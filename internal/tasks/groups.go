@@ -1,9 +1,9 @@
 package tasks
 
-// Group + patch governance shapes. Phase 21 lays groups, retain-turn
+// Group + patch governance shapes. Harbor lays groups, retain-turn
 // semantics, the `WatchGroup` wake mechanism, and patch governance on
-// top of the Phase 20 per-task surface (D-030). The shapes live in
-// this file for navigability (brief 05 §1) while sharing the
+// top of the per-task surface. The shapes live in
+// this file for navigability while sharing the
 // `TaskRegistry` interface seam.
 //
 // # Wake policy modes (planner-concrete concern, NOT a registry knob)
@@ -11,7 +11,7 @@ package tasks
 // The runtime ships ONE mechanism — `WatchGroup` + `GroupCompletion`
 // payload + the per-task `Get(taskID)` / per-group `ListGroups`
 // surface — and documents three patterns the planner runtime
-// (Phase 42+) can implement on top of it:
+// (the planner layer) can implement on top of it:
 //
 //  1. Push (LLM wake-on-resolution). The planner subscribes via
 //     `WatchGroup`; the runtime engine consumes the closed channel as
@@ -38,10 +38,10 @@ package tasks
 //     meantime. Suits user-facing agents where silence between turn
 //     close and group resolution looks broken.
 //
-// Phase 21 deliberately does NOT bake a `WakeMode` enum into
+// deliberately does NOT bake a `WakeMode` enum into
 // `TaskRegistry` — the choice is a planner-concrete decision, not a
-// registry concern. Future planner concretes (Phase 45 ReAct,
-// Phase 48 Deterministic, future) select push / poll / hybrid based
+// registry concern. Future planner concretes (ReAct,
+// Deterministic, future) select push / poll / hybrid based
 // on their own constraints.
 
 import (
@@ -51,10 +51,9 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// PatchKind is the StateStore Kind constant for patch records. Phase
-// 21 persists pending / applied / rejected patch state through the
-// same typed-wrapper-over-generic adapter the per-task surface uses
-// (D-027).
+// PatchKind is the StateStore Kind constant for patch records. Harbor
+// persists pending / applied / rejected patch state through the
+// same typed-wrapper-over-generic adapter the per-task surface uses.
 const PatchKind = "task.patch"
 
 // GroupKind is the StateStore Kind constant for group lifecycle
@@ -100,11 +99,11 @@ const (
 // TaskGroup is the persisted group record. The Identity is captured
 // from the owning session at create time; cross-session group
 // membership is forbidden (V1; nesting / cross-session lands post-V1
-// if a planner concrete genuinely needs it — brief 05).
+// if a planner concrete genuinely needs it).
 //
 // `Members` is the in-order list of member task IDs assigned during
-// the `Open` phase via the spawn-with-GroupID seam (Phase 26+ wires
-// `SpawnTool`'s group hookup). Phase 21 ships the group surface; the
+// the `Open` phase via the spawn-with-GroupID seam (later wires
+// `SpawnTool`'s group hookup). Harbor ships the group surface; the
 // member-assignment wiring is exercised by the conformance suite
 // directly through the new `AddMember` driver helper.
 //
@@ -158,17 +157,17 @@ const (
 	ActionCancel GroupAction = "cancel"
 	// ActionResolve marks a sealed group as `Completed` when the
 	// caller knows all members are done (used by drivers that defer
-	// resolution to an external signal — Phase 21's in-process driver
+	// resolution to an external signal — the in-process driver
 	// resolves automatically when all members are terminal, so this
-	// action is rarely needed but exposed for symmetry with the brief
-	// 05 surface).
+	// action is rarely needed but exposed for symmetry with the rest of
+	// the surface).
 	ActionResolve GroupAction = "resolve"
 )
 
 // PatchAction is the verb a caller passes to `ApplyPatch`. Patches
 // transition `pending → applied | rejected` through the registry.
 // The patch payload is opaque bytes — the actual context-patch shape
-// lives at the planner (Phase 42+); Phase 21 stores + retrieves; the
+// lives at the planner; Harbor stores + retrieves; the
 // planner consumes.
 type PatchAction string
 
@@ -199,8 +198,8 @@ type Patch struct {
 // and a `MemberOutcome` per group member.
 //
 // Discipline: `MemberOutcome.Result` is ref-shaped. Heavy results
-// upstream MUST already have been substituted with `ArtifactRef`s
-// (D-022, D-026); the payload is NOT byte-bound. A
+// upstream MUST already have been substituted with `ArtifactRef`s;
+// the payload is NOT byte-bound. A
 // `TaskResult.Value` carrying inline bytes above the heavy-output
 // threshold is a leak — the LLM-edge enforcement pass will fail
 // loudly. The conformance suite's
@@ -210,7 +209,7 @@ type Patch struct {
 // unchanged.
 //
 // Concurrent reuse: multiple `WatchGroup` subscribers on the same
-// group all receive the same payload (D-025). The driver fans out
+// group all receive the same payload. The driver fans out
 // the payload to each subscriber's buffered-size-1 channel without
 // blocking.
 type GroupCompletion struct {

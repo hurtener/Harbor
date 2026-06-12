@@ -1,8 +1,8 @@
 package auth
 
-// callback.go ships the production OAuth callback handler (Phase
-// 111b, D-199) — the completion leg of the tool-OAuth choreography.
-// The pause PRODUCER has been live since Phase 30 (the catalog OAuth
+// callback.go ships the production OAuth callback handler (
+// ) — the completion leg of the tool-OAuth choreography.
+// The pause PRODUCER has been live since then (the catalog OAuth
 // wrapper routes a token-missing tool through buildAuthRequired →
 // Coordinator.Request, emitting tool.auth_required and parking the
 // run); CallbackHandler is the resume half: the provider redirect
@@ -24,7 +24,7 @@ package auth
 // that identity. The handler adds zero identity logic of its own —
 // it quotes the record back, and CompleteFlow's identity cross-check
 // + the Coordinator's resume-scope check verify against the same
-// record (brief 09 §two binding scopes). For ScopeAgent flows the
+// record. For ScopeAgent flows the
 // admin gate already fired at InitiateFlow time; the handler restores
 // the control scope for the completion leg of that same flow only.
 //
@@ -124,7 +124,7 @@ func WithSuccessPage(html string) CallbackOption {
 // An upstream denial (`error=access_denied`, …) is surfaced loud:
 // 400 with the audit-safe reason, AND the flow is consumed via
 // DenyFlow so the pause resumes with DecisionReject instead of
-// hanging to flow-TTL (D-199).
+// hanging to flow-TTL.
 //
 // The handler is a plain http.Handler with no dependency on the
 // Protocol server, the dev server, or cmd/harbor — `harbor dev`
@@ -134,7 +134,7 @@ func WithSuccessPage(html string) CallbackOption {
 // must land on the same process that parked the run, which is true by
 // construction for `harbor dev` and single-process embedders.
 //
-// Concurrent reuse (D-025): the handler is a compiled artifact — the
+// Concurrent reuse: the handler is a compiled artifact — the
 // provider map is copied at construction and read-only afterwards;
 // per-request state lives on the request goroutine's stack.
 func CallbackHandler(providers map[string]OAuthProvider, opts ...CallbackOption) http.Handler {
@@ -157,7 +157,7 @@ func CallbackHandler(providers map[string]OAuthProvider, opts ...CallbackOption)
 }
 
 // callbackHandler is the concrete http.Handler. Immutable after
-// construction (D-025).
+// construction.
 type callbackHandler struct {
 	providers map[string]OAuthProvider
 	cfg       callbackConfig
@@ -218,7 +218,7 @@ func (h *callbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Upstream denial (RFC 6749 §4.1.2.1): surface loud + consume the
-	// flow so the pause resumes with DecisionReject (D-199) instead
+	// flow so the pause resumes with DecisionReject instead
 	// of hanging to flow-TTL.
 	if upstreamErr := q.Get("error"); upstreamErr != "" {
 		if derr := prov.DenyFlow(ctx, state, upstreamErr); derr != nil {

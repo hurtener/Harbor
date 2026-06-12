@@ -1,7 +1,7 @@
-// cmd/harbor/cmd_validate.go — `harbor validate` (Phase 68, D-088).
+// cmd/harbor/cmd_validate.go — `harbor validate`.
 //
 // Pre-boot tool that runs the in-process `internal/config` validator
-// against a Harbor config file. Surfaces each Phase 02 rule as a
+// against a Harbor config file. Surfaces each rule as a
 // stable, golden-pinnable error with file:line precision. Suitable
 // as a CI pre-flight gate.
 //
@@ -17,7 +17,7 @@
 //	<file>:<line>: <category>: <message> (<hint>)
 //	...
 //
-// Exit codes (pinned by D-088):
+// Exit codes (pinned by):
 //   - 0 — valid.
 //   - 1 — validation errors found (one or more entries in `errors[]`).
 //   - 2 — unexpected / internal error (I/O, unsupported input).
@@ -46,7 +46,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 )
 
-// Phase 68 — stable CLI error codes for the validate subcommand. New
+// stable CLI error codes for the validate subcommand. New
 // categories ADD entries here; existing entries are wire contracts
 // pinned by golden tests.
 const (
@@ -65,7 +65,7 @@ const (
 	// CategoryConfigParse — YAML parse / strict-decode failure (an
 	// unknown field, a malformed document). Pre-validator.
 	CategoryConfigParse = "config.parse"
-	// CategoryConfigSemantic — a Phase 02 `validateXxx` rule fired
+	// CategoryConfigSemantic — a `validateXxx` rule fired
 	// (bad enum, missing required, out-of-range numeric).
 	CategoryConfigSemantic = "config.semantic"
 	// CategoryIONotFound — the requested file does not exist.
@@ -104,7 +104,7 @@ type validationFinding struct {
 
 // validationBody is the wire shape `harbor validate --json` emits when
 // findings exist. Embeds the standard CLIError fields so the wire
-// shape stays compatible with the Phase 63 contract — the new
+// shape stays compatible with the contract — the new
 // `errors` field is additive.
 //
 // Field order matches encoding/json's struct-definition order so the
@@ -141,9 +141,9 @@ Exit codes:
   1  validation errors found
   2  unexpected / internal error (I/O, unsupported input)
 
-Phase 68 ships config validation. Standalone skill / agent-definition
+This subcommand ships config validation. Standalone skill / agent-definition
 validation lands when those surfaces gain file-based primitives — see
-RFC §8 + the Phase 68 plan in docs/plans/.`,
+RFC §8 + the validate phase plan in docs/plans/.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runValidate,
 	}
@@ -162,7 +162,7 @@ RFC §8 + the Phase 68 plan in docs/plans/.`,
 //
 // The two codes map to two distinct CLIError values so the existing
 // `emitCLIError` / `PrintCLIError` plumbing surfaces them uniformly
-// in both human + --json modes. Phase 63's main() exits with a
+// in both human + --json modes. the main() exits with a
 // non-zero exit code when Execute returns any error; the exit-2
 // distinction lives in the CLIError.Code field that callers read.
 func runValidate(cmd *cobra.Command, args []string) error {
@@ -230,13 +230,13 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// validatePath is the core pipeline. It reads `path`, runs the Phase 02
+// validatePath is the core pipeline. It reads `path`, runs the
 // loader, derives a (category, line) per finding, and returns the
 // list. A non-nil `internalErr` indicates an I/O or read failure that
 // short-circuits the pipeline — the caller surfaces this as a single
 // internal-class finding with exit code 2.
 //
-// Findings ordered as the loader surfaces them (Phase 02 is single-
+// Findings ordered as the loader surfaces them (is single-
 // finding today — its `Validate()` returns the first error it hits;
 // a future enhancement that gathers all errors will round-trip through
 // this slice).
@@ -252,7 +252,7 @@ func validatePath(ctx context.Context, path string) (findings []validationFindin
 		return nil, err
 	}
 
-	// Run the Phase 02 loader. We use LoadFromBytes (NOT Load) so we
+	// Run the loader. We use LoadFromBytes (NOT Load) so we
 	// retain the byte stream for AST-based line lookup. The loader's
 	// own error formatting carries the field path; we parse it back
 	// into a category + line.
@@ -265,7 +265,7 @@ func validatePath(ctx context.Context, path string) (findings []validationFindin
 	return []validationFinding{finding}, nil
 }
 
-// classifyLoaderError converts a Phase 02 loader error into a stable
+// classifyLoaderError converts a loader error into a stable
 // validation finding. The two categories the loader produces are:
 //
 //   - CategoryConfigParse — YAML parse / strict-decode failure. The
@@ -348,7 +348,7 @@ func extractParseReason(msg string) string {
 	return strings.TrimSpace(tail)
 }
 
-// extractFieldPath pulls the dotted field path from a Phase 02
+// extractFieldPath pulls the dotted field path from a
 // semantic error. The error format is `config.<path>: <reason>...`.
 // Returns "" when the path can't be extracted (defensive — should not
 // happen on well-formed loader errors).
@@ -670,7 +670,7 @@ func internalFindingFor(path string, err error) validationFinding {
 //
 // The returned CLIError is what cobra surfaces; the body is written
 // to cmd.ErrOrStderr() so it shows up on the error channel exactly
-// like every other Phase 63 error.
+// like every other error.
 func emitValidationResult(cmd *cobra.Command, flags validateFlags, findings []validationFinding, code, summary, summaryHint string) error {
 	w := cmd.ErrOrStderr()
 	if flags.jsonMode {
@@ -709,7 +709,7 @@ func emitValidationResult(cmd *cobra.Command, flags validateFlags, findings []va
 //	...
 //
 // The first line is the CLIError-shaped summary so the human-mode
-// rendering matches the Phase 63 convention. Subsequent lines are
+// rendering matches the convention. Subsequent lines are
 // per-finding details so operators can grep / read.
 func writeHumanFindings(w io.Writer, summary, summaryHint string, findings []validationFinding) error {
 	first := "Error: harbor validate: " + summary
@@ -751,6 +751,6 @@ func formatFindingHuman(f validationFinding) string {
 // only paths today, but a project-aware resolver will later look at
 // the working tree to find the canonical config. The helper is a
 // pure function so the resolution is testable.
-func defaultConfigPathFor(workdir string) string { //nolint:unused // forward-compatible helper; first consumer is a Phase 64+ project-aware resolver
+func defaultConfigPathFor(workdir string) string { //nolint:unused // forward-compatible helper; first consumer is a later project-aware resolver
 	return filepath.Join(workdir, defaultConfigPath)
 }

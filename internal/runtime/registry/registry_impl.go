@@ -20,7 +20,7 @@ import (
 )
 
 // StateStore Kind constants. The registry persists through the generic
-// StateStore seam (D-027): a per-identity *index* document plus one
+// StateStore seam: a per-identity *index* document plus one
 // *record* document per agent.
 //
 //   - indexKind        — one document per (tenant,user,session); maps
@@ -42,21 +42,21 @@ const (
 type Deps struct {
 	// Store is the per-runtime-instance StateStore. Driver pluralism
 	// (in-mem / SQLite / Postgres) lives here, not at the registry
-	// layer (D-027 / D-060).
+	// layer.
 	Store state.StateStore
 	// Bus is the typed event bus the registry emits agent.* events on.
 	Bus events.EventBus
 	// Redactor redacts the operator-supplied Reason string on every
-	// fleet-control command before it is emitted (D-020 / D-066).
+	// fleet-control command before it is emitted.
 	Redactor audit.Redactor
 }
 
 // Registry is the StateStore-backed implementation of AgentRegistry.
 // It is the single concrete impl in V1 — driver pluralism lives at the
-// StateStore layer (D-027).
+// StateStore layer.
 //
-// Concurrency model (D-025):
-//   - The StateStore is itself concurrent-safe per D-027.
+// Concurrency model:
+//   - The StateStore is itself concurrent-safe.
 //   - mu serialises the read-modify-write of a per-identity index
 //     document (Register / RegisterRemote / Deregister) so two
 //     concurrent registrations under the same identity cannot lose an
@@ -81,7 +81,7 @@ type Registry struct {
 	// the store layer, so mu serialises it. Every method that does a
 	// load→mutate→save (register, Deregister, ReportHealth, control)
 	// MUST hold mu across the whole sequence; a load under mu followed
-	// by a save outside it is the lost-update bug the Wave 9 §17.5
+	// by a save outside it is the lost-update bug the §17.5
 	// audit caught in ReportHealth/control. Read-only paths (Get,
 	// Inspect) and List's record fan-out do not need mu — a stale read
 	// is acceptable; a lost write is not.
@@ -116,7 +116,7 @@ func WithClock(c Clock) Option {
 // therefore automatic — a fresh *Registry over a durable StateStore
 // (SQLite / Postgres) sees the prior process's agents; a fresh
 // *Registry over a fresh in-mem store does not (the in-mem driver is
-// dev-only and non-persistent — D-060).
+// dev-only and non-persistent).
 func New(deps Deps, opts ...Option) (*Registry, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf("registry: New requires a non-nil StateStore")
@@ -166,7 +166,7 @@ func (r *Registry) RegisterRemote(ctx context.Context, key string, cardRef strin
 		return nil, fmt.Errorf("%w: RegisterRemote requires a non-empty AgentCard reference", ErrInvalidConfig)
 	}
 	// version_hash is empty for remote agents — the configuration is
-	// owned by the remote operator (D-060).
+	// owned by the remote operator.
 	return r.register(ctx, key, HostingRemote, cardRef, "", opts)
 }
 
@@ -456,8 +456,8 @@ func (r *Registry) ForceStop(ctx context.Context, agentID string, reason string)
 }
 
 // control is the shared fleet-control path. It enforces the elevated
-// control-scope claim (D-066), redacts the operator-supplied reason
-// (D-020), optionally transitions Health, and emits the control event.
+// control-scope claim, redacts the operator-supplied reason,
+// optionally transitions Health, and emits the control event.
 func (r *Registry) control(
 	ctx context.Context,
 	agentID string,
@@ -474,12 +474,12 @@ func (r *Registry) control(
 		return err
 	}
 	// Fleet control is a distinct, more-elevated privilege tier than
-	// fleet observation (D-066). Fail closed without the claim.
+	// fleet observation. Fail closed without the claim.
 	if !HasControlScope(ctx) {
 		return fmt.Errorf("%w: command=%q", ErrControlScopeRequired, command)
 	}
 	// Redact the operator-supplied reason BEFORE it reaches the bus
-	// payload (D-020 — no caller-controlled string bypasses the
+	// payload (no caller-controlled string bypasses the
 	// redactor). Done before the lock — it needs only `reason`, not
 	// the record.
 	redacted, err := r.redactString(ctx, reason)
@@ -534,7 +534,7 @@ func (r *Registry) Close(_ context.Context) error {
 // requireIdentity reads the (tenant,user,session) triple from ctx and
 // validates it. Identity is mandatory — the registry fails closed
 // (AGENTS.md §6 rule 9). agent_id is NOT part of this check: it is a
-// registration identity, not an isolation principal (D-059).
+// registration identity, not an isolation principal.
 func (r *Registry) requireIdentity(ctx context.Context) (identity.Identity, error) {
 	ident, ok := identity.From(ctx)
 	if !ok {
@@ -666,7 +666,7 @@ func recordKind(agentID string) string {
 // newAgentID mints a fresh ULID-shaped agent_id using crypto-strong
 // entropy. ULID gives a monotonic, lexicographically sortable id that
 // is collision-free by construction within this runtime instance
-// (D-059 / D-060) — it is never assumed globally unique.
+// it is never assumed globally unique.
 func newAgentID() string {
 	return ulid.MustNew(ulid.Now(), rand.Reader).String()
 }

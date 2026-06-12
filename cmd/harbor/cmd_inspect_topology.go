@@ -1,29 +1,29 @@
-// cmd/harbor/cmd_inspect_topology.go — Phase 70 (D-102): the
+// cmd/harbor/cmd_inspect_topology.go — the
 // `harbor inspect-topology <run-id>` subcommand. Renders the run's
-// node graph as deterministic ASCII (golden-pinned). Per D-102 the
-// topology is trajectory-synthesised from the Phase 60 SSE event
+// node graph as deterministic ASCII (golden-pinned). Per the
+// topology is trajectory-synthesised from the SSE event
 // stream — `topology.snapshot` events (the canonical source) land
-// with Phase 74; until then the synthesiser scrapes
+// with the topology Protocol surface; until then the synthesiser scrapes
 // `tool.invoked` / `tool.completed` / `task.spawned` / `pause.requested`
 // / `planner.finish` from the run-filtered SSE stream and assembles
 // an indent-based tree.
 //
 // # Auth posture
 //
-// Same Bearer-token surface as Phase 64's `harbor dev` mints: an
+// Same Bearer-token surface as the `harbor dev` mints: an
 // `HARBOR_TOKEN` env var OR a file at `~/.harbor/token`. Operators
 // running against the local dev stack grep `HARBOR_DEV_TOKEN=...` out
 // of the dev server's stderr log and `export HARBOR_TOKEN=$VALUE`.
-// Phase 69 ships the matching helper for inspect-events / inspect-runs;
+// Harbor ships the matching helper for inspect-events / inspect-runs;
 // this file uses an in-package equivalent so the two CLI bodies can
 // land in parallel-worktree merges without colliding on a shared
-// helper file. When Phase 69's helper merges, the two implementations
+// helper file. When the helper merges, the two implementations
 // can be consolidated in a follow-up.
 //
 // # Identity-filter flags
 //
 // `--tenant`, `--user`, `--session` populate the optional
-// `X-Harbor-Tenant` / `-User` / `-Session` headers — the Phase 60
+// `X-Harbor-Tenant` / `-User` / `-Session` headers — the
 // SSE transport honours these when the auth middleware has not
 // already attached an identity to the request ctx. In the common
 // case the Bearer-token's claims are the source of truth; the flags
@@ -36,7 +36,7 @@
 // command — it reads until either the run terminates
 // (`planner.finish` arrives) OR the bus is idle for
 // `--idle-timeout` (default 1500ms — two SSE keepalive intervals at
-// the Phase 60 default of 800ms gives a small buffer). The default
+// the default of 800ms gives a small buffer). The default
 // is generous enough to capture a freshly-started run that's still
 // building tools but tight enough to keep the CLI snappy.
 //
@@ -46,7 +46,7 @@
 // The JSON shape is the same `Topology` struct serialised — useful
 // for piping into `jq` or the future Console topology page (which
 // will eventually read `topology.snapshot` frames directly per
-// Phase 74; until then the CLI's JSON output is the same shape).
+// the topology Protocol surface; until then the CLI's JSON output is the same shape).
 
 package main
 
@@ -104,13 +104,13 @@ const (
 	flagInspectTopologyIdleTimeout = "idle-timeout"
 )
 
-// DefaultInspectTopologyBind matches Phase 64's default dev port so
+// DefaultInspectTopologyBind matches the default dev port so
 // the common case (`harbor dev` running locally) needs no flags.
 const DefaultInspectTopologyBind = "127.0.0.1:18080"
 
 // DefaultInspectTopologyIdleTimeout is the no-event-arrived window
 // after which the CLI assumes the run is quiescent and renders what
-// it has. 1500ms is generous against the Phase 60 default keepalive
+// it has. 1500ms is generous against the default keepalive
 // of 800ms — one missed keepalive + the next is still under threshold.
 const DefaultInspectTopologyIdleTimeout = 1500 * time.Millisecond
 
@@ -154,7 +154,7 @@ for a given input event ordering (sorted by Sequence + EventID).
 
 Topology source: trajectory-synthesised from tool.invoked /
 tool.completed / task.spawned / pause.requested / planner.finish
-events. When Phase 74 ships the canonical topology.snapshot event,
+events. When the Runtime serves the canonical topology.snapshot event,
 this command will prefer that source automatically.
 
 Examples:
@@ -315,9 +315,9 @@ func runInspectTopology(cmd *cobra.Command, args []string) error {
 // does not depend on a shared helper file (the parallel-worktree merge
 // constraint named in the prompt).
 // W3 partial — `resolveInspectToken` and the constants collapsed to
-// the Phase 69 canonical helpers (inspect_common.go). The bind
-// validator is intentionally NOT collapsed: `inspectEndpoint` (Phase
-// 69) is a URL composer that accepts any non-empty `bind` and prefixes
+// the canonical helpers (inspect_common.go). The bind
+// validator is intentionally NOT collapsed: `inspectEndpoint` (
+// ) is a URL composer that accepts any non-empty `bind` and prefixes
 // `http://...`; it does NOT enforce host:port shape. The topology cmd
 // uses a strict host:port shape check so a malformed bind surfaces
 // CodeInspectTopologyBindInvalid at the CLI edge BEFORE any network
@@ -341,7 +341,7 @@ func validateInspectBind(bind string) error {
 }
 
 // resolveInspectToken reads the Bearer token from the standard
-// locations (env var → ~/.harbor/token). Delegates to the Phase 69
+// locations (env var → ~/.harbor/token). Delegates to the
 // canonical helper. Returns an error when both sources are empty /
 // unreadable so the caller can surface CodeAuthMissing.
 func resolveInspectToken() (string, error) {
@@ -349,7 +349,7 @@ func resolveInspectToken() (string, error) {
 	if err != nil {
 		var ce CLIError
 		if errors.As(err, &ce) {
-			// Preserve the rich Phase 69 message + hint.
+			// Preserve the rich message + hint.
 			return "", errors.New(ce.Message)
 		}
 		return "", err
@@ -399,11 +399,11 @@ func fetchSSEUntilIdle(ctx context.Context, opts sseFetchOpts) ([]byte, error) {
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Authorization", "Bearer "+opts.Token)
 	// Last-Event-ID: 0 requests replay from the start of the run.
-	// The Phase 60 stream handler maps this to a Cursor{Sequence: 0}
+	// The stream handler maps this to a Cursor{Sequence: 0}
 	// which the bus driver replays everything strictly greater than
 	// — i.e. the whole run.
 	req.Header.Set("Last-Event-ID", "0")
-	// Run filter is INTENTIONALLY NOT set via X-Harbor-Run. The Phase 60
+	// Run filter is INTENTIONALLY NOT set via X-Harbor-Run. The
 	// SSE handler filters server-side by `Event.Identity.RunID`, which
 	// is EMPTY on the load-bearing `task.spawned` event (the `start`
 	// Protocol method dispatches `Quadruple{Identity: id}` — RunID is
@@ -412,8 +412,8 @@ func fetchSSEUntilIdle(ctx context.Context, opts sseFetchOpts) ([]byte, error) {
 	// the stream, leaving the topology synthesiser with no Task node
 	// to render. The CLI filters client-side via `runIDFromFrame` in
 	// `ParseSSEFrames` (TaskID-payload fallback) — same projection
-	// Phase 69's inspect-runs uses (D-101). Tracked: extend the Phase
-	// 60 stream to fall back to payload TaskID for task.spawned in a
+	// the inspect-runs uses. Tracked: extend the
+	// stream to fall back to payload TaskID for task.spawned in a
 	// future PR; until then the CLI carries the projection.
 	if opts.Tenant != "" {
 		req.Header.Set("X-Harbor-Tenant", opts.Tenant)
@@ -585,7 +585,7 @@ func fetchErrorToCLIError(err error) CLIError {
 			case http.StatusForbidden:
 				hint = "the token's scope did not authorise this subscription — admin scope is required for cross-tenant reads"
 			case http.StatusNotFound:
-				hint = "the /v1/events endpoint was not found — is the Runtime running Phase 60 or later?"
+				hint = "the /v1/events endpoint was not found — does this Runtime serve the SSE event stream?"
 			}
 			return CLIError{
 				Subcommand: "inspect-topology",

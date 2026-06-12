@@ -13,7 +13,7 @@ import (
 // LaunchFunc is the runtime-supplied launcher the FuncInvoker wraps. It
 // launches a one-shot run of the named flow under the caller's identity
 // and returns the accepted run's identifier + start time. The runtime
-// binds this to its real task-registry `start` path (Phase 54) — the
+// binds this to its real task-registry `start` path — the
 // FuncInvoker never reaches the task registry directly, so the Flows-
 // page surface stays decoupled from the task subsystem's concrete type.
 //
@@ -29,7 +29,7 @@ type LaunchFunc func(ctx context.Context, id identity.Identity, flowID string, i
 // real `start` path; the FuncInvoker is the thin adapter that keeps the
 // Flows-page surface decoupled from the task subsystem.
 //
-// Concurrent reuse (D-025): the FuncInvoker is a compiled artifact —
+// Concurrent reuse: the FuncInvoker is a compiled artifact —
 // the LaunchFunc is set once at construction and never mutated.
 type FuncInvoker struct {
 	launch   LaunchFunc

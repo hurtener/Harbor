@@ -1,12 +1,12 @@
 // Package types is the single source of truth for Harbor Protocol wire
 // types (CLAUDE.md §8). Every Protocol message struct lives here; other
 // packages import these types, and nothing else defines a Protocol
-// message struct. The Phase 58 lint formalises this — Phase 54 lays the
+// message struct. The lint formalises this — lays the
 // foundation so that lint is a no-op formalisation, not a cleanup.
 //
-// # What Phase 54 ships
+// # What Harbor ships
 //
-// Phase 54 ships the Protocol task control surface's wire types: the
+// Harbor ships the Protocol task control surface's wire types: the
 // flat IdentityScope every request carries, the StartRequest /
 // StartResponse pair, and the ControlRequest / ControlResponse pair the
 // nine steering-control methods share. The wire shapes are deliberately
@@ -23,9 +23,9 @@
 // Runtime implementation so third-party Consoles are not whipsawed by a
 // Runtime refactor.
 //
-// # Versioning discipline (Phase 59)
+// # Versioning discipline
 //
-// Phase 59 turns the version *pin* into a versioning *discipline*:
+// Harbor turns the version *pin* into a versioning *discipline*:
 //
 //   - Version + ParseVersion + Compatible — the pinned string parsed
 //     into a comparable Major/Minor/Patch value, so a client detects
@@ -44,13 +44,13 @@
 //     which surfaces are live and gets a structured VersionHandshake
 //     (the version + the advertised capability set) rather than
 //     discovering a missing surface by a 404. V1 advertises exactly
-//     the surfaces that have shipped — CapTaskControl, the Phase 54
+//     the surfaces that have shipped — CapTaskControl, the
 //     surface; later Protocol-surface phases add their constant here.
 //
-// None of this bumps the version: Phase 59 ships the *mechanism* for
+// None of this bumps the version: Harbor ships the *mechanism* for
 // living with versions, not a new version. It is transport-agnostic —
-// a Phase 60 SSE+REST adapter or a Phase 63 `harbor version` subcommand
-// consumes these values; Phase 59 binds to no transport.
+// a SSE+REST adapter or a `harbor version` subcommand
+// consumes these values; binds to no transport.
 package types
 
 import (
@@ -66,7 +66,7 @@ import (
 // independently of the Runtime, and a breaking change requires a
 // deprecation window so third-party Consoles are not whipsawed.
 //
-// V1 ships 0.1.0 — the task control surface (Phase 54) is the first
+// V1 ships 0.1.0 — the task control surface is the first
 // Protocol surface to land; the streaming-events / state-snapshot /
 // topology / artifacts / traces / metrics surfaces (RFC §5.2) extend it
 // in later phases without bumping the major while V1 is in flight.
@@ -227,11 +227,11 @@ var validDeprecationKinds = map[DeprecationKind]struct{}{
 // deprecated Protocol element carries its window in this shape — a
 // structured, machine-readable record — rather than a free-text code
 // comment, so a Protocol client (or a `harbor version` subcommand,
-// Phase 63) can surface "this method is going away in 0.3.0, use X
+// the CLI) can surface "this method is going away in 0.3.0, use X
 // instead" mechanically.
 //
 // Deprecation is a wire type — it round-trips through JSON so the
-// negotiation surface (Phase 60) can hand the active set to a client.
+// negotiation surface can hand the active set to a client.
 type Deprecation struct {
 	// Subject names the Protocol element being deprecated — the method
 	// name, error code, `Type.Field` wire-field path, or capability
@@ -305,10 +305,10 @@ func (d Deprecation) String() string {
 var ErrInvalidDeprecation = stderrors.New("types: invalid Protocol deprecation")
 
 // activeDeprecations is the registry of active Protocol deprecations. It
-// is EMPTY at Protocol 0.1.0 — the task control surface (Phase 54) just
+// is EMPTY at Protocol 0.1.0 — the task control surface just
 // shipped and nothing has been superseded yet. The first real
 // deprecation lands here, in the phase that supersedes a Protocol
-// element, populating the format Phase 59 settled. Keeping the registry
+// element, populating the format An earlier phase settled. Keeping the registry
 // here — even empty — gives the Deprecation format a single home and a
 // consumer (Deprecations()) from day one, per the §13
 // primitive-with-consumer rule.
@@ -351,31 +351,30 @@ func Deprecations() []Deprecation {
 type Capability string
 
 // The V1 Protocol capability set. At Protocol 0.1.0 exactly one surface
-// has shipped — the Phase 54 task control surface — so CapTaskControl
+// has shipped — the task control surface — so CapTaskControl
 // is the only capability. RFC §5.2's other surfaces add their
 // Capability constant here as their phase lands.
 const (
 	// CapTaskControl — the task control surface (RFC §5.2 "Task
 	// control" row): the `start` method plus the nine steering-control
-	// methods. Shipped in Phase 54.
+	// methods.
 	CapTaskControl Capability = "task_control"
 	// CapEventsSubscribe — the streaming-events surface (RFC §5.2
 	// "Streaming events" row): the `events.subscribe` method and the
-	// `events.aggregate` time-bucket method. Shipped in Wave 13
-	// (Phase 72 / 72a).
+	// `events.aggregate` time-bucket method. Shipped in.
 	CapEventsSubscribe Capability = "events_subscribe"
 	// CapRuntimePosture — the runtime-posture surface (RFC §5.3, §6.15,
 	// §7): the five read-only `runtime.*` / `metrics.*` methods
 	// (`runtime.info`, `runtime.health`, `runtime.counters`,
-	// `runtime.drivers`, `metrics.snapshot`). Shipped in Wave 13
-	// (Phase 72f / D-111). A Protocol client negotiates "does this
+	// `runtime.drivers`, `metrics.snapshot`). Shipped in.
+	// A Protocol client negotiates "does this
 	// Runtime advertise the posture surface?" via
 	// `VersionHandshake.Accepts(CapRuntimePosture)`. The addition is
 	// backward-compatible (RFC §5.3 minor-class change) — no version
 	// bump.
 	CapRuntimePosture Capability = "runtime_posture"
 	// CapTopologySnapshot — the engine-graph topology projection
-	// (`topology.snapshot`, Phase 74 / D-114). Conditional: a runtime
+	// (`topology.snapshot`,). Conditional: a runtime
 	// only advertises this capability when it hosts an engine (the
 	// ControlSurface's topology accessor is non-nil). Planner /
 	// RunLoop-shaped runtimes — including `harbor dev` against an
@@ -383,7 +382,7 @@ const (
 	// `runtime.info.capabilities` at attach and gates its
 	// `topology.snapshot` calls behind `caps.has('topology_snapshot')`
 	// so the browser console stays clean on runtimes without the
-	// surface (round-8 F1 / phase 84a). Backward-compatible (RFC §5.3
+	// surface (. Backward-compatible (RFC §5.3
 	// minor-class addition) — no version bump.
 	CapTopologySnapshot Capability = "topology_snapshot"
 )
@@ -393,7 +392,7 @@ const (
 // extends this map in its own phase; there is no registration escape
 // hatch.
 //
-// Phase 84a clarification: this is distinct from what a SPECIFIC
+// clarification: this is distinct from what a SPECIFIC
 // runtime instance advertises in `runtime.info.capabilities`. The
 // canonical set is the Protocol-version surface a handshake negotiates
 // against; the per-instance list is the *wired subset* (e.g.
@@ -434,7 +433,7 @@ func Capabilities() []Capability {
 // discovering a missing surface by a 404.
 //
 // VersionHandshake is a wire type — it round-trips through JSON; a
-// Phase 60 transport adapter serves CurrentHandshake() at the
+// transport adapter serves CurrentHandshake() at the
 // negotiation entry point.
 type VersionHandshake struct {
 	// ProtocolVersion is the version string the Runtime speaks — the
@@ -448,7 +447,7 @@ type VersionHandshake struct {
 
 // CurrentHandshake builds the Runtime's VersionHandshake from the pinned
 // ProtocolVersion and the advertised Capabilities() set. It is the value
-// a negotiation entry point (Phase 60) returns to a connecting client.
+// a negotiation entry point returns to a connecting client.
 func CurrentHandshake() VersionHandshake {
 	return VersionHandshake{
 		ProtocolVersion: ProtocolVersion,

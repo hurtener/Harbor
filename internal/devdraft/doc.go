@@ -1,5 +1,5 @@
 // Package devdraft implements the `harbor dev` draft-save scaffolding
-// surface — Phase 66 / D-100.
+// surface.
 //
 // # What this package owns
 //
@@ -50,7 +50,7 @@
 // draft ID and a short marker (file path, output dir abs path) and
 // never the file contents.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // The Store is a compiled artifact: every field is set at
 // construction and immutable afterwards; per-request state lives in

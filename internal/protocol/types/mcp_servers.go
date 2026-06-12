@@ -2,10 +2,10 @@ package types
 
 import "time"
 
-// Phase 73k (D-119) — the MCP-Connections-page wire types.
+// the MCP-Connections-page wire types.
 //
-// Phase 73k ships the operator control plane for Harbor's MCP southbound
-// surface (Phase 28). It lands twelve Protocol methods under the
+// Harbor ships the operator control plane for Harbor's MCP southbound
+// surface. It lands twelve Protocol methods under the
 // `mcp.servers.*` namespace — nine read methods, three admin verbs:
 //
 //	mcp.servers.list / get / resources / prompts / refresh_discovery /
@@ -19,7 +19,7 @@ import "time"
 // onto these wire shapes; the Console never sees the MCP SDK internals.
 //
 // Identity is mandatory on every request (RFC §5.5). The admin verbs
-// gate additionally on the `auth.ScopeAdmin` claim (D-079 closed-set —
+// gate additionally on the `auth.ScopeAdmin` claim (closed-set —
 // no new scope is minted for MCP).
 
 // MCPServerStateView is the canonical state chip a Console renders for an
@@ -78,7 +78,7 @@ type MCPServerView struct {
 	// this server.
 	OAuthBindingCount int32 `json:"oauth_binding_count"`
 	// RawHTMLTrusted reports whether the per-server raw-HTML opt-in flag
-	// is set. Default false (default-deny — brief 11 §8).
+	// is set. Default false (default-deny).
 	RawHTMLTrusted bool `json:"raw_html_trusted"`
 }
 
@@ -129,7 +129,7 @@ type MCPServerGetRequest struct {
 }
 
 // MCPToolPolicyView is the read-only projection of an MCP server's
-// ToolPolicy (D-024). It is read-only at V1 (policy editing is post-V1).
+// ToolPolicy. It is read-only at V1 (policy editing is post-V1).
 type MCPToolPolicyView struct {
 	// TimeoutMs is the per-invocation timeout in milliseconds.
 	TimeoutMs int64 `json:"timeout_ms"`
@@ -155,7 +155,7 @@ type MCPServerGetResponse struct {
 	// Server is the per-server row shape.
 	Server MCPServerView `json:"server"`
 	// DisplayModesAdvertised lists the MCP-Apps DisplayMode values the
-	// server declares (D-062). Always non-nil in the wire JSON.
+	// server declares. Always non-nil in the wire JSON.
 	DisplayModesAdvertised []string `json:"display_modes_advertised"`
 	// ContentShapes lists the canonical content shapes the server's
 	// tools return ("string" / "ImageRef" / ...). Always non-nil.
@@ -318,7 +318,7 @@ type MCPServerHealthResponse struct {
 }
 
 // MCPBindingView is one OAuth binding row. It NEVER carries token
-// plaintext — only the binding metadata (D-083 invariant).
+// plaintext — only the binding metadata (invariant).
 type MCPBindingView struct {
 	// PrincipalID is the bound principal — a user id (ScopeUser) or an
 	// agent id (ScopeAgent).

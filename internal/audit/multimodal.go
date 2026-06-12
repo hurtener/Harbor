@@ -9,7 +9,7 @@ import (
 )
 
 // ArtifactRef is the canonical reference-shaped form of binary
-// content per RFC §6.5 / D-021. Phase 03 ships only the type so the
+// content per RFC §6.5. Harbor ships only the type so the
 // redactor can recognise refs and pass them through; the artifact
 // store + materializer phases own the resolver. The type lives in
 // this package to avoid a circular import — `internal/audit` is
@@ -80,7 +80,7 @@ var commonImageHeaderPrefixes = []struct {
 
 // multimodalRule rewrites inline base64 / DataURL content in payload
 // to a `[redacted: <MIME> of <N> bytes]` placeholder. ArtifactRef
-// values pass through unchanged. Implements decisions D-021/D-022.
+// values pass through unchanged.
 type multimodalRule struct {
 	name string
 }

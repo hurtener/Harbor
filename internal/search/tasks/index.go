@@ -1,7 +1,7 @@
-// Package tasks implements the Phase 72c `search.tasks` runtime-side
+// Package tasks implements the `search.tasks` runtime-side
 // index — a server-enforced search over task lifecycle records, scoped
 // to the caller's identity triple unless the `auth.ScopeAdmin` claim
-// is present (D-079).
+// is present.
 //
 // The Searcher consumes the public `tasks.TaskRegistry.List` surface
 // per session, fanning across the sessions visible to the caller (via

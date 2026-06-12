@@ -1,10 +1,10 @@
 package types
 
-// governance.go — the Phase 72g (D-112) wire types for the
+// governance.go — the wire types for the
 // `governance.posture` Protocol method. The method surfaces the
-// runtime's read-only governance configuration — the D-081
+// runtime's read-only governance configuration — the consolidated
 // `IdentityTiers` shape — so the Console Settings page Governance
-// Posture card (Phase 73m) and any third-party Console implementation
+// Posture card and any third-party Console implementation
 // render the same projection.
 //
 // Single source of truth (CLAUDE.md §8): these are THE Protocol
@@ -25,7 +25,7 @@ package types
 // TenantID is forward-looking: an empty value (the default) reads the
 // caller's own tenant — no scope claim required. A non-empty value that
 // differs from the caller's identity-resolved tenant is a cross-tenant
-// read and requires the `auth.ScopeAdmin` scope claim (D-079 closed
+// read and requires the `auth.ScopeAdmin` scope claim (closed
 // two-scope set). V1 ships a single tenant per Harbor instance, so the
 // cross-tenant path is reachable in code but the value space is a
 // singleton; the field exists so a post-V1 multi-tenant deployment
@@ -40,8 +40,8 @@ type GovernancePostureRequest struct {
 // the read-only projection of the runtime's governance configuration.
 //
 // IdentityTiers is keyed by tier name (e.g. `"free"`, `"team"`,
-// `"enterprise"`). An empty map (the latent-default boot per D-044 /
-// Phase 36a) means no enforcement is configured — the Console renders an
+// `"enterprise"`). An empty map (the latent-default boot /
+// governance) means no enforcement is configured — the Console renders an
 // explicit "No tiers configured" state, never a blank panel. The map is
 // always non-nil in the wire JSON (`{}`, never `null`).
 type GovernancePostureResponse struct {
@@ -53,7 +53,7 @@ type GovernancePostureResponse struct {
 	// via the runtime's configured TierResolver. Empty when no tier
 	// resolves (latent default).
 	ResolvedTier string `json:"resolved_tier"`
-	// IdentityTiers maps tier name → tier configuration (the D-081
+	// IdentityTiers maps tier name → tier configuration (the consolidated
 	// shape). Always non-nil; an empty map signals no enforcement.
 	IdentityTiers map[string]IdentityTierView `json:"identity_tiers"`
 	// ProtocolVersion echoes the Protocol version the Runtime answered
@@ -62,7 +62,7 @@ type GovernancePostureResponse struct {
 }
 
 // IdentityTierView is the wire projection of one governance tier's
-// policy bundle (the D-081 `governance.TierConfig` shape). Every field
+// policy bundle (the `governance.TierConfig` shape). Every field
 // zero = latent for that policy.
 type IdentityTierView struct {
 	// BudgetCeilingUSD is the per-identity (per tier) cost ceiling in

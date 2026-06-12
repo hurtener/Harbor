@@ -3,7 +3,7 @@ package notifications
 import "github.com/hurtener/Harbor/internal/events"
 
 // Severity classifies a notification's operator-visible urgency. Per
-// Brief 11 §CC-3 the Console renders notifications in alert ribbons /
+// By design the Console renders notifications in alert ribbons /
 // notification centres with a severity-derived colour and ordering.
 //
 // V1 is a fixed three-value enum. A richer model (payload-derived
@@ -33,7 +33,7 @@ const (
 // event. Embeds events.Sealed (NOT events.SafeSealed): the Summary
 // field is human-readable and derived from caller-controlled bytes on
 // the originating event's typed payload, so the bus's redactor walks
-// the payload on Publish per D-020.
+// the payload on Publish.
 //
 // Field semantics:
 //
@@ -85,7 +85,7 @@ type NotificationPayload struct {
 }
 
 // IdentityRejectedPayload reports a Subscriber-side identity rejection:
-// the trigger event arrived with the D-033 `<missing>` sentinel
+// the trigger event arrived with the `<missing>` sentinel
 // substituted into one or more identity components, so the Subscriber
 // emits this rejection event instead of silently dropping the input or
 // synthesising a malformed notification (CLAUDE.md §13 fail-loudly +

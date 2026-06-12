@@ -3,7 +3,7 @@ package planner
 import "github.com/hurtener/Harbor/internal/planner/trajectory"
 
 // Trajectory and the associated types/sentinels are re-exported from
-// the canonical home at internal/planner/trajectory. Phase 43 moves
+// the canonical home at internal/planner/trajectory. Harbor moves
 // the load-bearing implementation into the subpackage; the aliases
 // below keep existing planner-package consumers compiling without
 // changes (RunContext.Trajectory *Trajectory, etc.).
@@ -12,7 +12,7 @@ import "github.com/hurtener/Harbor/internal/planner/trajectory"
 // internal/planner/trajectory/serialize.go; the handle registry lives
 // at internal/planner/trajectory/registry.go. Pre-Phase-43 stub
 // ErrTrajectoryNotImplemented is retired — the real contract replaces
-// it. See D-049.
+// it.
 
 // Trajectory is re-exported from the canonical subpackage.
 type Trajectory = trajectory.Trajectory
@@ -21,15 +21,14 @@ type Trajectory = trajectory.Trajectory
 // failure + streams). Re-exported from the canonical subpackage.
 //
 // Note: pre-Phase-43, this type was named TrajectoryStep at the
-// planner-package level. The Phase 43 rename to Step is part of the
+// planner-package level. The rename to Step is part of the
 // subpackage relocation; no external consumers of TrajectoryStep
 // existed pre-Phase-43.
 type Step = trajectory.Step
 
-// Summary is the trajectory's compaction artefact (Phase 46
+// Summary is the trajectory's compaction artefact (
 // summariser output). Pre-Phase-43 this was TrajectorySummary at the
 // planner-package level; the subpackage rename to Summary is part of
-// Phase 43.
 type Summary = trajectory.Summary
 
 // ToolContext is the split serialisable / handle-registry tool-handle
@@ -57,7 +56,7 @@ type BackgroundMemberOutcome = trajectory.BackgroundMemberOutcome
 // ResumeHint signals a resume continuation.
 type ResumeHint = trajectory.ResumeHint
 
-// FailureRecord is the structured-failure projection (Phase 44 repair).
+// FailureRecord is the structured-failure projection (repair).
 type FailureRecord = trajectory.FailureRecord
 
 // StreamChunk captures one chunk of a streaming output.

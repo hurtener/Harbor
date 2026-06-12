@@ -22,15 +22,15 @@ import (
 //
 // # Why this is the steering wiring
 //
-// Phase 52 shipped the steering primitive (the inbox, the nine-type
-// taxonomy, ValidatePayload, CheckScope, the Registry). Phase 50 shipped
+// An earlier phase shipped the steering primitive (the inbox, the nine-type
+// taxonomy, ValidatePayload, CheckScope, the Registry); another shipped
 // the pause/resume primitive (the Coordinator). Neither did anything by
 // itself — there was no run loop to drain the inbox or to route a
 // RequestPause decision through the Coordinator. RunLoop IS that loop.
 // It is the §13 first consumer of BOTH primitives, landing in the same
-// wave (Wave 9, Stage 3) per CLAUDE.md §13 + D-067 §4 + D-070 §5.
+// wave per CLAUDE.md §13.
 //
-// # The loop (brief 02 §4)
+// # The loop
 //
 // Per run, RunLoop owns a tight loop:
 //
@@ -46,23 +46,23 @@ import (
 //	        RequestPause -> Coordinator.Request; block; re-enter on RESUME/APPROVE
 //	        Finish       -> Retire the Inbox; return
 //	        other        -> (decision execution is a later-phase concern;
-//	                         Phase 53 records the step and re-enters)
+//	                         the loop records the step and re-enters)
 //	    }
 //	}
 //	Retire the Inbox  -- always, even on error
 //
 // The full applyEvent treatment happens exactly ONCE per step boundary.
 // While a decision execution is in flight the loop ALSO drains the
-// inbox (D-192), but consumes ONLY approval-bridge-eligible APPROVE /
-// REJECT controls there (the D-097 gate bridge — without the mid-step
+// inbox, but consumes ONLY approval-bridge-eligible APPROVE /
+// REJECT controls there (the gate bridge — without the mid-step
 // drain an approval-gated tool deadlocks the run: RunGuarded parks
 // until ResolveApproval, whose only production caller is this loop's
 // drain). Every other control drained mid-step is deferred verbatim to
-// the next boundary, preserving brief 02 §6's step-boundary semantics.
+// the next boundary, preserving the step-boundary semantics.
 // The planner observes the result via RunContext.Control; it never
-// touches the Inbox (brief 02 §5 sharp-edge #2).
+// touches the Inbox.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // RunLoop is a compiled artifact: every field is set once at construction
 // (the Registry, the Coordinator, the applier's dependencies, the
@@ -83,7 +83,7 @@ type RunLoop struct {
 	// pauseRecheckInterval is the parked run's Status re-check cadence
 	// (the delivery-independent timeout backstop). Defaults to
 	// pauseStatusRecheckInterval; injectable via
-	// WithPauseStatusRecheckInterval. Set once at construction (D-025).
+	// WithPauseStatusRecheckInterval. Set once at construction.
 	pauseRecheckInterval time.Duration
 }
 
@@ -130,7 +130,7 @@ func WithRunLoopBus(b events.EventBus) RunLoopOption {
 
 // WithHardCancelHook wires the cancellation propagator a hard CANCEL
 // fires. The hook is typically engine.Cancel(runID) — it propagates a
-// cancellation context into an in-flight decision execution (brief 02
+// cancellation context into an in-flight decision execution (the
 // §6). The RunLoop holds ONLY a func(ctx, runID) error, never a hard
 // import of internal/runtime/engine — this keeps the step-loop family
 // decoupled from the graph engine. A nil hook is tolerated: a hard
@@ -176,7 +176,7 @@ func WithRunLoopLogger(l *slog.Logger) RunLoopOption {
 // on a bus-less RunLoop). The default
 // (pauseStatusRecheckInterval, 30s) is deliberately coarse; tests
 // inject a small interval so the backstop branch is exercisable
-// without a 30s wall-clock wait (Wave C checkpoint audit). A
+// without a 30s wall-clock wait. A
 // non-positive d keeps the default.
 func WithPauseStatusRecheckInterval(d time.Duration) RunLoopOption {
 	return func(cfg *runLoopConfig) {
@@ -195,21 +195,21 @@ func WithMaxControlHistory(n int) RunLoopOption {
 // WithApprovalGates hands the RunLoop the catalog-applied approval gates
 // keyed by tool name (the assembly's catalog band — `assemble.Assemble`
 // → `Stack.Gates` — produces this map via the catalog Builder's
-// `Deps.AppliedGates` out-channel; D-090, D-097, D-197). When a
+// `Deps.AppliedGates` out-channel). When a
 // drained CONTROL_APPROVE / CONTROL_REJECT event references a `token`
 // the bridge tries each gate's `ResolveApproval` in turn; the gate that
 // owns the token resumes its `pending` waiter so the wrapped tool's
 // `Invoke` unblocks. When no gate owns the token (a plain RESUME or an
 // OAuth-pause APPROVE), the apply path falls back to the direct
 // `Coordinator.Resume`. A nil / empty map disables the bridge — the
-// loop behaves exactly as before D-097 (direct Resume only). See
+// loop behaves exactly as before the gate bridge landed (direct Resume only). See
 // `applier.advancePause` for the step-boundary routing and
 // `applier.routeApprovalControl` + `RunLoop.dispatchDecision` for the
 // mid-step routing that fires while a decision execution is in flight
-// (D-192 — the path a planner-dispatched approval-gated tool resumes
+// (the path a planner-dispatched approval-gated tool resumes
 // through).
 //
-// Coupling note (acceptable; D-097): `internal/runtime/steering`
+// Coupling note (acceptable): `internal/runtime/steering`
 // imports `internal/tools/approval` for the gate type. Both packages
 // are runtime mechanism — the boundary is acceptable because the
 // bridge IS the runtime-side wiring the gate needs to receive
@@ -223,13 +223,13 @@ func WithApprovalGates(gates map[string]*approval.ApprovalGate) RunLoopOption {
 	}
 }
 
-// NewRunLoop builds a RunLoop. The Registry (Phase 52 — owns the per-run
-// inboxes the loop drains) and the Coordinator (Phase 50 — the ONE
+// NewRunLoop builds a RunLoop. The Registry (owns the per-run
+// inboxes the loop drains) and the Coordinator (the ONE
 // pause/resume primitive PAUSE / RESUME / APPROVE / REJECT converge on)
 // are mandatory; a nil either fails loud with ErrRunLoopMisconfigured.
 // Everything else is optional (see the WithXxx options).
 //
-// The returned RunLoop is immutable after construction (D-025) and safe
+// The returned RunLoop is immutable after construction and safe
 // for concurrent use by N goroutines.
 func NewRunLoop(reg *Registry, coord pauseresume.Coordinator, opts ...RunLoopOption) (*RunLoop, error) {
 	if reg == nil {
@@ -279,9 +279,9 @@ const DefaultMaxSteps = 64
 //   - Returns a planner-readable observation (the runtime appends it
 //     onto trajectory.Step.Observation for the planner's next step).
 //
-// Phase 83i (D-152) introduces this seam so the dev binary can wire
-// a real `tools.ToolCatalog`-backed executor; before 83i the runloop's
-// `default:` case dropped every CallTool on the floor (Phase 53's
+// Harbor introduces this seam so the dev binary can wire
+// a real `tools.ToolCatalog`-backed executor; previously the runloop's
+// `default:` case dropped every CallTool on the floor (the
 // punted scope), which made multi-step ReAct structurally broken
 // against real LLMs because the planner saw the same trajectory on
 // every step.
@@ -293,14 +293,14 @@ const DefaultMaxSteps = 64
 type ToolExecutor interface {
 	// ExecuteDecision dispatches `decision` and returns BOTH the raw
 	// observation (preserved for inspect-runs / audit) AND the
-	// projection the next prompt sees (`llmObservation`, the D-026
+	// projection the next prompt sees (`llmObservation`, the
 	// heavy-content-discipline projection: a small summary +
 	// ArtifactRef when the raw result is over the heavy threshold,
 	// or just == raw when the result is small enough to inline).
 	//
 	// The runloop appends a trajectory.Step{Action: decision,
 	// Observation: raw, LLMObservation: projection} so the planner's
-	// renderer (Phase 46 / D-055) sees only the projection.
+	// renderer sees only the projection.
 	//
 	// `rc` is the per-step RunContext (identity, ToolContext, etc.).
 	// ctx is the per-step ctx; the executor MUST honour cancellation.
@@ -316,14 +316,14 @@ type ToolExecutor interface {
 var ErrDecisionShapeUnsupported = errors.New("steering: ToolExecutor does not support this decision shape")
 
 // RunSpec is the per-run input to RunLoop.Run. ALL run-specific state
-// lives here + ctx — never on the RunLoop struct (D-025).
+// lives here + ctx — never on the RunLoop struct.
 type RunSpec struct {
 	// Planner is the swappable reasoning policy the loop drives. Nil
 	// fails loud with ErrNoPlanner.
 	Planner planner.Planner
 	// Base is the run's RunContext template. RunLoop refreshes the
 	// per-step fields (Control, Goal) on a copy each step; the planner
-	// receives a fresh RunContext per Next call (Phase 42 contract).
+	// receives a fresh RunContext per Next call (contract).
 	// Base.Quadruple is the run's identity — its triple is validated
 	// identity-mandatory before the loop starts.
 	Base planner.RunContext
@@ -334,16 +334,16 @@ type RunSpec struct {
 	MaxSteps int
 
 	// ToolExecutor dispatches the planner's non-Finish, non-RequestPause
-	// decisions (CallTool, CallParallel, SpawnTask, AwaitTask). Phase
-	// 83i (D-152): when nil, the runloop's default case logs and
-	// appends an empty-observation step (the Phase 53 behaviour) so
+	// decisions (CallTool, CallParallel, SpawnTask, AwaitTask).
+	// When nil, the runloop's default case logs and
+	// appends an empty-observation step (the behaviour) so
 	// existing pause/steering tests still drive deterministic finishes.
 	// In production the dev binary wires a real executor backed by the
 	// tool catalog so the planner's CallTool decisions actually run.
 	ToolExecutor ToolExecutor
 
 	// Compression is the optional trajectory-compression runner
-	// (Phase 111e — D-202; the §13 first call site of
+	// (the §13 first call site of
 	// planner.CompressionRunner.MaybeCompress). When non-nil AND the
 	// run's Base.Budget.TokenBudget > 0, the runloop invokes
 	// MaybeCompress at each step boundary (after the control drain +
@@ -356,14 +356,14 @@ type RunSpec struct {
 	//
 	// One compression per run at V1.1.x: the runner is idempotent on
 	// `Trajectory.Summary != nil` (the documented scope fence — RFC
-	// §6.5; re-compaction cadence is the recorded D-202 follow-up).
+	// §6.5; re-compaction cadence is the recorded follow-up).
 	// A MaybeCompress error fails the run LOUDLY (the runner already
 	// emitted trajectory.compression_failed) — never a silent
 	// fall-through that pretends compression happened.
 	Compression *planner.CompressionRunner
 
 	// OnToolDispatched is the optional per-run hook the runloop
-	// invokes after the ToolExecutor returns WITHOUT ERROR (Phase 83m
+	// invokes after the ToolExecutor returns WITHOUT ERROR (
 	// item 7). The dev binary wires it to
 	// `taskReg.IncrementToolCount(ctx, taskID)` so the Console Tasks
 	// page reflects the per-task tool-dispatch count. A nil hook is
@@ -416,7 +416,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 	// here: run-end is the wrong signal (a session hosts multiple runs).
 	// Wiring controlHistory.forget to a real session-end signal is
 	// tracked in issue #79; each ring is capped so the per-session entry
-	// is bounded, only the session-keyed map grows. Accepted V1 limit — D-071.
+	// is bounded, only the session-keyed map grows. Accepted V1 limit.
 	defer func() {
 		_ = rl.registry.Retire(q) //nolint:errcheck // best-effort cleanup on run-end; a Retire error must not mask the run result
 	}()
@@ -433,16 +433,16 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 
 	// outstandingToken is the run's current pause Token, "" when the run
 	// is not paused. It is per-run loop state — it lives on this
-	// goroutine's stack, never on the RunLoop struct (D-025).
+	// goroutine's stack, never on the RunLoop struct.
 	var outstandingToken pauseresume.Token
 
 	// carryEvents holds control events drained mid-step (while a
-	// decision execution was in flight — D-192) that were NOT
+	// decision execution was in flight) that were NOT
 	// approval-bridge-eligible. They keep their step-boundary
 	// semantics: the next boundary merges them ahead of the fresh
 	// drain (FIFO preserved — they arrived first) and applies them
 	// exactly once. Per-run loop state on this goroutine's stack,
-	// never on the RunLoop struct (D-025).
+	// never on the RunLoop struct.
 	var carryEvents []ControlEvent
 
 	for step := range maxSteps {
@@ -455,11 +455,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		// without busy-spinning — until a steering control event
 		// arrives (a RESUME / APPROVE / REJECT, or any other control)
 		// OR the pause is reaped out-of-band by the max-park sweeper
-		// (Phase 111c / D-200 — a `pause.resumed` with the typed
+		// (— a `pause.resumed` with the typed
 		// `timeout` Decision). The next drain applies a control;
 		// a timeout is TERMINAL: the run finishes with
 		// Finish{ConstraintsConflict} (a deadline the human missed is
-		// a constraint the planner cannot resolve — the D-071 REJECT
+		// a constraint the planner cannot resolve — the REJECT
 		// posture), never a silent unpark-and-continue. The wait
 		// honours ctx so a cancelled run unblocks loud.
 		if outstandingToken != "" {
@@ -473,7 +473,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		}
 
 		// --- DRAIN: the step boundary. The full applyEvent treatment
-		// happens here for every control type. (D-192 carve-out: while
+		// happens here for every control type. (carve-out: while
 		// a decision execution is in flight, dispatchDecision keeps
 		// draining and consumes approval-bridge-eligible APPROVE /
 		// REJECT controls mid-step; everything else it drained rides
@@ -501,7 +501,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			})
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlApplied, classifyApplyErr(applyErr))
 			if applyErr != nil {
-				// Race carve-out (Phase 111c / D-200): a legitimate
+				// Race carve-out: a legitimate
 				// RESUME / APPROVE / REJECT control can lose the race
 				// against the max-park sweeper — the sweeper's
 				// DecisionTimeout Resume lands first and the control's
@@ -538,8 +538,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		}
 
 		// A REJECT that advanced a pause terminates the run: a rejected
-		// HITL gate is a constraint conflict the planner cannot resolve
-		// (D-071). The Coordinator.Resume already happened in applyEvent.
+		// HITL gate is a constraint conflict the planner cannot resolve.
+		// The Coordinator.Resume already happened in applyEvent.
 		if sc.resumeRequested && sc.resumeKind == ControlReject {
 			return planner.Finish{
 				Reason: planner.FinishConstraintsConflict,
@@ -594,7 +594,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		// The carry-over has now been handed to the planner — clear it
 		// from the base so the NEXT step does not re-deliver it.
 		spec.Base.Control = planner.ControlSignals{}
-		// Round-7 F11 / D-166 — input artifacts attach to the FIRST
+		// input artifacts attach to the FIRST
 		// planner turn only. The current step's rc copy carries them
 		// (set at run-loop wire-up time from `task.InputArtifactIDs`);
 		// clear them from the base so subsequent steps see an empty
@@ -608,14 +608,14 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			spec.Base.Goal = sc.goal
 		}
 
-		// Phase 83m item 8: per-step closure that captures the planner's
+		// item 8: per-step closure that captures the planner's
 		// reasoning trace via the RunContext.OnReasoning side-channel.
 		// The runloop reads stepReasoning after Planner.Next returns and
 		// copies it into the appended trajectory.Step. The closure is
 		// scoped to THIS step (one captured variable per iteration); a
 		// new closure is installed each step so a stale read from a
 		// prior step never reaches the next append. The capture lives
-		// on this goroutine's stack — D-025 holds (no planner-side
+		// on this goroutine's stack — the concurrent-reuse contract holds (no planner-side
 		// mutable state).
 		var stepReasoning string
 		rc.OnReasoning = func(s string) { stepReasoning = s }
@@ -625,11 +625,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		// alongside any `tool_calls`) so the prompt builder can replay
 		// it on the next turn's assistant message and the model
 		// retains its narrative thread. Same closure shape as
-		// OnReasoning: per-run stack-local (D-025), nil-safe.
+		// OnReasoning: per-run stack-local, nil-safe.
 		var stepAssistantContent string
 		rc.OnAssistantContent = func(s string) { stepAssistantContent = s }
 
-		// Phase 107c / D-167 (AC-19 + AC-19a) — wire the per-run
+		// (AC-19 + AC-19a) — wire the per-run
 		// native-tool-calling queue callback. The planner receives rc
 		// by VALUE, so any mutations the projector makes to
 		// `rc.PendingToolCalls` inside Next die with the planner's
@@ -651,7 +651,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			stepPending = pending
 		}
 
-		// --- COMPRESS (Phase 111e — D-202): the trajectory-compression
+		// --- COMPRESS: the trajectory-compression
 		// gate, after the drain/projection and before Planner.Next so
 		// THIS step's prompt build already sees the compacted view.
 		// The runner owns the semantics (estimate → threshold →
@@ -697,7 +697,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			// end-to-end consumer path: RequestPause -> Coordinator.Request
 			// -> Token (+ durable checkpoint when a store is configured)
 			// -> the loop blocks at this boundary -> an APPROVE / RESUME
-			// control event arrives via the Phase 52 inbox -> the next
+			// control event arrives via the inbox -> the next
 			// step's drain applies it -> Coordinator.Resume -> the
 			// planner re-enters.
 			tok, perr := rl.requestPause(runCtx, q, d, spec.Base.Trajectory)
@@ -717,8 +717,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			// Token — the existing pause stands.
 
 		default:
-			// CallTool / CallParallel / SpawnTask / AwaitTask. Phase 83i
-			// (D-152): dispatch via spec.ToolExecutor when present, then
+			// CallTool / CallParallel / SpawnTask / AwaitTask. Note:
+			// dispatch via spec.ToolExecutor when present, then
 			// append a trajectory.Step the planner sees on its next step.
 			// Without the trajectory append the planner repeats the same
 			// prompt forever (the failure mode the audit pinned in
@@ -726,17 +726,17 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			// "planner-only" loop that never actually does work. Both
 			// are V1.1 blockers.
 			//
-			// When spec.ToolExecutor is nil (the Phase 53 dev / legacy
+			// When spec.ToolExecutor is nil (the dev / legacy
 			// test path), the step still gets appended with a nil
 			// Observation so the planner sees its decision did NOT
 			// silently disappear (audit lesson: silent execution gaps
 			// are §13-forbidden silent degradation).
 			var observation, llmObservation any
 			if spec.ToolExecutor != nil {
-				// D-192: dispatch on a per-step goroutine and keep
+				// dispatch on a per-step goroutine and keep
 				// draining the inbox while the execution is in flight,
 				// routing ONLY approval-bridge-eligible APPROVE /
-				// REJECT controls (the D-097 gate bridge) mid-step. A
+				// REJECT controls (the gate bridge) mid-step. A
 				// synchronous dispatch here deadlocked approval-gated
 				// tools: the gate's RunGuarded parked until
 				// ResolveApproval, whose only production caller is
@@ -770,7 +770,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 				} else {
 					observation = obs
 					llmObservation = llmObs
-					// Phase 83m item 7: notify the per-run dispatch hook
+					// item 7: notify the per-run dispatch hook
 					// on a successful executor return. The dev binary
 					// wires this to `taskReg.IncrementToolCount` so the
 					// Console Tasks page's tool_count reflects the
@@ -789,10 +789,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			// `rc` is a value-copy of `spec.Base`, but `Trajectory` is a
 			// pointer — mutations are visible to the next step's rc.
 			//
-			// Phase 83m item 8: copy the captured reasoning trace
+			// item 8: copy the captured reasoning trace
 			// (delivered by the planner via the rc.OnReasoning
 			// side-channel) onto Step.ReasoningTrace. Without this
-			// copy, `ReasoningReplay=text` mode (Phase 83e — D-148)
+			// copy, `ReasoningReplay=text` mode
 			// is structurally ineffective in production because the
 			// prompt builder reads from Step.ReasoningTrace and finds
 			// an empty string on every prior step.
@@ -814,9 +814,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 // requestPause routes a planner's RequestPause decision through the
 // unified Coordinator. It maps the planner-side PauseReason onto the
 // pauseresume.Reason (the typedef bridge keeps them byte-identical) and
-// hands the run's LIVE trajectory through (Phase 111c / D-200) so a
+// hands the run's LIVE trajectory through so a
 // checkpoint-store-backed Coordinator persists the planner state with
-// the pause record — the brief 02 premise ("the planner can pause …
+// the pause record — the premise ("the planner can pause …
 // get serialised to a state store, and be resumed in a different
 // process") made true on the production path. A pauseresume error
 // (trajectory.ErrUnserializable from a non-serialisable payload /
@@ -847,8 +847,8 @@ func (rl *RunLoop) requestPause(ctx context.Context, q identity.Quadruple, d pla
 // coarse.
 const pauseStatusRecheckInterval = 30 * time.Second
 
-// awaitResumeSignal blocks while a pause is outstanding (Phase 111c /
-// D-200). It returns:
+// awaitResumeSignal blocks while a pause is outstanding
+// It returns:
 //
 //   - (false, nil) — a steering control event arrived; the caller
 //     drains and applies it (the pre-111c WaitForEvent contract).
@@ -909,7 +909,7 @@ func (rl *RunLoop) awaitResumeSignal(ctx, runCtx context.Context, inbox *Inbox, 
 	// Park the inbox wait on its own goroutine so this select can also
 	// observe the bus / the re-check ticker. The goroutine is joined on
 	// every return path (waitCancel unblocks WaitForEvent via ctx) — no
-	// leak (CLAUDE.md §5 / D-025).
+	// leak (CLAUDE.md §5).
 	waitCtx, waitCancel := context.WithCancel(ctx)
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- inbox.WaitForEvent(waitCtx) }()
@@ -926,7 +926,7 @@ func (rl *RunLoop) awaitResumeSignal(ctx, runCtx context.Context, inbox *Inbox, 
 	// established above — a bus wake published before the subscription
 	// landed is never delivered, leaving only the coarse ticker. One
 	// immediate Status check at park entry makes the timeout wake
-	// delivery-independent (found as a CI-only flake in the Phase 111f
+	// delivery-independent (found as a CI-only flake in the
 	// combination: TestRun_PauseTimeout_BusWake missed the wake and hit
 	// the 30s backstop past the test's 5s bound).
 	if rl.pauseTimedOut(runCtx, token) {
@@ -971,7 +971,7 @@ func (rl *RunLoop) awaitResumeSignal(ctx, runCtx context.Context, inbox *Inbox, 
 
 // pauseTimedOut reports whether the run's outstanding pause has been
 // resumed out-of-band with the typed `timeout` Decision (the max-park
-// sweeper's reap — Phase 111c / D-200). A Status error is treated as
+// sweeper's reap —). A Status error is treated as
 // "no timeout observed": the bus event remains the primary signal and
 // the next re-check retries; the check never converts a Status read
 // failure into a run failure.
@@ -985,7 +985,7 @@ func (rl *RunLoop) pauseTimedOut(ctx context.Context, token pauseresume.Token) b
 
 // timeoutFinish is the terminal outcome of a max-park timeout: the
 // pause's deadline elapsed with no human decision, which is a
-// constraint the planner cannot resolve (the D-071 REJECT posture
+// constraint the planner cannot resolve (the REJECT posture
 // applied to deadlines — plan §"Risks", settled). The metadata names
 // the timeout so observers distinguish it from a steering REJECT.
 func timeoutFinish(q identity.Quadruple, token pauseresume.Token) planner.Finish {
@@ -1032,7 +1032,7 @@ func (rl *RunLoop) emitLifecycle(ctx context.Context, q identity.Quadruple, t Co
 
 // ControlHistory returns a copy of a session's applied-control history,
 // oldest-to-newest. Primarily for observability + tests; the Protocol
-// edge (Phase 54) projects this as the session's steering audit trail.
+// edge projects this as the session's steering audit trail.
 func (rl *RunLoop) ControlHistory(sessionID string) []AppliedControl {
 	return rl.history.snapshot(sessionID)
 }

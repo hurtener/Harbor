@@ -2,13 +2,13 @@
 // method names (CLAUDE.md §8: "Method names live in
 // internal/protocol/methods/methods.go. No hardcoded method strings
 // elsewhere."). Other packages reference these constants; no Protocol
-// method string is hardcoded outside this file. The Phase 58 lint
-// formalises this — Phase 54 lays the foundation so that lint is a no-op
-// formalisation.
+// method string is hardcoded outside this file. A single-source lint
+// formalises this; the layout here lays the foundation so that lint
+// is a no-op formalisation.
 //
-// # The Phase 54 set: the task control surface
+// # The set: the task control surface
 //
-// Phase 54 ships the ten canonical task-control method names (RFC §5.2
+// Harbor ships the ten canonical task-control method names (RFC §5.2
 // "Task control" row): `start` plus the nine steering-control entries
 // from the RFC §6.3 control taxonomy. `start` spawns a task; the nine
 // controls map 1:1 onto the nine steering.ControlType values. Later
@@ -23,26 +23,26 @@
 // and the protocol.ControlSurface translates a method name into its
 // steering.ControlType. Keeping the two namespaces distinct is
 // deliberate — the Protocol surface owns its own method vocabulary
-// (brief 07's "the runtime owns the protocol it speaks").
+// ("the runtime owns the protocol it speaks").
 //
-// # The Wave 13 extension: the streaming-events method-name anchors
+// # The extension: the streaming-events method-name anchors
 //
-// Phase 72 elevates `events.subscribe` to a canonical method-name
-// constant. The wire-transport route is still `GET /v1/events` (Phase
-// 60 SSE), but the canonical method name is now the contract third-party
-// Console implementations branch on — same pattern as the Phase 54
-// task-control nine. Phase 72a adds `events.aggregate`
+// The streaming-events extension elevates `events.subscribe` to a
+// canonical method-name constant. The wire-transport route is still
+// `GET /v1/events` (SSE), but the canonical method name is now the contract third-party
+// Console implementations branch on — same pattern as the
+// task-control nine. Harbor adds `events.aggregate`
 // (`POST /v1/events/aggregate`) for time-bucketed event-type counts.
 // `events.subscribe` and `events.aggregate` are streaming-events
 // methods, NOT task-control methods: `IsControlMethod` returns false
-// for both (the predicate stays exclusive to the Phase 54 steering-
+// for both (the predicate stays exclusive to the steering-
 // control nine) and `Methods()` returns the augmented sorted set with
-// the new entries. See `docs/plans/phase-72-console-subscription-scope.md`
-// and `docs/plans/phase-72a-events-filter-and-aggregate.md`.
+// the new entries.
+// and
 //
-// # The Wave 13 search cluster (Phase 72c / D-108)
+// # The search cluster
 //
-// Phase 72c adds the five `search.*` methods used by the Console
+// Harbor adds the five `search.*` methods used by the Console
 // command palette and per-section search bars. `search.query` is the
 // pure aggregator that fans out to the per-index methods
 // (`search.sessions`, `search.tasks`, `search.events`,
@@ -50,31 +50,28 @@
 // `IsControlMethod` returns false for them (the steering inbox stays
 // exclusive). A separate `IsSearchMethod` predicate lets transport
 // adapters branch the route table. See
-// `docs/plans/phase-72c-search-cluster.md`.
 //
-// # The Wave 13 posture cluster (Phase 72f / D-111 + Phase 72g / D-112)
+// # The posture cluster
 //
-// Phase 72f adds the five read-only `runtime.*` / `metrics.*` posture
+// Harbor adds the five read-only `runtime.*` / `metrics.*` posture
 // methods: `runtime.info` (build identity + version + uptime +
 // capabilities), `runtime.health` (per-subsystem readiness rollup),
 // `runtime.counters` (low-cardinality live counters), `runtime.drivers`
 // (configured driver names per persistence-shaped subsystem), and
-// `metrics.snapshot` (a Protocol-shaped projection over the Phase 56
-// MetricsRegistry). Phase 72g extends the cluster with the two config-
+// `metrics.snapshot` (a Protocol-shaped projection over the
+// MetricsRegistry). Harbor extends the cluster with the two config-
 // posture methods the Console Settings page consumes: `governance.posture`
-// (the read-only D-081 `IdentityTiers` view) and `llm.posture` (the
-// bound LLM provider/model/region + `MockMode` flag per D-089). None of
+// (the read-only `IdentityTiers` view) and `llm.posture` (the
+// bound LLM provider/model/region + `MockMode` flag). None of
 // the seven methods are control or search methods — `IsControlMethod` /
 // `IsSearchMethod` return false; a dedicated `IsPostureMethod` predicate
 // routes them through the PostureSurface dispatcher, a sibling of the
 // task-control surface, not an extension. They are read-only — no
 // mutation counterpart ships at V1. See
-// `docs/plans/phase-72f-runtime-posture.md` and
-// `docs/plans/phase-72g-governance-llm-posture.md`.
 //
-// # The Wave 13 topology method (Phase 74 / D-114)
+// # The topology method
 //
-// Phase 74 adds `topology.snapshot` — the request-side surface that
+// Harbor adds `topology.snapshot` — the request-side surface that
 // returns the Runtime engine's canonical TopologyProjection (static
 // node graph + live per-edge queue depth). It is NOT a task-control
 // method (`IsControlMethod` returns false), NOT a streaming-events
@@ -83,16 +80,15 @@
 // `POST /v1/control/{method}` REST surface. The paired in-flight
 // surface — `topology.changed` — is a canonical EVENT, not a method,
 // so it is not in the method registry. See
-// `docs/plans/phase-74-console-topology.md`.
 //
 // # No registration escape hatch
 //
 // canonicalMethods is a fixed package-level map, not a write-once
-// registry. The Phase 54 task-control set is closed; a new Protocol
+// registry. The task-control set is closed; a new Protocol
 // method is a new phase that declares a new constant + extends the map +
 // (if reader-facing) updates the master plan / glossary — there is no
 // RegisterMethod seam to drift through. This mirrors the steering
-// taxonomy's fixed-enum posture (D-070 §2).
+// taxonomy's fixed-enum posture.
 package methods
 
 import "sort"
@@ -103,12 +99,12 @@ type Method string
 
 // The ten canonical task-control method names (RFC §5.2 "Task control"
 // row + RFC §6.3 control taxonomy) PLUS the two streaming-events method
-// names landed in Wave 13 (Phase 72 / 72a) — `events.subscribe` and
+// names landed in — `events.subscribe` and
 // `events.aggregate` — the first non-task-control Protocol surface,
-// PLUS the five `search.*` methods landed in Phase 72c (D-108).
+// PLUS the five `search.*` methods landed earlier.
 const (
 	// MethodStart asks the Runtime to spawn a new task / foreground run.
-	// Maps onto tasks.TaskRegistry.Spawn (Phase 20).
+	// Maps onto tasks.TaskRegistry.Spawn.
 	MethodStart Method = "start"
 	// MethodCancel cancels a run (soft by default; `hard: true` in the
 	// payload propagates a cancellation context). Maps onto the CANCEL
@@ -145,151 +141,149 @@ const (
 	// steering control; the message is the payload's `message` string.
 	MethodUserMessage Method = "user_message"
 
-	// MethodEventsSubscribe opens a server-filtered event subscription
-	// (Phase 72 / D-105). The wire-transport route is `GET /v1/events`
-	// SSE (Phase 60); the canonical method name is the contract a
+	// MethodEventsSubscribe opens a server-filtered event subscription.
+	// The wire-transport route is `GET /v1/events`
+	// SSE; the canonical method name is the contract a
 	// third-party Console branches on. Identity-mandatory; a request
 	// with `?admin=1` (cross-tenant fan-in) requires the verified
-	// `auth.ScopeAdmin` or `auth.ScopeConsoleFleet` scope claim
-	// (D-079). The reject path returns the canonical
+	// `auth.ScopeAdmin` or `auth.ScopeConsoleFleet` scope claim.
+	// The reject path returns the canonical
 	// `errors.CodeIdentityScopeRequired` Code (HTTP 403). NOT a
-	// task-control method — IsControlMethod returns false; the Phase
-	// 54 control nine stays exclusive.
+	// task-control method — IsControlMethod returns false; the
+	// control nine stays exclusive.
 	MethodEventsSubscribe Method = "events.subscribe"
 
 	// MethodEventsAggregate returns time-bucketed event-type counts
-	// over a window (Phase 72a / D-106). Powers the per-event-type
-	// stacked-area sparkline on the Console Events page (Phase 73g).
+	// over a window. Powers the per-event-type
+	// stacked-area sparkline on the Console Events page.
 	// The wire-transport route is `POST /v1/events/aggregate`.
-	// Identity-mandatory + D-079 cross-tenant scope rules apply (same
+	// Identity-mandatory + cross-tenant scope rules apply (same
 	// posture as MethodEventsSubscribe).
 	//
 	// NOT a control method: `IsControlMethod(MethodEventsAggregate)`
 	// returns false.
 	MethodEventsAggregate Method = "events.aggregate"
 
-	// MethodSearchQuery — Phase 72c (Wave 13) the Console palette
+	// MethodSearchQuery — the Console palette
 	// dispatcher. Pure aggregator: fans out concurrently to the
 	// runtime-side per-index search methods, merges + paginates the
-	// union. Carries no index of its own. See `docs/plans/phase-72c-search-cluster.md`.
+	// union. Carries no index of its own.
 	MethodSearchQuery Method = "search.query"
-	// MethodSearchSessions — Phase 72c. Server-enforced session-index
+	// MethodSearchSessions — Server-enforced session-index
 	// search scoped to the caller's identity triple; cross-tenant
-	// requires the `auth.ScopeAdmin` claim (D-079).
+	// requires the `auth.ScopeAdmin` claim.
 	MethodSearchSessions Method = "search.sessions"
-	// MethodSearchTasks — Phase 72c. Server-enforced task-index search;
+	// MethodSearchTasks — Server-enforced task-index search;
 	// same identity-scope contract as MethodSearchSessions.
 	MethodSearchTasks Method = "search.tasks"
-	// MethodSearchEvents — Phase 72c. Server-enforced events-index
+	// MethodSearchEvents — Server-enforced events-index
 	// search (filters by event type + header fields + time window).
-	// Reuses the Phase 72a EventFilter predicate. Substring search over
+	// Reuses the EventFilter predicate. Substring search over
 	// event payload contents is post-V1.
 	MethodSearchEvents Method = "search.events"
-	// MethodSearchArtifacts — Phase 72c. Server-enforced artifact-index
+	// MethodSearchArtifacts — Server-enforced artifact-index
 	// search; rows always carry a `ref` (artifacts are by-reference by
-	// construction per D-026).
+	// construction).
 	MethodSearchArtifacts Method = "search.artifacts"
 
-	// MethodRuntimeInfo — Phase 72f (D-111). Read-only posture method:
+	// MethodRuntimeInfo — Read-only posture method:
 	// returns the Runtime's build identity (version / commit / Go
 	// toolchain / build date), Protocol version, advertised
 	// capabilities, uptime, instance ID, and operator-configured
 	// display name. NOT a control method; dispatched by PostureSurface.
 	MethodRuntimeInfo Method = "runtime.info"
-	// MethodRuntimeHealth — Phase 72f. Read-only posture method:
+	// MethodRuntimeHealth — Read-only posture method:
 	// returns the per-subsystem readiness rollup (`ready` / `degraded`
 	// / `unavailable`) across the runtime's registered subsystems.
 	MethodRuntimeHealth Method = "runtime.health"
-	// MethodRuntimeCounters — Phase 72f. Read-only posture method:
+	// MethodRuntimeCounters — Read-only posture method:
 	// returns the low-cardinality live counters the Console footer /
 	// sidebar chips render (events/sec, tasks running, background jobs,
 	// MCP connections, sessions active). Identity-scoped; the response
 	// is the roll-up, never a per-run / per-task breakdown.
 	MethodRuntimeCounters Method = "runtime.counters"
-	// MethodRuntimeDrivers — Phase 72f. Read-only posture method:
+	// MethodRuntimeDrivers — Read-only posture method:
 	// returns the configured driver names per persistence-shaped
 	// subsystem (`state`, `artifacts`, `memory`, `eventlog`). Returns
 	// the driver name + optional posture mode — never the DSN.
 	MethodRuntimeDrivers Method = "runtime.drivers"
-	// MethodMetricsSnapshot — Phase 72f. Read-only posture method:
-	// returns a Protocol-shaped projection over the Phase 56
+	// MethodMetricsSnapshot — Read-only posture method:
+	// returns a Protocol-shaped projection over the
 	// MetricsRegistry — counters, histograms, gauges as flat wire
 	// values. NOT an OpenTelemetry SDK re-export.
 	MethodMetricsSnapshot Method = "metrics.snapshot"
 
-	// MethodGovernancePosture — Phase 72g (Wave 13; D-112). Returns the
-	// runtime's read-only governance configuration: the D-081
+	// MethodGovernancePosture — Returns the
+	// runtime's read-only governance configuration: the consolidated
 	// `IdentityTiers` map (per-tier `BudgetCeilingUSD` + token-bucket
 	// `RateLimit` + `MaxTokens`) plus the `DefaultTier` selector and the
 	// caller-resolved tier. Identity-mandatory; cross-tenant reads
-	// require the `auth.ScopeAdmin` claim (D-079). NOT a control method
+	// require the `auth.ScopeAdmin` claim. NOT a control method
 	// and NOT a search method — it is a posture method (read-only
 	// runtime-config projection). `IsControlMethod` / `IsSearchMethod`
 	// both return false; `IsPostureMethod` returns true. See
-	// `docs/plans/phase-72g-governance-llm-posture.md`.
 	MethodGovernancePosture Method = "governance.posture"
 
-	// MethodLLMPosture — Phase 72g (Wave 13; D-112). Returns the
+	// MethodLLMPosture — Returns the
 	// runtime's read-only LLM provider posture: provider name, model id,
 	// region/endpoint, and a `MockMode` boolean — `true` iff the runtime
-	// booted with `HARBOR_DEV_ALLOW_MOCK=1` (D-089). Identity-mandatory;
-	// cross-tenant reads require the `auth.ScopeAdmin` claim (D-079). A
+	// booted with `HARBOR_DEV_ALLOW_MOCK=1`. Identity-mandatory;
+	// cross-tenant reads require the `auth.ScopeAdmin` claim. A
 	// posture method, same posture as MethodGovernancePosture.
 	MethodLLMPosture Method = "llm.posture"
 
-	// MethodPauseList — Phase 72e (Wave 13; D-110) the paginated,
+	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
-	// the unified pause/resume Coordinator (Phase 50). Read-only: it
+	// the unified pause/resume Coordinator. Read-only: it
 	// does NOT mutate the registry and does NOT call Resume — resume
 	// actions continue through MethodResume / MethodApprove /
 	// MethodReject. The wire-transport route is
 	// `POST /v1/pause/list`. Identity-mandatory; a cross-tenant filter
-	// requires the verified `auth.ScopeAdmin` claim (D-079). NOT a
+	// requires the verified `auth.ScopeAdmin` claim. NOT a
 	// task-control method — `IsControlMethod(MethodPauseList)` returns
-	// false; the Phase 54 control nine stays exclusive. See
-	// `docs/plans/phase-72e-pause-list-snapshot.md`.
+	// false; the control nine stays exclusive. See
 	MethodPauseList Method = "pause.list"
 
-	// MethodFlowsList — Phase 73i (Wave 13 / D-117). Returns the
+	// MethodFlowsList — Returns the
 	// paginated catalog of registered engine-graph flows with aggregate
 	// run metrics (runs-in-window, p50/p95 latency, success rate, last
-	// run, per-flow Budget per D-023). Identity-mandatory; a cross-tenant
-	// filter requires the verified `auth.ScopeAdmin` claim (D-079). NOT a
+	// run, per-flow Budget). Identity-mandatory; a cross-tenant
+	// filter requires the verified `auth.ScopeAdmin` claim. NOT a
 	// task-control method — `IsFlowsMethod` returns true; `IsControlMethod`
-	// returns false. See `docs/plans/phase-73i-console-flows-page.md`.
+	// returns false.
 	MethodFlowsList Method = "flows.list"
-	// MethodFlowsDescribe — Phase 73i. Returns a single flow's full
+	// MethodFlowsDescribe — Returns a single flow's full
 	// engine-graph description: nodes + edges + per-node descriptor +
 	// per-node policy + a string source reference (Go path or YAML
-	// descriptor per D-023 — never executable code) + live Budget
+	// descriptor — never executable code) + live Budget
 	// consumption. Identity-mandatory; an unknown flow id fails with
 	// CodeNotFound.
 	MethodFlowsDescribe Method = "flows.describe"
-	// MethodFlowsRunsList — Phase 73i. Returns a flow's paginated run
+	// MethodFlowsRunsList — Returns a flow's paginated run
 	// history (per-run status / trigger / timing / cost / identity).
 	// Identity-mandatory; a cross-tenant filter requires the verified
-	// `auth.ScopeAdmin` claim (D-079).
+	// `auth.ScopeAdmin` claim.
 	MethodFlowsRunsList Method = "flows.runs.list"
-	// MethodFlowsRunsDescribe — Phase 73i. Returns a single flow run's
+	// MethodFlowsRunsDescribe — Returns a single flow run's
 	// per-node execution timeline + final-output reference. Heavy outputs
-	// are shipped by-reference via FlowArtifactRef (D-026) — NEVER inline
+	// are shipped by-reference via FlowArtifactRef — NEVER inline
 	// bytes. Identity-mandatory; an unknown run id fails with
 	// CodeNotFound.
 	MethodFlowsRunsDescribe Method = "flows.runs.describe"
-	// MethodFlowsRun — Phase 73i. Invokes a one-shot run of a registered
+	// MethodFlowsRun — Invokes a one-shot run of a registered
 	// flow. This is the ONLY mutating Flows-page method; it is gated on
-	// identity AND the verified `auth.ScopeAdmin` claim (D-079 closed
+	// identity AND the verified `auth.ScopeAdmin` claim (closed
 	// scope set). A request without the claim is rejected with
 	// CodeScopeMismatch (HTTP 403). Every other Flows-page method is
 	// read-only.
 	MethodFlowsRun Method = "flows.run"
-	// MethodFlowsMetrics — Phase 73i. Returns a flow's time-bucketed
+	// MethodFlowsMetrics — Returns a flow's time-bucketed
 	// sparkline aggregates (runs-per-bucket, p95 latency, success rate,
 	// cost, budget consumption) over a window. Read-only; identity-
 	// mandatory.
 	MethodFlowsMetrics Method = "flows.metrics"
 
-	// MethodTopologySnapshot — Phase 74 (Wave 13 / D-114). Returns the
+	// MethodTopologySnapshot — Returns the
 	// canonical TopologyProjection of the Runtime's engine — the static
 	// node graph + live per-edge queue depth. Request → reply (on-demand
 	// cold-start surface); the paired in-flight surface is the
@@ -300,71 +294,69 @@ const (
 	// search method — `IsControlMethod` / `IsStreamingEventsMethod` /
 	// `IsSearchMethod` all return false; `IsTopologyMethod` returns
 	// true. Identity-mandatory; a cross-tenant snapshot requires the
-	// `auth.ScopeAdmin` claim (D-079). See `docs/plans/phase-74-console-topology.md`.
+	// `auth.ScopeAdmin` claim.
 	MethodTopologySnapshot Method = "topology.snapshot"
 
-	// MethodArtifactsList — Phase 73l (Wave 13 / D-120). Returns the
+	// MethodArtifactsList — Returns the
 	// identity-scope-filtered catalog of artifacts from the runtime's
-	// content-addressed artifact store, with the Phase 73l filter
+	// content-addressed artifact store, with the filter
 	// extensions (mime / source / size-range / created-range / tags)
 	// applied as a Go-side projection. Identity-mandatory; a cross-tenant
-	// list requires the `auth.ScopeAdmin` claim (D-079). The wire-transport
+	// list requires the `auth.ScopeAdmin` claim. The wire-transport
 	// route is the existing `POST /v1/control/{method}` REST surface. NOT a
 	// task-control, streaming-events, search, posture, pause, or topology
 	// method — `IsArtifactsMethod` is its own O(1) predicate. See
-	// `docs/plans/phase-73l-console-artifacts-page.md`.
 	MethodArtifactsList Method = "artifacts.list"
-	// MethodArtifactsPut — Phase 73l (Wave 13 / D-120). The Console (and
-	// Playground) file-upload pipeline per Brief 11 §PG-2: accepts bytes +
+	// MethodArtifactsPut — The Console (and
+	// Playground) file-upload pipeline: accepts bytes +
 	// PutOpts, routes the payload through `audit.Redactor`, stores it via
 	// `artifacts.ArtifactStore.PutBytes`, and returns the canonical
 	// ArtifactRef. Heavy bytes never travel inline through the LLM edge
-	// (D-026) — the put returns a reference, never echoes the body.
+	// the put returns a reference, never echoes the body.
 	// Identity-mandatory; a body whose scope tenant disagrees with the
 	// caller's verified tenant is rejected with CodeScopeMismatch.
 	MethodArtifactsPut Method = "artifacts.put"
-	// MethodArtifactsGetRef — Phase 73l (Wave 13 / D-120). The read-side
+	// MethodArtifactsGetRef — The read-side
 	// presigned-URL resolver: invokes `artifacts.Presigner.PresignGet` via
 	// type-assertion on the underlying ArtifactStore. Drivers that do not
 	// implement `Presigner` (in-mem / fs / sqlite-blob / postgres-blob)
 	// return `CodePresignUnsupported` loudly — no silent fallback. The
 	// Console's Preview / Download / Share / bulk-Download all route
-	// through this single resolver per D-022 / D-026. Identity-mandatory;
+	// through this single resolver. Identity-mandatory;
 	// expiry is bounded [1m, 7d].
 	MethodArtifactsGetRef Method = "artifacts.get_ref"
 
-	// MethodArtifactsDelete — Phase 108o (D-187). The admin-gated, audited
+	// MethodArtifactsDelete — The admin-gated, audited
 	// "evict an artifact" mutation: removes the keyed artifact from the
 	// scope via the shipped `ArtifactStore.Delete` (idempotent). Requires
-	// the verified `admin` scope claim (D-079 / page-artifacts §9 — Delete
+	// the verified `admin` scope claim (Delete
 	// is a mutating verb, strictly more than the read scope); fails closed
 	// without it. Emits `artifacts.deleted` for audit. Routes through the
 	// control surface at `POST /v1/control/artifacts.delete`.
 	MethodArtifactsDelete Method = "artifacts.delete"
 
-	// MethodMemoryList — Phase 73j (Wave 13 / D-118). Returns the
+	// MethodMemoryList — Returns the
 	// paginated, identity-scope-filtered set of memory records the
 	// Console Memory page renders. Read-only — it composes over the
-	// shipped `MemoryStore.Snapshot` surface (Phases 23–25) and the
-	// `events.aggregate` counters (Phase 72a). The wire-transport route
+	// shipped `MemoryStore.Snapshot` surface and the
+	// `events.aggregate` counters. The wire-transport route
 	// is `POST /v1/memory/list`. Identity-mandatory; a cross-tenant
 	// filter requires the verified `auth.ScopeAdmin` (or
-	// `auth.ScopeConsoleFleet`) claim from the D-079 closed two-scope
+	// `auth.ScopeConsoleFleet`) claim from the closed two-scope
 	// set — NO new memory scope is minted (audit B1). NOT a control /
 	// search / posture / pause / topology method; `IsMemoryMethod` is
 	// its own O(1) predicate. See
-	// `docs/plans/phase-73j-console-memory-page.md`.
 	MethodMemoryList Method = "memory.list"
 
-	// MethodMemoryGet — Phase 73j. Returns the full detail of a single
-	// memory record: metadata + post-redaction value (below the D-026
+	// MethodMemoryGet — Returns the full detail of a single
+	// memory record: metadata + post-redaction value (below the
 	// heavy-content threshold) OR a by-reference `MemoryArtifactRef`
 	// (at or above the threshold) — NEVER inline bytes above threshold.
 	// The wire-transport route is `POST /v1/memory/get`. Same identity-
 	// scope contract as MethodMemoryList.
 	MethodMemoryGet Method = "memory.get"
 
-	// MethodMemoryHealth — Phase 73j. Returns aggregate memory-health
+	// MethodMemoryHealth — Returns aggregate memory-health
 	// counters (total records / expiring-in-1h / identity-rejected-24h
 	// / recovery-dropped-24h) plus the per-scope driver mapping. The
 	// 24-h-window counters derive from `events.aggregate` over the
@@ -373,7 +365,7 @@ const (
 	// MethodMemoryList.
 	MethodMemoryHealth Method = "memory.health"
 
-	// MethodMemoryStrategyTrace — Phase 108n (D-186). Returns the live
+	// MethodMemoryStrategyTrace — Returns the live
 	// read-only projection of how the configured memory strategy is
 	// compacting the caller's session memory right now (the rolling-
 	// summary text + the verbatim-turn count + the token estimate +
@@ -383,31 +375,30 @@ const (
 	// MethodMemoryList (read scope; no admin claim).
 	MethodMemoryStrategyTrace Method = "memory.strategy_trace"
 
-	// MethodMemoryPut — Phase 108n (D-186). The admin-gated, audited
+	// MethodMemoryPut — The admin-gated, audited
 	// "add a memory turn" mutation: appends an operator-supplied
 	// conversation turn to the caller's session memory via the shipped
-	// `MemoryStore.AddTurn`. Requires the verified `admin` scope claim
-	// (D-079); fails closed without it. The wire-transport route is
+	// `MemoryStore.AddTurn`. Requires the verified `admin` scope claim;
+	// fails closed without it. The wire-transport route is
 	// `POST /v1/memory/put`.
 	MethodMemoryPut Method = "memory.put"
 
-	// MethodMemoryDelete — Phase 108n (D-186). The admin-gated, audited
+	// MethodMemoryDelete — The admin-gated, audited
 	// "evict a memory turn" mutation: removes the keyed turn from the
 	// caller's session memory via a `Snapshot` → drop-turn → `Restore`
 	// read-modify-write on the shipped MemoryStore. Requires the verified
-	// `admin` scope claim (D-079); fails closed without it. The
+	// `admin` scope claim; fails closed without it. The
 	// wire-transport route is `POST /v1/memory/delete`.
 	MethodMemoryDelete Method = "memory.delete"
 
-	// The Wave 13 (Phase 73k / D-119) MCP-Connections-page method
+	// The MCP-Connections-page method
 	// cluster. Twelve `mcp.servers.*` methods — nine read methods and
 	// three admin verbs — that back the Console MCP Connections page.
 	// None are control / streaming-events / search / posture / pause /
 	// topology methods: `IsMCPServersMethod` is the O(1) predicate, and
 	// they route through the MCPSurface dispatcher. Identity-mandatory;
-	// the three admin verbs gate on the `auth.ScopeAdmin` claim (D-079
+	// the three admin verbs gate on the `auth.ScopeAdmin` claim (the
 	// closed-set — no new scope is minted for MCP). See
-	// `docs/plans/phase-73k-console-mcp-connections-page.md`.
 
 	// MethodMCPServersList — paged, filterable list of the configured
 	// MCP southbound servers with live state.
@@ -430,67 +421,66 @@ const (
 	// history + transport-error rate.
 	MethodMCPServersHealth Method = "mcp.servers.health"
 	// MethodMCPServersBindingsList — list of a server's OAuth bindings
-	// (metadata only — never token plaintext, D-083).
+	// (metadata only — never token plaintext).
 	MethodMCPServersBindingsList Method = "mcp.servers.bindings.list"
 	// MethodMCPServersPolicy — read-only ToolPolicy projection.
 	MethodMCPServersPolicy Method = "mcp.servers.policy"
 	// MethodMCPServersRefreshBinding — admin verb: initiates an OAuth
 	// (re)connect flow for a binding. Requires the `auth.ScopeAdmin`
-	// claim (D-079).
+	// claim.
 	MethodMCPServersRefreshBinding Method = "mcp.servers.refresh_binding"
 	// MethodMCPServersRevokeBinding — admin verb: revokes an OAuth
-	// binding. Requires the `auth.ScopeAdmin` claim (D-079).
+	// binding. Requires the `auth.ScopeAdmin` claim.
 	MethodMCPServersRevokeBinding Method = "mcp.servers.revoke_binding"
 	// MethodMCPServersSetRawHTMLTrust — admin verb: sets the per-server
 	// raw-HTML opt-in flag and emits the `mcp.raw_html_trust_toggled`
-	// audit event. Requires the `auth.ScopeAdmin` claim (D-079).
+	// audit event. Requires the `auth.ScopeAdmin` claim.
 	MethodMCPServersSetRawHTMLTrust Method = "mcp.servers.set_raw_html_trust"
 
-	// MethodToolsList — Phase 73f (Wave 13 / D-116). Returns the
+	// MethodToolsList — Returns the
 	// catalog of registered tools visible to the caller's identity
 	// scope, with optional facet filters (scope / transport / OAuth
 	// status / approval policy / reliability tier) plus aggregate
 	// counters (Total / Active / Pending approval / Awaiting OAuth) for
 	// the filtered view. Powers the Console Tools page catalog table.
 	// Identity-mandatory; a cross-tenant fan-in requires the
-	// `auth.ScopeAdmin` claim (D-079). NOT a control / search /
+	// `auth.ScopeAdmin` claim. NOT a control / search /
 	// posture / topology method — `IsToolsMethod` returns true. The
 	// wire-transport route is `POST /v1/tools/list`. See
-	// `docs/plans/phase-73f-console-tools-page.md`.
 	MethodToolsList Method = "tools.list"
-	// MethodToolsGet — Phase 73f. Returns a single tool's catalog row
+	// MethodToolsGet — Returns a single tool's catalog row
 	// projection by ID. The lighter sibling of `tools.describe` — the
 	// row shape the Console renders in the detail-panel header.
 	MethodToolsGet Method = "tools.get"
-	// MethodToolsDescribe — Phase 73f. Returns the full manifest of a
+	// MethodToolsDescribe — Returns the full manifest of a
 	// registered tool descriptor: transport, version, scopes, the
-	// argument / output JSON Schemas, examples, OAuth binding scope
-	// (D-083), approval policy (D-086), and the reliability shell
-	// (D-024). Powers the Tools-page Manifest / Inputs / Outputs tabs.
+	// argument / output JSON Schemas, examples, OAuth binding scope,
+	// approval policy, and the reliability shell.
+	// Powers the Tools-page Manifest / Inputs / Outputs tabs.
 	MethodToolsDescribe Method = "tools.describe"
-	// MethodToolsMetrics — Phase 73f. Returns per-tool error-rate
+	// MethodToolsMetrics — Returns per-tool error-rate
 	// gauges over a selectable window (1h / 24h / 7d) plus a status
 	// pill (`Healthy` / `Degraded` / `Offline`). Powers the Tools-page
 	// Status + Error-rate right-rail card.
 	MethodToolsMetrics Method = "tools.metrics"
-	// MethodToolsContentStats — Phase 73f. Returns the per-tool
+	// MethodToolsContentStats — Returns the per-tool
 	// distribution of recent result sizes vs the heavy-content
-	// threshold (RFC §6.5 / D-026) plus the negotiated `DisplayMode`
-	// snapshot (D-062). Powers the Tools-page Content-size card.
+	// threshold (RFC §6.5) plus the negotiated `DisplayMode`
+	// snapshot. Powers the Tools-page Content-size card.
 	MethodToolsContentStats Method = "tools.content_stats"
-	// MethodToolsSetApprovalPolicy — Phase 73f. ADMIN method: updates a
+	// MethodToolsSetApprovalPolicy — ADMIN method: updates a
 	// tool's approval policy. Requires the verified `auth.ScopeAdmin`
-	// claim (D-079; there is NO `tools.admin` scope — the closed
+	// claim (there is NO `tools.admin` scope — the closed
 	// two-scope set is the only admit surface). Emits an
 	// `audit.admin_scope_used` event through the shipped audit.Redactor.
 	MethodToolsSetApprovalPolicy Method = "tools.set_approval_policy"
-	// MethodToolsRevokeOAuth — Phase 73f. ADMIN method: revokes all
+	// MethodToolsRevokeOAuth — ADMIN method: revokes all
 	// OAuth bindings for a tool. Requires the verified `auth.ScopeAdmin`
-	// claim (D-079). Emits an `audit.admin_scope_used` event through
+	// claim. Emits an `audit.admin_scope_used` event through
 	// the shipped audit.Redactor.
 	MethodToolsRevokeOAuth Method = "tools.revoke_oauth"
 
-	// MethodTasksList — Phase 73d (Wave 13 / D-123). Returns the
+	// MethodTasksList — Returns the
 	// paginated list of tasks visible to the caller's identity scope,
 	// with optional facet filters (status / kind / parent-task /
 	// identity / time-window / error-class / latency-above / free-text)
@@ -498,14 +488,13 @@ const (
 	// Failed / Complete / Cancelled) for the filtered view. Powers the
 	// Console Tasks-page kanban board + list-mode table. Identity-
 	// mandatory; a cross-tenant fan-in requires the `auth.ScopeAdmin`
-	// claim (D-079). NOT a control / search / posture method —
+	// claim. NOT a control / search / posture method —
 	// `IsTasksMethod` returns true. The wire-transport route is
 	// `POST /v1/tasks/list`. See
-	// `docs/plans/phase-73d-console-tasks-page.md`.
 	MethodTasksList Method = "tasks.list"
-	// MethodTasksGet — Phase 73d. Returns the enriched detail of a
+	// MethodTasksGet — Returns the enriched detail of a
 	// single task: the full Task projection (heavy values via
-	// ArtifactRef per D-026), parent-session reference, parent-task
+	// ArtifactRef), parent-session reference, parent-task
 	// reference (when child), per-step cost rollup aggregated from
 	// `llm.cost.recorded` events, and the planner-checkpoint reference
 	// at spawn time. A cross-tenant TaskID lookup returns CodeNotFound
@@ -513,85 +502,84 @@ const (
 	// route is `POST /v1/tasks/get`.
 	MethodTasksGet Method = "tasks.get"
 
-	// MethodAgentsList — Phase 73e (Wave 13 / D-124). Returns the
+	// MethodAgentsList — Returns the
 	// catalog of agents registered under the caller's identity scope,
 	// with optional facet filters (status / planner type / free-text
 	// search) plus aggregate counters. Powers the Console Agents page
 	// cards grid. Identity-mandatory; a cross-tenant fan-in requires the
-	// `auth.ScopeAdmin` claim (D-079). `IsAgentsMethod` returns true.
+	// `auth.ScopeAdmin` claim. `IsAgentsMethod` returns true.
 	// The wire-transport route is `POST /v1/agents/list`.
 	MethodAgentsList Method = "agents.list"
-	// MethodAgentsGet — Phase 73e. Returns one agent's full
+	// MethodAgentsGet — Returns one agent's full
 	// registration-identity projection: agent_id / incarnation /
-	// version_hash (D-059), hosting (D-060), status, health, and the
+	// version_hash, hosting, status, health, and the
 	// AgentConfig projection. Powers the Agents detail header + the
 	// Identity / Autonomy tabs.
 	MethodAgentsGet Method = "agents.get"
-	// MethodAgentsTools — Phase 73e. Returns the agent's tool bindings
-	// joined to per-binding OAuth status (D-083). Powers the Tools tab.
+	// MethodAgentsTools — Returns the agent's tool bindings
+	// joined to per-binding OAuth status. Powers the Tools tab.
 	MethodAgentsTools Method = "agents.tools"
-	// MethodAgentsMemory — Phase 73e. Returns the agent's configured
-	// memory strategy (Phase 24), TTL, and scope. Powers the Memory tab.
+	// MethodAgentsMemory — Returns the agent's configured
+	// memory strategy, TTL, and scope. Powers the Memory tab.
 	MethodAgentsMemory Method = "agents.memory"
-	// MethodAgentsGovernance — Phase 73e. Returns the agent's
-	// per-identity-tier cost ceilings + spend (Phase 36a) and rate-limit
-	// posture (Phase 36b). Powers the Cost tab.
+	// MethodAgentsGovernance — Returns the agent's
+	// per-identity-tier cost ceilings + spend and rate-limit
+	// posture. Powers the Cost tab.
 	MethodAgentsGovernance Method = "agents.governance"
-	// MethodAgentsSkills — Phase 73e. Returns the agent's attached
-	// skills (Phase 38 + Phase 41 generated skills). Powers the Skills
+	// MethodAgentsSkills — Returns the agent's attached
+	// skills (imported + generated skills). Powers the Skills
 	// tab.
 	MethodAgentsSkills Method = "agents.skills"
-	// MethodAgentsPermissions — Phase 73e. Returns the agent's
+	// MethodAgentsPermissions — Returns the agent's
 	// permission model — V1 default is implicit ("every authenticated
 	// user in the tenant"); an explicit ACL surface is post-V1.
 	MethodAgentsPermissions Method = "agents.permissions"
-	// MethodAgentsMetrics — Phase 73e. Returns the registry-wide rollup
+	// MethodAgentsMetrics — Returns the registry-wide rollup
 	// (Active Agents / Running Tasks / Total Cost / Total Tokens) for
 	// the caller's identity scope. Powers the Agents page hero numbers.
 	MethodAgentsMetrics Method = "agents.metrics"
 
-	// MethodAgentsPause — Phase 108l (D-184). The fleet-control verb that
+	// MethodAgentsPause — The fleet-control verb that
 	// pauses an agent (stop accepting new tasks until Resume). Wraps the
 	// shipped `registry.Pause` in-process control verb behind a Protocol
 	// method so the Console can drive it. MUTATES registry state and
-	// therefore requires the elevated `auth.ScopeAdmin` control claim
-	// (D-066); emits `agent.paused`. `IsAgentsControlMethod` returns true.
-	// Supersedes the D-132/F4 deferral.
+	// therefore requires the elevated `auth.ScopeAdmin` control claim;
+	// emits `agent.paused`. `IsAgentsControlMethod` returns true.
+	// Supersedes the earlier deferral.
 	MethodAgentsPause Method = "agents.pause"
-	// MethodAgentsDrain — Phase 108l. Gracefully drains an agent (accept
+	// MethodAgentsDrain — Gracefully drains an agent (accept
 	// no new tasks, finish existing). Wraps `registry.Drain`; emits
-	// `agent.drained`. Control-scope gated (D-066).
+	// `agent.drained`. Control-scope gated.
 	MethodAgentsDrain Method = "agents.drain"
-	// MethodAgentsRestart — Phase 108l. Restarts an agent (bump
+	// MethodAgentsRestart — Restarts an agent (bump
 	// incarnation; rehydrate from StateStore). Wraps `registry.Restart`;
-	// emits `agent.restart_requested`. Control-scope gated (D-066).
+	// emits `agent.restart_requested`. Control-scope gated.
 	MethodAgentsRestart Method = "agents.restart"
-	// MethodAgentsForceStop — Phase 108l. Hard-stops an agent. Wraps
+	// MethodAgentsForceStop — Hard-stops an agent. Wraps
 	// `registry.ForceStop`; emits `agent.force_stopped`. Control-scope
-	// gated (D-066).
+	// gated.
 	MethodAgentsForceStop Method = "agents.force_stop"
-	// MethodAgentsDeregister — Phase 108l. Removes an agent from the
+	// MethodAgentsDeregister — Removes an agent from the
 	// registry (irreversible). Wraps `registry.Deregister`; emits
-	// `agent.deregistered`. Control-scope gated (D-066).
+	// `agent.deregistered`. Control-scope gated.
 	MethodAgentsDeregister Method = "agents.deregister"
 
-	// MethodAuthRotateToken — Phase 73m (Wave 13 / D-129). Rotates the
+	// MethodAuthRotateToken — Rotates the
 	// operator's current Protocol-auth token: the Runtime re-mints a
 	// JWT for the caller's already-verified `(tenant, user, session)`
 	// identity and returns it once (one-time-reveal). The ONLY net-new
-	// Protocol method Phase 73m ships — the Console Settings page is
-	// otherwise a pure consumer of the 72f / 72g posture methods. ADMIN
-	// method: requires the verified `auth.ScopeAdmin` claim (D-079
+	// Protocol method Harbor ships — the Console Settings page is
+	// otherwise a pure consumer of the posture methods. ADMIN
+	// method: requires the verified `auth.ScopeAdmin` claim (the
 	// closed two-scope set — there is NO `auth.admin` scope). A request
 	// without the claim is rejected 403 with CodeIdentityScopeRequired.
 	// Every successful rotation emits a redacted `audit.admin_scope_used`
 	// event. NOT a control / search / posture / pause / topology
 	// method — `IsAuthMethod` is its own O(1) predicate. The
 	// wire-transport route is `POST /v1/auth/rotate_token`. See
-	// `docs/plans/phase-73m-console-settings-page.md`.
 	MethodAuthRotateToken Method = "auth.rotate_token" //nolint:gosec // G101 false positive — this is a Protocol method name, not a credential.
 
-	// MethodSessionsList — Phase 73c (Wave 13 / D-122). Returns the
+	// MethodSessionsList — Returns the
 	// paginated, identity-scope-filtered projection of the
 	// SessionRegistry the Console Sessions page renders — the
 	// past-and-active durable record of every Harbor execution the
@@ -600,14 +588,13 @@ const (
 	// has-failed-task / cost-above) plus cursor pagination. Read-only;
 	// identity-mandatory. A cross-tenant filter (a `tenant_ids` entry
 	// outside the caller's verified tenant) requires the verified
-	// `auth.ScopeAdmin` claim (D-079 closed two-scope set — NO new
+	// `auth.ScopeAdmin` claim (closed two-scope set — NO new
 	// scope is minted). NOT a control / streaming-events / search /
 	// posture / pause / topology / artifacts / memory / mcp / tools /
 	// flows method — `IsSessionsMethod` is its own O(1) predicate. The
 	// wire-transport route is `POST /v1/sessions/list`. See
-	// `docs/plans/phase-73c-console-sessions-page.md`.
 	MethodSessionsList Method = "sessions.list"
-	// MethodSessionsInspect — Phase 73c. Returns the full per-session
+	// MethodSessionsInspect — Returns the full per-session
 	// snapshot the Console Sessions detail view renders — the
 	// right-rail Session Summary projection (id / status / started /
 	// duration / events / tasks / agent / user / tenant / cost / last
@@ -617,7 +604,7 @@ const (
 	// wire-transport route is `POST /v1/sessions/inspect`.
 	MethodSessionsInspect Method = "sessions.inspect"
 
-	// MethodRunsSetOverrides — Phase 73n (Wave 13 / D-130). Records the
+	// MethodRunsSetOverrides — Records the
 	// reasoning-effort / temperature / max-tokens / system-prompt
 	// override the Console Playground page applies to the NEXT message
 	// in a session. The override is session-scoped (keyed by the
@@ -631,12 +618,11 @@ const (
 	// topology / artifacts / memory / mcp / tools / flows / agents /
 	// sessions / tasks method — `IsRunsMethod` is its own O(1)
 	// predicate. The wire-transport route is `POST /v1/runs/set_overrides`.
-	// See `docs/plans/phase-73n-console-playground-page.md`.
 	MethodRunsSetOverrides Method = "runs.set_overrides"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
-// map (not a write-once registry) — the Phase 54 task-control set is
+// map (not a write-once registry) — the task-control set is
 // closed; a new Protocol method is a new phase that extends this map.
 // The map exists so IsValidMethod is O(1) and Methods returns a
 // deterministic snapshot.
@@ -733,13 +719,13 @@ var canonicalMethods = map[Method]struct{}{
 }
 
 // canonicalAgentsMethods is the closed set of the thirteen `agents.*`
-// methods: the eight read-only projections landed in Phase 73e (Wave 13
-// / D-124) plus the five fleet-control verbs (Pause / Drain / Restart /
-// ForceStop / Deregister) landed in Phase 108l (D-184). IsAgentsMethod
+// methods: the eight read-only projections landed earlier
+// plus the five fleet-control verbs (Pause / Drain / Restart /
+// ForceStop / Deregister) landed earlier. IsAgentsMethod
 // is O(1); the wire handler branches on it to route the request through
 // the agents dispatcher instead of the task-control surface. The five
 // control verbs wrap the shipped `registry.*` in-process control verbs
-// (D-066) behind a Protocol method — Phase 108l supersedes the D-132/F4
+// behind a Protocol method — supersedes the earlier
 // deferral that previously kept them off the Protocol surface.
 var canonicalAgentsMethods = map[Method]struct{}{
 	MethodAgentsList:        {},
@@ -759,8 +745,8 @@ var canonicalAgentsMethods = map[Method]struct{}{
 
 // canonicalAgentsControlMethods is the closed sub-set of the five
 // `agents.*` fleet-control verbs that MUTATE registry state and
-// therefore require the verified `auth.ScopeAdmin` control claim
-// (D-066, Phase 108l / D-184). The Agents wire handler uses this to gate
+// therefore require the verified `auth.ScopeAdmin` control claim.
+// The Agents wire handler uses this to gate
 // the control path: a read method skips the scope check; a control
 // method without the claim fails closed with CodeIdentityScopeRequired
 // (HTTP 403). There is NO `agents.admin` scope — the closed two-scope
@@ -774,7 +760,7 @@ var canonicalAgentsControlMethods = map[Method]struct{}{
 }
 
 // IsAgentsMethod reports whether m is one of the thirteen canonical
-// `agents.*` methods (Phase 73e / D-124 + Phase 108l / D-184). The wire
+// `agents.*` methods (reads + control verbs). The wire
 // handler branches on this to route the request through the agents
 // dispatcher instead of the task-control / search / posture / topology
 // surfaces.
@@ -786,7 +772,7 @@ func IsAgentsMethod(m Method) bool {
 // IsAgentsControlMethod reports whether m is one of the five mutating
 // `agents.*` fleet-control verbs (`agents.pause` / `agents.drain` /
 // `agents.restart` / `agents.force_stop` / `agents.deregister`) that
-// require the verified `auth.ScopeAdmin` control claim (D-066). The
+// require the verified `auth.ScopeAdmin` control claim. The
 // Agents wire handler uses this to decide whether to enforce the gate.
 func IsAgentsControlMethod(m Method) bool {
 	_, ok := canonicalAgentsControlMethods[m]
@@ -794,7 +780,7 @@ func IsAgentsControlMethod(m Method) bool {
 }
 
 // canonicalArtifactsMethods is the closed set of the artifacts methods —
-// the Phase 73l (D-120) read/put trio plus the Phase 108o (D-187)
+// the read/put trio plus the
 // admin `artifacts.delete` mutation. IsArtifactsMethod is
 // O(1); the control transport branches on it to route the request
 // through the artifacts dispatcher instead of the task-control surface.
@@ -806,8 +792,8 @@ var canonicalArtifactsMethods = map[Method]struct{}{
 }
 
 // IsArtifactsMethod reports whether m is one of the canonical artifacts
-// methods (Phase 73l / D-120 — `artifacts.list` / `artifacts.put` /
-// `artifacts.get_ref` — plus the Phase 108o / D-187 admin
+// methods (— `artifacts.list` / `artifacts.put` /
+// `artifacts.get_ref` — plus the admin
 // `artifacts.delete` mutation). The control transport branches on this to
 // route the request through the artifacts dispatcher instead of the
 // task-control / search / posture surfaces. NOT a control
@@ -819,7 +805,7 @@ func IsArtifactsMethod(m Method) bool {
 }
 
 // canonicalMCPServersMethods is the closed sub-set of the twelve
-// `mcp.servers.*` methods landed in Phase 73k (Wave 13 / D-119) — nine
+// `mcp.servers.*` methods landed earlier — nine
 // read methods and three admin verbs. IsMCPServersMethod is O(1); the
 // control transport branches on it to route the request through the
 // MCPSurface dispatcher instead of the task-control surface.
@@ -839,7 +825,7 @@ var canonicalMCPServersMethods = map[Method]struct{}{
 }
 
 // canonicalMCPAdminMethods is the closed sub-set of the three
-// `mcp.servers.*` admin verbs (Phase 73k / D-119) that gate on the
+// `mcp.servers.*` admin verbs that gate on the
 // `auth.ScopeAdmin` claim. IsMCPAdminMethod is O(1); the MCPSurface
 // dispatcher uses it to apply the admin-scope gate.
 var canonicalMCPAdminMethods = map[Method]struct{}{
@@ -849,7 +835,7 @@ var canonicalMCPAdminMethods = map[Method]struct{}{
 }
 
 // IsMCPServersMethod reports whether m is one of the twelve canonical
-// `mcp.servers.*` methods (Phase 73k / D-119). The control transport
+// `mcp.servers.*` methods. The control transport
 // branches on this to route the request through the MCPSurface
 // dispatcher instead of the task-control / search / posture surfaces.
 // NOT a control method — a new non-control method extends THIS
@@ -861,15 +847,15 @@ func IsMCPServersMethod(m Method) bool {
 
 // IsMCPAdminMethod reports whether m is one of the three `mcp.servers.*`
 // admin verbs (`refresh_binding` / `revoke_binding` /
-// `set_raw_html_trust`) that gate on the `auth.ScopeAdmin` claim
-// (D-079). The MCPSurface dispatcher uses it to apply the admin gate.
+// `set_raw_html_trust`) that gate on the `auth.ScopeAdmin` claim.
+// The MCPSurface dispatcher uses it to apply the admin gate.
 func IsMCPAdminMethod(m Method) bool {
 	_, ok := canonicalMCPAdminMethods[m]
 	return ok
 }
 
 // canonicalToolsMethods is the closed sub-set of the seven `tools.*`
-// methods landed in Phase 73f (Wave 13 / D-116) — the five read
+// methods landed earlier — the five read
 // methods (`tools.list` / `tools.get` / `tools.describe` /
 // `tools.metrics` / `tools.content_stats`) plus the two admin methods
 // (`tools.set_approval_policy` / `tools.revoke_oauth`). IsToolsMethod
@@ -887,7 +873,7 @@ var canonicalToolsMethods = map[Method]struct{}{
 
 // canonicalToolsAdminMethods is the closed sub-set of the two `tools.*`
 // methods that MUTATE runtime tool state and therefore require the
-// verified `auth.ScopeAdmin` claim (D-079). The Tools wire handler
+// verified `auth.ScopeAdmin` claim. The Tools wire handler
 // uses this to gate the admin path: a read method skips the scope
 // check; an admin method without the claim fails closed with
 // CodeIdentityScopeRequired (HTTP 403). There is NO `tools.admin`
@@ -899,7 +885,7 @@ var canonicalToolsAdminMethods = map[Method]struct{}{
 }
 
 // IsToolsMethod reports whether m is one of the seven canonical
-// `tools.*` methods (Phase 73f / D-116). The control transport
+// `tools.*` methods. The control transport
 // branches on this to route the request through the Tools dispatcher
 // instead of the task-control / search / posture / topology surfaces.
 // NOT a control method — a new non-control method extends THIS
@@ -911,7 +897,7 @@ func IsToolsMethod(m Method) bool {
 
 // IsToolsAdminMethod reports whether m is one of the two mutating
 // `tools.*` methods (`tools.set_approval_policy` / `tools.revoke_oauth`)
-// that require the verified `auth.ScopeAdmin` claim (D-079). The Tools
+// that require the verified `auth.ScopeAdmin` claim. The Tools
 // wire handler uses this to decide whether to enforce the scope gate.
 func IsToolsAdminMethod(m Method) bool {
 	_, ok := canonicalToolsAdminMethods[m]
@@ -919,9 +905,9 @@ func IsToolsAdminMethod(m Method) bool {
 }
 
 // canonicalTasksMethods is the closed sub-set of the two `tasks.*`
-// methods landed in Phase 73d (Wave 13 / D-123) — `tasks.list` and
+// methods landed earlier — `tasks.list` and
 // `tasks.get`. Both are READ-ONLY: the Console Tasks page consumes the
-// existing Phase 54 task-control verbs for mutation, never a new
+// existing task-control verbs for mutation, never a new
 // `tasks.*` mutating method. IsTasksMethod is O(1); the stream
 // transport branches on it to route the request through the Tasks
 // dispatcher instead of the task-control surface.
@@ -931,18 +917,18 @@ var canonicalTasksMethods = map[Method]struct{}{
 }
 
 // IsTasksMethod reports whether m is one of the two canonical `tasks.*`
-// methods (Phase 73d / D-123 — `tasks.list`, `tasks.get`). The stream
+// methods (— `tasks.list`, `tasks.get`). The stream
 // transport branches on this to route the request through the Tasks
 // dispatcher instead of the task-control / search / posture / topology
 // surfaces. NOT a control method — both are reads; the Console Tasks
-// page consumes the shipped Phase 54 control verbs for mutation.
+// page consumes the shipped control verbs for mutation.
 func IsTasksMethod(m Method) bool {
 	_, ok := canonicalTasksMethods[m]
 	return ok
 }
 
 // canonicalFlowsMethods is the closed sub-set of the six Flows-page
-// methods landed in Phase 73i (Wave 13 / D-117). IsFlowsMethod is O(1);
+// methods landed earlier. IsFlowsMethod is O(1);
 // a transport adapter uses it to branch the request onto the Flows
 // dispatcher instead of the task-control / search / posture surfaces.
 var canonicalFlowsMethods = map[Method]struct{}{
@@ -954,8 +940,8 @@ var canonicalFlowsMethods = map[Method]struct{}{
 	MethodFlowsMetrics:      {},
 }
 
-// IsFlowsMethod reports whether m is one of the six Flows-page methods
-// (Phase 73i / D-117). Five are read-only; `flows.run` is the single
+// IsFlowsMethod reports whether m is one of the six Flows-page methods.
+// Five are read-only; `flows.run` is the single
 // mutating method. The Flows-page surface is distinct from the steering
 // inbox, the streaming-events surface, the search cluster, and the
 // posture surface — a transport adapter branches on this predicate to
@@ -966,7 +952,7 @@ func IsFlowsMethod(m Method) bool {
 }
 
 // canonicalSessionsMethods is the closed sub-set of the two Sessions-
-// page methods landed in Phase 73c (Wave 13 / D-122) — `sessions.list`
+// page methods landed earlier — `sessions.list`
 // and `sessions.inspect`. IsSessionsMethod is O(1); the stream
 // transport branches on it to route the request through the Sessions
 // handler instead of the task-control surface. Both are read-only.
@@ -976,7 +962,7 @@ var canonicalSessionsMethods = map[Method]struct{}{
 }
 
 // IsSessionsMethod reports whether m is one of the two canonical
-// Sessions-page methods (Phase 73c / D-122 — `sessions.list`,
+// Sessions-page methods (— `sessions.list`,
 // `sessions.inspect`). The stream transport branches on this to route
 // the request through the Sessions handler instead of the task-control
 // / search / posture / pause / topology / artifacts / memory / mcp /
@@ -988,7 +974,7 @@ func IsSessionsMethod(m Method) bool {
 }
 
 // canonicalRunsMethods is the closed sub-set of the Console Playground-
-// page `runs.*` methods landed in Phase 73n (Wave 13 / D-130). Today it
+// page `runs.*` methods landed earlier. Today it
 // holds the single `runs.set_overrides` method — the next-message
 // reasoning-effort / temperature / max-tokens / system-prompt override
 // recorder. IsRunsMethod is O(1); the stream transport branches on it to
@@ -999,7 +985,7 @@ var canonicalRunsMethods = map[Method]struct{}{
 }
 
 // IsRunsMethod reports whether m is one of the canonical `runs.*`
-// methods (Phase 73n / D-130 — today just `runs.set_overrides`). The
+// methods (— today just `runs.set_overrides`). The
 // stream transport branches on this to route the request through the
 // Runs handler instead of the task-control / search / posture / pause /
 // topology / artifacts / memory / mcp / tools / flows / agents /
@@ -1011,7 +997,7 @@ func IsRunsMethod(m Method) bool {
 }
 
 // canonicalAuthMethods is the closed sub-set of the `auth.*` methods
-// landed in Phase 73m (Wave 13 / D-129). Today it holds the single
+// landed earlier. Today it holds the single
 // `auth.rotate_token` method. IsAuthMethod is O(1); the stream
 // transport branches on it to route the request through the auth
 // handler instead of the task-control surface.
@@ -1020,7 +1006,7 @@ var canonicalAuthMethods = map[Method]struct{}{
 }
 
 // IsAuthMethod reports whether m is one of the canonical `auth.*`
-// methods (Phase 73m / D-129 — today just `auth.rotate_token`). The
+// methods (— today just `auth.rotate_token`). The
 // stream transport branches on this to route the request through the
 // auth handler instead of the task-control / search / posture
 // surfaces. NOT a control method — a new non-control method extends
@@ -1031,7 +1017,7 @@ func IsAuthMethod(m Method) bool {
 }
 
 // canonicalSearchMethods is the closed sub-set of the five search.*
-// methods. IsSearchMethod is O(1); a transport adapter (Phase 72c
+// methods. IsSearchMethod is O(1); a transport adapter (
 // search handler) uses it to branch the route table.
 var canonicalSearchMethods = map[Method]struct{}{
 	MethodSearchQuery:     {},
@@ -1042,7 +1028,7 @@ var canonicalSearchMethods = map[Method]struct{}{
 }
 
 // IsSearchMethod reports whether m is one of the five canonical
-// `search.*` methods. The Phase 72c control transport branches on this
+// `search.*` methods. The control transport branches on this
 // to route the request through the search dispatcher instead of the
 // task-control surface.
 func IsSearchMethod(m Method) bool {
@@ -1051,8 +1037,8 @@ func IsSearchMethod(m Method) bool {
 }
 
 // canonicalPostureMethods is the closed sub-set of the seven posture
-// methods — the five Phase 72f (D-111) `runtime.*` / `metrics.*` reads
-// plus the two Phase 72g (D-112) `governance.posture` / `llm.posture`
+// methods — the five `runtime.*` / `metrics.*` reads
+// plus the two `governance.posture` / `llm.posture`
 // reads. IsPostureMethod is O(1); a transport adapter uses it to branch
 // the route table onto the PostureSurface instead of the task-control
 // ControlSurface.
@@ -1067,9 +1053,9 @@ var canonicalPostureMethods = map[Method]struct{}{
 }
 
 // IsPostureMethod reports whether m is one of the seven read-only
-// posture methods — the five `runtime.*` / `metrics.*` reads (Phase 72f
-// / D-111) and the two `governance.posture` / `llm.posture` config
-// reads (Phase 72g / D-112). The PostureSurface uses this to branch in
+// posture methods — the five `runtime.*` / `metrics.*` reads
+// and the two `governance.posture` / `llm.posture` config
+// reads. The PostureSurface uses this to branch in
 // transport adapters that want a single route table over all canonical
 // methods.
 func IsPostureMethod(m Method) bool {
@@ -1078,7 +1064,7 @@ func IsPostureMethod(m Method) bool {
 }
 
 // canonicalTopologyMethods is the closed sub-set of the topology-
-// projection methods landed in Phase 74 (Wave 13 / D-114). Today it
+// projection methods landed earlier. Today it
 // holds the single `topology.snapshot` method; the paired
 // `topology.changed` surface is an EVENT, not a method, so it is not
 // in this set. IsTopologyMethod is O(1); the control transport uses
@@ -1088,7 +1074,7 @@ var canonicalTopologyMethods = map[Method]struct{}{
 }
 
 // IsTopologyMethod reports whether m is one of the canonical
-// topology-projection methods (Phase 74 / D-114 — today just
+// topology-projection methods (— today just
 // `topology.snapshot`). The control transport branches on this to
 // route the request through the topology dispatcher instead of the
 // task-control / search surfaces. NOT a control method — a new
@@ -1099,14 +1085,14 @@ func IsTopologyMethod(m Method) bool {
 }
 
 // canonicalMemoryMethods is the closed set of `memory.*` methods that
-// route through the memory stream handlers: the three Phase 73j (Wave 13
-// / D-118) read methods (`memory.list` / `memory.get` / `memory.health`),
-// the Phase 108n (D-186) read `memory.strategy_trace`, and the Phase 108n
+// route through the memory stream handlers: the three
+// read methods (`memory.list` / `memory.get` / `memory.health`),
+// the read `memory.strategy_trace`, and the
 // admin-gated mutation pair (`memory.put` / `memory.delete`).
 // IsMemoryMethod is O(1); the transport adapter uses it to branch the
 // request through the memory handlers instead of the task-control
 // surface. The mutation methods gate on the verified `admin` scope claim
-// at the handler edge (D-079) — the predicate only governs routing.
+// at the handler edge — the predicate only governs routing.
 var canonicalMemoryMethods = map[Method]struct{}{
 	MethodMemoryList:          {},
 	MethodMemoryGet:           {},
@@ -1117,13 +1103,13 @@ var canonicalMemoryMethods = map[Method]struct{}{
 }
 
 // IsMemoryMethod reports whether m is one of the canonical `memory.*`
-// methods — the Phase 73j (Wave 13 / D-118) read trio plus the Phase 108n
-// (D-186) `memory.strategy_trace` read + `memory.put` / `memory.delete`
+// methods — the read trio plus the
+// `memory.strategy_trace` read + `memory.put` / `memory.delete`
 // admin mutation pair. The control transport branches on this to route the
 // request through the memory handlers instead of the task-control / search
 // / posture / pause / topology surfaces. NOT a control method — a new
 // non-control memory method extends THIS predicate, never the steering
-// inbox; the mutation methods gate on `admin` at the handler edge (D-079).
+// inbox; the mutation methods gate on `admin` at the handler edge.
 func IsMemoryMethod(m Method) bool {
 	_, ok := canonicalMemoryMethods[m]
 	return ok
@@ -1131,8 +1117,8 @@ func IsMemoryMethod(m Method) bool {
 
 // streamingEventsMethods is the closed set of canonical method names
 // the Runtime classifies as streaming-events methods (the first non-
-// task-control Protocol surface to land — Phase 72 / 72a). Used by
-// IsControlMethod to keep its predicate exclusive to the Phase 54
+// task-control Protocol surface to land — / 72a). Used by
+// IsControlMethod to keep its predicate exclusive to the
 // nine, and by IsStreamingEventsMethod (below) when a caller wants
 // the inverse predicate.
 var streamingEventsMethods = map[Method]struct{}{
@@ -1141,17 +1127,17 @@ var streamingEventsMethods = map[Method]struct{}{
 }
 
 // IsValidMethod reports whether m is one of the canonical Protocol
-// method names — the Phase 54 task-control ten plus the Wave 13
-// streaming-events additions plus the Phase 72c search cluster.
+// method names — the task-control ten plus the
+// streaming-events additions plus the search cluster.
 func IsValidMethod(m Method) bool {
 	_, ok := canonicalMethods[m]
 	return ok
 }
 
 // IsPauseMethod reports whether m is one of the pause-snapshot methods
-// landed in Wave 13 (Phase 72e — currently only MethodPauseList). The
+// landed in (currently only MethodPauseList). The
 // pause-snapshot surface is a read-only projection over the unified
-// pause/resume Coordinator (Phase 50); it is NOT a steering control,
+// pause/resume Coordinator; it is NOT a steering control,
 // NOT a streaming-events method, and NOT a search method. A transport
 // adapter branches on this predicate to route the request through the
 // pause-list snapshot handler instead of the task-control surface.
@@ -1161,26 +1147,26 @@ func IsPauseMethod(m Method) bool {
 }
 
 // pauseMethods is the closed set of canonical pause-snapshot method
-// names (Phase 72e). Used by IsControlMethod to keep its predicate
-// exclusive to the Phase 54 nine, and by IsPauseMethod for the inverse.
+// names. Used by IsControlMethod to keep its predicate
+// exclusive to the nine, and by IsPauseMethod for the inverse.
 var pauseMethods = map[Method]struct{}{
 	MethodPauseList: {},
 }
 
 // IsControlMethod reports whether m is one of the nine steering-control
 // methods — every canonical method except MethodStart AND the
-// streaming-events methods (Phase 72 / 72a) AND the Phase 72c
-// `search.*` cluster AND the Phase 72f `runtime.*` / `metrics.*`
-// posture cluster AND the Phase 72e pause-snapshot method AND the
-// Phase 74 `topology.snapshot` method AND the Phase 73j `memory.*`
+// streaming-events methods AND the
+// `search.*` cluster AND the `runtime.*` / `metrics.*`
+// posture cluster AND the pause-snapshot method AND the
+// `topology.snapshot` method AND the `memory.*`
 // read cluster (each a separate surface from the steering inbox).
 // The protocol.ControlSurface uses this to branch: a control method
 // maps onto a steering.ControlEvent; MethodStart maps onto the task
 // registry; a streaming-events method routes through the SSE /
-// events-aggregate transport; a search method maps onto the Phase 72c
-// search dispatcher; a posture method maps onto the Phase 72f
-// PostureSurface; a pause-snapshot method maps onto the Phase 72e
-// pause-list handler; a topology method maps onto the Phase 74
+// events-aggregate transport; a search method maps onto the
+// search dispatcher; a posture method maps onto the
+// PostureSurface; a pause-snapshot method maps onto the
+// pause-list handler; a topology method maps onto the
 // topology dispatcher. A new non-control method (state inspection,
 // artifacts — future phases) extends THIS predicate, NOT
 // the steering-control inbox.
@@ -1240,7 +1226,7 @@ func IsControlMethod(m Method) bool {
 }
 
 // IsStreamingEventsMethod reports whether m is one of the streaming-
-// events methods landed in Wave 13 (MethodEventsSubscribe or
+// events methods landed in (MethodEventsSubscribe or
 // MethodEventsAggregate). The transport-side router uses this to
 // classify a method into its routing branch without re-listing the
 // streaming set.
@@ -1250,8 +1236,8 @@ func IsStreamingEventsMethod(m Method) bool {
 }
 
 // Methods returns a deterministic, lexicographically-sorted snapshot of
-// every canonical method name (the Phase 54 task-control ten + the
-// Wave 13 streaming-events additions + the Phase 72c search cluster).
+// every canonical method name (the task-control ten + the
+// streaming-events additions + the search cluster).
 // Useful for exhaustiveness tests and for a transport adapter's route
 // table.
 func Methods() []Method {

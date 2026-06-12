@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 73e): the `agents.*` HTTP
+// Package stream — additions: the `agents.*` HTTP
 // handler. Like `tools.*` and `memory.*`, the eight Agents-page methods
 // are one-shot request/response — POST JSON in, JSON out — and the
 // handler lives in the stream package because its identity + scope-claim
@@ -15,22 +15,22 @@
 //	permissions | metrics
 //
 // The handler reads identity from r.Context() (auth.Middleware) or the
-// X-Harbor-* carrier headers (Phase 60 fallback), decodes the JSON body
+// X-Harbor-* carrier headers (fallback), decodes the JSON body
 // into the method-specific wire request, dispatches into the
 // agentsprotocol.Service, and encodes the response. On failure, a JSON
 // error body with the canonical Protocol Code, identical in shape to the
 // REST control transport's error body.
 //
 // All eight `agents.*` methods are READ-ONLY projections of the Agent
-// Registry (D-124). The five agent-control verbs the Console exposes
+// Registry. The five agent-control verbs the Console exposes
 // (Pause / Drain / Restart / Force-Stop / Deregister) are NOT served
 // here — they are the EXISTING shipped `registry.*` control verbs
-// (D-066) and Phase 73e mints no control method (CLAUDE.md §13).
+// and Harbor mints no control method (CLAUDE.md §13).
 //
 // Identity is mandatory: a missing / incomplete (tenant, user, session)
 // triple fails closed with CodeIdentityRequired (401). `agent_id` is a
 // registration identity, not an isolation filter — the runtime scopes
-// by the tuple, never by `agent_id` (D-059, CLAUDE.md §6).
+// by the tuple, never by `agent_id` (CLAUDE.md §6).
 package stream
 
 import (
@@ -67,7 +67,7 @@ var ErrAgentsMisconfigured = errors.New("stream: agents handler missing a mandat
 
 // AgentsHandler serves `POST /v1/agents/{method}`. It is the wire
 // adapter over an agentsprotocol.Service: resolve identity, decode the
-// request, dispatch, encode. The handler is a D-025-safe compiled
+// request, dispatch, encode. The handler is a concurrency-safe compiled
 // artifact — every field is set once at construction; ServeHTTP holds
 // no per-request state.
 type AgentsHandler struct {
@@ -93,7 +93,7 @@ func WithAgentsLogger(l *slog.Logger) AgentsOption {
 // agentsprotocol.Service. service is mandatory — a nil fails loud with
 // ErrAgentsMisconfigured rather than building a handler that would
 // nil-panic on the first request (CLAUDE.md §5). The returned
-// *AgentsHandler is immutable after construction (D-025) and safe for
+// *AgentsHandler is immutable after construction and safe for
 // concurrent use by N goroutines.
 func NewAgentsHandler(service *agentsprotocol.Service, opts ...AgentsOption) (*AgentsHandler, error) {
 	if service == nil {
@@ -166,7 +166,7 @@ func (h *AgentsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The fleet-control verbs MUTATE registry state and require the
-	// verified `auth.ScopeAdmin` control claim (D-066 / D-184) — the same
+	// verified `auth.ScopeAdmin` control claim — the same
 	// admin gate the tools admin verbs use. The read methods skip the
 	// check. The service is the authoritative gate (it fails closed
 	// without the bool); this is the verified-JWT scope decision passed
@@ -348,7 +348,7 @@ func (h *AgentsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, bod
 }
 
 // serveControl is the shared wire adapter for the five fleet-control
-// verbs (Phase 108l / D-184). It decodes the shared AgentControlRequest,
+// verbs. It decodes the shared AgentControlRequest,
 // overlays the verified identity, and dispatches into the matching
 // Service control method, passing the verified-JWT control-scope
 // decision. The Service is the authoritative gate — it fails closed with
@@ -406,7 +406,7 @@ func classifyAgentsError(method methods.Method, err error) (protoerrors.Code, in
 			m + ": invalid request — " + err.Error()
 	case errors.Is(err, agentsprotocol.ErrControlScopeRequired):
 		return protoerrors.CodeIdentityScopeRequired, http.StatusForbidden,
-			m + ": fleet control requires the elevated admin control claim (D-066)"
+			m + ": fleet control requires the elevated admin control claim"
 	case errors.Is(err, agentsprotocol.ErrControlUnsupported):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			m + ": fleet control is not wired on this runtime"

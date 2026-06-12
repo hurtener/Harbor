@@ -35,7 +35,7 @@ var methodToControlType = map[methods.Method]steering.ControlType{
 }
 
 // Dispatch is the single transport-agnostic entry point for a Protocol
-// task-control method call. A Phase 60 HTTP/SSE handler decodes a
+// task-control method call. A HTTP/SSE handler decodes a
 // request, calls Dispatch, and encodes the response — Dispatch IS the
 // surface; the wire transport is a thin adapter over it.
 //
@@ -61,7 +61,7 @@ var methodToControlType = map[methods.Method]steering.ControlType{
 //   - CodeRuntimeError    — an unclassified runtime-side failure.
 //
 // Dispatch holds no per-call state on the ControlSurface — it reads
-// everything from ctx + req (D-025). One ControlSurface serves N
+// everything from ctx + req. One ControlSurface serves N
 // concurrent Dispatch goroutines safely.
 func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsValidMethod(method) {
@@ -72,7 +72,7 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 	if method == methods.MethodStart {
 		return s.dispatchStart(ctx, req)
 	}
-	// Wave 13 (Phase 72 / 72a — D-105 / D-106): the streaming-events
+	// The streaming-events
 	// methods are served by their own transports (SSE for subscribe;
 	// POST /v1/events/aggregate for aggregate), NOT by the REST control
 	// surface. A caller that hits Dispatch with one of them is using
@@ -86,7 +86,7 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a streaming-events method; POST to /v1/events/aggregate instead", string(method))
 	}
-	// Phase 72c (D-108): the five `search.*` methods are dispatched by
+	// the five `search.*` methods are dispatched by
 	// SearchSurface, not ControlSurface — a caller that hits the REST
 	// control surface with a search method is using the wrong transport
 	// for the wrong vocabulary. Surface it loud rather than silently
@@ -95,7 +95,7 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a search method; dispatch through the SearchSurface (POST /v1/search) instead", string(method))
 	}
-	// Phase 72f (D-111): the five `runtime.*` / `metrics.*` posture
+	// the five `runtime.*` / `metrics.*` posture
 	// methods are dispatched by PostureSurface, not ControlSurface — a
 	// caller that hits the task-control Dispatch with a posture method
 	// is using the wrong surface. Surface it loud rather than silently
@@ -104,7 +104,7 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a posture method; dispatch through the PostureSurface instead", string(method))
 	}
-	// Phase 72e (D-110): `pause.list` is a read-only snapshot over the
+	// `pause.list` is a read-only snapshot over the
 	// pauseresume.Coordinator — it routes through its own HTTP handler
 	// (POST /v1/pause/list), not the task-control ControlSurface. A
 	// caller that hits the control Dispatch with the pause method is
@@ -114,7 +114,7 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a pause-snapshot method; POST to /v1/pause/list instead", string(method))
 	}
-	// Phase 74 (D-114): `topology.snapshot` is a read-only projection
+	// `topology.snapshot` is a read-only projection
 	// method — it reaches the engine's Topology accessor, not the
 	// steering inbox. ControlSurface dispatches it directly (unlike
 	// the streaming-events / search methods which route to other
@@ -123,7 +123,7 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 	if methods.IsTopologyMethod(method) {
 		return s.dispatchTopology(ctx, req)
 	}
-	// Phase 73k (D-119): the twelve `mcp.servers.*` methods are
+	// the twelve `mcp.servers.*` methods are
 	// dispatched by the MCPSurface, not the task-control ControlSurface
 	// — a caller that hits the control Dispatch with an MCP method is
 	// using the wrong surface. Surface it loud rather than silently
@@ -135,8 +135,8 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 	return s.dispatchControl(ctx, method, req)
 }
 
-// dispatchTopology handles the `topology.snapshot` method (Phase 74 /
-// D-114): it returns the Runtime engine's canonical TopologyProjection.
+// dispatchTopology handles the `topology.snapshot` method:
+// it returns the Runtime engine's canonical TopologyProjection.
 //
 // The gauntlet, in order:
 //
@@ -147,10 +147,12 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 //  2. A wrong / nil request type → CodeInvalidRequest.
 //  3. An incomplete identity triple → CodeIdentityRequired (RFC §5.5).
 //  4. A cross-tenant request (caller tenant ≠ the engine's tenant)
-//     without the verified auth.ScopeAdmin claim → CodeAuthRejected
-//     (D-079). The admin path additionally emits audit.admin_scope_used
-//     — the transport adapter owns the bus emit; here we record that
-//     an elevated read occurred by leaving the gate result observable.
+//     without the verified auth.ScopeAdmin claim → CodeAuthRejected.
+//
+// The admin path additionally emits audit.admin_scope_used — the
+// transport adapter owns the bus emit; here we record that an
+// elevated read occurred by leaving the gate result observable.
+//
 //  5. The engine's Topology accessor builds the projection; an
 //     identity-rejection from the accessor maps to CodeIdentityRequired,
 //     anything else to CodeRuntimeError.
@@ -179,7 +181,7 @@ func (s *ControlSurface) dispatchTopology(ctx context.Context, req any) (*types.
 			"method %q: identity scope incomplete: %v", string(method), err)
 	}
 
-	// Cross-tenant gate (D-079): a caller whose tenant differs from the
+	// Cross-tenant gate: a caller whose tenant differs from the
 	// engine's tenant needs the verified auth.ScopeAdmin claim. The
 	// projection carries no tenant id, but a cross-tenant read of
 	// another tenant's graph is an admin-only operation. A granted
@@ -201,7 +203,7 @@ func (s *ControlSurface) dispatchTopology(ctx context.Context, req any) (*types.
 
 	// The engine's Topology accessor reads identity from ctx. Inject
 	// the validated caller identity so the accessor's identity-mandatory
-	// gate passes — the trust-based Phase 60 posture has no ctx-identity
+	// gate passes — the trust-based posture has no ctx-identity
 	// otherwise, and the engine fails closed on an unscoped ctx.
 	topoCtx, err := identity.With(ctx, callerID)
 	if err != nil {
@@ -249,14 +251,14 @@ func (s *ControlSurface) emitAdminScopeUsed(ctx context.Context, caller identity
 }
 
 // dispatchStart handles the `start` method: it spawns a foreground task
-// via the Phase 20 tasks.TaskRegistry. A `start` request carries the
+// via the tasks.TaskRegistry. A `start` request carries the
 // identity triple (RunID is ignored — Spawn assigns the TaskID) and no
 // steering scope (task creation is not a steering control).
 //
 // The method name is read from methods.MethodStart, never hardcoded —
-// the Phase 58 single-source lint forbids a Protocol method string
+// the single-source lint forbids a Protocol method string
 // literal anywhere under internal/protocol/ outside the methods package
-// (CLAUDE.md §8; D-075).
+// (CLAUDE.md §8).
 func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.StartResponse, error) {
 	method := methods.MethodStart
 
@@ -278,7 +280,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 			"method %q: identity scope incomplete: %v", string(method), err)
 	}
 
-	// D-171: create-on-first-use. The session id is the per-request
+	// create-on-first-use. The session id is the per-request
 	// session the client chose; a `start` on a not-yet-existing session
 	// materialises its registry row BEFORE the task spawns so the
 	// Console's sessions.list surfaces the conversation even if the first
@@ -293,7 +295,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		}
 	}
 
-	// Phase 84b (D-189) — validate the optional per-attachment
+	// validate the optional per-attachment
 	// disposition hints at the edge so the registry / run loop only
 	// ever see canonical values. Each key must name an
 	// InputArtifactIDs entry; each value must satisfy the disposition
@@ -340,14 +342,14 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 
 // dispatchControl handles the nine steering-control methods. It builds a
 // steering.ControlEvent from the Protocol request and enqueues it on the
-// run's steering.Inbox — the Phase 52 Inbox.Enqueue does the validation
+// run's steering.Inbox — the Inbox.Enqueue does the validation
 // (RFC §6.3 payload bounds), the per-event scope check (steering.
-// CheckScope), and the identity gate. Phase 54 does NOT re-implement any
+// CheckScope), and the identity gate. Harbor does NOT re-implement any
 // of that (CLAUDE.md §13 forbids a second validator); it constructs the
 // event, hands it to Enqueue, and maps the steering sentinel onto a
 // Protocol error code.
 func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Method, req any) (*types.ControlResponse, error) {
-	_ = ctx // the steering enqueue path is synchronous; ctx is held for the Phase 60 transport adapter's cancellation seam.
+	_ = ctx // the steering enqueue path is synchronous; ctx is held for the transport adapter's cancellation seam.
 
 	cr, ok := req.(*types.ControlRequest)
 	if !ok || cr == nil {
@@ -403,7 +405,7 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 	}
 
 	// Construct the control event and hand it to Enqueue. Enqueue runs
-	// the full Phase 52 gauntlet: identity match, canonical-type check,
+	// the full gauntlet: identity match, canonical-type check,
 	// CheckScope (per-event scope + cross-tenant-requires-admin),
 	// ValidatePayload (the RFC §6.3 bounds). Any failure surfaces as a
 	// steering sentinel, mapped onto a Protocol error code.
@@ -411,7 +413,7 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 		Type:         ctrlType,
 		Identity:     q,
 		CallerScope:  scope,
-		CallerTenant: q.TenantID, // the caller authenticated under the run's tenant; cross-tenant steering arrives with a differing CallerTenant once Phase 61 auth lands. Until then the trust-based scope claim carries the elevation.
+		CallerTenant: q.TenantID, // the caller authenticated under the run's tenant; cross-tenant steering arrives with a differing CallerTenant once auth lands. Until then the trust-based scope claim carries the elevation.
 		Payload:      cr.Payload,
 		EventID:      cr.EventID,
 	}
@@ -428,8 +430,8 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 
 // compile-time assertion: every steering-control method
 // (IsControlMethod=true) has a steering.ControlType mapping. MethodStart,
-// the Wave 13 streaming-events methods (MethodEventsSubscribe /
-// MethodEventsAggregate), and the Phase 72c `search.*` cluster are NOT
+// the streaming-events methods (MethodEventsSubscribe /
+// MethodEventsAggregate), and the `search.*` cluster are NOT
 // control methods and route through their own surfaces (the task
 // registry for Start; the SSE handler + events-aggregate handler for
 // the streaming-events two; the search dispatcher in
@@ -441,8 +443,8 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 func init() {
 	for _, m := range methods.Methods() {
 		if !methods.IsControlMethod(m) {
-			// MethodStart, the Wave 13 streaming-events methods, the
-			// Phase 72c search cluster, and any future non-control
+			// MethodStart, the streaming-events methods, the
+			// search cluster, and any future non-control
 			// method are routed elsewhere — no steering.ControlType is
 			// expected for them.
 			continue

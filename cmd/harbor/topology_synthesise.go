@@ -1,4 +1,4 @@
-// cmd/harbor/topology_synthesise.go — Phase 70 (D-102): the
+// cmd/harbor/topology_synthesise.go — the
 // trajectory-synthesised topology builder.
 //
 // `BuildTopologyFromEvents` walks a sequence of wire-event frames (the
@@ -78,8 +78,8 @@ type WireEventFrame struct {
 }
 
 // runIDFromFrame extracts the run identifier from a WireEventFrame
-// using the same projection Phase 69's `runIDFromEvent` applies to
-// `wireEvent` (D-101). The frame's `Run` field (i.e.
+// using the same projection the `runIDFromEvent` applies to
+// `wireEvent`. The frame's `Run` field (i.e.
 // `Event.Identity.RunID`) is empty on the load-bearing `task.spawned`
 // event — the `start` Protocol method dispatches `Quadruple{Identity:
 // id}` and the per-task RunLoop driver sets `RunID = TaskID` only AFTER
@@ -130,7 +130,7 @@ func BuildTopologyFromEvents(runID string, frames []WireEventFrame) Topology {
 		return t
 	}
 	// Identity triple from the first frame. The bus is identity-scoped
-	// per CLAUDE.md §6 rule 5 + Phase 60 SSE filter: every frame for
+	// per CLAUDE.md §6 rule 5 + SSE filter: every frame for
 	// a run shares the (tenant, user, session) triple; we pick frame 0
 	// rather than walk the whole slice for the trivial case.
 	t.Tenant = frames[0].Tenant
@@ -276,7 +276,7 @@ func BuildTopologyFromEvents(runID string, frames []WireEventFrame) Topology {
 		default:
 			// Other event types are ignored — the renderer's surface
 			// is intentionally scoped to topology-shaping events. A
-			// future Phase 74 `topology.snapshot` event would also
+			// future `topology.snapshot` event would also
 			// land here as a new case branch.
 		}
 	}

@@ -10,12 +10,12 @@ import (
 
 // MCP content types (mcpsdk.Content) lower into one of these Harbor-
 // facing shapes. The discrimination preserves the typed structure
-// MCP returns ("brief 03 §4: MCP returns TextContent | ImageContent
+// MCP returns ("MCP returns TextContent | ImageContent
 // | EmbeddedResource | ResourceLink"); the LLM-edge enforcement
-// pass (Phase 33) will route ≥-heavy-output-threshold byte payloads
+// pass will route ≥-heavy-output-threshold byte payloads
 // through the artifact store.
 //
-// Concurrent reuse (D-025): these are value types; no mutable state
+// Concurrent reuse: these are value types; no mutable state
 // after construction.
 
 // ImageRef is the lowered form of an MCP ImageContent.
@@ -149,7 +149,7 @@ const (
 // retryable transient error class by default (the operator can
 // override via ToolPolicy.RetryOn).
 //
-// Concurrent reuse (D-025): pure function; no shared state.
+// Concurrent reuse: pure function; no shared state.
 func lowerCallToolResult(res *mcpsdk.CallToolResult) (MCPToolValue, error) {
 	if res == nil {
 		return MCPToolValue{}, nil

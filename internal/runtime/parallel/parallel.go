@@ -1,6 +1,6 @@
 // Package parallel ships Harbor's runtime parallel-call executor —
-// the consumer of [planner.CallParallel] Decisions (RFC §6.2, Phase 47,
-// D-056). The Planner emits CallParallel; this package dispatches the
+// the consumer of [planner.CallParallel] Decisions (RFC §6.2).
+// The Planner emits CallParallel; this package dispatches the
 // branches concurrently with three settled invariants:
 //
 //  1. **Atomic setup validation.** Every branch's args is validated via
@@ -17,12 +17,12 @@
 //
 //  3. **Parallel-pause atomicity.** No branch starts side-effecting
 //     tools, or all reach checkpointed observation before pause
-//     commits (RFC §6.2). The unified pause/resume primitive lands at
-//     Phase 50; for Phase 47 a mid-execution pause request fails loud
-//     with [planner.ErrParallelPauseUnsupported]. Phase 50 upgrades
+//     commits (RFC §6.2). Until the unified pause/resume primitive
+//     covers it, a mid-execution pause request fails loud
+//     with [planner.ErrParallelPauseUnsupported]. Harbor upgrades
 //     this path to a checkpointed atomic pause.
 //
-// Three join shapes are supported (D-056):
+// Three join shapes are supported:
 //
 //   - [planner.JoinAll]: wait for every branch to terminate; return
 //     the result slice in branch-index order. Default.
@@ -36,7 +36,7 @@
 // **Import-graph contract (§13).** This package lives in
 // `internal/runtime/parallel`, OUTSIDE the planner subtree, so it MAY
 // import `internal/planner`. The reverse (planner → runtime) is
-// FORBIDDEN by the Phase 42 conformance lint; the executor is the
+// FORBIDDEN by the conformance lint; the executor is the
 // one-way dispatch site that consumes the typed planner shape.
 //
 // **Identity (§6 rule 9).** Every dispatch reads the run's identity
@@ -44,7 +44,7 @@
 // [tools.ErrIdentityRequired]. Branches inherit the parent ctx so
 // identity propagates unchanged to every tool invocation.
 //
-// **Concurrent reuse (D-025).** The [Executor] struct is immutable
+// **Concurrent reuse.** The [Executor] struct is immutable
 // after construction; per-call state lives on the stack and in ctx.
 // `concurrent_test.go` pins N≥128 concurrent invocations against one
 // shared instance under `-race`.
@@ -79,8 +79,7 @@ type Resolver interface {
 }
 
 // Executor dispatches [planner.CallParallel] Decisions. Constructed
-// once; safe for N concurrent invocations against a shared instance
-// (D-025).
+// once; safe for N concurrent invocations against a shared instance.
 //
 // The executor is intentionally minimal — it does NOT apply
 // [tools.ToolPolicy] retry / timeout (that is the per-tool dispatch
@@ -103,22 +102,22 @@ func New(resolver Resolver) *Executor {
 }
 
 // ExecuteOption configures a single [Executor.Execute] call. Options
-// are per-call (NOT stored on the immutable [Executor] — D-025), so a
+// are per-call (NOT stored on the immutable [Executor]), so a
 // shared executor instance can serve atomic programmatic callers and
 // non-atomic native callers concurrently without cross-talk.
 type ExecuteOption func(*executeOptions)
 
 // executeOptions carries the resolved per-call knobs.
 type executeOptions struct {
-	// nonAtomicSetup selects the Phase 107d native-path setup posture:
+	// nonAtomicSetup selects the native-path setup posture:
 	// a branch's resolve-miss / args-validation failure becomes that
 	// branch's Result.Err instead of aborting the whole call. Default
-	// false = the Phase 47 / D-056 atomic posture.
+	// false = the atomic posture.
 	nonAtomicSetup bool
 }
 
-// WithNonAtomicSetup selects non-atomic setup validation (Phase 107d —
-// D-169). In non-atomic mode a branch whose tool fails to resolve, or
+// WithNonAtomicSetup selects non-atomic setup validation.
+// In non-atomic mode a branch whose tool fails to resolve, or
 // whose args fail the descriptor's Validate, surfaces as that branch's
 // [Result.Err] and is skipped at dispatch; the remaining valid branches
 // still fan out. The result slice carries exactly one [Result] per
@@ -228,7 +227,7 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts 
 	}
 	if len(branches) == 0 {
 		// Defensive: an empty CallParallel is the planner's bug
-		// (Phase 44 repair loop guards against this; we still reject
+		// (repair loop guards against this; we still reject
 		// explicitly per §13 fail-loudly).
 		return nil, fmt.Errorf(
 			"%w: CallParallel must carry at least one branch",
@@ -243,9 +242,9 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts 
 	}
 
 	// Step 1 (c) + (d): resolve every descriptor + validate every
-	// args. In the atomic default (Phase 47 / D-056) a single
+	// args. In the atomic default a single
 	// resolve-miss or invalid-args branch fails the whole call before
-	// ANY branch dispatches. In non-atomic mode (Phase 107d — D-169 —
+	// ANY branch dispatches. In non-atomic mode (—
 	// the native React path) the failing branch's setup error is
 	// recorded in `setupErrs[i]` and that branch is skipped at dispatch;
 	// the valid branches still fan out so every `tool_call_id` is
@@ -293,12 +292,12 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts 
 	case planner.JoinN:
 		return e.dispatchN(ctx, branches, descriptors, join.N)
 	case planner.JoinKeyed:
-		// JoinKeyed is a documented future surface (D-056 — Phase 47
+		// JoinKeyed is a documented future surface (
 		// ships JoinAll / JoinFirstSuccess / JoinN; JoinKeyed merge
 		// semantics land at a later runtime phase). Fail-loudly per
 		// §13 — never silently treat as JoinAll.
 		return nil, fmt.Errorf(
-			"%w: JoinKeyed not implemented at Phase 47 (D-056 reserves the constant for a later runtime phase)",
+			"%w: JoinKeyed not implemented (the constant is reserved for a later runtime phase)",
 			planner.ErrParallelInvalidJoin,
 		)
 	default:
@@ -343,7 +342,7 @@ func validateJoin(j planner.JoinSpec, branchCount int) error {
 		return nil
 	case planner.JoinKeyed:
 		// Allowed shape; the dispatch switch rejects it with the
-		// "not implemented at Phase 47" error.
+		// "not implemented" error.
 		return nil
 	default:
 		return fmt.Errorf("%w: unknown JoinKind %q", planner.ErrParallelInvalidJoin, j.Kind)

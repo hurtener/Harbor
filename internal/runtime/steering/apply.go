@@ -21,7 +21,7 @@ import (
 // needs no synchronisation.
 type stepControl struct {
 	// signals is the planner-visible projection — exactly the shape the
-	// planner reads via RunContext.Control (Phase 42).
+	// planner reads via RunContext.Control.
 	signals planner.ControlSignals
 	// goal carries a REDIRECT's new goal so the RunLoop can update
 	// RunContext.Goal in addition to Control.RedirectGoal. Empty when no
@@ -49,16 +49,16 @@ type stepControl struct {
 
 // applier holds the runtime dependencies the per-control-type side-effect
 // functions need. It is constructed once per RunLoop (the dependencies
-// are immutable after construction — D-025) and shared across every run;
+// are immutable after construction) and shared across every run;
 // the per-run / per-step state lives in stepControl + ctx, never here.
 type applier struct {
 	coord          pauseresume.Coordinator
 	taskRegistry   tasks.TaskRegistry                            // optional; nil ⇒ PRIORITIZE fails loud
 	hardCancelHook func(ctx context.Context, runID string) error // optional
 	// gates is the catalog-applied approval-gate map keyed by tool
-	// name (D-090 `AppliedGates`). Nil / empty disables the
+	// name (`AppliedGates`). Nil / empty disables the
 	// steering→gate bridge — the apply path falls back to the direct
-	// Coordinator.Resume call (the pre-D-097 behaviour). Per WithApprovalGates'
+	// Coordinator.Resume call (the earlier behaviour). Per WithApprovalGates'
 	// godoc: when an APPROVE/REJECT drains carrying a `token`, the
 	// applier tries each gate's ResolveApproval; the gate that owns
 	// the token resumes its waiter (which itself calls
@@ -72,8 +72,8 @@ type applier struct {
 // function, mutating sc in place. It returns a non-nil error only when
 // the side effect itself failed (a missing task for PRIORITIZE, a
 // Coordinator.Resume failure for RESUME / APPROVE / REJECT); a structural
-// problem with the event was already rejected at Inbox.Enqueue time
-// (Phase 52), so applyEvent trusts the event's Type / Identity / Payload.
+// problem with the event was already rejected at Inbox.Enqueue time,
+// so applyEvent trusts the event's Type / Identity / Payload.
 //
 // The accumulating events (INJECT_CONTEXT / USER_MESSAGE / REDIRECT /
 // CANCEL soft / PAUSE) never fail — they only mutate sc. The acting
@@ -93,9 +93,9 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 	case ControlUserMessage:
 		// USER_MESSAGE carries a user-authored message string under the
 		// "message" key. A missing / non-string "message" is tolerated as
-		// an empty append rather than an error — Phase 52's ValidatePayload
+		// an empty append rather than an error — the ValidatePayload
 		// already bounded the payload; the shape is a Protocol-edge
-		// convention, not a hard contract Phase 53 re-enforces.
+		// convention, not a hard contract re-enforces.
 		if msg, ok := stringFromPayload(ev.Payload, "message"); ok {
 			sc.signals.UserMessages = append(sc.signals.UserMessages, msg)
 		}
@@ -117,7 +117,7 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 		// Control.Cancelled; the planner returns Finish{Cancelled} at the
 		// next boundary. When payload.hard == true, the RunLoop ALSO fires
 		// the hard-cancel hook to propagate a cancellation context into an
-		// in-flight decision execution (brief 02 §6).
+		// in-flight decision execution.
 		sc.signals.Cancelled = true
 		if boolFromPayload(ev.Payload, "hard") {
 			sc.hardCancel = true
@@ -162,9 +162,9 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 	default:
 		// Unreachable: Inbox.Enqueue already rejected any non-canonical
 		// type with ErrUnknownControlType. Fail loud rather than silently
-		// skip — a drained event of an unknown type is a Phase 52
+		// skip — a drained event of an unknown type is a
 		// invariant violation.
-		return fmt.Errorf("%w: %q reached applyEvent (Phase 52 Enqueue invariant violated)",
+		return fmt.Errorf("%w: %q reached applyEvent (inbox Enqueue invariant violated)",
 			ErrUnknownControlType, string(ev.Type))
 	}
 }
@@ -172,19 +172,19 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 // advancePause routes a RESUME / APPROVE / REJECT control event to
 // the unified pause/resume primitive. Two paths:
 //
-//  1. Gate-owned (D-097). When the applier was constructed with
+//  1. Gate-owned. When the applier was constructed with
 //     `WithApprovalGates(gates)` AND an APPROVE / REJECT carries a
 //     `token` matching one of the gates' pending entries, the bridge
 //     calls `gate.ResolveApproval(ctx, token, decision, reason)` on
 //     the owning gate. `ResolveApproval` itself calls
 //     `Coordinator.Resume`, so the direct call below is SKIPPED for
-//     this path (option A — gate-owned resume; documented in D-097
+//     this path (option A — gate-owned resume; documented in the
 //     to avoid the ErrAlreadyResumed double-resume that option B
 //     would trigger). The gate's resolve channel delivers the
 //     decision to the blocked `RunGuarded` waiter so the wrapped
 //     tool's `Invoke` unblocks.
 //
-//  2. Direct Resume (the pre-D-097 path, retained as the fall-back).
+//  2. Direct Resume (the earlier path, retained as the fall-back).
 //     A plain RESUME, an APPROVE / REJECT targeting an OAuth pause
 //     (or any pause whose Token is NOT in any gate's pending map),
 //     or an APPROVE / REJECT when no gates are wired — all flow
@@ -193,7 +193,7 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 //     (RESUME→Resume, APPROVE→Approve, REJECT→Reject) and carried on
 //     the emitted `pause.resumed` event so wire consumers can
 //     distinguish the resume kind without parsing free-form `Reason`
-//     strings (issue #113, D-096). A run with no outstanding pause
+//     strings (issue #113). A run with no outstanding pause
 //     Token fails loud with ErrNoOutstandingPause.
 //
 // REJECT additionally stamps `rejected: true` on the resume payload
@@ -205,7 +205,7 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 			ErrNoOutstandingPause, ev.Type, ev.Identity.RunID)
 	}
 
-	// Path 1 — gate-owned resume (D-097). The bridge fires only for
+	// Path 1 — gate-owned resume. The bridge fires only for
 	// APPROVE / REJECT controls. RESUME is the operator-level "advance
 	// the pause" verb that has no approval semantics; it stays on the
 	// direct Coordinator.Resume path even when gates are wired.
@@ -272,12 +272,12 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 			// If routed == false: no gate owned wireToken (typo on the
 			// wire? OAuth pause? unknown). The direct path below
 			// resumes the RunLoop's own pause with the wire-side
-			// payload — preserving the pre-D-097 behaviour for
+			// payload — preserving the earlier behaviour for
 			// non-gate APPROVE/REJECT events.
 		}
 	}
 
-	// Path 2 — direct Coordinator.Resume (the pre-D-097 path).
+	// Path 2 — direct Coordinator.Resume (the earlier path).
 	// Build the resume payload. For REJECT, stamp rejected:true so the
 	// distinction survives into the pause record. Clone so a caller's
 	// later mutation cannot reach the Coordinator's recorded state.
@@ -312,7 +312,7 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 	return nil
 }
 
-// routeApprovalControl is the D-192 mid-step entry into the D-097
+// routeApprovalControl is the mid-step entry into the
 // steering→gate bridge. While a decision execution is in flight on the
 // per-step goroutine (see RunLoop.dispatchDecision), the run loop keeps
 // draining the inbox and hands EVERY drained event here. The method
@@ -336,7 +336,7 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 //
 // The bridge logic itself (gate iteration + the ResolveApproval
 // call) lives in routeThroughGate — ONE implementation
-// shared with the step-boundary path in advancePause (D-097; the D-192
+// shared with the step-boundary path in advancePause (the per-step-goroutine
 // requirement that the bridge is never duplicated).
 func (a *applier) routeApprovalControl(ctx context.Context, ev ControlEvent) (bool, error) {
 	if ev.Type != ControlApprove && ev.Type != ControlReject {
@@ -352,7 +352,7 @@ func (a *applier) routeApprovalControl(ctx context.Context, ev ControlEvent) (bo
 	return a.routeThroughGate(ctx, ev, wireToken)
 }
 
-// routeThroughGate is the D-097 steering→gate bridge. It iterates the
+// routeThroughGate is the steering→gate bridge. It iterates the
 // configured gates and tries `gate.ResolveApproval(ctx, token, ...)`
 // on each; the first gate that does not return `ErrApprovalNotFound`
 // is the owning gate (a token can only ever be in ONE gate's pending
@@ -361,7 +361,7 @@ func (a *applier) routeApprovalControl(ctx context.Context, ev ControlEvent) (bo
 //
 //   - (true, nil) — the owning gate resolved the token. The gate
 //     itself called Coordinator.Resume; the caller MUST NOT
-//     double-resume (option A; D-097).
+//     double-resume (option A).
 //   - (false, nil) — every gate returned ErrApprovalNotFound. The
 //     token belongs to a non-gate pause (an OAuth flow, an A2A
 //     `AUTH_REQUIRED`, a deadline-driven pause); the caller falls
@@ -399,13 +399,13 @@ func (a *applier) routeThroughGate(ctx context.Context, ev ControlEvent, token p
 	// reason and the per-tool events surface it verbatim.
 	reason, _ := stringFromPayload(ev.Payload, "reason")
 
-	// No elevation ceremony (Phase 111f, D-203 — the pre-seam
+	// No elevation ceremony (— the pre-seam
 	// self-elevation via protocol scopes is deleted). The gate's
 	// injected ResolveAuthorizer speaks runtime vocabulary: the bridge
 	// ctx already carries the run's identity quadruple (the RunLoop's
 	// ctxWithIdentity), which IS the gated pause's originating
 	// identity, so the default IdentityAuthorizer admits the bridge
-	// directly. The Phase 54 Protocol edge already vetted the wire
+	// directly. The Protocol edge already vetted the wire
 	// caller's RFC §6.3 steering scope at inbox-Enqueue time via
 	// `CheckScope`; the gate's authorizer is the defence-in-depth
 	// re-check, one layer up from protocol-auth claims.
@@ -510,7 +510,7 @@ func (a *applier) prioritize(ctx context.Context, taskID tasks.TaskID, priority 
 }
 
 // hardCancel fires the hard-cancel hook to propagate a cancellation
-// context into an in-flight decision execution (brief 02 §6 — "hard=true
+// context into an in-flight decision execution ("hard=true
 // propagates a cancellation context to the in-flight tool"). A nil hook
 // is tolerated: a soft CANCEL still set Control.Cancelled, so the run
 // still terminates at the next boundary — the hook only accelerates an

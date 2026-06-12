@@ -30,7 +30,7 @@ import (
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcptool "github.com/hurtener/Harbor/internal/tools/drivers/mcp" // payload home for mcp.resource_updated (the MCP southbound driver declares it; imported only to read the exported type)
 
-	// The Q1 registry-read (proposal §3.1, resolved in the Phase 113a
+	// The Q1 registry-read (proposal §3.1, resolved in the
 	// plan): blank-importing the §4.4 production aggregator transitively
 	// seats every subsystem's RegisterEventType init() before the
 	// generator reads events.EventTypes(). The payload-type imports
@@ -130,7 +130,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	// --- Engine flow budgets.
 	flow.EventTypeFlowBudgetExceeded: {Payloads: []reflect.Type{reflect.TypeOf(flow.BudgetExceededPayload{})}},
 
-	// --- Notifications topic (Phase 72d / D-109) — one shared payload.
+	// --- Notifications topic — one shared payload.
 	notifications.EventTypeNotificationTaskFailed:               {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},
 	notifications.EventTypeNotificationToolApprovalRequested:    {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},
 	notifications.EventTypeNotificationGovernanceBudgetExceeded: {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},

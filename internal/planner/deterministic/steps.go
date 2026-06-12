@@ -23,7 +23,7 @@ import (
 //     [planner.ErrDeterministicStep] and returns it. NO silent skip.
 //
 // Implementations MUST be safe for concurrent use. The
-// [DeterministicPlanner] is a reusable artifact (D-025); the same
+// [DeterministicPlanner] is a reusable artifact; the same
 // step instance receives N concurrent invocations from N concurrent
 // runs against the shared planner.
 type DecisionTreeStep interface {
@@ -74,13 +74,13 @@ func bindRegistry(step DecisionTreeStep, reg tasks.TaskRegistry) {
 // returns a step error from [Decide] (fail-loudly per §13 — a
 // silent default-args behaviour would mask operator bugs).
 //
-// Phase 83e (D-147) narrowed `planner.CallTool` to `{tool, args}` —
+// An earlier phase narrowed `planner.CallTool` to `{tool, args}` —
 // the former `Reasoning` field was removed. A deterministic planner
 // emits no provider-side reasoning, so the step carries no reasoning
 // either.
 type CallToolStep struct {
 	// Tool is the tool name registered in the ToolCatalogView. The
-	// runtime executor dispatches via Phase 26's catalog.
+	// runtime executor dispatches via the catalog.
 	Tool string
 	// ArgsBuilder constructs the JSON-encoded args payload from the
 	// run context. Required; nil → step error.
@@ -166,7 +166,7 @@ func (s *FinishStep) Decide(_ context.Context, rc planner.RunContext) (planner.D
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	// Stamp the per-call RunID into metadata so D-025 identity
+	// Stamp the per-call RunID into metadata so the identity
 	// round-trip is observable without requiring every operator to
 	// remember to do it themselves. Operators that prefer pure
 	// builder-driven metadata can clear the key in MetadataBuilder.
@@ -239,7 +239,7 @@ func (s *PauseStep) Decide(_ context.Context, rc planner.RunContext) (planner.De
 type spawnState struct {
 	// mu guards every field below. Decide locks it for the whole
 	// transition so concurrent invocations sharing one
-	// `(SessionID, StepID)` key are serialised — the D-025
+	// `(SessionID, StepID)` key are serialised — the concurrent-reuse
 	// concurrent-reuse contract is binary (§5): the artifact must be
 	// race-free for shared concurrent use, not merely race-free when
 	// callers happen to use distinct keys. Distinct keys still get
@@ -253,7 +253,7 @@ type spawnState struct {
 
 // SpawnAndAwaitStep is the operator-configured spawn-then-await
 // step. The step ships the load-bearing scenario the §13 primitive-
-// with-consumer policy demands for Phase 48: SpawnTask + AwaitTask
+// with-consumer policy demands: SpawnTask + AwaitTask
 // are emitted by a real concrete planner against a real
 // [tasks.TaskRegistry].
 //
@@ -271,7 +271,7 @@ type spawnState struct {
 //     - not yet ready → emit
 //     [planner.AwaitTask]{TaskID: ownerTaskID} so the runtime
 //     sleeps the step until the next deterministic boundary
-//     (WakePoll semantics, D-032).
+//     (WakePoll semantics).
 //     - ready → invoke `OnResolved(rc, members)`; the returned
 //     decision flows through. Once OnResolved fires, the step is
 //     MARKED resolved — future `Decide` calls with the same
@@ -370,7 +370,7 @@ func (s *SpawnAndAwaitStep) Decide(ctx context.Context, rc planner.RunContext) (
 	// `(SessionID, StepID)` tuple) → distinct *spawnState values.
 	// state.mu serialises concurrent invocations that DO share a
 	// key, so the field reads/writes below are race-free under the
-	// D-025 contract regardless of how callers key their runs.
+	// contract regardless of how callers key their runs.
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
@@ -443,7 +443,7 @@ func (s *SpawnAndAwaitStep) Decide(ctx context.Context, rc planner.RunContext) (
 	}
 	defer cancel()
 
-	// Non-blocking receive (WakePoll semantics, D-032). The
+	// Non-blocking receive (WakePoll semantics). The
 	// runtime's foreground turn never blocks here.
 	select {
 	case completion, ok := <-ch:

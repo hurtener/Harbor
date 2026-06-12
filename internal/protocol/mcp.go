@@ -17,18 +17,18 @@ import (
 )
 
 // MCPSurface is the transport-agnostic Harbor Protocol MCP-Connections
-// handler (Phase 73k / D-119). It owns the twelve `mcp.servers.*`
+// handler. It owns the twelve `mcp.servers.*`
 // methods that back the Console MCP Connections page — nine read
 // methods and three admin verbs.
 //
-// MCPSurface is a sibling of the Phase 54 ControlSurface and the Phase
-// 72f PostureSurface, not an extension: the MCP methods reach the
+// MCPSurface is a sibling of the ControlSurface and the
+// PostureSurface, not an extension: the MCP methods reach the
 // runtime's MCP driver registry and tool-side OAuth provider, not the
 // steering inbox.
 //
 // MCPSurface is built once per Runtime process via NewMCPSurface and
 // shared across every Protocol request; Dispatch is safe for concurrent
-// use by N goroutines (D-025). Every field is set once at construction
+// use by N goroutines. Every field is set once at construction
 // and never mutated — Dispatch reads its request-specific data from
 // ctx + the request argument, never from the surface struct.
 //
@@ -37,13 +37,13 @@ import (
 // Every handler fails closed on an incomplete identity triple with
 // CodeIdentityRequired. The three admin verbs (`refresh_binding` /
 // `revoke_binding` / `set_raw_html_trust`) gate additionally on the
-// `auth.ScopeAdmin` claim per D-079; a missing claim surfaces
+// `auth.ScopeAdmin` claim per the closed admin-scope set; a missing claim surfaces
 // CodeScopeMismatch. The two control-plane verbs (`refresh_discovery` /
-// `probe`) gate on the `auth.ScopeAdmin` claim too (D-066 — control-
+// `probe`) gate on the `auth.ScopeAdmin` claim too (control-
 // plane verbs mutate the runtime's view of upstream state) — there is
-// NO new scope minted for MCP (D-079 closed-set).
+// NO new scope minted for MCP (closed-set).
 //
-// # The raw-HTML trust audit (brief 11 §8)
+// # The raw-HTML trust audit
 //
 // A successful `mcp.servers.set_raw_html_trust` emits a
 // `mcp.raw_html_trust_toggled` audit event through the wired Redactor +
@@ -166,7 +166,7 @@ type MCPReconnectRow struct {
 }
 
 // MCPBindingRow is the runtime-side projection of one OAuth binding. It
-// NEVER carries token plaintext (D-083 invariant).
+// NEVER carries token plaintext (invariant).
 type MCPBindingRow struct {
 	PrincipalID  string
 	BindingScope string
@@ -208,7 +208,7 @@ type MCPAccessor interface {
 // verbs `refresh_binding` / `revoke_binding`. The Runtime's
 // `tools/auth.Provider` is wrapped to satisfy it.
 //
-// The accessor NEVER returns token plaintext (D-083 invariant) — only
+// The accessor NEVER returns token plaintext (invariant) — only
 // binding metadata and, for an InitiateFlow, the runtime-minted
 // AuthorizeURL + flow State.
 type MCPOAuthAccessor interface {
@@ -249,7 +249,7 @@ var ErrMCPMisconfigured = stderrors.New("protocol: MCPSurface missing a mandator
 // OAuth accessors, the Redactor, and the Bus are all mandatory; a nil
 // fails loud with a wrapped ErrMCPMisconfigured.
 //
-// The returned MCPSurface is immutable after construction (D-025) and
+// The returned MCPSurface is immutable after construction and
 // safe for concurrent use by N goroutines.
 func NewMCPSurface(deps MCPDeps) (*MCPSurface, error) {
 	if deps.MCP == nil {
@@ -278,7 +278,7 @@ func NewMCPSurface(deps MCPDeps) (*MCPSurface, error) {
 }
 
 // Dispatch is the single transport-agnostic entry point for a Protocol
-// `mcp.servers.*` method call. A Phase 60 REST handler decodes a request,
+// `mcp.servers.*` method call. A REST handler decodes a request,
 // calls Dispatch, and encodes the response — Dispatch IS the surface.
 //
 // method selects the handler; it MUST be one of the twelve
@@ -295,7 +295,7 @@ func NewMCPSurface(deps MCPDeps) (*MCPSurface, error) {
 //   - CodeNotFound        — the named MCP server does not exist.
 //   - CodeRuntimeError    — an accessor or audit-emit failure.
 //
-// Dispatch holds no per-call state on the MCPSurface (D-025).
+// Dispatch holds no per-call state on the MCPSurface.
 func (s *MCPSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsMCPServersMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
@@ -305,7 +305,7 @@ func (s *MCPSurface) Dispatch(ctx context.Context, method methods.Method, req an
 	// Identity + admin/control-scope gate at the edge. Every MCP method
 	// is identity-mandatory; the three admin verbs AND the two
 	// control-plane verbs (refresh_discovery / probe) require the admin
-	// scope claim (D-079 closed-set; D-066 — control-plane verbs).
+	// scope claim (closed-set; control-plane verbs).
 	id, scoped, perr := s.gate(ctx, method, req)
 	if perr != nil {
 		return nil, perr
@@ -445,7 +445,7 @@ func extractIdentityScope(req any) *types.IdentityScope {
 
 // withIdentity injects the validated caller identity into ctx so the
 // accessor's identity-mandatory gate (it reads the triple from ctx) is
-// satisfied — the trust-based Phase 60 posture leaves no ctx-identity.
+// satisfied — the trust-based posture leaves no ctx-identity.
 func withIdentity(ctx context.Context, id identity.Identity) (context.Context, *protoerrors.Error) {
 	idCtx, err := identity.With(ctx, id)
 	if err != nil {
@@ -840,7 +840,7 @@ func (s *MCPSurface) handleSetRawHTMLTrust(ctx context.Context, id identity.Iden
 
 // emitRawHTMLTrustToggled publishes the `mcp.raw_html_trust_toggled`
 // audit event onto the wired bus. The audit-visible fields run through
-// the wired Redactor BEFORE the publish (CLAUDE.md §7 rule 6 + D-020).
+// the wired Redactor BEFORE the publish (CLAUDE.md §7 rule 6).
 func (s *MCPSurface) emitRawHTMLTrustToggled(ctx context.Context, actor identity.Identity, server string, trusted bool) error {
 	auditView := map[string]any{
 		"actor_tenant":  actor.TenantID,

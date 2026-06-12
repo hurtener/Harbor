@@ -68,7 +68,7 @@ var projectNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // Store is the per-binary, per-operator-root draft scratchpad.
 // Construction binds the on-disk Root + the bus + the logger; the
-// returned Store is a compiled artifact (D-025) and safe to share
+// returned Store is a compiled artifact and safe to share
 // across N concurrent goroutines.
 type Store struct {
 	root       string
@@ -93,7 +93,7 @@ type Options struct {
 	// Bus is the events.EventBus the Store publishes lifecycle
 	// events onto. Mandatory — a Store with no bus would silently
 	// drop the observability surface, which violates CLAUDE.md §13
-	// "fail loudly" + the Wave 11.5 §17.6 F1 lesson (test fixture
+	// "fail loudly" + the.5 §17.6 F1 lesson (test fixture
 	// vs production divergence on bus wiring).
 	Bus events.EventBus
 	// Logger is the slog.Logger the Store writes lifecycle lines to.
@@ -364,7 +364,7 @@ func (s *Store) WriteFile(ctx context.Context, draftID, relPath string, content 
 // PreviewResult reports the outcome of Store.Preview. OK is true when
 // the rendered `harbor.yaml` parses + validates via the in-process
 // `internal/config` loader; the Errors slice carries the human-
-// readable reasons when OK is false. The Phase 66 preview surface is
+// readable reasons when OK is false. The preview surface is
 // a config-validation pass; a future phase upgrades this to a real
 // dry-run that boots the draft against a sandboxed runtime.
 type PreviewResult struct {
@@ -564,7 +564,7 @@ func (s *Store) Discard(ctx context.Context, draftID string) error {
 // only inspection; production code should NOT path-join into this.
 func (s *Store) Root() string { return s.root }
 
-// Close releases the Store. Phase 83m (Item 3, D-156): the V1 Store
+// Close releases the Store. The V1 Store
 // owns no long-lived goroutines and no persistent file handles — the
 // per-call methods open + close their own descriptors — so Close is
 // a no-op today. It exists so cmd/harbor's bootDevStack and

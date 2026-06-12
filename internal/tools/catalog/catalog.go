@@ -1,5 +1,5 @@
 // Package catalog ships Harbor's operator-config-driven tool-catalog
-// wiring (Phase 64a / D-090). Operators declare per-tool middleware in
+// wiring. Operators declare per-tool middleware in
 // `tools.entries[]` and the `Builder` defined here auto-wraps each
 // registered tool descriptor with the matching `approval.ApprovalGate`
 // and / or OAuth-aware invocation wrapper. No Go wiring code on the
@@ -45,12 +45,12 @@
 //     needed, the planner still observes `*ErrAuthRequired` and can
 //     pause for OAuth completion.
 //
-// D-090 pins this order. Reversing it (OAuth outermost) would mean
+// This order is pinned. Reversing it (OAuth outermost) would mean
 // an OAuth pause fires BEFORE the approval gate, which contradicts
 // operator intent and burns the user's OAuth-completion attention on
 // a call that may end up rejected.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // `*Builder` is a one-shot constructor — built, called once via Apply,
 // then discarded. The wrapped descriptors `Apply` produces ARE the
@@ -58,7 +58,7 @@
 // concurrent invocations because:
 //
 //   - The wrapper holds the gate / provider by reference; both are
-//     compiled artifacts safe for concurrent reuse (Phase 30 / 31
+//     compiled artifacts safe for concurrent reuse (
 //     concurrent_test.go pins).
 //   - Per-invocation state lives in ctx + the inner descriptor's
 //     ToolResult, never on the wrapper.
@@ -94,7 +94,7 @@ var (
 	ErrCatalogRequired = errors.New("catalog: ToolCatalog required")
 	// ErrCoordinatorRequired — Apply was called with no Coordinator and
 	// at least one entry declares an approval policy. The Coordinator
-	// is the unified pause/resume primitive (Phase 50 / D-067).
+	// is the unified pause/resume primitive.
 	ErrCoordinatorRequired = errors.New("catalog: pauseresume.Coordinator required when entries declare approval")
 	// ErrBusRequired — Apply was called with no EventBus and at least
 	// one entry declares an approval policy. The bus carries the gate's
@@ -108,8 +108,8 @@ var (
 	ErrRedactorRequired = errors.New("catalog: audit.Redactor required when entries declare approval")
 	// ErrAuthorizerRequired — Apply was called with no Authorizer and
 	// at least one entry declares an approval policy. The authorizer
-	// is the gate\'s injected resolve-privilege seam (Phase 111f,
-	// D-203); a gate with no resolve privilege check is a
+	// is the gate\'s injected resolve-privilege seam;
+	// a gate with no resolve privilege check is a
 	// misconfiguration, not a permissive mode.
 	ErrAuthorizerRequired = errors.New("catalog: approval.ResolveAuthorizer required when entries declare approval")
 	// ErrToolNotRegistered — an `entries[].name` did not resolve to a
@@ -135,7 +135,7 @@ var (
 	// The builder is one-shot.
 	ErrAlreadyApplied = errors.New("catalog: builder already applied")
 	// ErrInvalidLoadingMode — entries[].loading_mode names a value
-	// not in {"", "always", "deferred"}. Phase 107c / D-167. Fired
+	// not in {"", "always", "deferred"}.. Fired
 	// from the Builder as defence-in-depth; the config validator
 	// rejects the same shape pre-boot.
 	ErrInvalidLoadingMode = errors.New("catalog: invalid loading_mode")
@@ -159,7 +159,7 @@ type Deps struct {
 	// otherwise.
 	Redactor audit.Redactor
 	// Authorizer is the resolve-privilege seam threaded into every
-	// constructed ApprovalGate (Phase 111f, D-203). Mandatory when
+	// constructed ApprovalGate. Mandatory when
 	// any entry declares approval; ignored otherwise. The runtime
 	// assembly passes the runtime-vocabulary default
 	// (`approval.NewIdentityAuthorizer()`) unless the caller injects
@@ -184,7 +184,7 @@ type Deps struct {
 // Builder per Apply — the type is one-shot.
 //
 // Builder is NOT a long-lived artifact; the wrapped descriptors it
-// installs ARE. The D-025 concurrent-reuse invariant lives on those
+// installs ARE. The concurrent-reuse invariant lives on those
 // descriptors, not on Builder.
 type Builder struct {
 	entries []config.ToolEntryConfig
@@ -315,7 +315,7 @@ func (b *Builder) wrap(_ context.Context, e config.ToolEntryConfig, d tools.Tool
 	// 1. Inner-most → start from the registered descriptor.
 	current := d
 
-	// Phase 107c / D-167 — propagate operator-declared LoadingMode
+	// propagate operator-declared LoadingMode
 	// from the yaml entry onto the Tool. The descriptor's underlying
 	// transport (in-proc registrar, MCP, HTTP, A2A) may have a
 	// registration-time default; the yaml wins per CLAUDE.md §15
@@ -465,9 +465,9 @@ type OAuthWrapperOptions struct {
 // access token exists via `prov.Token`. A `*auth.ErrAuthRequired`
 // return short-circuits — the wrapper does NOT call the underlying
 // tool; the runtime catches the typed sentinel and pauses the run
-// via the unified pause/resume primitive (Phase 50).
+// via the unified pause/resume primitive.
 //
-// The Phase 64a wrapper does NOT inject the token into the upstream
+// The wrapper does NOT inject the token into the upstream
 // request — that is a per-driver concern (HTTP / MCP / A2A drivers
 // each compose their own bearer-token injection). The wrapper's job
 // is to PRE-CHECK token availability so the runtime can pause for
@@ -477,7 +477,7 @@ func WrapWithOAuth(d tools.ToolDescriptor, prov auth.OAuthProvider, opts OAuthWr
 	source := d.Tool.Source
 	out := d
 	out.Invoke = func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-		// Identity is mandatory (CLAUDE.md §6 rule 9). The Phase 30
+		// Identity is mandatory (CLAUDE.md §6 rule 9). The tool-OAuth
 		// provider also enforces this; we surface a wrapped error
 		// here so the trace points back at the catalog wrapper.
 		if _, ok := identity.From(ctx); !ok {

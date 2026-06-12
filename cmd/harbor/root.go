@@ -1,11 +1,11 @@
 // cmd/harbor/root.go — the cobra root command + global flag wiring.
 //
-// Phase 63 (RFC §8, D-084) makes `harbor` a cobra-rooted CLI. The root
+// The CLI skeleton (RFC §8) makes `harbor` a cobra-rooted CLI. The root
 // command owns the two global flags `--quiet` and `--json`; every
 // subcommand inherits them. Subcommands return their CLIError via cobra
 // RunE; the root's RunE / PersistentPostRunE wiring funnels every error
 // through PrintCLIError so JSON-mode round-trips with the wire shape
-// pinned in D-084.
+// pinned in.
 //
 // NOTE: cmd/harbor does not import internal/protocol/errors — the CLI
 // structured-error surface is distinct from the Protocol wire-error
@@ -27,7 +27,7 @@ import (
 // version tracks the shipped binary, the Protocol version tracks the
 // Runtime↔Console wire contract, and the two move independently.
 //
-// It is a `var`, not a `const`, so the Phase 81 release build can
+// It is a `var`, not a `const`, so the release build can
 // stamp the real git-derived semver into it at link time via
 //
 //	go build -ldflags="-X 'main.HarborVersion=v1.0.0-rc.1'"
@@ -38,7 +38,7 @@ import (
 // the same sentinel discipline `buildHash()` follows (CLAUDE.md §5
 // "fail loudly"). The release workflow's version stamp comes from
 // `git describe --tags`; `scripts/release-build.sh` is the single
-// home of the stamping logic (Phase 81 / D-139). The CLI surface is
+// home of the stamping logic. The CLI surface is
 // forward-compatible — `harbor version` always prints whatever value
 // this variable carries.
 var HarborVersion = "v0.0.0-dev"
@@ -54,7 +54,7 @@ const flagQuiet = "quiet"
 // invoked once by main() per process, but tests call it per-test to
 // exercise the command tree in isolation (cobra commands carry mutable
 // flag state through Execute(), so sharing a root across tests is a
-// bug). The returned tree includes every Phase 63 subcommand.
+// bug). The returned tree includes every subcommand.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "harbor",
@@ -74,11 +74,11 @@ docs/plans/README.md for the implementation schedule.`,
 		// SilenceUsage / SilenceErrors hand error printing to the
 		// PersistentPostRunE hook below so the structured-error
 		// shape goes through PrintCLIError (CLAUDE.md §5 "fail
-		// loudly" + D-084).
+		// loudly").
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// Disable cobra's default completion subcommand to keep the
-		// help golden compact and the surface intentional. Phase 78
+		// help golden compact and the surface intentional. A later phase
 		// (release engineering) can re-enable when it ships shell
 		// completion docs.
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
@@ -106,7 +106,7 @@ docs/plans/README.md for the implementation schedule.`,
 
 // resolveJSONMode reads the inherited --json flag value off the
 // command. Returns false if the flag is not registered on this command
-// tree (defensive — every command Phase 63 ships inherits it).
+// tree (defensive — every command Harbor ships inherits it).
 func resolveJSONMode(cmd *cobra.Command) bool {
 	v, err := cmd.Flags().GetBool(flagJSON)
 	if err != nil {
@@ -145,11 +145,11 @@ func asCLIError(err error) (CLIError, bool) {
 //
 // The quietMode flag is currently a no-op for error output — errors
 // always emit. quietMode reaching here would only suppress
-// informational output (none in Phase 63's stub bodies). The hook
+// informational output (none in the stub bodies). The hook
 // observes the flag so the contract is wired through end-to-end and
 // future subcommand bodies inherit it.
 func emitCLIError(cmd *cobra.Command, cliErr CLIError) error {
-	_ = resolveQuietMode(cmd) // flag is wired through; no info output in Phase 63
+	_ = resolveQuietMode(cmd) // flag is wired through; no info output in a later phase
 	if writeErr := PrintCLIError(cmd.ErrOrStderr(), resolveJSONMode(cmd), cliErr); writeErr != nil {
 		// Fail loudly — a write error on stderr is a system-level
 		// problem, surface it. This will reach cobra's

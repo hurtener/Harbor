@@ -4,11 +4,11 @@ import "sort"
 
 // ControlType is the string-typed enum of the nine canonical control
 // event types (RFC §6.3 — Settled). The wire strings are the RFC's
-// verbatim uppercase identifiers; the Protocol projection (Phase 54)
+// verbatim uppercase identifiers; the Protocol projection
 // accepts exactly these.
 type ControlType string
 
-// The nine canonical control types (RFC §6.3, brief 02 §2). Adding a
+// The nine canonical control types (RFC §6.3). Adding a
 // tenth is an RFC change — the taxonomy is Settled.
 const (
 	// ControlInjectContext — append operator-supplied context to the
@@ -18,21 +18,21 @@ const (
 	// (the agent's owner) — RFC §6.3.
 	ControlRedirect ControlType = "REDIRECT"
 	// ControlCancel — cancel the run (hard or soft; the soft/hard
-	// distinction is a Phase 53 payload concern).
+	// distinction is a payload concern).
 	ControlCancel ControlType = "CANCEL"
 	// ControlPrioritize — change the run's task priority. Requires
 	// admin — RFC §6.3.
 	ControlPrioritize ControlType = "PRIORITIZE"
 	// ControlPause — pause the run at the next planner-step boundary.
-	// Phase 53 wires this onto the unified pause/resume primitive.
+	// Harbor wires this onto the unified pause/resume primitive.
 	ControlPause ControlType = "PAUSE"
-	// ControlResume — resume a paused run. Phase 53 wires this onto
+	// ControlResume — resume a paused run. Harbor wires this onto
 	// the unified pause/resume primitive.
 	ControlResume ControlType = "RESUME"
-	// ControlApprove — approve a HITL-gated step. Phase 53 wires this
+	// ControlApprove — approve a HITL-gated step. Harbor wires this
 	// onto the unified pause/resume primitive (advance a pause).
 	ControlApprove ControlType = "APPROVE"
-	// ControlReject — reject a HITL-gated step. Phase 53 wires this
+	// ControlReject — reject a HITL-gated step. Harbor wires this
 	// onto the unified pause/resume primitive.
 	ControlReject ControlType = "REJECT"
 	// ControlUserMessage — inject a user-authored message into the
@@ -40,7 +40,7 @@ const (
 	ControlUserMessage ControlType = "USER_MESSAGE"
 )
 
-// canonicalControlTypes is the registered set. Phase 52's taxonomy is
+// canonicalControlTypes is the registered set. the taxonomy is
 // fixed (RFC §6.3 — nine types, Settled); there is no RegisterControlType
 // escape hatch because a tenth type is an RFC change, not a phase
 // addition. The map exists so IsValidControlType is O(1) and

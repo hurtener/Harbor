@@ -17,14 +17,14 @@ type Scope string
 //
 // ScopeAdmin is the cross-tenant fan-in entitlement: a Subscribe call
 // with `events.Filter.Admin = true` requires this scope (RFC §6.13
-// admin subscriptions). The Phase 05 events.ErrAdminScopeRequired
+// admin subscriptions). The events.ErrAdminScopeRequired
 // sentinel is the corresponding error.
 //
 // ScopeConsoleFleet is the fleet-observation entitlement (RFC §7
 // "Fleet privilege tiers"): a Console managing multiple Runtimes uses
 // this scope to subscribe to events from outside its single
 // (tenant, user, session) triple. Distinct from a hypothetical
-// "fleet:control" scope (deferred per D-066).
+// "fleet:control" scope (deferred).
 const (
 	ScopeAdmin        Scope = "admin"
 	ScopeConsoleFleet Scope = "console:fleet"

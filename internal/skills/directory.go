@@ -10,13 +10,13 @@ import (
 	"github.com/hurtener/Harbor/internal/skills/capfilter"
 )
 
-// Phase 39 — Virtual directory subsystem (RFC §6.7).
+// Virtual directory subsystem (RFC §6.7).
 //
 // The virtual directory is a bounded, identity-scoped, capability-
 // filtered, redacted snapshot of the skills catalogue. Built once
 // (per operator-config reload); shared across N concurrent
-// goroutines (D-025); read-only on a flat View(ctx, cap) API. See
-// brief 04 §4.6 for the design intent.
+// goroutines; read-only on a flat View(ctx, cap) API. See
+// the memory-subsystem design notes for the intent.
 //
 // Selection semantics:
 //
@@ -38,12 +38,12 @@ import (
 // from the capability filter. A pinned skill whose required tools/
 // namespaces/tags are not a subset of the planner-supplied allowed
 // sets is still excluded from the View — fail-loud per CLAUDE.md §6
-// rule 9 + D-052.
+// rule 9.
 //
 // Identity-mandatory: View reads the identity Quadruple/Identity
 // from ctx; a missing triple returns wrapped ErrIdentityRequired
 // AND emits skill.identity_rejected via EmitIdentityRejected. No
-// silent-fallback path (CLAUDE.md §5 + §13 + D-052).
+// silent-fallback path (CLAUDE.md §5 + §13).
 
 // Selection picks the unpinned-partition ordering. Pinned skills
 // always come first; Selection orders only the unpinned remainder
@@ -59,13 +59,13 @@ const (
 	// (UseCount DESC, Name ASC). Library-level only at V1.1.x: no
 	// production path increments UseCount, so the OPERATOR config
 	// validator rejects `skills.directory.selection: pinned_then_top`
-	// as not-yet-wired (Wave C checkpoint audit; D-201 addendum). An
+	// as not-yet-wired. An
 	// embedder that maintains UseCount through Upsert itself may use
 	// this Selection directly.
 	SelectionPinnedThenTop Selection = "pinned_then_top"
 )
 
-// MaxEntries bounds — brief 04 §3 contract.
+// MaxEntries bounds — a binding contract.
 const (
 	// DefaultMaxEntries is the per-View row cap when DirectoryConfig
 	// leaves MaxEntries at zero.
@@ -141,7 +141,7 @@ type DirectoryConfig struct {
 
 // Directory exposes the virtual-directory snapshot. Built once at
 // boot (or per operator-config reload); safe to share across N
-// concurrent goroutines (D-025). Per-call state lives on ctx + the
+// concurrent goroutines. Per-call state lives on ctx + the
 // args; no mutable field on Directory itself changes after
 // construction.
 type Directory struct {
@@ -173,7 +173,7 @@ var ErrInvalidConfig = errors.New("skills: invalid directory config")
 //   - cfg.Selection not in the two canonical values → wrapped ErrInvalidConfig
 //
 // Concurrent reuse: the returned *Directory holds no mutable state;
-// safe to share across N goroutines (D-025).
+// safe to share across N goroutines.
 func NewDirectory(store SkillStore, deps Deps, cfg DirectoryConfig) (*Directory, error) {
 	if store == nil {
 		return nil, fmt.Errorf("%w: store is nil", ErrInvalidConfig)
@@ -259,7 +259,7 @@ func (d *Directory) View(ctx context.Context, cap DirectoryCapability) ([]SkillV
 	}
 
 	// Fetch every skill under the identity. We pass Limit=0 so the
-	// store applies its driver default (Phase 37 localdb: 100); the
+	// store applies its driver default (localdb: 100); the
 	// directory itself bounds to maxEntry after filter + partition,
 	// so a larger driver default just gives us more candidates.
 	all, err := d.store.List(ctx, q, ListFilter{Limit: 0})
@@ -271,7 +271,7 @@ func (d *Directory) View(ctx context.Context, cap DirectoryCapability) ([]SkillV
 	// RequiredTags. Skills with empty Required* slices pass; skills
 	// whose Required* lists are not subsets of cap.Allowed* are
 	// excluded. Default-deny when Allowed* is empty AND Required* is
-	// non-empty — matches Phase 38's filter stance (D-048).
+	// non-empty — matches the filter stance.
 	filtered := filterByCapability(all, cap)
 
 	// Partition by pinning state. Order rules:
@@ -322,7 +322,7 @@ func (d *Directory) View(ctx context.Context, cap DirectoryCapability) ([]SkillV
 //   - unpinned: everything else.
 //
 // Pinned-by-config skills missing from the filtered set are SKIPPED
-// (config + storage may disagree — storage wins per brief 04 §4.6).
+// (config + storage may disagree — storage wins).
 // Order preservation: configPinned mirrors d.pinnedOrder; the other
 // two partitions preserve the input slice's order, which the
 // Selection-aware sort then re-orders.
@@ -367,7 +367,7 @@ func (d *Directory) partitionByPinning(in []Skill) (configPinned, extraPinned, u
 // isExtraPinned reports whether the skill's Extra map marks it as
 // runtime-pinned. The single canonical shape is ExtraPinnedKey →
 // bool(true); other shapes (string "true", int 1, etc.) are ignored.
-// Fail-loud on shape drift rather than silently accept — D-052.
+// Fail-loud on shape drift rather than silently accept.
 func isExtraPinned(s Skill) bool {
 	if s.Extra == nil {
 		return false
@@ -410,7 +410,7 @@ func sortBySelection(in []Skill, sel Selection) {
 
 // filterByCapability is the directory's capability subset gate. The
 // subset logic lives in capfilter — the single source shared with
-// Phase 38's tools.Filter (D-052). capfilter is a leaf package, so
+// the tools.Filter. capfilter is a leaf package, so
 // internal/skills can import it without the cycle that blocked a
 // direct internal/skills/tools import.
 //
@@ -448,7 +448,7 @@ func filterByCapability(in []Skill, cap DirectoryCapability) []Skill {
 // scrubber (Skill.Description / Steps / Preconditions / FailureModes
 // are NOT projected, so they don't need redaction at this boundary —
 // the SkillView is intentionally compact for cheap browsing per
-// brief 04 §4.6).
+// a settled design point).
 //
 // The `pinned` flag is supplied by the caller (the View pipeline
 // computes it from the final partition assembly).

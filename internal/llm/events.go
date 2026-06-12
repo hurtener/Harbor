@@ -7,7 +7,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// Phase 32 LLM-edge event types. Registered via init() so the
+// LLM-edge event types. Registered via init() so the
 // canonical events registry stays the single source of truth (see
 // internal/events/events.go and AGENTS.md §17.6's "wiring gap"
 // lesson — register at declaration time, publish at use time).
@@ -19,41 +19,41 @@ import (
 const (
 	// EventTypeImageMaterialized — emitted when the safety-pass's
 	// auto-materialize step rewrites an inline DataURL ≥ heavy-output
-	// threshold to an ArtifactRef (D-022). Carries the source
+	// threshold to an ArtifactRef. Carries the source
 	// CompleteRequest's model name + the new ref's id + size.
 	EventTypeImageMaterialized events.EventType = "llm.image.materialized"
 	// EventTypeContextLeak — emitted when the safety-pass detects
 	// raw heavy content that survived every upstream producer's
-	// normalization step (D-026 violation). The bus event lets
+	// normalization step (violation). The bus event lets
 	// operators trace the offending producer.
 	EventTypeContextLeak events.EventType = "llm.context_leak"
 	// EventTypeContextWindowExceeded — emitted when the safety-pass
-	// token-budget guard fires (D-026). Payload carries the
+	// token-budget guard fires. Payload carries the
 	// estimated token count + the model's cap + the reserve
 	// fraction so operators can quantify how often planner-side
 	// recovery (truncate / summarize) needs to engage.
 	EventTypeContextWindowExceeded events.EventType = "llm.context_window_exceeded"
 	// EventTypeCostRecorded — emitted by the runtime AFTER a
-	// successful Complete. Phase 36a (governance accumulator)
-	// subscribes; Phase 32 registers the type + ships the payload
-	// shape so Phase 36a's emit site lands clean.
+	// successful Complete. The governance accumulator
+	// subscribes; Harbor registers the type + ships the payload
+	// shape so the emit site lands clean.
 	EventTypeCostRecorded events.EventType = "llm.cost.recorded"
-	// EventTypeModeDowngraded — emitted by Phase 35's structured-
+	// EventTypeModeDowngraded — emitted by the structured-
 	// output downgrade chain (`json_schema → json_object → text`).
-	// Phase 32 registers the type as a forward-compat seam; no
-	// downgrade logic ships in Phase 32.
+	// Harbor registers the type as a forward-compat seam; no
+	// downgrade logic ships in a later phase.
 	EventTypeModeDowngraded events.EventType = "llm.mode_downgraded"
-	// EventTypeRetryWithFeedback (Phase 36) — emitted by the retry
+	// EventTypeRetryWithFeedback — emitted by the retry
 	// wrapper per corrective re-ask. Carries the attempt index and a
 	// truncated `Reason` derived from the validator's error.
 	EventTypeRetryWithFeedback events.EventType = "llm.retry_with_feedback"
-	// EventTypePostureReadAdmin — Phase 72g (D-112). Emitted when an
+	// EventTypePostureReadAdmin — Emitted when an
 	// admin-scoped caller reads ANOTHER tenant's LLM posture via the
 	// `llm.posture` Protocol method. An own-tenant read does NOT emit.
 	// The cross-tenant read is a privileged action and lands on the
 	// audit trail per CLAUDE.md §7 + RFC §6.15.
 	EventTypePostureReadAdmin events.EventType = "llm.posture_read_admin"
-	// EventTypeCompletionChunk — Phase 107 streaming completion event.
+	// EventTypeCompletionChunk — streaming completion event.
 	// Emitted per token delta from the LLM provider under the originating
 	// run's identity quadruple. The `Done=true` chunk fires exactly once
 	// per stream (terminator marker). SafePayload — deltas are per-session
@@ -88,7 +88,7 @@ func init() {
 }
 
 // PostureReadAdminPayload is the typed payload for
-// EventTypePostureReadAdmin (Phase 72g). SafePayload — the actor's
+// EventTypePostureReadAdmin. SafePayload — the actor's
 // identity and the requested tenant are operator-visible audit
 // metadata, not secret-shaped. NEVER carries provider API keys — the
 // posture surface reports provider/model/region only. The payload runs
@@ -148,7 +148,7 @@ type ContextWindowExceededPayload struct {
 }
 
 // CostRecordedPayload is the typed payload for EventTypeCostRecorded.
-// SafePayload — cost / token counts are operator-visible. Phase 36a
+// SafePayload — cost / token counts are operator-visible. Governance
 // subscribes for per-identity accumulator updates.
 type CostRecordedPayload struct {
 	events.SafeSealed
@@ -164,7 +164,7 @@ type CostRecordedPayload struct {
 }
 
 // ModeDowngradedPayload is the typed payload for
-// EventTypeModeDowngraded. Phase 35 fills the From/To/Reason fields.
+// EventTypeModeDowngraded. Harbor fills the From/To/Reason fields.
 // `FromMode` / `ToMode` carry the Harbor-side `OutputMode` (Native /
 // Tools / Prompted / text); `From` / `To` carry the resolved
 // `ResponseFormatKind` for backward visibility.
@@ -180,7 +180,7 @@ type ModeDowngradedPayload struct {
 	OccurredAt time.Time
 }
 
-// RetryWithFeedbackPayload (Phase 36) is the typed payload for
+// RetryWithFeedbackPayload is the typed payload for
 // EventTypeRetryWithFeedback. SafePayload — `Attempt` is the 1-based
 // retry index (1 = first re-ask after the original); `Reason` is the
 // validator's truncated `Error()` string. The wrapper truncates
@@ -227,7 +227,7 @@ type ProviderFileUploadedPayload struct {
 }
 
 // CompletionChunkPayload is the typed payload for
-// EventTypeCompletionChunk (Phase 107). SafePayload — the delta is
+// EventTypeCompletionChunk. SafePayload — the delta is
 // per-session operator-visible content (the LLM's own output), not a
 // secret. Kind is "content" or "reasoning".
 type CompletionChunkPayload struct {

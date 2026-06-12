@@ -62,7 +62,7 @@ type DraftUpdatedPayload struct {
 }
 
 // DraftPreviewedPayload reports a Store.Preview call. The payload is
-// deliberately small — Phase 66's preview path is a stub that
+// deliberately small — the preview path is a stub that
 // validates the draft tree (specifically the rendered harbor.yaml)
 // and reports whether it would boot. Concrete dry-run execution
 // lands in a later phase; the event shape is stable across that

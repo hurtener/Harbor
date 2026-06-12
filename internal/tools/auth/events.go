@@ -6,7 +6,7 @@ import "github.com/hurtener/Harbor/internal/events"
 // init() so a Publish never trips events.ErrUnknownEventType.
 //
 // `tool.auth_required` and `tool.auth_completed` are the two events
-// Phase 30 emits onto the bus. Both carry caller-controllable surface
+// Harbor emits onto the bus. Both carry caller-controllable surface
 // only (URLs, scopes, source identifiers) — NEVER access / refresh
 // token bytes. Both payload types embed events.SafeSealed so the bus
 // accepts them under the typed path and the redactor is not run on a

@@ -1,8 +1,8 @@
 package types
 
-// Phase 72f (D-111) — the runtime-posture wire types.
+// the runtime-posture wire types.
 //
-// Phase 72f ships five read-only Protocol methods that expose the live
+// Harbor ships five read-only Protocol methods that expose the live
 // Runtime's posture to a Protocol client (Console, CLI, third-party).
 // The wire types below are the response shapes; RuntimeInfoRequest is
 // the shared request shape (the methods are read-only and take no
@@ -11,11 +11,11 @@ package types
 // Every type here is a flat, Protocol-owned struct — never a re-export
 // of an internal Runtime Go type (RFC §5.1 reject-on-sight smell). In
 // particular, MetricsSnapshot is a Protocol-shaped projection over the
-// Phase 56 telemetry.MetricsRegistry: it carries flat numbers, NOT the
+// telemetry.MetricsRegistry: it carries flat numbers, NOT the
 // OpenTelemetry SDK's metric types. internal/protocol/types/posture.go
 // deliberately imports no OTel package; the static smoke guard pins it.
 
-// RuntimeInfoRequest is the shared request shape for the five Phase 72f
+// RuntimeInfoRequest is the shared request shape for the five
 // posture methods. It carries only the identity scope — the methods are
 // read-only and take no payload.
 //
@@ -25,7 +25,7 @@ package types
 // (runtime.counters returns tenant-wide rollups for a Tenant-only
 // scope, the session's slice when a Session is supplied). A cross-tenant
 // request — Identity.Tenant differing from the caller's verified tenant
-// — requires the admin scope per D-079.
+// requires the admin scope per the closed admin-scope set.
 type RuntimeInfoRequest struct {
 	// Identity is the caller's identity scope. The PostureSurface
 	// validates the triple and gates cross-tenant reads on the admin
@@ -108,7 +108,7 @@ type RuntimeHealth struct {
 // RuntimeCounters is the runtime.counters response: the low-cardinality
 // live counters the Console footer / sidebar chips render. Every field
 // is a roll-up — never a per-run / per-task / per-session breakdown
-// (the Phase 56 cardinality firewall posture, mirrored at the Protocol
+// (the cardinality firewall posture, mirrored at the Protocol
 // boundary).
 type RuntimeCounters struct {
 	// EventsPerSecond is the recent bus-emit rate.
@@ -160,7 +160,7 @@ type NamedCounter struct {
 	Value float64 `json:"value"`
 	// Labels carries the metric's low-cardinality label set. A
 	// high-cardinality label (run_id / trace_id / span_id) never appears
-	// here — the Phase 56 cardinality firewall gates it on the SDK side,
+	// here — the cardinality firewall gates it on the SDK side,
 	// and MetricsSnapshot.HasHighCardinalityLabel is the wire-boundary
 	// cardinalitylint guard (exercised by the posture type tests).
 	Labels map[string]string `json:"labels,omitempty"`
@@ -200,7 +200,7 @@ type NamedGauge struct {
 }
 
 // MetricsSnapshot is the metrics.snapshot response: a Protocol-shaped
-// projection over the Phase 56 telemetry.MetricsRegistry. The wire
+// projection over the telemetry.MetricsRegistry. The wire
 // shape is a flat slice per metric kind — counters, histograms, gauges
 // — carrying plain numbers. NO OpenTelemetry SDK type crosses the
 // Protocol boundary (RFC §5.1 / CLAUDE.md §13 single-source rule).
@@ -218,9 +218,9 @@ type MetricsSnapshot struct {
 // HighCardinalityLabelKeys is the closed set of label keys that must
 // NEVER appear on a metric crossing the Protocol boundary — they are
 // unbounded per-run identifiers and would explode the metric series
-// cardinality. The Phase 56 telemetry cardinality firewall gates these
-// on the SDK side; this set lets the wire boundary re-check (D-132 /
-// Wave 13 NIT cleanup, mirroring the Phase 56 label-lint pattern).
+// cardinality. The telemetry cardinality firewall gates these
+// on the SDK side; this set lets the wire boundary re-check (a
+// NIT cleanup, mirroring the label-lint pattern).
 var HighCardinalityLabelKeys = []string{"run_id", "trace_id", "span_id"}
 
 // HasHighCardinalityLabel reports the first (metric-name, label-key)

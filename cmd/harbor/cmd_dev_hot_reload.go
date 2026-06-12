@@ -1,4 +1,4 @@
-// cmd/harbor/cmd_dev_hot_reload.go — Phase 65 (D-099) `harbor dev`
+// cmd/harbor/cmd_dev_hot_reload.go — `harbor dev`
 // hot-reload watcher. fsnotify-driven graceful-drain restart when a
 // watched file changes (Go source, harbor.yaml, project-local
 // `.harbor/agents/` drafts).
@@ -25,7 +25,7 @@
 // the in-process devStack rebuild satisfies it for every config /
 // scaffold change, and operators who genuinely changed Go source
 // rebuild + re-launch the binary manually (the same cycle they'd run
-// today without hot-reload). This is documented in D-099.
+// today without hot-reload). This is documented in.
 //
 // # Concurrency contract
 //
@@ -77,7 +77,7 @@ import (
 
 // Canonical event types the hot-reload supervisor emits on the bus.
 // Registered with the canonical events registry via init() so a wire
-// consumer subscribing to them is accepted. Pinned in D-099.
+// consumer subscribing to them is accepted. Pinned in.
 const (
 	// EventTypeDevHotReloadTriggered fires the moment the supervisor
 	// observes a watched file change and decides to restart. Payload
@@ -122,7 +122,7 @@ type DevHotReloadCompletedPayload struct {
 	// Success reports whether the rebuilt devStack booted cleanly. A
 	// failed restart cycle leaves the supervisor with no active
 	// devStack — the boot ctx is cancelled and the runDev loop exits
-	// with a non-zero CLIError. Pinned in D-099: a fail-loud restart
+	// with a non-zero CLIError. By design a fail-loud restart
 	// is preferable to a stack-less binary lingering on the port.
 	Success bool
 	// ErrorMessage is the wrapped boot error string when Success is
@@ -232,7 +232,7 @@ func (s *hotReloadSupervisor) Run(ctx context.Context) error {
 		if statErr != nil {
 			if errors.Is(statErr, os.ErrNotExist) {
 				// A non-existent root is acceptable for the project-local
-				// `.harbor/agents/` default (Phase 66 will create it on
+				// `.harbor/agents/` default (A later phase will create it on
 				// first draft-save). Log Info and skip — the watcher serves
 				// the roots that DO exist; the missing root is harmless
 				// (no file will land there to trigger anything). We do NOT
@@ -563,7 +563,7 @@ func (s *hotReloadSupervisor) emitCompleted(
 // "the editor save triggered one restart" regardless of how many
 // fsnotify events the swap-file dance produced.
 //
-// Database engine sidecar files ARE skipped (Phase 83h — D-151):
+// Database engine sidecar files ARE skipped:
 // SQLite's WAL/SHM/journal companions get rewritten on every commit,
 // which under the default `sqlite` state + skills drivers means a
 // reboot loop the moment the planner writes anything. The skip list
@@ -584,14 +584,14 @@ func shouldTrigger(ev fsnotify.Event) bool {
 }
 
 // dbSidecarSuffixes lists filename suffixes for engine artifacts the
-// hot-reload watcher skips. Phase 83h (D-151) — these files get
+// hot-reload watcher skips — these files get
 // rewritten on every commit by the running binary, so triggering a
 // reload on them creates a feedback loop that reboots the binary
 // indefinitely. The suffixes cover SQLite (WAL/SHM/journal) and the
 // rollback-journal forms other lightweight engines use.
 //
-// Phase 83m (Item 2, D-156): the MAIN `.sqlite` / `.db` files are also
-// skipped. The Phase 83h fix covered only the WAL/SHM/journal sidecars,
+// the MAIN `.sqlite` / `.db` files are also
+// skipped. The fix covered only the WAL/SHM/journal sidecars,
 // but SQLite rewrites the main file on every commit too (transient
 // metadata changes are normal — they fire fsnotify Write events even
 // when the operator did not touch the file). Skipping only the sidecars

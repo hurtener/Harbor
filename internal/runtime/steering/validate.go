@@ -6,7 +6,7 @@ import (
 )
 
 // Payload bounds — RFC §6.3 "Steering payload bounds" (Settled),
-// verbatim from the predecessor's steering constants (brief 02 §6
+// verbatim from the settled steering constants (the
 // finding 8: "Harbor keeps the same caps"). Enforced at the Protocol
 // edge by Validate before a ControlEvent is ever enqueued.
 const (
@@ -47,7 +47,7 @@ const (
 //     whose Go type is outside the JSON-shaped accepted set.
 //
 // ValidatePayload is pure and holds no state — safe for concurrent
-// use by N goroutines (D-025).
+// use by N goroutines.
 func ValidatePayload(p map[string]any) error {
 	if len(p) == 0 {
 		return nil

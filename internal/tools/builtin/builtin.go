@@ -3,8 +3,7 @@
 // agent a zero-dependency way to prove the planner → executor →
 // trajectory loop without forcing an operator to author Go code or
 // attach an MCP server first.
-//
-// Phase 83n / D-153. V1.1 ships two built-ins:
+// V1.1 ships two built-ins:
 //
 //   - `clock.now` — returns the current UTC time as RFC 3339 +
 //     epoch milliseconds. Useful as a heartbeat / sanity-check tool.
@@ -17,7 +16,7 @@
 // empty list registers nothing — the registry is purely additive and
 // opt-in by design.
 //
-// Phase 111d / D-201 — canonical skills surface. The `skill_search` /
+// canonical skills surface. The `skill_search` /
 // `skill_get` / `skill_list` / `skill_propose` built-ins are thin
 // delegations to the Phase-38 `internal/skills/tools` handlers and
 // the Phase-41 `internal/skills/generator`. The capability envelope
@@ -33,11 +32,11 @@
 // time rather than at boot. A drift test (`builtin_test.go`)
 // asserts the two surfaces stay in lockstep.
 //
-// Concurrent reuse (D-025). Built-in tools are registered through
+// Concurrent reuse. Built-in tools are registered through
 // `inproc.RegisterFunc`, which captures the closure into a fresh
 // `ToolDescriptor` per call. The functions themselves
 // (`clock.Now`, `text.Echo`) hold no per-invocation state and are
-// safe for concurrent use; D-025 is trivially satisfied through the
+// safe for concurrent use; the concurrent-reuse contract is trivially satisfied through the
 // existing inproc driver's contract.
 package builtin
 
@@ -91,14 +90,14 @@ var registry = map[string]registrar{
 			tools.WithSideEffect(tools.SideEffectPure),
 		)
 	},
-	// Phase 107c / D-167 — meta-tools for tool + skill discovery.
+	// meta-tools for tool + skill discovery.
 	"tool_search": func(rc RegistryContext) error {
 		return registerToolSearch(rc.Catalog)
 	},
 	"tool_get": func(rc RegistryContext) error {
 		return registerToolGet(rc.Catalog)
 	},
-	// Phase 111d / D-201 — the skill meta-tools are thin delegations
+	// the skill meta-tools are thin delegations
 	// to the Phase-38 `internal/skills/tools` handlers (capability
 	// filter + redaction + budgeter on the production path) and the
 	// Phase-41 generator. The builtin registry stays the ONE
@@ -107,12 +106,12 @@ var registry = map[string]registrar{
 	"skill_search": registerSkillSearch,
 	"skill_get":    registerSkillGet,
 	"skill_list":   registerSkillList,
-	// `skill_propose` is the persistence-capable generator tool
-	// (D-054). Like every built-in it registers ONLY when the
+	// `skill_propose` is the persistence-capable generator tool.
+	// Like every built-in it registers ONLY when the
 	// operator lists it in `tools.built_in` — and unlike the
 	// discovery set it is deliberately absent from every recommended
 	// default: persistence-capable skill authoring is an explicit
-	// operator decision (Phase 111d / D-201).
+	// operator decision.
 	"skill_propose": registerSkillPropose,
 	"declarative_action": func(rc RegistryContext) error {
 		return registerDeclarativeAction(rc.Catalog)
@@ -150,10 +149,10 @@ func KnownNames() []string {
 //   - Wiring-shaped deps (`Bus` for every skill_* delegation;
 //     `Redactor` additionally for `skill_propose`) fail at
 //     REGISTRATION time — a missing bus/redactor is a boot-path bug,
-//     not an operator configuration choice (Phase 111d / D-201).
+//     not an operator configuration choice.
 //
 // `GrantedScopes` is the operator-declared `tools.granted_scopes`
-// list (Phase 83m Item 6, D-156). The skill_* delegations derive the
+// list. The skill_* delegations derive the
 // run's capability envelope from `tools.VisibleNames(Catalog, ...)`
 // under these scopes — default-deny: an empty list means tools with
 // AuthScopes are invisible and skills requiring them are filtered.

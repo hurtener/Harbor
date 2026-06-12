@@ -1,9 +1,9 @@
 // Package conformancetest exposes the shared TokenStore + Sealer
-// conformance suite Phase 30 ships. The same suite runs against every
+// conformance suite Harbor ships. The same suite runs against every
 // V1 state.StateStore driver (in-mem / SQLite / Postgres) — driver
 // pluralism for the TokenStore is inherited from the
-// state.StateStore §4.4 seam (D-027 + D-067 pattern; Phase 30 follows
-// the same approach Phase 53a took, see phase-30-tool-oauth.md
+// state.StateStore §4.4 seam (the typed-wrapper pattern; follows
+// the same approach An earlier phase took,
 // §"Findings I'm departing from").
 //
 // Test surface:

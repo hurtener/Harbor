@@ -13,13 +13,13 @@ import (
 // package's canonical registry from init(), so a Publish never trips
 // events.ErrUnknownEventType.
 //
-// Phase 52 emitted exactly one of these: control.rejected, on a
-// validation / scope failure at Enqueue time. Phase 53 adds the two
-// lifecycle events brief 02 §3 names — control.received (a control
+// emitted exactly one of these: control.rejected, on a
+// validation / scope failure at Enqueue time. Harbor adds the two
+// canonical lifecycle events — control.received (a control
 // event was drained from the per-run inbox by the RunLoop) and
 // control.applied (the RunLoop applied the control's side effect).
 // Together with control.rejected they are the full steering audit
-// trail; Phase 54's Protocol edge surfaces them over the wire.
+// trail; the Protocol edge surfaces them over the wire.
 const (
 	// EventTypeControlRejected — emitted when a steering submission is
 	// rejected at the edge: an unknown control type, a payload-bounds
@@ -71,7 +71,7 @@ type ControlLifecyclePayload struct {
 }
 
 // Control lifecycle outcome strings — stable, low-cardinality (safe for
-// Phase 56 metric derivation).
+// metric derivation).
 const (
 	outcomeReceived = "received"
 	outcomeApplied  = "applied"
@@ -100,7 +100,7 @@ type ControlRejectedPayload struct {
 }
 
 // Rejection reason strings — stable, low-cardinality (safe for
-// Phase 56 metric derivation).
+// metric derivation).
 const (
 	reasonUnknownType     = "unknown_type"
 	reasonPayloadInvalid  = "payload_invalid"
@@ -130,9 +130,9 @@ func classifyRejection(err error) string {
 
 // EmitRejection publishes a control.rejected event onto the bus for a
 // steering submission that Inbox.Enqueue rejected. It is the
-// audit-on-scope-mismatch path the master-plan Phase 52 acceptance
+// audit-on-scope-mismatch path the master-plan acceptance
 // names ("per-event scope mismatch returns 403 + audit") — the 403 is
-// the Protocol edge's job (Phase 54); the audit emit is this. The
+// the Protocol edge's job; the audit emit is this. The
 // Protocol edge calls EmitRejection whenever Enqueue returns a
 // non-nil error.
 //

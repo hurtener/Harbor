@@ -1,5 +1,5 @@
 // Package skills owns Harbor's token-savvy, DB-backed, identity-
-// scoped skill subsystem (RFC §6.7). Phase 37 lands the leaf surface:
+// scoped skill subsystem (RFC §6.7). lands the leaf surface:
 //
 //   - The mandatory `SkillStore` interface every backend implements.
 //   - The shared types — `Skill`, `Origin`, `Scope`, `ListFilter`,
@@ -7,19 +7,19 @@
 //   - Sentinel errors compared via `errors.Is`.
 //   - The §4.4 extensibility-seam plumbing (registry + factory).
 //
-// Phase 38 (planner-facing tools), Phase 39 (virtual directory),
-// Phase 40 (Skills.md importer), Phase 41 (in-runtime generator with
+// sibling layers (planner-facing tools, the virtual directory,
+// the Skills.md importer, the in-runtime generator with
 // persistence) all consume this surface.
 //
-// Identity is mandatory at every method (D-001). The triple
+// Identity is mandatory at every method. The triple
 // `(tenant, user, session)` MUST be fully populated; empty `RunID`
 // is accepted (skills are session-scoped at the storage layer; the
 // generator stamps `OriginRef` with the run id from `ctx`).
 // Missing-triple operations fail closed with `ErrIdentityRequired`
 // AND emit a `skill.identity_rejected` event on the bus — never
-// silent (AGENTS.md §5 "Fail loudly", brief 04 §4.2).
+// silent (AGENTS.md §5 "Fail loudly").
 //
-// Concurrent reuse (D-025): one `SkillStore` instance is safe to
+// Concurrent reuse: one `SkillStore` instance is safe to
 // share across N concurrent goroutines. Drivers persist only
 // internally-synchronized state on themselves; per-call state lives
 // in `ctx` and the supplied `identity.Quadruple`.
@@ -41,18 +41,18 @@ import (
 // Origin is the provenance of a skill — the pack import path or the
 // in-runtime generator path. The two flavors share storage but their
 // conflict semantics differ: a `Generated` skill MAY NOT overwrite a
-// `PackImport` skill of the same name (brief 04 §4.8, RFC §6.7).
+// `PackImport` skill of the same name.
 type Origin string
 
 // Origin values.
 const (
-	// OriginPack — imported from a Skills.md pack (Phase 40 lands the
+	// OriginPack — imported from a Skills.md pack (lands the
 	// importer). Pack rows are immutable from the generator's
 	// perspective: `Upsert` refuses to overwrite with
 	// `ErrPackOverwriteRefused` when incoming Origin != OriginPack.
 	OriginPack Origin = "pack"
 	// OriginGenerated — produced by the in-runtime generator
-	// (`skill_propose(persist=true)`, Phase 41). Generated→Generated
+	// (`skill_propose(persist=true)`). Generated→Generated
 	// is last-write-wins gated by `ContentHash` change.
 	OriginGenerated Origin = "generated"
 )
@@ -64,7 +64,7 @@ type Scope string
 const (
 	// ScopeSession — visible only inside the originating session.
 	// The narrowest scope; cross-session visibility requires an
-	// explicit promotion (RFC §6.7, brief 04 §6 "isolation
+	// explicit promotion (RFC §6.7 "isolation
 	// conformance"). The storage layer's identity filter already
 	// pins rows to a `(tenant, user, session)` triple; ScopeSession
 	// is the matching declared-scope marker for rows that should
@@ -81,13 +81,13 @@ const (
 )
 
 // Skill is the canonical skill record. The struct is the storage
-// envelope drivers persist; the planner-facing tools (Phase 38) wrap
+// envelope drivers persist; the planner-facing tools wrap
 // it with capability filtering + redaction at injection time.
 //
 // Validation rules at `validate`:
 //
 //   - `Name` non-empty
-//   - `Trigger` non-empty (planner-visible match cue, brief 04 §4.7)
+//   - `Trigger` non-empty (planner-visible match cue)
 //   - `Steps` non-empty (at least one step)
 //   - `Origin` ∈ {OriginPack, OriginGenerated}
 //   - `Scope` ∈ {ScopeSession, ScopeProject, ScopeTenant, ScopeGlobal}
@@ -157,10 +157,10 @@ type ListFilter struct {
 
 // RankedSkill carries the search-time relevance score + the path
 // that produced it. `Path` is one of `"fts5" | "regex" | "exact"`;
-// callers (Phase 38's planner tools) surface it for observability
+// callers (the planner tools) surface it for observability
 // only — it is not part of the ranking math.
 //
-// `Score` is the normalised 0.0–1.0 score per brief 04 §4.4:
+// `Score` is the normalised 0.0–1.0 score:
 //
 //   - FTS5 path: `bm25 → 1/(1+raw) → min-max normalised`.
 //   - Regex path: `name fullmatch=0.95 | name match=0.90 |
@@ -221,14 +221,14 @@ type Embedder interface {
 // implements every method. No `Supports*` ceremony per AGENTS.md
 // §4.4.
 //
-// Identity-mandatory contract (D-001):
+// Identity-mandatory contract:
 //
 //   - Every method validates the identity `Quadruple` at the
 //     boundary. Empty tenant / user / session returns wrapped
 //     `ErrIdentityRequired` AND emits one `skill.identity_rejected`
 //     event on the bus.
 //
-// Concurrent-reuse contract (D-025):
+// Concurrent-reuse contract:
 //
 //   - One instance is safe to share across N concurrent goroutines.
 //     Mutable state is internally synchronised; per-call state lives
@@ -236,7 +236,7 @@ type Embedder interface {
 type SkillStore interface {
 	// Upsert inserts or updates `skill` under the identity-scoped
 	// `(tenant, user, session, scope, name)` key. Conflict policy
-	// (RFC §6.7, brief 04 §4.8):
+	// (RFC §6.7):
 	//
 	//   - existing.Origin == "pack" && skill.Origin != "pack" →
 	//     `ErrPackOverwriteRefused` AND
@@ -259,7 +259,7 @@ type SkillStore interface {
 	List(ctx context.Context, id identity.Quadruple, filter ListFilter) ([]Skill, error)
 
 	// Search returns up to `limit` skills ranked by the FTS5 →
-	// regex → exact ladder (brief 04 §4.4). `limit == 0` falls back
+	// regex → exact ladder. `limit == 0` falls back
 	// to 20. The driver picks the first path that returns rows;
 	// later paths run only when earlier ones produced nothing.
 	// Emits `skill.search_executed` with the path that produced the
@@ -281,7 +281,7 @@ var (
 	// row.
 	ErrSkillNotFound = errors.New("skills: skill not found")
 	// ErrPackOverwriteRefused — `Upsert` attempted to overwrite an
-	// `Origin=pack` row with non-pack input. Brief 04 §4.8.
+	// `Origin=pack` row with non-pack input.
 	ErrPackOverwriteRefused = errors.New("skills: refuse to overwrite pack-origin skill")
 	// ErrStoreClosed — store has been closed; further operations
 	// are rejected.
@@ -320,7 +320,7 @@ type ConfigSnapshot struct {
 // (`skill.upserted`, `skill.deleted`, `skill.pack_overwrite_refused`,
 // `skill.search_executed`) land on the audit pipeline.
 //
-// **Note** (D-034 analog): unlike memory drivers, skills drivers do
+// **Note** (analog): unlike memory drivers, skills drivers do
 // NOT receive a `state.StateStore`. The `localdb` driver owns its
 // own `skills` + `skills_fts` tables; persistent skill state lives
 // in the driver's own DB, not piggybacked onto the StateStore. The
@@ -343,7 +343,7 @@ type Deps struct {
 // Drivers expose one `Factory` each via `init()` → `Register`.
 type Factory func(cfg ConfigSnapshot, deps Deps) (SkillStore, error)
 
-// DefaultDriver is the Phase 37 production driver name. Phase 49+
+// DefaultDriver is the production driver name. later phases
 // (Portico) registers additional names.
 const DefaultDriver = "localdb"
 
@@ -471,7 +471,7 @@ func ValidateIdentity(q identity.Quadruple) error {
 //
 // Single source for the planner tools (`internal/skills/tools`) and
 // the virtual directory (`internal/skills`) — both consumed the same
-// byte-for-byte logic before this was hoisted here (Wave 8 audit).
+// byte-for-byte logic before this was hoisted here.
 func IdentityFromCtx(ctx context.Context) (identity.Quadruple, error) {
 	if q, ok := identity.QuadrupleFrom(ctx); ok {
 		if err := identity.Validate(q.Identity); err != nil {

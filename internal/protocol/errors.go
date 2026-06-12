@@ -86,7 +86,7 @@ func mapTaskError(method string, err error) *protoerrors.Error {
 	}
 }
 
-// Session-ensure sentinels (D-171). The SessionEnsurer seam is
+// Session-ensure sentinels. The SessionEnsurer seam is
 // error-only and the protocol package does not import the sessions
 // package, so the adapter that wraps a concrete sessions.Registry
 // translates the registry's sentinels into THESE before returning them
@@ -134,7 +134,7 @@ func mapSessionEnsureError(method string, err error) *protoerrors.Error {
 }
 
 // mapTopologyError translates an engine Topology() error into a stable
-// *protoerrors.Error (Phase 74 / D-114). The engine's identity-rejection
+// *protoerrors.Error. The engine's identity-rejection
 // path wraps identity.ErrIdentityIncomplete; anything else is an
 // unclassified runtime failure. Never swallowed (CLAUDE.md §5).
 func mapTopologyError(method string, err error) *protoerrors.Error {

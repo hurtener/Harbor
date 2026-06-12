@@ -1,6 +1,6 @@
 // Package singlesource is the Harbor Protocol single-source enforcement
-// checker (CLAUDE.md §8, §13; RFC §5). It is the Phase 58 formalisation
-// of the single-source discipline Phase 54 (D-072) laid the foundation
+// checker (CLAUDE.md §8, §13; RFC §5). It is the formalisation
+// of the single-source discipline laid the foundation
 // for: the canonical Protocol packages are the ONLY definition sites,
 // and a hardcoded Protocol method string / error code / wire-type
 // redefinition anywhere else is a build-gating lint failure.
@@ -25,7 +25,7 @@
 // The repo already proves the pattern: internal/planner/conformance/
 // importgraph_test.go is a go/parser AST walk that gates the §13
 // planner-does-not-import-runtime invariant with zero external-tool
-// dependencies. Phase 58 reuses that shape — a custom golangci-lint
+// dependencies. Harbor reuses that shape — a custom golangci-lint
 // analyzer would need a plugin build and a .golangci.yml entry (a new
 // linter needs a PR rationale per CLAUDE.md §5), and a shell script
 // could not parse Go reliably (a method string inside a comment or a
@@ -36,12 +36,12 @@
 // is gated by CI + the preflight smoke exactly like the importgraph
 // lint.
 //
-// # The checker is a reusable artifact (D-025)
+// # The checker is a reusable artifact
 //
 // ScanProtocolTree and its helpers are pure functions over a filesystem
 // root — no package-level mutable state, safe to call concurrently. The
-// Phase 58 test is the first consumer; a later phase (e.g. a `harbor
-// lint` subcommand, or Phase 59's versioning discipline) can call the
+// test is the first consumer; a later phase (e.g. a `harbor
+// lint` subcommand, or the versioning discipline) can call the
 // same checker without a second implementation.
 package singlesource
 
@@ -112,86 +112,86 @@ var CanonicalMethods = map[string]struct{}{
 	"reject":                {},
 	"prioritize":            {},
 	"user_message":          {},
-	"events.subscribe":      {}, // Phase 72 / D-105
-	"events.aggregate":      {}, // Phase 72a / D-106
-	"search.query":          {}, // Phase 72c / D-108
-	"search.sessions":       {}, // Phase 72c / D-108
-	"search.tasks":          {}, // Phase 72c / D-108
-	"search.events":         {}, // Phase 72c / D-108
-	"search.artifacts":      {}, // Phase 72c / D-108
-	"runtime.info":          {}, // Phase 72f / D-111
-	"runtime.health":        {}, // Phase 72f / D-111
-	"runtime.counters":      {}, // Phase 72f / D-111
-	"runtime.drivers":       {}, // Phase 72f / D-111
-	"metrics.snapshot":      {}, // Phase 72f / D-111
-	"governance.posture":    {}, // Phase 72g / D-112
-	"llm.posture":           {}, // Phase 72g / D-112
-	"pause.list":            {}, // Phase 72e / D-110
-	"topology.snapshot":     {}, // Phase 74 / D-114
-	"artifacts.list":        {}, // Phase 73l / D-120
-	"artifacts.put":         {}, // Phase 73l / D-120
-	"artifacts.get_ref":     {}, // Phase 73l / D-120
-	"artifacts.delete":      {}, // Phase 108o / D-187
-	"memory.list":           {}, // Phase 73j / D-118
-	"memory.get":            {}, // Phase 73j / D-118
-	"memory.health":         {}, // Phase 73j / D-118
-	"memory.strategy_trace": {}, // Phase 108n / D-186
-	"memory.put":            {}, // Phase 108n / D-186
-	"memory.delete":         {}, // Phase 108n / D-186
-	// Phase 73k (D-119) MCP-Connections-page cluster — twelve methods.
-	"mcp.servers.list":               {}, // Phase 73k / D-119
-	"mcp.servers.get":                {}, // Phase 73k / D-119
-	"mcp.servers.resources":          {}, // Phase 73k / D-119
-	"mcp.servers.prompts":            {}, // Phase 73k / D-119
-	"mcp.servers.refresh_discovery":  {}, // Phase 73k / D-119
-	"mcp.servers.probe":              {}, // Phase 73k / D-119
-	"mcp.servers.health":             {}, // Phase 73k / D-119
-	"mcp.servers.bindings.list":      {}, // Phase 73k / D-119
-	"mcp.servers.policy":             {}, // Phase 73k / D-119
-	"mcp.servers.refresh_binding":    {}, // Phase 73k / D-119
-	"mcp.servers.revoke_binding":     {}, // Phase 73k / D-119
-	"mcp.servers.set_raw_html_trust": {}, // Phase 73k / D-119
-	// Phase 73f (D-116) Console-Tools-page cluster — seven methods.
-	"tools.list":                {}, // Phase 73f / D-116
-	"tools.get":                 {}, // Phase 73f / D-116
-	"tools.describe":            {}, // Phase 73f / D-116
-	"tools.metrics":             {}, // Phase 73f / D-116
-	"tools.content_stats":       {}, // Phase 73f / D-116
-	"tools.set_approval_policy": {}, // Phase 73f / D-116
-	"tools.revoke_oauth":        {}, // Phase 73f / D-116
-	// Phase 73d (D-123) Console-Tasks-page cluster — two methods.
-	"tasks.list": {}, // Phase 73d / D-123
-	"tasks.get":  {}, // Phase 73d / D-123
-	// Phase 73c (D-122) Console-Sessions-page cluster — two methods.
-	"sessions.list":    {}, // Phase 73c / D-122
-	"sessions.inspect": {}, // Phase 73c / D-122
-	// Phase 73n (D-130) Console-Playground-page cluster — one method.
-	"runs.set_overrides": {}, // Phase 73n / D-130
-	// Phase 73m (D-129) Console-Settings-page cluster — one method.
-	"auth.rotate_token": {}, // Phase 73m / D-129
-	// Phase 73i (D-117) Console-Flows-page cluster — six methods.
-	"flows.list":          {}, // Phase 73i / D-117
-	"flows.describe":      {}, // Phase 73i / D-117
-	"flows.runs.list":     {}, // Phase 73i / D-117
-	"flows.runs.describe": {}, // Phase 73i / D-117
-	"flows.run":           {}, // Phase 73i / D-117
-	"flows.metrics":       {}, // Phase 73i / D-117
-	// Phase 73e (D-124) Console-Agents-page cluster — eight methods.
-	"agents.list":        {}, // Phase 73e / D-124
-	"agents.get":         {}, // Phase 73e / D-124
-	"agents.tools":       {}, // Phase 73e / D-124
-	"agents.memory":      {}, // Phase 73e / D-124
-	"agents.governance":  {}, // Phase 73e / D-124
-	"agents.skills":      {}, // Phase 73e / D-124
-	"agents.permissions": {}, // Phase 73e / D-124
-	"agents.metrics":     {}, // Phase 73e / D-124
-	// Phase 108l (D-184) Console-Agents fleet-control verbs — five admin-
+	"events.subscribe":      {},
+	"events.aggregate":      {},
+	"search.query":          {},
+	"search.sessions":       {},
+	"search.tasks":          {},
+	"search.events":         {},
+	"search.artifacts":      {},
+	"runtime.info":          {},
+	"runtime.health":        {},
+	"runtime.counters":      {},
+	"runtime.drivers":       {},
+	"metrics.snapshot":      {},
+	"governance.posture":    {},
+	"llm.posture":           {},
+	"pause.list":            {},
+	"topology.snapshot":     {},
+	"artifacts.list":        {},
+	"artifacts.put":         {},
+	"artifacts.get_ref":     {},
+	"artifacts.delete":      {},
+	"memory.list":           {},
+	"memory.get":            {},
+	"memory.health":         {},
+	"memory.strategy_trace": {},
+	"memory.put":            {},
+	"memory.delete":         {},
+	// MCP-Connections-page cluster — twelve methods.
+	"mcp.servers.list":               {},
+	"mcp.servers.get":                {},
+	"mcp.servers.resources":          {},
+	"mcp.servers.prompts":            {},
+	"mcp.servers.refresh_discovery":  {},
+	"mcp.servers.probe":              {},
+	"mcp.servers.health":             {},
+	"mcp.servers.bindings.list":      {},
+	"mcp.servers.policy":             {},
+	"mcp.servers.refresh_binding":    {},
+	"mcp.servers.revoke_binding":     {},
+	"mcp.servers.set_raw_html_trust": {},
+	// Console-Tools-page cluster — seven methods.
+	"tools.list":                {},
+	"tools.get":                 {},
+	"tools.describe":            {},
+	"tools.metrics":             {},
+	"tools.content_stats":       {},
+	"tools.set_approval_policy": {},
+	"tools.revoke_oauth":        {},
+	// Console-Tasks-page cluster — two methods.
+	"tasks.list": {},
+	"tasks.get":  {},
+	// Console-Sessions-page cluster — two methods.
+	"sessions.list":    {},
+	"sessions.inspect": {},
+	// Console-Playground-page cluster — one method.
+	"runs.set_overrides": {},
+	// Console-Settings-page cluster — one method.
+	"auth.rotate_token": {},
+	// Console-Flows-page cluster — six methods.
+	"flows.list":          {},
+	"flows.describe":      {},
+	"flows.runs.list":     {},
+	"flows.runs.describe": {},
+	"flows.run":           {},
+	"flows.metrics":       {},
+	// Console-Agents-page cluster — eight methods.
+	"agents.list":        {},
+	"agents.get":         {},
+	"agents.tools":       {},
+	"agents.memory":      {},
+	"agents.governance":  {},
+	"agents.skills":      {},
+	"agents.permissions": {},
+	"agents.metrics":     {},
+	// Console-Agents fleet-control verbs — five admin-
 	// gated methods wrapping the in-process registry.* control verbs.
-	"agents.pause":      {}, // Phase 108l / D-184
-	"agents.drain":      {}, // Phase 108l / D-184
-	"agents.restart":    {}, // Phase 108l / D-184
-	"agents.force_stop": {}, // Phase 108l / D-184
-	"agents.deregister": {}, // Phase 108l / D-184
+	"agents.pause":      {},
+	"agents.drain":      {},
+	"agents.restart":    {},
+	"agents.force_stop": {},
+	"agents.deregister": {},
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -202,11 +202,11 @@ var CanonicalMethods = map[string]struct{}{
 // Almost every wire type lives in internal/protocol/types; the one
 // exception is Error, the Protocol error wire type, which lives in
 // internal/protocol/errors alongside the Code constants it carries
-// (D-072 §1: "internal/protocol/errors/errors.go ... the Error wire
+// (a settled carve-out: "internal/protocol/errors/errors.go ... the Error wire
 // type"). Single-sourcing means "exactly one home", not "all in the
 // same directory" — the map records the home per type.
 //
-// Version, Deprecation, and VersionHandshake are the Phase 59 (D-077)
+// Version, Deprecation, and VersionHandshake are the
 // versioning-discipline wire types — all in internal/protocol/types
 // alongside the ProtocolVersion pin.
 //
@@ -226,7 +226,7 @@ var CanonicalWireTypes = map[string]string{
 	"EventAggregateRequest":  "types",
 	"EventAggregateResponse": "types",
 	"Error":                  "errors",
-	// Phase 72c (D-108) search cluster wire types — all live in
+	// search cluster wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"SearchRequest":     "types",
 	"SearchResponse":    "types",
@@ -234,7 +234,7 @@ var CanonicalWireTypes = map[string]string{
 	"SearchFilter":      "types",
 	"SearchFacet":       "types",
 	"SearchArtifactRef": "types",
-	// Phase 72f (D-111) runtime-posture wire types — all live in
+	// runtime-posture wire types — all live in
 	// internal/protocol/types (internal/protocol/types/posture.go).
 	"RuntimeInfoRequest": "types",
 	"RuntimeInfo":        "types",
@@ -248,7 +248,7 @@ var CanonicalWireTypes = map[string]string{
 	"NamedHistogram":     "types",
 	"NamedGauge":         "types",
 	"MetricsSnapshot":    "types",
-	// Phase 72g (D-112) posture-pair wire types — all live in
+	// posture-pair wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"GovernancePostureRequest":  "types",
 	"GovernancePostureResponse": "types",
@@ -256,20 +256,20 @@ var CanonicalWireTypes = map[string]string{
 	"RateLimitView":             "types",
 	"LLMPostureRequest":         "types",
 	"LLMPostureResponse":        "types",
-	// Phase 72e (D-110) pause-list snapshot wire types — all live in
+	// pause-list snapshot wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"PauseListRequest":  "types",
 	"PauseListResponse": "types",
 	"PauseSnapshot":     "types",
 	"PauseFilter":       "types",
 	"PauseArtifactRef":  "types",
-	// Phase 74 (D-114) topology-projection wire types — all live in
+	// topology-projection wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"TopologyProjection":      "types",
 	"TopologyNode":            "types",
 	"TopologyEdge":            "types",
 	"TopologySnapshotRequest": "types",
-	// Phase 73l (D-120) artifacts-page wire types — all live in
+	// artifacts-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"ArtifactScope":           "types",
 	"SizeRange":               "types",
@@ -283,9 +283,9 @@ var CanonicalWireTypes = map[string]string{
 	"ArtifactsPutResponse":    "types",
 	"ArtifactsGetRefRequest":  "types",
 	"ArtifactsGetRefResponse": "types",
-	"ArtifactsDeleteRequest":  "types", // Phase 108o / D-187
-	"ArtifactsDeleteResponse": "types", // Phase 108o / D-187
-	// Phase 73j (D-118) Console-memory-page wire types — all live in
+	"ArtifactsDeleteRequest":  "types",
+	"ArtifactsDeleteResponse": "types",
+	// Console-memory-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"MemoryItem":            "types",
 	"MemoryFilter":          "types",
@@ -300,7 +300,7 @@ var CanonicalWireTypes = map[string]string{
 	"MemoryHealthRequest":   "types",
 	"MemoryHealthAggregate": "types",
 	"MemoryHealthResponse":  "types",
-	// Phase 108n (D-186) strategy-trace + mutation wire types.
+	// strategy-trace + mutation wire types.
 	"MemoryStrategyTraceRequest":  "types",
 	"MemoryStrategyTrace":         "types",
 	"MemoryStrategyTraceResponse": "types",
@@ -309,7 +309,7 @@ var CanonicalWireTypes = map[string]string{
 	"MemoryPutResponse":           "types",
 	"MemoryDeleteRequest":         "types",
 	"MemoryDeleteResponse":        "types",
-	// Phase 73k (D-119) MCP-Connections-page wire types — all live in
+	// MCP-Connections-page wire types — all live in
 	// internal/protocol/types/mcp_servers.go. MCPServerStateView is a
 	// string-enum type (like methods.Method / errors.Code) and is NOT
 	// listed here — CanonicalWireTypes records struct wire types only.
@@ -346,7 +346,7 @@ var CanonicalWireTypes = map[string]string{
 	"MCPServerRevokeBindingResponse":    "types",
 	"MCPServerSetRawHTMLTrustRequest":   "types",
 	"MCPServerSetRawHTMLTrustResponse":  "types",
-	// Phase 73f (D-116) Console-Tools-page wire types — all live in
+	// Console-Tools-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/tools.go).
 	"Tool":                          "types",
 	"ToolFilter":                    "types",
@@ -365,11 +365,11 @@ var CanonicalWireTypes = map[string]string{
 	"ToolSetApprovalPolicyResponse": "types",
 	"ToolRevokeOAuthRequest":        "types",
 	"ToolRevokeOAuthResponse":       "types",
-	// Phase 73d (D-123) Console Tasks-page wire types — all live in
+	// Console Tasks-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/tasks.go).
-	// Phase 73b (D-126) extends the cluster with the Live Runtime
+	// Harbor extends the cluster with the Live Runtime
 	// header status-counter-strip aggregate.
-	"TasksListStatusCounterStrip": "types", // Phase 73b / D-126
+	"TasksListStatusCounterStrip": "types",
 	"TaskRow":                     "types",
 	"TaskFilter":                  "types",
 	"TaskListAggregates":          "types",
@@ -383,12 +383,12 @@ var CanonicalWireTypes = map[string]string{
 	"TaskCostStep":                "types",
 	"TaskPlannerSnapshotRef":      "types",
 	"TaskGetRequest":              "types",
-	// Phase 107a — TaskDetail.Trajectory wire types (D-075).
+	// TaskDetail.Trajectory wire types.
 	"TaskTrajectoryRef":  "types",
 	"TaskTrajectoryStep": "types",
-	// Phase 84b (D-189) — per-attachment disposition on tasks.get.
+	// per-attachment disposition on tasks.get.
 	"TaskInputArtifact": "types",
-	// Phase 73i (D-117) Console Flows-page wire types — all live in
+	// Console Flows-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"Flow":                   "types",
 	"FlowBudget":             "types",
@@ -413,7 +413,7 @@ var CanonicalWireTypes = map[string]string{
 	"FlowMetricsBucket":      "types",
 	"FlowMetrics":            "types",
 	"FlowMetricsRequest":     "types",
-	// Phase 73e (D-124) Console Agents-page wire types — all live in
+	// Console Agents-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/agents.go).
 	// AgentStatus / AgentHealth / AgentHosting are string-enum types
 	// (like methods.Method / errors.Code) and are NOT listed here —
@@ -446,11 +446,11 @@ var CanonicalWireTypes = map[string]string{
 	"AgentMetricsRequest":      "types",
 	"AgentMetrics":             "types",
 	"AgentMetricsResponse":     "types",
-	// Phase 108l (D-184) fleet-control wire types — the shared control
+	// fleet-control wire types — the shared control
 	// request/response (internal/protocol/types/agents.go).
 	"AgentControlRequest":  "types",
 	"AgentControlResponse": "types",
-	// Phase 73c (D-122) Console Sessions-page wire types — all live in
+	// Console Sessions-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/sessions.go).
 	// SessionStatus / SessionSort are string-enum types (like
 	// methods.Method / errors.Code) and are NOT listed here —
@@ -464,16 +464,16 @@ var CanonicalWireTypes = map[string]string{
 	"ArtifactRefSummary":      "types",
 	"SessionsInspectRequest":  "types",
 	"SessionsInspectResponse": "types",
-	// Phase 73n (D-130) Console Playground-page wire types — all live
+	// Console Playground-page wire types — all live
 	// in internal/protocol/types (internal/protocol/types/runs.go).
 	"RunOverrides":            "types",
 	"RunSetOverridesRequest":  "types",
 	"RunSetOverridesResponse": "types",
-	// Phase 73m (D-129) Console Settings-page wire types — the
+	// Console Settings-page wire types — the
 	// `auth.rotate_token` request / response live in
 	// internal/protocol/types (internal/protocol/types/auth.go). The
-	// ONE net-new Protocol method Phase 73m ships; the page is
-	// otherwise a pure consumer of the 72f / 72g posture surfaces.
+	// ONE net-new Protocol method Harbor ships; the page is
+	// otherwise a pure consumer of the posture surfaces.
 	"AuthRotateTokenRequest":  "types",
 	"AuthRotateTokenResponse": "types",
 }
@@ -509,7 +509,7 @@ func dirAllowsKind(dir, kind string) bool {
 //
 // The scan is exhaustive (it returns ALL violations, not the first) and
 // deterministic (violations are sorted by file then line). It has no
-// package-level mutable state and is safe for concurrent use (D-025).
+// package-level mutable state and is safe for concurrent use.
 //
 // A returned error means the walk itself failed (an unreadable file, an
 // unparseable source file) — that is distinct from a Violation, which

@@ -6,7 +6,7 @@
 // "do not emit." Callers that get an error from Redact must NOT fall
 // back to the original payload. Tests pin this behaviour.
 //
-// The Redactor is a canonical reusable artifact (D-025): one instance
+// The Redactor is a canonical reusable artifact: one instance
 // is opened at boot via Open and shared across every emit path. It
 // is safe to call Redact concurrently from N goroutines on the same
 // instance. No per-run state lives on the Redactor itself.
@@ -50,7 +50,7 @@ var (
 //     emit" — never persist or transmit the original payload as a
 //     fallback. The returned value is undefined and may be nil.
 //   - Implementations must be safe for concurrent use by N goroutines
-//     against a single shared instance (D-025 concurrent reuse).
+//     against a single shared instance (concurrent reuse).
 type Redactor interface {
 	Redact(ctx context.Context, payload any) (any, error)
 }

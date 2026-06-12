@@ -20,7 +20,7 @@ import (
 )
 
 // Driver is the patterns Redactor. Built once at boot via Open and
-// shared across every emit path; D-025 concurrent-reuse contract
+// shared across every emit path; concurrent-reuse contract
 // is enforced by the test suite. The rule slice is immutable after
 // construction.
 type Driver struct {

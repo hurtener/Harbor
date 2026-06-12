@@ -1,5 +1,5 @@
 // Package a2a is Harbor's southbound A2A integration with the tool
-// catalog (Phase 29). It implements `tools.ToolProvider` by composing
+// catalog. It implements `tools.ToolProvider` by composing
 // the wire `distributed.RemoteTransport` (`internal/distributed/drivers/a2a`)
 // with the catalog's standard `RunWithPolicyHooked` shell.
 //
@@ -17,12 +17,12 @@
 // of `Tool`s. The `SourceID` is derived from the peer URL so
 // observability + audit can attribute each tool to its origin.
 //
-// Reliability shell (D-024). Every Invoke routes through
+// Reliability shell. Every Invoke routes through
 // `tools.RunWithPolicyHooked` so timeout / retry / validation happen
 // once, in the same place, regardless of transport. The wire driver
 // does NOT add its own shell.
 //
-// Concurrent reuse (D-025). Provider is constructed once with an
+// Concurrent reuse. Provider is constructed once with an
 // immutable peer URL + transport reference; Connect / Discover / Close
 // take an internal Mutex so concurrent calls are serialised; Invoke
 // is stateless on the Provider and dispatches through the shared

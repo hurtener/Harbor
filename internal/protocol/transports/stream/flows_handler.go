@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 73i / D-117): the Console
+// Package stream — additions: the Console
 // Flows-page HTTP handler. Like `events.aggregate` and `pause.list`,
 // these are one-shot request/response endpoints — POST JSON in, JSON
 // out. They live in the stream package because their identity +
@@ -16,7 +16,7 @@
 //	POST /v1/flows/metrics         — a flow's sparkline metrics
 //
 // Five routes are read-only; `flows/run` mutates and is gated on the
-// verified `auth.ScopeAdmin` claim (D-079 closed two-scope set — NO new
+// verified `auth.ScopeAdmin` claim (closed two-scope set — NO new
 // scope is minted). Every route is identity-mandatory.
 //
 // The handler emits a per-page audit event on every dispatch:
@@ -24,7 +24,7 @@
 // mutating run. The events flow through the canonical EventBus so the
 // Console activity feed and the audit log see Flows-page traffic.
 //
-// FlowsHandler is a D-025-safe compiled artifact — surface / bus /
+// FlowsHandler is a concurrency-safe compiled artifact — surface / bus /
 // logger are set once at construction; ServeHTTP holds no per-request
 // state.
 package stream
@@ -147,7 +147,7 @@ func WithFlowsBus(b events.EventBus) FlowsOption {
 // ErrFlowsMisconfigured rather than building a handler that would
 // nil-panic on the first request (CLAUDE.md §5).
 //
-// The returned *FlowsHandler is immutable after construction (D-025)
+// The returned *FlowsHandler is immutable after construction
 // and safe for concurrent use by N goroutines.
 func NewFlowsHandler(surface *flowprotocol.Surface, opts ...FlowsOption) (*FlowsHandler, error) {
 	if surface == nil {

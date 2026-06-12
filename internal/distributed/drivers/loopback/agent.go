@@ -1,7 +1,7 @@
 // Package loopback ships Harbor's V1 in-process drivers for both
 // `distributed.MessageBus` and `distributed.RemoteTransport`. It is
 // the test reference for the conformance suite — every later driver
-// (durable bus at phase 86, A2A wire RemoteTransport at phase 29)
+// (durable bus, A2A wire RemoteTransport)
 // inherits the same suite verbatim.
 //
 // The MessageBus loopback projects each published envelope as a typed

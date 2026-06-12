@@ -6,7 +6,7 @@
 // package (precedent: `internal/identity/conformancetest`,
 // `internal/state/conformancetest`).
 //
-// Downstream drivers (Phase 25 SQLite + Postgres) consume it via:
+// Downstream drivers (SQLite + Postgres) consume it via:
 //
 //	import "github.com/hurtener/Harbor/internal/memory/conformancetest"
 //
@@ -45,7 +45,7 @@ import (
 //     Subscribe and observe audit emits without injecting a fake.
 //   - `Strategy` is the strategy the Store is configured for; the
 //     suite forks its strategy-specific subtests on this value.
-//     Defaults to `StrategyNone` when zero — preserving Phase 23
+//     Defaults to `StrategyNone` when zero — preserving the original
 //     callers (which had no Strategy field on Harness).
 //   - `Cleanup` releases the harness (store.Close + bus.Close +
 //     any caller-owned tear-down).
@@ -70,7 +70,7 @@ type Harness struct {
 }
 
 // strategy returns the configured strategy, defaulting to
-// `StrategyNone` when zero (Phase 23 compatibility).
+// `StrategyNone` when zero (compatibility).
 func (h Harness) strategy() memory.Strategy {
 	if h.Strategy == "" {
 		return memory.StrategyNone
@@ -577,7 +577,7 @@ func Run(t *testing.T, factory Factory) {
 
 		// Wait briefly for any internal goroutines to wind down before
 		// asserting baseline restoration (no time.Sleep for sync — bounded
-		// real-time deadline + Gosched yields, same pattern as Phase 07).
+		// real-time deadline + Gosched yields, same pattern as the state suite).
 		deadline := time.Now().Add(2 * time.Second)
 		for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
 			runtime.Gosched()

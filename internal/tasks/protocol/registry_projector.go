@@ -21,8 +21,8 @@ import (
 // `tasks.TaskRegistry.List` is session-scoped: it returns the task
 // summaries for one `(tenant, user, session)` identity. RegistryProjector
 // projects the caller's own session — the realistic V1 surface, matching
-// brief 11 §CC-4's high-cardinality runtime-side posture. A cross-tenant
-// fan-in is gated by the Service (admin scope, D-079); the projector
+// the high-cardinality runtime-side posture. A cross-tenant
+// fan-in is gated by the Service (admin scope); the projector
 // honours whatever identity the Service passes it. A future
 // cross-runtime aggregating projector slots in behind the Projector
 // interface without reshaping the Service.
@@ -39,10 +39,10 @@ import (
 // failing — the zeros are honest ("we don't have this data"), not
 // silent degradation of a known value.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // RegistryProjector is immutable after NewRegistryProjector: it holds
-// the registry + enricher references. The registry is itself D-025-safe;
+// the registry + enricher references. The registry is itself safe for concurrent reuse;
 // the projector adds no mutable state.
 type RegistryProjector struct {
 	registry tasks.TaskRegistry
@@ -86,7 +86,7 @@ func WithEnricher(e Enricher) RegistryProjectorOption {
 
 // NewRegistryProjector builds the V1 production Projector over a
 // `tasks.TaskRegistry`. The registry is mandatory — a nil fails loud
-// with ErrMisconfigured. The returned *RegistryProjector is D-025-safe.
+// with ErrMisconfigured. The returned *RegistryProjector is safe for concurrent reuse.
 func NewRegistryProjector(registry tasks.TaskRegistry, opts ...RegistryProjectorOption) (*RegistryProjector, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("%w: tasks.TaskRegistry is nil", ErrMisconfigured)
@@ -118,7 +118,7 @@ func (p *RegistryProjector) ListTasks(ctx context.Context, id identity.Identity)
 	if err != nil {
 		return nil, fmt.Errorf("tasks/protocol: registry list: %w", err)
 	}
-	// Phase 73h (D-128): build a task → TaskGroup reverse index so the
+	// build a task → TaskGroup reverse index so the
 	// projected rows carry their `GroupID`. The Background Jobs page's
 	// per-job "Related Sessions" tab issues a `tasks.list?group_id=…`
 	// drill-in; the Service-layer filterMatches pass narrows on the
@@ -206,7 +206,7 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 	}
 	// No enricher → cost rollup + planner snapshot stay zero-valued; the
 	// parent-session baseline (SessionID from identity) was set above.
-	// Round-6 fix: the TS contract declares cost.per_step as a non-null
+	// fix: the TS contract declares cost.per_step as a non-null
 	// array (TaskCostStep[]); a Go nil slice JSON-marshals to `null` and
 	// the Console null-derefs on `.length`. Normalize to an empty slice
 	// so the wire honours the contract — failing loud is the rule
@@ -218,7 +218,7 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 	if task.Result != nil && len(task.Result.Value) > 0 {
 		detail.ResultInline = string(task.Result.Value)
 	}
-	// Phase 84b (D-189) — surface the operator-attached input
+	// surface the operator-attached input
 	// artifacts with their per-attachment disposition hints, in spawn
 	// order, so a client can verify its `start` hint round-tripped.
 	if len(task.InputArtifactIDs) > 0 {
@@ -257,7 +257,7 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 		StartedAt:       started,
 		UpdatedAt:       updated,
 		DurationMS:      updated.Sub(started).Milliseconds(),
-		// Phase 73h (D-128): IsBackground mirrors Kind so a Console
+		// IsBackground mirrors Kind so a Console
 		// row-renderer (the Background Jobs queue) branches without
 		// re-comparing the enum. LastActivityAt defaults to UpdatedAt —
 		// the registry record carries no separate event timestamp; a
@@ -265,7 +265,7 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 		// stream without reshaping this projection.
 		IsBackground:   kind == prototypes.TaskKindBackground,
 		LastActivityAt: updated,
-		// Phase 83m item 7: the registry-side ToolCount counter is the
+		// item 7: the registry-side ToolCount counter is the
 		// running count of tool dispatches the runloop has performed
 		// against this task; mirrored to the wire so the Console Tasks
 		// page renders the count without subscribing to the per-tool

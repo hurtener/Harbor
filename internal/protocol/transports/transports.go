@@ -1,5 +1,5 @@
 // Package transports is the Harbor Protocol wire-transport seam — the
-// Phase 60 binding of RFC §5.4's resolved transport choice (SSE for the
+// binding of RFC §5.4's resolved transport choice (SSE for the
 // event stream + REST/JSON for the control surface) onto net/http.
 //
 // # The seam (CLAUDE.md §3, §4.4)
@@ -7,37 +7,36 @@
 // Each wire transport is its own sub-package:
 //
 //   - internal/protocol/transports/control — REST/JSON over the
-//     transport-agnostic protocol.ControlSurface (Phase 54).
-//   - internal/protocol/transports/stream — SSE over the events.EventBus
-//     (Phase 05).
+//     transport-agnostic protocol.ControlSurface.
+//   - internal/protocol/transports/stream — SSE over the events.EventBus.
 //
 // This package composes them: NewMux wires both handlers into one
-// *http.ServeMux a future server (the `harbor dev` subcommand — Phase
-// 64) mounts. The layout is the §4.4-style seam read for transports
+// *http.ServeMux a future server (the `harbor dev` subcommand)
+// mounts. The layout is the §4.4-style seam read for transports
 // rather than drivers: RFC §5.4 explicitly leaves WebSocket as an
 // additive alternate transport. Adding it is a third sub-package
 // (internal/protocol/transports/websocket) plus one more mux entry here
 // — neither `control` nor `stream` is reshaped, and no caller outside
 // this package changes. There is NO driver-registry / factory ceremony:
 // the transport set is small, closed, and mounted in code at boot, not
-// resolved by name from config — the same posture Phase 54 took for the
-// ControlSurface (D-072).
+// resolved by name from config — the same posture An earlier phase took for the
+// ControlSurface.
 //
 // # Why no http.Server here
 //
-// Phase 60 ships the transport HANDLERS, not the server that listens.
-// `harbor dev` (Phase 64) owns the net.Listener, the graceful-shutdown
+// Harbor ships the transport HANDLERS, not the server that listens.
+// `harbor dev` owns the net.Listener, the graceful-shutdown
 // lifecycle, and the /healthz + /readyz endpoints; it calls NewMux and
 // serves the result. Keeping the listen/shutdown lifecycle out of this
 // package means the transports are exercised end-to-end today via
 // httptest (the package + integration tests) without waiting on the
-// server phase — the same decoupling Phase 54 used to stay testable
+// server phase — the same decoupling used to stay testable
 // ahead of its wire binding.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // The *http.ServeMux NewMux returns is immutable after construction and
-// both mounted handlers are themselves D-025-safe compiled artifacts
+// both mounted handlers are themselves safe for concurrent reuse compiled artifacts
 // (control.Handler, stream.Handler). One mux serves N concurrent
 // requests safely; concurrent_test.go pins it under -race.
 package transports
@@ -80,14 +79,14 @@ type muxConfig struct {
 	withoutAuth     bool
 	aggregatorClock events.AggregatorClock
 	// redactor is the audit.Redactor wired into the control transport
-	// for the Phase 72b admin-impersonation audit emit. Optional in the
+	// for the admin-impersonation audit emit. Optional in the
 	// mux config so existing call-sites compile unchanged, but
 	// production wiring (the `harbor dev` boot path) SHOULD supply it
 	// so impersonation works end-to-end. When unsupplied, the control
 	// transport refuses impersonation requests fail-closed with
 	// CodeRuntimeError (CLAUDE.md §13 "Silent degradation").
 	redactor audit.Redactor
-	// searchSurface is the Phase 72c (D-108) search dispatcher wired
+	// searchSurface is the search dispatcher wired
 	// into the control transport so the five `search.*` methods route
 	// through it instead of the task-control ControlSurface. Optional —
 	// when unsupplied, the control transport rejects search calls with
@@ -95,7 +94,7 @@ type muxConfig struct {
 	// on). Production wiring (`harbor dev` / `harbor console`) supplies
 	// it so the Console search surface works out of the box.
 	searchSurface control.SearchSurface
-	// postureSurface is the Phase 72f / 72g (D-111 / D-112) posture
+	// postureSurface is the posture
 	// dispatcher wired into the control transport so the seven posture
 	// methods — the five `runtime.*` / `metrics.*` reads plus the two
 	// `governance.posture` / `llm.posture` reads — route through it.
@@ -103,20 +102,20 @@ type muxConfig struct {
 	// calls with CodeUnknownMethod (the 404 → SKIP path the smoke
 	// script relies on).
 	postureSurface control.PostureSurface
-	// artifactsSurface is the Phase 73l (D-120) artifacts dispatcher
+	// artifactsSurface is the artifacts dispatcher
 	// wired into the control transport so the three `artifacts.*`
 	// methods route through it. Optional — when unsupplied, the control
 	// transport rejects artifacts calls with CodeUnknownMethod (the 404
 	// → SKIP path the smoke script relies on).
 	artifactsSurface control.ArtifactsSurface
-	// mcpSurface is the Phase 73k (D-119) MCP-Connections dispatcher
+	// mcpSurface is the MCP-Connections dispatcher
 	// wired into the control transport so the twelve `mcp.servers.*`
 	// methods route through it. Optional — when unsupplied, the control
 	// transport rejects MCP calls with CodeUnknownMethod (the 404 → SKIP
 	// path the smoke script relies on).
 	mcpSurface control.MCPSurface
-	// pauseCoordinator + artifactStore + heavyThreshold feed the Phase
-	// 72e `pause.list` snapshot handler. All three are OPTIONAL in the
+	// pauseCoordinator + artifactStore + heavyThreshold feed the
+	// `pause.list` snapshot handler. All three are OPTIONAL in the
 	// mux config so existing call-sites compile unchanged — when the
 	// coordinator or store is unsupplied the `pause.list` route is NOT
 	// mounted, so the smoke script's `skip_if_404` keeps preflight
@@ -125,46 +124,46 @@ type muxConfig struct {
 	pauseCoordinator pauseresume.Coordinator
 	artifactStore    artifacts.ArtifactStore
 	heavyThreshold   int
-	// memoryStore + memoryDriverName feed the Phase 73j (D-118) three
+	// memoryStore + memoryDriverName feed the three
 	// `memory.*` read routes. memoryStore is OPTIONAL in the mux config
 	// so existing call-sites compile unchanged — when it is unsupplied
 	// the three `memory.*` routes are NOT mounted, so the smoke
 	// script's `skip_if_404` keeps preflight green on a partial build.
 	// The memory handler reuses artifactStore + heavyThreshold (the
-	// `pause.list` deps) for the D-026 heavy-value bypass; production
+	// `pause.list` deps) for the heavy-value bypass; production
 	// wiring (`harbor dev`) supplies all of them so the Console Memory
 	// page works.
 	memoryStore      memory.MemoryStore
 	memoryDriverName string
-	// toolsService feeds the Phase 73f `tools.*` handler (the Console
+	// toolsService feeds the `tools.*` handler (the Console
 	// Tools page surface). OPTIONAL — when unsupplied the
 	// `POST /v1/tools/{method}` route is NOT mounted, so the smoke
 	// script's `skip_if_404` keeps preflight green on a partial build.
 	// Production wiring (`harbor dev`) SHOULD supply it so the Console
-	// Tools page (Phase 73f) has a live surface.
+	// Tools page has a live surface.
 	toolsService *toolsprotocol.Service
-	// flowsSurface feeds the Phase 73i (D-117) Console Flows-page
+	// flowsSurface feeds the Console Flows-page
 	// handler — the six `POST /v1/flows/*` routes. OPTIONAL: when
 	// unsupplied the Flows routes are NOT mounted, so the smoke
 	// script's `skip_if_404` keeps preflight green on a partial build.
 	// Production wiring (`harbor dev`) SHOULD supply it so the Console
 	// Flows page works.
 	flowsSurface *flowprotocol.Surface
-	// tasksService feeds the Phase 73d (D-123) `tasks.*` handler — the
+	// tasksService feeds the `tasks.*` handler — the
 	// two Console Tasks-page read methods (`tasks.list` / `tasks.get`).
 	// OPTIONAL — when unsupplied the `POST /v1/tasks/{method}` route is
 	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight
 	// green on a partial build. Production wiring (`harbor dev`) SHOULD
 	// supply it so the Console Tasks page has a live surface.
 	tasksService *tasksprotocol.Service
-	// agentsService feeds the Phase 73e (D-124) Console Agents-page
+	// agentsService feeds the Console Agents-page
 	// handler — the eight `POST /v1/agents/{method}` read routes.
 	// OPTIONAL: when unsupplied the `POST /v1/agents/{method}` route is
 	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight
 	// green on a partial build. Production wiring (`harbor dev`) SHOULD
 	// supply it so the Console Agents page works.
 	agentsService *agentsprotocol.Service
-	// sessionsService feeds the Phase 73c (D-122) Console Sessions-page
+	// sessionsService feeds the Console Sessions-page
 	// handler — the two `POST /v1/sessions/*` routes (`sessions.list` /
 	// `sessions.inspect`). OPTIONAL: when unsupplied the Sessions routes
 	// are NOT mounted, so the smoke script's `skip_if_404` keeps
@@ -172,20 +171,20 @@ type muxConfig struct {
 	// (`harbor dev`) SHOULD supply it so the Console Sessions page has
 	// a live surface.
 	sessionsService *sessionsprotocol.Service
-	// runsService feeds the Phase 73n (D-130) Console Playground-page
+	// runsService feeds the Console Playground-page
 	// handler — the `POST /v1/runs/set_overrides` route. OPTIONAL: when
 	// unsupplied the Runs route is NOT mounted, so the smoke script's
 	// `skip_if_404` keeps preflight green on a partial build. Production
 	// wiring (`harbor dev`) SHOULD supply it so the Console Playground
 	// page can record next-message overrides.
 	runsService *runsprotocol.Service
-	// rotateSurface feeds the Phase 73m (D-129) `auth.*` handler — the
+	// rotateSurface feeds the `auth.*` handler — the
 	// single net-new Console Settings-page method (`auth.rotate_token`).
 	// OPTIONAL: when unsupplied the `POST /v1/auth/{method}` route is
 	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight
 	// green on a partial build. Production wiring (`harbor dev` /
 	// `harbor console`) SHOULD supply it so the Console Settings page
-	// (Phase 73m) "Rotate token" action has a live surface.
+	// "Rotate token" action has a live surface.
 	rotateSurface *auth.RotateSurface
 }
 
@@ -212,7 +211,7 @@ func WithKeepalive(d time.Duration) Option {
 	}
 }
 
-// WithValidator wires the Phase 61 JWT auth.Validator into NewMux.
+// WithValidator wires the JWT auth.Validator into NewMux.
 // BOTH transport handlers (REST control + SSE stream) are wrapped in
 // auth.Middleware: every request must carry a verified
 // `Authorization: Bearer <jwt>`; the middleware injects the verified
@@ -221,7 +220,7 @@ func WithKeepalive(d time.Duration) Option {
 //
 // A validator is **mandatory** — `NewMux` returns `ErrMisconfigured`
 // when neither `WithValidator` nor `WithoutValidator` is supplied
-// (PR #91 amendment to D-078 / CLAUDE.md §13 "Test stubs as
+// (PR #91 amendment; CLAUDE.md §13 "Test stubs as
 // production defaults on operator-facing seams"). A nil validator is
 // treated as "WithValidator not supplied"; tests that legitimately
 // need the unauthenticated path use `WithoutValidator()` explicitly.
@@ -248,7 +247,7 @@ func WithAggregateClock(c events.AggregatorClock) Option {
 }
 
 // WithRedactor wires the audit.Redactor into the control transport so
-// the Phase 72b admin-impersonation gate can publish a redacted
+// the admin-impersonation gate can publish a redacted
 // `audit.admin_scope_used` event onto the bus on every accepted
 // impersonation. The bus is already mandatory at NewMux (it feeds the
 // SSE event transport); the redactor is the second half of the pair the
@@ -269,7 +268,7 @@ func WithRedactor(r audit.Redactor) Option {
 	}
 }
 
-// WithPostureSurface wires the Phase 72f / 72g (D-111 / D-112) posture
+// WithPostureSurface wires the posture
 // dispatcher into the control transport. When supplied, the control
 // handler routes the seven posture methods — the five `runtime.*` /
 // `metrics.*` reads plus `governance.posture` / `llm.posture` — to the
@@ -280,7 +279,7 @@ func WithRedactor(r audit.Redactor) Option {
 // not supplied, the control transport rejects posture calls with
 // CodeUnknownMethod (HTTP 404) — the 404 → SKIP path the smoke script
 // relies on. Production wiring (`harbor dev`) supplies it so the
-// Console Settings page (Phase 73m) has a live surface. A nil surface
+// Console Settings page has a live surface. A nil surface
 // is treated as "WithPostureSurface not supplied".
 func WithPostureSurface(s control.PostureSurface) Option {
 	return func(c *muxConfig) {
@@ -290,7 +289,7 @@ func WithPostureSurface(s control.PostureSurface) Option {
 	}
 }
 
-// WithSearch wires the Phase 72c (D-108) search dispatcher into the
+// WithSearch wires the search dispatcher into the
 // control transport. When supplied, the handler routes the five
 // `search.*` methods to s.Dispatch instead of falling through to the
 // task-control ControlSurface.
@@ -310,7 +309,7 @@ func WithSearch(s control.SearchSurface) Option {
 	}
 }
 
-// WithMCPSurface wires the Phase 73k (D-119) MCP-Connections dispatcher
+// WithMCPSurface wires the MCP-Connections dispatcher
 // into the control transport. When supplied, the control handler routes
 // the twelve `mcp.servers.*` methods to the MCP surface instead of
 // falling through to the task-control ControlSurface.
@@ -319,7 +318,7 @@ func WithSearch(s control.SearchSurface) Option {
 // not supplied, the control transport rejects MCP calls with
 // CodeUnknownMethod (HTTP 404) — the 404 → SKIP path the smoke script
 // relies on. Production wiring (`harbor dev`) supplies it so the Console
-// MCP Connections page (Phase 73k) has a live surface. A nil surface is
+// MCP Connections page has a live surface. A nil surface is
 // treated as "WithMCPSurface not supplied".
 func WithMCPSurface(s control.MCPSurface) Option {
 	return func(c *muxConfig) {
@@ -329,9 +328,9 @@ func WithMCPSurface(s control.MCPSurface) Option {
 	}
 }
 
-// WithPauseList wires the Phase 72e `pause.list` snapshot handler into
-// NewMux. coord is the unified pause/resume Coordinator (Phase 50) the
-// snapshot projects from; store is the ArtifactStore the D-026
+// WithPauseList wires the `pause.list` snapshot handler into
+// NewMux. coord is the unified pause/resume Coordinator the
+// snapshot projects from; store is the ArtifactStore the
 // heavy-content bypass routes oversized pause payloads through;
 // heavyThreshold is the configured heavy-content byte size
 // (cfg.Artifacts.HeavyOutputThresholdBytes).
@@ -354,7 +353,7 @@ func WithPauseList(coord pauseresume.Coordinator, store artifacts.ArtifactStore,
 	}
 }
 
-// WithArtifactsSurface wires the Phase 73l (D-120) artifacts dispatcher
+// WithArtifactsSurface wires the artifacts dispatcher
 // into the control transport. When supplied, the control handler routes
 // the three artifacts methods — `artifacts.list`, `artifacts.put`,
 // `artifacts.get_ref` — to the artifacts surface instead of falling
@@ -364,7 +363,7 @@ func WithPauseList(coord pauseresume.Coordinator, store artifacts.ArtifactStore,
 // not supplied, the control transport rejects artifacts calls with
 // CodeUnknownMethod (HTTP 404) — the 404 → SKIP path the smoke script
 // relies on. Production wiring (`harbor dev`) supplies it so the Console
-// Artifacts page (Phase 73l) has a live surface. A nil surface is
+// Artifacts page has a live surface. A nil surface is
 // treated as "WithArtifactsSurface not supplied".
 func WithArtifactsSurface(s control.ArtifactsSurface) Option {
 	return func(c *muxConfig) {
@@ -374,7 +373,7 @@ func WithArtifactsSurface(s control.ArtifactsSurface) Option {
 	}
 }
 
-// WithFlows wires the Phase 73i (D-117) Console Flows-page handler into
+// WithFlows wires the Console Flows-page handler into
 // NewMux. surface is the transport-agnostic flowprotocol.Surface the
 // six `POST /v1/flows/*` routes dispatch through.
 //
@@ -382,11 +381,11 @@ func WithArtifactsSurface(s control.ArtifactsSurface) Option {
 // not supplied (or supplied a nil surface), the Flows routes are NOT
 // mounted — the smoke script's `skip_if_404` keeps preflight green on a
 // partial build. Production wiring (`harbor dev`) supplies it so the
-// Console Flows page (Phase 73i) has a live surface.
+// Console Flows page has a live surface.
 //
 // Five of the six routes are read-only; `POST /v1/flows/run` mutates
 // and the Surface gates it on the verified `auth.ScopeAdmin` claim
-// (D-079 closed two-scope set — no new scope is minted). When
+// (closed two-scope set — no new scope is minted). When
 // WithValidator is also set, the handler is wrapped in auth.Middleware
 // like every other transport.
 func WithFlows(surface *flowprotocol.Surface) Option {
@@ -397,7 +396,7 @@ func WithFlows(surface *flowprotocol.Surface) Option {
 	}
 }
 
-// WithToolsService wires the Phase 73f `tools.*` handler into NewMux —
+// WithToolsService wires the `tools.*` handler into NewMux —
 // the seven Console Tools-page methods (`tools.list` / `tools.get` /
 // `tools.describe` / `tools.metrics` / `tools.content_stats` /
 // `tools.set_approval_policy` / `tools.revoke_oauth`).
@@ -406,10 +405,10 @@ func WithFlows(surface *flowprotocol.Surface) Option {
 // When unsupplied, the `POST /v1/tools/{method}` route is NOT mounted —
 // the smoke script's `skip_if_404` keeps preflight green on a partial
 // build. Production wiring (`harbor dev`) supplies it so the Console
-// Tools page (Phase 73f) has a live surface. When supplied AND
+// Tools page has a live surface. When supplied AND
 // WithValidator is set, the route is wrapped in auth.Middleware like
 // every other transport — the two admin methods then gate on the
-// verified `auth.ScopeAdmin` claim (D-079). A nil service is treated
+// verified `auth.ScopeAdmin` claim. A nil service is treated
 // as "WithToolsService not supplied".
 func WithToolsService(s *toolsprotocol.Service) Option {
 	return func(c *muxConfig) {
@@ -419,7 +418,7 @@ func WithToolsService(s *toolsprotocol.Service) Option {
 	}
 }
 
-// WithTasksService wires the Phase 73d (D-123) `tasks.*` handler into
+// WithTasksService wires the `tasks.*` handler into
 // NewMux — the two Console Tasks-page read methods (`tasks.list` /
 // `tasks.get`).
 //
@@ -427,14 +426,14 @@ func WithToolsService(s *toolsprotocol.Service) Option {
 // When unsupplied, the `POST /v1/tasks/{method}` route is NOT mounted —
 // the smoke script's `skip_if_404` keeps preflight green on a partial
 // build. Production wiring (`harbor dev`) supplies it so the Console
-// Tasks page (Phase 73d) has a live surface. When supplied AND
+// Tasks page has a live surface. When supplied AND
 // WithValidator is set, the route is wrapped in auth.Middleware like
 // every other transport — a cross-tenant `tasks.list` fan-in then
-// gates on the verified `auth.ScopeAdmin` claim (D-079). A nil service
+// gates on the verified `auth.ScopeAdmin` claim. A nil service
 // is treated as "WithTasksService not supplied".
 //
 // Both `tasks.*` methods are READ-ONLY (CLAUDE.md §13) — the Console
-// Tasks page consumes the shipped Phase 54 task-control verbs for
+// Tasks page consumes the shipped task-control verbs for
 // mutation; no `tasks.*` mutation path is mounted.
 func WithTasksService(s *tasksprotocol.Service) Option {
 	return func(c *muxConfig) {
@@ -444,7 +443,7 @@ func WithTasksService(s *tasksprotocol.Service) Option {
 	}
 }
 
-// WithAgentsService wires the Phase 73e (D-124) `agents.*` handler into
+// WithAgentsService wires the `agents.*` handler into
 // NewMux — the eight Console Agents-page methods (`agents.list` /
 // `agents.get` / `agents.tools` / `agents.memory` / `agents.governance`
 // / `agents.skills` / `agents.permissions` / `agents.metrics`).
@@ -453,14 +452,14 @@ func WithTasksService(s *tasksprotocol.Service) Option {
 // When unsupplied, the `POST /v1/agents/{method}` route is NOT mounted
 // — the smoke script's `skip_if_404` keeps preflight green on a partial
 // build. Production wiring (`harbor dev`) supplies it so the Console
-// Agents page (Phase 73e) has a live surface. When supplied AND
+// Agents page has a live surface. When supplied AND
 // WithValidator is set, the route is wrapped in auth.Middleware like
 // every other transport.
 //
 // All eight `agents.*` methods are READ-ONLY projections of the Agent
 // Registry — the five agent-control verbs (Pause / Drain / Restart /
 // Force-Stop / Deregister) are the EXISTING shipped `registry.*`
-// control verbs (D-066), not new methods (CLAUDE.md §13). A nil service
+// control verbs, not new methods (CLAUDE.md §13). A nil service
 // is treated as "WithAgentsService not supplied".
 func WithAgentsService(s *agentsprotocol.Service) Option {
 	return func(c *muxConfig) {
@@ -470,7 +469,7 @@ func WithAgentsService(s *agentsprotocol.Service) Option {
 	}
 }
 
-// WithSessionsService wires the Phase 73c (D-122) Console Sessions-page
+// WithSessionsService wires the Console Sessions-page
 // handler into NewMux — the two `POST /v1/sessions/*` routes
 // (`sessions.list` / `sessions.inspect`).
 //
@@ -478,10 +477,10 @@ func WithAgentsService(s *agentsprotocol.Service) Option {
 // When unsupplied, the `POST /v1/sessions/{method}` routes are NOT
 // mounted — the smoke script's `skip_if_404` keeps preflight green on a
 // partial build. Production wiring (`harbor dev`) supplies it so the
-// Console Sessions page (Phase 73c) has a live surface. When supplied
+// Console Sessions page has a live surface. When supplied
 // AND WithValidator is set, the route is wrapped in auth.Middleware
 // like every other transport — a cross-tenant `sessions.list` filter
-// then gates on the verified `auth.ScopeAdmin` claim (D-079). A nil
+// then gates on the verified `auth.ScopeAdmin` claim. A nil
 // service is treated as "WithSessionsService not supplied".
 func WithSessionsService(s *sessionsprotocol.Service) Option {
 	return func(c *muxConfig) {
@@ -491,14 +490,14 @@ func WithSessionsService(s *sessionsprotocol.Service) Option {
 	}
 }
 
-// WithRunsService wires the Phase 73n (D-130) Console Playground-page
+// WithRunsService wires the Console Playground-page
 // handler into NewMux — the `POST /v1/runs/set_overrides` route.
 //
 // The service is OPTIONAL so existing call-sites compile unchanged.
 // When unsupplied, the `POST /v1/runs/{method}` route is NOT mounted —
 // the smoke script's `skip_if_404` keeps preflight green on a partial
 // build. Production wiring (`harbor dev`) supplies it so the Console
-// Playground page (Phase 73n) can record next-message overrides. When
+// Playground page can record next-message overrides. When
 // supplied AND WithValidator is set, the route is wrapped in
 // auth.Middleware like every other transport. A nil service is treated
 // as "WithRunsService not supplied".
@@ -510,12 +509,12 @@ func WithRunsService(s *runsprotocol.Service) Option {
 	}
 }
 
-// WithMemory wires the Phase 73j (D-118) three `memory.*` read routes
+// WithMemory wires the three `memory.*` read routes
 // into NewMux. store is the memory.MemoryStore the Console Memory page
-// projects from (Phases 23–25); driverName is the configured memory-
+// projects from; driverName is the configured memory-
 // driver name surfaced on each row. The memory handler reuses the
 // ArtifactStore + heavy-content threshold supplied via WithPauseList
-// for the D-026 heavy-value bypass — so WithPauseList must also be set
+// for the heavy-value bypass — so WithPauseList must also be set
 // for the three `memory.*` routes to mount.
 //
 // store is OPTIONAL — when it is nil (or the ArtifactStore /
@@ -535,7 +534,7 @@ func WithMemory(store memory.MemoryStore, driverName string) Option {
 	}
 }
 
-// WithAuthSurface wires the Phase 73m (D-129) `auth.*` handler into
+// WithAuthSurface wires the `auth.*` handler into
 // NewMux — the single net-new Console Settings-page method
 // (`auth.rotate_token`). surface is the *auth.RotateSurface the
 // `POST /v1/auth/rotate_token` route dispatches through.
@@ -548,7 +547,7 @@ func WithMemory(store memory.MemoryStore, driverName string) Option {
 // action has a live surface. When supplied AND WithValidator is set,
 // the route is wrapped in auth.Middleware like every other transport —
 // `auth.rotate_token` then gates on the verified `auth.ScopeAdmin`
-// claim (D-079). A nil surface is treated as "WithAuthSurface not
+// claim. A nil surface is treated as "WithAuthSurface not
 // supplied".
 func WithAuthSurface(surface *auth.RotateSurface) Option {
 	return func(c *muxConfig) {
@@ -559,10 +558,10 @@ func WithAuthSurface(surface *auth.RotateSurface) Option {
 }
 
 // WithoutValidator is the explicit, test-only escape hatch for cases
-// that legitimately need the Phase 60 trust-based posture (the REST
+// that legitimately need the trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
 // gate, the SSE handler resolves identity from the `X-Harbor-*`
-// carrier headers via `resolveIdentity`). It is used by Phase 60's
+// carrier headers via `resolveIdentity`). It is used by the
 // own package tests + `test/integration/phase60_wire_transport_test.go`
 // to assert the pre-auth transport surface still works.
 //
@@ -592,16 +591,16 @@ var ErrMisconfigured = errors.New("transports: NewMux missing a mandatory depend
 //   - a non-nil EventBus,
 //   - and EITHER `WithValidator(v)` (the production posture — JWT
 //     bearer auth at the edge) OR `WithoutValidator()` (the explicit,
-//     test-only escape hatch for the Phase 60 trust-based posture).
+//     test-only escape hatch for the trust-based posture).
 //
 // A missing dependency — including the auth choice — fails loud with
 // ErrMisconfigured rather than mounting a half-built mux or an
 // unauthenticated production surface (CLAUDE.md §13 "Test stubs as
 // production defaults on operator-facing seams"; PR #91).
 //
-// The returned mux is immutable after construction (D-025) and safe
+// The returned mux is immutable after construction and safe
 // to share across N concurrent requests — a future server
-// (`harbor dev`, Phase 64) mounts it and owns the listen / shutdown
+// (`harbor dev`) mounts it and owns the listen / shutdown
 // lifecycle.
 func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*http.ServeMux, error) {
 	if cs == nil {
@@ -624,7 +623,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 
 	controlOpts := []control.Option{
 		control.WithLogger(cfg.logger),
-		// Phase 72b: thread the bus and (optional) redactor into the
+		// thread the bus and (optional) redactor into the
 		// control transport so the admin-impersonation gate can emit
 		// `audit.admin_scope_used` events. The bus is mandatory at
 		// NewMux already; the redactor is optional at the type level
@@ -662,7 +661,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		return nil, fmt.Errorf("transports: build stream handler: %w", err)
 	}
 
-	// Wave 13 (Phase 72a): the events.aggregate handler shares the
+	// The events.aggregate handler shares the
 	// bus and lives in the same package. It is built once per Runtime
 	// process; if the bus does not implement events.Replayer, the
 	// handler still mounts — the per-request error path returns
@@ -681,7 +680,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		return nil, fmt.Errorf("transports: build events.aggregate handler: %w", err)
 	}
 
-	// Wave 13 (Phase 72e): the pause.list snapshot handler. Built only
+	// The pause.list snapshot handler. Built only
 	// when WithPauseList supplied all three dependencies (coordinator,
 	// store, positive threshold). When any is missing the route is left
 	// un-mounted — the smoke `skip_if_404` keeps preflight green on a
@@ -699,7 +698,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		pauseListHandler = plh
 	}
 
-	// Wave 13 (Phase 73j / D-118): the three `memory.*` read handlers.
+	// The three `memory.*` read handlers.
 	// Built only when WithMemory supplied a MemoryStore AND the
 	// ArtifactStore + heavy-content threshold (shared with pause.list)
 	// are set. When any is missing the three routes are left un-mounted
@@ -713,7 +712,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			stream.WithMemoryLogger(cfg.logger),
 			stream.WithMemoryAggregator(aggregator),
 			stream.WithMemoryDriverName(cfg.memoryDriverName),
-			// Phase 108n (D-186): the mutation methods (memory.put /
+			// the mutation methods (memory.put /
 			// memory.delete) publish their audit events on the same bus the
 			// Mux is built over.
 			stream.WithMemoryBus(bus),
@@ -724,7 +723,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		memoryHandler = mh
 	}
 
-	// Wave 13 (Phase 73f): the `tools.*` handler. Built only when
+	// The `tools.*` handler. Built only when
 	// WithToolsService supplied a non-nil service. When unsupplied the
 	// `POST /v1/tools/{method}` route is left un-mounted — the smoke
 	// `skip_if_404` keeps preflight green on a partial build.
@@ -737,7 +736,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		toolsHandler = th
 	}
 
-	// Wave 13 (Phase 73d / D-123): the `tasks.*` handler. Built only
+	// The `tasks.*` handler. Built only
 	// when WithTasksService supplied a non-nil service. When unsupplied
 	// the `POST /v1/tasks/{method}` route is left un-mounted — the smoke
 	// `skip_if_404` keeps preflight green on a partial build.
@@ -750,7 +749,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		tasksHandler = th
 	}
 
-	// Wave 13 (Phase 73i / D-117): the Console Flows-page handler. Built
+	// The Console Flows-page handler. Built
 	// only when WithFlows supplied a non-nil surface. When unsupplied
 	// the six `/v1/flows/*` routes are left un-mounted — the smoke
 	// `skip_if_404` keeps preflight green on a partial build.
@@ -767,7 +766,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		flowsHandler = fh
 	}
 
-	// Wave 13 (Phase 73e / D-124): the Console Agents-page handler.
+	// The Console Agents-page handler.
 	// Built only when WithAgentsService supplied a non-nil service.
 	// When unsupplied the `POST /v1/agents/{method}` route is left
 	// un-mounted — the smoke `skip_if_404` keeps preflight green on a
@@ -781,7 +780,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		agentsHandler = ah
 	}
 
-	// Wave 13 (Phase 73c / D-122): the Console Sessions-page handler.
+	// The Console Sessions-page handler.
 	// Built only when WithSessionsService supplied a non-nil service.
 	// When unsupplied the two `/v1/sessions/*` routes are left
 	// un-mounted — the smoke `skip_if_404` keeps preflight green on a
@@ -798,7 +797,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		sessionsHandler = sh
 	}
 
-	// Wave 13 (Phase 73n / D-130): the Console Playground-page handler.
+	// The Console Playground-page handler.
 	// Built only when WithRunsService supplied a non-nil service. When
 	// unsupplied the `/v1/runs/*` route is left un-mounted — the smoke
 	// `skip_if_404` keeps preflight green on a partial build.
@@ -814,7 +813,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		runsHandler = rh
 	}
 
-	// Wave 13 (Phase 73m / D-129): the `auth.*` handler. Built only
+	// The `auth.*` handler. Built only
 	// when WithAuthSurface supplied a non-nil *auth.RotateSurface. When
 	// unsupplied the `POST /v1/auth/{method}` route is left un-mounted
 	// — the smoke `skip_if_404` keeps preflight green on a partial
@@ -830,11 +829,11 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 
 	mux := http.NewServeMux()
 
-	// Phase 61: when WithValidator was supplied, wrap both transport
+	// when WithValidator was supplied, wrap both transport
 	// handlers in auth.Middleware. The middleware enforces the JWT
 	// bearer at the edge, injects the verified identity + scopes into
 	// r.Context(), and then calls the wrapped handler — which reads
-	// identity from ctx (preferred) or the Phase 60 trust-based
+	// identity from ctx (preferred) or the trust-based
 	// carriers (fallback when WithValidator is not set).
 	var (
 		mountedControl   http.Handler = controlHandler
@@ -849,7 +848,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		// (Console multi-process posture) can subscribe. The shim
 		// wraps OUTSIDE the auth middleware so the request is
 		// rewritten BEFORE the JWT validation reads the header.
-		// Round-3 walkthrough fix.
+		// a walkthrough fix.
 		mountedStream = auth.SSEAccessTokenShim(mw(streamHandler))
 		mountedAggregate = mw(aggregateHandler)
 	}
@@ -878,7 +877,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		mountMemory(stream.MemoryListRoutePattern, memoryHandler.ListHandler())
 		mountMemory(stream.MemoryGetRoutePattern, memoryHandler.GetHandler())
 		mountMemory(stream.MemoryHealthRoutePattern, memoryHandler.HealthHandler())
-		// Phase 108n (D-186): the strategy-trace read + the admin-gated
+		// the strategy-trace read + the admin-gated
 		// mutation pair. Same mount family as the read trio.
 		mountMemory(stream.MemoryStrategyTraceRoutePattern, memoryHandler.StrategyTraceHandler())
 		mountMemory(stream.MemoryPutRoutePattern, memoryHandler.PutHandler())

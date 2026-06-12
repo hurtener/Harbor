@@ -1,30 +1,19 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: static-only
+# Phase 102 smoke — godoc hygiene: no internal phase jargon in
+# godoc-visible comments.
 #
-# Phase NN smoke template. Copy to phase-NN.sh, set the surface assertions, make executable.
+# pkg.go.dev renders every non-test comment under internal/ and cmd/.
+# "Phase NN" / "phase-NN" / inline "D-NNN" / "brief NN" / wave-band
+# references ("Wave 8", "Round 3", "Stage A") are contributor concepts
+# that must not reach the public docs surface. This smoke runs the four
+# acceptance greps from the phase plan and asserts each returns zero
+# matches in non-test Go source. Test files (_test.go) are
+# contributor-internal and exempt.
 #
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# The patterns are intentionally narrow (numbering forms only) so
+# legitimate runtime vocabulary — e.g. "three phases: pending, running,
+# completed" or a domain "stage" — never trips the scan.
 
 set -euo pipefail
 
@@ -34,17 +23,21 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase NN assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+# One assertion per acceptance grep (plan §Acceptance criteria).
+check_jargon() {
+    local pattern="$1" label="$2" hits
+    hits=$(grep -rE "$pattern" --include='*.go' internal/ cmd/ 2>/dev/null | grep -v '_test\.go' || true)
+    if [ -z "$hits" ]; then
+        ok "phase 102: no '${label}' jargon in non-test Go source under internal/ + cmd/"
+    else
+        fail "phase 102: '${label}' jargon found in non-test Go source:"
+        printf '%s\n' "$hits" | head -10 | sed 's/^/       /'
+    fi
+}
 
-skip "phase NN: smoke skeleton — replace with real assertions when the phase implements its surface"
+check_jargon '(Phase|phase-)[0-9]+' 'Phase NN / phase-NN'
+check_jargon '\bD-[0-9]+' 'D-NNN'
+check_jargon '\b[Bb]rief [0-9]+' 'brief NN'
+check_jargon '\b(Wave|Round|Stage)[ -][0-9A-Z]+' 'Wave/Round/Stage band'
 
 smoke_summary

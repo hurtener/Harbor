@@ -25,7 +25,7 @@ type GateDeps struct {
 	// Mandatory — there is no silent-auto-approve default
 	// (CLAUDE.md §13 amendment).
 	Policy ApprovalPolicy
-	// Coordinator is the unified pause/resume primitive (Phase 50).
+	// Coordinator is the unified pause/resume primitive.
 	// Mandatory — RunGuarded parks a pause record on it; an APPROVE /
 	// REJECT control event resumes through it.
 	Coordinator pauseresume.Coordinator
@@ -37,8 +37,8 @@ type GateDeps struct {
 	// ArgsSummary before emission. Mandatory — CLAUDE.md §7 rule 6
 	// requires audit redaction on every emit path.
 	Redactor audit.Redactor
-	// Authorizer is the injected resolve-privilege check (Phase 111f,
-	// D-203). Mandatory — an approval gate with no resolve privilege
+	// Authorizer is the injected resolve-privilege check.
+	// Mandatory — an approval gate with no resolve privilege
 	// check is a misconfiguration, not a permissive mode. Direct
 	// construction wires the runtime-vocabulary default
 	// (NewIdentityAuthorizer); wire-driven assembly injects the
@@ -48,7 +48,7 @@ type GateDeps struct {
 
 // ApprovalGate is the V1 concrete approval-gate artifact.
 //
-// Concurrent reuse contract (D-025): every field below is either set
+// Concurrent reuse contract: every field below is either set
 // once at construction (deps + closed flag) or is the pending map
 // guarded by mu. There is no per-run state on the struct itself.
 // One gate is safe to share across N goroutines; concurrent_test.go
@@ -61,7 +61,7 @@ type ApprovalGate struct {
 	authorizer  ResolveAuthorizer
 
 	// mu guards pending. Documented internally-synchronised per the
-	// D-025 concurrent-reuse contract (CLAUDE.md §5).
+	// concurrent-reuse contract (CLAUDE.md §5).
 	mu sync.Mutex
 	// pending is the per-pause resolution channel registry. Keyed by
 	// `pauseresume.Token` because that is what `ResolveApproval`
@@ -134,7 +134,7 @@ func NewApprovalGate(deps GateDeps) (*ApprovalGate, error) {
 // ResolveApproval return ErrGateClosed.
 //
 // Close is safe to call concurrently with RunGuarded — atomic flag +
-// the mutex on map operations cover the race. Mirrors the Phase 30
+// the mutex on map operations cover the race. Mirrors the
 // Provider.Close pattern.
 func (g *ApprovalGate) Close(_ context.Context) error {
 	if g.closed.Swap(true) {
@@ -182,7 +182,7 @@ func (g *ApprovalGate) Close(_ context.Context) error {
 //     can still land an APPROVE / REJECT later, but the original
 //     caller is gone.
 //
-// Concurrent-safe (D-025): one ApprovalGate is shared by N runs.
+// Concurrent-safe: one ApprovalGate is shared by N runs.
 //
 //nolint:gocyclo // gate orchestration is naturally branchy — splitting it would only hide the flow.
 func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (json.RawMessage, error) {
@@ -210,7 +210,7 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 
 	// Build the audit-redacted args summary BEFORE we mint a pause —
 	// a redactor error fails the gate loud (CLAUDE.md §13 amendment;
-	// brief 03 §"Audit redaction"; CLAUDE.md §7 rule 6).
+	// CLAUDE.md §7 rule 6).
 	summary, err := g.buildRedactedSummary(ctx, req)
 	if err != nil {
 		return nil, err
@@ -314,8 +314,8 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 	}
 }
 
-// ResolveApproval is the in-process resolution helper. The Phase 53
-// steering-inbox + Phase 54 Protocol edge dispatches APPROVE /
+// ResolveApproval is the in-process resolution helper. The run-loop
+// steering-inbox + Protocol edge dispatches APPROVE /
 // REJECT control events through this surface (in-process callers
 // reach the gate directly). Path:
 //
@@ -323,10 +323,10 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 //     rejected with `ErrInvalidDecision`).
 //
 //  2. Locate the pending entry and consult the injected
-//     `ResolveAuthorizer` (Phase 111f, D-203) with the entry\'s
+//     `ResolveAuthorizer` with the entry\'s
 //     PendingInfo. An unauthorized resolver is rejected with a
 //     wrapped `ErrResolveForbidden` BEFORE any pause state mutates.
-//     The Phase 54 edge also enforces the RFC §6.3 steering scopes at
+//     The edge also enforces the RFC §6.3 steering scopes at
 //     the JWT boundary; the in-process check is the defence-in-depth
 //     layer — in runtime vocabulary, never protocol scopes (the
 //     pre-seam `internal/protocol/auth` check lives on as the
@@ -336,11 +336,11 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 //  3. Call `Coordinator.Resume(ctx, token, decision, {rejected: bool})`
 //     with the typed `pauseresume.Decision` (Approve or Reject) so the
 //     emitted `pause.resumed` event carries a typed marker wire
-//     consumers branch on (issue #113, D-096). This is where
+//     consumers branch on (issue #113). This is where
 //     cross-identity rejection happens — the Coordinator's
 //     `ErrScopeMismatch` propagates verbatim if the caller's
 //     identity does not match the original pause's identity. For
-//     elevated callers, the Phase 50 Coordinator's `sameScope`
+//     elevated callers, the Coordinator's `sameScope`
 //     check applies the same `(tenant, user, session)` equality —
 //     so a console-fleet admin resolver MUST present a ctx whose
 //     triple matches the original pause's triple. (The
@@ -378,9 +378,9 @@ func (g *ApprovalGate) ResolveApproval(ctx context.Context, token pauseresume.To
 		return fmt.Errorf("%w: token %q", ErrApprovalNotFound, token)
 	}
 
-	// Privilege check via the injected seam (Phase 111f, D-203):
+	// Privilege check via the injected seam:
 	// originating identity / control scope by default, protocol scopes
-	// via the server-side adapter. Defence in depth — the Phase 54
+	// via the server-side adapter. Defence in depth — the
 	// Protocol edge enforces the RFC §6.3 steering scopes at the JWT
 	// boundary too. Authorize BEFORE reserving the entry so a rejected
 	// resolver leaves the pending approval untouched.
@@ -411,7 +411,7 @@ func (g *ApprovalGate) ResolveApproval(ctx context.Context, token pauseresume.To
 	// identity-tuple equality. For REJECT, the convention (mirrored
 	// from the steering apply path) is `rejected: true` on the
 	// resume payload — observers can branch on it; the typed
-	// `pauseresume.Decision` (issue #113, D-096) is the load-bearing
+	// `pauseresume.Decision` (issue #113) is the load-bearing
 	// channel wire consumers actually switch on.
 	payload := map[string]any{}
 	if decision == DecisionReject {

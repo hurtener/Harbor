@@ -1,4 +1,4 @@
-// Package protocol — Phase 108n (D-186) additions: the strategy-trace read
+// Package protocol — additions: the strategy-trace read
 // projection + the admin-gated mutation pair (`memory.put` /
 // `memory.delete`). Like List / Get / Health these are stateless pure
 // functions — every dependency is passed in per call. They compose ONLY
@@ -23,7 +23,7 @@
 // `memory.Record.Summary` field added in 108n). Both emit an audit event on
 // the bus (`memory.item_put` / `memory.item_deleted`, SafePayload — the
 // hashed key only, never the turn text). Admin-gating lives at the handler
-// edge (D-079); the service trusts a gated, identity-validated call.
+// edge; the service trusts a gated, identity-validated call.
 package protocol
 
 import (
@@ -48,7 +48,7 @@ type StrategyTraceDeps struct {
 // the caller's session memory right now — the strategy's live
 // `GetLLMContext` (rolling summary + verbatim turns + token estimate) plus
 // `Health`. Identity is validated before the store is touched; a missing
-// triple fails loudly with `memory.ErrIdentityRequired` (D-001 / D-033).
+// triple fails loudly with `memory.ErrIdentityRequired`.
 func StrategyTrace(ctx context.Context, deps StrategyTraceDeps, id identity.Quadruple) (prototypes.MemoryStrategyTraceResponse, error) {
 	if err := memory.ValidateIdentity(id); err != nil {
 		return prototypes.MemoryStrategyTraceResponse{}, err

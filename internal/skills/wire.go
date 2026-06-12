@@ -28,7 +28,7 @@ import (
 // The hash is computed over a fixed-key envelope, NOT over a struct
 // rendering, so future field additions don't silently break stored
 // hashes. The envelope format and the included-fields list ARE
-// load-bearing — changes need a new content-hash version (D-046).
+// load-bearing — changes need a new content-hash version.
 //
 // Slice-shaped fields (`Tags`, `RequiredTools`, `RequiredNS`,
 // `RequiredTags`) are sorted before hashing so ordering noise from

@@ -10,7 +10,7 @@ import (
 // for the standalone SSE stream with exponential backoff — there is
 // no need for a Phase-28-internal reconnect state machine. Operator
 // recovery for transient transport failure rides on the outer
-// `ToolPolicy` retry shell (D-024).
+// `ToolPolicy` retry shell.
 //
 // URL MUST be set; caller (selectTransport) validates this. Headers
 // flow through the shared headerInjectingTransport so auth is

@@ -11,7 +11,7 @@ import (
 // until an envelope arrives, ctx cancels, the run is cancelled, or
 // the engine stops.
 //
-// Concurrent-fetcher contract per brief 01 §5: a single per-run
+// Concurrent-fetcher contract: a single per-run
 // subqueue means concurrent FetchByRun calls would race for ordering.
 // The API forbids the contention rather than serializing under the
 // hood — a second concurrent fetch returns ErrConcurrentFetchByRun.

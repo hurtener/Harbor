@@ -22,12 +22,12 @@ import (
 // handler. It owns the seven read-only posture methods:
 //
 //   - runtime.info, runtime.health, runtime.counters, runtime.drivers,
-//     metrics.snapshot — the Phase 72f (D-111) runtime-posture cluster.
-//   - governance.posture, llm.posture — the Phase 72g (D-112) config-
-//     posture pair (the D-081 governance `IdentityTiers` view and the
-//     bound LLM provider/model/region + D-089 `MockMode` flag).
+//     metrics.snapshot — the runtime-posture cluster.
+//   - governance.posture, llm.posture — the config-
+//     posture pair (the governance `IdentityTiers` view and the
+//     bound LLM provider/model/region + `MockMode` flag).
 //
-// PostureSurface is a sibling of the Phase 54 ControlSurface, not an
+// PostureSurface is a sibling of the ControlSurface, not an
 // extension: the posture methods are READ methods (no runtime
 // mutation), and threading the build / health / counters / drivers /
 // metrics / governance / llm seams through NewControlSurface would
@@ -35,7 +35,7 @@ import (
 //
 // PostureSurface is built once per Runtime process via NewPostureSurface
 // and shared across every Protocol request; Dispatch is safe for
-// concurrent use by N goroutines (D-025). Every field is set once at
+// concurrent use by N goroutines. Every field is set once at
 // construction and never mutated — Dispatch reads its request-specific
 // data from ctx + the request argument, never from the surface struct.
 //
@@ -44,17 +44,17 @@ import (
 // Every handler fails closed on an incomplete identity triple with
 // CodeIdentityRequired. A cross-tenant query — the request's
 // Identity.Tenant differing from the caller's ctx-verified tenant —
-// requires the admin scope per D-079; without it the response is
-// CodeScopeMismatch. When no auth middleware ran (Phase 60 trust-based
+// requires the admin scope per the closed admin-scope set; without it the response is
+// CodeScopeMismatch. When no auth middleware ran (trust-based
 // posture, no identity on ctx), the request's body identity is
 // authoritative and the cross-tenant gate is a no-op — the same
 // posture every other Protocol surface holds.
 //
-// # Audit on the cross-tenant config reads (Phase 72g / D-112)
+// # Audit on the cross-tenant config reads
 //
 // An accepted cross-tenant `governance.posture` / `llm.posture` read
 // emits a `*.posture_read_admin` audit event through the wired Redactor
-// + Bus — the same posture the Phase 72b admin-scope path takes. An
+// + Bus — the same posture the admin-scope path takes. An
 // own-tenant read does NOT emit (matches the sessions.inspect
 // convention). The five `runtime.*` / `metrics.*` reads never emit
 // audit. A failed audit emit fails loudly (CodeRuntimeError) — the read
@@ -82,7 +82,7 @@ type PostureSurface struct {
 	displayName string
 	instanceID  string
 	// wiredCaps is the per-instance subset of canonical Protocol
-	// capabilities this Runtime actually wires (Phase 84a F1 / round-8).
+	// capabilities this Runtime actually wires (/ round-8).
 	// `handleInfo` projects it as `RuntimeInfo.Capabilities`. The
 	// always-on capabilities (task_control, events_subscribe,
 	// runtime_posture) are added at construction; conditional ones
@@ -93,7 +93,7 @@ type PostureSurface struct {
 
 // PostureDeps bundles the runtime-side seams a PostureSurface reads
 // through. Every dependency is read-only — the surface mutates none of
-// them. The Runtime wires these at boot (Stage-2 page consumers — the
+// them. The Runtime wires these at boot (page consumers — the
 // Overview counter cards, the Settings Runtime Info / Governance /
 // LLM-Provider cards — read the resulting Protocol methods, never the
 // seams directly).
@@ -119,14 +119,14 @@ type PostureDeps struct {
 	// Drivers returns the configured driver names per persistence-
 	// shaped subsystem. Mandatory.
 	Drivers func() []types.SubsystemDriver
-	// Metrics returns the Protocol-shaped projection over the Phase 56
+	// Metrics returns the Protocol-shaped projection over the
 	// MetricsRegistry. Mandatory.
 	Metrics func(ctx context.Context) types.MetricsSnapshot
-	// Governance is the Phase 72g (D-112) read-only governance posture
+	// Governance is the read-only governance posture
 	// accessor — the source the `governance.posture` method projects
 	// onto types.GovernancePostureResponse. Mandatory.
 	Governance *governance.PostureProvider
-	// LLM is the Phase 72g (D-112) read-only LLM posture accessor — the
+	// LLM is the read-only LLM posture accessor — the
 	// source the `llm.posture` method projects onto
 	// types.LLMPostureResponse. Mandatory.
 	LLM *llm.PostureProvider
@@ -148,7 +148,7 @@ type PostureDeps struct {
 	// TopologyAvailable indicates this Runtime hosts an engine-graph
 	// projection — when true, `runtime.info.capabilities` advertises
 	// `topology_snapshot` so Protocol clients gate their topology
-	// fetches at attach time (round-8 F1 / phase 84a). The
+	// fetches at attach time (. The
 	// `topology.snapshot` method itself stays gated by the matching
 	// `ControlSurface.topology` accessor; this flag is the *advertised*
 	// projection of that wiring decision. Optional — defaults false
@@ -166,7 +166,7 @@ var ErrPostureMisconfigured = stderrors.New("protocol: PostureSurface missing a 
 // PostureDeps seam except Build / DisplayName / BootedAt is mandatory; a
 // missing one fails loud with a wrapped ErrPostureMisconfigured.
 //
-// The returned PostureSurface is immutable after construction (D-025)
+// The returned PostureSurface is immutable after construction
 // and safe for concurrent use by N goroutines.
 func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 	if deps.Clock == nil {
@@ -225,7 +225,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // canonical Protocol capabilities this Runtime instance has actually
 // wired. Always-on surfaces (task control, events subscribe, runtime
 // posture) are unconditional in the dev binary; conditional ones come
-// in via the matching deps flag (round-8 F1 / phase 84a). Adding a new
+// in via the matching deps flag (. Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
 func wiredCapabilitiesFor(topologyAvailable bool) []types.Capability {
@@ -242,7 +242,7 @@ func wiredCapabilitiesFor(topologyAvailable bool) []types.Capability {
 }
 
 // Dispatch is the single transport-agnostic entry point for a Protocol
-// posture-method call. A Phase 60 REST handler decodes a request, calls
+// posture-method call. A REST handler decodes a request, calls
 // Dispatch, and encodes the response — Dispatch IS the surface.
 //
 // method selects the handler; it MUST be one of the seven posture
@@ -261,7 +261,7 @@ func wiredCapabilitiesFor(topologyAvailable bool) []types.Capability {
 //   - CodeRuntimeError    — a posture-accessor or audit-emit failure.
 //
 // Dispatch holds no per-call state on the PostureSurface — it reads
-// everything from ctx + req (D-025). One PostureSurface serves N
+// everything from ctx + req. One PostureSurface serves N
 // concurrent Dispatch goroutines safely.
 func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsPostureMethod(method) {
@@ -287,13 +287,13 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 			"method %q: identity scope incomplete: %v", string(method), err)
 	}
 
-	// Cross-tenant gate (D-079). When auth middleware ran, ctx carries
+	// Cross-tenant gate. When auth middleware ran, ctx carries
 	// the verified identity; a request whose body Tenant differs from
 	// the verified tenant requires the admin (or console:fleet) scope.
-	// When no middleware ran (Phase 60 trust-based posture), there is
+	// When no middleware ran (trust-based posture), there is
 	// no ctx-identity and the gate is a no-op — the body identity is
 	// authoritative, same posture every other Protocol surface holds.
-	// The actor — the audit anchor for the Phase 72g cross-tenant
+	// The actor — the audit anchor for the cross-tenant
 	// config reads — is the ctx-verified identity when present, else
 	// the body identity.
 	crossTenant := false
@@ -341,7 +341,7 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	out.InstanceID = s.instanceID
 	out.DisplayName = s.displayName
 	out.ProtocolVersion = types.ProtocolVersion
-	// Per-instance wired subset (round-8 F1 / phase 84a). Conditional
+	// Per-instance wired subset (. Conditional
 	// surfaces (currently `topology_snapshot`) appear here only when
 	// the matching seam was wired at construction; the static
 	// `types.Capabilities()` is the handshake/registry surface, not
@@ -409,8 +409,8 @@ func (s *PostureSurface) handleMetrics(ctx context.Context) *types.MetricsSnapsh
 	return &m
 }
 
-// handleGovernancePosture builds the governance.posture response (Phase
-// 72g / D-112) by reading the governance PostureProvider and projecting
+// handleGovernancePosture builds the governance.posture response (
+// ) by reading the governance PostureProvider and projecting
 // its Snapshot onto the wire type. The validated request identity is
 // threaded into ctx so the provider's identity-mandatory gate (it reads
 // the triple from ctx) is satisfied. An accepted cross-tenant read
@@ -440,7 +440,7 @@ func (s *PostureSurface) handleGovernancePosture(
 	return projectGovernancePosture(snap), nil
 }
 
-// handleLLMPosture builds the llm.posture response (Phase 72g / D-112)
+// handleLLMPosture builds the llm.posture response
 // by reading the llm PostureProvider and projecting its PostureSnapshot
 // onto the wire type. An accepted cross-tenant read emits an
 // `llm.posture_read_admin` audit event.
@@ -466,7 +466,7 @@ func (s *PostureSurface) handleLLMPosture(
 
 // emitPostureReadAdmin publishes the typed `*.posture_read_admin` audit
 // event onto the wired bus. The audit payload runs through the wired
-// audit.Redactor BEFORE the publish (CLAUDE.md §7 rule 6 + D-020) — the
+// audit.Redactor BEFORE the publish (CLAUDE.md §7 rule 6) — the
 // posture surface reports provider/model/region/tier metadata, never an
 // API key, but the redactor pass is mandatory regardless.
 //
@@ -483,7 +483,7 @@ func (s *PostureSurface) emitPostureReadAdmin(
 	actorQuad := identity.Quadruple{Identity: actor}
 
 	// Run the audit-visible fields through the redactor before building
-	// the typed payload (mirrors the Phase 72b admin_scope_used
+	// the typed payload (mirrors the admin_scope_used
 	// pattern).
 	auditView := map[string]any{
 		"actor_tenant":     actor.TenantID,

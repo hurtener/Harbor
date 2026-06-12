@@ -1,22 +1,22 @@
 // Package conformance ships the planner conformance pack.
 //
-// Phase 42 landed the harness shape (the Harness struct + the
+// An earlier phase landed the harness shape (the Harness struct + the
 // Run(t, factory) entry point + the §13 import-graph lint test).
-// Phase 49 fills in every scenario body — the top-prompt
+// Harbor fills in every scenario body — the top-prompt
 // LLM-round-trip set, the malformed-LLM-output salvage path, the
 // CallParallel atomicity check, the load-bearing wake-mode
-// round-trip (D-032 — binding), the budget-aware finish, the
+// round-trip (binding), the budget-aware finish, the
 // pause-payload bounds, the steering drain-between-steps, and the
-// D-025 concurrent-reuse surface.
+// concurrent-reuse surface.
 //
 // The conformance pack is a shared test asset: every concrete
-// `Planner` (Phase 45 ReAct, Phase 48 Deterministic, and every future
+// `Planner` (ReAct, Deterministic, and every future
 // concrete on the same iface) calls Run against the same scenarios.
 // The pack itself never imports a concrete-planner package — the
 // `internal/planner/conformance.TestImportGraph_PlannerDoesNotImportRuntime`
 // lint test walks the planner subtree and would fail otherwise.
 //
-// Per-concrete consumption pattern (Phase 49+):
+// Per-concrete consumption pattern:
 //
 //	func TestReact_Conformance(t *testing.T) {
 //	    conformance.Run(t, func() conformance.Harness {
@@ -37,8 +37,8 @@
 // The harness factory pattern matches the events / tools / tasks
 // conformance suites: each subtest gets a fresh planner instance so
 // internal state can't bleed between scenarios. The harness factory's
-// `Factory` closure returns a planner that is safe under D-025
-// concurrent reuse — the D-025 scenario runs N=64 concurrent Next
+// `Factory` closure returns a planner that is safe under the concurrent-reuse contract's
+// concurrent reuse — the scenario runs N=64 concurrent Next
 // calls against one shared instance.
 package conformance
 
@@ -81,12 +81,12 @@ type Capability uint32
 const (
 	// CapabilityLLMDriven — the planner uses an LLM client and
 	// participates in the LLM-round-trip + malformed-output scenarios.
-	// Phase 45 ReAct sets this; Phase 48 Deterministic does not.
+	// ReAct sets this; Deterministic does not.
 	CapabilityLLMDriven Capability = 1 << iota
 	// CapabilityCanPause — the planner can emit `RequestPause` under
 	// operator configuration; the pause-payload bounds scenario runs.
 	// Deterministic sets this via its `PauseStep`; ReAct does not in
-	// V1 (Phase 50 wires the planner-side emission path).
+	// V1 (Harbor wires the planner-side emission path).
 	CapabilityCanPause
 	// CapabilityWakeRoundTrip — the planner is wired to consume the
 	// wake-mode round-trip via real `tasks.TaskRegistry`. Both ReAct
@@ -100,14 +100,14 @@ const (
 	CapabilityHonoursCancelControl
 )
 
-// CapabilitySetReAct is the canonical capability set for Phase 45's
+// CapabilitySetReAct is the canonical capability set for the
 // LLM-driven ReAct planner.
 const CapabilitySetReAct = CapabilityLLMDriven |
 	CapabilityWakeRoundTrip |
 	CapabilityHonoursCancelControl
 
 // CapabilitySetDeterministic is the canonical capability set for
-// Phase 48's deterministic planner. Distinct from ReAct: no LLM
+// the deterministic planner. Distinct from ReAct: no LLM
 // (Deterministic is programmatic), can emit Pause (via PauseStep),
 // supports the wake-mode poll round-trip.
 const CapabilitySetDeterministic = CapabilityCanPause |
@@ -146,8 +146,8 @@ type PlannerFactoryFn func(scenario ScenarioName) planner.Planner
 // Each conformance subtest invokes `factory()` once to obtain a fresh
 // Harness with a fresh planner instance.
 //
-// Compatibility with Phase 42: the original three fields (Factory,
-// WakeMode, RunContextFactory, Cleanup) are unchanged. Phase 49 adds
+// Backward compatibility: the original three fields (Factory,
+// WakeMode, RunContextFactory, Cleanup) are unchanged. Harbor adds
 // `ScenarioFactory`, `Capabilities`, `TaskRegistryFactory`, and the
 // scenario-content factories at the bottom — additive only; existing
 // per-concrete tests continue to compile.
@@ -168,15 +168,15 @@ type Harness struct {
 	// scenario uses `Factory()`.
 	ScenarioFactory PlannerFactoryFn
 
-	// WakeMode is the wake mode the concrete declares (D-032). The
+	// WakeMode is the wake mode the concrete declares. The
 	// WakeMode_Declared scenario asserts the planner's
 	// `ResolveWakeMode` agrees; the WakeMode_RoundTrip scenario
 	// drives the corresponding round-trip path (push vs poll).
 	WakeMode planner.WakeMode
 
 	// RunContextFactory builds the minimal valid RunContext the
-	// concrete needs. Required at Phase 49 — every concrete now
-	// validates identity at Next boundary (§6 rule 9 + D-001).
+	// concrete needs. Required — every concrete now
+	// validates identity at Next boundary (§6 rule 9).
 	RunContextFactory func() planner.RunContext
 
 	// Capabilities is the planner's declared capability set. The
@@ -187,7 +187,7 @@ type Harness struct {
 	// TaskRegistryFactory, when non-nil, builds the real
 	// `tasks.TaskRegistry` (production inprocess driver) the
 	// WakeMode_RoundTrip scenario drives. The factory also wires a
-	// real `events.EventBus` since the registry needs one (D-032 +
+	// real `events.EventBus` since the registry needs one (the wake contract +
 	// §17.3 #1 — no mocks at the seam).
 	//
 	// The pack ships a default factory (`DefaultTaskRegistryFactory`)
@@ -210,8 +210,8 @@ type Harness struct {
 	Cleanup func()
 }
 
-// runContext returns the harness's per-subtest RunContext. Required
-// at Phase 49; concretes that pass a nil factory will fail loudly in
+// runContext returns the harness's per-subtest RunContext. Required;
+// concretes that pass a nil factory will fail loudly in
 // the Sanity scenario.
 func (h Harness) runContext() planner.RunContext {
 	if h.RunContextFactory == nil {
@@ -246,7 +246,7 @@ func (h Harness) plannerForScenario(s ScenarioName) planner.Planner {
 // All fields are real production drivers (§17.3 #1 — no mocks at the
 // seam): inmem `events.EventBus`, inprocess `tasks.TaskRegistry`,
 // inmem `state.StateStore`. The wake-mode round-trip is the
-// load-bearing D-032 scenario; mocks here would defeat its purpose.
+// load-bearing scenario; mocks here would defeat its purpose.
 type WakeRoundTripDeps struct {
 	Bus      events.EventBus
 	Registry tasks.TaskRegistry
@@ -319,8 +319,8 @@ func DefaultRunContext() planner.RunContext {
 }
 
 // Run executes the conformance pack against the planner produced by
-// `factoryFunc`. Phase 49 fills every scenario; the Sanity skeleton
-// scenarios from Phase 42 are preserved verbatim (subtest names are
+// `factoryFunc`. Harbor fills every scenario; the Sanity skeleton
+// scenarios from are preserved verbatim (subtest names are
 // pinned). New scenarios use real drivers at the seam (§17.3 #1).
 //
 // The factory is called once per subtest so per-scenario planner
@@ -329,7 +329,7 @@ func DefaultRunContext() planner.RunContext {
 func Run(t *testing.T, factoryFunc func() Harness) {
 	t.Helper()
 
-	// Phase 42 skeleton scenarios — preserved verbatim. Subtest names
+	// skeleton scenarios — preserved verbatim. Subtest names
 	// are stable.
 	t.Run("Sanity_NextReturnsDecision", func(t *testing.T) {
 		h := factoryFunc()
@@ -383,7 +383,7 @@ func Run(t *testing.T, factoryFunc func() Harness) {
 		var _ planner.Decision = planner.Finish{}
 	})
 
-	// Phase 49 scenarios. Each has its own subtest; per-scenario
+	// scenarios. Each has its own subtest; per-scenario
 	// capability gating skips with a reason rather than silently
 	// passing.
 	t.Run(string(ScenarioTopPrompts), func(t *testing.T) {
@@ -474,7 +474,7 @@ func runTopPromptsScenario(t *testing.T, factoryFunc func() Harness) {
 
 // runMalformedLLMScenario asserts the planner does NOT panic on
 // malformed LLM output and surfaces a typed terminal via the schema-
-// repair pipeline (Phase 44). For non-LLM concretes (Deterministic),
+// repair pipeline. For non-LLM concretes (Deterministic),
 // the scenario is N/A — capability gated.
 func runMalformedLLMScenario(t *testing.T, factoryFunc func() Harness) {
 	t.Helper()
@@ -505,7 +505,7 @@ func runMalformedLLMScenario(t *testing.T, factoryFunc func() Harness) {
 	dec, err := p.Next(context.Background(), rc)
 	// The schema repair pipeline's documented contract is that
 	// malformed output salvages to `Finish{NoPath}` after the repair
-	// ladder exhausts (D-050). The planner may either return that
+	// ladder exhausts. The planner may either return that
 	// Finish or surface a wrapped error — both shapes are
 	// fail-loudly. A nil Decision + nil err is the silent-degradation
 	// shape that §13 forbids.
@@ -526,7 +526,7 @@ func runMalformedLLMScenario(t *testing.T, factoryFunc func() Harness) {
 // CallParallel decision, the shape is well-formed (≥1 branch, every
 // branch is a CallTool with a non-empty Tool name, the Join is one
 // of the canonical kinds). The atomic-setup-validation contract is
-// the runtime executor's job (Phase 47); the planner's contract is
+// the runtime executor's job; the planner's contract is
 // shape-only.
 //
 // Concretes that have no ScenarioFactory or no way to emit
@@ -581,7 +581,7 @@ func runParallelAtomicityScenario(t *testing.T, factoryFunc func() Harness) {
 	}
 }
 
-// runWakeRoundTripScenario is the LOAD-BEARING scenario per D-032.
+// runWakeRoundTripScenario is the LOAD-BEARING scenario.
 // It wires REAL drivers across the seam (§17.3 #1):
 //
 //   - Real `events.EventBus` (inmem driver).
@@ -599,14 +599,14 @@ func runParallelAtomicityScenario(t *testing.T, factoryFunc func() Harness) {
 //  4. WatchGroup channel delivers GroupCompletion.
 //  5. Test surfaces the MemberOutcome into
 //     `rc.Trajectory.Background` (mimicking what the runtime engine
-//     does in production at Phase 60+).
+//     does in production in later phases).
 //  6. Planner re-enters Next; emits Finish.
 //
 // For poll-mode planners (Deterministic):
 //
 //  1. Planner emits SpawnTask via the harness's PrebuiltPlannerFactory
 //     (Deterministic's SpawnAndAwaitStep spawns the real task
-//     itself; Phase 48's wiring).
+//     itself; the wiring).
 //  2. Test runs the planner repeatedly: Next returns AwaitTask
 //     while the group is open.
 //  3. Test transitions the spawned task to Complete.
@@ -686,7 +686,7 @@ func runWakeRoundTripPush(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 	}
 
 	// Runtime side (the test stands in for the production planner-
-	// step adapter that lands at Phase 60+): spawn the real task in
+	// step adapter that lands in later phases): spawn the real task in
 	// a fresh group; WatchGroup before transitioning to Complete.
 	group, err := deps.Registry.ResolveOrCreateGroup(ctx, tasks.GroupRequest{
 		SessionID:   rc.Quadruple.Identity,
@@ -731,7 +731,7 @@ func runWakeRoundTripPush(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 	select {
 	case completion = <-completionCh:
 	case <-time.After(2 * time.Second):
-		t.Fatal("WakeMode_RoundTrip (push): WatchGroup did not deliver GroupCompletion within 2s — failure to wire tasks.WatchGroup is the test's failure mode, not silent deadlock (D-032)")
+		t.Fatal("WakeMode_RoundTrip (push): WatchGroup did not deliver GroupCompletion within 2s — failure to wire tasks.WatchGroup is the test's failure mode, not silent deadlock")
 	}
 	if completion.FinalStatus != tasks.GroupCompleted {
 		t.Errorf("FinalStatus = %q, want %q", completion.FinalStatus, tasks.GroupCompleted)
@@ -799,7 +799,7 @@ func runWakeRoundTripPoll(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 
 	// Step 1: planner emits SpawnTask (the planner's step
 	// implementation also spawns the real task into the registry;
-	// Phase 48's SpawnAndAwaitStep does this).
+	// the SpawnAndAwaitStep does this).
 	dec, err := p.Next(ctx, rc)
 	if err != nil {
 		t.Fatalf("Next #1 (expect SpawnTask): %v", err)
@@ -866,7 +866,7 @@ func runWakeRoundTripPoll(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 
 	// Step 3: Next consumes the resolved group via the planner's
 	// non-blocking receive, fires OnResolved, emits the resolved
-	// decision (Phase 48's SpawnAndAwaitStep + tests typically wire
+	// decision (the SpawnAndAwaitStep + tests typically wire
 	// OnResolved to return Finish{Goal}).
 	//
 	// Bounded retry: the registry's WatchGroup delivery is
@@ -891,7 +891,7 @@ func runWakeRoundTripPoll(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 		runtime.Gosched()
 	}
 	if _, ok := dec3.(planner.AwaitTask); ok {
-		t.Fatal("WakeMode_RoundTrip (poll): planner never advanced past AwaitTask within 2s after MarkComplete — failure to wire tasks.WatchGroup is the test's failure mode, not silent deadlock (D-032)")
+		t.Fatal("WakeMode_RoundTrip (poll): planner never advanced past AwaitTask within 2s after MarkComplete — failure to wire tasks.WatchGroup is the test's failure mode, not silent deadlock")
 	}
 	// The terminal decision shape varies by the operator-supplied
 	// OnResolved; accept any non-AwaitTask shape (Finish is the
@@ -960,8 +960,8 @@ func runBudgetAwareScenario(t *testing.T, factoryFunc func() Harness) {
 //   - Key count ≤ 64
 //   - Total size ≤ 16 KiB
 //
-// The strict bounds-enforcement test lives at the protocol edge
-// (Phase 52); the pack's scenario asserts that a typical operator-
+// The strict bounds-enforcement test lives at the protocol edge;
+// the pack's scenario asserts that a typical operator-
 // supplied payload from a real planner emission is comfortably
 // inside the limits.
 func runPauseBoundsScenario(t *testing.T, factoryFunc func() Harness) {
@@ -1205,7 +1205,7 @@ type ScenarioContentMap map[ScenarioName]string
 // tests typically pass this map verbatim; operators with bespoke
 // emission shapes can override individual entries.
 //
-// The content envelope shapes mirror Phase 45's `DefaultSystemPrompt`
+// The content envelope shapes mirror the `DefaultSystemPrompt`
 // — JSON-only, the reserved tool names (`_finish`, `_spawn_task`,
 // `_await_task`), arrays for parallel fan-out.
 func DefaultReactContentMap() ScenarioContentMap {

@@ -3,9 +3,9 @@
 // runtime, planner, tools) Publishes to and Subscribes from. There
 // is no parallel observability channel; the unification of telemetry
 // + chunked output on one bus is a load-bearing decision that closes
-// the predecessor's split-channel sharp edge (brief 06 §1).
+// the predecessor's split-channel sharp edge.
 //
-// Phase 05 ships:
+// Harbor ships:
 //
 //   - The exhaustive EventType registry (V1 starter set + the IsValidEventType
 //     / EventTypes API; future phases add types by declaring an exported
@@ -15,18 +15,18 @@
 //   - The Event record, Filter, Subscription and EventBus interfaces.
 //   - Sentinel errors callers compare via errors.Is.
 //   - The §4.4 driver-registry seam (registry.go) so future drivers
-//     (replay-equipped Phase 06, durable-log Phase 57) plug in without
+//     (replay-equipped, durable-log) plug in without
 //     changing callers.
 //   - Ctx helpers (WithBus / MustFrom / From) mirroring the audit / identity
 //     ctx-helper pattern.
 //
-// What is OUT of scope for Phase 05:
+// What is OUT of scope for this package:
 //
-//   - Replay-from-cursor / ring-buffered driver — Phase 06.
-//   - Durable event-log driver against StateStore — Phase 57.
-//   - Cryptographic Admin scope verification — Phase 61 (Protocol auth).
-//   - Protocol wire encoding / remote consumers — Phase 60.
-//   - Metric label derivation — Phase 56.
+//   - Replay-from-cursor / ring-buffered driver.
+//   - Durable event-log driver against StateStore.
+//   - Cryptographic Admin scope verification — (Protocol auth).
+//   - Protocol wire encoding / remote consumers.
+//   - Metric label derivation.
 package events
 
 import (
@@ -71,10 +71,10 @@ type EventID string
 // new type is reader-facing.
 type EventType string
 
-// V1 starter set. Phase 03 / 04 / 36b will populate the matching
-// emit paths; Phase 05 emits the bus-internal types itself.
+// V1 starter set. A later phase will populate the matching
+// emit paths; Harbor emits the bus-internal types itself.
 const (
-	// EventTypeRuntimeError — emitted by the Phase 04 logger on Error.
+	// EventTypeRuntimeError — emitted by the logger on Error.
 	EventTypeRuntimeError EventType = "runtime.error"
 	// EventTypeRuntimeWarning — reserved for future runtime-warn emits.
 	EventTypeRuntimeWarning EventType = "runtime.warning"
@@ -93,32 +93,32 @@ const (
 	// Admin: true (cross-session/cross-tenant) so admin-scope use is
 	// retroactively detectable.
 	EventTypeAdminScopeUsed EventType = "audit.admin_scope_used"
-	// EventTypeGovernanceBudgetExceeded — reserved for Phase 36b emit.
+	// EventTypeGovernanceBudgetExceeded — reserved for emit.
 	EventTypeGovernanceBudgetExceeded EventType = "governance.budget_exceeded"
-	// EventTypeGovernanceRateLimited — reserved for Phase 36b emit.
+	// EventTypeGovernanceRateLimited — reserved for emit.
 	EventTypeGovernanceRateLimited EventType = "governance.rate_limited"
 	// EventTypeRuntimeRunCancelled — emitted by Engine.Cancel(runID)
 	// when the cancellation was observed for an active run. Payload is
-	// RunCancelledPayload (SafePayload). Phase 13.
+	// RunCancelledPayload (SafePayload).
 	EventTypeRuntimeRunCancelled EventType = "runtime.run_cancelled"
 	// EventTypeTopologyChanged — emitted by the engine on construction
 	// and on every adjacency-set change, carrying the canonical
-	// TopologyProjection (Phase 74 / D-114). Payload is
+	// TopologyProjection. Payload is
 	// TopologyChangedPayload (SafePayload — the projection has no
 	// secret-shaped fields, so the audit redactor bypasses it and
 	// subscribers keep typed access). The paired request-side surface
 	// is the `topology.snapshot` Protocol method.
 	EventTypeTopologyChanged EventType = "topology.changed"
 	// EventTypeMCPRawHTMLTrustToggled — emitted by the runtime (the
-	// Phase 73k MCPSurface) when a Console admin flips the per-server
+	// MCPSurface) when a Console admin flips the per-server
 	// raw-HTML opt-in flag via `mcp.servers.set_raw_html_trust`. Payload
 	// is MCPRawHTMLTrustToggledPayload (SafePayload by construction —
 	// server name + boolean + actor identity quadruple; no upstream MCP
 	// content). The default-deny posture for raw-HTML / SVG rendering
-	// (brief 11 §8) makes this audit event the load-bearing record of
-	// the operator's explicit opt-in. Phase 73k / D-119.
+	// makes this audit event the load-bearing record of
+	// the operator's explicit opt-in.
 	EventTypeMCPRawHTMLTrustToggled EventType = "mcp.raw_html_trust_toggled"
-	// EventTypeRunOverridesSet — emitted by the runtime (the Phase 73n
+	// EventTypeRunOverridesSet — emitted by the runtime (the
 	// Runs surface) when the Console Playground page records a
 	// next-message override via `runs.set_overrides`. Payload is
 	// RunOverridesSetPayload (SafePayload by construction — the actor's
@@ -126,7 +126,7 @@ const (
 	// "which field was set" flags; the override VALUES themselves are
 	// NOT in the payload, since a system-prompt override is
 	// caller-supplied text that must not reach an audit subscriber
-	// unredacted — CLAUDE.md §7). Phase 73n / D-130.
+	// unredacted — CLAUDE.md §7).
 	EventTypeRunOverridesSet EventType = "runs.overrides_set"
 )
 
@@ -159,10 +159,10 @@ func init() {
 }
 
 // TopologyChangedPayload is the SafePayload carried by an
-// EventTypeTopologyChanged event (Phase 74 / D-114). The engine
+// EventTypeTopologyChanged event. The engine
 // publishes one on construction and on every adjacency-set change.
 //
-// It is SafePayload by construction (D-028): a TopologyProjection
+// It is SafePayload by construction: a TopologyProjection
 // carries only node names, edge endpoints, kind tags, and bounded
 // integer queue depths — no secret-shaped fields. The bus therefore
 // skips the audit.Redactor for this payload and a subscriber keeps
@@ -175,11 +175,11 @@ type TopologyChangedPayload struct {
 }
 
 // MCPRawHTMLTrustToggledPayload is the SafePayload carried by an
-// EventTypeMCPRawHTMLTrustToggled event (Phase 73k / D-119). The
+// EventTypeMCPRawHTMLTrustToggled event. The
 // runtime publishes one on every successful
 // `mcp.servers.set_raw_html_trust` Protocol call.
 //
-// It is SafePayload by construction (D-028): the payload carries only
+// It is SafePayload by construction: the payload carries only
 // the MCP server name, the new boolean trust value, the actor's
 // identity quadruple, and the toggle instant — no upstream MCP content,
 // no secret-shaped fields. The bus therefore skips the audit.Redactor
@@ -197,10 +197,10 @@ type MCPRawHTMLTrustToggledPayload struct {
 }
 
 // RunOverridesSetPayload is the SafePayload carried by an
-// EventTypeRunOverridesSet event (Phase 73n / D-130). The runtime
+// EventTypeRunOverridesSet event. The runtime
 // publishes one on every successful `runs.set_overrides` Protocol call.
 //
-// It is SafePayload by construction (D-028): the payload carries only
+// It is SafePayload by construction: the payload carries only
 // the actor's identity quadruple, the target session id, the recording
 // instant, and a bounded set of boolean "which field was set" flags.
 // The override VALUES are deliberately NOT in the payload — a
@@ -324,8 +324,8 @@ type RedactedMap struct {
 // Callers MUST NOT pre-fill Sequence (Publish rejects with
 // ErrSequenceProvided). OccurredAt defaults to time.Now() when zero.
 //
-// Extra is reserved for Phase 56's bounded low-cardinality metric
-// labels. Phase 05 does not derive metrics; the slot exists so later
+// Extra is reserved for the bounded low-cardinality metric
+// labels. Harbor does not derive metrics; the slot exists so later
 // phases can populate it without changing the Event shape.
 type Event struct {
 	Type       EventType
@@ -342,8 +342,8 @@ type Event struct {
 // triple, the bus emits an audit.admin_scope_used event before
 // returning the subscription.
 //
-// The Admin claim is trust-based in Phase 05. Cryptographic
-// verification arrives with Protocol auth in Phase 61; until then
+// The Admin claim is trust-based in a later phase. Cryptographic
+// verification arrives with Protocol auth in a later phase; until then
 // the audit emit on every Admin-true Subscribe makes any abuse
 // retroactively detectable.
 type Filter struct {
@@ -353,9 +353,9 @@ type Filter struct {
 	// Run, when non-empty, narrows the subscription to a single run
 	// inside the (tenant, user, session) scope. An empty Run means
 	// "every run in the session" (session-scoped subscription) — the
-	// Phase 60 default. The wire transport carries this via the
+	// default. The wire transport carries this via the
 	// optional `X-Harbor-Run` (stream/HeaderRun) carrier header.
-	// PR #91 / D-082 (Wave 10 audit WARN-5).
+	// PR #91.
 	Run   string
 	Types []EventType
 	Admin bool
@@ -411,7 +411,7 @@ type Subscription interface {
 
 // EventBus is the canonical pub/sub surface. Implementations MUST be
 // safe for concurrent use by N goroutines against a single shared
-// instance (D-025).
+// instance.
 type EventBus interface {
 	Publish(ctx context.Context, ev Event) error
 	Subscribe(ctx context.Context, f Filter) (Subscription, error)
@@ -474,9 +474,9 @@ var (
 	// ErrIdentityScopeRequired — Subscribe filter elides the identity
 	// triple AND Admin is false.
 	ErrIdentityScopeRequired = errors.New("events: filter must specify (tenant, user, session) unless Admin")
-	// ErrAdminScopeRequired — reserved; Phase 61 wiring will return
+	// ErrAdminScopeRequired — reserved; wiring will return
 	// this when a caller claims Admin without a verified scope claim.
-	// Phase 05 trusts the caller; the sentinel is exposed now so the
+	// Harbor trusts the caller; the sentinel is exposed now so the
 	// API surface is stable across the auth wiring.
 	ErrAdminScopeRequired = errors.New("events: admin scope required for cross-session/cross-tenant subscription")
 	// ErrSubscriberLimitReached — per-session subscriber cap hit.
@@ -496,7 +496,7 @@ var (
 	// ErrCursorTooOld — Replay was called with a Cursor whose Sequence
 	// is older than the ring's oldest retained entry. Wraps a
 	// "(oldest, requested)" detail in the formatted message so callers
-	// that fall through to a durable log (Phase 57) can interpret the
+	// that fall through to a durable log can interpret the
 	// gap. errors.Is(err, ErrCursorTooOld) is the comparison.
 	ErrCursorTooOld = errors.New("events: cursor older than ring tail")
 	// ErrReplayUnavailable — replay is disabled on this driver

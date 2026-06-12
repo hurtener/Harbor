@@ -8,8 +8,8 @@ import (
 )
 
 // DefaultQueueSize is the bounded per-adjacency channel capacity when
-// no override is configured. RFC §6.1 settles the value at 64
-// (resolves brief 01 Q-4). Engine-wide override via WithQueueSize(n);
+// no override is configured. RFC §6.1 settles the value at 64.
+// Engine-wide override via WithQueueSize(n);
 // per-channel override via WithChannelOverride(from, to, n).
 const DefaultQueueSize = 64
 
@@ -17,7 +17,7 @@ const DefaultQueueSize = 64
 // failure. The engine's default (when no handler is configured) is a
 // no-op AFTER the engine's slog.Logger has logged the failure — the
 // handler is the seam production wiring uses to route the structured
-// RunError to Phase 04's *telemetry.Logger.Error so the wave-2
+// RunError to the *telemetry.Logger.Error so the wave-2
 // BusEmitter adapter publishes a runtime.error event.
 //
 // Decoupled by design: the engine package does not import
@@ -63,8 +63,8 @@ type engineConfig struct {
 	runCancelledHandler RunCancelledHandler
 	cancelTTL           time.Duration
 	// eventBus, when non-nil, is the bus the engine publishes a
-	// `topology.changed` event onto at construction (Phase 74 /
-	// D-114). nil (the default) = no emit — the Phase 02 engine-test
+	// `topology.changed` event onto at construction
+	// nil (the default) = no emit — the engine-test
 	// surface that never wires a bus sees zero behavioural change.
 	eventBus events.EventBus
 }
@@ -100,9 +100,9 @@ func WithChannelOverride(from, to NodeRef, n int) Option {
 }
 
 // WithErrorEmissionToEgress toggles whether internal worker errors
-// (Phase 11's RunError) ALSO land on the egress channel as a special
-// error-shaped envelope. Default is false: errors go to Phase 04's
-// logger + Phase 05's bus (via the configured RunErrorHandler) only.
+// (the RunError) ALSO land on the egress channel as a special
+// error-shaped envelope. Default is false: errors go to the
+// logger + the bus (via the configured RunErrorHandler) only.
 //
 // Operators who want to consume errors via Fetch (instead of via the
 // bus) opt in here. The egress envelope's Payload is the *RunError;
@@ -114,7 +114,7 @@ func WithErrorEmissionToEgress(enabled bool) Option {
 }
 
 // WithRunErrorHandler installs the callback the engine fires on
-// terminal node failure. The production handler (Phase 111f, D-203)
+// terminal node failure. The production handler
 // is a callback that invokes telemetry.Logger.Error so the wave-2
 // BusEmitter adapter publishes a runtime.error event:
 // `assemble.Assemble` builds it as `Stack.RunErrorHandler`. The
@@ -126,7 +126,7 @@ func WithErrorEmissionToEgress(enabled bool) Option {
 // assert the structured RunError shape.
 //
 // When unset, the engine logs the failure via its slog.Logger only
-// (Phase 10 behavior). The handler is invoked AFTER the slog log so
+// (behavior). The handler is invoked AFTER the slog log so
 // both paths see the failure regardless of the handler's outcome.
 func WithRunErrorHandler(h RunErrorHandler) Option {
 	return func(cfg *engineConfig) {
@@ -139,7 +139,7 @@ func WithRunErrorHandler(h RunErrorHandler) Option {
 // engine-hosting assembly to translate the notice to a
 // runtime.run_cancelled bus event (no production assembly installs
 // THIS handler today, unlike the run-error handler — see
-// WithRunErrorHandler); tests use a recording callback. Phase 13.
+// WithRunErrorHandler); tests use a recording callback.
 func WithRunCancelledHandler(h RunCancelledHandler) Option {
 	return func(cfg *engineConfig) {
 		cfg.runCancelledHandler = h
@@ -147,14 +147,14 @@ func WithRunCancelledHandler(h RunCancelledHandler) Option {
 }
 
 // WithEventBus wires the canonical events.EventBus the engine
-// publishes its construction-time `topology.changed` event onto
-// (Phase 74 / D-114). The event carries the engine's initial
+// publishes its construction-time `topology.changed` event onto.
+// The event carries the engine's initial
 // TopologyProjection so a Protocol consumer that subscribed before
 // the engine was built catches the graph the moment it exists.
 //
 // The option is additive: an engine constructed WITHOUT WithEventBus
-// (the Phase 02 default) publishes nothing — every existing engine
-// test sees zero behavioural change and Phase 02 callers gain no new
+// (the default) publishes nothing — every existing engine
+// test sees zero behavioural change and callers gain no new
 // mandatory dependency. A nil bus passed to WithEventBus is treated
 // as "WithEventBus not supplied".
 //
@@ -169,7 +169,7 @@ func WithEventBus(b events.EventBus) Option {
 	}
 }
 
-// EmitOption is the Emit-time option type. Phase 12 added
+// EmitOption is the Emit-time option type. An earlier phase added
 // WithRunCapacity for per-run streaming backpressure overrides.
 type EmitOption func(*emitOptions)
 
@@ -197,7 +197,7 @@ func WithRunCapacity(n int) EmitOption {
 	}
 }
 
-// FetchOption is the Fetch-time option type. Phase 13 will add
+// FetchOption is the Fetch-time option type. A later phase will add
 // per-run filtering via FetchByRun (a dedicated method, not an
 // option), but the type exists today for fetch-side knobs that may
 // land later (e.g. FetchTimeout).

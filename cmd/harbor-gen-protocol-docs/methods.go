@@ -73,7 +73,7 @@ const (
 	// topology.snapshot).
 	crossTenantAdminOnly
 	// crossTenantAdminOrFleet — the cross-tenant filter gate admits the
-	// D-079 closed two-scope set: `admin` OR `console:fleet` (events,
+	// closed two-scope set: `admin` OR `console:fleet` (events,
 	// search, sessions.list, artifacts.list, memory.list, posture).
 	crossTenantAdminOrFleet
 	// crossTenantAdminWidens — no rejecting cross-tenant filter shape
@@ -122,8 +122,8 @@ var methodToControlType = map[methods.Method]steering.ControlType{
 }
 
 // adminNote is the shared auth-posture string for the admin-gated
-// methods (D-079 closed two-scope set).
-const adminNote = "requires the verified `admin` scope claim (D-079)"
+// methods (closed two-scope set).
+const adminNote = "requires the verified `admin` scope claim"
 
 // controlRoute derives the concrete control-transport route for a
 // method from control.RoutePattern.
@@ -151,13 +151,13 @@ func subtreeRoute(pattern, prefix string, m methods.Method) string {
 // same construction the renderer uses.
 func methodTable() map[methods.Method]methodEntry {
 	t := map[methods.Method]methodEntry{
-		// --- Task control (Phase 54): start + the nine steering controls.
+		// --- Task control: start + the nine steering controls.
 		methods.MethodStart: {
 			Route: controlRoute(methods.MethodStart), Mutates: true,
 			Request: "StartRequest", Response: "StartResponse",
 		},
 
-		// --- Streaming events (Phases 60 / 72 / 72a).
+		// --- Streaming events.
 		methods.MethodEventsSubscribe: {
 			Route: stream.RoutePattern, Mutates: false,
 			RequestNote:  "no JSON body — the filter travels as query/header values (`X-Harbor-Run`, `X-Harbor-Event-Type`, `?admin=1`, `Last-Event-ID`)",
@@ -170,14 +170,14 @@ func methodTable() map[methods.Method]methodEntry {
 			CrossTenant: crossTenantAdminOrFleet,
 		},
 
-		// --- Search cluster (Phase 72c / D-108) — all five share one shape.
+		// --- Search cluster — all five share one shape.
 		methods.MethodSearchQuery:     searchEntry(methods.MethodSearchQuery),
 		methods.MethodSearchSessions:  searchEntry(methods.MethodSearchSessions),
 		methods.MethodSearchTasks:     searchEntry(methods.MethodSearchTasks),
 		methods.MethodSearchEvents:    searchEntry(methods.MethodSearchEvents),
 		methods.MethodSearchArtifacts: searchEntry(methods.MethodSearchArtifacts),
 
-		// --- Posture cluster (Phases 72f / 72g) — read-only; all seven
+		// --- Posture cluster — read-only; all seven
 		// take the shared RuntimeInfoRequest identity envelope.
 		methods.MethodRuntimeInfo:       postureEntry(methods.MethodRuntimeInfo, "RuntimeInfo"),
 		methods.MethodRuntimeHealth:     postureEntry(methods.MethodRuntimeHealth, "RuntimeHealth"),
@@ -187,21 +187,21 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodGovernancePosture: postureEntry(methods.MethodGovernancePosture, "GovernancePostureResponse"),
 		methods.MethodLLMPosture:        postureEntry(methods.MethodLLMPosture, "LLMPostureResponse"),
 
-		// --- Pause snapshot (Phase 72e / D-110).
+		// --- Pause snapshot.
 		methods.MethodPauseList: {
 			Route: stream.PauseListRoutePattern, Mutates: false,
 			Request: "PauseListRequest", Response: "PauseListResponse",
 			CrossTenant: crossTenantAdminOnly,
 		},
 
-		// --- Topology (Phase 74 / D-114).
+		// --- Topology.
 		methods.MethodTopologySnapshot: {
 			Route: controlRoute(methods.MethodTopologySnapshot), Mutates: false,
 			Request: "TopologySnapshotRequest", Response: "TopologyProjection",
 			CrossTenant: crossTenantAdminOnly,
 		},
 
-		// --- Artifacts (Phase 73l / D-120 + Phase 108o / D-187).
+		// --- Artifacts.
 		methods.MethodArtifactsList: {
 			Route: controlRoute(methods.MethodArtifactsList), Mutates: false,
 			Request: "ArtifactsListRequest", Response: "ArtifactsListResponse",
@@ -221,7 +221,7 @@ func methodTable() map[methods.Method]methodEntry {
 			Auth: adminNote,
 		},
 
-		// --- Memory (Phase 73j / D-118 + Phase 108n / D-186).
+		// --- Memory.
 		methods.MethodMemoryList: {
 			Route: stream.MemoryListRoutePattern, Mutates: false,
 			Request: "MemoryListRequest", Response: "MemoryListResponse",
@@ -250,7 +250,7 @@ func methodTable() map[methods.Method]methodEntry {
 			Auth: adminNote,
 		},
 
-		// --- MCP Connections (Phase 73k / D-119): nine reads + three
+		// --- MCP Connections: nine reads + three
 		// admin verbs, all on the control transport.
 		methods.MethodMCPServersList:             mcpEntry(methods.MethodMCPServersList, "MCPServersListRequest", "MCPServersListResponse", false),
 		methods.MethodMCPServersGet:              mcpEntry(methods.MethodMCPServersGet, "MCPServerGetRequest", "MCPServerGetResponse", false),
@@ -265,7 +265,7 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodMCPServersRevokeBinding:    mcpEntry(methods.MethodMCPServersRevokeBinding, "MCPServerRevokeBindingRequest", "MCPServerRevokeBindingResponse", true),
 		methods.MethodMCPServersSetRawHTMLTrust:  mcpEntry(methods.MethodMCPServersSetRawHTMLTrust, "MCPServerSetRawHTMLTrustRequest", "MCPServerSetRawHTMLTrustResponse", true),
 
-		// --- Tools (Phase 73f / D-116): five reads + two admin verbs.
+		// --- Tools: five reads + two admin verbs.
 		methods.MethodToolsList: {
 			Route: wildcardRoute(stream.ToolsRoutePattern, "tools.", methods.MethodToolsList), Mutates: false,
 			Request: "ToolListRequest", Response: "ToolListResponse",
@@ -297,7 +297,7 @@ func methodTable() map[methods.Method]methodEntry {
 			Auth: adminNote,
 		},
 
-		// --- Tasks (Phase 73d / D-123): both read-only.
+		// --- Tasks: both read-only.
 		methods.MethodTasksList: {
 			Route: wildcardRoute(stream.TasksRoutePattern, "tasks.", methods.MethodTasksList), Mutates: false,
 			Request: "TaskListRequest", Response: "TaskListResponse",
@@ -308,7 +308,7 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "TaskGetRequest", Response: "TaskDetail",
 		},
 
-		// --- Agents (Phase 73e / D-124 reads + Phase 108l / D-184
+		// --- Agents (reads +
 		// fleet-control verbs).
 		methods.MethodAgentsList:        agentsRead(methods.MethodAgentsList, "AgentListRequest", "AgentListResponse"),
 		methods.MethodAgentsGet:         agentsRead(methods.MethodAgentsGet, "AgentGetRequest", "AgentGetResponse"),
@@ -324,7 +324,7 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodAgentsForceStop:   agentsControl(methods.MethodAgentsForceStop),
 		methods.MethodAgentsDeregister:  agentsControl(methods.MethodAgentsDeregister),
 
-		// --- Sessions (Phase 73c / D-122): both read-only.
+		// --- Sessions: both read-only.
 		methods.MethodSessionsList: {
 			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsList), Mutates: false,
 			Request: "SessionsListRequest", Response: "SessionsListResponse",
@@ -335,7 +335,7 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "SessionsInspectRequest", Response: "SessionsInspectResponse",
 		},
 
-		// --- Flows (Phase 73i / D-117): five reads + the one admin run.
+		// --- Flows: five reads + the one admin run.
 		methods.MethodFlowsList:         flowsRead(methods.MethodFlowsList, "FlowListRequest", "FlowListResponse", crossTenantAdminOnly),
 		methods.MethodFlowsDescribe:     flowsRead(methods.MethodFlowsDescribe, "FlowDescribeRequest", "FlowDescription", crossTenantAdminWidens),
 		methods.MethodFlowsRunsList:     flowsRead(methods.MethodFlowsRunsList, "FlowRunsListRequest", "FlowRunsListResponse", crossTenantAdminOnly),
@@ -347,13 +347,13 @@ func methodTable() map[methods.Method]methodEntry {
 			Auth: adminNote,
 		},
 
-		// --- Runs (Phase 73n / D-130).
+		// --- Runs.
 		methods.MethodRunsSetOverrides: {
 			Route: subtreeRoute(stream.RunsRoutePattern, "runs.", methods.MethodRunsSetOverrides), Mutates: true,
 			Request: "RunSetOverridesRequest", Response: "RunSetOverridesResponse",
 		},
 
-		// --- Auth (Phase 73m / D-129).
+		// --- Auth.
 		methods.MethodAuthRotateToken: {
 			Route: wildcardRoute(stream.AuthRoutePattern, "auth.", methods.MethodAuthRotateToken), Mutates: true,
 			Request: "AuthRotateTokenRequest", Response: "AuthRotateTokenResponse",
@@ -397,7 +397,7 @@ func postureEntry(m methods.Method, response string) methodEntry {
 }
 
 // mcpEntry builds a row for one mcp.servers.* method; admin selects the
-// D-079 admin-verb posture.
+// admin-verb posture.
 func mcpEntry(m methods.Method, req, resp string, mutates bool) methodEntry {
 	e := methodEntry{Route: controlRoute(m), Mutates: mutates, Request: req, Response: resp}
 	if methods.IsMCPAdminMethod(m) {
@@ -417,7 +417,7 @@ func agentsRead(m methods.Method, req, resp string) methodEntry {
 	}
 }
 
-// agentsControl builds a fleet-control agents.* row (D-066 / D-184).
+// agentsControl builds a fleet-control agents.* row.
 func agentsControl(m methods.Method) methodEntry {
 	return methodEntry{
 		Route: wildcardRoute(stream.AgentsRoutePattern, "agents.", m), Mutates: true,

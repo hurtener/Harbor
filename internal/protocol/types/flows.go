@@ -2,7 +2,7 @@ package types
 
 import "time"
 
-// Flows-page wire types (Phase 73i / D-117). These are the canonical
+// Flows-page wire types. These are the canonical
 // Protocol projections the Console Flows page renders — the catalog
 // row, the engine-graph description, the run-history rows, the per-run
 // timeline, the run-invocation request, and the sparkline-metrics
@@ -12,11 +12,11 @@ import "time"
 // (CLAUDE.md §8; RFC §5.1 — a Protocol type that mapped 1:1 onto an
 // internal Go struct would be the reject-on-sight smell).
 //
-// The Flows page is view-only at V1 (D-063): six read methods + one
+// The Flows page is view-only at V1: six read methods + one
 // run method. There is NO authoring surface — `flows.run` is the only
 // mutating method, and it is gated on identity + the appropriate scope
-// claim (D-079). Heavy run outputs are shipped by-reference via
-// `FlowArtifactRef` (D-026); the page never inlines heavy bytes.
+// claim. Heavy run outputs are shipped by-reference via
+// `FlowArtifactRef`; the page never inlines heavy bytes.
 
 // Flows-page pagination bounds. They mirror the `pause.list` /
 // `search.*` pagination contract so the Console-side pagination
@@ -33,8 +33,8 @@ const (
 	MaxFlowListPageSize = 200
 )
 
-// FlowBudget is the wire projection of a flow's per-flow Budget (D-023
-// — Flow-as-Tool registration, Phase 26a). It mirrors the three caps a
+// FlowBudget is the wire projection of a flow's per-flow Budget (the
+// Flow-as-Tool registration). It mirrors the three caps a
 // flow's aggregate `Budget` enforces at the flow boundary: a wall-clock
 // deadline, a hop (request) cap, and a cost cap. It is a flat wire type
 // — the Protocol owns its vocabulary; the runtime `flow.Budget` struct
@@ -74,7 +74,7 @@ type FlowBudgetConsumption struct {
 // Flow is one row of the `flows.list` catalog: a registered engine-graph
 // flow with its aggregate run metrics over the active window. A "flow"
 // in the Console is exactly an engine node graph a graph-family planner
-// runs on (D-063); this row is the catalog lens over it.
+// runs on; this row is the catalog lens over it.
 type Flow struct {
 	// ID is the flow's stable identifier — the registered flow name.
 	ID string `json:"id"`
@@ -88,7 +88,7 @@ type Flow struct {
 	Version string `json:"version,omitempty"`
 	// PlannerFamily is the graph-family planner the flow runs on —
 	// "graph" / "workflow" / "deterministic". The catalog is filtered
-	// to graph-family planners (D-063).
+	// to graph-family planners.
 	PlannerFamily string `json:"planner_family,omitempty"`
 	// NodeCount is the number of nodes in the flow's engine graph.
 	NodeCount int `json:"node_count"`
@@ -107,14 +107,14 @@ type Flow struct {
 	// LastRun is the wall-clock time of the most recent invocation. The
 	// zero value (omitted) means the flow has never run.
 	LastRun time.Time `json:"last_run,omitempty"`
-	// Budget is the flow's per-flow Budget (D-023). Read-only at V1.
+	// Budget is the flow's per-flow Budget. Read-only at V1.
 	Budget FlowBudget `json:"budget"`
 }
 
 // FlowFilter narrows the `flows.list` catalog. An empty filter means
 // "the caller's own identity scope". Supplying a `Tenants` value that
 // reaches OUTSIDE the caller's own tenant (or naming more than one
-// tenant) requires the `auth.ScopeAdmin` scope claim (D-079); a
+// tenant) requires the `auth.ScopeAdmin` scope claim; a
 // missing-claim cross-tenant request is rejected loudly with
 // CodeIdentityScopeRequired (HTTP 403) — never silently downgraded.
 type FlowFilter struct {
@@ -175,7 +175,7 @@ const (
 	FlowNodeTool FlowNodeKind = "tool"
 	// FlowNodePause tags a node that parks the run at a pause point.
 	// The wire value is the two-word form pause_point — deliberately
-	// distinct from the Protocol method-name vocabulary so the Phase 58
+	// distinct from the Protocol method-name vocabulary so the
 	// single-source checker never flags this enum value.
 	FlowNodePause FlowNodeKind = "pause_point"
 	// FlowNodeArtifactEmitter tags a node that emits an artifact.
@@ -219,7 +219,7 @@ type FlowEdge struct {
 // FlowDescription is the wire projection of a flow's full engine-graph
 // description — the `flows.describe` payload. It carries the catalog
 // row plus the node / edge set plus a string source reference. The
-// source reference is a Go path or a YAML descriptor path (D-023: Go-
+// source reference is a Go path or a YAML descriptor path (Go-
 // coded V1; declarative YAML in V1.1) — it is NEVER executable code in
 // the Console.
 type FlowDescription struct {
@@ -309,7 +309,7 @@ type FlowRunsListRequest struct {
 	FlowID string `json:"flow_id"`
 	// Tenants restricts the history to the named tenants. Empty means
 	// "the caller's own tenant". A value reaching outside the caller's
-	// tenant requires the admin scope claim (D-079).
+	// tenant requires the admin scope claim.
 	Tenants []string `json:"tenants,omitempty"`
 	// Page is the 1-based page index. Zero is treated as page 1.
 	Page int `json:"page,omitempty"`
@@ -335,7 +335,7 @@ type FlowRunsListResponse struct {
 
 // FlowArtifactRef is the by-reference shape a `FlowRunDescription`
 // carries when a run's final output meets or exceeds the configured
-// heavy-content threshold (D-026). It mirrors a subset of
+// heavy-content threshold. It mirrors a subset of
 // `internal/artifacts.ArtifactRef` but is a flat wire type, kept
 // distinct from `PauseArtifactRef` / `SearchArtifactRef` so a future
 // divergence in either surface does not whipsaw the other.
@@ -369,8 +369,8 @@ type FlowNodeRunState struct {
 
 // FlowRunDescription is the wire projection of a single flow run's
 // per-node timeline + final-output reference — the `flows.runs.describe`
-// payload. Heavy outputs are shipped by-reference via OutputRef
-// (D-026); the description NEVER inlines heavy bytes.
+// payload. Heavy outputs are shipped by-reference via OutputRef;
+// the description NEVER inlines heavy bytes.
 type FlowRunDescription struct {
 	// Run is the run-history row for the described run.
 	Run FlowRun `json:"run"`
@@ -381,7 +381,7 @@ type FlowRunDescription struct {
 	// produced no output or when the output was routed by-reference.
 	OutputPreview string `json:"output_preview,omitempty"`
 	// OutputRef is populated when the run's final output exceeded the
-	// heavy-content threshold (D-026). The Console fetches the bytes via
+	// heavy-content threshold. The Console fetches the bytes via
 	// `artifacts.get` when it wants them. When OutputRef is set,
 	// OutputPreview is empty.
 	OutputRef *FlowArtifactRef `json:"output_ref,omitempty"`
@@ -399,7 +399,7 @@ type FlowRunDescribeRequest struct {
 // FlowRunRequest is the wire request for `flows.run` — a one-shot
 // invocation of a registered flow. `flows.run` is the ONLY mutating
 // Flows-page method; it is gated on identity + the appropriate scope
-// claim (D-079).
+// claim.
 type FlowRunRequest struct {
 	// Identity is the mandatory caller identity scope.
 	Identity IdentityScope `json:"identity"`

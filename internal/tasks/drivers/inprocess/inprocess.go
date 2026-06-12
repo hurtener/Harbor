@@ -1,7 +1,7 @@
 // Package inprocess is Harbor's V1 in-process TaskRegistry driver.
 // It is the test reference for the conformance suite — every later
 // driver (post-V1 durable queue, e.g. NATS or Postgres-as-queue at
-// Phase 87) inherits the same suite verbatim.
+// post-V1) inherits the same suite verbatim.
 //
 // Internal model:
 //
@@ -14,11 +14,11 @@
 //     no I/O so contention is bounded by Go's map throughput; a
 //     finer-grained lock structure would be premature.
 //   - Every lifecycle transition writes through `state.StateStore`
-//     (the typed-wrapper-over-generic adapter, D-027) and emits a
+//     (the typed-wrapper-over-generic adapter) and emits a
 //     typed `events.EventPayload` on the bus.
 //   - Caller-controlled strings (Description, Query, Result.Value,
 //     Error.Message) are run through the `audit.Redactor` BEFORE the
-//     Save (D-020). The redactor's reflective walk returns a
+//     Save. The redactor's reflective walk returns a
 //     `map[string]any`; we read the redacted strings back and replace
 //     them on the Task before marshalling.
 //   - `Close(ctx)` flips an atomic flag; subsequent calls return
@@ -56,7 +56,7 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 	if deps.Bus == nil {
 		return nil, fmt.Errorf("tasks/inprocess: New requires a non-nil EventBus")
 	}
-	// Redactor is mandatory per D-020. The audit driver is loaded
+	// Redactor is mandatory. The audit driver is loaded
 	// alongside the tasks driver in cmd/harbor; tests that don't
 	// care about redaction pass a no-op redactor (see the
 	// conformance suite's helper).
@@ -118,7 +118,7 @@ type driver struct {
 	idemIdx  map[idempotencyKey]idempotencyRecord
 	children map[tasks.TaskID][]tasks.TaskID
 
-	// Phase 21 — group + patch + retain-turn + watcher state. All
+	// group + patch + retain-turn + watcher state. All
 	// guarded by `mu`. See `drivers/inprocess/groups.go` for the
 	// access patterns + invariants.
 	groups           map[tasks.TaskGroupID]*tasks.TaskGroup
@@ -169,8 +169,8 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	id := tasks.TaskID(ulid.MustNew(ulid.Now(), d.ulidEntropy).String())
 	now := time.Now().UnixNano()
 
-	// Caller-side audit redaction on the user-controlled strings
-	// (D-020). Description / Query are the inputs at Spawn; Result /
+	// Caller-side audit redaction on the user-controlled strings.
+	// Description / Query are the inputs at Spawn; Result /
 	// Error are populated later by Mark*.
 	redactedDesc, redactedQuery, err := d.redactSpawnFields(ctx, req.Description, req.Query)
 	if err != nil {
@@ -185,7 +185,7 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	if len(req.InputArtifactIDs) > 0 {
 		inputArtifactIDs = append([]string(nil), req.InputArtifactIDs...)
 	}
-	// Phase 84b (D-189) — defensive copy of the per-attachment
+	// defensive copy of the per-attachment
 	// disposition hint map, same caller-mutation rationale.
 	var inputArtifactDispositions map[string]string
 	if len(req.InputArtifactDispositions) > 0 {
@@ -209,7 +209,7 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		InputArtifactIDs:  inputArtifactIDs,
-		// Phase 84b (D-189) — per-attachment disposition hints.
+		// per-attachment disposition hints.
 		InputArtifactDispositions: inputArtifactDispositions,
 	}
 	if err := d.persistLocked(ctx, t); err != nil {
@@ -225,7 +225,7 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	if req.ParentTaskID != nil && *req.ParentTaskID != "" {
 		d.children[*req.ParentTaskID] = append(d.children[*req.ParentTaskID], id)
 	}
-	// Phase 21: wire the new task into the requested group, if any.
+	// wire the new task into the requested group, if any.
 	// Sealed / terminal groups reject with ErrGroupSealed. The error
 	// rolls back the spawn: we delete the just-created task to keep
 	// the registry consistent.
@@ -270,9 +270,9 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 
 // SpawnTool implements tasks.TaskRegistry.
 //
-// Phase 20's body is a deliberate stub: we persist a foreground task
+// the body is a deliberate stub: we persist a foreground task
 // at StatusPending and emit task.spawned. Tool dispatch wiring lands
-// at Phase 26 — the runtime engine will drive MarkRunning /
+// the runtime engine will drive MarkRunning /
 // MarkComplete / MarkFailed once the dispatcher is wired. Documented
 // inline + flagged in the smoke script's PR body.
 func (d *driver) SpawnTool(ctx context.Context, req tasks.SpawnToolRequest) (tasks.TaskHandle, error) {
@@ -281,8 +281,8 @@ func (d *driver) SpawnTool(ctx context.Context, req tasks.SpawnToolRequest) (tas
 	}
 	// Re-shape onto the SpawnRequest path so the FSM, idempotency,
 	// and parent-graph bookkeeping share one code path. Tool args
-	// are NOT carried on Task at Phase 20 (the schema is reserved
-	// for Phase 26's tool catalog wiring); the description captures
+	// are NOT carried on Task (the schema is reserved
+	// for the tool catalog wiring); the description captures
 	// the intent for the lifecycle log.
 	desc := req.Description
 	if desc == "" {
@@ -346,7 +346,7 @@ func (d *driver) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 
 // List implements tasks.TaskRegistry. Filters by session and the
 // optional fields on `f`. Returns task summaries in arbitrary order
-// — Phase 20 does not promise iteration order; Phase 21 may.
+// does not promise iteration order; may.
 func (d *driver) List(ctx context.Context, sessionID identity.Identity, f tasks.TaskFilter) ([]tasks.TaskSummary, error) {
 	if d.closed.Load() {
 		return nil, tasks.ErrRegistryClosed
@@ -460,7 +460,7 @@ func (d *driver) Cancel(ctx context.Context, id tasks.TaskID, reason string) (bo
 			// Enqueue grandchildren regardless of their own
 			// PropagateOnCancel — once a parent cascade has reached
 			// them, the cascade stops at terminal-status checks, not
-			// at policy boundaries. (Brief 05 §4: cascade is a parent-
+			// at policy boundaries. (By design cascade is a parent-
 			// initiated walk; child policy governs the child's own
 			// Cancel call, not its parent's cascade.)
 			queue = append(queue, d.children[childID]...)
@@ -471,7 +471,7 @@ func (d *driver) Cancel(ctx context.Context, id tasks.TaskID, reason string) (bo
 }
 
 // Prioritize implements tasks.TaskRegistry. Stores the new value;
-// does NOT preempt or reorder execution (D-001's "scheduling is
+// does NOT preempt or reorder execution (the "scheduling is
 // runtime engine's concern" line). Emits task.prioritised.
 func (d *driver) Prioritize(ctx context.Context, id tasks.TaskID, priority int) (bool, error) {
 	if d.closed.Load() {
@@ -564,7 +564,7 @@ func (d *driver) MarkResumed(ctx context.Context, id tasks.TaskID) error {
 }
 
 // MarkComplete implements tasks.TaskRegistry. Persists `result` on
-// the Task record (after caller-side redaction; per D-020 the caller
+// the Task record (after caller-side redaction; the caller
 // is responsible for redacting Value before passing it in, but we
 // run it through the redactor again as a safety net).
 func (d *driver) MarkComplete(ctx context.Context, id tasks.TaskID, result tasks.TaskResult) error {
@@ -623,7 +623,7 @@ func (d *driver) MarkFailed(ctx context.Context, id tasks.TaskID, taskErr tasks.
 // IncrementToolCount implements tasks.TaskRegistry.
 //
 // Atomically increments `t.ToolCount` by 1 under the FSM lock and
-// persists the updated record (Phase 83m item 7). The lock ensures
+// persists the updated record. The lock ensures
 // N concurrent calls against the same task yield the correct final
 // count — N — without torn writes.
 //
@@ -709,7 +709,7 @@ func (d *driver) lookupLocked(ctx context.Context, id tasks.TaskID) (*tasks.Task
 
 // transitionLocked performs an FSM transition and persists the task.
 // When the destination is a terminal state AND the task belongs to a
-// group, the Phase 21 group resolve gate is checked (`onMemberTerminalLocked`).
+// group, the group resolve gate is checked (`onMemberTerminalLocked`).
 // Caller MUST hold d.mu.
 func (d *driver) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.TaskStatus) error {
 	if !isValidTransition(t.Status, to) {
@@ -820,7 +820,7 @@ func (d *driver) redactRawJSON(ctx context.Context, raw json.RawMessage) (json.R
 		// caller's contract is that Value is JSON, but we'd rather
 		// redact-then-pass than fail loudly on malformed bytes that
 		// the caller may have intentionally sent (e.g. a tool that
-		// emits raw text alongside JSON in a future Phase 26 wiring).
+		// emits raw text alongside JSON in a future wiring).
 		_ = jerr // intentionally swallow; defensive fall-through is documented above.
 		redacted, rerr := d.redactString(ctx, string(raw))
 		if rerr != nil {
@@ -883,12 +883,12 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if existing.IdempotencyKey != req.IdempotencyKey {
 		return false
 	}
-	// Round-7 F11 / D-166 — input artifact attachments are part of the
+	// input artifact attachments are part of the
 	// task's content identity. Same key, different attachments → conflict.
 	if !stringSliceEqual(existing.InputArtifactIDs, req.InputArtifactIDs) {
 		return false
 	}
-	// Phase 84b (D-189) — disposition hints are part of the task's
+	// disposition hints are part of the task's
 	// content identity too. Same key, same attachments, different
 	// dispositions → conflict.
 	if !stringMapEqual(existing.InputArtifactDispositions, req.InputArtifactDispositions) {
@@ -936,13 +936,13 @@ func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
 	h.Write([]byte(req.Description))
 	h.Write([]byte{0x1F})
 	h.Write([]byte(req.Query))
-	// Round-7 F11 / D-166 — fold InputArtifactIDs into the hash so
+	// fold InputArtifactIDs into the hash so
 	// "same key, different attachments" surfaces as ErrIdempotencyConflict.
 	for _, id := range req.InputArtifactIDs {
 		h.Write([]byte{0x1F})
 		h.Write([]byte(id))
 	}
-	// Phase 84b (D-189) — fold the disposition hints in deterministic
+	// fold the disposition hints in deterministic
 	// (sorted-key) order so "same attachments, different dispositions"
 	// also surfaces as ErrIdempotencyConflict.
 	if len(req.InputArtifactDispositions) > 0 {
@@ -1013,7 +1013,7 @@ func isTerminal(s tasks.TaskStatus) bool {
 }
 
 // identityFromCtx pulls the Identity off ctx and validates it. The
-// triple is mandatory at every API boundary (D-001).
+// triple is mandatory at every API boundary.
 func identityFromCtx(ctx context.Context) (identity.Identity, error) {
 	ident, ok := identity.From(ctx)
 	if !ok {

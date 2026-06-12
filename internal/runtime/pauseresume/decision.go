@@ -5,7 +5,7 @@ package pauseresume
 // reject vs. generic resume vs. timeout) without parsing free-form
 // `Reason` strings.
 //
-// The Phase 31 approval gate already owns its own narrower enum
+// The approval gate already owns its own narrower enum
 // (`approval.ApprovalDecision` — approve / reject / pending) for the
 // gate-internal resolution channel; that enum is approval-specific and
 // stays where it lives. This `pauseresume.Decision` is the broader
@@ -20,7 +20,7 @@ package pauseresume
 //
 // Wire consumers (the Console, third-party clients, integration tests)
 // switch on this typed value rather than parsing `Reason` strings —
-// the audit-flagged anti-pattern issue #113 / D-096 closes.
+// the audit-flagged anti-pattern issue #113 closes.
 type Decision string
 
 const (
@@ -32,23 +32,23 @@ const (
 	// DecisionReject — the gate's approver said no (HITL rejection).
 	// Mirrors the steering inbox's `ControlReject` and the approval
 	// package's `DecisionReject`. A REJECT terminates the run with
-	// `Finish{ConstraintsConflict}` in the RunLoop (D-071).
+	// `Finish{ConstraintsConflict}` in the RunLoop.
 	DecisionReject Decision = "reject"
 
 	// DecisionResume — a generic resume of a non-approval pause. The
 	// canonical producer is the tool-side OAuth provider completing a
-	// flow (Phase 30), but any future non-approval resume (a steering
+	// flow, but any future non-approval resume (a steering
 	// `RESUME` not tied to an APPROVE / REJECT, an A2A `INPUT_REQUIRED`
 	// fulfilled) lands here.
 	DecisionResume Decision = "resume"
 
 	// DecisionTimeout — a deadline-driven resume (the pause's max-park
 	// window elapsed and the runtime resumed it to surface a
-	// constraint-conflict). Produced by the pause sweeper (sweeper.go,
-	// Phase 111c / D-200) when a pause outlives the Coordinator's
+	// constraint-conflict). Produced by the pause sweeper (sweeper.go)
+	// when a pause outlives the Coordinator's
 	// WithMaxParkDuration ceiling. Terminal for the waiting run: the
 	// steering RunLoop finishes it with Finish{ConstraintsConflict}
-	// (the D-071 REJECT posture applied to deadlines), never a silent
+	// (the REJECT posture applied to deadlines), never a silent
 	// unpark-and-continue.
 	DecisionTimeout Decision = "timeout"
 )

@@ -12,9 +12,9 @@ import (
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
-// Phase 73k (D-119) — the MCP-Connections-page read API.
+// the MCP-Connections-page read API.
 //
-// Phase 28 ships one `Provider` per MCP server attachment. Phase 73k
+// Harbor ships one `Provider` per MCP server attachment. Harbor
 // adds the process-local `Registry` that holds the configured providers
 // by name and exposes the projection-only read surface the Console MCP
 // Connections page consumes — server list, per-server detail, advertised
@@ -29,7 +29,7 @@ import (
 // boundary — the Protocol surface translates these projection types
 // onto the wire shapes; the Console never sees an SDK type.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // Registry is a compiled artifact: the provider set is built once at
 // construction and never mutated after Register/Close. Per-server
@@ -40,14 +40,14 @@ import (
 // concurrent_test.go pins N≥128 under -race.
 
 // Provider-discovery interface — the narrow contract the Registry's read
-// API needs from each held provider. The Phase 28 *Provider satisfies it
+// API needs from each held provider. The MCP *Provider satisfies it
 // structurally; tests inject a deterministic stub.
 type serverProvider interface {
 	SourceID() tools.ToolSourceID
 	Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 }
 
-// compile-time assertion: the Phase 28 *Provider satisfies serverProvider.
+// compile-time assertion: the MCP *Provider satisfies serverProvider.
 var _ serverProvider = (*Provider)(nil)
 
 // ServerState mirrors the canonical state chip the Console renders. The
@@ -237,7 +237,7 @@ type serverStats struct {
 }
 
 // Registry is the process-local MCP-server read API. It is a compiled
-// artifact (D-025) — built once at construction; the provider set is
+// artifact — built once at construction; the provider set is
 // write-once after Register; per-server stats are guarded by mu.
 type Registry struct {
 	mu      sync.RWMutex
@@ -367,8 +367,8 @@ func (e *serverEntry) viewLocked() ServerView {
 }
 
 // ListServers returns the filtered, paginated server list. The view
-// shapes are projection-only; no per-call state lives on the Registry
-// (D-025). Identity is mandatory.
+// shapes are projection-only; no per-call state lives on the Registry.
+// Identity is mandatory.
 func (r *Registry) ListServers(ctx context.Context, f ListFilter) ([]ServerView, *Cursor, error) {
 	if err := requireIdentity(ctx); err != nil {
 		return nil, nil, err
@@ -666,7 +666,7 @@ func (r *Registry) Health(ctx context.Context, name string, window time.Duration
 }
 
 // SetRawHTMLTrust persists the per-server raw-HTML trust flag in the
-// runtime-side mirror (the legitimate D-061 carve-out for a preference
+// runtime-side mirror (the legitimate carve-out for a preference
 // with audit consequences). It returns the prior value so a caller can
 // detect a no-op toggle. Identity is mandatory.
 func (r *Registry) SetRawHTMLTrust(ctx context.Context, name string, trusted bool) (prev bool, err error) {
@@ -748,7 +748,7 @@ func appendBucket(buckets []HealthBucket, b HealthBucket) []HealthBucket {
 // `tool_count: 0` and `last_discovery_at: 0001-01-01T00:00:00Z` on
 // every just-booted Runtime because the boot-time discovery never
 // reached the registry's stats — its result went straight to the tool
-// catalog. Round-4 walkthrough fix.
+// catalog. a walkthrough fix.
 //
 // RecordDiscovery is a no-network counterpart to RefreshDiscovery:
 // caller already has the descriptors (from a previous provider.Discover
@@ -777,7 +777,7 @@ func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) er
 }
 
 // classifyDescriptors counts tools / resources / prompts in a descriptor
-// slice, using the Phase 28 synthetic-name markers.
+// slice, using the synthetic-name markers.
 func classifyDescriptors(descs []tools.ToolDescriptor, server string) (toolCount, resourceCount, promptCount int) {
 	for _, d := range descs {
 		name := d.Tool.Name
@@ -794,7 +794,7 @@ func classifyDescriptors(descs []tools.ToolDescriptor, server string) (toolCount
 	return toolCount, resourceCount, promptCount
 }
 
-// resourceURIFromToolName extracts the resource URI from a Phase 28
+// resourceURIFromToolName extracts the resource URI from a
 // synthetic resource tool name (`<server>__resource.<uri>`).
 func resourceURIFromToolName(toolName, server string) (string, bool) {
 	prefix := server + resourceTypeSeparator + resourceNamePrefix
@@ -804,7 +804,7 @@ func resourceURIFromToolName(toolName, server string) (string, bool) {
 	return strings.TrimPrefix(toolName, prefix), true
 }
 
-// promptNameFromToolName extracts the prompt name from a Phase 28
+// promptNameFromToolName extracts the prompt name from a
 // synthetic prompt tool name (`<server>__prompt.<name>`).
 func promptNameFromToolName(toolName, server string) (string, bool) {
 	prefix := server + resourceTypeSeparator + promptNamePrefix

@@ -1,12 +1,12 @@
 // Command harbor is the Harbor binary entry point.
 //
-// Phase 63 (RFC §8, D-084) turns this from a driver-registration stub
+// The CLI skeleton (RFC §8) turns this from a driver-registration stub
 // into a cobra-rooted CLI. The production driver set self-registers
 // via the `internal/drivers/prod` aggregator blank import below (so
 // the audit / events / state / artifacts / memory / skills / tools /
 // telemetry / llm / governance / distributed factories resolve when
 // something Opens them — the §4.4 seam pattern; the per-driver imports
-// were collapsed into the aggregator by Phase 110c, D-196). The cobra
+// were collapsed into the aggregator by). The cobra
 // command tree lives in root.go (NewRootCmd) and is executed here.
 package main
 
@@ -14,14 +14,14 @@ import (
 	"fmt"
 	"os"
 
-	// Production driver aggregator (Phase 110c, D-196) — the single
+	// Production driver aggregator — the single
 	// sanctioned home of the driver blank-import block (§4.4). Its
 	// init chain seats every production driver factory, the LLM
 	// wrapper hooks (corrections / downgrade / retry / governance),
 	// and the notifications event-type registration. New drivers are
 	// added THERE, not here. The dev-only mock LLM driver is NOT part
 	// of the set — `harbor dev` conditionally imports it behind
-	// HARBOR_DEV_ALLOW_MOCK=1 (D-089; see cmd/harbor/devmock.go).
+	// HARBOR_DEV_ALLOW_MOCK=1 (see cmd/harbor/devmock.go).
 	_ "github.com/hurtener/Harbor/internal/drivers/prod"
 )
 
@@ -50,7 +50,7 @@ func main() {
 	os.Exit(exitCodeFor(cli))
 }
 
-// exitCodeFor maps a CLIError.Code to the binary's exit code. Phase 68
+// exitCodeFor maps a CLIError.Code to the binary's exit code. An earlier phase
 // introduced the distinction between "validation found issues" (exit 1)
 // and "unexpected / internal error" (exit 2). All other codes
 // (`not_implemented`, `invocation_error`, ...) collapse to exit 1.

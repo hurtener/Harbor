@@ -1,7 +1,7 @@
 // cmd/harbor/devseed.go — the dev-only runtime-entity fixture seeder.
 //
-// Phase 75a (D-131). The Console e2e Playwright suite boots `harbor
-// console` (D-091) and walks the 14 V1 pages. A fresh `harbor console`
+// The Console e2e Playwright suite boots `harbor
+// console` and walks the 14 V1 pages. A fresh `harbor console`
 // runtime boots EMPTY — no sessions, no agents, no tasks — so a per-page
 // spec that asserts the rendered DATA shape (a `DataTable` row, a detail
 // drill-down, an identity column) has nothing to render and SKIPs.
@@ -124,7 +124,7 @@ var devSeedMemoryTurns = []memory.ConversationTurn{
 // devSeedTools is the deterministic in-process tool fixture set the
 // seeder registers into the catalog so the Console Tools page renders
 // catalog rows. Each is a no-op in-process tool — the Console Tools
-// page is a read-only catalog projection (Phase 73f), so the fixtures
+// page is a read-only catalog projection, so the fixtures
 // only need a name + description + schema, not real behaviour.
 var devSeedTools = []struct {
 	name        string
@@ -137,7 +137,7 @@ var devSeedTools = []struct {
 
 // devSeedFlows is the deterministic flow fixture set the seeder
 // registers so the Console Flows page renders catalog rows. Each is a
-// single-node pass-through flow — the Console Flows page (Phase 73i) is
+// single-node pass-through flow — the Console Flows page is
 // a read-only catalog projection, so the fixture flows only need to be
 // structurally valid (one node, Entry == Exit, a non-nil node Func).
 var devSeedFlows = []struct {
@@ -160,7 +160,7 @@ type devSeedDeps struct {
 	tools     tools.ToolCatalog
 	flows     *flow.Registry
 	// bus feeds the events-seeding step — a small Console-shaped event
-	// stream so the Console Events page renders rows (D-132 / W11).
+	// stream so the Console Events page renders rows.
 	bus    events.EventBus
 	logger *slog.Logger
 }
@@ -201,11 +201,11 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 	}
 
 	// 2. Agents — register each into the Agent Registry. The registry's
-	//    enumeration index is one document per `(tenant, user, session)`
-	//    (D-060), so agents are registered under the EXACT dev-token
+	//    enumeration index is one document per `(tenant, user, session)`,
+	// so agents are registered under the EXACT dev-token
 	//    triple `(dev, dev, dev)` — that is the identity the Console
 	//    queries `agents.list` with, so the registered set is visible.
-	//    (`agent_id` is not an isolation principal — D-059 — but the
+	//    (`agent_id` is not an isolation principal — but the
 	//    registry's enumeration index still scopes by the caller triple.)
 	devID := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
 	devQuad := identity.Quadruple{Identity: devID}
@@ -224,8 +224,8 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 	// 3. Tasks — spawn a mix of foreground + background tasks so the
 	//    Console Tasks page + Background Jobs page render real rows.
 	//    `tasks.list` is session-scoped (it returns the caller's
-	//    session's tasks; the cross-session fan-in is admin-gated —
-	//    D-079), so every task is spawned under the dev-token's exact
+	//    session's tasks; the cross-session fan-in is admin-gated —),
+	// so every task is spawned under the dev-token's exact
 	//    session `dev` — the session the Console's `tasks.list` query
 	//    carries — so the seeded tasks are visible without an admin
 	//    fan-in.
@@ -275,7 +275,7 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 
 	// 4b. Tools — register no-op in-process tools into the catalog so
 	//     the Console Tools page renders catalog rows. The Tools page
-	//     (Phase 73f) is a read-only catalog projection, so the fixture
+	// is a read-only catalog projection, so the fixture
 	//     tools only need a name + description + a minimal args schema;
 	//     `Invoke` is a no-op (the Console never dispatches them).
 	emptyObjectSchema := json.RawMessage(`{"type":"object"}`)
@@ -300,7 +300,7 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 
 	// 4c. Flows — register single-node pass-through flows so the
 	//     Console Flows page renders catalog rows. The Flows page
-	//     (Phase 73i) is a read-only catalog projection; the fixture
+	// is a read-only catalog projection; the fixture
 	//     flows only need to be structurally valid.
 	for _, f := range devSeedFlows {
 		const nodeID flow.NodeID = "passthrough"
@@ -366,7 +366,7 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 
 	// 6. Events — publish a small Console-shaped event stream onto the
 	//    bus so the Console Events page renders rows AND the per-row
-	//    detail-rail-on-select Playwright assertion (D-132 / W11 — the
+	//    detail-rail-on-select Playwright assertion (the
 	//    73g events-seed gap) flips from SKIP to OK. The events are a
 	//    `tool.invoked` → `tool.completed` pair plus a `task.failed`,
 	//    all SafePayload, published under the dev-token quadruple so the

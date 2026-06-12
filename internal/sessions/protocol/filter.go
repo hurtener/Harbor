@@ -47,7 +47,7 @@ func filterMatches(f prototypes.SessionFilter, row prototypes.SessionRow) bool {
 // queryMatches reports whether the free-text query substring-matches
 // the session id, agent name, agent id, or user. The Service applies
 // the query as a post-search refinement — the runtime forwards the
-// query to the `search.sessions` index first (D-122 forward-then-filter
+// query to the `search.sessions` index first (forward-then-filter
 // resolution) and this predicate narrows the merged result-set.
 func queryMatches(query string, row prototypes.SessionRow) bool {
 	q := strings.ToLower(query)

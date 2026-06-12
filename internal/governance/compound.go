@@ -17,14 +17,14 @@ import (
 //
 // The fan-out order is the slice order — operators put cheap checks
 // (MaxTokens) before expensive ones (cost-ceiling state lookup) to keep
-// the rejection path fast. The Phase 36a/36b binary order is:
+// the rejection path fast. The binary order is:
 //
 //  1. MaxTokensEnforcer — purely in-memory cap check; cheapest reject.
 //  2. RateLimiter — bucket drain (lock + small state lookup).
 //  3. CostAccumulator — accumulator lookup (state I/O).
 //
-// Concurrent reuse (D-025): NewCompound's returned Subsystem is a thin
-// adapter; concurrent reuse depends on each member honouring D-025.
+// Concurrent reuse: NewCompound's returned Subsystem is a thin
+// adapter; concurrent reuse depends on each member honouring.
 func NewCompound(subs ...Subsystem) Subsystem {
 	out := make([]Subsystem, 0, len(subs))
 	for _, s := range subs {

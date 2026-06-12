@@ -10,18 +10,18 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 )
 
-// D-103 — planner driver registry.
+// planner driver registry.
 //
 // The §4.4 seam pattern applied to the planner concrete. The V1 default
-// driver is `react` (the reference LLM-driven ReAct planner — Phase 45 /
-// D-051). New concretes (Plan-Execute, Workflow, Graph, Deterministic,
+// driver is `react` (the reference LLM-driven ReAct planner — /).
+// New concretes (Plan-Execute, Workflow, Graph, Deterministic,
 // Supervisor, MultiAgent, HumanApproval per RFC §6.2) add a new driver
 // under `internal/planner/<name>/` without changing this registry's
-// shape. The shape mirrors `internal/tools/auth/registry.go` (D-095)
+// shape. The shape mirrors `internal/tools/auth/registry.go`
 // for OAuth-provider drivers; the structural precedent is deliberate.
 //
 // CLAUDE.md §1.3 names the swappable planner one of the three
-// non-negotiable product properties. D-097 noted "future phases will
+// non-negotiable product properties. An earlier phase noted "future phases will
 // read a planner choice from cfg.Planner and switch concretes" — this
 // registry closes that note.
 //
@@ -36,7 +36,7 @@ import (
 // but lives in `internal/planner` so concrete drivers can depend on it
 // without forcing the `internal/config` package to import driver
 // internals. The dev stack maps the YAML struct onto this struct at the
-// boundary (D-095 precedent).
+// boundary (precedent).
 //
 // `MaxSteps` is the planner-side circuit-breaker cap. Zero (the
 // loader-side and registry-side default) means "use the driver's
@@ -58,13 +58,13 @@ type PlannerConfig struct {
 	MaxSteps int
 
 	// ExtraGuidance is operator-supplied domain-specific guidance for
-	// the rendered prompt's <additional_guidance> section (Phase 83a).
+	// the rendered prompt's <additional_guidance> section.
 	// The V1 `react` driver maps it onto `react.WithSystemPromptExtra`;
 	// other drivers ignore it. Empty by default.
 	ExtraGuidance string
 
-	// ReasoningReplay is the agent-configured reasoning-replay mode
-	// (Phase 83e — D-148). Empty string resolves to
+	// ReasoningReplay is the agent-configured reasoning-replay mode.
+	// Empty string resolves to
 	// `ReasoningReplayNever` — replay is OFF unless an operator opts
 	// in. The dev stack maps `config.PlannerConfig.ReasoningReplay`
 	// onto this field; the react factory passes it to
@@ -73,16 +73,16 @@ type PlannerConfig struct {
 	ReasoningReplay ReasoningReplayMode
 
 	// MaxToolExamplesPerTool caps how many curated examples the ReAct
-	// prompt's <available_tools> section renders per tool (Phase 83b —
-	// D-144). Zero resolves to the react driver's default of 3; the
+	// prompt's <available_tools> section renders per tool.
+	// Zero resolves to the react driver's default of 3; the
 	// react factory passes it to `react.WithMaxToolExamplesPerTool`.
 	// Other drivers ignore it.
 	MaxToolExamplesPerTool int
 
-	// ParallelToolCalls is the optional native-parallel tool-call knob
-	// (Phase 107d — D-169). Nil (the default) resolves to `true` — the
+	// ParallelToolCalls is the optional native-parallel tool-call knob.
+	// Nil (the default) resolves to `true` — the
 	// react driver emits a native `CallParallel` for N>1 tool-calls in
-	// one response. A non-nil `false` selects the Phase 107c
+	// one response. A non-nil `false` selects the
 	// serialization fallback. The react factory passes the resolved
 	// value to `react.WithParallelToolCalls` only when non-nil (the
 	// planner's own default is already `true`). Other drivers ignore it.
@@ -105,7 +105,7 @@ type PlannerConfig struct {
 // internals (the §13 import-graph rule for `internal/planner/...`).
 type FactoryDeps struct {
 	// LLM is the composed LLM client (retry → downgrade → corrections →
-	// safety → driver per D-043). The V1 `react` driver consumes this
+	// safety → driver). The V1 `react` driver consumes this
 	// directly; drivers that don't use an LLM ignore the field.
 	LLM llm.LLMClient
 }

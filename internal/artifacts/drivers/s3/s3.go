@@ -48,7 +48,7 @@
 //
 // Presigner capability. The driver implements `artifacts.Presigner`
 // (`PresignGet` only — write-side presigned URLs are an attack
-// surface intentionally not exposed at V1; see Phase 19 plan
+// surface intentionally not exposed at V1; see plan
 // non-goals). Expiry bounded `[1 minute, 7 days]` — out-of-range
 // returns a clear error.
 package s3
@@ -86,7 +86,7 @@ const (
 	metaSuffix        = ".meta.json"
 	defaultRegion     = "us-east-1"
 
-	// Presign expiry bounds per the Phase 19 plan / S3's documented
+	// Presign expiry bounds per the phase plan / S3's documented
 	// limit. Out-of-range expiries are rejected with a clear error
 	// (fail-loudly per AGENTS.md §5).
 	minPresignExpiry = 1 * time.Minute
@@ -132,7 +132,7 @@ func New(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
 	// Build our own HTTP client so Close can drain idle connections
 	// deterministically. The SDK's default `BuildableHTTPClient` is
 	// fine for production but it doesn't expose a CloseIdleConnections
-	// hook the conformance suite's goroutine-leak check (D-025) can
+	// hook the conformance suite's goroutine-leak check can
 	// invoke. We clone DefaultTransport (preserving the SDK's
 	// connection / TLS / dial characteristics) and tighten
 	// `IdleConnTimeout` to 1s so connection-pool goroutines unwind
@@ -530,7 +530,7 @@ func (d *driver) List(ctx context.Context, filter artifacts.ArtifactScope) ([]ar
 // Close implements artifacts.ArtifactStore. SDK clients are stateless
 // (no per-driver goroutines); Close flips the closed flag so subsequent
 // calls return `ErrStoreClosed` and drains idle HTTP connections so
-// the conformance suite's goroutine-leak gate (D-025) sees the pool
+// the conformance suite's goroutine-leak gate sees the pool
 // reset to baseline.
 //
 // `Close` is idempotent: subsequent calls are no-ops on the already-

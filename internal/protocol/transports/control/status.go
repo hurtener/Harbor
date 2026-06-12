@@ -17,7 +17,7 @@ import (
 // each Code to a status. A Code with no explicit entry falls through to
 // 500 — fail loud rather than silently returning a misleading 200.
 //
-// Exported since Phase 113a (D-209): `cmd/harbor-gen-protocol-docs`
+// Exported since then: `cmd/harbor-gen-protocol-docs`
 // renders the published error reference from the SAME binding the wire
 // transport serves, so the docs cannot drift from this function.
 func HTTPStatus(code protoerrors.Code) int {
@@ -29,7 +29,7 @@ func HTTPStatus(code protoerrors.Code) int {
 	case protoerrors.CodeIdentityRequired:
 		// No / incomplete identity scope. RFC §5.5: the Protocol rejects
 		// any request without an identity scope. 401 — the request is
-		// unauthenticated at the Protocol edge (Phase 61 makes this a
+		// unauthenticated at the Protocol edge (makes this a
 		// real JWT check; the status is stable across that change).
 		return http.StatusUnauthorized // 401
 	case protoerrors.CodeScopeMismatch:
@@ -53,20 +53,20 @@ func HTTPStatus(code protoerrors.Code) int {
 		// An unclassified runtime-side failure — the catch-all.
 		return http.StatusInternalServerError // 500
 	case protoerrors.CodeAuthRejected:
-		// Phase 61 — the request carried a JWT bearer that failed
+		// the request carried a JWT bearer that failed
 		// cryptographic / structural verification. Distinct from
 		// CodeIdentityRequired (which signals no identity at all): the
 		// client supplied a token but it did not verify. 401 — the
 		// request is unauthenticated at the Protocol edge.
 		return http.StatusUnauthorized // 401
 	case protoerrors.CodeIdentityScopeRequired:
-		// Wave 13 (Phase 72 / 72a — D-105 / D-106) — the request is
+		// the request is
 		// authenticated AND identified, but the caller's scope set is
 		// insufficient for the requested fan-in. Returned when an
 		// `events.subscribe` request asks for `?admin=1`, or an
 		// `events.aggregate` filter names a tenant other than the
 		// caller's, without the `auth.ScopeAdmin` or
-		// `auth.ScopeConsoleFleet` claim (D-079). Distinct from
+		// `auth.ScopeConsoleFleet` claim. Distinct from
 		// CodeIdentityRequired (no identity — 401), CodeAuthRejected
 		// (token invalid — 401), and CodeScopeMismatch (reserved for
 		// the steering-control scope path per RFC §6.3). 403 —
@@ -75,7 +75,7 @@ func HTTPStatus(code protoerrors.Code) int {
 		// events.ErrAdminScopeRequired at the wire edge.
 		return http.StatusForbidden // 403
 	case protoerrors.CodePresignUnsupported:
-		// Phase 73l (Wave 13 / D-120) — an `artifacts.get_ref` request
+		// an `artifacts.get_ref` request
 		// reached an ArtifactStore driver without the `Presigner`
 		// capability. The request is well-formed and the surface is
 		// real, but the configured driver cannot satisfy it. 501 Not
@@ -83,7 +83,7 @@ func HTTPStatus(code protoerrors.Code) int {
 		// (the request was valid).
 		return http.StatusNotImplemented // 501
 	case protoerrors.CodeRequestTooLarge:
-		// Phase 73l (Wave 13 / D-120) — an `artifacts.put` body exceeded
+		// an `artifacts.put` body exceeded
 		// the configured MaxRequestBytes bound. 413 Payload Too Large.
 		return http.StatusRequestEntityTooLarge // 413
 	default:

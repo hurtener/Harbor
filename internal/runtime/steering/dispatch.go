@@ -8,7 +8,7 @@ import (
 )
 
 // execOutcome carries the ToolExecutor's three-value return across the
-// per-step dispatch goroutine boundary (D-192). Internal — never
+// per-step dispatch goroutine boundary. Internal — never
 // exported; the run loop unpacks it right after the join.
 type execOutcome struct {
 	observation    any
@@ -20,16 +20,16 @@ type execOutcome struct {
 // decision via the ToolExecutor on a per-step goroutine and, while the
 // execution is in flight, keeps draining the run's steering inbox —
 // routing ONLY approval-bridge-eligible APPROVE / REJECT controls (the
-// D-097 gate bridge) mid-step. This is the D-192 deadlock fix: an
+// gate bridge) mid-step. This is the deadlock fix: an
 // approval-gated tool parks inside `gate.RunGuarded` until
-// `ResolveApproval` fires, and before D-192 the ONLY production caller
+// `ResolveApproval` fires, and previously the ONLY production caller
 // of `ResolveApproval` was the step-boundary drain — which the
 // synchronous ExecuteDecision call was itself blocking. A
 // planner-dispatched gated tool therefore hung the run until ctx
 // cancellation. Dispatching on a per-step goroutine and bridging
 // APPROVE / REJECT mid-step closes the cycle.
 //
-// Semantics (the smallest delta over the pre-D-192 synchronous path):
+// Semantics (the smallest delta over the earlier synchronous path):
 //
 //   - ONLY bridge-eligible APPROVE / REJECT controls (a gate-owned
 //     wire `token` — see applier.routeApprovalControl) are consumed
@@ -52,9 +52,9 @@ type execOutcome struct {
 //   - The per-step goroutine is ALWAYS joined before return — on the
 //     happy path, on run-ctx cancellation, and on a bridge error (where
 //     stepCtx is cancelled first so a parked RunGuarded waiter
-//     unblocks). No goroutine outlives the step (D-025 / §11
+//     unblocks). No goroutine outlives the step (§11
 //     goroutine-leak gate). All dispatch state lives on this
-//     goroutine's stack — nothing lands on the RunLoop struct (D-025).
+//     goroutine's stack — nothing lands on the RunLoop struct.
 //
 // Returns the executor's outcome, the deferred (still-unapplied)
 // control events, and a non-nil error ONLY when a mid-step bridge
@@ -107,7 +107,7 @@ func (rl *RunLoop) dispatchDecision(
 				// join, and hand the outcome back — the next step
 				// boundary surfaces the underlying condition
 				// (ctx.Err() / Drain's ErrInboxNotFound) exactly as
-				// the pre-D-192 synchronous dispatch did.
+				// the earlier synchronous dispatch did.
 				cancelStep()
 				out := <-done
 				return out, deferred, nil

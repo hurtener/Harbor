@@ -7,7 +7,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// Phase 36a/36b governance event types. Registered via init() so the
+// governance event types. Registered via init() so the
 // canonical events registry stays the single source of truth (AGENTS.md
 // §17.6's "wiring gap" lesson — register at declaration time, publish at
 // use time).
@@ -32,10 +32,10 @@ const (
 	// resolved tier's cap.
 	EventTypeMaxTokensExceeded events.EventType = "governance.maxtokens_exceeded"
 
-	// EventTypePostureReadAdmin — Phase 72g (D-112). Emitted when an
+	// EventTypePostureReadAdmin — Emitted when an
 	// admin-scoped caller reads ANOTHER tenant's governance posture via
 	// the `governance.posture` Protocol method. A caller reading its
-	// OWN tenant does NOT emit this event (matches the Phase 73
+	// OWN tenant does NOT emit this event (matches the
 	// sessions.inspect convention — own-scope reads are not audited).
 	// The cross-tenant read is a privileged action and lands on the
 	// audit trail per CLAUDE.md §7 + RFC §6.15.
@@ -54,7 +54,7 @@ func init() {
 }
 
 // PostureReadAdminPayload is the typed payload for
-// EventTypePostureReadAdmin (Phase 72g). SafePayload — the actor's
+// EventTypePostureReadAdmin. SafePayload — the actor's
 // identity and the requested tenant are operator-visible audit
 // metadata, not secret-shaped. The payload still runs through the
 // audit Redactor before the bus publish (CLAUDE.md §7 rule 6).

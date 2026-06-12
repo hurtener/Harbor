@@ -1,17 +1,17 @@
-// cmd/harbor/inspect_common.go — shared plumbing for the Phase 69
+// cmd/harbor/inspect_common.go — shared plumbing for the
 // inspect-events / inspect-runs subcommands.
 //
-// Phase 69 (D-101) graduates the two inspect subcommands from §13 stubs.
+// Harbor graduates the two inspect subcommands from §13 stubs.
 // They share the same wire shape, the same Bearer-token discovery, the
 // same SSE consumption: this file centralises the helpers so neither
 // subcommand body re-rolls a fetch loop, a JSON shape, or a token
 // resolver.
 //
-// # Authentication (D-101)
+// # Authentication
 //
 // The CLI is a Protocol client of a running Harbor Runtime. The Runtime
 // requires `Authorization: Bearer <jwt>` on every Protocol request
-// (Phase 61 / D-079 — the auth.Middleware wraps both /v1/control and
+// (— the auth.Middleware wraps both /v1/control and
 // /v1/events). The CLI resolves the token from two sources, in order:
 //
 //  1. `HARBOR_TOKEN` env var.
@@ -26,9 +26,9 @@
 // Runtime's auth.Middleware does, and that path is locked to ES256 /
 // RS256 etc. (CLAUDE.md §7 rule 1).
 //
-// # Wire shape (D-101 / Phase 60)
+// # Wire shape
 //
-// The Phase 60 SSE transport (`internal/protocol/transports/stream`)
+// The SSE transport (`internal/protocol/transports/stream`)
 // serialises each `events.Event` as a JSON `wireEvent`:
 //
 //	{
@@ -129,7 +129,7 @@ const envHarborToken = "HARBOR_TOKEN"
 // operator's home directory.
 const tokenFileRel = ".harbor/token"
 
-// wireEvent mirrors the Phase 60 SSE `data:` payload. Kept verbatim
+// wireEvent mirrors the SSE `data:` payload. Kept verbatim
 // (field names + tags) so a wire-shape change at the SSE transport
 // side without a CLI update fails the golden. See file-level godoc.
 type wireEvent struct {
@@ -260,8 +260,8 @@ func (f inspectFilter) validate() error {
 	return nil
 }
 
-// applyHeaders writes the Phase 60 X-Harbor-* identity carrier headers
-// and the Bearer token to req. Phase 61's auth.Middleware prefers the
+// applyHeaders writes the X-Harbor-* identity carrier headers
+// and the Bearer token to req. the auth.Middleware prefers the
 // ctx-attached verified identity (from the JWT claims) over the
 // carrier headers, but we send both so a Runtime booted with
 // `WithoutValidator()` (test-only escape hatch — see

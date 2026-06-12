@@ -1,9 +1,9 @@
-// Package sqlite is Harbor's SQLite-backed `state.StateStore` driver
-// (Phase 15). It is the second leg of the persistence triad
+// Package sqlite is Harbor's SQLite-backed `state.StateStore` driver.
+// It is the second leg of the persistence triad
 // (in-memory, SQLite, Postgres) defined by RFC §6.11 + §9.
 //
 // The driver is built on `modernc.org/sqlite` — a CGo-free SQLite
-// engine (D-013, AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
+// engine (AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
 //
 // Operating model:
 //
@@ -21,7 +21,7 @@
 //     `Concurrent_SaveLoad_NoRace` and our supplemental
 //     `concurrent_test.go` does not surface caller-visible errors.
 //   - The schema is applied via embedded `migrations/*.sql` files
-//     (forward-only, brief 05 §4 + AGENTS.md §13). The runner is
+//     (forward-only, AGENTS.md §13). The runner is
 //     idempotent — re-running on an already-migrated DB is a no-op.
 //
 // The driver self-registers under `"sqlite"` from its `init()`. The
@@ -29,7 +29,7 @@
 // `cmd/harbor/main.go`; tests may call `New` directly to skip the
 // registry.
 //
-// Concurrency contract (D-025):
+// Concurrency contract:
 //
 //   - The driver struct holds a `*sql.DB` (an internally-synchronized
 //     connection pool) and an `atomic.Bool` close flag. Both are safe
@@ -85,8 +85,8 @@ const busyTimeoutMs = 5000
 //
 //   - Empty DSN → clear error (no silent default-fallback).
 //   - `:memory:` → translated to a PER-OPEN uniquely named shared-cache
-//     memory URI (`file:harbor_state_mem_<entropy>?mode=memory&cache=shared`,
-//     D-207) so `database/sql`'s pool can hand out multiple shared
+//     memory URI (`file:harbor_state_mem_<entropy>?mode=memory&cache=shared`)
+//     so `database/sql`'s pool can hand out multiple shared
 //     connections to the SAME in-memory database (the bare `:memory:`
 //     DSN gives every pool connection its own private DB, which would
 //     break Save+Load round-trip across pooled connections) while two
@@ -140,7 +140,7 @@ func New(cfg config.StateConfig) (state.StateStore, error) {
 	// can hand out N connections that race for the writer lock).
 	// Pinning the pool to a single connection serializes all access
 	// at the Go layer — the driver thus matches the engine's
-	// single-writer reality. This deviates from the Phase 15 plan's
+	// single-writer reality. This deviates from the phase plan's
 	// "leave pool defaulted" guidance (AGENTS.md §4.3 reasonable
 	// deviation): the conformance suite's
 	// `Concurrent_SaveLoad_NoRace` (N=128) does not pass with the
@@ -189,7 +189,7 @@ func init() {
 //     conflict is logical, not physical.
 //
 // The bare `:memory:` DSN is translated to a PER-OPEN uniquely named
-// `file:`-form shared-cache memory URI (D-207; see uniqueMemoryDSN)
+// `file:`-form shared-cache memory URI (see uniqueMemoryDSN)
 // so `database/sql`'s pool shares one DB within this store while two
 // `:memory:` stores opened by different subsystems never collide.
 //
@@ -200,7 +200,7 @@ func init() {
 func augmentDSNForPragmas(dsn string) (string, error) {
 	// Translate bare `:memory:` to a per-Open uniquely named
 	// shared-cache memory URI: shared across the pool, isolated
-	// across Opens (D-207).
+	// across Opens.
 	if dsn == ":memory:" {
 		unique, err := uniqueMemoryDSN()
 		if err != nil {
@@ -250,8 +250,8 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	return dsn + sep + strings.Join(parts, "&"), nil
 }
 
-// uniqueMemoryDSN mints a per-Open named in-memory database URI
-// (D-207). `mode=memory` keeps it off disk; `cache=shared` lets every
+// uniqueMemoryDSN mints a per-Open named in-memory database URI.
+// `mode=memory` keeps it off disk; `cache=shared` lets every
 // connection in THIS store's pool see the same database; the
 // crypto-random name keeps two `:memory:` stores — this subsystem's or
 // any other's — fully isolated within one process. The database lives
@@ -316,7 +316,7 @@ var _ state.StateStore = (*driver)(nil)
 
 // Save implements state.StateStore.
 //
-// SQL flow (single transaction, brief 05 §4 idempotency contract):
+// SQL flow (single transaction, the idempotency contract):
 //
 //  1. Look up the row at the slot key (composite PK) AND/OR the row
 //     resolved by EventID. If the EventID was previously seen:
@@ -565,7 +565,7 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 }
 
 // ListKind implements state.StateStore — the explicitly-elevated
-// maintenance scan (RFC §6.11, D-207). The prefix matches literally:
+// maintenance scan (RFC §6.11). The prefix matches literally:
 // LIKE metacharacters in kindPrefix are escaped so a prefix containing
 // `%` or `_` cannot widen the scan.
 func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {

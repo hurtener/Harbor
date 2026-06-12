@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 73m / D-129): the `auth.*`
+// Package stream — additions: the `auth.*`
 // HTTP handler. Like `tools.*` and `tasks.*`, the single `auth.*`
 // method (`auth.rotate_token`) is one-shot request/response — POST JSON
 // in, JSON out — and the handler lives in the stream package because
@@ -13,11 +13,11 @@
 //
 //	rotate_token
 //
-// `auth.rotate_token` is the ONE net-new Protocol method Phase 73m
+// `auth.rotate_token` is the ONE net-new Protocol method Harbor
 // ships — the Console Settings page is otherwise a pure consumer of the
 // 72f / 72g posture surfaces. It is an ADMIN method: it rotates the
 // operator's current Protocol-auth token and requires the verified
-// `auth.ScopeAdmin` claim (D-079 closed two-scope set — there is NO
+// `auth.ScopeAdmin` claim (closed two-scope set — there is NO
 // `auth.admin` scope). A request without the claim is rejected 403 with
 // the canonical CodeIdentityScopeRequired Code. Every successful
 // rotation emits a redacted `audit.admin_scope_used` event through the
@@ -56,7 +56,7 @@ var ErrAuthMisconfigured = errors.New("stream: auth handler missing a mandatory 
 
 // AuthHandler serves `POST /v1/auth/{method}`. It is the wire adapter
 // over an *auth.RotateSurface: resolve identity + scopes, decode the
-// request, dispatch, encode. The handler is a D-025-safe compiled
+// request, dispatch, encode. The handler is a concurrency-safe compiled
 // artifact — every field is set once at construction; ServeHTTP holds
 // no per-request state.
 type AuthHandler struct {
@@ -82,7 +82,7 @@ func WithAuthLogger(l *slog.Logger) AuthOption {
 // surface is mandatory — a nil fails loud with ErrAuthMisconfigured
 // rather than building a handler that would nil-panic on the first
 // request (CLAUDE.md §5). The returned *AuthHandler is immutable after
-// construction (D-025) and safe for concurrent use by N goroutines.
+// construction and safe for concurrent use by N goroutines.
 func NewAuthHandler(surface *auth.RotateSurface, opts ...AuthOption) (*AuthHandler, error) {
 	if surface == nil {
 		return nil, fmt.Errorf("%w: auth.RotateSurface is nil", ErrAuthMisconfigured)

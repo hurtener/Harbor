@@ -35,7 +35,7 @@ type ProviderDeps struct {
 	// Redactor processes the ToolAuthRequiredPayload before emission.
 	// Mandatory.
 	Redactor audit.Redactor
-	// Coordinator is the unified pause/resume primitive (Phase 50).
+	// Coordinator is the unified pause/resume primitive.
 	// Mandatory — InitiateFlow allocates a pause record on it;
 	// CompleteFlow resumes through it.
 	Coordinator pauseresume.Coordinator
@@ -54,7 +54,7 @@ type ProviderDeps struct {
 
 // Provider is the V1 concrete OAuthProvider implementation.
 //
-// Concurrent reuse (D-025): every field below is set once at
+// Concurrent reuse: every field below is set once at
 // construction (deps + immutable maps protected by mu).
 type Provider struct {
 	store       TokenStore
@@ -86,8 +86,7 @@ type Provider struct {
 
 	// refreshGroup is the per-(scope,subject,source) single-flight
 	// gate for token refresh. Prevents a refresh storm on
-	// agent-bound tokens shared across N concurrent sessions
-	// (brief 09 §"Concurrent refresh storm on agent-bound tokens").
+	// agent-bound tokens shared across N concurrent sessions.
 	refreshMu     sync.Mutex
 	refreshFlight map[string]*refreshCall
 
@@ -519,7 +518,7 @@ func (p *Provider) InitiateFlow(ctx context.Context, source tools.ToolSourceID) 
 // coordinator; emits tool.auth_completed.
 //
 // CompleteFlow is the resume half of the tool-OAuth pause. Its
-// production caller is `auth.CallbackHandler` (Phase 111b, D-199),
+// production caller is `auth.CallbackHandler`,
 // which `harbor dev` mounts at `GET /v1/tools/oauth/callback`;
 // headless embedders mount the same handler (or call CompleteFlow
 // directly) at whatever path matches the configured RedirectURI. A
@@ -623,8 +622,8 @@ func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token,
 
 	// Resume the parked run with a typed `DecisionResume` marker —
 	// this is a generic resume of a non-approval pause (the OAuth flow
-	// completed), distinct from approve / reject / timeout (issue #113,
-	// D-096). A failure here is loud — the pause would otherwise
+	// completed), distinct from approve / reject / timeout (issue #113).
+	// A failure here is loud — the pause would otherwise
 	// linger as a record nobody can claim.
 	if err := p.coordinator.Resume(ctx, rec.PauseToken, pauseresume.DecisionResume, map[string]any{
 		"source":       string(cfg.Source),
@@ -710,11 +709,11 @@ func (p *Provider) PendingFlow(state string) (PendingFlowInfo, bool) {
 }
 
 // DenyFlow consumes the flow record for `state` and resumes the
-// associated pause with the typed DecisionReject marker (D-096) — the
+// associated pause with the typed DecisionReject marker — the
 // fail-loud terminal for an upstream authorization denial. The token
 // store is never touched (there is no token); the pause record does
 // not linger to flow-TTL on a denial the authorization server already
-// made final (Phase 111b plan §Risks; recorded in D-199).
+// made final — a recorded design decision.
 //
 // Identity + admin-scope checks mirror CompleteFlow: the calling ctx
 // must carry the flow's parking identity, and a ScopeAgent flow
@@ -780,7 +779,7 @@ func (p *Provider) DenyFlow(ctx context.Context, state, reason string) error {
 // The payload is SafePayload by construction (every field is
 // caller-controllable surface — auth URLs, scope identifiers, opaque
 // pause tokens; never plaintext OAuth tokens), so the bus skips the
-// redactor. But Phase 30's acceptance criterion is explicit:
+// redactor. But the acceptance criterion is explicit:
 // "ErrAuthRequired payload is typed and audit-redacted (no raw token
 // material in events)." We satisfy "audit-redacted" defensively here:
 // the payload is run through Redactor.Redact before Publish; a

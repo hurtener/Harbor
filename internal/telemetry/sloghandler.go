@@ -1,5 +1,5 @@
 // sloghandler.go — the *slog.Logger bridge over the canonical
-// telemetry Logger (Wave C checkpoint audit; closes the 111f
+// telemetry Logger (checkpoint audit; closes the telemetry-assembly
 // telemetry-threading gap). Long-lived subsystems constructed by the
 // assembly (the notifications subscriber, the pause sweeper, the
 // dispatch executor, the MCP attach loop, the search-cache warn path)
@@ -31,7 +31,7 @@ import (
 // time, exactly as a direct Logger call does.
 //
 // The returned *slog.Logger is safe for concurrent use (the Logger's
-// D-025 contract carries over; the bridge holds no mutable state).
+// contract carries over; the bridge holds no mutable state).
 func (l *Logger) Slog() *slog.Logger {
 	return slog.New(&slogBridgeHandler{base: l})
 }

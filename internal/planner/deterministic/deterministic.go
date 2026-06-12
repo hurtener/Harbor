@@ -1,8 +1,8 @@
 // Package deterministic ships Harbor's second concrete Planner
-// (Phase 48 — RFC §6.2 + RFC §11 Q-6 — the iface-validation lens that
+// (RFC §6.2 + RFC §11 Q-6 — the iface-validation lens that
 // proves the `internal/planner.Planner` seam is genuinely swappable).
 //
-// The same Runtime that drives the Phase 45 LLM-driven ReAct concrete
+// The same Runtime that drives the LLM-driven ReAct concrete
 // drives this deterministic concrete via the identical `Planner`
 // interface, the identical `RunContext` view, and the identical
 // `Decision` sum. NO Runtime change. NO interface change. NO
@@ -16,7 +16,7 @@
 // step claimed the current `Next` call. On every `Next`, the walker:
 //
 //  1. Honours `ctx.Err()`.
-//  2. Validates [planner.RunContext.Quadruple] (§6 rule 9 + D-001;
+//  2. Validates [planner.RunContext.Quadruple] (§6 rule 9;
 //     fail-loudly per §13 with wrapped [planner.ErrIdentityRequired]).
 //  3. Observes [planner.RunContext.Control.Cancelled] — returns
 //     `Finish{Cancelled}` at the step boundary per RFC §6.3.
@@ -30,7 +30,7 @@
 //     A misconfigured tree surfaces as a typed terminal, NEVER a
 //     silent loop (§13).
 //
-// # Wake-on-resolution (D-032)
+// # Wake-on-resolution
 //
 // The deterministic planner declares [planner.WakePoll] via the
 // [planner.WakeAware] interface. The [WatchGroupStep] (and the
@@ -46,13 +46,13 @@
 //     operator-supplied `OnResolved` callback whose return value is
 //     the planner's decision.
 //
-// The TaskRegistry stays NEUTRAL (D-032): no `WakeMode` field on
+// The TaskRegistry stays NEUTRAL: no `WakeMode` field on
 // registry types, no `Supports*` capability protocol. The choice is
 // the planner concrete's; the deterministic concrete picks `poll`
 // because the WakePoll mode is the on-disk proof that the registry's
 // mode-neutral surface accepts a poller.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // [DeterministicPlanner] is a reusable artifact: the receiver is
 // read-only after construction. Per-run state lives on the stack and
@@ -64,9 +64,9 @@
 // # Import-graph contract (§13)
 //
 // The deterministic package MUST NOT import `internal/runtime/...`
-// or `internal/llm/...`. The Phase 42
+// or `internal/llm/...`. The
 // [internal/planner/conformance.TestImportGraph_PlannerDoesNotImportRuntime]
-// covers the new package by construction; `scripts/smoke/phase-48.sh`
+// covers the new package by construction; the package's static smoke guard
 // asserts the same via grep on both forbidden prefixes.
 package deterministic
 
@@ -203,7 +203,7 @@ func (p *DeterministicPlanner) Name() string {
 }
 
 // WakeMode declares the planner's wake-on-resolution strategy
-// (D-032 + Phase 48 spec). Deterministic ships the `poll` mode: each
+// (the wake contract). Deterministic ships the `poll` mode: each
 // `Next` invocation performs a non-blocking receive on its
 // outstanding group's [tasks.TaskRegistry.WatchGroup] channel; not
 // ready → emit `AwaitTask`, the runtime sleeps the step until the
@@ -275,7 +275,7 @@ func (p *DeterministicPlanner) Next(ctx context.Context, rc planner.RunContext) 
 
 // assertIdentity rejects calls whose [planner.RunContext.Quadruple]
 // is missing any of the four scope components. Returns wrapped
-// [planner.ErrIdentityRequired] (§6 rule 9 + D-001). Fail-loudly per
+// [planner.ErrIdentityRequired] (§6 rule 9). Fail-loudly per
 // §13 — a planner with missing identity fails closed, never silently
 // degrades.
 func assertIdentity(rc planner.RunContext) error {

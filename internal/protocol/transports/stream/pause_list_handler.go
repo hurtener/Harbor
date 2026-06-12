@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 72e): the `pause.list`
+// Package stream — additions: the `pause.list`
 // HTTP handler. Like `events.aggregate`, this is a one-shot
 // request/response — POST JSON in, JSON out — and it lives in the
 // stream package because its identity + cross-tenant scope-claim gating
@@ -10,17 +10,17 @@
 //	POST /v1/pause/list
 //
 // The handler reads identity from r.Context() (auth.Middleware) or the
-// X-Harbor-* carrier headers (Phase 60 fallback), decodes the JSON body
+// X-Harbor-* carrier headers (fallback), decodes the JSON body
 // into a types.PauseListRequest, gates cross-tenant filters on
 // auth.HasScope(ScopeAdmin), projects the snapshot from the unified
-// pause/resume Coordinator (Phase 50), applies the D-026 heavy-content
+// pause/resume Coordinator, applies the heavy-content
 // bypass on each row, and encodes the response. The response body is
 // the wire types.PauseListResponse JSON; on failure, a JSON error body
 // with the canonical Protocol Code.
 //
 // pause.list is READ-ONLY against the Coordinator — it does NOT call
 // Resume, does NOT clear checkpoints. Resume actions continue through
-// the Phase 54 `resume` / `approve` / `reject` control methods. The
+// the `resume` / `approve` / `reject` control methods. The
 // unified pause/resume primitive is never bypassed: pause.list reads
 // the shipped Coordinator state, it does not reinvent pause
 // coordination (CLAUDE.md §7 rule 4, §13).
@@ -57,7 +57,7 @@ const PauseListRoutePattern = "POST /v1/pause/list"
 const maxPauseListBodyBytes = 32 << 10
 
 // pauseListArtifactNamespace is the artifact namespace heavy pause
-// payloads are routed under (D-026). A dedicated namespace keeps the
+// payloads are routed under. A dedicated namespace keeps the
 // content-addressed IDs distinguishable from other artifact producers.
 const pauseListArtifactNamespace = "pause_payload"
 
@@ -69,8 +69,8 @@ var ErrPauseListMisconfigured = errors.New("stream: pause.list handler missing a
 // PauseListHandler serves `POST /v1/pause/list`. It is the wire adapter
 // over a pauseresume.Coordinator: decode the request, gate on scope
 // claim if the filter is cross-tenant, project the snapshot, apply the
-// D-026 heavy-content bypass per row, encode the response. The handler
-// is a D-025-safe compiled artifact — every field is set once at
+// heavy-content bypass per row, encode the response. The handler
+// is a concurrency-safe compiled artifact — every field is set once at
 // construction; ServeHTTP holds no per-request state.
 type PauseListHandler struct {
 	coord     pauseresume.Coordinator
@@ -95,7 +95,7 @@ func WithPauseListLogger(l *slog.Logger) PauseListOption {
 }
 
 // WithPauseListBus wires the canonical events.EventBus into the handler
-// so the D-026 heavy-content bypass can publish a
+// so the heavy-content bypass can publish a
 // `pause.payload_artifact_routed` observation when a heavy payload is
 // routed through the ArtifactStore. The bus is OPTIONAL — when not
 // supplied, the bypass still happens (the heavy payload is still routed
@@ -120,7 +120,7 @@ func WithPauseListBus(b events.EventBus) PauseListOption {
 // value fails loud (a zero threshold would route every payload).
 //
 // The returned *PauseListHandler is immutable after construction
-// (D-025) and safe for concurrent use by N goroutines.
+// and safe for concurrent use by N goroutines.
 func NewPauseListHandler(coord pauseresume.Coordinator, store artifacts.ArtifactStore, threshold int, opts ...PauseListOption) (*PauseListHandler, error) {
 	if coord == nil {
 		return nil, fmt.Errorf("%w: pauseresume.Coordinator is nil", ErrPauseListMisconfigured)
@@ -145,7 +145,7 @@ func NewPauseListHandler(coord pauseresume.Coordinator, store artifacts.Artifact
 
 // ServeHTTP implements http.Handler. It resolves identity from
 // r.Context() (auth.Middleware) or the X-Harbor-* carrier headers
-// (Phase 60 fallback), decodes the JSON body into a PauseListRequest,
+// (fallback), decodes the JSON body into a PauseListRequest,
 // gates cross-tenant filters on scope, projects the Coordinator
 // snapshot, applies the heavy-content bypass, and encodes the response.
 func (h *PauseListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +193,7 @@ func (h *PauseListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Cross-tenant gate — a filter naming a tenant other than the
 	// caller's own, or more than one tenant, requires the verified
-	// admin scope claim (D-079). The Coordinator's checkCrossTenantScope
+	// admin scope claim. The Coordinator's checkCrossTenantScope
 	// is the authoritative enforcement; this edge check produces the
 	// canonical CodeIdentityScopeRequired (403) Protocol error.
 	adminScoped := auth.HasScope(r.Context(), auth.ScopeAdmin)
@@ -218,7 +218,7 @@ func (h *PauseListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Project the runtime snapshot into the wire response, applying the
-	// D-026 heavy-content bypass per row.
+	// heavy-content bypass per row.
 	wireResp, perr := h.projectResponse(r.Context(), resp)
 	if perr != nil {
 		writePauseListError(w, perr.code, perr.status, perr.message)
@@ -238,7 +238,7 @@ func (h *PauseListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // projectResponse maps the runtime ListResponse onto the wire
 // PauseListResponse. Each row's Payload is checked against the
-// heavy-content threshold (D-026): a payload whose JSON-marshalled byte
+// heavy-content threshold: a payload whose JSON-marshalled byte
 // length meets or exceeds the threshold is routed through the
 // ArtifactStore and the row ships PayloadRef instead of inline bytes.
 func (h *PauseListHandler) projectResponse(ctx context.Context, resp pauseresume.ListResponse) (*prototypes.PauseListResponse, *pauseListError) {
@@ -290,7 +290,7 @@ func (h *PauseListHandler) projectResponse(ctx context.Context, resp pauseresume
 // payload through the ArtifactStore, emits a
 // `pause.payload_artifact_routed` observation (when a bus is wired),
 // and returns the by-reference PauseArtifactRef. A marshal or store
-// failure fails loud — never a silent truncation (D-026, §13).
+// failure fails loud — never a silent truncation (§13).
 func (h *PauseListHandler) maybeRouteHeavyPayload(ctx context.Context, p pauseresume.Pause) (*prototypes.PauseArtifactRef, *pauseListError) {
 	raw, err := json.Marshal(p.Payload)
 	if err != nil {
@@ -314,7 +314,7 @@ func (h *PauseListHandler) maybeRouteHeavyPayload(ctx context.Context, p pausere
 		Source: map[string]any{
 			// methods.MethodPauseList is the single source for the
 			// `pause.list` wire string (CLAUDE.md §8) — used here so
-			// the Phase 58 single-source checker does not flag the
+			// the single-source checker does not flag the
 			// artifact-provenance literal.
 			"producer":    string(methods.MethodPauseList),
 			"pause_token": string(p.Token),
@@ -329,7 +329,7 @@ func (h *PauseListHandler) maybeRouteHeavyPayload(ctx context.Context, p pausere
 
 	// Make the bypass LOUD — emit a pause.payload_artifact_routed
 	// observation when a bus is wired; log it at Info regardless. A
-	// heavy payload is never silently truncated (D-026, §13).
+	// heavy payload is never silently truncated (§13).
 	h.emitPayloadRouted(ctx, p, ref.ID, len(raw))
 
 	return &prototypes.PauseArtifactRef{
@@ -341,13 +341,13 @@ func (h *PauseListHandler) maybeRouteHeavyPayload(ctx context.Context, p pausere
 	}, nil
 }
 
-// emitPayloadRouted publishes the D-026 heavy-content-bypass
+// emitPayloadRouted publishes the heavy-content-bypass
 // observation. When no bus is wired, it logs at Info so the routing is
 // never fully silent. A publish failure is logged loudly but does not
 // fail the request — the bypass itself (routing the payload to the
 // store) already succeeded; only the best-effort observation was lost.
 func (h *PauseListHandler) emitPayloadRouted(ctx context.Context, p pauseresume.Pause, artifactID string, payloadBytes int) {
-	h.logger.InfoContext(ctx, "pause.list: heavy pause payload routed to artifact store (D-026)",
+	h.logger.InfoContext(ctx, "pause.list: heavy pause payload routed to artifact store",
 		slog.String("pause_token", string(p.Token)),
 		slog.String("artifact_id", artifactID),
 		slog.Int("payload_bytes", payloadBytes),

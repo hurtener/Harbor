@@ -3,11 +3,11 @@ package types
 import "time"
 
 // EventFilter is the canonical wire predicate every events.* Protocol
-// method consumes — `events.subscribe` (Phase 72) for live subscriptions
-// and `events.aggregate` (Phase 72a) for time-bucketed count series. The
+// method consumes — `events.subscribe` for live subscriptions
+// and `events.aggregate` for time-bucketed count series. The
 // shape is identity-scope-aware: cross-tenant filters (TenantIDs with
 // more than one entry, or a tenant other than the caller's) require the
-// `auth.ScopeAdmin` OR `auth.ScopeConsoleFleet` claim per D-079 — there
+// `auth.ScopeAdmin` OR `auth.ScopeConsoleFleet` claim per the closed admin-scope set — there
 // is NO dedicated `events.crosstenant` scope (the closed two-scope set
 // is the wire posture).
 //
@@ -17,12 +17,12 @@ import "time"
 // A filter that elides the triple WITHOUT a scope claim is rejected
 // loudly at the wire edge with `CodeIdentityRequired`; one that names
 // multiple tenants WITHOUT a scope claim is rejected with
-// `CodeIdentityScopeRequired` (Phase 72; HTTP 403).
+// `CodeIdentityScopeRequired` (HTTP 403).
 //
-// Heavy payloads (D-026 / RFC §6.5): the filter operates on event
+// Heavy payloads (RFC §6.5): the filter operates on event
 // HEADER fields only (type, identity, timestamp). Predicates over event
 // payload bytes would force the runtime to materialise heavy payloads
-// through the LLM-edge safety net — explicitly out of scope per Brief 11
+// through the LLM-edge safety net — explicitly out of scope per the design
 // §CC-4 (substring payload search is post-V1).
 //
 // Since / Until are UTC; the empty zero-value means "unbounded on that
@@ -38,7 +38,7 @@ type EventFilter struct {
 	// identity tuple matches one of the supplied values. Empty on any
 	// axis is interpreted as "the caller's own component"; >1 on the
 	// tenant axis (or a single tenant other than the caller's) requires
-	// `auth.ScopeAdmin` OR `auth.ScopeConsoleFleet` per D-079.
+	// `auth.ScopeAdmin` OR `auth.ScopeConsoleFleet` per the closed admin-scope set.
 	TenantIDs  []string `json:"tenant_ids,omitempty"`
 	UserIDs    []string `json:"user_ids,omitempty"`
 	SessionIDs []string `json:"session_ids,omitempty"`
@@ -52,8 +52,8 @@ type EventFilter struct {
 }
 
 // EventBucket is a single time-bucketed count series — one stripe of the
-// per-event-type stacked-area sparkline the Events page renders (Phase
-// 73g). Start (inclusive) and End (exclusive) are UTC; Counts is keyed
+// per-event-type stacked-area sparkline the Events page renders (
+// ). Start (inclusive) and End (exclusive) are UTC; Counts is keyed
 // by event-type string.
 //
 // Bucket boundaries are computed deterministically by the aggregator:
@@ -65,8 +65,8 @@ type EventFilter struct {
 type EventBucket struct {
 	// Start is the bucket's lower bound (inclusive). UTC. The JSON tag
 	// is namespaced (bucket_start rather than start) so the wire
-	// surface does not collide with the Phase 54 task-control method
-	// name start — the Phase 58 single-source grep backstop is
+	// surface does not collide with the task-control method
+	// name start — the single-source grep backstop is
 	// substring-shaped (it does not parse struct tags) and a bare
 	// start tag would false-positive against it.
 	Start time.Time `json:"bucket_start"`
@@ -80,7 +80,7 @@ type EventBucket struct {
 }
 
 // EventAggregateRequest is the wire request for the `events.aggregate`
-// Protocol method (Phase 72a). It returns a deterministic time series
+// Protocol method. It returns a deterministic time series
 // of event-type counts over `Window`, bucketed by `Bucket`. The window
 // is anchored at the request's effective `Now` (the runtime's
 // monotonic clock at handler entry) — the response slice runs
@@ -88,7 +88,7 @@ type EventBucket struct {
 //
 // The request body's `filter` is the EventFilter above; the same
 // identity-scope rules apply (a cross-tenant aggregate is gated on the
-// `auth.ScopeAdmin` OR `auth.ScopeConsoleFleet` claim per D-079).
+// `auth.ScopeAdmin` OR `auth.ScopeConsoleFleet` claim per the closed admin-scope set).
 type EventAggregateRequest struct {
 	// Identity is the (tenant, user, session) scope envelope every
 	// Protocol client carries on the body. The aggregate handler pulls
@@ -97,7 +97,7 @@ type EventAggregateRequest struct {
 	// decode's `DisallowUnknownFields` accepts the Console's standard
 	// payload shape (`Transport.request` auto-injects `identity` on
 	// every request body). Optional in the wire schema; ignored by the
-	// handler. Round-5 walkthrough fix — pre-fix the request was the
+	// handler. a walkthrough fix — pre-fix the request was the
 	// only typed request shape on the Console-facing surface that
 	// REFUSED the identity envelope, breaking every Events page
 	// `events.aggregate` call cross-origin.
@@ -128,6 +128,6 @@ type EventAggregateResponse struct {
 	Buckets []EventBucket `json:"buckets"`
 	// ProtocolVersion echoes the Protocol version the Runtime answered
 	// under so a client can detect a version skew (mirrors the
-	// Phase 54 ControlResponse / StartResponse shape).
+	// ControlResponse / StartResponse shape).
 	ProtocolVersion string `json:"protocol_version"`
 }

@@ -7,7 +7,7 @@
 // adds MCP servers, tunes memory — and proceeds with `harbor
 // validate` and `harbor scaffold`.
 //
-// Phase 83n / D-153. The shape mirrors `cmd/harbor/scaffold`:
+// The shape mirrors `cmd/harbor/scaffold`:
 //
 //   - Templates live under `cmd/harbor/init/templates/<name>/`.
 //   - The default template is named `default` (V1.1 ships exactly

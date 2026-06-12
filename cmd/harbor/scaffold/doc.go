@@ -34,12 +34,12 @@
 // Templates are embedded at compile time via Go's embed package
 // (templates/*). The registry is a write-once package-level map
 // populated in init(); Templates() returns the keys in deterministic
-// order. Phase 67 ships exactly one template (`minimal-react`).
+// order. Harbor ships exactly one template (`minimal-react`).
 //
 // # Concurrency
 //
 // Scaffold is a pure function — no shared state, no goroutines, no
-// long-lived artifacts. The D-025 concurrent-reuse contract is
+// long-lived artifacts. The concurrent-reuse contract is
 // vacuous here; the package is safe for concurrent invocation by
 // construction.
 package scaffold

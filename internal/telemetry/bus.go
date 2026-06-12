@@ -5,8 +5,8 @@ import (
 	"log/slog"
 )
 
-// BusEmitter is the seam Phase 05+ uses to make Logger.Error fire a
-// paired runtime.error event. Phase 04 ships the noopEmitter default;
+// BusEmitter is the seam the event bus uses to make Logger.Error fire a
+// paired runtime.error event. Harbor ships the noopEmitter default;
 // the production emitter is wired via WithBusEmitter once the event
 // bus lands.
 //
@@ -19,9 +19,9 @@ type BusEmitter interface {
 	EmitRuntimeError(ctx context.Context, msg string, attrs []slog.Attr)
 }
 
-// noopEmitter is the default BusEmitter — does nothing. Phase 04
+// noopEmitter is the default BusEmitter — does nothing. Harbor
 // ships it so Logger.Error has a non-nil emitter pointer at all
-// times; Phase 05 swaps in a real implementation via WithBusEmitter.
+// times; Harbor swaps in a real implementation via WithBusEmitter.
 type noopEmitter struct{}
 
 func (noopEmitter) EmitRuntimeError(_ context.Context, _ string, _ []slog.Attr) {}

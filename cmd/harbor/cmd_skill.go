@@ -1,5 +1,4 @@
-// cmd/harbor/cmd_skill.go — `harbor skill import` / `harbor skill rm`
-// (Phase 111d, D-201).
+// cmd/harbor/cmd_skill.go — `harbor skill import` / `harbor skill rm`.
 //
 // The operator-facing half of the canonical skills surface: both
 // verbs are THIN callers over the same Go-level surface a headless

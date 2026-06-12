@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 72a): the
+// Package stream — additions: the
 // `events.aggregate` HTTP handler. Unlike `events.subscribe` (long-lived
 // SSE), this is a one-shot request/response — POST JSON in, JSON out.
 // It lives in the stream package because it shares the same events-
@@ -44,7 +44,7 @@ const maxAggregateBodyBytes = 32 << 10
 // AggregateHandler serves `POST /v1/events/aggregate`. It is the wire
 // adapter over an *events.Aggregator: decode the request body, gate on
 // scope claim if the filter is cross-tenant, dispatch, encode the
-// response. The handler is a D-025-safe compiled artifact — bus and
+// response. The handler is a concurrency-safe compiled artifact — bus and
 // logger are set once at construction; ServeHTTP holds no per-request
 // state.
 type AggregateHandler struct {
@@ -72,7 +72,7 @@ func WithAggregateLogger(l *slog.Logger) AggregateOption {
 // nil-panic on the first request (CLAUDE.md §5).
 //
 // The returned *AggregateHandler is immutable after construction
-// (D-025) and safe for concurrent use by N goroutines.
+// and safe for concurrent use by N goroutines.
 func NewAggregateHandler(aggregator *events.Aggregator, opts ...AggregateOption) (*AggregateHandler, error) {
 	if aggregator == nil {
 		return nil, fmt.Errorf("%w: events.Aggregator is nil", ErrAggregateMisconfigured)
@@ -92,7 +92,7 @@ func NewAggregateHandler(aggregator *events.Aggregator, opts ...AggregateOption)
 var ErrAggregateMisconfigured = errors.New("stream: aggregate handler missing a mandatory dependency")
 
 // ServeHTTP implements http.Handler. It resolves identity from r.Context()
-// (auth.Middleware) or the X-Harbor-* carrier headers (Phase 60
+// (auth.Middleware) or the X-Harbor-* carrier headers (
 // fallback), decodes the JSON body into an EventAggregateRequest, gates
 // on cross-tenant scope, dispatches to the Aggregator, and encodes the
 // response.

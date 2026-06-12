@@ -1,5 +1,5 @@
 // Package protocol implements the `runs.set_overrides` Protocol method
-// the Console Playground page (Phase 73n / D-130) consumes.
+// the Console Playground page consumes.
 //
 // `runs.set_overrides` records the reasoning-effort / temperature /
 // max-tokens / system-prompt override an operator applies to the NEXT
@@ -46,7 +46,7 @@
 // session); the impersonation triplet on `IdentityScope` is honoured by
 // the `user_message` / `start` consumer, not by override recording.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // A constructed *Service is immutable after NewService and safe to
 // share across N concurrent goroutines: it holds only the Store
@@ -54,7 +54,7 @@
 // method's per-call state lives in the call's arguments and locals,
 // never on the Service. The Store guards its map with a sync.Mutex —
 // the only mutable state, and it is documented "internally
-// synchronised" per the D-025 carve-out.
+// synchronised" per the carve-out.
 package protocol
 
 import (
@@ -124,7 +124,7 @@ type PendingOverride struct {
 }
 
 // Store is the in-process, identity-scoped pending-override slot map.
-// It is a compiled artifact (D-025): constructed once via NewStore,
+// It is a compiled artifact: constructed once via NewStore,
 // shared across N goroutines, with its single mutable field — the slot
 // map — guarded by an internally-synchronised sync.Mutex.
 //
@@ -187,7 +187,7 @@ type Clock func() time.Time
 // payload, enforces identity, records the override into the Store, and
 // emits the `runs.overrides_set` audit event.
 //
-// The Service is a compiled artifact (D-025): immutable after
+// The Service is a compiled artifact: immutable after
 // NewService; every method's per-call state lives in arguments + locals.
 type Service struct {
 	store    *Store
@@ -250,7 +250,7 @@ func WithClock(c Clock) Option {
 // rather than building a Service that would nil-panic on the first
 // request (CLAUDE.md §5).
 //
-// The returned *Service is immutable after construction (D-025) and
+// The returned *Service is immutable after construction and
 // safe for concurrent use by N goroutines.
 func NewService(store *Store, opts ...Option) (*Service, error) {
 	if store == nil {

@@ -1,17 +1,17 @@
-// metrics.go — the telemetry package's metrics surface (Phase 56).
-// It adds OpenTelemetry metrics on top of the Phase 04 Logger and the
-// Phase 55 Tracer. The canonical package doc comment is in logger.go.
+// metrics.go — the telemetry package's metrics surface.
+// It adds OpenTelemetry metrics on top of the Logger and the
+// Tracer. The canonical package doc comment is in logger.go.
 //
-// The load-bearing decision — the same one Phase 55 applied to spans —
+// The load-bearing decision — the same one applied to spans —
 // is that metrics are a DERIVATION of the event bus, not a parallel
 // instrumentation path. Subsystems emit events.Event records;
 // MetricsRegistry.RegisterEvent is the single bridge that turns an
 // event into a metric increment. There is deliberately no public
 // Counter / Gauge / Meter accessor on MetricsRegistry — a contributor
 // cannot sprinkle meter.Int64Counter(...) calls across subsystems and
-// grow a second metrics channel (brief 06 §1).
+// grow a second metrics channel.
 //
-// # The cardinality firewall (brief 06 "metrics cardinality footgun")
+// # The cardinality firewall ("metrics cardinality footgun")
 //
 // The predecessor's docs warn "Never tag metrics by trace_id". Harbor
 // makes that structural: RegisterEvent reads ev.Type and the two
@@ -23,11 +23,11 @@
 // future hand-rolled instrument honest; this file is the production
 // boundary that is closed by construction.
 //
-// # Reusable artifact (D-025)
+// # Reusable artifact
 //
 // A *MetricsRegistry is built once at boot via NewMetricsRegistry,
 // then shared across every emit path. It is immutable after
-// construction and safe for concurrent use; the D-025 concurrent-reuse
+// construction and safe for concurrent use; the concurrent-reuse
 // contract is enforced by TestConcurrentReuse_MetricsRegistry (N≥100
 // goroutines, one shared instance, under -race). The OTel SDK's
 // Int64Counter is itself safe for concurrent Add; the registry holds
@@ -35,7 +35,7 @@
 //
 // # The metric exporter sits behind the §4.4 driver seam
 //
-// Mirroring the Phase 55 SpanExporter seam exactly: the otlpmetric
+// Mirroring the SpanExporter seam exactly: the otlpmetric
 // driver (OTLP/gRPC, the default) and the prometheus driver (the
 // built-in /metrics pull endpoint) self-register from their init();
 // the factory below dispatches by name. NewMetricsRegistry does NOT
@@ -68,7 +68,7 @@ import (
 // Sentinel errors. Callers compare via errors.Is.
 var (
 	// ErrMetricsNotConfigured — NewMetricsRegistry received an invalid
-	// TelemetryConfig (e.g. an empty ServiceName). Phase 02 validates
+	// TelemetryConfig (e.g. an empty ServiceName). Harbor validates
 	// config upstream, but the constructor must not trust it.
 	ErrMetricsNotConfigured = errors.New("telemetry: metrics registry not configured")
 	// ErrMetricExporterUnknown — an explicitly-configured metric
@@ -92,7 +92,7 @@ const meterName = "github.com/hurtener/Harbor/internal/telemetry"
 // instrument addition does not re-spell them and the cardinality-lint
 // has a stable target set.
 const (
-	// metricEventsTotal is the Phase 56 core counter: total
+	// metricEventsTotal is the core counter: total
 	// events.Event records observed by the MetricsRegistry.
 	metricEventsTotal = "harbor_events_total"
 
@@ -109,7 +109,7 @@ const (
 
 	// extraKeyProducer / extraKeyNode are the reserved events.Event.Extra
 	// keys RegisterEvent reads. The events.Event doc reserves Extra for
-	// "Phase 56's bounded low-cardinality metric labels"; these are
+	// "the bounded low-cardinality metric labels"; these are
 	// those keys.
 	extraKeyProducer = "producer"
 	extraKeyNode     = "node"
@@ -159,7 +159,7 @@ type PromGatherer interface {
 // metricExporterRegistry is the write-once-read-many driver registry.
 // It is package-level mutable state, permitted under CLAUDE.md §4.4 /
 // §5 as a driver registry (the §4.4 seam exception, same shape as the
-// Phase 55 span-exporter registry).
+// span-exporter registry).
 var (
 	metricExporterMu       sync.RWMutex
 	metricExporterRegistry = map[string]MetricExporter{}
@@ -265,7 +265,7 @@ func WithMetricExporterDriver(name string) MetricsOption {
 
 // MetricsRegistry is the canonical OTel metrics wrapper. Built once at
 // boot via NewMetricsRegistry; safe for concurrent use; immutable
-// after construction (D-025).
+// after construction.
 //
 // The struct holds only read-only references after construction: the
 // SDK MeterProvider, the reader (kept so PrometheusHandler can recover
@@ -367,7 +367,7 @@ func NewMetricsRegistry(cfg config.TelemetryConfig, opts ...MetricsOption) (*Met
 
 // harborMetricResource builds the OTel resource describing this Harbor
 // process for metrics. Kept minimal and identical in spirit to the
-// Phase 55 trace resource: the service name is the one identifying
+// trace resource: the service name is the one identifying
 // attribute; resource.Default() is intentionally NOT merged in (it
 // triggers host/OS detection that is noise for a runtime SDK).
 func harborMetricResource(cfg config.TelemetryConfig) *resource.Resource {
@@ -388,7 +388,7 @@ func harborMetricResource(cfg config.TelemetryConfig) *resource.Resource {
 //
 // RegisterEvent reads NO field of ev.Identity. The run quadruple —
 // tenant_id / user_id / session_id / run_id — never reaches a metric
-// label. This is the cardinality firewall (brief 06): a developer
+// label. This is the cardinality firewall: a developer
 // cannot accidentally tag a metric by RunID / TraceID here because
 // there is no code path that touches ev.Identity. The static
 // cardinality-lint (internal/telemetry/cardinalitylint) is the CI gate
@@ -446,11 +446,11 @@ type MetricSnapshot struct {
 // Snapshot collects the registry's live metrics from the active SDK
 // reader and projects them onto the OTel-SDK-free MetricSnapshot shape.
 //
-// Snapshot is the production seam the Phase 72f `metrics.snapshot`
+// Snapshot is the production seam the `metrics.snapshot`
 // posture method reads — the boot path wires it into
 // `protocol.PostureDeps.Metrics`. It is safe for concurrent use: the
 // reader's Collect is concurrency-safe and Snapshot holds no per-call
-// state on the registry (D-025).
+// state on the registry.
 //
 // A reader Collect failure is returned wrapped — never silently
 // degraded to an empty snapshot (CLAUDE.md §13 "Silent degradation").
@@ -488,7 +488,7 @@ func (r *MetricsRegistry) Snapshot(ctx context.Context) (MetricSnapshot, error) 
 }
 
 // PrometheusHandler returns the http.Handler that serves the Prometheus
-// text exposition format for reg. The Phase 60+ Runtime server mounts
+// text exposition format for reg. The Runtime server mounts
 // it at /metrics; RFC §6.14 promotes a built-in Prometheus endpoint to
 // V1 for self-hosted setups.
 //
@@ -514,9 +514,9 @@ func PrometheusHandler(reg *MetricsRegistry) (http.Handler, error) {
 // `stop` function cancels the subscription and joins the drain
 // goroutine; production callers `defer stop()` at process teardown.
 //
-// PR #91 / D-082 (Wave 10 audit WARN-6): this helper pins the
-// events→metrics wiring shape in production code BEFORE the Phase 64
-// `harbor dev` bootstrap reinvents it. Phase 56 originally shipped
+// PR #91: this helper pins the
+// events→metrics wiring shape in production code BEFORE the
+// `harbor dev` bootstrap reinvents it. originally shipped
 // the bridge only as a test-local goroutine in
 // `test/integration/phase56_metrics_test.go::drainToMetrics`;
 // extracting it here exposes one canonical contract for the future

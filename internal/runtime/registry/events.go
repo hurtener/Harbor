@@ -107,7 +107,7 @@ type AgentDeregisteredPayload struct {
 // audit-redacted reason string — callers MUST NOT pass tool args, raw
 // user input, or secret-shaped material; the registry runs Reason
 // through the audit.Redactor before this payload is built, and the
-// bus does not re-redact SafePayload types (D-020 / D-028).
+// bus does not re-redact SafePayload types.
 //
 // SafePayload by construction: every field is either a closed enum, an
 // id, a timestamp, or an already-redacted string.

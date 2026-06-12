@@ -1,6 +1,6 @@
 // cmd/harbor/cmd_scaffold.go — `harbor scaffold` subcommand.
 //
-// Phase 67 (RFC §8, D-087) replaces the Phase 63 stub with the real
+// This file (RFC §8) replaces the stub with the real
 // scaffold implementation. The subcommand materialises a new Harbor
 // agent project skeleton from an embedded template (default
 // "minimal-react") into the operator-supplied output directory.
@@ -8,10 +8,10 @@
 // The rendered project ships a production-shaped harbor.yaml that
 // passes `internal/config.Load + Validate` with zero further edits —
 // the in-PR stand-in for `harbor validate` (sibling-shipping in
-// Phase 68; the CLI integration lands in Phase 68's PR per
+// `harbor validate`; the CLI integration lands in the PR per
 // CLAUDE.md §17.6).
 //
-// Every failure path emits a structured CLIError (D-084) — no
+// Every failure path emits a structured CLIError — no
 // hand-rolled JSON, no silent partial writes.
 
 package main
@@ -28,7 +28,7 @@ import (
 )
 
 // Stable CLI error codes for `harbor scaffold`. Each value is a fixed
-// string a smoke test asserts against (D-084 wire contract). New
+// string a smoke test asserts against (wire contract). New
 // subcommands ADD codes to errors.go; subcommand-local codes (these)
 // live next to the subcommand body for grep locality.
 const (
@@ -48,8 +48,8 @@ const (
 	// operator can grep the offending file path.
 	CodeScaffoldFailed = "scaffold_failed"
 	// CodeUpstreamConfigInvalid fires when --from-config (or the
-	// auto-detected ./harbor.yaml) failed to load or validate
-	// (Phase 83o / D-154). The hint surfaces the wrapped config
+	// auto-detected ./harbor.yaml) failed to load or validate.
+	// The hint surfaces the wrapped config
 	// error so the operator can fix the offending key.
 	CodeUpstreamConfigInvalid = "upstream_config_invalid"
 )
@@ -65,8 +65,8 @@ const (
 )
 
 // scaffoldJSONResult is the wire shape `harbor scaffold --json` emits
-// on success. Field names are pinned by D-087; `skipped` added by
-// Phase 83o / D-154 (omitted when empty for backward compatibility).
+// on success. Field names are pinned; `skipped` added by
+// (omitted when empty for backward compatibility).
 type scaffoldJSONResult struct {
 	Name      string   `json:"name"`
 	OutputDir string   `json:"output_dir"`
@@ -89,7 +89,7 @@ production-shaped harbor.yaml, a go.mod, a worked example Agent, and a
 harbortest-driven test.
 
 The rendered config passes Harbor's config validator (` + "`harbor validate`" + `
-when Phase 68 ships; ` + "`internal/config.Load + Validate`" + ` directly today)
+when ` + "`harbor validate`" + ` ships; ` + "`internal/config.Load + Validate`" + ` directly today)
 with zero further edits.
 
 Examples:

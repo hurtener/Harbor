@@ -1,11 +1,11 @@
 // Package auth ships Harbor's tool-side OAuth subsystem — the
-// TokenStore + OAuthProvider seam every Phase 27 (HTTP) / Phase 28
-// (MCP) / Phase 29 (A2A) southbound driver consults when a tool call
+// TokenStore + OAuthProvider seam every HTTP /
+// MCP / A2A southbound driver consults when a tool call
 // needs a bearer token. There is one OAuth path: when no usable token
 // exists the provider returns a typed ErrAuthRequired carrying a
 // structured payload (provider, scope, binding-scope, authorize URL);
 // the runtime emits `tool.auth_required` and parks the run via the
-// unified pause/resume primitive (Phase 50 / RFC §3.3). Resume
+// unified pause/resume primitive (RFC §3.3). Resume
 // reattaches the freshly-minted token; A2A `AUTH_REQUIRED` translates
 // into the same ErrAuthRequired so the runtime never grows a parallel
 // pause path (CLAUDE.md §13 forbids two parallel implementations of
@@ -14,15 +14,15 @@
 // # The binding-scope dimension
 //
 // Tool-side OAuth has two production patterns Harbor supports as
-// first-class peers (brief 09):
+// first-class peers:
 //
 //   - ScopeUser — the token belongs to a Harbor user; the upstream
 //     service sees that user doing the action. Examples: personal
 //     GitHub, Gmail, Drive, Notion. Lookups key by
 //     (tenant, user_id, source).
 //   - ScopeAgent — the token belongs to a Harbor agent (an
-//     admin-configured service-account-style principal — Phase 53a /
-//     D-059's `agent_id`); the upstream sees the agent (or a shared
+//     admin-configured service-account-style principal — /
+//     the `agent_id`); the upstream sees the agent (or a shared
 //     service account). Examples: a shared Outlook mailbox, an
 //     internal Snowflake service account, a Slack bot user. Lookups
 //     key by (tenant, agent_id, source).
@@ -33,7 +33,7 @@
 //
 // # agent_id is NOT an isolation principal
 //
-// Per CLAUDE.md §6's clarifying note + D-059: agent_id is a
+// Per CLAUDE.md §6's clarifying note: agent_id is a
 // *registration identity*, not an isolation filter. Storage scopes by
 // the triple (tenant, user, session); the triple is mandatory on every
 // call. Agent-bound tokens carry the agent_id on the Token value (so
@@ -42,18 +42,18 @@
 // for an isolation-tuple element. The session triple still gates which
 // agents the call site can see and address.
 //
-// # Persistence: ride the §4.4 StateStore seam (D-067 pattern)
+// # Persistence: ride the §4.4 StateStore seam (pattern)
 //
 // TokenStore is a typed wrapper around the existing state.StateStore
-// (Phase 07) — the same shape Phase 50's pause/resume coordinator and
-// Phase 53a's Agent Registry use (D-067, D-068). Driver pluralism (in-
+// the same shape the pause/resume coordinator and
+// the Agent Registry use. Driver pluralism (in-
 // memory / SQLite / Postgres) lives at the StateStore layer; the
 // TokenStore is a single concrete type that consumes whatever
 // StateStore the binary opened at boot. This avoids the §13
 // two-parallel-implementations smell ("a token-store driver registry
 // AND a state-store driver registry, both saying 'three V1 drivers'")
-// and inherits the §4.3 deviation language Phase 50 / Phase 53a set as
-// precedent. See phase-30-tool-oauth.md §"Findings I'm departing
+// and inherits the §4.3 deviation language set as
+// precedent. I'm departing
 // from".
 //
 // # Encryption at rest
@@ -62,7 +62,7 @@
 // package-local AES-256-GCM envelope. The KEK is operator-supplied via
 // config (32 raw bytes hex-encoded); a missing / wrong-length KEK
 // fails the boot loud (CLAUDE.md §13 amendment — operator-facing seam
-// must demand explicit configuration; PR #91 / D-082). The encryption
+// must demand explicit configuration; PR #91). The encryption
 // envelope carries a fresh 12-byte nonce per-Save and a 4-byte version
 // header so KEK rotation (post-V1) can decrypt legacy records before
 // re-encrypting under the new key.
@@ -78,7 +78,7 @@
 // independently of access tokens — a compromised cache of access
 // tokens does not yield refresh capability.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // Every constructed artifact in this package — TokenStore, the
 // concrete *Provider, the AESGCMSealer — is safe to share across N
@@ -89,12 +89,12 @@
 //
 // # §13 primitive-with-consumer
 //
-// Phase 30 ships the primitive (OAuthProvider + TokenStore +
+// Harbor ships the primitive (OAuthProvider + TokenStore +
 // ErrAuthRequired + the tool.auth_required event). The §13
 // primitive-with-consumer obligation is discharged in-PR by:
 //
 //   - integration test `test/integration/phase30_tool_oauth_test.go`
-//     exercising the full pause/resume cycle against a real Phase 50
+//     exercising the full pause/resume cycle against a real
 //     Coordinator + a real events.EventBus + a real audit.Redactor +
 //     an httptest-backed authorization server doing PKCE +
 //     RFC 7591 dynamic client registration + metadata discovery, for
@@ -103,7 +103,7 @@
 //   - the package-local concurrent_test.go pinning D-025 (N≥100
 //     concurrent operations against one shared *Provider).
 //
-// Phase 31 (tool-side approval gates) will be the next consumer
+// The tool-side approval gates are the sibling consumer
 // layered on the same primitives.
 package auth
 
@@ -118,7 +118,7 @@ import (
 
 // BindingScope discriminates who an OAuth token belongs to. Configured
 // per OAuth attachment (per MCP server / HTTP tool / A2A peer); the
-// provider routes lookups accordingly. RFC §6.4 + brief 09.
+// provider routes lookups accordingly. RFC §6.4.
 type BindingScope string
 
 const (
@@ -128,7 +128,7 @@ const (
 	ScopeUser BindingScope = "user"
 
 	// ScopeAgent — token belongs to a Harbor agent (admin-configured
-	// service-account-style principal — Phase 53a / D-059's agent_id).
+	// service-account-style principal — agent_id).
 	// Lookups key by (tenant, agent_id, source). The admin
 	// authenticates once during agent setup; every user invoking that
 	// agent reuses the agent's token. The upstream sees the agent
@@ -147,7 +147,7 @@ func IsValidBindingScope(s BindingScope) bool {
 // one OAuthConfig per (Source, BindingScope) tuple — the same source
 // may have BOTH a ScopeUser AND a ScopeAgent attachment (rare but
 // legal — e.g. an agent's shared mailbox AND a user's personal
-// inbox); brief 09 §"Mixed-scope coexistence test" makes this a
+// inbox); the mixed-scope coexistence requirement makes this a
 // requirement.
 type OAuthConfig struct {
 	// Source is the ToolSourceID this attachment binds to. Required.
@@ -158,7 +158,7 @@ type OAuthConfig struct {
 	// BindingScope is ScopeUser or ScopeAgent. Required.
 	BindingScope BindingScope
 	// AgentID, when BindingScope == ScopeAgent, names the
-	// agent_id this attachment is bound to. Phase 53a / D-059's
+	// agent_id this attachment is bound to.
 	// registration identity — runtime-instance-local; not part of the
 	// isolation tuple. Required when BindingScope == ScopeAgent;
 	// ignored otherwise.
@@ -188,7 +188,7 @@ type OAuthConfig struct {
 	ServerURL string
 	// RedirectURI is the redirect_uri the callback endpoint exposes.
 	// Required. Harbor ships the production callback handler:
-	// `auth.CallbackHandler` (Phase 111b, D-199), mounted by
+	// `auth.CallbackHandler`, mounted by
 	// `harbor dev` at `GET /v1/tools/oauth/callback`
 	// (auth.CallbackPath) — point RedirectURI at
 	// `http://<bind>/v1/tools/oauth/callback` for the dev binary.
@@ -216,7 +216,7 @@ type Token struct {
 	// UserID is set when BindingScope == ScopeUser; empty otherwise.
 	UserID string
 	// AgentID is set when BindingScope == ScopeAgent; empty otherwise.
-	// Phase 53a registration identity — never substituted for an
+	// registration identity — never substituted for an
 	// isolation-tuple element.
 	AgentID string
 	// AccessToken — bearer credential. NEVER logged, NEVER emitted on
@@ -257,7 +257,7 @@ func (t Token) SubjectID() string {
 // FlowInitiation is what InitiateFlow returns: the AuthorizeURL the
 // caller hands to the user / admin to complete OAuth out-of-band, plus
 // the State token the callback handler quotes back to CompleteFlow.
-// State doubles as the pause-record correlation key — see brief 09
+// State doubles as the pause-record correlation key — see the
 // "State-as-resume-key idea."
 type FlowInitiation struct {
 	// AuthorizeURL is the URL the user / admin visits to grant
@@ -286,11 +286,11 @@ type FlowInitiation struct {
 
 // PendingFlowInfo is the read-only projection of an in-flight
 // authorization-code flow record that `OAuthProvider.PendingFlow`
-// returns. The callback handler (`auth.CallbackHandler`, Phase 111b)
+// returns. The callback handler (`auth.CallbackHandler`)
 // consults it to locate the owning provider for a redirect's `state`
 // and to rebuild the completing request's identity scope from the
 // provider's own record — the flow record stays the single source of
-// truth for the identity binding (brief 09: the handler adds zero
+// truth for the identity binding (the handler adds zero
 // identity logic of its own).
 //
 // The PKCE verifier and the pause Token are deliberately NOT exposed:
@@ -427,9 +427,9 @@ var (
 	ErrProviderClosed = errors.New("auth: provider closed")
 
 	// ErrAdminScopeRequired — a ScopeAgent flow was initiated /
-	// completed / revoked without the admin scope claim. Phase 30
-	// uses the existing registry.HasControlScope (Phase 53a) as the
-	// in-process admin discriminator until Phase 61 wires JWT-side
+	// completed / revoked without the admin scope claim. Harbor
+	// uses the existing registry.HasControlScope as the
+	// in-process admin discriminator until a later phase wires JWT-side
 	// scope claims; the call site flips the bit deliberately.
 	ErrAdminScopeRequired = errors.New("auth: admin scope required for ScopeAgent flow")
 )
@@ -496,7 +496,7 @@ type TokenStore interface {
 }
 
 // OAuthProvider is the canonical contract for tool-side OAuth. It is
-// transport-agnostic: Phase 27 (HTTP) / Phase 28 (MCP) / Phase 29 (A2A)
+// transport-agnostic: the HTTP / MCP / A2A
 // drivers all call the same Token method. The provider routes between
 // user-bound and agent-bound lookups based on the source's
 // OAuthConfig.BindingScope.
@@ -511,7 +511,7 @@ type OAuthProvider interface {
 	//   - ScopeAgent: lookup keyed by (tenant, agent_id, source)
 	// When no token exists or refresh fails irrecoverably, returns a
 	// typed *ErrAuthRequired (which the runtime catches to emit
-	// `tool.auth_required` and park the run via Phase 50). When the
+	// `tool.auth_required` and park the run via the pause primitive). When the
 	// stored token is expired, the provider attempts a single
 	// in-flight refresh per (subject, source) before falling through
 	// to *ErrAuthRequired.
@@ -527,7 +527,7 @@ type OAuthProvider interface {
 	// When a pause coordinator was wired into the provider at
 	// construction (the production path) AND the calling ctx carries
 	// the pause request payload, InitiateFlow allocates a pause
-	// record via the unified pause/resume primitive (Phase 50) and
+	// record via the unified pause/resume primitive and
 	// returns its opaque PauseToken on FlowInitiation.PauseToken.
 	InitiateFlow(ctx context.Context, source tools.ToolSourceID) (FlowInitiation, error)
 
@@ -536,7 +536,7 @@ type OAuthProvider interface {
 	// InitiateFlow) resumes the parked run via the coordinator.
 	// Returns the persisted Token (caller almost never needs it but
 	// it is returned for confirmation / testing). The production
-	// caller is `auth.CallbackHandler` (Phase 111b, D-199) — mounted
+	// caller is `auth.CallbackHandler` — mounted
 	// by `harbor dev` at `GET /v1/tools/oauth/callback` and
 	// mountable on any mux by headless embedders.
 	CompleteFlow(ctx context.Context, state, code string) (Token, error)
@@ -554,7 +554,7 @@ type OAuthProvider interface {
 	// DecisionReject marker — the fail-loud terminal for an upstream
 	// authorization denial (`error=access_denied` on the redirect).
 	// The run does not hang to flow-TTL on a denial the provider
-	// already made final (Phase 111b plan §Risks; recorded in D-199).
+	// already made final — a recorded design decision.
 	// `reason` is the audit-safe denial reason (the OAuth `error`
 	// code — never token or code material). Sentinels mirror
 	// CompleteFlow: ErrFlowNotFound / ErrFlowExpired /

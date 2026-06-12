@@ -21,7 +21,7 @@ import (
 // "recovery_loop_drained", etc.) that subscribers / SREs can
 // filter on. It MUST NOT carry caller-controlled bytes.
 //
-// Identity is required (D-001) — the event's `Identity` field
+// Identity is required — the event's `Identity` field
 // carries the executor's per-key triple so subscribers can scope
 // the transition to a session.
 //
@@ -57,9 +57,9 @@ func EmitHealthChanged(ctx context.Context, bus events.EventBus, id identity.Qua
 // EmitRecoveryDropped publishes the `memory.recovery_dropped` event
 // on `bus`. Used by the `rolling_summary` recovery loop when the
 // backlog overflows `RecoveryBacklogMax` and the oldest queued
-// batch is dropped to make room (D-035 bounded recovery loop).
+// batch is dropped to make room (bounded recovery loop).
 //
-// Identity is required (D-001).
+// Identity is required.
 func EmitRecoveryDropped(ctx context.Context, bus events.EventBus, id identity.Quadruple, reason string) error {
 	if err := ValidateIdentity(id); err != nil {
 		return err

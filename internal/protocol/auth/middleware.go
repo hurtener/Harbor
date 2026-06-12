@@ -17,7 +17,7 @@ import (
 // the scheme.
 const bearerPrefix = "Bearer "
 
-// HeaderSession is the per-request session selector (D-171). The
+// HeaderSession is the per-request session selector. The
 // connection token authenticates the (tenant, user, scopes) — it is a
 // per-backend credential, like an API key, NOT a single-session pin.
 // The session is chosen per-conversation by the client and supplied on
@@ -72,7 +72,7 @@ func MWLogger(l *slog.Logger) MiddlewareOption {
 //
 // Middleware is a compiled artifact: every field is set once at
 // construction and never mutated. The decorator is safe to share
-// across N concurrent requests (D-025).
+// across N concurrent requests.
 func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.Handler {
 	if v == nil {
 		// A middleware with no validator could not enforce anything —
@@ -131,7 +131,7 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 				return
 			}
 
-			// D-171: per-request session. The verified token carries
+			// per-request session. The verified token carries
 			// (tenant, user) + a default `session` claim. When the
 			// request supplies `X-Harbor-Session`, that value REPLACES
 			// the claim's session — the connection token is a

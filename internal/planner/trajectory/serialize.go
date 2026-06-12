@@ -11,7 +11,7 @@ import (
 // trajectory. On ANY non-JSON-encodable leaf, returns
 // (nil, ErrUnserializable{Field: "<dotted.path>"}) — never silently.
 //
-// The contract (RFC §6.2 + §3.4 + brief 02 §4):
+// The contract (RFC §6.2 + §3.4):
 //
 //   - Success: returns canonical JSON bytes; the round-trip
 //     Serialize → Deserialize → Serialize is byte-identical for any
@@ -41,7 +41,7 @@ func (t *Trajectory) Serialize() ([]byte, error) {
 	// Pre-flight: walk the trajectory reflectively, fail on the first
 	// non-encodable leaf with a precise field path. ValidateEncodable
 	// is the exported entry point — Serialize and external consumers
-	// (the Phase 51 pause-record envelope) share the SAME walker.
+	// (the pause-record envelope) share the SAME walker.
 	if err := ValidateEncodable(*t, "Trajectory"); err != nil {
 		return nil, err
 	}
@@ -63,10 +63,10 @@ func (t *Trajectory) Serialize() ([]byte, error) {
 // non-encodable leaf — never silently. It is the reusable primitive
 // behind Trajectory.Serialize's pre-flight pass, exported so other
 // runtime serialise contracts that share the fail-loudly invariant
-// (the Phase 51 pause-record envelope is the first such consumer) walk
+// (the pause-record envelope is the first such consumer) walk
 // the SAME walker rather than re-implementing it — re-implementing it
 // would be the CLAUDE.md §13 two-parallel-implementations anti-pattern
-// (RFC §3.4, D-049, D-069).
+// (RFC §3.4).
 //
 // root is the field-path prefix the returned error is rooted at — pass
 // the consumer's own envelope name (e.g. "PauseRecord") so the error

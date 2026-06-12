@@ -7,7 +7,7 @@ import (
 )
 
 // Decision is the sealed sum-type a planner returns from Next.
-// Six shapes ship at Phase 42 (RFC §6.2):
+// Six shapes ship (RFC §6.2):
 //
 //   - CallTool: invoke one tool with structured args.
 //   - CallParallel: invoke N tools in parallel with a join spec.
@@ -21,7 +21,7 @@ import (
 // "magic strings as next_node" anti-pattern is explicitly rejected
 // here (RFC §6.2 settled decisions); each shape is its own Go type.
 //
-// `NoOp` is deliberately absent (resolves brief 02 Q-5). Wait-for-
+// `NoOp` is deliberately absent. Wait-for-
 // steering and trajectory-summarisation are Runtime short-circuits,
 // not planner decisions.
 type Decision interface {
@@ -29,16 +29,16 @@ type Decision interface {
 }
 
 // CallTool invokes one tool with structured args. The Runtime
-// dispatches via the production ToolCatalog + ToolPolicy
-// (Phase 26 + 26a); the planner does not block on the call.
+// dispatches via the production ToolCatalog + ToolPolicy;
+// the planner does not block on the call.
 //
 // The action shape is intentionally narrow — `{tool, args}` only.
-// Phase 83e (D-147) dropped the former `Reasoning` field: the model
+// An earlier phase dropped the former `Reasoning` field: the model
 // emits the action JSON, and the provider-side thinking trace is
 // captured separately on `trajectory.Step.ReasoningTrace` via
 // `llm.CompleteResponse.Reasoning`. Reasoning is captured content, not
 // part of the structured decision; replaying it into prompts is an
-// operator-controlled per-agent knob (D-148), never a schema field.
+// operator-controlled per-agent knob, never a schema field.
 type CallTool struct {
 	// Tool is the name registered in the ToolCatalogView.
 	Tool string
@@ -47,7 +47,7 @@ type CallTool struct {
 	// payload produces `tools.ErrToolInvalidArgs` from dispatch.
 	Args json.RawMessage
 	// CallID is the provider-assigned tool-call identifier (Phase
-	// 107c / D-167 — native tool-calling). Empty for prompt-
+	// native tool-calling). Empty for prompt-
 	// engineered CallTool emissions; non-empty when the call
 	// originated from a native ToolCall. Round-trips on the
 	// RoleTool message's ToolCallID field.
@@ -59,10 +59,10 @@ func (CallTool) isDecision() {}
 // CallParallel invokes N tools concurrently with a JoinSpec describing
 // how the Runtime merges results. Atomic setup validation: any
 // branch's invalid args fails the whole call before execution (RFC
-// §6.2; Phase 47 ships the executor).
+// §6.2; Harbor ships the executor).
 //
 // Branches share the same step-level pause/cancel atomicity contract
-// — see Phase 47's plan.
+// see the plan.
 type CallParallel struct {
 	Branches []CallTool
 	Join     *JoinSpec
@@ -72,11 +72,11 @@ func (CallParallel) isDecision() {}
 
 // JoinSpec describes how the Runtime merges N CallParallel branch
 // results into a single observation the planner sees in the next
-// trajectory step. Phase 47 ships the executor; Phase 42 ships the
+// trajectory step. Harbor ships the executor; Harbor ships the
 // shape so concretes can compile against it.
 type JoinSpec struct {
-	// Kind is the join strategy. Phase 42 ships the constants;
-	// Phase 47 ships the implementations.
+	// Kind is the join strategy. Harbor ships the constants;
+	// Harbor ships the implementations.
 	Kind JoinKind
 	// MergeKeys is the deterministic merge ordering (only meaningful
 	// for JoinKeyed).
@@ -107,7 +107,7 @@ const (
 	// remaining branches. JoinSpec.N carries the threshold; the
 	// executor validates 0 < N ≤ len(Branches) at setup time and
 	// fails the call with ErrParallelInvalidJoin when out of range.
-	// D-056 — Phase 47 introduces JoinN as the third explicit join
+	// Harbor introduces JoinN as the third explicit join
 	// shape (JoinAll / JoinFirstSuccess / JoinN); JoinKeyed remains
 	// a documented future surface (a future runtime phase merges
 	// outputs by key).
@@ -118,7 +118,7 @@ const (
 // the foreground turn blocks on the spawned task's group; when false
 // the planner returns control to the runtime and consumes
 // `tasks.TaskRegistry.WatchGroup` to learn when the group resolves
-// (D-032 wake-on-resolution contract).
+// (wake-on-resolution contract).
 //
 // `GroupID` is optional — when empty, the runtime creates an
 // ad-hoc single-member group; when non-empty, the task joins the
@@ -135,7 +135,7 @@ func (SpawnTask) isDecision() {}
 // it into a `tasks.SpawnRequest` (or `tasks.SpawnToolRequest`) at
 // dispatch time; identity is filled from the run's quadruple.
 //
-// At Phase 42 the shape carries only the fields the planner needs to
+// At the shape carries only the fields the planner needs to
 // specify; the Runtime fills the rest (Identity, IdempotencyKey,
 // PropagateOnCancel, NotifyOnComplete). Future phases MAY extend this
 // shape with additional planner-controlled fields.
@@ -152,7 +152,7 @@ type SpawnSpec struct {
 	// group resolution. When true the planner WILL re-enter Next
 	// only after the group reaches a terminal state. When false the
 	// planner returns control to the runtime; the runtime consumes
-	// WatchGroup to re-invoke the planner on resolution (D-032).
+	// WatchGroup to re-invoke the planner on resolution.
 	RetainTurn bool
 	// FailFast applies when SpawnTask creates a fresh group: cancels
 	// remaining members when the first fails. Ignored when joining
@@ -193,7 +193,7 @@ func (RequestPause) isDecision() {}
 // Protocol `task.completed` / `task.failed` payloads; `Payload`
 // carries the planner's terminal observation (a summary string, a
 // structured answer, an ArtifactRef — heavy payloads MUST be
-// ArtifactRef-shaped per D-026).
+// ArtifactRef-shaped).
 //
 // `Reason` MUST be one of the canonical values (see
 // IsValidFinishReason). The Runtime rejects an invalid reason with

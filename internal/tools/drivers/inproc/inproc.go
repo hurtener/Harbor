@@ -2,12 +2,11 @@
 // register Go functions as Tools via RegisterFunc; the driver
 // derives ArgsSchema / OutSchema from the function's input / output
 // types via reflection (RFC §6.4 "Tool authors write a function and
-// register it", brief 03 §3) and wires the call through the
+// register it") and wires the call through the
 // ToolPolicy reliability shell so the registered function gets
-// production-resilient timeout + retry + validation for free
-// (D-024).
+// production-resilient timeout + retry + validation for free.
 //
-// Concurrent reuse (D-025): the driver itself is stateless — every
+// Concurrent reuse: the driver itself is stateless — every
 // RegisterFunc call builds a fresh ToolDescriptor and registers it
 // in the catalog. The descriptor's Invoke closure captures the
 // caller's `fn` (which the caller guarantees is safe for concurrent
@@ -48,7 +47,7 @@ var ErrSchemaBuild = errors.New("inproc: failed to build JSON schema")
 // schemas are derived from the type parameters I and O via
 // reflection.
 //
-// The function `fn` must be safe to invoke concurrently (D-025).
+// The function `fn` must be safe to invoke concurrently.
 // The driver wraps it in a ToolPolicy shell — timeout + retry +
 // validation — so a plain registration is production-resilient.
 //
@@ -72,8 +71,7 @@ var ErrSchemaBuild = errors.New("inproc: failed to build JSON schema")
 //	    func(ctx context.Context, in WeatherArgs) (WeatherOut, error) { ... },
 //	    tools.WithDescription("Look up current weather by city name."),
 //	    tools.WithAuthScopes("weather:read"),
-//	    tools.WithSideEffect(tools.SideEffectExternal),
-//	)
+//	    tools.WithSideEffect(tools.SideEffectExternal))
 func RegisterFunc[I any, O any](
 	cat tools.ToolCatalog,
 	name string,

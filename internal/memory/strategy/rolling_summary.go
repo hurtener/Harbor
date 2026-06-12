@@ -15,7 +15,7 @@ import (
 )
 
 // Default tuning constants — encoded as package constants per
-// D-035 (operator-facing config narrows to RecoveryBacklogMax only;
+// a settled scope decision (operator-facing config narrows to RecoveryBacklogMax only;
 // the retry / backoff / cadence knobs live here and require an RFC
 // PR + new exported config field to tune).
 const (
@@ -44,7 +44,7 @@ const (
 //     transition per recovery batch drained); each transition
 //     emits `memory.health_changed`.
 //
-// Concurrent-reuse contract (D-025): the executor is shared across
+// Concurrent-reuse contract: the executor is shared across
 // N goroutines. Per-key state is mutex-guarded; the recovery loop
 // goroutine is cancellable via `close(stop)` + `Close`.
 type rollingSummaryExec struct {
@@ -235,11 +235,11 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 // Returns nil after the in-band failure has been absorbed —
 // degraded mode is the observable failure surface (AGENTS.md §13
 // "no silent degradation" exception, documented at the executor
-// godoc + D-035). Returning an error here would force AddTurn to
+// godoc). Returning an error here would force AddTurn to
 // surface the summariser failure to the caller, which is exactly
 // the silent-context-loss path we're closing.
 //
-//nolint:unparam // the always-nil error return is deliberate (see godoc): a non-nil return would force AddTurn to surface the summariser failure, re-opening the silent-context-loss path D-035 closed. The signature keeps the `return e.onSummarizerFailure(...)` call site honest.
+//nolint:unparam // the always-nil error return is deliberate (see godoc): a non-nil return would force AddTurn to surface the summariser failure, re-opening the silent-context-loss path closed. The signature keeps the `return e.onSummarizerFailure(...)` call site honest.
 func (e *rollingSummaryExec) onSummarizerFailure(
 	ctx context.Context,
 	ks *rollingKeyState,
@@ -310,7 +310,7 @@ func (e *rollingSummaryExec) GetLLMContext(ctx context.Context, id identity.Quad
 		RecentTurns: recent,
 		Tokens:      sumTokens(ks.recent) + summaryTokens(ks.summary),
 	}
-	// Degraded fallback per brief 04 §4.1: drop the (stale) summary
+	// Degraded fallback: drop the (stale) summary
 	// from the patch, return only the recent window so the planner
 	// keeps the conversation usable.
 	if ks.health == memory.HealthDegraded {

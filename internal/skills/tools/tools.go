@@ -1,8 +1,8 @@
 // Package tools registers Harbor's planner-facing skill tools
-// (`skill_search`, `skill_get`, `skill_list`) into the Phase 26
-// `tools.ToolCatalog`. Each handler wraps the Phase 37
+// (`skill_search`, `skill_get`, `skill_list`) into the
+// `tools.ToolCatalog`. Each handler wraps the
 // `skills.SkillStore` with three injection-time concerns
-// (RFC §6.7, brief 04 §4.5):
+// (RFC §6.7):
 //
 //  1. Capability filter — a skill is visible only when its
 //     `RequiredTools / RequiredNS / RequiredTags` are subsets of the
@@ -25,17 +25,17 @@
 // `(tenant, user, session)` triple at the boundary via
 // `identity.From(ctx)`. Missing identity returns the wrapped
 // `skills.ErrIdentityRequired` AND emits `skill.identity_rejected`
-// on the bus (via `skills.EmitIdentityRejected`). Brief 04 §5
+// on the bus (via `skills.EmitIdentityRejected`). The design
 // removes the predecessor's `require_explicit_key` knob — there is
 // no opt-out.
 //
-// Concurrent reuse (D-025): the catalog + the registered descriptors
+// Concurrent reuse: the catalog + the registered descriptors
 // are stateless after `Register`; per-call state lives on
 // `(ctx, args)`. One catalog + one store is safe to share across N
 // concurrent goroutines.
 //
 // Registration is a runtime call (the catalog is built at boot, not
-// at package-init). Since Phase 111d (D-201) the PRODUCTION
+// at package-init). Since the PRODUCTION
 // registration path is the `internal/tools/builtin` carrier: the
 // `skill_search` / `skill_get` / `skill_list` built-ins delegate to
 // the exported handlers below (`SearchHandler` / `GetHandler` /
@@ -58,14 +58,14 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
 
-// Tool names registered into the Phase 26 catalog. These are
+// Tool names registered into the catalog. These are
 // load-bearing strings — the planner prompt references them by name
 // and a silent rename would break every downstream model. The
 // smoke script pins them with a string-grep.
 const (
 	// ToolNameSkillSearch — `skill_search(query, limit, capability)
 	// -> {skills, path}`. Returns ranked candidates from the
-	// SkillStore's FTS5 → regex → exact ladder (Phase 37), filtered
+	// SkillStore's FTS5 → regex → exact ladder, filtered
 	// by capability and redacted.
 	ToolNameSkillSearch = "skill_search"
 	// ToolNameSkillGet — `skill_get(names[], max_tokens, capability)
@@ -103,7 +103,7 @@ var ErrSkillTooLarge = errors.New("skills/tools: skill exceeds max_tokens after 
 // Empty `AllowedTools` / `AllowedNamespaces` / `AllowedTags` means
 // "the planner did not declare a capability set"; skills with empty
 // required lists pass; skills with non-empty required lists are
-// excluded (a "default-deny" stance — brief 04 §4.5).
+// excluded (a "default-deny" stance).
 //
 // Concurrent reuse: the struct is a value carried on the args; it
 // is never mutated in-flight. Multiple goroutines may share a
@@ -125,7 +125,7 @@ type CapabilityContext struct {
 }
 
 // Deps carries the runtime dependencies `Register` needs. `Bus` is
-// mandatory so the Phase 37 identity-rejection emit path
+// mandatory so the identity-rejection emit path
 // (`skills.EmitIdentityRejected`) lands on the audit pipeline.
 type Deps struct {
 	Bus events.EventBus
@@ -204,7 +204,7 @@ type ListResult struct {
 // indicates a misconfigured boot path, not a runtime fault).
 //
 // Concurrent reuse: the registered descriptors hold only an
-// immutable closure over `store` + `deps`; D-025 holds.
+// immutable closure over `store` + `deps`; the concurrent-reuse contract holds.
 func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) error {
 	if catalog == nil {
 		return errors.New("skills/tools: catalog is nil")
@@ -273,7 +273,7 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 // from ctx → SkillStore.Search → Filter → Redact (per-row). Path is
 // surfaced for observability.
 //
-// Exported (Phase 111d, D-201) as the handler seam the
+// Exported as the handler seam the
 // `internal/tools/builtin` carrier delegates to — ONE implementation
 // home, two registration carriers collapse onto it. Callers supply
 // the capability envelope on `args.Capability`; the builtin carrier
@@ -331,7 +331,7 @@ func SearchHandler(ctx context.Context, store skills.SkillStore, bus events.Even
 // a hard error for stale planner caches); the budgeter is the only
 // hard error path.
 //
-// Exported (Phase 111d, D-201) as the handler seam the
+// Exported as the handler seam the
 // `internal/tools/builtin` carrier delegates to.
 func GetHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args GetArgs) (GetResult, error) {
 	q, err := skills.IdentityFromCtx(ctx)
@@ -371,7 +371,7 @@ func GetHandler(ctx context.Context, store skills.SkillStore, bus events.EventBu
 	// post-filter skill. The top-level slice must be non-nil for the
 	// same reason — an all-missing/all-filtered request previously
 	// returned `"skills": null` and failed output validation when
-	// invoked through a catalog (found by the Phase 111d delegation
+	// invoked through a catalog (found by the delegation
 	// tests; fixed here per §17.6 — the bug predates the delegation).
 	if fit == nil {
 		fit = []skills.Skill{}
@@ -386,7 +386,7 @@ func GetHandler(ctx context.Context, store skills.SkillStore, bus events.EventBu
 // SkillStore.List → Filter → Redact (summary fields only — full
 // content is reserved for `skill_get`).
 //
-// Exported (Phase 111d, D-201) as the handler seam the
+// Exported as the handler seam the
 // `internal/tools/builtin` carrier delegates to.
 func ListHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args ListArgs) (ListResult, error) {
 	q, err := skills.IdentityFromCtx(ctx)

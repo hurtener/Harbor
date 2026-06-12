@@ -1,6 +1,6 @@
 // Package-level: artifact_fetch is the LLM-facing recovery path for
 // heavy-content artifacts. The runtime tool-executor materialises
-// tool results above the heavy-output threshold (D-026) to the
+// tool results above the heavy-output threshold to the
 // artifact store and projects the LLM-facing observation as a small
 // preview + a fetch hint; this builtin lets the LLM pull the full
 // bytes of the referenced artifact when the preview doesn't carry
@@ -13,8 +13,8 @@
 // bytes). The builtin's test pins this with a deliberate
 // cross-identity write + read.
 //
-// Concurrent reuse (D-025). The builtin is stateless; the only
-// shared resource is the `ArtifactStore`, whose D-025 contract
+// Concurrent reuse. The builtin is stateless; the only
+// shared resource is the `ArtifactStore`, whose concurrent-reuse contract
 // lives in its own conformance suite. No per-invocation state
 // crosses runs.
 
@@ -38,7 +38,7 @@ import (
 const defaultArtifactFetchMaxBytes = 64 * 1024
 
 // hardArtifactFetchMaxBytes caps `max_bytes` at 1 MiB. The runtime's
-// LLM-edge safety pass (D-026) will still reject content above the
+// LLM-edge safety pass will still reject content above the
 // configured heavy-output threshold, but this hard ceiling stops a
 // caller from requesting hundreds of MB of bytes in one fetch.
 const hardArtifactFetchMaxBytes = 1 * 1024 * 1024

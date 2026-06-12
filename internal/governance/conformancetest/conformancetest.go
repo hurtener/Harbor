@@ -300,7 +300,7 @@ func Run(t *testing.T, mk Factory) {
 		}
 	})
 
-	// Phase 111a (D-198): parity gate for the assembly-constructed
+	// parity gate for the assembly-constructed
 	// Subsystem — `NewSubsystemFromConfig` composes the same enforcers
 	// the per-policy subtests above exercise individually; this subtest
 	// proves the composed surface enforces all three policies on every

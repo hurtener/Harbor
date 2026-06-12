@@ -11,7 +11,7 @@ import (
 )
 
 // catalogKind is the StateStore Kind for the per-(tenant, user)
-// session-id catalog (D-171). The StateStore surface is point-read
+// session-id catalog. The StateStore surface is point-read
 // only — `(Quadruple, Kind) → Bytes`, with no List operation (the
 // `idIndex` doc on Registry says so). To make `sessions.list` survive a
 // runtime restart, the Registry persists, per (tenant, user), the set

@@ -1,7 +1,7 @@
 // Package postgres is Harbor's V1 Postgres-backed ArtifactStore driver.
 //
 // It is the fourth leg of the artifact persistence triad (in-memory
-// floor, FS, SQLite, Postgres) defined by RFC §6.10 + §9. Phase 18
+// floor, FS, SQLite, Postgres) defined by RFC §6.10 + §9. This driver
 // inherits `internal/artifacts/conformancetest.Run` verbatim — the
 // suite IS the gate; this driver ships zero new conformance scenarios.
 //
@@ -9,8 +9,8 @@
 // `database/sql.DB`. Parametric queries everywhere; no string
 // concatenation into SQL (AGENTS.md §9). Advisory locks serialise
 // the migration runner so multi-replica boots are race-free; the lock
-// key is FNV-64a("harbor-artifacts-migrations"), distinct from Phase
-// 16's StateStore lock so the two subsystems do not serialise against
+// key is FNV-64a("harbor-artifacts-migrations"), distinct from the
+// StateStore lock so the two subsystems do not serialise against
 // each other.
 //
 // Internal model:
@@ -31,7 +31,7 @@
 //     so subsequent calls fast-fail with `ErrStoreClosed` even while
 //     in-flight queries are draining.
 //
-// Per AGENTS.md §5 (D-025), the driver is safe for concurrent reuse
+// Per AGENTS.md §5, the driver is safe for concurrent reuse
 // across N goroutines. The conformance suite's
 // `Concurrent_PutGet_NoRace` + the local `concurrent_test.go` enforce
 // this under -race.
@@ -64,7 +64,7 @@ const driverName = "postgres"
 // pgx stdlib adapter.
 const pgxDriverName = "pgx"
 
-// Connection-pool defaults. Mirrors Phase 16's StateStore choices.
+// Connection-pool defaults. Mirrors the StateStore choices.
 const (
 	defaultMaxOpenConns    = 25
 	defaultMaxIdleConns    = 5
@@ -130,7 +130,7 @@ func init() {
 // driver is the Postgres-backed artifacts.ArtifactStore implementation.
 //
 // Fields are immutable after construction except for the atomic
-// `closed` flag (D-025: compiled artifacts are immutable; per-run
+// `closed` flag (compiled artifacts are immutable; per-run
 // state lives in ctx).
 type driver struct {
 	db     *sql.DB
@@ -177,7 +177,7 @@ func (d *driver) PutBytes(ctx context.Context, scope artifacts.ArtifactScope, da
 	id := fmt.Sprintf("%s_%s", namespace, hexDigest[:12])
 
 	// Marshal Source up front. Non-encodable values fail loudly here
-	// rather than after partial work commits. Per Phase 17's
+	// rather than after partial work commits. Per the
 	// documented behavior.
 	sourceJSON, err := marshalSource(opts.Source)
 	if err != nil {

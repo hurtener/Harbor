@@ -1,7 +1,6 @@
 // build_providers.go — the exported OAuth provider assembly (Phase
-// 110d, D-197; absorbs cmd/harbor's applyToolCatalogWiring KEK-resolve
-// → sealer → token store → provider-factory loop from Phase 64a/D-090
-// + D-095).
+// the assembly work; absorbs cmd/harbor's applyToolCatalogWiring KEK-resolve
+// → sealer → token store → provider-factory loop from).
 //
 // BuildProviders walks `cfg.OAuthProviders[]`, constructs the shared
 // crypto chain ONCE (one operator-supplied KEK env var per binary →

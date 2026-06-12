@@ -33,7 +33,7 @@ var ErrInvalidProvider = errors.New("bifrost: invalid provider")
 var ErrInvalidCustomProvider = errors.New("bifrost: invalid custom provider")
 
 // Account implements `bifrost/schemas.Account` for Harbor's
-// single-primary, optional-custom-providers deployment (Phase 33a).
+// single-primary, optional-custom-providers deployment.
 //
 // Concurrent-reuse: the struct is read-only after `newAccount`
 // returns. Safe for N concurrent bifrost goroutines.
@@ -52,7 +52,7 @@ type Account struct {
 	// `["*"]` — bifrost's documented "all non-blacklisted models"
 	// sentinel (`core@v1.5.8/bifrost.go:7218-7220`: empty Models =
 	// deny-by-default, `["*"]` = allow-all, non-empty list = explicit
-	// allowlist). Earlier Phase 33 commits left this empty intending
+	// allowlist). Earlier commits left this empty intending
 	// "all," which silently broke every native-primary routing
 	// because bifrost's deny-by-default semantic does NOT match the
 	// in-code comment — wave-end E2E surfaced this and §17.6 routed
@@ -68,7 +68,7 @@ type Account struct {
 	// `GetConfigForProvider` lookups when bifrost asks about a
 	// custom provider. V1 only registers the PRIMARY so this map
 	// effectively has at most one entry today; the field stays a
-	// map so future multi-provider phases (post-Phase 33a) widen
+	// map so future multi-provider work can widen
 	// without restructuring the Account.
 	customByName map[string]customRuntime
 }
@@ -263,7 +263,7 @@ func buildNativeProviderConfig(cfg llm.ConfigSnapshot) *bfschemas.ProviderConfig
 // buildCustomProviderConfig builds the `*ProviderConfig` for a custom
 // provider. Per-provider fields override `NetworkDefaults`; both
 // override bifrost's package-level defaults. `CustomProviderConfig`
-// is populated with `BaseProviderType = schemas.OpenAI` (Phase 33a
+// is populated with `BaseProviderType = schemas.OpenAI` (
 // only supports OpenAI-compatible).
 func buildCustomProviderConfig(spec llm.CustomProviderSpec, nd llm.NetworkDefaults) *bfschemas.ProviderConfig {
 	out := &bfschemas.ProviderConfig{
@@ -322,7 +322,7 @@ func buildCustomProviderConfig(spec llm.CustomProviderSpec, nd llm.NetworkDefaul
 }
 
 // GetConfiguredProviders implements `bfschemas.Account`. Returns the
-// single configured PRIMARY provider — Phase 33a preserves D-040's
+// single configured PRIMARY provider — preserving the settled
 // "single-provider per Harbor instance" contract even when custom
 // providers are declared. Multi-provider routing is a future
 // extension; the seam is ready (`customByName` holds the table).

@@ -14,7 +14,7 @@ import (
 )
 
 // TokenStore Kind shapes. The store persists through the generic
-// state.StateStore (D-027): one document per
+// state.StateStore: one document per
 // (tenant, scope, subject_id, source). Composite-key encoding lives
 // in tokenKind so the StateStore stays generic.
 const (
@@ -28,7 +28,7 @@ const (
 	// persisted under separate Kind prefixes so a (post-V1) caller
 	// that wants to read access-token TTL without unsealing the
 	// refresh-token half can — and so a compromise of the
-	// access-token cache does not yield refresh capability (brief 09
+	// access-token cache does not yield refresh capability (a
 	// §"Encryption at rest").
 	accessTokenKindPrefix = "tools.auth.access." //nolint:gosec // G101 false positive: this is a StateStore Kind namespace prefix, not a credential
 
@@ -48,12 +48,12 @@ func refreshKind(scope BindingScope, subjectID string, source tools.ToolSourceID
 }
 
 // stateStoreTokenStore is the V1 TokenStore implementation — a typed
-// wrapper around the §4.4 state.StateStore seam (D-027 + D-067 +
-// D-068 pattern). Driver pluralism (in-mem / SQLite / Postgres) lives
+// wrapper around the §4.4 state.StateStore seam (the typed-wrapper +
+// pattern). Driver pluralism (in-mem / SQLite / Postgres) lives
 // at the StateStore layer; the TokenStore is single-concrete.
 //
-// Concurrent reuse (D-025): the StateStore is itself concurrent-safe
-// per D-027; the Sealer is concurrent-safe per crypto/cipher; the
+// Concurrent reuse: the StateStore is itself concurrent-safe;
+// the Sealer is concurrent-safe per crypto/cipher; the
 // store struct holds only immutable references. Per-call state lives
 // in ctx + arguments.
 type stateStoreTokenStore struct {
@@ -167,7 +167,7 @@ func (s *stateStoreTokenStore) Get(ctx context.Context, scope BindingScope, subj
 // lives in. The Token's TenantID / UserID / AgentID fields are read
 // from t — the caller is responsible for setting them, since
 // agent-bound tokens may be persisted under an admin's ctx but key on
-// the agent_id in t (brief 09).
+// the agent_id in t.
 func (s *stateStoreTokenStore) Put(ctx context.Context, t Token) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("auth: Put cancelled: %w", err)

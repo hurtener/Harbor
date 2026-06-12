@@ -18,7 +18,7 @@ import (
 // Map is a PURE function. No I/O. No global state. No time.Now()
 // dependency (the bus's Publish path fills OccurredAt on the
 // synthesised event). Concurrent calls against a single shared mapper
-// instance are trivially safe — there is nothing to share. D-025
+// instance are trivially safe — there is nothing to share. The concurrent-reuse
 // concurrent-reuse is satisfied by construction.
 //
 // Return contract:
@@ -40,7 +40,7 @@ import (
 //     §13 — never silently degrade to "no notifications."
 //
 // The synthesised event carries the trigger's identity.Quadruple, the
-// V1 class's per-class severity (Brief 11 §CC-3 heuristic — see the
+// V1 class's per-class severity (a settled heuristic — see the
 // per-case comments below for rationale), and a per-class deep-link
 // shape. The bus's Publish path fills Sequence and OccurredAt.
 //

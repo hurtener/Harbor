@@ -39,7 +39,7 @@ func init() {
 }
 
 // exporter satisfies telemetry.SpanExporter. Stateless — one value
-// shared across every NewTracer call (D-025: no per-construction
+// shared across every NewTracer call (no per-construction
 // mutable state on the driver itself; the constructed
 // otlptrace.Exporter is per-Tracer).
 type exporter struct{}

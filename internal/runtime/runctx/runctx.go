@@ -1,14 +1,14 @@
 // Package runctx exports the RunContext-population helpers a run-loop
 // driver applies between "task spawned" and "planner.Next" — the code
 // that turns subsystem state (memory, skills, artifacts, the terminal
-// Finish) into what the planner actually sees (Phase 110b — D-195).
+// Finish) into what the planner actually sees.
 //
-// Brief 02's contract is that the planner never imports runtime
+// The settled contract is that the planner never imports runtime
 // internals: everything it can see arrives through `planner.RunContext`.
 // The projection code that POPULATES RunContext is therefore the
-// runtime's half of the planner contract. Before 110b that half lived
+// runtime's half of the planner contract. Previously that half lived
 // as unexported `package main` helpers in `cmd/harbor`, hand-duplicated
-// in `harbortest/devstack` (the D-094 mirror tax — the SDK friction
+// in `harbortest/devstack` (the mirror tax — the SDK friction
 // audit found a THIRD drifting copy of the keyword shaper). This
 // package is the promotion that makes the contract real for every
 // caller: `cmd/harbor`, the devstack test kit, and a headless SDK
@@ -21,9 +21,9 @@
 //
 // All five helpers are pure functions (or functions over their
 // explicit dependencies) with no package-level mutable state — they
-// are trivially safe for concurrent use (D-025).
+// are trivially safe for concurrent use.
 //
-// Phase 111d (D-201) executed the D-195 deprecation notice: the
+// executed the deprecation notice: the
 // `ExtractSkillKeywords` query shaper is DELETED along with the
 // raw-Search `<skills_context>` injection path it served; the
 // Phase-39 `skills.Directory` view (projected via
@@ -46,7 +46,7 @@ import (
 
 // ProjectMemoryBlocks shapes a memory.LLMContextPatch into the
 // JSON-encodable map the planner's `<read_only_conversation_memory>`
-// wrapper renders (Phase 83f — D-149; promoted by Phase 110b).
+// wrapper renders.
 // Returns nil when the patch is empty — the wrapper is omitted
 // entirely. V1.1 ships only the Conversation tier; the External tier
 // remains nil pending a long-term memory phase.
@@ -72,8 +72,8 @@ func ProjectMemoryBlocks(patch memory.LLMContextPatch) *planner.MemoryBlocks {
 }
 
 // ProjectSkillsContext shapes a []skills.RankedSkill into the []any
-// the planner's `<skills_context>` wrapper renders (Phase 83f —
-// D-149; promoted by Phase 110b). Each element is a small map
+// the planner's `<skills_context>` wrapper renders (
+// the reasoning-replay knob). Each element is a small map
 // carrying the body fields the LLM consumes (name / title /
 // description / steps). An empty input returns nil so the wrapper is
 // omitted.
@@ -100,7 +100,7 @@ func ProjectSkillsContext(ranked []skills.RankedSkill) []any {
 
 // ProjectSkillsDirectory shapes a Phase-39 `skills.Directory.View`
 // snapshot into the []any the planner's `<skills_context>` wrapper
-// renders (Phase 111d — D-201, executing the D-195 deprecation
+// renders (, executing the deprecation
 // notice: the keyword-shaped raw-Search injection path and its
 // `ExtractSkillKeywords` helper are deleted; the Directory's bounded,
 // pinned-then-recent, capability-filtered, redacted browse window is
@@ -121,8 +121,8 @@ func ProjectSkillsDirectory(views []skills.SkillView) []any {
 
 // ExtractAssistantAnswer pulls the planner's natural-language answer
 // out of a terminal Finish for the memory.AddTurn writeback and the
-// `planner.AnswerEnvelope` projection (Phase 83i — D-152; promoted by
-// Phase 110b). The react planner's FinishGoal carries
+// `planner.AnswerEnvelope` projection (promoted by
+// the runtime promotion). The react planner's FinishGoal carries
 // Payload = map[string]any{"answer": "<the LLM's answer>"}. Other
 // planners may shape Payload differently; we accept any string-valued
 // "answer" key and otherwise fall back to a Sprintf so something
@@ -145,7 +145,7 @@ func ExtractAssistantAnswer(fin planner.Finish) string {
 	return fmt.Sprintf("%v", fin.Payload)
 }
 
-// InputArtifactOptions carries the Phase 84b (D-189) disposition
+// InputArtifactOptions carries the disposition
 // inputs to [ResolveInputArtifacts]. The zero value reproduces the
 // pre-84b behaviour exactly: no hints, no policy (the runtime default
 // resolves `image/*` → inline, everything else → ref), no catalog
@@ -192,11 +192,11 @@ func DispositionHints(raw map[string]string) map[string]planner.AttachmentDispos
 // ResolveInputArtifacts pre-fetches the metadata (+ bytes for inline
 // dispositions) for every operator-uploaded artifact ID on a task,
 // producing the `planner.InputArtifactView` slice the run loop hands
-// to the planner's first turn (Round-7 F11 / D-166; promoted by
-// Phase 110b). The synchronous pre-resolution keeps the planner's
+// to the planner's first turn (promoted by
+// the runtime promotion). The synchronous pre-resolution keeps the planner's
 // prompt assembly I/O-free.
 //
-// Phase 84b (D-189): each view's `Disposition` is resolved here via
+// each view's `Disposition` is resolved here via
 // the pure `planner.ResolveDisposition` (per-attachment caller hint >
 // per-agent policy map > runtime default) + capability normalisation
 // via `planner.EffectiveDisposition`. This helper is a THIN caller —
@@ -263,7 +263,7 @@ func ResolveInputArtifacts(
 				slog.String("artifact_id", id))
 			continue
 		}
-		// Phase 84b (D-189): thin calls into the planner-homed pure
+		// thin calls into the planner-homed pure
 		// policy core; this caller logs/emits the returned facts.
 		resolved, layer := planner.ResolveDisposition(opts.Hints[id], opts.Policy, ref.MimeType)
 		effective, degradation := planner.EffectiveDisposition(resolved, ref.MimeType, opts.Catalog)

@@ -1,6 +1,6 @@
 // Package inmem is Harbor's V1 in-memory StateStore driver. It is
 // the test reference for the conformance suite — every later driver
-// (SQLite Phase 15, Postgres Phase 16, durable-log Phase 57) inherits
+// (SQLite, Postgres, durable-log) inherits
 // the same suite verbatim.
 //
 // Internal model:
@@ -212,7 +212,7 @@ func (d *driver) Delete(_ context.Context, q identity.Quadruple, kind string) er
 }
 
 // ListKind implements state.StateStore — the explicitly-elevated
-// maintenance scan (RFC §6.11, D-207). The prefix matches literally
+// maintenance scan (RFC §6.11). The prefix matches literally
 // via strings.HasPrefix; results carry value copies with cloned Bytes
 // (same defensive-copy discipline as Load).
 func (d *driver) ListKind(_ context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {

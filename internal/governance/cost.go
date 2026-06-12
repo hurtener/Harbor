@@ -22,7 +22,7 @@ import (
 // `kindMemoryState` convention).
 const kindGovernanceCost = "governance.cost"
 
-// CostAccumulator is the Phase 36a `Subsystem` that aggregates LLM cost
+// CostAccumulator is the `Subsystem` that aggregates LLM cost
 // per `(tenant, user, session, model)` and enforces per-tier ceilings
 // in PreCall. State persists to a `state.StateStore` so the accumulator
 // survives runtime restart; three V1 drivers (in-mem / SQLite / Postgres)
@@ -32,10 +32,10 @@ const kindGovernanceCost = "governance.cost"
 // enforcement path. PreCall returns nil; PostCall still records cost so
 // the accumulator's observability surface stays alive (operators get
 // per-identity cost dashboards without opting into enforcement). This
-// satisfies the Wave 7b scoping decision: "interface + math only,
+// satisfies the V1 scoping: "interface + math only,
 // ceilings opt-in."
 //
-// Concurrent reuse (D-025): the accumulator's per-key state lives in a
+// Concurrent reuse: the accumulator's per-key state lives in a
 // `sync.Map` of `*costKeyState`; each `costKeyState` uses an atomic
 // `uint64`-packed float64 for the cumulative total. The CAS loop in
 // `add` is lock-free and N concurrent PostCalls cannot lose updates.
@@ -96,7 +96,7 @@ type costRecord struct {
 
 const costRecordSchema = 1
 
-// NewCostAccumulator constructs a Phase 36a `CostAccumulator`. `state`
+// NewCostAccumulator constructs a `CostAccumulator`. `state`
 // is the persistence floor (mandatory); `bus` is the observability bus
 // (mandatory); `cfg` carries operator-supplied tier ceilings.
 //
@@ -196,7 +196,7 @@ func (a *CostAccumulator) PostCall(ctx context.Context, req llm.CompleteRequest,
 }
 
 // Snapshot returns the current per-(identity, model) accumulator total
-// + the identity-level grand total. Used by tests and by Phase 91's
+// + the identity-level grand total. Used by tests and by the
 // Console-driven inspection (post-V1). Concurrent-safe.
 func (a *CostAccumulator) Snapshot(ctx context.Context, q identity.Quadruple) (float64, map[string]float64, error) {
 	if a.closed.Load() {

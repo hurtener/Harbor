@@ -26,13 +26,13 @@ var (
 )
 
 // ActionEnvelope is the canonical LLM-emitted shape the parser
-// recognises. Brief 02 §2 settled on a typed envelope rather than
+// recognises. The design settled on a typed envelope rather than
 // the predecessor's "magic strings as next_node" pattern (RFC §6.2
-// settled decisions; D-047). The envelope is intentionally minimal:
+// settled decisions). The envelope is intentionally minimal:
 //
 //	{"tool": "<catalog name>", "args": {...}}
 //
-// Phase 83e (D-147) narrowed the shape — the former `reasoning` /
+// An earlier phase narrowed the shape — the former `reasoning` /
 // `thought` fields are dropped. A model that still emits them (older
 // trained checkpoints) has the extra fields silently stripped, with a
 // `planner.action_extra_field_dropped` telemetry event per dropped
@@ -43,7 +43,7 @@ var (
 // discriminator — that vocabulary is explicitly rejected.
 //
 // The parser does NOT extract [planner.CallParallel] / [planner.Finish]
-// envelopes — those are runtime opcodes, not tool calls. Phase 45
+// envelopes — those are runtime opcodes, not tool calls. The ReAct planner
 // (ReAct) prompts the LLM to emit `tool: "_finish"` as a marker which
 // it then maps to [planner.Finish] before passing to the loop; that's
 // the planner concrete's call, not the repair loop's. The repair loop
@@ -56,14 +56,14 @@ type ActionEnvelope struct {
 // extraActionFields lists the JSON keys the parser strips from an
 // incoming action object before mapping it to a [planner.CallTool].
 // `reasoning` / `thought` are legacy free-text fields older models
-// were trained to emit; Phase 83e (D-147) narrowed the action schema
+// were trained to emit; An earlier phase narrowed the action schema
 // to `{tool, args}`, so the parser strip-and-warns rather than
 // carrying them. Each stripped key emits one
 // `planner.action_extra_field_dropped` event.
 var extraActionFields = []string{"reasoning", "thought"}
 
 // ActionParser extracts one OR many [planner.CallTool] actions from
-// raw LLM text. Tolerant of the failure modes brief 07 §3 catalogued:
+// raw LLM text. Tolerant of the catalogued failure modes:
 //
 //   - Fenced JSON (` ```json ... ``` ` or ` ``` ... ``` `).
 //   - Prose-wrapped JSON ("Here's my action:\n {...}").
@@ -71,7 +71,7 @@ var extraActionFields = []string{"reasoning", "thought"}
 //   - Bare JSON arrays of envelopes.
 //
 // Order preservation: actions are returned in the LLM-emitted order
-// (brief 07 §5: "the next LLM prompt sees the branches in the same
+// ("the next LLM prompt sees the branches in the same
 // order the model proposed them").
 //
 // Concurrent-reuse: the parser holds no per-call state on the
@@ -116,7 +116,7 @@ func (p *ActionParser) Parse(text string) ([]planner.CallTool, error) {
 	}
 
 	// Step 3: fenced-block extraction. The fences are documented in
-	// brief 07 §3 — we strip ` ```json `, ` ```JSON `, and bare ` ``` `
+	// we strip ` ```json `, ` ```JSON `, and bare ` ``` `
 	// fences. Within each fenced block we re-run the greedy decode.
 	if actions := tryFenced(text); len(actions) > 0 {
 		return actions, nil
@@ -226,16 +226,16 @@ func extractFencedBlocks(text string) []string {
 // objects from "Sure, here's the first: {tool:'a',...} and the
 // second: {tool:'b',...}".
 //
-// Brief 07 §10 sharp edge: "prefer the multi-object scanner as the
+// A known sharp edge says "prefer the multi-object scanner as the
 // primary extractor and fall back to fence-extraction only when
-// multi-object scan fails." Phase 44 inverts that ordering — greedy
+// multi-object scan fails." Harbor inverts that ordering — greedy
 // decode first (cheapest), fence-extraction second (mid-tolerance),
 // scan last (most tolerant). The inversion is intentional: the scan
 // is the LAST resort because it's the most likely to mis-extract a
 // reasoning-channel JSON example as an action. The brief's rationale
 // applies when the fence-extractor is brittle around nested fences;
 // our extractor uses an explicit close-fence search per opening, so
-// the brittleness brief 07 cited (nested ` ```python ` blocks) is
+// the known brittleness (nested ` ```python ` blocks) is
 // already handled.
 func tryScan(text string) []planner.CallTool {
 	var out []planner.CallTool
@@ -301,7 +301,7 @@ func trimLeftJunk(s string) string {
 // the original RawMessage so the downstream tool-validator sees the
 // exact bytes the LLM emitted.
 //
-// Phase 83e (D-147): the action schema is `{tool, args}` only. Extra
+// the action schema is `{tool, args}` only. Extra
 // fields (`reasoning` / `thought`) are dropped silently by the typed
 // unmarshal — [DroppedExtraFields] reports which ones a raw object
 // carried so the parser can emit telemetry.
@@ -316,7 +316,7 @@ func envelopeToCallTool(env ActionEnvelope) planner.CallTool {
 	}
 }
 
-// droppedFieldsInObject reports which Phase 83e-narrowed extra keys
+// droppedFieldsInObject reports which narrowed extra keys
 // ([extraActionFields] — `reasoning` / `thought`) a single raw
 // action-object JSON carries. A non-object payload, or an object with
 // none of the keys, returns nil.
@@ -334,8 +334,8 @@ func droppedFieldsInObject(raw []byte) []string {
 	return dropped
 }
 
-// DroppedExtraFields scans an LLM response for Phase 83e-narrowed
-// extra action fields (`reasoning` / `thought` — D-147) and returns
+// DroppedExtraFields scans an LLM response for narrowed
+// extra action fields (`reasoning` / `thought`) and returns
 // every dropped key across every action object the response carries
 // (a multi-action array contributes one entry per object). The repair
 // loop calls it after a successful parse to emit one

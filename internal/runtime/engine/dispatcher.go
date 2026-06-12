@@ -18,7 +18,7 @@ import (
 // direct fetch vs post-dispatcher per-run demux) is bolted-on and
 // surfaces sharp edges (e.g. the "Fetch with no RunID becomes
 // unsupported once any RunID-Fetch happens" rule). RFC §6.1 settles
-// the call: dispatcher on by default, always — see brief 01 §5.
+// the call: dispatcher on by default, always — a settled design rule.
 //
 // Concurrency model:
 //   - One reader (the dispatcher goroutine) on outlet.
@@ -31,7 +31,7 @@ import (
 type dispatcher struct {
 	outlet chan messages.Envelope
 	// anyRun receives envelopes that any Fetch (no run filter) can
-	// consume. Phase 10's Fetch reads exclusively from anyRun;
+	// consume. the Fetch reads exclusively from anyRun;
 	// FetchByRun(runID) reads from runQueues[runID]. Both modes coexist
 	// because the dispatcher writes to BOTH targets: the per-run
 	// subqueue AND anyRun (the latter so FetchAny doesn't have to scan
@@ -42,7 +42,7 @@ type dispatcher struct {
 	runQueues map[string]*runQueue
 	// fetcherActive[runID] tracks whether a FetchByRun is currently in
 	// flight for that run. Used to enforce the
-	// "concurrent FetchByRun forbidden" contract (brief 01 §5). The
+	// "concurrent FetchByRun forbidden" contract. The
 	// flag is set on entry and cleared on exit; only one goroutine
 	// holds it at a time per run.
 	fetcherActive map[string]*atomic.Bool
@@ -51,7 +51,7 @@ type dispatcher struct {
 	// subqueue write becomes BLOCKING (backpressure-bound delivery).
 	// Until then, the write is non-blocking with drop-on-full so a
 	// Fetch-only consumer doesn't backpressure-cascade the dispatcher
-	// (the Phase 12 cross-run no-deadlock guarantee). Set on first
+	// (the cross-run no-deadlock guarantee). Set on first
 	// FetchByRun for a run; never cleared (subscription is permanent
 	// for the run's lifetime).
 	subscribed map[string]struct{}
@@ -66,9 +66,9 @@ type dispatcher struct {
 	subqueueSize int
 
 	// onFetched is invoked after the consumer has drained an envelope
-	// via fetchAny or fetchByRun. Used by Phase 12 to release the
+	// via fetchAny or fetchByRun. Used by to release the
 	// run's streaming capacity counter so EmitChunk waiters can wake.
-	// nil = no-op (Phase 10 behavior). The callback runs synchronously
+	// nil = no-op (behavior). The callback runs synchronously
 	// on the calling goroutine; keep it short.
 	//
 	// Why fetch-time and not route-time: the producer must block
@@ -160,13 +160,13 @@ func (d *dispatcher) start(ctx context.Context) {
 //   - SUBSCRIBED: blocking write. A stalled FetchByRun consumer
 //     backpressures the dispatcher, which backpressures the worker
 //     via the outlet channel — symmetric with the anyRun path. This
-//     matches Phase 13's "no half-measure" delivery contract for
-//     FetchByRun consumers (brief 01 §5).
+//     matches the "no half-measure" delivery contract for
+//     FetchByRun consumers.
 //   - UNSUBSCRIBED: non-blocking write with drop on full. A
 //     Fetch-only consumer (any-run) doesn't drain the per-run
 //     subqueue; without this fall-through, the subqueue would fill
 //     and cascade-block every worker emitting on that run (the
-//     Phase 12 cross-run no-deadlock failure). The anyRun write is
+//     cross-run no-deadlock failure). The anyRun write is
 //     still bounded-blocking so the run's frames remain visible to
 //     Fetch.
 //
@@ -231,7 +231,7 @@ const (
 // Returns (nil, sendSkip) when the run has been Cancel'd. Otherwise,
 // blocking when a FetchByRun consumer has subscribed (the subqueue is
 // the contract for that run's delivery), non-blocking with drop on
-// full when no consumer has subscribed (preserving Phase 12's
+// full when no consumer has subscribed (preserving the
 // cross-run no-deadlock guarantee).
 //
 // Lazy-creates the subqueue on first access either way: the buffer
@@ -256,8 +256,8 @@ func (d *dispatcher) subqueueForSend(runID string) (*runQueue, sendMode) {
 
 // fetchAny reads from the any-run channel. Returns ctx.Err() when
 // ctx cancels; returns ErrEngineStopped when the channel closes
-// (engine shutdown). On a successful read, fires onFetched (Phase
-// 12's streaming capacity-release hook).
+// (engine shutdown). On a successful read, fires onFetched (the
+// streaming capacity-release hook).
 func (d *dispatcher) fetchAny(ctx context.Context) (messages.Envelope, error) {
 	select {
 	case <-ctx.Done():

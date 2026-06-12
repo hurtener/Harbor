@@ -1,10 +1,10 @@
 // Package stream is the Harbor Protocol SSE event transport — the
 // server→client half of the wire binding RFC §5.4 resolves to (SSE for
-// events + REST/JSON for control). It is a thin adapter over the Phase
-// 05 events.EventBus: a Handler opens a triple-scoped events.Subscription
+// events + REST/JSON for control). It is a thin adapter over the
+// events.EventBus: a Handler opens a triple-scoped events.Subscription
 // and frames each events.Event as an SSE block (frame.go). The SSE
 // transport adds the wire framing and the connection lifecycle; it adds
-// NO second event channel — brief 06's "one bus, no parallel
+// NO second event channel — the "one bus, no parallel
 // observability channel" is load-bearing.
 //
 // # The route shape
@@ -14,7 +14,7 @@
 // The identity triple is carried in request headers (X-Harbor-Tenant /
 // X-Harbor-User / X-Harbor-Session) — a header carrier, not a query
 // string, so the triple is not logged in access logs by default and
-// Phase 61's JWT validation slots in at the same choke point. An
+// the JWT validation slots in at the same choke point. An
 // optional X-Harbor-Event-Type header (repeatable) narrows the
 // subscription's event-type selector.
 //
@@ -23,9 +23,9 @@
 // The handler resolves the triple from the headers and rejects a request
 // with any missing component closed — HTTP 401, before any subscription
 // is opened. The SSE stream is ALWAYS triple-scoped: events.Filter.Admin
-// (cross-tenant fan-in) is NOT exposed on the wire in Phase 60 — it needs
-// the cryptographic scope claim Phase 61 adds. resolveIdentity is the
-// single choke point Phase 61 slots JWT validation into.
+// (cross-tenant fan-in) is NOT exposed on the wire in a later phase — it needs
+// the cryptographic scope claim Harbor adds. resolveIdentity is the
+// single choke point slots JWT validation into.
 //
 // # Reconnect cursor
 //
@@ -39,7 +39,7 @@
 // explicit `stream.replay_unavailable` comment frame so the gap is
 // SURFACED, never silently masked (CLAUDE.md §5).
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // Handler is a compiled artifact: the bus, the logger, the keepalive
 // interval and the clock are set once at construction and never mutated.
@@ -82,13 +82,13 @@ const RoutePattern = "GET /v1/events"
 
 // Identity-carrier header names. The triple travels in headers, not a
 // query string, so it does not land in access logs by default and so
-// Phase 61's JWT validation replaces a single resolve step.
+// the JWT validation replaces a single resolve step.
 //
 // HeaderRun is optional — when present, the subscription is
 // run-scoped (events.Filter.Run is set, so only events with a
 // matching RunID flow through). When absent, the subscription is
-// session-scoped (the Phase 60 default; every run in the session is
-// observed). Added in PR #91 / D-082 per Wave 10 audit WARN-5.
+// session-scoped (the default; every run in the session is
+// observed). Added in PR #91per checkpoint audit WARN-5.
 const (
 	HeaderTenant    = "X-Harbor-Tenant"
 	HeaderUser      = "X-Harbor-User"
@@ -108,7 +108,7 @@ const reconnectRetryMS = 3000
 
 // Handler is the Protocol SSE event transport. It is built once per
 // Runtime process via NewHandler and shared across every stream request;
-// ServeHTTP is safe for concurrent use by N goroutines (D-025).
+// ServeHTTP is safe for concurrent use by N goroutines.
 type Handler struct {
 	bus       events.EventBus
 	logger    *slog.Logger
@@ -147,12 +147,12 @@ func WithKeepalive(d time.Duration) Option {
 	}
 }
 
-// NewHandler builds the Protocol SSE event transport over the Phase 05
+// NewHandler builds the Protocol SSE event transport over the
 // events.EventBus. The bus is mandatory — a nil fails loud with
 // ErrMisconfigured rather than building a handler that would nil-panic
 // on the first request (CLAUDE.md §5).
 //
-// The returned *Handler is immutable after construction (D-025) and safe
+// The returned *Handler is immutable after construction and safe
 // for concurrent use by N goroutines.
 func NewHandler(bus events.EventBus, opts ...Option) (*Handler, error) {
 	if bus == nil {
@@ -192,9 +192,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Identity at the edge — resolve the triple. Phase 61: when the
+	// Identity at the edge — resolve the triple. When the
 	// auth.Middleware ran before us, the verified identity is in
-	// r.Context() (via identity.With) and we prefer it. Phase 60
+	// r.Context() (via identity.With) and we prefer it. The
 	// fallback: when no middleware ran, resolve from the X-Harbor-*
 	// carrier headers via resolveIdentity. A missing component on
 	// either path fails the request closed (401) before any
@@ -207,11 +207,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 61: an `?admin=1` query param requests cross-tenant fan-in
+	// an `?admin=1` query param requests cross-tenant fan-in
 	// (events.Filter.Admin = true). This is gated on a verified scope
-	// claim — ScopeAdmin OR ScopeConsoleFleet (D-079). A request that
+	// claim — ScopeAdmin OR ScopeConsoleFleet. A request that
 	// asks for admin without the scope is rejected 403 with the
-	// canonical Phase 72 / D-105 wire code CodeIdentityScopeRequired
+	// canonical wire code CodeIdentityScopeRequired
 	// (distinct from CodeScopeMismatch, which is reserved for the
 	// steering-control scope-claim path per RFC §6.3). A request that
 	// does NOT ask for admin is the default triple-scoped stream.
@@ -219,7 +219,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if wantAdmin && (!auth.HasScope(r.Context(), auth.ScopeAdmin) && !auth.HasScope(r.Context(), auth.ScopeConsoleFleet)) {
 		writeProtocolError(w, http.StatusForbidden,
 			protoerrors.Newf(protoerrors.CodeIdentityScopeRequired,
-				"admin fan-in requires a verified `admin` or `console:fleet` scope (D-079)"))
+				"admin fan-in requires a verified `admin` or `console:fleet` scope"))
 		return
 	}
 
@@ -236,11 +236,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// A rejected Subscribe (identity gate, subscriber-limit, closed
 		// bus) — surface it; do not silently 200 with an empty stream.
-		// Phase 72 / D-105: both ErrIdentityScopeRequired (filter
+		// both ErrIdentityScopeRequired (filter
 		// elided the triple and admin was false) and
 		// ErrAdminScopeRequired (admin requested without the scope
 		// claim) collapse onto the canonical wire code
-		// CodeIdentityScopeRequired (403). Phase 61's `?admin=1` gate
+		// CodeIdentityScopeRequired (403). the `?admin=1` gate
 		// normally short-circuits BEFORE Subscribe, but the mapping
 		// must hold if a future filter variant lets the bus return
 		// either sentinel.
@@ -409,7 +409,7 @@ func (h *Handler) replayFromCursor(
 
 // surfaceReplayGap writes an explicit SSE comment frame announcing that
 // a reconnecting client's gap could not be replayed. The client sees the
-// gap and can fall through to a durable-log read (Phase 57) or accept
+// gap and can fall through to a durable-log read or accept
 // the loss knowingly — what it does NOT get is a silent stream that
 // looks complete but skipped events.
 func (h *Handler) surfaceReplayGap(
@@ -427,13 +427,13 @@ func (h *Handler) surfaceReplayGap(
 	flusher.Flush()
 }
 
-// resolveIdentity reads the identity triple. Phase 61: prefer the
+// resolveIdentity reads the identity triple. Prefer the
 // verified identity attached to r.Context() by auth.Middleware
-// (identity.With). Phase 60 fallback: when no middleware ran, read
+// (identity.With). fallback: when no middleware ran, read
 // from the X-Harbor-* carrier headers and validate.
 //
 // This is the single identity choke point on the SSE transport — the
-// Phase 61 ctx-first preference is additive and does not reshape
+// ctx-first preference is additive and does not reshape
 // ServeHTTP. When neither path produces a complete triple, the
 // request fails closed (401).
 func resolveIdentity(r *http.Request) (identity.Identity, error) {
@@ -506,7 +506,7 @@ func writePlainError(w http.ResponseWriter, status int, msg string) {
 
 // writeProtocolError writes a pre-stream rejection as the canonical
 // Protocol error envelope (JSON `{code, message}`) with the given
-// status. Phase 72 / D-105: the SSE transport's rejection paths
+// status.: the SSE transport's rejection paths
 // (identity missing, scope insufficient, bus refused) return a typed
 // wire envelope so third-party Consoles branch on the `code` field
 // instead of parsing free-form prose. A marshal failure degrades to a

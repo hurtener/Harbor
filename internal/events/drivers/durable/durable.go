@@ -1,5 +1,5 @@
 // Package durable is Harbor's StateStore-backed durable event log
-// driver (Phase 57, RFC §6.13).
+// driver (RFC §6.13).
 //
 // Architecture:
 //
@@ -17,7 +17,7 @@
 //     against the same StateStore sees the full, gap-free history.
 //   - When NO StateStore is configured the driver auto-degrades to a
 //     best-effort in-memory ring buffer AND emits a loud runtime.warning
-//     event plus an slog.Warn (D-074, CLAUDE.md §13 "no silent
+//     event plus an slog.Warn (CLAUDE.md §13 "no silent
 //     degradation"). Replay is then NOT durable across restarts.
 //
 // Keying scheme (within state.StateStore's keyed-slot contract — there
@@ -116,7 +116,6 @@ func optWithOwnedStore() Option {
 // for cmd/harbor's wiring path (which opens the StateStore and hands
 // it in). When store is nil the driver runs in best-effort
 // ring-buffer mode and emits a loud warning — see the package doc and
-// D-074.
 func New(cfg config.EventsConfig, r audit.Redactor, store state.StateStore, opts ...Option) (events.EventBus, error) {
 	if r == nil {
 		return nil, fmt.Errorf("durable: audit.Redactor required (got nil)")
@@ -162,7 +161,7 @@ func New(cfg config.EventsConfig, r audit.Redactor, store state.StateStore, opts
 // carry a state.StateStore, the registry-path factory opens the
 // StateStore itself from EventsConfig.StateDriver / StateDSN.
 //
-// PR #91 amended D-074 per the CLAUDE.md §13 "Test stubs as
+// PR #91 amended per the CLAUDE.md §13 "Test stubs as
 // production defaults on operator-facing seams" rule: the
 // registry-path factory now fails LOUD AT BOOT when StateDriver is
 // empty rather than auto-degrading to the in-memory ring. An
@@ -179,7 +178,7 @@ func init() {
 		}
 		return newWithOwnedStore(cfg, r)
 	})
-	// Phase 110d (D-197) — the deps-aware factory: when the runtime
+	// the deps-aware factory: when the runtime
 	// hands its already-open StateStore through `events.OpenWith`, the
 	// durable log persists into the SAME store the rest of the runtime
 	// uses, and the bus's Close leaves the shared store open (the
@@ -222,7 +221,7 @@ func newWithOwnedStore(cfg config.EventsConfig, r audit.Redactor) (events.EventB
 // bus is the durable driver. It is a compiled artifact: every field is
 // set once at construction. Per-publish state lives under publishMu;
 // per-subscriber state lives on the subscription. Nothing run-specific
-// is stored on the struct (D-025).
+// is stored on the struct.
 type bus struct {
 	cfg      config.EventsConfig
 	redactor audit.Redactor
@@ -259,7 +258,7 @@ type bus struct {
 // Publish honours ctx (CLAUDE.md §5): a cancelled caller context is
 // rejected up front, BEFORE anything is persisted — the publish ctx
 // drives store.Save, and the caller's ctx is the lifetime bound for
-// the persistence (D-207: the run-loop drivers' emit closures publish
+// the persistence (the run-loop drivers' emit closures publish
 // under their driver-lifetime ctx, so events stop persisting at driver
 // teardown regardless of whether the configured StateStore driver
 // itself reads ctx — the inmem store does no I/O and ignores it).
@@ -274,7 +273,7 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 		return err
 	}
 
-	// Audit-before-emit boundary (RFC §6.13, D-020). SafePayload
+	// Audit-before-emit boundary (RFC §6.13). SafePayload
 	// bypasses the redactor; everything else is walked.
 	payload := ev.Payload
 	if _, safe := payload.(events.SafePayload); !safe {
@@ -306,7 +305,7 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 //
 // A persistence failure surfaces loudly — the event is NOT enqueued
 // and the error propagates to the Publish caller. Silently dropping a
-// persistence failure would foreclose the gap-free guarantee Phase 57
+// persistence failure would foreclose the gap-free guarantee this driver
 // exists to provide (CLAUDE.md §5 "fail loudly", §13).
 func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 	b.publishMu.Lock()
@@ -432,7 +431,7 @@ func (b *bus) Replay(ctx context.Context, from events.Cursor, f events.Filter) (
 
 	if f.Admin {
 		// Mirror the inmem driver: surface admin-scope use on the bus
-		// so abuse is retroactively detectable. Phase 61 adds the
+		// so abuse is retroactively detectable. Harbor adds the
 		// cryptographic check.
 		b.emitAdminScopeUsed(f)
 	}
@@ -703,8 +702,7 @@ func (b *bus) publishInternal(ev events.Event) {
 // channel is closed. Whether the StateStore is closed depends on
 // ownership: the registry-path factory opens the store and marks the
 // bus as its owner (Close then closes it); a caller that passes a
-// store into New owns the store's lifecycle and Close leaves it open
-// (D-074).
+// store into New owns the store's lifecycle and Close leaves it open.
 func (b *bus) Close(ctx context.Context) error {
 	if b.closed.Swap(true) {
 		return nil

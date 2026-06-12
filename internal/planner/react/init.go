@@ -8,16 +8,16 @@ import (
 
 // DriverName is the canonical name the react planner registers under.
 // The `internal/config` validator's `allowedPlannerDrivers` allowlist
-// mirrors this constant (D-103). `cmd/harbor/main.go` blank-imports
+// mirrors this constant. `cmd/harbor/main.go` blank-imports
 // this package so the registration fires at process boot (§4.4 seam
-// pattern; D-095 OAuth-provider precedent).
+// pattern; the OAuth-provider registry precedent).
 const DriverName = "react"
 
 // init self-registers the `react` driver under its canonical name. The
 // factory adapter below maps the planner-package `FactoryDeps` +
 // `PlannerConfig` boundary onto `react.New`'s option-applied surface.
 //
-// D-103 — closes D-097's "future phases will read cfg.Planner" note
+// closes the "future phases will read cfg.Planner" note
 // and CLAUDE.md §1.3's swappable-planner property gap.
 func init() {
 	planner.MustRegister(DriverName, factory)
@@ -40,20 +40,20 @@ func factory(cfg planner.PlannerConfig, deps planner.FactoryDeps) (planner.Plann
 	if cfg.ExtraGuidance != "" {
 		opts = append(opts, WithSystemPromptExtra(cfg.ExtraGuidance))
 	}
-	// Phase 83e (D-148): propagate the agent-configured reasoning-
+	// propagate the agent-configured reasoning-
 	// replay mode. An empty mode resolves to `never` inside the
 	// planner; WithReasoningReplay no-ops on an invalid value (config
 	// validation already rejected those pre-boot).
 	if cfg.ReasoningReplay != "" {
 		opts = append(opts, WithReasoningReplay(cfg.ReasoningReplay))
 	}
-	// Phase 83b (D-144): propagate the per-tool curated-example cap. A
+	// propagate the per-tool curated-example cap. A
 	// value ≤ 0 resolves to defaultMaxToolExamples (3) inside the
 	// prompt renderer; config validation already rejected negatives.
 	if cfg.MaxToolExamplesPerTool > 0 {
 		opts = append(opts, WithMaxToolExamplesPerTool(cfg.MaxToolExamplesPerTool))
 	}
-	// Phase 107d (D-169): native parallel tool-call emission. The
+	// native parallel tool-call emission. The
 	// planner's own default is `true`; only override when the operator
 	// set the knob explicitly (nil = unset = keep the default).
 	if cfg.ParallelToolCalls != nil {

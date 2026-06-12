@@ -6,19 +6,19 @@ import "errors"
 //
 // Each sentinel maps 1:1 to a `governance.*` event type — code that
 // catches one of these knows which policy fired and can route the
-// outcome (e.g. ErrBudgetExceeded → pause/resume primitive in Wave 9+).
+// outcome (e.g. ErrBudgetExceeded → pause/resume primitive in +).
 var (
-	// ErrBudgetExceeded — Phase 36a. PreCall blocked because the
+	// ErrBudgetExceeded — PreCall blocked because the
 	// (identity, tier) accumulator hit or exceeded the configured
 	// BudgetCeilingUSD. Wraps with the identity + total + ceiling so
 	// log handlers can render the failure deterministically.
 	ErrBudgetExceeded = errors.New("governance: budget ceiling exceeded")
 
-	// ErrRateLimited — Phase 36b. PreCall blocked because the per-
+	// ErrRateLimited — PreCall blocked because the per-
 	// (identity, model) token bucket underflowed the requested drain.
 	ErrRateLimited = errors.New("governance: rate-limited")
 
-	// ErrMaxTokensExceeded — Phase 36b. PreCall blocked because the
+	// ErrMaxTokensExceeded — PreCall blocked because the
 	// request's MaxTokens exceeded the identity tier's cap.
 	ErrMaxTokensExceeded = errors.New("governance: per-call MaxTokens exceeded")
 

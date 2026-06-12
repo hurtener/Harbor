@@ -10,7 +10,7 @@ import (
 )
 
 // SkillSearchArgs is the LLM-facing input shape for the `skill_search`
-// built-in. Phase 111d (D-201): the shape deliberately OMITS the rich
+// built-in. The shape deliberately OMITS the rich
 // handler's `capability` field — the envelope is server-computed from
 // the run's visible-tool set (see skill_capability.go) so a model
 // cannot self-grant a wider skill view. The pre-111d `tags` filter is

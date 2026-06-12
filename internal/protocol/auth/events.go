@@ -5,11 +5,11 @@ import (
 )
 
 // EventTypeAuthRejected is the canonical EventType emitted whenever
-// the Phase 61 JWT auth pipeline rejects a request at the transport
+// the JWT auth pipeline rejects a request at the transport
 // edge (a missing token, an algorithm-confusion attack, an expired
 // bearer, an unknown kid, a scope mismatch, etc.). The event lives on
 // the bus alongside every other rejection-class signal — the same
-// observability surface Phase 05 + Phase 57 ship for the rest of the
+// observability surface the event subsystems ship for the rest of the
 // runtime — so a Console (or any Protocol client) can subscribe to
 // auth rejections through the canonical events.EventBus rather than
 // scraping slog output.
@@ -20,7 +20,7 @@ import (
 // identifiers — all run through the audit.Redactor at the middleware
 // edge before the publish.
 //
-// PR #91 / D-082: surfaced by the Wave 10 audit's WARN-3. Before
+// PR #91: surfaced by the checkpoint audit WARN-3. Before
 // this addition, auth rejections only emitted a structured
 // `slog.Warn` — observable to an operator with log access but NOT to
 // a Console subscribing through the Protocol's canonical event
@@ -70,10 +70,10 @@ func init() {
 }
 
 // AdminImpersonationReason is the stable sentinel name for an
-// `audit.admin_scope_used` event emitted by the Phase 72b
+// `audit.admin_scope_used` event emitted by the
 // admin-impersonation path. The Reason field of
 // AdminScopeUsedPayload is set to this constant when the bus event
-// comes from the impersonation gate (vs. the Phase 05
+// comes from the impersonation gate (vs. the
 // events.Subscribe admin-filter emit, which carries the
 // events.AdminScopeUsedPayload shape).
 //
@@ -95,7 +95,7 @@ const AdminImpersonationReason = "impersonation"
 // bus surface, not on the runtime's identity-quadruple surface.
 // Mirroring the runtime type 1:1 would couple the audit shape to
 // internal storage refactors (the same anti-pattern RFC §5.1 names
-// for the wire IdentityScope). Phase 72b, D-107.
+// for the wire IdentityScope).
 type IdentityTriple struct {
 	// Tenant / User / Session are the flattened `(tenant, user, session)`
 	// isolation triple the audit payload records — the wire-adjacent
@@ -108,27 +108,25 @@ type IdentityTriple struct {
 
 // AdminScopeUsedPayload is the typed payload on the
 // `audit.admin_scope_used` canonical event when the emit source is
-// an impersonation request (Phase 72b). The pre-existing emit site
-// (the `events.Subscribe` admin-filter, Phase 05 /
+// an impersonation request. The pre-existing emit site
+// (the `events.Subscribe` admin-filter,
 // `internal/events/drivers/inmem`) continues to use
 // `events.AdminScopeUsedPayload`; this richer typed payload is
-// what the Phase 72b impersonation path publishes.
+// what the impersonation path publishes.
 //
 // SafePayload by construction: every field is a bounded-string
 // shaped identity component plus two enum strings. No
 // caller-controlled bytes reach the bus — the wire shape rejects
 // any deviation at the Protocol edge before reaching the emit.
 //
-// Brief 11 §PG-5 verbatim names the three identity fields. The
+// The design verbatim names the three identity fields. The
 // `Reason` field is the stable sentinel
 // (`AdminImpersonationReason`); the `Method` field is the
 // Protocol method that carried the impersonation (one of the ten
 // canonical methods, typically `start` but `redirect` /
-// `user_message` are accepted too — Phase 72b's non-goal explicitly
+// `user_message` are accepted too — the non-goal explicitly
 // names per-tool-call impersonation downgrade as post-V1, so the
 // method stays one of the ten).
-//
-// Phase 72b, D-107.
 type AdminScopeUsedPayload struct {
 	events.SafeSealed
 	// Actor is the verified admin identity at the Protocol edge.

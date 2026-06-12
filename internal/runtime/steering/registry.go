@@ -13,7 +13,7 @@ import (
 // Inbox to the Protocol edge (Lookup) and the run loop, and retires
 // the Inbox when the run ends (Retire).
 //
-// Registry is a compiled artifact (D-025): immutable after
+// Registry is a compiled artifact: immutable after
 // construction, with the run→inbox map behind a documented-invariant
 // sync.Mutex. One Registry is safe to share across N concurrent
 // goroutines — concurrent_test.go pins N≥100 under -race. Per-run

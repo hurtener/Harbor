@@ -1,7 +1,7 @@
 // cmd/harbor/console_embed.go — the `harbor console` static-asset
-// embed (Phase 73m / D-129).
+// embed.
 //
-// D-091 pins the Console deployment: the static SvelteKit build is
+// pins the Console deployment: the static SvelteKit build is
 // baked into `cmd/harbor` via `embed.FS` and served EXCLUSIVELY by the
 // `harbor console` subcommand — never by `harbor dev`. This file is the
 // embed surface.

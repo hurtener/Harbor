@@ -3,7 +3,7 @@
 // the Prometheus text exposition format.
 //
 // RFC §6.14 promotes a built-in Prometheus /metrics endpoint to V1 for
-// self-hosted setups (a popular operator preference; resolves brief 06
+// self-hosted setups (a popular operator preference; resolves a
 // Q-2). This driver is the default — telemetry.NewMetricsRegistry
 // selects it when TelemetryConfig.OTelEndpoint is empty, because the
 // Prometheus path needs no collector: the metrics are pulled by a
@@ -18,7 +18,7 @@
 // with it via WithRegisterer. That keeps every telemetry.MetricsRegistry
 // independent — two registries in one process (a test running N of
 // them; a future multi-listener setup) do not collide on the global
-// registerer, and the D-025 concurrent-reuse contract holds. The fresh
+// registerer, and the concurrent-reuse contract holds. The fresh
 // registry is handed back through the PromGatherer contract so
 // telemetry.PrometheusHandler can build a promhttp handler from it.
 //
@@ -48,7 +48,7 @@ func init() {
 }
 
 // exporter satisfies telemetry.MetricExporter. Stateless — one value
-// shared across every NewMetricsRegistry call (D-025: no
+// shared across every NewMetricsRegistry call (no
 // per-construction mutable state on the driver itself; the constructed
 // reader + registry are per-MetricsRegistry).
 type exporter struct{}

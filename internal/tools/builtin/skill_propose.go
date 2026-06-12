@@ -11,9 +11,9 @@ import (
 
 // registerSkillPropose installs the `skill_propose` built-in as a
 // thin delegation to the Phase-41 generator (`generator.Propose`) —
-// its first production registration (Phase 111d / D-201).
+// its first production registration.
 //
-// D-054 semantics ride unchanged through this carrier: draft
+// The settled generator semantics ride unchanged through this carrier: draft
 // validation, Origin=Generated + OriginRef stamping, the conflict
 // policy (PackImport-protected; Generated→Generated content-hash-
 // gated LWW), the MANDATORY redacted `skill.proposed` audit emit

@@ -14,7 +14,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 )
 
-// D-095 — OAuth provider driver registry.
+// OAuth provider driver registry.
 //
 // The §4.4 seam pattern applied to OAuth flow strategies. The V1
 // default driver is `oauth2` (generic OAuth2/PKCE Authorization Code
@@ -72,8 +72,8 @@ type ProviderConfig struct {
 // ONCE (one KEK env var per binary; see
 // `config.ToolsConfig.OAuthTokenKEKEnv`) and passes the same instances
 // into every factory call — so N declared providers share one token
-// store + sealer + bus + redactor + coordinator. This matches Phase
-// 30's architecture where one `*Provider` consumes N `OAuthConfig`
+// store + sealer + bus + redactor + coordinator. This matches the
+// architecture where one `*Provider` consumes N `OAuthConfig`
 // entries (the `oauth2` driver constructs one `*Provider` per
 // registry entry; future per-vendor drivers may pool).
 type FactoryDeps struct {

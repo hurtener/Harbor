@@ -5,7 +5,7 @@
 // `internal/state` does not import the standard library `testing`
 // package (precedent: `internal/identity/conformancetest`).
 //
-// Downstream drivers (Phase 15 SQLite, Phase 16 Postgres, Phase 57
+// Downstream drivers (SQLite, Postgres, the
 // durable-log) consume it via:
 //
 //	import "github.com/hurtener/Harbor/internal/state/conformancetest"
@@ -56,14 +56,14 @@ type Factory func() (state.StateStore, func())
 //   - Save_CrossSession_Isolation
 //   - Save_AcceptsEmptyRunID (session-scoped state)
 //   - Delete_Idempotent
-//   - ListKind_PrefixMatchesAcrossIdentities (D-207)
-//   - ListKind_RequiresMaintenanceScope (D-207)
-//   - ListKind_EmptyPrefixRejected (D-207)
-//   - ListKind_NoMatchesReturnsEmpty (D-207)
-//   - ListKind_MetacharactersMatchLiterally (D-207)
-//   - ListKind_AfterClose_Errors (D-207)
+//   - ListKind_PrefixMatchesAcrossIdentities
+//   - ListKind_RequiresMaintenanceScope
+//   - ListKind_EmptyPrefixRejected
+//   - ListKind_NoMatchesReturnsEmpty
+//   - ListKind_MetacharactersMatchLiterally
+//   - ListKind_AfterClose_Errors
 //   - Save_AfterClose_Errors
-//   - Concurrent_SaveLoad_NoRace (D-025)
+//   - Concurrent_SaveLoad_NoRace
 //   - GoroutineLeak_AfterClose
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
@@ -404,7 +404,7 @@ func Run(t *testing.T, factory Factory) {
 		// Two records under the SAME kind prefix in DIFFERENT tenants,
 		// plus one non-matching kind: the maintenance scan must return
 		// both prefix matches (it deliberately crosses identity
-		// boundaries — RFC §6.11 / D-207) and nothing else.
+		// boundaries — RFC §6.11) and nothing else.
 		seeds := []state.StateRecord{
 			{ID: "01HABXXX00000000LK", Identity: tripleA(), Kind: "pauseresume.checkpoint:tok-A", Bytes: []byte("a")},
 			{ID: "01HABXXX00000001LK", Identity: tripleB(), Kind: "pauseresume.checkpoint:tok-B", Bytes: []byte("b")},
@@ -551,8 +551,8 @@ func Run(t *testing.T, factory Factory) {
 				}
 				// Mix of Save / Load / LoadByEventID / Delete per
 				// iteration so the conformance gate covers every
-				// method's concurrent-correctness contract — Phase 15
-				// SQLite + Phase 16 Postgres inherit this.
+				// method's concurrent-correctness contract — the SQLite work
+				// SQLite + Postgres inherit this.
 				for j := range opsPerGo {
 					eventID := state.EventID(fmt.Sprintf("ev-%d-%d", i, j))
 					rec := state.StateRecord{

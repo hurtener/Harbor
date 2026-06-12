@@ -9,9 +9,9 @@ import "sync"
 //
 // V1 ships one driver: process-local, backed by sync.Map. Resume MUST
 // run in the same Runtime process. A distributed handle directory is
-// a post-V1 RFC concern (RFC §6.3 + RFC §12 + brief 02 §4).
+// a post-V1 RFC concern (RFC §6.3 + RFC §12).
 //
-// Concurrent reuse contract (D-025): every method is safe to call
+// Concurrent reuse contract: every method is safe to call
 // from N goroutines on a single shared instance. The process-local
 // driver is sync.Map-backed; concurrent_test.go is the gate.
 //

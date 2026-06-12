@@ -1,5 +1,5 @@
-// tracing.go — the telemetry package's tracing surface (Phase 55).
-// It adds OpenTelemetry spans on top of the Phase 04 Logger. The
+// tracing.go — the telemetry package's tracing surface.
+// It adds OpenTelemetry spans on top of the Logger. The
 // canonical package doc comment is in logger.go.
 //
 // The load-bearing decision: spans are a DERIVATION of the event bus,
@@ -7,11 +7,11 @@
 // records; Tracer.SpanFromEvent is the single bridge that turns an
 // event into a span. There is deliberately no public Start method on
 // Tracer — a contributor cannot sprinkle tracer.Start(...) across
-// subsystems and grow a second observability channel (brief 06 §1).
+// subsystems and grow a second observability channel.
 //
 // A *Tracer is built once at boot via NewTracer, then shared across
 // every emit path. It is immutable after construction and safe for
-// concurrent use; the D-025 concurrent-reuse contract is enforced by
+// concurrent use; the concurrent-reuse contract is enforced by
 // TestConcurrentReuse_Tracer (N≥100 goroutines, one shared instance,
 // under -race).
 //
@@ -45,7 +45,7 @@ import (
 // Sentinel errors. Callers compare via errors.Is.
 var (
 	// ErrTracerNotConfigured — NewTracer received an invalid
-	// TelemetryConfig (e.g. an empty ServiceName). Phase 02 validates
+	// TelemetryConfig (e.g. an empty ServiceName). Harbor validates
 	// config upstream, but the constructor must not trust it.
 	ErrTracerNotConfigured = errors.New("telemetry: tracer not configured")
 	// ErrExporterUnknown — an explicitly-configured exporter driver is
@@ -175,8 +175,7 @@ func WithExporterDriver(name string) TracerOption {
 }
 
 // Tracer is the canonical OTel tracer wrapper. Built once at boot via
-// NewTracer; safe for concurrent use; immutable after construction
-// (D-025).
+// NewTracer; safe for concurrent use; immutable after construction.
 //
 // The struct holds only read-only references after construction: the
 // SDK TracerProvider, the trace.Tracer obtained from it, and the W3C
@@ -298,7 +297,7 @@ func harborResource(cfg config.TelemetryConfig) *resource.Resource {
 // derived from ev.Type; the identity quadruple and ev.Extra become
 // span attributes. NO EventPayload bytes are stamped onto the span —
 // payload content is not span-safe and the audit redactor is the only
-// sanctioniser of payload bytes (D-020). The returned ctx carries the
+// sanctioniser of payload bytes. The returned ctx carries the
 // new span; the caller is responsible for ending the span (the
 // integration / unit tests do so explicitly).
 //
@@ -339,7 +338,7 @@ func (t *Tracer) SpanFromEvent(ctx context.Context, ev events.Event) (context.Co
 
 // LogAttrs returns the trace_id / span_id slog.Attr pair from the
 // span context in ctx. Returns an empty slice when no valid span is
-// active — the Phase 04 Logger elides absent attributes, so an empty
+// active — the Logger elides absent attributes, so an empty
 // slice composes cleanly: logger.With(tracer.LogAttrs(ctx)...).
 //
 // LogAttrs is a free function in spirit (it does not touch Tracer

@@ -19,7 +19,7 @@ import (
 // post-redaction shape the inmem bus already produces for any payload
 // that is not SafePayload (see internal/events/drivers/inmem
 // wrapRedacted). Replay consumers read fields via RedactedMap.Data.
-// D-074 records this fidelity boundary.
+// records this fidelity boundary.
 type persistedEvent struct {
 	Type       events.EventType  `json:"type"`
 	TenantID   string            `json:"tenant_id"`
@@ -35,7 +35,7 @@ type persistedEvent struct {
 // encodeEvent serialises ev into opaque StateStore bytes. It fails
 // loudly (CLAUDE.md §5 "fail loudly") rather than dropping context
 // when the payload cannot be marshalled — a silently-dropped event
-// would foreclose the gap-free guarantee Phase 57 exists to provide.
+// would foreclose the gap-free guarantee exists to provide.
 func encodeEvent(ev events.Event) ([]byte, error) {
 	payload, err := marshalPayload(ev.Payload)
 	if err != nil {

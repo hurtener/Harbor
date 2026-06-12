@@ -15,9 +15,9 @@ import (
 
 // Topology builds a canonical types.TopologyProjection of this engine —
 // the static node graph plus the live per-edge bounded-channel depth.
-// It is the runtime-side accessor the Phase 74 `topology.snapshot`
+// It is the runtime-side accessor the `topology.snapshot`
 // Protocol method calls; the Protocol surface returns the projection to
-// the caller verbatim (Phase 74 / D-114).
+// the caller verbatim.
 //
 // Identity is mandatory (RFC §5.5, CLAUDE.md §6 rule 9): a ctx whose
 // identity triple is incomplete fails closed with ErrIdentityRequired —
@@ -33,7 +33,7 @@ import (
 // rests on.
 //
 // Topology is a pure read: it never mutates the engine. It is safe for
-// N concurrent callers against one shared engine under -race (D-025) —
+// N concurrent callers against one shared engine under -race —
 // topology_concurrent_test.go pins N≥128. The per-edge queue-depth read
 // (len / cap of the bounded channel) holds no engine lock: len and cap
 // on a channel are atomic in Go and the channel map itself is written
@@ -61,7 +61,7 @@ func identityFromCtx(ctx context.Context) identity.Identity {
 // engine's node index + adjacency list + per-edge channel map and emits
 // a deterministic types.TopologyProjection. It has no engine-state
 // dependency beyond its arguments and no package-level mutable state —
-// safe to call concurrently (D-025).
+// safe to call concurrently.
 //
 // Node kind is derived from the graph shape: a node with no incoming
 // edge is an inlet, a node with no outgoing edge is an outlet, every
@@ -135,7 +135,7 @@ func buildProjection(
 // publishTopologyChanged emits one EventTypeTopologyChanged event onto
 // the configured bus carrying the engine's current projection. It is
 // called once from New (construction-time emit) when WithEventBus
-// supplied a bus. A nil bus is a no-op — the Phase 02 engine-test
+// supplied a bus. A nil bus is a no-op — the engine-test
 // surface that never wires a bus sees zero behavioural change.
 //
 // Best-effort: a bus Publish error is returned to the caller (New)

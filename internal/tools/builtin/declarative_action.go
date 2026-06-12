@@ -110,14 +110,14 @@ type DeclarativeActionOut struct {
 	// Error is the human-readable error message when Dispatched=false.
 	Error string `json:"error,omitempty"`
 	// RepairOutcome carries the across-step repair classification the
-	// React planner reads on the next step (Phase 107c step 10 — D-167).
+	// React planner reads on the next step.
 	// Nil means "no repair signal" (a clean dispatch resets counters
 	// the same way a clean native step does).
 	RepairOutcome *DeclarativeRepairOutcome `json:"repair_outcome,omitempty"`
 }
 
-// DeclarativeRepairOutcome maps onto the per-run `planner.RepairCounters`
-// (Phase 83c — D-145). The React planner reads it at the start of the
+// DeclarativeRepairOutcome maps onto the per-run `planner.RepairCounters`.
+// The React planner reads it at the start of the
 // step that follows a declarative_action dispatch and bumps the matching
 // counter; on a clean step it stays nil so the planner resets all three
 // counters per the existing semantics.
@@ -137,12 +137,12 @@ type DeclarativeRepairOutcome struct {
 	FinishRepair bool `json:"finish_repair,omitempty"`
 }
 
-// declarativeAction is the meta-tool's real V1.3 body (Phase 107c
+// declarativeAction is the meta-tool's real V1.3 body (
 // step 10 — AC-13). The flow:
 //
 //  1. Resolve the action envelope. The typed `Tool`/`Args` shape wins;
 //     when only `Body` is supplied, the body is parsed via
-//     `repair.ActionParser` (the existing Phase 44 salvage parser).
+//     `repair.ActionParser` (the existing salvage parser).
 //     Parse failures and empty results surface
 //     ErrDeclarativeActionMissingTool with `repair_outcome.args_repaired=true`.
 //  2. Detect reserved names (`_finish` / `_spawn_task` / `_await_task`)
@@ -167,7 +167,7 @@ type DeclarativeRepairOutcome struct {
 //     repair outcome — invocation errors are not a planner-layer
 //     repair signal.
 //
-// Identity is mandatory (§6 rule 9 + D-001): a missing tenant / user /
+// Identity is mandatory (§6 rule 9): a missing tenant / user /
 // session triple returns `ErrIdentityRequired` with NO repair outcome
 // (identity failures are policy violations, not LLM-output-format
 // failures the planner can repair).

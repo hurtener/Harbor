@@ -34,12 +34,12 @@ type templateVars struct {
 	// origin.
 	Template string
 	// BuiltIns is the operator's `tools.built_in` list, projected onto
-	// the scaffold templates (Phase 83o / D-154). Empty when no
+	// the scaffold templates. Empty when no
 	// upstream yaml was loaded. The generated `agent.go` reads this
 	// to emit `builtin.Register(cat, [...])`.
 	BuiltIns []string
 	// CustomTools is the projected `tools.custom[]` list with Go-
-	// friendly type names (Phase 83o / D-154). One entry per generated
+	// friendly type names. One entry per generated
 	// `tools/<name>.go` stub + matching test.
 	CustomTools []customToolView
 }
@@ -80,7 +80,7 @@ type customToolField struct {
 	GoType string
 }
 
-// renderProject is the Phase 83o (D-154) replacement for the
+// renderProject is the replacement for the
 // pre-83o `renderTemplate`. It walks the embedded template tree, but
 // also threads the upstream config through so per-tool templates can
 // fan out, the operator's yaml can be copied verbatim, and existing
@@ -147,7 +147,7 @@ func renderProject(name string, opts Options, absOut, upstreamPath string, upstr
 		return nil, nil, fmt.Errorf("%w: %w", ErrRender, walkErr)
 	}
 
-	// Phase 83o / D-154 — overlay the operator's yaml on top of the
+	// overlay the operator's yaml on top of the
 	// template-rendered one. We do this AFTER the walk so the
 	// rendered placeholder is replaced verbatim by the file the
 	// operator actually edited. Patch mode skips when the destination
@@ -167,7 +167,7 @@ func renderProject(name string, opts Options, absOut, upstreamPath string, upstr
 		}
 	}
 
-	// Phase 83o / D-154 — fan-out per-tool stubs.
+	// fan-out per-tool stubs.
 	if len(vars.CustomTools) > 0 {
 		toolWritten, toolSkipped, toolErr := renderCustomTools(root, vars, absOut, opts.Patch)
 		if toolErr != nil {
@@ -235,7 +235,7 @@ func renderOneTemplate(embedPath, parseName, outRel, absOut string, vars any, pa
 	return outRel, "", nil
 }
 
-// renderCustomTools fans out the per-tool stubs (Phase 83o / D-154).
+// renderCustomTools fans out the per-tool stubs.
 // One pair of files per `vars.CustomTools` entry: `tools/<name>.go`
 // + `tools/<name>_test.go`.
 func renderCustomTools(root string, vars templateVars, absOut string, patch bool) ([]string, []string, error) {
@@ -361,7 +361,7 @@ func replaceOrAppend(written []string, path string) []string {
 }
 
 // projectCustomTools maps a slice of `CustomToolConfig` to the
-// template-friendly `customToolView` shape (Phase 83o / D-154). The
+// template-friendly `customToolView` shape. The
 // returned slice is sorted by tool name so renders are deterministic.
 func projectCustomTools(in []config.CustomToolConfig) []customToolView {
 	if len(in) == 0 {

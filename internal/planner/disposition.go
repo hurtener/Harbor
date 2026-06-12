@@ -1,7 +1,7 @@
-// Attachment disposition policy (Phase 84b — D-189).
+// Attachment disposition policy.
 //
 // Disposition is a *choice* that belongs to the developer / operator /
-// planner, not a fact the runtime hardcodes. Before 84b the per-MIME
+// planner, not a fact the runtime hardcodes. Previously the per-MIME
 // `switch` in `materializeOne` was the sole authority over how an
 // uploaded attachment reached the model. This file turns that
 // mechanism into declared policy:
@@ -25,7 +25,7 @@
 // The runtime default reproduces the pre-84b dispatch byte-for-byte:
 // `image/*` resolves `inline` (the sub-threshold DataURL fast path),
 // everything else resolves `ref` (the `ArtifactStub` + `Fetch.Tool`
-// hint the planner drives via native tool-calling — 107c / D-167).
+// hint the planner drives via native tool-calling — 107c).
 package planner
 
 import (
@@ -35,7 +35,7 @@ import (
 )
 
 // AttachmentDisposition declares how an uploaded input artifact is
-// handed to the model (Phase 84b — D-189). The zero value ("") means
+// handed to the model. The zero value ("") means
 // "no disposition declared" — the materializer falls back to the
 // pre-84b per-MIME dispatch, so a headless consumer that never sets
 // the field gets today's behaviour unchanged.
@@ -118,7 +118,7 @@ func (d AttachmentDisposition) Valid() bool {
 // skip it (garbage degrades loudly at [EffectiveDisposition]).
 //
 // `internal/config/validate.go::validateMultimodal` mirrors this
-// grammar locally (the D-193 import direction forbids config →
+// grammar locally (the import direction forbids config →
 // planner); `TestParseDisposition_ConfigGrammarLockstep` pins the two
 // in lockstep.
 func ParseDisposition(s string) (AttachmentDisposition, error) {
@@ -210,8 +210,8 @@ func DefaultDisposition(mime string) AttachmentDisposition {
 	return DispositionRef
 }
 
-// ResolveDisposition is the pure precedence resolver (Phase 84b —
-// D-189): per-attachment caller hint > per-agent policy map > runtime
+// ResolveDisposition is the pure precedence resolver:
+// per-attachment caller hint > per-agent policy map > runtime
 // default. It returns the resolved disposition AND the layer that
 // won, so the caller can log/emit which disposition fired and why.
 //

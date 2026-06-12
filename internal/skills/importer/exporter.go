@@ -115,7 +115,7 @@ func skillFrontmatterRaw(s skills.Skill) ([]byte, bool) {
 
 // synthesiseFrontmatter emits a deterministic YAML frontmatter for a
 // caller-built Skill that did not pass through Import. Used by the
-// Phase 41 generator path (planned) and by tests that build a Skill
+// generator path (planned) and by tests that build a Skill
 // directly. Field ordering matches the goccy/go-yaml default for the
 // frontmatterFields struct: name, title, trigger, task_type, tags,
 // required_tools, required_namespaces, required_tags, scope. Empty

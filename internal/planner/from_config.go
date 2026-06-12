@@ -1,7 +1,6 @@
-// from_config.go — the exported config→planner projections (Phase 110c,
-// D-196).
+// from_config.go — the exported config→planner projections.
 //
-// Before 110c the `config.PlannerConfig` → `planner.PlannerConfig`
+// Previously the `config.PlannerConfig` → `planner.PlannerConfig`
 // projection existed twice — unexported `plannerConfigFromConfig` in
 // `cmd/harbor/cmd_dev.go` and a hand-maintained `harbortest/devstack`
 // mirror. The devstack copy shipped live bug B3 (SDK friction audit
@@ -13,7 +12,7 @@
 // mechanical closure: a new `config.PlannerConfig` field without a
 // projection (or an explicit exclusion naming why) fails the build.
 //
-// Import direction (D-193): the subsystem imports `internal/config`
+// Import direction: the subsystem imports `internal/config`
 // additively; config stays a leaf. The projections are optional sugar
 // — programmatic `PlannerConfig` / `PlanningHints` construction
 // remains the headless golden path.
@@ -27,10 +26,10 @@ import (
 )
 
 // ConfigFromOperator maps the operator-facing `config.PlannerConfig`
-// onto the registry-facing `planner.PlannerConfig` boundary (D-103).
+// onto the registry-facing `planner.PlannerConfig` boundary.
 // Empty Driver defaults to "react" — the V1 reference planner — so a
 // config that omits the planner block boots unchanged from the
-// pre-D-103 hardcoded path. The boundary copy matches the D-095
+// earlier hardcoded path. The boundary copy matches the OAuth-provider
 // OAuth-provider precedent (`internal/config` keeps its own struct
 // shape; the subsystem owns the projection).
 //
@@ -63,7 +62,7 @@ func ConfigFromOperator(cfg config.PlannerConfig) PlannerConfig {
 		ExtraGuidance:          cfg.ExtraGuidance,
 		ReasoningReplay:        ReasoningReplayMode(cfg.ReasoningReplay),
 		MaxToolExamplesPerTool: cfg.MaxToolExamplesPerTool,
-		// Phase 107d (D-169): pass the *bool through verbatim so the
+		// pass the *bool through verbatim so the
 		// react factory distinguishes "unset" (nil → default true) from
 		// an explicit false (107c serialization opt-out).
 		ParallelToolCalls: cfg.ParallelToolCalls,
@@ -79,7 +78,7 @@ func ConfigFromOperator(cfg config.PlannerConfig) PlannerConfig {
 // V1.1 projects only the two YAML-exposed fields (Constraints +
 // PreferredTools). The richer Go-struct fields on PlanningHints
 // (ParallelGroups, DisallowTools, Budget) remain reachable through a
-// custom planner Option but not via harbor.yaml; see Phase 83f's plan
+// custom planner Option but not via harbor.yaml; see the plan
 // risks/open-questions section.
 func HintsFromConfig(cfg config.PlannerPlanningHintsCfg) *PlanningHints {
 	if cfg.IsZero() {
@@ -92,8 +91,8 @@ func HintsFromConfig(cfg config.PlannerPlanningHintsCfg) *PlanningHints {
 }
 
 // DispositionPolicyFromConfig decodes the YAML `multimodal.disposition`
-// block into the planner-homed [DispositionPolicy] (Phase 84b —
-// D-189). The config block is a thin carrier: the literal `*` key
+// block into the planner-homed [DispositionPolicy].
+// The config block is a thin carrier: the literal `*` key
 // decodes onto Default; every other key (exact media type or `type/*`
 // family wildcard) decodes onto ByMIME. Programmatic
 // [DispositionPolicy] construction produces the same value with no
@@ -101,7 +100,7 @@ func HintsFromConfig(cfg config.PlannerPlanningHintsCfg) *PlanningHints {
 //
 // Values are re-validated via [ParseDisposition] defense-in-depth
 // behind `config.Validate` (the loader's validateMultimodal mirrors
-// the grammar locally per D-193); a non-grammar value fails loud with
+// the grammar locally); a non-grammar value fails loud with
 // [ErrInvalidDisposition] rather than decoding a policy that silently
 // drops entries (CLAUDE.md §13).
 func DispositionPolicyFromConfig(cfg config.MultimodalConfig) (DispositionPolicy, error) {

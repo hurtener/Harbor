@@ -2,19 +2,19 @@ package types
 
 import "time"
 
-// Phase 73m (D-129) — the `auth.rotate_token` wire types.
+// the `auth.rotate_token` wire types.
 //
-// `auth.rotate_token` is the ONE net-new Protocol method Phase 73m
+// `auth.rotate_token` is the ONE net-new Protocol method Harbor
 // ships (the Console Settings page is otherwise a pure consumer of the
-// 72f / 72g posture surfaces and the 72h Console DB). It rotates the
+// posture surfaces and the Console-local DB). It rotates the
 // operator's current Protocol-auth token: the Runtime re-mints a JWT
 // for the caller's already-verified `(tenant, user, session)` identity
 // and returns it once, one-time-reveal. The encrypted persistence — the
-// operator re-saving the new token into the 72h `auth_profiles` table —
+// operator re-saving the new token into the Console-local `auth_profiles` table —
 // is the Console's job, not the Runtime's.
 //
 // The method is ADMIN-gated: it requires the verified `auth.ScopeAdmin`
-// claim on the caller's JWT (D-079 closed two-scope set — no new scope
+// claim on the caller's JWT (closed two-scope set — no new scope
 // is minted). A request without the claim is rejected 403 with the
 // canonical `CodeIdentityScopeRequired` Code. Every successful rotation
 // emits a redacted `audit.admin_scope_used` event through the shipped

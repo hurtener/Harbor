@@ -13,11 +13,11 @@ import (
 // ConfigSource is the optional join seam the RegistryProjector uses to
 // resolve an agent's configuration-derived projections — the
 // AgentConfig, tool bindings, memory binding, governance posture, and
-// attached skills. The Agent Registry (D-059) stores only the
+// attached skills. The Agent Registry stores only the
 // version_hash of an agent's AgentConfig, not the config itself; the
 // configuration-derived tabs of the Console Agents page therefore need
 // a join over the subsystems that DO own that data (the tool catalog,
-// the memory configs, the Phase 36 governance accumulators, the skills
+// the memory configs, the governance accumulators, the skills
 // catalog).
 //
 // ConfigSource is OPTIONAL on the projector. When it is nil, the
@@ -30,7 +30,7 @@ import (
 // (`harbor dev`) supplies a ConfigSource so the tabs carry live data.
 //
 // Every method takes the verified identity tuple so the implementation
-// scopes its reads — NEVER by agent_id (D-059).
+// scopes its reads — NEVER by agent_id.
 type ConfigSource interface {
 	// Config returns the agent's AgentConfig projection.
 	Config(ctx context.Context, id identity.Identity, agentID string) (prototypes.AgentConfig, error)
@@ -46,7 +46,7 @@ type ConfigSource interface {
 
 // RegistryProjector is the V1 production Projector — a read-only
 // projection over a registry.AgentRegistry, optionally joined to a
-// ConfigSource for the configuration-derived tabs. It is a D-025-safe
+// ConfigSource for the configuration-derived tabs. It is a concurrency-safe
 // compiled artifact: immutable after NewRegistryProjector, holding only
 // interface references.
 type RegistryProjector struct {
@@ -253,7 +253,7 @@ func (p *RegistryProjector) AgentPermissions(ctx context.Context, _ identity.Ide
 	return prototypes.AgentPermissions{
 		Model: "implicit",
 		Description: "Every authenticated user in the tenant can invoke this agent. " +
-			"An explicit per-agent ACL surface is post-V1 (D-064).",
+			"An explicit per-agent ACL surface is post-V1.",
 	}, nil
 }
 

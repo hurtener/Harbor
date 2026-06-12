@@ -415,11 +415,12 @@ fi
 
 # ----------------------------------------------------------------------
 # Assertion 6 — static guard: composition order pinned (approval
-# outermost). D-090 settles this; the comment in catalog.go references
-# D-090 explicitly.
+# outermost). The order is a settled decision; the comment in
+# catalog.go pins it explicitly (phase 102 stripped the decision
+# number from the godoc — the pin prose is the load-bearing text).
 # ----------------------------------------------------------------------
-if grep -q 'D-090' "${CATALOG_FILE}" && grep -q 'approval ( oauth' "${CATALOG_FILE}"; then
-    ok 'phase 64a: composition order pin (approval outermost) documented in package doc (D-090)'
+if grep -q 'This order is pinned' "${CATALOG_FILE}" && grep -q 'approval ( oauth' "${CATALOG_FILE}"; then
+    ok 'phase 64a: composition order pin (approval outermost) documented in package doc'
 else
     fail 'phase 64a: composition order pin not documented in catalog.go'
 fi

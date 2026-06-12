@@ -53,15 +53,15 @@ import (
 // a pass-through; the standard middleware rejects the request with
 // CodeIdentityRequired as it always did.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // The shim wraps next once at construction and holds no mutable state;
 // it is safe to share across N concurrent requests.
 //
-// Round-3 walkthrough fix: pre-shim, the Console's cross-origin SSE
+// a walkthrough fix: pre-shim, the Console's cross-origin SSE
 // subscribe got 401 on every request because the standard
 // auth.Middleware only read Authorization. The CORS preflight pass
-// (Phase 83v / D-162) unblocked the REST surface; this shim unblocks
+// unblocked the REST surface; this shim unblocks
 // the SSE surface for the same multi-process Console+Runtime posture.
 func SSEAccessTokenShim(next http.Handler) http.Handler {
 	if next == nil {
@@ -91,10 +91,10 @@ func SSEAccessTokenShim(next http.Handler) http.Handler {
 		// the cloned request only.
 		clone := r.Clone(r.Context())
 		clone.Header.Set("Authorization", bearerPrefix+token)
-		// D-171 EventSource session selector. An EventSource cannot set
+		// EventSource session selector. An EventSource cannot set
 		// the canonical `X-Harbor-Session` header (no header API), so the
 		// SSE surface ALSO accepts the per-request session as a `?session=`
-		// query param — promoted here to the header the D-171 middleware
+		// query param — promoted here to the header the middleware
 		// reads. This is a header-incapable-client fallback ONLY: a header
 		// already present wins (header precedence), and a header-capable
 		// client (curl, a WebSocket/gRPC third-party console) sets

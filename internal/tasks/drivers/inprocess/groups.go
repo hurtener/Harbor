@@ -1,7 +1,7 @@
 package inprocess
 
-// Phase 21 — group governance + retain-turn + patches + WatchGroup
-// for the in-process driver. The driver extends the Phase 20
+// group governance + retain-turn + patches + WatchGroup
+// for the in-process driver. The driver extends the
 // per-task internal model with three additional maps:
 //
 //   - `groups[TaskGroupID]*tasks.TaskGroup` — primary group store.
@@ -503,7 +503,7 @@ func (d *driver) WatchGroup(sessionID identity.Identity, groupID tasks.TaskGroup
 
 	// If the group is already resolved AND we have a cached
 	// completion payload, deliver it immediately + close the channel.
-	// This is the late-subscriber path (D-022 doc'd in the plan).
+	// This is the late-subscriber path (doc'd in the plan).
 	if isGroupTerminal(g.Status) {
 		if cached, has := d.groupCompletions[groupID]; has {
 			sub.ch <- cached
@@ -807,9 +807,9 @@ func (d *driver) addMemberLocked(g *tasks.TaskGroup, tid tasks.TaskID) error {
 
 // AddMemberToGroup is a driver-internal (non-interface) helper the
 // conformance suite uses to wire a freshly-spawned task into a
-// group. Phase 26+ will route this through the SpawnTool's GroupID
+// group. The tool dispatcher will route this through the SpawnTool's GroupID
 // parameter; until then the helper exposes the seam directly so
-// Phase 21's conformance subtests can exercise the resolve gate
+// the conformance subtests can exercise the resolve gate
 // without waiting for the tool-dispatch wiring.
 //
 // Returns `ErrGroupNotFound` on an unknown group or a cross-session
@@ -848,8 +848,8 @@ func (d *driver) AddMemberToGroup(ctx context.Context, gid tasks.TaskGroupID, ti
 }
 
 // CreatePendingPatch is a driver-internal helper the conformance
-// suite uses to seed a pending patch record. Phase 42+ planner code
-// will land patches through a typed interface; Phase 21 ships the
+// suite uses to seed a pending patch record. Planner code
+// will land patches through a typed interface; Harbor ships the
 // transition surface (ApplyPatch) and the helper that creates the
 // pending record the planner would normally create.
 func (d *driver) CreatePendingPatch(ctx context.Context, sessionID identity.Identity, patchID string, bytesPayload []byte) (*tasks.Patch, error) {
@@ -913,7 +913,7 @@ func (d *driver) persistGroupLocked(ctx context.Context, g *tasks.TaskGroup) err
 
 // persistPatchLocked writes the patch through the StateStore. The
 // patch bytes are opaque to the registry; the caller is responsible
-// for any audit-redaction upstream (D-020).
+// for any audit-redaction upstream.
 func (d *driver) persistPatchLocked(ctx context.Context, p *tasks.Patch) error {
 	payload, err := marshalPatch(p)
 	if err != nil {
@@ -999,7 +999,7 @@ func validateGroupRequest(req tasks.GroupRequest) error {
 }
 
 // marshalGroup is JSON-encoding for the group record. The group
-// payload is opaque bytes from StateStore's POV (D-027 typed-wrapper
+// payload is opaque bytes from StateStore's POV (typed-wrapper
 // pattern).
 func marshalGroup(g *tasks.TaskGroup) ([]byte, error) {
 	return json.Marshal(g)

@@ -17,10 +17,10 @@ import (
 // Drivers expose one Factory each via init() → Register.
 type Factory func(config.EventsConfig, audit.Redactor) (EventBus, error)
 
-// DefaultDriver is the Phase 05 production driver name. Phase 06
-// replay-equipped drivers and Phase 57 durable-log drivers will
+// DefaultDriver is the production driver name. Later phases
+// replay-equipped drivers and durable-log drivers will
 // register additional names; Open switches on cfg.Driver once
-// EventsConfig.Driver is populated by Phase 02.
+// EventsConfig.Driver is populated by the config loader.
 const DefaultDriver = "inmem"
 
 // ErrUnknownDriver — the requested driver name is not in the registry.

@@ -1,7 +1,7 @@
 // Package cardinalitylint is the Harbor metrics-cardinality enforcement
-// checker (RFC §6.14; brief 06 "metrics cardinality footgun"). It is
-// the Phase 56 mechanical gate behind the rule the predecessor learned
-// the hard way and brief 06 calls out explicitly: a metric label must
+// checker (RFC §6.14; the "metrics cardinality footgun"). It is
+// the mechanical gate behind the rule the predecessor learned
+// the hard way: a metric label must
 // NEVER derive from a high-cardinality source — `run_id`, `trace_id`,
 // `span_id`, `task_id`, or any value pulled off an `events.Event`'s
 // `Identity` field. Tagging a metric by `trace_id` blows up the time
@@ -22,7 +22,7 @@
 // The repo already proves the pattern twice: internal/planner/conformance/
 // importgraph_test.go and internal/protocol/singlesource/ are both
 // go/parser AST walks that gate an invariant with zero external-tool
-// dependency. Phase 56 reuses that shape. A golangci-lint plugin would
+// dependency. Harbor reuses that shape. A golangci-lint plugin would
 // need a separate build + a .golangci.yml entry (a new linter needs a
 // PR rationale per CLAUDE.md §5). A shell grep could not be precise — a
 // forbidden word inside a comment or an unrelated string is not a
@@ -40,7 +40,7 @@
 //
 // # Metric labels only — span attributes are NOT in scope
 //
-// A span attribute legitimately carries `run_id` (Phase 55 / D-073
+// A span attribute legitimately carries `run_id`.
 // stamps the run quadruple onto event-derived spans on purpose — that
 // is correct trace correlation). The cardinality rule is about METRIC
 // labels, where a high-cardinality value blows up the time series
@@ -52,11 +52,11 @@
 // `trace.WithAttributes` is left alone; a metric's is a build-gating
 // violation.
 //
-// # The checker is a reusable artifact (D-025)
+// # The checker is a reusable artifact
 //
 // ScanMetricsTree and its helpers are pure functions over a filesystem
 // root — no package-level mutable state, safe to call concurrently. The
-// Phase 56 test is the first consumer; a later phase (a `harbor lint`
+// test is the first consumer; a later phase (a `harbor lint`
 // subcommand) can call the same checker without a second implementation.
 //
 // # Scope note — the Prometheus-gatherer accessor seam
@@ -127,7 +127,7 @@ const (
 
 // forbiddenLabelKeys is the set of label-name string literals that must
 // never appear as a metric label key. These are the high-cardinality
-// identifiers brief 06 names: a metric tagged by any of them produces
+// canonical identifiers: a metric tagged by any of them produces
 // effectively-unbounded time series. The set is matched
 // case-insensitively against the unquoted literal value.
 //
@@ -192,7 +192,7 @@ var attributeConstructors = map[string]struct{}{
 //
 // The scan is exhaustive (it returns ALL violations, not the first) and
 // deterministic (violations are sorted by file then line). It has no
-// package-level mutable state and is safe for concurrent use (D-025).
+// package-level mutable state and is safe for concurrent use.
 //
 // A returned error means the walk itself failed (an unreadable file, an
 // unparseable source file) — that is distinct from a Violation, which
@@ -254,7 +254,7 @@ func ScanMetricsTree(telemetryRoot string) ([]Violation, error) {
 // Add/Record — and inspects the `attribute.*` constructor calls passed
 // to them. A span's attribute list (`trace.WithAttributes(...)`) is
 // deliberately NOT inspected: a span legitimately carries the run
-// quadruple (Phase 55 / D-073), and the cardinality rule is about
+// quadruple, and the cardinality rule is about
 // metric labels only.
 func scanFile(fset *token.FileSet, file *ast.File, rel string) []Violation {
 	var out []Violation
@@ -328,7 +328,7 @@ func scanAttributeCall(fset *token.FileSet, call *ast.CallExpr, rel string) []Vi
 					Line: fset.Position(keyLit.Pos()).Line,
 					Kind: KindForbiddenLabelKey,
 					Detail: fmt.Sprintf(
-						"metric label key %q is a high-cardinality identifier - metrics MUST NOT be tagged by run/trace/span/task id or the identity triple (brief 06 metrics-cardinality footgun)",
+						"metric label key %q is a high-cardinality identifier - metrics MUST NOT be tagged by run/trace/span/task id or the identity triple (metrics-cardinality footgun)",
 						val),
 				})
 			}
@@ -345,7 +345,7 @@ func scanAttributeCall(fset *token.FileSet, call *ast.CallExpr, rel string) []Vi
 				Line: fset.Position(call.Args[1].Pos()).Line,
 				Kind: KindIdentitySourcedLabel,
 				Detail: fmt.Sprintf(
-					"metric label value is sourced from %s.%s - the identity quadruple is high-cardinality and MUST NOT reach a metric label (brief 06 metrics-cardinality footgun)",
+					"metric label value is sourced from %s.%s - the identity quadruple is high-cardinality and MUST NOT reach a metric label (metrics-cardinality footgun)",
 					sourcedFrom, field),
 			})
 		}

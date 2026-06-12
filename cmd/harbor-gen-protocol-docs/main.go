@@ -1,7 +1,7 @@
 // Command harbor-gen-protocol-docs emits the four generated Protocol
 // contract-reference pages (`methods.md` / `events.md` / `errors.md` /
 // `types.md`) into docs/site/protocol/ from the canonical single
-// sources the Runtime compiles from (Phase 113a, D-209; RFC §5):
+// sources the Runtime compiles from (RFC §5):
 //
 //   - internal/protocol/methods — the canonical method registry + the
 //     Is*Method classification predicates.
@@ -21,7 +21,7 @@
 // docs/site/protocol/ after a regeneration — is byte-stable. Generated
 // pages carry a DO-NOT-EDIT header and are never hand-edited; a Go-side
 // change to a method / error code / event type / wire type without a
-// regenerated reference fails CI (the gate shape D-093 specified for
+// regenerated reference fails CI (the gate shape specified for
 // the deferred TS client generator, built here for a generator that
 // exists).
 package main
