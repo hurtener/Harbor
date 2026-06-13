@@ -114,6 +114,12 @@ type muxConfig struct {
 	// transport rejects MCP calls with CodeUnknownMethod (the 404 → SKIP
 	// path the smoke script relies on).
 	mcpSurface control.MCPSurface
+	// appsSurface is the MCP Apps dispatcher wired into the control
+	// transport so the two MCP Apps methods (`mcp.servers.read_resource`
+	// / `mcp.apps.call_tool`) route through it. Optional — when
+	// unsupplied, the control transport rejects MCP Apps calls with
+	// CodeUnknownMethod (the 404 → SKIP path the smoke script relies on).
+	appsSurface control.AppsSurface
 	// pauseCoordinator + artifactStore + heavyThreshold feed the
 	// `pause.list` snapshot handler. All three are OPTIONAL in the
 	// mux config so existing call-sites compile unchanged — when the
@@ -324,6 +330,26 @@ func WithMCPSurface(s control.MCPSurface) Option {
 	return func(c *muxConfig) {
 		if s != nil {
 			c.mcpSurface = s
+		}
+	}
+}
+
+// WithAppsSurface wires the MCP Apps dispatcher into the control
+// transport. When supplied, the control handler routes the two MCP Apps
+// methods (`mcp.servers.read_resource` / `mcp.apps.call_tool`) to the
+// Apps surface instead of falling through to the task-control
+// ControlSurface.
+//
+// The option is OPTIONAL so existing call-sites compile unchanged. When
+// not supplied, the control transport rejects MCP Apps calls with
+// CodeUnknownMethod (HTTP 404) — the 404 → SKIP path the smoke script
+// relies on. Production wiring (`harbor dev`) supplies it so the Console
+// can render MCP Apps. A nil surface is treated as "WithAppsSurface not
+// supplied".
+func WithAppsSurface(s control.AppsSurface) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.appsSurface = s
 		}
 	}
 }
@@ -646,6 +672,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	}
 	if cfg.mcpSurface != nil {
 		controlOpts = append(controlOpts, control.WithMCPSurface(cfg.mcpSurface))
+	}
+	if cfg.appsSurface != nil {
+		controlOpts = append(controlOpts, control.WithAppsSurface(cfg.appsSurface))
 	}
 	controlHandler, err := control.NewHandler(cs, controlOpts...)
 	if err != nil {

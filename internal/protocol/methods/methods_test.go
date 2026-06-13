@@ -63,6 +63,8 @@ var wantMethods = []methods.Method{
 	methods.MethodMCPServersRefreshBinding,
 	methods.MethodMCPServersRevokeBinding,
 	methods.MethodMCPServersSetRawHTMLTrust,
+	methods.MethodMCPReadResource,
+	methods.MethodMCPAppsCallTool,
 	methods.MethodToolsList,
 	methods.MethodToolsGet,
 	methods.MethodToolsDescribe,
@@ -108,9 +110,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
 	// Phase 73c sessions-page two + Phase 73n runs-page one +
 	// Phase 73m auth.rotate_token one + Phase 108l agents-control five +
-	// Phase 108n memory-mutation/trace three + Phase 108o artifacts.delete one = 80.
-	if len(got) != 80 {
-		t.Fatalf("Methods() returned %d methods, want 80", len(got))
+	// Phase 108n memory-mutation/trace three + Phase 108o artifacts.delete one = 80,
+	// + MCP Apps host two (mcp.servers.read_resource + mcp.apps.call_tool) = 82.
+	if len(got) != 82 {
+		t.Fatalf("Methods() returned %d methods, want 82", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -390,7 +393,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			methods.IsTopologyMethod(m) || methods.IsArtifactsMethod(m) || methods.IsMemoryMethod(m) {
 			continue
 		}
-		if methods.IsMCPServersMethod(m) {
+		if methods.IsMCPServersMethod(m) || methods.IsMCPAppsMethod(m) {
 			continue
 		}
 		if methods.IsToolsMethod(m) || methods.IsTasksMethod(m) ||

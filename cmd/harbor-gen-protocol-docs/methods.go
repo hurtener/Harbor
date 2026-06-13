@@ -265,6 +265,17 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodMCPServersRevokeBinding:    mcpEntry(methods.MethodMCPServersRevokeBinding, "MCPServerRevokeBindingRequest", "MCPServerRevokeBindingResponse", true),
 		methods.MethodMCPServersSetRawHTMLTrust:  mcpEntry(methods.MethodMCPServersSetRawHTMLTrust, "MCPServerSetRawHTMLTrustRequest", "MCPServerSetRawHTMLTrustResponse", true),
 
+		// --- MCP Apps host: the `ui://` document fetch + the
+		// app-tool-call proxy. Both route on the control transport.
+		methods.MethodMCPReadResource: {
+			Route: controlRoute(methods.MethodMCPReadResource), Mutates: false,
+			Request: "ReadMCPResourceRequest", Response: "ReadMCPResourceResponse",
+		},
+		methods.MethodMCPAppsCallTool: {
+			Route: controlRoute(methods.MethodMCPAppsCallTool), Mutates: true,
+			Request: "MCPAppCallToolRequest", Response: "MCPAppCallToolResponse",
+		},
+
 		// --- Tools: five reads + two admin verbs.
 		methods.MethodToolsList: {
 			Route: wildcardRoute(stream.ToolsRoutePattern, "tools.", methods.MethodToolsList), Mutates: false,
@@ -464,6 +475,8 @@ func classify(m methods.Method) string {
 		return "memory"
 	case methods.IsMCPServersMethod(m):
 		return "mcp servers"
+	case methods.IsMCPAppsMethod(m):
+		return "mcp apps"
 	case methods.IsTasksMethod(m):
 		return "tasks (read-only)"
 	case methods.IsToolsMethod(m):
@@ -508,6 +521,7 @@ var methodClusters = []struct {
 	{"Flows", methods.IsFlowsMethod, "flows"},
 	{"Agents", methods.IsAgentsMethod, "agents"},
 	{"MCP servers", methods.IsMCPServersMethod, "mcp-servers"},
+	{"MCP apps", methods.IsMCPAppsMethod, "mcp-apps"},
 	{"Runs", methods.IsRunsMethod, "runs"},
 	{"Auth", methods.IsAuthMethod, "auth"},
 }

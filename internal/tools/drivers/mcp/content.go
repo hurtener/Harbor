@@ -64,6 +64,86 @@ type MCPToolValue struct {
 	// servers that support typed JSON output (mcpsdk.ToolHandlerFor).
 	// nil when absent.
 	StructuredContent any
+	// AppRef is the MCP Apps reference parsed from the tool result's
+	// `_meta.ui.resourceUri` slot, when the server declared an
+	// interactive UI for this result. It is nil for ordinary results.
+	// AppRef is excluded from the JSON wire form (`json:"-"`) so it
+	// never reaches the LLM-facing observation — it is a host-side
+	// projection consumed by the app-tool-call proxy, not planner
+	// context.
+	AppRef *AppRef `json:"-"`
+}
+
+// AppRef is the host-side reference to an MCP App — the interactive
+// HTML UI an MCP tool declares via the official
+// `io.modelcontextprotocol/ui` (ext-apps) extension. It is parsed from
+// a tool result's `_meta.ui.resourceUri` slot and recognised distinctly
+// from ordinary content: ONLY a `ui://`-scheme URI is treated as an
+// app. An ordinary `file://` / `https://` resource reference is never
+// promoted to an AppRef.
+//
+// Concurrent reuse: AppRef is a value type with no mutable state after
+// construction.
+type AppRef struct {
+	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
+	// The host fetches the document via a resource read scoped to the
+	// request identity triple.
+	ResourceURI string
+	// PreferredDisplayMode is the per-result display-mode hint the
+	// server may carry on the `_meta.ui` slot (one of inline /
+	// fullscreen / pip), or empty when the server stated none. It is a
+	// hint only; the host reconciles it against the server's negotiated
+	// capability set.
+	PreferredDisplayMode string
+}
+
+// uiResourceScheme is the URI scheme the MCP Apps extension reserves
+// for an app's UI document. ONLY a resource reference carrying this
+// scheme is recognised as an app; ordinary file:// / https:// resources
+// are left as plain content.
+const uiResourceScheme = "ui://"
+
+// IsUIResourceURI reports whether uri carries the reserved `ui://`
+// scheme — the distinct recognition the MCP Apps extension requires so
+// an ordinary file:// / https:// resource is never mistaken for an app.
+func IsUIResourceURI(uri string) bool {
+	return strings.HasPrefix(uri, uiResourceScheme)
+}
+
+// parseAppRef extracts the MCP Apps reference from a tool result's
+// `_meta` map. The extension carries the reference under the `ui` key
+// as `{ resourceUri: "ui://…", … }`. parseAppRef returns nil when the
+// slot is absent, malformed, or carries a non-`ui://`-scheme URI — so a
+// result that references an ordinary file:// / https:// resource is not
+// promoted to an app. A loud-but-non-fatal posture: a malformed slot
+// yields nil rather than an error, because a present-but-broken `_meta`
+// must not poison an otherwise-valid tool result.
+func parseAppRef(meta mcpsdk.Meta) *AppRef {
+	if len(meta) == 0 {
+		return nil
+	}
+	uiRaw, ok := meta["ui"]
+	if !ok {
+		return nil
+	}
+	uiMap, ok := uiRaw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	uri, ok := uiMap["resourceUri"].(string)
+	if !ok || uri == "" || !IsUIResourceURI(uri) {
+		return nil
+	}
+	ref := &AppRef{ResourceURI: uri}
+	// preferredFrame / displayMode is an optional per-result hint. The
+	// ext-apps dialect names it `preferredFrame`; accept `displayMode`
+	// as an alias some servers emit.
+	if mode, ok := uiMap["preferredFrame"].(string); ok {
+		ref.PreferredDisplayMode = mode
+	} else if mode, ok := uiMap["displayMode"].(string); ok {
+		ref.PreferredDisplayMode = mode
+	}
+	return ref
 }
 
 // MarshalJSON renders the value LLM-edge-friendly. The text-only
@@ -156,6 +236,10 @@ func lowerCallToolResult(res *mcpsdk.CallToolResult) (MCPToolValue, error) {
 	}
 	value := MCPToolValue{
 		StructuredContent: res.StructuredContent,
+		// Parse the MCP Apps `_meta.ui.resourceUri` slot. Only a
+		// `ui://`-scheme URI is promoted to an AppRef; an ordinary
+		// file:// / https:// resource is left untouched.
+		AppRef: parseAppRef(res.Meta),
 	}
 	var texts []string
 	for _, c := range res.Content {
