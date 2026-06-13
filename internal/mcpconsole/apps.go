@@ -172,7 +172,7 @@ func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawM
 			return protocol.MCPAppToolResultRow{}, err
 		}
 	}
-	out.App = appRefFromValue(res.Value)
+	out.App = appRefFromValue(res.Value, string(desc.Tool.Source))
 	encoded, encErr := json.Marshal(res.Value)
 	if encErr != nil {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: encode tool %q result: %w", tool, encErr)
@@ -241,16 +241,19 @@ func (a *AppsAccessor) offload(ctx context.Context, content []byte, mime, source
 
 // appRefFromValue projects an MCP App reference parsed by the driver onto
 // the runtime-side row, when the tool result declared a `ui://` app.
-// Returns nil for a non-MCP or non-app result. The DisplayMode is the
+// Returns nil for a non-MCP or non-app result. serverID is the source id
+// of the MCP server the tool belongs to, so the Console can resolve which
+// server to read the `ui://` document from. The DisplayMode is the
 // server's per-result preference hint; RawHTMLTrusted stays the
 // default-deny posture (the Console reconciles full trust via
 // mcp.servers.get).
-func appRefFromValue(value any) *protocol.MCPAppRefRow {
+func appRefFromValue(value any, serverID string) *protocol.MCPAppRefRow {
 	v, ok := value.(mcp.MCPToolValue)
 	if !ok || v.AppRef == nil {
 		return nil
 	}
 	return &protocol.MCPAppRefRow{
+		ServerID:    serverID,
 		ResourceURI: v.AppRef.ResourceURI,
 		DisplayMode: v.AppRef.PreferredDisplayMode,
 	}

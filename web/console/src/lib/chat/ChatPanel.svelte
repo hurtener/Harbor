@@ -14,6 +14,12 @@
   // no `connection.ts`, no `fetch`).
   import MessageBubble from './MessageBubble.svelte';
   import ChatComposer from './ChatComposer.svelte';
+  import type {
+    DisplayModeRequest,
+    McpUiDisplayMode,
+    MCPAppHostClient,
+    MCPAppRefView
+  } from './renderers/app-bridge-host.js';
   import type { ChatMessage, ChatProtocolClient } from './types.js';
 
   let {
@@ -21,7 +27,10 @@
     client,
     sending = false,
     running = false,
-    onsend
+    onsend,
+    appHostClient,
+    availableDisplayModes,
+    onAppDisplayModeRequest
   }: {
     messages: ChatMessage[];
     client: ChatProtocolClient;
@@ -44,6 +53,20 @@
       artifactIDs: string[],
       mode?: 'queue' | 'steer',
       dispositions?: Record<string, string>
+    ) => void;
+    /**
+     * The injected Harbor Protocol surface inline MCP Apps drive app→host
+     * requests through (D-173). Forwarded to each `<MessageBubble>`; absent
+     * when the host has no MCP App support wired.
+     */
+    appHostClient?: MCPAppHostClient;
+    /** The display modes the host can apply for an inline app. */
+    availableDisplayModes?: McpUiDisplayMode[];
+    /** Forwarded from a bubble's inline app when it requests a display mode. */
+    onAppDisplayModeRequest?: (
+      req: DisplayModeRequest,
+      app: MCPAppRefView,
+      serverID: string
     ) => void;
   } = $props();
 
@@ -74,7 +97,13 @@
       </p>
     {:else}
       {#each messages as message (message.id)}
-        <MessageBubble {message} {client} />
+        <MessageBubble
+          {message}
+          {client}
+          {appHostClient}
+          {availableDisplayModes}
+          {onAppDisplayModeRequest}
+        />
       {/each}
     {/if}
   </div>

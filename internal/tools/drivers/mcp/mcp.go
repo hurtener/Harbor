@@ -536,10 +536,63 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
 	}
 	value, lowerErr := lowerCallToolResult(res)
+	// When the result declares an interactive MCP App via `_meta.ui`,
+	// surface a discovery event so a Protocol client can mount the inline
+	// renderer for this turn. This is the planner-path projection of the
+	// app reference — the proxy path also carries it on its response, but a
+	// planner-initiated call never enters that path.
+	if value.AppRef != nil {
+		p.publishAppAvailable(ctx, value.AppRef)
+	}
 	if lowerErr != nil {
 		return tools.ToolResult{Value: value}, lowerErr
 	}
 	return tools.ToolResult{Value: value}, nil
+}
+
+// publishAppAvailable emits the MCP App discovery event for a tool result
+// that declared a `ui://` app. The event is scoped to the inflight
+// caller's identity quadruple (its RunID correlates the discovery to the
+// turn). The emit is best-effort observability — the tool result is the
+// source of truth — so a missing identity or a publish failure logs and
+// returns rather than failing the call.
+func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef) {
+	if p.cfg.Bus == nil || ref == nil {
+		return
+	}
+	id, ok := identity.From(ctx)
+	if !ok {
+		// Identity is mandatory for the call itself (buildIdentityMeta
+		// rejects a missing triple earlier); a result here without one is
+		// not reachable, but the bus rejects empty-triple events, so guard.
+		return
+	}
+	q := identity.Quadruple{Identity: id}
+	if quad, qok := identity.QuadrupleFrom(ctx); qok {
+		q.RunID = quad.RunID
+	}
+	ev := events.Event{
+		Type:       EventTypeMCPAppAvailable,
+		Identity:   q,
+		OccurredAt: time.Now(),
+		Payload: AppAvailablePayload{
+			Identity:    q,
+			ServerID:    p.source,
+			ResourceURI: ref.ResourceURI,
+			DisplayMode: ref.PreferredDisplayMode,
+			// Default-deny: the per-server trust posture is reconciled by
+			// the client via mcp.servers.get.
+			RawHTMLTrusted: false,
+			OccurredAt:     time.Now(),
+		},
+	}
+	if err := p.cfg.Bus.Publish(ctx, ev); err != nil {
+		p.logger.Warn("mcp: publish app_available failed",
+			slog.String("source", string(p.source)),
+			slog.String("resource_uri", ref.ResourceURI),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 // buildResourceDescriptor wraps an MCP Resource as a one-shot

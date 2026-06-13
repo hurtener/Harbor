@@ -21,6 +21,8 @@
 // that registry with chat-bubble / tool-call / diff renderers; it does
 // not fork the dispatch core.
 
+import type { MCPAppRefView } from './renderers/app-bridge-host.js';
+
 /** The role a chat message was authored by. */
 export type ChatRole = 'user' | 'agent' | 'system';
 
@@ -101,6 +103,16 @@ export interface ChatMessage {
 	 * (mock Image 7). Absent until the turn completes.
 	 */
 	meta?: { elapsedMs?: number; tokens?: number; costUSD?: number };
+	/**
+	 * An inline MCP App discovered on this turn's tool result (the
+	 * `mcp.app_available` event). When set, the bubble mounts the sandboxed
+	 * MCP App renderer (the `MCP_APP_INLINE_MIME` registry entry); the
+	 * injected `appHostClient` drives every app→host request through the
+	 * Harbor Protocol (D-173). Paired with {@link serverID}.
+	 */
+	app?: MCPAppRefView;
+	/** The MCP server (source id) hosting {@link app} — the renderer reads its `ui://` document from this server. */
+	serverID?: string;
 }
 
 export interface ReasoningStep {

@@ -18,15 +18,48 @@
   import ReasoningAccordion from './ReasoningAccordion.svelte';
   import StreamingIndicator from './StreamingIndicator.svelte';
   import { splitChatSegments } from './segments.js';
+  import { dispatchRenderer, MCP_APP_INLINE_MIME } from './renderers/index.js';
+  import type {
+    DisplayModeRequest,
+    McpUiDisplayMode,
+    MCPAppHostClient,
+    MCPAppRefView
+  } from './renderers/app-bridge-host.js';
   import type { ChatMessage, ChatProtocolClient } from './types.js';
 
   let {
     message,
-    client
+    client,
+    appHostClient,
+    availableDisplayModes,
+    onAppDisplayModeRequest
   }: {
     message: ChatMessage;
     client: ChatProtocolClient;
+    /**
+     * The injected Harbor Protocol surface an inline MCP App drives every
+     * app→host request through (D-173). Provided by the Playground page;
+     * when absent, an `app`-bearing message renders its text only.
+     */
+    appHostClient?: MCPAppHostClient;
+    /** The display modes the host can apply for an inline app (Playground passes the full set). */
+    availableDisplayModes?: McpUiDisplayMode[];
+    /**
+     * Called when an inline app requests a different display mode. The
+     * Playground page reduces this into its page-level layout (fullscreen /
+     * pip). Carries the request plus the message's app ref + server id so
+     * the page can open the right page-level panel.
+     */
+    onAppDisplayModeRequest?: (
+      req: DisplayModeRequest,
+      app: MCPAppRefView,
+      serverID: string
+    ) => void;
   } = $props();
+
+  // The inline MCP App renderer, resolved through the canonical registry
+  // (the synthetic MCP-app MIME) so the dispatch core is never edited.
+  const AppRenderer = dispatchRenderer(MCP_APP_INLINE_MIME).component;
 
   // The message body, split into plain-text + fenced-code segments.
   const parts = $derived(splitChatSegments(message.text));
@@ -179,6 +212,24 @@
           {#each message.artifacts as artifact (artifact.id)}
             <ArtifactReferenceCard {artifact} {client} preview />
           {/each}
+        {/if}
+
+        {#if message.app && message.serverID && appHostClient}
+          <!-- Inline MCP App discovered on this turn (mcp.app_available).
+               Mount the sandboxed renderer; the app→host bridge routes
+               through the injected appHostClient (D-173). -->
+          <div class="mcp-app-slot" data-testid="chat-mcp-app">
+            <AppRenderer
+              mime={MCP_APP_INLINE_MIME}
+              src=""
+              app={message.app}
+              serverID={message.serverID}
+              {appHostClient}
+              {availableDisplayModes}
+              onDisplayModeRequest={(req) =>
+                onAppDisplayModeRequest?.(req, message.app!, message.serverID!)}
+            />
+          </div>
         {/if}
 
         {#if message.streaming}
@@ -353,5 +404,9 @@
     color: var(--color-text);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .mcp-app-slot {
+    margin-top: var(--space-1);
   }
 </style>
