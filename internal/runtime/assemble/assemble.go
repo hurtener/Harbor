@@ -578,17 +578,32 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 
 	// the long-lived `notification.*` Subscriber —
 	// the bus consumer that synthesises notification.* events from the
-	// V1 trigger taxonomy. §17.6 F2: it MUST be constructed AND run —
-	// without a live Run the topic has no producer. The goroutine is
-	// cancelled + joined on Close.
+	// V1 trigger taxonomy. The subscription must be established before
+	// Assemble returns: without a subscribed-and-consuming Subscriber
+	// the notification.* topic has no producer, and any trigger event
+	// published in the window between Assemble returning and the
+	// goroutine reaching bus.Subscribe is silently lost (the inmem bus
+	// does not back-fill a plain Subscribe with pre-subscription
+	// events). Start establishes the subscription synchronously and
+	// returns the blocking consume closure; the closure runs in a
+	// goroutine that is cancelled + joined on Close.
 	notifSubscriber := notifications.NewSubscriber(bus, logger)
 	// context.Background is deliberate: the subscriber's lifetime is the
 	// stack's (bounded by the closer below), not the assembly ctx's.
 	notifCtx, notifCancel := context.WithCancel(context.Background())
+	// Start subscribes synchronously — the notification.* topic is
+	// guaranteed to have a live consumer before Assemble returns. A
+	// Subscribe failure means the bus is not accepting subscriptions;
+	// fail the assembly loudly rather than silently degrading.
+	notifRun, err := notifSubscriber.Start(notifCtx)
+	if err != nil {
+		notifCancel()
+		return stack, fmt.Errorf("notifications subscriber: %w", err)
+	}
 	notifDone := make(chan struct{})
 	go func() {
 		defer close(notifDone)
-		if rerr := notifSubscriber.Run(notifCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
+		if rerr := notifRun(); rerr != nil && !errors.Is(rerr, context.Canceled) {
 			logger.ErrorContext(notifCtx, "notifications subscriber exited", slog.Any("error", rerr))
 		}
 	}()
