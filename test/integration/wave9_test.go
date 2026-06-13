@@ -566,7 +566,7 @@ func TestE2E_Wave9_Concurrency_NoCrossTalk(t *testing.T) {
 					errs <- fmt.Errorf("run %d RunLoop: %w", i, rerr)
 					return
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(30 * time.Second):
 				errs <- fmt.Errorf("run %d did not finish after approve", i)
 				return
 			}

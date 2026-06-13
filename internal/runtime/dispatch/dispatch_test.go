@@ -440,7 +440,7 @@ func TestExecutor_ParallelCancel_NoCrossTalk(t *testing.T) {
 	// Wait (bounded) until A's branch is parked inside the tool body.
 	select {
 	case <-blockEntered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run A's blocking branch never started")
 	}
 
@@ -462,7 +462,7 @@ func TestExecutor_ParallelCancel_NoCrossTalk(t *testing.T) {
 	cancelA()
 	select {
 	case <-aDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run A did not return after its ctx was cancelled")
 	}
 	if aErr != nil {

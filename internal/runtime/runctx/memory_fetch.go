@@ -29,9 +29,13 @@ import (
 
 // recalledTurnTextCap is the per-side (user / assistant) byte ceiling
 // applied to each recalled turn's text before it enters the prompt.
-// Keeps the injected External block well below the context-window
-// heavy-output threshold; the LLM-edge context-leak guard stays the
-// authoritative backstop.
+// This bounds each turn, not the aggregate: the injected External
+// block is at most recall.TopK × 2 × this cap, so a small TopK keeps
+// it well under the context-window heavy-output threshold. A large
+// operator-set TopK can push the aggregate over that threshold — at
+// which point the LLM-edge context-leak guard fails the run loudly
+// with ErrContextLeak (never a silent leak; §13). That guard is the
+// authoritative backstop; this per-turn cap is the first line.
 const recalledTurnTextCap = 2048
 
 // FetchMemoryBlocks fetches the session's memory patch, optionally
@@ -59,15 +63,20 @@ const recalledTurnTextCap = 2048
 // the caller can fail the run loudly via MarkFailed(runtime_fetch_error).
 // There is no silent fallback to rolling-summary-only on a recall error.
 //
-// A slog.Debug line is emitted when recall fires (count + top score) so
-// operators can see retrieval activity without seeing turn content.
+// A Debug line is emitted on the supplied logger when recall fires
+// (count + top score) so operators can see retrieval activity without
+// seeing turn content. A nil logger falls back to slog.Default().
 func FetchMemoryBlocks(
 	ctx context.Context,
 	store memory.MemoryStore,
 	id identity.Quadruple,
 	query string,
 	recall memory.RecallSettings,
+	logger *slog.Logger,
 ) (*planner.MemoryBlocks, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	patch, err := store.GetLLMContext(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("memory.GetLLMContext: %w", err)
@@ -116,7 +125,7 @@ func FetchMemoryBlocks(
 	}
 
 	if len(recalled) > 0 {
-		slog.Default().Debug("runctx: semantic recall fired",
+		logger.Debug("runctx: semantic recall fired",
 			slog.Int("count", len(recalled)),
 			slog.Float64("top_score", scored[0].Score))
 

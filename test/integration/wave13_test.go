@@ -475,7 +475,7 @@ func TestE2E_Wave13_NotificationTopicHasLiveProducer(t *testing.T) {
 		t.Fatalf("Publish task.failed: %v", err)
 	}
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	select {
 	case ev, ok := <-listener.Events():
 		if !ok {

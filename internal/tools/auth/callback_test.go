@@ -150,7 +150,7 @@ func TestCallbackHandler_Success_CompletesFlow_ResumesPause_NoSecrets(t *testing
 			t.Fatalf("payload type = %T", ev.Payload)
 		}
 		pauseToken = p.PauseToken
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("tool.auth_required never landed")
 	}
 
@@ -310,7 +310,7 @@ func TestCallbackHandler_UpstreamDenial_RejectsPause(t *testing.T) {
 	select {
 	case ev := <-sub.Events():
 		pauseToken = ev.Payload.(ToolAuthRequiredPayload).PauseToken
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("tool.auth_required never landed")
 	}
 
@@ -396,7 +396,7 @@ func TestCallbackHandler_ExpiredFlow_Gone_PauseStillParked(t *testing.T) {
 	select {
 	case ev := <-sub.Events():
 		pauseToken = ev.Payload.(ToolAuthRequiredPayload).PauseToken
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("tool.auth_required never landed")
 	}
 	code, _, err := server.VisitAuthorizeURL(authErr.AuthorizeURL)

@@ -312,6 +312,20 @@ var _ = json.Marshal
 // valid video container cannot be synthesized inline. Model names
 // are overridable via `HARBOR_LIVE_OPENAI_MODEL` /
 // `HARBOR_LIVE_GEMINI_MODEL`.
+//
+// KNOWN UPSTREAM ISSUE (do not re-diagnose): the streaming rows can
+// trip the race detector inside the bifrost dependency, NOT Harbor
+// code — `fasthttp.releaseRequestStream` writes the pooled
+// `requestStream` fields while another goroutine is still in
+// `requestStream.Read`, reached via bifrost's
+// `core/providers/utils.SetupStreamCancellation` (cancellation closes
+// the body stream concurrently with the reader). Observed on
+// `github.com/maximhq/bifrost/core@v1.5.18`
+// (`providers/utils/utils.go:2180`) over the OpenRouter streaming
+// path; the closed upstream fixes #3591/#3733 (close-vs-close) do not
+// cover this close-vs-Read window. All Harbor probes here pass; the
+// `-race` failure is the upstream teardown race. Re-check / file
+// upstream on the next `core` bump.
 func TestE2E_Bifrost_LiveProviderNativeMultimodal(t *testing.T) {
 	if os.Getenv("HARBOR_LIVE_LLM") != "1" {
 		t.Skip("set HARBOR_LIVE_LLM=1 to run the live provider-native multimodal table (this test burns API credits)")

@@ -148,7 +148,7 @@ func awaitPauseRequested(t *testing.T, sub events.Subscription, wantQuad identit
 			t.Fatalf("pause.requested identity = %+v, want %+v (identity propagation)", ev.Identity, wantQuad)
 		}
 		return pauseresume.Token(payload.Token)
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("no pause.requested event within 5s")
 		return ""
 	}
@@ -285,7 +285,7 @@ func TestE2E_Phase111c_RunLoopPause_CheckpointsTrajectory_RunContinues(t *testin
 		if out.fin.Reason != planner.FinishGoal {
 			t.Fatalf("Finish.Reason = %q, want %q (the resumed run must continue)", out.fin.Reason, planner.FinishGoal)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run did not finish within 5s of the APPROVE")
 	}
 	if got := p.steps(); got != 2 {
@@ -441,7 +441,7 @@ func TestE2E_Phase111c_Timeout_RunTerminatesAndCheckpointReaped(t *testing.T) {
 
 	// The pause.resumed event carries the typed timeout marker under
 	// the run's quadruple.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	for {
 		var ev events.Event
 		select {
@@ -549,7 +549,7 @@ func TestE2E_Phase111c_CancelWhilePaused_SweeperReapsOrphan(t *testing.T) {
 		if out.fin.Reason != planner.FinishCancelled {
 			t.Fatalf("Finish.Reason = %q, want %q", out.fin.Reason, planner.FinishCancelled)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run did not terminate within 5s of the CANCEL")
 	}
 

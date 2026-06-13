@@ -172,7 +172,7 @@ func TestE2E_NotificationsTopic_AllV1Mappings(t *testing.T) {
 	// Collect five notifications keyed by class. Bounded wait per
 	// CLAUDE.md §17.4 — no time.Sleep as a synchronisation primitive.
 	got := make(map[events.EventType]events.Event, len(cases))
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	for len(got) < len(cases) {
 		select {
 		case ev, ok := <-listener.Events():

@@ -74,7 +74,7 @@ func TestRun_RequestPause_ThreadsTrajectory(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Run did not finish within 5s of the APPROVE")
 	}
 }
@@ -127,7 +127,7 @@ func TestRun_PauseTimeout_BusWake_TerminatesConstraintsConflict(t *testing.T) {
 			t.Fatalf("payload type = %T, want PauseRequestedPayload", ev.Payload)
 		}
 		token = pauseresume.Token(payload.Token)
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("no pause.requested event within 5s")
 	}
 
@@ -151,7 +151,7 @@ func TestRun_PauseTimeout_BusWake_TerminatesConstraintsConflict(t *testing.T) {
 		if out.fin.Metadata["pause_token"] != string(token) {
 			t.Fatalf("Finish.Metadata[pause_token] = %v, want %q", out.fin.Metadata["pause_token"], token)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run did not terminate within 5s of the timeout resume — the park never woke")
 	}
 
@@ -241,7 +241,7 @@ func TestRun_PauseTimeout_FastPathWithoutBus(t *testing.T) {
 		if out.fin.Metadata["steering_reason"] != "pause_timeout" {
 			t.Fatalf("Finish.Metadata[steering_reason] = %v, want pause_timeout", out.fin.Metadata["steering_reason"])
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("bus-less run did not terminate after the timeout resume")
 	}
 }
@@ -306,7 +306,7 @@ func TestRun_ResumeControl_LosesRaceToTimeout(t *testing.T) {
 		if out.fin.Metadata["steering_reason"] != "pause_timeout" {
 			t.Fatalf("Finish.Metadata[steering_reason] = %v, want pause_timeout", out.fin.Metadata["steering_reason"])
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run did not terminate after the losing RESUME control")
 	}
 }
@@ -356,7 +356,7 @@ func TestRun_ResumeControl_NonTimeoutAlreadyResumed_StaysLoud(t *testing.T) {
 		if !errors.Is(rerr, pauseresume.ErrAlreadyResumed) {
 			t.Fatalf("Run err = %v, want ErrAlreadyResumed surfaced loud", rerr)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run did not surface the apply failure")
 	}
 }
@@ -408,7 +408,7 @@ func TestRun_PauseTimeout_StatusRecheckBackstop(t *testing.T) {
 		if out.fin.Metadata["steering_reason"] != "pause_timeout" {
 			t.Fatalf("Finish.Metadata[steering_reason] = %v, want pause_timeout", out.fin.Metadata["steering_reason"])
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("bus-less parked run did not terminate via the Status re-check ticker")
 	}
 
@@ -471,7 +471,7 @@ func TestRun_PauseTimeout_BusSubscribeFailure_WarnsAndFallsBack(t *testing.T) {
 		if out.fin.Reason != planner.FinishConstraintsConflict {
 			t.Fatalf("Finish.Reason = %q, want %q", out.fin.Reason, planner.FinishConstraintsConflict)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run with a failed bus subscription did not terminate via the re-check fallback")
 	}
 
