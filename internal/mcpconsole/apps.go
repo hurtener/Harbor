@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
@@ -107,8 +108,9 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 
 // defaultHeavyThreshold is the heavy-output floor applied when the
 // operator-configured threshold is unset. Single-sourced on the
-// artifacts package's shared default — no literal copy.
-const defaultHeavyThreshold = 32 * 1024
+// canonical config default so the unconfigured fallback can never drift
+// from the runtime-wide heavy-output boundary.
+const defaultHeavyThreshold = config.DefaultHeavyOutputThresholdBytes
 
 // compile-time assertions: AppsAccessor satisfies both Apps seams.
 var (
@@ -143,8 +145,9 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 // from the SAME catalog a planner resolves against and invokes the SAME
 // wrapped descriptor — so the approval gate (the unified pause primitive)
 // + tool-side OAuth fire exactly as on a planner call. The result is
-// heavy-content-disciplined (the context-window safety net); a `ui://` MCP App declared on the
-// result's `_meta.ui` is projected onto the App field.
+// heavy-content-disciplined (the context-window safety net); a `ui://`
+// MCP App declared on the result's `_meta.ui` is projected onto the
+// App field.
 func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	desc, ok := a.cat.Resolve(tool)
 	if !ok {
