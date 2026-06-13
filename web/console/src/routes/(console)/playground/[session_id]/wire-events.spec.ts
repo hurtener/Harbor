@@ -15,7 +15,8 @@ import {
 	decodePlannerDecision,
 	decodeToolLifecycle,
 	decodeIntervention,
-	decodeInterventionClear
+	decodeInterventionClear,
+	decodeAppAvailable
 } from './wire-events.js';
 
 const chunkFrame = JSON.stringify({
@@ -254,5 +255,54 @@ describe('decodeBudget', () => {
 
 	it('ignores other event types', () => {
 		expect(decodeBudget(costFrame)).toBeNull();
+	});
+});
+
+// The `mcp.app_available` frame is the inline-MCP-app discovery signal. Its
+// payload (AppAvailablePayload) is PascalCase-nested like every event frame;
+// the turn it belongs to is the envelope's `run` (the RunID).
+const appAvailableFrame = JSON.stringify({
+	type: 'mcp.app_available',
+	sequence: 200,
+	run: '01KSTH74S20BDDP1BK6ZSGABJG',
+	payload: {
+		SafePayload: null,
+		Identity: { TenantID: 'dev', UserID: 'dev', SessionID: 'dev', RunID: '01KSTH74S20BDDP1BK6ZSGABJG' },
+		ServerID: 'weather-server',
+		ResourceURI: 'ui://weather/main.html',
+		DisplayMode: 'inline',
+		RawHTMLTrusted: false
+	}
+});
+
+describe('decodeAppAvailable', () => {
+	it('decodes the discovery frame, correlating to the run', () => {
+		expect(decodeAppAvailable(appAvailableFrame)).toEqual({
+			taskID: '01KSTH74S20BDDP1BK6ZSGABJG',
+			serverID: 'weather-server',
+			resourceUri: 'ui://weather/main.html',
+			displayMode: 'inline',
+			rawHtmlTrusted: false
+		});
+	});
+
+	it('drops a frame missing the server id or resource uri (cannot mount an app)', () => {
+		const noServer = JSON.stringify({
+			type: 'mcp.app_available',
+			run: 'r',
+			payload: { ResourceURI: 'ui://x', DisplayMode: 'inline' }
+		});
+		const noURI = JSON.stringify({
+			type: 'mcp.app_available',
+			run: 'r',
+			payload: { ServerID: 'srv', DisplayMode: 'inline' }
+		});
+		expect(decodeAppAvailable(noServer)).toBeNull();
+		expect(decodeAppAvailable(noURI)).toBeNull();
+	});
+
+	it('ignores other event types', () => {
+		expect(decodeAppAvailable(costFrame)).toBeNull();
+		expect(decodeAppAvailable(chunkFrame)).toBeNull();
 	});
 });

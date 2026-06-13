@@ -192,6 +192,12 @@ export interface MCPServerSetRawHTMLTrustResponse {
  * (absent on the response) for an ordinary, non-app tool result.
  */
 export interface MCPAppRef {
+  /**
+   * The MCP server (source id) hosting the app — paired with
+   * `resource_uri` to fetch the document via `mcp.servers.read_resource`.
+   * Empty for a non-app tool result.
+   */
+  server_id?: string;
   /** The `ui://`-scheme URI of the app's UI document. */
   resource_uri: string;
   /**

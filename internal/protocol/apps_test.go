@@ -119,7 +119,7 @@ func TestAppsSurface_CallTool_AppRefProjection(t *testing.T) {
 	inv := &stubInvoker{res: protocol.MCPAppToolResultRow{
 		Tool:   "srv-a_weather",
 		Inline: json.RawMessage(`{"ok":true}`),
-		App:    &protocol.MCPAppRefRow{ResourceURI: "ui://weather/view.html", DisplayMode: "inline"},
+		App:    &protocol.MCPAppRefRow{ServerID: "srv-a", ResourceURI: "ui://weather/view.html", DisplayMode: "inline"},
 	}}
 	s := newAppsSurface(t, &stubResourceReader{}, inv)
 	resp, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
@@ -131,6 +131,9 @@ func TestAppsSurface_CallTool_AppRefProjection(t *testing.T) {
 	out := resp.(*types.MCPAppCallToolResponse)
 	if out.App == nil || out.App.ResourceURI != "ui://weather/view.html" || out.App.DisplayMode != "inline" {
 		t.Errorf("app-ref projection wrong: %+v", out.App)
+	}
+	if out.App != nil && out.App.ServerID != "srv-a" {
+		t.Errorf("app-ref server_id projection wrong: got %q, want srv-a", out.App.ServerID)
 	}
 	if string(out.Content) != `{"ok":true}` {
 		t.Errorf("content wrong: %s", out.Content)

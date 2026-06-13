@@ -939,6 +939,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `server_id` | `string` | optional (`omitempty`) |
 | `resource_uri` | `string` |  |
 | `display_mode` | `string` | optional (`omitempty`) |
 | `raw_html_trusted` | `bool` |  |

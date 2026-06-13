@@ -88,6 +88,7 @@ type MCPResourceReader interface {
 // parsed from a tool result's `_meta.ui.resourceUri` slot. It is nil for
 // a non-app tool result.
 type MCPAppRefRow struct {
+	ServerID       string
 	ResourceURI    string
 	DisplayMode    string
 	RawHTMLTrusted bool
@@ -266,6 +267,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	}
 	if res.App != nil {
 		resp.App = &types.MCPAppRef{
+			ServerID:       res.App.ServerID,
 			ResourceURI:    res.App.ResourceURI,
 			DisplayMode:    res.App.DisplayMode,
 			RawHTMLTrusted: res.App.RawHTMLTrusted,

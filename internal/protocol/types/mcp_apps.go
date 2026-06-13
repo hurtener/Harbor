@@ -32,6 +32,11 @@ import "encoding/json"
 // advertised capability set; RawHTMLTrusted is the per-server raw-HTML
 // trust posture (default-deny).
 type MCPAppRef struct {
+	// ServerID is the MCP server (source id) hosting the app's UI document
+	// and tools. The Console pairs it with ResourceURI to fetch the
+	// document via mcp.servers.read_resource — without it the renderer
+	// cannot resolve which server to read from. Empty for a non-app result.
+	ServerID string `json:"server_id,omitempty"`
 	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
 	// The Console fetches the document via mcp.servers.read_resource.
 	ResourceURI string `json:"resource_uri"`
