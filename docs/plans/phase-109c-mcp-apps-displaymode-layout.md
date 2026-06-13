@@ -46,15 +46,15 @@ None.
 
 ## Acceptance criteria
 
-- [ ] An app with `DisplayMode` `fullscreen` replaces the chat + composer region; a tab strip lets the operator switch between Chat and the app, and between multiple fullscreen apps.
-- [ ] An app with `DisplayMode` `pip` renders a resizable 50/50 split (chat | app); the right rail is hidden by default in `pip`.
-- [ ] In `pip`, a toggle reopens the right rail; the split ratio is clamped to sane bounds when the operator drags the divider.
-- [ ] `inline` continues to render in the chat scroll — 109b behaviour is unchanged (regression guard).
-- [ ] `onrequestdisplaymode` from the app transitions the layout at runtime (`inline → pip`, `pip → fullscreen`, etc.) without reloading the session.
-- [ ] Closing or tearing down an app returns the layout to the chat + right-rail default.
-- [ ] The layout uses design tokens only — no raw color / spacing / type-scale literals in the new `.svelte` files (the `.stylelintrc.cjs` token-surface rule; `npm run lint` gates it).
-- [ ] `svelte-check --fail-on-warnings` and the Console lint pass.
-- [ ] A Playwright test asserts each `DisplayMode`'s layout: `fullscreen` tab strip + app-replaces-chat; `pip` 50/50 split + rail hidden + toggle reopens; `inline` unchanged.
+- [x] An app with `DisplayMode` `fullscreen` replaces the chat + composer region; a tab strip lets the operator switch between Chat and the app, and between multiple fullscreen apps.
+- [x] An app with `DisplayMode` `pip` renders a resizable 50/50 split (chat | app); the right rail is hidden by default in `pip`.
+- [x] In `pip`, a toggle reopens the right rail; the split ratio is clamped to sane bounds when the operator drags the divider.
+- [x] `inline` continues to render in the chat scroll — 109b behaviour is unchanged (regression guard).
+- [x] `onrequestdisplaymode` from the app transitions the layout at runtime (`inline → pip`, `pip → fullscreen`, etc.) without reloading the session.
+- [x] Closing or tearing down an app returns the layout to the chat + right-rail default.
+- [x] The layout uses design tokens only — no raw color / spacing / type-scale literals in the new `.svelte` files (the `.stylelintrc.cjs` token-surface rule; `npm run lint` gates it).
+- [x] `svelte-check --fail-on-warnings` and the Console lint pass.
+- [x] A Playwright test asserts each `DisplayMode`'s layout: `fullscreen` tab strip + app-replaces-chat; `pip` 50/50 split + rail hidden + toggle reopens; `inline` unchanged.
 
 ## Files added or changed
 
@@ -63,9 +63,18 @@ None.
 - `web/console/src/lib/components/playground/AppTabStrip.svelte` — the `fullscreen` tab strip (Chat tab + one tab per fullscreen app); add / remove / activate. If Skeleton ships a Tabs primitive that fits, this wraps it rather than rebuilding (justified in PR per §4.5 rule 4).
 - `web/console/src/lib/components/playground/SplitPane.svelte` — the resizable `pip` split; takes two slot regions + a ratio, clamps the ratio on drag. If a Skeleton splitter primitive fits, this wraps it rather than rebuilding (justified in PR).
 - `web/console/src/lib/components/playground/layout.ts` (or co-located module) — the pure layout state-machine logic (`DisplayMode` → region routing; ratio clamp; tab add/remove) so it is unit-testable without the DOM.
-- `web/console/tests/` — the Playwright layout suite asserting the per-`DisplayMode` scenarios.
+- `web/console/tests/mcp-app-displaymode.spec.ts` — the Playwright layout suite asserting the per-`DisplayMode` scenarios.
 - `scripts/smoke/phase-109c.sh` — the static-only smoke (this PR).
 - `docs/plans/README.md` — Status flip on merge (by coordinator).
+
+**Additive seam extension (in-scope §4.3 deviation, D-214).** Consuming 109b's `onrequestdisplaymode` requires threading an optional callback + the available-mode set through the reused renderer to the AppBridge host. Backward-compatible (the 109b inline-only default + its pinned test are untouched):
+
+- `web/console/src/lib/chat/renderers/app-bridge-host.ts` — `AppBridgeHostOptions.availableDisplayModes` (default `['inline']`); the grant resolver grants a requested mode when available, else `inline`; re-export `McpUiDisplayMode`.
+- `web/console/src/lib/chat/renderers/index.ts` — `RendererProps` gains optional `availableDisplayModes` + `onDisplayModeRequest`.
+- `web/console/src/lib/chat/renderers/mcp-app.svelte` — forwards both to the host; binds `data-display-mode` to the app's mode (inline path unchanged).
+- `web/console/src/lib/chat/renderers/app-bridge-host.spec.ts` — adds the 109c grant test (fullscreen/pip granted when advertised).
+
+**Known upstream gap (named per §17.6, D-214).** Inline MCP-app *discovery in the chat bubble* is not wired in the Console today (`MessageBubble` does not dispatch the MCP-app MIME; `ChatMessage` carries no app ref) — a 109a/109b integration gap out of this file list. 109c delivers the full page-level layout subsystem, which activates the moment that discovery path lands; tracked as a follow-up.
 
 ## Public API surface
 
@@ -116,14 +125,14 @@ Console-side TypeScript only — no Go surface, no new Protocol method (the `Dis
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references resolve
-- [ ] Coverage ≥ target (`web/console`: 80%)
-- [ ] Multi-isolation note — N/A: this is Console-side page layout; identity flows through the Protocol client established in 109b/108 and is unchanged here. No new identity-scoped code path.
-- [ ] Concurrent-reuse test — N/A: Console-side Svelte layout; the §5 / D-025 concurrent-reuse contract applies to Go runtime artifacts, not Svelte components. Marked N/A with this reason.
-- [ ] **Integration / Playwright test passes** — the per-`DisplayMode` layout scenarios (fullscreen tab strip + app-replaces-chat; pip 50/50 + rail hidden + toggle reopens; inline unchanged) are green.
-- [ ] `svelte-check --fail-on-warnings` + Console lint (no raw color/spacing literals) pass.
-- [ ] Glossary updated (coordinator lands the `App panel` term if accepted; `DisplayMode` unchanged).
-- [ ] No brief departures (this plan departs from none).
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references resolve
+- [x] Coverage ≥ target (`web/console`: 80%) — the layout state machine + new component contract are covered by the 19-case `layout.spec.ts` unit suite, the extended `app-bridge-host.spec.ts` grant test, and the 5-scenario Playwright layout suite.
+- [x] Multi-isolation note — N/A: this is Console-side page layout; identity flows through the Protocol client established in 109b/108 and is unchanged here. No new identity-scoped code path.
+- [x] Concurrent-reuse test — N/A: Console-side Svelte layout; the §5 / D-025 concurrent-reuse contract applies to Go runtime artifacts, not Svelte components. Marked N/A with this reason.
+- [x] **Integration / Playwright test passes** — the per-`DisplayMode` layout scenarios (fullscreen tab strip + app-replaces-chat; pip 50/50 + rail hidden + toggle reopens; inline unchanged) are green.
+- [x] `svelte-check --fail-on-warnings` + Console lint (no raw color/spacing literals) pass.
+- [x] Glossary updated (`App panel` term landed; `DisplayMode` unchanged).
+- [x] No brief departures (this plan departs from none).

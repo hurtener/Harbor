@@ -46,6 +46,9 @@ import {
   type McpUiHostCapabilities,
   type McpUiHostContext,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
+
+/** The MCP-Apps display mode union, re-exported for host callers. */
+export type { McpUiDisplayMode };
 import type {
   CallToolResult,
   ListResourcesResult,
@@ -176,11 +179,20 @@ export interface AppBridgeHostOptions {
   /** The MCP server (source id) hosting the app's tools + resources. */
   serverID: string;
   /**
-   * Called when the app requests a display mode. Phase 109b is inline-only:
-   * the request is recorded + acked, but the layout never changes (109c
-   * consumes fullscreen / pip). Optional.
+   * Called when the app requests a display mode. The request is recorded and
+   * acked with the GRANTED mode (see {@link availableDisplayModes}). The
+   * Playground page consumes this to drive its page-level layout (fullscreen /
+   * pip). Optional.
    */
   onDisplayModeRequest?: (req: DisplayModeRequest) => void;
+  /**
+   * The display modes the host can actually apply. Defaults to `['inline']`
+   * (the inline-only chat-scroll host). The Playground page passes the full set
+   * (`['inline','fullscreen','pip']`) because it owns the page-level layout that
+   * applies fullscreen / pip; a requested mode outside this set is granted as
+   * `inline` (fail-safe to the always-available mode). Optional.
+   */
+  availableDisplayModes?: McpUiDisplayMode[];
 }
 
 /**
@@ -259,9 +271,13 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
     },
 
     async onrequestdisplaymode({ mode }) {
-      // Inline-only in 109b: record + ack, but the actually-set mode stays
-      // `inline` (the layout machine for fullscreen / pip is 109c).
-      const granted: McpUiDisplayMode = 'inline';
+      // Grant the requested mode when the host can apply it; otherwise fall back
+      // to the always-available `inline`. The inline-only chat-scroll host (the
+      // default, no `availableDisplayModes`) keeps the original behaviour; the
+      // Playground page passes the full set so fullscreen / pip are granted and
+      // routed to its page-level layout machine.
+      const available = opts.availableDisplayModes ?? (['inline'] as McpUiDisplayMode[]);
+      const granted: McpUiDisplayMode = available.includes(mode) ? mode : 'inline';
       opts.onDisplayModeRequest?.({ requested: mode, granted });
       return { mode: granted };
     },
@@ -331,10 +347,13 @@ export class AppBridgeHost {
       },
     });
 
+    const available = opts.availableDisplayModes ?? (['inline'] as McpUiDisplayMode[]);
     const hostContext: McpUiHostContext = {
       theme,
+      // The app boots inline (in the chat scroll); fullscreen / pip are reached
+      // via a `ui/request-display-mode` the page's layout machine applies.
       displayMode: 'inline',
-      availableDisplayModes: ['inline'],
+      availableDisplayModes: available,
     };
 
     // The load-bearing line: the first argument is `null`. The AppBridge is

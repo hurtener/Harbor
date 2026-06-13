@@ -204,6 +204,27 @@ describe('manual handlers dispatch to the injected client', () => {
     expect(res.mode).toBe('inline');
     expect(seen).toEqual(['fullscreen->inline']);
   });
+
+  it('onrequestdisplaymode grants fullscreen / pip when the page advertises them (109c)', async () => {
+    const { client } = makeFakeClient();
+    const seen: string[] = [];
+    const handlers = createAppHandlers({
+      client,
+      serverID: 'srv',
+      availableDisplayModes: ['inline', 'fullscreen', 'pip'],
+      onDisplayModeRequest: (r) => seen.push(`${r.requested}->${r.granted}`),
+    });
+    expect((await handlers.onrequestdisplaymode({ mode: 'fullscreen' })).mode).toBe('fullscreen');
+    expect((await handlers.onrequestdisplaymode({ mode: 'pip' })).mode).toBe('pip');
+    // An unsupported mode still falls back to the always-available inline.
+    const handlers2 = createAppHandlers({
+      client,
+      serverID: 'srv',
+      availableDisplayModes: ['inline', 'fullscreen'],
+    });
+    expect((await handlers2.onrequestdisplaymode({ mode: 'pip' })).mode).toBe('inline');
+    expect(seen).toEqual(['fullscreen->fullscreen', 'pip->pip']);
+  });
 });
 
 describe('D-173 — the host opens NO direct MCP transport', () => {

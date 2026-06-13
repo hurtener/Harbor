@@ -21,7 +21,13 @@
   import { AppBridgeHost } from './app-bridge-host.js';
   import { appIframeSandbox, buildAppCSP, wrapAppDocument } from './sandbox-policy.js';
 
-  let { app, serverID, appHostClient }: RendererProps = $props();
+  let {
+    app,
+    serverID,
+    appHostClient,
+    availableDisplayModes,
+    onDisplayModeRequest
+  }: RendererProps = $props();
 
   type LoadState = 'loading' | 'ready' | 'error' | 'empty';
 
@@ -73,7 +79,12 @@
   async function connectBridge(): Promise<void> {
     if (!iframeEl?.contentWindow || !app || !serverID || !appHostClient) return;
     if (host) return;
-    host = new AppBridgeHost({ client: appHostClient, serverID });
+    host = new AppBridgeHost({
+      client: appHostClient,
+      serverID,
+      availableDisplayModes,
+      onDisplayModeRequest
+    });
     try {
       await host.connect(iframeEl.contentWindow);
     } catch (err) {
@@ -99,7 +110,7 @@
   });
 </script>
 
-<div class="mcp-app" data-renderer-source="mcp-app" data-display-mode="inline">
+<div class="mcp-app" data-renderer-source="mcp-app" data-display-mode={app?.displayMode || 'inline'}>
   {#if loadState === 'loading'}
     <div class="mcp-app__state" data-state="loading" role="status">
       <span class="mcp-app__spinner" aria-hidden="true"></span>
