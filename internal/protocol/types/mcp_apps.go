@@ -1,0 +1,148 @@
+package types
+
+import "encoding/json"
+
+// MCP Apps wire types — the canonical contract for the MCP Apps host
+// surface (the official `io.modelcontextprotocol/ui` extension). An MCP
+// tool declares an interactive HTML UI via a `ui://` resource referenced
+// from a tool result's `_meta.ui.resourceUri`; the Console renders that
+// UI in a sandboxed iframe. These flat wire shapes are the only thing
+// that crosses to the Console — runtime Go structs never leak (RFC §5.1
+// / CLAUDE.md §13 single-source rule).
+//
+// Two methods consume these types:
+//
+//   - mcp.servers.read_resource — ReadMCPResourceRequest →
+//     ReadMCPResourceResponse. Fetches a `ui://` resource's HTML scoped
+//     to the request identity triple, heavy-content-aware: content at or
+//     above the heavy threshold rides by reference, never inline.
+//   - mcp.apps.call_tool — MCPAppCallToolRequest →
+//     MCPAppCallToolResponse. An app-initiated tool invocation proxied
+//     back through the SAME identity + approval-gate + tool-side-OAuth
+//     path a planner-initiated call uses — never a parallel path.
+//
+// Identity is mandatory on every request (RFC §5.5 / CLAUDE.md §6
+// rule 9): an incomplete IdentityScope fails closed at the wire edge
+// with CodeIdentityRequired.
+
+// MCPAppRef is the host-side projection of an MCP App reference parsed
+// from a tool result's `_meta.ui.resourceUri` slot. It is empty (nil on
+// the response) for an ordinary, non-app tool result. The DisplayMode
+// is the negotiated value the host reconciles from the server's
+// advertised capability set; RawHTMLTrusted is the per-server raw-HTML
+// trust posture (default-deny).
+type MCPAppRef struct {
+	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
+	// The Console fetches the document via mcp.servers.read_resource.
+	ResourceURI string `json:"resource_uri"`
+	// DisplayMode is the negotiated MCP-Apps display mode for this
+	// result (one of inline / fullscreen / pip), or empty when the
+	// server stated no preference and none was negotiated.
+	DisplayMode string `json:"display_mode,omitempty"`
+	// RawHTMLTrusted reports the per-server raw-HTML trust flag — the
+	// default-deny posture means the host sandboxes the iframe unless an
+	// operator explicitly opted in (mcp.servers.set_raw_html_trust).
+	RawHTMLTrusted bool `json:"raw_html_trusted"`
+}
+
+// MCPResourceArtifactRef is the by-reference shape the MCP Apps surface
+// returns when fetched content (a `ui://` HTML document, or an app-tool-
+// call result) meets or exceeds the configured heavy-content threshold
+// (RFC §6.5). It mirrors a subset of `internal/artifacts.Ref`
+// but is a flat wire type — the Console fetches the bytes via the
+// artifacts surface against this stub. It is the same flat shape
+// MemoryArtifactRef uses, kept distinct so a future divergence does not
+// whipsaw either surface.
+type MCPResourceArtifactRef struct {
+	// ID is the content-addressed identifier (`{namespace}_{sha256[:12]}`).
+	ID string `json:"id"`
+	// MimeType is the IANA media type, when known.
+	MimeType string `json:"mime_type,omitempty"`
+	// SizeBytes is the length of the referenced bytes.
+	SizeBytes int64 `json:"size_bytes,omitempty"`
+	// Filename is metadata only (never used for path construction).
+	Filename string `json:"filename,omitempty"`
+	// SHA256 is the full hex digest of the referenced bytes.
+	SHA256 string `json:"sha256,omitempty"`
+}
+
+// ReadMCPResourceRequest is the `mcp.servers.read_resource` request
+// body. Identity is mandatory.
+type ReadMCPResourceRequest struct {
+	// Identity is the (tenant, user, session) scope the read runs under.
+	// Mandatory — an incomplete triple fails closed.
+	Identity IdentityScope `json:"identity"`
+	// ServerID is the MCP server (source id) hosting the resource.
+	ServerID string `json:"server_id"`
+	// ResourceURI is the resource to fetch — the `ui://`-scheme URI of
+	// an MCP App's UI document for app fetches.
+	ResourceURI string `json:"resource_uri"`
+}
+
+// ReadMCPResourceResponse is the `mcp.servers.read_resource` reply.
+// EXACTLY ONE of Content / ArtifactRef is set. Content carries the
+// inline bytes when the resource is below the heavy-content threshold;
+// ArtifactRef carries the by-reference stub when it meets or exceeds the
+// threshold (a loud bypass event accompanies the offload — never a
+// silent truncation, never an inline leak).
+type ReadMCPResourceResponse struct {
+	// ResourceURI echoes the fetched resource URI.
+	ResourceURI string `json:"resource_uri"`
+	// MIMEType is the resource's declared media type.
+	MIMEType string `json:"mime_type,omitempty"`
+	// Content is the inline resource bytes, populated ONLY when the
+	// content is below the heavy-content threshold. Empty when
+	// ArtifactRef is set.
+	Content string `json:"content,omitempty"`
+	// ArtifactRef is the by-reference stub, populated when the content
+	// meets or exceeds the heavy-content threshold. Nil when Content is
+	// set.
+	ArtifactRef *MCPResourceArtifactRef `json:"artifact_ref,omitempty"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under so a client can detect a version skew.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// MCPAppCallToolRequest is the `mcp.apps.call_tool` request body — an
+// MCP App asking the host to invoke an MCP tool. The request carries the
+// identity triple from the Protocol context; the runtime re-enters the
+// EXISTING tool-invocation path (approval gate + tool-side OAuth +
+// identity), so an app call to a gated tool parks on the unified pause
+// primitive exactly as a planner call does. Identity is mandatory.
+type MCPAppCallToolRequest struct {
+	// Identity is the (tenant, user, session) scope the tool call runs
+	// under. Mandatory — an incomplete triple fails closed.
+	Identity IdentityScope `json:"identity"`
+	// Tool is the catalog tool name to invoke (the Harbor-side
+	// `<source>_<tool>` name).
+	Tool string `json:"tool"`
+	// Arguments is the raw JSON argument object the tool's schema
+	// validates on the wire.
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+// MCPAppCallToolResponse is the `mcp.apps.call_tool` reply. EXACTLY ONE
+// of Content / ArtifactRef is set (the heavy-content discipline matches
+// ReadMCPResourceResponse). App is non-nil when the tool result declared
+// a `ui://` MCP App via `_meta.ui.resourceUri`, empty otherwise.
+type MCPAppCallToolResponse struct {
+	// Tool echoes the invoked tool name.
+	Tool string `json:"tool"`
+	// Content is the inline tool-result JSON, populated ONLY when the
+	// encoded result is below the heavy-content threshold. Empty when
+	// ArtifactRef is set.
+	Content json.RawMessage `json:"content,omitempty"`
+	// ArtifactRef is the by-reference stub, populated when the encoded
+	// result meets or exceeds the heavy-content threshold. Nil when
+	// Content is set.
+	ArtifactRef *MCPResourceArtifactRef `json:"artifact_ref,omitempty"`
+	// IsError reports whether the MCP server returned a tool error
+	// (the result's IsError flag) — the app renders it as a failure.
+	IsError bool `json:"is_error"`
+	// App is the MCP App reference parsed from the tool result's
+	// `_meta.ui.resourceUri`, or nil for a non-app result.
+	App *MCPAppRef `json:"app,omitempty"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under so a client can detect a version skew.
+	ProtocolVersion string `json:"protocol_version"`
+}

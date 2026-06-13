@@ -16,16 +16,29 @@ import (
 // tests — no MCP wire, no SDK. It returns a fixed descriptor set and a
 // configurable error.
 type stubProvider struct {
-	id        tools.ToolSourceID
-	mu        sync.Mutex
-	calls     int
-	discErr   error
-	resources []string
-	prompts   []string
-	toolNames []string
+	id           tools.ToolSourceID
+	mu           sync.Mutex
+	calls        int
+	discErr      error
+	resources    []string
+	prompts      []string
+	toolNames    []string
+	displayModes []string
+	resourceBody []byte
+	resourceMime string
+	resourceErr  error
 }
 
 func (p *stubProvider) SourceID() tools.ToolSourceID { return p.id }
+
+func (p *stubProvider) DisplayModes() []string { return p.displayModes }
+
+func (p *stubProvider) ReadResource(_ context.Context, _ string) ([]byte, string, error) {
+	if p.resourceErr != nil {
+		return nil, "", p.resourceErr
+	}
+	return p.resourceBody, p.resourceMime, nil
+}
 
 func (p *stubProvider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error) {
 	p.mu.Lock()

@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 215 canonical Harbor Protocol wire types, generated from the single-source
+The 221 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -910,6 +910,39 @@ Declared in `internal/protocol/types`.
 | `mock_mode` | `bool` |  |
 | `protocol_version` | `string` |  |
 
+## MCPAppCallToolRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `tool` | `string` |  |
+| `arguments` | `json.RawMessage` | optional (`omitempty`) |
+
+## MCPAppCallToolResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `tool` | `string` |  |
+| `content` | `json.RawMessage` | optional (`omitempty`) |
+| `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
+| `is_error` | `bool` |  |
+| `app` | `*types.MCPAppRef` — see [`MCPAppRef`](./types.md#mcpappref) | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
+
+## MCPAppRef
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `resource_uri` | `string` |  |
+| `display_mode` | `string` | optional (`omitempty`) |
+| `raw_html_trusted` | `bool` |  |
+
 ## MCPBindingScopeCount
 
 Declared in `internal/protocol/types`.
@@ -968,6 +1001,18 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `occurred_at` | `time.Time` |  |
 | `reason` | `string` | optional (`omitempty`) |
+
+## MCPResourceArtifactRef
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `id` | `string` |  |
+| `mime_type` | `string` | optional (`omitempty`) |
+| `size_bytes` | `int64` | optional (`omitempty`) |
+| `filename` | `string` | optional (`omitempty`) |
+| `sha256` | `string` | optional (`omitempty`) |
 
 ## MCPResourceView
 
@@ -1592,6 +1637,28 @@ Declared in `internal/protocol/types`.
 | `capacity` | `int` |  |
 | `refill_tokens` | `int` |  |
 | `refill_interval_ms` | `int64` |  |
+
+## ReadMCPResourceRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `server_id` | `string` |  |
+| `resource_uri` | `string` |  |
+
+## ReadMCPResourceResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `resource_uri` | `string` |  |
+| `mime_type` | `string` | optional (`omitempty`) |
+| `content` | `string` | optional (`omitempty`) |
+| `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
 
 ## RunOverrides
 

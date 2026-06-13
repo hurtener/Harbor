@@ -437,6 +437,22 @@ const (
 	// audit event. Requires the `auth.ScopeAdmin` claim.
 	MethodMCPServersSetRawHTMLTrust Method = "mcp.servers.set_raw_html_trust"
 
+	// MethodMCPReadResource — the MCP Apps host's resource read: fetches
+	// a `ui://` resource's HTML (an MCP App's UI document) scoped to the
+	// request identity triple, heavy-content aware (content at or above
+	// the heavy threshold rides by reference with a loud bypass event,
+	// never inline). NOT a control method; routed through the MCP Apps
+	// dispatcher (`IsMCPAppsMethod`). Identity-mandatory.
+	MethodMCPReadResource Method = "mcp.servers.read_resource"
+	// MethodMCPAppsCallTool — the MCP Apps host's app-tool-call proxy:
+	// an in-iframe MCP App asks the host to invoke an MCP tool, and the
+	// request re-enters the EXISTING identity + approval-gate + tool-side
+	// -OAuth invocation path (no new bypass). An app call to a gated
+	// tool parks on the unified pause primitive exactly as a planner call
+	// does. NOT a control method; routed through the MCP Apps
+	// dispatcher. Identity-mandatory.
+	MethodMCPAppsCallTool Method = "mcp.apps.call_tool"
+
 	// MethodToolsList — Returns the
 	// catalog of registered tools visible to the caller's identity
 	// scope, with optional facet filters (scope / transport / OAuth
@@ -703,6 +719,9 @@ var canonicalMethods = map[Method]struct{}{
 	MethodMCPServersRevokeBinding:    {},
 	MethodMCPServersSetRawHTMLTrust:  {},
 
+	MethodMCPReadResource: {},
+	MethodMCPAppsCallTool: {},
+
 	MethodAgentsList:        {},
 	MethodAgentsGet:         {},
 	MethodAgentsTools:       {},
@@ -851,6 +870,28 @@ func IsMCPServersMethod(m Method) bool {
 // The MCPSurface dispatcher uses it to apply the admin gate.
 func IsMCPAdminMethod(m Method) bool {
 	_, ok := canonicalMCPAdminMethods[m]
+	return ok
+}
+
+// canonicalMCPAppsMethods is the closed set of the two MCP Apps host
+// methods — the `mcp.servers.read_resource` `ui://` document fetch and
+// the `mcp.apps.call_tool` app-tool-call proxy. Both are
+// identity-mandatory reads/proxies routed through the AppsSurface
+// dispatcher, distinct from the twelve `mcp.servers.*` Console methods.
+// IsMCPAppsMethod is O(1); the control transport branches on it.
+var canonicalMCPAppsMethods = map[Method]struct{}{
+	MethodMCPReadResource: {},
+	MethodMCPAppsCallTool: {},
+}
+
+// IsMCPAppsMethod reports whether m is one of the two MCP Apps host
+// methods (`mcp.servers.read_resource` / `mcp.apps.call_tool`). The
+// control transport branches on this to route the request through the
+// AppsSurface dispatcher instead of the task-control / Console-MCP
+// surfaces. NOT a control method — a new MCP Apps method extends THIS
+// predicate, never the steering inbox.
+func IsMCPAppsMethod(m Method) bool {
+	_, ok := canonicalMCPAppsMethods[m]
 	return ok
 }
 
@@ -1199,6 +1240,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsMCPServersMethod(m) {
+		return false
+	}
+	if IsMCPAppsMethod(m) {
 		return false
 	}
 	if IsTasksMethod(m) {

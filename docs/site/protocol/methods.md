@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 80 canonical Harbor Protocol methods, generated from the single-source registry
+The 82 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -161,6 +161,13 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `mcp.servers.resources` | `POST /v1/control/mcp.servers.resources` | mcp servers | [`MCPServerResourcesRequest`](./types.md#mcpserverresourcesrequest) | [`MCPServerResourcesResponse`](./types.md#mcpserverresourcesresponse) | read-only |
 | `mcp.servers.revoke_binding` | `POST /v1/control/mcp.servers.revoke_binding` | mcp servers | [`MCPServerRevokeBindingRequest`](./types.md#mcpserverrevokebindingrequest) | [`MCPServerRevokeBindingResponse`](./types.md#mcpserverrevokebindingresponse) | mutating; requires the verified `admin` scope claim |
 | `mcp.servers.set_raw_html_trust` | `POST /v1/control/mcp.servers.set_raw_html_trust` | mcp servers | [`MCPServerSetRawHTMLTrustRequest`](./types.md#mcpserversetrawhtmltrustrequest) | [`MCPServerSetRawHTMLTrustResponse`](./types.md#mcpserversetrawhtmltrustresponse) | mutating; requires the verified `admin` scope claim |
+
+## MCP apps
+
+| Method | Route | Classification | Request | Response | Auth (beyond identity) |
+|---|---|---|---|---|---|
+| `mcp.apps.call_tool` | `POST /v1/control/mcp.apps.call_tool` | mcp apps | [`MCPAppCallToolRequest`](./types.md#mcpappcalltoolrequest) | [`MCPAppCallToolResponse`](./types.md#mcpappcalltoolresponse) | mutating |
+| `mcp.servers.read_resource` | `POST /v1/control/mcp.servers.read_resource` | mcp apps | [`ReadMCPResourceRequest`](./types.md#readmcpresourcerequest) | [`ReadMCPResourceResponse`](./types.md#readmcpresourceresponse) | read-only |
 
 ## Runs
 

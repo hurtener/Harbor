@@ -633,6 +633,157 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 	return tools.ToolDescriptor{Tool: tool, Invoke: invoke}
 }
 
+// ReadResource fetches a single resource's content from the remote MCP
+// server under the request identity triple. It is the runtime-side leg
+// of the `mcp.servers.read_resource` Protocol method: the Console reads
+// an MCP App's `ui://` UI document through it (the URI is validated to
+// the `ui://` scheme by the caller; ReadResource itself is scheme-
+// agnostic so the same path serves any resource read).
+//
+// The returned bytes are the first resource-content item's payload —
+// Text rendered as UTF-8 bytes, or the raw Blob when the server sent a
+// binary resource. The MIME type is the content item's declared type.
+// Identity is mandatory: a ctx without a full (tenant, user, session)
+// triple fails closed with ErrIdentityMissing (the `_meta` builder
+// rejects it) — never a read with an empty `_meta` block.
+//
+// Concurrent reuse: ReadResource holds no per-call state on the
+// Provider; identity + the URI ride the call.
+func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte, mimeType string, err error) {
+	session, sErr := p.sessionForRead()
+	if sErr != nil {
+		return nil, "", sErr
+	}
+	meta, mErr := buildIdentityMeta(ctx)
+	if mErr != nil {
+		return nil, "", mErr
+	}
+	params := &mcpsdk.ReadResourceParams{URI: uri}
+	params.Meta = meta
+	res, rErr := session.ReadResource(ctx, params)
+	if rErr != nil {
+		return nil, "", fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, rErr)
+	}
+	if res == nil || len(res.Contents) == 0 {
+		return nil, "", fmt.Errorf("%w: resource %q returned no content", ErrTransportFailed, uri)
+	}
+	rc := res.Contents[0]
+	if rc == nil {
+		return nil, "", fmt.Errorf("%w: resource %q returned a nil content item", ErrTransportFailed, uri)
+	}
+	if len(rc.Blob) > 0 {
+		return append([]byte(nil), rc.Blob...), rc.MIMEType, nil
+	}
+	return []byte(rc.Text), rc.MIMEType, nil
+}
+
+// DisplayModes returns the MCP Apps display modes the connected server
+// advertises via its `io.modelcontextprotocol/ui` capability. It reads
+// the negotiated capabilities from the live MCP session and projects
+// the advertised mode set. A server that advertises no UI capability
+// yields an empty slice — never a fabricated fallback set. Before
+// Connect (or after Close) the result is empty.
+//
+// Concurrent reuse: DisplayModes reads the session under the read lock;
+// the InitializeResult is immutable after the handshake.
+func (p *Provider) DisplayModes() []string {
+	session, err := p.sessionForRead()
+	if err != nil {
+		return nil
+	}
+	init := session.InitializeResult()
+	if init == nil {
+		return nil
+	}
+	return negotiateDisplayModes(init.Capabilities)
+}
+
+// uiExtensionKey is the canonical capability key the MCP Apps
+// (ext-apps) extension is advertised under during the MCP initialize
+// handshake.
+const uiExtensionKey = "io.modelcontextprotocol/ui"
+
+// validDisplayModes is the closed set of MCP Apps display modes
+// (ext-apps `McpUiDisplayMode`). Negotiation filters a server's
+// advertised modes against this set so an unknown value never reaches
+// the projection.
+var validDisplayModes = map[string]struct{}{
+	"inline":     {},
+	"fullscreen": {},
+	"pip":        {},
+}
+
+// negotiateDisplayModes extracts the advertised MCP Apps display modes
+// from a server's negotiated capabilities. The modes are carried on the
+// `io.modelcontextprotocol/ui` capability under either the `extensions`
+// or `experimental` capability map, as a `displayModes` array. The
+// result is the intersection of the advertised values with the closed
+// valid-mode set, in advertised order with duplicates removed.
+//
+// A capabilities object that does NOT advertise the UI extension yields
+// an empty slice — the negotiation never substitutes a stale default
+// (the placeholder it replaces). An advertised UI capability that names
+// no display modes is treated as inline-only, the ext-apps baseline.
+func negotiateDisplayModes(caps *mcpsdk.ServerCapabilities) []string {
+	if caps == nil {
+		return nil
+	}
+	settings := uiCapabilitySettings(caps)
+	if settings == nil {
+		// The server does not advertise the UI extension at all.
+		return nil
+	}
+	raw, ok := settings["displayModes"]
+	if !ok {
+		// UI is advertised but no explicit modes — inline is the
+		// ext-apps baseline every Apps-capable server supports.
+		return []string{"inline"}
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return []string{"inline"}
+	}
+	out := make([]string, 0, len(arr))
+	seen := map[string]struct{}{}
+	for _, v := range arr {
+		mode, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if _, valid := validDisplayModes[mode]; !valid {
+			continue
+		}
+		if _, dup := seen[mode]; dup {
+			continue
+		}
+		seen[mode] = struct{}{}
+		out = append(out, mode)
+	}
+	return out
+}
+
+// uiCapabilitySettings returns the `io.modelcontextprotocol/ui`
+// capability settings object, checking the `extensions` map first
+// (where ext-apps advertises) then the `experimental` map (a fallback
+// for servers that route the key there). Returns nil when the extension
+// is not advertised, or an empty (non-nil) map when the key is present
+// with a nil / non-object settings value.
+func uiCapabilitySettings(caps *mcpsdk.ServerCapabilities) map[string]any {
+	for _, m := range []map[string]any{caps.Extensions, caps.Experimental} {
+		v, ok := m[uiExtensionKey]
+		if !ok {
+			continue
+		}
+		if settings, ok := v.(map[string]any); ok {
+			return settings
+		}
+		// Present with a nil / non-object value: the extension IS
+		// advertised, just without structured settings.
+		return map[string]any{}
+	}
+	return nil
+}
+
 // SubscribeResource registers a server-side resource subscription.
 // Updates received via the SDK's ResourceUpdatedHandler are
 // published as `mcp.resource_updated` on the configured event bus

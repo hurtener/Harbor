@@ -45,6 +45,15 @@ import (
 type serverProvider interface {
 	SourceID() tools.ToolSourceID
 	Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
+	// DisplayModes returns the MCP Apps display modes the connected
+	// server advertises via its `io.modelcontextprotocol/ui`
+	// capability. An empty result means the server advertises no UI
+	// capability — never a fabricated default.
+	DisplayModes() []string
+	// ReadResource fetches a single resource's content under the
+	// request identity triple. Powers `mcp.servers.read_resource` — the
+	// MCP Apps `ui://` UI-document fetch.
+	ReadResource(ctx context.Context, uri string) (content []byte, mimeType string, err error)
 }
 
 // compile-time assertion: the MCP *Provider satisfies serverProvider.
@@ -282,8 +291,6 @@ type ServerRegistration struct {
 	URLOrCommand string
 	// Policy is the server's ToolPolicy. Zero-valued → DefaultPolicy.
 	Policy tools.ToolPolicy
-	// DisplayModes lists the advertised MCP-Apps DisplayMode values.
-	DisplayModes []string
 	// ContentShapes lists the canonical content shapes the tools return.
 	ContentShapes []string
 	// OAuthBindingCount is the configured OAuth binding count.
@@ -321,7 +328,11 @@ func (r *Registry) Register(reg ServerRegistration) error {
 		transport:    reg.Transport,
 		urlOrCommand: reg.URLOrCommand,
 		policy:       policy,
-		displayModes: append([]string(nil), reg.DisplayModes...),
+		// DisplayModes are NEGOTIATED from the server's live
+		// `io.modelcontextprotocol/ui` capability, not set from a static
+		// registration placeholder — a server advertising no UI
+		// capability yields an empty set, never a stale default.
+		displayModes: reg.Provider.DisplayModes(),
 		contentShape: append([]string(nil), reg.ContentShapes...),
 		stats: serverStats{
 			state:             st,
@@ -329,6 +340,30 @@ func (r *Registry) Register(reg ServerRegistration) error {
 		},
 	}
 	return nil
+}
+
+// ReadResource fetches a single resource's content from the named MCP
+// server under the request identity triple — the runtime-side leg of
+// the `mcp.servers.read_resource` Protocol method. Identity is
+// mandatory: a ctx without a full triple fails closed with
+// ErrRegistryIdentityMissing. An unknown server name returns
+// ErrServerNotFound.
+func (r *Registry) ReadResource(ctx context.Context, name, uri string) (content []byte, mimeType string, err error) {
+	if idErr := requireIdentity(ctx); idErr != nil {
+		return nil, "", idErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", fmt.Errorf("mcp: ReadResource cancelled: %w", err)
+	}
+	e, eErr := r.entry(name)
+	if eErr != nil {
+		return nil, "", eErr
+	}
+	content, mimeType, err = e.provider.ReadResource(ctx, uri)
+	if err != nil {
+		return nil, "", fmt.Errorf("mcp: ReadResource %q from %q: %w", uri, name, err)
+	}
+	return content, mimeType, nil
 }
 
 // requireIdentity fails closed when ctx carries no identity triple.

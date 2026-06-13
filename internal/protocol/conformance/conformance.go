@@ -623,8 +623,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 80 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 80 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three)", len(got))
+	if len(got) != 82 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 82 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host two)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -676,6 +676,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodMCPServersRefreshBinding:   {},
 		methods.MethodMCPServersRevokeBinding:    {},
 		methods.MethodMCPServersSetRawHTMLTrust:  {},
+
+		methods.MethodMCPReadResource: {},
+		methods.MethodMCPAppsCallTool: {},
 
 		methods.MethodToolsList:              {},
 		methods.MethodToolsGet:               {},
@@ -866,6 +869,15 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// topology clusters above.
 			if methods.IsMCPServersMethod(m) {
 				t.Skip("mcp.servers.* methods exercised by the MCPSurface unit tests + test/integration MCP-page test; conformance-suite scenario lands with a later surface extension")
+			}
+			// the two MCP Apps host methods
+			// (mcp.servers.read_resource / mcp.apps.call_tool) are
+			// dispatched by the AppsSurface, not the ControlSurface — the
+			// conformance Stack wires no Apps accessor. Their happy-paths +
+			// failure modes are exercised by the AppsSurface unit tests +
+			// the MCP-Apps integration test.
+			if methods.IsMCPAppsMethod(m) {
+				t.Skip("mcp Apps methods exercised by the AppsSurface unit tests + test/integration MCP-Apps test; conformance-suite scenario lands with a later surface extension")
 			}
 			// the seven `tools.*` methods are
 			// dispatched by the Tools handler (POST /v1/tools/{method}),
@@ -1153,6 +1165,12 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// paths are covered by the MCPSurface unit tests.
 			if methods.IsMCPServersMethod(m) {
 				t.Skip("phase-73k: mcp.servers.* malformed-request path covered by internal/protocol/mcp_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// mcp Apps methods route through the AppsSurface, not the
+			// ControlSurface — their malformed-request paths are covered by
+			// the AppsSurface unit tests.
+			if methods.IsMCPAppsMethod(m) {
+				t.Skip("mcp Apps malformed-request path covered by internal/protocol/apps_test.go; conformance-suite scenario lands with a later surface extension")
 			}
 			// auth.rotate_token routes through its own
 			// stream-transport handler, not the ControlSurface — its
