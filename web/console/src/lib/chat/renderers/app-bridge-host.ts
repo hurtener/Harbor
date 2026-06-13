@@ -141,6 +141,19 @@ export interface MCPAppHostClient {
    * `@modelcontextprotocol/ext-apps`).
    */
   listTools(serverID: string): Promise<MCPAppToolListing[]>;
+  /**
+   * Resolve an artifact id to a time-bounded presigned URL the renderer
+   * fetches the bytes from (D-026). The MCP Apps host calls this when a
+   * `ui://` document is at/above the heavy-content threshold and
+   * {@link readResource} returned an {@link MCPAppResource.artifactRef} stub
+   * INSTEAD of inline `content` — a routine outcome, since real Svelte/React
+   * App bundles are almost always larger than the threshold. The renderer
+   * fetches the document bytes from this URL and loads them into the same
+   * sandboxed `srcdoc` the inline path uses; only the content SOURCE differs.
+   * Maps onto `artifacts.get_ref` (the same read-side resolver every other
+   * renderer's presigned `src` flows through).
+   */
+  resolveArtifact(artifactID: string): Promise<string>;
 }
 
 /* ------------------------------------------------------------------ */

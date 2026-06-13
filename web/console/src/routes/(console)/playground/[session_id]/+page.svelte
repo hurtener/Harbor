@@ -398,8 +398,13 @@
       async resolveArtifact(id) {
         // `artifacts.get_ref` — the read-side presigned-URL resolver
         // (D-026 — renderers fetch from the presigned URL, never inline).
-        const resp = await c.artifacts.getRef<{ url: string }>({ id });
-        return resp.url;
+        // The wire field is `presigned_url`
+        // (internal/protocol/types/artifacts.go::ArtifactsGetRefResponse); the
+        // prior `resp.url` read resolved to `undefined` and silently broke
+        // every chat-bubble artifact preview (§17.6 bug-twin of the heavy
+        // MCP-App fetch this phase wires up).
+        const resp = await c.artifacts.getRef<{ presigned_url: string }>({ id });
+        return resp.presigned_url;
       },
       async cancelRun(hard) {
         await c.control.dispatch('cancel', sessionID, { hard });
@@ -1822,6 +1827,14 @@
     gap: var(--space-4);
     min-width: var(--space-0);
     min-height: 0;
+    /* Fill the parent's height. In the default region `.main-col` is a
+       grid item stretched by `.layout` (flex-grow ignored there); inside a
+       SplitPane `.pane` (pip) or `.fullscreen-body` (fullscreen) — both
+       flex columns — this is what makes the chat column fill the pane so
+       the conversation + composer stay visible beside the app. Without it
+       the column collapses to content height and the chat disappears in
+       side-by-side. */
+    flex: 1;
   }
 
   .toolbar-row {
