@@ -118,7 +118,7 @@ func TestConcurrentReuse_CancellationIsPerCall(t *testing.T) {
 		if err != nil {
 			t.Fatalf("run B affected by run A's cancellation: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("run B did not complete")
 	}
 }

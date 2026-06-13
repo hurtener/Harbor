@@ -88,7 +88,7 @@ func materializeOne(a InputArtifactView, catalog ToolCatalogView) llm.ContentPar
 	case a.Disposition == DispositionInline:
 		// The sub-threshold image fast path. Missing bytes fall back
 		// to the by-reference rendering — the same degradation the
-		// pre-84b dispatch applied to a bytes-less image.
+		// legacy dispatch applied to a bytes-less image.
 		if strings.HasPrefix(a.MIME, "image/") && len(a.Bytes) > 0 {
 			return imagePartFromBytes(a)
 		}
@@ -174,7 +174,7 @@ func documentTypeFor(mime string) string {
 	return sub
 }
 
-// materializeDefault is the pre-84b per-MIME dispatch, kept verbatim
+// materializeDefault is the legacy per-MIME dispatch, kept verbatim
 // as the zero-disposition default map (the default-parity golden test
 // pins it byte-for-byte). The four MIME families that today's
 // vision-capable providers actually handle in-context (image, PDF,

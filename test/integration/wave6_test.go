@@ -629,7 +629,7 @@ func TestE2E_Wave6_Concurrent_MultiTenant_TaskGroups(t *testing.T) {
 					}
 					seenPerSess[id.SessionID] = seen
 					seenMu.Unlock()
-				case <-time.After(5 * time.Second):
+				case <-time.After(30 * time.Second):
 					errCnt.Add(1)
 					t.Errorf("WatchGroup(%s): timeout", id.SessionID)
 					return

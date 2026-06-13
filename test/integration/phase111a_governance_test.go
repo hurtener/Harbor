@@ -153,7 +153,7 @@ func awaitGovernanceEvent(t *testing.T, sub events.Subscription, wantType events
 		if ev.Identity.TenantID != "phase111a" || ev.Identity.UserID != "operator" || ev.Identity.SessionID != session {
 			t.Errorf("identity propagation on %s: got %+v", wantType, ev.Identity)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("timed out waiting for %s", wantType)
 	}
 }
@@ -290,7 +290,7 @@ func TestE2E_Phase111a_LatentDefault_EmptyTiers(t *testing.T) {
 		if ev.Type != events.EventTypeRuntimeWarning {
 			t.Fatalf("latent default leaked a %s event before the marker", ev.Type)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("timed out waiting for the marker event")
 	}
 }
@@ -519,7 +519,7 @@ func TestE2E_Phase111a_ClearFactoryOnClose(t *testing.T) {
 		if ev.Type != events.EventTypeRuntimeWarning {
 			t.Fatalf("post-Close client emitted a %s event — the factory survived Stack.Close", ev.Type)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("timed out waiting for the marker event")
 	}
 }

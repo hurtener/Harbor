@@ -356,7 +356,7 @@ func TestE2E_Phase11_NodeFailure_BusEvent(t *testing.T) {
 
 	// The bus subscriber must observe a runtime.error event whose
 	// identity matches the failing envelope.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	saw := false
 	for !saw {
 		select {

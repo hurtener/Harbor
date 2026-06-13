@@ -121,7 +121,7 @@ func TestFetchMemoryBlocks_DefaultParity(t *testing.T) {
 	}
 
 	// FetchMemoryBlocks with recall off.
-	got, err := runctx.FetchMemoryBlocks(ctx, mem, q, "hello world", memory.RecallSettings{Enabled: false})
+	got, err := runctx.FetchMemoryBlocks(ctx, mem, q, "hello world", memory.RecallSettings{Enabled: false}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestFetchMemoryBlocks_RecallOff_NoEmbedderTraffic(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddTurn: %v", err)
 	}
-	_, err := runctx.FetchMemoryBlocks(ctx, mem, q, "query one", memory.RecallSettings{Enabled: false})
+	_, err := runctx.FetchMemoryBlocks(ctx, mem, q, "query one", memory.RecallSettings{Enabled: false}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestFetchMemoryBlocks_MinScoreFloor(t *testing.T) {
 		Enabled:  true,
 		TopK:     5,
 		MinScore: 1.1, // impossible to meet
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestFetchMemoryBlocks_MinScoreAdmitsRelevant(t *testing.T) {
 		Enabled:  true,
 		TopK:     5,
 		MinScore: -1.0, // admit everything
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestFetchMemoryBlocks_DedupRecentWindow(t *testing.T) {
 		Enabled:  true,
 		TopK:     5,
 		MinScore: -1.0,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestFetchMemoryBlocks_TextCap(t *testing.T) {
 		Enabled:  true,
 		TopK:     5,
 		MinScore: -1.0,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestFetchMemoryBlocks_ExternalTierShape(t *testing.T) {
 		Enabled:  true,
 		TopK:     5,
 		MinScore: -1.0,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestFetchMemoryBlocks_SearchError_FailsLoud(t *testing.T) {
 		Enabled:  true,
 		TopK:     5,
 		MinScore: 0.0,
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("FetchMemoryBlocks returned nil error on SearchTurns failure — should fail loud")
 	}
@@ -458,7 +458,7 @@ func TestFetchMemoryBlocks_ConversationUnchangedWithRecall(t *testing.T) {
 		}
 	}
 
-	mbOff, err := runctx.FetchMemoryBlocks(ctx, mem, q, "turn one", memory.RecallSettings{Enabled: false})
+	mbOff, err := runctx.FetchMemoryBlocks(ctx, mem, q, "turn one", memory.RecallSettings{Enabled: false}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks (off): %v", err)
 	}
@@ -466,7 +466,7 @@ func TestFetchMemoryBlocks_ConversationUnchangedWithRecall(t *testing.T) {
 		Enabled:  true,
 		TopK:     5,
 		MinScore: -1.0,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks (on): %v", err)
 	}
@@ -524,6 +524,7 @@ func TestFetchMemoryBlocks_ConcurrentReuse(t *testing.T) {
 				ctx, mem, sessions[i],
 				fmt.Sprintf("sailing message %d", i),
 				memory.RecallSettings{Enabled: true, TopK: 3, MinScore: -1.0},
+				nil,
 			)
 		}(i)
 	}
@@ -560,7 +561,7 @@ func TestFetchMemoryBlocks_GetLLMContextError_Propagates(t *testing.T) {
 	sentinel := errors.New("test: GetLLMContext failure")
 	store := &errGetLLMStore{err: sentinel}
 	q := fetchTestQuad("sess-llm-err")
-	_, err := runctx.FetchMemoryBlocks(context.Background(), store, q, "query", memory.RecallSettings{})
+	_, err := runctx.FetchMemoryBlocks(context.Background(), store, q, "query", memory.RecallSettings{}, nil)
 	if !errors.Is(err, sentinel) {
 		t.Errorf("error does not wrap sentinel: %v", err)
 	}

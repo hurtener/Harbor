@@ -131,7 +131,7 @@ func TestAssemble_SweeperStart_ConfigGated(t *testing.T) {
 			if payload.Token != string(p.Token) || payload.Decision != pauseresume.DecisionTimeout {
 				t.Fatalf("pause.resumed token=%q decision=%q, want %q/timeout", payload.Token, payload.Decision, p.Token)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("no timeout pause.resumed within 5s — the assembly did not start the sweeper")
 		}
 

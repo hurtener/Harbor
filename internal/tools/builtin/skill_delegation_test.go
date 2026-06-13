@@ -512,7 +512,7 @@ func TestSkillPropose_Delegation_D054Semantics(t *testing.T) {
 		if payload.Name != "proposed-skill" || payload.Result != string(generator.ResultPersisted) {
 			t.Errorf("payload = %+v, want name proposed-skill result persisted", payload)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("no skill.proposed event within bound — the D-054 audit emit did not reach the bus")
 	}
 

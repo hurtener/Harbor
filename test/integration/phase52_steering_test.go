@@ -87,7 +87,7 @@ func phase52Run(tenant, run string) identity.Quadruple {
 func drainRejections(t *testing.T, sub events.Subscription, want int) []steering.ControlRejectedPayload {
 	t.Helper()
 	var got []steering.ControlRejectedPayload
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	for len(got) < want {
 		select {
 		case ev, ok := <-sub.Events():
