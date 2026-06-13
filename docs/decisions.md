@@ -5114,6 +5114,36 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 
 6. **Deferred: `memory.search` Protocol method.** The run-loop recall surface is a runtime-internal call to `SearchTurns`; there is no Protocol method for it. A `memory.search` method is the prerequisite for any Console memory-search page (D-062 ordering rule). It is not introduced here and is parked for a post-109 planning round.
 
+---
+
+## D-214 — Phase 109c: the Playground DisplayMode layout is a pure page-level state machine; `pip` / `fullscreen` are mutually-exclusive regions; the host grants modes the page can apply
+
+**Date:** 2026-06-13
+
+**Status:** Accepted
+
+**Context.** Phase 109b shipped the MCP-Apps iframe host + AppBridge (manual-handler, D-173) + the `inline` renderer registered on the shared chat-renderer registry. The DisplayMode contract (D-062) also defines `fullscreen` (the app replaces the chat + composer region, addressable via a tab strip — multiple fullscreen apps yield multiple tabs) and `pip` (a resizable 50/50 chat-beside-app split, right rail hidden by default with a toggle). 109c delivers the Playground page-level layout that honours those two modes, driven at runtime by the AppBridge `onrequestdisplaymode` request and by operator affordances, without reloading the session.
+
+**Decision.** The calls that shape it:
+
+1. **The layout is a pure, DOM-free state machine.** `web/console/src/lib/components/playground/layout.ts` exports `reduceLayout(model, action)` (the reducer) and `computeRegion(model)` (a total `(LayoutModel) → RegionLayout` projection), plus `clampRatio`. The Playground page is the only stateful holder; the machine is unit-tested without a DOM (`layout.spec.ts`, 19 cases). This keeps the region routing, the split-ratio clamp, and the tab add/remove/activate logic verifiable independent of Svelte/browser.
+
+2. **`pip` and `fullscreen` are mutually-exclusive page regions; `pip` is ONE app.** The reducer maintains the invariant that `apps` holds EITHER N `fullscreen` apps OR exactly one `pip` app — never both. Requesting `pip` replaces the whole set with the single app and hides the rail by default; requesting `fullscreen` drops any `pip` app and adds/focuses a tab. This makes `computeRegion` total and pins the explicit distinction from PG-6's two-agent comparison (D-064): `pip` is one app beside chat, not a comparison surface. No comparison affordances are added.
+
+3. **The renderer is REUSED, not forked.** The `fullscreen` / `pip` `AppPanel` pulls the registered 109b renderer out of the shared registry (`dispatchRenderer(MCP_APP_INLINE_MIME).component`) — the public §4.5#11 seam — rather than deep-importing or duplicating `mcp-app.svelte`. The chat module stays self-contained (the layout components live OUTSIDE it, under `components/playground/`, and the module gains no page/route import). `inline` is unchanged — 109b behaviour, guarded by a regression test.
+
+4. **The host grants the modes the page can apply (backward-compatible seam extension).** `createAppHandlers` / `AppBridgeHost` gain an optional `availableDisplayModes` (default `['inline']`, preserving 109b's inline-only grant + its pinned test). The Playground App panel passes `['inline','fullscreen','pip']` so a `ui/request-display-mode` for fullscreen/pip is granted and routed to the layout machine; an unsupported mode falls back to the always-available `inline`. The renderer forwards an optional `onDisplayModeRequest` to the host — the consumption seam the page reduces on.
+
+5. **Split ratio + rail toggle are Console-local view state (D-061).** The split ratio is clamped to `[0.2, 0.8]` on drag and persists across teardown; the rail toggle reopens the rail in `pip` WITHOUT resetting the ratio. Layout itself (which apps are open, the active region) is conversation-scoped, not persisted across sessions.
+
+**§4.3 deviations from the plan.** Minor, in-scope: the plan's file list did not name `mcp-app.svelte` / the registry `index.ts` / `app-bridge-host.ts`, but consuming 109b's `onrequestdisplaymode` requires threading an optional `onDisplayModeRequest` + `availableDisplayModes` through the renderer to the host — an additive, backward-compatible seam extension (the 109b inline-only default + its test are untouched). Documented in the PR.
+
+**Known upstream gap (named, not masked — §17.6).** Inline MCP-app *discovery in the chat bubble* (a tool result's `_meta.ui.resourceUri` → a chat message that mounts the inline renderer) is NOT wired in the Console today — `MessageBubble` does not dispatch the MCP-app MIME and `ChatMessage` carries no app ref. That is a 109a/109b integration gap (it needs runtime event surface that carries the app ref), out of 109c's file list. 109c delivers the complete page-level layout subsystem (machine + components + region routing + the `onrequestdisplaymode` grant seam + operator affordances), which activates the moment that discovery path lands; until then the page region stays `chat` in production. Tracked as a follow-up.
+
+**Protocol additions.** None — no method, error code, event type, or wire type changed. DisplayMode rides 109a's projection (`MCPAppRef.display_mode`), surfaced by 109b.
+
+**Cross-references.** D-062 (DisplayMode semantics — honoured exactly, no new modes), D-064 (PG-6 two-agent comparison — explicitly NOT this), D-061 (Console-local view state — ratio/rail toggle may persist; layout is conversation-scoped), D-091 (shared chat module encapsulation — layout lives outside it; renderer reused via the registry), D-121 (Console design-system foundation), D-173 (manual-handler AppBridge — app→host stays Protocol-proxied), D-172 (the 109a–c wave). RFC §6.4, §7. CLAUDE.md §4.5, §13, §17.6, §18. Plan: `docs/plans/phase-109c-mcp-apps-displaymode-layout.md`.
+
 **§4.3 deviations from the plan.** None — the plan's design matched the implementation.
 
 **Protocol additions.** None — no method, error code, event type, or wire type changed.

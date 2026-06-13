@@ -44,6 +44,20 @@
   } from '$lib/components/playground/PlaygroundArtifactsCard.svelte';
   import TraceToggle, { type TraceNode } from '$lib/components/playground/TraceToggle.svelte';
   import { ChatPanel, type ChatMessage, type ChatProtocolClient } from '$lib/chat/index.js';
+  import AppPanel from '$lib/components/playground/AppPanel.svelte';
+  import AppTabStrip from '$lib/components/playground/AppTabStrip.svelte';
+  import SplitPane from '$lib/components/playground/SplitPane.svelte';
+  import {
+    reduceLayout,
+    computeRegion,
+    INITIAL_LAYOUT,
+    type LayoutModel,
+    type LayoutAction,
+    type DisplayMode,
+    type OpenApp
+  } from '$lib/components/playground/layout.js';
+  import { makeMCPAppHostClient } from '$lib/mcp-app-host-client.js';
+  import type { MCPAppHostClient } from '$lib/chat/renderers/app-bridge-host.js';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
@@ -400,6 +414,35 @@
   }
 
   let chatClient = $state<ChatProtocolClient | null>(null);
+
+  /* ================================================================ */
+  /* MCP Apps DisplayMode layout (fullscreen / pip)                    */
+  /* ================================================================ */
+
+  // The page-level layout state machine that honours an active MCP App's
+  // DisplayMode (D-062): `fullscreen` (the app replaces the chat + composer
+  // region, addressable via a tab strip) and `pip` (a resizable 50/50 split
+  // with the right rail hidden by default). `inline` apps render inside the
+  // chat scroll (109b) and never enter this model. The pure reducer +
+  // projection live in `layout.ts`; this page is the only stateful holder.
+  let layout = $state<LayoutModel>(INITIAL_LAYOUT);
+  const region = $derived(computeRegion(layout));
+
+  // The injected Protocol surface the hosted App panels drive app→host
+  // requests through (D-173). Built once the connection resolves.
+  let appHostClient = $state<MCPAppHostClient | null>(null);
+
+  function dispatchLayout(action: LayoutAction): void {
+    layout = reduceLayout(layout, action);
+  }
+
+  // The app (or the operator) requested a different display mode — switch the
+  // page region at runtime WITHOUT reloading the session (D-062).
+  function appRequestMode(app: OpenApp, mode: DisplayMode): void {
+    const { mode: _drop, ...ref } = app;
+    void _drop;
+    dispatchLayout({ type: 'request-display-mode', app: ref, mode });
+  }
 
   /* ================================================================ */
   /* Round-6 F10 — active-task lifecycle + queued-send drain           */
@@ -1274,6 +1317,11 @@
     client = injectedClient ?? new HarborClient({ connection });
     canControl = hasScope(connection, 'admin');
     chatClient = buildChatClient(client);
+    // The §4.4 adapter that routes app→host requests through the Harbor
+    // Protocol client → Runtime → MCP southbound (D-173). Injected into the
+    // hosted App panels so a fullscreen / pip app stays inside the identity
+    // boundary and the unified approval / OAuth gates.
+    appHostClient = makeMCPAppHostClient(client);
     subscribeEvents(client);
     void refreshSessionList();
     void refreshArtifacts();
@@ -1446,7 +1494,11 @@
     turnLatencies={turnLatencies}
   />
 
-  <div class="layout">
+  <!-- The chat + composer column. Hoisted into a snippet so the same chat
+       surface composes into the default region, a fullscreen Chat tab, and the
+       pip split's left pane — never re-instantiated, so switching DisplayMode
+       does NOT reload the session (D-062). -->
+  {#snippet chatColumn()}
     <div class="main-col">
       <PageState status={status} error={pageError} info={pageInfo} onretry={() => void load()}>
         {#snippet skeleton()}
@@ -1508,7 +1560,11 @@
         />
       {/if}
     </div>
+  {/snippet}
 
+  <!-- The right detail rail. Shown by default; hidden by default in pip with a
+       toggle to reopen (the toggle never resets the split ratio — D-061). -->
+  {#snippet railColumn()}
     <DetailRail>
       <RailCard title="Controls">
         <ControlsCard
@@ -1543,6 +1599,75 @@
         />
       </RailCard>
     </DetailRail>
+  {/snippet}
+
+  <!-- One MCP App panel hosting the reused 109b renderer for a page region. -->
+  {#snippet appPanel(app: OpenApp)}
+    {#if appHostClient !== null}
+      <AppPanel
+        app={app}
+        appHostClient={appHostClient}
+        onrequestmode={(mode) => appRequestMode(app, mode)}
+        onclose={() => dispatchLayout({ type: 'close-app', id: app.id })}
+      />
+    {/if}
+  {/snippet}
+
+  <!-- Region routing — the DisplayMode layout state machine (D-062). The grid
+       columns + rail visibility derive from `region`; `inline` apps never reach
+       here (they render in the chat scroll, 109b unchanged). -->
+  <div class="layout" data-region={region.region} data-rail={region.railVisible} data-testid="playground-layout">
+    {#if region.region === 'fullscreen'}
+      <div class="main-col fullscreen-main" data-testid="fullscreen-region">
+        <AppTabStrip
+          tabs={region.tabs}
+          activeTabId={region.activeTabId}
+          onactivate={(id) => dispatchLayout({ type: 'activate-tab', id })}
+          onclose={(id) => dispatchLayout({ type: 'close-app', id })}
+        />
+        <div class="fullscreen-body">
+          {#if region.fullscreenApp !== null}
+            {@render appPanel(region.fullscreenApp)}
+          {:else}
+            {@render chatColumn()}
+          {/if}
+        </div>
+      </div>
+      {@render railColumn()}
+    {:else if region.region === 'pip'}
+      <div class="pip-region" data-testid="pip-region">
+        <div class="pip-bar">
+          <button
+            type="button"
+            class="rail-toggle"
+            data-testid="pip-rail-toggle"
+            aria-pressed={region.railVisible}
+            onclick={() => dispatchLayout({ type: 'toggle-rail' })}
+          >
+            {region.railVisible ? 'Hide rail' : 'Show rail'}
+          </button>
+        </div>
+        <SplitPane
+          ratio={region.splitRatio}
+          onratio={(r) => dispatchLayout({ type: 'set-ratio', ratio: r })}
+        >
+          {#snippet left()}
+            {@render chatColumn()}
+          {/snippet}
+          {#snippet right()}
+            {#if region.pipApp !== null}
+              {@render appPanel(region.pipApp)}
+            {/if}
+          {/snippet}
+        </SplitPane>
+      </div>
+      {#if region.railVisible}
+        {@render railColumn()}
+      {/if}
+    {:else}
+      {@render chatColumn()}
+      {@render railColumn()}
+    {/if}
   </div>
 </div>
 
@@ -1568,6 +1693,52 @@
     grid-template-columns: 1fr var(--size-rail);
     gap: var(--space-4);
     align-items: stretch;
+  }
+
+  /* In pip the right rail is hidden by default — a single content column. The
+     toggle (`data-rail='true'`) reopens the rail without resetting the split. */
+  .layout[data-region='pip'][data-rail='false'] {
+    grid-template-columns: 1fr;
+  }
+
+  .fullscreen-main {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .fullscreen-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pip-region {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .pip-bar {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .rail-toggle {
+    background: var(--color-surface-raised);
+    color: var(--color-text-muted);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+
+  .rail-toggle:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
   }
 
   .main-col {
