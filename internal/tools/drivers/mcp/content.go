@@ -64,36 +64,48 @@ type MCPToolValue struct {
 	// servers that support typed JSON output (mcpsdk.ToolHandlerFor).
 	// nil when absent.
 	StructuredContent any
-	// AppRef is the MCP Apps reference parsed from the tool result's
-	// `_meta.ui.resourceUri` slot, when the server declared an
-	// interactive UI for this result. It is nil for ordinary results.
-	// AppRef is excluded from the JSON wire form (`json:"-"`) so it
-	// never reaches the LLM-facing observation — it is a host-side
-	// projection consumed by the app-tool-call proxy, not planner
-	// context.
+	// AppRef is the MCP Apps reference for an invoked tool that declared
+	// an interactive UI. The canonical `io.modelcontextprotocol/ui`
+	// (ext-apps) dialect binds the `ui://` UI resource to the tool
+	// DEFINITION (`_meta.ui.resourceUri` on the tool, captured at
+	// discovery); a server MAY additionally place a per-result hint on the
+	// CallToolResult `_meta.ui` slot. The value here is the reconciled
+	// reference — the tool-definition binding, merged with any per-result
+	// hint — set on the result by `Provider.callTool`. `lowerCallToolResult`
+	// alone populates it only from the per-result `_meta`; the binding is
+	// merged in by `callTool`, which holds the discovery-time binding. It is
+	// nil for ordinary (non-app) tools. AppRef is excluded from the JSON
+	// wire form (`json:"-"`) so it never reaches the LLM-facing observation —
+	// it is a host-side projection consumed by the app-tool-call proxy and
+	// the discovery event, not planner context.
 	AppRef *AppRef `json:"-"`
 }
 
 // AppRef is the host-side reference to an MCP App — the interactive
 // HTML UI an MCP tool declares via the official
-// `io.modelcontextprotocol/ui` (ext-apps) extension. It is parsed from
-// a tool result's `_meta.ui.resourceUri` slot and recognised distinctly
-// from ordinary content: ONLY a `ui://`-scheme URI is treated as an
-// app. An ordinary `file://` / `https://` resource reference is never
-// promoted to an AppRef.
+// `io.modelcontextprotocol/ui` (ext-apps) extension. The canonical
+// dialect binds the UI resource to the tool DEFINITION: the `ui://`
+// resource URI rides the tool's `_meta.ui.resourceUri` slot, captured at
+// discovery. It is recognised distinctly from ordinary content: ONLY a
+// `ui://`-scheme URI is treated as an app. An ordinary `file://` /
+// `https://` resource reference is never promoted to an AppRef.
 //
 // Concurrent reuse: AppRef is a value type with no mutable state after
 // construction.
 type AppRef struct {
 	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
 	// The host fetches the document via a resource read scoped to the
-	// request identity triple.
+	// request identity triple. Its canonical source is the tool
+	// definition's `_meta.ui.resourceUri`.
 	ResourceURI string
-	// PreferredDisplayMode is the per-result display-mode hint the
-	// server may carry on the `_meta.ui` slot (one of inline /
-	// fullscreen / pip), or empty when the server stated none. It is a
-	// hint only; the host reconciles it against the server's negotiated
-	// capability set.
+	// PreferredDisplayMode is an optional display-mode hint (one of
+	// inline / fullscreen / pip), or empty when none was stated. The tool
+	// definition's `_meta.ui` carries no display mode in the canonical
+	// dialect, so this is empty on the golden path; a server MAY supply a
+	// per-result hint on the CallToolResult `_meta.ui` slot, which the
+	// host merges over the binding. When empty, the renderer defaults to
+	// inline. It is a hint only; the host reconciles it against the
+	// server's negotiated capability set.
 	PreferredDisplayMode string
 }
 
@@ -110,14 +122,18 @@ func IsUIResourceURI(uri string) bool {
 	return strings.HasPrefix(uri, uiResourceScheme)
 }
 
-// parseAppRef extracts the MCP Apps reference from a tool result's
-// `_meta` map. The extension carries the reference under the `ui` key
-// as `{ resourceUri: "ui://…", … }`. parseAppRef returns nil when the
-// slot is absent, malformed, or carries a non-`ui://`-scheme URI — so a
-// result that references an ordinary file:// / https:// resource is not
-// promoted to an app. A loud-but-non-fatal posture: a malformed slot
-// yields nil rather than an error, because a present-but-broken `_meta`
-// must not poison an otherwise-valid tool result.
+// parseAppRef extracts the MCP Apps reference from an MCP `_meta` map.
+// The same slot shape appears on a tool DEFINITION (the canonical
+// placement — `Tool._meta.ui.resourceUri`, read at discovery) and,
+// optionally, on a tool RESULT (`CallToolResult._meta.ui`, a per-result
+// hint), so parseAppRef serves both. The extension carries the reference
+// under the `ui` key as `{ resourceUri: "ui://…", … }`. parseAppRef
+// returns nil when the slot is absent, malformed, or carries a
+// non-`ui://`-scheme URI — so a definition or result that references an
+// ordinary file:// / https:// resource is not promoted to an app. A
+// loud-but-non-fatal posture: a malformed slot yields nil rather than an
+// error, because a present-but-broken `_meta` must not poison an
+// otherwise-valid tool or result.
 func parseAppRef(meta mcpsdk.Meta) *AppRef {
 	if len(meta) == 0 {
 		return nil
@@ -134,16 +150,65 @@ func parseAppRef(meta mcpsdk.Meta) *AppRef {
 	if !ok || uri == "" || !IsUIResourceURI(uri) {
 		return nil
 	}
-	ref := &AppRef{ResourceURI: uri}
-	// preferredFrame / displayMode is an optional per-result hint. The
-	// ext-apps dialect names it `preferredFrame`; accept `displayMode`
-	// as an alias some servers emit.
-	if mode, ok := uiMap["preferredFrame"].(string); ok {
-		ref.PreferredDisplayMode = mode
-	} else if mode, ok := uiMap["displayMode"].(string); ok {
-		ref.PreferredDisplayMode = mode
+	return &AppRef{
+		ResourceURI:          uri,
+		PreferredDisplayMode: uiDisplayModeHint(meta),
 	}
-	return ref
+}
+
+// uiDisplayModeHint extracts an optional display-mode hint from an MCP
+// `_meta.ui` slot, independently of whether the slot also carries a
+// `resourceUri`. The canonical tool-definition binding carries NO display
+// mode, but a server MAY place a per-result display-mode hint on the
+// CallToolResult `_meta.ui` slot to steer THIS result's presentation. The
+// ext-apps dialect names it `preferredFrame`; `displayMode` is accepted as
+// an alias some servers emit. Returns "" when absent or malformed.
+func uiDisplayModeHint(meta mcpsdk.Meta) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	uiMap, ok := meta["ui"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if mode, ok := uiMap["preferredFrame"].(string); ok {
+		return mode
+	}
+	if mode, ok := uiMap["displayMode"].(string); ok {
+		return mode
+	}
+	return ""
+}
+
+// reconcileAppRef combines the tool-DEFINITION app binding (the
+// spec-conformant source of the `ui://` resource URI — the canonical
+// `io.modelcontextprotocol/ui` dialect binds the UI resource to the tool,
+// captured at discovery) with an optional per-result hint a server may
+// also place on the CallToolResult `_meta.ui` slot. The tool binding is
+// the source of the resource URI; a per-result display-mode hint, when
+// present, wins over the binding's so a server can steer THIS result's
+// presentation. Returns nil when neither source declares an app.
+//
+// Conformant servers leave the result `_meta` empty, so resultHint is nil
+// and resultMode is "" on the golden path and the binding stands alone. A
+// per-result `_meta.ui` slot carrying only a display mode (no resourceUri)
+// yields a nil resultHint but a non-empty resultMode — so a server can steer
+// THIS result's presentation without re-declaring the resource URI. A server
+// that (non-conformantly) declares the full app only on the result still
+// surfaces, via the resultHint fallback — the reconcile never REQUIRES the
+// result `_meta`.
+func reconcileAppRef(toolBinding, resultHint *AppRef, resultMode string) *AppRef {
+	if toolBinding == nil {
+		return resultHint
+	}
+	eff := &AppRef{
+		ResourceURI:          toolBinding.ResourceURI,
+		PreferredDisplayMode: toolBinding.PreferredDisplayMode,
+	}
+	if resultMode != "" {
+		eff.PreferredDisplayMode = resultMode
+	}
+	return eff
 }
 
 // MarshalJSON renders the value LLM-edge-friendly. The text-only
@@ -236,9 +301,13 @@ func lowerCallToolResult(res *mcpsdk.CallToolResult) (MCPToolValue, error) {
 	}
 	value := MCPToolValue{
 		StructuredContent: res.StructuredContent,
-		// Parse the MCP Apps `_meta.ui.resourceUri` slot. Only a
-		// `ui://`-scheme URI is promoted to an AppRef; an ordinary
-		// file:// / https:// resource is left untouched.
+		// Parse the OPTIONAL per-result MCP Apps `_meta.ui` hint. The
+		// canonical dialect binds the `ui://` resource to the tool
+		// DEFINITION (reconciled in by Provider.callTool, which holds the
+		// discovery-time binding); a server MAY additionally place a hint
+		// here, most usefully a per-result display mode. Only a
+		// `ui://`-scheme URI is promoted; an ordinary file:// / https://
+		// resource is left untouched. Conformant servers leave this empty.
 		AppRef: parseAppRef(res.Meta),
 	}
 	var texts []string

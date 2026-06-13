@@ -47,16 +47,19 @@ const EventTypeMCPResourceUpdated events.EventType = "mcp.resource_updated"
 const EventTypeMCPResourceOffloaded events.EventType = "mcp.resource_offloaded"
 
 // EventTypeMCPAppAvailable is the canonical event the runtime emits when
-// an MCP tool result declares an interactive MCP App via its
-// `_meta.ui.resourceUri` slot. It is the discovery signal a Protocol
-// client consumes off the event stream to mount the inline MCP App
-// renderer in the chat surface for the run's turn — without it, a
-// planner-initiated tool result carrying a `ui://` app reference reaches
-// no surface and the renderer never activates. The payload is SafePayload
-// by construction: it carries the server source id, the `ui://` resource
-// URI, the per-result display-mode hint, the default-deny raw-HTML trust
-// posture, and the actor identity quadruple — no upstream MCP content
-// bytes and no caller-controlled argument data.
+// an invoked MCP tool declares an interactive MCP App via the
+// `_meta.ui.resourceUri` slot on its tool DEFINITION (the spec-conformant
+// placement in the `io.modelcontextprotocol/ui` dialect, captured at
+// discovery). It is the discovery signal a Protocol client consumes off
+// the event stream to mount the inline MCP App renderer in the chat
+// surface for the run's turn — without it, a planner-initiated call to a
+// tool carrying a `ui://` app reference reaches no surface and the
+// renderer never activates. The payload is SafePayload by construction:
+// it carries the server source id, the `ui://` resource URI, the
+// display-mode hint (empty unless the server supplied one — the renderer
+// defaults to inline), the default-deny raw-HTML trust posture, and the
+// actor identity quadruple — no upstream MCP content bytes and no
+// caller-controlled argument data.
 const EventTypeMCPAppAvailable events.EventType = "mcp.app_available"
 
 func init() {
@@ -81,8 +84,11 @@ type AppAvailablePayload struct {
 	ServerID tools.ToolSourceID
 	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
 	ResourceURI string
-	// DisplayMode is the server's per-result display-mode hint (one of
-	// inline / fullscreen / pip), or empty when the server stated none.
+	// DisplayMode is the display-mode hint (one of inline / fullscreen /
+	// pip), or empty when the server stated none. The tool-definition
+	// binding carries no mode in the canonical dialect, so this is empty on
+	// the golden path and the renderer defaults to inline; a server MAY
+	// supply a per-result hint that wins over the binding.
 	DisplayMode string
 	// RawHTMLTrusted is the raw-HTML trust posture carried on the
 	// discovery. The driver emits the default-deny posture; a client
