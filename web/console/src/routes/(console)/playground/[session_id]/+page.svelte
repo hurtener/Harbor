@@ -398,8 +398,13 @@
       async resolveArtifact(id) {
         // `artifacts.get_ref` — the read-side presigned-URL resolver
         // (D-026 — renderers fetch from the presigned URL, never inline).
-        const resp = await c.artifacts.getRef<{ url: string }>({ id });
-        return resp.url;
+        // The wire field is `presigned_url`
+        // (internal/protocol/types/artifacts.go::ArtifactsGetRefResponse); the
+        // prior `resp.url` read resolved to `undefined` and silently broke
+        // every chat-bubble artifact preview (§17.6 bug-twin of the heavy
+        // MCP-App fetch this phase wires up).
+        const resp = await c.artifacts.getRef<{ presigned_url: string }>({ id });
+        return resp.presigned_url;
       },
       async cancelRun(hard) {
         await c.control.dispatch('cancel', sessionID, { hard });
