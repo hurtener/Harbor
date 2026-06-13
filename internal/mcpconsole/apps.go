@@ -146,8 +146,9 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 // wrapped descriptor — so the approval gate (the unified pause primitive)
 // + tool-side OAuth fire exactly as on a planner call. The result is
 // heavy-content-disciplined (the context-window safety net); a `ui://`
-// MCP App declared on the result's `_meta.ui` is projected onto the
-// App field.
+// MCP App the invoked tool declared (on its tool-definition `_meta.ui`,
+// reconciled by the driver onto the result's app reference) is projected
+// onto the App field.
 func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	desc, ok := a.cat.Resolve(tool)
 	if !ok {
@@ -239,14 +240,15 @@ func (a *AppsAccessor) offload(ctx context.Context, content []byte, mime, source
 	}, nil
 }
 
-// appRefFromValue projects an MCP App reference parsed by the driver onto
-// the runtime-side row, when the tool result declared a `ui://` app.
+// appRefFromValue projects an MCP App reference reconciled by the driver
+// onto the runtime-side row, when the invoked tool declared a `ui://` app
+// (on its tool-definition `_meta.ui`, the spec-conformant placement).
 // Returns nil for a non-MCP or non-app result. serverID is the source id
 // of the MCP server the tool belongs to, so the Console can resolve which
 // server to read the `ui://` document from. The DisplayMode is the
-// server's per-result preference hint; RawHTMLTrusted stays the
-// default-deny posture (the Console reconciles full trust via
-// mcp.servers.get).
+// optional display-mode hint (empty unless the server supplied one — the
+// renderer defaults to inline); RawHTMLTrusted stays the default-deny
+// posture (the Console reconciles full trust via mcp.servers.get).
 func appRefFromValue(value any, serverID string) *protocol.MCPAppRefRow {
 	v, ok := value.(mcp.MCPToolValue)
 	if !ok || v.AppRef == nil {
