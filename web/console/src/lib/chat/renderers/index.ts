@@ -35,7 +35,7 @@
 
 import type { Component } from 'svelte';
 
-import type { MCPAppHostClient, MCPAppRefView } from './app-bridge-host.js';
+import type { DisplayModeRequest, McpUiDisplayMode, MCPAppHostClient, MCPAppRefView } from './app-bridge-host.js';
 import AudioRenderer from './audio.svelte';
 import CodeRenderer from './code.svelte';
 import FallbackRenderer from './fallback.svelte';
@@ -81,6 +81,19 @@ export interface RendererProps {
    * with {@link app}; the caller (the Playground page) provides it.
    */
   appHostClient?: MCPAppHostClient;
+  /**
+   * The display modes the host can apply. Defaults to inline-only when absent
+   * (the chat-scroll host). The Playground App panel passes the full set so the
+   * app can request fullscreen / pip. Forwarded to the AppBridge host.
+   */
+  availableDisplayModes?: McpUiDisplayMode[];
+  /**
+   * Called when the hosted app requests a display mode (the AppBridge
+   * `onrequestdisplaymode` seam). The Playground page reduces this into its
+   * page-level layout state machine to switch `inline ↔ fullscreen ↔ pip`
+   * without reloading the session. Forwarded to the AppBridge host.
+   */
+  onDisplayModeRequest?: (req: DisplayModeRequest) => void;
 }
 
 /**
