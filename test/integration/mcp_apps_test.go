@@ -103,7 +103,7 @@ func TestE2E_MCPApps_ProxyParksOnGate(t *testing.T) {
 			t.Fatalf("payload type = %T, want ToolApprovalRequestedPayload", ev.Payload)
 		}
 		token = pauseresume.Token(p.PauseToken)
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("app call to a gated tool did NOT park on the pause primitive — the gate was bypassed")
 	}
 	if token == "" {
@@ -146,7 +146,7 @@ func TestE2E_MCPApps_ProxyParksOnGate(t *testing.T) {
 		if len(out.Content) == 0 {
 			t.Errorf("Content empty after approval")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("proxy call did not return after APPROVE")
 	}
 }

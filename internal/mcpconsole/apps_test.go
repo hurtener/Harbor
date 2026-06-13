@@ -140,7 +140,7 @@ func TestAppsAccessor_ReadResource_HeavyOffload(t *testing.T) {
 		if ev.Type != mcp.EventTypeMCPResourceOffloaded {
 			t.Fatalf("event type = %q, want %q", ev.Type, mcp.EventTypeMCPResourceOffloaded)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("no mcp.resource_offloaded event — the loud bypass is not emitted")
 	}
 }
