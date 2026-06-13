@@ -46,9 +46,50 @@ const EventTypeMCPResourceUpdated events.EventType = "mcp.resource_updated"
 // upstream MCP content bytes.
 const EventTypeMCPResourceOffloaded events.EventType = "mcp.resource_offloaded"
 
+// EventTypeMCPAppAvailable is the canonical event the runtime emits when
+// an MCP tool result declares an interactive MCP App via its
+// `_meta.ui.resourceUri` slot. It is the discovery signal a Protocol
+// client consumes off the event stream to mount the inline MCP App
+// renderer in the chat surface for the run's turn — without it, a
+// planner-initiated tool result carrying a `ui://` app reference reaches
+// no surface and the renderer never activates. The payload is SafePayload
+// by construction: it carries the server source id, the `ui://` resource
+// URI, the per-result display-mode hint, the default-deny raw-HTML trust
+// posture, and the actor identity quadruple — no upstream MCP content
+// bytes and no caller-controlled argument data.
+const EventTypeMCPAppAvailable events.EventType = "mcp.app_available"
+
 func init() {
 	events.RegisterEventType(EventTypeMCPResourceUpdated)
 	events.RegisterEventType(EventTypeMCPResourceOffloaded)
+	events.RegisterEventType(EventTypeMCPAppAvailable)
+}
+
+// AppAvailablePayload is the typed payload for EventTypeMCPAppAvailable.
+// SafePayload: no caller-controlled MCP content survives on the payload —
+// only the server source id, the `ui://` resource URI, the per-result
+// display-mode hint, the default-deny raw-HTML trust posture, and the
+// actor identity quadruple (its RunID correlates the discovery to the
+// turn that produced it).
+type AppAvailablePayload struct {
+	events.SafeSealed
+	// Identity scopes the discovery to the (tenant, user, session) triple
+	// the tool ran under; its RunID is the turn-correlation key.
+	Identity identity.Quadruple
+	// ServerID is the MCP server (source id) hosting the app — the value a
+	// client passes to mcp.servers.read_resource to fetch the document.
+	ServerID tools.ToolSourceID
+	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
+	ResourceURI string
+	// DisplayMode is the server's per-result display-mode hint (one of
+	// inline / fullscreen / pip), or empty when the server stated none.
+	DisplayMode string
+	// RawHTMLTrusted is the raw-HTML trust posture carried on the
+	// discovery. The driver emits the default-deny posture; a client
+	// reconciles the full per-server trust via mcp.servers.get.
+	RawHTMLTrusted bool
+	// OccurredAt is the wall-clock instant the app was discovered.
+	OccurredAt time.Time
 }
 
 // ResourceOffloadedPayload is the typed payload for

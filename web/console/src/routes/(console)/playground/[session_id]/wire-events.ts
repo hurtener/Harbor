@@ -232,6 +232,46 @@ export function decodeToolLifecycle(data: string): ToolLifecycleEvent | null {
 	return { taskID, tool, kind, summary };
 }
 
+/**
+ * A decoded `mcp.app_available` — an MCP tool result on this turn declared
+ * an interactive MCP App via its `_meta.ui.resourceUri` slot. The payload
+ * (`internal/tools/drivers/mcp/events.go::AppAvailablePayload`) carries the
+ * server source id, the `ui://` resource URI, the per-result display-mode
+ * hint, and the default-deny raw-HTML trust posture; the turn it belongs to
+ * is the frame envelope's `run` (the discovery's RunID). The page attaches
+ * the decoded ref to the run's agent bubble, which mounts the inline
+ * renderer.
+ */
+export interface AppAvailableEvent {
+	taskID: string;
+	serverID: string;
+	resourceUri: string;
+	/** The per-result display-mode hint (`inline` / `fullscreen` / `pip`), or ''. */
+	displayMode: string;
+	rawHtmlTrusted: boolean;
+}
+
+/** Decode an `mcp.app_available` frame. Returns null if not one. */
+export function decodeAppAvailable(data: string): AppAvailableEvent | null {
+	const frame = parseFrame(data);
+	if (frame === null || frame.payload === undefined) return null;
+	if (str(frame.type) !== 'mcp.app_available') return null;
+	const taskID = taskIDOf(frame);
+	const serverID = str(frame.payload.ServerID);
+	const resourceUri = str(frame.payload.ResourceURI);
+	// serverID + resourceUri are both load-bearing — the renderer fetches the
+	// document via `readResource(serverID, resourceUri)`. A frame missing
+	// either cannot mount an app, so drop it rather than render a broken frame.
+	if (taskID === '' || serverID === '' || resourceUri === '') return null;
+	return {
+		taskID,
+		serverID,
+		resourceUri,
+		displayMode: str(frame.payload.DisplayMode),
+		rawHtmlTrusted: frame.payload.RawHTMLTrusted === true
+	};
+}
+
 const INTERVENTION_TYPES = new Set([
 	'tool.approval_requested',
 	'tool.auth_required',

@@ -51,13 +51,20 @@
     reduceLayout,
     computeRegion,
     INITIAL_LAYOUT,
+    appId,
     type LayoutModel,
     type LayoutAction,
     type DisplayMode,
+    type AppRef,
     type OpenApp
   } from '$lib/components/playground/layout.js';
   import { makeMCPAppHostClient } from '$lib/mcp-app-host-client.js';
-  import type { MCPAppHostClient } from '$lib/chat/renderers/app-bridge-host.js';
+  import type {
+    DisplayModeRequest,
+    McpUiDisplayMode,
+    MCPAppHostClient,
+    MCPAppRefView
+  } from '$lib/chat/renderers/app-bridge-host.js';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
@@ -76,10 +83,12 @@
     decodeToolLifecycle,
     decodeIntervention,
     decodeInterventionClear,
+    decodeAppAvailable,
     type ChunkEvent,
     type CostEvent,
     type LifecycleEvent,
-    type ToolLifecycleEvent
+    type ToolLifecycleEvent,
+    type AppAvailableEvent
   } from './wire-events.js';
   import type { ChatToolCall } from '$lib/chat/types.js';
   import {
@@ -444,6 +453,59 @@
     dispatchLayout({ type: 'request-display-mode', app: ref, mode });
   }
 
+  // The display modes the page can apply for an inline app — the full set,
+  // because the page owns the page-level fullscreen / pip layout. Passed to
+  // the chat module so an inline app's `onrequestdisplaymode` is granted and
+  // routed back here (the inline-only chat-scroll default never grows).
+  const APP_DISPLAY_MODES: McpUiDisplayMode[] = ['inline', 'fullscreen', 'pip'];
+
+  // Derive a short tab/panel label from a `ui://` resource URI.
+  function deriveAppTitle(resourceUri: string): string {
+    const tail = resourceUri.replace(/^ui:\/\//, '').split('/').filter(Boolean).pop();
+    return tail && tail !== '' ? tail : 'App';
+  }
+
+  // mcp.app_available — attach the discovered MCP App ref to the run's agent
+  // bubble so the inline renderer mounts. Keyed by the discovery's run (=
+  // the foreground turn's task id). A discovery with no matching agent bubble
+  // (the bubble is created synchronously on send, before tool results) is a
+  // no-op rather than a synthetic bubble.
+  function applyAppAvailable(ev: AppAvailableEvent): void {
+    const known = (['inline', 'fullscreen', 'pip'] as const).includes(
+      ev.displayMode as McpUiDisplayMode
+    );
+    const appView: MCPAppRefView = {
+      resourceUri: ev.resourceUri,
+      displayMode: known ? (ev.displayMode as McpUiDisplayMode) : '',
+      rawHtmlTrusted: ev.rawHtmlTrusted
+    };
+    messages = messages.map((m) =>
+      m.taskID === ev.taskID && m.role === 'agent'
+        ? { ...m, app: appView, serverID: ev.serverID }
+        : m
+    );
+  }
+
+  // An inline app (in the chat bubble) requested a larger display mode. Open
+  // it as a page-level app so the fullscreen / pip layout takes over WITHOUT
+  // reloading the session (D-062). An `inline` grant is a no-op — the app
+  // already renders in the chat scroll.
+  function onInlineAppDisplayModeRequest(
+    req: DisplayModeRequest,
+    app: MCPAppRefView,
+    serverID: string
+  ): void {
+    if (req.granted === 'inline') return;
+    const ref: AppRef = {
+      id: appId(serverID, app.resourceUri),
+      title: deriveAppTitle(app.resourceUri),
+      serverID,
+      resourceUri: app.resourceUri,
+      rawHtmlTrusted: app.rawHtmlTrusted
+    };
+    dispatchLayout({ type: 'request-display-mode', app: ref, mode: req.granted });
+  }
+
   /* ================================================================ */
   /* Round-6 F10 — active-task lifecycle + queued-send drain           */
   /* ================================================================ */
@@ -665,6 +727,7 @@
           'tool.invoked',
           'tool.completed',
           'tool.failed',
+          'mcp.app_available',
           'tool.approval_requested',
           'tool.auth_required',
           'pause.requested',
@@ -717,6 +780,15 @@
       es.addEventListener('tool.invoked', onToolLifecycle);
       es.addEventListener('tool.completed', onToolLifecycle);
       es.addEventListener('tool.failed', onToolLifecycle);
+
+      // MCP App discovery — an MCP tool result on this turn declared a
+      // `ui://` interactive app. Attach the ref to the run's agent bubble so
+      // the inline renderer mounts (109b) and the page-level layout (109c)
+      // activates when the app requests fullscreen / pip.
+      es.addEventListener('mcp.app_available', (msg: MessageEvent): void => {
+        const ev = decodeAppAvailable((msg as MessageEvent<string>).data);
+        if (ev !== null) applyAppAvailable(ev);
+      });
 
       const onTerminal = (msg: MessageEvent): void => {
         const ev = decodeLifecycle((msg as MessageEvent<string>).data);
@@ -1518,6 +1590,9 @@
             sending={sending}
             running={activeTaskID !== null}
             onsend={(text, ids, mode) => void sendMessage(text, ids, mode)}
+            appHostClient={appHostClient ?? undefined}
+            availableDisplayModes={APP_DISPLAY_MODES}
+            onAppDisplayModeRequest={onInlineAppDisplayModeRequest}
           />
         {/if}
       </PageState>
