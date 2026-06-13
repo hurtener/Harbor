@@ -34,6 +34,7 @@ export {
 	ArtifactsNamespace,
 	MCPNamespace,
 	MCPServersNamespace,
+	MCPAppsNamespace,
 	EventsNamespace,
 	AgentsNamespace,
 	SessionsNamespace,

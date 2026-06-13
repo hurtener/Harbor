@@ -372,6 +372,46 @@ export class MCPServersNamespace {
 			trusted
 		});
 	}
+
+	/**
+	 * `mcp.servers.read_resource` — fetch a `ui://` resource's bytes scoped
+	 * to the request identity triple, D-026 heavy-content aware (the MCP Apps
+	 * host's `onreadresource` handler routes here, never to a direct MCP
+	 * transport — D-173). The Runtime mounts it on the control surface at
+	 * `POST /v1/control/mcp.servers.read_resource`.
+	 */
+	readResource<R = unknown>(serverID: string, resourceURI: string): Promise<R> {
+		return this.#t.request<R>('/v1/control/mcp.servers.read_resource', {
+			server_id: serverID,
+			resource_uri: resourceURI
+		});
+	}
+}
+
+/**
+ * The `mcp.apps.*` surface — the MCP Apps host's app-tool-call proxy. The
+ * single method `call_tool` routes an app-initiated `tools/call` back through
+ * the SAME identity + approval-gate + tool-side-OAuth path a planner-initiated
+ * call uses (D-173): the Console opens no direct MCP transport, so an app call
+ * to a gated tool parks on the unified pause primitive exactly as a planner
+ * call does. The Runtime mounts it at `POST /v1/control/mcp.apps.call_tool`.
+ */
+export class MCPAppsNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/**
+	 * `mcp.apps.call_tool` — proxy an app-initiated tool invocation. `tool` is
+	 * the Harbor catalog tool name (`<source>_<tool>`); `args` is the raw JSON
+	 * argument object the tool's schema validates on the wire.
+	 */
+	callTool<R = unknown>(tool: string, args?: unknown): Promise<R> {
+		return this.#t.request<R>('/v1/control/mcp.apps.call_tool', {
+			tool,
+			arguments: args
+		});
+	}
 }
 
 /**
@@ -864,8 +904,11 @@ export class SearchNamespace {
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
 	readonly servers: MCPServersNamespace;
+	/** The `mcp.apps.*` method surface — the MCP Apps host's tool-call proxy. */
+	readonly apps: MCPAppsNamespace;
 	constructor(t: Transport) {
 		this.servers = new MCPServersNamespace(t);
+		this.apps = new MCPAppsNamespace(t);
 	}
 }
 

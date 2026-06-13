@@ -102,7 +102,9 @@ if command -v git >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 \
             | jq -r '((.dependencies // {}) | keys[]), ((.devDependencies // {}) | keys[])' 2>/dev/null | sort) \
         <(jq -r '((.dependencies // {}) | keys[]), ((.devDependencies // {}) | keys[])' \
             web/console/package.json 2>/dev/null | sort) )
-    UNEXPECTED=$(printf '%s\n' "${ADDED}" | grep -vE '^(@lucide/svelte)?$' || true)
+    # Also allow the MCP Apps host bridge deps `@modelcontextprotocol/ext-apps`
+    # + peer `@modelcontextprotocol/sdk` (Phase 109b, RFC §10 / D-172). §17.6.
+    UNEXPECTED=$(printf '%s\n' "${ADDED}" | grep -vE '^(@lucide/svelte|@modelcontextprotocol/ext-apps|@modelcontextprotocol/sdk)?$' || true)
     if [ -z "${UNEXPECTED}" ]; then
         ok "phase-108a: no unexpected npm dependency vs main (only sanctioned post-108 additions)"
     else

@@ -1359,6 +1359,7 @@ All three pass the same conformance suite. Designing the interface against three
 | YAML | `goccy/go-yaml` | Settled |
 | CLI | `cobra` | Settled |
 | Console | SvelteKit + adapter-static + Skeleton | Settled |
+| Console MCP Apps host | `@modelcontextprotocol/ext-apps` + peer `@modelcontextprotocol/sdk` — the official framework-agnostic AppBridge for the sandboxed MCP Apps renderer (core + `app-bridge` entry points ONLY, never the `/react` entry, so not the forbidden React surface). Consumed in manual-handler mode (D-173). | Settled — see D-172/D-173 |
 | Protocol wire | SSE + REST (event stream + control surface) | Settled — Q-1 RESOLVED 2026-05-14 |
 
 Additions to this surface require an RFC PR (see `AGENTS.md` §13).
