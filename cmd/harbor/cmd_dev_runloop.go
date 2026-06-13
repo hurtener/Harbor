@@ -524,7 +524,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
 	if d.memory != nil {
-		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall)
+		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall, d.logger)
 		if mErr != nil {
 			d.logger.Warn("perTaskRunLoopDriver: FetchMemoryBlocks failed; failing run",
 				slog.String("task_id", string(taskID)),

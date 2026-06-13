@@ -40,7 +40,7 @@ None.
 - **Sandboxed iframe:** the `sandbox` attribute is set (NO `allow-same-origin` unless the projected `RawHTMLTrusted` trust state explicitly permits), a strict CSP applies, no parent-DOM / cookie / localStorage access is possible, and `postMessage` ORIGIN VALIDATION accepts messages only from the expected iframe — a missing origin check is a cross-frame injection vector.
 - **Integrate the official AppBridge in MANUAL-HANDLER mode (D-173):** wire `oncalltool` → 109a's app-tool-call proxy, `onreadresource` → `mcp.servers.read_resource`, `onlistresources` / `onlisttools` → the existing list methods, and the `ui/initialize` handshake; honour `RawHTMLTrusted` → sandbox strictness; audit `set_raw_html_trust` transitions. The Console opens NO direct MCP transport — every handler routes through the injected `ProtocolClient` → Runtime → MCP southbound.
 - **inline DisplayMode:** an app declared `inline` renders as a widget in the chat scroll via the renderer registry (`registerRenderer` in `web/console/src/lib/chat/renderers/index.ts`). Fullscreen + pip are 109c.
-- Keep the generated typed Protocol client clean: `web/console/src/lib/protocol.ts` is GENERATED from `CanonicalWireTypes` (D-093), so any 109a wire-type change regenerates it and `make protocol-ts-gen-check` must stay clean. Hand-written client-method additions go in the namespace layer (`web/console/src/lib/protocol/client.ts`), never in the generated file.
+- Keep the typed Protocol client in lockstep: `web/console/src/lib/protocol.ts` is HAND-MAINTAINED against `CanonicalWireTypes` (D-093; the `cmd/harbor-gen-protocol-ts` generator + `make protocol-ts-gen-check` gate are specified but not yet built — see the file's header and CLAUDE.md §4.5 rule 5), so any 109a wire-type change must be mirrored into it by hand. Hand-written client-method additions go in the namespace layer (`web/console/src/lib/protocol/client.ts`).
 
 ## Non-goals
 
@@ -61,7 +61,7 @@ None.
 - [ ] The renderer honours `RawHTMLTrusted` → sandbox strictness; `set_raw_html_trust` transitions are audited.
 - [ ] inline DisplayMode renders the app as a chat-scroll widget via the renderer registry.
 - [ ] The renderer lives at `web/console/src/lib/chat/renderers/` and imports no other Console internals (D-091 chat-module encapsulation rule); the `ProtocolClient` is injected.
-- [ ] `svelte-check --fail-on-warnings` and the Console lint (no raw color/spacing literals, tokens only) pass; `make protocol-ts-gen-check` is clean.
+- [ ] `svelte-check --fail-on-warnings` and the Console lint (no raw color/spacing literals, tokens only) pass; `protocol.ts` is hand-synced against any 109a wire-type change (no generator/gate yet — CLAUDE.md §4.5 rule 5).
 - [ ] A Playwright test renders a fixture MCP App, exercises a proxied tool call through the host policy, asserts the iframe sandbox blocks parent-DOM / cookie / `localStorage` access, asserts the CSP, and asserts a foreign-origin message is rejected.
 
 ## Files added or changed
@@ -70,7 +70,7 @@ None.
 - `web/console/src/lib/chat/renderers/mcp-app.svelte` — the MCP Apps renderer (sandboxed iframe + inline mode).
 - `web/console/src/lib/chat/renderers/app-bridge-host.ts` — thin wrapper over the official AppBridge in manual-handler mode; constructed with an injected `ProtocolClient`.
 - `web/console/src/lib/chat/renderers/index.ts` — register the inline app renderer via `registerRenderer`.
-- `web/console/src/lib/protocol/client.ts` — hand-written namespace methods calling 109a's `mcp.servers.read_resource` + the app-tool-call proxy. (NOT the generated `protocol.ts`.)
+- `web/console/src/lib/protocol/client.ts` — hand-written namespace methods calling 109a's `mcp.servers.read_resource` + the app-tool-call proxy. (Separate from the hand-maintained wire-type file `protocol.ts`.)
 - `web/console/tests/` — Playwright suite: fixture app + sandbox-escape + proxied-tool-call + origin-rejection.
 - `scripts/smoke/phase-109b.sh`.
 - `docs/decisions.md` — D-173 reference (filed by the coordinator).
@@ -141,6 +141,6 @@ Console-side TypeScript only — no new Go surface (that is 109a):
 - [ ] Multi-isolation cross-session test passes — proxied tool calls run under the conversation identity; the isolation assertion is included.
 - [ ] Concurrent-reuse test — N/A (Console-side rendering; the runtime artifact is unchanged — the `ui://` projection + proxy live in 109a). Marked N/A with this reason.
 - [ ] Integration / Playwright test passes — fixture App rendered, sandbox isolation asserted, proxied tool call exercised, foreign-origin message rejected.
-- [ ] `svelte-check --fail-on-warnings` + Console lint pass; `make protocol-ts-gen-check` clean.
+- [ ] `svelte-check --fail-on-warnings` + Console lint pass; `protocol.ts` hand-synced against any 109a wire-type change (no generator/gate yet — CLAUDE.md §4.5 rule 5).
 - [ ] If new vocabulary: glossary updated (`MCP App`, `AppBridge`).
 - [ ] If a brief finding was departed from: justified above + decisions.md entry filed. (No departures.)

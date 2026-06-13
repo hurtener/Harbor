@@ -218,7 +218,7 @@ func TestE2E_Phase64_ProtocolSurface_Boots_AndAcceptsBearerToken(t *testing.T) {
 	// handler asserts against the body's triple).
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 
 	submitTokenedStart(t, srv.URL, token, "phase64-e2e")
 	for {

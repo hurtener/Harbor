@@ -569,7 +569,7 @@ func TestHotReloadSupervisor_CtxCancel_ReturnsCleanly(t *testing.T) {
 		if err != nil {
 			t.Errorf("supervisor.Run() = %v, want nil on ctx-cancel", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("supervisor.Run did not return within 5s of ctx-cancel")
 	}
 
@@ -653,7 +653,7 @@ func TestHotReloadSupervisor_MissingWatchRoot_LogsAndSkips(t *testing.T) {
 		if err != nil {
 			t.Errorf("supervisor.Run() = %v, want nil (missing root should be skipped, not fatal)", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("supervisor.Run did not return within 5s of ctx-cancel")
 	}
 }

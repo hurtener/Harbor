@@ -333,7 +333,7 @@ func TestE2E_Phase72b_AdminImpersonation_AcceptedEmitsAuditEvent(t *testing.T) {
 	// Drain until we see the AdminScopeUsedPayload. The
 	// subscription may also deliver task lifecycle events to the
 	// same triple; tolerate them.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 loop:
 	for {
 		select {

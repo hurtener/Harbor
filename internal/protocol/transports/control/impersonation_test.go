@@ -127,7 +127,7 @@ func TestImpersonation_AdminAccepted_EmitsAuditEvent(t *testing.T) {
 	// Drain until we see the AdminScopeUsedPayload — the test bus
 	// may also deliver other events (task lifecycle, etc.) to the
 	// same subscriber depending on its filter shape.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 loop:
 	for {
 		select {

@@ -48,6 +48,7 @@ import (
 	sdkassemble "github.com/hurtener/Harbor/sdk/assemble"
 	sdkconfig "github.com/hurtener/Harbor/sdk/config"
 	sdkdispatch "github.com/hurtener/Harbor/sdk/dispatch"
+	sdkembeddings "github.com/hurtener/Harbor/sdk/embeddings"
 	sdkevents "github.com/hurtener/Harbor/sdk/events"
 	sdkidentity "github.com/hurtener/Harbor/sdk/identity"
 	sdkllm "github.com/hurtener/Harbor/sdk/llm"
@@ -384,24 +385,26 @@ func TestE2E_Phase112a_MissingLLMConfigFailsLoud(t *testing.T) {
 // scripts/smoke/phase-112a.sh.)
 func TestPhase112a_ProdParity_RegistriesSeated(t *testing.T) {
 	want := map[string][]string{
-		"state":     {sdkstate.DefaultDriver, "sqlite", "postgres"},
-		"memory":    {sdkmemory.DefaultDriver, "sqlite", "postgres"},
-		"artifacts": {sdkartifacts.DefaultDriver, "fs", "sqlite", "postgres", "s3"},
-		"events":    {sdkevents.DefaultDriver, "durable"},
-		"llm":       {sdkllm.DefaultDriver},
-		"skills":    {sdkskills.DefaultDriver},
-		"tasks":     {sdktasks.DefaultDriver},
-		"planner":   {sdkreact.DriverName},
+		"state":      {sdkstate.DefaultDriver, "sqlite", "postgres"},
+		"memory":     {sdkmemory.DefaultDriver, "sqlite", "postgres"},
+		"artifacts":  {sdkartifacts.DefaultDriver, "fs", "sqlite", "postgres", "s3"},
+		"events":     {sdkevents.DefaultDriver, "durable"},
+		"llm":        {sdkllm.DefaultDriver},
+		"skills":     {sdkskills.DefaultDriver},
+		"tasks":      {sdktasks.DefaultDriver},
+		"planner":    {sdkreact.DriverName},
+		"embeddings": {sdkembeddings.DefaultDriver},
 	}
 	got := map[string][]string{
-		"state":     sdkstate.RegisteredDrivers(),
-		"memory":    sdkmemory.RegisteredDrivers(),
-		"artifacts": sdkartifacts.RegisteredDrivers(),
-		"events":    sdkevents.RegisteredDrivers(),
-		"llm":       sdkllm.RegisteredDrivers(),
-		"skills":    sdkskills.RegisteredDrivers(),
-		"tasks":     sdktasks.RegisteredDrivers(),
-		"planner":   sdkplanner.RegisteredDrivers(),
+		"state":      sdkstate.RegisteredDrivers(),
+		"memory":     sdkmemory.RegisteredDrivers(),
+		"artifacts":  sdkartifacts.RegisteredDrivers(),
+		"events":     sdkevents.RegisteredDrivers(),
+		"llm":        sdkllm.RegisteredDrivers(),
+		"skills":     sdkskills.RegisteredDrivers(),
+		"tasks":      sdktasks.RegisteredDrivers(),
+		"planner":    sdkplanner.RegisteredDrivers(),
+		"embeddings": sdkembeddings.RegisteredDrivers(),
 	}
 	for subsystem, names := range want {
 		seated := make(map[string]bool, len(got[subsystem]))

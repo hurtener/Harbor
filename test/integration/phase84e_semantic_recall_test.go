@@ -131,7 +131,7 @@ func TestE2E_Phase84e_EarlyTurnRecalled_ExternalTierPopulated(t *testing.T) {
 		TopK:     5,
 		MinScore: -1.0, // accept everything the embedder scores
 	}
-	mb, err := runctx.FetchMemoryBlocks(ctx, stores.memory, q, "mooring a boat at the dock", recall)
+	mb, err := runctx.FetchMemoryBlocks(ctx, stores.memory, q, "mooring a boat at the dock", recall, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestE2E_Phase84e_RecallOff_ExternalTierNil(t *testing.T) {
 		t.Fatalf("AddTurn: %v", err)
 	}
 
-	mb, err := runctx.FetchMemoryBlocks(ctx, stores.memory, q, "some question", memory.RecallSettings{Enabled: false})
+	mb, err := runctx.FetchMemoryBlocks(ctx, stores.memory, q, "some question", memory.RecallSettings{Enabled: false}, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestE2E_Phase84e_MinScoreFloor_DropsLowScoringTurns(t *testing.T) {
 	// MinScore = 2.0 is above the cosine similarity ceiling of 1.0;
 	// every turn will be filtered out.
 	recall := memory.RecallSettings{Enabled: true, TopK: 5, MinScore: 2.0}
-	mb, err := runctx.FetchMemoryBlocks(ctx, stores.memory, q, "quantum physics", recall)
+	mb, err := runctx.FetchMemoryBlocks(ctx, stores.memory, q, "quantum physics", recall, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestE2E_Phase84e_CrossSession_Isolation(t *testing.T) {
 
 	recall := memory.RecallSettings{Enabled: true, TopK: 5, MinScore: -1.0}
 	// FetchMemoryBlocks for sessB must not see sessA's turn.
-	mb, err := runctx.FetchMemoryBlocks(ctx, stores.memory, sessB, "harbor password", recall)
+	mb, err := runctx.FetchMemoryBlocks(ctx, stores.memory, sessB, "harbor password", recall, nil)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks sessB: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestE2E_Phase84e_FailLoud_SearchTurnsError(t *testing.T) {
 	failing := &phase84eFailSearchStore{inner: stores.memory, err: injectedErr}
 
 	recall := memory.RecallSettings{Enabled: true, TopK: 5, MinScore: -1.0}
-	_, err := runctx.FetchMemoryBlocks(ctx, failing, q, "any query", recall)
+	_, err := runctx.FetchMemoryBlocks(ctx, failing, q, "any query", recall, nil)
 	if err == nil {
 		t.Fatal("FetchMemoryBlocks succeeded; expected a propagated SearchTurns error")
 	}
@@ -354,7 +354,7 @@ func TestE2E_Phase84e_ConcurrentSessions_NoCrossTalk(t *testing.T) {
 			defer wg.Done()
 			q := phase84eQuad("grace", fmt.Sprintf("sess-%d", i))
 			query := fmt.Sprintf("harbor mooring session %d", i)
-			mb, fetchErr := runctx.FetchMemoryBlocks(ctx, stores.memory, q, query, recall)
+			mb, fetchErr := runctx.FetchMemoryBlocks(ctx, stores.memory, q, query, recall, nil)
 			if fetchErr != nil {
 				errCh <- fmt.Errorf("sess-%d FetchMemoryBlocks: %w", i, fetchErr)
 				return

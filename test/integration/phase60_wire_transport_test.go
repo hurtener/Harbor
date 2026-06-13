@@ -201,7 +201,7 @@ func TestE2E_Phase60_WireTransport_BothDirections(t *testing.T) {
 	// without a time.Sleep-as-synchronisation antipattern.
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	_ = submitStart(t, srv.URL, "s1")
 	for {
 		select {

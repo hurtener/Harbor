@@ -22,10 +22,11 @@
 //     typed fact — the resolver and materializer are pure; the CALLER
 //     (run loop, devstack, or a consumer's own loop) logs and emits.
 //
-// The runtime default reproduces the pre-84b dispatch byte-for-byte:
-// `image/*` resolves `inline` (the sub-threshold DataURL fast path),
-// everything else resolves `ref` (the `ArtifactStub` + `Fetch.Tool`
-// hint the planner drives via native tool-calling — 107c).
+// The runtime default reproduces the legacy per-MIME dispatch
+// byte-for-byte: `image/*` resolves `inline` (the sub-threshold
+// DataURL fast path), everything else resolves `ref` (the
+// `ArtifactStub` + `Fetch.Tool` hint the planner drives via native
+// tool-calling).
 package planner
 
 import (
@@ -37,8 +38,8 @@ import (
 // AttachmentDisposition declares how an uploaded input artifact is
 // handed to the model. The zero value ("") means
 // "no disposition declared" — the materializer falls back to the
-// pre-84b per-MIME dispatch, so a headless consumer that never sets
-// the field gets today's behaviour unchanged.
+// legacy per-MIME dispatch, so a headless consumer that never sets
+// the field gets the default behaviour unchanged.
 type AttachmentDisposition string
 
 const (
@@ -80,7 +81,7 @@ func DispositionTool(name string) AttachmentDisposition {
 }
 
 // IsZero reports whether no disposition was declared. A zero
-// disposition selects the pre-84b per-MIME materializer dispatch.
+// disposition selects the legacy per-MIME materializer dispatch.
 func (d AttachmentDisposition) IsZero() bool { return d == "" }
 
 // ToolName returns the forced tool name and true when d is a
@@ -146,7 +147,7 @@ const (
 	DispositionLayerAgentPolicy DispositionLayer = "agent_policy"
 	// DispositionLayerRuntimeDefault — the built-in runtime default
 	// won: `image/*` → inline, everything else → ref (byte-for-byte
-	// the pre-84b dispatch).
+	// the legacy per-MIME dispatch).
 	DispositionLayerRuntimeDefault DispositionLayer = "runtime_default"
 )
 
@@ -198,7 +199,7 @@ func (p DispositionPolicy) lookup(mime string) (AttachmentDisposition, bool) {
 }
 
 // DefaultDisposition is the runtime-default layer: the built-in map
-// that reproduces the pre-84b materializer dispatch. `image/*` →
+// that reproduces the legacy materializer dispatch. `image/*` →
 // [DispositionInline] (the sub-threshold DataURL fast path);
 // everything else → [DispositionRef] (the `ArtifactStub` +
 // `Fetch.Tool` path). Exported so a headless consumer can read the
@@ -296,7 +297,7 @@ type DispositionDegradation struct {
 //     ([DegradationInvalidDisposition]).
 //
 // A zero disposition passes through unchanged — it selects the
-// pre-84b materializer dispatch and there is nothing to degrade.
+// legacy materializer dispatch and there is nothing to degrade.
 func EffectiveDisposition(resolved AttachmentDisposition, mime string, catalog ToolCatalogView) (AttachmentDisposition, *DispositionDegradation) {
 	switch {
 	case resolved.IsZero(), resolved == DispositionRef:

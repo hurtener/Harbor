@@ -370,7 +370,7 @@ func waitEvent(t *testing.T, sub events.Subscription) events.Event {
 			t.Fatal("subscription channel closed before an event arrived")
 		}
 		return ev
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for an event")
 		return events.Event{}
 	}

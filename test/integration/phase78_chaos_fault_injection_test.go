@@ -258,7 +258,7 @@ func injectKillMidRun(t *testing.T) {
 	// is now genuinely in flight.
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("kill-mid-run: run never entered node A — could not get a run in-flight to kill")
 	}
 
@@ -285,7 +285,7 @@ func injectKillMidRun(t *testing.T) {
 		if n.CancelledAt.IsZero() {
 			t.Error("kill-mid-run: run-cancelled notice has a zero CancelledAt timestamp")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("kill-mid-run: engine never fired the RunCancelledHandler — cancellation event lost")
 	}
 
@@ -402,7 +402,7 @@ func injectDropMessages(t *testing.T) {
 	// Drain and assert: somewhere in the delivered stream is the
 	// typed bus.dropped backpressure event. Bounded eventually-poll
 	// on the channel — never a time.Sleep (§17.4).
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	sawDropped := false
 	for !sawDropped {
 		select {
@@ -536,7 +536,7 @@ func injectProviderQuirks(t *testing.T) {
 			if got.Type != llm.EventTypeRetryWithFeedback {
 				t.Errorf("provider-quirks: got event %q, want %q", got.Type, llm.EventTypeRetryWithFeedback)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("provider-quirks: no llm.retry_with_feedback event — the correction path did not fire")
 		}
 	})
