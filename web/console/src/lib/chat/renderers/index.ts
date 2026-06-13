@@ -35,13 +35,24 @@
 
 import type { Component } from 'svelte';
 
+import type { MCPAppHostClient, MCPAppRefView } from './app-bridge-host.js';
 import AudioRenderer from './audio.svelte';
 import CodeRenderer from './code.svelte';
 import FallbackRenderer from './fallback.svelte';
 import ImageRenderer from './image.svelte';
 import JsonRenderer from './json.svelte';
 import MarkdownRenderer from './markdown.svelte';
+import McpAppRenderer from './mcp-app.svelte';
 import PdfRenderer from './pdf.svelte';
+
+/**
+ * The synthetic MIME the chat host dispatches an inline MCP App widget under.
+ * An MCP App is not discovered by a real media type — it is triggered by a
+ * tool result's `_meta.ui.resourceUri` (projected by the Protocol as an
+ * `MCPAppRef`). The chat host maps that onto this MIME so the same
+ * `registerRenderer` / `dispatchRenderer` registry serves it.
+ */
+export const MCP_APP_INLINE_MIME = 'application/vnd.harbor.mcp-app';
 
 /**
  * The props every renderer component accepts. A renderer receives the
@@ -56,6 +67,20 @@ export interface RendererProps {
   src: string;
   /** Optional display filename. */
   filename?: string;
+  /**
+   * The MCP App reference, set ONLY when dispatching the inline MCP App
+   * renderer (MIME {@link MCP_APP_INLINE_MIME}). Carries the `ui://` resource
+   * URI, the negotiated display mode, and the per-server raw-HTML trust flag.
+   */
+  app?: MCPAppRefView;
+  /** The MCP server (source id) hosting the app — paired with {@link app}. */
+  serverID?: string;
+  /**
+   * The injected Harbor Protocol surface the MCP App renderer drives every
+   * app→host request through (D-173 — never a direct MCP transport). Paired
+   * with {@link app}; the caller (the Playground page) provides it.
+   */
+  appHostClient?: MCPAppHostClient;
 }
 
 /**
@@ -162,3 +187,11 @@ registerRenderer(
     mime === 'application/x-sh',
   { source: 'code', component: CodeRenderer }
 );
+
+// The inline MCP App renderer (Phase 109b) — dispatched under the synthetic
+// MCP-App MIME, never a real media type. Registered after the code rule so it
+// only matches its own exact MIME.
+registerRenderer(mimeIs(MCP_APP_INLINE_MIME), {
+  source: 'mcp-app',
+  component: McpAppRenderer
+});

@@ -174,6 +174,99 @@ export interface MCPServerSetRawHTMLTrustResponse {
   protocol_version: string;
 }
 
+/* ------------------------------------------------------------------ */
+/* MCP Apps host wire types                                            */
+/*                                                                     */
+/* Hand-synced field-for-field from internal/protocol/types/mcp_apps.go */
+/* (the Go-side single source, D-002). Two methods consume these:      */
+/*   - mcp.servers.read_resource — ReadMCPResourceResponse             */
+/*   - mcp.apps.call_tool        — MCPAppCallToolResponse              */
+/* The request bodies fold identity at the Transport choke point, so   */
+/* the TS request shapes are constructed inline by the namespace        */
+/* methods and only the response + projection types are declared here. */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The host-side projection of an MCP App reference parsed from a tool
+ * result's `_meta.ui.resourceUri` slot — mirrors `types.MCPAppRef`. Empty
+ * (absent on the response) for an ordinary, non-app tool result.
+ */
+export interface MCPAppRef {
+  /** The `ui://`-scheme URI of the app's UI document. */
+  resource_uri: string;
+  /**
+   * The negotiated MCP-Apps display mode (one of inline / fullscreen /
+   * pip), or empty when the server stated no preference. Phase 109b
+   * consumes only `inline`; fullscreen + pip are 109c.
+   */
+  display_mode?: string;
+  /**
+   * The per-server raw-HTML trust flag — default-deny. The host sandboxes
+   * the iframe unless an operator explicitly opted in via
+   * `mcp.servers.set_raw_html_trust`.
+   */
+  raw_html_trusted: boolean;
+}
+
+/**
+ * The by-reference stub the MCP Apps surface returns when fetched content
+ * meets or exceeds the heavy-content threshold (D-026) — mirrors
+ * `types.MCPResourceArtifactRef`. The Console fetches the bytes via the
+ * artifacts surface against this stub.
+ */
+export interface MCPResourceArtifactRef {
+  /** The content-addressed identifier (`{namespace}_{sha256[:12]}`). */
+  id: string;
+  /** The IANA media type, when known. */
+  mime_type?: string;
+  /** The length of the referenced bytes. */
+  size_bytes?: number;
+  /** Metadata only — never used for path construction. */
+  filename?: string;
+  /** The full hex digest of the referenced bytes. */
+  sha256?: string;
+}
+
+/**
+ * `mcp.servers.read_resource` reply — mirrors `types.ReadMCPResourceResponse`.
+ * EXACTLY ONE of `content` / `artifact_ref` is set: `content` carries the
+ * inline bytes below the heavy threshold; `artifact_ref` carries the
+ * by-reference stub at or above it.
+ */
+export interface ReadMCPResourceResponse {
+  /** Echoes the fetched resource URI. */
+  resource_uri: string;
+  /** The resource's declared media type. */
+  mime_type?: string;
+  /** Inline resource bytes — set only below the heavy threshold. */
+  content?: string;
+  /** By-reference stub — set only at or above the heavy threshold. */
+  artifact_ref?: MCPResourceArtifactRef;
+  /** The Protocol version the Runtime answered under. */
+  protocol_version: string;
+}
+
+/**
+ * `mcp.apps.call_tool` reply — mirrors `types.MCPAppCallToolResponse`.
+ * EXACTLY ONE of `content` / `artifact_ref` is set (the same heavy-content
+ * discipline as `ReadMCPResourceResponse`). `app` is non-null when the tool
+ * result declared a `ui://` MCP App.
+ */
+export interface MCPAppCallToolResponse {
+  /** Echoes the invoked tool name. */
+  tool: string;
+  /** Inline tool-result JSON — set only below the heavy threshold. */
+  content?: unknown;
+  /** By-reference stub — set only at or above the heavy threshold. */
+  artifact_ref?: MCPResourceArtifactRef;
+  /** Whether the MCP server returned a tool error (the result's IsError). */
+  is_error: boolean;
+  /** The MCP App reference parsed from `_meta.ui.resourceUri`, or absent. */
+  app?: MCPAppRef;
+  /** The Protocol version the Runtime answered under. */
+  protocol_version: string;
+}
+
 /**
  * Filter parameters for `mcp.servers.list`. The MCP-page `SavedViewChips`
  * persist a JSON-encoded value of this shape in the Console DB
