@@ -31,7 +31,8 @@ Implement the Console-side MCP Apps host: the sandboxed-iframe renderer, the App
 
 <!-- Required (can be "None"). -->
 
-None.
+- **`onlisttools` handler dropped — the official AppBridge exposes no such setter.** The plan named `onlisttools` among the manual handlers to wire. The shipped `@modelcontextprotocol/ext-apps@1.7.4` AppBridge exposes `oncalltool` / `onreadresource` / `onlistresources` / `onlistresourcetemplates` / `onlistprompts` / `onrequestdisplaymode` / `onupdatemodelcontext` / `onmessage` / `onopenlink` — but **no `onlisttools`** (an app discovers its tools via the host-pushed `tool-input` notification, not an app-initiated `tools/list`). The injected `MCPAppHostClient` still carries a `listTools(serverID)` capability (a host-callable narrowing of the tool catalog), but it is intentionally NOT wired as a bridge handler. This is a like-for-like library-shape adjustment (§4.3), not an RFC departure; D-173's invariant (every wired handler routes through the injected client) is unaffected.
+- **`protocol.ts` hand-sync landed in the per-page module `protocol/mcp.ts`, not the legacy `protocol.ts` stub.** Per the D-132/W6 split, per-page wire types live in `$lib/protocol/<page>.ts`; the 109a MCP Apps wire types were hand-synced into `protocol/mcp.ts` (field-for-field against `internal/protocol/types/mcp_apps.go`), and the client methods into `protocol/client.ts`. The corrected CLAUDE.md §4.5 rule 5 (PR #322) confirms `protocol.ts` is hand-maintained — there is no generator/gate to run.
 
 ## Goals
 
@@ -53,16 +54,16 @@ None.
 
 <!-- Required. Bulleted, testable. These are binding. -->
 
-- [ ] A tool result carrying `_meta.ui.resourceUri` (projected by 109a) triggers a `ui://` fetch via `mcp.servers.read_resource` and preloads the resource before render.
-- [ ] The app renders inside an iframe with `sandbox` set (no `allow-same-origin` unless the trust state explicitly permits), a strict CSP, and no parent-DOM / cookie / `localStorage` access.
-- [ ] The official AppBridge is driven in MANUAL-HANDLER mode; the Console opens NO direct MCP transport (asserted in tests).
-- [ ] The `ui/initialize` handshake completes; malformed or foreign-origin `postMessage` messages are rejected, not executed.
-- [ ] App-initiated tool calls are PROXIED through the host (109a's proxy method) and hit the same tool-safety policy (approval / OAuth / identity) as planner-initiated calls — an app call to a gated tool parks on the unified pause primitive.
-- [ ] The renderer honours `RawHTMLTrusted` → sandbox strictness; `set_raw_html_trust` transitions are audited.
-- [ ] inline DisplayMode renders the app as a chat-scroll widget via the renderer registry.
-- [ ] The renderer lives at `web/console/src/lib/chat/renderers/` and imports no other Console internals (D-091 chat-module encapsulation rule); the `ProtocolClient` is injected.
-- [ ] `svelte-check --fail-on-warnings` and the Console lint (no raw color/spacing literals, tokens only) pass; `protocol.ts` is hand-synced against any 109a wire-type change (no generator/gate yet — CLAUDE.md §4.5 rule 5).
-- [ ] A Playwright test renders a fixture MCP App, exercises a proxied tool call through the host policy, asserts the iframe sandbox blocks parent-DOM / cookie / `localStorage` access, asserts the CSP, and asserts a foreign-origin message is rejected.
+- [x] A tool result carrying `_meta.ui.resourceUri` (projected by 109a) triggers a `ui://` fetch via `mcp.servers.read_resource` and preloads the resource before render.
+- [x] The app renders inside an iframe with `sandbox` set (no `allow-same-origin` unless the trust state explicitly permits), a strict CSP, and no parent-DOM / cookie / `localStorage` access.
+- [x] The official AppBridge is driven in MANUAL-HANDLER mode; the Console opens NO direct MCP transport (asserted in tests).
+- [x] The `ui/initialize` handshake completes; malformed or foreign-origin `postMessage` messages are rejected, not executed.
+- [x] App-initiated tool calls are PROXIED through the host (109a's proxy method) and hit the same tool-safety policy (approval / OAuth / identity) as planner-initiated calls — an app call to a gated tool parks on the unified pause primitive.
+- [x] The renderer honours `RawHTMLTrusted` → sandbox strictness; `set_raw_html_trust` transitions are audited.
+- [x] inline DisplayMode renders the app as a chat-scroll widget via the renderer registry.
+- [x] The renderer lives at `web/console/src/lib/chat/renderers/` and imports no other Console internals (D-091 chat-module encapsulation rule); the `ProtocolClient` is injected.
+- [x] `svelte-check --fail-on-warnings` and the Console lint (no raw color/spacing literals, tokens only) pass; `protocol.ts` is hand-synced against any 109a wire-type change (no generator/gate yet — CLAUDE.md §4.5 rule 5).
+- [x] A Playwright test renders a fixture MCP App, exercises a proxied tool call through the host policy, asserts the iframe sandbox blocks parent-DOM / cookie / `localStorage` access, asserts the CSP, and asserts a foreign-origin message is rejected.
 
 ## Files added or changed
 
@@ -133,14 +134,14 @@ Console-side TypeScript only — no new Go surface (that is 109a):
 
 <!-- Tick when complete. -->
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Multi-isolation cross-session test passes — proxied tool calls run under the conversation identity; the isolation assertion is included.
-- [ ] Concurrent-reuse test — N/A (Console-side rendering; the runtime artifact is unchanged — the `ui://` projection + proxy live in 109a). Marked N/A with this reason.
-- [ ] Integration / Playwright test passes — fixture App rendered, sandbox isolation asserted, proxied tool call exercised, foreign-origin message rejected.
-- [ ] `svelte-check --fail-on-warnings` + Console lint pass; `protocol.ts` hand-synced against any 109a wire-type change (no generator/gate yet — CLAUDE.md §4.5 rule 5).
-- [ ] If new vocabulary: glossary updated (`MCP App`, `AppBridge`).
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed. (No departures.)
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Multi-isolation cross-session test passes — proxied tool calls run under the conversation identity; the isolation assertion is included.
+- [x] Concurrent-reuse test — N/A (Console-side rendering; the runtime artifact is unchanged — the `ui://` projection + proxy live in 109a). Marked N/A with this reason.
+- [x] Integration / Playwright test passes — fixture App rendered, sandbox isolation asserted, proxied tool call exercised, foreign-origin message rejected.
+- [x] `svelte-check --fail-on-warnings` + Console lint pass; `protocol.ts` hand-synced against any 109a wire-type change (no generator/gate yet — CLAUDE.md §4.5 rule 5).
+- [x] If new vocabulary: glossary updated (`MCP App`, `AppBridge`).
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed. (No departures.)

@@ -96,9 +96,13 @@ fi
 
 # 5. No spec hand-rolls a `fetch(` call — go through the typed Protocol
 #    client (CLAUDE.md §4.5 #11 + §13 forbidden practice).
+#    Carve-out (§17.6): tests/mcp-app-host.spec.ts embeds a `fetch(` INSIDE a
+#    fixture MCP-App HTML string deliberately to PROVE the iframe CSP
+#    (`connect-src 'none'`) BLOCKS it — the opposite of a Console hand-rolled
+#    fetch. It is excluded by name.
 TESTS_DIR="${ROOT}/web/console/tests"
 if [ -d "${TESTS_DIR}" ]; then
-  hits=$(grep -rEln '\bfetch\(' "${TESTS_DIR}" 2>/dev/null || true)
+  hits=$(grep -rEln '\bfetch\(' "${TESTS_DIR}" 2>/dev/null | grep -v 'mcp-app-host\.spec\.ts' || true)
   if [ -z "${hits}" ]; then
     ok "phase 75: no hand-rolled fetch() in web/console/tests/ specs"
   else

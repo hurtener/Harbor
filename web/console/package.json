@@ -41,6 +41,8 @@
   },
   "dependencies": {
     "@lucide/svelte": "^1.17.0",
+    "@modelcontextprotocol/ext-apps": "1.7.4",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@skeletonlabs/skeleton": "^3.0.0"
   }
 }

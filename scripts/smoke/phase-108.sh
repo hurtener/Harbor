@@ -137,7 +137,12 @@ if command -v git >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 \
             | jq -r '((.dependencies // {}) | keys[]), ((.devDependencies // {}) | keys[])' 2>/dev/null | sort) \
         <(jq -r '((.dependencies // {}) | keys[]), ((.devDependencies // {}) | keys[])' \
             web/console/package.json 2>/dev/null | sort) )
-    UNEXPECTED=$(printf '%s\n' "${ADDED}" | grep -vE '^(@lucide/svelte)?$' || true)
+    # Sanctioned post-108 additions: @lucide/svelte (108b icons) and the MCP
+    # Apps host bridge `@modelcontextprotocol/ext-apps` + its peer
+    # `@modelcontextprotocol/sdk` (Phase 109b, RFC §10 / D-172, operator-
+    # approved). §17.6: this allowlist is extended as later phases on the same
+    # branch legitimately add deps.
+    UNEXPECTED=$(printf '%s\n' "${ADDED}" | grep -vE '^(@lucide/svelte|@modelcontextprotocol/ext-apps|@modelcontextprotocol/sdk)?$' || true)
     if [ -z "${UNEXPECTED}" ]; then
         ok "phase-108: no unexpected npm dependency vs main (only sanctioned post-108 additions)"
     else

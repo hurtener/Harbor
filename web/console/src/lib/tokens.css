@@ -168,6 +168,8 @@
   /* Phase 108b — the top-bar identity / connection popover. */
   --size-popover-min-width: 16rem;
   --size-graph-max-height: 480px;
+  /* The minimum height of an inline MCP App iframe before it self-sizes. */
+  --size-app-inline-min: 12rem;
   --size-modal-width: 420px;
   --size-sparkline-height: 4rem;
   /* Phase 108h — the Events rate card holds a multi-line chart + a
