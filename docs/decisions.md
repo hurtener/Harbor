@@ -5089,3 +5089,33 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 **Protocol additions.** None — no method, error code, event type, or wire type changed. Semantic retrieval is a runtime/SDK surface at this phase; a Protocol read over `SearchTurns` is future work that rides the existing memory-protocol pattern when a Console page demands it.
 
 **Cross-references.** D-189 (the 84b/c/d split + the direction: embeddings serve semantic memory/skill retrieval, not a standalone RAG tool), D-174 (the registry-threaded `Deps.Summarizer` fail-loud pattern this mirrors), D-027 (typed-wrapper StateStore persistence the vector record rides), D-196 (the prod aggregator home), D-204 (the `sdk/embeddings` facade), D-025 (concurrent-reuse: the driver + semantic executors are compiled artifacts; N≥100 gates ship in-package), D-001 (identity-mandatory). RFC §6.5, §6.6, §6.7, §9. CLAUDE.md §4.4, §9, §13 (primitive-with-consumer: both retrieval modes ship in this PR, each exercised end-to-end; no stub defaults), §17.1–§17.3, §18. Briefs 04 §retrieval, 08 §driver seam.
+
+---
+
+## D-211 — Phase 84e: the run loop consumes semantic memory — `FetchMemoryBlocks` populates the External tier; `retrieval_min_score` floor; D-094 mirror collapsed
+
+**Date:** 2026-06-12
+
+**Status:** Settled (shipping with Phase 84e)
+
+**Where it lives:** `internal/runtime/runctx/memory_fetch.go` (`FetchMemoryBlocks` + `capText`); `internal/memory/from_config.go` (`RecallSettings` + `RecallFromConfig`); `internal/config/config.go` (`RetrievalMinScore` field on `MemoryConfig`); `internal/config/validate.go` (`validateMemory` range check); `cmd/harbor/cmd_dev_runloop.go` (collapsed to thin `FetchMemoryBlocks` call + `memoryRecall` field); `cmd/harbor/cmd_dev.go` (`RecallFromConfig` projection into opts); `harbortest/devstack/devstack.go` (D-094 mirror collapsed, same pattern); `internal/runtime/runctx/memory_fetch_test.go` (unit + concurrent-reuse + fail-loud suite); `test/integration/phase84e_semantic_recall_test.go` (E2E acceptance); `scripts/smoke/phase-84e.sh` (real assertions); `docs/CONFIG.md` / `examples/harbor.yaml` / `cmd/harbor/init/templates/default/harbor.yaml.tmpl` (new field documented); `docs/glossary.md` (`Semantic recall` term); `docs/skills/configure-memory-and-skills/SKILL.md` (§18 sweep).
+
+**Decision.** `MemoryStore.SearchTurns` shipped in 84d with store/SDK consumers only; the run loop never called it, so the agent never semantically recalled earlier conversation turns. 84e closes this gap. The calls that shape it:
+
+1. **One home: `runctx.FetchMemoryBlocks`.** The fetch+recall step lives in exactly one function — the 110b promoted-helper pattern (`BuildArtifactManifest`, `ProjectMemoryBlocks`, `BuildSkillsContext` are the siblings). Both `cmd/harbor/cmd_dev_runloop.go` and `harbortest/devstack/devstack.go` previously held identical ~20-line inline blocks (`GetLLMContext` → `ProjectMemoryBlocks`); both collapse to a thin call. The D-094 "mirror discipline" is honoured by construction: one implementation, two callers, parity enforced structurally rather than by hand.
+
+2. **Composition, not replacement.** When recall fires, `GetLLMContext` is called first (unchanged) and its patch feeds `ProjectMemoryBlocks` for the Conversation tier; `SearchTurns` populates the External tier only. The Conversation tier is byte-untouched. Mode off → `FetchMemoryBlocks` is byte-for-byte identical to the prior inline block — the 84b golden default-parity posture applied to the recall gate. The ONLY enable switch is `memory.retrieval: semantic` (the 84d seam); no second knob is introduced.
+
+3. **Three filters before injection.** `SearchTurns` results pass through: (a) `retrieval_min_score` cosine-similarity floor — turns below the configured threshold (default 0.0, range [-1,1], validated at boot) are dropped silently; (b) recent-turn dedup — a turn whose `UserMessage` is already in `GetLLMContext`'s `RecentTurns` window is skipped (injecting duplicates wastes tokens and confuses temporal ordering); (c) 2 KiB per-side text cap (`capText`, valid UTF-8 boundary truncation with a `…[truncated]` marker) — this is a D-026 first-line guard; the LLM-edge safety pass stays the authoritative backstop.
+
+4. **`RecallSettings` + `RecallFromConfig` follow the 110c field-parity pattern.** `memory.RecallSettings{Enabled, TopK, MinScore}` is the typed holder; `memory.RecallFromConfig(cfg.MemoryConfig)` is the single exporter — the same structure `SnapshotFromConfig`, `GovernanceFromConfig`, `HintsFromConfig` established in the 110c band. A reflection-based field-parity test gates the exporter (per D-155/B3): every `MemoryConfig` field is either projected by `RecallFromConfig` or explicitly excluded in the test with a one-line reason comment.
+
+5. **Fail-loud is the ONLY posture.** A `SearchTurns` error (network outage, embedder down, driver closed) is returned to the caller and propagates as `MarkFailed(runtime_fetch_error)` — the LLM is never called. There is no silent fall-back to rolling-summary-only. A `GetLLMContext` error likewise propagates. The "no silent degradation" rule (CLAUDE.md §13) is structurally enforced: `FetchMemoryBlocks` has no catch-and-ignore path.
+
+6. **Deferred: `memory.search` Protocol method.** The run-loop recall surface is a runtime-internal call to `SearchTurns`; there is no Protocol method for it. A `memory.search` method is the prerequisite for any Console memory-search page (D-062 ordering rule). It is not introduced here and is parked for a post-109 planning round.
+
+**§4.3 deviations from the plan.** None — the plan's design matched the implementation.
+
+**Protocol additions.** None — no method, error code, event type, or wire type changed.
+
+**Cross-references.** D-191 (the Embedder seam + `SearchTurns` — 84e is its run-loop consumer, closing the §13 primitive-with-consumer cycle), D-094 (the D-094 mirror discipline; the collapsed duplication), D-026 (the D-026 heavy-content guard; `capText` is the first-line guard at the injection seam), D-025 (concurrent-reuse contract; the N=100 test in `memory_fetch_test.go`), D-155 / D-196 / D-197 (the 110c/110b patterns this follows: field-parity test, promoted helper, thin callers), D-062 (the deferred `memory.search` Protocol method gate). RFC §6.2, §6.5, §6.6. CLAUDE.md §4.2, §4.4, §13 (no second knob; no silent degradation; fail-loud), §17.1–§17.3, §18. Plan: `docs/plans/phase-84e-semantic-memory-runloop.md`.

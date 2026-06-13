@@ -89,6 +89,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
+	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -591,7 +592,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// optional surfaces is projected onto RunContext when the
 		// corresponding subsystem / config block is configured; nil
 		// surfaces leave the planner's matching wrapper omitted.
-		memory: memStore,
+		memory:       memStore,
+		memoryRecall: memory.RecallFromConfig(cfg.Memory),
 		// the Phase-39 Directory is the
 		// `<skills_context>` producer — pinned-then-recent,
 		// identity-scoped, capability-filtered, redacted. Replaces

@@ -128,6 +128,7 @@ type perTaskRunLoopDriverOpts struct {
 	// producer (the directory carries its own MaxEntries cap; the
 	// pre-111d SkillStore.Search + skillsContextMax pair is deleted).
 	memory          memory.MemoryStore
+	memoryRecall    memory.RecallSettings
 	skillsDirectory *skills.Directory
 	planningHints   *planner.PlanningHints
 
@@ -188,6 +189,7 @@ type perTaskRunLoopDriver struct {
 	// per-run consumer wiring; the canonical-skills work
 	// — Directory as the skills surface. See driver opts godoc.
 	memory          memory.MemoryStore
+	memoryRecall    memory.RecallSettings
 	skillsDirectory *skills.Directory
 	planningHints   *planner.PlanningHints
 
@@ -264,6 +266,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		taskKind:        opts.taskKind,
 		driveBackground: opts.driveBackground,
 		memory:          opts.memory,
+		memoryRecall:    opts.memoryRecall,
 		skillsDirectory: opts.skillsDirectory,
 		planningHints:   opts.planningHints,
 		catalog:         opts.catalog,
@@ -521,15 +524,15 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
 	if d.memory != nil {
-		patch, mErr := d.memory.GetLLMContext(taskCtx, sessionQ)
+		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall)
 		if mErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: memory.GetLLMContext failed; failing run",
+			d.logger.Warn("perTaskRunLoopDriver: FetchMemoryBlocks failed; failing run",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))
 			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 				Code:    "runtime_fetch_error",
-				Message: fmt.Sprintf("memory.GetLLMContext: %v", mErr),
+				Message: fmt.Sprintf("FetchMemoryBlocks: %v", mErr),
 			}); fErr != nil {
 				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
@@ -537,9 +540,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 			return
 		}
-		if mb := runctx.ProjectMemoryBlocks(patch); mb != nil {
-			memBlocks = mb
-		}
+		memBlocks = mb
 	}
 
 	var skillsCtx []any
