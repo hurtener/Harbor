@@ -1827,6 +1827,14 @@
     gap: var(--space-4);
     min-width: var(--space-0);
     min-height: 0;
+    /* Fill the parent's height. In the default region `.main-col` is a
+       grid item stretched by `.layout` (flex-grow ignored there); inside a
+       SplitPane `.pane` (pip) or `.fullscreen-body` (fullscreen) — both
+       flex columns — this is what makes the chat column fill the pane so
+       the conversation + composer stay visible beside the app. Without it
+       the column collapses to content height and the chat disappears in
+       side-by-side. */
+    flex: 1;
   }
 
   .toolbar-row {
