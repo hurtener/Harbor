@@ -851,6 +851,36 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			muxOpts = append(muxOpts, transports.WithMCPSurface(mcpSurface))
 		}
 
+		// Mount the MCP Apps host surface (`mcp.servers.read_resource`
+		// + the `mcp.apps.call_tool` proxy) for parity with the
+		// production cmd/harbor boot path (CLAUDE.md §17.6 — the fixture
+		// must not diverge from production). Without this a test routed
+		// through the devstack mux gets 404 on the Apps methods while
+		// `harbor dev` serves them. Requires the MCP registry (the
+		// `ui://` document source) + the tool catalog (the proxy
+		// re-enters it with its approval/OAuth wrappers) + the artifact
+		// store (the heavy-content offload target).
+		if stack.MCPRegistry != nil && stack.Catalog != nil && stack.Artifacts != nil {
+			appsAccessor, aaErr := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
+				Registry:  stack.MCPRegistry,
+				Catalog:   stack.Catalog,
+				Store:     stack.Artifacts,
+				Bus:       bus,
+				Threshold: cfg.Artifacts.HeavyOutputThresholdBytes,
+			})
+			if aaErr != nil {
+				return stack, fmt.Errorf("mcp apps accessor: %w", aaErr)
+			}
+			appsSurface, asErr := protocol.NewAppsSurface(protocol.AppsDeps{
+				Resource: appsAccessor,
+				Invoker:  appsAccessor,
+			})
+			if asErr != nil {
+				return stack, fmt.Errorf("mcp apps surface: %w", asErr)
+			}
+			muxOpts = append(muxOpts, transports.WithAppsSurface(appsSurface))
+		}
+
 		// Phase 72e: mount the `pause.list` snapshot route. The
 		// devstack mirrors the production `cmd/harbor` boot path
 		// (CLAUDE.md §17.6 — the fixture must not diverge from
