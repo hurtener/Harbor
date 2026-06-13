@@ -151,6 +151,8 @@ var CanonicalMethods = map[string]struct{}{
 	"mcp.servers.refresh_binding":    {},
 	"mcp.servers.revoke_binding":     {},
 	"mcp.servers.set_raw_html_trust": {},
+	"mcp.servers.read_resource":      {},
+	"mcp.apps.call_tool":             {},
 	// Console-Tools-page cluster — seven methods.
 	"tools.list":                {},
 	"tools.get":                 {},
@@ -346,6 +348,14 @@ var CanonicalWireTypes = map[string]string{
 	"MCPServerRevokeBindingResponse":    "types",
 	"MCPServerSetRawHTMLTrustRequest":   "types",
 	"MCPServerSetRawHTMLTrustResponse":  "types",
+	// MCP Apps host wire types — the `ui://` document fetch + the
+	// app-tool-call proxy, all in internal/protocol/types/mcp_apps.go.
+	"ReadMCPResourceRequest":  "types",
+	"ReadMCPResourceResponse": "types",
+	"MCPResourceArtifactRef":  "types",
+	"MCPAppCallToolRequest":   "types",
+	"MCPAppCallToolResponse":  "types",
+	"MCPAppRef":               "types",
 	// Console-Tools-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/tools.go).
 	"Tool":                          "types",

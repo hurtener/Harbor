@@ -72,6 +72,10 @@ func (s *postureStubProvider) SourceID() tools.ToolSourceID { return s.id }
 func (s *postureStubProvider) Discover(_ context.Context) ([]tools.ToolDescriptor, error) {
 	return nil, nil
 }
+func (s *postureStubProvider) DisplayModes() []string { return nil }
+func (s *postureStubProvider) ReadResource(_ context.Context, _ string) ([]byte, string, error) {
+	return nil, "", nil
+}
 func (s *postureStubProvider) Close(_ context.Context) error { return nil }
 
 // TestMetricsProvider_ProjectsLiveSnapshot asserts the Metrics seam

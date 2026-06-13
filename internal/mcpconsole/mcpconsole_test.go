@@ -14,7 +14,10 @@ import (
 )
 
 // stubProvider is a deterministic mcp provider — no MCP wire.
-type stubProvider struct{ id tools.ToolSourceID }
+type stubProvider struct {
+	id           tools.ToolSourceID
+	resourceBody []byte
+}
 
 func (p *stubProvider) SourceID() tools.ToolSourceID { return p.id }
 func (p *stubProvider) Discover(context.Context) ([]tools.ToolDescriptor, error) {
@@ -22,6 +25,13 @@ func (p *stubProvider) Discover(context.Context) ([]tools.ToolDescriptor, error)
 		{Tool: tools.Tool{Name: string(p.id) + ".tool-a"}},
 		{Tool: tools.Tool{Name: string(p.id) + "__resource.repo://x"}},
 	}, nil
+}
+func (p *stubProvider) DisplayModes() []string { return nil }
+func (p *stubProvider) ReadResource(context.Context, string) ([]byte, string, error) {
+	if p.resourceBody != nil {
+		return p.resourceBody, "text/html", nil
+	}
+	return []byte("stub resource"), "text/plain", nil
 }
 
 func idCtx(t *testing.T) context.Context {

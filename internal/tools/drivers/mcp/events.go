@@ -34,8 +34,43 @@ import (
 // server) and the source ID is operator-supplied.
 const EventTypeMCPResourceUpdated events.EventType = "mcp.resource_updated"
 
+// EventTypeMCPResourceOffloaded is the canonical event the runtime
+// emits when an MCP resource read (an MCP App `ui://` document fetch, or
+// an app-tool-call result) meets the heavy-content threshold and is
+// routed through the ArtifactStore by reference instead of inlined. It
+// is the loud bypass record the context-window safety net requires —
+// heavy content is never inlined past the threshold and never silently
+// truncated; the offload is observable. The payload is SafePayload by
+// construction: it carries the artifact reference id, the resource URI
+// or tool name, the byte size, and the actor identity quadruple — no
+// upstream MCP content bytes.
+const EventTypeMCPResourceOffloaded events.EventType = "mcp.resource_offloaded"
+
 func init() {
 	events.RegisterEventType(EventTypeMCPResourceUpdated)
+	events.RegisterEventType(EventTypeMCPResourceOffloaded)
+}
+
+// ResourceOffloadedPayload is the typed payload for
+// EventTypeMCPResourceOffloaded. SafePayload: no caller-controlled MCP
+// content survives on the payload — only the reference id, the source
+// identifier (resource URI or tool name), the byte size, and the actor
+// identity quadruple.
+type ResourceOffloadedPayload struct {
+	events.SafeSealed
+	// Identity scopes the offload to the (tenant, user, session) triple
+	// the read ran under.
+	Identity identity.Quadruple
+	// ArtifactID is the content-addressed reference the heavy content
+	// was stored under.
+	ArtifactID string
+	// Source identifies what was offloaded: the resource URI for a
+	// `read_resource`, or the tool name for an app-tool-call result.
+	Source string
+	// SizeBytes is the length of the offloaded content.
+	SizeBytes int64
+	// OccurredAt is the wall-clock instant the offload happened.
+	OccurredAt time.Time
 }
 
 // ResourceUpdatedPayload is the typed payload for

@@ -74,6 +74,12 @@ type mcpPageStubProvider struct {
 
 func (p *mcpPageStubProvider) SourceID() tools.ToolSourceID { return p.id }
 
+func (p *mcpPageStubProvider) DisplayModes() []string { return nil }
+
+func (p *mcpPageStubProvider) ReadResource(context.Context, string) ([]byte, string, error) {
+	return []byte("stub"), "text/plain", nil
+}
+
 func (p *mcpPageStubProvider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

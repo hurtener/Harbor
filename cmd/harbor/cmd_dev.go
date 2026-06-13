@@ -529,6 +529,33 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("mcp surface: %w", err)
 	}
 
+	// the MCP Apps host surface — the two
+	// `mcp.servers.read_resource` / `mcp.apps.call_tool` methods that back
+	// the Console's sandboxed-iframe MCP App renderer. ReadResource fetches
+	// `ui://` UI documents from the MCP registry; the app-tool-call proxy
+	// re-enters the SAME tool catalog (with its approval gate + tool-side
+	// OAuth wrappers) a planner uses. Heavy content offloads to the
+	// artifact store by reference (the context-window safety net).
+	appsAccessor, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
+		Registry:  mcpRegistry,
+		Catalog:   toolCat,
+		Store:     artStore,
+		Bus:       bus,
+		Threshold: cfg.Artifacts.HeavyOutputThresholdBytes,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("mcp apps accessor: %w", err)
+	}
+	appsSurface, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: appsAccessor,
+		Invoker:  appsAccessor,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("mcp apps surface: %w", err)
+	}
+
 	// the ControlSurface is built WITHOUT a
 	// topology accessor. `harbor dev`'s runtime is planner/RunLoop-
 	// shaped — it hosts no `engine.Engine` node-graph — so there is no
@@ -984,6 +1011,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// so the Console MCP Connections page renders live data instead
 		// of an "unknown_method" red error on every visit.
 		transports.WithMCPSurface(mcpSurface),
+		// mount the two MCP Apps host methods
+		// (`mcp.servers.read_resource` / `mcp.apps.call_tool`) so the
+		// Console can fetch a `ui://` UI document and proxy an
+		// app-initiated tool call back through the runtime's tool-safety
+		// gates.
+		transports.WithAppsSurface(appsSurface),
 		// mount the `pause.list` snapshot route. The
 		// production path always wires the unified Coordinator + the
 		// artifact store + the configured heavy-content threshold so

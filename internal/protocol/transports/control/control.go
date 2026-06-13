@@ -104,6 +104,7 @@ type Handler struct {
 	postureSurface   PostureSurface
 	artifactsSurface ArtifactsSurface
 	mcpSurface       MCPSurface
+	appsSurface      AppsSurface
 	logger           *slog.Logger
 	bus              events.EventBus // nil ⇒ impersonation accepted-path refused
 	redactor         audit.Redactor  // nil ⇒ impersonation accepted-path refused
@@ -119,6 +120,20 @@ type Handler struct {
 type MCPSurface interface {
 	// Dispatch handles one of the twelve `mcp.servers.*` methods.
 	// Returns either a *types.<Method>Response or a *errors.Error.
+	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
+}
+
+// AppsSurface is the narrow contract the control transport calls into for
+// the two MCP Apps host methods — `mcp.servers.read_resource` and
+// `mcp.apps.call_tool`. The production implementation is
+// *protocol.AppsSurface; tests inject a deterministic surface. A nil
+// surface means the handler rejects MCP Apps calls with
+// CodeUnknownMethod — preserving the 404 → SKIP path the smoke script
+// relies on while the surface is being wired through.
+type AppsSurface interface {
+	// Dispatch handles one of the two MCP Apps methods. Returns either a
+	// *types.ReadMCPResourceResponse / *types.MCPAppCallToolResponse, or
+	// a *errors.Error.
 	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
 }
 
@@ -283,6 +298,18 @@ func WithMCPSurface(s MCPSurface) Option {
 	}
 }
 
+// WithAppsSurface wires the MCP Apps dispatcher into the control handler.
+// When supplied, the handler routes the two MCP Apps methods
+// (`mcp.servers.read_resource` / `mcp.apps.call_tool`) to s.Dispatch
+// instead of falling through to the task-control ControlSurface.
+// Optional — handlers built without it reject MCP Apps calls with
+// CodeUnknownMethod (the 404 → SKIP path the smoke script relies on).
+func WithAppsSurface(s AppsSurface) Option {
+	return func(h *Handler) {
+		h.appsSurface = s
+	}
+}
+
 // NewHandler builds the Protocol REST/JSON control transport over the
 // transport-agnostic ControlSurface. The surface is mandatory — a nil
 // fails loud with ErrMisconfigured rather than building a handler that
@@ -401,6 +428,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.serveMCP(w, r, method)
+		return
+	}
+
+	// the two MCP Apps host methods
+	// (`mcp.servers.read_resource` / `mcp.apps.call_tool`) route through a
+	// separate AppsSurface — they reach the runtime's MCP registry + tool
+	// catalog, not the steering inbox. If no AppsSurface is wired, fall
+	// through to the unknown-method path so the smoke `skip_if_404` branch
+	// fires.
+	if methods.IsMCPAppsMethod(method) {
+		if h.appsSurface == nil {
+			h.writeError(w, r, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+				"method %q: MCP Apps surface is not configured on this Runtime", string(method)))
+			return
+		}
+		h.serveApps(w, r, method)
 		return
 	}
 

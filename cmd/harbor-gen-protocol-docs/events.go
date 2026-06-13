@@ -202,6 +202,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	toolauth.EventTypeToolAuthRequired:      {Payloads: []reflect.Type{reflect.TypeOf(toolauth.ToolAuthRequiredPayload{})}},
 	toolauth.EventTypeToolAuthCompleted:     {Payloads: []reflect.Type{reflect.TypeOf(toolauth.ToolAuthCompletedPayload{})}},
 	mcptool.EventTypeMCPResourceUpdated:     {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ResourceUpdatedPayload{})}},
+	mcptool.EventTypeMCPResourceOffloaded:   {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ResourceOffloadedPayload{})}},
 }
 
 // safePayloadIface / eventPayloadIface back the mechanical Safe-vs-
