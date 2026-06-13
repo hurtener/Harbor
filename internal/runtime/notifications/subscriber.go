@@ -10,11 +10,15 @@ import (
 )
 
 // Subscriber wires the rules-engine-lite mapper onto a long-lived bus
-// subscription. NewSubscriber + Run together implement the §13
-// primitive-with-consumer rule: the Subscriber consumes
-// the trigger events already emit and
+// subscription. It consumes V1 trigger events already emitted and
 // republishes a `notification.*` event for each match through the
 // same bus.
+//
+// Lifecycle: call Start to establish the bus subscription synchronously
+// (Start returns an error on failure; never silently degrades), then
+// launch the returned run closure in a goroutine. Run is a convenience
+// wrapper that does both steps sequentially — prefer Start when the
+// caller needs delivery guarantees immediately after construction.
 //
 // Concurrent-reuse contract: the Subscriber is a long-lived
 // component constructed once and shared across the bus's lifetime. It
@@ -22,11 +26,11 @@ import (
 // Subscribers may be wired onto the same bus (rare in production —
 // the default boot wires one — but the type does not block it).
 //
-// Goroutine-leak contract (CLAUDE.md §11): Run blocks until ctx is
-// cancelled OR the bus closes its delivery channel. On return, the
-// subscription's Cancel() has been called and the bus's reaper has
-// joined the underlying goroutine. The mandatory leak test
-// (`subscriber_test.go::TestSubscriber_Run_GoroutineLeak`) asserts
+// Goroutine-leak contract: Run blocks until ctx is cancelled OR the
+// bus closes its delivery channel. On return, the subscription's
+// Cancel() has been called and the bus's reaper has joined the
+// underlying goroutine. The mandatory leak test
+// (subscriber_test.go::TestSubscriber_Run_GoroutineLeak) asserts
 // runtime.NumGoroutine() returns to baseline after Run returns.
 type Subscriber struct {
 	bus events.EventBus
@@ -48,14 +52,24 @@ func NewSubscriber(bus events.EventBus, log *slog.Logger) *Subscriber {
 	return &Subscriber{bus: bus, log: log}
 }
 
-// Run opens an Admin-scope subscription on the V1 trigger event
-// types and republishes each synthesised notification.* event onto
-// the same bus. Blocks until ctx is cancelled OR the bus closes the
-// subscription's delivery channel.
+// Start establishes the Admin-scope bus subscription synchronously
+// and returns a run closure that, when called, blocks until ctx is
+// cancelled or the bus closes the subscription's delivery channel.
+//
+// The subscription is established before Start returns, so callers
+// that need the notification.* topic to have a live consumer
+// immediately after construction (e.g. an assembler that publishes
+// trigger events synchronously after boot) can call Start, confirm
+// success, then launch the returned closure in a goroutine. A
+// Subscribe failure is returned directly and must be treated as fatal
+// — the topic cannot be made live without a valid subscription.
+//
+// The returned func must be called exactly once; it owns the
+// subscription's lifecycle and calls sub.Cancel() on return.
 //
 // The subscription is Admin-scope (Filter.Admin=true) because the
-// Subscriber is a runtime-internal infrastructure consumer that
-// must fan in across the full identity space — every tenant, user,
+// Subscriber is a runtime-internal infrastructure consumer that must
+// fan in across the full identity space — every tenant, user, and
 // session generates trigger events the notification topic should
 // cover. The Admin scope use is audit-emitted by the bus on
 // subscription open (events.EventTypeAdminScopeUsed); the Subscriber
@@ -63,47 +77,65 @@ func NewSubscriber(bus events.EventBus, log *slog.Logger) *Subscriber {
 // other Admin-scope subscriber is.
 //
 // Identity-rejection fail-loudly path: if a delivered trigger event
-// arrives with the `<missing>` identity sentinel in any
-// component, Run emits a `notification.identity_rejected` event
+// arrives with the `<missing>` identity sentinel in any component,
+// the run closure emits a `notification.identity_rejected` event
 // (SafePayload — no caller bytes) AND logs at Error, then continues.
 // The malformed trigger does NOT silently produce a malformed
 // notification.
 //
 // Mapper-error fail-loudly path: if Map returns a non-nil error
-// (always wrapped ErrUnmappable), Run logs at Error and emits a
-// `runtime.error` event via the bus; no notification.* event is
+// (always wrapped ErrUnmappable), the closure logs at Error and emits
+// a `runtime.error` event via the bus; no notification.* event is
 // emitted for that trigger.
 //
-// Publish errors are logged at Error and counted as observability
-// failures; Run continues so a transient bus issue does not collapse
-// the subscriber.
-func (s *Subscriber) Run(ctx context.Context) error {
+// Publish errors are logged at Error; the closure continues so a
+// transient bus issue does not collapse the subscriber.
+func (s *Subscriber) Start(ctx context.Context) (func() error, error) {
 	filter := events.Filter{
 		Admin: true,
 		Types: V1TriggerEventTypes(),
 	}
 	sub, err := s.bus.Subscribe(ctx, filter)
 	if err != nil {
-		return fmt.Errorf("notifications: subscribe: %w", err)
+		return nil, fmt.Errorf("notifications: subscribe: %w", err)
 	}
-	defer sub.Cancel()
-
-	s.log.Info("notifications subscriber running",
+	s.log.Info("notifications subscriber subscribed, starting consume loop",
 		slog.Int("trigger_types", len(V1TriggerEventTypes())))
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case ev, ok := <-sub.Events():
-			if !ok {
-				// Bus closed the channel — return cleanly so the
-				// caller's join completes.
-				return nil
+	run := func() error {
+		defer sub.Cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case ev, ok := <-sub.Events():
+				if !ok {
+					// Bus closed the channel — return cleanly so the
+					// caller's join completes.
+					return nil
+				}
+				s.handle(ctx, ev)
 			}
-			s.handle(ctx, ev)
 		}
 	}
+	return run, nil
+}
+
+// Run opens an Admin-scope subscription on the V1 trigger event
+// types and republishes each synthesised notification.* event onto
+// the same bus. Blocks until ctx is cancelled OR the bus closes the
+// subscription's delivery channel.
+//
+// Run is a convenience wrapper around Start: it establishes the
+// subscription synchronously and then runs the blocking consume loop
+// in the same call. Callers that need the subscription to be live
+// before further work proceeds should call Start directly so the
+// synchronous subscribe step is separated from the blocking loop.
+func (s *Subscriber) Run(ctx context.Context) error {
+	run, err := s.Start(ctx)
+	if err != nil {
+		return err
+	}
+	return run()
 }
 
 // handle processes one delivered trigger event. Errors are logged
