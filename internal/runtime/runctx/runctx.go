@@ -48,8 +48,9 @@ import (
 // JSON-encodable map the planner's `<read_only_conversation_memory>`
 // wrapper renders.
 // Returns nil when the patch is empty — the wrapper is omitted
-// entirely. V1.1 ships only the Conversation tier; the External tier
-// remains nil pending a long-term memory phase.
+// entirely. Only the Conversation tier is populated here; callers that
+// enable semantic recall (via FetchMemoryBlocks) will additionally
+// populate the External tier with retrieved turns.
 func ProjectMemoryBlocks(patch memory.LLMContextPatch) *planner.MemoryBlocks {
 	if len(patch.RecentTurns) == 0 && patch.Summary == "" {
 		return nil

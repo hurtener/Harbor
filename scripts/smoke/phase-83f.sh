@@ -48,8 +48,8 @@ assert_grep_present 'skillsDirectory \*skills.Directory' "cmd/harbor/cmd_dev_run
     "perTaskRunLoopDriver opts carry the skills Directory dep (D-149 → D-201)"
 # Phase 110b (D-195) re-homed the projection helpers to the exported
 # internal/runtime/runctx package; the run loop is a thin caller.
-assert_grep_present 'runctx\.ProjectMemoryBlocks' "cmd/harbor/cmd_dev_runloop.go" \
-    "runloop calls promoted runctx.ProjectMemoryBlocks (LLMContextPatch → MemoryBlocks; 110b)"
+assert_grep_present 'runctx\.FetchMemoryBlocks' "cmd/harbor/cmd_dev_runloop.go" \
+    "runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
 assert_grep_present 'runctx\.ProjectSkillsDirectory' "cmd/harbor/cmd_dev_runloop.go" \
     "runloop projects the Directory view via runctx.ProjectSkillsDirectory (110b → 111d)"
 assert_grep_present 'RepairCounters{' "cmd/harbor/cmd_dev_runloop.go" \
@@ -67,8 +67,8 @@ assert_grep_present 'planner\.HintsFromConfig' "cmd/harbor/cmd_dev.go" \
 # ----------------------------------------------------------------------------
 # Phase 110b (D-195): the D-094 mirror copies are deleted; devstack
 # calls the SAME promoted projections production calls.
-assert_grep_present 'runctx\.ProjectMemoryBlocks' "harbortest/devstack/devstack.go" \
-    "devstack calls promoted runctx.ProjectMemoryBlocks (mirror collapsed; 110b)"
+assert_grep_present 'runctx\.FetchMemoryBlocks' "harbortest/devstack/devstack.go" \
+    "devstack calls runctx.FetchMemoryBlocks (mirror collapsed; 110b + semantic recall)"
 assert_grep_present 'runctx\.ProjectSkillsDirectory' "harbortest/devstack/devstack.go" \
     "devstack projects the Directory view via runctx.ProjectSkillsDirectory (mirror; 110b → 111d)"
 

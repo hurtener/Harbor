@@ -357,6 +357,9 @@ memory:
   # Result cap for a semantic SearchTurns when the caller passes no
   # limit. 0/unset → 5.
   # retrieval_top_k: 5
+  # Cosine-similarity floor: turns below this score are skipped.
+  # Range [-1, 1]. Ignored unless retrieval = "semantic".
+  # retrieval_min_score: 0.0
 
 # D-103 — Planner driver selection (closes issue #126). The §4.4 seam
 # pattern that D-095 uses for OAuth providers, applied to the planner
