@@ -14,19 +14,36 @@ import (
 )
 
 // newAppToolProvider builds an in-memory MCP server whose `weather` tool
-// returns a result carrying `_meta.ui.resourceUri` (an MCP App), paired with
-// a connected Provider. The `plain` tool returns no app, so the negative
-// branch (no discovery event for an ordinary result) is testable.
+// declares `_meta.ui.resourceUri` (an MCP App) on its tool DEFINITION and
+// returns an EMPTY result `_meta` — exactly matching the canonical
+// `io.modelcontextprotocol/ui` (ext-apps) dialect (McpUiToolMetaSchema:
+// "UI-related metadata for tools"; resourceUri = "URI of the UI resource to
+// display for this tool") AND a real ext-apps server (go-study-mcp's
+// tools/list binds `ui://…/index.html` per tool, while a successful call
+// returns a null result `_meta`). This is the fixture that the spec-
+// conformant discovery path is tested against — NOT the earlier
+// hand-authored fixture that put `_meta.ui` on the RESULT (a self-consistent
+// shape that matched the buggy code but not the spec, hiding the bug).
+//
+// The `plain` tool carries NO ui binding and returns no app, so the negative
+// branch (no discovery event for an ordinary tool) is testable. The
+// `weather_pip` tool declares the binding on its definition AND emits a
+// per-result display-mode hint on its result `_meta.ui`, so the secondary
+// merge (result hint wins for display mode over the binding default) is
+// testable.
 func newAppToolProvider(t *testing.T, bus events.EventBus, resourceURI string) *Provider {
 	t.Helper()
 	srv := mcpsdk.NewServer(
 		&mcpsdk.Implementation{Name: "harbor-app-tool-test-server", Version: "v0"},
 		&mcpsdk.ServerOptions{},
 	)
+	// CANONICAL PLACEMENT: the `ui://` resource URI rides the tool DEFINITION's
+	// `_meta.ui` slot (Tool.Meta), and the call result carries an EMPTY `_meta`.
 	mcpsdk.AddTool(srv,
 		&mcpsdk.Tool{
 			Name:        "weather",
-			Description: "Returns weather and declares a ui:// app.",
+			Description: "Returns weather and declares a ui:// app on its definition.",
+			Meta:        mcpsdk.Meta{"ui": map[string]any{"resourceUri": resourceURI}},
 			InputSchema: map[string]any{
 				"type":                 "object",
 				"properties":           map[string]any{},
@@ -34,9 +51,9 @@ func newAppToolProvider(t *testing.T, bus events.EventBus, resourceURI string) *
 			},
 		},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ any) (*mcpsdk.CallToolResult, any, error) {
+			// EMPTY result _meta — the conformant golden path.
 			return &mcpsdk.CallToolResult{
 				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: `{"temp":21}`}},
-				Meta:    mcpsdk.Meta{"ui": map[string]any{"resourceUri": resourceURI, "preferredFrame": "inline"}},
 			}, nil, nil
 		},
 	)
@@ -53,6 +70,26 @@ func newAppToolProvider(t *testing.T, bus events.EventBus, resourceURI string) *
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ any) (*mcpsdk.CallToolResult, any, error) {
 			return &mcpsdk.CallToolResult{
 				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: `{"ok":true}`}},
+			}, nil, nil
+		},
+	)
+	mcpsdk.AddTool(srv,
+		&mcpsdk.Tool{
+			Name:        "weather_pip",
+			Description: "Declares a ui:// app on its definition AND a per-result display-mode hint.",
+			Meta:        mcpsdk.Meta{"ui": map[string]any{"resourceUri": resourceURI}},
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+		},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ any) (*mcpsdk.CallToolResult, any, error) {
+			// A server MAY steer THIS result's presentation with a per-result
+			// `_meta.ui` hint; the resource URI still comes from the binding.
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: `{"temp":21}`}},
+				Meta:    mcpsdk.Meta{"ui": map[string]any{"preferredFrame": "pip"}},
 			}, nil, nil
 		},
 	)
@@ -109,12 +146,19 @@ func resolveTool(t *testing.T, p *Provider, harborName string) tools.ToolDescrip
 
 // TestE2E_MCPAppAvailable_PlannerPathEmitsEvent is the load-bearing
 // integration test: a PLANNER-initiated MCP tool call (through the
-// descriptor's Invoke closure, the same path a planner drives) whose result
-// declares a `ui://` app emits `mcp.app_available` on the real bus, carrying
-// the server source id, the resource URI, the per-result display-mode hint,
-// and the run/identity correlation. This closes the gap where the
-// planner-path app reference reached no surface. Runs with the real inmem bus
-// and a fake MCP server; -race is the gate.
+// descriptor's Invoke closure, the same path a planner drives) to a tool that
+// declares a `ui://` app on its DEFINITION emits `mcp.app_available` on the
+// real bus — even though the call result carries an EMPTY `_meta` (the
+// conformant golden path). The event carries the server source id, the
+// resource URI captured from the tool definition, an empty display-mode hint
+// (the renderer defaults to inline), and the run/identity correlation. The
+// reconciled app reference is ALSO surfaced on the returned ToolResult.Value,
+// the source the app-tool-call proxy projects from.
+//
+// If the parse reverted to result-only (the pre-fix bug), this test FAILS:
+// the conformant server's empty result `_meta` carries no `ui` slot, so
+// discovery never fires and the select times out. Runs with the real inmem
+// bus and a fake MCP server; -race is the gate.
 func TestE2E_MCPAppAvailable_PlannerPathEmitsEvent(t *testing.T) {
 	bus := newTestBus(t)
 	const resourceURI = "ui://weather/main.html"
@@ -146,8 +190,18 @@ func TestE2E_MCPAppAvailable_PlannerPathEmitsEvent(t *testing.T) {
 	}
 
 	desc := resolveTool(t, p, "weather-server_weather")
-	if _, err := desc.Invoke(ctx, json.RawMessage(`{}`)); err != nil {
+	res, err := desc.Invoke(ctx, json.RawMessage(`{}`))
+	if err != nil {
 		t.Fatalf("Invoke: %v", err)
+	}
+	// The reconciled app reference is surfaced on the result value — the
+	// source the app-tool-call proxy (mcpconsole) projects onto its response.
+	val, ok := res.Value.(MCPToolValue)
+	if !ok {
+		t.Fatalf("result Value type = %T, want MCPToolValue", res.Value)
+	}
+	if val.AppRef == nil || val.AppRef.ResourceURI != resourceURI {
+		t.Fatalf("result AppRef = %+v, want ResourceURI %q (from the tool definition)", val.AppRef, resourceURI)
 	}
 
 	select {
@@ -168,8 +222,12 @@ func TestE2E_MCPAppAvailable_PlannerPathEmitsEvent(t *testing.T) {
 		if payload.ResourceURI != resourceURI {
 			t.Errorf("payload ResourceURI = %q, want %q", payload.ResourceURI, resourceURI)
 		}
-		if payload.DisplayMode != "inline" {
-			t.Errorf("payload DisplayMode = %q, want inline", payload.DisplayMode)
+		// The canonical tool-definition `_meta.ui` carries no display mode, and
+		// the conformant result `_meta` is empty — so the hint is empty and the
+		// Console renderer defaults to inline (mcp-app.svelte: `app?.displayMode
+		// || 'inline'`).
+		if payload.DisplayMode != "" {
+			t.Errorf("payload DisplayMode = %q, want empty (renderer defaults to inline)", payload.DisplayMode)
 		}
 		if payload.Identity.Identity != id {
 			t.Errorf("payload identity = %+v, want %+v", payload.Identity.Identity, id)
@@ -182,9 +240,57 @@ func TestE2E_MCPAppAvailable_PlannerPathEmitsEvent(t *testing.T) {
 	}
 }
 
-// TestMCPAppAvailable_PlainResultEmitsNoEvent proves the negative branch: an
-// ordinary tool result (no `_meta.ui`) emits no discovery event, so an
-// ordinary file:// / https:// resource is never mistaken for an app.
+// TestMCPAppAvailable_ResultHintMergesOverBinding proves the secondary merge:
+// a tool that declares the `ui://` binding on its DEFINITION and emits a
+// per-result display-mode hint on its result `_meta.ui` surfaces the binding's
+// resource URI with the per-result hint winning for display mode.
+func TestMCPAppAvailable_ResultHintMergesOverBinding(t *testing.T) {
+	bus := newTestBus(t)
+	const resourceURI = "ui://weather/main.html"
+	p := newAppToolProvider(t, bus, resourceURI)
+
+	id := defaultIdentity()
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant:  id.TenantID,
+		User:    id.UserID,
+		Session: id.SessionID,
+		Types:   []events.EventType{EventTypeMCPAppAvailable},
+	})
+	if err != nil {
+		t.Fatalf("subscribe bus: %v", err)
+	}
+	defer sub.Cancel()
+
+	ctx, err := identity.WithRun(mustIdentity(t), id, "run-pip-1")
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+	desc := resolveTool(t, p, "weather-server_weather_pip")
+	if _, err := desc.Invoke(ctx, json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+
+	select {
+	case ev := <-sub.Events():
+		payload, ok := ev.Payload.(AppAvailablePayload)
+		if !ok {
+			t.Fatalf("unexpected payload type %T", ev.Payload)
+		}
+		if payload.ResourceURI != resourceURI {
+			t.Errorf("payload ResourceURI = %q, want %q (the tool-definition binding)", payload.ResourceURI, resourceURI)
+		}
+		if payload.DisplayMode != "pip" {
+			t.Errorf("payload DisplayMode = %q, want pip (per-result hint wins over the binding)", payload.DisplayMode)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timeout waiting for mcp.app_available event")
+	}
+}
+
+// TestMCPAppAvailable_PlainResultEmitsNoEvent proves the negative branch: a
+// tool with NO `_meta.ui` binding (and no result hint) emits no discovery
+// event, so an ordinary tool — or one referencing a file:// / https://
+// resource — is never mistaken for an app.
 func TestMCPAppAvailable_PlainResultEmitsNoEvent(t *testing.T) {
 	bus := newTestBus(t)
 	p := newAppToolProvider(t, bus, "ui://weather/main.html")
@@ -212,7 +318,7 @@ func TestMCPAppAvailable_PlainResultEmitsNoEvent(t *testing.T) {
 
 	select {
 	case ev := <-sub.Events():
-		t.Fatalf("unexpected discovery event for a plain result: %+v", ev)
+		t.Fatalf("unexpected discovery event for a plain tool: %+v", ev)
 	case <-time.After(300 * time.Millisecond):
 		// No event — the expected outcome.
 	}

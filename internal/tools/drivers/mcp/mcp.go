@@ -458,12 +458,23 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	}
 
 	mcpName := t.Name
+	// MCP App binding: the canonical `io.modelcontextprotocol/ui` dialect
+	// carries the `ui://` UI resource on the tool DEFINITION's
+	// `_meta.ui.resourceUri` slot. Capture it here, at discovery — this is
+	// the spec-conformant source of the app reference. A real ext-apps
+	// server (e.g. one that advertises a `ui://…/index.html` per tool)
+	// returns an EMPTY result `_meta`, so reading the binding from the
+	// result alone never fires discovery. The binding is immutable after
+	// discovery and captured by value into the Invoke closure — the
+	// concurrent-reuse contract: no shared mutable per-run state on the
+	// Provider.
+	toolApp := parseAppRef(t.Meta)
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
 		return tools.RunWithPolicy(
 			ctx,
 			args,
 			func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-				return p.callTool(ctx, mcpName, args)
+				return p.callTool(ctx, mcpName, args, toolApp)
 			},
 			nil, // server-side schema validates on the wire; client-side compiled
 			nil, // output validator is optional.
@@ -510,8 +521,11 @@ func deriveSideEffect(a *mcpsdk.ToolAnnotations) tools.SideEffect {
 }
 
 // callTool dispatches a CallTool RPC and lowers the result. Used by
-// the descriptor's Invoke closure under the ToolPolicy shell.
-func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage) (tools.ToolResult, error) {
+// the descriptor's Invoke closure under the ToolPolicy shell. toolApp is
+// the tool-DEFINITION MCP App binding captured at discovery (nil for a
+// non-app tool); it is reconciled with any per-result `_meta.ui` hint to
+// produce the effective app reference on the result.
+func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef) (tools.ToolResult, error) {
 	session, err := p.sessionForRead()
 	if err != nil {
 		return tools.ToolResult{}, err
@@ -536,11 +550,17 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
 	}
 	value, lowerErr := lowerCallToolResult(res)
-	// When the result declares an interactive MCP App via `_meta.ui`,
-	// surface a discovery event so a Protocol client can mount the inline
-	// renderer for this turn. This is the planner-path projection of the
-	// app reference — the proxy path also carries it on its response, but a
-	// planner-initiated call never enters that path.
+	// MCP App discovery: the effective app reference is the tool-DEFINITION
+	// binding (the spec-conformant source of the `ui://` resource URI,
+	// captured at discovery), reconciled with any optional per-result
+	// `_meta.ui` hint (which wins for display mode only). The reconciled
+	// reference feeds BOTH the discovery event below AND the app-tool-call
+	// proxy projection, which reads value.AppRef. When the invoked tool has
+	// a UI binding, surface a discovery event so a Protocol client can mount
+	// the inline renderer for this turn. This is the planner-path projection
+	// of the app reference — the proxy path reuses the same value.AppRef on
+	// its response, but a planner-initiated call never enters that path.
+	value.AppRef = reconcileAppRef(toolApp, value.AppRef, uiDisplayModeHint(res.Meta))
 	if value.AppRef != nil {
 		p.publishAppAvailable(ctx, value.AppRef)
 	}
@@ -550,8 +570,8 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	return tools.ToolResult{Value: value}, nil
 }
 
-// publishAppAvailable emits the MCP App discovery event for a tool result
-// that declared a `ui://` app. The event is scoped to the inflight
+// publishAppAvailable emits the MCP App discovery event for an invoked
+// tool that declared a `ui://` app on its definition. The event is scoped to the inflight
 // caller's identity quadruple (its RunID correlates the discovery to the
 // turn). The emit is best-effort observability — the tool result is the
 // source of truth — so a missing identity or a publish failure logs and

@@ -683,6 +683,10 @@ Harbor is built in **waves** — a wave is ~3–8 phases that form a coherent su
 
 **Recurring failure modes to pre-empt** (the reason each guard in step 3 exists): agents drifting out of their worktree into the main checkout; latent `docs/decisions.md` markdownlint breakage that surfaces one PR late (CI lints repo-wide); committed merge-conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) from an agent that ran `git merge main` mid-build; and the occasional agent dying on an API-overload error mid-run — recover by picking up that worktree's in-progress work and finishing it as coordinator rather than re-dispatching from scratch.
 
+### 17.8 External-protocol conformance fixtures derive from the real spec
+
+When a phase implements a host or client for an external wire protocol (MCP, the `io.modelcontextprotocol/ui` ext-apps dialect, A2A, OAuth), its tests MUST exercise a fixture derived from the canonical spec artifact — the vendored/official schema, the official package's types, or a captured transcript from a real server — NOT a hand-authored fixture encoding the implementer's interpretation. A self-consistent hand fixture passes while the code is wired to the wrong field or placement, so the test goes green while the feature is inert against real servers. The MCP Apps `_meta.ui` discovery shipped four phases of green tests that all put `_meta.ui` on the tool RESULT, matching the code but not the spec; the canonical schema (and every real ext-apps server) puts it on the tool DEFINITION, so discovery never fired against a real server (D-216 corrected both the code and the fixture). Where a real server can be driven in dev (a stdio MCP binary, a local fixture server), a probe against it is the gate — env-gated so CI skips it (the `HARBOR_LIVE_*` pattern); where it can't, capture the real server's transcript and commit it as the fixture. This is the §17.6 "fix what the test finds" rule read upstream: a fixture that can't tell right-field from wrong-field is not a gate, it is a rubber stamp.
+
 ---
 
 ## 18. Operator-skill hygiene — same-PR drift prevention (effective V1.1.5)
