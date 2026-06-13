@@ -7,9 +7,12 @@
   //
   // Lifecycle:
   //   1. Preload the app's `ui://` HTML via the injected client
-  //      (→ mcp.servers.read_resource). Heavy content fails loudly — an
-  //      app document is never silently truncated or inlined past the
-  //      threshold (D-026).
+  //      (→ mcp.servers.read_resource). A document at/above the heavy-content
+  //      threshold (D-026) is offloaded to the ArtifactStore by reference;
+  //      the host resolves that stub to a presigned URL and fetches the bytes
+  //      (→ resolveArtifact → artifacts.get_ref). EITHER content source feeds
+  //      the SAME sandboxed `srcdoc` — heavy bytes are NEVER inlined through
+  //      the context plane, only fetched at the iframe edge.
   //   2. Wrap the HTML with the strict CSP and load it into the iframe via
   //      `srcdoc` under a sandbox with NO `allow-same-origin` — the iframe
   //      is forced to an opaque origin (no parent-DOM / cookie / localStorage
@@ -18,7 +21,7 @@
   //      the iframe's `contentWindow`, completing the `ui/initialize`
   //      handshake. Every app→host request routes through `appHostClient`.
   import type { RendererProps } from './index.js';
-  import { AppBridgeHost } from './app-bridge-host.js';
+  import { AppBridgeHost, type McpUiDisplayMode } from './app-bridge-host.js';
   import { appIframeSandbox, buildAppCSP, wrapAppDocument } from './sandbox-policy.js';
 
   let {
@@ -43,6 +46,28 @@
   const trusted = $derived(app?.rawHtmlTrusted ?? false);
   const sandbox = $derived(appIframeSandbox(trusted));
 
+  // The operator "pop to side-by-side" affordance (host-side, app-independent).
+  // The app can ask to grow via the AppBridge `ui/request-display-mode` handshake;
+  // this gives the OPERATOR the same reach without the app asking, dispatched
+  // through the SAME injected `onDisplayModeRequest` seam (never by reaching into
+  // the page — chat-module encapsulation, D-091). The affordance shows ONLY while
+  // the app is inline (the page-level fullscreen/pip panels carry their own mode
+  // bar) and ONLY for modes the host advertises it can apply (`availableDisplayModes`).
+  const isInline = $derived((app?.displayMode ?? 'inline') === 'inline' || app?.displayMode === '');
+  const canPip = $derived((availableDisplayModes ?? []).includes('pip'));
+  const canFullscreen = $derived((availableDisplayModes ?? []).includes('fullscreen'));
+  const showExpand = $derived(
+    isInline && onDisplayModeRequest != null && (canPip || canFullscreen)
+  );
+
+  // Pop the inline app to a host-applied display mode. The host knows it can
+  // apply `mode` (it is in `availableDisplayModes`), so it grants it directly —
+  // the same `{requested, granted}` shape the AppBridge handler produces — and
+  // the page's layout reducer moves the app to that region (D-062, D-214).
+  function popTo(mode: McpUiDisplayMode): void {
+    onDisplayModeRequest?.({ requested: mode, granted: mode });
+  }
+
   async function preload(): Promise<void> {
     if (!app || !serverID || !appHostClient) {
       loadState = 'empty';
@@ -52,19 +77,32 @@
     errorMessage = '';
     try {
       const resource = await appHostClient.readResource(serverID, app.resourceUri);
+      let documentHTML: string;
       if (resource.artifactRef) {
-        // A `ui://` document at/above the heavy threshold is a server bug for
-        // an inline app — refuse loudly rather than render a blank frame.
-        throw new Error(
-          `app document ${app.resourceUri} exceeds the inline heavy-content ` +
-            `threshold (artifact ${resource.artifactRef.id})`,
-        );
+        // The `ui://` document is at/above the heavy-content threshold (D-026),
+        // so the Runtime offloaded it to the ArtifactStore by reference rather
+        // than inlining it. This is the COMMON case, not a server bug — real
+        // Svelte/React App bundles routinely exceed the 32 KiB threshold.
+        // Resolve the by-reference stub to a presigned URL and fetch the bytes
+        // at the iframe edge, exactly as the inline path uses `content`; the
+        // offload (never inlining heavy bytes through the context plane) is
+        // correct and preserved — only the document SOURCE differs here.
+        const url = await appHostClient.resolveArtifact(resource.artifactRef.id);
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          throw new Error(
+            `failed to fetch app document artifact ${resource.artifactRef.id}: HTTP ${resp.status}`,
+          );
+        }
+        documentHTML = await resp.text();
+      } else {
+        documentHTML = resource.content ?? '';
       }
-      if (!resource.content) {
+      if (documentHTML === '') {
         loadState = 'empty';
         return;
       }
-      srcdoc = wrapAppDocument(resource.content, buildAppCSP(trusted));
+      srcdoc = wrapAppDocument(documentHTML, buildAppCSP(trusted));
       loadState = 'ready';
     } catch (err) {
       errorMessage = err instanceof Error ? err.message : String(err);
@@ -126,6 +164,37 @@
       <span>No app content.</span>
     </div>
   {:else}
+    {#if showExpand}
+      <!-- Host-side operator "pop to side-by-side" affordance. Dispatches the
+           display-mode request through the injected callback (D-091) — it never
+           reaches into the page. The app does not have to ask. -->
+      <div class="mcp-app__toolbar" data-testid="mcp-app-expand-bar">
+        {#if canPip}
+          <button
+            type="button"
+            class="mcp-app__expand"
+            data-testid="mcp-app-expand-pip"
+            aria-label="Pop app to side-by-side"
+            title="Pop to side-by-side"
+            onclick={() => popTo('pip')}
+          >
+            <span aria-hidden="true">⤢</span>
+          </button>
+        {/if}
+        {#if canFullscreen}
+          <button
+            type="button"
+            class="mcp-app__expand"
+            data-testid="mcp-app-expand-fullscreen"
+            aria-label="Pop app to fullscreen"
+            title="Pop to fullscreen"
+            onclick={() => popTo('fullscreen')}
+          >
+            <span aria-hidden="true">⛶</span>
+          </button>
+        {/if}
+      </div>
+    {/if}
     <iframe
       bind:this={iframeEl}
       class="mcp-app__frame"
@@ -141,11 +210,47 @@
 
 <style>
   .mcp-app {
+    position: relative;
     width: 100%;
     border: var(--border-hairline);
     border-radius: var(--radius-md);
     overflow: hidden;
     background: var(--color-surface-raised);
+  }
+
+  .mcp-app__toolbar {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    z-index: 1;
+    display: flex;
+    gap: var(--space-1);
+  }
+
+  .mcp-app__expand {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--space-6);
+    height: var(--space-6);
+    padding: var(--space-0);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-raised);
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .mcp-app__expand:hover {
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+
+  .mcp-app__expand:focus-visible {
+    outline: var(--border-hairline-width) solid var(--color-accent);
+    outline-offset: var(--space-1);
   }
 
   .mcp-app__frame {

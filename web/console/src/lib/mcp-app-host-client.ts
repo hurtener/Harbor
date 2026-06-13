@@ -19,6 +19,7 @@ import type {
   MCPAppToolListing,
   MCPAppToolResult,
 } from '$lib/chat/renderers/app-bridge-host.js';
+import type { ArtifactsGetRefResponse } from '$lib/protocol/artifacts.js';
 import type { ProtocolClient } from '$lib/protocol/client.js';
 import type {
   MCPAppCallToolResponse,
@@ -36,6 +37,9 @@ import type { ToolListResponse } from '$lib/protocol/tools.js';
  *   - `callTool`     → `mcp.apps.call_tool` (re-enters the tool-safety gates)
  *   - `listResources`→ `mcp.servers.resources`
  *   - `listTools`    → `tools.list`, narrowed to the server's `<source>_*` rows
+ *   - `resolveArtifact` → `artifacts.get_ref` (the heavy `ui://` document's
+ *                         by-reference stub → a presigned URL the renderer
+ *                         fetches the bytes from, D-026)
  *
  * Identity rides on the Protocol client's request choke point, so each call is
  * `(tenant, user, session)` scoped — there is no parallel, unscoped path.
@@ -94,6 +98,16 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
       return res.tools
         .filter((t) => t.name.startsWith(prefix))
         .map((t) => ({ name: t.name, description: t.description }));
+    },
+
+    async resolveArtifact(artifactID): Promise<string> {
+      // The read-side presigned-URL resolver (D-026). The Runtime backfills the
+      // identity scope from the request choke point, so the body carries only
+      // the artifact id; the renderer fetches the document bytes from the
+      // returned time-bounded URL. The wire field is `presigned_url`
+      // (internal/protocol/types/artifacts.go::ArtifactsGetRefResponse).
+      const res = await client.artifacts.getRef<ArtifactsGetRefResponse>({ id: artifactID });
+      return res.presigned_url;
     },
   };
 }

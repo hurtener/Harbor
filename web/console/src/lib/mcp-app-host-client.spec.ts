@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { makeMCPAppHostClient } from './mcp-app-host-client.js';
 import type { ProtocolClient } from './protocol/client.js';
 
-function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnType<typeof vi.fn>; callTool: ReturnType<typeof vi.fn>; resources: ReturnType<typeof vi.fn>; toolsList: ReturnType<typeof vi.fn> } {
+function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnType<typeof vi.fn>; callTool: ReturnType<typeof vi.fn>; resources: ReturnType<typeof vi.fn>; toolsList: ReturnType<typeof vi.fn>; getRef: ReturnType<typeof vi.fn> } {
   const readResource = vi.fn(async () => ({
     resource_uri: 'ui://srv/app.html',
     mime_type: 'text/html',
@@ -32,11 +32,18 @@ function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnTyp
       { name: 'other_tool', description: 'no' },
     ],
   }));
+  const getRef = vi.fn(async () => ({
+    ref: { id: 'art_studio_abc', size_bytes: 88_500 },
+    presigned_url: 'https://artifacts.example/art_studio_abc',
+    expires_at: '2026-06-13T00:00:00Z',
+    protocol_version: '1',
+  }));
   const client = {
     mcp: { servers: { readResource, resources }, apps: { callTool } },
     tools: { list: toolsList },
+    artifacts: { getRef },
   } as unknown as ProtocolClient;
-  return { client, readResource, callTool, resources, toolsList };
+  return { client, readResource, callTool, resources, toolsList, getRef };
 }
 
 describe('makeMCPAppHostClient', () => {
@@ -71,5 +78,14 @@ describe('makeMCPAppHostClient', () => {
     const host = makeMCPAppHostClient(client);
     const rows = await host.listTools('srv');
     expect(rows.map((t) => t.name)).toEqual(['srv_echo']);
+  });
+
+  it('resolveArtifact routes to artifacts.get_ref and returns the presigned_url (not the absent `url`)', async () => {
+    const { client, getRef } = fakeProtocolClient();
+    const host = makeMCPAppHostClient(client);
+    const url = await host.resolveArtifact('art_studio_abc');
+    expect(getRef).toHaveBeenCalledWith({ id: 'art_studio_abc' });
+    // The Go wire field is `presigned_url` — a `.url` read would be undefined.
+    expect(url).toBe('https://artifacts.example/art_studio_abc');
   });
 });

@@ -57,6 +57,9 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
       calls.listTools.push(serverID);
       return [{ name: 'srv_echo', description: 'echo' }];
     },
+    async resolveArtifact(id) {
+      return `https://artifacts.example/${id}`;
+    },
     ...overrides,
   };
   return { client, calls };
