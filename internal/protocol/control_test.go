@@ -1,9 +1,11 @@
 package protocol_test
 
 import (
-	"context"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -11,27 +13,29 @@ import (
 
 // TestDispatch_AllNineControls_RoundTrip exercises every one of the nine
 // steering-control Protocol methods through the in-process surface: each
-// is submitted at a sufficient scope with a method-appropriate payload,
-// and the test asserts (a) Dispatch returns a *types.ControlResponse
-// with Accepted=true and the right Method echo, and (b) the control
-// event actually landed on the run's steering inbox — proving the
-// surface reached the real Phase 52 Inbox, not a stub.
+// is submitted by a VERIFIED caller (identity on ctx) at a sufficient
+// privilege tier with a method-appropriate payload, and the test asserts
+// (a) Dispatch returns a *types.ControlResponse with Accepted=true and
+// the right Method echo, and (b) the control event actually landed on the
+// run's steering inbox — proving the surface reached the real Inbox, not
+// a stub. The owning user satisfies the owner_user/session_user controls;
+// PRIORITIZE requires the admin scope claim.
 func TestDispatch_AllNineControls_RoundTrip(t *testing.T) {
 	cases := []struct {
 		method  methods.Method
-		scope   string
+		admin   bool // PRIORITIZE is admin-only; the rest pass as the owning user
 		payload map[string]any
 		ctrl    steering.ControlType
 	}{
-		{methods.MethodCancel, "owner_user", nil, steering.ControlCancel},
-		{methods.MethodPause, "owner_user", nil, steering.ControlPause},
-		{methods.MethodResume, "owner_user", nil, steering.ControlResume},
-		{methods.MethodApprove, "owner_user", nil, steering.ControlApprove},
-		{methods.MethodReject, "owner_user", nil, steering.ControlReject},
-		{methods.MethodRedirect, "owner_user", map[string]any{"goal": "new goal"}, steering.ControlRedirect},
-		{methods.MethodInjectContext, "session_user", map[string]any{"note": "context"}, steering.ControlInjectContext},
-		{methods.MethodUserMessage, "session_user", map[string]any{"message": "hello agent"}, steering.ControlUserMessage},
-		{methods.MethodPrioritize, "admin", map[string]any{"priority": 7}, steering.ControlPrioritize},
+		{methods.MethodCancel, false, nil, steering.ControlCancel},
+		{methods.MethodPause, false, nil, steering.ControlPause},
+		{methods.MethodResume, false, nil, steering.ControlResume},
+		{methods.MethodApprove, false, nil, steering.ControlApprove},
+		{methods.MethodReject, false, nil, steering.ControlReject},
+		{methods.MethodRedirect, false, map[string]any{"goal": "new goal"}, steering.ControlRedirect},
+		{methods.MethodInjectContext, false, map[string]any{"note": "context"}, steering.ControlInjectContext},
+		{methods.MethodUserMessage, false, map[string]any{"message": "hello agent"}, steering.ControlUserMessage},
+		{methods.MethodPrioritize, true, map[string]any{"priority": 7}, steering.ControlPrioritize},
 	}
 
 	for _, tc := range cases {
@@ -43,10 +47,17 @@ func TestDispatch_AllNineControls_RoundTrip(t *testing.T) {
 				t.Fatalf("steering.Open: %v", err)
 			}
 
-			resp, err := fx.surface.Dispatch(context.Background(), tc.method, &types.ControlRequest{
+			// The caller is the run's owning user. PRIORITIZE additionally
+			// requires the verified admin scope.
+			var scopes []auth.Scope
+			if tc.admin {
+				scopes = append(scopes, auth.ScopeAdmin)
+			}
+			ctx := authCtx(t, run.Identity, scopes...)
+
+			resp, err := fx.surface.Dispatch(ctx, tc.method, &types.ControlRequest{
 				Identity: types.IdentityScope{
 					Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
-					Scope: tc.scope,
 				},
 				Payload: tc.payload,
 				EventID: "evt-" + string(tc.method),
@@ -87,6 +98,11 @@ func TestDispatch_AllNineControls_RoundTrip(t *testing.T) {
 			if ev.Identity != run {
 				t.Errorf("Dispatch(%s): enqueued event identity = %+v, want %+v", tc.method, ev.Identity, run)
 			}
+			// CallerTenant is the VERIFIED caller's tenant, not echoed from
+			// the request body.
+			if ev.CallerTenant != run.TenantID {
+				t.Errorf("Dispatch(%s): enqueued CallerTenant = %q, want %q (verified caller tenant)", tc.method, ev.CallerTenant, run.TenantID)
+			}
 			if ev.EventID != "evt-"+string(tc.method) {
 				t.Errorf("Dispatch(%s): enqueued event id = %q, want %q", tc.method, ev.EventID, "evt-"+string(tc.method))
 			}
@@ -104,10 +120,10 @@ func TestDispatch_AdminSatisfiesLowerScopes(t *testing.T) {
 	if _, err := fx.steering.Open(run); err != nil {
 		t.Fatalf("steering.Open: %v", err)
 	}
-	_, err := fx.surface.Dispatch(context.Background(), methods.MethodInjectContext, &types.ControlRequest{
+	ctx := authCtx(t, run.Identity, auth.ScopeAdmin)
+	_, err := fx.surface.Dispatch(ctx, methods.MethodInjectContext, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
-			Scope: "admin",
 		},
 		Payload: map[string]any{"note": "admin-injected context"},
 	})
@@ -132,10 +148,10 @@ func TestDispatch_PerRunIsolation(t *testing.T) {
 		t.Fatalf("steering.Open(B): %v", err)
 	}
 
-	_, err = fx.surface.Dispatch(context.Background(), methods.MethodPause, &types.ControlRequest{
+	ctx := authCtx(t, runA.Identity)
+	_, err = fx.surface.Dispatch(ctx, methods.MethodPause, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: runA.TenantID, User: runA.UserID, Session: runA.SessionID, Run: runA.RunID,
-			Scope: "owner_user",
 		},
 	})
 	if err != nil {
@@ -147,5 +163,128 @@ func TestDispatch_PerRunIsolation(t *testing.T) {
 	}
 	if inboxB.Len() != 0 {
 		t.Errorf("runB inbox.Len() = %d, want 0 — a control for run A leaked onto run B", inboxB.Len())
+	}
+}
+
+// TestDispatch_BodyScopeClaimIsIgnored_NoEscalation is the core
+// privilege-escalation regression. A non-admin caller (the run's owning
+// user) submits PRIORITIZE — an admin-only control — while asserting
+// Scope:"admin" in the request BODY. The surface must ignore the body
+// claim and derive owner_user from the verified ctx, so the control is
+// rejected with CodeScopeMismatch. A green here proves a body-supplied
+// scope string can no longer elevate a caller.
+func TestDispatch_BodyScopeClaimIsIgnored_NoEscalation(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	run := testRun("run-escalate")
+	inbox, err := fx.steering.Open(run)
+	if err != nil {
+		t.Fatalf("steering.Open: %v", err)
+	}
+
+	// Caller authenticates as the owning user with NO admin scope.
+	ctx := authCtx(t, run.Identity)
+	_, err = fx.surface.Dispatch(ctx, methods.MethodPrioritize, &types.ControlRequest{
+		Identity: types.IdentityScope{
+			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
+			Scope: "admin", // the lie — must be ignored
+		},
+		Payload: map[string]any{"priority": 9},
+	})
+	if code := codeOf(t, err); code != protoerrors.CodeScopeMismatch {
+		t.Fatalf("Dispatch(prioritize, body-claims-admin) code = %q, want %q — the body scope claim must NOT elevate the caller", code, protoerrors.CodeScopeMismatch)
+	}
+	if inbox.Len() != 0 {
+		t.Fatalf("escalated control reached the inbox (Len=%d) — body scope claim was trusted", inbox.Len())
+	}
+}
+
+// TestDispatch_NoVerifiedIdentity_FailsClosed proves the surface no
+// longer falls back to the request body when ctx carries no verified
+// identity (the auth middleware did not run). A fully-populated body,
+// including Scope:"admin", must still be rejected with
+// CodeIdentityRequired.
+func TestDispatch_NoVerifiedIdentity_FailsClosed(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	run := testRun("run-noident")
+	inbox, err := fx.steering.Open(run)
+	if err != nil {
+		t.Fatalf("steering.Open: %v", err)
+	}
+
+	_, err = fx.surface.Dispatch(t.Context(), methods.MethodPause, &types.ControlRequest{
+		Identity: types.IdentityScope{
+			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
+			Scope: "admin",
+		},
+	})
+	if code := codeOf(t, err); code != protoerrors.CodeIdentityRequired {
+		t.Fatalf("Dispatch(no verified identity) code = %q, want %q", code, protoerrors.CodeIdentityRequired)
+	}
+	if inbox.Len() != 0 {
+		t.Fatalf("control with no verified identity reached the inbox (Len=%d)", inbox.Len())
+	}
+}
+
+// TestDispatch_CrossTenantNonAdmin_Rejected proves a caller verified in
+// one tenant cannot steer a run in another: deriveSteeringScope grants no
+// authority (the caller is neither admin nor the run's owning user), so
+// the control is rejected with CodeScopeMismatch before it reaches the
+// inbox. This is the gate the old code could never fire, because it set
+// CallerTenant from the body (always == the run tenant).
+func TestDispatch_CrossTenantNonAdmin_Rejected(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	run := testRun("run-xtenant") // tenant-a
+	inbox, err := fx.steering.Open(run)
+	if err != nil {
+		t.Fatalf("steering.Open: %v", err)
+	}
+
+	// Caller is verified in a DIFFERENT tenant, no admin scope.
+	attacker := identity.Identity{TenantID: "tenant-b", UserID: "user-1", SessionID: "session-x"}
+	ctx := authCtx(t, attacker)
+	_, err = fx.surface.Dispatch(ctx, methods.MethodCancel, &types.ControlRequest{
+		Identity: types.IdentityScope{
+			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
+		},
+	})
+	if code := codeOf(t, err); code != protoerrors.CodeScopeMismatch {
+		t.Fatalf("Dispatch(cross-tenant, non-admin) code = %q, want %q", code, protoerrors.CodeScopeMismatch)
+	}
+	if inbox.Len() != 0 {
+		t.Fatalf("cross-tenant non-admin control reached the inbox (Len=%d)", inbox.Len())
+	}
+}
+
+// TestDispatch_CrossTenantAdmin_Allowed proves the admin scope is the one
+// legitimate path to cross-tenant steering: an admin verified in tenant-b
+// may cancel a run in tenant-a. The control reaches the inbox carrying
+// the verified caller tenant.
+func TestDispatch_CrossTenantAdmin_Allowed(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	run := testRun("run-xtenant-admin") // tenant-a
+	inbox, err := fx.steering.Open(run)
+	if err != nil {
+		t.Fatalf("steering.Open: %v", err)
+	}
+
+	admin := identity.Identity{TenantID: "tenant-b", UserID: "ops", SessionID: "session-ops"}
+	ctx := authCtx(t, admin, auth.ScopeAdmin)
+	_, err = fx.surface.Dispatch(ctx, methods.MethodCancel, &types.ControlRequest{
+		Identity: types.IdentityScope{
+			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(cross-tenant, admin) error = %v, want nil", err)
+	}
+	if inbox.Len() != 1 {
+		t.Fatalf("admin cross-tenant control did not reach the inbox (Len=%d)", inbox.Len())
+	}
+	drained, err := inbox.Drain()
+	if err != nil {
+		t.Fatalf("inbox.Drain: %v", err)
+	}
+	if drained[0].CallerTenant != "tenant-b" {
+		t.Errorf("CallerTenant = %q, want %q (verified admin tenant)", drained[0].CallerTenant, "tenant-b")
 	}
 }

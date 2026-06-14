@@ -12,6 +12,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -101,6 +102,20 @@ func testRun(run string) identity.Quadruple {
 		},
 		RunID: run,
 	}
+}
+
+// authCtx builds a request context carrying a VERIFIED caller identity
+// and zero or more verified JWT scope claims — the shape the auth
+// middleware produces. Steering controls read caller authority from this
+// context, never from the request body, so every control-surface test
+// authenticates through authCtx rather than passing context.Background().
+func authCtx(t *testing.T, id identity.Identity, scopes ...auth.Scope) context.Context {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), id)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	return auth.WithScopes(ctx, scopes)
 }
 
 // codeOf extracts the stable protocol error Code from err, failing the
@@ -257,30 +272,15 @@ func TestDispatch_Control_WrongRequestType_FailsClosed(t *testing.T) {
 	}
 }
 
-func TestDispatch_Control_UnknownScope_FailsClosed(t *testing.T) {
-	fx := newSurfaceFixture(t)
-	run := testRun("run-scope")
-	if _, err := fx.steering.Open(run); err != nil {
-		t.Fatalf("steering.Open: %v", err)
-	}
-	_, err := fx.surface.Dispatch(context.Background(), methods.MethodCancel, &types.ControlRequest{
-		Identity: types.IdentityScope{
-			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
-			Scope: "superadmin", // not a canonical steering scope
-		},
-	})
-	if got := codeOf(t, err); got != protoerrors.CodeScopeMismatch {
-		t.Fatalf("Dispatch(cancel, unknown scope) code = %q, want %q", got, protoerrors.CodeScopeMismatch)
-	}
-}
-
 func TestDispatch_Control_NoLiveInbox_FailsClosed(t *testing.T) {
 	fx := newSurfaceFixture(t)
-	// No steering.Open for this run — there is no inbox.
-	_, err := fx.surface.Dispatch(context.Background(), methods.MethodCancel, &types.ControlRequest{
+	// No steering.Open for this run — there is no inbox. The caller is
+	// verified as the run's owning user, so authority resolves and the
+	// surface proceeds to the inbox Lookup, which misses.
+	ctx := authCtx(t, identity.Identity{TenantID: "tenant-a", UserID: "user-1", SessionID: "session-x"})
+	_, err := fx.surface.Dispatch(ctx, methods.MethodCancel, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: "tenant-a", User: "user-1", Session: "session-x", Run: "run-ghost",
-			Scope: "owner_user",
 		},
 	})
 	if got := codeOf(t, err); got != protoerrors.CodeNotFound {
@@ -294,18 +294,19 @@ func TestDispatch_Control_ScopeBelowMinimum_FailsClosed(t *testing.T) {
 	if _, err := fx.steering.Open(run); err != nil {
 		t.Fatalf("steering.Open: %v", err)
 	}
-	// PRIORITIZE requires admin (RFC §6.3). A session_user caller is
-	// below the minimum — steering.CheckScope rejects it, the surface
-	// maps it to CodeScopeMismatch.
-	_, err := fx.surface.Dispatch(context.Background(), methods.MethodPrioritize, &types.ControlRequest{
+	// PRIORITIZE requires admin (RFC §6.3). The owning user (no admin
+	// scope) derives owner_user, which is below the minimum —
+	// steering.CheckScope rejects it, the surface maps it to
+	// CodeScopeMismatch.
+	ctx := authCtx(t, run.Identity)
+	_, err := fx.surface.Dispatch(ctx, methods.MethodPrioritize, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
-			Scope: "session_user",
 		},
 		Payload: map[string]any{"priority": 9},
 	})
 	if got := codeOf(t, err); got != protoerrors.CodeScopeMismatch {
-		t.Fatalf("Dispatch(prioritize, session_user) code = %q, want %q", got, protoerrors.CodeScopeMismatch)
+		t.Fatalf("Dispatch(prioritize, owner_user) code = %q, want %q", got, protoerrors.CodeScopeMismatch)
 	}
 }
 
@@ -322,10 +323,10 @@ func TestDispatch_Control_OversizePayload_FailsClosed(t *testing.T) {
 	for i := range huge {
 		huge[i] = 'x'
 	}
-	_, err := fx.surface.Dispatch(context.Background(), methods.MethodInjectContext, &types.ControlRequest{
+	ctx := authCtx(t, run.Identity)
+	_, err := fx.surface.Dispatch(ctx, methods.MethodInjectContext, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
-			Scope: "session_user",
 		},
 		Payload: map[string]any{"note": string(huge)},
 	})
@@ -334,29 +335,7 @@ func TestDispatch_Control_OversizePayload_FailsClosed(t *testing.T) {
 	}
 }
 
-func TestDispatch_Control_CrossTenantNonAdmin_FailsClosed(t *testing.T) {
-	fx := newSurfaceFixture(t)
-	// The run belongs to tenant-a; a caller authenticating under
-	// tenant-b without admin is a cross-tenant steering attempt. The
-	// surface sets CallerTenant from the request's tenant — but the run
-	// inbox's identity is tenant-a, so steering.CheckScope's cross-tenant
-	// gate fires. To exercise this we open the inbox under tenant-a but
-	// send the control with tenant-b in the identity scope: the inbox
-	// Enqueue rejects it because the event identity != inbox identity.
-	run := testRun("run-xtenant")
-	if _, err := fx.steering.Open(run); err != nil {
-		t.Fatalf("steering.Open: %v", err)
-	}
-	_, err := fx.surface.Dispatch(context.Background(), methods.MethodCancel, &types.ControlRequest{
-		Identity: types.IdentityScope{
-			Tenant: "tenant-b", User: run.UserID, Session: run.SessionID, Run: run.RunID,
-			Scope: "owner_user",
-		},
-	})
-	// The inbox for run-xtenant is keyed under tenant-a; an event with
-	// tenant-b identity cannot be looked up (CodeNotFound) — the inbox
-	// Registry.Lookup keys on the full quadruple.
-	if got := codeOf(t, err); got != protoerrors.CodeNotFound {
-		t.Fatalf("Dispatch(cancel, cross-tenant) code = %q, want %q", got, protoerrors.CodeNotFound)
-	}
-}
+// Cross-tenant steering authorization (non-admin rejected, admin allowed)
+// is exercised in control_test.go's TestDispatch_CrossTenant* tests,
+// which authenticate the caller via ctx — the authority source the
+// surface actually reads.

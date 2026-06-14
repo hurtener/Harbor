@@ -81,11 +81,13 @@ func TestConcurrentReuse_ControlSurface(t *testing.T) {
 				return
 			}
 
-			// (2) a steering control — lands on this run's own inbox.
-			ctrlResp, err := fx.surface.Dispatch(context.Background(), methods.MethodInjectContext, &types.ControlRequest{
+			// (2) a steering control — lands on this run's own inbox. The
+			// caller authenticates as this run's owning user (ctx-borne
+			// verified identity); owner_user satisfies the session_user
+			// minimum for INJECT_CONTEXT.
+			ctrlResp, err := fx.surface.Dispatch(authCtx(t, run.Identity), methods.MethodInjectContext, &types.ControlRequest{
 				Identity: types.IdentityScope{
 					Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
-					Scope: "session_user",
 				},
 				Payload: map[string]any{"goroutine": i},
 			})
