@@ -30,6 +30,12 @@ import (
 // bypass event — never inlined past the threshold, never silently
 // truncated.
 //
+// A `ui://` MCP App document is the one carve-out: it is a Console-render
+// payload, not LLM context, so it rides inline up to the dedicated, much
+// larger App-document cap instead of the LLM-context heavy threshold —
+// see appDocumentInlineCap. Above that cap it still offloads (the same
+// loud bypass), so a pathologically large App is never inlined unbounded.
+//
 // Concurrent reuse: AppsAccessor is an immutable adapter — the wrapped
 // registry / catalog / store / bus are themselves concurrent-safe
 // compiled artifacts, and the adapter adds no mutable state. Per-call
@@ -112,6 +118,31 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 // from the runtime-wide heavy-output boundary.
 const defaultHeavyThreshold = config.DefaultHeavyOutputThresholdBytes
 
+// appDocumentInlineCap is the inline byte ceiling for a `ui://` MCP App
+// document fetched through ReadResource. It is DELIBERATELY larger than
+// the heavy-output threshold (defaultHeavyThreshold, 32 KiB) because the
+// two ceilings guard different things:
+//
+//   - The heavy-output threshold (RFC §6.5) keeps bulky bytes OUT of the
+//     LLM context window — a large tool result inlined into the next
+//     prompt balloons the context and risks a context-window overflow.
+//   - An MCP App document NEVER enters the LLM context. The tool result
+//     carries only the tiny `_meta.ui.resourceUri` reference string; the
+//     `ui://` HTML itself is fetched ONLY by the Console (via
+//     mcp.servers.read_resource) and rendered in a sandboxed iframe. It
+//     is a render payload, not a context payload.
+//
+// Gating an App document on the LLM-context threshold offloads ordinary
+// real-world apps (a studio App's HTML routinely runs 80–100 KiB) to the
+// ArtifactStore by reference — and a by-reference App can only be fetched
+// via a presigned URL, which every non-S3 artifact driver fails loud on,
+// so the App never renders on the in-memory / filesystem / SQLite /
+// Postgres stores. The dedicated, larger cap lets the common case ride
+// inline on EVERY driver. Above the cap the read still offloads (the loud
+// `mcp.resource_offloaded` bypass) so a pathologically large App is never
+// inlined unbounded and never silently truncated.
+const appDocumentInlineCap = 2 * 1024 * 1024 // 2 MiB
+
 // compile-time assertions: AppsAccessor satisfies both Apps seams.
 var (
 	_ protocol.MCPResourceReader = (*AppsAccessor)(nil)
@@ -120,16 +151,29 @@ var (
 
 // ReadResource implements protocol.MCPResourceReader. It fetches the
 // resource bytes from the MCP registry under the ctx identity triple,
-// then applies the heavy-content decision: content at or above the
-// threshold is offloaded to the ArtifactStore by reference (with a loud
-// `mcp.resource_offloaded` event), otherwise it rides inline.
+// then applies the inline-or-offload decision against an effective cap:
+// a `ui://` MCP App document — a Console-render payload that never enters
+// the LLM context — rides inline up to the dedicated App-document cap
+// (appDocumentInlineCap); any other resource keeps the LLM-context heavy
+// threshold. Content at or above the effective cap is offloaded to the
+// ArtifactStore by reference (with a loud `mcp.resource_offloaded`
+// event); below it, the content rides inline.
 func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI string) (protocol.MCPResourceContent, error) {
 	content, mime, err := a.reg.ReadResource(ctx, serverID, resourceURI)
 	if err != nil {
 		return protocol.MCPResourceContent{}, err
 	}
 	out := protocol.MCPResourceContent{ResourceURI: resourceURI, MIMEType: mime}
-	if len(content) < a.threshold {
+	// A `ui://` App document is fetched only by the Console and rendered in
+	// a sandboxed iframe — it never reaches the LLM, so the LLM-context
+	// heavy threshold does not apply. It rides inline up to the larger
+	// App-document cap so real-world apps render on every artifact driver,
+	// not just S3. An ordinary resource keeps the heavy-output threshold.
+	inlineCap := a.threshold
+	if mcp.IsUIResourceURI(resourceURI) {
+		inlineCap = appDocumentInlineCap
+	}
+	if len(content) < inlineCap {
 		out.Inline = content
 		return out, nil
 	}
