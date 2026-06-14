@@ -86,10 +86,12 @@ func TestAppsAccessor_ReadResource_InlineBelowThreshold(t *testing.T) {
 	}
 }
 
-// TestAppsAccessor_ReadResource_HeavyOffload proves the D-026 branch:
-// a resource at or above the threshold is offloaded by reference AND a
-// loud `mcp.resource_offloaded` event is emitted — never inlined, never
-// silently truncated.
+// TestAppsAccessor_ReadResource_HeavyOffload proves the D-026 branch for
+// an ORDINARY (non-`ui://`) resource: content at or above the heavy
+// threshold is offloaded by reference AND a loud `mcp.resource_offloaded`
+// event is emitted — never inlined, never silently truncated. A non-app
+// resource keeps the LLM-context heavy threshold; only `ui://` App
+// documents ride the larger App-document cap (see the App-doc tests).
 func TestAppsAccessor_ReadResource_HeavyOffload(t *testing.T) {
 	body := []byte(strings.Repeat("A", 2048))
 	store := newAppsStore(t)
@@ -115,7 +117,9 @@ func TestAppsAccessor_ReadResource_HeavyOffload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
 	}
-	got, err := acc.ReadResource(idCtx(t), "srv-a", "ui://app/main.html")
+	// An ordinary `repo://` resource — NOT a `ui://` App document — so the
+	// heavy threshold (1024) governs and a 2048-byte body offloads.
+	got, err := acc.ReadResource(idCtx(t), "srv-a", "repo://app/data.json")
 	if err != nil {
 		t.Fatalf("ReadResource: %v", err)
 	}
@@ -142,6 +146,122 @@ func TestAppsAccessor_ReadResource_HeavyOffload(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("no mcp.resource_offloaded event — the loud bypass is not emitted")
+	}
+}
+
+// TestAppsAccessor_ReadResource_AppDocInlineAboveHeavyThreshold is the
+// revert-guard for the fix: a `ui://` App document of 86 KiB — well above
+// the 32 KiB LLM-context heavy threshold but below the 2 MiB App-document
+// cap — rides INLINE against a REAL in-memory ArtifactStore, with NO
+// `mcp.resource_offloaded` event. If the gate is reverted to the heavy
+// threshold, an 86 KiB doc would offload to an artifactRef instead of
+// inlining, and this test fails (the Console can then only fetch the App
+// via a presigned URL, which fails loud on every non-S3 driver — the live
+// bug this phase closes).
+func TestAppsAccessor_ReadResource_AppDocInlineAboveHeavyThreshold(t *testing.T) {
+	// 86 KiB — larger than the 32 KiB heavy threshold, smaller than the
+	// 2 MiB App-document cap. Mirrors go-study-mcp's ~86 KB studio App.
+	body := []byte(strings.Repeat("<div>app</div>", 86*1024/14))
+	if len(body) <= 32*1024 {
+		t.Fatalf("test fixture too small (%d bytes) — must exceed the 32 KiB heavy threshold", len(body))
+	}
+	store := newAppsStore(t)
+	bus := newAppsBus(t)
+
+	// Subscribe BEFORE the read so a (wrongly-fired) offload event would be
+	// captured. Delivery to the subscriber buffer is synchronous within
+	// Publish, so the absence check below is deterministic.
+	sub, err := bus.Subscribe(idCtx(t), events.Filter{
+		Tenant: "t-1", User: "u-1", Session: "s-1",
+		Types: []events.EventType{mcp.EventTypeMCPResourceOffloaded},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
+		Registry: newAppsRegistry(t, body),
+		Catalog:  tools.NewCatalog(),
+		Store:    store,
+		Bus:      bus,
+		// Threshold unset → the real 32 KiB heavy default. The 86 KiB doc
+		// would offload under it; the App-document cap is what saves it.
+	})
+	if err != nil {
+		t.Fatalf("NewAppsAccessor: %v", err)
+	}
+	got, err := acc.ReadResource(idCtx(t), "srv-a", "ui://go-study-mcp/studio/index.html")
+	if err != nil {
+		t.Fatalf("ReadResource: %v", err)
+	}
+	if got.Artifact != nil {
+		t.Fatalf("App document was offloaded to an artifactRef (%+v) — it must ride inline so it renders on every driver", got.Artifact)
+	}
+	if len(got.Inline) != len(body) {
+		t.Fatalf("Inline = %d bytes, want %d (the full App document)", len(got.Inline), len(body))
+	}
+	// No loud bypass event fired — the App rode inline, nothing offloaded.
+	select {
+	case ev := <-sub.Events():
+		t.Fatalf("unexpected %s event — the App document offloaded instead of inlining", ev.Type)
+	default:
+	}
+}
+
+// TestAppsAccessor_ReadResource_AppDocOffloadAboveCap proves the >cap
+// fallback is preserved: a `ui://` App document larger than the 2 MiB
+// App-document cap still offloads to the ArtifactStore by reference AND
+// fires the loud `mcp.resource_offloaded` bypass — a pathologically large
+// App is never inlined unbounded, never silently truncated.
+func TestAppsAccessor_ReadResource_AppDocOffloadAboveCap(t *testing.T) {
+	body := []byte(strings.Repeat("Z", 2*1024*1024+1)) // 2 MiB + 1 byte
+	store := newAppsStore(t)
+	bus := newAppsBus(t)
+
+	sub, err := bus.Subscribe(idCtx(t), events.Filter{
+		Tenant: "t-1", User: "u-1", Session: "s-1",
+		Types: []events.EventType{mcp.EventTypeMCPResourceOffloaded},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
+		Registry: newAppsRegistry(t, body),
+		Catalog:  tools.NewCatalog(),
+		Store:    store,
+		Bus:      bus,
+	})
+	if err != nil {
+		t.Fatalf("NewAppsAccessor: %v", err)
+	}
+	got, err := acc.ReadResource(idCtx(t), "srv-a", "ui://app/huge.html")
+	if err != nil {
+		t.Fatalf("ReadResource: %v", err)
+	}
+	if len(got.Inline) != 0 {
+		t.Fatalf("over-cap App document was inlined (%d bytes) — the >cap fallback must offload", len(got.Inline))
+	}
+	if got.Artifact == nil || got.Artifact.ID == "" {
+		t.Fatalf("over-cap App document not offloaded: %+v", got.Artifact)
+	}
+	scope := artifacts.ArtifactScope{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"}
+	stored, found, err := store.Get(idCtx(t), scope, got.Artifact.ID)
+	if err != nil || !found {
+		t.Fatalf("Get offloaded artifact: found=%v err=%v", found, err)
+	}
+	if len(stored) != len(body) {
+		t.Errorf("stored %d bytes, want %d", len(stored), len(body))
+	}
+	select {
+	case ev := <-sub.Events():
+		if ev.Type != mcp.EventTypeMCPResourceOffloaded {
+			t.Fatalf("event type = %q, want %q", ev.Type, mcp.EventTypeMCPResourceOffloaded)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("no mcp.resource_offloaded event — the loud bypass is not emitted for the >cap App document")
 	}
 }
 
