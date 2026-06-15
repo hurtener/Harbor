@@ -125,6 +125,19 @@
     border: var(--border-hairline);
     border-radius: var(--radius-md);
     background: var(--color-bg);
+    /* Self-apply text colour alongside background so descendant text that
+       doesn't override `color` renders correctly when the module is mounted
+       WITHOUT the app-shell rule that pairs background + color. Symmetric
+       with the font-family self-application below; both are part of the
+       token contract a second surface supplies. */
+    color: var(--color-text);
+    /* Self-apply the sans typeface at the module root so the chat module
+       renders correctly when mounted WITHOUT the Console global stylesheet
+       (the global html/body font-family rule). The chat module is a
+       self-contained component library — a second framework surface (the
+       packed dev UI) can mount it supplying only the token contract, with
+       no app-shell CSS. This token is part of that contract. */
+    font-family: var(--font-sans);
     overflow: hidden;
   }
 

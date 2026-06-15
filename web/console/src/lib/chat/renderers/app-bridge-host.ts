@@ -206,6 +206,21 @@ export interface AppBridgeHostOptions {
    * `inline` (fail-safe to the always-available mode). Optional.
    */
   availableDisplayModes?: McpUiDisplayMode[];
+  /**
+   * The host identity advertised to the app in the `ui/initialize` handshake
+   * (`name` / `version`). Injected through the module seam rather than baked
+   * in, so a second framework surface mounting the chat module (the packed dev
+   * UI) advertises its own identity. Defaults to {@link DEFAULT_HOST_INFO} —
+   * the current Console identity — so an existing caller is unchanged.
+   */
+  hostInfo?: { name: string; version: string };
+  /**
+   * The host theme propagated to the app's `McpUiHostContext`. Injected through
+   * the module seam so the mounting surface supplies its own theme rather than
+   * the module assuming the Console's. Defaults to `'dark'` (the prior baked-in
+   * value) so an existing caller is unchanged.
+   */
+  theme?: 'light' | 'dark';
 }
 
 /**
@@ -316,8 +331,13 @@ function asStructured(content: unknown): Record<string, unknown> {
   return { value: content };
 }
 
-/** The handshake host identity advertised in `ui/initialize`. */
-const HOST_INFO = { name: 'harbor-console', version: '1' } as const;
+/**
+ * The default handshake host identity advertised in `ui/initialize` — the
+ * Console's identity. Used when {@link AppBridgeHostOptions.hostInfo} is not
+ * supplied, so the Console caller is unchanged while a second framework surface
+ * can inject its own identity through the seam.
+ */
+export const DEFAULT_HOST_INFO = { name: 'harbor-console', version: '1' } as const;
 
 /**
  * The host capabilities advertised to the app. Phase 109b advertises the two
@@ -351,7 +371,7 @@ export class AppBridgeHost {
   #connected = false;
   #initialized = false;
 
-  constructor(opts: AppBridgeHostOptions, theme: 'light' | 'dark' = 'dark') {
+  constructor(opts: AppBridgeHostOptions) {
     this.#handlers = createAppHandlers({
       ...opts,
       onDisplayModeRequest: (req) => {
@@ -359,6 +379,11 @@ export class AppBridgeHost {
         opts.onDisplayModeRequest?.(req);
       },
     });
+
+    // Host identity + theme are injected through the seam; both default to the
+    // Console's prior baked-in values so an existing caller is unchanged.
+    const hostInfo = opts.hostInfo ?? DEFAULT_HOST_INFO;
+    const theme: 'light' | 'dark' = opts.theme ?? 'dark';
 
     const available = opts.availableDisplayModes ?? (['inline'] as McpUiDisplayMode[]);
     const hostContext: McpUiHostContext = {
@@ -372,7 +397,7 @@ export class AppBridgeHost {
     // The load-bearing line: the first argument is `null`. The AppBridge is
     // NEVER handed an MCP Client, so it can never auto-forward to a direct MCP
     // transport (D-173).
-    this.#bridge = new AppBridge(null, HOST_INFO, hostCapabilities(), { hostContext });
+    this.#bridge = new AppBridge(null, hostInfo, hostCapabilities(), { hostContext });
 
     this.#bridge.oncalltool = (params) => this.#handlers.oncalltool(params);
     this.#bridge.onreadresource = (params) => this.#handlers.onreadresource(params);
