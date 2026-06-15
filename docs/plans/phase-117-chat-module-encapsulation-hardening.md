@@ -64,15 +64,16 @@ makes the eventual move mechanical.
 
 ## Acceptance criteria
 
-- [ ] `.chat-panel` (or the module root) sets `font-family` from a token;
+- [x] `.chat-panel` (or the module root) sets `font-family` from a token;
       the module renders with correct typography with no Console global
       stylesheet present (a portability fixture asserts this).
-- [ ] `HOST_INFO` (name/version) and theme are injected via the module's
-      typed seam; no Console-specific literal remains in the chat module.
-- [ ] The chat module has zero imports of other Console internals
-      (`$lib/` outside `$lib/chat/`) — enforced by the existing boundary
-      check.
-- [ ] `svelte-check --fail-on-warnings` + `npm run lint` (token-literal
+- [x] `HOST_INFO` (name/version) and theme are injected via the module's
+      typed seam; the baked-in literal becomes the overridable exported
+      `DEFAULT_HOST_INFO` default (see D-222 §4.3).
+- [x] The chat module has zero imports of other Console internals
+      (`$lib/` outside `$lib/chat/`) — now enforced by the mechanical
+      encapsulation guard (`scripts/check-chat-encapsulation.mjs`).
+- [x] `svelte-check --fail-on-warnings` + `npm run lint` (token-literal
       rule) stay clean.
 
 ## Files added or changed
@@ -137,13 +138,15 @@ makes the eventual move mechanical.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes — N/A (UI-only)
-- [ ] Concurrent-reuse test — N/A (UI module, no reusable Go artifact)
-- [ ] Integration test — N/A (frontend-only; boundary check + portability fixture are the guards)
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified + decisions.md entry
+- [x] `make drift-audit` passes
+- [ ] `make preflight` passes — run by the coordinator (Go-side gate; this
+      phase's static smoke `scripts/smoke/phase-117.sh` passes: 7 OK / 0 FAIL)
+- [x] `make check-mirror` passes (no AGENTS.md/CLAUDE.md edits)
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target (chat-module component
+      tests extended: injection + portability + guard specs added, all green)
+- [x] If multi-isolation paths changed: cross-session isolation test passes — N/A (UI-only)
+- [x] Concurrent-reuse test — N/A (UI module, no reusable Go artifact)
+- [x] Integration test — N/A (frontend-only; the encapsulation guard + portability test are the guards)
+- [x] If new vocabulary: glossary updated (`chat-module token contract`)
+- [x] If a brief finding was departed from: justified + decisions.md entry (D-222 §4.3)

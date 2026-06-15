@@ -30,6 +30,15 @@ export default ts.config(
     }
   },
   {
+    // Build/CI scripts run under Node, not the browser — they use `process`,
+    // `console`, and the node: stdlib. The chat-module encapsulation guard
+    // lives here.
+    files: ['scripts/**/*.{js,mjs,cjs}'],
+    languageOptions: {
+      globals: { ...globals.node }
+    }
+  },
+  {
     rules: {
       // Allow underscore-prefixed unused variables (Svelte 5 props that
       // are destructured but not yet wired in the component).
