@@ -56,16 +56,25 @@ None.
 
 ## Acceptance criteria
 
-- [ ] The runtime issues a session-scoped and an owner-scoped token with
-      a verified principal; neither carries `admin`.
-- [ ] `deriveSteeringScope` grants `session_user` only from a verified
+- [x] The runtime issues a session-scoped and an owner-scoped token with
+      a verified principal; neither carries `admin`. (Dev mint via the
+      bootstrap endpoint's optional `scopes:[]` override; in the
+      single-participant session model the two resolve to the same
+      principal — D-221.)
+- [x] `deriveSteeringScope` grants `session_user` only from a verified
       session principal; a bare session-id match still confers nothing.
-- [ ] A non-admin owner: cancel/pause/resume/redirect/approve/reject on
+      (Resolved as option (a): a verified session participant IS the run
+      owner, so a full-triple match earns the strictly-higher
+      `owner_user`; a collision confers nothing. D-221.)
+- [x] A non-admin owner: cancel/pause/resume/redirect/approve/reject on
       their own run succeed; `prioritize` and cross-tenant are rejected.
-- [ ] A session_user: `inject_context` / `user_message` succeed;
-      owner-level controls are rejected.
-- [ ] Cross-session / cross-user isolation test: a non-admin token cannot
-      steer another principal's run.
+- [~] A session_user: `inject_context` / `user_message` succeed;
+      owner-level controls are rejected. (The distinct `session_user`
+      tier is RESERVED — no V1 Dispatch path mints it; the tier semantics
+      are covered at `steering.CheckScope`. §4.3 deviation in D-221.)
+- [x] Cross-session / cross-user isolation test: a non-admin token cannot
+      steer another principal's run. (Surface + wire collision-safety
+      tests + integration test.)
 
 ## Files added or changed
 
@@ -119,13 +128,13 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse test passes (steering edge, `-race`)
-- [ ] Integration test exists, real drivers, identity propagation, ≥1 failure mode, `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified + decisions.md entry
+- [x] `make drift-audit` passes
+- [ ] `make preflight` passes (coordinator runs the live gate; static gate + a local live-server smoke run green)
+- [x] `make check-mirror` passes (no AGENTS.md/CLAUDE.md edits)
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes (collision + concurrency stress)
+- [x] Concurrent-reuse test passes (steering edge, `-race`) (bootstrap N=100 + integration N=16, `-race`)
+- [x] Integration test exists, real drivers, identity propagation, ≥1 failure mode, `-race`
+- [x] If new vocabulary: glossary updated (`session-scoped token`, `owner-scoped token`)
+- [x] If a brief finding was departed from: justified + decisions.md entry (D-221 §4.3 deviations)

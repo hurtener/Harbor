@@ -14,7 +14,10 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,6 +34,38 @@ type bootstrapIdentity struct {
 	Tenant  string `json:"tenant"`
 	User    string `json:"user"`
 	Session string `json:"session"`
+}
+
+// BootstrapRequest is the OPTIONAL request body the bootstrap endpoint
+// accepts. An empty body (the common `-d '{}'` case) mints the handler's
+// default admin dev token, preserving the one-click Console-attach flow.
+// A body that names a full identity triple and/or a scope set mints a
+// token for THAT principal instead — the dev-only path that makes a
+// lesser-privileged (non-admin) token obtainable so the non-admin
+// authorization contract is exercisable end-to-end (and the live
+// negative-escalation smoke can run).
+//
+// The override is gated by the same loopback boundary as the default
+// mint: only a localhost peer ever reaches the signer, so a caller that
+// can request a token for an arbitrary principal already controls the
+// loopback dev surface. This is dev-only convenience — production
+// (`harbor serve`) never mounts this endpoint.
+type BootstrapRequest struct {
+	// Tenant / User / Session override the minted token's identity
+	// triple. All three must be non-empty to take effect; a partial
+	// triple is rejected (identity is mandatory — CLAUDE.md §6). When
+	// all three are empty, the handler's default identity is used.
+	Tenant  string `json:"tenant"`
+	User    string `json:"user"`
+	Session string `json:"session"`
+	// Scopes overrides the minted token's verified scope set. A nil
+	// pointer (the field absent from the JSON) keeps the handler's
+	// default scopes; a non-nil pointer — INCLUDING an explicit empty
+	// array — replaces them, so `"scopes": []` mints a token with NO
+	// scopes (the non-admin case). Each entry SHOULD be a canonical
+	// auth.Scope string; unknown scopes are dropped from the verified
+	// set at validation time (auth.WithScopes), never elevated.
+	Scopes *[]string `json:"scopes"`
 }
 
 // BootstrapResponse is the JSON envelope returned by the bootstrap
@@ -99,7 +134,23 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.signer.SignDevToken(time.Now(), h.id.TenantID, h.id.UserID, h.id.SessionID, h.scopes)
+	// Resolve the identity + scopes to mint for. An empty / absent body
+	// uses the handler defaults (the admin dev token); a body that names
+	// a full triple and/or a scope set overrides them (the dev-only path
+	// to a lesser-privileged token). A malformed body or a partial
+	// identity triple fails closed with 400 — identity is mandatory.
+	mintID, mintScopes, berr := h.resolveMint(r)
+	if berr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck // best-effort response on error path; 400 status code is the contract, body is informational
+			"code":    "invalid_request",
+			"message": berr.Error(),
+		})
+		return
+	}
+
+	token, err := h.signer.SignDevToken(time.Now(), mintID.TenantID, mintID.UserID, mintID.SessionID, mintScopes)
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "bootstrap: sign token failed",
 			slog.String("err", err.Error()),
@@ -117,11 +168,11 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		BaseURL: h.baseURL,
 		Token:   token,
 		Identity: bootstrapIdentity{
-			Tenant:  h.id.TenantID,
-			User:    h.id.UserID,
-			Session: h.id.SessionID,
+			Tenant:  mintID.TenantID,
+			User:    mintID.UserID,
+			Session: mintID.SessionID,
 		},
-		Scopes:          h.scopes,
+		Scopes:          mintScopes,
 		ProtocolVersion: "0.1.0",
 	}
 
@@ -134,6 +185,59 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.String("err", err.Error()))
 	}
 }
+
+// resolveMint reads the OPTIONAL request body and resolves the identity
+// triple + scope set the token should be minted for. An empty body, or a
+// body that names none of the override fields, yields the handler
+// defaults (the admin dev token). A body that names a full triple
+// overrides the identity; a body that carries a `scopes` array (even an
+// empty one) overrides the scope set.
+//
+// It fails closed with an error (the caller maps it to 400) on a
+// malformed body or a PARTIAL identity triple — identity is mandatory
+// (CLAUDE.md §6 rule 9), there is no "tenant-only" dev token.
+func (h *BootstrapHandler) resolveMint(r *http.Request) (identity.Identity, []string, error) {
+	mintID := h.id
+	mintScopes := h.scopes
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBootstrapBodyBytes))
+	if err != nil {
+		return identity.Identity{}, nil, fmt.Errorf("bootstrap request body could not be read")
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return mintID, mintScopes, nil
+	}
+
+	var req BootstrapRequest
+	if err := json.Unmarshal(trimmed, &req); err != nil {
+		return identity.Identity{}, nil, fmt.Errorf("bootstrap request body is not valid JSON")
+	}
+
+	// Identity override: all-or-nothing. A partial triple fails closed.
+	anyID := req.Tenant != "" || req.User != "" || req.Session != ""
+	allID := req.Tenant != "" && req.User != "" && req.Session != ""
+	switch {
+	case allID:
+		mintID = identity.Identity{TenantID: req.Tenant, UserID: req.User, SessionID: req.Session}
+	case anyID:
+		return identity.Identity{}, nil, fmt.Errorf("bootstrap identity override requires a full (tenant, user, session) triple")
+	}
+
+	// Scope override: a non-nil pointer (incl. an explicit empty array)
+	// replaces the default scope set; nil keeps the default.
+	if req.Scopes != nil {
+		mintScopes = *req.Scopes
+	}
+
+	return mintID, mintScopes, nil
+}
+
+// maxBootstrapBodyBytes bounds the optional bootstrap request body. The
+// override payload is a tiny identity-triple + scope-list JSON object; a
+// generous 4 KiB cap fails closed on a client streaming an unbounded
+// body at this dev-only endpoint.
+const maxBootstrapBodyBytes = 4 << 10
 
 // isLoopback parses the host from the remoteAddr (stripping the port)
 // and returns true when the IP is a loopback address. Accepts
