@@ -195,7 +195,7 @@ func TestBootErrorToCLIError_MapsKnownSentinels(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cli := bootErrorToCLIError(tc.err)
+			cli := bootErrorToCLIError("dev", tc.err)
 			if cli.Code != tc.want {
 				t.Errorf("Code = %q, want %q (input: %v)", cli.Code, tc.want, tc.err)
 			}

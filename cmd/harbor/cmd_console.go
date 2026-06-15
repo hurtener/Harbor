@@ -190,7 +190,7 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 		subcommandLabel: "console",
 	})
 	if err != nil {
-		return emitCLIError(cmd, bootErrorToCLIError(err))
+		return emitCLIError(cmd, bootErrorToCLIError("console", err))
 	}
 	defer stack.close(context.Background())
 

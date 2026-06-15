@@ -126,6 +126,14 @@ func TestValidate_TableDriven(t *testing.T) {
 			"identity",
 		},
 		{
+			"both JWKS sources set",
+			func(c *config.Config) {
+				c.Identity.JWKSURL = "https://issuer.example.com/.well-known/jwks.json"
+				c.Identity.JWKSFile = "/etc/harbor/jwks.json"
+			},
+			"identity",
+		},
+		{
 			"unknown log_format",
 			func(c *config.Config) { c.Telemetry.LogFormat = "csv" },
 			"telemetry.log_format",
