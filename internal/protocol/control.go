@@ -417,6 +417,20 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 			"method %q: the verified caller is not authorised to steer run %q", string(method), q.RunID)
 	}
 
+	// Enforce the per-control scope minimum (and the
+	// cross-tenant-requires-admin rule) at the edge, BEFORE the inbox
+	// Lookup. This is the SAME steering.CheckScope the inbox runs inside
+	// Enqueue — calling it here is not a second validator (CLAUDE.md §13),
+	// it is the one authoritative gate run one step earlier so a caller who
+	// holds SOME authority over the run but not enough for this control
+	// (e.g. the owning user submitting the admin-only PRIORITIZE) is
+	// refused with a scope error instead of leaking whether the run exists
+	// via a not-found. Enqueue runs CheckScope again — defence in depth for
+	// any caller that reaches the inbox by another path.
+	if err := steering.CheckScope(ctrlType, scope, caller.TenantID, q); err != nil {
+		return nil, mapSteeringError(string(method), err)
+	}
+
 	// Look up the run's live inbox. A run with no inbox (never started,
 	// or already ended) fails closed with CodeNotFound.
 	inbox, err := s.steering.Lookup(q)
@@ -454,30 +468,60 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 // consults the request body, whose scope field is a caller-supplied
 // claim. It fails closed: a caller who is neither an administrator nor
 // the run's owning user gets no authority (ok=false), and dispatchControl
-// rejects the control before it reaches the steering inbox.
+// rejects the control before it reaches the steering inbox. The contract
+// holds for a non-admin token (a verified token without the admin scope)
+// exactly as it does for an admin one — authority is the verified
+// identity-vs-run comparison, never a token-carried tier field.
 //
 //   - admin JWT scope                  → steering.ScopeAdmin (sufficient
 //     for every control type, cross-tenant included).
 //   - verified (tenant,user) == run's  → steering.ScopeOwnerUser, which
-//     by rank also satisfies the session_user-minimum controls
-//     (INJECT_CONTEXT, USER_MESSAGE).
+//     by rank also satisfies the session-scoped controls (INJECT_CONTEXT,
+//     USER_MESSAGE).
 //   - otherwise                        → no authority (ok=false).
 //
-// ScopeSessionUser is deliberately NOT derived from a bare session-id
-// match: session ids are not globally unique across users, so a
-// same-tenant session-id collision must not confer authority over
-// another user's run. A real session-scoped principal (a non-admin token
-// carrying a verified session claim) is the seam where that tier becomes
-// safe to grant; until that token contract exists, only the owning user
-// and the administrator can steer.
+// # Why the session-scoped tier collapses into the owner tier here
 //
-// steering.CheckScope (run inside Inbox.Enqueue) then enforces the
-// per-control minimum and the cross-tenant-requires-admin rule on top of
-// the tier this function returns — defence in depth, not a substitute.
+// A session belongs to exactly one (tenant, user): a run is keyed by the
+// full triple (tenant, user, session), so the principal authenticated
+// into a run's session IS that run's owning user. Granting the
+// session-scoped tier therefore requires a full-triple match, which is a
+// subset of the (tenant, user) match that already earns the strictly
+// higher owner tier — so a verified session participant is handed
+// owner_user, and the distinct session-scoped tier (where session_user is
+// strictly below owner_user) is never minted. That distinct tier would
+// only be meaningful for multi-participant sessions — a capability the
+// runtime does not have at V1 — so it stays reserved (the constant, the
+// rank, and the per-control minimum in steering.CheckScope keep it
+// defined for that future and for the admin/owner total order).
+//
+// # Why a session-id collision cannot escalate
+//
+// Session ids are client-chosen and not unique across users, so a
+// same-tenant collision is expected: a verified token for
+// (tenant-a, user-B, session-x) and a run owned by
+// (tenant-a, user-A, session-x) share the session-id STRING but are
+// different sessions. Collision safety is structural, not a special case:
+// the only non-admin grant compares the user component too, so a verified
+// principal whose user differs from the run owner's earns nothing — a
+// bare (tenant, session) match never confers authority over another
+// user's run. The collision token is rejected with CodeScopeMismatch
+// before the control reaches the inbox.
+//
+// steering.CheckScope (run at the dispatchControl edge AND again inside
+// Inbox.Enqueue) then enforces the per-control minimum and the
+// cross-tenant-requires-admin rule on top of the tier this function
+// returns — defence in depth, not a substitute.
 func deriveSteeringScope(ctx context.Context, caller identity.Identity, run identity.Quadruple) (steering.Scope, bool) {
 	if auth.HasScope(ctx, auth.ScopeAdmin) {
 		return steering.ScopeAdmin, true
 	}
+	// The run owner is identified by (tenant, user). A verified principal
+	// whose full triple (tenant, user, session) equals the run's is BOTH
+	// the session participant and — in Harbor's single-participant session
+	// model — the owner, so it is handed the strictly-higher owner tier by
+	// this same branch. A principal whose user differs (a session-id
+	// collision) falls through to "no authority".
 	if caller.TenantID == run.TenantID && caller.UserID == run.UserID {
 		return steering.ScopeOwnerUser, true
 	}

@@ -255,6 +255,119 @@ func TestDispatch_CrossTenantNonAdmin_Rejected(t *testing.T) {
 	}
 }
 
+// TestDispatch_SessionIDCollision_NonAdminCannotSteerOtherUsersRun is the
+// load-bearing collision-safety assertion for the non-admin token
+// contract. Two users in the same tenant chose the SAME session-id string
+// ("session-x"); user-A owns the target run. A verified non-admin token
+// for (tenant-a, user-B, session-x) must NOT be able to steer
+// (tenant-a, user-A, session-x)'s run just because the session-id
+// collides — deriveSteeringScope compares the user component, so user-B
+// earns no authority and the control is rejected CodeScopeMismatch before
+// it reaches the inbox. A green here proves a session-id collision across
+// users cannot escalate.
+func TestDispatch_SessionIDCollision_NonAdminCannotSteerOtherUsersRun(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	// user-A owns the run; session id is the colliding string.
+	run := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "tenant-a", UserID: "user-A", SessionID: "session-x"},
+		RunID:    "run-collision",
+	}
+	inbox, err := fx.steering.Open(run)
+	if err != nil {
+		t.Fatalf("steering.Open: %v", err)
+	}
+
+	// user-B holds a VERIFIED non-admin token for the SAME (tenant,
+	// session) but a different user. The transport forces body==JWT, so
+	// the only run user-B can name is user-B's own; here we exercise the
+	// surface directly with a body that names user-A's run (the worst
+	// case) to prove deriveSteeringScope refuses it even if the body-vs-JWT
+	// transport gate were bypassed.
+	attacker := identity.Identity{TenantID: "tenant-a", UserID: "user-B", SessionID: "session-x"}
+	ctx := authCtx(t, attacker) // no admin scope
+
+	for _, method := range []methods.Method{methods.MethodInjectContext, methods.MethodCancel, methods.MethodUserMessage} {
+		_, err := fx.surface.Dispatch(ctx, method, &types.ControlRequest{
+			Identity: types.IdentityScope{
+				Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
+			},
+			Payload: map[string]any{"note": "collision"},
+		})
+		if code := codeOf(t, err); code != protoerrors.CodeScopeMismatch {
+			t.Fatalf("Dispatch(%s) by session-id collision: code = %q, want %q", method, code, protoerrors.CodeScopeMismatch)
+		}
+	}
+	if inbox.Len() != 0 {
+		t.Fatalf("a session-id collision control reached user-A's inbox (Len=%d) — collision-safety breached", inbox.Len())
+	}
+}
+
+// TestDispatch_NonAdminOwnerPrioritize_RejectedBeforeLookup proves the
+// per-control scope minimum is enforced at the edge BEFORE the inbox
+// Lookup: a non-admin owner submitting the admin-only PRIORITIZE is
+// rejected CodeScopeMismatch even when the run has NO live inbox — the
+// authorization failure wins over a would-be not-found, so an
+// unauthorised caller cannot probe run existence. This is the ordering the
+// live smoke relies on (PRIORITIZE → 403 on a ghost run).
+func TestDispatch_NonAdminOwnerPrioritize_RejectedBeforeLookup(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	run := testRun("run-ghost-prio") // NO inbox opened — a ghost run.
+
+	ctx := authCtx(t, run.Identity) // the owning user, no admin scope.
+	_, err := fx.surface.Dispatch(ctx, methods.MethodPrioritize, &types.ControlRequest{
+		Identity: types.IdentityScope{
+			Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
+		},
+		Payload: map[string]any{"priority": 9},
+	})
+	if code := codeOf(t, err); code != protoerrors.CodeScopeMismatch {
+		t.Fatalf("Dispatch(prioritize, non-admin owner, ghost run) code = %q, want %q (scope check must precede inbox lookup)", code, protoerrors.CodeScopeMismatch)
+	}
+}
+
+// TestDispatch_NonAdminOwner_OwnRunControls confirms a non-admin owner can
+// exercise every control RFC §6.3 grants the owning user — the positive
+// half of the non-admin token contract. The owner submits the eight
+// owner/session-level controls on their own run with NO scopes attached
+// (a non-admin token), and each lands on the inbox.
+func TestDispatch_NonAdminOwner_OwnRunControls(t *testing.T) {
+	ownerControls := []struct {
+		method  methods.Method
+		payload map[string]any
+	}{
+		{methods.MethodCancel, nil},
+		{methods.MethodPause, nil},
+		{methods.MethodResume, nil},
+		{methods.MethodApprove, nil},
+		{methods.MethodReject, nil},
+		{methods.MethodRedirect, map[string]any{"goal": "new goal"}},
+		{methods.MethodInjectContext, map[string]any{"note": "ctx"}},
+		{methods.MethodUserMessage, map[string]any{"message": "hi"}},
+	}
+	for _, tc := range ownerControls {
+		t.Run(string(tc.method), func(t *testing.T) {
+			fx := newSurfaceFixture(t)
+			run := testRun("run-nonadmin-" + string(tc.method))
+			inbox, err := fx.steering.Open(run)
+			if err != nil {
+				t.Fatalf("steering.Open: %v", err)
+			}
+			ctx := authCtx(t, run.Identity) // non-admin owner.
+			if _, err := fx.surface.Dispatch(ctx, tc.method, &types.ControlRequest{
+				Identity: types.IdentityScope{
+					Tenant: run.TenantID, User: run.UserID, Session: run.SessionID, Run: run.RunID,
+				},
+				Payload: tc.payload,
+			}); err != nil {
+				t.Fatalf("Dispatch(%s) by non-admin owner: %v", tc.method, err)
+			}
+			if inbox.Len() != 1 {
+				t.Fatalf("Dispatch(%s) by non-admin owner did not reach the inbox (Len=%d)", tc.method, inbox.Len())
+			}
+		})
+	}
+}
+
 // TestDispatch_CrossTenantAdmin_Allowed proves the admin scope is the one
 // legitimate path to cross-tenant steering: an admin verified in tenant-b
 // may cancel a run in tenant-a. The control reaches the inbox carrying

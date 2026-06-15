@@ -75,9 +75,14 @@ Two elevated scopes exist. There is no third; per-surface scopes
 | `console:fleet` | Fleet observation: cross-tenant fan-in on `events.subscribe` / `events.aggregate`, the five `search.*` methods, `sessions.list`, `artifacts.list`, `memory.list`, and the seven posture reads (`runtime.*`, `metrics.snapshot`, `governance.posture`, `llm.posture`). It is observation-only — it satisfies **no** mutation gate, and the admin-only fan-ins (`tasks.list`, `pause.list`, `topology.snapshot`, `flows.list` / `flows.runs.list`) do not consult it. The per-method Auth column in the [methods reference](./methods.md) is the authoritative row-level map. |
 
 Distinct from both: the **steering scope** (`session_user` / `owner_user` /
-`admin`) that travels in a control request's body `scope` field and is checked
-against each control's RFC §6.3 minimum — see
-[task control](./task-control.md).
+`admin`) — the privilege tier each control is checked against per its RFC §6.3
+minimum. It is **derived from your verified token**, never read from a request
+body: the Runtime compares your token's `(tenant, user)` and `admin` claim
+against the target run (`admin` → cross-tenant + every control; you own the run
+→ `owner_user`, which covers `inject_context` / `user_message` / `cancel` /
+`pause` / `resume` / `redirect` / `approve` / `reject`; otherwise no authority).
+A `prioritize` or any cross-tenant control needs `admin`. The body's `scope`
+field is ignored. See [task control](./task-control.md).
 
 ## Dev bootstrap vs production posture
 
@@ -87,6 +92,20 @@ against each control's RFC §6.3 minimum — see
 `tenant=dev / user=dev / session=dev (default)` and the full scope set
 `["admin", "console:fleet"]`. It is printed at boot as `HARBOR_DEV_TOKEN=` and
 returned by the bootstrap envelope. The [quickstart](./quickstart.md) uses it.
+
+To mint a **lesser-privileged token** for testing the steering authorization
+contract — a token for a chosen identity with no `admin` scope — POST an
+optional override body to the same loopback endpoint:
+
+```bash
+curl -sS -X POST http://127.0.0.1:18080/v1/dev/bootstrap.json \
+  -d '{"tenant":"dev","user":"dev","session":"dev","scopes":[]}'
+```
+
+An explicit empty `scopes` array mints a token with no scopes (a non-admin
+token); a full `(tenant, user, session)` triple overrides the identity. An
+empty `{}` body keeps the default admin token, so the one-click attach flow is
+unchanged. This override is dev-only — `harbor serve` does not mint tokens.
 
 **Production** — the Runtime validates tokens against your OIDC provider via
 the `identity:` config block (`issuer`, `audience`, `jwks_url`,
