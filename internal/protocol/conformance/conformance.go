@@ -545,6 +545,20 @@ func runIdentity(tenant, suffix string) identity.Quadruple {
 	}
 }
 
+// callerCtx builds the verified-identity context the steering control
+// surface reads caller authority from — the shape the wire auth
+// middleware produces. Steering controls authorise off ctx, never off
+// the request body, so the in-process scenarios must authenticate the
+// caller this way (the Wire scenarios get it from the signed token).
+func callerCtx(t *testing.T, id identity.Identity, scopes ...auth.Scope) context.Context {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), id)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	return auth.WithScopes(ctx, scopes)
+}
+
 // RunSuite runs every scenario as a subtest. Consumers wire a Factory
 // that builds a fresh Stack per top-level subtest; the suite itself
 // owns the matrix definition.
@@ -1005,11 +1019,14 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 						User:    q.UserID,
 						Session: q.SessionID,
 						Run:     q.RunID,
-						Scope:   string(methodScopeFor(m)),
 					},
 					Payload: happyPayloadFor(m),
 				}
-				resp, err := st.Surface.Dispatch(context.Background(), m, req)
+				// Authenticate the caller via ctx with the admin scope —
+				// admin satisfies every control type's minimum (the Wire
+				// scenario signs an admin token for the same reason).
+				ctx := callerCtx(t, q.Identity, auth.ScopeAdmin)
+				resp, err := st.Surface.Dispatch(ctx, m, req)
 				if err != nil {
 					t.Fatalf("Dispatch(%s): unexpected error: %v", m, err)
 				}
@@ -1250,12 +1267,13 @@ func runErrorCodeMatrix(t *testing.T, factory Factory) {
 		if _, err := st.Steering.Open(q); err != nil {
 			t.Fatalf("steering.Open: %v", err)
 		}
-		// PRIORITIZE requires admin scope (RFC §6.3). Submitting with
-		// session_user is below the minimum — CodeScopeMismatch.
-		_, err := st.Surface.Dispatch(context.Background(), methods.MethodPrioritize, &types.ControlRequest{
+		// PRIORITIZE requires admin scope (RFC §6.3). The owning user
+		// (no admin scope) derives owner_user, below the minimum —
+		// CodeScopeMismatch.
+		ctx := callerCtx(t, q.Identity)
+		_, err := st.Surface.Dispatch(ctx, methods.MethodPrioritize, &types.ControlRequest{
 			Identity: types.IdentityScope{
 				Tenant: q.TenantID, User: q.UserID, Session: q.SessionID, Run: q.RunID,
-				Scope: string(steering.ScopeSessionUser),
 			},
 			Payload: map[string]any{"priority": 9},
 		})
@@ -1269,12 +1287,14 @@ func runErrorCodeMatrix(t *testing.T, factory Factory) {
 		if _, err := st.Steering.Open(q); err != nil {
 			t.Fatalf("steering.Open: %v", err)
 		}
-		// RFC §6.3 caps a string leaf at 4096 runes. Submit 5000.
+		// RFC §6.3 caps a string leaf at 4096 runes. Submit 5000. The
+		// owning user satisfies INJECT_CONTEXT's session_user minimum, so
+		// the request reaches the payload validator.
 		huge := strings.Repeat("x", 5000)
-		_, err := st.Surface.Dispatch(context.Background(), methods.MethodInjectContext, &types.ControlRequest{
+		ctx := callerCtx(t, q.Identity)
+		_, err := st.Surface.Dispatch(ctx, methods.MethodInjectContext, &types.ControlRequest{
 			Identity: types.IdentityScope{
 				Tenant: q.TenantID, User: q.UserID, Session: q.SessionID, Run: q.RunID,
-				Scope: string(steering.ScopeSessionUser),
 			},
 			Payload: map[string]any{"note": huge},
 		})
@@ -1291,12 +1311,16 @@ func runErrorCodeMatrix(t *testing.T, factory Factory) {
 	t.Run("CodeNotFound_GhostRunInbox", func(t *testing.T) {
 		st := factory(t)
 		defer st.Cleanup()
-		// A control for a run with no live inbox — never started.
-		_, err := st.Surface.Dispatch(context.Background(), methods.MethodCancel, &types.ControlRequest{
+		// A control for a run with no live inbox — never started. The
+		// caller is verified as the run's owning user, so authority
+		// resolves and the surface proceeds to the inbox Lookup miss.
+		ctx := callerCtx(t, identity.Identity{
+			TenantID: "tenant-conformance", UserID: "user-conformance", SessionID: "session-ghost",
+		})
+		_, err := st.Surface.Dispatch(ctx, methods.MethodCancel, &types.ControlRequest{
 			Identity: types.IdentityScope{
 				Tenant: "tenant-conformance", User: "user-conformance",
 				Session: "session-ghost", Run: "run-ghost",
-				Scope: string(steering.ScopeOwnerUser),
 			},
 		})
 		assertCode(t, err, protoerrors.CodeNotFound)

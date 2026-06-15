@@ -348,9 +348,15 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 // of that (CLAUDE.md §13 forbids a second validator); it constructs the
 // event, hands it to Enqueue, and maps the steering sentinel onto a
 // Protocol error code.
+//
+// Caller authority is read from the VERIFIED identity on ctx (placed
+// there by the auth middleware), never from the request body. The body
+// names which run the control targets — a routing key — but the caller's
+// tenant and privilege tier come from the authenticated context. Trusting
+// a body-supplied scope claim would let any caller assert admin against
+// the steering control plane (a privilege escalation); failing closed on
+// a missing verified identity is the CLAUDE.md §7 + §13 posture.
 func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Method, req any) (*types.ControlResponse, error) {
-	_ = ctx // the steering enqueue path is synchronous; ctx is held for the transport adapter's cancellation seam.
-
 	cr, ok := req.(*types.ControlRequest)
 	if !ok || cr == nil {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
@@ -366,10 +372,11 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 			"method %q: no steering control type mapping (Protocol-surface invariant violated)", string(method))
 	}
 
-	// Build the run quadruple. The full quadruple — triple + run — is
-	// mandatory for a steering control: it targets a specific run's
-	// inbox. An incomplete quadruple fails closed here, before the
-	// steering Registry is ever touched.
+	// Build the TARGET run quadruple from the request body. This is a
+	// routing key — it names which run the control targets — not an
+	// authority claim. The full quadruple (triple + run) is mandatory:
+	// an incomplete quadruple fails closed here, before the steering
+	// Registry is ever touched.
 	q := identity.Quadruple{
 		Identity: identity.Identity{
 			TenantID:  cr.Identity.Tenant,
@@ -387,14 +394,27 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 			"method %q: run id is required for a steering control", string(method))
 	}
 
-	// Resolve the caller's steering scope. An empty / unrecognised scope
-	// is rejected by steering.CheckScope inside Enqueue — but resolve it
-	// here so an obviously-malformed scope string fails with a clear
-	// Protocol error rather than being passed through as the raw string.
-	scope := steering.Scope(cr.Identity.Scope)
-	if !steering.IsValidScope(scope) {
+	// Read the VERIFIED caller identity from ctx. A request that has not
+	// been through the auth middleware carries no identity — fail closed
+	// rather than fall back to the (untrusted) request body.
+	caller, ok := identity.From(ctx)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: no verified caller identity on the request context", string(method))
+	}
+	if err := identity.Validate(caller); err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: verified caller identity is incomplete: %v", string(method), err)
+	}
+
+	// Derive the caller's steering privilege tier from the verified
+	// identity + JWT scope claims — NEVER from cr.Identity.Scope (a
+	// caller-supplied string). A caller with no authority over the
+	// target run is rejected before the control reaches the inbox.
+	scope, ok := deriveSteeringScope(ctx, caller, q)
+	if !ok {
 		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
-			"method %q: caller scope %q is not a canonical steering scope", string(method), cr.Identity.Scope)
+			"method %q: the verified caller is not authorised to steer run %q", string(method), q.RunID)
 	}
 
 	// Look up the run's live inbox. A run with no inbox (never started,
@@ -413,7 +433,7 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 		Type:         ctrlType,
 		Identity:     q,
 		CallerScope:  scope,
-		CallerTenant: q.TenantID, // the caller authenticated under the run's tenant; cross-tenant steering arrives with a differing CallerTenant once auth lands. Until then the trust-based scope claim carries the elevation.
+		CallerTenant: caller.TenantID, // the VERIFIED caller tenant — drives steering.CheckScope's cross-tenant-requires-admin gate. A control whose target run lives in a different tenant only passes when the caller holds the admin scope.
 		Payload:      cr.Payload,
 		EventID:      cr.EventID,
 	}
@@ -426,6 +446,42 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 		Method:          string(method),
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// deriveSteeringScope maps a verified caller onto the steering privilege
+// tier for the run being steered. It reads ONLY the verified ctx identity
+// + JWT scope claims and compares them against the target run — it never
+// consults the request body, whose scope field is a caller-supplied
+// claim. It fails closed: a caller who is neither an administrator nor
+// the run's owning user gets no authority (ok=false), and dispatchControl
+// rejects the control before it reaches the steering inbox.
+//
+//   - admin JWT scope                  → steering.ScopeAdmin (sufficient
+//     for every control type, cross-tenant included).
+//   - verified (tenant,user) == run's  → steering.ScopeOwnerUser, which
+//     by rank also satisfies the session_user-minimum controls
+//     (INJECT_CONTEXT, USER_MESSAGE).
+//   - otherwise                        → no authority (ok=false).
+//
+// ScopeSessionUser is deliberately NOT derived from a bare session-id
+// match: session ids are not globally unique across users, so a
+// same-tenant session-id collision must not confer authority over
+// another user's run. A real session-scoped principal (a non-admin token
+// carrying a verified session claim) is the seam where that tier becomes
+// safe to grant; until that token contract exists, only the owning user
+// and the administrator can steer.
+//
+// steering.CheckScope (run inside Inbox.Enqueue) then enforces the
+// per-control minimum and the cross-tenant-requires-admin rule on top of
+// the tier this function returns — defence in depth, not a substitute.
+func deriveSteeringScope(ctx context.Context, caller identity.Identity, run identity.Quadruple) (steering.Scope, bool) {
+	if auth.HasScope(ctx, auth.ScopeAdmin) {
+		return steering.ScopeAdmin, true
+	}
+	if caller.TenantID == run.TenantID && caller.UserID == run.UserID {
+		return steering.ScopeOwnerUser, true
+	}
+	return "", false
 }
 
 // compile-time assertion: every steering-control method
