@@ -183,6 +183,10 @@ func (c *Config) validateIdentity() error {
 		return fieldError("identity",
 			"one of jwks_url or jwks_file must be set")
 	}
+	if c.Identity.JWKSURL != "" && c.Identity.JWKSFile != "" {
+		return fieldError("identity",
+			"set only one of jwks_url or jwks_file, not both")
+	}
 	return nil
 }
 

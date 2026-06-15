@@ -82,6 +82,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/events"
@@ -259,7 +260,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	}
 	stack, err := bootDevStack(ctx, bootOpts)
 	if err != nil {
-		return emitCLIError(cmd, bootErrorToCLIError(err))
+		return emitCLIError(cmd, bootErrorToCLIError("dev", err))
 	}
 
 	// hot-reload supervisor. The supervisor owns the
@@ -370,6 +371,17 @@ type devBootOptions struct {
 	// JSON body + the boot log lines ("dev" or "console"). Defaults to
 	// "dev" when empty.
 	subcommandLabel string
+
+	// authValidatorFactory, when non-nil, builds the Protocol auth
+	// validator from the loaded config plus the assembled redactor / bus /
+	// logger — the PRODUCTION path. `harbor serve` injects the
+	// JWKS-backed validator factory here. When nil, the dev-signer path
+	// runs (ephemeral ES256 KeySet + a printed dev token), which is what
+	// `harbor dev` / `harbor console` use. A non-nil factory ALSO marks
+	// the boot as production: the dev-only surfaces (the bootstrap-token
+	// endpoint, the dev-token mint/print, the draft scaffolding, the
+	// dev-signer-backed token-rotation surface) are NOT mounted.
+	authValidatorFactory func(ctx context.Context, cfg *config.Config, red audit.Redactor, bus events.EventBus, logger *slog.Logger) (auth.Validator, error)
 }
 
 // bootDevStack does the heavy lifting: it reads the config, opens
@@ -674,35 +686,58 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	closers = append(closers, runLoopDriver.Close)
 
-	devSigner, err := newDevSigner()
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("dev signer: %w", err)
-	}
-	validator, err := auth.NewValidator(devSigner.KeySet(),
-		auth.WithRedactor(red),
-		auth.WithLogger(opts.logger),
-		auth.WithEventBus(bus),
+	// Auth validator. Two paths share this boot stack:
+	//   - PRODUCTION (`harbor serve`): opts.authValidatorFactory builds
+	//     the JWKS-backed validator from the operator's identity config.
+	//     No dev signer is constructed; the dev-only surfaces below stay
+	//     un-mounted.
+	//   - DEV (`harbor dev` / `harbor console`): an ephemeral ES256 dev
+	//     signer backs the validator and a default-identity dev token is
+	//     printed at boot.
+	var (
+		validator     auth.Validator
+		signer        *devSigner // nil in production
+		rotateSurface *auth.RotateSurface
 	)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("auth: %w", err)
-	}
+	if opts.authValidatorFactory != nil {
+		validator, err = opts.authValidatorFactory(ctx, cfg, red, bus, opts.logger)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("auth: %w", err)
+		}
+	} else {
+		signer, err = newDevSigner()
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("dev signer: %w", err)
+		}
+		validator, err = auth.NewValidator(signer.KeySet(),
+			auth.WithRedactor(red),
+			auth.WithLogger(opts.logger),
+			auth.WithEventBus(bus),
+		)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("auth: %w", err)
+		}
 
-	// the `auth.rotate_token` surface — the single
-	// net-new Console Settings-page Protocol method. The dev signer is
-	// the V1 auth.TokenIssuer (it re-mints ephemeral ES256 tokens for
-	// the caller's verified identity); a real OIDC-backed deployment
-	// wires an RFC 8693 token-exchange issuer behind the same seam.
-	// The redactor + bus are wired so every accepted rotation emits a
-	// redacted `audit.admin_scope_used` event (CLAUDE.md §7 rule 6).
-	rotateSurface, err := auth.NewRotateSurface(devSigner, red,
-		auth.WithRotateBus(bus),
-		auth.WithRotateLogger(opts.logger),
-	)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("auth: rotate surface: %w", err)
+		// the `auth.rotate_token` surface — the single
+		// net-new Console Settings-page Protocol method. The dev signer is
+		// the V1 auth.TokenIssuer (it re-mints ephemeral ES256 tokens for
+		// the caller's verified identity); a real OIDC-backed deployment
+		// wires an RFC 8693 token-exchange issuer behind the same seam.
+		// The redactor + bus are wired so every accepted rotation emits a
+		// redacted `audit.admin_scope_used` event (CLAUDE.md §7 rule 6).
+		// Production (`harbor serve`) has no in-runtime token issuer, so
+		// this surface is dev-only and stays un-mounted there.
+		rotateSurface, err = auth.NewRotateSurface(signer, red,
+			auth.WithRotateBus(bus),
+			auth.WithRotateLogger(opts.logger),
+		)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("auth: rotate surface: %w", err)
+		}
 	}
 
 	// the artifacts surface backing the Console
@@ -1090,33 +1125,38 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// validator + identity-in-ctx invariant. Mounted on
 	// `/v1/dev/drafts/` — Go's http.ServeMux longest-prefix-match
 	// resolves this BEFORE the `/v1/` Protocol catch-all below.
-	draftRoot := filepath.Join(".", ".harbor", "drafts")
-	draftStore, err := devdraft.NewStore(devdraft.Options{
-		Root:   draftRoot,
-		Bus:    bus,
-		Logger: opts.logger,
-	})
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("devdraft: %w", err)
+	//
+	// Drafts are a dev-loop scaffolding surface; the headless production
+	// server (`harbor serve`, signer == nil) does not mount them.
+	var draftStore *devdraft.Store
+	if signer != nil {
+		draftStore, err = devdraft.NewStore(devdraft.Options{
+			Root:   filepath.Join(".", ".harbor", "drafts"),
+			Bus:    bus,
+			Logger: opts.logger,
+		})
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("devdraft: %w", err)
+		}
+		// append the draft store's Close to
+		// the closer chain. The V1 Store is a no-op (no goroutines, no
+		// persistent handles) — the contract is "every constructed
+		// subsystem registers its Close" so a future SQLite-backed Draft
+		// store does not need to be retro-fitted into every caller.
+		closers = append(closers, draftStore.Close)
+		draftHandler, herr := devdraft.NewHandler(draftStore, opts.logger)
+		if herr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("devdraft: handler: %w", herr)
+		}
+		// Auth-wrap so the draft handler reads identity from ctx via the
+		// same path the Protocol transports do — keeps the §6 identity-
+		// is-mandatory invariant uniform across every authenticated
+		// surface mounted on the dev mux.
+		draftMW := auth.Middleware(validator, auth.MWLogger(opts.logger))
+		router.Handle(devdraft.RoutePrefix+"/", draftMW(draftHandler))
 	}
-	// append the draft store's Close to
-	// the closer chain. The V1 Store is a no-op (no goroutines, no
-	// persistent handles) — the contract is "every constructed
-	// subsystem registers its Close" so a future SQLite-backed Draft
-	// store does not need to be retro-fitted into every caller.
-	closers = append(closers, draftStore.Close)
-	draftHandler, err := devdraft.NewHandler(draftStore, opts.logger)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("devdraft: handler: %w", err)
-	}
-	// Auth-wrap so the draft handler reads identity from ctx via the
-	// same path the Protocol transports do — keeps the §6 identity-
-	// is-mandatory invariant uniform across every authenticated
-	// surface mounted on the dev mux.
-	draftMW := auth.Middleware(validator, auth.MWLogger(opts.logger))
-	router.Handle(devdraft.RoutePrefix+"/", draftMW(draftHandler))
 
 	// Compute the bind address so the bootstrap handler knows which
 	// URL to put in the response envelope. HARBOR_BIND overrides the
@@ -1124,6 +1164,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
 	if opts.bindAddr != "" {
 		bindAddr = opts.bindAddr
+	} else if opts.authValidatorFactory != nil && cfg.Server.BindAddr != "" {
+		// Production serve binds the operator-configured address (which
+		// may be a non-loopback interface, e.g. 0.0.0.0:8080); the dev /
+		// console loops stay loopback-only.
+		bindAddr = cfg.Server.BindAddr
 	}
 
 	// dev-only bootstrap endpoint. Mints a fresh
@@ -1131,15 +1176,18 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// needs for a one-click "Attach to local Runtime" button.
 	// Loopback-gated; mounted WITHOUT auth middleware — the loopback
 	// gate is the security boundary. Mounted BEFORE the /v1/ catch-all
-	// so the exact method+path match wins.
-	bootstrapHandler := server.NewBootstrapHandler(
-		devSigner,
-		identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
-		[]string{string(auth.ScopeAdmin), string(auth.ScopeConsoleFleet)},
-		"http://"+bindAddr,
-		opts.logger,
-	)
-	router.Handle("POST /v1/dev/bootstrap.json", bootstrapHandler)
+	// so the exact method+path match wins. Production (`harbor serve`)
+	// never mints dev tokens, so the endpoint is dev-only.
+	if signer != nil {
+		bootstrapHandler := server.NewBootstrapHandler(
+			signer,
+			identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
+			[]string{string(auth.ScopeAdmin), string(auth.ScopeConsoleFleet)},
+			"http://"+bindAddr,
+			opts.logger,
+		)
+		router.Handle("POST /v1/dev/bootstrap.json", bootstrapHandler)
+	}
 
 	// the tool-OAuth callback endpoint: the
 	// completion leg of the unified pause/resume choreography (RFC
@@ -1216,11 +1264,16 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 
 	// Mint and print a default-identity dev token so an operator can
-	// curl the protocol surface without writing JWT-signing code.
-	token, err := devSigner.SignDevToken(time.Now(), DevTenant, DevUser, DevSession, []string{"admin", "console:fleet"})
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("dev token: %w", err)
+	// curl the protocol surface without writing JWT-signing code. The
+	// production server (`harbor serve`, signer == nil) verifies tokens
+	// from the operator's IdP and never mints one itself.
+	var token string
+	if signer != nil {
+		token, err = signer.SignDevToken(time.Now(), DevTenant, DevUser, DevSession, []string{"admin", "console:fleet"})
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("dev token: %w", err)
+		}
 	}
 
 	// the dev-only runtime-entity fixture seeder.
@@ -1229,8 +1282,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// (which boots `harbor console`) renders real rows instead of
 	// SKIPping every data-shaped per-page assertion. Gated behind an
 	// explicit env var, never the default — a production runtime boots
-	// empty (the §13 dev-only escape-hatch posture; see devseed.go).
-	if os.Getenv(EnvDevSeedFixtures) == "1" {
+	// empty (the dev-only escape-hatch posture; see devseed.go).
+	// Gated on signer too: the production server (`harbor serve`, signer
+	// == nil) never seeds, even if the env var leaks into its
+	// environment — seeded fixtures would otherwise drive the real
+	// planner/LLM on a production boot.
+	if signer != nil && os.Getenv(EnvDevSeedFixtures) == "1" {
 		_, _ = fmt.Fprintln(opts.stderr, DevSeedBanner)
 		if seedErr := seedDevFixtures(ctx, devSeedDeps{
 			sessions:  sessionRegistry,
@@ -1334,17 +1391,22 @@ func (s *devStack) serve(ctx context.Context) error {
 		slog.String("memory_strategy", s.cfg.Memory.Strategy),
 		slog.Bool("dev_allow_mock", s.allowMock),
 	)
-	s.logger.InfoContext(ctx, "harbor "+label+": dev token minted",
-		slog.String("kid", DevKID),
-		slog.String("tenant", DevTenant),
-		slog.String("user", DevUser),
-		slog.String("session", DevSession),
-		slog.Duration("ttl", DevTokenTTL),
-	)
-	// Print the dev token to stderr so operators can `export
-	// HARBOR_DEV_TOKEN=$(harbor dev 2>&1 | grep ...` — wait, simpler:
-	// emit a single named-prefix line.
-	_, _ = fmt.Fprintf(s.stderr, "HARBOR_DEV_TOKEN=%s\n", s.devToken)
+	// The dev token is dev-only; `harbor serve` boots with an empty
+	// token (it verifies operator-IdP tokens via JWKS) and prints
+	// neither the "dev token minted" log line nor the HARBOR_DEV_TOKEN
+	// stderr contract line.
+	if s.devToken != "" {
+		s.logger.InfoContext(ctx, "harbor "+label+": dev token minted",
+			slog.String("kid", DevKID),
+			slog.String("tenant", DevTenant),
+			slog.String("user", DevUser),
+			slog.String("session", DevSession),
+			slog.Duration("ttl", DevTokenTTL),
+		)
+		// Print the dev token to stderr so operators can curl the
+		// protocol surface without writing JWT-signing code.
+		_, _ = fmt.Fprintf(s.stderr, "HARBOR_DEV_TOKEN=%s\n", s.devToken)
+	}
 
 	// Bind the listener up front (rather than using ListenAndServe) so
 	// (a) we can support HARBOR_BIND=host:0 ephemeral-port allocation
@@ -1450,33 +1512,35 @@ var ErrLLMRequired = errors.New("dev: LLM provider not configured")
 
 // bootErrorToCLIError maps a boot error onto a CLIError. The mapping
 // preserves the underlying error chain so callers can errors.Is back
-// to the sentinel.
-func bootErrorToCLIError(err error) CLIError {
+// to the sentinel. subcommand labels which command's boot failed ("dev"
+// / "console" / "serve") so the structured-error surface attributes the
+// failure correctly.
+func bootErrorToCLIError(subcommand string, err error) CLIError {
 	switch {
 	case errors.Is(err, ErrLLMRequired):
 		return CLIError{
-			Subcommand: "dev",
+			Subcommand: subcommand,
 			Message:    err.Error(),
 			Code:       CodeBootLLMRequired,
 			Hint:       "see examples/dev.yaml for the canonical shape; set " + EnvDevAllowMock + "=1 for the dev-only mock escape hatch",
 		}
 	case errors.Is(err, config.ErrConfigNotFound):
 		return CLIError{
-			Subcommand: "dev",
+			Subcommand: subcommand,
 			Message:    err.Error(),
 			Code:       CodeBootConfigInvalid,
 			Hint:       "pass --config or create harbor.yaml in the working directory (try `harbor scaffold --name my-agent`)",
 		}
 	case errors.Is(err, config.ErrConfigInvalid):
 		return CLIError{
-			Subcommand: "dev",
+			Subcommand: subcommand,
 			Message:    err.Error(),
 			Code:       CodeBootConfigInvalid,
 			Hint:       "run `harbor validate` for file:line precision on the failing field",
 		}
 	default:
 		return CLIError{
-			Subcommand: "dev",
+			Subcommand: subcommand,
 			Message:    fmt.Sprintf("boot failed: %v", err),
 			Code:       CodeBootInternal,
 			Hint:       "check the server log lines above for the originating subsystem",
