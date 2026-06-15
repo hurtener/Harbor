@@ -17,6 +17,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -288,8 +289,19 @@ func TestServeHTTP_Control_NoLiveRun_404(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1","run":"r-nonexistent","scope":"owner_user"}}`
-	rec := do(t, h, "/v1/control/cancel", body)
+	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1","run":"r-nonexistent"}}`
+	// Simulate the auth middleware: the verified caller (the run's owning
+	// user) rides on the request context. Authority resolves to owner_user,
+	// so the surface proceeds to the inbox Lookup, which misses → 404.
+	ctx, err := identity.With(context.Background(), identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/control/cancel", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.Handle(control.RoutePattern, h)
+	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}

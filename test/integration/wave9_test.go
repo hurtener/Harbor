@@ -267,6 +267,21 @@ func codeOfWave9(t *testing.T, err error) protoerrors.Code {
 	return pe.Code
 }
 
+// wave9CallerCtx builds the verified-identity context the steering control
+// surface reads caller authority from (the shape the wire auth middleware
+// produces). A caller whose verified (tenant,user) matches the run owns it
+// (owner_user), which satisfies every owner/session-level control. These
+// in-process E2E dispatches must authenticate this way — the surface reads
+// authority from ctx, never from the request body.
+func wave9CallerCtx(t *testing.T, id identity.Identity) context.Context {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), id)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	return ctx
+}
+
 // ---------------------------------------------------------------------------
 // TestE2E_Wave9_ProtocolDrivenRun_AssembledSurface — the load-bearing
 // wave-end shape: a Protocol client drives a HITL-gated run end to end
@@ -354,10 +369,9 @@ func TestE2E_Wave9_ProtocolDrivenRun_AssembledSurface(t *testing.T) {
 	// (5) `inject_context` through the ControlSurface — lands on the
 	// Phase 52 inbox while the run is paused. This proves a Protocol
 	// control reaches the live run's inbox mid-pause.
-	injResp, err := deps.surface.Dispatch(context.Background(), methods.MethodInjectContext, &types.ControlRequest{
+	injResp, err := deps.surface.Dispatch(wave9CallerCtx(t, q.Identity), methods.MethodInjectContext, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: q.TenantID, User: q.UserID, Session: q.SessionID, Run: q.RunID,
-			Scope: string(steering.ScopeSessionUser),
 		},
 		Payload: map[string]any{"note": "operator context injected via Protocol"},
 	})
@@ -373,10 +387,9 @@ func TestE2E_Wave9_ProtocolDrivenRun_AssembledSurface(t *testing.T) {
 	// finishes. A clean Finish IS the proof the whole chain composed:
 	// Protocol approve → steering inbox → RunLoop drain → applyEvent →
 	// Coordinator.Resume → planner re-enters.
-	apprResp, err := deps.surface.Dispatch(context.Background(), methods.MethodApprove, &types.ControlRequest{
+	apprResp, err := deps.surface.Dispatch(wave9CallerCtx(t, q.Identity), methods.MethodApprove, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: q.TenantID, User: q.UserID, Session: q.SessionID, Run: q.RunID,
-			Scope: string(steering.ScopeOwnerUser),
 		},
 		Payload: map[string]any{"approved_by": "operator"},
 	})
@@ -431,10 +444,11 @@ func TestE2E_Wave9_FailureModes_FailClosedAtTheEdge(t *testing.T) {
 	if _, oerr := deps.steering.Open(q); oerr != nil {
 		t.Fatalf("steering.Open: %v", oerr)
 	}
-	_, err = deps.surface.Dispatch(context.Background(), methods.MethodPrioritize, &types.ControlRequest{
+	// The owning user (no admin scope) derives owner_user, below
+	// PRIORITIZE's admin minimum → CodeScopeMismatch.
+	_, err = deps.surface.Dispatch(wave9CallerCtx(t, q.Identity), methods.MethodPrioritize, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: q.TenantID, User: q.UserID, Session: q.SessionID, Run: q.RunID,
-			Scope: string(steering.ScopeSessionUser),
 		},
 		Payload: map[string]any{"priority": 9},
 	})
@@ -449,10 +463,9 @@ func TestE2E_Wave9_FailureModes_FailClosedAtTheEdge(t *testing.T) {
 	for i := range huge {
 		huge[i] = 'x'
 	}
-	_, err = deps.surface.Dispatch(context.Background(), methods.MethodInjectContext, &types.ControlRequest{
+	_, err = deps.surface.Dispatch(wave9CallerCtx(t, q.Identity), methods.MethodInjectContext, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: q.TenantID, User: q.UserID, Session: q.SessionID, Run: q.RunID,
-			Scope: string(steering.ScopeSessionUser),
 		},
 		Payload: map[string]any{"note": string(huge)},
 	})
@@ -462,10 +475,10 @@ func TestE2E_Wave9_FailureModes_FailClosedAtTheEdge(t *testing.T) {
 
 	// (d) A steering control for a run with no live inbox fails closed
 	// with CodeNotFound — the run never started.
-	_, err = deps.surface.Dispatch(context.Background(), methods.MethodCancel, &types.ControlRequest{
+	ghostCaller := identity.Identity{TenantID: "tenant-w9", UserID: "user-w9", SessionID: "session-ghost"}
+	_, err = deps.surface.Dispatch(wave9CallerCtx(t, ghostCaller), methods.MethodCancel, &types.ControlRequest{
 		Identity: types.IdentityScope{
 			Tenant: "tenant-w9", User: "user-w9", Session: "session-ghost", Run: "run-ghost",
-			Scope: string(steering.ScopeOwnerUser),
 		},
 	})
 	if got := codeOfWave9(t, err); got != protoerrors.CodeNotFound {
@@ -550,10 +563,9 @@ func TestE2E_Wave9_Concurrency_NoCrossTalk(t *testing.T) {
 			}
 
 			// `approve` via the shared surface — resumes this run only.
-			if _, err := deps.surface.Dispatch(context.Background(), methods.MethodApprove, &types.ControlRequest{
+			if _, err := deps.surface.Dispatch(wave9CallerCtx(t, q.Identity), methods.MethodApprove, &types.ControlRequest{
 				Identity: types.IdentityScope{
 					Tenant: q.TenantID, User: q.UserID, Session: q.SessionID, Run: q.RunID,
-					Scope: string(steering.ScopeOwnerUser),
 				},
 			}); err != nil {
 				errs <- fmt.Errorf("run %d approve: %w", i, err)
