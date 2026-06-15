@@ -21,7 +21,11 @@
   //      the iframe's `contentWindow`, completing the `ui/initialize`
   //      handshake. Every app→host request routes through `appHostClient`.
   import type { RendererProps } from './index.js';
-  import { AppBridgeHost, type McpUiDisplayMode } from './app-bridge-host.js';
+  import {
+    AppBridgeHost,
+    DEFAULT_HOST_INFO,
+    type McpUiDisplayMode
+  } from './app-bridge-host.js';
   import { appIframeSandbox, buildAppCSP, wrapAppDocument } from './sandbox-policy.js';
 
   let {
@@ -121,7 +125,11 @@
       client: appHostClient,
       serverID,
       availableDisplayModes,
-      onDisplayModeRequest
+      onDisplayModeRequest,
+      // Host identity is injected through the seam (not baked into the module).
+      // The Console supplies its own identity; theme stays at the seam default
+      // ('dark'), preserving prior behaviour until a theme prop is threaded.
+      hostInfo: DEFAULT_HOST_INFO
     });
     try {
       await host.connect(iframeEl.contentWindow);
