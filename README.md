@@ -185,6 +185,10 @@ there:
 
 - `harbor dev` — boots the local Runtime + Protocol server, mints an ephemeral
   dev token, serves until you `Ctrl-C`.
+- `harbor serve` — the production sibling of `harbor dev`: boots the headless
+  Runtime + Protocol surface behind a JWKS-backed JWT verifier (your IdP's
+  signing keys, via `identity.jwks_url` / `jwks_file`), mints no token, embeds
+  no Console. See [`examples/serve.yaml`](examples/serve.yaml).
 - `harbor console` — serves the Harbor Console (baked into the binary) against
   a co-resident Runtime.
 - `harbor validate` — runs the config loader against a YAML file with

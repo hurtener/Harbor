@@ -11,6 +11,26 @@ including in tests, except as documented `testdata/` fixtures.
 | `rs256_public.pem`  | Verifies the above | RSA 2048 |
 | `es256_private.pem` | Signs test JWTs for `ES256` parser-acceptance tests | ECDSA P-256 |
 | `es256_public.pem`  | Verifies the above | ECDSA P-256 |
+| `jwks.json`         | A JWK Set (RFC 7517) carrying the two PUBLIC keys above (kids `test-rsa-1` / `test-ec-1`) — the real fixture the JWKS-backed `KeySet` tests parse | RSA 2048 + ECDSA P-256 |
+
+## `jwks.json` — derived from the real keys, not hand-authored
+
+`jwks.json` is the canonical JWK Set fixture the `JWKSKeySet` tests parse.
+It is **generated** from `rs256_public.pem` + `es256_public.pem` by an
+independent path (a standalone program using `crypto/x509` +
+`math/big` + `base64.RawURLEncoding`) — NOT hand-typed and NOT shaped by
+the parser under test. This is the §17.8 discipline: a fixture produced
+by a different code path than the parser cannot rubber-stamp a wrong-field
+parse. Regenerate it from the PEMs with the equivalent of:
+
+```text
+# read rs256_public.pem → RSA → {kty:RSA, kid:test-rsa-1, alg:RS256, n, e}
+# read es256_public.pem → EC  → {kty:EC,  kid:test-ec-1,  alg:ES256, crv:P-256, x, y}
+# emit {"keys":[ … ]}  (base64url, no padding)
+```
+
+The `kid` values are stable test constants; the keys are the same dummy
+public-knowledge material described below.
 
 **These keys are public knowledge.** They are committed to the
 repository, visible in every clone, and were generated locally with

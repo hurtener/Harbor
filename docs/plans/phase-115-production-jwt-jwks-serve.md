@@ -54,14 +54,15 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `auth.Validator` verifies a token against a JWKS keyset; rejects
+- [x] `auth.Validator` verifies a token against a JWKS keyset; rejects
       HS\*/`none`; rejects an unknown `kid` after a bounded refresh.
-- [ ] Keyset fetch is cached and refreshed; a `-race` concurrent-reuse
+- [x] Keyset fetch is cached and refreshed; a `-race` concurrent-reuse
       test covers N≥100 concurrent verifications against one Validator.
-- [ ] `harbor serve` boots behind the production verifier and exits
+      (N=150 against one shared keyset+validator.)
+- [x] `harbor serve` boots behind the production verifier and exits
       non-zero with a config-key-naming error when none is configured.
-- [ ] A request with a JWKS-verified token reaches a surface carrying the
-      verified identity + scopes on ctx.
+- [x] A request with a JWKS-verified token reaches a surface carrying the
+      verified identity + scopes on ctx. (`test/integration/jwks_serve_test.go`.)
 
 ## Files added or changed
 
@@ -120,11 +121,11 @@ None.
 
 - [ ] `make drift-audit` passes
 - [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse test passes (Validator, N≥100, `-race`)
-- [ ] Integration test exists, real drivers, identity propagation, ≥1 failure mode, `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified + decisions.md entry
+- [x] `make check-mirror` passes (no rule-file edits; AGENTS.md ↔ CLAUDE.md unchanged)
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes (integration no-identity-bleed run)
+- [x] Concurrent-reuse test passes (Validator, N≥100, `-race`)
+- [x] Integration test exists, real drivers, identity propagation, ≥1 failure mode, `-race`
+- [x] If new vocabulary: glossary updated (`JWKS validator`)
+- [ ] If a brief finding was departed from: justified + decisions.md entry (none departed)

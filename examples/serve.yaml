@@ -1,0 +1,96 @@
+# Harbor — production `harbor serve` configuration.
+#
+# `harbor serve` boots the headless Runtime + Protocol surface behind a
+# PRODUCTION JWT verifier: it mints no token of its own (unlike
+# `harbor dev`), and verifies every `/v1/*` request against your identity
+# provider's published signing keys (a JWK Set, RFC 7517).
+#
+# This file shows the production-shaped blocks that matter for serving;
+# every other knob (governance tiers, memory/skills drivers, MCP/A2A
+# tool peers, the full LLM model-profile surface) is documented
+# exhaustively in examples/harbor.yaml — copy from there as needed.
+#
+# Boot is fail-loud: a missing JWKS source, an unreachable provider, or
+# a missing real LLM provider exits non-zero with a named-field error.
+# `harbor serve` never falls back to the dev signer or a mock.
+
+server:
+  # Production binds a reachable interface (not loopback-only). Override
+  # at the command line with `--bind host:port`.
+  bind_addr: 0.0.0.0:8080
+  shutdown_grace_period: 30s
+
+identity:
+  # Asymmetric algorithms only (Harbor §7 security rule 1). The verifier
+  # rejects HS* and `none` at the algorithm allowlist BEFORE the signing
+  # key is consulted, so the algorithm-confusion CVE family is
+  # structurally impossible. List the algorithm(s) your IdP signs with.
+  jwt_algorithms:
+    - RS256
+    - ES256
+  # The `iss` claim every accepted token must carry — your IdP's issuer.
+  issuer: https://issuer.example.com
+  # The `aud` claim every accepted token must carry — this Runtime's
+  # audience identifier as registered with your IdP.
+  audience: harbor
+  # The verifier fetches your IdP's signing keys from this JWK Set
+  # endpoint, caches them, and refreshes on key rotation (TTL + a
+  # bounded on-miss re-fetch). HTTPS in production.
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+  # Alternatively, load the JWK Set from a local file synced out of band
+  # (air-gapped deployments). Set EXACTLY ONE of jwks_url / jwks_file.
+  # jwks_file: /etc/harbor/jwks.json
+
+telemetry:
+  log_format: json
+  log_level: info
+  service_name: harbor
+
+state:
+  # Durable in production — `sqlite` (single-node) or `postgres`
+  # (multi-replica). `inmem` shown here for a self-contained example;
+  # see examples/harbor.yaml for the dsn forms.
+  driver: inmem
+
+llm:
+  # A real provider is mandatory — `harbor serve` does NOT honour the
+  # HARBOR_DEV_ALLOW_MOCK escape hatch.
+  driver: bifrost
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  # Use an env.NAME reference so the secret stays out of the repo; the
+  # driver resolves os.Getenv at boot and fails closed if it is unset.
+  api_key: env.OPENROUTER_API_KEY
+  timeout: 60s
+  context_window_reserve: 0.05
+  model_profiles:
+    anthropic/claude-sonnet-4:
+      context_window_tokens: 200000
+      token_estimator: chars_div_4
+      json_schema_mode: native
+      reasoning_effort: medium
+
+events:
+  driver: inmem
+
+artifacts:
+  driver: inmem
+  heavy_output_threshold_bytes: 32768
+
+tasks:
+  driver: inprocess
+
+memory:
+  driver: inmem
+  strategy: none
+
+planner:
+  driver: react
+
+tools:
+  http_manifests: []
+  mcp_servers: []
+
+distributed:
+  bus_driver: loopback
+  remote_driver: loopback
