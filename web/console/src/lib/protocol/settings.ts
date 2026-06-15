@@ -62,28 +62,35 @@ export interface RuntimeDrivers {
 	subsystems: SubsystemDriver[];
 }
 
-/** Token-bucket rate-limit view in one governance tier. */
+/** Token-bucket rate-limit view in one governance tier — mirrors `types.RateLimitView`. */
 export interface RateLimitView {
 	capacity?: number;
 	refill_tokens?: number;
-	refill_interval?: string;
+	/** Refill tick duration in milliseconds (the Go side holds a `time.Duration`). */
+	refill_interval_ms?: number;
 }
 
-/** One identity tier's governance posture. */
+/**
+ * One identity tier's governance posture — mirrors `types.IdentityTierView`.
+ * The tier NAME is the `identity_tiers` map key, not a field on the value.
+ */
 export interface IdentityTierView {
-	tier: string;
 	budget_ceiling_usd?: number;
 	max_tokens?: number;
 	rate_limit?: RateLimitView;
 }
 
-/** `governance.posture` response — the read-only D-081 IdentityTiers view. */
+/**
+ * `governance.posture` response — the read-only IdentityTiers view.
+ * `identity_tiers` maps tier name → tier configuration; an empty/absent map
+ * signals the latent default (no enforcement).
+ */
 export interface GovernancePostureResponse {
 	default_tier?: string;
 	resolved_tier?: string;
-	tiers?: IdentityTierView[];
-	/** True when the governance config is the latent default (no tiers). */
-	latent?: boolean;
+	identity_tiers?: Record<string, IdentityTierView>;
+	/** Echoes the Protocol version the Runtime answered with. */
+	protocol_version?: string;
 }
 
 /** `llm.posture` response — the bound LLM provider posture. */
@@ -93,6 +100,8 @@ export interface LLMPostureResponse {
 	region?: string;
 	/** True iff the runtime booted with HARBOR_DEV_ALLOW_MOCK=1 (D-089). */
 	mock_mode?: boolean;
+	/** Echoes the Protocol version the Runtime answered with. */
+	protocol_version?: string;
 }
 
 /** `auth.rotate_token` response — the one-time-revealed re-minted token. */

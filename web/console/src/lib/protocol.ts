@@ -1,21 +1,29 @@
-// HAND-MAINTAINED — keep in lockstep with
+// HAND-MAINTAINED, mechanically LOCKSTEP-GATED — keep in lockstep with
 // internal/protocol/singlesource.CanonicalWireTypes.
 //
-// D-093 specifies a `cmd/harbor-gen-protocol-ts` generator that would
-// regenerate this file from the Go `CanonicalWireTypes` single source,
-// with a `make protocol-ts-gen-check` CI gate. That generator has NOT
-// been built — Phase 72h committed this file as a hand-shaped stub and
-// later phases hand-extended it. The Wave 13 §17.5 checkpoint (D-132 /
-// W10) corrected the formerly-false `// CODE GENERATED … DO NOT EDIT`
-// header to this accurate "hand-maintained" notice and filed a tracking
-// issue for building the generator + the CI gate. Until then: this file
-// is hand-maintained, and any Go-side wire-type change MUST be mirrored
-// here by hand.
+// The per-page wire-type interfaces (this module + `$lib/protocol/<page>.ts`
+// + `$lib/sessions/types.ts` + `$lib/flows/types.ts`) are hand-maintained,
+// but a field-level lockstep gate (`make protocol-ts-gen-check`, D-223) now
+// holds them to the Go single source: a Go generator emits the committed
+// wire manifest `$lib/protocol/wire-manifest.gen.json` from
+// `CanonicalWireTypes`, and a TS-source scan
+// (`scripts/check-protocol-ts-lockstep.mjs`, in `npm run lint`) fails CI when
+// a hand-written interface drops, renames, or mistypes a manifest field, or
+// when a new Go wire type lands with neither a TS interface nor a justified
+// entry in `scripts/protocol-ts-untyped-allow.json`. Any Go-side wire-type
+// change MUST still be mirrored here by hand AND the manifest regenerated
+// (`make protocol-ts-gen`); the gate catches a missed mirror.
+//
+// FULL GENERATION of the per-domain TypeScript type modules (D-093's
+// original ambition) is a deferred future deliverable; until it lands the
+// `cmd/harbor-gen-protocol-ts` name is reserved for it. Today the Go tool is
+// `cmd/harbor-protocol-ts-lockstep` — it VERIFIES lockstep, it does not
+// generate this file.
 //
 // Per-page wire types live in `$lib/protocol/<page>.ts` (Tools / Memory
 // / MCP / Flows / Sessions / Agents / Artifacts). This module retains
 // only the Console-DB-facing `OperatorIdentity` shape; the artifacts
-// wire types moved to `$lib/protocol/artifacts.ts` (D-132 / W6) and are
+// wire types moved to `$lib/protocol/artifacts.ts` and are
 // re-exported here for any legacy `$lib/protocol.js` import path.
 
 export type {
