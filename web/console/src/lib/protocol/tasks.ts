@@ -140,7 +140,7 @@ export interface TaskListCursor {
  * six-status kanban tally. Identity-scoped + computed server-side: the
  * counter never crosses the isolation boundary.
  */
-export interface TaskListStatusCounterStrip {
+export interface TasksListStatusCounterStrip {
   pending: number;
   running: number;
   completed: number;
@@ -155,7 +155,7 @@ export interface TaskListRequest {
   cursor?: TaskListCursor;
   /**
    * Phase 73b (D-126) — opt the response into carrying the
-   * {@link TaskListStatusCounterStrip} aggregate. The Live Runtime page
+   * {@link TasksListStatusCounterStrip} aggregate. The Live Runtime page
    * sets it on its initial-load call; the Tasks page never does.
    */
   include_status_counter_strip?: boolean;
@@ -171,7 +171,7 @@ export interface TaskListResponse {
    * request set `include_status_counter_strip`. Computed over the full
    * identity-scoped task set (not the filtered view).
    */
-  status_counter_strip?: TaskListStatusCounterStrip;
+  status_counter_strip?: TasksListStatusCounterStrip;
 }
 
 /** The parent-session reference card `tasks.get` returns. */
@@ -231,6 +231,17 @@ export interface TaskInputArtifact {
   disposition?: string;
 }
 
+/** One projected planner reasoning-trace step — mirrors `types.TaskTrajectoryStep`. */
+export interface TaskTrajectoryStep {
+  index: number;
+  reasoning_trace: string;
+}
+
+/** The projected planner reasoning-trace snapshot — mirrors `types.TaskTrajectoryRef`. */
+export interface TaskTrajectoryRef {
+  steps: TaskTrajectoryStep[];
+}
+
 /** The enriched payload `tasks.get` returns. */
 export interface TaskDetail {
   task: TaskRow;
@@ -242,6 +253,8 @@ export interface TaskDetail {
   result_inline?: string;
   /** Phase 84b (D-189) — input artifacts with disposition hints. */
   input_artifacts?: TaskInputArtifact[];
+  /** The projected planner reasoning-trace snapshot; absent when unavailable. */
+  trajectory?: TaskTrajectoryRef;
 }
 
 /** The kanban columns, in mockup order.

@@ -12,7 +12,7 @@
  * a Vitest unit test exercises every transition without a DOM.
  */
 
-/** The five-chip strip shape — mirrors `TaskListStatusCounterStrip`. */
+/** The five-chip strip shape — mirrors `TasksListStatusCounterStrip`. */
 export interface StatusCounterStrip {
 	pending: number;
 	running: number;

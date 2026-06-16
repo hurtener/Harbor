@@ -50,6 +50,17 @@ import type { SearchRequest, SearchResponse } from './search.js';
 /** The HTTP verb a route is mounted under. All Protocol routes are POST. */
 type Method = 'POST';
 
+/**
+ * The `start` (and idempotent-restart) reply. Mirrors the Go
+ * `types.StartResponse` — a named type so the lockstep gate guards its
+ * fields rather than leaving the shape as an inline generic default.
+ */
+export interface StartResponse {
+	task_id: string;
+	reused: boolean;
+	protocol_version: string;
+}
+
 /** Options the `HarborClient` is constructed with. */
 export interface HarborClientOptions {
 	/** The resolved Runtime connection (base URL + token + identity triple). */
@@ -564,7 +575,7 @@ export class ControlNamespace {
 	 * `foreground` at the dispatch layer (background runs go through
 	 * `tasks.spawn_background`, not `start`).
 	 */
-	start<R = { task_id: string; reused: boolean; protocol_version: string }>(
+	start<R = StartResponse>(
 		query: string,
 		opts: {
 			description?: string;

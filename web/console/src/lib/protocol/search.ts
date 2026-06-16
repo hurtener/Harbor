@@ -13,9 +13,22 @@ export type SearchIndex = 'sessions' | 'tasks' | 'events' | 'artifacts';
 
 /** Optional scope-narrowing filter (within the caller's verified identity). */
 export interface SearchFilter {
-	tenant_id?: string;
-	user_id?: string;
-	session_id?: string;
+	/** Narrow to these tenants; empty defaults to the caller's tenant. A value outside the caller's tenant requires `admin`. */
+	tenant_ids?: string[];
+	/** Narrow to these users; empty defaults to the caller's user. */
+	user_ids?: string[];
+	/** Narrow to these sessions; empty defaults to the caller's session. */
+	session_ids?: string[];
+	/** Inclusive lower time bound (RFC3339); omitted imposes no lower bound. */
+	since?: string;
+	/** Inclusive upper time bound (RFC3339); omitted imposes no upper bound. */
+	until?: string;
+}
+
+/** One per-index dimension selector — mirrors `types.SearchFacet`. */
+export interface SearchFacet {
+	key: string;
+	value: string;
 }
 
 /** The `search.query` request body (snake_case — RPC wire shape). */
@@ -26,6 +39,8 @@ export interface SearchRequest {
 	indexes?: SearchIndex[];
 	/** Optional scope-narrowing filter. */
 	filter?: SearchFilter;
+	/** Optional per-index dimension selectors; unrecognised facets are ignored. */
+	facets?: SearchFacet[];
 	/** 1-based page number; defaults to 1. */
 	page?: number;
 	/** Per-page row count; defaults to 20, max 200. */

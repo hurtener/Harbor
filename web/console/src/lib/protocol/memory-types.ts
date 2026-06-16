@@ -32,6 +32,16 @@ export interface IdentityScope {
 	tenant: string;
 	user: string;
 	session: string;
+	/** Per-execution scope inside a session; set on steering-control methods, omitted on `start`. */
+	run?: string;
+	/** The caller's steering scope claim (`session_user` / `owner_user` / `admin`). */
+	scope?: string;
+	/** The verified admin identity at the request edge (impersonation audit trail). */
+	actor?: IdentityScope;
+	/** The originating admin identity for delegated impersonation chains. */
+	requester?: IdentityScope;
+	/** The target identity the run executes under when impersonating. */
+	impersonating?: IdentityScope;
 }
 
 /** One Memory-page table row — mirrors `types.MemoryItem`. */

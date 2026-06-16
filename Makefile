@@ -1,4 +1,4 @@
-.PHONY: help build console-build test vet lint lint-revive preflight drift-audit markdownlint check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun docs docs-install protocol-docs-gen protocol-docs-gen-check
+.PHONY: help build console-build test vet lint lint-revive preflight drift-audit markdownlint check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun docs docs-install protocol-docs-gen protocol-docs-gen-check protocol-ts-gen protocol-ts-gen-check
 
 help:
 	@echo "Harbor — make targets"
@@ -18,6 +18,8 @@ help:
 	@echo "  docs-install    Install the docs/site/ npm dependencies"
 	@echo "  protocol-docs-gen        Regenerate docs/site/protocol from the canonical Protocol sources"
 	@echo "  protocol-docs-gen-check  Regenerate + fail if docs/site/protocol is stale (CI gate)"
+	@echo "  protocol-ts-gen          Regenerate the Console wire-surface manifest from the canonical Protocol sources"
+	@echo "  protocol-ts-gen-check    Regenerate + Go lockstep + TS-source scan: the Console Protocol-client lockstep gate"
 	@echo "  check-mirror    Verify AGENTS.md == CLAUDE.md"
 	@echo "  install-hooks   Install the pre-commit hook (one-time per clone)"
 	@echo "  dev             Run ./bin/harbor dev (skipped until Phase 1 lands)"
@@ -140,6 +142,36 @@ protocol-docs-gen-check: protocol-docs-gen
 		exit 1; \
 	fi
 	@echo "protocol-docs-gen-check: docs/site/protocol is in sync"
+
+# protocol-ts-gen regenerates the committed Console wire-surface manifest
+# (web/console/src/lib/protocol/wire-manifest.gen.json) from the canonical
+# Protocol single sources. Run after any change to a Protocol method,
+# error code, event type, or wire type. The manifest is the machine-
+# checkable Go-side contract the hand-maintained Console TypeScript client
+# is lockstep-gated against (the full per-domain TS type generator is a
+# deferred future deliverable; this verifies lockstep, it does not
+# generate the client).
+protocol-ts-gen:
+	go run ./cmd/harbor-protocol-ts-lockstep -out web/console/src/lib/protocol/wire-manifest.gen.json -root .
+
+# protocol-ts-gen-check is the Console Protocol-client lockstep gate, in
+# three halves: (1) regenerate the manifest + assert the working tree is
+# clean (a Go-side wire change without a regenerated manifest fails here);
+# (2) the Go lockstep test (a new canonical method / error / event / type
+# without its manifest coverage fails `go test`); (3) the TS-source scan
+# (the hand-written Console interfaces must declare every manifest type's
+# fields, or justify the omission in the untyped allowlist). Wired into CI
+# alongside protocol-docs-gen-check.
+protocol-ts-gen-check: protocol-ts-gen
+	@if ! git diff --exit-code -- web/console/src/lib/protocol/wire-manifest.gen.json; then \
+		echo ""; \
+		echo "ERROR: web/console/src/lib/protocol/wire-manifest.gen.json is stale relative to the canonical Protocol sources." >&2; \
+		echo "  Run 'make protocol-ts-gen' and commit the regenerated manifest." >&2; \
+		exit 1; \
+	fi
+	go test ./cmd/harbor-protocol-ts-lockstep/...
+	node web/console/scripts/check-protocol-ts-lockstep.mjs
+	@echo "protocol-ts-gen-check: Console Protocol client is in lockstep with the wire manifest"
 
 # markdownlint runs the SAME markdownlint-cli2 version CI pins
 # (DavidAnson/markdownlint-cli2-action@v23 bundles markdownlint-cli2
