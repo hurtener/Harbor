@@ -18,6 +18,11 @@
     governance: GovernancePostureResponse | null;
     mockMode: boolean;
   } = $props();
+
+  // The wire shape is `identity_tiers` (tier name → config map); the latent
+  // default is signalled by an empty/absent map (Go: "an empty map signals no
+  // enforcement"). Project it to ordered [name, view] entries for the table.
+  const tierEntries = $derived(Object.entries(governance?.identity_tiers ?? {}));
 </script>
 
 <div class="card-body" data-testid="settings-governance-posture">
@@ -26,7 +31,7 @@
   {/if}
   {#if governance === null}
     <p class="muted">Governance posture unavailable.</p>
-  {:else if governance.latent || !governance.tiers || governance.tiers.length === 0}
+  {:else if tierEntries.length === 0}
     <p class="muted" data-testid="governance-latent">
       Governance is at its latent default — no identity tiers configured. No cost
       ceilings, rate limits, or MaxTokens caps are enforced.
@@ -41,9 +46,9 @@
         <tr><th>Tier</th><th>Budget (USD)</th><th>Max tokens</th><th>Rate limit</th></tr>
       </thead>
       <tbody>
-        {#each governance.tiers as tier (tier.tier)}
+        {#each tierEntries as [name, tier] (name)}
           <tr data-testid="governance-tier-row">
-            <td>{tier.tier}</td>
+            <td>{name}</td>
             <td>{tier.budget_ceiling_usd ?? '—'}</td>
             <td>{tier.max_tokens ?? '—'}</td>
             <td class="muted">
