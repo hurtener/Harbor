@@ -53,6 +53,14 @@ type AttachDeps struct {
 	// Provider's Close immediately after a successful Connect so a
 	// later Discover/Register failure still drains the live subprocess.
 	Closers *[]func(context.Context) error
+	// HostDisplayModes lists the MCP App (`io.modelcontextprotocol/ui`)
+	// display modes the host can render. Projected onto the Provider's
+	// Config.HostDisplayModes so the provider advertises the UI extension
+	// during the initialize handshake. The boot loader sources this once
+	// from the deployment-level `tools.mcp_app_host.display_modes` config
+	// (defaulting to inline); empty leaves the SDK's default advertisement
+	// untouched. This is the programmatic seam an embedder sets without YAML.
+	HostDisplayModes []string
 }
 
 // Attach wires one configured MCP server (config.MCPServerConfig) into
@@ -84,17 +92,18 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		return fmt.Errorf("mcp server %q: %w", ms.Name, policyErr)
 	}
 	provider, err := New(Config{
-		Name:            ms.Name,
-		TransportMode:   mode,
-		URL:             ms.URL,
-		Command:         append([]string(nil), ms.Command...),
-		Headers:         cloneHeaderMap(ms.Headers),
-		KeepAlive:       ms.KeepAlive,
-		Logger:          deps.Logger,
-		Bus:             deps.Bus,
-		DefaultPolicy:   defaultPolicy,
-		ToolPolicies:    toolPolicies,
-		DefaultIdentity: deps.DefaultIdentity,
+		Name:             ms.Name,
+		TransportMode:    mode,
+		URL:              ms.URL,
+		Command:          append([]string(nil), ms.Command...),
+		Headers:          cloneHeaderMap(ms.Headers),
+		KeepAlive:        ms.KeepAlive,
+		Logger:           deps.Logger,
+		Bus:              deps.Bus,
+		DefaultPolicy:    defaultPolicy,
+		ToolPolicies:     toolPolicies,
+		DefaultIdentity:  deps.DefaultIdentity,
+		HostDisplayModes: append([]string(nil), deps.HostDisplayModes...),
 	})
 	if err != nil {
 		return fmt.Errorf("mcp.New: %w", err)

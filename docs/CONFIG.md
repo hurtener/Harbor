@@ -810,6 +810,34 @@ tools:
   search_cache_dsn: file:./harbor-tools.db
 ```
 
+### tools.mcp_app_host
+
+Deployment-wide MCP App (`io.modelcontextprotocol/ui`) host capability the
+runtime advertises to every MCP server during the initialize handshake. The
+host's rendering ability does not vary per server, so this is a single
+deployment-level block, not a per-server field.
+
+`display_modes` lists the MCP App display modes this host can render, from the
+closed set `inline` / `fullscreen` / `pip` (the ext-apps `McpUiDisplayMode`
+values). A spec-conformant server reads these to tailor the app references it
+returns. Each entry must be in the closed set and unique; a typo fails at
+config load.
+
+Omitting the block (or leaving `display_modes` empty) resolves to the
+inline-only **baseline** (`[inline]`) — the mode the Console renders out of
+the box. Set the full set once the deployment's Console serves the
+fullscreen-tab and side-by-side (pip) layouts.
+
+Default: nil (resolves to `[inline]`). Restart-required.
+
+Example:
+
+```yaml
+tools:
+  mcp_app_host:
+    display_modes: [inline, fullscreen, pip]
+```
+
 ---
 
 ## Planner
