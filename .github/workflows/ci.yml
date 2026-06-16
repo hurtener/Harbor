@@ -106,6 +106,53 @@ jobs:
       - name: Test examples (-race needs cgo — no CGO_ENABLED override)
         run: go test -race ./examples/...
 
+  frontend:
+    name: frontend (check + lint + test + build)
+    runs-on: ubuntu-latest
+    # CLAUDE.md §4.5 rule 6 — the binding `frontend` job: `npm ci &&
+    # npm run check && npm run lint && npm run build` in web/console/.
+    # This is the CI home of `svelte-check --fail-on-warnings` (Svelte 4
+    # syntax drift), stylelint (raw color/spacing literals — §4.5 #3),
+    # eslint, the vitest unit suite (incl. the chat-encapsulation and
+    # protocol-ts lockstep guard specs), and the production Vite build.
+    # The frontend-e2e job runs Playwright, NOT these gates. Skips
+    # gracefully when web/console/ is absent (the §4.2 SKIP analogue).
+    steps:
+      - uses: actions/checkout@v6
+      - name: Detect web/console/
+        id: detect
+        run: |
+          if [ -f web/console/package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "web/console/ absent — SKIP"
+          fi
+      - uses: actions/setup-node@v6
+        if: steps.detect.outputs.present == 'true'
+        with:
+          node-version: 'lts/*'
+      - name: Install dependencies (npm ci)
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web/console
+        run: npm ci
+      - name: svelte-check (--fail-on-warnings)
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web/console
+        run: npm run check
+      - name: Lint (stylelint + eslint + guards + svelte-check)
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web/console
+        run: npm run lint
+      - name: Unit tests (vitest)
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web/console
+        run: npm run test
+      - name: Production build (vite)
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web/console
+        run: npm run build
+
   frontend-e2e:
     name: frontend-e2e (Console Playwright)
     runs-on: ubuntu-latest
