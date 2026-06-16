@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 82 canonical Harbor Protocol methods, generated from the single-source registry
+The 83 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -167,6 +167,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
 | `mcp.apps.call_tool` | `POST /v1/control/mcp.apps.call_tool` | mcp apps | [`MCPAppCallToolRequest`](./types.md#mcpappcalltoolrequest) | [`MCPAppCallToolResponse`](./types.md#mcpappcalltoolresponse) | mutating |
+| `mcp.apps.tool_context` | `POST /v1/control/mcp.apps.tool_context` | mcp apps | [`ToolContextRequest`](./types.md#toolcontextrequest) | [`ToolContextResponse`](./types.md#toolcontextresponse) | read-only |
 | `mcp.servers.read_resource` | `POST /v1/control/mcp.servers.read_resource` | mcp apps | [`ReadMCPResourceRequest`](./types.md#readmcpresourcerequest) | [`ReadMCPResourceResponse`](./types.md#readmcpresourceresponse) | read-only |
 
 ## Runs

@@ -75,10 +75,11 @@ func TestLive_AppsAccessor_ReadResource_StudioDocInline(t *testing.T) {
 	}
 
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry: reg,
-		Catalog:  tools.NewCatalog(),
-		Store:    newAppsStore(t),
-		Bus:      bus,
+		Registry:    reg,
+		Catalog:     tools.NewCatalog(),
+		Store:       newAppsStore(t),
+		Bus:         bus,
+		ToolContext: newToolCtxStore(t, 0),
 	})
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)

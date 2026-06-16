@@ -107,6 +107,14 @@ type AppRef struct {
 	// inline. It is a hint only; the host reconciles it against the
 	// server's negotiated capability set.
 	PreferredDisplayMode string
+	// ToolCallID is the stable, per-invocation identifier minted at the
+	// tool-call site (a content hash of the run / server / tool / args).
+	// It correlates a discovered app to the captured tool context — the
+	// input + lowered result that produced it — so a Protocol client can
+	// fetch that context via mcp.apps.tool_context. Empty until the
+	// invocation path stamps it; it is NOT parsed from the server's
+	// `_meta` (a result never carries it).
+	ToolCallID string
 }
 
 // uiResourceScheme is the URI scheme the MCP Apps extension reserves

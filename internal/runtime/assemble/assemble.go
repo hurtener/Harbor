@@ -59,6 +59,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
+	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
@@ -249,6 +250,13 @@ type Stack struct {
 	OAuthProviders map[string]toolauth.OAuthProvider
 	MCPRegistry    *mcpdrv.Registry
 	Executor       steering.ToolExecutor
+
+	// MCPToolContext is the MCP Apps tool-context store the MCP providers
+	// capture through (input + lowered result behind a declared `ui://`
+	// app) and the host reads back from for `mcp.apps.tool_context`. Nil
+	// under SkipCatalog (no MCP providers attach). Wired into every
+	// Provider so a planner-path app tool call's context is captured.
+	MCPToolContext *mcpconsole.ToolContextStore
 
 	// Steering band (nil under SkipSteering; RunLoop additionally nil
 	// under SkipRunLoop or when no planner could be resolved).
@@ -801,6 +809,22 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// initialize handshake (the host's rendering ability does not vary per
 	// server). Defaults to the inline-only baseline.
 	hostDisplayModes := cfg.Tools.MCPAppHostDisplayModes()
+	// The MCP Apps tool-context store: MCP providers capture the input +
+	// lowered result behind a declared `ui://` app through it, and the host
+	// reads it back for `mcp.apps.tool_context`. Built over the runtime's
+	// own StateStore + ArtifactStore so identity isolation + the persistence
+	// triad come free; wired into every Provider below so a planner-path
+	// app tool call's context is captured at the invocation site.
+	toolCtxStore, err := mcpconsole.NewToolContextStore(mcpconsole.ToolContextDeps{
+		State:     stack.State,
+		Store:     stack.Artifacts,
+		Bus:       stack.Bus,
+		Threshold: cfg.Artifacts.HeavyOutputThresholdBytes,
+	})
+	if err != nil {
+		return fmt.Errorf("mcp tool-context store: %w", err)
+	}
+	stack.MCPToolContext = toolCtxStore
 	for _, ms := range cfg.Tools.MCPServers {
 		if err := mcpdrv.Attach(ctx, ms, mcpdrv.AttachDeps{
 			Catalog:          toolCat,
@@ -810,6 +834,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			DefaultIdentity:  mcpDefault,
 			Closers:          &stack.closers,
 			HostDisplayModes: hostDisplayModes,
+			ToolContext:      toolCtxStore,
 		}); err != nil {
 			return fmt.Errorf("mcp[%s]: %w", ms.Name, err)
 		}

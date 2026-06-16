@@ -82,6 +82,14 @@ type AppAvailablePayload struct {
 	// ServerID is the MCP server (source id) hosting the app — the value a
 	// client passes to mcp.servers.read_resource to fetch the document.
 	ServerID tools.ToolSourceID
+	// ToolCallID is the stable per-invocation id (a content hash, not a
+	// counter) the client passes to mcp.apps.tool_context to fetch the tool
+	// context — the input + lowered result — that produced this app. Safe
+	// by construction: an opaque hash, never caller content.
+	ToolCallID string
+	// ToolName is the server-side tool name that declared the app — display
+	// metadata only. Safe by construction: a tool name, never content.
+	ToolName string
 	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
 	ResourceURI string
 	// DisplayMode is the display-mode hint (one of inline / fullscreen /

@@ -198,6 +198,12 @@ export interface MCPAppRef {
    * Empty for a non-app tool result.
    */
   server_id?: string;
+  /**
+   * The stable per-invocation id of the tool call that declared the app —
+   * paired with `server_id` to fetch the tool context (input + lowered
+   * result) via `mcp.apps.tool_context`. Empty for a non-app result.
+   */
+  tool_call_id?: string;
   /** The `ui://`-scheme URI of the app's UI document. */
   resource_uri: string;
   /**
@@ -269,6 +275,52 @@ export interface MCPAppCallToolResponse {
   is_error: boolean;
   /** The MCP App reference parsed from `_meta.ui.resourceUri`, or absent. */
   app?: MCPAppRef;
+  /** The Protocol version the Runtime answered under. */
+  protocol_version: string;
+}
+
+/**
+ * `mcp.apps.tool_context` request — a rendered MCP App asking the host for
+ * the tool context (input + lowered result) that produced it. Mirrors
+ * `types.ToolContextRequest`. Identity is threaded by the typed client from
+ * the verified session; an unknown or cross-identity (server_id,
+ * tool_call_id) is not found.
+ */
+export interface ToolContextRequest {
+  /** The MCP server (source id) carried on the `mcp.app_available` event. */
+  server_id: string;
+  /** The stable per-invocation id carried on the `mcp.app_available` event. */
+  tool_call_id: string;
+}
+
+/**
+ * One half (input or result) of a captured tool context — mirrors
+ * `types.ToolContextPayload`. EXACTLY ONE of `content` / `artifact_ref` is
+ * set: `content` carries inline JSON below the heavy threshold;
+ * `artifact_ref` carries the by-reference stub at or above it.
+ */
+export interface ToolContextPayload {
+  /** Inline JSON — set only below the heavy threshold. */
+  content?: unknown;
+  /** By-reference stub — set only at or above the heavy threshold. */
+  artifact_ref?: MCPResourceArtifactRef;
+}
+
+/**
+ * `mcp.apps.tool_context` reply — the captured input + lowered result that
+ * produced a rendered app. Mirrors `types.ToolContextResponse`. Each of
+ * `input` / `result` is inline-or-by-reference (a large result rides by
+ * reference). An unknown or cross-identity id fails with `not_found`.
+ */
+export interface ToolContextResponse {
+  /** The server-side tool name that declared the app. */
+  tool: string;
+  /** The tool's input arguments (inline JSON or by reference). */
+  input: ToolContextPayload;
+  /** The tool's lowered result (inline JSON or by reference). */
+  result: ToolContextPayload;
+  /** Whether the tool returned a server-side error result. */
+  is_error: boolean;
   /** The Protocol version the Runtime answered under. */
   protocol_version: string;
 }
