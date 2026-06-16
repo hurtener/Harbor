@@ -485,6 +485,8 @@ Payload `AppAvailablePayload` — safe payload (delivered typed, verbatim).
 |---|---|---|
 | `Identity` | `identity.Quadruple` |  |
 | `ServerID` | `tools.ToolSourceID` |  |
+| `ToolCallID` | `string` |  |
+| `ToolName` | `string` |  |
 | `ResourceURI` | `string` |  |
 | `DisplayMode` | `string` |  |
 | `RawHTMLTrusted` | `bool` |  |

@@ -45,8 +45,9 @@ import (
 // use by N goroutines — Dispatch reads request-specific data from ctx +
 // the request argument, never from the surface struct.
 type AppsSurface struct {
-	resource MCPResourceReader
-	invoker  AppToolInvoker
+	resource    MCPResourceReader
+	invoker     AppToolInvoker
+	toolContext AppToolContextReader
 }
 
 // MCPResourceArtifactRow is the runtime-side projection of a by-reference
@@ -89,9 +90,44 @@ type MCPResourceReader interface {
 // a non-app tool result.
 type MCPAppRefRow struct {
 	ServerID       string
+	ToolCallID     string
 	ResourceURI    string
 	DisplayMode    string
 	RawHTMLTrusted bool
+}
+
+// AppToolContextPayloadRow is the runtime-side projection of one half
+// (input or result) of a captured tool context. EXACTLY ONE of Inline /
+// Artifact is populated — Inline for content captured below the
+// heavy-content threshold, Artifact for content at or above it (offloaded
+// by reference at capture time). The accessor owns the threshold decision;
+// the surface only projects.
+type AppToolContextPayloadRow struct {
+	Inline   json.RawMessage
+	Artifact *MCPResourceArtifactRow
+}
+
+// AppToolContextRow is the runtime-side result of a tool-context read. It
+// carries the captured input + lowered result that produced a rendered MCP
+// App, each inline-or-by-reference (the heavy-content discipline matches
+// MCPResourceContent).
+type AppToolContextRow struct {
+	Tool    string
+	Input   AppToolContextPayloadRow
+	Result  AppToolContextPayloadRow
+	IsError bool
+}
+
+// AppToolContextReader is the narrow contract the AppsSurface calls into
+// for `mcp.apps.tool_context`. The runtime's tool-context store (over the
+// StateStore + ArtifactStore) satisfies it; the `protocol` package never
+// imports the store.
+//
+// ToolContext is identity-mandatory: the implementation reads the triple
+// from ctx and resolves the captured context scoped to it, so an unknown
+// or cross-identity (serverID, toolCallID) is not found.
+type AppToolContextReader interface {
+	ToolContext(ctx context.Context, serverID, toolCallID string) (AppToolContextRow, error)
 }
 
 // MCPAppToolResultRow is the runtime-side result of an app-tool-call
@@ -128,6 +164,9 @@ type AppsDeps struct {
 	// Invoker is the app-tool-call proxy (the tool-catalog adapter).
 	// Mandatory.
 	Invoker AppToolInvoker
+	// ToolContext is the tool-context reader (the StateStore + ArtifactStore
+	// adapter) backing `mcp.apps.tool_context`. Mandatory.
+	ToolContext AppToolContextReader
 }
 
 // ErrAppsMisconfigured — NewAppsSurface was called with a missing
@@ -147,7 +186,10 @@ func NewAppsSurface(deps AppsDeps) (*AppsSurface, error) {
 	if deps.Invoker == nil {
 		return nil, fmt.Errorf("%w: tool-call Invoker is nil", ErrAppsMisconfigured)
 	}
-	return &AppsSurface{resource: deps.Resource, invoker: deps.Invoker}, nil
+	if deps.ToolContext == nil {
+		return nil, fmt.Errorf("%w: tool-context reader is nil", ErrAppsMisconfigured)
+	}
+	return &AppsSurface{resource: deps.Resource, invoker: deps.Invoker, toolContext: deps.ToolContext}, nil
 }
 
 // Dispatch is the single transport-agnostic entry point for an MCP Apps
@@ -174,6 +216,8 @@ func (s *AppsSurface) Dispatch(ctx context.Context, method methods.Method, req a
 		return s.handleReadResource(ctx, req)
 	case methods.MethodMCPAppsCallTool:
 		return s.handleCallTool(ctx, req)
+	case methods.MethodMCPAppsToolContext:
+		return s.handleToolContext(ctx, req)
 	default:
 		// Unreachable: IsMCPAppsMethod already gated the set.
 		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
@@ -268,12 +312,61 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	if res.App != nil {
 		resp.App = &types.MCPAppRef{
 			ServerID:       res.App.ServerID,
+			ToolCallID:     res.App.ToolCallID,
 			ResourceURI:    res.App.ResourceURI,
 			DisplayMode:    res.App.DisplayMode,
 			RawHTMLTrusted: res.App.RawHTMLTrusted,
 		}
 	}
 	return resp, nil
+}
+
+// handleToolContext serves mcp.apps.tool_context — the tool-context read.
+func (s *AppsSurface) handleToolContext(ctx context.Context, req any) (any, error) {
+	method := methods.MethodMCPAppsToolContext
+	r, ok := req.(*types.ToolContextRequest)
+	if !ok || r == nil {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: expected *types.ToolContextRequest, got %T", string(method), req)
+	}
+	id, perr := gateAppsIdentity(method, r.Identity)
+	if perr != nil {
+		return nil, perr
+	}
+	if r.ServerID == "" {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: server_id is required", string(method))
+	}
+	if r.ToolCallID == "" {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: tool_call_id is required", string(method))
+	}
+	idCtx, perr := withIdentity(ctx, id)
+	if perr != nil {
+		return nil, perr
+	}
+	row, err := s.toolContext.ToolContext(idCtx, r.ServerID, r.ToolCallID)
+	if err != nil {
+		return nil, mapMCPError(string(method), err)
+	}
+	resp := &types.ToolContextResponse{
+		Tool:            row.Tool,
+		IsError:         row.IsError,
+		Input:           projectToolContextPayload(row.Input),
+		Result:          projectToolContextPayload(row.Result),
+		ProtocolVersion: types.ProtocolVersion,
+	}
+	return resp, nil
+}
+
+// projectToolContextPayload maps a runtime tool-context payload row onto
+// the wire shape: inline JSON below the heavy threshold, an artifact
+// reference at or above it (exactly one is set).
+func projectToolContextPayload(row AppToolContextPayloadRow) types.ToolContextPayload {
+	if row.Artifact != nil {
+		return types.ToolContextPayload{ArtifactRef: projectArtifactRow(row.Artifact)}
+	}
+	return types.ToolContextPayload{Content: row.Inline}
 }
 
 // gateAppsIdentity validates the request's identity triple at the edge.

@@ -98,6 +98,14 @@ type Config struct {
 	// Bus is the event bus used to publish `mcp.resource_updated`
 	// notifications. Required.
 	Bus events.EventBus
+	// ToolContext captures the tool context (input + lowered result) behind
+	// a declared MCP App so the host can deliver it to the rendered app
+	// (the MCP Apps "Data Delivery" lifecycle). Optional — a nil capturer
+	// means tool-context delivery is not wired (the host's tool-context
+	// read then returns not-found). When set, the driver calls it from the
+	// tool-invocation path whenever a result declares a `ui://` app; a
+	// Capture error is logged loudly but never fails the tool call.
+	ToolContext ToolContextCapturer
 	// DefaultPolicy is the ToolPolicy applied to descriptors built
 	// from this provider. Zero-valued → tools.DefaultPolicy().
 	DefaultPolicy tools.ToolPolicy
@@ -562,7 +570,18 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	// its response, but a planner-initiated call never enters that path.
 	value.AppRef = reconcileAppRef(toolApp, value.AppRef, uiDisplayModeHint(res.Meta))
 	if value.AppRef != nil {
-		p.publishAppAvailable(ctx, value.AppRef)
+		// Mint the stable per-invocation id (a content hash of run /
+		// server / tool / args — no mutable Provider field) and
+		// stamp it on the reference so BOTH the discovery event and the
+		// proxy-path projection (which reads value.AppRef) correlate to the
+		// captured tool context.
+		runID := ""
+		if quad, qok := identity.QuadrupleFrom(ctx); qok {
+			runID = quad.RunID
+		}
+		value.AppRef.ToolCallID = ToolCallID(runID, string(p.source), name, args)
+		p.captureToolContext(ctx, value.AppRef.ToolCallID, name, args, value, res.IsError)
+		p.publishAppAvailable(ctx, value.AppRef, name)
 	}
 	if lowerErr != nil {
 		return tools.ToolResult{Value: value}, lowerErr
@@ -576,7 +595,7 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 // turn). The emit is best-effort observability — the tool result is the
 // source of truth — so a missing identity or a publish failure logs and
 // returns rather than failing the call.
-func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef) {
+func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef, toolName string) {
 	if p.cfg.Bus == nil || ref == nil {
 		return
 	}
@@ -598,6 +617,8 @@ func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef) {
 		Payload: AppAvailablePayload{
 			Identity:    q,
 			ServerID:    p.source,
+			ToolCallID:  ref.ToolCallID,
+			ToolName:    toolName,
 			ResourceURI: ref.ResourceURI,
 			DisplayMode: ref.PreferredDisplayMode,
 			// Default-deny: the per-server trust posture is reconciled by
@@ -611,6 +632,51 @@ func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef) {
 			slog.String("source", string(p.source)),
 			slog.String("resource_uri", ref.ResourceURI),
 			slog.String("error", err.Error()),
+		)
+	}
+}
+
+// captureToolContext persists the tool context (input + lowered result)
+// behind a declared app so a Protocol client can fetch it via
+// mcp.apps.tool_context. The capture is optional (a nil capturer means
+// the feature is not wired) and best-effort relative to the tool call: a
+// missing identity or a Capture error is logged loudly and returns —
+// never silently swallowed (CLAUDE.md §13) — but it does not fail the tool
+// call, because the tool result is the source of truth for the planner.
+func (p *Provider) captureToolContext(ctx context.Context, toolCallID, toolName string, args json.RawMessage, value MCPToolValue, isError bool) {
+	if p.cfg.ToolContext == nil {
+		return
+	}
+	if _, ok := identity.From(ctx); !ok {
+		p.logger.Warn("mcp: app tool-context capture skipped: no identity on ctx",
+			slog.String("source", string(p.source)),
+			slog.String("tool", toolName),
+		)
+		return
+	}
+	resultJSON, err := json.Marshal(value)
+	if err != nil {
+		p.logger.Warn("mcp: app tool-context capture failed: encode result",
+			slog.String("source", string(p.source)),
+			slog.String("tool", toolName),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	in := CapturedToolContext{
+		ServerID:   p.source,
+		ToolCallID: toolCallID,
+		Tool:       toolName,
+		Input:      args,
+		Result:     json.RawMessage(resultJSON),
+		IsError:    isError,
+	}
+	if capErr := p.cfg.ToolContext.Capture(ctx, in); capErr != nil {
+		p.logger.Warn("mcp: app tool-context capture failed",
+			slog.String("source", string(p.source)),
+			slog.String("tool", toolName),
+			slog.String("tool_call_id", toolCallID),
+			slog.String("error", capErr.Error()),
 		)
 	}
 }

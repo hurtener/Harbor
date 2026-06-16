@@ -1877,6 +1877,11 @@
           "optional": true
         },
         {
+          "key": "tool_call_id",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "resource_uri",
           "type": "string"
         },
@@ -4623,6 +4628,67 @@
         }
       ]
     },
+    "ToolContextPayload": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "content",
+          "type": "any",
+          "optional": true
+        },
+        {
+          "key": "artifact_ref",
+          "type": "object",
+          "ref": "MCPResourceArtifactRef",
+          "optional": true
+        }
+      ]
+    },
+    "ToolContextRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "server_id",
+          "type": "string"
+        },
+        {
+          "key": "tool_call_id",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolContextResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "tool",
+          "type": "string"
+        },
+        {
+          "key": "input",
+          "type": "object",
+          "ref": "ToolContextPayload"
+        },
+        {
+          "key": "result",
+          "type": "object",
+          "ref": "ToolContextPayload"
+        },
+        {
+          "key": "is_error",
+          "type": "boolean"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
     "ToolDescribeRequest": {
       "home": "types",
       "fields": [
@@ -5052,6 +5118,7 @@
     "inject_context",
     "llm.posture",
     "mcp.apps.call_tool",
+    "mcp.apps.tool_context",
     "mcp.servers.bindings.list",
     "mcp.servers.get",
     "mcp.servers.health",

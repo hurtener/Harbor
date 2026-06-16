@@ -17,6 +17,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
+	"github.com/hurtener/Harbor/internal/state"
+	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
@@ -48,6 +50,32 @@ func newAppsBus(t *testing.T) events.EventBus {
 	return bus
 }
 
+func newAppsState(t *testing.T) state.StateStore {
+	t.Helper()
+	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	return st
+}
+
+// newAppsToolCtx builds a standalone ToolContextStore for the ReadResource
+// / CallTool / concurrent-reuse fixtures that do not exercise tool-context
+// capture themselves (the capture+load path has its own dedicated tests).
+func newAppsToolCtx(t *testing.T) *mcpconsole.ToolContextStore {
+	t.Helper()
+	tc, err := mcpconsole.NewToolContextStore(mcpconsole.ToolContextDeps{
+		State: newAppsState(t),
+		Store: newAppsStore(t),
+		Bus:   newAppsBus(t),
+	})
+	if err != nil {
+		t.Fatalf("NewToolContextStore: %v", err)
+	}
+	return tc
+}
+
 func newAppsRegistry(t *testing.T, body []byte) *mcp.Registry {
 	t.Helper()
 	reg := mcp.NewRegistry()
@@ -65,11 +93,12 @@ func newAppsRegistry(t *testing.T, body []byte) *mcp.Registry {
 // resource rides inline (no artifact offload).
 func TestAppsAccessor_ReadResource_InlineBelowThreshold(t *testing.T) {
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:  newAppsRegistry(t, []byte("<html>small</html>")),
-		Catalog:   tools.NewCatalog(),
-		Store:     newAppsStore(t),
-		Bus:       newAppsBus(t),
-		Threshold: 1024,
+		Registry:    newAppsRegistry(t, []byte("<html>small</html>")),
+		Catalog:     tools.NewCatalog(),
+		Store:       newAppsStore(t),
+		Bus:         newAppsBus(t),
+		ToolContext: newAppsToolCtx(t),
+		Threshold:   1024,
 	})
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
@@ -108,11 +137,12 @@ func TestAppsAccessor_ReadResource_HeavyOffload(t *testing.T) {
 	defer sub.Cancel()
 
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:  newAppsRegistry(t, body),
-		Catalog:   tools.NewCatalog(),
-		Store:     store,
-		Bus:       bus,
-		Threshold: 1024,
+		Registry:    newAppsRegistry(t, body),
+		Catalog:     tools.NewCatalog(),
+		Store:       store,
+		Bus:         bus,
+		ToolContext: newAppsToolCtx(t),
+		Threshold:   1024,
 	})
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
@@ -181,10 +211,11 @@ func TestAppsAccessor_ReadResource_AppDocInlineAboveHeavyThreshold(t *testing.T)
 	defer sub.Cancel()
 
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry: newAppsRegistry(t, body),
-		Catalog:  tools.NewCatalog(),
-		Store:    store,
-		Bus:      bus,
+		Registry:    newAppsRegistry(t, body),
+		Catalog:     tools.NewCatalog(),
+		Store:       store,
+		Bus:         bus,
+		ToolContext: newAppsToolCtx(t),
 		// Threshold unset → the real 32 KiB heavy default. The 86 KiB doc
 		// would offload under it; the App-document cap is what saves it.
 	})
@@ -229,10 +260,11 @@ func TestAppsAccessor_ReadResource_AppDocOffloadAboveCap(t *testing.T) {
 	defer sub.Cancel()
 
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry: newAppsRegistry(t, body),
-		Catalog:  tools.NewCatalog(),
-		Store:    store,
-		Bus:      bus,
+		Registry:    newAppsRegistry(t, body),
+		Catalog:     tools.NewCatalog(),
+		Store:       store,
+		Bus:         bus,
+		ToolContext: newAppsToolCtx(t),
 	})
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
@@ -278,11 +310,12 @@ func TestAppsAccessor_CallTool_ResolvesAndInvokes(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:  newAppsRegistry(t, nil),
-		Catalog:   cat,
-		Store:     newAppsStore(t),
-		Bus:       newAppsBus(t),
-		Threshold: 1024,
+		Registry:    newAppsRegistry(t, nil),
+		Catalog:     cat,
+		Store:       newAppsStore(t),
+		Bus:         newAppsBus(t),
+		ToolContext: newAppsToolCtx(t),
+		Threshold:   1024,
 	})
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
@@ -318,11 +351,12 @@ func TestAppsAccessor_ConcurrentReuse(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:  newAppsRegistry(t, []byte("<html>x</html>")),
-		Catalog:   cat,
-		Store:     newAppsStore(t),
-		Bus:       newAppsBus(t),
-		Threshold: 1024,
+		Registry:    newAppsRegistry(t, []byte("<html>x</html>")),
+		Catalog:     cat,
+		Store:       newAppsStore(t),
+		Bus:         newAppsBus(t),
+		ToolContext: newAppsToolCtx(t),
+		Threshold:   1024,
 	})
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)

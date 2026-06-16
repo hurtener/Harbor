@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 221 canonical Harbor Protocol wire types, generated from the single-source
+The 224 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -940,6 +940,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `server_id` | `string` | optional (`omitempty`) |
+| `tool_call_id` | `string` | optional (`omitempty`) |
 | `resource_uri` | `string` |  |
 | `display_mode` | `string` | optional (`omitempty`) |
 | `raw_html_trusted` | `bool` |  |
@@ -2227,6 +2228,37 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `id` | `string` |  |
+
+## ToolContextPayload
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `content` | `json.RawMessage` | optional (`omitempty`) |
+| `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
+
+## ToolContextRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `server_id` | `string` |  |
+| `tool_call_id` | `string` |  |
+
+## ToolContextResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `tool` | `string` |  |
+| `input` | `types.ToolContextPayload` — see [`ToolContextPayload`](./types.md#toolcontextpayload) |  |
+| `result` | `types.ToolContextPayload` — see [`ToolContextPayload`](./types.md#toolcontextpayload) |  |
+| `is_error` | `bool` |  |
+| `protocol_version` | `string` |  |
 
 ## ToolDescribeRequest
 

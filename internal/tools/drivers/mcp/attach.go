@@ -53,6 +53,12 @@ type AttachDeps struct {
 	// Provider's Close immediately after a successful Connect so a
 	// later Discover/Register failure still drains the live subprocess.
 	Closers *[]func(context.Context) error
+	// ToolContext is the optional MCP Apps tool-context capturer. When set,
+	// the Provider persists the input + lowered result behind a declared
+	// `ui://` app so the host can deliver it to the rendered app. A nil
+	// capturer leaves tool-context delivery unwired (the host read returns
+	// not-found). Optional.
+	ToolContext ToolContextCapturer
 }
 
 // Attach wires one configured MCP server (config.MCPServerConfig) into
@@ -95,6 +101,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		DefaultPolicy:   defaultPolicy,
 		ToolPolicies:    toolPolicies,
 		DefaultIdentity: deps.DefaultIdentity,
+		ToolContext:     deps.ToolContext,
 	})
 	if err != nil {
 		return fmt.Errorf("mcp.New: %w", err)

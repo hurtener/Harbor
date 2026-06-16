@@ -275,6 +275,10 @@ func methodTable() map[methods.Method]methodEntry {
 			Route: controlRoute(methods.MethodMCPAppsCallTool), Mutates: true,
 			Request: "MCPAppCallToolRequest", Response: "MCPAppCallToolResponse",
 		},
+		methods.MethodMCPAppsToolContext: {
+			Route: controlRoute(methods.MethodMCPAppsToolContext), Mutates: false,
+			Request: "ToolContextRequest", Response: "ToolContextResponse",
+		},
 
 		// --- Tools: five reads + two admin verbs.
 		methods.MethodToolsList: {
