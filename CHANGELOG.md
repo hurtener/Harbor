@@ -17,7 +17,82 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-(Next up: the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
+(Next up: generated per-domain Protocol wire-type modules and the shared chat-module extraction — the D-093 / D-091 follow-ons.)
+
+## [1.4.0] — 2026-06-16
+
+Production adoption: interactive MCP Apps in the Console, multimodal input,
+a production authentication path, and a privilege-escalation fix on the
+steering control surface. No breaking changes — the Harbor Protocol stays
+at `0.1.0` and all new configuration fields are optional.
+
+### Added
+
+- **MCP Apps host** — a server's tool can declare a `ui://` resource
+  (`io.modelcontextprotocol/ui`) that the Console renders as an interactive,
+  sandboxed app inline in the Playground. Ships the runtime + Protocol
+  surface (`mcp.servers.read_resource`, `ui://` projection, the app-tool-call
+  proxy), a Console host built on the official `ext-apps` AppBridge in
+  manual-handler mode (every app→host call is Protocol-proxied — an in-app
+  call never escapes the `(tenant, user, session)` isolation boundary),
+  three DisplayModes (inline / fullscreen tab / pip split), and inline
+  discovery via the `mcp.app_available` event. App documents render on every
+  artifact driver, not only S3.
+- **Multimodal input** — agents accept image, audio, and video attachments.
+  Provider-native upload happens inside the LLM driver; an attachment
+  disposition policy (mechanism → policy, reference by default) keeps heavy
+  bytes out of the context window. An `Embedder` seam adds opt-in semantic
+  memory + skill retrieval, consumed by the run loop.
+- **Production authentication** — `harbor serve`, the headless production
+  sibling of `harbor dev`, verifies JWTs against a JWKS source
+  (`identity.jwks_url` / `jwks_file`; asymmetric algorithms only) and boots
+  with no dev-only surfaces (no bootstrap-token endpoint, no Console, no mock
+  LLM — it fails loud at boot when a real provider or JWKS source is
+  missing). Non-admin session-scoped and owner-scoped tokens are now
+  authorized correctly across the steering control surface.
+- **Protocol TS lockstep gate** — `make protocol-ts-gen-check` verifies the
+  Console's hand-maintained TypeScript wire client against the Go single
+  source (`CanonicalWireTypes`) and fails CI on any drift (a new/renamed/
+  retyped wire field that the client did not mirror). It immediately caught
+  and fixed real latent client drift.
+- A binding **`frontend` CI job** (`svelte-check` + stylelint + eslint +
+  vitest + build) and a Console chat-module **encapsulation guard** that
+  keeps the chat module renderable as a self-contained library.
+
+### Changed
+
+- **Chat module encapsulation hardening** — the Console chat module is now
+  self-contained (its own typography + theming, an injectable host identity
+  and theme, a documented design-token contract) so it can render outside
+  the Console shell, mechanically enforced.
+- **Godoc hygiene** — internal phase / decision numbering stripped from
+  operator-visible Go doc comments (the `pkg.go.dev` surface now reads as
+  product API docs).
+- CI runners moved to Node 24; dependency bumps (`pgx` v5.10.0,
+  `aws-sdk-go-v2` S3, others via Dependabot).
+
+### Fixed
+
+- Image (and other) attachments now reach the agent — a stub-fetch tool-name
+  mismatch dropped them silently.
+- MCP App discovery reads the tool **definition**'s `_meta.ui` (spec-correct),
+  so discovery fires against real ext-apps servers; heavy app documents that
+  exceed the inline threshold now render via the offloaded artifact.
+- A notification-producer startup race (subscriber registered after assembly
+  returned) is closed.
+- The preflight gate no longer silently aborts when a parallel smoke fails.
+
+### Security
+
+- **Steering control surface privilege escalation closed.** Caller authority
+  for cancel / pause / resume / redirect / inject / approve / reject /
+  prioritize is now derived from the **verified** request-context identity
+  and JWT scope — never from the request body. A request can no longer
+  assert its own privilege tier, the steering surface fails closed when no
+  verified identity is present, and cross-tenant steering requires the admin
+  scope (the cross-tenant check is now actually reachable). Latent before
+  this release because only admin-scoped dev tokens existed; closed before
+  any lesser-privileged token (now supported) could exploit it.
 
 ## [1.3.1] — 2026-06-11
 
