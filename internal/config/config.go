@@ -807,6 +807,39 @@ type ToolsConfig struct {
 	// path (`file:./harbor-tools.db?_pragma=...`) to persist the
 	// cache across reboots. Restart-required.
 	SearchCacheDSN string `yaml:"search_cache_dsn,omitempty"`
+
+	// MCPAppHost configures the deployment-wide MCP App
+	// (`io.modelcontextprotocol/ui`) host capability the runtime advertises
+	// to every MCP server during the initialize handshake. The host's
+	// renderable display modes do not vary per server, so this is a single
+	// deployment-level block, not a per-server field. Optional; nil resolves
+	// to the inline-only baseline (the mode the Console renders today).
+	// Restart-required.
+	MCPAppHost *MCPAppHostConfig `yaml:"mcp_app_host,omitempty"`
+}
+
+// MCPAppHostConfig declares the MCP App display modes this Harbor host can
+// render. The runtime advertises these in the `io.modelcontextprotocol/ui`
+// client capability during every MCP initialize handshake so a server can
+// tailor the app references it returns to what the host actually renders.
+//
+// `DisplayModes` is the closed set `inline` / `fullscreen` / `pip` (the
+// ext-apps `McpUiDisplayMode` values). Empty or nil resolves to the
+// inline-only baseline. Restart-required.
+type MCPAppHostConfig struct {
+	DisplayModes []string `yaml:"display_modes,omitempty"`
+}
+
+// MCPAppHostDisplayModes resolves the MCP App display modes the host
+// advertises. A nil MCPAppHost block, or one with no display modes, yields
+// the inline-only baseline — the mode the Console renders out of the box.
+// The boot loader calls this once and threads the result into every MCP
+// provider's host-capability advertisement.
+func (t ToolsConfig) MCPAppHostDisplayModes() []string {
+	if t.MCPAppHost == nil || len(t.MCPAppHost.DisplayModes) == 0 {
+		return []string{"inline"}
+	}
+	return append([]string(nil), t.MCPAppHost.DisplayModes...)
 }
 
 // CustomToolConfig declares one operator-defined custom tool whose Go

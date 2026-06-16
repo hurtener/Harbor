@@ -796,14 +796,20 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		mcpDefault = DefaultMCPIdentity
 	}
 	mcpRegistry := mcpdrv.NewRegistry()
+	// Resolve the host's renderable MCP App display modes once; every
+	// attached server advertises the same host capability during its
+	// initialize handshake (the host's rendering ability does not vary per
+	// server). Defaults to the inline-only baseline.
+	hostDisplayModes := cfg.Tools.MCPAppHostDisplayModes()
 	for _, ms := range cfg.Tools.MCPServers {
 		if err := mcpdrv.Attach(ctx, ms, mcpdrv.AttachDeps{
-			Catalog:         toolCat,
-			Registry:        mcpRegistry,
-			Bus:             stack.Bus,
-			Logger:          logger,
-			DefaultIdentity: mcpDefault,
-			Closers:         &stack.closers,
+			Catalog:          toolCat,
+			Registry:         mcpRegistry,
+			Bus:              stack.Bus,
+			Logger:           logger,
+			DefaultIdentity:  mcpDefault,
+			Closers:          &stack.closers,
+			HostDisplayModes: hostDisplayModes,
 		}); err != nil {
 			return fmt.Errorf("mcp[%s]: %w", ms.Name, err)
 		}

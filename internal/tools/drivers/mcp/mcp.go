@@ -130,6 +130,19 @@ type Config struct {
 	// `notifications/resources/updated` arriving outside any
 	// inflight call) where the ctx has no triple to read.
 	DefaultIdentity identity.Identity
+
+	// HostDisplayModes lists the MCP App (`io.modelcontextprotocol/ui`)
+	// display modes this host can render. When non-empty, the provider
+	// advertises the UI extension during the MCP initialize handshake with
+	// these modes (filtered against the closed valid-mode set), so a server
+	// can tailor the app references it returns to what the host actually
+	// renders. Empty leaves the SDK's default capability advertisement
+	// untouched (no UI extension) — the behaviour for an embedder that does
+	// not opt in. The boot loader sources this from the deployment-level
+	// `tools.mcp_app_host.display_modes` config (defaulting to inline), but
+	// a programmatic embedder may set it directly. Read once at construction;
+	// immutable thereafter.
+	HostDisplayModes []string
 }
 
 // pushIdentity returns the identity to stamp on a server-pushed
@@ -244,15 +257,74 @@ func New(cfg Config) (*Provider, error) {
 	// The client is constructed eagerly so subscriptions /
 	// notification handlers attached at New time survive the
 	// re-Connect cycle a ToolPolicy retry might trigger.
+	clientOpts := &mcpsdk.ClientOptions{
+		Logger:                 cfg.Logger,
+		KeepAlive:              cfg.KeepAlive,
+		ResourceUpdatedHandler: p.onResourceUpdated,
+	}
+	// Advertise the host's renderable MCP App display modes during the
+	// initialize handshake when the host opts in. Leaving Capabilities nil
+	// preserves the SDK's default advertisement for embedders that do not.
+	if caps := hostCapabilities(cfg.HostDisplayModes); caps != nil {
+		clientOpts.Capabilities = caps
+	}
 	p.client = mcpsdk.NewClient(
 		&mcpsdk.Implementation{Name: implementationName, Version: implementationVersion},
-		&mcpsdk.ClientOptions{
-			Logger:                 cfg.Logger,
-			KeepAlive:              cfg.KeepAlive,
-			ResourceUpdatedHandler: p.onResourceUpdated,
-		},
+		clientOpts,
 	)
 	return p, nil
+}
+
+// hostCapabilities builds the client capabilities advertised during the MCP
+// initialize handshake when the host can render MCP App
+// (`io.modelcontextprotocol/ui`) documents. It advertises the UI extension
+// with the host's renderable display modes (filtered against the closed
+// valid-mode set, deduplicated, advertised order preserved) so a server can
+// tailor the app references it returns.
+//
+// Returns nil when no renderable modes are configured, leaving the SDK's
+// default capability advertisement in place.
+//
+// Setting any client capability overrides the SDK's default advertisement
+// (`{"roots":{"listChanged":true}}`), and the SDK ignores the deprecated
+// `Roots` field in favour of `RootsV2`. So this MUST replicate the current
+// roots advertisement explicitly — otherwise opting into the UI extension
+// would silently drop the roots capability the runtime advertises today.
+// Sampling and elicitation remain inferred from their handlers (unset here).
+func hostCapabilities(displayModes []string) *mcpsdk.ClientCapabilities {
+	modes := filterHostDisplayModes(displayModes)
+	if len(modes) == 0 {
+		return nil
+	}
+	caps := &mcpsdk.ClientCapabilities{
+		RootsV2: &mcpsdk.RootCapabilities{ListChanged: true},
+	}
+	settings := map[string]any{"displayModes": modes}
+	caps.AddExtension(uiExtensionKey, settings)
+	return caps
+}
+
+// filterHostDisplayModes returns the host-advertised display modes that are in
+// the closed valid-mode set, with duplicates removed and advertised order
+// preserved. The mirror of negotiateDisplayModes' server-side filtering, so
+// the host advertises only modes it can actually render.
+func filterHostDisplayModes(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, mode := range in {
+		if _, valid := validDisplayModes[mode]; !valid {
+			continue
+		}
+		if _, dup := seen[mode]; dup {
+			continue
+		}
+		seen[mode] = struct{}{}
+		out = append(out, mode)
+	}
+	return out
 }
 
 // SourceID returns the source ID under which this provider's
