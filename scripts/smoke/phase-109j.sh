@@ -4,9 +4,9 @@
 # Phase 109j smoke — Console pushes tool-input/tool-result into the MCP App.
 #
 # Conventions (AGENTS.md §4.2):
-#   - Surface-not-yet-present → SKIP (so this forward-phase script coexists
-#     with builds that predate 109j). The implementer flips the SKIPs to
-#     OK/FAIL once the surface lands so the script guards against regression.
+#   - The 109j surface has LANDED, so each guard now asserts OK on presence and
+#     FAIL on absence (a missing surface is a regression, no longer a forward
+#     SKIP). These are static source greps — the surface is Console-only.
 #   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
 #
 # This phase closes the MCP Apps Data Delivery lifecycle on the Console side:
@@ -33,7 +33,7 @@ if grep -q 'sendToolInput' "${BRIDGE}" 2>/dev/null &&
     grep -q 'sendToolResult' "${BRIDGE}" 2>/dev/null; then
     ok 'phase 109j: app-bridge-host pushes sendToolInput + sendToolResult'
 else
-    skip 'phase 109j: Data Delivery push (sendToolInput/sendToolResult) not yet implemented'
+    fail 'phase 109j: Data Delivery push (sendToolInput/sendToolResult) missing from app-bridge-host'
 fi
 
 # ----------------------------------------------------------------------------
@@ -43,7 +43,7 @@ fi
 if grep -q 'toolContext' "${BRIDGE}" 2>/dev/null; then
     ok 'phase 109j: host fetches tool context via the injected MCPAppHostClient'
 else
-    skip 'phase 109j: MCPAppHostClient.toolContext seam not yet implemented'
+    fail 'phase 109j: MCPAppHostClient.toolContext seam missing from app-bridge-host'
 fi
 
 # ----------------------------------------------------------------------------
@@ -52,7 +52,7 @@ fi
 if grep -q 'tool_call_id\|toolCallId' "${WIRE}" 2>/dev/null; then
     ok 'phase 109j: wire-events decodes tool_call_id for app correlation'
 else
-    skip 'phase 109j: wire-events does not yet decode tool_call_id'
+    fail 'phase 109j: wire-events does not decode tool_call_id'
 fi
 
 smoke_summary

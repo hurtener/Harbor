@@ -269,6 +269,7 @@ const appAvailableFrame = JSON.stringify({
 		SafePayload: null,
 		Identity: { TenantID: 'dev', UserID: 'dev', SessionID: 'dev', RunID: '01KSTH74S20BDDP1BK6ZSGABJG' },
 		ServerID: 'weather-server',
+		ToolCallID: 'tc_weather_abc123',
 		ResourceURI: 'ui://weather/main.html',
 		DisplayMode: 'inline',
 		RawHTMLTrusted: false
@@ -281,9 +282,19 @@ describe('decodeAppAvailable', () => {
 			taskID: '01KSTH74S20BDDP1BK6ZSGABJG',
 			serverID: 'weather-server',
 			resourceUri: 'ui://weather/main.html',
+			toolCallId: 'tc_weather_abc123',
 			displayMode: 'inline',
 			rawHtmlTrusted: false
 		});
+	});
+
+	it('decodes an empty tool_call_id when the runtime omits it (older capture)', () => {
+		const noToolCall = JSON.stringify({
+			type: 'mcp.app_available',
+			run: 'r',
+			payload: { ServerID: 'srv', ResourceURI: 'ui://srv/app.html', RawHTMLTrusted: false }
+		});
+		expect(decodeAppAvailable(noToolCall)?.toolCallId).toBe('');
 	});
 
 	it('drops a frame missing the server id or resource uri (cannot mount an app)', () => {
