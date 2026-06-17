@@ -491,6 +491,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		coord           = stack.Coordinator
 		appliedGates    = stack.Gates
 		mcpRegistry     = stack.MCPRegistry
+		mcpToolContext  = stack.MCPToolContext
 		sessionRegistry = stack.Sessions
 		agentRegistry   = stack.Agents
 		steeringReg     = stack.Steering
@@ -549,19 +550,21 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// OAuth wrappers) a planner uses. Heavy content offloads to the
 	// artifact store by reference (the context-window safety net).
 	appsAccessor, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:  mcpRegistry,
-		Catalog:   toolCat,
-		Store:     artStore,
-		Bus:       bus,
-		Threshold: cfg.Artifacts.HeavyOutputThresholdBytes,
+		Registry:    mcpRegistry,
+		Catalog:     toolCat,
+		Store:       artStore,
+		Bus:         bus,
+		ToolContext: mcpToolContext,
+		Threshold:   cfg.Artifacts.HeavyOutputThresholdBytes,
 	})
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("mcp apps accessor: %w", err)
 	}
 	appsSurface, err := protocol.NewAppsSurface(protocol.AppsDeps{
-		Resource: appsAccessor,
-		Invoker:  appsAccessor,
+		Resource:    appsAccessor,
+		Invoker:     appsAccessor,
+		ToolContext: appsAccessor,
 	})
 	if err != nil {
 		closeAll(ctx)

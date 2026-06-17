@@ -60,6 +60,8 @@ func decodeAppsRequest(method methods.Method, body []byte) (any, *protoerrors.Er
 		target = &types.ReadMCPResourceRequest{}
 	case methods.MethodMCPAppsCallTool:
 		target = &types.MCPAppCallToolRequest{}
+	case methods.MethodMCPAppsToolContext:
+		target = &types.ToolContextRequest{}
 	default:
 		// Unreachable — serveApps is gated on IsMCPAppsMethod.
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
@@ -82,6 +84,8 @@ func appsIdentityScope(req any) *types.IdentityScope {
 	case *types.ReadMCPResourceRequest:
 		return &v.Identity
 	case *types.MCPAppCallToolRequest:
+		return &v.Identity
+	case *types.ToolContextRequest:
 		return &v.Identity
 	default:
 		return nil

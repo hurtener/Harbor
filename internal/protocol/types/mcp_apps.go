@@ -37,6 +37,11 @@ type MCPAppRef struct {
 	// document via mcp.servers.read_resource — without it the renderer
 	// cannot resolve which server to read from. Empty for a non-app result.
 	ServerID string `json:"server_id,omitempty"`
+	// ToolCallID is the stable per-invocation id of the tool call that
+	// declared the app. The Console pairs it with ServerID to fetch the
+	// tool context (input + lowered result) via mcp.apps.tool_context.
+	// Empty for a non-app result.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
 	// The Console fetches the document via mcp.servers.read_resource.
 	ResourceURI string `json:"resource_uri"`
@@ -147,6 +152,61 @@ type MCPAppCallToolResponse struct {
 	// App is the MCP App reference parsed from the tool result's
 	// `_meta.ui.resourceUri`, or nil for a non-app result.
 	App *MCPAppRef `json:"app,omitempty"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under so a client can detect a version skew.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// ToolContextRequest is the `mcp.apps.tool_context` request body — a
+// rendered MCP App asking the host for the tool context (input arguments +
+// lowered result) that produced it. The request carries the identity
+// triple from the Protocol context; the runtime resolves the captured
+// context scoped to that triple, so an app can never read a context
+// captured under a different identity (a cross-identity id fails with
+// CodeNotFound). Identity is mandatory.
+type ToolContextRequest struct {
+	// Identity is the (tenant, user, session) scope the read runs under.
+	// Mandatory — an incomplete triple fails closed.
+	Identity IdentityScope `json:"identity"`
+	// ServerID is the MCP server (source id) the tool belongs to — the
+	// value carried on the `mcp.app_available` discovery event.
+	ServerID string `json:"server_id"`
+	// ToolCallID is the stable per-invocation id of the tool call that
+	// declared the app — also carried on the discovery event.
+	ToolCallID string `json:"tool_call_id"`
+}
+
+// ToolContextPayload is one half (input or result) of a tool context.
+// EXACTLY ONE of Content / ArtifactRef is set: Content carries the inline
+// JSON when the payload is below the heavy-content threshold; ArtifactRef
+// carries the by-reference stub when it met or exceeded the threshold at
+// capture time (the Console fetches the bytes via the artifacts surface).
+type ToolContextPayload struct {
+	// Content is the inline JSON, populated ONLY when the payload was
+	// captured below the heavy-content threshold. Empty when ArtifactRef
+	// is set.
+	Content json.RawMessage `json:"content,omitempty"`
+	// ArtifactRef is the by-reference stub, populated when the payload met
+	// or exceeded the heavy-content threshold at capture. Nil when Content
+	// is set.
+	ArtifactRef *MCPResourceArtifactRef `json:"artifact_ref,omitempty"`
+}
+
+// ToolContextResponse is the `mcp.apps.tool_context` reply — the captured
+// input + lowered result that produced the rendered app. Each of Input /
+// Result is inline-or-by-reference (the heavy-content discipline matches
+// ReadMCPResourceResponse): a large result rides by reference, never
+// inline. An unknown or cross-identity (server_id, tool_call_id) fails
+// with CodeNotFound rather than returning an empty response.
+type ToolContextResponse struct {
+	// Tool echoes the server-side tool name that declared the app.
+	Tool string `json:"tool"`
+	// Input is the tool's input arguments (inline JSON or by reference).
+	Input ToolContextPayload `json:"input"`
+	// Result is the tool's lowered result (inline JSON or by reference).
+	Result ToolContextPayload `json:"result"`
+	// IsError reports whether the tool returned a server-side error result.
+	IsError bool `json:"is_error"`
 	// ProtocolVersion echoes the Protocol version the Runtime answered
 	// under so a client can detect a version skew.
 	ProtocolVersion string `json:"protocol_version"`

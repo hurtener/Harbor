@@ -406,6 +406,11 @@ type DevStack struct {
 	// directly to assert each configured server reached the Registry.
 	MCPRegistry *mcpdrv.Registry
 
+	// MCPToolContext is the MCP Apps tool-context store the MCP providers
+	// capture through and the host reads back for `mcp.apps.tool_context`.
+	// Nil when SkipCatalog is set. Mirrors the production cmd/harbor wiring.
+	MCPToolContext *mcpconsole.ToolContextStore
+
 	// Validator / SigningKey / KID / Token are nil/empty when
 	// SkipAuth is set. The Token is a signed Bearer the caller
 	// stamps on outgoing HTTP requests; SigningKey is the matching
@@ -576,6 +581,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.Coordinator = core.Coordinator
 		stack.Gates = core.Gates
 		stack.MCPRegistry = core.MCPRegistry
+		stack.MCPToolContext = core.MCPToolContext
 		stack.Steering = core.Steering
 		stack.RunLoop = core.RunLoop
 		if core.OAuthProviders != nil {
@@ -860,20 +866,22 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// `ui://` document source) + the tool catalog (the proxy
 		// re-enters it with its approval/OAuth wrappers) + the artifact
 		// store (the heavy-content offload target).
-		if stack.MCPRegistry != nil && stack.Catalog != nil && stack.Artifacts != nil {
+		if stack.MCPRegistry != nil && stack.Catalog != nil && stack.Artifacts != nil && stack.MCPToolContext != nil {
 			appsAccessor, aaErr := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-				Registry:  stack.MCPRegistry,
-				Catalog:   stack.Catalog,
-				Store:     stack.Artifacts,
-				Bus:       bus,
-				Threshold: cfg.Artifacts.HeavyOutputThresholdBytes,
+				Registry:    stack.MCPRegistry,
+				Catalog:     stack.Catalog,
+				Store:       stack.Artifacts,
+				Bus:         bus,
+				ToolContext: stack.MCPToolContext,
+				Threshold:   cfg.Artifacts.HeavyOutputThresholdBytes,
 			})
 			if aaErr != nil {
 				return stack, fmt.Errorf("mcp apps accessor: %w", aaErr)
 			}
 			appsSurface, asErr := protocol.NewAppsSurface(protocol.AppsDeps{
-				Resource: appsAccessor,
-				Invoker:  appsAccessor,
+				Resource:    appsAccessor,
+				Invoker:     appsAccessor,
+				ToolContext: appsAccessor,
 			})
 			if asErr != nil {
 				return stack, fmt.Errorf("mcp apps surface: %w", asErr)

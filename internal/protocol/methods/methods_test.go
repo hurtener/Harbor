@@ -65,6 +65,7 @@ var wantMethods = []methods.Method{
 	methods.MethodMCPServersSetRawHTMLTrust,
 	methods.MethodMCPReadResource,
 	methods.MethodMCPAppsCallTool,
+	methods.MethodMCPAppsToolContext,
 	methods.MethodToolsList,
 	methods.MethodToolsGet,
 	methods.MethodToolsDescribe,
@@ -111,9 +112,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 73c sessions-page two + Phase 73n runs-page one +
 	// Phase 73m auth.rotate_token one + Phase 108l agents-control five +
 	// Phase 108n memory-mutation/trace three + Phase 108o artifacts.delete one = 80,
-	// + MCP Apps host two (mcp.servers.read_resource + mcp.apps.call_tool) = 82.
-	if len(got) != 82 {
-		t.Fatalf("Methods() returned %d methods, want 82", len(got))
+	// + MCP Apps host three (mcp.servers.read_resource + mcp.apps.call_tool
+	// + mcp.apps.tool_context) = 83.
+	if len(got) != 83 {
+		t.Fatalf("Methods() returned %d methods, want 83", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

@@ -3,6 +3,7 @@ package config_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -996,6 +997,96 @@ func TestValidateTools_MCPServers(t *testing.T) {
 			}
 			if tc.wantSub != "" && !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("expected substring %q in error, got: %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
+// TestValidateTools_MCPAppHost covers the deployment-level MCP App host
+// capability block: a nil block is valid (resolves to the inline baseline),
+// the closed display-mode set is enforced, and duplicates are rejected.
+func TestValidateTools_MCPAppHost(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantOK  bool
+		wantSub string
+	}{
+		{
+			name:   "nil block passes",
+			mutate: func(c *config.Config) { c.Tools.MCPAppHost = nil },
+			wantOK: true,
+		},
+		{
+			name: "empty display_modes passes",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPAppHost = &config.MCPAppHostConfig{}
+			},
+			wantOK: true,
+		},
+		{
+			name: "valid modes pass",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPAppHost = &config.MCPAppHostConfig{DisplayModes: []string{"inline", "pip", "fullscreen"}}
+			},
+			wantOK: true,
+		},
+		{
+			name: "unknown mode rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPAppHost = &config.MCPAppHostConfig{DisplayModes: []string{"inline", "hologram"}}
+			},
+			wantOK:  false,
+			wantSub: "tools.mcp_app_host.display_modes[1]",
+		},
+		{
+			name: "duplicate mode rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPAppHost = &config.MCPAppHostConfig{DisplayModes: []string{"inline", "inline"}}
+			},
+			wantOK:  false,
+			wantSub: "duplicate display mode",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoadValid(t)
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("expected ok, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected validation failure, got nil")
+			}
+			if tc.wantSub != "" && !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("expected substring %q in error, got: %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
+// TestMCPAppHostDisplayModes_Resolver pins the inline-only baseline default
+// and the configured-modes pass-through. The boot loader threads this into
+// every MCP provider's host-capability advertisement.
+func TestMCPAppHostDisplayModes_Resolver(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *config.MCPAppHostConfig
+		want []string
+	}{
+		{name: "nil block defaults to inline", in: nil, want: []string{"inline"}},
+		{name: "empty modes default to inline", in: &config.MCPAppHostConfig{}, want: []string{"inline"}},
+		{name: "configured modes pass through", in: &config.MCPAppHostConfig{DisplayModes: []string{"inline", "pip"}}, want: []string{"inline", "pip"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := config.ToolsConfig{MCPAppHost: tc.in}.MCPAppHostDisplayModes()
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("MCPAppHostDisplayModes() = %v, want %v", got, tc.want)
 			}
 		})
 	}

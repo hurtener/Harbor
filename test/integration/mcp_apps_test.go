@@ -19,6 +19,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/approval"
 	"github.com/hurtener/Harbor/internal/tools/catalog"
@@ -176,17 +177,35 @@ func mkAppsSurface(t *testing.T, cat tools.ToolCatalog, bus events.EventBus) *pr
 		t.Fatalf("artifactsInmem.New: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:  mcp.NewRegistry(),
-		Catalog:   cat,
+	// The tool-context store backing mcp.apps.tool_context is a mandatory
+	// AppsAccessor dependency (production always wires it in assemble); the
+	// seam carries a real StateStore + ArtifactStore, no mock.
+	stateStore, err := stateInmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateInmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = stateStore.Close(context.Background()) })
+	toolCtx, err := mcpconsole.NewToolContextStore(mcpconsole.ToolContextDeps{
+		State:     stateStore,
 		Store:     store,
 		Bus:       bus,
 		Threshold: 32 * 1024,
 	})
 	if err != nil {
+		t.Fatalf("NewToolContextStore: %v", err)
+	}
+	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
+		Registry:    mcp.NewRegistry(),
+		Catalog:     cat,
+		Store:       store,
+		Bus:         bus,
+		Threshold:   32 * 1024,
+		ToolContext: toolCtx,
+	})
+	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
 	}
-	s, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: acc, Invoker: acc})
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: acc, Invoker: acc, ToolContext: acc})
 	if err != nil {
 		t.Fatalf("NewAppsSurface: %v", err)
 	}

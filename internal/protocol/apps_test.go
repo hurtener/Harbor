@@ -42,9 +42,30 @@ func (s *stubInvoker) CallTool(_ context.Context, tool string, _ json.RawMessage
 	return s.res, nil
 }
 
+// stubToolContextReader is a deterministic AppToolContextReader seam.
+type stubToolContextReader struct {
+	row         protocol.AppToolContextRow
+	err         error
+	gotServerID string
+	gotCallID   string
+}
+
+func (s *stubToolContextReader) ToolContext(_ context.Context, serverID, toolCallID string) (protocol.AppToolContextRow, error) {
+	s.gotServerID, s.gotCallID = serverID, toolCallID
+	if s.err != nil {
+		return protocol.AppToolContextRow{}, s.err
+	}
+	return s.row, nil
+}
+
 func newAppsSurface(t *testing.T, r protocol.MCPResourceReader, inv protocol.AppToolInvoker) *protocol.AppsSurface {
 	t.Helper()
-	s, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: r, Invoker: inv})
+	return newAppsSurfaceTC(t, r, inv, &stubToolContextReader{})
+}
+
+func newAppsSurfaceTC(t *testing.T, r protocol.MCPResourceReader, inv protocol.AppToolInvoker, tc protocol.AppToolContextReader) *protocol.AppsSurface {
+	t.Helper()
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: r, Invoker: inv, ToolContext: tc})
 	if err != nil {
 		t.Fatalf("NewAppsSurface: %v", err)
 	}
@@ -52,11 +73,14 @@ func newAppsSurface(t *testing.T, r protocol.MCPResourceReader, inv protocol.App
 }
 
 func TestAppsSurface_NewRejectsNilDeps(t *testing.T) {
-	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{Invoker: &stubInvoker{}}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
+	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{Invoker: &stubInvoker{}, ToolContext: &stubToolContextReader{}}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
 		t.Errorf("nil Resource: err = %v, want ErrAppsMisconfigured", err)
 	}
-	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: &stubResourceReader{}}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
+	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: &stubResourceReader{}, ToolContext: &stubToolContextReader{}}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
 		t.Errorf("nil Invoker: err = %v, want ErrAppsMisconfigured", err)
+	}
+	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{Resource: &stubResourceReader{}, Invoker: &stubInvoker{}}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
+		t.Errorf("nil ToolContext: err = %v, want ErrAppsMisconfigured", err)
 	}
 }
 
@@ -155,4 +179,83 @@ func TestAppsSurface_Dispatch_RejectsNonAppsMethod(t *testing.T) {
 	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
 	_, err := s.Dispatch(context.Background(), methods.MethodStart, &types.ReadMCPResourceRequest{Identity: validScope()})
 	assertCode(t, err, protoerrors.CodeUnknownMethod)
+}
+
+func TestAppsSurface_ToolContext_InlineProjection(t *testing.T) {
+	tc := &stubToolContextReader{row: protocol.AppToolContextRow{
+		Tool:    "srv-a_weather",
+		IsError: false,
+		Input:   protocol.AppToolContextPayloadRow{Inline: json.RawMessage(`{"city":"NYC"}`)},
+		Result:  protocol.AppToolContextPayloadRow{Inline: json.RawMessage(`{"temp":21}`)},
+	}}
+	s := newAppsSurfaceTC(t, &stubResourceReader{}, &stubInvoker{}, tc)
+	resp, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+		Identity: validScope(), ServerID: "srv-a", ToolCallID: "abc123",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	out := resp.(*types.ToolContextResponse)
+	if out.Tool != "srv-a_weather" || out.IsError {
+		t.Errorf("tool-context projection wrong: %+v", out)
+	}
+	if string(out.Input.Content) != `{"city":"NYC"}` || out.Input.ArtifactRef != nil {
+		t.Errorf("input projection wrong: %+v", out.Input)
+	}
+	if string(out.Result.Content) != `{"temp":21}` || out.Result.ArtifactRef != nil {
+		t.Errorf("result projection wrong: %+v", out.Result)
+	}
+	if tc.gotServerID != "srv-a" || tc.gotCallID != "abc123" {
+		t.Errorf("reader args wrong: server=%q call=%q", tc.gotServerID, tc.gotCallID)
+	}
+}
+
+func TestAppsSurface_ToolContext_ArtifactProjection(t *testing.T) {
+	tc := &stubToolContextReader{row: protocol.AppToolContextRow{
+		Tool:   "srv-a_weather",
+		Input:  protocol.AppToolContextPayloadRow{Inline: json.RawMessage("null")},
+		Result: protocol.AppToolContextPayloadRow{Artifact: &protocol.MCPResourceArtifactRow{ID: "mcp-apps_xyz", SizeBytes: 99000}},
+	}}
+	s := newAppsSurfaceTC(t, &stubResourceReader{}, &stubInvoker{}, tc)
+	resp, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+		Identity: validScope(), ServerID: "srv-a", ToolCallID: "abc123",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	out := resp.(*types.ToolContextResponse)
+	if out.Result.ArtifactRef == nil || out.Result.ArtifactRef.ID != "mcp-apps_xyz" || out.Result.Content != nil {
+		t.Errorf("result by-reference projection wrong: %+v", out.Result)
+	}
+}
+
+func TestAppsSurface_ToolContext_FailsClosedOnMissingIdentity(t *testing.T) {
+	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
+	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+		Identity: types.IdentityScope{}, ServerID: "srv-a", ToolCallID: "abc",
+	})
+	assertCode(t, err, protoerrors.CodeIdentityRequired)
+}
+
+func TestAppsSurface_ToolContext_RequiresServerAndCallID(t *testing.T) {
+	s := newAppsSurface(t, &stubResourceReader{}, &stubInvoker{})
+	if _, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+		Identity: validScope(), ToolCallID: "abc",
+	}); true {
+		assertCode(t, err, protoerrors.CodeInvalidRequest)
+	}
+	if _, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+		Identity: validScope(), ServerID: "srv-a",
+	}); true {
+		assertCode(t, err, protoerrors.CodeInvalidRequest)
+	}
+}
+
+func TestAppsSurface_ToolContext_UnknownIDMapsToNotFound(t *testing.T) {
+	tc := &stubToolContextReader{err: errors.New("mcpconsole: tool context not found (server \"srv-a\", call \"nope\"): state: record not found")}
+	s := newAppsSurfaceTC(t, &stubResourceReader{}, &stubInvoker{}, tc)
+	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsToolContext, &types.ToolContextRequest{
+		Identity: validScope(), ServerID: "srv-a", ToolCallID: "nope",
+	})
+	assertCode(t, err, protoerrors.CodeNotFound)
 }

@@ -637,8 +637,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 82 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 82 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host two)", len(got))
+	if len(got) != 83 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 83 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -691,8 +691,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodMCPServersRevokeBinding:    {},
 		methods.MethodMCPServersSetRawHTMLTrust:  {},
 
-		methods.MethodMCPReadResource: {},
-		methods.MethodMCPAppsCallTool: {},
+		methods.MethodMCPReadResource:    {},
+		methods.MethodMCPAppsCallTool:    {},
+		methods.MethodMCPAppsToolContext: {},
 
 		methods.MethodToolsList:              {},
 		methods.MethodToolsGet:               {},
