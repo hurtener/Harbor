@@ -423,6 +423,20 @@ export class MCPAppsNamespace {
 			arguments: args
 		});
 	}
+	/**
+	 * `mcp.apps.tool_context` — fetch the captured tool context (input + lowered
+	 * result) that produced a rendered `ui://` MCP App, so the host can push it
+	 * across the AppBridge after the app initializes (the Data Delivery
+	 * lifecycle stage). `serverID` + `toolCallID` are the correlation pair the
+	 * `mcp.app_available` event carries; the read is identity-scoped, so an
+	 * unknown or cross-identity pair fails with `not_found`.
+	 */
+	toolContext<R = unknown>(serverID: string, toolCallID: string): Promise<R> {
+		return this.#t.request<R>('/v1/control/mcp.apps.tool_context', {
+			server_id: serverID,
+			tool_call_id: toolCallID
+		});
+	}
 }
 
 /**

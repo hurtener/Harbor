@@ -16,15 +16,19 @@ import type {
   MCPAppHostClient,
   MCPAppResource,
   MCPAppResourceListing,
+  MCPAppToolContext,
   MCPAppToolListing,
   MCPAppToolResult,
 } from '$lib/chat/renderers/app-bridge-host.js';
 import type { ArtifactsGetRefResponse } from '$lib/protocol/artifacts.js';
 import type { ProtocolClient } from '$lib/protocol/client.js';
+import { ProtocolError } from '$lib/protocol/errors.js';
 import type {
   MCPAppCallToolResponse,
   MCPServerResourcesResponse,
   ReadMCPResourceResponse,
+  ToolContextPayload,
+  ToolContextResponse,
 } from '$lib/protocol/mcp.js';
 import type { ToolListResponse } from '$lib/protocol/tools.js';
 
@@ -40,11 +44,31 @@ import type { ToolListResponse } from '$lib/protocol/tools.js';
  *   - `resolveArtifact` → `artifacts.get_ref` (the heavy `ui://` document's
  *                         by-reference stub → a presigned URL the renderer
  *                         fetches the bytes from, D-026)
+ *   - `toolContext`  → `mcp.apps.tool_context` (the captured input + lowered
+ *                         result the host pushes into a rendered app after it
+ *                         initializes — the Data Delivery lifecycle stage; a
+ *                         Runtime `not_found` maps to `null`)
+ *   - `fetchArtifactText` → `artifacts.get_ref` + a raw `fetch` of the bytes
+ *                         (the heavy tool-context path; the raw `fetch` lives
+ *                         HERE in the adapter so the chat module stays
+ *                         transport-free, D-173)
  *
  * Identity rides on the Protocol client's request choke point, so each call is
  * `(tenant, user, session)` scoped — there is no parallel, unscoped path.
  */
 export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
+  function mapPayload(p: ToolContextPayload): MCPAppToolContext['input'] {
+    return {
+      content: p.content,
+      artifactRef: p.artifact_ref
+        ? {
+            id: p.artifact_ref.id,
+            mimeType: p.artifact_ref.mime_type,
+            sizeBytes: p.artifact_ref.size_bytes,
+          }
+        : undefined,
+    };
+  }
   return {
     async readResource(serverID, resourceURI): Promise<MCPAppResource> {
       const res = await client.mcp.servers.readResource<ReadMCPResourceResponse>(
@@ -108,6 +132,42 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
       // (internal/protocol/types/artifacts.go::ArtifactsGetRefResponse).
       const res = await client.artifacts.getRef<ArtifactsGetRefResponse>({ id: artifactID });
       return res.presigned_url;
+    },
+
+    async toolContext(serverID, toolCallID): Promise<MCPAppToolContext | null> {
+      try {
+        const res = await client.mcp.apps.toolContext<ToolContextResponse>(serverID, toolCallID);
+        return {
+          tool: res.tool,
+          input: mapPayload(res.input),
+          result: mapPayload(res.result),
+          isError: res.is_error,
+        };
+      } catch (err) {
+        // A missing / evicted / cross-identity (server_id, tool_call_id) is
+        // reported by the Runtime as `not_found` — the host treats that as
+        // "no captured context" and performs no push (degraded, never a thrown
+        // render error). Any OTHER error is a real failure — re-throw it.
+        if (err instanceof ProtocolError && err.code === 'not_found') {
+          return null;
+        }
+        throw err;
+      }
+    },
+
+    async fetchArtifactText(artifactID): Promise<string> {
+      // The heavy tool-context path: resolve the by-reference stub to a
+      // presigned URL, then fetch the bytes as text. The raw `fetch` lives in
+      // this adapter (the same place the renderer's heavy-doc fetch does) so
+      // the chat module's `app-bridge-host.ts` never issues a direct network
+      // call (D-173). A non-OK response throws — the host then delivers a
+      // faithful by-reference stub rather than silently empty data (§13).
+      const ref = await client.artifacts.getRef<ArtifactsGetRefResponse>({ id: artifactID });
+      const resp = await fetch(ref.presigned_url);
+      if (!resp.ok) {
+        throw new Error(`failed to fetch tool-context artifact ${artifactID}: HTTP ${resp.status}`);
+      }
+      return resp.text();
     },
   };
 }
