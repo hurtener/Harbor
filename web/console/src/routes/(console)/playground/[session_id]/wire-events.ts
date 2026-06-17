@@ -246,6 +246,14 @@ export interface AppAvailableEvent {
 	taskID: string;
 	serverID: string;
 	resourceUri: string;
+	/**
+	 * The stable per-invocation id of the tool call that declared the app —
+	 * the correlation key the host uses to fetch + push the captured tool
+	 * context (input + lowered result) after the app initializes (the Data
+	 * Delivery lifecycle stage). '' when the discovery carried no id; the host
+	 * then performs no push.
+	 */
+	toolCallId: string;
 	/** The per-result display-mode hint (`inline` / `fullscreen` / `pip`), or ''. */
 	displayMode: string;
 	rawHtmlTrusted: boolean;
@@ -267,6 +275,10 @@ export function decodeAppAvailable(data: string): AppAvailableEvent | null {
 		taskID,
 		serverID,
 		resourceUri,
+		// The correlation id is best-effort — an older runtime that predates
+		// the tool-context capture omits it, in which case the host simply
+		// performs no Data Delivery push (the app still renders).
+		toolCallId: str(frame.payload.ToolCallID),
 		displayMode: str(frame.payload.DisplayMode),
 		rawHtmlTrusted: frame.payload.RawHTMLTrusted === true
 	};
