@@ -8,29 +8,39 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
-// TestHostCapabilities_AdvertisesConfiguredModes asserts the host capability
-// builder emits the UI extension carrying the configured display modes, and
-// preserves the SDK's roots advertisement (the regression guard — setting any
-// capability overrides the SDK default, so RootsV2 must be replicated).
-func TestHostCapabilities_AdvertisesConfiguredModes(t *testing.T) {
-	caps := hostCapabilities([]string{"inline", "pip"})
+// TestHostCapabilities_AdvertisesMimeTypesNotDisplayModes asserts the host
+// capability builder emits the spec UI capability — the `mimeTypes` array a
+// conformant ext-apps server gates on (its `getUiCapability(caps).mimeTypes`
+// check) — carrying the canonical ResourceMIMEType, and that the non-spec
+// `displayModes` payload is GONE. It also preserves the SDK's roots
+// advertisement (the regression guard — setting any capability overrides the
+// SDK default, so RootsV2 must be replicated).
+func TestHostCapabilities_AdvertisesMimeTypesNotDisplayModes(t *testing.T) {
+	caps := hostCapabilities()
 	if caps == nil {
-		t.Fatal("hostCapabilities returned nil for a non-empty configured mode set")
+		t.Fatal("hostCapabilities returned nil — the UI capability must always be advertised")
 	}
 	ext, ok := caps.Extensions[uiExtensionKey].(map[string]any)
 	if !ok {
 		t.Fatalf("UI extension %q absent or wrong shape: %#v", uiExtensionKey, caps.Extensions)
 	}
-	got, ok := ext["displayModes"].([]string)
+	mimeTypes, ok := ext["mimeTypes"].([]string)
 	if !ok {
-		t.Fatalf("displayModes absent or wrong type: %#v", ext["displayModes"])
+		t.Fatalf("mimeTypes absent or wrong type: %#v", ext["mimeTypes"])
 	}
-	if want := []string{"inline", "pip"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("displayModes = %v, want %v", got, want)
+	if want := []string{ResourceMIMEType}; !reflect.DeepEqual(mimeTypes, want) {
+		t.Fatalf("mimeTypes = %v, want %v", mimeTypes, want)
+	}
+	if ResourceMIMEType != "text/html;profile=mcp-app" {
+		t.Fatalf("ResourceMIMEType = %q, want the canonical ext-apps value", ResourceMIMEType)
+	}
+	// The non-spec displayModes capability payload must be GONE — display
+	// modes ride the ui/initialize host-context, not the capability.
+	if _, present := ext["displayModes"]; present {
+		t.Fatalf("displayModes still present in the UI capability: %#v", ext)
 	}
 	// Roots-preserved regression guard: opting into the UI extension must NOT
 	// drop the roots capability the runtime advertises today.
@@ -39,32 +49,33 @@ func TestHostCapabilities_AdvertisesConfiguredModes(t *testing.T) {
 	}
 }
 
-// TestHostCapabilities_NoRenderableModesLeavesSDKDefault asserts that with no
-// configured (or no VALID) modes the builder returns nil, leaving the SDK's
-// default capability advertisement in place — the behaviour for an embedder
-// that does not opt in.
-func TestHostCapabilities_NoRenderableModesLeavesSDKDefault(t *testing.T) {
-	for name, in := range map[string][]string{
-		"nil":         nil,
-		"empty":       {},
-		"invalidOnly": {"bogus", "hologram"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if caps := hostCapabilities(in); caps != nil {
-				t.Fatalf("hostCapabilities(%v) = %#v, want nil", in, caps)
-			}
-		})
-	}
-}
-
 // TestFilterHostDisplayModes_FiltersDedupesPreservesOrder pins the host-side
-// filter as the mirror of the server-side negotiation: only valid modes
-// survive, duplicates collapse, advertised order is preserved.
+// filter DisplayModes() returns: only valid modes survive, duplicates
+// collapse, advertised order is preserved.
 func TestFilterHostDisplayModes_FiltersDedupesPreservesOrder(t *testing.T) {
 	got := filterHostDisplayModes([]string{"pip", "bogus", "inline", "pip", "fullscreen"})
 	want := []string{"pip", "inline", "fullscreen"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("filterHostDisplayModes = %v, want %v", got, want)
+	}
+}
+
+// TestProvider_DisplayModes_ReturnsConfiguredHostModes proves DisplayModes()
+// returns the deployment's configured host modes (filtered) — NOT a value
+// read off the server's capabilities (display modes are not a spec capability
+// field).
+func TestProvider_DisplayModes_ReturnsConfiguredHostModes(t *testing.T) {
+	p, _ := newHostProvider(t, "modes", []string{"inline", "bogus", "pip", "inline"})
+	got := p.DisplayModes()
+	if want := []string{"inline", "pip"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("DisplayModes = %v, want %v", got, want)
+	}
+
+	// A provider with no configured host modes reports an empty set — never a
+	// fabricated default.
+	pEmpty, _ := newHostProvider(t, "nomodes", nil)
+	if got := pEmpty.DisplayModes(); len(got) != 0 {
+		t.Fatalf("DisplayModes (no config) = %v, want empty", got)
 	}
 }
 
@@ -147,10 +158,10 @@ func rootsListChanged(caps *mcpsdk.ClientCapabilities) bool {
 	return caps.Roots.ListChanged
 }
 
-// uiDisplayModes extracts the advertised UI-extension display modes from a
+// uiMimeTypes extracts the advertised UI-extension `mimeTypes` from a
 // server-captured client InitializeParams, or nil when the extension is
-// absent. The server receives the modes as []any after JSON round-trip.
-func uiDisplayModes(t *testing.T, caps *mcpsdk.ClientCapabilities) []string {
+// absent. The server receives the array as []any after JSON round-trip.
+func uiMimeTypes(t *testing.T, caps *mcpsdk.ClientCapabilities) []string {
 	t.Helper()
 	if caps == nil {
 		return nil
@@ -159,7 +170,7 @@ func uiDisplayModes(t *testing.T, caps *mcpsdk.ClientCapabilities) []string {
 	if !ok {
 		return nil
 	}
-	raw, ok := ext["displayModes"]
+	raw, ok := ext["mimeTypes"]
 	if !ok {
 		return nil
 	}
@@ -179,22 +190,18 @@ func uiDisplayModes(t *testing.T, caps *mcpsdk.ClientCapabilities) []string {
 	}
 }
 
-// TestHostCapabilityAdvertisement_TwoProviders_EchoUIExtensionAndPreserveRoots
-// is the cross-subsystem integration test: two MCP providers built from ONE
-// resolved host-display-mode config value each advertise the UI extension to
-// their server during the real SDK initialize handshake, the servers echo
-// back the configured modes, AND every provider still advertises roots
-// (the regression guard). Identity still propagates on a real tool call, and
-// the failure mode — a provider that opts out — advertises roots with NO UI
-// extension. Real drivers on the seam (in-mem bus, real SDK transports).
-func TestHostCapabilityAdvertisement_TwoProviders_EchoUIExtensionAndPreserveRoots(t *testing.T) {
-	// ONE config value resolved once, threaded into BOTH providers — mirrors
-	// the boot loader sourcing tools.mcp_app_host.display_modes once.
-	cfg := config.ToolsConfig{MCPAppHost: &config.MCPAppHostConfig{DisplayModes: []string{"inline", "pip"}}}
-	hostModes := cfg.MCPAppHostDisplayModes()
-
+// TestHostCapabilityAdvertisement_TwoProviders_EchoMimeTypesAndPreserveRoots
+// is the cross-subsystem integration test: two MCP providers each advertise
+// the spec UI `mimeTypes` capability to their server during the real SDK
+// initialize handshake (the field a conformant server gates on), AND every
+// provider still advertises roots (the regression guard). The capability is
+// advertised UNCONDITIONALLY — a provider configured with no host display
+// modes still advertises `mimeTypes` (display modes are not the capability).
+// Identity still propagates on a real tool call. Real drivers on the seam
+// (in-mem bus, real SDK transports).
+func TestHostCapabilityAdvertisement_TwoProviders_EchoMimeTypesAndPreserveRoots(t *testing.T) {
 	for _, name := range []string{"alpha", "beta"} {
-		p, m := newHostProvider(t, name, hostModes)
+		p, m := newHostProvider(t, name, []string{"inline", "pip"})
 		serverSession, cleanup := pairProviderCapturingServer(t, m, p)
 		t.Cleanup(func() {
 			_ = p.Close(context.Background())
@@ -207,9 +214,9 @@ func TestHostCapabilityAdvertisement_TwoProviders_EchoUIExtensionAndPreserveRoot
 		}
 		caps := iparams.Capabilities
 
-		got := uiDisplayModes(t, caps)
-		if want := []string{"inline", "pip"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("%s: advertised displayModes = %v, want %v", name, got, want)
+		got := uiMimeTypes(t, caps)
+		if want := []string{ResourceMIMEType}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: advertised mimeTypes = %v, want %v", name, got, want)
 		}
 		// Roots preserved (the SDK syncs RootsV2 → Roots on the wire).
 		if !rootsListChanged(caps) {
@@ -237,9 +244,10 @@ func TestHostCapabilityAdvertisement_TwoProviders_EchoUIExtensionAndPreserveRoot
 		}
 	}
 
-	// Failure mode / opt-out: a provider with NO host modes advertises roots
-	// and NO UI extension — the backward-compatible default path.
-	p, m := newHostProvider(t, "optout", nil)
+	// A provider configured with NO host display modes STILL advertises the
+	// spec `mimeTypes` capability (it is unconditional — Harbor always hosts
+	// apps via the Console) and preserves roots.
+	p, m := newHostProvider(t, "nomodes", nil)
 	serverSession, cleanup := pairProviderCapturingServer(t, m, p)
 	t.Cleanup(func() {
 		_ = p.Close(context.Background())
@@ -247,12 +255,12 @@ func TestHostCapabilityAdvertisement_TwoProviders_EchoUIExtensionAndPreserveRoot
 	})
 	caps := serverSession.InitializeParams().Capabilities
 	if caps == nil {
-		t.Fatal("optout: server captured no client capabilities")
+		t.Fatal("nomodes: server captured no client capabilities")
 	}
-	if got := uiDisplayModes(t, caps); got != nil {
-		t.Fatalf("optout: advertised UI extension %v despite no host modes", got)
+	if got := uiMimeTypes(t, caps); !reflect.DeepEqual(got, []string{ResourceMIMEType}) {
+		t.Fatalf("nomodes: advertised mimeTypes = %v, want %v", got, []string{ResourceMIMEType})
 	}
 	if !rootsListChanged(caps) {
-		t.Fatalf("optout: roots capability dropped on the default (no-opt-in) path (caps=%#v)", caps)
+		t.Fatalf("nomodes: roots capability dropped (caps=%#v)", caps)
 	}
 }

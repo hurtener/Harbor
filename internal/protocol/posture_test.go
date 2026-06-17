@@ -81,6 +81,10 @@ func newPostureFixture(t *testing.T) *protocol.PostureSurface {
 			BuildCommit:    "abc1234",
 			BuildDate:      "2026-05-19T00:00:00Z",
 			BuildGoVersion: "go1.26.0",
+			// The host's renderable MCP App display modes, declared by the
+			// deployment config; runtime.info projects them so the Console
+			// seeds the `ui/initialize` host-context availableDisplayModes.
+			MCPAppDisplayModes: []string{"inline", "pip"},
 		},
 		Clock:    fixedClock,
 		BootedAt: fixedClock().Add(-1 * time.Hour),
@@ -233,6 +237,12 @@ func TestPostureDispatch_RuntimeInfo(t *testing.T) {
 	}
 	if info.BuildVersion != "v0.0.0-dev" || info.BuildCommit != "abc1234" {
 		t.Errorf("build identity wrong: %+v", info)
+	}
+	// The configured MCP App display modes are projected onto runtime.info so
+	// the Console seeds its host-context availableDisplayModes from the
+	// deployment declaration, not a hard-coded set.
+	if want := []string{"inline", "pip"}; !reflect.DeepEqual(info.MCPAppDisplayModes, want) {
+		t.Errorf("MCPAppDisplayModes = %v, want %v", info.MCPAppDisplayModes, want)
 	}
 	var hasPostureCap bool
 	for _, c := range info.Capabilities {

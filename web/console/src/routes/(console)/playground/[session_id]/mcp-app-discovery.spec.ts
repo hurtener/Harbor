@@ -50,6 +50,9 @@ function fakeHostClient(): MCPAppHostClient & { reads: Array<[string, string]> }
     async listResources() {
       return [];
     },
+    async listResourceTemplates() {
+      return [];
+    },
     async listTools() {
       return [];
     },
@@ -262,6 +265,9 @@ function heavyHostClient(): MCPAppHostClient & { resolved: string[] } {
       return { tool, content: { ok: true }, isError: false };
     },
     async listResources() {
+      return [];
+    },
+    async listResourceTemplates() {
       return [];
     },
     async listTools() {

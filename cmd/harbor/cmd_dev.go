@@ -963,6 +963,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			BuildVersion:   HarborVersion,
 			BuildCommit:    "dev",
 			BuildGoVersion: goruntime.Version(),
+			// The host's renderable MCP App display modes, sourced from
+			// `tools.mcp_app_host.display_modes`. The Console reads these off
+			// runtime.info to seed the `ui/initialize` host-context
+			// `availableDisplayModes` it advertises to a rendered app —
+			// display modes are a host-context value, not an MCP capability.
+			MCPAppDisplayModes: cfg.Tools.MCPAppHostDisplayModes(),
 		},
 		Clock:    time.Now,
 		BootedAt: time.Now(),

@@ -16,6 +16,7 @@ import type {
   MCPAppHostClient,
   MCPAppResource,
   MCPAppResourceListing,
+  MCPAppResourceTemplateListing,
   MCPAppToolContext,
   MCPAppToolListing,
   MCPAppToolResult,
@@ -112,6 +113,16 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
         name: r.name ?? r.title,
         mimeType: r.mime_type,
       }));
+    },
+
+    async listResourceTemplates(_serverID): Promise<MCPAppResourceTemplateListing[]> {
+      // The Harbor Protocol exposes no MCP resource-template method yet (a
+      // documented follow-up). Return an empty list so a conformant app's
+      // `resources/templates/list` resolves GRACEFULLY (no error) rather than
+      // the advertised `serverResources` capability throwing — honestly
+      // serviceable, just empty. When a `mcp.servers.*` templates method lands,
+      // route to it here.
+      return [];
     },
 
     async listTools(serverID): Promise<MCPAppToolListing[]> {

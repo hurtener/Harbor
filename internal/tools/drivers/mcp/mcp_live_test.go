@@ -72,11 +72,12 @@ func TestLive_MCPAppAvailable_RealExtAppsServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	// The real server advertises {logging, resources, tools} — NOT the
-	// io.modelcontextprotocol/ui capability — so DisplayModes negotiation is
-	// empty and the tool-definition `_meta.ui` carries only a resourceUri.
+	// DisplayModes reports the host's CONFIGURED renderable modes (not a
+	// server read); this live provider sets none, so the set is empty. The
+	// tool-definition `_meta.ui` carries the `ui://` resourceUri the
+	// discovery path below asserts.
 	if modes := p.DisplayModes(); len(modes) != 0 {
-		t.Logf("server advertised display modes %v (test still asserts the inline default)", modes)
+		t.Logf("host configured display modes %v (test does not depend on them)", modes)
 	}
 
 	const harborTool = "go-study-mcp_synthesize_speech"

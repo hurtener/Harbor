@@ -67,6 +67,14 @@ type RuntimeInfo struct {
 	// UptimeSeconds is the number of whole seconds since the Runtime
 	// process started.
 	UptimeSeconds int64 `json:"uptime_seconds"`
+	// MCPAppDisplayModes is the set of MCP App (`io.modelcontextprotocol/ui`)
+	// display modes this host can render, declared by the deployment's
+	// `tools.mcp_app_host.display_modes` config. A Protocol client (the
+	// Console) reads it to seed the `ui/initialize` host-context
+	// `availableDisplayModes` it advertises to a rendered app — display modes
+	// are a host-context value, not an MCP capability field. Empty when the
+	// deployment declared none.
+	MCPAppDisplayModes []string `json:"mcp_app_display_modes,omitempty"`
 }
 
 // SubsystemHealth is one subsystem's readiness entry in a RuntimeHealth

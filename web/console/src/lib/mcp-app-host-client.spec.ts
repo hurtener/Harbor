@@ -92,6 +92,15 @@ describe('makeMCPAppHostClient', () => {
     expect(rows.map((t) => t.name)).toEqual(['srv_echo']);
   });
 
+  it('listResourceTemplates resolves to an empty list (graceful, no Protocol call) — the documented follow-up', async () => {
+    const { client } = fakeProtocolClient();
+    const host = makeMCPAppHostClient(client);
+    // No MCP resource-template Protocol method exists yet; the adapter returns
+    // an empty list so a conformant app's templates call resolves gracefully
+    // rather than the advertised serverResources capability throwing.
+    await expect(host.listResourceTemplates('srv')).resolves.toEqual([]);
+  });
+
   it('resolveArtifact routes to artifacts.get_ref and returns the presigned_url (not the absent `url`)', async () => {
     const { client, getRef } = fakeProtocolClient();
     const host = makeMCPAppHostClient(client);

@@ -94,6 +94,13 @@ export interface RendererProps {
    * without reloading the session. Forwarded to the AppBridge host.
    */
   onDisplayModeRequest?: (req: DisplayModeRequest) => void;
+  /**
+   * The host theme the MCP App renderer threads into the `ui/initialize`
+   * host-context and re-pushes (via `setHostContext`) when it changes, so a
+   * rendered app re-themes live. The caller (the Playground) resolves the
+   * Console's active theme; absent defaults to the host module's `'dark'`.
+   */
+  theme?: 'light' | 'dark';
 }
 
 /**

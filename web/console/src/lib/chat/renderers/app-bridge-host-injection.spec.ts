@@ -21,10 +21,16 @@ vi.mock('@modelcontextprotocol/ext-apps/app-bridge', () => {
     oncalltool: unknown;
     onreadresource: unknown;
     onlistresources: unknown;
+    onlistresourcetemplates: unknown;
     onrequestdisplaymode: unknown;
     oninitialized: unknown;
     constructor(...args: unknown[]) {
       captured.ctorArgs.push(args);
+    }
+    addEventListener(): void {}
+    setHostContext(): void {}
+    async teardownResource(): Promise<Record<string, unknown>> {
+      return {};
     }
     async connect(): Promise<void> {}
     async close(): Promise<void> {}
@@ -47,6 +53,9 @@ function fakeClient(): MCPAppHostClient {
       return { tool, content: {}, isError: false };
     },
     async listResources() {
+      return [];
+    },
+    async listResourceTemplates() {
       return [];
     },
     async listTools() {

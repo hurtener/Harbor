@@ -328,10 +328,10 @@ func (r *Registry) Register(reg ServerRegistration) error {
 		transport:    reg.Transport,
 		urlOrCommand: reg.URLOrCommand,
 		policy:       policy,
-		// DisplayModes are NEGOTIATED from the server's live
-		// `io.modelcontextprotocol/ui` capability, not set from a static
-		// registration placeholder — a server advertising no UI
-		// capability yields an empty set, never a stale default.
+		// DisplayModes report what THIS HOST can render — the deployment's
+		// configured `tools.mcp_app_host.display_modes`, not a value scraped
+		// off the server (display modes are not a spec capability field;
+		// they ride the `ui/initialize` host-context the host dictates).
 		displayModes: reg.Provider.DisplayModes(),
 		contentShape: append([]string(nil), reg.ContentShapes...),
 		stats: serverStats{

@@ -48,7 +48,10 @@ func newAppsProvider(t *testing.T, uiBody string) *Provider {
 		TransportMode:   TransportAuto,
 		Bus:             bus,
 		DefaultIdentity: defaultIdentity(),
-		DefaultPolicy:   tools.DefaultPolicy(),
+		// The host's configured renderable modes — DisplayModes() reports
+		// these (not a server read), so the registry column is populated.
+		HostDisplayModes: []string{"inline", "fullscreen", "pip"},
+		DefaultPolicy:    tools.DefaultPolicy(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -113,22 +116,6 @@ func TestProvider_ReadResource_FailsClosedOnMissingIdentity(t *testing.T) {
 	}
 }
 
-// TestProvider_DisplayModes_NegotiatesFromCapability proves DisplayModes
-// reflects the live server's advertised UI capability.
-func TestProvider_DisplayModes_NegotiatesFromCapability(t *testing.T) {
-	p := newAppsProvider(t, "x")
-	got := p.DisplayModes()
-	want := []string{"inline", "fullscreen", "pip"}
-	if len(got) != len(want) {
-		t.Fatalf("DisplayModes = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("DisplayModes = %v, want %v", got, want)
-		}
-	}
-}
-
 // TestRegistry_ReadResource_EndToEnd exercises the registry leg: identity
 // is mandatory, an unknown server fails, and a real read returns content.
 func TestRegistry_ReadResource_EndToEnd(t *testing.T) {
@@ -141,7 +128,8 @@ func TestRegistry_ReadResource_EndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	// Display modes negotiated at Register time from the live capability.
+	// Display modes captured at Register time from the host's configured
+	// renderable set (DisplayModes() reports host config, not a server read).
 	v, err := r.GetServer(appsIdentityCtx(t), "apps-server")
 	if err != nil {
 		t.Fatalf("GetServer: %v", err)

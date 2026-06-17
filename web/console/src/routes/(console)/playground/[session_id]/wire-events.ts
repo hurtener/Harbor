@@ -254,6 +254,8 @@ export interface AppAvailableEvent {
 	 * then performs no push.
 	 */
 	toolCallId: string;
+	/** The server-side tool name that declared the app (host-context toolInfo). */
+	toolName: string;
 	/** The per-result display-mode hint (`inline` / `fullscreen` / `pip`), or ''. */
 	displayMode: string;
 	rawHtmlTrusted: boolean;
@@ -279,6 +281,7 @@ export function decodeAppAvailable(data: string): AppAvailableEvent | null {
 		// the tool-context capture omits it, in which case the host simply
 		// performs no Data Delivery push (the app still renders).
 		toolCallId: str(frame.payload.ToolCallID),
+		toolName: str(frame.payload.ToolName),
 		displayMode: str(frame.payload.DisplayMode),
 		rawHtmlTrusted: frame.payload.RawHTMLTrusted === true
 	};

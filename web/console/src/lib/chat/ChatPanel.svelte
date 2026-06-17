@@ -30,7 +30,8 @@
     onsend,
     appHostClient,
     availableDisplayModes,
-    onAppDisplayModeRequest
+    onAppDisplayModeRequest,
+    theme
   }: {
     messages: ChatMessage[];
     client: ChatProtocolClient;
@@ -68,6 +69,8 @@
       app: MCPAppRefView,
       serverID: string
     ) => void;
+    /** The live host theme threaded into a rendered inline app's host-context. */
+    theme?: 'light' | 'dark';
   } = $props();
 
   // Phase 108 — keep the newest message (and live streaming deltas) in
@@ -103,6 +106,7 @@
           {appHostClient}
           {availableDisplayModes}
           {onAppDisplayModeRequest}
+          {theme}
         />
       {/each}
     {/if}

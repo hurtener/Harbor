@@ -458,11 +458,23 @@
     dispatchLayout({ type: 'request-display-mode', app: ref, mode });
   }
 
-  // The display modes the page can apply for an inline app — the full set,
-  // because the page owns the page-level fullscreen / pip layout. Passed to
-  // the chat module so an inline app's `onrequestdisplaymode` is granted and
-  // routed back here (the inline-only chat-scroll default never grows).
-  const APP_DISPLAY_MODES: McpUiDisplayMode[] = ['inline', 'fullscreen', 'pip'];
+  // The display modes the page can apply for an inline app. Seeded from
+  // runtime.info `mcp_app_display_modes` (the deployment's declared host
+  // modes — the spec-correct source) at mount; until that resolves, the page
+  // assumes the full set it can layout (fullscreen / pip page regions). Passed
+  // to the chat module so an inline app's `onrequestdisplaymode` is granted and
+  // routed back here.
+  const ALL_DISPLAY_MODES: McpUiDisplayMode[] = ['inline', 'fullscreen', 'pip'];
+  let appDisplayModes = $state<McpUiDisplayMode[]>(ALL_DISPLAY_MODES);
+
+  // The live host theme threaded into a rendered app's host-context. Resolved
+  // from the OS color-scheme preference and kept reactive, so a scheme flip
+  // re-pushes `ui/notifications/host-context-changed` into the running app.
+  let appTheme = $state<'light' | 'dark'>('dark');
+  // The OS color-scheme media query + its listener, retained so onDestroy can
+  // detach the listener (no leak).
+  let themeMedia: MediaQueryList | null = null;
+  let themeMediaListener: ((e: MediaQueryListEvent) => void) | null = null;
 
   // Derive a short tab/panel label from a `ui://` resource URI.
   function deriveAppTitle(resourceUri: string): string {
@@ -486,7 +498,9 @@
       // Carry the correlation id so the inline renderer's AppBridge host can
       // fetch + push the captured tool context (input + result) after the app
       // initializes — the Data Delivery lifecycle stage.
-      toolCallId: ev.toolCallId
+      toolCallId: ev.toolCallId,
+      // The server-side tool name → host-context toolInfo.
+      toolName: ev.toolName
     };
     messages = messages.map((m) =>
       m.taskID === ev.taskID && m.role === 'agent'
@@ -1404,6 +1418,17 @@
     // boundary and the unified approval / OAuth gates.
     appHostClient = makeMCPAppHostClient(client);
     subscribeEvents(client);
+    // Resolve the live host theme from the OS color-scheme preference and keep
+    // it reactive — a scheme flip re-pushes the theme into any rendered app
+    // (ui/notifications/host-context-changed) without a reload.
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+      appTheme = themeMedia.matches ? 'dark' : 'light';
+      themeMediaListener = (e: MediaQueryListEvent) => {
+        appTheme = e.matches ? 'dark' : 'light';
+      };
+      themeMedia.addEventListener('change', themeMediaListener);
+    }
     void refreshSessionList();
     void refreshArtifacts();
     void refreshTools();
@@ -1415,12 +1440,23 @@
     // (AC-11 fallback chain).
     void (async () => {
       try {
-        const info = await client!.posture.info<{ display_name?: string }>();
+        const info = await client!.posture.info<{
+          display_name?: string;
+          mcp_app_display_modes?: string[];
+        }>();
         // Fallback rung 3 (below the address-book name + agents.list): the
         // runtime's own display name. Only used if nothing better resolved.
         if (info.display_name && activeAgent === 'default agent') activeAgent = info.display_name;
+        // Seed the MCP App display modes from the deployment's declaration
+        // (the spec-correct source) so the app's host-context availableDisplayModes
+        // reflects what THIS host renders — not a hard-coded set. Filtered to the
+        // modes this page can actually lay out.
+        const declared = (info.mcp_app_display_modes ?? []).filter((m): m is McpUiDisplayMode =>
+          ALL_DISPLAY_MODES.includes(m as McpUiDisplayMode)
+        );
+        if (declared.length > 0) appDisplayModes = declared;
       } catch {
-        /* keep the em-dash */
+        /* keep the em-dash + the assumed full mode set */
       }
       try {
         const list = await client!.agents.list<{ agents?: Array<{ name?: string }> }>();
@@ -1466,6 +1502,11 @@
     if (taskEvents !== null) {
       taskEvents.close();
       taskEvents = null;
+    }
+    if (themeMedia !== null && themeMediaListener !== null) {
+      themeMedia.removeEventListener('change', themeMediaListener);
+      themeMedia = null;
+      themeMediaListener = null;
     }
   });
 </script>
@@ -1600,8 +1641,9 @@
             running={activeTaskID !== null}
             onsend={(text, ids, mode) => void sendMessage(text, ids, mode)}
             appHostClient={appHostClient ?? undefined}
-            availableDisplayModes={APP_DISPLAY_MODES}
+            availableDisplayModes={appDisplayModes}
             onAppDisplayModeRequest={onInlineAppDisplayModeRequest}
+            theme={appTheme}
           />
         {/if}
       </PageState>
@@ -1693,6 +1735,8 @@
         appHostClient={appHostClient}
         onrequestmode={(mode) => appRequestMode(app, mode)}
         onclose={() => dispatchLayout({ type: 'close-app', id: app.id })}
+        availableDisplayModes={appDisplayModes}
+        theme={appTheme}
       />
     {/if}
   {/snippet}

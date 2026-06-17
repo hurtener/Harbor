@@ -1736,6 +1736,7 @@ Declared in `internal/protocol/types`.
 | `protocol_version` | `string` |  |
 | `capabilities` | `[]types.Capability` |  |
 | `uptime_seconds` | `int64` |  |
+| `mcp_app_display_modes` | `[]string` | optional (`omitempty`) |
 
 ## RuntimeInfoRequest
 

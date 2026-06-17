@@ -270,12 +270,12 @@ func New(cfg Config) (*Provider, error) {
 		KeepAlive:              cfg.KeepAlive,
 		ResourceUpdatedHandler: p.onResourceUpdated,
 	}
-	// Advertise the host's renderable MCP App display modes during the
-	// initialize handshake when the host opts in. Leaving Capabilities nil
-	// preserves the SDK's default advertisement for embedders that do not.
-	if caps := hostCapabilities(cfg.HostDisplayModes); caps != nil {
-		clientOpts.Capabilities = caps
-	}
+	// Advertise the MCP App (`io.modelcontextprotocol/ui`) host capability
+	// during the initialize handshake. Harbor always hosts apps via the
+	// Console, so the capability is advertised unconditionally — a
+	// conformant server gates its `ui://` tool registration on the spec
+	// `mimeTypes` field this carries.
+	clientOpts.Capabilities = hostCapabilities()
 	p.client = mcpsdk.NewClient(
 		&mcpsdk.Implementation{Name: implementationName, Version: implementationVersion},
 		clientOpts,
@@ -284,14 +284,17 @@ func New(cfg Config) (*Provider, error) {
 }
 
 // hostCapabilities builds the client capabilities advertised during the MCP
-// initialize handshake when the host can render MCP App
-// (`io.modelcontextprotocol/ui`) documents. It advertises the UI extension
-// with the host's renderable display modes (filtered against the closed
-// valid-mode set, deduplicated, advertised order preserved) so a server can
-// tailor the app references it returns.
+// initialize handshake. The host can render MCP App
+// (`io.modelcontextprotocol/ui`) documents, so it advertises the UI extension
+// carrying the spec `mimeTypes` field — the field a conformant ext-apps
+// server reads (its `getUiCapability(caps).mimeTypes` gate) to decide whether
+// to register its `ui://` tools. The value is the single canonical MCP App
+// media type, ResourceMIMEType, mirroring the ext-apps SDK constant.
 //
-// Returns nil when no renderable modes are configured, leaving the SDK's
-// default capability advertisement in place.
+// Display modes are NOT a capability field (the spec carries the host's
+// renderable modes in the `ui/initialize` host-context `availableDisplayModes`,
+// surfaced to the Console via runtime.info). This builder therefore advertises
+// only `mimeTypes`.
 //
 // Setting any client capability overrides the SDK's default advertisement
 // (`{"roots":{"listChanged":true}}`), and the SDK ignores the deprecated
@@ -299,23 +302,22 @@ func New(cfg Config) (*Provider, error) {
 // roots advertisement explicitly — otherwise opting into the UI extension
 // would silently drop the roots capability the runtime advertises today.
 // Sampling and elicitation remain inferred from their handlers (unset here).
-func hostCapabilities(displayModes []string) *mcpsdk.ClientCapabilities {
-	modes := filterHostDisplayModes(displayModes)
-	if len(modes) == 0 {
-		return nil
-	}
+func hostCapabilities() *mcpsdk.ClientCapabilities {
 	caps := &mcpsdk.ClientCapabilities{
 		RootsV2: &mcpsdk.RootCapabilities{ListChanged: true},
 	}
-	settings := map[string]any{"displayModes": modes}
+	// McpUiClientCapabilities is `{ "mimeTypes": [...] }` — a conformant
+	// server checks the array includes ResourceMIMEType before registering
+	// its app tools.
+	settings := map[string]any{"mimeTypes": []string{ResourceMIMEType}}
 	caps.AddExtension(uiExtensionKey, settings)
 	return caps
 }
 
 // filterHostDisplayModes returns the host-advertised display modes that are in
 // the closed valid-mode set, with duplicates removed and advertised order
-// preserved. The mirror of negotiateDisplayModes' server-side filtering, so
-// the host advertises only modes it can actually render.
+// preserved, so the host reports only modes it can actually render. It is the
+// projection DisplayModes() returns for the Registry / Console column.
 func filterHostDisplayModes(in []string) []string {
 	if len(in) == 0 {
 		return nil
@@ -888,31 +890,32 @@ func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte
 	return []byte(rc.Text), rc.MIMEType, nil
 }
 
-// DisplayModes returns the MCP Apps display modes the connected server
-// advertises via its `io.modelcontextprotocol/ui` capability. It reads
-// the negotiated capabilities from the live MCP session and projects
-// the advertised mode set. A server that advertises no UI capability
-// yields an empty slice — never a fabricated fallback set. Before
-// Connect (or after Close) the result is empty.
+// DisplayModes returns the MCP App display modes THIS HOST can render —
+// the deployment's configured host modes (`Config.HostDisplayModes`,
+// sourced from `tools.mcp_app_host.display_modes`), filtered against the
+// closed valid-mode set with duplicates removed and order preserved. It is
+// NOT a server read: display modes are not a spec capability field — they
+// ride the `ui/initialize` host-context `availableDisplayModes` the host
+// dictates — so the Registry / Console column reports what the host
+// renders, not a value scraped off the server's capabilities.
 //
-// Concurrent reuse: DisplayModes reads the session under the read lock;
-// the InitializeResult is immutable after the handshake.
+// Concurrent reuse: the configured modes are immutable after construction;
+// DisplayModes reads no per-call or session state.
 func (p *Provider) DisplayModes() []string {
-	session, err := p.sessionForRead()
-	if err != nil {
-		return nil
-	}
-	init := session.InitializeResult()
-	if init == nil {
-		return nil
-	}
-	return negotiateDisplayModes(init.Capabilities)
+	return filterHostDisplayModes(p.cfg.HostDisplayModes)
 }
 
 // uiExtensionKey is the canonical capability key the MCP Apps
 // (ext-apps) extension is advertised under during the MCP initialize
 // handshake.
 const uiExtensionKey = "io.modelcontextprotocol/ui"
+
+// ResourceMIMEType is the single canonical media type an MCP App
+// (`io.modelcontextprotocol/ui`) UI document carries. It mirrors the
+// ext-apps SDK's `RESOURCE_MIME_TYPE` constant; the host advertises it in
+// the `mimeTypes` UI capability so a conformant server gates its `ui://`
+// tool registration on it.
+const ResourceMIMEType = "text/html;profile=mcp-app"
 
 // validDisplayModes is the closed set of MCP Apps display modes
 // (ext-apps `McpUiDisplayMode`). Negotiation filters a server's
@@ -922,77 +925,6 @@ var validDisplayModes = map[string]struct{}{
 	"inline":     {},
 	"fullscreen": {},
 	"pip":        {},
-}
-
-// negotiateDisplayModes extracts the advertised MCP Apps display modes
-// from a server's negotiated capabilities. The modes are carried on the
-// `io.modelcontextprotocol/ui` capability under either the `extensions`
-// or `experimental` capability map, as a `displayModes` array. The
-// result is the intersection of the advertised values with the closed
-// valid-mode set, in advertised order with duplicates removed.
-//
-// A capabilities object that does NOT advertise the UI extension yields
-// an empty slice — the negotiation never substitutes a stale default
-// (the placeholder it replaces). An advertised UI capability that names
-// no display modes is treated as inline-only, the ext-apps baseline.
-func negotiateDisplayModes(caps *mcpsdk.ServerCapabilities) []string {
-	if caps == nil {
-		return nil
-	}
-	settings := uiCapabilitySettings(caps)
-	if settings == nil {
-		// The server does not advertise the UI extension at all.
-		return nil
-	}
-	raw, ok := settings["displayModes"]
-	if !ok {
-		// UI is advertised but no explicit modes — inline is the
-		// ext-apps baseline every Apps-capable server supports.
-		return []string{"inline"}
-	}
-	arr, ok := raw.([]any)
-	if !ok {
-		return []string{"inline"}
-	}
-	out := make([]string, 0, len(arr))
-	seen := map[string]struct{}{}
-	for _, v := range arr {
-		mode, ok := v.(string)
-		if !ok {
-			continue
-		}
-		if _, valid := validDisplayModes[mode]; !valid {
-			continue
-		}
-		if _, dup := seen[mode]; dup {
-			continue
-		}
-		seen[mode] = struct{}{}
-		out = append(out, mode)
-	}
-	return out
-}
-
-// uiCapabilitySettings returns the `io.modelcontextprotocol/ui`
-// capability settings object, checking the `extensions` map first
-// (where ext-apps advertises) then the `experimental` map (a fallback
-// for servers that route the key there). Returns nil when the extension
-// is not advertised, or an empty (non-nil) map when the key is present
-// with a nil / non-object settings value.
-func uiCapabilitySettings(caps *mcpsdk.ServerCapabilities) map[string]any {
-	for _, m := range []map[string]any{caps.Extensions, caps.Experimental} {
-		v, ok := m[uiExtensionKey]
-		if !ok {
-			continue
-		}
-		if settings, ok := v.(map[string]any); ok {
-			return settings
-		}
-		// Present with a nil / non-object value: the extension IS
-		// advertised, just without structured settings.
-		return map[string]any{}
-	}
-	return nil
 }
 
 // SubscribeResource registers a server-side resource subscription.
