@@ -953,7 +953,15 @@ func mapMCPError(method string, err error) error {
 // driver (no import cycle), so the classification is string-based — the
 // accessor wraps the driver sentinel and the marker is stable.
 func isMCPNotFound(err error) bool {
-	return err != nil && containsMarker(err.Error(), "server not found")
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// The MCP registry surfaces "server not found"; the tool-context store
+	// surfaces "tool context not found" for an unknown or cross-identity
+	// (serverID, toolCallID). Both map to CodeNotFound — existence is never
+	// revealed across identities.
+	return containsMarker(msg, "server not found") || containsMarker(msg, "tool context not found")
 }
 
 func isMCPIdentityMissing(err error) bool {

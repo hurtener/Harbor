@@ -452,6 +452,17 @@ const (
 	// does. NOT a control method; routed through the MCP Apps
 	// dispatcher. Identity-mandatory.
 	MethodMCPAppsCallTool Method = "mcp.apps.call_tool"
+	// MethodMCPAppsToolContext — the MCP Apps host's tool-context read: a
+	// rendered MCP App fetches the tool context (the input arguments + the
+	// lowered result) that produced it, keyed by the server source id + the
+	// stable tool-call id carried on the `mcp.app_available` discovery
+	// event. The runtime captures the context at the tool-invocation site
+	// (heavy-aware — a large result rides by reference); the read projects
+	// it inline OR as an artifact reference. An unknown or cross-identity
+	// id fails with CodeNotFound (existence is never revealed across
+	// identities). NOT a control method; routed through the MCP Apps
+	// dispatcher. Identity-mandatory.
+	MethodMCPAppsToolContext Method = "mcp.apps.tool_context"
 
 	// MethodToolsList — Returns the
 	// catalog of registered tools visible to the caller's identity
@@ -719,8 +730,9 @@ var canonicalMethods = map[Method]struct{}{
 	MethodMCPServersRevokeBinding:    {},
 	MethodMCPServersSetRawHTMLTrust:  {},
 
-	MethodMCPReadResource: {},
-	MethodMCPAppsCallTool: {},
+	MethodMCPReadResource:    {},
+	MethodMCPAppsCallTool:    {},
+	MethodMCPAppsToolContext: {},
 
 	MethodAgentsList:        {},
 	MethodAgentsGet:         {},
@@ -873,23 +885,25 @@ func IsMCPAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalMCPAppsMethods is the closed set of the two MCP Apps host
-// methods — the `mcp.servers.read_resource` `ui://` document fetch and
-// the `mcp.apps.call_tool` app-tool-call proxy. Both are
-// identity-mandatory reads/proxies routed through the AppsSurface
-// dispatcher, distinct from the twelve `mcp.servers.*` Console methods.
-// IsMCPAppsMethod is O(1); the control transport branches on it.
+// canonicalMCPAppsMethods is the closed set of the three MCP Apps host
+// methods — the `mcp.servers.read_resource` `ui://` document fetch, the
+// `mcp.apps.call_tool` app-tool-call proxy, and the
+// `mcp.apps.tool_context` tool-context read. All are identity-mandatory
+// reads/proxies routed through the AppsSurface dispatcher, distinct from
+// the twelve `mcp.servers.*` Console methods. IsMCPAppsMethod is O(1); the
+// control transport branches on it.
 var canonicalMCPAppsMethods = map[Method]struct{}{
-	MethodMCPReadResource: {},
-	MethodMCPAppsCallTool: {},
+	MethodMCPReadResource:    {},
+	MethodMCPAppsCallTool:    {},
+	MethodMCPAppsToolContext: {},
 }
 
-// IsMCPAppsMethod reports whether m is one of the two MCP Apps host
-// methods (`mcp.servers.read_resource` / `mcp.apps.call_tool`). The
-// control transport branches on this to route the request through the
-// AppsSurface dispatcher instead of the task-control / Console-MCP
-// surfaces. NOT a control method — a new MCP Apps method extends THIS
-// predicate, never the steering inbox.
+// IsMCPAppsMethod reports whether m is one of the three MCP Apps host
+// methods (`mcp.servers.read_resource` / `mcp.apps.call_tool` /
+// `mcp.apps.tool_context`). The control transport branches on this to
+// route the request through the AppsSurface dispatcher instead of the
+// task-control / Console-MCP surfaces. NOT a control method — a new MCP
+// Apps method extends THIS predicate, never the steering inbox.
 func IsMCPAppsMethod(m Method) bool {
 	_, ok := canonicalMCPAppsMethods[m]
 	return ok

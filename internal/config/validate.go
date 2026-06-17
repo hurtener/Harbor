@@ -982,6 +982,19 @@ var allowedMCPTransportModes = map[string]struct{}{
 	"stdio":           {},
 }
 
+// allowedMCPAppDisplayModes mirrors the closed display-mode set
+// (`validDisplayModes`) in `internal/tools/drivers/mcp/mcp.go`. Duplicated
+// (not imported) for the same reason as allowedMCPTransportModes:
+// `internal/config` MUST NOT depend on a concrete driver package
+// (AGENTS.md §4.4). A drift between the two lists is caught by
+// `TestValidateTools_MCPAppDisplayModeAllowlistMirrors_MCPDriver` in
+// `internal/tools/drivers/mcp/mcp_test.go`.
+var allowedMCPAppDisplayModes = map[string]struct{}{
+	"inline":     {},
+	"fullscreen": {},
+	"pip":        {},
+}
+
 // validateTools checks the tools configuration: the
 // HTTP manifest paths + the MCP servers. Later phases extend
 // (A2A peers, OAuth token stores, etc.). The
@@ -1160,6 +1173,26 @@ func (c *Config) validateTools() error {
 				fmt.Sprintf("%s.tool_policies[%q]", prefix, toolName), tp); err != nil {
 				return err
 			}
+		}
+	}
+	// MCP App host capability. Optional; nil resolves to the inline-only
+	// baseline. When set, each declared display mode must be in the closed
+	// set (inline / fullscreen / pip) and unique — a typo fails at config
+	// load rather than silently advertising an unrenderable mode.
+	if c.Tools.MCPAppHost != nil {
+		seenMode := make(map[string]struct{}, len(c.Tools.MCPAppHost.DisplayModes))
+		for i, mode := range c.Tools.MCPAppHost.DisplayModes {
+			field := fmt.Sprintf("tools.mcp_app_host.display_modes[%d]", i)
+			if _, ok := allowedMCPAppDisplayModes[mode]; !ok {
+				return fieldError(field,
+					fmt.Sprintf("must be one of %s, got %q",
+						sortedKeys(allowedMCPAppDisplayModes), mode))
+			}
+			if _, dup := seenMode[mode]; dup {
+				return fieldError(field,
+					fmt.Sprintf("duplicate display mode %q (must be unique)", mode))
+			}
+			seenMode[mode] = struct{}{}
 		}
 	}
 	// A2A peers. Empty list is valid. Each entry must

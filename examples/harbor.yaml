@@ -606,6 +606,23 @@ tools:
   #       - /var/data/filesystem-root
   mcp_servers: []
 
+  # mcp_app_host — the deployment-wide MCP App (`io.modelcontextprotocol/ui`)
+  # host capability the runtime advertises to EVERY MCP server during the
+  # initialize handshake. The host's rendering ability does not vary per
+  # server, so this is one deployment-level block (not a per-server field).
+  #
+  #   display_modes — the MCP App display modes this host can render, from the
+  #                   closed set `inline` / `fullscreen` / `pip`. A server
+  #                   reads these to tailor the app references it returns.
+  #
+  # Omitting the block (or leaving display_modes empty) resolves to the
+  # inline-only BASELINE — `[inline]`, the mode the Console renders out of
+  # the box. Set the full set once the deployment's Console serves the
+  # fullscreen-tab and side-by-side (pip) layouts:
+  #
+  # mcp_app_host:
+  #   display_modes: [inline, fullscreen, pip]
+
 distributed:
   # MessageBus driver — Harbor's at-least-once cross-worker fan-out
   # edge. Phase 22 ships only `loopback` (in-process; projects

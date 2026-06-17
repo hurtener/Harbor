@@ -153,6 +153,7 @@ var CanonicalMethods = map[string]struct{}{
 	"mcp.servers.set_raw_html_trust": {},
 	"mcp.servers.read_resource":      {},
 	"mcp.apps.call_tool":             {},
+	"mcp.apps.tool_context":          {},
 	// Console-Tools-page cluster — seven methods.
 	"tools.list":                {},
 	"tools.get":                 {},
@@ -356,6 +357,9 @@ var CanonicalWireTypes = map[string]string{
 	"MCPAppCallToolRequest":   "types",
 	"MCPAppCallToolResponse":  "types",
 	"MCPAppRef":               "types",
+	"ToolContextRequest":      "types",
+	"ToolContextPayload":      "types",
+	"ToolContextResponse":     "types",
 	// Console-Tools-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/tools.go).
 	"Tool":                          "types",

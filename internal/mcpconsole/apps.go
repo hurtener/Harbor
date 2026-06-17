@@ -45,6 +45,7 @@ type AppsAccessor struct {
 	cat       tools.ToolCatalog
 	store     artifacts.ArtifactStore
 	bus       events.EventBus
+	toolCtx   *ToolContextStore
 	threshold int
 	clock     func() time.Time
 }
@@ -67,6 +68,10 @@ type AppsDeps struct {
 	// Bus carries the `mcp.resource_offloaded` loud bypass event.
 	// Mandatory.
 	Bus events.EventBus
+	// ToolContext is the tool-context store backing `mcp.apps.tool_context`
+	// — the same store the MCP providers capture through, so a discovered
+	// app's context is readable here. Mandatory.
+	ToolContext *ToolContextStore
 	// Threshold is the heavy-content threshold in bytes. ≤ 0 falls back
 	// to artifacts' shared default.
 	Threshold int
@@ -94,6 +99,9 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 	if deps.Bus == nil {
 		return nil, fmt.Errorf("%w: Bus is nil", ErrAppsMisconfigured)
 	}
+	if deps.ToolContext == nil {
+		return nil, fmt.Errorf("%w: ToolContext is nil", ErrAppsMisconfigured)
+	}
 	threshold := deps.Threshold
 	if threshold <= 0 {
 		threshold = defaultHeavyThreshold
@@ -107,6 +115,7 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 		cat:       deps.Catalog,
 		store:     deps.Store,
 		bus:       deps.Bus,
+		toolCtx:   deps.ToolContext,
 		threshold: threshold,
 		clock:     clock,
 	}, nil
@@ -143,10 +152,11 @@ const defaultHeavyThreshold = config.DefaultHeavyOutputThresholdBytes
 // inlined unbounded and never silently truncated.
 const appDocumentInlineCap = 2 * 1024 * 1024 // 2 MiB
 
-// compile-time assertions: AppsAccessor satisfies both Apps seams.
+// compile-time assertions: AppsAccessor satisfies the three Apps seams.
 var (
-	_ protocol.MCPResourceReader = (*AppsAccessor)(nil)
-	_ protocol.AppToolInvoker    = (*AppsAccessor)(nil)
+	_ protocol.MCPResourceReader    = (*AppsAccessor)(nil)
+	_ protocol.AppToolInvoker       = (*AppsAccessor)(nil)
+	_ protocol.AppToolContextReader = (*AppsAccessor)(nil)
 )
 
 // ReadResource implements protocol.MCPResourceReader. It fetches the
@@ -234,6 +244,16 @@ func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawM
 	return out, nil
 }
 
+// ToolContext implements protocol.AppToolContextReader. It resolves the
+// tool context (input + lowered result) a captured MCP App call produced,
+// scoped to the ctx identity triple, projecting each half inline or by
+// reference exactly as ReadResource does. An unknown or cross-identity
+// (serverID, toolCallID) is not found. It delegates to the same
+// ToolContextStore the MCP providers capture through.
+func (a *AppsAccessor) ToolContext(ctx context.Context, serverID, toolCallID string) (protocol.AppToolContextRow, error) {
+	return a.toolCtx.Load(ctx, serverID, toolCallID)
+}
+
 // offload stores heavy content in the ArtifactStore under the ctx
 // identity scope and emits the loud `mcp.resource_offloaded` bypass
 // event. The event is the load-bearing record that the content was
@@ -241,19 +261,32 @@ func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawM
 // silently truncated (RFC §6.5). A store or emit failure fails
 // the call loud — there is no silent truncation fallback (CLAUDE.md §13).
 func (a *AppsAccessor) offload(ctx context.Context, content []byte, mime, source, filename string) (*protocol.MCPResourceArtifactRow, error) {
+	return offloadHeavy(ctx, a.store, a.bus, a.clock, content, mime, source, filename)
+}
+
+// offloadHeavy stores heavy content in the ArtifactStore under the ctx
+// identity scope and emits the loud `mcp.resource_offloaded` bypass event.
+// It is the shared offload path the AppsAccessor (resource reads + proxy
+// results) and the ToolContextStore (captured tool contexts) route heavy
+// content through — one loud-bypass implementation, never two. The event
+// is the load-bearing record that the content was routed by reference,
+// never inlined past the threshold and never silently truncated
+// (RFC §6.5). A store or emit failure fails the call loud — there is no
+// silent truncation fallback (CLAUDE.md §13).
+func offloadHeavy(ctx context.Context, store artifacts.ArtifactStore, bus events.EventBus, clock func() time.Time, content []byte, mime, source, filename string) (*protocol.MCPResourceArtifactRow, error) {
 	id, ok := identity.From(ctx)
 	if !ok {
 		return nil, fmt.Errorf("mcpconsole: offload: %w", mcp.ErrIdentityMissing)
 	}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
-	ref, putErr := a.store.PutBytes(ctx, scope, content, artifacts.PutOpts{
+	ref, putErr := store.PutBytes(ctx, scope, content, artifacts.PutOpts{
 		MimeType:  mime,
 		Filename:  filename,
 		Namespace: "mcp-apps",
 		Source: map[string]any{
 			"source":     "mcp",
 			"producer":   "mcp-apps",
-			"created_at": a.clock().UTC(),
+			"created_at": clock().UTC(),
 		},
 	})
 	if putErr != nil {
@@ -263,16 +296,16 @@ func (a *AppsAccessor) offload(ctx context.Context, content []byte, mime, source
 	ev := events.Event{
 		Type:       mcp.EventTypeMCPResourceOffloaded,
 		Identity:   q,
-		OccurredAt: a.clock(),
+		OccurredAt: clock(),
 		Payload: mcp.ResourceOffloadedPayload{
 			Identity:   q,
 			ArtifactID: ref.ID,
 			Source:     source,
 			SizeBytes:  int64(len(content)),
-			OccurredAt: a.clock(),
+			OccurredAt: clock(),
 		},
 	}
-	if pubErr := a.bus.Publish(ctx, ev); pubErr != nil {
+	if pubErr := bus.Publish(ctx, ev); pubErr != nil {
 		return nil, fmt.Errorf("mcpconsole: publish %s: %w", ev.Type, pubErr)
 	}
 	return &protocol.MCPResourceArtifactRow{
@@ -300,6 +333,7 @@ func appRefFromValue(value any, serverID string) *protocol.MCPAppRefRow {
 	}
 	return &protocol.MCPAppRefRow{
 		ServerID:    serverID,
+		ToolCallID:  v.AppRef.ToolCallID,
 		ResourceURI: v.AppRef.ResourceURI,
 		DisplayMode: v.AppRef.PreferredDisplayMode,
 	}
