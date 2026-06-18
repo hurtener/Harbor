@@ -33,8 +33,7 @@
     serverID,
     appHostClient,
     availableDisplayModes,
-    onDisplayModeRequest,
-    theme
+    onDisplayModeRequest
   }: RendererProps = $props();
 
   type LoadState = 'loading' | 'ready' | 'error' | 'empty';
@@ -44,11 +43,6 @@
   let srcdoc = $state('');
   let iframeEl = $state<HTMLIFrameElement | null>(null);
   let host: AppBridgeHost | undefined;
-
-  // The inline iframe height tracks the app's reported content height (the
-  // SDK auto-emits `ui/notifications/size-changed` from every app). Null until
-  // the first report — the CSS `min-height` holds the initial box.
-  let contentHeight = $state<number | null>(null);
 
   // The sandbox token set + CSP are derived from the per-server raw-HTML
   // trust posture. `appIframeSandbox` GUARANTEES `allow-same-origin` is never
@@ -127,32 +121,15 @@
   async function connectBridge(): Promise<void> {
     if (!iframeEl?.contentWindow || !app || !serverID || !appHostClient) return;
     if (host) return;
-    // Best-effort container dimensions from the iframe box, so the app can
-    // size itself to the host viewport (the spec host-context field).
-    const box = iframeEl.getBoundingClientRect();
     host = new AppBridgeHost({
       client: appHostClient,
       serverID,
-      // The correlation id of the tool call that declared this app. The host
-      // uses it to fetch + push the captured tool context (input + result)
-      // after the app initializes — the Data Delivery lifecycle stage.
-      toolCallId: app?.toolCallId,
-      // The server-side tool name that declared the app → host-context toolInfo.
-      toolName: app?.toolName,
       availableDisplayModes,
       onDisplayModeRequest,
       // Host identity is injected through the seam (not baked into the module).
-      hostInfo: DEFAULT_HOST_INFO,
-      // The live Console theme → host-context; re-pushed on change via setTheme.
-      theme,
-      // Track the inline iframe height to the app's reported content height.
-      onSizeChanged: ({ height }) => {
-        if (typeof height === 'number' && height > 0) contentHeight = height;
-      },
-      containerDimensions:
-        box.width > 0 && box.height > 0
-          ? { width: Math.round(box.width), height: Math.round(box.height) }
-          : undefined
+      // The Console supplies its own identity; theme stays at the seam default
+      // ('dark'), preserving prior behaviour until a theme prop is threaded.
+      hostInfo: DEFAULT_HOST_INFO
     });
     try {
       await host.connect(iframeEl.contentWindow);
@@ -176,13 +153,6 @@
         host = undefined;
       }
     };
-  });
-
-  // Re-push the host theme into a connected app on a live theme change, so the
-  // rendered app re-themes without a reload (→ ui/notifications/host-context-changed).
-  $effect(() => {
-    const next = theme;
-    if (host && next) host.setTheme(next);
   });
 </script>
 
@@ -242,7 +212,6 @@
       allow=""
       referrerpolicy="no-referrer"
       data-trusted={trusted}
-      style={contentHeight != null ? `height: ${contentHeight}px` : undefined}
     ></iframe>
   {/if}
 </div>

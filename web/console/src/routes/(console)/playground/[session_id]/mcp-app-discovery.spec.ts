@@ -50,20 +50,11 @@ function fakeHostClient(): MCPAppHostClient & { reads: Array<[string, string]> }
     async listResources() {
       return [];
     },
-    async listResourceTemplates() {
-      return [];
-    },
     async listTools() {
       return [];
     },
     async resolveArtifact(id) {
       return `https://artifacts.example/${id}`;
-    },
-    async toolContext() {
-      return null;
-    },
-    async fetchArtifactText() {
-      return '{}';
     }
   };
 }
@@ -267,21 +258,12 @@ function heavyHostClient(): MCPAppHostClient & { resolved: string[] } {
     async listResources() {
       return [];
     },
-    async listResourceTemplates() {
-      return [];
-    },
     async listTools() {
       return [];
     },
     async resolveArtifact(id) {
       resolved.push(id);
       return `https://artifacts.example/${id}`;
-    },
-    async toolContext() {
-      return null;
-    },
-    async fetchArtifactText() {
-      return '{}';
     }
   };
 }

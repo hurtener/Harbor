@@ -52,7 +52,6 @@ export type { McpUiDisplayMode };
 import type {
   CallToolResult,
   ListResourcesResult,
-  ListResourceTemplatesResult,
   ReadResourceResult,
 } from '@modelcontextprotocol/sdk/types.js';
 
@@ -68,24 +67,10 @@ import type {
 export interface MCPAppRefView {
   /** The `ui://`-scheme URI of the app's UI document. */
   resourceUri: string;
-  /** The negotiated display mode; the inline host consumes only `inline`. */
+  /** The negotiated display mode; Phase 109b consumes only `inline`. */
   displayMode?: McpUiDisplayMode | '';
   /** The per-server raw-HTML trust flag — default-deny. */
   rawHtmlTrusted: boolean;
-  /**
-   * The stable per-invocation id of the tool call that declared the app —
-   * paired with the server id to fetch the captured tool context (input +
-   * lowered result) the host pushes into the app after it initializes (the
-   * Data Delivery lifecycle stage). Empty/absent when the discovery event
-   * carried no correlation id; the host then performs no push.
-   */
-  toolCallId?: string;
-  /**
-   * The server-side tool name that declared the app. Threaded into the
-   * `ui/initialize` host-context `toolInfo` so a conformant app can introspect
-   * the originating tool. Absent when the discovery carried no tool name.
-   */
-  toolName?: string;
 }
 
 /** A `ui://` resource fetched through the host (mirrors `ReadMCPResourceResponse`). */
@@ -123,49 +108,11 @@ export interface MCPAppResourceListing {
   mimeType?: string;
 }
 
-/** One advertised resource TEMPLATE (the `resources/templates/list` row shape). */
-export interface MCPAppResourceTemplateListing {
-  uriTemplate: string;
-  name?: string;
-  mimeType?: string;
-}
-
 /** One advertised tool (mirrors a row of the tool catalog). */
 export interface MCPAppToolListing {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
-}
-
-/**
- * One half (input or result) of a captured tool context (mirrors
- * `ToolContextPayload`). EXACTLY ONE of `content` / `artifactRef` is set:
- * `content` carries inline JSON below the heavy-content threshold (D-026);
- * `artifactRef` carries the by-reference stub at or above it, which the host
- * resolves + fetches at the iframe edge before delivering.
- */
-export interface MCPAppToolContextPayload {
-  /** Inline JSON — set only below the heavy threshold. */
-  content?: unknown;
-  /** The by-reference stub when the payload meets/exceeds the heavy threshold. */
-  artifactRef?: { id: string; mimeType?: string; sizeBytes?: number };
-}
-
-/**
- * The captured tool context (input + lowered result) that produced a rendered
- * `ui://` MCP App (mirrors `ToolContextResponse`). The host pushes this into
- * the app after `ui/notifications/initialized` — `input` via `sendToolInput`,
- * then `result` via `sendToolResult` — closing the Data Delivery lifecycle.
- */
-export interface MCPAppToolContext {
-  /** The server-side tool name that declared the app. */
-  tool: string;
-  /** The tool's input arguments (inline JSON or by reference). */
-  input: MCPAppToolContextPayload;
-  /** The tool's lowered result (inline JSON or by reference). */
-  result: MCPAppToolContextPayload;
-  /** Whether the tool returned a server-side error result. */
-  isError: boolean;
 }
 
 /**
@@ -184,14 +131,6 @@ export interface MCPAppHostClient {
   callTool(tool: string, args?: unknown): Promise<MCPAppToolResult>;
   /** Route `resources/list` → `mcp.servers.resources`. */
   listResources(serverID: string): Promise<MCPAppResourceListing[]>;
-  /**
-   * Route `resources/templates/list` → the server's resource templates. The
-   * Runtime exposes no MCP resource-template Protocol method yet, so the
-   * adapter returns an empty list (a documented follow-up). The point is that
-   * the advertised `serverResources` capability no longer ERRORS when a
-   * conformant app issues a templates call — it gets a graceful empty result.
-   */
-  listResourceTemplates(serverID: string): Promise<MCPAppResourceTemplateListing[]>;
   /**
    * Route a tool listing → the tool catalog filtered to this server. NOTE:
    * the official AppBridge exposes no `onlisttools` host handler (an app
@@ -215,29 +154,6 @@ export interface MCPAppHostClient {
    * renderer's presigned `src` flows through).
    */
   resolveArtifact(artifactID: string): Promise<string>;
-  /**
-   * Fetch the captured tool context (input + lowered result) that produced a
-   * rendered app, so the host can push it into the app after it initializes
-   * (the Data Delivery lifecycle stage). Routes onto `mcp.apps.tool_context`,
-   * identity-scoped. Returns `null` when no context exists for the
-   * `(serverID, toolCallID)` pair — an unknown / evicted / cross-identity id
-   * (the adapter maps the Runtime's `not_found` onto `null`); the host then
-   * performs no push and the app boots without a delivered result (degraded,
-   * never a thrown error).
-   */
-  toolContext(serverID: string, toolCallID: string): Promise<MCPAppToolContext | null>;
-  /**
-   * Resolve an artifact id to a presigned URL and fetch its bytes as text —
-   * the heavy-payload path for {@link toolContext}. A captured input / result
-   * at or above the heavy threshold (D-026) rides by reference; the host
-   * fetches the bytes here (implemented in the adapter so this module never
-   * issues a raw `fetch` — the no-direct-transport invariant, D-173). The
-   * fetched text is the tool payload's JSON, parsed/delivered by the host.
-   * Throws when the bytes cannot be resolved or fetched (e.g. presign
-   * unsupported on a non-S3 store) — the host then delivers a faithful
-   * by-reference stub rather than silently empty data (fail-loud, §13).
-   */
-  fetchArtifactText(artifactID: string): Promise<string>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -276,14 +192,6 @@ export interface AppBridgeHostOptions {
   /** The MCP server (source id) hosting the app's tools + resources. */
   serverID: string;
   /**
-   * The stable per-invocation id of the tool call that declared the app —
-   * the correlation key the host uses to fetch the captured tool context via
-   * {@link MCPAppHostClient.toolContext} once the app has initialized, then
-   * push it across the bridge (the Data Delivery lifecycle stage). When unset,
-   * the host performs no push (the app boots without a delivered result).
-   */
-  toolCallId?: string;
-  /**
    * Called when the app requests a display mode. The request is recorded and
    * acked with the GRANTED mode (see {@link availableDisplayModes}). The
    * Playground page consumes this to drive its page-level layout (fullscreen /
@@ -313,32 +221,6 @@ export interface AppBridgeHostOptions {
    * value) so an existing caller is unchanged.
    */
   theme?: 'light' | 'dark';
-  /**
-   * The server-side tool name that declared this app. Threaded into the
-   * `ui/initialize` host-context `toolInfo` (paired with {@link toolCallId})
-   * so a conformant app can introspect the originating tool. Optional — absent
-   * leaves `toolInfo` off the host-context.
-   */
-  toolName?: string;
-  /**
-   * The best-effort dimensions (CSS px) of the iframe container, threaded into
-   * the `ui/initialize` host-context `containerDimensions` so an app can size
-   * itself to the host viewport. Optional.
-   */
-  containerDimensions?: { width: number; height: number };
-  /**
-   * Called when the app emits `ui/notifications/size-changed` (the SDK
-   * auto-emits it from every app). The renderer uses it to track the inline
-   * iframe height to the app's reported content height. Optional.
-   */
-  onSizeChanged?: (size: { width?: number; height?: number }) => void;
-  /**
-   * Called when the app requests teardown via `ui/notifications/request-teardown`
-   * (the app asking the host to unmount it). The host sends `ui/resource-teardown`
-   * and closes the bridge; this lets the mounting surface drop the app from its
-   * own layout too. Optional.
-   */
-  onRequestTeardown?: () => void;
 }
 
 /**
@@ -350,7 +232,6 @@ export interface AppHandlers {
   oncalltool(params: { name: string; arguments?: unknown }): Promise<CallToolResult>;
   onreadresource(params: { uri: string }): Promise<ReadResourceResult>;
   onlistresources(): Promise<ListResourcesResult>;
-  onlistresourcetemplates(): Promise<ListResourceTemplatesResult>;
   onrequestdisplaymode(params: { mode: McpUiDisplayMode }): Promise<{ mode: McpUiDisplayMode }>;
 }
 
@@ -367,15 +248,7 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       // → mcp.apps.call_tool: re-enters the SAME identity + approval-gate +
       //   tool-side-OAuth path a planner call uses. A gated tool parks on the
       //   unified pause primitive (D-173).
-      //
-      // The app supplies a BARE server-side tool name (`get_weather`); the
-      // Harbor catalog keys tools as `<source>_<tool>`. Prefix with this
-      // bridge's serverID before dispatch so (a) the call resolves to the
-      // right catalog row, and (b) an app can ONLY reach its OWN server's
-      // tools — a bare or cross-server name is confined to this serverID's
-      // namespace and cannot resolve another server's tool (confinement).
-      const qualifiedTool = `${serverID}_${name}`;
-      const result = await client.callTool(qualifiedTool, args);
+      const result = await client.callTool(name, args);
       const blocks: CallToolResult['content'] = [];
       if (result.artifactRef) {
         // Heavy result rides by reference (D-026) — surface the stub, never
@@ -422,22 +295,6 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       const rows = await client.listResources(serverID);
       return {
         resources: rows.map((r) => ({ uri: r.uri, name: r.name ?? r.uri, mimeType: r.mimeType })),
-      };
-    },
-
-    async onlistresourcetemplates() {
-      // Route through the injected client. The Runtime exposes no MCP
-      // resource-template method yet, so this resolves to an empty list — but
-      // it resolves GRACEFULLY rather than erroring, so the advertised
-      // `serverResources` capability is honestly serviceable when a conformant
-      // app issues a `resources/templates/list`.
-      const rows = await client.listResourceTemplates(serverID);
-      return {
-        resourceTemplates: rows.map((r) => ({
-          uriTemplate: r.uriTemplate,
-          name: r.name ?? r.uriTemplate,
-          mimeType: r.mimeType,
-        })),
       };
     },
 
@@ -509,22 +366,12 @@ function hostCapabilities(): McpUiHostCapabilities {
 export class AppBridgeHost {
   readonly #bridge: AppBridge;
   readonly #handlers: AppHandlers;
-  readonly #client: MCPAppHostClient;
-  readonly #serverID: string;
-  readonly #toolCallId: string | undefined;
-  readonly #onRequestTeardown: (() => void) | undefined;
   #transport: PostMessageTransport | undefined;
   #displayModeRequests: DisplayModeRequest[] = [];
   #connected = false;
   #initialized = false;
-  #toreDown = false;
-  #theme: 'light' | 'dark';
 
   constructor(opts: AppBridgeHostOptions) {
-    this.#client = opts.client;
-    this.#serverID = opts.serverID;
-    this.#toolCallId = opts.toolCallId;
-    this.#onRequestTeardown = opts.onRequestTeardown;
     this.#handlers = createAppHandlers({
       ...opts,
       onDisplayModeRequest: (req) => {
@@ -536,33 +383,16 @@ export class AppBridgeHost {
     // Host identity + theme are injected through the seam; both default to the
     // Console's prior baked-in values so an existing caller is unchanged.
     const hostInfo = opts.hostInfo ?? DEFAULT_HOST_INFO;
-    this.#theme = opts.theme ?? 'dark';
+    const theme: 'light' | 'dark' = opts.theme ?? 'dark';
 
     const available = opts.availableDisplayModes ?? (['inline'] as McpUiDisplayMode[]);
     const hostContext: McpUiHostContext = {
-      theme: this.#theme,
+      theme,
       // The app boots inline (in the chat scroll); fullscreen / pip are reached
       // via a `ui/request-display-mode` the page's layout machine applies.
       displayMode: 'inline',
       availableDisplayModes: available,
     };
-    // toolInfo: the originating tool's id + name, so a conformant app can
-    // introspect the tool that instantiated it (the spec host-context field).
-    if (opts.toolName !== undefined && opts.toolName !== '') {
-      hostContext.toolInfo = {
-        id: opts.toolCallId,
-        // The full Tool definition is not on the host side; name + an empty
-        // object input schema is the faithful minimal shape.
-        tool: { name: opts.toolName, inputSchema: { type: 'object' as const } },
-      };
-    }
-    // containerDimensions: best-effort iframe box so the app can size itself.
-    if (opts.containerDimensions !== undefined) {
-      hostContext.containerDimensions = {
-        width: opts.containerDimensions.width,
-        height: opts.containerDimensions.height,
-      };
-    }
 
     // The load-bearing line: the first argument is `null`. The AppBridge is
     // NEVER handed an MCP Client, so it can never auto-forward to a direct MCP
@@ -572,138 +402,10 @@ export class AppBridgeHost {
     this.#bridge.oncalltool = (params) => this.#handlers.oncalltool(params);
     this.#bridge.onreadresource = (params) => this.#handlers.onreadresource(params);
     this.#bridge.onlistresources = () => this.#handlers.onlistresources();
-    this.#bridge.onlistresourcetemplates = () => this.#handlers.onlistresourcetemplates();
     this.#bridge.onrequestdisplaymode = (params) => this.#handlers.onrequestdisplaymode(params);
-    // The app auto-emits `ui/notifications/size-changed` on every content
-    // resize (the SDK's setupSizeChangedNotifications). The renderer tracks the
-    // inline iframe height to the reported content height. addEventListener
-    // (not the `onsizechange` setter) composes with any other listener.
-    this.#bridge.addEventListener('sizechange', (params) => opts.onSizeChanged?.(params));
-    // The app can ask the host to unmount it (`ui/notifications/request-teardown`).
-    // Send the graceful `ui/resource-teardown` + close, then let the mounting
-    // surface drop the app from its own layout.
-    this.#bridge.addEventListener('requestteardown', () => {
-      void this.close();
-      this.#onRequestTeardown?.();
-    });
     this.#bridge.oninitialized = () => {
       this.#initialized = true;
-      // Data Delivery: once the app has sent `ui/notifications/initialized`,
-      // push the originating tool's input + result into it. Best-effort and
-      // fire-and-forget — a delivery failure is logged, never thrown (the app
-      // already rendered its shell).
-      void this.#deliverToolContext();
     };
-  }
-
-  /**
-   * Push a new host theme into the running app via `setHostContext`, which the
-   * SDK forwards as a `ui/notifications/host-context-changed`. Called on a live
-   * Console theme toggle so the rendered app re-themes without a reload.
-   */
-  setTheme(theme: 'light' | 'dark'): void {
-    if (theme === this.#theme) return;
-    this.#theme = theme;
-    this.#bridge.setHostContext({ theme });
-  }
-
-  /**
-   * Fetch the captured tool context and push it into the app — `input` via
-   * `sendToolInput`, then `result` via `sendToolResult` (in that ORDER: the
-   * SDK requires `initialized` before `sendToolResult`, and input-then-result
-   * is the lifecycle order). Guarded by a `toolCallId` being set; a missing /
-   * evicted context (`toolContext` → `null`) yields no push and no error.
-   * The whole sequence is best-effort: a delivery failure is logged but never
-   * propagated — the app has already rendered (fail-safe on the push, not the
-   * render).
-   */
-  async #deliverToolContext(): Promise<void> {
-    if (this.#toolCallId === undefined || this.#toolCallId === '') return;
-    try {
-      const ctx = await this.#client.toolContext(this.#serverID, this.#toolCallId);
-      if (!ctx) return;
-      await this.#bridge.sendToolInput({ arguments: await this.#payloadToArgs(ctx.input) });
-      await this.#bridge.sendToolResult(await this.#payloadToResult(ctx.result, ctx.isError));
-    } catch (err) {
-      // The push is best-effort — surface the failure to the console but never
-      // throw (the app already rendered; a delivery error is not a render
-      // error). The injected client is the ONLY path used here — no direct
-      // transport (D-173).
-      console.error('MCP App tool-context delivery failed', err);
-    }
-  }
-
-  /**
-   * Build the `sendToolInput` arguments from a captured input payload. Inline
-   * content is coerced to a record; a heavy by-reference payload is fetched +
-   * JSON-parsed at the iframe edge (the bytes are the input JSON).
-   *
-   * On a heavy-input fetch / parse failure the host LOGS the failure (never a
-   * silent swallow, §13) and delivers an empty argument map. This is the
-   * deliberate asymmetry with {@link #payloadToResult}, recorded in D-227:
-   * tool INPUT is a `Record<string, unknown>` the app reads by key, so there
-   * is no faithful key-shaped stub the way the RESULT path delivers a
-   * by-reference text block — and the input is advisory pre-render data, not
-   * the source of truth (the result is). So a failed heavy-input fetch yields
-   * loud-logged empty args rather than a thrown render error.
-   */
-  async #payloadToArgs(p: MCPAppToolContextPayload): Promise<Record<string, unknown>> {
-    if (p.content !== undefined) {
-      return asStructured(p.content);
-    }
-    if (p.artifactRef) {
-      try {
-        const text = await this.#client.fetchArtifactText(p.artifactRef.id);
-        return asStructured(JSON.parse(text));
-      } catch (err) {
-        console.warn(
-          `MCP App heavy tool-input artifact ${p.artifactRef.id} unavailable; delivering empty arguments`,
-          err,
-        );
-        return {};
-      }
-    }
-    return {};
-  }
-
-  /**
-   * Build the `sendToolResult` `CallToolResult` from a captured result payload.
-   * Inline content becomes a text block plus `structuredContent`; a heavy
-   * by-reference result is resolved + fetched at the iframe edge and delivered
-   * as a text block. When the heavy bytes cannot be fetched (e.g. presign
-   * unsupported on a non-S3 store), the host delivers a FAITHFUL by-reference
-   * stub block — never silently empty (fail-loud, §13).
-   */
-  async #payloadToResult(
-    p: MCPAppToolContextPayload,
-    isError: boolean,
-  ): Promise<CallToolResult> {
-    if (p.content !== undefined) {
-      return {
-        content: [{ type: 'text', text: stringifyContent(p.content) }],
-        structuredContent: asStructured(p.content),
-        isError,
-      };
-    }
-    if (p.artifactRef) {
-      try {
-        const text = await this.#client.fetchArtifactText(p.artifactRef.id);
-        return { content: [{ type: 'text', text }], isError };
-      } catch {
-        const ref = p.artifactRef;
-        const size = ref.sizeBytes ? ` · ${ref.sizeBytes} bytes` : '';
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `[artifact ${ref.id}${size} — unavailable on this store]`,
-            },
-          ],
-          isError,
-        };
-      }
-    }
-    return { content: [{ type: 'text', text: '' }], isError };
   }
 
   /** Always `'manual-handler'` — the wrapper holds no MCP client (D-173). */
@@ -736,24 +438,10 @@ export class AppBridgeHost {
     return this.#initialized;
   }
 
-  /**
-   * Tears the bridge down gracefully: sends `ui/resource-teardown` (so the app
-   * can persist / clean up) BEFORE closing the transport and dropping the
-   * iframe peer. The teardown send is best-effort — a failure (the app never
-   * acked, the transport already dropped) is logged but never blocks the close,
-   * so a render leak can't wedge unmount. Idempotent.
-   */
+  /** Tears the bridge down — closes the transport and drops the iframe peer. */
   async close(): Promise<void> {
     if (!this.#connected) return;
     this.#connected = false;
-    if (!this.#toreDown) {
-      this.#toreDown = true;
-      try {
-        await this.#bridge.teardownResource({});
-      } catch (err) {
-        console.warn('MCP App resource-teardown failed; closing anyway', err);
-      }
-    }
     await this.#bridge.close();
   }
 }

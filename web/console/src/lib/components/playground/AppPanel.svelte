@@ -27,9 +27,7 @@
     app,
     appHostClient,
     onrequestmode,
-    onclose,
-    availableDisplayModes,
-    theme
+    onclose
   }: {
     /** The page-level app to host (carries server id, resource uri, mode). */
     app: OpenApp;
@@ -39,28 +37,15 @@
     onrequestmode: (mode: DisplayMode) => void;
     /** Emitted when the operator closes the app. */
     onclose: () => void;
-    /**
-     * The display modes the host can apply — sourced from runtime.info by the
-     * page (the deployment's declared host modes). Defaults to the full set the
-     * page can lay out when the page passes none.
-     */
-    availableDisplayModes?: DisplayMode[];
-    /** The live host theme threaded into the rendered app's host-context. */
-    theme?: 'light' | 'dark';
   } = $props();
 
   // Reuse the registered 109b renderer (no fork) via the public registry seam.
   const Renderer = dispatchRenderer(MCP_APP_INLINE_MIME).component;
 
-  // The page is the surface that applies fullscreen / pip; the modes it offers
-  // are the deployment's declared host modes (from runtime.info), falling back
-  // to the full set the page can lay out.
-  const FALLBACK_MODES: DisplayMode[] = ['inline', 'fullscreen', 'pip'];
-  const modes = $derived(
-    availableDisplayModes && availableDisplayModes.length > 0
-      ? availableDisplayModes
-      : FALLBACK_MODES
-  );
+  // The host now supports the full DisplayMode set (109a/109b advertised inline
+  // only); the page is the surface that applies fullscreen / pip, so the app's
+  // requests are granted here and routed to the page's layout machine.
+  const AVAILABLE: DisplayMode[] = ['inline', 'fullscreen', 'pip'];
 
   const rendererProps = $derived<RendererProps>({
     mime: MCP_APP_INLINE_MIME,
@@ -72,8 +57,7 @@
     },
     serverID: app.serverID,
     appHostClient,
-    availableDisplayModes: modes,
-    theme,
+    availableDisplayModes: AVAILABLE,
     onDisplayModeRequest: (req: DisplayModeRequest) => onrequestmode(req.granted)
   });
 

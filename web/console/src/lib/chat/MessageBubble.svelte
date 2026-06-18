@@ -32,8 +32,7 @@
     client,
     appHostClient,
     availableDisplayModes,
-    onAppDisplayModeRequest,
-    theme
+    onAppDisplayModeRequest
   }: {
     message: ChatMessage;
     client: ChatProtocolClient;
@@ -45,8 +44,6 @@
     appHostClient?: MCPAppHostClient;
     /** The display modes the host can apply for an inline app (Playground passes the full set). */
     availableDisplayModes?: McpUiDisplayMode[];
-    /** The live host theme threaded into a rendered inline app's host-context. */
-    theme?: 'light' | 'dark';
     /**
      * Called when an inline app requests a different display mode. The
      * Playground page reduces this into its page-level layout (fullscreen /
@@ -229,7 +226,6 @@
               serverID={message.serverID}
               {appHostClient}
               {availableDisplayModes}
-              {theme}
               onDisplayModeRequest={(req) =>
                 onAppDisplayModeRequest?.(req, message.app!, message.serverID!)}
             />
