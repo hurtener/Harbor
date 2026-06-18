@@ -536,6 +536,12 @@ var (
 	// structural validation (empty Kind, negative priority, unknown
 	// PropagateOnCancel value, etc.).
 	ErrInvalidRequest = errors.New("tasks: invalid request")
+	// ErrUnserializable — a persistence-backed driver could not
+	// serialize a task / group / patch record for storage. Raised
+	// loudly (never a silent drop or nil record) so a malformed
+	// payload surfaces at the call site instead of vanishing from the
+	// durable log (CLAUDE.md §5 fail-loud).
+	ErrUnserializable = errors.New("tasks: record is not serializable")
 )
 
 // ValidateRequest checks structural invariants Spawn needs before

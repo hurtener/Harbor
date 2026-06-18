@@ -118,6 +118,11 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 	// Tasks driver — production in-process TaskRegistry, registered via init().
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
+	// Tasks driver — StateStore-backed durable TaskRegistry, registered
+	// via init(). Persists task/group/patch records through the shared
+	// runtime StateStore so they survive a restart; opt-in via
+	// tasks.driver: durable.
+	_ "github.com/hurtener/Harbor/internal/tasks/drivers/durable"
 	// Telemetry span exporters — OTel traces. The noop driver
 	// is the default (no collector); the otlp driver ships spans to an
 	// OTLP/gRPC collector when telemetry.otel_endpoint is configured.

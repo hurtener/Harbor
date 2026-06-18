@@ -71,4 +71,14 @@ else
     skip 'phase 87: durable task driver not yet in the prod aggregator'
 fi
 
+# ----------------------------------------------------------------------------
+# 6. The config validator accepts tasks.driver: durable.
+# ----------------------------------------------------------------------------
+if grep -rqE 'allowedTasksDrivers.*"durable"|"durable".*allowedTasksDrivers' internal/config/*.go 2>/dev/null \
+    || grep -rqE '"inprocess".*"durable"|"durable".*"inprocess"' internal/config/validate.go 2>/dev/null; then
+    ok 'phase 87: config validator accepts tasks.driver: durable'
+else
+    skip 'phase 87: tasks.driver: durable not yet in the config allowlist'
+fi
+
 smoke_summary
