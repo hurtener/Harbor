@@ -320,8 +320,27 @@ feed the read-only `governance.posture` surface. See
 
 ### distributed.bus_driver
 
-MessageBus driver. Default: `loopback`. Validation: `loopback`
-(V1).
+MessageBus driver. Default: `loopback`. Validation: `loopback` /
+`durable`.
+
+- `loopback` (default) — in-process; projects each `BusEnvelope` onto
+  the local event bus. No durability, no cross-instance fan-out.
+- `durable` — persists every `BusEnvelope` through the `StateStore` and
+  projects it onto the local event bus, with a background poller that
+  also projects envelopes published by OTHER instances sharing the
+  store (or left by a crash) — at-least-once cross-instance fan-out +
+  restart-replay. StateStore-backed (Postgres-as-queue on a shared
+  Postgres store; single-instance restart-replay on SQLite). Reuses the
+  runtime `StateStore`; fails loud at construction when no store is
+  wired. Consumers dedupe on `(TaskID, Edge, EventID)`. NATS / Redis
+  Streams remain future drivers.
+
+### distributed.bus_poll_interval
+
+How often the `durable` bus driver scans the shared `StateStore` for
+envelopes published by other instances (or left by a crash). Optional;
+the durable driver applies a built-in default (1s) when unset. Ignored
+by `loopback`.
 
 ### distributed.remote_driver
 

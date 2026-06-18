@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/devdraft"
-	"github.com/hurtener/Harbor/internal/distributed/drivers/loopback" // payload home for distributed.bus_envelope (the loopback driver declares it; prod already blank-imports the driver, this import only reads the exported type)
+	"github.com/hurtener/Harbor/internal/distributed" // payload home for distributed.bus_envelope (the shared bus-projection contract; prod already blank-imports the drivers)
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -88,7 +88,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	devdraft.EventTypeDraftDiscarded: {Payloads: []reflect.Type{reflect.TypeOf(devdraft.DraftDiscardedPayload{})}},
 
 	// --- Distributed bus.
-	loopback.EventTypeDistributedBusEnvelope: {Payloads: []reflect.Type{reflect.TypeOf(loopback.BusEnvelopePayload{})}},
+	distributed.EventTypeDistributedBusEnvelope: {Payloads: []reflect.Type{reflect.TypeOf(distributed.BusEnvelopePayload{})}},
 
 	// --- LLM edge.
 	llm.EventTypeImageMaterialized:     {Payloads: []reflect.Type{reflect.TypeOf(llm.ImageMaterializedPayload{})}},

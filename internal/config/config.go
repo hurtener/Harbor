@@ -576,6 +576,12 @@ type TasksConfig struct {
 type DistributedConfig struct {
 	BusDriver    string `yaml:"bus_driver"`
 	RemoteDriver string `yaml:"remote_driver"`
+	// BusPollInterval tunes how often the durable bus driver scans the
+	// shared StateStore for envelopes published by other instances (or
+	// left by a crash) to project onto the local event bus. Optional;
+	// the durable driver applies a built-in default when unset (<= 0).
+	// Ignored by the loopback driver.
+	BusPollInterval time.Duration `yaml:"bus_poll_interval,omitempty"`
 }
 
 // SessionsConfig configures the SessionRegistry's GC sweeper. Defaults

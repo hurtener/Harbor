@@ -22,26 +22,10 @@ func init() {
 // MessageBus loopback — projects envelopes onto the typed event bus
 // -----------------------------------------------------------------------------
 
-// EventTypeDistributedBusEnvelope is the canonical event type the
-// loopback MessageBus emits onto the typed `events.EventBus` for each
-// Publish. Subscribers wired to the event bus see envelopes by
-// filtering on this type. Registered once at package init.
-const EventTypeDistributedBusEnvelope events.EventType = "distributed.bus_envelope"
-
-func init() {
-	events.RegisterEventType(EventTypeDistributedBusEnvelope)
-}
-
-// BusEnvelopePayload is the typed event payload carrying a
-// distributed.BusEnvelope projection. SafePayload — the envelope's
-// Payload bytes are assumed pre-redacted by the publisher.
-type BusEnvelopePayload struct {
-	events.SafeSealed
-	// Envelope is the published BusEnvelope, projected onto the typed
-	// event bus. Consumers idempotency-key on
-	// `(Envelope.TaskID, Envelope.Edge, Envelope.EventID)`.
-	Envelope distributed.BusEnvelope
-}
+// The projection event type + payload (EventTypeDistributedBusEnvelope,
+// BusEnvelopePayload) are the SHARED bus-projection contract; they live
+// in the `distributed` package so every driver references one set of
+// symbols and no driver imports another. See distributed/projection.go.
 
 // bus is the loopback MessageBus driver.
 type bus struct {
@@ -72,10 +56,10 @@ func (b *bus) Publish(ctx context.Context, env distributed.BusEnvelope) error {
 		return err
 	}
 	ev := events.Event{
-		Type:       EventTypeDistributedBusEnvelope,
+		Type:       distributed.EventTypeDistributedBusEnvelope,
 		Identity:   env.Identity,
 		OccurredAt: env.Timestamp,
-		Payload:    BusEnvelopePayload{Envelope: env},
+		Payload:    distributed.BusEnvelopePayload{Envelope: env},
 	}
 	if err := b.eventBus.Publish(ctx, ev); err != nil {
 		return fmt.Errorf("distributed/loopback: bus publish: %w", err)
