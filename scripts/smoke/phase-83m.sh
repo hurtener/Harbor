@@ -78,8 +78,8 @@ assert_grep_present 'ToolCount\s*int' "internal/tasks/tasks.go" \
     "tasks.Task.ToolCount field declared (item 7)"
 assert_grep_present 'IncrementToolCount' "internal/tasks/tasks.go" \
     "TaskRegistry.IncrementToolCount method declared (item 7)"
-assert_grep_present 'IncrementToolCount' "internal/tasks/drivers/inprocess/inprocess.go" \
-    "inprocess driver implements IncrementToolCount (item 7)"
+assert_grep_present 'IncrementToolCount' "internal/tasks/engine/engine.go" \
+    "tasks engine implements IncrementToolCount (item 7; the shared engine the inprocess + durable drivers wrap, Phase 87)"
 assert_grep_present 'ToolCount' "internal/tasks/protocol/registry_projector.go" \
     "projectRow projects ToolCount onto the wire (item 7)"
 

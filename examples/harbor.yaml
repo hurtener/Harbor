@@ -292,11 +292,19 @@ artifacts:
   # s3_use_path_style: false
 
 tasks:
-  # TaskRegistry driver. Phase 20 ships only `inprocess` — an
-  # in-memory registry that persists every lifecycle transition
-  # through the StateStore (D-027 typed wrapper). Post-V1 phases
-  # (e.g. a durable queue-backed driver at Phase 87+) extend the
-  # allowlist.
+  # TaskRegistry driver. One of:
+  #   inprocess (default) — in-memory registry; live state is
+  #     observable but a runtime restart starts empty.
+  #   durable — persists task/group/patch records through the
+  #     StateStore so they survive a restart. On open it replays every
+  #     record and runs a recovery sweep (a task left `running` by a
+  #     crash becomes `failed` with code `runtime_restarted`; the
+  #     record is recovered, execution is not re-driven). Reuses the
+  #     runtime StateStore — no extra config. For survival across a
+  #     real process restart, pair with a durable state.driver
+  #     (sqlite/postgres); with state.driver: inmem records survive
+  #     only an in-process driver reopen. Selecting durable with no
+  #     StateStore wired fails loudly at boot.
   driver: inprocess
   # Phase 21 backgroundtasks-config knobs (RFC §6.8). Both fields
   # must be > 0; defaults are applied when the section is omitted.

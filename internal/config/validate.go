@@ -651,10 +651,12 @@ func (c *Config) validateArtifacts() error {
 	return nil
 }
 
-// allowedTasksDrivers is the V1 tasks-driver allowlist. Harbor
-// ships only `inprocess`; later post-V1 phases (e.g. a durable
-// queue-backed driver) extend this list.
-var allowedTasksDrivers = map[string]struct{}{"inprocess": {}}
+// allowedTasksDrivers is the tasks-driver allowlist. `inprocess` is
+// the default (live state, no restart survival); `durable` persists
+// task/group/patch records through the StateStore so they survive a
+// runtime restart (pair it with a durable state.driver — sqlite or
+// postgres — for cross-process survival).
+var allowedTasksDrivers = map[string]struct{}{"inprocess": {}, "durable": {}}
 
 func (c *Config) validateTasks() error {
 	if c.Tasks.Driver == "" {

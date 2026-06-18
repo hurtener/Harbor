@@ -457,7 +457,23 @@ the `embeddings` block and `skills.driver` to be set.
 
 ### tasks.driver
 
-`TaskRegistry` driver. Default: `inprocess`. Validation: `inprocess`.
+`TaskRegistry` driver. Default: `inprocess`. Validation: `inprocess` /
+`durable`.
+
+- `inprocess` (default) — keeps task/group/patch state in memory. Live
+  state is observable, but a runtime restart starts with an empty
+  registry.
+- `durable` — persists task/group/patch records through the configured
+  `StateStore`, so they survive a runtime restart. On open it replays
+  every record and runs a recovery sweep: a task left `running` by a
+  crash is transitioned to `failed` with the reserved error code
+  `runtime_restarted` (the record is recovered; execution is not
+  re-driven). It reuses the runtime's `StateStore` — no extra config
+  beyond `tasks.driver: durable`. For survival across a real **process**
+  restart, pair it with a durable `state.driver` (`sqlite` or
+  `postgres`); with `state.driver: inmem` records survive only an
+  in-process driver reopen. Selecting `durable` with no `StateStore`
+  wired fails loudly at boot.
 
 ### tasks.retain_turn_timeout
 
