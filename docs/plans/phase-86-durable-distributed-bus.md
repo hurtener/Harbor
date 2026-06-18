@@ -62,7 +62,7 @@ RFC §6.12 / §12 name "NATS, Redis Streams, Postgres-as-queue" as the post-V1 d
 - `internal/distributed/drivers/durable/*_test.go` — conformance hook, restart-replay, cross-instance fan-out, concurrent-reuse, leak, fail-loud tests.
 - `internal/distributed/registry.go` — `Dependencies` gains a `State state.StateStore` field (shared-store wiring; the durable factory reads it, the loopback factory ignores it). The factory signature is unchanged (`BusFactory func(deps Dependencies) (MessageBus, error)`).
 - `internal/config/config.go` + `internal/config/validate.go` — `validateDistributed` accepts `bus_driver: durable`; `allowedDistributedBusDrivers` gains `"durable"`.
-- `internal/runtime/assemble/assemble.go` — wire the runtime's shared `StateStore` into `distributed.Dependencies.State` at `OpenBus` (the same store already opened for events/tasks). `harbortest/devstack` inherits this via the promoted `assemble.Assemble` (D-197).
+- `internal/runtime/assemble/assemble.go` — *no change at implementation.* The `MessageBus` seam has no production consumer yet (no `OpenBus` call in `assemble`/`cmd` — RFC §6.12 contracts-only), so there is nothing to wire at boot; the `Dependencies.State` field + the `bus_poll_interval` config are ready for when a production bus consumer lands. The driver is registered (prod aggregator) + conformance/integration-tested, exactly as `loopback` is. (Recorded in D-229.)
 - `internal/drivers/prod/prod.go` — add the durable bus driver's blank import to the production aggregator (§4.4 single home).
 - `examples/*.yaml` + `docs/CONFIG.md` + `docs/skills/define-the-agent-yaml/SKILL.md` — document `distributed.bus_driver: durable` (§18 surface-in-lockstep).
 - `scripts/smoke/phase-86.sh` — static-only assertions (below).

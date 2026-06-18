@@ -103,7 +103,7 @@ func RunBus(t *testing.T, factory BusFactory) {
 		triple := tripleA()
 		sub, err := eb.Subscribe(context.Background(), events.Filter{
 			Tenant: triple.TenantID, User: triple.UserID, Session: triple.SessionID,
-			Types: []events.EventType{loopback.EventTypeDistributedBusEnvelope},
+			Types: []events.EventType{distributed.EventTypeDistributedBusEnvelope},
 		})
 		if err != nil {
 			t.Fatalf("subscribe: %v", err)
@@ -128,10 +128,10 @@ func RunBus(t *testing.T, factory BusFactory) {
 			if !ok {
 				t.Fatalf("subscription closed unexpectedly")
 			}
-			if ev.Type != loopback.EventTypeDistributedBusEnvelope {
-				t.Fatalf("type: got %q want %q", ev.Type, loopback.EventTypeDistributedBusEnvelope)
+			if ev.Type != distributed.EventTypeDistributedBusEnvelope {
+				t.Fatalf("type: got %q want %q", ev.Type, distributed.EventTypeDistributedBusEnvelope)
 			}
-			payload, ok := ev.Payload.(loopback.BusEnvelopePayload)
+			payload, ok := ev.Payload.(distributed.BusEnvelopePayload)
 			if !ok {
 				t.Fatalf("payload type: %T", ev.Payload)
 			}
@@ -192,7 +192,7 @@ func RunBus(t *testing.T, factory BusFactory) {
 		triple := tripleA()
 		sub, err := eb.Subscribe(context.Background(), events.Filter{
 			Tenant: triple.TenantID, User: triple.UserID, Session: triple.SessionID,
-			Types: []events.EventType{loopback.EventTypeDistributedBusEnvelope},
+			Types: []events.EventType{distributed.EventTypeDistributedBusEnvelope},
 		})
 		if err != nil {
 			t.Fatalf("subscribe: %v", err)

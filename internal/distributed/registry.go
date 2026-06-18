@@ -9,6 +9,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/state"
 )
 
 // DefaultDriver is the production driver name for BOTH the
@@ -43,6 +44,13 @@ type Dependencies struct {
 	// driver reads `Tools.A2APeers` here. Other drivers
 	// MAY ignore.
 	Tools config.ToolsConfig
+	// State is the runtime's shared StateStore. The durable bus driver
+	// persists envelopes through it (and a poller reads them back for
+	// cross-instance / restart-replay delivery); the loopback driver
+	// ignores it. The durable driver fails loud at construction when it
+	// is nil. Wired by the runtime at OpenBus (the same store opened for
+	// events / tasks).
+	State state.StateStore
 }
 
 var (
