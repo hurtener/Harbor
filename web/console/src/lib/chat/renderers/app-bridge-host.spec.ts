@@ -9,49 +9,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The Data Delivery push (`sendToolInput` / `sendToolResult`) is driven by the
-// AppBridge `oninitialized` callback. The real bridge only fires that after a
-// live `ui/notifications/initialized` over a postMessage transport (the
-// Playwright spec covers that path). To drive the push deterministically in a
-// unit test we replace the bridge with a fake that captures the handler
-// assignments + records the push order; the fake constructor opens NO network
-// connection, so the D-173 no-transport tests below still hold.
-const bridgeHooks = vi.hoisted(() => {
-  const instances: Array<{
-    oninitialized?: () => void;
-    pushOrder: string[];
-    sendToolInput: ReturnType<typeof vi.fn>;
-    sendToolResult: ReturnType<typeof vi.fn>;
-  }> = [];
-  return { instances };
-});
-
-vi.mock('@modelcontextprotocol/ext-apps/app-bridge', () => {
-  class FakeAppBridge {
-    oncalltool: unknown;
-    onreadresource: unknown;
-    onlistresources: unknown;
-    onrequestdisplaymode: unknown;
-    oninitialized: (() => void) | undefined;
-    pushOrder: string[] = [];
-    sendToolInput = vi.fn(async () => {
-      this.pushOrder.push('input');
-    });
-    sendToolResult = vi.fn(async () => {
-      this.pushOrder.push('result');
-    });
-    connect = vi.fn(async () => {});
-    close = vi.fn(async () => {});
-    constructor() {
-      bridgeHooks.instances.push(this);
-    }
-  }
-  class FakePostMessageTransport {
-    constructor(..._args: unknown[]) {}
-  }
-  return { AppBridge: FakeAppBridge, PostMessageTransport: FakePostMessageTransport };
-});
-
 import {
   APP_IFRAME_SANDBOX_BASE,
   AppBridgeHost,
@@ -63,7 +20,6 @@ import {
   wrapAppDocument,
   type MCPAppHostClient,
   type MCPAppResource,
-  type MCPAppToolContext,
   type MCPAppToolResult,
 } from './app-bridge-host.js';
 
@@ -77,22 +33,13 @@ interface FakeCalls {
   callTool: Array<[string, unknown]>;
   listResources: string[];
   listTools: string[];
-  toolContext: Array<[string, string]>;
-  fetchArtifactText: string[];
 }
 
 function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
   client: MCPAppHostClient;
   calls: FakeCalls;
 } {
-  const calls: FakeCalls = {
-    readResource: [],
-    callTool: [],
-    listResources: [],
-    listTools: [],
-    toolContext: [],
-    fetchArtifactText: [],
-  };
+  const calls: FakeCalls = { readResource: [], callTool: [], listResources: [], listTools: [] };
   const client: MCPAppHostClient = {
     async readResource(serverID, uri): Promise<MCPAppResource> {
       calls.readResource.push([serverID, uri]);
@@ -113,29 +60,9 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
     async resolveArtifact(id) {
       return `https://artifacts.example/${id}`;
     },
-    async toolContext(serverID, toolCallID): Promise<MCPAppToolContext | null> {
-      calls.toolContext.push([serverID, toolCallID]);
-      return {
-        tool: 'srv_echo',
-        input: { content: { q: 1 } },
-        result: { content: { ok: true } },
-        isError: false,
-      };
-    },
-    async fetchArtifactText(id) {
-      calls.fetchArtifactText.push(id);
-      return '{}';
-    },
     ...overrides,
   };
   return { client, calls };
-}
-
-/** Flush enough microtasks for the fire-and-forget delivery chain to settle. */
-async function flush(): Promise<void> {
-  for (let i = 0; i < 8; i++) {
-    await Promise.resolve();
-  }
 }
 
 describe('sandbox + CSP constants', () => {
@@ -358,196 +285,5 @@ describe('D-173 — the host opens NO direct MCP transport', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(wsSpy).not.toHaveBeenCalled();
     expect(esSpy).not.toHaveBeenCalled();
-  });
-
-  it('the Data Delivery push routes ONLY through the injected client — no global transport', async () => {
-    // A heavy result so the delivery path also exercises the artifact fetch
-    // (which lives on the injected client, never a global `fetch`).
-    const toolContext = vi.fn(async () => ({
-      tool: 'srv_echo',
-      input: { content: { q: 1 } },
-      result: { artifactRef: { id: 'art_big', sizeBytes: 9_000_000 } },
-      isError: false,
-    }));
-    const fetchArtifactText = vi.fn(async () => '{"rows":3}');
-    const { client } = makeFakeClient({ toolContext, fetchArtifactText });
-    new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_1' });
-    const bridge = bridgeHooks.instances.at(-1)!;
-    bridge.oninitialized?.();
-    await flush();
-
-    // The delivery used the injected client (tool-context fetch + artifact
-    // bytes fetch) and pushed both notifications...
-    expect(toolContext).toHaveBeenCalledWith('srv', 'tc_1');
-    expect(fetchArtifactText).toHaveBeenCalledWith('art_big');
-    expect(bridge.pushOrder).toEqual(['input', 'result']);
-
-    // ...and NOTHING opened a direct transport.
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(wsSpy).not.toHaveBeenCalled();
-    expect(esSpy).not.toHaveBeenCalled();
-    expect(xhrSpy).not.toHaveBeenCalled();
-  });
-});
-
-describe('Data Delivery — host pushes the captured tool context after init', () => {
-  beforeEach(() => {
-    bridgeHooks.instances.length = 0;
-  });
-
-  function lastBridge() {
-    const b = bridgeHooks.instances.at(-1);
-    if (!b) throw new Error('no AppBridge instance was constructed');
-    return b;
-  }
-
-  it('pushes sendToolInput BEFORE sendToolResult, both after initialized, with the right payloads', async () => {
-    const toolContext = vi.fn(async () => ({
-      tool: 'srv_chart',
-      input: { content: { symbol: 'AAPL' } },
-      result: { content: { points: [1, 2, 3] } },
-      isError: false,
-    }));
-    const { client } = makeFakeClient({ toolContext });
-    const host = new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_42' });
-    const bridge = lastBridge();
-
-    // No push before the app initializes.
-    expect(bridge.sendToolInput).not.toHaveBeenCalled();
-    expect(bridge.sendToolResult).not.toHaveBeenCalled();
-
-    bridge.oninitialized?.();
-    await flush();
-
-    expect(host.isInitialized).toBe(true);
-    expect(toolContext).toHaveBeenCalledWith('srv', 'tc_42');
-    // Order: input before result.
-    expect(bridge.pushOrder).toEqual(['input', 'result']);
-    expect(bridge.sendToolInput).toHaveBeenCalledWith({ arguments: { symbol: 'AAPL' } });
-    const resultArg = bridge.sendToolResult.mock.calls[0][0] as {
-      content: Array<{ type: string; text: string }>;
-      structuredContent?: Record<string, unknown>;
-      isError: boolean;
-    };
-    expect(resultArg.isError).toBe(false);
-    expect(resultArg.structuredContent).toEqual({ points: [1, 2, 3] });
-    expect(resultArg.content[0].text).toContain('points');
-  });
-
-  it('resolves a heavy (artifactRef) result via fetchArtifactText and delivers the fetched bytes', async () => {
-    const { client, calls } = makeFakeClient({
-      async toolContext() {
-        return {
-          tool: 'srv_big',
-          input: { content: {} },
-          result: { artifactRef: { id: 'art_heavy', sizeBytes: 5_000_000 } },
-          isError: false,
-        };
-      },
-      async fetchArtifactText(id) {
-        calls.fetchArtifactText.push(id);
-        return 'HEAVY-RESULT-BYTES';
-      },
-    });
-    new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_heavy' });
-    const bridge = lastBridge();
-    bridge.oninitialized?.();
-    await flush();
-
-    expect(calls.fetchArtifactText).toEqual(['art_heavy']);
-    const resultArg = bridge.sendToolResult.mock.calls[0][0] as {
-      content: Array<{ type: string; text: string }>;
-    };
-    expect(resultArg.content[0].text).toBe('HEAVY-RESULT-BYTES');
-  });
-
-  it('on a fetchArtifactText failure delivers a faithful by-reference stub, never empty', async () => {
-    const { client } = makeFakeClient({
-      async toolContext() {
-        return {
-          tool: 'srv_big',
-          input: { content: {} },
-          result: { artifactRef: { id: 'art_unreachable', sizeBytes: 4242 } },
-          isError: false,
-        };
-      },
-      async fetchArtifactText() {
-        throw new Error('presign unsupported on this store');
-      },
-    });
-    new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_stub' });
-    const bridge = lastBridge();
-    bridge.oninitialized?.();
-    await flush();
-
-    const resultArg = bridge.sendToolResult.mock.calls[0][0] as {
-      content: Array<{ type: string; text: string }>;
-    };
-    const text = resultArg.content[0].text;
-    expect(text).not.toBe('');
-    expect(text).toContain('art_unreachable');
-    expect(text).toContain('4242');
-    expect(text).toContain('unavailable');
-  });
-
-  it('a heavy INPUT artifactRef is fetched + JSON-parsed into the tool arguments', async () => {
-    const { client } = makeFakeClient({
-      async toolContext() {
-        return {
-          tool: 'srv_form',
-          input: { artifactRef: { id: 'art_in', sizeBytes: 100 } },
-          result: { content: { ok: true } },
-          isError: false,
-        };
-      },
-      async fetchArtifactText() {
-        return '{"location":"NYC"}';
-      },
-    });
-    new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_in' });
-    const bridge = lastBridge();
-    bridge.oninitialized?.();
-    await flush();
-
-    expect(bridge.sendToolInput).toHaveBeenCalledWith({ arguments: { location: 'NYC' } });
-  });
-
-  it('a not-found tool context (null) triggers NO push and NO thrown error', async () => {
-    const toolContext = vi.fn(async () => null);
-    const { client } = makeFakeClient({ toolContext });
-    const host = new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_missing' });
-    const bridge = lastBridge();
-    expect(() => bridge.oninitialized?.()).not.toThrow();
-    await flush();
-
-    expect(host.isInitialized).toBe(true);
-    expect(toolContext).toHaveBeenCalledWith('srv', 'tc_missing');
-    expect(bridge.sendToolInput).not.toHaveBeenCalled();
-    expect(bridge.sendToolResult).not.toHaveBeenCalled();
-  });
-
-  it('a toolContext fetch failure is swallowed (best-effort) — no push, no throw', async () => {
-    const { client } = makeFakeClient({
-      async toolContext() {
-        throw new Error('runtime exploded');
-      },
-    });
-    new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_err' });
-    const bridge = lastBridge();
-    expect(() => bridge.oninitialized?.()).not.toThrow();
-    await flush();
-    expect(bridge.sendToolInput).not.toHaveBeenCalled();
-    expect(bridge.sendToolResult).not.toHaveBeenCalled();
-  });
-
-  it('no toolCallId → no fetch and no push (the guard)', async () => {
-    const { client, calls } = makeFakeClient();
-    new AppBridgeHost({ client, serverID: 'srv' });
-    const bridge = lastBridge();
-    bridge.oninitialized?.();
-    await flush();
-    expect(calls.toolContext).toEqual([]);
-    expect(bridge.sendToolInput).not.toHaveBeenCalled();
-    expect(bridge.sendToolResult).not.toHaveBeenCalled();
   });
 });

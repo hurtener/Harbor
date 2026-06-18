@@ -55,12 +55,6 @@ function fakeClient(): MCPAppHostClient {
     async resolveArtifact(id) {
       return `blob:${id}`;
     },
-    async toolContext() {
-      return null;
-    },
-    async fetchArtifactText() {
-      return '{}';
-    },
   };
 }
 

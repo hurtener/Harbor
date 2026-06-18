@@ -3492,6 +3492,11 @@
         {
           "key": "uptime_seconds",
           "type": "number"
+        },
+        {
+          "key": "mcp_app_display_modes",
+          "type": "array",
+          "optional": true
         }
       ]
     },

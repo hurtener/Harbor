@@ -61,8 +61,10 @@ type ToolContextCapturer interface {
 // re-derives the same id and overwrites the same captured slot).
 func ToolCallID(runID, serverID, tool string, args json.RawMessage) string {
 	h := sha256.New()
-	// Length-prefix each field with a newline separator so distinct field
-	// boundaries cannot alias (e.g. {"ab","c"} vs {"a","bc"}).
+	// Newline-separate each field so distinct field boundaries cannot alias
+	// (e.g. {"ab","c"} vs {"a","bc"}). Args, which may itself contain
+	// newlines, is written last (unseparated) so no trailing field can be
+	// confused with a separator.
 	for _, part := range []string{runID, serverID, tool} {
 		_, _ = h.Write([]byte(part))
 		_, _ = h.Write([]byte{'\n'})

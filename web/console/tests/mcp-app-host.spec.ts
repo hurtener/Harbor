@@ -16,21 +16,6 @@
 //   (c) a proxied tool-call message reaches the host ONLY from the trusted
 //       iframe source (the host-policy seam);
 //   (d) a foreign-origin / foreign-window message is rejected, not executed.
-//
-// # Data Delivery push coverage (the host→app `sendToolInput`/`sendToolResult`)
-//
-// The Data Delivery lifecycle — after `ui/notifications/initialized` the host
-// fetches the captured tool context and pushes it into the app via the official
-// AppBridge `sendToolInput()` then `sendToolResult()` — is NOT asserted here.
-// This spec is a deliberately bridge-free security-primitive harness (it
-// hand-builds the iframe + a minimal `window.message` guard rather than driving
-// the real `AppBridge` handshake), so exercising a real `sendToolResult` render
-// would mean standing up a full bridge-handshake harness wired to a fake
-// `mcp.apps.tool_context` surface — disproportionate to the value over the
-// existing unit coverage. The push is covered end-to-end (push order, payload
-// shape, heavy-result resolve+fetch, by-reference stub fallback, not-found→no-push,
-// and the no-direct-transport invariant) by the vitest suite with a fake bridge
-// + fake injected client in `src/lib/chat/renderers/app-bridge-host.spec.ts`.
 
 import { expect, test } from '@playwright/test';
 
