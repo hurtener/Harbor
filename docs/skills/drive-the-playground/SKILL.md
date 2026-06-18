@@ -57,7 +57,7 @@ The pick rides the `start` request as `input_artifact_dispositions` and outranks
 
 ### Limits
 
-- **Max upload size**: governed by `artifacts.max_size_bytes` (default 100MB).
+- **Max upload size**: governed by `protocol.max_request_bytes` (the `artifacts.put` upload body bound; default 4 MiB). A body above this fails with `CodeRequestTooLarge` / HTTP 413 rather than silently truncating.
 - **Path 1 inline cap**: ~20MB of image data per LLM call (the provider's actual limit varies). Larger images get downscaled by the Console before upload — the original lives in the artifact store; the LLM sees the downscaled version inline.
 
 ## 3. Foreground vs background tasks
@@ -75,7 +75,7 @@ When a foreground task is running and you type into the chat input, you get a CH
 - **Steer** — interrupt the current run, redirect with your new input. The current run gets a `RequestPause` event with reason `user_steer`; the planner picks up the new input from its next turn.
 - **Queue** — let the current run finish, then your input goes as the next user turn.
 
-The UI presents two buttons; pick one. There is no default — the choice is explicit because steering mid-tool-call has different semantics than queuing. Steering during a tool call cancels the tool call's `ctx` and the planner sees the cancellation; queuing waits for the tool to finish.
+While a run is active the composer swaps its Send affordance for a single Queue/Steer mode dropdown next to the send arrow; **Queue is the default**. Pick Steer from the dropdown when you want to interrupt rather than wait — the choice matters because steering mid-tool-call has different semantics than queuing. Steering during a tool call cancels the tool call's `ctx` and the planner sees the cancellation; queuing waits for the tool to finish.
 
 The unified pause/resume primitive (RFC §6.10) is what makes this work — `RequestPause` is the same mechanism used for HITL approval, tool-side OAuth, A2A `AUTH_REQUIRED`. Steering is just one more reason code.
 

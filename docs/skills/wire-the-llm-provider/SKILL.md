@@ -84,7 +84,7 @@ For any provider that exposes an OpenAI-compatible endpoint — NVIDIA NIM, vLLM
 
 ## 2. `model_profiles` — the budgeting contract
 
-`model_profiles.<model>.context_window_tokens` is what the planner consults when it decides how much memory to replay, how much tool output to inline, and when to clip. **Without a profile, the planner falls back to a conservative 32k default — which under-uses big models.** Every model you actually use deserves a profile:
+`model_profiles.<model>.context_window_tokens` is what the planner consults when it decides how much memory to replay, how much tool output to inline, and when to clip. **A profile for your `llm.model` is effectively REQUIRED: a model with no `model_profiles` entry has no context-window number, so the first LLM call hard-fails with `ErrUnsupportedModel` — there is no silent fallback.** Give every model you actually use a profile:
 
 ```yaml
 model_profiles:
@@ -140,14 +140,17 @@ Provider swap (e.g. OpenRouter → Anthropic direct) is the same flow — edit, 
 llm:
   # ... provider + model ...
   timeout: 60s                  # request-level timeout
-  retry:
-    max_attempts: 3             # default 3
-    initial_backoff: 1s
-    max_backoff: 8s
-    jitter: 0.2
+  network_defaults:             # applies to every provider (native + custom)
+    max_retries: 2              # extra attempts after the first try
+    retry_backoff_initial: 1s   # backoff before the first retry
+    retry_backoff_max: 8s       # backoff ceiling
+  model_profiles:
+    anthropic/claude-haiku-4.5:
+      context_window_tokens: 200000
+      max_retries: 4            # per-model override of network_defaults.max_retries
 ```
 
-The retry policy is per-attempt; the `timeout` applies to each individual attempt. Total worst-case wall-clock = `timeout * max_attempts + sum(backoffs)`. Bifrost honours `Retry-After` headers from the provider when present.
+`network_defaults` sets the retry policy for every provider; a `model_profiles.<model>.max_retries` entry overrides it for that one model. The retry policy is per-attempt; the `timeout` applies to each individual attempt. Backoff grows from `retry_backoff_initial` up to the `retry_backoff_max` ceiling. Omit any field and it falls through to Bifrost's package-level default. Bifrost honours `Retry-After` headers from the provider when present.
 
 Long-running models (deep reasoning, large context) sometimes exceed the default 60s; bump to 120s or 240s for those. The Console's Task page surfaces timeout errors with the provider's verbatim response, so you can tune fast.
 
@@ -172,7 +175,7 @@ You only need it when something consumes embeddings — the opt-in semantic retr
 - **`harbor dev` exits with `ErrUnknownProvider: "nim"`.** You set `provider: nim` but forgot the matching `custom_providers:` entry. Add it.
 - **Every LLM call times out.** Either your `timeout:` is too low for the model, OR the provider is unreachable from the runtime's network. Check with a `curl https://api.openrouter.ai/v1/models` from the runtime host first.
 - **`llm.context_leak` events fire mid-run.** A tool returned >32KB inline instead of an `ArtifactStub`. See [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md) §4.
-- **The planner clips memory aggressively even on a big-context model.** You forgot the `model_profiles.<model>.context_window_tokens` entry. The planner is using the 32k fallback. Add the entry.
+- **`harbor dev` fails the first LLM call with `ErrUnsupportedModel: model has no configured ModelProfile`.** Your `llm.model` has no `model_profiles.<model>` entry, so the runtime has no context-window number for it and refuses the call — there is no fallback. Add the `model_profiles.<model>.context_window_tokens` entry.
 
 ## See also
 

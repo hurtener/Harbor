@@ -34,7 +34,7 @@ That's the load-bearing path. Everything else is built around it.
 
 ### Observe + debug
 
-- [observe-with-the-console](observe-with-the-console/SKILL.md) — the 14-page Console tour.
+- [observe-with-the-console](observe-with-the-console/SKILL.md) — a tour of the Console's Runtime / Execution / Resources / Settings pages.
 
 ### Ship
 

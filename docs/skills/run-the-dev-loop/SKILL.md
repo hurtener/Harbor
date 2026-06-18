@@ -67,9 +67,9 @@ server:
 - **`harbor.yaml`** changes → the Runtime drains in-flight runs, re-reads the config, re-wires the LLM / tools / memory, and restarts the Protocol server. The watcher debounces — a flurry of saves coalesces to one reload.
 - **In-process tool `.go` file** changes → `harbor dev` does NOT recompile your binary automatically. You re-run `go build && harbor dev` for code changes. Yaml-only changes (provider model swap, new MCP server entry, memory budget tweak) flow through the hot-reload path.
 
-The watcher policy is `drain` with a 5s timeout — in-flight tasks are given 5s to settle; longer-running runs are cancelled at the 5s mark. Drainage timing is hot-reloadable via `server.shutdown_grace_period` in the yaml.
+The watcher policy is `drain` with a 5s timeout — in-flight tasks are given 5s to settle; longer-running runs are cancelled at the 5s mark. The drain window is set by `cli.dev_hot_reload.drain_timeout` (default 5s) — NOT `server.shutdown_grace_period` (that's the ~30s HTTP-listener shutdown knob, a different thing). The `cli.dev_hot_reload.*` config is read once when `harbor dev` boots its supervisor, so changing it is restart-required — a reload won't pick up a new drain timeout.
 
-**Watch out for the SQLite-WAL feedback loop.** `state.dsn: ./harbor-state.sqlite` writes a `.sqlite-wal` sibling file the watcher sees as a change — infinite reboot loop. Move the DSN OUTSIDE the project dir: `state.dsn: /tmp/harbor-validation/<project>-state.sqlite` or `~/.harbor/<project>.sqlite`. The init template puts it under `/tmp/harbor-validation/` for this reason.
+**SQLite in the project dir is safe.** The watcher ignores all SQLite/db files — the main `.sqlite` / `.db` file plus its `-wal` / `-shm` / `-journal` sidecars — so an in-project `state.dsn: ./harbor-state.sqlite` no longer triggers a reboot loop. Keeping the DSN outside the project tree (`/tmp/harbor-validation/<project>-state.sqlite` or `~/.harbor/<project>.sqlite`, as the init template does) is optional tidiness, not a requirement.
 
 ## 4. Token re-seed (the 24h expiry trap)
 
@@ -85,12 +85,15 @@ Tokens also expire after 24h — a Console session left open overnight needs the
 
 ## 5. Logs — where to look
 
-`harbor dev`'s stderr is the operator log. JSON-structured by default (`telemetry.log_format: json`); switch to text for human-readable dev with:
+There are two log streams, and they're easy to mix up:
+
+- **Boot output on stderr** — `harbor dev` (and `harbor console`) write their startup banner, the `HARBOR_DEV_TOKEN`, and lifecycle lines to stderr as **human-readable text**, always. This is the stream you watch while iterating; it's not configurable to JSON.
+- **The subsystem logger on stdout** — the Runtime's structured logger (per-request, per-task slog records) writes to stdout, and `telemetry.log_format` (`json` | `text`) + `telemetry.log_level` govern it:
 
 ```yaml
 telemetry:
-  log_format: text
-  log_level: debug  # bumps to debug for the noisy traces
+  log_format: json   # json for machine ingest, text for eyeballing
+  log_level: debug   # bump to debug for the noisy traces
 ```
 
 Per-task events ALSO go to the Console's Events page in real time (assuming `events.driver: inmem` — the dev default — keeps events in memory while the Console is attached). Use the Events page when you want a live stream; use stderr when you want grep-able history.
@@ -121,7 +124,7 @@ The response is a ready-to-use connection envelope containing `base_url`, `token
 
 - **Console shows "Disconnected" after I restart `harbor dev`.** Token rotated. Reseed localStorage. See §4.
 - **Browser DevTools floods with `401 Unauthorized`.** Same root cause — stale token. Reseed.
-- **`harbor dev` reboots in a loop with `fsnotify` events.** The SQLite WAL trap (see §3). Move `state.dsn` outside the project dir.
+- **`harbor dev` reboots in a loop with `fsnotify` events.** This used to be the SQLite-WAL trap; the watcher now ignores all SQLite/db files (see §3), so a state DB is no longer the cause. If you still see a loop, look for another tool or build step rewriting a watched file on each cycle.
 - **CORS preflight failing on multi-process Console.** Your `server.allowed_origins` doesn't list the Console's origin. The Runtime defaults to default-deny — explicitly add the Console URL.
 - **Port conflict on `:18080` / `:18790`.** Another `harbor dev` is already running. `lsof -nP -iTCP:18080,18790 -sTCP:LISTEN | awk 'NR>1 {print $2}' | xargs -r kill`.
 
@@ -129,6 +132,6 @@ The response is a ready-to-use connection envelope containing `base_url`, `token
 
 - [`scaffold-a-harbor-agent`](../scaffold-a-harbor-agent/SKILL.md) — get to the point where `harbor dev` can boot.
 - [`drive-the-playground`](../drive-the-playground/SKILL.md) — what to do once the Console is attached.
-- [`observe-with-the-console`](../observe-with-the-console/SKILL.md) — the 14-page Console tour.
+- [`observe-with-the-console`](../observe-with-the-console/SKILL.md) — a tour of the Console's Runtime / Execution / Resources / Settings pages.
 - [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md) — if you're attaching a NON-bundled UI to the Runtime.
 - Sibling project: Dockyard's [`run-the-dev-loop`](https://github.com/hurtener/dockyard) — the same hot-reload posture for MCP-server projects.
