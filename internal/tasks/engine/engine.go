@@ -308,13 +308,14 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	return tasks.TaskHandle{ID: id, Reused: false}, nil
 }
 
-// SpawnTool implements tasks.TaskRegistry.
-//
-// the body is a deliberate stub: we persist a foreground task
-// at StatusPending and emit task.spawned. Tool dispatch wiring lands
-// the runtime engine will drive MarkRunning /
-// MarkComplete / MarkFailed once the dispatcher is wired. Documented
-// inline + flagged in the smoke script's PR body.
+// SpawnTool implements tasks.TaskRegistry. It reshapes the tool request
+// onto the Spawn path so the FSM, idempotency, and parent-graph
+// bookkeeping share one code path; the task persists at StatusPending
+// and emits task.spawned. Tool arguments are not carried on the Task
+// (that field is reserved for the tool-catalog wiring); the description
+// captures the intent for the lifecycle log. A run-loop driver advances
+// the task (MarkRunning / MarkComplete / MarkFailed) once it dispatches
+// the tool.
 func (e *Engine) SpawnTool(ctx context.Context, req tasks.SpawnToolRequest) (tasks.TaskHandle, error) {
 	if err := tasks.ValidateToolRequest(req); err != nil {
 		return tasks.TaskHandle{}, err
