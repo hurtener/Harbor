@@ -568,11 +568,11 @@ type TasksConfig struct {
 	ContinuationHopLimit int           `yaml:"continuation_hop_limit"`
 }
 
-// DistributedConfig configures Harbor's distributed contracts (
-// ). `BusDriver` selects the MessageBus driver; `RemoteDriver`
-// selects the RemoteTransport driver. V1 ships only `"loopback"` for
-// both. Post-V1 Harbor adds durable bus drivers; Harbor adds the
-// A2A wire RemoteTransport driver. Restart-required (no `reload:"live"`).
+// DistributedConfig configures Harbor's distributed contracts (the
+// MessageBus + RemoteTransport seams). `BusDriver` selects the
+// MessageBus driver (`loopback` default, or `durable`); `RemoteDriver`
+// selects the RemoteTransport driver (`loopback` default, or `a2a`).
+// Restart-required (no `reload:"live"`).
 type DistributedConfig struct {
 	BusDriver    string `yaml:"bus_driver"`
 	RemoteDriver string `yaml:"remote_driver"`
