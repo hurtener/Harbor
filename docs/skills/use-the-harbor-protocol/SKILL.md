@@ -22,10 +22,10 @@ The Protocol is what makes Harbor headless. The Runtime never imports Console co
 
 ## 1. The wire — base URL, auth, identity
 
-Every Protocol request carries:
+The wire is **REST-per-method**: each Protocol method is its own route under `/v1/`, you POST a flat JSON body, and you get a flat JSON response back — there is no JSON-RPC envelope. Every request carries:
 
 ```http
-POST /v1/protocol HTTP/1.1
+POST /v1/control/start HTTP/1.1
 Host: 127.0.0.1:18080
 Content-Type: application/json
 Authorization: Bearer <JWT>
@@ -37,16 +37,19 @@ X-Harbor-Session: <session_id>
 - **Bearer JWT**: RS256/RS384/RS512/ES256/ES384/ES512 signed token. Issuer + audience match the Runtime's `identity:` block. For `harbor dev`, the ephemeral `HARBOR_DEV_TOKEN` (printed on stderr) is what you use — see [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md).
 - **`X-Harbor-Session`**: the per-request session selector (D-171). The connection JWT verifies the WHO (`tenant` + `user`) and the scopes; the **session is chosen per-conversation** by this header and may differ on every request — the connection token is a per-backend credential, not a single-session pin. A new session id is a new conversation (create-on-first-use on the first `start`). The token's `session` claim is a back-compat **default** used only when the header is absent. `X-Harbor-Tenant` / `X-Harbor-User` can never widen the JWT-verified principal. Every storage call still filters by the full `(tenant, user, session)` triple — no cross-session leakage. Full Console contract: [`docs/notes/session-model-contract.md`](../../notes/session-model-contract.md).
 
-Body is JSON-RPC 2.0:
+Routes group by surface family:
+
+- **Task control** — `start` plus the nine steering verbs (`cancel` / `pause` / `resume` / `redirect` / `inject_context` / `approve` / `reject` / `prioritize` / `user_message`) all POST to `POST /v1/control/{method}` (e.g. `/v1/control/start`, `/v1/control/cancel`). The read-only posture methods (`runtime.info`, `topology.snapshot`) and `artifacts.put` share this route shape.
+- **Event stream** — `GET /v1/events` (SSE; see §4).
+- **Read surfaces** group by family under their own prefix: `POST /v1/tasks/{method}` (e.g. `/v1/tasks/get`), `POST /v1/tools/{method}`, `POST /v1/sessions/{method}`, `POST /v1/memory/{method}`, and so on.
+
+The body is a flat JSON object — the method's request shape — with an `identity` object carrying the triple (or the headers above; the body's `identity` may be left empty when the headers supply it):
 
 ```json
-{
-  "jsonrpc": "2.0",
-  "method": "tasks.start",
-  "params": { "input": "Hello, agent!" },
-  "id": 1
-}
+{ "identity": { "tenant": "dev", "user": "dev", "session": "dev" }, "query": "Hello, agent!" }
 ```
+
+The response is the method's flat response shape directly — no `result` / `error` wrapper. A failure is an HTTP status plus a `{"code": "..."}` envelope (e.g. `404 {"code": "unknown_method"}`).
 
 CORS is default-deny. For browser clients, your origin must be in the Runtime's `server.allowed_origins`. See [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) §2.
 
@@ -84,33 +87,27 @@ Two things to read and act on:
 
 ## 3. Starting a task — the chat-message equivalent
 
-```http
-POST /v1/protocol
-{
-  "jsonrpc": "2.0",
-  "method": "tasks.start",
-  "params": {
-    "input": "What's the weather in Madrid?",
-    "input_artifact_ids": [],
-    "foreground": true
-  },
-  "id": 1
-}
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {}, "query": "What'\''s the weather in Madrid?", "input_artifact_ids": []}'
 ```
 
-Response is a task envelope:
+The request is the flat `StartRequest`: `identity` (the triple — empty here because the headers supply it), the `query` string, and the optional `input_artifact_ids`. There is no `foreground` field — every `start` mints a task and you observe it on the event stream.
+
+Response is the flat `StartResponse`:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "task_id": "tsk_01HXYZ...",
-    "session_id": "sess_dev",
-    "status": "running"
-  }
+  "task_id": "tsk_01HXYZ...",
+  "reused": false,
+  "protocol_version": "0.1.0"
 }
 ```
+
+`reused` is `true` only when you supplied an `idempotency_key` that matched an existing task; `protocol_version` lets you detect a version skew.
 
 For multimodal input, upload artifacts FIRST (`artifacts.put`, see §6) and pass the returned IDs in `input_artifact_ids` (D-166). The per-MIME dispatch — image inline vs PDF/audio as ArtifactStub — happens inside the planner; your client just passes refs. To override how an attachment is handed to the model, add the optional `input_artifact_dispositions` map (Phase 84b — D-189), keyed by artifact id with values `ref` | `inline` | `provider_native` | `tool:<name>` (e.g. `{"art_x": "tool:pdf.extract"}` forces the named catalog tool). Your hint is the top precedence layer (hint > the agent's `multimodal.disposition` config map > the runtime default: image inline, everything else ref); an omitted map keeps today's behaviour. `tasks.get` reflects the hint on `input_artifacts[].disposition`, and the resolution (including degradations — e.g. an unknown `tool:<name>`) is observable as `task.input_disposition.resolved` events. A `provider_native` hint is honoured end-to-end (Phase 84c — D-190): the LLM driver uploads the attachment to the provider's file surface and the upload is observable as `llm.provider_file.uploaded` events (artifact ref, provider, modality, `file_id`).
 
@@ -119,11 +116,14 @@ For multimodal input, upload artifacts FIRST (`artifacts.put`, see §6) and pass
 The Protocol exposes events as Server-Sent Events:
 
 ```http
-GET /v1/protocol/events?task_id=tsk_01HXYZ&access_token=<JWT>
+GET /v1/events?access_token=<JWT>
 Accept: text/event-stream
+X-Harbor-Tenant: <tenant_id>
+X-Harbor-User: <user_id>
+X-Harbor-Session: <session_id>
 ```
 
-(Note: SSE doesn't allow custom headers from EventSource, so the auth is via the `access_token` query param shim — same JWT, same identity triple, encoded in the URL. The query-param shim is documented in `internal/protocol/transports/sse.go`.)
+The subscription is **identity-scoped** — it streams the whole session's events — so there is **no `task_id` query param**. A client that can set headers narrows server-side with the optional `X-Harbor-Run` (a task id) and the repeatable `X-Harbor-Event-Type` headers. A browser `EventSource` (which can't set custom headers) authenticates via the `?access_token=` query-param shim — same JWT, same identity triple, its `session` claim scoping the stream — and filters client-side on the event payload's task id. The query-param shim is documented in `internal/protocol/transports/transports.go`.
 
 The stream is a sequence of `event: <type>\ndata: <JSON>\n\n` blocks:
 
@@ -149,7 +149,7 @@ data: {"task_id":"tsk_01HXYZ","status":"completed"}
 For a chat UI, you'd:
 
 1. Append a "user turn" bubble to the chat.
-2. POST `tasks.start`, get `task_id`.
+2. POST `start`, get `task_id`.
 3. Open an SSE stream for that `task_id`.
 4. Append `llm.completion.chunk` content to a streaming "assistant turn" bubble.
 5. Render `tool.invoked` / `tool.result` as collapsed cards inside the assistant bubble.
@@ -186,37 +186,44 @@ The "steer vs queue" UI choice in [`drive-the-playground`](../drive-the-playgrou
 
 ## 6. Artifact upload — multimodal input
 
-For images / PDFs / audio uploads from your UI:
+For images / PDFs / audio uploads from your UI, `artifacts.put` is a control-surface method: POST the bytes (base64-encoded inline on the request leg) and you get back a reference, never an echo of the body:
 
-```http
-POST /v1/protocol/artifacts
-Content-Type: multipart/form-data; boundary=...
-Authorization: Bearer <JWT>
-X-Harbor-Tenant: dev
-X-Harbor-User: dev
-X-Harbor-Session: dev
-
---<boundary>
-Content-Disposition: form-data; name="file"; filename="report.pdf"
-Content-Type: application/pdf
-
-<bytes>
---<boundary>--
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/artifacts.put" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "scope": {"tenant": "dev", "user": "dev", "session": "dev"},
+    "bytes": "'"$(base64 < report.pdf)"'",
+    "opts": {"mime_type": "application/pdf", "filename": "report.pdf"}
+  }'
 ```
 
-Response:
+Response carries the canonical `ref`:
 
 ```json
-{ "artifact_id": "art_01H...", "mime": "application/pdf", "size": 142853 }
+{
+  "ref": {
+    "id": "art_01H...",
+    "mime_type": "application/pdf",
+    "size_bytes": 142853,
+    "filename": "report.pdf"
+  },
+  "protocol_version": "0.1.0"
+}
 ```
 
-Pass `artifact_id` in `tasks.start.input_artifact_ids`. Bytes never go on the JSON-RPC wire.
+Pass `ref.id` in `start`'s `input_artifact_ids`. The upload bytes ride the request leg only (base64-inline, bounded by the Runtime's max request size — an oversize body is rejected with `request_too_large`); the response is a reference, and bytes never reach the LLM edge inline.
 
 ## 7. Topology snapshot — render the runtime's wiring
 
-```http
-POST /v1/protocol
-{ "jsonrpc": "2.0", "method": "topology.snapshot", "id": 4 }
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/topology.snapshot" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {}}'
 ```
 
 Response is a graph of components + edges — Bifrost, tool catalog (with per-tool nodes), memory driver, state driver, artifact store, event bus, skill catalog. The Console's Topology page is one consumer; your custom dashboard could be another.
@@ -239,8 +246,9 @@ const baseUrl = "http://127.0.0.1:18080";
 const token = "<HARBOR_DEV_TOKEN>";
 const identity = { tenant: "dev", user: "dev", session: "dev" };
 
-async function call<T>(method: string, params?: object): Promise<T> {
-  const res = await fetch(`${baseUrl}/v1/protocol`, {
+// One REST call per method: POST /v1/<family>/<method>, flat body in, flat body out.
+async function call<T>(route: string, body: object): Promise<T> {
+  const res = await fetch(`${baseUrl}${route}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -249,24 +257,29 @@ async function call<T>(method: string, params?: object): Promise<T> {
       "X-Harbor-User": identity.user,
       "X-Harbor-Session": identity.session,
     },
-    body: JSON.stringify({ jsonrpc: "2.0", method, params, id: crypto.randomUUID() }),
+    body: JSON.stringify(body),
   });
-  const json = await res.json();
-  if (json.error) throw new Error(json.error.message);
-  return json.result as T;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ code: `http_${res.status}` }));
+    throw new Error(err.code ?? `http_${res.status}`);
+  }
+  return res.json() as Promise<T>;
 }
 
-const info = await call("runtime.info");
+const info = await call("/v1/control/runtime.info", { identity: {} });
 console.log("connected to harbor", info);
 
-const { task_id } = await call<{ task_id: string }>("tasks.start", { input: "Hello!", foreground: true });
+const { task_id } = await call<{ task_id: string }>("/v1/control/start", { identity: {}, query: "Hello!" });
 
-const sse = new EventSource(`${baseUrl}/v1/protocol/events?task_id=${task_id}&access_token=${encodeURIComponent(token)}`);
+// The stream is session-scoped (no task_id query param), so filter client-side.
+const sse = new EventSource(`${baseUrl}/v1/events?access_token=${encodeURIComponent(token)}`);
 sse.addEventListener("llm.completion.chunk", (e) => {
   const data = JSON.parse(e.data);
-  process.stdout.write(data.chunk);
+  if (data.task_id === task_id) process.stdout.write(data.chunk);
 });
-sse.addEventListener("task.completed", () => sse.close());
+sse.addEventListener("task.completed", (e) => {
+  if (JSON.parse(e.data).task_id === task_id) sse.close();
+});
 ```
 
 That's a working CLI chatbot in 30 lines. Wrap the same in React/Svelte/Vue/whatever your stack is, render the chunks into a bubble, and you have a chat UI.
@@ -277,7 +290,7 @@ That's a working CLI chatbot in 30 lines. Wrap the same in React/Svelte/Vue/what
 - **CORS preflight fails.** Your origin isn't in `server.allowed_origins`. Add it to the yaml + restart Runtime.
 - **SSE stream opens but no events.** The `payload.TaskID` capital-T gotcha — your handler is reading `payload.task_id` (lowercase). Fix the case.
 - **A control call returns `404 {"code": "unknown_method"}` or 405/501.** This runtime doesn't serve that surface. Call `runtime.info` first, branch on `capabilities`, and degrade the feature instead of crashing (the [versioning & compatibility contract](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility)).
-- **Artifact upload returns 413 Payload Too Large.** Above `limits.max_artifact_size_bytes` from `runtime.info`. Chunk uploads aren't supported in V1.1 — bump the Runtime's `artifacts.max_size_bytes`.
+- **Artifact upload returns 413 Payload Too Large.** The request body exceeded the Runtime's `protocol.max_request_bytes` (default 4 MiB) — the canonical `{"code": "request_too_large"}` envelope. Chunk uploads aren't supported in V1.1; raise `protocol.max_request_bytes` in the Runtime's `harbor.yaml` if you need larger inline uploads.
 - **Topology snapshot rejected.** This Runtime doesn't advertise the `topology_snapshot` capability — check `runtime.info.capabilities` before enabling the panel.
 - **The Console reads internal Runtime objects.** It doesn't — that would be a CLAUDE.md §13 violation. If you suspect leakage, file a bug; the Console reads only what's documented as a Protocol surface.
 

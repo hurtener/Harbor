@@ -242,31 +242,42 @@ below — the repo stays the source of truth.
 
 ## Status
 
-**Harbor v1.3.0.** The release where the SDK story becomes real. The runtime
-that previously shipped *inside* the `harbor` binary is now a first-class
-embeddable library: a production-promotion program moved tool dispatch, run
-context population, config projection, and the one-call `assemble.Assemble`
-fan-out out of the binary and into the runtime proper, and the curated
-[`sdk/`](sdk/) facade (RFC §3.6) re-exports the supported surface to external
-Go modules. `harbor scaffold` emits the public paths, the `harbortest` kit's
-full vocabulary is externally satisfiable, and a standing preflight gate
-compiles a tool-declaring scaffold as an external module on every change.
+**Harbor v1.4.1.** The production-adoption line. A server's tool can now
+declare a `ui://` resource (`io.modelcontextprotocol/ui`) that the Console
+renders as an interactive, sandboxed app inline in the Playground — the
+**MCP Apps host**, built on the official `ext-apps` AppBridge in
+manual-handler mode, so every app→host call is Protocol-proxied and never
+escapes the `(tenant, user, session)` isolation boundary; it ships three
+display modes (inline / fullscreen tab / pip split) and inline discovery via
+the `mcp.app_available` event. Agents now accept image, audio, and video
+attachments end-to-end: provider-native upload happens inside the LLM driver,
+an attachment-disposition policy keeps heavy bytes out of the context window,
+and an opt-in `Embedder` seam adds semantic memory + skill retrieval. And
+`harbor serve` — the headless production sibling of `harbor dev` — verifies
+JWTs against a JWKS source (`identity.jwks_url` / `jwks_file`, asymmetric
+algorithms only) and boots with no dev-only surfaces, failing loud at boot
+when a real provider or JWKS source is missing.
 
-The same program hardened the operational core: per-tenant governance
-ceilings now *enforce* (`governance.identity_tiers`), durable pauses survive
-a Runtime restart via trajectory checkpoints with a max-park sweeper, the
-tool-side OAuth completion leg closes the pause→callback→resume choreography,
-long trajectories compress under an operator-set `planner.token_budget`, and
-production telemetry assembles the full redactor → bus → metrics → tracer
-chain. The Console gained a new app-shell chrome (compact rail, top bar,
-⌘K search) and thirteen pages rebuilt against binding design mocks — and
-this release adds the published docs site. Cross-tenant isolation,
-goroutine-leak, and chaos conformance harnesses still gate every change.
+v1.4.1 hardened the MCP Apps backend into a spec-conformant host: the MCP
+southbound driver advertises the host's renderable modes during the initialize
+handshake through the spec `text/html;profile=mcp-app` UI capability (the
+symmetric write side of the existing read path), `runtime.info` carries the
+host's display modes for a server to read, and the new
+`mcp.apps.tool_context` Protocol method backs durable app tool-context
+delivery. On the security side, the steering control surface now derives
+caller authority from the *verified* request-context identity and JWT scope
+— never the request body — so a request can no longer assert its own
+privilege tier, and cross-tenant steering requires the admin scope.
+Cross-tenant isolation, goroutine-leak, and chaos conformance harnesses still
+gate every change.
 
-Next: the MCP Apps host (interactive, sandboxed `ui://` resources), the
-background-task dispatch leg, and the last Console page-polish rounds.
-Post-V1 work — additional planner concretes, a durable distributed bus,
-governance extensions — is tracked in the master phase plan.
+Next: the Console-side MCP-Apps data-delivery push — reverted over a
+`ui/initialize` handshake regression and tracked for re-land in
+[#347](https://github.com/hurtener/Harbor/issues/347) — plus the generated
+per-domain Protocol wire-type modules and the shared chat-module extraction
+(the D-093 / D-091 follow-ons). Post-V1 work — additional planner concretes,
+a durable distributed bus, governance extensions — is tracked in the master
+phase plan.
 
 ## Releases
 

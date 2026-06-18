@@ -41,12 +41,12 @@ llm:
   model: anthropic/claude-haiku-4.5
   api_key: env.OPENROUTER_API_KEY              # `env.NAME` resolves via os.Getenv
   timeout: 60s
-  model_profiles:                              # optional but recommended
+  model_profiles:                              # effectively REQUIRED — one entry per model you use
     anthropic/claude-haiku-4.5:
-      context_window_tokens: 200000            # planner uses this for budgeting
+      context_window_tokens: 200000            # the runtime uses this for context-window budgeting
 ```
 
-`model_profiles` is what the planner consults for context-window budgeting — set it for every model you use; otherwise the planner falls back to a conservative default (32k tokens) that under-uses big models. See [`wire-the-llm-provider`](../wire-the-llm-provider/SKILL.md).
+`model_profiles.<llm.model>.context_window_tokens` is what the runtime consults for context-window budgeting. There is no silent fallback: a model with no matching `model_profiles` entry hard-fails the FIRST LLM call with `ErrUnsupportedModel` (fail-loudly — the error names the missing `model_profiles[<model>]` key). Set a profile for every model you reference. See [`wire-the-llm-provider`](../wire-the-llm-provider/SKILL.md).
 
 ## COMMON — planner, memory, state, tools, skills, governance
 
@@ -102,14 +102,16 @@ tools:
     - text.echo
   mcp_servers:
     - name: weather
-      transport_mode: stdio
-      command: [uvx, mcp-weather]
-      env: { WEATHER_API_KEY: "${env.WEATHER_API_KEY}" }
-      timeout: 60s
-      auto_register_with_planner: true                # default true; the planner discovers tools at boot
+      transport_mode: stdio                           # auto / sse / streamable_http / stdio
+      command: [uvx, mcp-weather]                      # argv form; required for stdio
+      headers: { Authorization: "Bearer ${env.WEATHER_TOKEN}" }   # HTTP transports; redacted as secrets
+      keep_alive: 30s                                  # session-ping interval; 0 disables
+      policy:                                          # optional per-server tool reliability defaults
+        timeout_ms: 60000                              # per-attempt deadline (default 30000)
+        max_attempts: 4                                # total attempts incl. the first
 ```
 
-Built-in tools live in the harbor binary — list `clock.now` to enable, omit to disable. MCP servers are external processes; see [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md) for the skill-vs-tool axis.
+The planner discovers every MCP server's tools at boot — there's no per-server enable flag; listing the server registers its tools. Built-in tools live in the harbor binary — list `clock.now` to enable, omit to disable. MCP servers are external processes; see [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md) for the skill-vs-tool axis.
 
 ### `skills`
 
@@ -161,7 +163,7 @@ The scaffold drops a commented summary of advanced defaults. The full reference 
 - **`server`**: `bind_addr` (default `127.0.0.1:8080` for `harbor serve`; `harbor dev` always binds `:18080`), `allowed_origins` (CORS allowlist for multi-process Console), `shutdown_grace_period` (drain timeout for hot reload).
 - **`telemetry`**: `log_format` (`json` / `text`), `log_level` (`debug` / `info` / `warn` / `error`), `service_name` (OTel resource).
 - **`artifacts`**: `driver` (`inmem` / `fs` / `sqlite` / `postgres`), `heavy_output_threshold_bytes` (the LLM-edge context-leak guard, default 32768 — see RFC §6.5).
-- **`events`**: `driver` (`inmem` / `sqlite` / `postgres`); events power the Console's live streaming.
+- **`events`**: `driver` (`inmem` / `durable`); events power the Console's live streaming. Durable persistence is NOT selected on `driver` — set `driver: durable` and then pick the backing store with `state_driver` (`sqlite` / `postgres`) + `state_dsn`. With `driver: durable` and an empty `state_driver` the bus loudly degrades to best-effort in-memory (not durable across restart).
 - **`sessions`**: `idle_ttl` (default 24h), `hard_cap` (default 720h / 30d), `sweep_interval`.
 - **`pauseresume`**: `max_park_duration` (ceiling on how long a pause — HITL approval, tool OAuth — may stay parked before the runtime resumes it with the typed `timeout` decision and the run ends as a constraints-conflict; default `0` = never expire), `sweep_interval` (sweeper cadence, default 1m).
 - **`tasks`**: `driver` (`inprocess` only in V1.1).
@@ -188,7 +190,7 @@ Every error carries the `file:line` of the offending key. Fix one, re-run, repea
 - **`harbor validate` says `unknown field "X"`.** Either a typo (check indentation — YAML is whitespace-sensitive) or the field belongs in a different block. Check `docs/CONFIG.md` for the canonical block.
 - **`harbor dev` boots but every Protocol call returns 401.** Your `identity` block points at a real IdP but the JWKS isn't reachable. For local dev, use the dev-token flow (see [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md)) — the issuer/jwks_url path is for production.
 - **`harbor dev` reboots in an infinite loop.** SQLite WAL trap — `dsn:` inside the project directory. Move it outside.
-- **A model swap silently degrades.** You forgot to set `model_profiles.<model>.context_window_tokens` for the new model — the planner falls back to a 32k default. Add the profile.
+- **A model swap fails the first call with `ErrUnsupportedModel`.** You forgot to add a `model_profiles.<model>.context_window_tokens` entry for the new model. There's no silent fallback — add the profile and the call succeeds.
 
 ## See also
 
