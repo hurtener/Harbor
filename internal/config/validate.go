@@ -680,10 +680,14 @@ func (c *Config) validateTasks() error {
 	return nil
 }
 
-// allowedDistributedBusDrivers is the V1 distributed bus driver
-// allowlist. Harbor ships only `loopback`; post-V1 Harbor adds
-// durable backends (NATS / Redis Streams / Postgres-as-queue).
-var allowedDistributedBusDrivers = map[string]struct{}{"loopback": {}}
+// allowedDistributedBusDrivers is the distributed bus driver
+// allowlist. `loopback` is the default (in-process, no durability);
+// `durable` persists every BusEnvelope through the StateStore and
+// projects it onto the local event bus, with a poller for
+// cross-instance / restart-replay delivery (StateStore-backed —
+// Postgres-as-queue on a shared Postgres store). NATS / Redis Streams
+// remain future drivers in the same post-V1 set.
+var allowedDistributedBusDrivers = map[string]struct{}{"loopback": {}, "durable": {}}
 
 // allowedDistributedRemoteDrivers is the V1 RemoteTransport driver
 // allowlist. Harbor ships `loopback`; Harbor adds the `a2a` wire
@@ -709,6 +713,12 @@ func (c *Config) validateDistributed() error {
 		return fieldError("distributed.remote_driver",
 			fmt.Sprintf("must be one of %s, got %q",
 				sortedKeys(allowedDistributedRemoteDrivers), c.Distributed.RemoteDriver))
+	}
+	// bus_poll_interval is optional (the durable driver applies a default
+	// when unset); a negative value is a misconfiguration, not "use the
+	// default", so reject it rather than silently coercing.
+	if c.Distributed.BusPollInterval < 0 {
+		return fieldError("distributed.bus_poll_interval", "must be >= 0 (zero uses the driver default)")
 	}
 	return nil
 }

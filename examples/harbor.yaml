@@ -633,12 +633,22 @@ tools:
 
 distributed:
   # MessageBus driver — Harbor's at-least-once cross-worker fan-out
-  # edge. Phase 22 ships only `loopback` (in-process; projects
-  # envelopes through the typed events.EventBus). Post-V1 phase 86
-  # adds durable backends (NATS / Redis Streams / Postgres-as-queue).
+  # edge. One of:
+  #   loopback (default) — in-process; projects envelopes through the
+  #     typed events.EventBus. No durability / cross-instance fan-out.
+  #   durable — persists every BusEnvelope through the StateStore and
+  #     projects it onto the local event bus, with a poller that also
+  #     delivers envelopes published by other instances sharing the
+  #     store (or left by a crash): at-least-once cross-instance
+  #     fan-out + restart-replay. StateStore-backed (Postgres-as-queue
+  #     on a shared Postgres store); reuses the runtime StateStore and
+  #     fails loud if none is wired. Tune the scan cadence with
+  #     bus_poll_interval (default 1s). NATS / Redis Streams remain
+  #     future drivers.
   # Handlers MUST be idempotent on (TaskID, Edge, EventID) so the
-  # same consumer code works against both V1 + durable drivers.
+  # same consumer code works against every driver.
   bus_driver: loopback
+  # bus_poll_interval: 1s   # durable driver only; default 1s
   # RemoteTransport driver — Harbor's cross-process / cross-host call
   # surface, designed against the full A2A v1 spec (vendored at
   # docs/specifications/a2a.proto). Phase 22 ships `loopback`

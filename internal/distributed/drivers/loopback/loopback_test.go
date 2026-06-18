@@ -68,10 +68,10 @@ func TestLoopback_BusPublishProjectsToEventBus(t *testing.T) {
 
 	select {
 	case ev := <-sub.Events():
-		if ev.Type != loopback.EventTypeDistributedBusEnvelope {
-			t.Errorf("type %q != %q", ev.Type, loopback.EventTypeDistributedBusEnvelope)
+		if ev.Type != distributed.EventTypeDistributedBusEnvelope {
+			t.Errorf("type %q != %q", ev.Type, distributed.EventTypeDistributedBusEnvelope)
 		}
-		p, ok := ev.Payload.(loopback.BusEnvelopePayload)
+		p, ok := ev.Payload.(distributed.BusEnvelopePayload)
 		if !ok {
 			t.Errorf("payload type %T", ev.Payload)
 		}

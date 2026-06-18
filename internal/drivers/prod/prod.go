@@ -48,6 +48,12 @@ import (
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	// Distributed drivers — loopback MessageBus + RemoteTransport.
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/loopback"
+	// Distributed bus driver — StateStore-backed durable MessageBus,
+	// registered via init(). Persists every BusEnvelope through the
+	// shared StateStore and projects it onto the local event bus, with a
+	// poller for cross-instance / restart-replay delivery; opt-in via
+	// distributed.bus_driver: durable.
+	_ "github.com/hurtener/Harbor/internal/distributed/drivers/durable"
 	// Distributed driver — A2A wire RemoteTransport (southbound).
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
 	// Embeddings driver — bifrost-backed Embedder,
