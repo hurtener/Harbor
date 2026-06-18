@@ -13,7 +13,7 @@ metadata:
 Harbor ships one static binary — `harbor` — and a four-step flow that lands a working agent in under five minutes:
 
 ```bash
-harbor init <dir>                  # drop the tiered yaml + companion docs
+harbor init --target <dir>         # drop the tiered yaml + companion docs
 $EDITOR <dir>/harbor.yaml          # pick a provider, set api_key
 harbor validate <dir>/harbor.yaml  # fail-loud config check
 harbor scaffold --name <name>      # materialise the Go project
@@ -24,7 +24,7 @@ The flow is deliberately bounded — `harbor init` does not assume what LLM you 
 ## 1. Drop the tiered yaml
 
 ```bash
-harbor init ~/my-first-agent
+harbor init --target ~/my-first-agent
 ```
 
 You get:
@@ -37,7 +37,7 @@ You get:
 └── README.md        # quickstart pointer for human contributors
 ```
 
-The yaml has a `REQUIRED` block at the top with four commented LLM-provider examples (OpenRouter / Anthropic direct / OpenAI direct / Azure OpenAI). **Uncomment exactly one block and set `api_key: env.YOUR_KEY_NAME`.** Bifrost (Harbor's LLM driver) speaks many providers under one wire surface; the four examples cover the common cases. The full provider list is in `docs/CONFIG.md`.
+The yaml has a `REQUIRED` block at the top with four commented LLM-provider examples (OpenRouter / Anthropic direct / OpenAI direct / NVIDIA NIM). **Uncomment exactly one block and set `api_key: env.YOUR_KEY_NAME`.** Bifrost (Harbor's LLM driver) speaks many providers under one wire surface; the four examples cover the common cases. The full provider list is in `docs/CONFIG.md`.
 
 `AGENTS.md` and `CLAUDE.md` are verbatim mirrors — Claude Code picks up `CLAUDE.md` automatically; other agents pick up `AGENTS.md`. Edit one, then `cp AGENTS.md CLAUDE.md` (or vice versa). If they drift, your project's drift-audit catches it.
 
@@ -109,10 +109,10 @@ harbor dev
 
 ## Common failure modes
 
-- **`harbor init` overwrote my edits.** It won't — `harbor init <dir>` refuses to write into a non-empty directory unless `--force` is passed. The default is fail-safe.
+- **`harbor init` overwrote my edits.** It won't — `harbor init --target <dir>` refuses to overwrite any of its four target files: if `harbor.yaml`, `AGENTS.md`, `CLAUDE.md`, or `README.md` already exists it errors out (per-file, fail-loud). Delete the conflicting file or pick a fresh `--target` directory and re-run.
 - **`harbor validate` says `unknown field "tools"`.** You're either on an old `harbor` binary or your yaml uses a renamed key. Run `harbor version` and check the upgrade notes; field renames are flagged in the CHANGELOG.
 - **`harbor dev` exits with `ErrMissingAPIKey` immediately.** Your provider block declares `api_key: env.OPENROUTER_API_KEY` (or similar) but the env var isn't set in the shell that ran `harbor dev`. Check with `echo $OPENROUTER_API_KEY` before re-running. Source your `.env` if you keep keys there.
-- **`harbor scaffold` says "name must match the project directory".** The `--name` flag is the Go module name, not a free string — keep it in `kebab-case` and match the directory name to keep imports clean.
+- **`harbor scaffold` says `name must match ^[a-z0-9][a-z0-9_-]{0,63}$`.** The `--name` flag is the Go module name, not a free string — it must start with a lowercase letter or digit and contain only lowercase letters, digits, hyphens, or underscores (up to 64 chars). It does *not* have to match the directory name; `kebab-case` keeps imports clean.
 
 ## See also
 

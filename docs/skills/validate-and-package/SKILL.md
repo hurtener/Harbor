@@ -32,7 +32,7 @@ Run after every yaml edit. Failure modes are usually obvious from the message.
 Expected output on success:
 
 ```text
-config OK: ./harbor.yaml
+./harbor.yaml: ok
 ```
 
 ## 2. `make preflight` — the live gate

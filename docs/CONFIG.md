@@ -8,7 +8,7 @@ build when a field lands without documentation.
 Conventions used throughout:
 
 - **Default** — the value applied when the key is absent (sourced
-  from `internal/config/loader.go::defaults()`).
+  from `internal/config/loader.go::Defaults()`).
 - **Validation** — what the validator (`internal/config/validate.go`)
   rejects.
 - **Restart-required** — restart-required unless explicitly tagged
@@ -703,9 +703,19 @@ is set on a loopback host.
 
 ### tools.entries
 
-Per-tool catalog wiring (Phase 64a / D-090). Attaches approval gates
-and / or OAuth bindings to a tool name without writing Go wiring
-code. See `ToolEntryConfig` godoc.
+Per-tool catalog wiring (Phase 64a / D-090). Attaches approval gates,
+OAuth bindings, and / or a loading mode to a tool name without writing
+Go wiring code. See `ToolEntryConfig` godoc. Each entry carries:
+
+- `approval` — an approval-gate binding (optional).
+- `oauth` — an OAuth binding (optional).
+- `loading_mode` — when the tool appears in the planner's prompt-time
+  catalog. `""` (default) or `always` means every turn; `deferred`
+  hides the tool by default and lets the LLM discover it via
+  meta-tools.
+
+Validation: an entry must set at least one of `approval`, `oauth`, or
+`loading_mode` (an entry with no fields is a configuration typo).
 
 ### tools.oauth_providers
 

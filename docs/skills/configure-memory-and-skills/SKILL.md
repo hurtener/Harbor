@@ -49,11 +49,11 @@ memory:
   driver: sqlite
   dsn: /tmp/harbor-validation/my-agent-memory.sqlite   # outside the project dir (WAL trap)
   strategy: rolling_summary
-  budget_tokens: 8000        # max tokens the planner replays per turn
-  summary_keep_recent_turns: 6   # the N most-recent turns kept verbatim
+  budget_tokens: 8000          # max tokens the planner replays per turn (0 = unbounded)
+  recovery_backlog_max: 16     # bounded queue for the summariser's recovery loop (default 16)
 ```
 
-`budget_tokens` is the hard cap; `summary_keep_recent_turns` is the floor — older turns are summarised together into one assistant-role message. The planner sees: `[summary of turns 1-12] [turn 13] [turn 14] ... [turn 18]`.
+`budget_tokens` is the hard cap — once a conversation exceeds it, older turns are summarised together into one assistant-role message while recent turns stay verbatim. The planner sees: `[summary of turns 1-12] [turn 13] [turn 14] ... [turn 18]`. `recovery_backlog_max` bounds the `rolling_summary` recovery loop's queue; on overflow it drops the oldest and emits `memory.recovery_dropped`. Both knobs are ignored by the `none` and `truncation` strategies.
 
 ### Opt-in semantic retrieval
 

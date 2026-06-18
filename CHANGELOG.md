@@ -19,6 +19,35 @@ Two versions move independently in Harbor (RFC §5.3):
 
 (Next up: generated per-domain Protocol wire-type modules and the shared chat-module extraction — the D-093 / D-091 follow-ons.)
 
+## [1.4.1] — 2026-06-18
+
+MCP Apps backend spec-conformance and a Console rollback. The Harbor Protocol
+stays at `0.1.0`; the one new method and the new capability advertisement are
+additive, and the reverted Console surface returns the Playground to its
+working v1.4 behavior. No breaking changes.
+
+### Added
+
+- **MCP Apps backend spec-conformance.** The runtime advertises the
+  `text/html;profile=mcp-app` UI-host capability to MCP servers during
+  initialization, so a spec-conformant `ext-apps` server knows the host can
+  render its `ui://` documents. `runtime.info` surfaces the host's supported
+  display modes (inline / fullscreen / pip), and a new Protocol method
+  `mcp.apps.tool_context` exposes the tool-context the app needs after mount
+  — identity-mandatory and Protocol-proxied like every other app→host call,
+  so it never escapes the `(tenant, user, session)` boundary.
+
+### Reverted
+
+- **Console MCP-Apps data delivery rolled back to v1.4.** The post-1.4
+  Console renderer/host that pushed tool input/result into a mounted app,
+  live-re-themed a running app, and wired the operator pop-to-side-by-side
+  display-mode panel broke the `ui/initialize` handshake — a rendered app
+  timed out before it could mount. The Console MCP-Apps surface is restored
+  to its working v1.4 behavior; re-landing the data-delivery push is tracked
+  in issue [#347](https://github.com/hurtener/Harbor/issues/347). The backend
+  conformance above is unaffected and remains present.
+
 ## [1.4.0] — 2026-06-16
 
 Production adoption: interactive MCP Apps in the Console, multimodal input,
