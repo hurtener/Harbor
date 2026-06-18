@@ -482,11 +482,7 @@
     const appView: MCPAppRefView = {
       resourceUri: ev.resourceUri,
       displayMode: known ? (ev.displayMode as McpUiDisplayMode) : '',
-      rawHtmlTrusted: ev.rawHtmlTrusted,
-      // Carry the correlation id so the inline renderer's AppBridge host can
-      // fetch + push the captured tool context (input + result) after the app
-      // initializes — the Data Delivery lifecycle stage.
-      toolCallId: ev.toolCallId
+      rawHtmlTrusted: ev.rawHtmlTrusted
     };
     messages = messages.map((m) =>
       m.taskID === ev.taskID && m.role === 'agent'

@@ -36,6 +36,14 @@ export interface RuntimeInfo {
 	protocol_version: string;
 	capabilities: Capability[];
 	uptime_seconds: number;
+	/**
+	 * The MCP App (`io.modelcontextprotocol/ui`) display modes this host can
+	 * render, declared by the deployment's `tools.mcp_app_host.display_modes`.
+	 * The Playground reads these to seed the `ui/initialize` host-context
+	 * `availableDisplayModes` it advertises to a rendered app — display modes
+	 * are a host-context value, not an MCP capability. Absent when none.
+	 */
+	mcp_app_display_modes?: string[];
 }
 
 /** One subsystem's readiness in the `runtime.health` rollup. */

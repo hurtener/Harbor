@@ -797,6 +797,10 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				BuildVersion:   "devstack",
 				BuildCommit:    "devstack",
 				BuildGoVersion: goruntime.Version(),
+				// The host's renderable MCP App display modes — the Console
+				// reads these off runtime.info to seed the `ui/initialize`
+				// host-context `availableDisplayModes`.
+				MCPAppDisplayModes: cfg.Tools.MCPAppHostDisplayModes(),
 			},
 			Clock:    time.Now,
 			BootedAt: time.Now(),
@@ -862,11 +866,18 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// production cmd/harbor boot path (CLAUDE.md §17.6 — the fixture
 		// must not diverge from production). Without this a test routed
 		// through the devstack mux gets 404 on the Apps methods while
-		// `harbor dev` serves them. Requires the MCP registry (the
-		// `ui://` document source) + the tool catalog (the proxy
-		// re-enters it with its approval/OAuth wrappers) + the artifact
-		// store (the heavy-content offload target).
-		if stack.MCPRegistry != nil && stack.Catalog != nil && stack.Artifacts != nil && stack.MCPToolContext != nil {
+		// `harbor dev` serves them.
+		//
+		// Gated on the MCP/catalog band being present (the same `MCPRegistry`
+		// signal the MCP-surface block above uses) — under `SkipCatalog` the
+		// whole band is nil and there is nothing to mount. But WHEN the band IS
+		// present, the accessor is constructed FAIL-LOUD (matching cmd_dev):
+		// the catalog band always builds the catalog + artifact store +
+		// tool-context store alongside the registry, so a nil sub-dep here is a
+		// real wiring regression, not a config choice — a per-dep silent guard
+		// would mask it and let the wave-end E2E pass against a fixture that
+		// diverges from production (CLAUDE.md §13 / §17.6).
+		if stack.MCPRegistry != nil {
 			appsAccessor, aaErr := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
 				Registry:    stack.MCPRegistry,
 				Catalog:     stack.Catalog,

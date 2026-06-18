@@ -124,10 +124,6 @@
     host = new AppBridgeHost({
       client: appHostClient,
       serverID,
-      // The correlation id of the tool call that declared this app. The host
-      // uses it to fetch + push the captured tool context (input + result)
-      // after the app initializes — the Data Delivery lifecycle stage.
-      toolCallId: app?.toolCallId,
       availableDisplayModes,
       onDisplayModeRequest,
       // Host identity is injected through the seam (not baked into the module).

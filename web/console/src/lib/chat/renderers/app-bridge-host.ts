@@ -67,18 +67,10 @@ import type {
 export interface MCPAppRefView {
   /** The `ui://`-scheme URI of the app's UI document. */
   resourceUri: string;
-  /** The negotiated display mode; the inline host consumes only `inline`. */
+  /** The negotiated display mode; Phase 109b consumes only `inline`. */
   displayMode?: McpUiDisplayMode | '';
   /** The per-server raw-HTML trust flag — default-deny. */
   rawHtmlTrusted: boolean;
-  /**
-   * The stable per-invocation id of the tool call that declared the app —
-   * paired with the server id to fetch the captured tool context (input +
-   * lowered result) the host pushes into the app after it initializes (the
-   * Data Delivery lifecycle stage). Empty/absent when the discovery event
-   * carried no correlation id; the host then performs no push.
-   */
-  toolCallId?: string;
 }
 
 /** A `ui://` resource fetched through the host (mirrors `ReadMCPResourceResponse`). */
@@ -124,37 +116,6 @@ export interface MCPAppToolListing {
 }
 
 /**
- * One half (input or result) of a captured tool context (mirrors
- * `ToolContextPayload`). EXACTLY ONE of `content` / `artifactRef` is set:
- * `content` carries inline JSON below the heavy-content threshold (D-026);
- * `artifactRef` carries the by-reference stub at or above it, which the host
- * resolves + fetches at the iframe edge before delivering.
- */
-export interface MCPAppToolContextPayload {
-  /** Inline JSON — set only below the heavy threshold. */
-  content?: unknown;
-  /** The by-reference stub when the payload meets/exceeds the heavy threshold. */
-  artifactRef?: { id: string; mimeType?: string; sizeBytes?: number };
-}
-
-/**
- * The captured tool context (input + lowered result) that produced a rendered
- * `ui://` MCP App (mirrors `ToolContextResponse`). The host pushes this into
- * the app after `ui/notifications/initialized` — `input` via `sendToolInput`,
- * then `result` via `sendToolResult` — closing the Data Delivery lifecycle.
- */
-export interface MCPAppToolContext {
-  /** The server-side tool name that declared the app. */
-  tool: string;
-  /** The tool's input arguments (inline JSON or by reference). */
-  input: MCPAppToolContextPayload;
-  /** The tool's lowered result (inline JSON or by reference). */
-  result: MCPAppToolContextPayload;
-  /** Whether the tool returned a server-side error result. */
-  isError: boolean;
-}
-
-/**
  * The minimal, injected Protocol surface the MCP Apps host drives every
  * app→host request through. The caller (the Playground page) implements this
  * by delegating to the Harbor Protocol client's `mcp.servers.read_resource`
@@ -193,29 +154,6 @@ export interface MCPAppHostClient {
    * renderer's presigned `src` flows through).
    */
   resolveArtifact(artifactID: string): Promise<string>;
-  /**
-   * Fetch the captured tool context (input + lowered result) that produced a
-   * rendered app, so the host can push it into the app after it initializes
-   * (the Data Delivery lifecycle stage). Routes onto `mcp.apps.tool_context`,
-   * identity-scoped. Returns `null` when no context exists for the
-   * `(serverID, toolCallID)` pair — an unknown / evicted / cross-identity id
-   * (the adapter maps the Runtime's `not_found` onto `null`); the host then
-   * performs no push and the app boots without a delivered result (degraded,
-   * never a thrown error).
-   */
-  toolContext(serverID: string, toolCallID: string): Promise<MCPAppToolContext | null>;
-  /**
-   * Resolve an artifact id to a presigned URL and fetch its bytes as text —
-   * the heavy-payload path for {@link toolContext}. A captured input / result
-   * at or above the heavy threshold (D-026) rides by reference; the host
-   * fetches the bytes here (implemented in the adapter so this module never
-   * issues a raw `fetch` — the no-direct-transport invariant, D-173). The
-   * fetched text is the tool payload's JSON, parsed/delivered by the host.
-   * Throws when the bytes cannot be resolved or fetched (e.g. presign
-   * unsupported on a non-S3 store) — the host then delivers a faithful
-   * by-reference stub rather than silently empty data (fail-loud, §13).
-   */
-  fetchArtifactText(artifactID: string): Promise<string>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -253,14 +191,6 @@ export interface AppBridgeHostOptions {
   client: MCPAppHostClient;
   /** The MCP server (source id) hosting the app's tools + resources. */
   serverID: string;
-  /**
-   * The stable per-invocation id of the tool call that declared the app —
-   * the correlation key the host uses to fetch the captured tool context via
-   * {@link MCPAppHostClient.toolContext} once the app has initialized, then
-   * push it across the bridge (the Data Delivery lifecycle stage). When unset,
-   * the host performs no push (the app boots without a delivered result).
-   */
-  toolCallId?: string;
   /**
    * Called when the app requests a display mode. The request is recorded and
    * acked with the GRANTED mode (see {@link availableDisplayModes}). The
@@ -436,18 +366,12 @@ function hostCapabilities(): McpUiHostCapabilities {
 export class AppBridgeHost {
   readonly #bridge: AppBridge;
   readonly #handlers: AppHandlers;
-  readonly #client: MCPAppHostClient;
-  readonly #serverID: string;
-  readonly #toolCallId: string | undefined;
   #transport: PostMessageTransport | undefined;
   #displayModeRequests: DisplayModeRequest[] = [];
   #connected = false;
   #initialized = false;
 
   constructor(opts: AppBridgeHostOptions) {
-    this.#client = opts.client;
-    this.#serverID = opts.serverID;
-    this.#toolCallId = opts.toolCallId;
     this.#handlers = createAppHandlers({
       ...opts,
       onDisplayModeRequest: (req) => {
@@ -481,101 +405,7 @@ export class AppBridgeHost {
     this.#bridge.onrequestdisplaymode = (params) => this.#handlers.onrequestdisplaymode(params);
     this.#bridge.oninitialized = () => {
       this.#initialized = true;
-      // Data Delivery: once the app has sent `ui/notifications/initialized`,
-      // push the originating tool's input + result into it. Best-effort and
-      // fire-and-forget — a delivery failure is logged, never thrown (the app
-      // already rendered its shell).
-      void this.#deliverToolContext();
     };
-  }
-
-  /**
-   * Fetch the captured tool context and push it into the app — `input` via
-   * `sendToolInput`, then `result` via `sendToolResult` (in that ORDER: the
-   * SDK requires `initialized` before `sendToolResult`, and input-then-result
-   * is the lifecycle order). Guarded by a `toolCallId` being set; a missing /
-   * evicted context (`toolContext` → `null`) yields no push and no error.
-   * The whole sequence is best-effort: a delivery failure is logged but never
-   * propagated — the app has already rendered (fail-safe on the push, not the
-   * render).
-   */
-  async #deliverToolContext(): Promise<void> {
-    if (this.#toolCallId === undefined || this.#toolCallId === '') return;
-    try {
-      const ctx = await this.#client.toolContext(this.#serverID, this.#toolCallId);
-      if (!ctx) return;
-      await this.#bridge.sendToolInput({ arguments: await this.#payloadToArgs(ctx.input) });
-      await this.#bridge.sendToolResult(await this.#payloadToResult(ctx.result, ctx.isError));
-    } catch (err) {
-      // The push is best-effort — surface the failure to the console but never
-      // throw (the app already rendered; a delivery error is not a render
-      // error). The injected client is the ONLY path used here — no direct
-      // transport (D-173).
-      console.error('MCP App tool-context delivery failed', err);
-    }
-  }
-
-  /**
-   * Build the `sendToolInput` arguments from a captured input payload. Inline
-   * content is coerced to a record; a heavy by-reference payload is fetched +
-   * JSON-parsed at the iframe edge (the bytes are the input JSON). A fetch /
-   * parse failure degrades to `{}` — tool input is advisory pre-render data,
-   * not the result, so an empty argument map is a faithful "no input" rather
-   * than a thrown error.
-   */
-  async #payloadToArgs(p: MCPAppToolContextPayload): Promise<Record<string, unknown>> {
-    if (p.content !== undefined) {
-      return asStructured(p.content);
-    }
-    if (p.artifactRef) {
-      try {
-        const text = await this.#client.fetchArtifactText(p.artifactRef.id);
-        return asStructured(JSON.parse(text));
-      } catch {
-        return {};
-      }
-    }
-    return {};
-  }
-
-  /**
-   * Build the `sendToolResult` `CallToolResult` from a captured result payload.
-   * Inline content becomes a text block plus `structuredContent`; a heavy
-   * by-reference result is resolved + fetched at the iframe edge and delivered
-   * as a text block. When the heavy bytes cannot be fetched (e.g. presign
-   * unsupported on a non-S3 store), the host delivers a FAITHFUL by-reference
-   * stub block — never silently empty (fail-loud, §13).
-   */
-  async #payloadToResult(
-    p: MCPAppToolContextPayload,
-    isError: boolean,
-  ): Promise<CallToolResult> {
-    if (p.content !== undefined) {
-      return {
-        content: [{ type: 'text', text: stringifyContent(p.content) }],
-        structuredContent: asStructured(p.content),
-        isError,
-      };
-    }
-    if (p.artifactRef) {
-      try {
-        const text = await this.#client.fetchArtifactText(p.artifactRef.id);
-        return { content: [{ type: 'text', text }], isError };
-      } catch {
-        const ref = p.artifactRef;
-        const size = ref.sizeBytes ? ` · ${ref.sizeBytes} bytes` : '';
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `[artifact ${ref.id}${size} — unavailable on this store]`,
-            },
-          ],
-          isError,
-        };
-      }
-    }
-    return { content: [{ type: 'text', text: '' }], isError };
   }
 
   /** Always `'manual-handler'` — the wrapper holds no MCP client (D-173). */

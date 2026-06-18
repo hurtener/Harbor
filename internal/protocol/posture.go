@@ -99,10 +99,12 @@ type PostureSurface struct {
 // seams directly).
 type PostureDeps struct {
 	// Build carries the static build identity (BuildVersion /
-	// BuildCommit / BuildDate / BuildGoVersion). The Capabilities,
-	// ProtocolVersion, InstanceID, DisplayName, and UptimeSeconds
-	// fields of the eventual RuntimeInfo are filled by the surface —
-	// callers leave them zero here.
+	// BuildCommit / BuildDate / BuildGoVersion) plus the static
+	// deployment-declared MCPAppDisplayModes (the host's renderable MCP
+	// App display modes, sourced from `tools.mcp_app_host.display_modes`).
+	// The Capabilities, ProtocolVersion, InstanceID, DisplayName, and
+	// UptimeSeconds fields of the eventual RuntimeInfo are filled by the
+	// surface — callers leave them zero here.
 	Build types.RuntimeInfo
 	// Clock returns the current wall-clock time. Used to compute
 	// uptime and the SnapshotAt timestamps. Mandatory.

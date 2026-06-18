@@ -27,13 +27,25 @@ source "scripts/smoke/common.sh"
 BRIDGE='web/console/src/lib/chat/renderers/app-bridge-host.ts'
 
 # ----------------------------------------------------------------------------
-# 1. FAIL-1: the UI capability advertises the spec `mimeTypes` shape.
+# 1. FAIL-1: the UI capability advertises the spec `mimeTypes` shape AND the
+#    non-spec `displayModes` capability payload is gone.
 # ----------------------------------------------------------------------------
 if grep -q 'text/html;profile=mcp-app' internal/tools/drivers/mcp/mcp.go 2>/dev/null &&
-    grep -q 'mimeTypes' internal/tools/drivers/mcp/mcp.go 2>/dev/null; then
-    ok 'phase 109k: UI capability advertises the spec mimeTypes shape'
+    grep -q '"mimeTypes"' internal/tools/drivers/mcp/mcp.go 2>/dev/null &&
+    ! grep -q '"displayModes": modes' internal/tools/drivers/mcp/mcp.go 2>/dev/null; then
+    ok 'phase 109k: UI capability advertises spec mimeTypes (displayModes payload removed)'
 else
     skip 'phase 109k: mimeTypes UI capability not yet implemented'
+fi
+
+# ----------------------------------------------------------------------------
+# 1b. runtime.info surfaces the configured MCP-app display modes (the Console
+#     reads them for the host-context availableDisplayModes).
+# ----------------------------------------------------------------------------
+if grep -q 'MCPAppDisplayModes' internal/protocol/types/posture.go 2>/dev/null; then
+    ok 'phase 109k: runtime.info carries the configured MCP-app display modes'
+else
+    skip 'phase 109k: runtime.info MCP-app display modes not yet surfaced'
 fi
 
 # ----------------------------------------------------------------------------
@@ -53,6 +65,26 @@ if grep -q 'sizechange' "${BRIDGE}" 2>/dev/null && grep -q 'teardownResource' "$
     ok 'phase 109k: size-changed + resource-teardown host obligations wired'
 else
     skip 'phase 109k: size-changed / teardown host obligations not yet wired'
+fi
+
+# ----------------------------------------------------------------------------
+# 4. Live theme: the host pushes host-context-changed on a theme toggle
+#    (setHostContext) and wires the app's request-teardown.
+# ----------------------------------------------------------------------------
+if grep -q 'setHostContext' "${BRIDGE}" 2>/dev/null && grep -q 'requestteardown' "${BRIDGE}" 2>/dev/null; then
+    ok 'phase 109k: live-theme host-context-changed + request-teardown wired'
+else
+    skip 'phase 109k: theme host-context / request-teardown not yet wired'
+fi
+
+# ----------------------------------------------------------------------------
+# 5. resources/templates/list is handled gracefully (advertised serverResources
+#    no longer errors on a templates call).
+# ----------------------------------------------------------------------------
+if grep -q 'onlistresourcetemplates' "${BRIDGE}" 2>/dev/null; then
+    ok 'phase 109k: resources/templates/list handled gracefully'
+else
+    skip 'phase 109k: resources/templates/list handler not yet wired'
 fi
 
 smoke_summary
