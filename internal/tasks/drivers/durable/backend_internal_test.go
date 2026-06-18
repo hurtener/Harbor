@@ -52,6 +52,9 @@ func TestBackend_SaveNilRecords_FailLoud(t *testing.T) {
 	if err := b.SavePatch(ctx, nil); err == nil {
 		t.Error("SavePatch(nil): want error")
 	}
+	if err := b.DeleteTask(ctx, nil); err == nil {
+		t.Error("DeleteTask(nil): want error")
+	}
 }
 
 // TestBackend_SaveStoreError_Propagates asserts a StateStore Save
