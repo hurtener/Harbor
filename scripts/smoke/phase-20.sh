@@ -13,8 +13,9 @@
 #
 # SpawnTool's execution body is a no-op stub at Phase 20 (the task
 # persists at StatusPending until the Phase 26 dispatcher wires the
-# real execution). Documented inline in
-# `internal/tasks/drivers/inprocess/inprocess.go`.
+# real execution). Documented inline in the shared task engine
+# `internal/tasks/engine/engine.go` (the inprocess + durable drivers
+# wrap it; extracted in Phase 87).
 
 set -euo pipefail
 

@@ -78,6 +78,9 @@ artifacts:
   heavy_output_threshold_bytes: 32768
 
 tasks:
+  # inprocess (default) or durable. durable persists task/group/patch
+  # records through the StateStore so they survive a restart; pair it
+  # with a durable state.driver (sqlite/postgres). See docs/CONFIG.md.
   driver: inprocess
 
 memory:
