@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 229 canonical Harbor Protocol wire types, generated from the single-source
+The 231 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -861,6 +861,27 @@ Declared in `internal/protocol/types`.
 | `default_tier` | `string` |  |
 | `resolved_tier` | `string` |  |
 | `identity_tiers` | `map[string]types.IdentityTierView` — see [`IdentityTierView`](./types.md#identitytierview) |  |
+| `protocol_version` | `string` |  |
+
+## GovernanceRotateKeyRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `provider` | `string` | optional (`omitempty`) |
+| `key` | `string` |  |
+
+## GovernanceRotateKeyResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `provider` | `string` |  |
+| `fingerprint` | `string` |  |
+| `rotated_at` | `time.Time` |  |
 | `protocol_version` | `string` |  |
 
 ## GovernanceSetTenantOverridesRequest

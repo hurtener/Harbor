@@ -251,6 +251,17 @@ const (
 	// `POST /v1/governance/get_tenant_overrides`.
 	MethodGovernanceGetTenantOverrides Method = "governance.get_tenant_overrides"
 
+	// MethodGovernanceRotateKey — admin verb: rotates the LLM provider
+	// API key live, with no redeploy. The new key swaps atomically behind
+	// the provider account so the next call uses it and the old key is
+	// invalidated immediately. The key VALUE is a secret carried only on
+	// the request leg — never logged, audited, or echoed; the response +
+	// the `governance.key_rotated` event carry only a non-reversible
+	// fingerprint. Identity-mandatory; requires the `auth.ScopeAdmin`
+	// claim (a non-admin caller is rejected with CodeScopeMismatch). The
+	// wire-transport route is `POST /v1/governance/rotate_key`.
+	MethodGovernanceRotateKey Method = "governance.rotate_key"
+
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
 	// the unified pause/resume Coordinator. Read-only: it
@@ -699,6 +710,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodLLMPosture:                   {},
 	MethodGovernanceSetTenantOverrides: {},
 	MethodGovernanceGetTenantOverrides: {},
+	MethodGovernanceRotateKey:          {},
 	MethodPauseList:                    {},
 	MethodTopologySnapshot:             {},
 	MethodArtifactsList:                {},
@@ -914,6 +926,7 @@ func IsMCPAdminMethod(m Method) bool {
 var canonicalGovernanceAdminMethods = map[Method]struct{}{
 	MethodGovernanceSetTenantOverrides: {},
 	MethodGovernanceGetTenantOverrides: {},
+	MethodGovernanceRotateKey:          {},
 }
 
 // IsGovernanceAdminMethod reports whether m is one of the admin-scoped

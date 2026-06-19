@@ -201,6 +201,11 @@ type muxConfig struct {
 	// `harbor console`) SHOULD supply it so an admin can change a tenant's
 	// default LLM parameters live (no redeploy).
 	governanceService *governanceprotocol.Service
+	// governanceKeyRotate feeds the `POST /v1/governance/rotate_key`
+	// route. OPTIONAL: when unsupplied the route 501s (the partial-build
+	// convention). Built only alongside governanceService. Production
+	// wiring supplies it so an admin can rotate the LLM provider key live.
+	governanceKeyRotate *governanceprotocol.KeyRotateService
 }
 
 // Option configures NewMux.
@@ -613,6 +618,20 @@ func WithGovernanceService(s *governanceprotocol.Service) Option {
 	}
 }
 
+// WithGovernanceKeyRotate wires the rotate-key service so the
+// `POST /v1/governance/rotate_key` route is live (the admin LLM-provider
+// key-rotation surface). OPTIONAL; built only alongside WithGovernance
+// Service. A nil service leaves the route returning 501. When supplied AND
+// WithValidator is set, the route inherits the same admin gate as the rest
+// of `/v1/governance/*`.
+func WithGovernanceKeyRotate(s *governanceprotocol.KeyRotateService) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.governanceKeyRotate = s
+		}
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -892,7 +911,11 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	// `skip_if_404` keeps preflight green on a partial build.
 	var governanceHandler *stream.GovernanceHandler
 	if cfg.governanceService != nil {
-		gh, err := stream.NewGovernanceHandler(cfg.governanceService, stream.WithGovernanceLogger(cfg.logger))
+		govOpts := []stream.GovernanceOption{stream.WithGovernanceLogger(cfg.logger)}
+		if cfg.governanceKeyRotate != nil {
+			govOpts = append(govOpts, stream.WithGovernanceKeyRotate(cfg.governanceKeyRotate))
+		}
+		gh, err := stream.NewGovernanceHandler(cfg.governanceService, govOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("transports: build governance handler: %w", err)
 		}

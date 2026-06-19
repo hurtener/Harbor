@@ -644,6 +644,22 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		closeAll(ctx)
 		return nil, fmt.Errorf("governance/protocol service: %w", err)
 	}
+	// the rotate-key service — built only when the assembled stack opened
+	// an LLM driver (so there is a key holder to swap). Wired into the
+	// governance handler so `governance.rotate_key` lets an admin rotate
+	// the provider key live (no redeploy). The new key is a secret carried
+	// only on the request leg; the audit event carries a fingerprint only.
+	var keyRotateService *governanceprotocol.KeyRotateService
+	if stack.KeyRotator != nil {
+		keyRotateService, err = governanceprotocol.NewKeyRotateService(stack.KeyRotator,
+			governanceprotocol.WithKeyRotateBus(bus),
+			governanceprotocol.WithKeyRotateRedactor(red),
+			governanceprotocol.WithKeyRotateLogger(opts.logger))
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("governance/protocol key-rotate service: %w", err)
+		}
+	}
 
 	runLoopDriver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
 		logger:   opts.logger,
@@ -1130,6 +1146,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// (`governance.set_tenant_overrides` / `get_tenant_overrides`) so
 		// an admin can change a tenant's default LLM parameters live.
 		transports.WithGovernanceService(governanceService),
+		// mount the admin-scoped `governance.rotate_key` route so an admin
+		// can rotate the LLM provider key live (nil-safe when no LLM driver
+		// was configured — the route then 501s).
+		transports.WithGovernanceKeyRotate(keyRotateService),
 	)
 	if err != nil {
 		closeAll(ctx)

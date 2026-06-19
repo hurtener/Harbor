@@ -388,6 +388,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "GovernanceGetTenantOverridesRequest", Response: "GovernanceGetTenantOverridesResponse",
 			Auth: adminNote,
 		},
+		methods.MethodGovernanceRotateKey: {
+			Route:   subtreeRoute(stream.GovernanceRoutePattern, "governance.", methods.MethodGovernanceRotateKey),
+			Mutates: true,
+			Request: "GovernanceRotateKeyRequest", Response: "GovernanceRotateKeyResponse",
+			Auth: adminNote,
+		},
 	}
 
 	// The nine steering controls share one wire shape; their per-control

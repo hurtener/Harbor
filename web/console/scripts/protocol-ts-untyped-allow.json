@@ -20,6 +20,8 @@
     "GovernanceSetTenantOverridesRequest": "admin governance request body sent inline via the generic HarborClient namespace; the typed Console admin control is a follow-up",
     "GovernanceSetTenantOverridesResponse": "admin governance response narrowed inline at the call site; the typed Console admin control is a follow-up",
     "GovernanceTenantOverrides": "admin governance override shape consumed inline by the (follow-up) Console admin control; not declared as a named TS interface",
+    "GovernanceRotateKeyRequest": "admin governance key-rotation request body sent inline via the generic HarborClient namespace; carries a SECRET (key) — not declared as a named TS interface to keep the secret off typed surfaces",
+    "GovernanceRotateKeyResponse": "admin governance key-rotation response narrowed inline at the call site; carries only a fingerprint, not declared as a named TS interface",
     "HistogramBucket": "runtime metrics-snapshot family; consumed inline by the runtime-posture surfaces, not declared as a named TS interface",
     "LLMPostureRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "MCPAppCallToolRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",

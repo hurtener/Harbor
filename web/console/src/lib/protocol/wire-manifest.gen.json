@@ -1711,6 +1711,46 @@
         }
       ]
     },
+    "GovernanceRotateKeyRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "provider",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "key",
+          "type": "string"
+        }
+      ]
+    },
+    "GovernanceRotateKeyResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "provider",
+          "type": "string"
+        },
+        {
+          "key": "fingerprint",
+          "type": "string"
+        },
+        {
+          "key": "rotated_at",
+          "type": "string"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
     "GovernanceSetTenantOverridesRequest": {
       "home": "types",
       "fields": [
@@ -5207,6 +5247,7 @@
     "flows.runs.list",
     "governance.get_tenant_overrides",
     "governance.posture",
+    "governance.rotate_key",
     "governance.set_tenant_overrides",
     "inject_context",
     "llm.posture",
@@ -5305,6 +5346,7 @@
     "flows.page_viewed",
     "flows.run_invoked",
     "governance.budget_exceeded",
+    "governance.key_rotated",
     "governance.maxtokens_exceeded",
     "governance.posture_read_admin",
     "governance.rate_limited",
