@@ -374,6 +374,20 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AuthRotateTokenRequest", Response: "AuthRotateTokenResponse",
 			Auth: adminNote,
 		},
+
+		// --- Governance admin (tenant-default LLM overrides).
+		methods.MethodGovernanceSetTenantOverrides: {
+			Route:   subtreeRoute(stream.GovernanceRoutePattern, "governance.", methods.MethodGovernanceSetTenantOverrides),
+			Mutates: true,
+			Request: "GovernanceSetTenantOverridesRequest", Response: "GovernanceSetTenantOverridesResponse",
+			Auth: adminNote,
+		},
+		methods.MethodGovernanceGetTenantOverrides: {
+			Route:   subtreeRoute(stream.GovernanceRoutePattern, "governance.", methods.MethodGovernanceGetTenantOverrides),
+			Mutates: false,
+			Request: "GovernanceGetTenantOverridesRequest", Response: "GovernanceGetTenantOverridesResponse",
+			Auth: adminNote,
+		},
 	}
 
 	// The nine steering controls share one wire shape; their per-control
@@ -497,6 +511,8 @@ func classify(m methods.Method) string {
 		return "runs"
 	case methods.IsAuthMethod(m):
 		return "auth"
+	case methods.IsGovernanceAdminMethod(m):
+		return "governance — admin"
 	default:
 		return "unclassified"
 	}
@@ -528,6 +544,7 @@ var methodClusters = []struct {
 	{"MCP apps", methods.IsMCPAppsMethod, "mcp-apps"},
 	{"Runs", methods.IsRunsMethod, "runs"},
 	{"Auth", methods.IsAuthMethod, "auth"},
+	{"Governance admin", methods.IsGovernanceAdminMethod, "governance-admin"},
 }
 
 // renderMethodsPage emits methods.md: every methods.Methods() entry,

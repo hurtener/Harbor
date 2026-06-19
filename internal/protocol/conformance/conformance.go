@@ -637,8 +637,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 83 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 83 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three)", len(got))
+	if len(got) != 85 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 85 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -733,6 +733,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodRunsSetOverrides: {},
 
 		methods.MethodAuthRotateToken: {},
+
+		methods.MethodGovernanceSetTenantOverrides: {},
+		methods.MethodGovernanceGetTenantOverrides: {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -982,6 +985,18 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// surface extension.
 			if methods.IsAuthMethod(m) {
 				t.Skip("phase-73m: auth.rotate_token exercised by internal/protocol/auth/rotate_token_test.go + stream auth_handler_test.go + test/integration/settings_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// the admin-scoped governance.{set,get}_tenant_overrides
+			// methods route through their own stream-transport handler
+			// (GovernanceHandler over the governance/protocol Service),
+			// not the ControlSurface. Their happy paths + failure modes
+			// are exercised by internal/runtime/governance/protocol tests +
+			// stream governance_handler_test.go +
+			// test/integration/tenant_overrides_test.go; the
+			// conformance-suite scenario lands with a later surface
+			// extension — same posture as the runs / auth clusters.
+			if methods.IsGovernanceAdminMethod(m) {
+				t.Skip("governance.{set,get}_tenant_overrides exercised by governance/protocol tests + stream governance_handler_test.go + test/integration/tenant_overrides_test.go; conformance-suite scenario lands with a later surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)

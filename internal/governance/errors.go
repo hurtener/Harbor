@@ -41,4 +41,15 @@ var (
 	// construction. Used by `NewCostAccumulator` / `NewRateLimiter` /
 	// `NewMaxTokensEnforcer`.
 	ErrInvalidConfig = errors.New("governance: invalid config")
+
+	// ErrUnknownModel — an admin tried to set a tenant default model
+	// that has no configured `ModelProfile`. Validation happens at set
+	// time (fail loud) rather than deferring the failure to call time.
+	ErrUnknownModel = errors.New("governance: unknown model (no configured ModelProfile)")
+
+	// ErrInvalidOverride — a tenant override carried a structurally
+	// invalid value (a temperature outside [0,2], a non-positive
+	// max-tokens, an unknown reasoning-effort). Fails closed rather than
+	// silently passing the value to the provider.
+	ErrInvalidOverride = errors.New("governance: invalid tenant override")
 )
