@@ -80,6 +80,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	governance.EventTypeMaxTokensExceeded:     {Payloads: []reflect.Type{reflect.TypeOf(governance.MaxTokensExceededPayload{})}},
 	governance.EventTypePostureReadAdmin:      {Payloads: []reflect.Type{reflect.TypeOf(governance.PostureReadAdminPayload{})}},
 	governance.EventTypeTenantOverridesSet:    {Payloads: []reflect.Type{reflect.TypeOf(governance.TenantOverridesSetPayload{})}},
+	governance.EventTypeKeyRotated:            {Payloads: []reflect.Type{reflect.TypeOf(governance.KeyRotatedPayload{})}},
 
 	// --- Dev-draft lifecycle (harbor dev's dynamic agent scaffolding).
 	devdraft.EventTypeDraftCreated:   {Payloads: []reflect.Type{reflect.TypeOf(devdraft.DraftCreatedPayload{})}},

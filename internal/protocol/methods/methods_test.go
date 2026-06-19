@@ -100,6 +100,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAuthRotateToken,
 	methods.MethodGovernanceSetTenantOverrides,
 	methods.MethodGovernanceGetTenantOverrides,
+	methods.MethodGovernanceRotateKey,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -118,8 +119,8 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + mcp.apps.tool_context) = 83, + governance tenant-override admin
 	// pair two (governance.set_tenant_overrides +
 	// governance.get_tenant_overrides) = 85.
-	if len(got) != 85 {
-		t.Fatalf("Methods() returned %d methods, want 85", len(got))
+	if len(got) != 86 {
+		t.Fatalf("Methods() returned %d methods, want 86", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

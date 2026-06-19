@@ -128,6 +128,7 @@ var CanonicalMethods = map[string]struct{}{
 	"llm.posture":                     {},
 	"governance.set_tenant_overrides": {},
 	"governance.get_tenant_overrides": {},
+	"governance.rotate_key":           {},
 	"pause.list":                      {},
 	"topology.snapshot":               {},
 	"artifacts.list":                  {},
@@ -270,6 +271,8 @@ var CanonicalWireTypes = map[string]string{
 	"GovernanceSetTenantOverridesResponse": "types",
 	"GovernanceGetTenantOverridesRequest":  "types",
 	"GovernanceGetTenantOverridesResponse": "types",
+	"GovernanceRotateKeyRequest":           "types",
+	"GovernanceRotateKeyResponse":          "types",
 	// pause-list snapshot wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"PauseListRequest":  "types",

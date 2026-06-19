@@ -52,6 +52,15 @@ const (
 	// the extra-instructions text (operator-supplied prose runs through
 	// the redactor and is not echoed onto the audit event).
 	EventTypeTenantOverridesSet events.EventType = "governance.tenant_overrides_set"
+
+	// EventTypeKeyRotated — Emitted when an admin-scoped caller rotates an
+	// LLM provider API key via the `governance.rotate_key` Protocol
+	// method. The change is a privileged, no-deploy credential swap and
+	// lands on the audit trail (CLAUDE.md §7, RFC §6.15 — the key-rotation
+	// seam). The payload carries the provider + a NON-REVERSIBLE
+	// fingerprint of the new key + actor + timestamp — NEVER the key value
+	// (CLAUDE.md §7: secrets are never logged or persisted to the bus).
+	EventTypeKeyRotated events.EventType = "governance.key_rotated"
 )
 
 func init() {
@@ -61,6 +70,7 @@ func init() {
 		EventTypeMaxTokensExceeded,
 		EventTypePostureReadAdmin,
 		EventTypeTenantOverridesSet,
+		EventTypeKeyRotated,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -156,4 +166,24 @@ type TenantOverridesSetPayload struct {
 	SetMaxTokens         bool
 	SetReasoningEffort   bool
 	OccurredAt           time.Time
+}
+
+// KeyRotatedPayload is the typed payload for EventTypeKeyRotated.
+// SafePayload — the actor identity, the provider, and the NON-REVERSIBLE
+// key fingerprint are operator-visible audit metadata. The key VALUE is
+// NEVER carried here (CLAUDE.md §7: secrets never reach the bus); only the
+// `sha256:<prefix>` fingerprint is, so an operator can correlate a
+// rotation without the secret ever leaving the runtime's key holder. The
+// payload still runs through the audit Redactor before publish.
+type KeyRotatedPayload struct {
+	events.SafeSealed
+	// Actor is the admin-scoped caller that performed the rotation.
+	Actor identity.Quadruple
+	// Provider is the provider whose key was rotated.
+	Provider string
+	// Fingerprint is the non-reversible digest of the NEW key
+	// (`sha256:<prefix>`). Never the key itself.
+	Fingerprint string
+	// OccurredAt is the wall-clock time of the rotation.
+	OccurredAt time.Time
 }

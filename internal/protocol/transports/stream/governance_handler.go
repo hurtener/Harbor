@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/governance"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -59,8 +60,9 @@ var ErrGovernanceMisconfigured = errors.New("stream: governance handler missing 
 // enforce the admin scope, branch on the trailing path segment, decode,
 // dispatch, encode.
 type GovernanceHandler struct {
-	service *governanceprotocol.Service
-	logger  *slog.Logger
+	service   *governanceprotocol.Service
+	keyRotate *governanceprotocol.KeyRotateService // optional — nil ⇒ rotate_key route 501s
+	logger    *slog.Logger
 }
 
 // GovernanceOption configures NewGovernanceHandler.
@@ -72,6 +74,18 @@ func WithGovernanceLogger(l *slog.Logger) GovernanceOption {
 	return func(h *GovernanceHandler) {
 		if l != nil {
 			h.logger = l
+		}
+	}
+}
+
+// WithGovernanceKeyRotate wires the rotate-key service so the
+// `POST /v1/governance/rotate_key` route is live. A nil service (the
+// default) leaves the route returning CodeUnknownMethod (501) — the
+// partial-build convention.
+func WithGovernanceKeyRotate(s *governanceprotocol.KeyRotateService) GovernanceOption {
+	return func(h *GovernanceHandler) {
+		if s != nil {
+			h.keyRotate = s
 		}
 	}
 }
@@ -128,10 +142,41 @@ func (h *GovernanceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSet(w, r, body, wireID)
 	case "get_tenant_overrides":
 		h.serveGet(w, r, body, wireID)
+	case "rotate_key":
+		h.serveRotateKey(w, r, body, wireID)
 	default:
 		writeGovernanceError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown governance method route")
 	}
+}
+
+// serveRotateKey handles `governance.rotate_key`. The request carries the
+// new key as a SECRET on the body — it is decoded, passed straight to the
+// service (which hands it to the atomic key holder), and never logged or
+// echoed. The route is admin-gated above.
+func (h *GovernanceHandler) serveRotateKey(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	if h.keyRotate == nil {
+		writeGovernanceError(w, protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			"governance.rotate_key is not wired on this runtime")
+		return
+	}
+	var req prototypes.GovernanceRotateKeyRequest
+	if err := decodeGovernanceBody(body, &req); err != nil {
+		writeGovernanceError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			"failed to decode governance.rotate_key request: "+err.Error())
+		return
+	}
+	if perr := assertGovernanceIdentity(req.Identity, wireID); perr != "" {
+		writeGovernanceError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.keyRotate.RotateKey(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodGovernanceRotateKey, err)
+		return
+	}
+	writeGovernanceJSON(w, r, resp, h.logger)
 }
 
 func (h *GovernanceHandler) serveSet(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -223,6 +268,12 @@ func classifyGovernanceError(method methods.Method, err error) (protoerrors.Code
 	case errors.Is(err, governance.ErrInvalidOverride):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
+	case errors.Is(err, llm.ErrEmptyKey):
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": rotate key value is empty"
+	case errors.Is(err, llm.ErrUnknownProvider):
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": provider is not the configured provider"
 	case errors.Is(err, governance.ErrClosed):
 		return protoerrors.CodeRuntimeError, http.StatusServiceUnavailable,
 			m + ": governance subsystem closed"

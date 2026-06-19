@@ -30,6 +30,17 @@ import (
 type Deps struct {
 	Artifacts artifacts.ArtifactStore
 	Bus       events.EventBus
+	// LiveKey is the shared, atomically-swappable primary-key holder for
+	// Console-driven key rotation. OPTIONAL: when non-nil, the driver
+	// seeds it with the boot-resolved key and reads through it on every
+	// call, so an admin `governance.rotate_key` swap takes effect on the
+	// next call (the old key is never read again). When nil (tests,
+	// embedders that do not wire rotation), the driver uses a private
+	// holder seeded from config — the key path is unchanged and
+	// rotation simply has no external handle. The boot wiring
+	// (`cmd/harbor`) creates ONE holder, passes it here, and hands the
+	// SAME holder to the rotate service.
+	LiveKey *LiveKey
 }
 
 // ConfigSnapshot is the strict subset of `config.LLMConfig` the LLM

@@ -42,10 +42,15 @@ type Account struct {
 	// `LLMConfig.Provider` named. Bifrost ChatCompletion requests
 	// from Harbor route to this provider via `BifrostChatRequest.Provider`.
 	provider bfschemas.ModelProvider
-	// apiKey is the resolved API key for the primary provider.
-	// Resolved at construction (`env.NAME` for native primary, plain
-	// `os.Getenv(APIKeyEnvVar)` for custom primary). NEVER logged.
-	apiKey string
+	// primaryKey is the atomically-swappable holder for the primary
+	// provider's resolved API key. Seeded at construction (`env.NAME`
+	// for native primary, plain `os.Getenv(APIKeyEnvVar)` for custom
+	// primary) and read on every `GetKeysForProvider` call, so an admin
+	// `governance.rotate_key` swap lands on the next call. NEVER logged.
+	// The boot wiring may inject a SHARED holder via `deps.LiveKey` (so
+	// the rotate service swaps the same one); absent that, a private
+	// holder is created here (read path unchanged, no external rotation).
+	primaryKey *llm.LiveKey
 	// primaryModels is the model allowlist for the primary provider's
 	// bifrost `Key.Models`. For custom primary, this is the operator-
 	// declared `Models` list. For native primary, the wildcard
@@ -89,9 +94,17 @@ type customRuntime struct {
 // custom-provider entry (in which case the entry's `APIKeyEnvVar` /
 // network knobs / `Models` apply and the legacy fields are ignored).
 // Missing keys fail closed with `ErrMissingAPIKey`.
-func newAccount(cfg llm.ConfigSnapshot) (*Account, error) {
+func newAccount(cfg llm.ConfigSnapshot, deps llm.Deps) (*Account, error) {
 	if cfg.Provider == "" {
 		return nil, fmt.Errorf("%w: LLMConfig.Provider is empty", ErrInvalidProvider)
+	}
+	// The primary key lives in a swappable holder. Use the injected
+	// shared holder (so the rotate service swaps the same one) or a
+	// private holder when none was wired. Seeded with the resolved key
+	// below, once the primary path determines it.
+	holder := deps.LiveKey
+	if holder == nil {
+		holder = llm.NewLiveKey()
 	}
 
 	// Build the custom-provider runtime table first so the primary
@@ -122,9 +135,10 @@ func newAccount(cfg llm.ConfigSnapshot) (*Account, error) {
 	// name. Decide based on whether the name appears in the custom
 	// table.
 	if entry, ok := customByName[cfg.Provider]; ok {
+		holder.Init(entry.apiKey)
 		return &Account{
 			provider:      provider,
-			apiKey:        entry.apiKey,
+			primaryKey:    holder,
 			primaryModels: entry.models,
 			primaryConfig: entry.config,
 			customByName:  customByName,
@@ -138,10 +152,11 @@ func newAccount(cfg llm.ConfigSnapshot) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
+	holder.Init(key)
 	nativeCfg := buildNativeProviderConfig(cfg)
 	return &Account{
 		provider:      provider,
-		apiKey:        key,
+		primaryKey:    holder,
 		primaryModels: []string{"*"}, // bifrost's "all non-blacklisted" wildcard; see Account.primaryModels godoc
 		primaryConfig: nativeCfg,
 		customByName:  customByName,
@@ -342,7 +357,7 @@ func (a *Account) GetKeysForProvider(_ context.Context, providerKey bfschemas.Mo
 		{
 			ID:     "harbor-default",
 			Name:   "harbor-default",
-			Value:  bfschemas.EnvVar{Val: a.apiKey},
+			Value:  bfschemas.EnvVar{Val: a.primaryKey.Get()},
 			Models: append([]string(nil), a.primaryModels...),
 			Weight: 1.0,
 		},
