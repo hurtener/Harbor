@@ -637,8 +637,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 85 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 85 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two)", len(got))
+	if len(got) != 86 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 86 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -736,6 +736,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 
 		methods.MethodGovernanceSetTenantOverrides: {},
 		methods.MethodGovernanceGetTenantOverrides: {},
+		methods.MethodGovernanceRotateKey:          {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {

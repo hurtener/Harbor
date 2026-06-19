@@ -91,7 +91,7 @@ var _ llm.Driver = (*Driver)(nil)
 // is tolerated (the safety pass's `Open` already rejects nil Bus, but
 // tests that construct a Driver directly may pass nil).
 func New(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
-	account, err := newAccount(cfg)
+	account, err := newAccount(cfg, deps)
 	if err != nil {
 		return nil, err
 	}

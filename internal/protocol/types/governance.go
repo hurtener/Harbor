@@ -176,3 +176,40 @@ type GovernanceGetTenantOverridesResponse struct {
 	// with.
 	ProtocolVersion string `json:"protocol_version"`
 }
+
+// GovernanceRotateKeyRequest is the wire request for the admin-scoped
+// `governance.rotate_key` method — rotate the LLM provider API key live.
+type GovernanceRotateKeyRequest struct {
+	// Identity is the request's identity scope. The triple is mandatory;
+	// the admin scope is required (rotating a provider credential is a
+	// privileged action).
+	Identity IdentityScope `json:"identity"`
+	// Provider names the provider whose key to rotate. Empty targets the
+	// runtime's bound provider (the common single-provider case); a value
+	// other than the bound provider is rejected with CodeInvalidRequest
+	// (multi-provider rotation is post-V1).
+	Provider string `json:"provider,omitempty"`
+	// Key is the new API key value. MANDATORY and a SECRET — it travels
+	// only on this request leg, is held only in the runtime's atomic key
+	// holder, and is NEVER logged, audited, or echoed back. An empty Key
+	// is rejected with CodeInvalidRequest before any swap.
+	Key string `json:"key"`
+}
+
+// GovernanceRotateKeyResponse is the wire response for
+// `governance.rotate_key`. It carries NO key — only the provider, a
+// non-reversible fingerprint of the new key (for audit correlation), and
+// the rotation timestamp.
+type GovernanceRotateKeyResponse struct {
+	// Provider is the provider whose key was rotated.
+	Provider string `json:"provider"`
+	// Fingerprint is a non-reversible digest of the new key
+	// (`sha256:<prefix>`) — correlatable, never the secret.
+	Fingerprint string `json:"fingerprint"`
+	// RotatedAt is the runtime timestamp at which the key was swapped. The
+	// new key is effective immediately (the next call uses it).
+	RotatedAt time.Time `json:"rotated_at"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// with.
+	ProtocolVersion string `json:"protocol_version"`
+}

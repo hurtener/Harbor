@@ -37,15 +37,15 @@ func TestNewAccount_CustomProviderPrimary(t *testing.T) {
 			},
 		},
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
 	if a.provider != bfschemas.ModelProvider("nim") {
 		t.Errorf("provider = %q want nim", a.provider)
 	}
-	if a.apiKey != "nim-secret-value" {
-		t.Errorf("apiKey not propagated: %q", a.apiKey)
+	if a.primaryKey.Get() != "nim-secret-value" {
+		t.Errorf("apiKey not propagated: %q", a.primaryKey.Get())
 	}
 	if len(a.primaryModels) != 1 || a.primaryModels[0] != "google/gemma-4-31b-it" {
 		t.Errorf("primaryModels = %v", a.primaryModels)
@@ -68,7 +68,7 @@ func TestNewAccount_CustomProviderMissingEnv(t *testing.T) {
 			},
 		},
 	}
-	_, err := newAccount(cfg)
+	_, err := newAccount(cfg, llm.Deps{})
 	if !errors.Is(err, ErrMissingAPIKey) {
 		t.Fatalf("err = %v; want ErrMissingAPIKey", err)
 	}
@@ -109,7 +109,7 @@ func TestNewAccount_CustomProviderInvalidSpec(t *testing.T) {
 				Provider:        "x",
 				CustomProviders: []llm.CustomProviderSpec{tc.spec},
 			}
-			_, err := newAccount(cfg)
+			_, err := newAccount(cfg, llm.Deps{})
 			if !errors.Is(err, ErrInvalidCustomProvider) {
 				t.Errorf("err = %v; want ErrInvalidCustomProvider", err)
 			}
@@ -125,7 +125,7 @@ func TestNewAccount_UnknownPrimaryWithoutCustom(t *testing.T) {
 		Provider: "ghost-provider",
 		APIKey:   "k",
 	}
-	_, err := newAccount(cfg)
+	_, err := newAccount(cfg, llm.Deps{})
 	if !errors.Is(err, ErrInvalidProvider) {
 		t.Fatalf("err = %v; want ErrInvalidProvider", err)
 	}
@@ -157,7 +157,7 @@ func TestAccount_GetConfigForProvider_CustomPrimary(t *testing.T) {
 			},
 		},
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestAccount_NetworkDefaults_FallthroughOnCustom(t *testing.T) {
 			},
 		},
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestAccount_NetworkDefaults_PerProviderOverride(t *testing.T) {
 			},
 		},
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestAccount_NetworkDefaults_OnNativePrimary(t *testing.T) {
 			MaxRetries: 4,
 		},
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestAccount_NativePrimary_LegacyTimeoutWins(t *testing.T) {
 		Timeout:         30 * time.Second,
 		NetworkDefaults: llm.NetworkDefaults{Timeout: 90 * time.Second},
 	}
-	a, _ := newAccount(cfg)
+	a, _ := newAccount(cfg, llm.Deps{})
 	got, _ := a.GetConfigForProvider(bfschemas.OpenAI)
 	if got.NetworkConfig.DefaultRequestTimeoutInSeconds != 30 {
 		t.Errorf("Timeout = %d want 30 (legacy wins)", got.NetworkConfig.DefaultRequestTimeoutInSeconds)
@@ -337,7 +337,7 @@ func TestAccount_CustomPrimary_RequestPathOverrides(t *testing.T) {
 			},
 		},
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestAccount_GetConfigForProvider_DeclinesUnknownProvider(t *testing.T) {
 		Provider: string(bfschemas.Anthropic),
 		APIKey:   "k",
 	}
-	a, _ := newAccount(cfg)
+	a, _ := newAccount(cfg, llm.Deps{})
 	_, err := a.GetConfigForProvider(bfschemas.OpenAI)
 	if err == nil {
 		t.Fatal("expected error for unconfigured provider")
@@ -387,7 +387,7 @@ func TestConcurrent_D025_Account_Mixed(t *testing.T) {
 			},
 		},
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestAccount_NativeAndCustomCoexist(t *testing.T) {
 			},
 		},
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}

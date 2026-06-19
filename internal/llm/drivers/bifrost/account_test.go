@@ -17,12 +17,12 @@ func TestNewAccount_LiteralKey(t *testing.T) {
 		Provider: string(bfschemas.OpenAI),
 		APIKey:   "sk-test-literal",
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
-	if a.apiKey != "sk-test-literal" {
-		t.Errorf("apiKey not propagated: %q", a.apiKey)
+	if a.primaryKey.Get() != "sk-test-literal" {
+		t.Errorf("apiKey not propagated: %q", a.primaryKey.Get())
 	}
 	if a.provider != bfschemas.OpenAI {
 		t.Errorf("provider = %q want %q", a.provider, bfschemas.OpenAI)
@@ -38,12 +38,12 @@ func TestNewAccount_EnvKey(t *testing.T) {
 		Provider: string(bfschemas.OpenRouter),
 		APIKey:   "env." + envName,
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
-	if a.apiKey != "sk-from-env-1234" {
-		t.Errorf("env-resolved key not propagated: %q", a.apiKey)
+	if a.primaryKey.Get() != "sk-from-env-1234" {
+		t.Errorf("env-resolved key not propagated: %q", a.primaryKey.Get())
 	}
 }
 
@@ -55,7 +55,7 @@ func TestNewAccount_MissingEnvVar(t *testing.T) {
 		Provider: string(bfschemas.OpenAI),
 		APIKey:   "env." + envName,
 	}
-	_, err := newAccount(cfg)
+	_, err := newAccount(cfg, llm.Deps{})
 	if err == nil {
 		t.Fatalf("newAccount succeeded with unset env var; want ErrMissingAPIKey")
 	}
@@ -73,7 +73,7 @@ func TestNewAccount_EmptyAPIKey(t *testing.T) {
 		Provider: string(bfschemas.OpenAI),
 		APIKey:   "",
 	}
-	_, err := newAccount(cfg)
+	_, err := newAccount(cfg, llm.Deps{})
 	if !errors.Is(err, ErrMissingAPIKey) {
 		t.Errorf("err = %v; want ErrMissingAPIKey", err)
 	}
@@ -85,7 +85,7 @@ func TestNewAccount_EmptyProvider(t *testing.T) {
 		Provider: "",
 		APIKey:   "sk-test",
 	}
-	_, err := newAccount(cfg)
+	_, err := newAccount(cfg, llm.Deps{})
 	if !errors.Is(err, ErrInvalidProvider) {
 		t.Errorf("err = %v; want ErrInvalidProvider", err)
 	}
@@ -98,7 +98,7 @@ func TestNewAccount_UnknownProvider(t *testing.T) {
 		Provider: "totally-not-real",
 		APIKey:   "sk-test",
 	}
-	_, err := newAccount(cfg)
+	_, err := newAccount(cfg, llm.Deps{})
 	if !errors.Is(err, ErrInvalidProvider) {
 		t.Errorf("err = %v; want ErrInvalidProvider", err)
 	}
@@ -115,7 +115,7 @@ func TestAccount_GetKeysForProvider(t *testing.T) {
 		Provider: string(bfschemas.Anthropic),
 		APIKey:   literalKey,
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestAccount_GetConfigForProvider(t *testing.T) {
 		BaseURL:  "https://proxy.example.com",
 		Timeout:  90_000_000_000, // 90s in nanoseconds
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestAccount_GetConfiguredProviders(t *testing.T) {
 		Provider: string(bfschemas.OpenAI),
 		APIKey:   "k",
 	}
-	a, err := newAccount(cfg)
+	a, err := newAccount(cfg, llm.Deps{})
 	if err != nil {
 		t.Fatalf("newAccount: %v", err)
 	}
@@ -177,5 +177,73 @@ func TestAccount_GetConfiguredProviders(t *testing.T) {
 	}
 	if len(providers) != 1 || providers[0] != bfschemas.OpenAI {
 		t.Errorf("providers = %v want [openai]", providers)
+	}
+}
+
+// TestAccount_GetKeysForProvider_ReflectsRotate proves the per-call read
+// path picks up an atomic key rotation on the SHARED holder injected via
+// deps — the seam Console-driven key rotation depends on.
+func TestAccount_GetKeysForProvider_ReflectsRotate(t *testing.T) {
+	holder := llm.NewLiveKey()
+	cfg := llm.ConfigSnapshot{Provider: "openai", APIKey: "sk-boot"}
+	a, err := newAccount(cfg, llm.Deps{LiveKey: holder})
+	if err != nil {
+		t.Fatalf("newAccount: %v", err)
+	}
+	keys, err := a.GetKeysForProvider(context.Background(), a.provider)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("GetKeysForProvider: keys=%d err=%v", len(keys), err)
+	}
+	if keys[0].Value.Val != "sk-boot" {
+		t.Fatalf("boot key = %q, want sk-boot", keys[0].Value.Val)
+	}
+	// Rotate the shared holder (what the rotate service does).
+	if err := holder.Rotate("sk-rotated"); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	keys, err = a.GetKeysForProvider(context.Background(), a.provider)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider after rotate: %v", err)
+	}
+	if keys[0].Value.Val != "sk-rotated" {
+		t.Errorf("after rotate, GetKeysForProvider = %q, want sk-rotated", keys[0].Value.Val)
+	}
+}
+
+// TestAccount_CustomPrimary_ReflectsRotate proves the custom-provider
+// PRIMARY path also seeds + reads the injected shared holder, so a rotate
+// reflects through GetKeysForProvider (the native path is covered by
+// TestAccount_GetKeysForProvider_ReflectsRotate).
+func TestAccount_CustomPrimary_ReflectsRotate(t *testing.T) {
+	t.Setenv("HARBOR_TEST_CUSTOM_PRIMARY_KEY", "sk-custom-boot")
+	holder := llm.NewLiveKey()
+	cfg := llm.ConfigSnapshot{
+		Provider: "vllm-local",
+		CustomProviders: []llm.CustomProviderSpec{{
+			Name:         "vllm-local",
+			BaseURL:      "http://127.0.0.1:1",
+			APIKeyEnvVar: "HARBOR_TEST_CUSTOM_PRIMARY_KEY",
+			Models:       []string{"m"},
+		}},
+	}
+	a, err := newAccount(cfg, llm.Deps{LiveKey: holder})
+	if err != nil {
+		t.Fatalf("newAccount: %v", err)
+	}
+	keys, err := a.GetKeysForProvider(context.Background(), a.provider)
+	if err != nil || len(keys) != 1 || keys[0].Value.Val != "sk-custom-boot" {
+		t.Fatalf("custom-primary boot key: keys=%d err=%v val=%q", len(keys), err, func() string {
+			if len(keys) == 1 {
+				return keys[0].Value.Val
+			}
+			return ""
+		}())
+	}
+	if err := holder.Rotate("sk-custom-rotated"); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	keys, _ = a.GetKeysForProvider(context.Background(), a.provider)
+	if keys[0].Value.Val != "sk-custom-rotated" {
+		t.Errorf("custom-primary after rotate = %q, want sk-custom-rotated", keys[0].Value.Val)
 	}
 }

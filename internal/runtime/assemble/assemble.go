@@ -230,6 +230,12 @@ type Stack struct {
 	// snapshot the client was opened with — posture surfaces project it.
 	LLM         llm.LLMClient
 	LLMSnapshot llm.ConfigSnapshot
+	// KeyRotator is the admin-write seam for Console-driven LLM key
+	// rotation — it swaps the SAME atomic key holder the opened driver
+	// reads per call. Populated alongside LLM (nil when no LLM driver is
+	// configured). The serving binary wires it into the
+	// `governance.rotate_key` service.
+	KeyRotator *llm.ProviderKeyRotator
 
 	// Embedder is populated when the cfg carries a non-zero
 	// `embeddings` block (or Options.Embedder is set — caller-owned
@@ -454,14 +460,21 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 			llmCfg = *opts.LLMSnapshot
 		}
 		stack.LLMSnapshot = llmCfg
+		// The shared, atomically-swappable primary-key holder for
+		// Console-driven key rotation. Created here so the SAME holder is
+		// both injected into the driver (the per-call read path) and
+		// exposed on the Stack as a KeyRotator (the admin write path).
+		liveKey := llm.NewLiveKey()
 		llmClient, llmErr := llm.Open(ctx, llmCfg, llm.Deps{
 			Artifacts: artStore,
 			Bus:       bus,
+			LiveKey:   liveKey,
 		})
 		if llmErr != nil {
 			return stack, fmt.Errorf("llm: %w", llmErr)
 		}
 		stack.LLM = llmClient
+		stack.KeyRotator = llm.NewProviderKeyRotator(llmCfg.Provider, liveKey)
 		stack.closers = append(stack.closers, llmClient.Close)
 	}
 

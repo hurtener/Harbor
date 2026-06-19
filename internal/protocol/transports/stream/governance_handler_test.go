@@ -10,6 +10,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
@@ -246,5 +247,130 @@ func TestGovernanceHandler_MethodNotAllowed(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
+// --- governance.rotate_key handler cases ---
+
+type fakeKeyRotator struct {
+	gotProvider, gotKey string
+	retProvider, retFP  string
+	err                 error
+}
+
+func (f *fakeKeyRotator) RotateKey(provider, newKey string) (string, string, error) {
+	f.gotProvider, f.gotKey = provider, newKey
+	if f.err != nil {
+		return "", "", f.err
+	}
+	return f.retProvider, f.retFP, nil
+}
+
+func newGovHandlerWithRotate(t *testing.T, rotator governanceprotocol.KeyRotator) http.Handler {
+	t.Helper()
+	svc, err := governanceprotocol.NewService(&fakeOverrideStore{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	krs, err := governanceprotocol.NewKeyRotateService(rotator)
+	if err != nil {
+		t.Fatalf("NewKeyRotateService: %v", err)
+	}
+	h, err := stream.NewGovernanceHandler(svc, stream.WithGovernanceKeyRotate(krs))
+	if err != nil {
+		t.Fatalf("NewGovernanceHandler: %v", err)
+	}
+	return h
+}
+
+func TestGovernanceHandler_RotateKey_AdminSuccess_NoKeyEchoed(t *testing.T) {
+	rot := &fakeKeyRotator{retProvider: "openrouter", retFP: "sha256:abc123"}
+	h := newGovHandlerWithRotate(t, rot)
+	const secret = "sk-rotate-secret-xyz"
+	body := `{"provider":"openrouter","key":"` + secret + `"}`
+	code, resp := govReq(t, h, "rotate_key", body, adminID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, resp)
+	}
+	if rot.gotKey != secret {
+		t.Errorf("rotator did not receive the key")
+	}
+	// The response must NOT echo the secret.
+	if strings.Contains(string(resp), secret) {
+		t.Fatalf("response leaked the key: %s", resp)
+	}
+	var out prototypes.GovernanceRotateKeyResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Provider != "openrouter" || out.Fingerprint != "sha256:abc123" {
+		t.Errorf("resp = %+v", out)
+	}
+}
+
+func TestGovernanceHandler_RotateKey_NonAdminForbidden(t *testing.T) {
+	rot := &fakeKeyRotator{retProvider: "p", retFP: "fp"}
+	h := newGovHandlerWithRotate(t, rot)
+	code, resp := govReq(t, h, "rotate_key", `{"key":"sk-x"}`, adminID(), []auth.Scope{})
+	if code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", code, resp)
+	}
+	if errCode(t, resp) != protoerrors.CodeScopeMismatch {
+		t.Errorf("code = %q, want scope_mismatch", errCode(t, resp))
+	}
+	if rot.gotKey != "" {
+		t.Error("non-admin rotate must not reach the rotator")
+	}
+}
+
+func TestGovernanceHandler_RotateKey_EmptyKey(t *testing.T) {
+	h := newGovHandlerWithRotate(t, &fakeKeyRotator{err: llm.ErrEmptyKey})
+	code, resp := govReq(t, h, "rotate_key", `{"key":""}`, adminID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", code, resp)
+	}
+	if errCode(t, resp) != protoerrors.CodeInvalidRequest {
+		t.Errorf("code = %q, want invalid_request", errCode(t, resp))
+	}
+}
+
+func TestGovernanceHandler_RotateKey_UnknownProvider(t *testing.T) {
+	h := newGovHandlerWithRotate(t, &fakeKeyRotator{err: llm.ErrUnknownProvider})
+	code, _ := govReq(t, h, "rotate_key", `{"provider":"nope","key":"sk-x"}`, adminID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
+	}
+}
+
+func TestGovernanceHandler_RotateKey_NotWired_501(t *testing.T) {
+	// A handler built WITHOUT the key-rotate service 501s the route.
+	h := newGovHandler(t, &fakeOverrideStore{})
+	code, _ := govReq(t, h, "rotate_key", `{"key":"sk-x"}`, adminID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", code)
+	}
+}
+
+func TestGovernanceHandler_RotateKey_NoIdentity(t *testing.T) {
+	h := newGovHandlerWithRotate(t, &fakeKeyRotator{retProvider: "p", retFP: "fp"})
+	code, resp := govReq(t, h, "rotate_key", `{"key":"sk-x"}`, nil, []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", code, resp)
+	}
+	if errCode(t, resp) != protoerrors.CodeIdentityRequired {
+		t.Errorf("code = %q, want identity_required", errCode(t, resp))
+	}
+}
+
+func TestGovernanceHandler_RotateKey_BodyIdentityMismatch(t *testing.T) {
+	rot := &fakeKeyRotator{retProvider: "p", retFP: "fp"}
+	h := newGovHandlerWithRotate(t, rot)
+	body := `{"identity":{"tenant":"other","user":"admin","session":"s1"},"key":"sk-x"}`
+	code, resp := govReq(t, h, "rotate_key", body, adminID(), []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", code, resp)
+	}
+	if rot.gotKey != "" {
+		t.Error("body/verified mismatch must not reach the rotator (the secret must not be applied)")
 	}
 }
