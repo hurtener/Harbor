@@ -232,6 +232,25 @@ const (
 	// posture method, same posture as MethodGovernancePosture.
 	MethodLLMPosture Method = "llm.posture"
 
+	// MethodGovernanceSetTenantOverrides — admin verb: sets (or clears) a
+	// tenant's default LLM-parameter overrides (model, additive
+	// extra-instructions, temperature, max-tokens, reasoning-effort) live,
+	// with no redeploy. The change is a desired-state REPLACE and lands on
+	// every session in the tenant on its next run (the RFC §6.15
+	// `ModelOverride` governance seam). Identity-mandatory; requires the
+	// `auth.ScopeAdmin` claim (a non-admin caller is rejected with
+	// CodeScopeMismatch). NOT a control / search / posture method —
+	// `IsGovernanceAdminMethod` is its own O(1) predicate. The
+	// wire-transport route is `POST /v1/governance/set_tenant_overrides`.
+	MethodGovernanceSetTenantOverrides Method = "governance.set_tenant_overrides"
+
+	// MethodGovernanceGetTenantOverrides — admin verb: reads a tenant's
+	// current default LLM-parameter override record (the read-back the
+	// Console renders before editing). Identity-mandatory; requires the
+	// `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/governance/get_tenant_overrides`.
+	MethodGovernanceGetTenantOverrides Method = "governance.get_tenant_overrides"
+
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
 	// the unified pause/resume Coordinator. Read-only: it
@@ -654,42 +673,44 @@ const (
 // The map exists so IsValidMethod is O(1) and Methods returns a
 // deterministic snapshot.
 var canonicalMethods = map[Method]struct{}{
-	MethodStart:               {},
-	MethodCancel:              {},
-	MethodPause:               {},
-	MethodResume:              {},
-	MethodRedirect:            {},
-	MethodInjectContext:       {},
-	MethodApprove:             {},
-	MethodReject:              {},
-	MethodPrioritize:          {},
-	MethodUserMessage:         {},
-	MethodEventsSubscribe:     {},
-	MethodEventsAggregate:     {},
-	MethodSearchQuery:         {},
-	MethodSearchSessions:      {},
-	MethodSearchTasks:         {},
-	MethodSearchEvents:        {},
-	MethodSearchArtifacts:     {},
-	MethodRuntimeInfo:         {},
-	MethodRuntimeHealth:       {},
-	MethodRuntimeCounters:     {},
-	MethodRuntimeDrivers:      {},
-	MethodMetricsSnapshot:     {},
-	MethodGovernancePosture:   {},
-	MethodLLMPosture:          {},
-	MethodPauseList:           {},
-	MethodTopologySnapshot:    {},
-	MethodArtifactsList:       {},
-	MethodArtifactsPut:        {},
-	MethodArtifactsGetRef:     {},
-	MethodArtifactsDelete:     {},
-	MethodMemoryList:          {},
-	MethodMemoryGet:           {},
-	MethodMemoryHealth:        {},
-	MethodMemoryStrategyTrace: {},
-	MethodMemoryPut:           {},
-	MethodMemoryDelete:        {},
+	MethodStart:                        {},
+	MethodCancel:                       {},
+	MethodPause:                        {},
+	MethodResume:                       {},
+	MethodRedirect:                     {},
+	MethodInjectContext:                {},
+	MethodApprove:                      {},
+	MethodReject:                       {},
+	MethodPrioritize:                   {},
+	MethodUserMessage:                  {},
+	MethodEventsSubscribe:              {},
+	MethodEventsAggregate:              {},
+	MethodSearchQuery:                  {},
+	MethodSearchSessions:               {},
+	MethodSearchTasks:                  {},
+	MethodSearchEvents:                 {},
+	MethodSearchArtifacts:              {},
+	MethodRuntimeInfo:                  {},
+	MethodRuntimeHealth:                {},
+	MethodRuntimeCounters:              {},
+	MethodRuntimeDrivers:               {},
+	MethodMetricsSnapshot:              {},
+	MethodGovernancePosture:            {},
+	MethodLLMPosture:                   {},
+	MethodGovernanceSetTenantOverrides: {},
+	MethodGovernanceGetTenantOverrides: {},
+	MethodPauseList:                    {},
+	MethodTopologySnapshot:             {},
+	MethodArtifactsList:                {},
+	MethodArtifactsPut:                 {},
+	MethodArtifactsGetRef:              {},
+	MethodArtifactsDelete:              {},
+	MethodMemoryList:                   {},
+	MethodMemoryGet:                    {},
+	MethodMemoryHealth:                 {},
+	MethodMemoryStrategyTrace:          {},
+	MethodMemoryPut:                    {},
+	MethodMemoryDelete:                 {},
 
 	MethodFlowsList:         {},
 	MethodFlowsDescribe:     {},
@@ -882,6 +903,26 @@ func IsMCPServersMethod(m Method) bool {
 // The MCPSurface dispatcher uses it to apply the admin gate.
 func IsMCPAdminMethod(m Method) bool {
 	_, ok := canonicalMCPAdminMethods[m]
+	return ok
+}
+
+// canonicalGovernanceAdminMethods is the closed set of the admin-scoped
+// `governance.*` mutation/read verbs that gate on the `auth.ScopeAdmin`
+// claim (distinct from the read-only `governance.posture` posture method).
+// IsGovernanceAdminMethod is O(1); the governance wire handler uses it to
+// apply the admin-scope gate.
+var canonicalGovernanceAdminMethods = map[Method]struct{}{
+	MethodGovernanceSetTenantOverrides: {},
+	MethodGovernanceGetTenantOverrides: {},
+}
+
+// IsGovernanceAdminMethod reports whether m is one of the admin-scoped
+// `governance.*` tenant-override verbs (`set_tenant_overrides` /
+// `get_tenant_overrides`). The governance wire handler uses it to apply
+// the admin gate. NOT a posture method — `governance.posture` is read-only
+// and routed through the posture surface.
+func IsGovernanceAdminMethod(m Method) bool {
+	_, ok := canonicalGovernanceAdminMethods[m]
 	return ok
 }
 
@@ -1275,6 +1316,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsRunsMethod(m) {
+		return false
+	}
+	if IsGovernanceAdminMethod(m) {
 		return false
 	}
 	if IsAuthMethod(m) {

@@ -86,6 +86,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -172,6 +173,23 @@ type perTaskRunLoopDriverOpts struct {
 	// layer of the disposition resolution). Zero value = no agent
 	// policy; the runtime default applies.
 	dispositionPolicy planner.DispositionPolicy
+
+	// tenantOverrides resolves an admin-set tenant default for the run's
+	// LLM parameters at run start (model / extra-instructions /
+	// temperature / max-tokens / reasoning-effort). OPTIONAL — a nil
+	// resolver means "no tenant defaults to apply" (the run uses the
+	// agent/config defaults). When supplied, the driver reads it ONCE per
+	// run and pins the resolved snapshot into the run's RunContext so the
+	// swap lands on this run (next-turn relative to the admin's set), never
+	// mid-flight.
+	tenantOverrides tenantOverrideResolver
+}
+
+// tenantOverrideResolver is the narrow read seam the run loop uses to
+// resolve an admin-set tenant default at run start. The
+// `*governance.TenantOverridePolicy` concrete satisfies it.
+type tenantOverrideResolver interface {
+	Get(ctx context.Context, tenant string) (governance.TenantOverrideSpec, bool, error)
 }
 
 // perTaskRunLoopDriver subscribes to `task.spawned` and drives a
@@ -211,6 +229,9 @@ type perTaskRunLoopDriver struct {
 
 	// per-agent attachment disposition policy.
 	dispositionPolicy planner.DispositionPolicy
+
+	// admin-set tenant-default override resolver (nil = none).
+	tenantOverrides tenantOverrideResolver
 
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
@@ -276,6 +297,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		artifactStore:   opts.artifactStore,
 		// disposition policy passthrough.
 		dispositionPolicy: opts.dispositionPolicy,
+		tenantOverrides:   opts.tenantOverrides,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 		tokenBudget:       opts.tokenBudget,
 		compression:       opts.compression,
@@ -450,6 +472,32 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 // (driver shutdown raced with Run return), the Mark* call may fail
 // with a context error; this is logged at Debug — the FSM transition
 // the operator wanted is moot because the binary is shutting down.
+// resolveLLMOverrides reads the admin-set tenant default for the run's
+// LLM parameters from the resolver and projects it onto the planner's
+// per-run override bundle. A nil resolver or a tenant with no record
+// returns (nil, nil) — the run then uses the agent/config defaults. A
+// resolver error is returned to the caller (which fails the run loudly).
+func (d *perTaskRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quadruple) (*planner.LLMOverrides, error) {
+	if d.tenantOverrides == nil {
+		return nil, nil
+	}
+	spec, set, err := d.tenantOverrides.Get(ctx, q.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	if !set {
+		return nil, nil
+	}
+	ov := &planner.LLMOverrides{
+		Model:             spec.Model,
+		Temperature:       spec.Temperature,
+		MaxTokens:         spec.MaxTokens,
+		ReasoningEffort:   spec.ReasoningEffort,
+		ExtraInstructions: spec.ExtraInstructions,
+	}
+	return ov, nil
+}
+
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
@@ -687,12 +735,39 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// renderer.
 	sessionArtifacts := d.resolveSessionArtifacts(taskCtx, sessionQ)
 
+	// Resolve the admin-set tenant default for this run's LLM parameters
+	// ONCE at run start and pin the snapshot into the RunContext (the
+	// effective resolution order is tenant-default › config; the
+	// per-session next-turn layer slots above the tenant layer when its
+	// consume seam is wired). A resolution error fails the run LOUDLY
+	// rather than silently dropping the admin's policy (CLAUDE.md §13) —
+	// the override store IS the runtime StateStore, so a read error here
+	// means the runtime is already unhealthy.
+	llmOverrides, ovErr := d.resolveLLMOverrides(taskCtx, q)
+	if ovErr != nil {
+		d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: tenant-override resolution failed; failing run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", ovErr.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "tenant-override resolution failed: " + ovErr.Error(),
+		}); mErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after override-resolution error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
 			Quadruple:        q,
 			Query:            task.Query,
-			Goal:             task.Query, // initial goal = user query; runtime REDIRECT may mutate
+			Goal:             task.Query,   // initial goal = user query; runtime REDIRECT may mutate
+			LLMOverrides:     llmOverrides, // admin-set tenant default, pinned at run start
 			MemoryBlocks:     memBlocks,
 			SkillsContext:    skillsCtx,
 			RepairCounters:   counters,

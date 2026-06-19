@@ -98,6 +98,8 @@ var wantMethods = []methods.Method{
 	methods.MethodSessionsInspect,
 	methods.MethodRunsSetOverrides,
 	methods.MethodAuthRotateToken,
+	methods.MethodGovernanceSetTenantOverrides,
+	methods.MethodGovernanceGetTenantOverrides,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -113,9 +115,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 73m auth.rotate_token one + Phase 108l agents-control five +
 	// Phase 108n memory-mutation/trace three + Phase 108o artifacts.delete one = 80,
 	// + MCP Apps host three (mcp.servers.read_resource + mcp.apps.call_tool
-	// + mcp.apps.tool_context) = 83.
-	if len(got) != 83 {
-		t.Fatalf("Methods() returned %d methods, want 83", len(got))
+	// + mcp.apps.tool_context) = 83, + governance tenant-override admin
+	// pair two (governance.set_tenant_overrides +
+	// governance.get_tenant_overrides) = 85.
+	if len(got) != 85 {
+		t.Fatalf("Methods() returned %d methods, want 85", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -401,7 +405,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 		if methods.IsToolsMethod(m) || methods.IsTasksMethod(m) ||
 			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) ||
 			methods.IsSessionsMethod(m) || methods.IsRunsMethod(m) ||
-			methods.IsAuthMethod(m) {
+			methods.IsGovernanceAdminMethod(m) || methods.IsAuthMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

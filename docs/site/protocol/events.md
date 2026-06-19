@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 108 canonical event types a Harbor Runtime can publish, read from the live
+The 109 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -356,6 +356,22 @@ Payload `RateLimitedPayload` — safe payload (delivered typed, verbatim).
 | `Capacity` | `int` |  |
 | `RefillTokens` | `int` |  |
 | `RefillEvery` | `time.Duration` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `governance.tenant_overrides_set`
+
+Payload `TenantOverridesSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Actor` | `identity.Quadruple` |  |
+| `Tenant` | `string` |  |
+| `Model` | `string` |  |
+| `SetModel` | `bool` |  |
+| `SetExtraInstructions` | `bool` |  |
+| `SetTemperature` | `bool` |  |
+| `SetMaxTokens` | `bool` |  |
+| `SetReasoningEffort` | `bool` |  |
 | `OccurredAt` | `time.Time` |  |
 
 ## `llm.completion.chunk`

@@ -605,6 +605,16 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		req = p.builder.Build(rc, p.systemPrompt)
 	}
 
+	// Apply the run-start-resolved per-run LLM-parameter overrides
+	// (model / temperature / max-tokens / reasoning-effort). The bundle is
+	// pinned on rc at run start and immutable for the run; a nil bundle or
+	// a nil field is a no-op (the agent/config default flows through). The
+	// additive ExtraInstructions field is applied earlier inside the
+	// system-prompt build (the default builder's <additional_guidance>),
+	// not here — this stamps only the scalar request fields. Reads from
+	// rc, never from the shared planner artifact.
+	applyLLMOverrides(&req, rc.LLMOverrides)
+
 	// AC-17: populate the per-turn native tool-calling surface.
 	// `rc.Catalog.List()` already returns the always-loaded subset
 	// filtered by the run's identity + GrantedScopes (the
@@ -862,4 +872,36 @@ func assertIdentity(rc planner.RunContext) error {
 		return fmt.Errorf("%w (react planner refuses missing-identity Next)", llm.ErrIdentityMissing)
 	}
 	return nil
+}
+
+// applyLLMOverrides stamps the run-start-resolved scalar overrides onto a
+// built request. A nil bundle or a nil field leaves the request untouched,
+// so the agent/config default (the bound `llm.model`, the provider
+// defaults) flows through. Temperature is widened from the override's
+// float64 to the request's float32; an unrecognised reasoning-effort value
+// is ignored (the value was validated at set time, but the planner stays
+// defensive rather than passing an unknown hint to the provider). The
+// additive ExtraInstructions field is applied during system-prompt
+// construction, not here.
+func applyLLMOverrides(req *llm.CompleteRequest, ov *planner.LLMOverrides) {
+	if ov == nil {
+		return
+	}
+	if ov.Model != nil && *ov.Model != "" {
+		req.Model = *ov.Model
+	}
+	if ov.Temperature != nil {
+		t := float32(*ov.Temperature)
+		req.Temperature = &t
+	}
+	if ov.MaxTokens != nil && *ov.MaxTokens > 0 {
+		m := *ov.MaxTokens
+		req.MaxTokens = &m
+	}
+	if ov.ReasoningEffort != nil {
+		switch llm.ReasoningEffort(*ov.ReasoningEffort) {
+		case llm.ReasoningOff, llm.ReasoningLow, llm.ReasoningMedium, llm.ReasoningHigh:
+			req.ReasoningEffort = llm.ReasoningEffort(*ov.ReasoningEffort)
+		}
+	}
 }

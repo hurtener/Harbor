@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: static-only
 #
-# Phase 92 smoke — Console-driven mid-session model swap (two scopes).
+# Phase 92 smoke — admin-set tenant-default LLM overrides (the RFC §6.15
+# ModelOverride governance seam).
 #
 # Conventions (AGENTS.md §4.2): static greps SKIP until the surface lands;
-# the live drive-a-swap checks are added when the dev surface supports them.
+# the live admin-set checks run when the dev surface supports them.
 #
-# Phase 92: session-level swap extends runs.set_overrides with a Model field
-# (next-turn, owner-scoped); tenant-level admin default is the new admin-scoped
-# governance.swap_model Protocol method (RFC §6.15 ModelOverride seam, audited).
-# Effective model resolves session > tenant > cfg.LLM.Model at run start (D-025
-# snapshot). Unknown model fails loud (ErrUnsupportedModel).
+# Phase 92 (tenant-default scope): an admin sets a tenant's default LLM
+# parameters (model + additive extra-instructions + temperature +
+# max-tokens + reasoning-effort) live via the admin-scoped
+# governance.set_tenant_overrides Protocol method; governance.get_tenant_overrides
+# reads them back. The default is StateStore-backed, audited
+# (governance.tenant_overrides_set), and applied to every session's NEXT run
+# (a D-025 run-start snapshot pinned into RunContext.LLMOverrides, consumed by
+# the planner). An unknown model fails loud (ErrUnknownModel) at set time.
 
 set -euo pipefail
 
@@ -21,39 +25,63 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 # ----------------------------------------------------------------------------
-# 1. RunOverrides carries a Model field (the session-level swap, single source).
+# Static guards — the Protocol surface + governance seam + planner apply path.
 # ----------------------------------------------------------------------------
-if grep -rqE 'Model\s+\*string' internal/protocol/types/runs.go 2>/dev/null; then
-    ok 'phase 92: RunOverrides.Model field present (session-level swap)'
-else
-    skip 'phase 92: RunOverrides.Model not yet present'
-fi
+
+# 1. The admin-scoped tenant-override methods are declared (single source).
+assert_grep_present '"governance\.set_tenant_overrides"' \
+    internal/protocol/methods/methods.go \
+    'phase 92: governance.set_tenant_overrides Protocol method declared'
+assert_grep_present '"governance\.get_tenant_overrides"' \
+    internal/protocol/methods/methods.go \
+    'phase 92: governance.get_tenant_overrides Protocol method declared'
+
+# 2. The StateStore-backed governance TenantOverridePolicy realises the seam.
+assert_grep_present 'type TenantOverridePolicy struct' \
+    internal/governance/tenantoverride.go \
+    'phase 92: governance TenantOverridePolicy present'
+
+# 3. The audit event is declared + registered.
+assert_grep_present 'EventTypeTenantOverridesSet' \
+    internal/governance/events.go \
+    'phase 92: governance.tenant_overrides_set event present'
+
+# 4. The planner carries the per-run override bundle (the apply primitive).
+assert_grep_present 'LLMOverrides \*LLMOverrides' \
+    internal/planner/planner.go \
+    'phase 92: RunContext.LLMOverrides per-run override bundle present'
+
+# 5. The run loop resolves the tenant default at run start (the consumer).
+assert_grep_present 'resolveLLMOverrides' \
+    cmd/harbor/cmd_dev_runloop.go \
+    'phase 92: run-start tenant-override resolution wired'
 
 # ----------------------------------------------------------------------------
-# 2. The governance.swap_model Protocol method is declared (tenant-level).
+# Live checks (preflight dev server). The routes are admin-scoped; an
+# unauthenticated probe is rejected (401/403), which the helpers treat as a
+# reachable surface (NOT 404/SKIP). When the surface is not mounted, the
+# route 404s and SKIPs — the partial-build convention.
 # ----------------------------------------------------------------------------
-if grep -rqE '"governance\.swap_model"' internal/protocol/methods/methods.go 2>/dev/null; then
-    ok 'phase 92: governance.swap_model Protocol method declared'
-else
-    skip 'phase 92: governance.swap_model method not yet declared'
-fi
-
-# ----------------------------------------------------------------------------
-# 3. A governance ModelOverride policy backs the tenant default.
-# ----------------------------------------------------------------------------
-if grep -rqiE 'ModelOverride' internal/governance/*.go 2>/dev/null; then
-    ok 'phase 92: governance ModelOverride policy present'
-else
-    skip 'phase 92: governance ModelOverride policy not yet present'
-fi
-
-# ----------------------------------------------------------------------------
-# 4. A governance.model_swapped audit/event is declared.
-# ----------------------------------------------------------------------------
-if grep -rqiE 'model_swapped|ModelSwapped' internal/ 2>/dev/null; then
-    ok 'phase 92: governance.model_swapped event present'
-else
-    skip 'phase 92: governance.model_swapped event not yet present'
+GET_URL="$(api_url /v1/governance/get_tenant_overrides)"
+if skip_if_404 "${GET_URL}" 'phase 92: governance.get_tenant_overrides route mounted'; then
+    # The route exists. An unauthenticated POST must NOT be 200 (admin-gated):
+    # the dev server's auth posture returns 401 (no identity) or 403 (no admin
+    # scope). Either is a healthy "the gate is live" signal.
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -X POST -H 'Content-Type: application/json' -d '{}' "${GET_URL}" || true)
+    case "${code}" in
+        401|403)
+            ok "phase 92: governance.get_tenant_overrides is identity/admin-gated (${code})"
+            ;;
+        200)
+            # Trust-based dev posture (no validator) — the route answered. Still
+            # a live surface; the admin gate is exercised by the Go tests.
+            ok "phase 92: governance.get_tenant_overrides answered (trust posture, 200)"
+            ;;
+        *)
+            fail "phase 92: governance.get_tenant_overrides unexpected status ${code}"
+            ;;
+    esac
 fi
 
 smoke_summary

@@ -1652,6 +1652,34 @@
         }
       ]
     },
+    "GovernanceGetTenantOverridesRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        }
+      ]
+    },
+    "GovernanceGetTenantOverridesResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "overrides",
+          "type": "object",
+          "ref": "GovernanceTenantOverrides"
+        },
+        {
+          "key": "set",
+          "type": "boolean"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
     "GovernancePostureRequest": {
       "home": "types",
       "fields": [
@@ -1680,6 +1708,64 @@
         {
           "key": "protocol_version",
           "type": "string"
+        }
+      ]
+    },
+    "GovernanceSetTenantOverridesRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "overrides",
+          "type": "object",
+          "ref": "GovernanceTenantOverrides"
+        }
+      ]
+    },
+    "GovernanceSetTenantOverridesResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "applied_at",
+          "type": "string"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "GovernanceTenantOverrides": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "model",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "extra_instructions",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "temperature",
+          "type": "number",
+          "optional": true
+        },
+        {
+          "key": "max_tokens",
+          "type": "number",
+          "optional": true
+        },
+        {
+          "key": "reasoning_effort",
+          "type": "string",
+          "optional": true
         }
       ]
     },
@@ -5119,7 +5205,9 @@
     "flows.run",
     "flows.runs.describe",
     "flows.runs.list",
+    "governance.get_tenant_overrides",
     "governance.posture",
+    "governance.set_tenant_overrides",
     "inject_context",
     "llm.posture",
     "mcp.apps.call_tool",
@@ -5220,6 +5308,7 @@
     "governance.maxtokens_exceeded",
     "governance.posture_read_admin",
     "governance.rate_limited",
+    "governance.tenant_overrides_set",
     "llm.completion.chunk",
     "llm.context_leak",
     "llm.context_window_exceeded",

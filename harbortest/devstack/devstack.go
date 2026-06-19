@@ -1277,6 +1277,13 @@ type DevStackRunLoopDriver struct {
 	// (D-094 mirror of the production driver's field).
 	dispositionPolicy planner.DispositionPolicy
 
+	// admin-set tenant-default LLM override resolver — the D-094 mirror
+	// of the production driver's field. OPTIONAL (nil = no overrides);
+	// the kit does not construct a governance policy by default, so this
+	// stays nil and the run uses agent/config defaults, but the SHAPE
+	// tracks production so the mirror does not drift.
+	tenantOverrides devStackTenantOverrideResolver
+
 	// Phase 107a parity (D-195 dated-note follow-up) — per-task
 	// trajectory map for the Enricher seam, the D-094 mirror of the
 	// production driver. Trajectories are stored before RunLoop.Run
@@ -1331,6 +1338,16 @@ type devStackRunLoopDriverOpts struct {
 
 	// Phase 84b (D-189) — per-agent attachment disposition policy.
 	dispositionPolicy planner.DispositionPolicy
+
+	// admin-set tenant-default LLM override resolver (D-094 mirror).
+	tenantOverrides devStackTenantOverrideResolver
+}
+
+// devStackTenantOverrideResolver mirrors cmd/harbor's
+// tenantOverrideResolver — the narrow read seam the run loop uses to
+// resolve an admin-set tenant default at run start.
+type devStackTenantOverrideResolver interface {
+	Get(ctx context.Context, tenant string) (governance.TenantOverrideSpec, bool, error)
 }
 
 func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
@@ -1365,6 +1382,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		compression:     opts.compression,
 		// Phase 84b (D-189) — disposition policy passthrough.
 		dispositionPolicy: opts.dispositionPolicy,
+		tenantOverrides:   opts.tenantOverrides,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
@@ -1609,12 +1627,29 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	// fabricated one.
 	sessionArtifacts := d.resolveSessionArtifacts(taskCtx, sessionQ)
 
+	// Resolve the admin-set tenant default once at run start (D-094 mirror
+	// of cmd/harbor/cmd_dev_runloop.go). A resolution error fails the run
+	// loudly rather than silently dropping the policy.
+	llmOverrides, ovErr := d.resolveLLMOverrides(taskCtx, q)
+	if ovErr != nil {
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "tenant-override resolution failed: " + ovErr.Error(),
+		}); mErr != nil && d.logger != nil {
+			d.logger.Warn("devstack runloop: MarkFailed after override-resolution error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
 			Quadruple:        q,
 			Query:            task.Query,
 			Goal:             task.Query,
+			LLMOverrides:     llmOverrides, // admin-set tenant default (D-094 mirror)
 			MemoryBlocks:     memBlocks,
 			SkillsContext:    skillsCtx,
 			RepairCounters:   counters,
@@ -1710,6 +1745,30 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			slog.String("task_id", string(taskID)),
 			slog.String("err", mErr.Error()))
 	}
+}
+
+// resolveLLMOverrides mirrors `cmd/harbor/cmd_dev_runloop.go`'s run-start
+// tenant-override resolution (D-094 parity). A nil resolver or a tenant
+// with no record returns (nil, nil) — the run uses agent/config defaults;
+// a resolver error propagates so the caller fails the run loudly.
+func (d *DevStackRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quadruple) (*planner.LLMOverrides, error) {
+	if d.tenantOverrides == nil {
+		return nil, nil
+	}
+	spec, set, err := d.tenantOverrides.Get(ctx, q.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	if !set {
+		return nil, nil
+	}
+	return &planner.LLMOverrides{
+		Model:             spec.Model,
+		Temperature:       spec.Temperature,
+		MaxTokens:         spec.MaxTokens,
+		ReasoningEffort:   spec.ReasoningEffort,
+		ExtraInstructions: spec.ExtraInstructions,
+	}, nil
 }
 
 // resolveSessionArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go`'s
