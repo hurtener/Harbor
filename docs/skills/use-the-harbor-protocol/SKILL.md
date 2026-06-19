@@ -42,6 +42,7 @@ Routes group by surface family:
 - **Task control** — `start` plus the nine steering verbs (`cancel` / `pause` / `resume` / `redirect` / `inject_context` / `approve` / `reject` / `prioritize` / `user_message`) all POST to `POST /v1/control/{method}` (e.g. `/v1/control/start`, `/v1/control/cancel`). The read-only posture methods (`runtime.info`, `topology.snapshot`) and `artifacts.put` share this route shape.
 - **Event stream** — `GET /v1/events` (SSE; see §4).
 - **Read surfaces** group by family under their own prefix: `POST /v1/tasks/{method}` (e.g. `/v1/tasks/get`), `POST /v1/tools/{method}`, `POST /v1/sessions/{method}`, `POST /v1/memory/{method}`, and so on.
+- **Admin control surfaces** are family-prefixed and gate on the verified `admin` scope claim (a non-admin caller gets `403 {"code": "scope_mismatch"}`). The governance tenant-default LLM overrides are here: `POST /v1/governance/set_tenant_overrides` sets a tenant's default model / additive extra-instructions / temperature / max-tokens / reasoning-effort live (no redeploy; applied to every session's next run), and `POST /v1/governance/get_tenant_overrides` reads them back. (`governance.posture` / `llm.posture` remain read-only posture methods.)
 
 The body is a flat JSON object — the method's request shape — with an `identity` object carrying the triple (or the headers above; the body's `identity` may be left empty when the headers supply it):
 

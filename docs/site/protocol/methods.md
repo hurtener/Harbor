@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 83 canonical Harbor Protocol methods, generated from the single-source registry
+The 85 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -181,3 +181,10 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
 | `auth.rotate_token` | `POST /v1/auth/rotate_token` | auth | [`AuthRotateTokenRequest`](./types.md#authrotatetokenrequest) | [`AuthRotateTokenResponse`](./types.md#authrotatetokenresponse) | mutating; requires the verified `admin` scope claim |
+
+## Governance admin
+
+| Method | Route | Classification | Request | Response | Auth (beyond identity) |
+|---|---|---|---|---|---|
+| `governance.get_tenant_overrides` | `POST /v1/governance/get_tenant_overrides` | governance — admin | [`GovernanceGetTenantOverridesRequest`](./types.md#governancegettenantoverridesrequest) | [`GovernanceGetTenantOverridesResponse`](./types.md#governancegettenantoverridesresponse) | read-only; requires the verified `admin` scope claim |
+| `governance.set_tenant_overrides` | `POST /v1/governance/set_tenant_overrides` | governance — admin | [`GovernanceSetTenantOverridesRequest`](./types.md#governancesettenantoverridesrequest) | [`GovernanceSetTenantOverridesResponse`](./types.md#governancesettenantoverridesresponse) | mutating; requires the verified `admin` scope claim |

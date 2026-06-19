@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 // governance.go — the wire types for the
 // `governance.posture` Protocol method. The method surfaces the
 // runtime's read-only governance configuration — the consolidated
@@ -14,11 +16,14 @@ package types
 // a future change to the internal config struct does not silently
 // reshape the Protocol surface.
 //
-// The surface is READ-ONLY. There is no `governance.set_*` mutation
-// method at V1 — operators change ceilings by editing `harbor.yaml` and
-// restarting (RFC §6.15 "Hot-reloadable fields" carve-out + RFC §10
-// default). Post-V1 admin methods (`governance.rotate_key`,
-// `governance.swap_model`) are separate phases.
+// The `governance.posture` method is READ-ONLY (tier ceilings still
+// change via `harbor.yaml` + restart — RFC §6.15 "Hot-reloadable fields"
+// carve-out + RFC §10 default). The admin-scoped tenant-default override
+// methods below (`governance.set_tenant_overrides` /
+// `governance.get_tenant_overrides`) are the post-V1 `ModelOverride`
+// governance seam: an admin sets a tenant's default LLM parameters live
+// (no deploy), and the change lands on every session's next run. Key
+// rotation (`governance.rotate_*`) remains a separate phase.
 
 // GovernancePostureRequest is the `governance.posture` request body.
 //
@@ -89,4 +94,85 @@ type RateLimitView struct {
 	// RefillIntervalMS is the refill tick duration in milliseconds. The
 	// Go side holds a time.Duration; this is its millisecond projection.
 	RefillIntervalMS int64 `json:"refill_interval_ms"`
+}
+
+// GovernanceTenantOverrides is the wire projection of a tenant's default
+// LLM-parameter overrides — an admin-set, no-deploy default applied to
+// every session in the tenant on its NEXT run.
+//
+// Every field is a pointer so the absent / present distinction is
+// preserved on the wire: a nil field means "the tenant inherits the
+// runtime's configured default for this dimension"; a non-nil field means
+// "use this value." `set_tenant_overrides` is a desired-state REPLACE: the
+// supplied record wholly replaces the tenant's prior record, so a field
+// that was set before and is nil now is cleared.
+type GovernanceTenantOverrides struct {
+	// Model, when non-nil, overrides the default model name. The runtime
+	// validates it against the configured ModelProfiles at set time and
+	// rejects an unknown model with CodeInvalidRequest.
+	Model *string `json:"model,omitempty"`
+	// ExtraInstructions, when non-nil, is an ADDITIVE block appended to
+	// the agent's system prompt (rendered into the additional-guidance
+	// section). It extends the prompt; it never replaces it. nil means
+	// "no extension."
+	ExtraInstructions *string `json:"extra_instructions,omitempty"`
+	// Temperature, when non-nil, overrides the sampling temperature. The
+	// runtime rejects a value outside the closed range [0, 2] with
+	// CodeInvalidRequest.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// MaxTokens, when non-nil, overrides the per-call token ceiling. The
+	// runtime rejects a non-positive value with CodeInvalidRequest.
+	MaxTokens *int `json:"max_tokens,omitempty"`
+	// ReasoningEffort, when non-nil, overrides the reasoning-effort hint.
+	// The runtime rejects a value outside {low, medium, high} with
+	// CodeInvalidRequest.
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+}
+
+// GovernanceSetTenantOverridesRequest is the wire request for the
+// admin-scoped `governance.set_tenant_overrides` method. The override
+// applies to the tenant named on the IdentityScope (the caller's verified
+// tenant); the admin scope claim is required.
+type GovernanceSetTenantOverridesRequest struct {
+	// Identity is the request's identity scope. The triple is mandatory.
+	// The runtime requires the admin scope claim and rejects a non-admin
+	// caller with CodeScopeMismatch.
+	Identity IdentityScope `json:"identity"`
+	// Overrides is the desired-state override record (a full REPLACE of
+	// the tenant's prior record).
+	Overrides GovernanceTenantOverrides `json:"overrides"`
+}
+
+// GovernanceSetTenantOverridesResponse is the wire response for
+// `governance.set_tenant_overrides`.
+type GovernanceSetTenantOverridesResponse struct {
+	// AppliedAt is the runtime timestamp at which the tenant default was
+	// persisted. The new default takes effect on each session's next run.
+	AppliedAt time.Time `json:"applied_at"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// with, so a Console can assert wire compatibility.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// GovernanceGetTenantOverridesRequest is the wire request for the
+// admin-scoped `governance.get_tenant_overrides` method.
+type GovernanceGetTenantOverridesRequest struct {
+	// Identity is the request's identity scope. The triple is mandatory;
+	// the admin scope is required (reading a tenant's control-plane
+	// defaults is a privileged action).
+	Identity IdentityScope `json:"identity"`
+}
+
+// GovernanceGetTenantOverridesResponse is the wire response for
+// `governance.get_tenant_overrides`.
+type GovernanceGetTenantOverridesResponse struct {
+	// Overrides is the tenant's current default-override record. When no
+	// record exists (Set is false) every field is nil.
+	Overrides GovernanceTenantOverrides `json:"overrides"`
+	// Set reports whether a tenant-default record exists. False means the
+	// tenant inherits every runtime config default.
+	Set bool `json:"set"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// with.
+	ProtocolVersion string `json:"protocol_version"`
 }

@@ -100,6 +100,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
+	governanceprotocol "github.com/hurtener/Harbor/internal/runtime/governance/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
@@ -618,6 +619,32 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// introduced. The rule authorizes this for runtime-internal fan-in
 	// subscribers; the bus emits `audit.admin_scope_used` for the
 	// trail.
+	// The admin-set tenant-default override policy (the RFC §6.15
+	// ModelOverride governance seam): an admin changes a tenant's default
+	// LLM parameters live (no redeploy), persisted through the same
+	// StateStore the rest of the runtime uses, applied to every session's
+	// next run. The valid-model set is the configured ModelProfiles — a
+	// set to an unconfigured model is rejected at set time. Wired
+	// unconditionally so the Console admin control has a live surface out
+	// of the box; with no override set, every Get returns "no record" and
+	// the run uses the agent/config defaults.
+	validModels := make([]string, 0, len(llmCfg.ModelProfiles))
+	for m := range llmCfg.ModelProfiles {
+		validModels = append(validModels, m)
+	}
+	tenantOverridePolicy, err := governance.NewTenantOverridePolicy(stack.State, bus, validModels, nil)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("governance tenant-override policy: %w", err)
+	}
+	closers = append(closers, tenantOverridePolicy.Close)
+	governanceService, err := governanceprotocol.NewService(tenantOverridePolicy,
+		governanceprotocol.WithLogger(opts.logger))
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("governance/protocol service: %w", err)
+	}
+
 	runLoopDriver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
 		logger:   opts.logger,
 		bus:      bus,
@@ -678,6 +705,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// projection — `harbor.yaml` is a thin carrier over
 		// `planner.DispositionPolicy`.
 		dispositionPolicy: dispositionPolicy,
+		// admin-set tenant-default override resolver — read once at run
+		// start and pinned into the run's RunContext (next-turn-only).
+		tenantOverrides: tenantOverridePolicy,
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -1096,6 +1126,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Console Settings page "Rotate token" action has a live
 		// Protocol surface.
 		transports.WithAuthSurface(rotateSurface),
+		// mount the admin-scoped governance tenant-override routes
+		// (`governance.set_tenant_overrides` / `get_tenant_overrides`) so
+		// an admin can change a tenant's default LLM parameters live.
+		transports.WithGovernanceService(governanceService),
 	)
 	if err != nil {
 		closeAll(ctx)

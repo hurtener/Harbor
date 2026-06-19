@@ -1,5 +1,54 @@
 # Phase 92 — console-model-swap
 
+## Scope reconciliation (implementation — authoritative)
+
+> This block records two operator decisions taken AFTER the plan merged. Where it
+> conflicts with the historical Summary below, **this block wins** (§4.3 documented
+> deviation; the body is kept as design context).
+
+1. **Scope narrowed to the tenant-level admin layer for this PR.** The session-level
+   model swap (extending `runs.set_overrides` with a `Model` field, owner-scoped) is a
+   **follow-up**. Discovery during implementation found the session next-turn override
+   mechanism is **set-only in production**: `Store.Consume`/`Peek` are called from no
+   non-test code, so the runtime has **no apply seam** that consumes a recorded override
+   at run start. This PR therefore *builds that apply seam* (run-start → `RunContext` →
+   planner) and wires the **tenant** layer through it; the session layer slots above the
+   tenant layer in the resolver when its `Consume` call is wired (follow-up).
+
+2. **The tenant override carries the FULL override field set, not just the model.** Per
+   the operator: the tenant default must set "the same values as the session" — model,
+   an **additive** system-prompt extension ("extra instructions"), temperature,
+   max-tokens, reasoning-effort. So the admin-set tenant override is a multi-field
+   desired-state record, admin-authorized, tenant-scoped, resolved per session at run
+   start.
+
+Consequent design (what shipped):
+
+- **Fields**: `Model *string`, `ExtraInstructions *string`, `Temperature *float64`,
+  `MaxTokens *int`, `ReasoningEffort *string`. `ExtraInstructions` is **additive** —
+  appended to the agent's system prompt via the `<additional_guidance>` section — and is
+  deliberately distinct from the session layer's `SystemPromptOverride` (a full
+  **replace**): a tenant admin appending org-wide guidance must never clobber the agent's
+  base prompt.
+- **Methods renamed** (model-only names were wrong once scope expanded):
+  `governance.set_tenant_overrides` (admin, mutate; replaces the planned
+  `governance.swap_model`) + `governance.get_tenant_overrides` (admin, read-back for the
+  Console). Event renamed `governance.tenant_overrides_set` (replaces
+  `governance.model_swapped`).
+- **Set semantics = desired-state replace.** `set_tenant_overrides` replaces the stored
+  record wholesale with the supplied fields (a nil field = inherit config / clear). This
+  matches 92a's versioned desired-state framing.
+- **Scope/authorization** ("admin tenant and session scoped"): admin scope required
+  (D-219 — authority from the verified ctx, not the body); the record is stored
+  tenant-scoped (a synthetic governance identity, since `state.Save` requires a full
+  triple) and isolated per tenant; it resolves **per (tenant, session)** at run start, so
+  every session in the tenant inherits the default on its next run.
+- **Apply path (new primitive + consumer in this PR)**: `planner.RunContext.LLMOverrides`
+  (a per-run, runtime-populated, planner-read-only bundle, mirroring `ReasoningReplay`);
+  the **ReAct planner** is its consumer (scalars stamped onto the `llm.CompleteRequest`;
+  `ExtraInstructions` rendered into `<additional_guidance>`). Resolved once at run start
+  (D-025 snapshot) in the run loop: **tenant override › `cfg.LLM.Model`/defaults**.
+
 ## Summary
 
 Ships **Console-driven mid-session model swap** at **two scopes**, both taking effect on the next run (never mid-flight), so an operator changes the model live with no redeploy:
@@ -116,8 +165,8 @@ The master-plan detail block for Phase 92 names a single new `governance.swap_mo
 
 ## Glossary additions
 
-- **mid-session model swap** — changing the model a session (or a whole tenant) uses, taking effect on the **next** run (never mid-flight; a D-025 run-start snapshot). Session scope rides `runs.set_overrides` (`RunOverrides.Model`); tenant scope is the admin-scoped `governance.swap_model` (the RFC §6.15 `ModelOverride` seam). Effective model resolves session › tenant › `cfg.LLM.Model`. Phase 92, D-231.
-- **`governance.swap_model`** — the admin-scoped Protocol method that sets a tenant-scoped default model live (no redeploy), audited; the tenant-level half of the mid-session model swap. Phase 92, RFC §6.15, D-231.
+- **tenant-default LLM overrides** — an admin-set, no-deploy default for a tenant's LLM parameters (model, additive extra-instructions, temperature, max-tokens, reasoning-effort), the RFC §6.15 `ModelOverride` governance seam. Set via the admin-scoped `governance.set_tenant_overrides` method, read via `governance.get_tenant_overrides`, persisted by `governance.TenantOverridePolicy`, audited (`governance.tenant_overrides_set`), applied to every session's next run via `RunContext.LLMOverrides` (a D-025 run-start snapshot). Phase 92, D-231.
+- **`governance.set_tenant_overrides` / `governance.get_tenant_overrides`** — the admin-scoped Protocol methods that set / read a tenant's default LLM parameters live (no redeploy), audited; the tenant-level layer of the next-turn override mechanism. Phase 92, RFC §6.15, D-231.
 
 ## Pre-merge checklist
 

@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -160,13 +162,17 @@ type driverTestPlanner struct {
 	pauseReason           planner.PauseReason
 	finishGoalImmediately bool
 	errOnNext             error
-	finishPayload         any // map[string]any or nil; used by Phase 106 tests
+	finishPayload         any                         // map[string]any or nil; used by Phase 106 tests
+	onRunContext          func(rc planner.RunContext) // optional: observe the per-step RunContext (e.g. LLMOverrides)
 }
 
-func (p *driverTestPlanner) Next(_ context.Context, _ planner.RunContext) (planner.Decision, error) {
+func (p *driverTestPlanner) Next(_ context.Context, rc planner.RunContext) (planner.Decision, error) {
 	p.mu.Lock()
 	p.steps++
 	step := p.steps
+	if p.onRunContext != nil {
+		p.onRunContext(rc)
+	}
 	p.mu.Unlock()
 	if p.stepsCh != nil {
 		select {
@@ -982,4 +988,218 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(digits)
+}
+
+// --- tenant-default LLM override resolution (run-start seam) ---
+
+// fakeTenantOverrides is a test double for the run-loop's
+// tenantOverrideResolver seam.
+type fakeTenantOverrides struct {
+	spec governance.TenantOverrideSpec
+	set  bool
+	err  error
+}
+
+func (f fakeTenantOverrides) Get(_ context.Context, _ string) (governance.TenantOverrideSpec, bool, error) {
+	return f.spec, f.set, f.err
+}
+
+func ovStr(s string) *string   { return &s }
+func ovF64(f float64) *float64 { return &f }
+
+// TestResolveLLMOverrides_NilResolver asserts a driver with no resolver
+// returns no overrides (the run uses agent/config defaults).
+func TestResolveLLMOverrides_NilResolver(t *testing.T) {
+	d := &perTaskRunLoopDriver{logger: slog.Default()}
+	ov, err := d.resolveLLMOverrides(context.Background(), validQuadForOv())
+	if err != nil {
+		t.Fatalf("resolveLLMOverrides: %v", err)
+	}
+	if ov != nil {
+		t.Errorf("nil resolver: want nil overrides, got %+v", ov)
+	}
+}
+
+// TestResolveLLMOverrides_NoRecord asserts a tenant with no record yields
+// nil overrides.
+func TestResolveLLMOverrides_NoRecord(t *testing.T) {
+	d := &perTaskRunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{set: false}}
+	ov, err := d.resolveLLMOverrides(context.Background(), validQuadForOv())
+	if err != nil {
+		t.Fatalf("resolveLLMOverrides: %v", err)
+	}
+	if ov != nil {
+		t.Errorf("no record: want nil overrides, got %+v", ov)
+	}
+}
+
+// TestResolveLLMOverrides_ProjectsSpec asserts a set record projects onto
+// the planner override bundle field-for-field.
+func TestResolveLLMOverrides_ProjectsSpec(t *testing.T) {
+	mt := 2048
+	d := &perTaskRunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{
+		set: true,
+		spec: governance.TenantOverrideSpec{
+			Model:             ovStr("model-x"),
+			ExtraInstructions: ovStr("be terse"),
+			Temperature:       ovF64(0.5),
+			MaxTokens:         &mt,
+			ReasoningEffort:   ovStr("high"),
+		},
+	}}
+	ov, err := d.resolveLLMOverrides(context.Background(), validQuadForOv())
+	if err != nil {
+		t.Fatalf("resolveLLMOverrides: %v", err)
+	}
+	if ov == nil || ov.Model == nil || *ov.Model != "model-x" {
+		t.Fatalf("model not projected: %+v", ov)
+	}
+	if ov.ExtraInstructions == nil || *ov.ExtraInstructions != "be terse" {
+		t.Errorf("extra not projected: %+v", ov.ExtraInstructions)
+	}
+	if ov.Temperature == nil || *ov.Temperature != 0.5 {
+		t.Errorf("temp not projected: %+v", ov.Temperature)
+	}
+	if ov.MaxTokens == nil || *ov.MaxTokens != 2048 {
+		t.Errorf("max_tokens not projected: %+v", ov.MaxTokens)
+	}
+	if ov.ReasoningEffort == nil || *ov.ReasoningEffort != "high" {
+		t.Errorf("reasoning_effort not projected: %+v", ov.ReasoningEffort)
+	}
+}
+
+// TestResolveLLMOverrides_ErrorPropagates asserts a resolver error
+// propagates (the run loop then fails the run loudly rather than silently
+// dropping the admin's policy).
+func TestResolveLLMOverrides_ErrorPropagates(t *testing.T) {
+	d := &perTaskRunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{err: errors.New("state down")}}
+	if _, err := d.resolveLLMOverrides(context.Background(), validQuadForOv()); err == nil {
+		t.Fatal("want resolver error to propagate, got nil")
+	}
+}
+
+func validQuadForOv() identity.Quadruple {
+	return identity.Quadruple{Identity: identity.Identity{TenantID: "t1", UserID: "u", SessionID: "s"}, RunID: "r"}
+}
+
+// TestPerTaskRunLoopDriver_AppliesTenantOverride_ToRunContext is the
+// end-to-end run-loop wiring gate: a driver wired with a tenant-override
+// resolver MUST resolve the default at run start and pin it onto the
+// per-step RunContext the planner sees. Guards the
+// `spec.Base.LLMOverrides = llmOverrides` assignment in runOne — without
+// it, the resolved override would never reach the planner.
+func TestPerTaskRunLoopDriver_AppliesTenantOverride_ToRunContext(t *testing.T) {
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	reg := mkDriverTestTaskRegistry(t, bus, red)
+	steerReg := steering.NewRegistry()
+	coord := pauseresume.New(pauseresume.WithBus(bus))
+	rl, err := steering.NewRunLoop(steerReg, coord, steering.WithRunLoopBus(bus))
+	if err != nil {
+		t.Fatalf("steering.NewRunLoop: %v", err)
+	}
+	ovCh := make(chan *planner.LLMOverrides, 4)
+	p := &driverTestPlanner{
+		finishGoalImmediately: true,
+		onRunContext: func(rc planner.RunContext) {
+			select {
+			case ovCh <- rc.LLMOverrides:
+			default:
+			}
+		},
+	}
+	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
+		bus:     bus,
+		runLoop: rl,
+		planner: p,
+		tasks:   reg,
+		tenantOverrides: fakeTenantOverrides{
+			set: true,
+			spec: governance.TenantOverrideSpec{
+				Model:             ovStr("model-x"),
+				ExtraInstructions: ovStr("be terse"),
+				Temperature:       ovF64(0.5),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+	}
+	if err := driver.Start(context.Background()); err != nil {
+		t.Fatalf("driver.Start: %v", err)
+	}
+	defer func() { _ = driver.Close(context.Background()) }()
+
+	_ = spawnDriverTestTask(t, reg)
+
+	select {
+	case ov := <-ovCh:
+		if ov == nil {
+			t.Fatal("RunContext.LLMOverrides is nil — the resolved tenant default never reached the planner")
+		}
+		if ov.Model == nil || *ov.Model != "model-x" {
+			t.Errorf("LLMOverrides.Model = %v, want model-x", ov.Model)
+		}
+		if ov.ExtraInstructions == nil || *ov.ExtraInstructions != "be terse" {
+			t.Errorf("LLMOverrides.ExtraInstructions = %v, want be terse", ov.ExtraInstructions)
+		}
+		if ov.Temperature == nil || *ov.Temperature != 0.5 {
+			t.Errorf("LLMOverrides.Temperature = %v, want 0.5", ov.Temperature)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("planner.Next never fired — driver did not pick up task.spawned")
+	}
+}
+
+// TestPerTaskRunLoopDriver_TenantOverrideResolutionError_MarksFailed
+// guards the run-start fail-loud branch: a resolver error fails the run
+// (MarkFailed, code=runloop_error) rather than silently dropping the
+// admin's policy (CLAUDE.md §13). The planner is never invoked.
+func TestPerTaskRunLoopDriver_TenantOverrideResolutionError_MarksFailed(t *testing.T) {
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	reg := mkDriverTestTaskRegistry(t, bus, red)
+	steerReg := steering.NewRegistry()
+	coord := pauseresume.New(pauseresume.WithBus(bus))
+	rl, err := steering.NewRunLoop(steerReg, coord, steering.WithRunLoopBus(bus))
+	if err != nil {
+		t.Fatalf("steering.NewRunLoop: %v", err)
+	}
+	nextCalled := make(chan struct{}, 1)
+	p := &driverTestPlanner{
+		finishGoalImmediately: true,
+		onRunContext: func(planner.RunContext) {
+			select {
+			case nextCalled <- struct{}{}:
+			default:
+			}
+		},
+	}
+	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
+		bus:             bus,
+		runLoop:         rl,
+		planner:         p,
+		tasks:           reg,
+		tenantOverrides: fakeTenantOverrides{err: errors.New("state down")},
+	})
+	if err != nil {
+		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+	}
+	if err := driver.Start(context.Background()); err != nil {
+		t.Fatalf("driver.Start: %v", err)
+	}
+	defer func() { _ = driver.Close(context.Background()) }()
+
+	taskID := spawnDriverTestTask(t, reg)
+	status := waitForTaskStatus(t, reg, taskID, tasks.StatusFailed, 2*time.Second)
+	if status != tasks.StatusFailed {
+		t.Fatalf("task FSM = %q, want %q (override-resolution error must fail the run loudly)", status, tasks.StatusFailed)
+	}
+	// The planner must NOT have run — the resolution error short-circuits
+	// before the RunLoop starts.
+	select {
+	case <-nextCalled:
+		t.Error("planner.Next fired despite a resolution error — the run was not short-circuited")
+	default:
+	}
 }

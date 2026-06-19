@@ -57,6 +57,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
+	governanceprotocol "github.com/hurtener/Harbor/internal/runtime/governance/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
@@ -192,6 +193,14 @@ type muxConfig struct {
 	// `harbor console`) SHOULD supply it so the Console Settings page
 	// "Rotate token" action has a live surface.
 	rotateSurface *auth.RotateSurface
+	// governanceService feeds the admin-scoped governance tenant-override
+	// handler — the `POST /v1/governance/{set,get}_tenant_overrides`
+	// routes. OPTIONAL: when unsupplied the `/v1/governance/*` route is
+	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight
+	// green on a partial build. Production wiring (`harbor dev` /
+	// `harbor console`) SHOULD supply it so an admin can change a tenant's
+	// default LLM parameters live (no redeploy).
+	governanceService *governanceprotocol.Service
 }
 
 // Option configures NewMux.
@@ -583,6 +592,27 @@ func WithAuthSurface(surface *auth.RotateSurface) Option {
 	}
 }
 
+// WithGovernanceService wires the admin-scoped governance tenant-override
+// handler into NewMux — the `POST /v1/governance/{set,get}_tenant_overrides`
+// routes.
+//
+// The option is OPTIONAL so existing call-sites compile unchanged. When
+// not supplied (or supplied a nil service), the `/v1/governance/*` route
+// is NOT mounted — the smoke script's `skip_if_404` keeps preflight green
+// on a partial build. Production wiring (`harbor dev` / `harbor console`)
+// supplies it so an admin can change a tenant's default LLM parameters
+// live. When supplied AND WithValidator is set, the route is wrapped in
+// auth.Middleware like every other transport — the handler then gates on
+// the verified `auth.ScopeAdmin` claim. A nil service is treated as
+// "WithGovernanceService not supplied".
+func WithGovernanceService(s *governanceprotocol.Service) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.governanceService = s
+		}
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -856,6 +886,19 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		authHandler = ah
 	}
 
+	// The admin-scoped governance tenant-override handler. Built only when
+	// WithGovernanceService supplied a non-nil service. When unsupplied
+	// the `/v1/governance/*` route is left un-mounted — the smoke
+	// `skip_if_404` keeps preflight green on a partial build.
+	var governanceHandler *stream.GovernanceHandler
+	if cfg.governanceService != nil {
+		gh, err := stream.NewGovernanceHandler(cfg.governanceService, stream.WithGovernanceLogger(cfg.logger))
+		if err != nil {
+			return nil, fmt.Errorf("transports: build governance handler: %w", err)
+		}
+		governanceHandler = gh
+	}
+
 	mux := http.NewServeMux()
 
 	// when WithValidator was supplied, wrap both transport
@@ -974,6 +1017,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedAuth = mw(authHandler)
 		}
 		mux.Handle(stream.AuthRoutePattern, mountedAuth)
+	}
+
+	if governanceHandler != nil {
+		var mountedGovernance http.Handler = governanceHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedGovernance = mw(governanceHandler)
+		}
+		mux.Handle(stream.GovernanceRoutePattern, mountedGovernance)
 	}
 	return mux, nil
 }

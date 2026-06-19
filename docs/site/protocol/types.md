@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 224 canonical Harbor Protocol wire types, generated from the single-source
+The 229 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -826,6 +826,24 @@ Declared in `internal/protocol/types`.
 | `page_count` | `int` |  |
 | `total_rows` | `int` |  |
 
+## GovernanceGetTenantOverridesRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+
+## GovernanceGetTenantOverridesResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `overrides` | `types.GovernanceTenantOverrides` — see [`GovernanceTenantOverrides`](./types.md#governancetenantoverrides) |  |
+| `set` | `bool` |  |
+| `protocol_version` | `string` |  |
+
 ## GovernancePostureRequest
 
 Declared in `internal/protocol/types`.
@@ -844,6 +862,36 @@ Declared in `internal/protocol/types`.
 | `resolved_tier` | `string` |  |
 | `identity_tiers` | `map[string]types.IdentityTierView` — see [`IdentityTierView`](./types.md#identitytierview) |  |
 | `protocol_version` | `string` |  |
+
+## GovernanceSetTenantOverridesRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `overrides` | `types.GovernanceTenantOverrides` — see [`GovernanceTenantOverrides`](./types.md#governancetenantoverrides) |  |
+
+## GovernanceSetTenantOverridesResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `applied_at` | `time.Time` |  |
+| `protocol_version` | `string` |  |
+
+## GovernanceTenantOverrides
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `model` | `*string` | optional (`omitempty`) |
+| `extra_instructions` | `*string` | optional (`omitempty`) |
+| `temperature` | `*float64` | optional (`omitempty`) |
+| `max_tokens` | `*int` | optional (`omitempty`) |
+| `reasoning_effort` | `*string` | optional (`omitempty`) |
 
 ## HistogramBucket
 

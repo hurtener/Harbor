@@ -629,18 +629,34 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 // present. Returns the empty string when neither contributes — the
 // caller then omits the section entirely.
 //
+// The run-start-resolved additive extra-instructions
+// (`RunContext.LLMOverrides.ExtraInstructions` — an admin-set tenant
+// default today) render here too, BELOW the operator's baked guidance and
+// ABOVE the per-turn repair guidance. The field is additive by design: it
+// extends the system prompt, it never replaces it (the full-replace knob is
+// the session layer's `SystemPromptOverride`, applied elsewhere).
+//
 // Pure read of `extraGuidance` + `rc`: it never mutates the counters.
 func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string {
 	op := strings.TrimSpace(extraGuidance)
+	extra := overrideExtraInstructions(rc)
 	repair := renderRepairGuidance(rc.RepairCounters)
-	switch {
-	case op != "" && repair != "":
-		return op + "\n\n" + repair
-	case op != "":
-		return op
-	default:
-		return repair
+	parts := make([]string, 0, 3)
+	for _, p := range []string{op, extra, repair} {
+		if p != "" {
+			parts = append(parts, p)
+		}
 	}
+	return strings.Join(parts, "\n\n")
+}
+
+// overrideExtraInstructions returns the trimmed additive extra-instructions
+// from the per-run override bundle, or "" when none is set.
+func overrideExtraInstructions(rc planner.RunContext) string {
+	if rc.LLMOverrides == nil || rc.LLMOverrides.ExtraInstructions == nil {
+		return ""
+	}
+	return strings.TrimSpace(*rc.LLMOverrides.ExtraInstructions)
 }
 
 // renderToolNameDesc renders a tool as name + description only for the

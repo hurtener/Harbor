@@ -173,7 +173,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 89 | A2A northbound (Harbor as A2A server)         | tools/a2a            | §6.4, §11Q2 | 29                    | n/a  | Post-V1  |
 | 90 | Additional planner concretes                  | planner              | §12         | 49                    | n/a  | Post-V1  |
 | 91 | Console-driven key rotation (Protocol)        | governance           | §6.15       | 36a, 60, 73           | n/a  | Post-V1  |
-| 92 | Console-driven mid-session model swap         | governance           | §6.15       | 36a, 60, 73           | n/a  | Post-V1  |
+| 92 | Admin-set tenant-default LLM overrides         | governance           | §6.15       | 36a, 60, 73           | 85%  | Shipped  |
 |92a | Agent-config control plane (extends 91/92)    | governance/agentcfg  | §6.15, §6.16| 86, 87, 92, 53a, 37, 110a, 109i | n/a | Post-V1 |
 | 93 | Failover chains as Harbor policy              | governance           | §6.15       | 36a, 33               | n/a  | Post-V1  |
 | 94 | Provider circuit breakers (provider, key)     | governance           | §6.15       | 33, 93                | n/a  | Post-V1  |

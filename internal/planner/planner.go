@@ -233,6 +233,24 @@ type RunContext struct {
 	// populates it from the per-run options; the planner reads only.
 	ReasoningReplay *ReasoningReplayMode
 
+	// LLMOverrides carries the per-run, run-start-resolved LLM-parameter
+	// overrides the Runtime applies to this run's LLM requests: the model
+	// name, sampling temperature, per-call token ceiling, reasoning-effort
+	// hint, and an ADDITIVE extra-instructions block appended to the
+	// agent's system prompt. Nil means "no overrides" — the planner uses
+	// the agent/config defaults (the bound `llm.model`, the provider
+	// defaults, the agent's base system prompt).
+	//
+	// The Runtime resolves these ONCE at run start from the effective
+	// override layers (an admin-set tenant default today; a per-session
+	// next-turn override above it later) and pins the snapshot here for
+	// the whole run — a swap at any layer lands on the NEXT run, never
+	// mid-flight (the same next-turn-only invariant the compiled-artifact
+	// concurrent-reuse contract requires: a running planner's parameters
+	// are fixed for the run; per-run state lives on rc, never on the
+	// shared planner artifact). The planner reads only.
+	LLMOverrides *LLMOverrides
+
 	// MemoryBlocks carries the pre-fetched, identity-scoped memory
 	// blobs the planner injects into the system prompt as UNTRUSTED-
 	// framed `<read_only_*_memory>` sections. The
@@ -351,6 +369,28 @@ type RunContext struct {
 	// Concurrent-reuse: the manifest is per-run state on rc,
 	// never on the shared planner artifact.
 	SessionArtifacts []ArtifactManifestEntry
+}
+
+// LLMOverrides is the per-run bundle of run-start-resolved LLM-parameter
+// overrides carried on [RunContext.LLMOverrides]. Every field is optional
+// (a nil pointer / zero-value means "no override for this dimension — use
+// the agent/config default"). The Runtime resolves the bundle once at run
+// start and the planner reads it when building each LLM request; the
+// bundle is immutable for the run.
+//
+//   - Model overrides the model name the request asks for (validated at
+//     set time against the configured `ModelProfiles`).
+//   - Temperature / MaxTokens / ReasoningEffort override the corresponding
+//     `llm.CompleteRequest` fields.
+//   - ExtraInstructions is ADDITIVE: it is appended to the agent's system
+//     prompt (rendered into the `<additional_guidance>` section), never a
+//     replacement of the base prompt.
+type LLMOverrides struct {
+	Model             *string
+	Temperature       *float64
+	MaxTokens         *int
+	ReasoningEffort   *string
+	ExtraInstructions *string
 }
 
 // ToolCallDeferred is a pending native tool-call the planner will

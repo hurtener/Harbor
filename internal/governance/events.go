@@ -40,6 +40,18 @@ const (
 	// The cross-tenant read is a privileged action and lands on the
 	// audit trail per CLAUDE.md §7 + RFC §6.15.
 	EventTypePostureReadAdmin events.EventType = "governance.posture_read_admin"
+
+	// EventTypeTenantOverridesSet — Emitted when an admin-scoped caller
+	// sets (or clears) a tenant's default LLM-parameter overrides via the
+	// `governance.set_tenant_overrides` Protocol method. The change is a
+	// privileged, no-deploy reconfiguration of the tenant's default
+	// model / temperature / max-tokens / reasoning-effort / extra
+	// instructions and lands on the audit trail (CLAUDE.md §7, RFC §6.15
+	// — the `ModelOverride` governance seam). The payload carries only
+	// which dimensions were set (booleans) plus the model name — never
+	// the extra-instructions text (operator-supplied prose runs through
+	// the redactor and is not echoed onto the audit event).
+	EventTypeTenantOverridesSet events.EventType = "governance.tenant_overrides_set"
 )
 
 func init() {
@@ -48,6 +60,7 @@ func init() {
 		EventTypeRateLimited,
 		EventTypeMaxTokensExceeded,
 		EventTypePostureReadAdmin,
+		EventTypeTenantOverridesSet,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -116,4 +129,31 @@ type MaxTokensExceededPayload struct {
 	Requested  int
 	Cap        int
 	OccurredAt time.Time
+}
+
+// TenantOverridesSetPayload is the typed payload for
+// EventTypeTenantOverridesSet. SafePayload — the actor identity, the
+// target tenant, the (non-secret) model name, and the per-dimension
+// set/clear flags are operator-visible audit metadata. The
+// extra-instructions PROSE is never carried here (only the boolean flag),
+// so operator-supplied text never lands on the bus; the payload still
+// runs through the audit Redactor before publish (CLAUDE.md §7 rule 6).
+type TenantOverridesSetPayload struct {
+	events.SafeSealed
+	// Actor is the admin-scoped caller that performed the set.
+	Actor identity.Quadruple
+	// Tenant is the tenant_id whose defaults were changed.
+	Tenant string
+	// Model is the new default model name, or "" when the model
+	// dimension was left unset / cleared. Non-secret.
+	Model string
+	// SetModel / SetExtraInstructions / SetTemperature / SetMaxTokens /
+	// SetReasoningEffort report which dimensions the new desired-state
+	// record carries (true) versus inherits from config (false).
+	SetModel             bool
+	SetExtraInstructions bool
+	SetTemperature       bool
+	SetMaxTokens         bool
+	SetReasoningEffort   bool
+	OccurredAt           time.Time
 }
