@@ -394,6 +394,54 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "GovernanceRotateKeyRequest", Response: "GovernanceRotateKeyResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigGet: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigGet),
+			Mutates: false,
+			Request: "AgentConfigGetRequest", Response: "AgentConfigGetResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigSetRevision: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetRevision),
+			Mutates: true,
+			Request: "AgentConfigSetRevisionRequest", Response: "AgentConfigSetRevisionResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigListRevisions: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigListRevisions),
+			Mutates: false,
+			Request: "AgentConfigListRevisionsRequest", Response: "AgentConfigListRevisionsResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigDiff: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigDiff),
+			Mutates: false,
+			Request: "AgentConfigDiffRequest", Response: "AgentConfigDiffResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigRollback: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigRollback),
+			Mutates: true,
+			Request: "AgentConfigRollbackRequest", Response: "AgentConfigRollbackResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigSkillsList: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSkillsList),
+			Mutates: false,
+			Request: "AgentConfigSkillsListRequest", Response: "AgentConfigSkillsListResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigSkillsUpsert: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSkillsUpsert),
+			Mutates: true,
+			Request: "AgentConfigSkillsUpsertRequest", Response: "AgentConfigSkillsUpsertResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigSkillsDelete: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSkillsDelete),
+			Mutates: true,
+			Request: "AgentConfigSkillsDeleteRequest", Response: "AgentConfigSkillsDeleteResponse",
+			Auth: adminNote,
+		},
 	}
 
 	// The nine steering controls share one wire shape; their per-control
@@ -519,6 +567,8 @@ func classify(m methods.Method) string {
 		return "auth"
 	case methods.IsGovernanceAdminMethod(m):
 		return "governance — admin"
+	case methods.IsAgentConfigMethod(m):
+		return "agent config — admin"
 	default:
 		return "unclassified"
 	}
@@ -551,6 +601,7 @@ var methodClusters = []struct {
 	{"Runs", methods.IsRunsMethod, "runs"},
 	{"Auth", methods.IsAuthMethod, "auth"},
 	{"Governance admin", methods.IsGovernanceAdminMethod, "governance-admin"},
+	{"Agent config", methods.IsAgentConfigMethod, "agent-config"},
 }
 
 // renderMethodsPage emits methods.md: every methods.Methods() entry,

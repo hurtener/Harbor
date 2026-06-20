@@ -34,6 +34,9 @@
 package prod
 
 import (
+	// Agent-config driver — StateStore-backed versioned desired-state
+	// registry (the agent-config control plane), registered via init().
+	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
 	// Artifacts drivers — content-addressed blob store. Each V1
 	// driver self-registers via init() so `artifacts.Open` can resolve
 	// them. Harbor ships fs + inmem; Harbor adds sqlite +

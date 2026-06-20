@@ -637,8 +637,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 86 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 86 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one)", len(got))
+	if len(got) != 94 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 94 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane eight)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -737,6 +737,14 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodGovernanceSetTenantOverrides: {},
 		methods.MethodGovernanceGetTenantOverrides: {},
 		methods.MethodGovernanceRotateKey:          {},
+		methods.MethodAgentConfigGet:               {},
+		methods.MethodAgentConfigSetRevision:       {},
+		methods.MethodAgentConfigListRevisions:     {},
+		methods.MethodAgentConfigDiff:              {},
+		methods.MethodAgentConfigRollback:          {},
+		methods.MethodAgentConfigSkillsList:        {},
+		methods.MethodAgentConfigSkillsUpsert:      {},
+		methods.MethodAgentConfigSkillsDelete:      {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -998,6 +1006,17 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// extension — same posture as the runs / auth clusters.
 			if methods.IsGovernanceAdminMethod(m) {
 				t.Skip("governance.{set,get}_tenant_overrides exercised by governance/protocol tests + stream governance_handler_test.go + test/integration/tenant_overrides_test.go; conformance-suite scenario lands with a later surface extension")
+			}
+			// The agent-config control-plane methods are served by the
+			// dedicated AgentConfigHandler (over the agentcfg/protocol
+			// Service), not the ControlSurface. Their happy paths + failure
+			// modes are exercised by internal/runtime/agentcfg/protocol
+			// tests + test/integration/agentcfg_control_plane_test.go; the
+			// conformance-suite scenario lands with a later surface
+			// extension — same posture as the governance / runs / auth
+			// clusters.
+			if methods.IsAgentConfigMethod(m) {
+				t.Skip("agent_config.* exercised by agentcfg/protocol tests + test/integration/agentcfg_control_plane_test.go; conformance-suite scenario lands with a later surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)

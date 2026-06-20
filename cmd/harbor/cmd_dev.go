@@ -82,6 +82,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/devdraft"
@@ -97,6 +98,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
@@ -667,6 +669,30 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		}
 	}
 
+	// The agent-config control plane — the versioned desired-state registry
+	// keyed by the dev agent's registration id. The dev run loop runs a
+	// single configured agent; its config slot is keyed by a deterministic
+	// dev agent id (the binary does not run a multi-agent fleet). The
+	// registry reuses the runtime StateStore for identity isolation. Built
+	// only when the assembled stack opened a StateStore (always true on the
+	// dev path). The skills-control surface drives the SAME SkillStore the
+	// run loop reads at run start, so a skills edit is a versioned,
+	// next-turn-applied revision.
+	const devAgentConfigID = "harbor-dev-agent"
+	agentConfigRegistry, err := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: stack.State, Bus: bus})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("agent-config registry: %w", err)
+	}
+	closers = append(closers, agentConfigRegistry.Close)
+	agentConfigService, err := agentcfgprotocol.NewService(agentConfigRegistry,
+		agentcfgprotocol.WithLogger(opts.logger),
+		agentcfgprotocol.WithSkillStore(skillStore))
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("agent-config/protocol service: %w", err)
+	}
+
 	runLoopDriver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
 		logger:   opts.logger,
 		bus:      bus,
@@ -734,6 +760,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// start and composed OVER the tenant default (session › tenant ›
 		// config). The SAME Store the runs Service writes into.
 		sessionOverrides: runsStore,
+		// agent-config registry — resolved ONCE at run start to project the
+		// agent's active skills-set (next-turn-only). The SAME registry the
+		// agent-config Protocol service mutates, so a skills edit lands on
+		// the next run.
+		agentConfig:   agentConfigRegistry,
+		agentConfigID: devAgentConfigID,
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -1165,6 +1197,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// can rotate the LLM provider key live (nil-safe when no LLM driver
 		// was configured — the route then 501s).
 		transports.WithGovernanceKeyRotate(keyRotateService),
+		// mount the admin-scoped agent-config control-plane routes
+		// (`POST /v1/agent_config/*`) so an admin can version an agent's
+		// config (skills now) with diff + rollback live.
+		transports.WithAgentConfigService(agentConfigService),
 	)
 	if err != nil {
 		closeAll(ctx)

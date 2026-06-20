@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/distributed" // payload home for distributed.bus_envelope (the shared bus-projection contract; prod already blank-imports the drivers)
 	"github.com/hurtener/Harbor/internal/events"
@@ -81,6 +82,10 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	governance.EventTypePostureReadAdmin:      {Payloads: []reflect.Type{reflect.TypeOf(governance.PostureReadAdminPayload{})}},
 	governance.EventTypeTenantOverridesSet:    {Payloads: []reflect.Type{reflect.TypeOf(governance.TenantOverridesSetPayload{})}},
 	governance.EventTypeKeyRotated:            {Payloads: []reflect.Type{reflect.TypeOf(governance.KeyRotatedPayload{})}},
+
+	// --- Agent-config control plane (internal/agentcfg).
+	agentcfg.EventTypeConfigRevised:  {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.ConfigRevisedPayload{})}},
+	agentcfg.EventTypeConfigReverted: {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.ConfigRevertedPayload{})}},
 
 	// --- Dev-draft lifecycle (harbor dev's dynamic agent scaffolding).
 	devdraft.EventTypeDraftCreated:   {Payloads: []reflect.Type{reflect.TypeOf(devdraft.DraftCreatedPayload{})}},
