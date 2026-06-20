@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 86 canonical Harbor Protocol methods, generated from the single-source registry
+The 94 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -189,3 +189,16 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `governance.get_tenant_overrides` | `POST /v1/governance/get_tenant_overrides` | governance — admin | [`GovernanceGetTenantOverridesRequest`](./types.md#governancegettenantoverridesrequest) | [`GovernanceGetTenantOverridesResponse`](./types.md#governancegettenantoverridesresponse) | read-only; requires the verified `admin` scope claim |
 | `governance.rotate_key` | `POST /v1/governance/rotate_key` | governance — admin | [`GovernanceRotateKeyRequest`](./types.md#governancerotatekeyrequest) | [`GovernanceRotateKeyResponse`](./types.md#governancerotatekeyresponse) | mutating; requires the verified `admin` scope claim |
 | `governance.set_tenant_overrides` | `POST /v1/governance/set_tenant_overrides` | governance — admin | [`GovernanceSetTenantOverridesRequest`](./types.md#governancesettenantoverridesrequest) | [`GovernanceSetTenantOverridesResponse`](./types.md#governancesettenantoverridesresponse) | mutating; requires the verified `admin` scope claim |
+
+## Agent config
+
+| Method | Route | Classification | Request | Response | Auth (beyond identity) |
+|---|---|---|---|---|---|
+| `agent_config.diff` | `POST /v1/agent_config/diff` | agent config — admin | [`AgentConfigDiffRequest`](./types.md#agentconfigdiffrequest) | [`AgentConfigDiffResponse`](./types.md#agentconfigdiffresponse) | read-only; requires the verified `admin` scope claim |
+| `agent_config.get` | `POST /v1/agent_config/get` | agent config — admin | [`AgentConfigGetRequest`](./types.md#agentconfiggetrequest) | [`AgentConfigGetResponse`](./types.md#agentconfiggetresponse) | read-only; requires the verified `admin` scope claim |
+| `agent_config.list_revisions` | `POST /v1/agent_config/list_revisions` | agent config — admin | [`AgentConfigListRevisionsRequest`](./types.md#agentconfiglistrevisionsrequest) | [`AgentConfigListRevisionsResponse`](./types.md#agentconfiglistrevisionsresponse) | read-only; requires the verified `admin` scope claim |
+| `agent_config.rollback` | `POST /v1/agent_config/rollback` | agent config — admin | [`AgentConfigRollbackRequest`](./types.md#agentconfigrollbackrequest) | [`AgentConfigRollbackResponse`](./types.md#agentconfigrollbackresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.set_revision` | `POST /v1/agent_config/set_revision` | agent config — admin | [`AgentConfigSetRevisionRequest`](./types.md#agentconfigsetrevisionrequest) | [`AgentConfigSetRevisionResponse`](./types.md#agentconfigsetrevisionresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.skills.delete` | `POST /v1/agent_config/skills/delete` | agent config — admin | [`AgentConfigSkillsDeleteRequest`](./types.md#agentconfigskillsdeleterequest) | [`AgentConfigSkillsDeleteResponse`](./types.md#agentconfigskillsdeleteresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.skills.list` | `POST /v1/agent_config/skills/list` | agent config — admin | [`AgentConfigSkillsListRequest`](./types.md#agentconfigskillslistrequest) | [`AgentConfigSkillsListResponse`](./types.md#agentconfigskillslistresponse) | read-only; requires the verified `admin` scope claim |
+| `agent_config.skills.upsert` | `POST /v1/agent_config/skills/upsert` | agent config — admin | [`AgentConfigSkillsUpsertRequest`](./types.md#agentconfigskillsupsertrequest) | [`AgentConfigSkillsUpsertResponse`](./types.md#agentconfigskillsupsertresponse) | mutating; requires the verified `admin` scope claim |

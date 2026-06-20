@@ -45,6 +45,7 @@ export {
 	PostureNamespace,
 	AuthNamespace,
 	GovernanceNamespace,
+	AgentConfigNamespace,
 	SearchNamespace,
 	type ProtocolClient,
 	type HarborClientOptions

@@ -56,6 +56,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	governanceprotocol "github.com/hurtener/Harbor/internal/runtime/governance/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -206,6 +207,13 @@ type muxConfig struct {
 	// convention). Built only alongside governanceService. Production
 	// wiring supplies it so an admin can rotate the LLM provider key live.
 	governanceKeyRotate *governanceprotocol.KeyRotateService
+	// agentConfigService feeds the admin-scoped agent-config control-plane
+	// handler — the `POST /v1/agent_config/*` routes. OPTIONAL: when
+	// unsupplied the `/v1/agent_config/*` route is NOT mounted, so the
+	// smoke script's `skip_if_404` keeps preflight green on a partial
+	// build. Production wiring (`harbor dev` / `harbor console`) supplies it
+	// so an admin can version an agent's config (skills now) live.
+	agentConfigService *agentcfgprotocol.Service
 }
 
 // Option configures NewMux.
@@ -632,6 +640,25 @@ func WithGovernanceKeyRotate(s *governanceprotocol.KeyRotateService) Option {
 	}
 }
 
+// WithAgentConfigService wires the admin-scoped agent-config
+// control-plane handler into NewMux — the `POST /v1/agent_config/*`
+// routes (the versioned desired-state registry + skills control).
+//
+// The option is OPTIONAL so existing call-sites compile unchanged. When
+// not supplied (or supplied a nil service), the `/v1/agent_config/*` route
+// is NOT mounted — the smoke script's `skip_if_404` keeps preflight green
+// on a partial build. When supplied AND WithValidator is set, the route is
+// wrapped in auth.Middleware like every other transport — the handler then
+// gates on the verified `auth.ScopeAdmin` claim (the agent-config authorization model). A nil service is
+// treated as "WithAgentConfigService not supplied".
+func WithAgentConfigService(s *agentcfgprotocol.Service) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.agentConfigService = s
+		}
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -922,6 +949,19 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		governanceHandler = gh
 	}
 
+	// The admin-scoped agent-config control-plane handler. Built only when
+	// WithAgentConfigService supplied a non-nil service. When unsupplied
+	// the `/v1/agent_config/*` route is left un-mounted — the smoke
+	// `skip_if_404` keeps preflight green on a partial build.
+	var agentConfigHandler *stream.AgentConfigHandler
+	if cfg.agentConfigService != nil {
+		ach, err := stream.NewAgentConfigHandler(cfg.agentConfigService, stream.WithAgentConfigLogger(cfg.logger))
+		if err != nil {
+			return nil, fmt.Errorf("transports: build agent-config handler: %w", err)
+		}
+		agentConfigHandler = ach
+	}
+
 	mux := http.NewServeMux()
 
 	// when WithValidator was supplied, wrap both transport
@@ -1049,6 +1089,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedGovernance = mw(governanceHandler)
 		}
 		mux.Handle(stream.GovernanceRoutePattern, mountedGovernance)
+	}
+
+	if agentConfigHandler != nil {
+		var mountedAgentConfig http.Handler = agentConfigHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedAgentConfig = mw(agentConfigHandler)
+		}
+		mux.Handle(stream.AgentConfigRoutePattern, mountedAgentConfig)
 	}
 	return mux, nil
 }

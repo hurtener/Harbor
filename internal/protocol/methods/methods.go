@@ -262,6 +262,55 @@ const (
 	// wire-transport route is `POST /v1/governance/rotate_key`.
 	MethodGovernanceRotateKey Method = "governance.rotate_key"
 
+	// MethodAgentConfigGet — reads an agent's current active config
+	// revision (the read-back the Console renders before editing).
+	// Identity-mandatory; requires the verified `auth.ScopeAdmin` claim
+	// (reading the agent-config control plane is a privileged action).
+	// The wire-transport route is `POST /v1/agent_config/get`.
+	MethodAgentConfigGet Method = "agent_config.get"
+	// MethodAgentConfigSetRevision — admin verb: writes a NEW immutable,
+	// content-addressed config revision for an agent and advances the
+	// active pointer. An idempotent re-set of byte-identical canonical
+	// content is a no-op returning the existing revision. The change lands
+	// on the agent's NEXT run (next-turn projection — never mid-flight).
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim (a
+	// non-admin caller is rejected with CodeScopeMismatch). The
+	// wire-transport route is `POST /v1/agent_config/set_revision`.
+	MethodAgentConfigSetRevision Method = "agent_config.set_revision"
+	// MethodAgentConfigListRevisions — reads an agent's revision chain,
+	// newest-first. Identity-mandatory; requires the `auth.ScopeAdmin`
+	// claim. The wire-transport route is
+	// `POST /v1/agent_config/list_revisions`.
+	MethodAgentConfigListRevisions Method = "agent_config.list_revisions"
+	// MethodAgentConfigDiff — server-side compare of two existing config
+	// revisions (a structured set-diff for the structured sections).
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
+	// wire-transport route is `POST /v1/agent_config/diff`.
+	MethodAgentConfigDiff Method = "agent_config.diff"
+	// MethodAgentConfigRollback — admin verb: repoints the active pointer
+	// to an existing revision WITHOUT mutating or deleting any revision.
+	// The repoint lands on the agent's NEXT run. Identity-mandatory;
+	// requires the `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/rollback`.
+	MethodAgentConfigRollback Method = "agent_config.rollback"
+	// MethodAgentConfigSkillsList — reads the agent's skills (metadata
+	// only) — the first consumer of the config-revision registry.
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
+	// wire-transport route is `POST /v1/agent_config/skills.list`.
+	MethodAgentConfigSkillsList Method = "agent_config.skills.list"
+	// MethodAgentConfigSkillsUpsert — admin verb: upserts a skill into the
+	// agent's store and records the membership change as a config
+	// revision. A pack-origin skill is never silently overwritten — the
+	// refusal surfaces as a typed Protocol error. Identity-mandatory;
+	// requires the `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/skills.upsert`.
+	MethodAgentConfigSkillsUpsert Method = "agent_config.skills.upsert"
+	// MethodAgentConfigSkillsDelete — admin verb: deletes a skill from the
+	// agent's store and records the membership change as a config
+	// revision. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
+	// The wire-transport route is `POST /v1/agent_config/skills.delete`.
+	MethodAgentConfigSkillsDelete Method = "agent_config.skills.delete"
+
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
 	// the unified pause/resume Coordinator. Read-only: it
@@ -711,6 +760,14 @@ var canonicalMethods = map[Method]struct{}{
 	MethodGovernanceSetTenantOverrides: {},
 	MethodGovernanceGetTenantOverrides: {},
 	MethodGovernanceRotateKey:          {},
+	MethodAgentConfigGet:               {},
+	MethodAgentConfigSetRevision:       {},
+	MethodAgentConfigListRevisions:     {},
+	MethodAgentConfigDiff:              {},
+	MethodAgentConfigRollback:          {},
+	MethodAgentConfigSkillsList:        {},
+	MethodAgentConfigSkillsUpsert:      {},
+	MethodAgentConfigSkillsDelete:      {},
 	MethodPauseList:                    {},
 	MethodTopologySnapshot:             {},
 	MethodArtifactsList:                {},
@@ -936,6 +993,54 @@ var canonicalGovernanceAdminMethods = map[Method]struct{}{
 // and routed through the posture surface.
 func IsGovernanceAdminMethod(m Method) bool {
 	_, ok := canonicalGovernanceAdminMethods[m]
+	return ok
+}
+
+// canonicalAgentConfigMethods is the closed set of the eight
+// `agent_config.*` methods — the five registry verbs (get / set_revision /
+// list_revisions / diff / rollback) plus the three skills-control verbs
+// (skills.list / skills.upsert / skills.delete). IsAgentConfigMethod is
+// O(1); the agent-config wire handler branches on the trailing path
+// segment to dispatch.
+var canonicalAgentConfigMethods = map[Method]struct{}{
+	MethodAgentConfigGet:           {},
+	MethodAgentConfigSetRevision:   {},
+	MethodAgentConfigListRevisions: {},
+	MethodAgentConfigDiff:          {},
+	MethodAgentConfigRollback:      {},
+	MethodAgentConfigSkillsList:    {},
+	MethodAgentConfigSkillsUpsert:  {},
+	MethodAgentConfigSkillsDelete:  {},
+}
+
+// canonicalAgentConfigAdminMethods is the closed sub-set of the
+// `agent_config.*` methods that mutate the agent-config control plane and
+// gate on the verified `auth.ScopeAdmin` claim (the agent-config authorization model). Reads
+// (`agent_config.get` / `list_revisions` / `diff` / `skills.list`) are
+// also admin-gated at the wire handler (the whole family is admin-scoped),
+// but this set names the WRITES for callers that distinguish them.
+var canonicalAgentConfigAdminMethods = map[Method]struct{}{
+	MethodAgentConfigSetRevision:  {},
+	MethodAgentConfigRollback:     {},
+	MethodAgentConfigSkillsUpsert: {},
+	MethodAgentConfigSkillsDelete: {},
+}
+
+// IsAgentConfigMethod reports whether m is one of the eight
+// `agent_config.*` methods. The control transport / wire handler branches
+// on this to route the request through the agent-config dispatcher
+// instead of the task-control surface. NOT a control method — a new
+// agent-config method extends THIS predicate, never the steering inbox.
+func IsAgentConfigMethod(m Method) bool {
+	_, ok := canonicalAgentConfigMethods[m]
+	return ok
+}
+
+// IsAgentConfigAdminMethod reports whether m is one of the
+// `agent_config.*` capability-mutation verbs that gate on the verified
+// `auth.ScopeAdmin` claim (the agent-config authorization model).
+func IsAgentConfigAdminMethod(m Method) bool {
+	_, ok := canonicalAgentConfigAdminMethods[m]
 	return ok
 }
 
@@ -1332,6 +1437,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsGovernanceAdminMethod(m) {
+		return false
+	}
+	if IsAgentConfigMethod(m) {
 		return false
 	}
 	if IsAuthMethod(m) {
