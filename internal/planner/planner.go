@@ -385,12 +385,18 @@ type RunContext struct {
 //   - ExtraInstructions is ADDITIVE: it is appended to the agent's system
 //     prompt (rendered into the `<additional_guidance>` section), never a
 //     replacement of the base prompt.
+//   - SystemPromptOverride is a full REPLACE of the agent's base system
+//     prompt (the session layer's affordance, distinct from the additive
+//     ExtraInstructions). When both are set, the base prompt is replaced
+//     AND the additive guidance still appends. An empty string is a valid
+//     override (it clears the base prompt for that run); nil = no replace.
 type LLMOverrides struct {
-	Model             *string
-	Temperature       *float64
-	MaxTokens         *int
-	ReasoningEffort   *string
-	ExtraInstructions *string
+	Model                *string
+	Temperature          *float64
+	MaxTokens            *int
+	ReasoningEffort      *string
+	ExtraInstructions    *string
+	SystemPromptOverride *string
 }
 
 // ToolCallDeferred is a pending native tool-call the planner will

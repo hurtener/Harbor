@@ -44,12 +44,14 @@
   import NotificationsRoutingCard from '$lib/components/settings/NotificationsRoutingCard.svelte';
   import RuntimeInfoCard from '$lib/components/settings/RuntimeInfoCard.svelte';
   import GovernancePostureCard from '$lib/components/settings/GovernancePostureCard.svelte';
+  import TenantDefaultOverridesCard from '$lib/components/settings/TenantDefaultOverridesCard.svelte';
   import StorageDriversCard from '$lib/components/settings/StorageDriversCard.svelte';
   import LLMPostureCard from '$lib/components/settings/LLMPostureCard.svelte';
   import AboutCard from '$lib/components/settings/AboutCard.svelte';
   import {
     SettingsState,
     RotateTokenState,
+    TenantDefaultOverridesState,
     SETTINGS_SECTIONS,
     consoleLocalSections,
     runtimePostureSections,
@@ -60,6 +62,7 @@
   const settings = new SettingsState();
   const db = new SettingsDBController();
   const rotate = new RotateTokenState();
+  const tenantDefaults = new TenantDefaultOverridesState();
 
   /** The active section — drives the sub-nav rail highlight + the right pane. */
   let activeSection = $state<SettingsSectionId>('connected-runtimes');
@@ -97,6 +100,16 @@
     // the moment it is selected; load the Console DB for the local sections.
     void settings.load();
     void db.load();
+  });
+
+  // Lazy-load the tenant default overrides the first time that section is
+  // selected (it is its own admin Protocol read, distinct from the posture
+  // bundle). Re-loads only from the idle state so re-selecting does not
+  // clobber an in-progress edit.
+  $effect(() => {
+    if (activeSection === 'tenant-defaults' && tenantDefaults.phase === 'idle') {
+      void tenantDefaults.load();
+    }
   });
 
   function selectSection(id: SettingsSectionId): void {
@@ -203,6 +216,8 @@
                   governance={settings.posture.governance}
                   mockMode={settings.mockMode}
                 />
+              {:else if section.id === 'tenant-defaults'}
+                <TenantDefaultOverridesCard overrides={tenantDefaults} />
               {:else if section.id === 'storage-drivers'}
                 <StorageDriversCard drivers={settings.posture.drivers} />
               {:else if section.id === 'llm-posture'}

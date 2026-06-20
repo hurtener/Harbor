@@ -3498,6 +3498,11 @@
           "key": "system_prompt_override",
           "type": "string",
           "optional": true
+        },
+        {
+          "key": "model",
+          "type": "string",
+          "optional": true
         }
       ]
     },

@@ -1,5 +1,5 @@
 {
-  "_comment": "Untyped-wire-type allowlist for check-protocol-ts-lockstep.mjs. Each entry is a canonical Harbor Protocol wire type (singlesource.CanonicalWireTypes) that the hand-maintained Console TypeScript client intentionally does NOT declare as a named interface/type today \u2014 request bodies the Console builds inline as generic-namespace params, responses narrowed inline at the call site, and runtime/meta shapes the Console renders without a named type. The lockstep guard requires every untyped canonical type to appear here with a justification; a NEW Go wire type that lands without a TS interface fails the guard until it is either typed or consciously added here. Stale entries (a type now typed in TS, or no longer canonical) also fail the guard. This file is HAND-MAINTAINED.",
+  "_comment": "Untyped-wire-type allowlist for check-protocol-ts-lockstep.mjs. Each entry is a canonical Harbor Protocol wire type (singlesource.CanonicalWireTypes) that the hand-maintained Console TypeScript client intentionally does NOT declare as a named interface/type today — request bodies the Console builds inline as generic-namespace params, responses narrowed inline at the call site, and runtime/meta shapes the Console renders without a named type. The lockstep guard requires every untyped canonical type to appear here with a justification; a NEW Go wire type that lands without a TS interface fails the guard until it is either typed or consciously added here. Stale entries (a type now typed in TS, or no longer canonical) also fail the guard. This file is HAND-MAINTAINED.",
   "types": {
     "AgentControlRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "AgentGetRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
@@ -15,11 +15,6 @@
     "Deprecation": "version-handshake / deprecation meta surface not rendered by the Console as a named TS interface",
     "Error": "Protocol error wire type surfaced through the client error path (src/lib/protocol/errors.ts ProtocolError), not as a raw wire interface",
     "GovernancePostureRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
-    "GovernanceGetTenantOverridesRequest": "admin governance request body sent inline via the generic HarborClient namespace; the typed Console admin control is a follow-up",
-    "GovernanceGetTenantOverridesResponse": "admin governance response narrowed inline at the call site; the typed Console admin control is a follow-up",
-    "GovernanceSetTenantOverridesRequest": "admin governance request body sent inline via the generic HarborClient namespace; the typed Console admin control is a follow-up",
-    "GovernanceSetTenantOverridesResponse": "admin governance response narrowed inline at the call site; the typed Console admin control is a follow-up",
-    "GovernanceTenantOverrides": "admin governance override shape consumed inline by the (follow-up) Console admin control; not declared as a named TS interface",
     "GovernanceRotateKeyRequest": "admin governance key-rotation request body sent inline via the generic HarborClient namespace; carries a SECRET (key) — not declared as a named TS interface to keep the secret off typed surfaces",
     "GovernanceRotateKeyResponse": "admin governance key-rotation response narrowed inline at the call site; carries only a fingerprint, not declared as a named TS interface",
     "HistogramBucket": "runtime metrics-snapshot family; consumed inline by the runtime-posture surfaces, not declared as a named TS interface",

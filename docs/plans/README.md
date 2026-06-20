@@ -174,7 +174,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 90 | Additional planner concretes                  | planner              | §12         | 49                    | n/a  | Post-V1  |
 | 91 | Console-driven key rotation (`governance.rotate_key`) | governance    | §6.15       | 36a, 60, 73           | 85%  | Shipped  |
 | 92 | Admin-set tenant-default LLM overrides         | governance           | §6.15       | 36a, 60, 73           | 85%  | Shipped  |
-|92b | Tenant-override completion (session swap field + Console admin UI + multi-replica freshness) | governance/console | §6.15, §7 | 92 | 85% | Pending |
+|92b | Tenant-override completion (session swap field + Console admin UI + multi-replica freshness) | governance/console | §6.15, §7 | 92 | 85% | Shipped |
 |92a | Agent-config control plane (extends 91/92)    | governance/agentcfg  | §6.15, §6.16| 86, 87, 92, 53a, 37, 110a, 109i | n/a | Post-V1 |
 | 93 | Failover chains as Harbor policy              | governance           | §6.15       | 36a, 33               | n/a  | Post-V1  |
 | 94 | Provider circuit breakers (provider, key)     | governance           | §6.15       | 33, 93                | n/a  | Post-V1  |

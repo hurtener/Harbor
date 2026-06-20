@@ -288,3 +288,49 @@ func TestTenantOverride_ConcurrentReuse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestTenantOverride_MultiReplica_Freshness is the Phase 92b item-3 gate:
+// two policy instances over ONE shared StateStore model two runtime
+// replicas. A Set on replica A must be visible to replica B's NEXT Get —
+// AND a SECOND Set on A must also land on B (the per-read freshness
+// guarantee; the prior loaded-permanent cache served the first value
+// forever). This is the cross-replica staleness the change closes.
+func TestTenantOverride_MultiReplica_Freshness(t *testing.T) {
+	h := newPolicyHarness(t) // replica A over h.state
+	replicaB, err := governance.NewTenantOverridePolicy(h.state, h.bus, []string{"model-a", "model-b"}, nil)
+	if err != nil {
+		t.Fatalf("replica B: %v", err)
+	}
+	defer replicaB.Close(context.Background())
+
+	// A sets model-a; B loads it (first read populates B's slot).
+	if err := h.policy.Set(context.Background(), adminActor("t1"), "t1",
+		governance.TenantOverrideSpec{Model: sp("model-a")}); err != nil {
+		t.Fatalf("A Set 1: %v", err)
+	}
+	got, set, err := replicaB.Get(context.Background(), "t1")
+	if err != nil || !set || got.Model == nil || *got.Model != "model-a" {
+		t.Fatalf("B Get 1: set=%v err=%v model=%v, want model-a", set, err, got.Model)
+	}
+
+	// A sets model-b. B has already loaded t1 — under the OLD permanent
+	// cache it would still serve model-a. Per-read freshness means B's
+	// next Get re-reads and sees model-b.
+	if err := h.policy.Set(context.Background(), adminActor("t1"), "t1",
+		governance.TenantOverrideSpec{Model: sp("model-b")}); err != nil {
+		t.Fatalf("A Set 2: %v", err)
+	}
+	got, set, err = replicaB.Get(context.Background(), "t1")
+	if err != nil || !set || got.Model == nil || *got.Model != "model-b" {
+		t.Fatalf("B Get 2: set=%v err=%v model=%v, want model-b (stale cross-replica cache)", set, err, got.Model)
+	}
+
+	// A clears the record. B sees the clear too (set=false).
+	if err := h.policy.Set(context.Background(), adminActor("t1"), "t1",
+		governance.TenantOverrideSpec{}); err != nil {
+		t.Fatalf("A clear: %v", err)
+	}
+	if _, set, err := replicaB.Get(context.Background(), "t1"); err != nil || set {
+		t.Errorf("B after A clear: set=%v err=%v, want set=false", set, err)
+	}
+}

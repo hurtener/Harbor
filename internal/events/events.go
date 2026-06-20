@@ -228,6 +228,9 @@ type RunOverridesSetPayload struct {
 	// SetSystemPrompt reports whether the system-prompt-override field
 	// was set.
 	SetSystemPrompt bool
+	// SetModel reports whether the model-override field was set (the
+	// session-level model swap).
+	SetModel bool
 	// OccurredAt is the wall-clock instant the override was recorded.
 	OccurredAt time.Time
 }

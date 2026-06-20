@@ -68,8 +68,47 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
+
+// ComposeLLMOverrides merges a Consumed session override OVER a tenant
+// default into the planner's per-run override bundle — the canonical
+// session › tenant resolution (the run loop reads it at run start). Per
+// field, a non-nil session value wins; the tenant value fills the rest.
+// The session's SystemPromptOverride (full system-prompt REPLACE) is
+// session-only; the tenant's ExtraInstructions (additive) is tenant-only —
+// both compose. Returns nil when neither layer set anything.
+//
+// This is the ONE production composition; cmd/harbor's run loop and the
+// integration test both call it (no re-implemented copy — CLAUDE.md §17.4).
+func ComposeLLMOverrides(session *PendingOverride, tenant *planner.LLMOverrides) *planner.LLMOverrides {
+	if session == nil && tenant == nil {
+		return nil
+	}
+	out := &planner.LLMOverrides{}
+	if tenant != nil {
+		*out = *tenant // Model/Temperature/MaxTokens/ReasoningEffort/ExtraInstructions
+	}
+	if session != nil {
+		if session.Model != nil {
+			out.Model = session.Model
+		}
+		if session.Temperature != nil {
+			out.Temperature = session.Temperature
+		}
+		if session.MaxTokens != nil {
+			out.MaxTokens = session.MaxTokens
+		}
+		if session.ReasoningEffort != nil {
+			out.ReasoningEffort = session.ReasoningEffort
+		}
+		if session.SystemPromptOverride != nil {
+			out.SystemPromptOverride = session.SystemPromptOverride
+		}
+	}
+	return out
+}
 
 // Sentinel errors the Service returns. The wire handler maps each onto
 // a canonical Protocol Code + HTTP status; in-process callers compare
@@ -119,6 +158,9 @@ type PendingOverride struct {
 	// SystemPromptOverride, when non-nil, replaces the agent's system
 	// prompt for the next message only.
 	SystemPromptOverride *string
+	// Model, when non-nil, is the validated model the next message's run
+	// requests (the session-level model swap).
+	Model *string
 	// RecordedAt is the runtime instant the override entered the slot.
 	RecordedAt time.Time
 }
@@ -195,6 +237,13 @@ type Service struct {
 	redactor audit.Redactor  // optional — defence-in-depth before the emit
 	logger   *slog.Logger
 	now      Clock
+	// validModels is the set of model names with a configured
+	// `ModelProfile`. When non-empty, a `Model` override outside it is
+	// rejected at set time (fail loud, mirroring the tenant layer). Empty
+	// = no model validation (the field is unset; existing callers/tests
+	// compile unchanged), in which case an unknown model would surface at
+	// the LLM safety edge instead.
+	validModels map[string]struct{}
 }
 
 // Option configures NewService.
@@ -241,6 +290,26 @@ func WithClock(c Clock) Option {
 	return func(s *Service) {
 		if c != nil {
 			s.now = c
+		}
+	}
+}
+
+// WithValidModels wires the set of model names that have a configured
+// `ModelProfile`. When supplied (non-empty), a `Model` override naming a
+// model outside the set is rejected at set time with ErrInvalidRequest
+// (fail loud, mirroring the tenant-default layer). When unsupplied, the
+// Service does not validate the model name — an unknown model surfaces at
+// the LLM safety edge instead.
+func WithValidModels(models []string) Option {
+	return func(s *Service) {
+		if len(models) == 0 {
+			return
+		}
+		s.validModels = make(map[string]struct{}, len(models))
+		for _, m := range models {
+			if m != "" {
+				s.validModels[m] = struct{}{}
+			}
 		}
 	}
 }
@@ -351,6 +420,19 @@ func (s *Service) validate(o prototypes.RunOverrides) (PendingOverride, error) {
 		v := *o.SystemPromptOverride
 		po.SystemPromptOverride = &v
 	}
+	if o.Model != nil && *o.Model != "" {
+		m := *o.Model
+		if len(s.validModels) > 0 {
+			if _, ok := s.validModels[m]; !ok {
+				return PendingOverride{}, fmt.Errorf("%w: unknown model %q (no configured ModelProfile)",
+					ErrInvalidRequest, m)
+			}
+		}
+		// An empty Model is treated as "no model swap" (dropped) so it
+		// never clobbers a tenant default down to the config model — a
+		// session model override means a REAL model, not a clear.
+		po.Model = &m
+	}
 	return po, nil
 }
 
@@ -367,6 +449,7 @@ func (s *Service) emitAudit(ctx context.Context, id identity.Identity, po Pendin
 		slog.Bool("set_temperature", po.Temperature != nil),
 		slog.Bool("set_max_tokens", po.MaxTokens != nil),
 		slog.Bool("set_system_prompt", po.SystemPromptOverride != nil),
+		slog.Bool("set_model", po.Model != nil),
 	}
 	if s.bus == nil {
 		s.logger.InfoContext(ctx, "runs/protocol: override recorded (bus not wired — audit logged only)", logAttrs...)
@@ -379,6 +462,7 @@ func (s *Service) emitAudit(ctx context.Context, id identity.Identity, po Pendin
 		SetTemperature:     po.Temperature != nil,
 		SetMaxTokens:       po.MaxTokens != nil,
 		SetSystemPrompt:    po.SystemPromptOverride != nil,
+		SetModel:           po.Model != nil,
 		OccurredAt:         at,
 	}
 	ev := events.Event{

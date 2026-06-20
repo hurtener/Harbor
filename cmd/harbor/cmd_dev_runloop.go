@@ -92,6 +92,7 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
+	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -183,6 +184,15 @@ type perTaskRunLoopDriverOpts struct {
 	// swap lands on this run (next-turn relative to the admin's set), never
 	// mid-flight.
 	tenantOverrides tenantOverrideResolver
+
+	// sessionOverrides is the in-process pending-override Store the
+	// `runs.set_overrides` Service writes into. The driver Consumes the
+	// session's pending override at run start (one-shot) and composes it
+	// OVER the tenant default (session › tenant › config). OPTIONAL — a
+	// nil Store means "no session overrides" (the run uses tenant/config
+	// only). It is the SAME Store handed to the runs Service so a set and
+	// the consume meet.
+	sessionOverrides *runsprotocol.Store
 }
 
 // tenantOverrideResolver is the narrow read seam the run loop uses to
@@ -232,6 +242,9 @@ type perTaskRunLoopDriver struct {
 
 	// admin-set tenant-default override resolver (nil = none).
 	tenantOverrides tenantOverrideResolver
+
+	// session-level pending-override Store, Consumed at run start (nil = none).
+	sessionOverrides *runsprotocol.Store
 
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
@@ -298,6 +311,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		// disposition policy passthrough.
 		dispositionPolicy: opts.dispositionPolicy,
 		tenantOverrides:   opts.tenantOverrides,
+		sessionOverrides:  opts.sessionOverrides,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 		tokenBudget:       opts.tokenBudget,
 		compression:       opts.compression,
@@ -472,30 +486,49 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 // (driver shutdown raced with Run return), the Mark* call may fail
 // with a context error; this is logged at Debug — the FSM transition
 // the operator wanted is moot because the binary is shutting down.
-// resolveLLMOverrides reads the admin-set tenant default for the run's
-// LLM parameters from the resolver and projects it onto the planner's
-// per-run override bundle. A nil resolver or a tenant with no record
-// returns (nil, nil) — the run then uses the agent/config defaults. A
-// resolver error is returned to the caller (which fails the run loudly).
+// resolveLLMOverrides resolves the effective per-run LLM-parameter
+// override at run start by composing the two layers in precedence order
+// **session › tenant › config**:
+//
+//   - the TENANT default (admin-set, persistent) is read from the
+//     resolver — model / temperature / max-tokens / reasoning-effort /
+//     additive extra-instructions;
+//   - the SESSION override (operator-set via `runs.set_overrides`,
+//     one-shot) is Consumed from the Store and, where present, WINS over
+//     the tenant default per field; it also carries the full
+//     system-prompt REPLACE (a session-only affordance).
+//
+// A nil result means "no overrides — use the agent/config defaults". A
+// tenant-resolver error is returned (the caller fails the run loudly);
+// the session Consume cannot error (in-process map read).
 func (d *perTaskRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quadruple) (*planner.LLMOverrides, error) {
-	if d.tenantOverrides == nil {
-		return nil, nil
+	// Tenant arm.
+	var tenant *planner.LLMOverrides
+	if d.tenantOverrides != nil {
+		spec, set, err := d.tenantOverrides.Get(ctx, q.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		if set {
+			tenant = &planner.LLMOverrides{
+				Model:             spec.Model,
+				Temperature:       spec.Temperature,
+				MaxTokens:         spec.MaxTokens,
+				ReasoningEffort:   spec.ReasoningEffort,
+				ExtraInstructions: spec.ExtraInstructions,
+			}
+		}
 	}
-	spec, set, err := d.tenantOverrides.Get(ctx, q.TenantID)
-	if err != nil {
-		return nil, err
+	// Session arm — Consume the one-shot pending override (read-once).
+	var session *runsprotocol.PendingOverride
+	if d.sessionOverrides != nil {
+		if po, found := d.sessionOverrides.Consume(q.Identity); found {
+			session = &po
+		}
 	}
-	if !set {
-		return nil, nil
-	}
-	ov := &planner.LLMOverrides{
-		Model:             spec.Model,
-		Temperature:       spec.Temperature,
-		MaxTokens:         spec.MaxTokens,
-		ReasoningEffort:   spec.ReasoningEffort,
-		ExtraInstructions: spec.ExtraInstructions,
-	}
-	return ov, nil
+	// Compose via the single production function (shared with the
+	// integration test — CLAUDE.md §17.4).
+	return runsprotocol.ComposeLLMOverrides(session, tenant), nil
 }
 
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
