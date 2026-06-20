@@ -130,6 +130,11 @@
           "key": "skills",
           "type": "object",
           "ref": "AgentConfigSkillsDiff"
+        },
+        {
+          "key": "tool_exposure",
+          "type": "object",
+          "ref": "AgentConfigToolExposureDiff"
         }
       ]
     },
@@ -243,6 +248,12 @@
           "type": "object",
           "ref": "AgentConfigSkillsSelection",
           "optional": true
+        },
+        {
+          "key": "tool_exposure",
+          "type": "object",
+          "ref": "AgentConfigToolExposure",
+          "optional": true
         }
       ]
     },
@@ -335,6 +346,39 @@
       ]
     },
     "AgentConfigSetRevisionResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSetToolExposureRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "tool_exposure",
+          "type": "object",
+          "ref": "AgentConfigToolExposure"
+        }
+      ]
+    },
+    "AgentConfigSetToolExposureResponse": {
       "home": "types",
       "fields": [
         {
@@ -553,6 +597,46 @@
         {
           "key": "protocol_version",
           "type": "string"
+        }
+      ]
+    },
+    "AgentConfigToolExposure": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "paused_servers",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "disabled_tools",
+          "type": "array",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigToolExposureDiff": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "paused_added",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "paused_resumed",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "disabled_added",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "disabled_enabled",
+          "type": "array",
+          "optional": true
         }
       ]
     },
@@ -5668,6 +5752,7 @@
     "agent_config.list_revisions",
     "agent_config.rollback",
     "agent_config.set_revision",
+    "agent_config.set_tool_exposure",
     "agent_config.skills.delete",
     "agent_config.skills.list",
     "agent_config.skills.upsert",
@@ -5817,6 +5902,8 @@
     "llm.provider_file.uploaded",
     "llm.retry_with_feedback",
     "mcp.app_available",
+    "mcp.connection.paused",
+    "mcp.connection.resumed",
     "mcp.raw_html_trust_toggled",
     "mcp.resource_offloaded",
     "mcp.resource_updated",

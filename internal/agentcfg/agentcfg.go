@@ -154,6 +154,9 @@ type Diff struct {
 	ToRevisionID   string
 	// Skills is the structured set-diff of the skills membership.
 	Skills SkillsDiff
+	// ToolExposure is the structured set-diff of the MCP-exposure /
+	// per-tool policy.
+	ToolExposure ToolExposureDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -186,17 +189,24 @@ type Registry interface {
 }
 
 // NormalizePayload returns a defensive, canonicalised copy of payload:
-// the skills membership is sorted and de-duplicated so a re-ordering does
-// not perturb the content hash and the stored form is stable. Other
-// sections are copied verbatim (no nested mutation). It is exported so
-// consumers (the skills service) and the driver share one canonical form.
+// the skills membership and the tool-exposure sets (paused servers,
+// disabled tools) are sorted and de-duplicated so a re-ordering does not
+// perturb the content hash and the stored form is stable. The prompt-layer
+// section is copied verbatim (no nested mutation). It is exported so
+// consumers (the skills + tool-exposure services) and the driver share one
+// canonical form.
 func NormalizePayload(p ConfigPayload) ConfigPayload {
 	out := ConfigPayload{
 		PromptLayers: p.PromptLayers,
-		ToolExposure: p.ToolExposure,
 	}
 	if p.Skills != nil {
 		out.Skills = &SkillsSelection{Names: sortDedup(p.Skills.Names)}
+	}
+	if p.ToolExposure != nil {
+		out.ToolExposure = &ToolExposure{
+			PausedServers: sortDedup(p.ToolExposure.PausedServers),
+			DisabledTools: sortDedup(p.ToolExposure.DisabledTools),
+		}
 	}
 	return out
 }
@@ -263,6 +273,85 @@ func (p ConfigPayload) SkillNames() []string {
 		return nil
 	}
 	return p.Skills.Names
+}
+
+// PausedServers returns the agent's paused MCP server set from a payload,
+// or nil when the payload pins no tool-exposure section. A convenience for
+// the tool-exposure consumer + the run-start projection.
+func (p ConfigPayload) PausedServers() []string {
+	if p.ToolExposure == nil {
+		return nil
+	}
+	return p.ToolExposure.PausedServers
+}
+
+// DisabledTools returns the agent's disabled tool set from a payload, or
+// nil when the payload pins no tool-exposure section.
+func (p ConfigPayload) DisabledTools() []string {
+	if p.ToolExposure == nil {
+		return nil
+	}
+	return p.ToolExposure.DisabledTools
+}
+
+// ToolExposureDiff is the structured set-diff of the MCP-exposure /
+// per-tool policy across two revisions. Deterministic: every slice is
+// sorted.
+type ToolExposureDiff struct {
+	// PausedAdded / PausedResumed are the MCP servers newly paused / newly
+	// resumed (present-in-to-but-not-from / present-in-from-but-not-to).
+	PausedAdded   []string
+	PausedResumed []string
+	// DisabledAdded / DisabledEnabled are the tools newly disabled / newly
+	// re-enabled.
+	DisabledAdded   []string
+	DisabledEnabled []string
+}
+
+// Changed reports whether the tool exposure differs between the two
+// revisions.
+func (d ToolExposureDiff) Changed() bool {
+	return len(d.PausedAdded) > 0 || len(d.PausedResumed) > 0 ||
+		len(d.DisabledAdded) > 0 || len(d.DisabledEnabled) > 0
+}
+
+// DiffToolExposure computes the structured set-diff of two tool-exposure
+// states. Exported so the diff is one canonical implementation shared by
+// the driver and tests.
+func DiffToolExposure(from, to ConfigPayload) ToolExposureDiff {
+	pAdded, pResumed := setDiff(from.PausedServers(), to.PausedServers())
+	dAdded, dEnabled := setDiff(from.DisabledTools(), to.DisabledTools())
+	return ToolExposureDiff{
+		PausedAdded:     pAdded,
+		PausedResumed:   pResumed,
+		DisabledAdded:   dAdded,
+		DisabledEnabled: dEnabled,
+	}
+}
+
+// setDiff returns (in to but not from, in from but not to), each sorted.
+func setDiff(from, to []string) (added, removed []string) {
+	fromSet := make(map[string]struct{}, len(from))
+	for _, s := range from {
+		fromSet[s] = struct{}{}
+	}
+	toSet := make(map[string]struct{}, len(to))
+	for _, s := range to {
+		toSet[s] = struct{}{}
+	}
+	for s := range toSet {
+		if _, ok := fromSet[s]; !ok {
+			added = append(added, s)
+		}
+	}
+	for s := range fromSet {
+		if _, ok := toSet[s]; !ok {
+			removed = append(removed, s)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
 }
 
 // DiffSkills computes the structured set-diff of two skills memberships.

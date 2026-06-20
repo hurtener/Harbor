@@ -545,19 +545,41 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("mcp surface: %w", err)
 	}
 
+	// The agent-config control plane — the versioned desired-state registry
+	// keyed by the dev agent's registration id. The dev run loop runs a
+	// single configured agent; its config slot is keyed by a deterministic
+	// dev agent id (the binary does not run a multi-agent fleet). The
+	// registry reuses the runtime StateStore for identity isolation. Built
+	// here (before the MCP Apps accessor) so the accessor's app→host exposure
+	// gate can read the registry's CURRENT desired state — the
+	// planner-snapshot / app-call-current asymmetry.
+	const devAgentConfigID = "harbor-dev-agent"
+	agentConfigRegistry, err := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: stack.State, Bus: bus})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("agent-config registry: %w", err)
+	}
+	closers = append(closers, agentConfigRegistry.Close)
+
 	// the MCP Apps host surface — the two
 	// `mcp.servers.read_resource` / `mcp.apps.call_tool` methods that back
 	// the Console's sandboxed-iframe MCP App renderer. ReadResource fetches
 	// `ui://` UI documents from the MCP registry; the app-tool-call proxy
 	// re-enters the SAME tool catalog (with its approval gate + tool-side
 	// OAuth wrappers) a planner uses. Heavy content offloads to the
-	// artifact store by reference (the context-window safety net).
+	// artifact store by reference (the context-window safety net). The
+	// AgentConfig + AgentID wire the app→host exposure gate: an App callback
+	// to a tool whose server is currently paused (or whose tool is disabled)
+	// is rejected against CURRENT desired state, while the live transport
+	// stays warm and any in-flight planner snapshot is undisturbed.
 	appsAccessor, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
 		Registry:    mcpRegistry,
 		Catalog:     toolCat,
 		Store:       artStore,
 		Bus:         bus,
 		ToolContext: mcpToolContext,
+		AgentConfig: agentConfigRegistry,
+		AgentID:     devAgentConfigID,
 		Threshold:   cfg.Artifacts.HeavyOutputThresholdBytes,
 	})
 	if err != nil {
@@ -669,25 +691,16 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		}
 	}
 
-	// The agent-config control plane — the versioned desired-state registry
-	// keyed by the dev agent's registration id. The dev run loop runs a
-	// single configured agent; its config slot is keyed by a deterministic
-	// dev agent id (the binary does not run a multi-agent fleet). The
-	// registry reuses the runtime StateStore for identity isolation. Built
-	// only when the assembled stack opened a StateStore (always true on the
-	// dev path). The skills-control surface drives the SAME SkillStore the
-	// run loop reads at run start, so a skills edit is a versioned,
-	// next-turn-applied revision.
-	const devAgentConfigID = "harbor-dev-agent"
-	agentConfigRegistry, err := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: stack.State, Bus: bus})
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("agent-config registry: %w", err)
-	}
-	closers = append(closers, agentConfigRegistry.Close)
+	// The agent-config control-plane Protocol service over the registry built
+	// earlier (before the MCP Apps accessor, which reads the registry for its
+	// app→host exposure gate). The skills-control surface drives the SAME
+	// SkillStore the run loop reads at run start, so a skills edit is a
+	// versioned, next-turn-applied revision; the tool-exposure surface emits
+	// the `mcp.connection.paused` / `.resumed` overlay events through the bus.
 	agentConfigService, err := agentcfgprotocol.NewService(agentConfigRegistry,
 		agentcfgprotocol.WithLogger(opts.logger),
-		agentcfgprotocol.WithSkillStore(skillStore))
+		agentcfgprotocol.WithSkillStore(skillStore),
+		agentcfgprotocol.WithBus(bus))
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("agent-config/protocol service: %w", err)

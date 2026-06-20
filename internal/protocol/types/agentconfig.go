@@ -29,13 +29,30 @@ type AgentConfigSkillsSelection struct {
 	Names []string `json:"names"`
 }
 
+// AgentConfigToolExposure is the wire projection of an agent's MCP-exposure
+// / per-tool policy in a config revision (exclusion-based): the set of
+// paused MCP servers and the set of individually-disabled tools. Pausing a
+// server excludes its tools from the next run's projection (the live
+// transport stays warm); disabling a tool excludes that one tool. Tools are
+// keyed `<source>_<tool>`; a server's tools share the source id.
+type AgentConfigToolExposure struct {
+	// PausedServers names the MCP source ids excluded from the next run's
+	// projection (resume is a flag flip, not a re-dial).
+	PausedServers []string `json:"paused_servers,omitempty"`
+	// DisabledTools names the individually-disabled tools (`<source>_<tool>`).
+	DisabledTools []string `json:"disabled_tools,omitempty"`
+}
+
 // AgentConfigPayload is the wire projection of an agent-config envelope.
 // Every section is optional so later consumers extend it without a schema
-// break; the first wave wires only Skills.
+// break.
 type AgentConfigPayload struct {
 	// Skills, when non-nil, pins the agent's skills membership for the
 	// revision.
 	Skills *AgentConfigSkillsSelection `json:"skills,omitempty"`
+	// ToolExposure, when non-nil, pins the agent's MCP-exposure / per-tool
+	// policy for the revision.
+	ToolExposure *AgentConfigToolExposure `json:"tool_exposure,omitempty"`
 }
 
 // AgentConfigRevisionView is the wire projection of one immutable config
@@ -71,12 +88,26 @@ type AgentConfigSkillsDiff struct {
 	Removed []string `json:"removed,omitempty"`
 }
 
+// AgentConfigToolExposureDiff is the wire projection of the structured
+// MCP-exposure / per-tool policy set-diff across two revisions.
+type AgentConfigToolExposureDiff struct {
+	// PausedAdded / PausedResumed are the MCP servers newly paused / newly
+	// resumed across the two revisions.
+	PausedAdded   []string `json:"paused_added,omitempty"`
+	PausedResumed []string `json:"paused_resumed,omitempty"`
+	// DisabledAdded / DisabledEnabled are the tools newly disabled / newly
+	// re-enabled across the two revisions.
+	DisabledAdded   []string `json:"disabled_added,omitempty"`
+	DisabledEnabled []string `json:"disabled_enabled,omitempty"`
+}
+
 // AgentConfigDiff is the wire projection of a server-side revision
-// compare. The first wave carries the structured skills set-diff.
+// compare — the structured skills + tool-exposure set-diffs.
 type AgentConfigDiff struct {
-	FromRevisionID string                `json:"from_revision_id"`
-	ToRevisionID   string                `json:"to_revision_id"`
-	Skills         AgentConfigSkillsDiff `json:"skills"`
+	FromRevisionID string                      `json:"from_revision_id"`
+	ToRevisionID   string                      `json:"to_revision_id"`
+	Skills         AgentConfigSkillsDiff       `json:"skills"`
+	ToolExposure   AgentConfigToolExposureDiff `json:"tool_exposure"`
 }
 
 // AgentConfigGetRequest is the `agent_config.get` request — read the
@@ -154,6 +185,25 @@ type AgentConfigRollbackRequest struct {
 // AgentConfigRollbackResponse is the `agent_config.rollback` response —
 // the revision the active pointer now points to.
 type AgentConfigRollbackResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigSetToolExposureRequest is the admin-scoped
+// `agent_config.set_tool_exposure` request — set the agent's MCP-exposure /
+// per-tool policy as a desired-state REPLACE of the tool-exposure section
+// (the skills + prompt sections of the active revision are preserved). The
+// edit records a new config revision and applies to the agent's NEXT run.
+type AgentConfigSetToolExposureRequest struct {
+	Identity     IdentityScope           `json:"identity"`
+	AgentID      string                  `json:"agent_id"`
+	ToolExposure AgentConfigToolExposure `json:"tool_exposure"`
+}
+
+// AgentConfigSetToolExposureResponse is the `agent_config.set_tool_exposure`
+// response — the recorded config revision (or, on an idempotent re-set, the
+// existing active revision).
+type AgentConfigSetToolExposureResponse struct {
 	Revision        AgentConfigRevisionView `json:"revision"`
 	ProtocolVersion string                  `json:"protocol_version"`
 }

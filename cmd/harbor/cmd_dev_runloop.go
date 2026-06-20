@@ -559,6 +559,14 @@ func (d *perTaskRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q i
 	return projection.ActiveSkillViews(ctx, d.agentConfig, d.agentConfigID, q, views)
 }
 
+// projectAgentConfigCatalog builds the run's planner catalog view, applying
+// the agent's active-config tool exposure (paused MCP servers + disabled
+// tools excluded) via the SAME shared projection the devstack twin uses
+// (CLAUDE.md §17.6). Next-turn-only; the live transport stays warm.
+func (d *perTaskRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
+	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.agentConfigID, q, d.catalog, filter)
+}
+
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
@@ -735,13 +743,36 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// AuthScopes are filtered out).
 		// the per-run view is the promoted
 		// `tools.NewPlannerView` — constructed per run (never cached;
-		// the filter carries the run's identity triple).
-		catalogView = tools.NewPlannerView(d.catalog, tools.CatalogFilter{
+		// the filter carries the run's identity triple) — wrapped with the
+		// agent-config tool-exposure projection: a paused MCP server's tools
+		// and any disabled tool are excluded from THIS run's view
+		// (next-turn-only; the live transport stays warm). The active
+		// revision is read ONCE at run start; a registry read error fails the
+		// run LOUDLY (the registry IS the runtime StateStore — an error means
+		// the runtime is unhealthy). The shared projection keeps the cmd +
+		// devstack views identical (CLAUDE.md §17.6).
+		view, vErr := d.projectAgentConfigCatalog(taskCtx, q, tools.CatalogFilter{
 			TenantID:      q.TenantID,
 			UserID:        q.UserID,
 			SessionID:     q.SessionID,
 			GrantedScopes: d.grantedScopes,
 		})
+		if vErr != nil {
+			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: agent-config tool-exposure projection failed; failing run",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", vErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "runtime_fetch_error",
+				Message: "agent-config tool-exposure projection: " + vErr.Error(),
+			}); fErr != nil {
+				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		catalogView = view
 	}
 
 	// wire the planner's event-emit closure so

@@ -49,11 +49,13 @@ import type {
 } from './governance.js';
 import type {
 	AgentConfigPayload,
+	AgentConfigToolExposure,
 	AgentConfigGetResponse,
 	AgentConfigSetRevisionResponse,
 	AgentConfigListRevisionsResponse,
 	AgentConfigDiffResponse,
 	AgentConfigRollbackResponse,
+	AgentConfigSetToolExposureResponse,
 	AgentConfigSkillInput,
 	AgentConfigSkillsListResponse,
 	AgentConfigSkillsUpsertResponse,
@@ -1007,6 +1009,21 @@ export class AgentConfigNamespace {
 			agent_id: agentId,
 			revision_id: revisionId,
 		});
+	}
+	/** `agent_config.set_tool_exposure` — set MCP pause/resume + per-tool
+	 * policy (desired-state replace of the tool-exposure section); records a
+	 * revision + emits `mcp.connection.paused` / `.resumed`. */
+	setToolExposure(
+		agentId: string,
+		toolExposure: AgentConfigToolExposure,
+	): Promise<AgentConfigSetToolExposureResponse> {
+		return this.#t.request<AgentConfigSetToolExposureResponse>(
+			'/v1/agent_config/set_tool_exposure',
+			{
+				agent_id: agentId,
+				tool_exposure: toolExposure as unknown as Record<string, unknown>,
+			},
+		);
 	}
 	/** `agent_config.skills.list` — list the agent's skills (metadata only). */
 	skillsList(agentId: string): Promise<AgentConfigSkillsListResponse> {

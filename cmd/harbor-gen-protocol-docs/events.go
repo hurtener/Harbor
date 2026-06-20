@@ -84,8 +84,10 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	governance.EventTypeKeyRotated:            {Payloads: []reflect.Type{reflect.TypeOf(governance.KeyRotatedPayload{})}},
 
 	// --- Agent-config control plane (internal/agentcfg).
-	agentcfg.EventTypeConfigRevised:  {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.ConfigRevisedPayload{})}},
-	agentcfg.EventTypeConfigReverted: {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.ConfigRevertedPayload{})}},
+	agentcfg.EventTypeConfigRevised:        {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.ConfigRevisedPayload{})}},
+	agentcfg.EventTypeConfigReverted:       {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.ConfigRevertedPayload{})}},
+	agentcfg.EventTypeMCPConnectionPaused:  {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.MCPConnectionPausedPayload{})}},
+	agentcfg.EventTypeMCPConnectionResumed: {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.MCPConnectionResumedPayload{})}},
 
 	// --- Dev-draft lifecycle (harbor dev's dynamic agent scaffolding).
 	devdraft.EventTypeDraftCreated:   {Payloads: []reflect.Type{reflect.TypeOf(devdraft.DraftCreatedPayload{})}},

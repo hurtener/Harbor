@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // ActiveSkillViews applies an agent's active-config skills membership to the
@@ -42,6 +43,41 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, agentID string
 		return views, nil
 	}
 	return FilterSkillViewsByMembership(views, rev.Payload.Skills.Names), nil
+}
+
+// ActivePlannerCatalogView builds the run's planner-facing catalog view at
+// run start, applying the agent's active-config tool exposure: a paused MCP
+// server's tools and any individually-disabled tool are excluded from the
+// view (next-turn projection — the live transport stays WARM). It always
+// returns a usable view: a nil registry, an empty agentID, an agent with no
+// active revision, or an active revision with no tool-exposure section (or an
+// empty one) returns the plain [tools.NewPlannerView] over cat+filter — the
+// backward-compatible "ungated" path. A registry read error is returned so
+// the caller fails the run loudly (CLAUDE.md §13): no silent fall-through to
+// the unfiltered view on a read failure.
+//
+// The active revision is read ONCE per run; the returned view is fresh, so
+// concurrent / in-flight runs keep their own snapshot (the concurrent-reuse
+// contract). Only the identity triple is used (the registry is
+// identity-scoped, never keyed by run).
+func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
+	base := tools.NewPlannerView(cat, filter)
+	if reg == nil || agentID == "" {
+		return base, nil
+	}
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || rev.Payload.ToolExposure == nil {
+		return base, nil
+	}
+	paused := rev.Payload.PausedServers()
+	disabled := rev.Payload.DisabledTools()
+	if len(paused) == 0 && len(disabled) == 0 {
+		return base, nil
+	}
+	return tools.NewExclusionView(base, paused, disabled), nil
 }
 
 // FilterSkillViewsByMembership keeps only the views whose Name is in the

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
@@ -46,6 +47,8 @@ type AppsAccessor struct {
 	store     artifacts.ArtifactStore
 	bus       events.EventBus
 	toolCtx   *ToolContextStore
+	agentCfg  agentcfg.Registry // optional — nil ⇒ the app-call exposure gate is inert
+	agentID   string            // the agent slot the gate reads current desired-state from
 	threshold int
 	clock     func() time.Time
 }
@@ -72,6 +75,18 @@ type AppsDeps struct {
 	// — the same store the MCP providers capture through, so a discovered
 	// app's context is readable here. Mandatory.
 	ToolContext *ToolContextStore
+	// AgentConfig is the agent-config desired-state registry the app→host
+	// call gate reads CURRENT exposure from (the planner-snapshot /
+	// app-call-current asymmetry): an App callback to a tool whose server is
+	// currently paused — or whose tool is currently disabled — is rejected,
+	// while an in-flight planner snapshot is undisturbed. Optional: a nil
+	// registry (or empty AgentID) leaves the gate inert (backward
+	// compatible). The transport is NEVER consulted — pause is desired-state,
+	// not transport state; the live transport stays warm.
+	AgentConfig agentcfg.Registry
+	// AgentID is the agent slot the gate reads desired-state from. Required
+	// when AgentConfig is set; ignored when it is nil.
+	AgentID string
 	// Threshold is the heavy-content threshold in bytes. ≤ 0 falls back
 	// to artifacts' shared default.
 	Threshold int
@@ -83,6 +98,17 @@ type AppsDeps struct {
 // ErrAppsMisconfigured — NewAppsAccessor was called with a missing
 // mandatory dependency. Fails closed.
 var ErrAppsMisconfigured = errors.New("mcpconsole: AppsAccessor missing a mandatory dependency")
+
+// ErrAppToolExposureDenied — an App app→host tool call targeted a tool
+// whose MCP server is currently paused, or a tool that is currently
+// disabled, in the agent's active config. It is an authorization rejection
+// (mapped to CodeScopeMismatch at the wire edge), the functional basis for
+// the operator-legible "paused by a system administrator" overlay. Its
+// message carries the stable "paused or disabled by agent configuration"
+// marker the Protocol edge classifies on (the `protocol` package does not
+// import this package, mirroring the existing not-found / identity-missing
+// markers).
+var ErrAppToolExposureDenied = errors.New("mcpconsole: tool unavailable — paused or disabled by agent configuration")
 
 // NewAppsAccessor builds the MCP Apps host adapter. Registry, Catalog,
 // Store, and Bus are mandatory; a nil fails loud.
@@ -116,6 +142,8 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 		store:     deps.Store,
 		bus:       deps.Bus,
 		toolCtx:   deps.ToolContext,
+		agentCfg:  deps.AgentConfig,
+		agentID:   deps.AgentID,
 		threshold: threshold,
 		clock:     clock,
 	}, nil
@@ -211,6 +239,17 @@ func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawM
 	if desc.Invoke == nil {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: tool %q registered without an Invoke function", tool)
 	}
+	// The app→host current-state gate (the planner-snapshot / app-call-
+	// current asymmetry): an App callback is a NEW invocation fired after
+	// the run, so it is gated against the CURRENT agent-config desired
+	// state — NOT the run's stale snapshot, and NOT the transport's
+	// online/warm state (a paused server stays connected). Once an admin
+	// pauses the tool's server (or disables the tool), the App's callbacks
+	// are rejected here, before any side effect, while any still-running
+	// planner snapshot is undisturbed.
+	if err := a.gateToolExposure(ctx, tool, desc.Tool.Source); err != nil {
+		return protocol.MCPAppToolResultRow{}, err
+	}
 	// Invoke the wrapped descriptor. For a gated tool this parks on the
 	// unified pause primitive inside the approval wrapper before any side
 	// effect — the proxy is a re-entry, not a bypass.
@@ -242,6 +281,44 @@ func (a *AppsAccessor) CallTool(ctx context.Context, tool string, args json.RawM
 	}
 	out.Artifact = row
 	return out, nil
+}
+
+// gateToolExposure rejects an app→host tool call whose MCP source server is
+// in the agent's CURRENT active-revision paused set, or whose tool name is
+// in the current disabled set. It reads desired-state from the agent-config
+// registry — never the run snapshot, never the transport state (the live
+// transport stays warm while paused). The gate is INERT when no registry /
+// agent id is wired (backward compatible). Identity is mandatory: a ctx
+// without a triple fails closed. A registry read error fails the call loud
+// (no silent fall-through, CLAUDE.md §13).
+func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, source tools.ToolSourceID) error {
+	if a.agentCfg == nil || a.agentID == "" {
+		return nil
+	}
+	id, ok := identity.From(ctx)
+	if !ok || id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
+		return fmt.Errorf("mcpconsole: app-call exposure gate: %w", mcp.ErrIdentityMissing)
+	}
+	rev, has, err := a.agentCfg.Active(ctx, identity.Quadruple{Identity: id}, a.agentID)
+	if err != nil {
+		return fmt.Errorf("mcpconsole: app-call exposure gate: read active config: %w", err)
+	}
+	if !has || rev.Payload.ToolExposure == nil {
+		return nil
+	}
+	if source != "" {
+		for _, s := range rev.Payload.PausedServers() {
+			if tools.ToolSourceID(s) == source {
+				return fmt.Errorf("%w: tool %q is on server %q, which is paused", ErrAppToolExposureDenied, toolName, source)
+			}
+		}
+	}
+	for _, n := range rev.Payload.DisabledTools() {
+		if n == toolName {
+			return fmt.Errorf("%w: tool %q is disabled", ErrAppToolExposureDenied, toolName)
+		}
+	}
+	return nil
 }
 
 // ToolContext implements protocol.AppToolContextReader. It resolves the
