@@ -5724,3 +5724,45 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 **§4.3 deviations.** None — this is the §6.16/D-066 privilege-tier split applied to config mutation.
 
 **Cross-references.** D-234 (the registry primitive these scopes gate), D-066 (fleet observation vs control privilege tiers — the precedent), D-219 (authority from verified ctx, not body), D-231/D-233 (the admin-scope governance-verb gate this mirrors), D-232 (the per-run session override, distinct from the durable base-layer edit). RFC §6.16, §6.15, §5.5 (JWT scope). briefs 11 + 09. CLAUDE.md §6 (identity), §7 (no credential passthrough; approval-gated privileged actions), §13 (admin-scope gate; no identity-downgrading knobs). Plans: `docs/plans/phase-92a-agent-config-registry.md`, `phase-92c-agent-config-skills.md`, `phase-92d-agent-config-mcp-policy.md`.
+
+---
+
+## D-236 — Phase 92e: layered system prompt — operator base + user layer, composition order is the boundary
+
+**Date:** 2026-06-20
+
+**Status:** Accepted
+
+**Context.** The agent-config registry (92a) declared `ConfigPayload.PromptLayers{Base, User}` forward-compatibly. D-235 §3 pinned that the layered prompt's data model IS the security boundary (operator-owned base; a user layer that composes above without mutating it). Phase 92e wires it, and must define how the durable layers compose with the per-run override systems Phase 92b already shipped (the session one-shot `SystemPromptOverride` REPLACE + the additive `ExtraInstructions`).
+
+**Decision.**
+
+1. **Two durable layers, resolved at run start (next-turn, D-025).** The active revision's `PromptLayers.Base`, when set, becomes the run's base system prompt (overriding the agent's configured default base); an unset base inherits the configured default (backward compatible). `PromptLayers.User`, when set, composes ABOVE the base in the lower-trust guidance position (brief 13) — appended, never a base replace, never a position before the base. The composition is read once at run start via the shared `projection.ActivePromptLayers` (cmd/harbor + devstack twin, §17.6).
+2. **The composition order is the structural boundary.** Because `Base` and `User` are distinct fields and `User` is always appended below `Base`, a writer of only `User` (the 92g session-user tier) physically cannot alter or precede the operator guardrails — the data model carries the guarantee, the scope gate (92g) is defence-in-depth.
+3. **Precedence with the 92b per-run overrides (pinned + tested).** The effective order is: **durable base layer → durable user layer → tenant additive `ExtraInstructions` → session additive `ExtraInstructions`**, and the session one-shot `SystemPromptOverride` (92b) REPLACES the whole base+user spine for its single message (it is a per-message escape hatch, not a durable edit). This is documented in the prompt-builder godoc and pinned by a test so the durable-layer and per-run-override systems never silently fight.
+4. **A prompt edit is a config revision.** `agent_config.set_prompt_layers` REPLACES only the `PromptLayers` section, preserving Skills + ToolExposure (the bidirectional section-merge invariant 92d established); it records a revision (diff renders the base/user text delta; rollback repoints) and emits `agent.config.revised`. Admin-scoped; authority from the verified ctx (D-219/D-235).
+
+**§4.3 deviations.** None — implements the D-235 §3 prompt-layer model on the 92a-declared envelope.
+
+**Cross-references.** D-234 (the registry/revision/projection primitive), D-235 (the layered-prompt-as-boundary + scope matrix), D-232 (the 92b per-run `SystemPromptOverride`/`ExtraInstructions` this composes with), D-025 (next-turn snapshot). RFC §6.2 (ReAct prompt sections), §6.16. briefs 13 + 11. Plan: `docs/plans/phase-92e-agent-config-layered-prompt.md`.
+
+---
+
+## D-237 — Phase 92f: runtime MCP attach — explicit async lifecycle, OAuth via the unified pause/resume primitive, stdio allowlist-gated
+
+**Date:** 2026-06-20
+
+**Status:** Accepted
+
+**Context.** Pause/resume (92d) is a projection-time flag on an already-attached server. Adding a genuinely NEW MCP connection over the Protocol is the separable hard piece (the 92a master-plan block flagged it): it needs an async dial + the MCP `initialize` handshake + possibly OAuth. The boot-time `Attach` exists; this adds a post-boot, identity-scoped, admin-driven attach.
+
+**Decision.**
+
+1. **An explicit, fail-loud lifecycle.** The add drives dial → `initialize` handshake → Discover → register, modelled as explicit states `pending → online | failed | auth_required`. A failure at any step records a `failed` connection with the reason and emits a loud lifecycle event; a half-attached server is NEVER registered (CLAUDE.md §13 — no silent drop). The connection descriptor is recorded as an agent-config revision (diff/rollback via 92a), preserving the other sections.
+2. **OAuth reuses the unified pause/resume primitive — no new auth dance.** A server that requires authorization parks on the existing pause/resume coordinator (tool-side OAuth, §7.4 lineage); the agent-bound token keys by the registration `agent_id` (D-059). A resume completes the attach. The runtime emits state; the Console (92h) renders the "awaiting authorization / paused by an administrator" advisory — it never reaches into the flow (D-061).
+3. **Adding a stdio server is the most privileged action — allowlist + approval gated.** A stdio server runs an operator-supplied command (an RCE surface). Beyond the admin scope (D-235), adding stdio is allowlist-gated and/or approval-gated via the pause/resume primitive, fail-closed, and audited; argv-form only (§7 rule 8 — never `sh -c`). The plan ships no path where a plain-admin token spawns an arbitrary process without the allowlist/approval.
+4. **The driver stays a transport; the service orchestrates.** The MCP driver exposes a guarded runtime-attach entry point; the agentcfg protocol service drives it + the registry + the pause/resume routing — the driver remains unaware of the registry (the §4.4 boundary).
+
+**§4.3 deviations.** Scope is MCP-only (HTTP/A2A add deferred); destructive remove of an existing connection is deferred (pause/resume covers the disable need). Documented in the plan's non-goals.
+
+**Cross-references.** D-234 (registry/revision), D-235 (admin scope + the stdio-approval rule), D-173 (the app surface the asymmetry gate protects), D-059 (agent-bound token keying), §7.4 (tool-side OAuth + the unified pause/resume primitive). RFC §6.4, §7.4, §6.16. briefs 14 + 09. Plan: `docs/plans/phase-92f-agent-config-add-connection.md`.
