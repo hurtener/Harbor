@@ -13,6 +13,7 @@
 //	POST /v1/agent_config/rollback        — repoint the active pointer
 //	POST /v1/agent_config/set_tool_exposure — set MCP pause/resume + per-tool policy
 //	POST /v1/agent_config/set_prompt_layers — set the layered system prompt (base + user)
+//	POST /v1/agent_config/add_mcp_connection — add a NEW MCP server connection (dial + handshake + OAuth)
 //	POST /v1/agent_config/skills/list     — list the agent's skills
 //	POST /v1/agent_config/skills/upsert   — upsert a skill (records a rev)
 //	POST /v1/agent_config/skills/delete   — delete a skill (records a rev)
@@ -146,6 +147,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSetToolExposure(w, r, body, wireID)
 	case "set_prompt_layers":
 		h.serveSetPromptLayers(w, r, body, wireID)
+	case "add_mcp_connection":
+		h.serveAddMCPConnection(w, r, body, wireID)
 	case "skills/list":
 		h.serveSkillsList(w, r, body, wireID)
 	case "skills/upsert":
@@ -277,6 +280,23 @@ func (h *AgentConfigHandler) serveSetPromptLayers(w http.ResponseWriter, r *http
 	writeAgentConfigJSON(w, r, resp, h.logger)
 }
 
+func (h *AgentConfigHandler) serveAddMCPConnection(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAddMCPConnectionRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAddMCPConnection) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.AddMCPConnection(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigAddMCPConnection, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
 func (h *AgentConfigHandler) serveSkillsList(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
 	var req prototypes.AgentConfigSkillsListRequest
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSkillsList) {
@@ -375,6 +395,20 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrSkillsUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": skills control is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrConnectionAttachUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			m + ": mcp connection attach is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrStdioNotAllowed):
+		// The most privileged action's fail-closed RCE gate — a stdio add of
+		// an un-allowlisted command is an authorization failure (CodeScopeMismatch).
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrInvalidConnection):
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrCoordinatorUnavailable):
+		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": " + err.Error()

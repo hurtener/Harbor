@@ -697,10 +697,25 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// SkillStore the run loop reads at run start, so a skills edit is a
 	// versioned, next-turn-applied revision; the tool-exposure surface emits
 	// the `mcp.connection.paused` / `.resumed` overlay events through the bus.
-	agentConfigService, err := agentcfgprotocol.NewService(agentConfigRegistry,
+	// the runtime MCP-attach concrete (the §4.4 boundary glue) drives the real
+	// dial → initialize → discover → register lifecycle for an admin add of a
+	// NEW MCP connection against the LIVE catalog + registry + bus. Its closer
+	// drains any runtime-added subprocess on teardown. Built only when the
+	// catalog band is present (a no-catalog stack cannot attach tools).
+	agentConfigOpts := []agentcfgprotocol.Option{
 		agentcfgprotocol.WithLogger(opts.logger),
 		agentcfgprotocol.WithSkillStore(skillStore),
-		agentcfgprotocol.WithBus(bus))
+		agentcfgprotocol.WithBus(bus),
+		agentcfgprotocol.WithCoordinator(coord),
+		agentcfgprotocol.WithStdioAllowlist(mcpAddStdioAllowlist(cfg)),
+	}
+	if toolCat != nil && mcpRegistry != nil {
+		mcpAttacher := newDevMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.logger,
+			identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession})
+		closers = append(closers, mcpAttacher.Close)
+		agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(mcpAttacher))
+	}
+	agentConfigService, err := agentcfgprotocol.NewService(agentConfigRegistry, agentConfigOpts...)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("agent-config/protocol service: %w", err)

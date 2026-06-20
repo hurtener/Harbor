@@ -329,6 +329,20 @@ const (
 	// next run. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
 	// The wire-transport route is `POST /v1/agent_config/set_prompt_layers`.
 	MethodAgentConfigSetPromptLayers Method = "agent_config.set_prompt_layers"
+	// MethodAgentConfigAddMCPConnection — admin verb: adds a NEW MCP server
+	// connection (the separable async-dial path). The runtime drives the real
+	// attach lifecycle (dial → initialize handshake → discover → register),
+	// records the non-secret descriptor as a config revision (preserving the
+	// skills + tool-exposure + prompt-layer sections), and emits the
+	// `mcp.connection.pending` then a terminal `mcp.connection.added` /
+	// `.failed` / `.auth_required` lifecycle event. A failure records no
+	// revision and never registers a half-attached server (fail loud). Adding
+	// a stdio server (an RCE surface) is gated beyond admin on an operator
+	// allowlist (fail-closed; argv-form only). An auth-required server parks
+	// on the unified pause/resume primitive; a resume completes the attach.
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
+	// wire-transport route is `POST /v1/agent_config/add_mcp_connection`.
+	MethodAgentConfigAddMCPConnection Method = "agent_config.add_mcp_connection"
 
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
@@ -789,6 +803,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsDelete:      {},
 	MethodAgentConfigSetToolExposure:   {},
 	MethodAgentConfigSetPromptLayers:   {},
+	MethodAgentConfigAddMCPConnection:  {},
 	MethodPauseList:                    {},
 	MethodTopologySnapshot:             {},
 	MethodArtifactsList:                {},
@@ -1017,24 +1032,26 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the ten
+// canonicalAgentConfigMethods is the closed set of the eleven
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
-// (set_tool_exposure), and the layered-prompt verb (set_prompt_layers).
-// IsAgentConfigMethod is O(1); the agent-config wire handler branches on the
-// trailing path segment to dispatch.
+// (set_tool_exposure), the layered-prompt verb (set_prompt_layers), and the
+// add-connection verb (add_mcp_connection). IsAgentConfigMethod is O(1); the
+// agent-config wire handler branches on the trailing path segment to
+// dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
-	MethodAgentConfigGet:             {},
-	MethodAgentConfigSetRevision:     {},
-	MethodAgentConfigListRevisions:   {},
-	MethodAgentConfigDiff:            {},
-	MethodAgentConfigRollback:        {},
-	MethodAgentConfigSkillsList:      {},
-	MethodAgentConfigSkillsUpsert:    {},
-	MethodAgentConfigSkillsDelete:    {},
-	MethodAgentConfigSetToolExposure: {},
-	MethodAgentConfigSetPromptLayers: {},
+	MethodAgentConfigGet:              {},
+	MethodAgentConfigSetRevision:      {},
+	MethodAgentConfigListRevisions:    {},
+	MethodAgentConfigDiff:             {},
+	MethodAgentConfigRollback:         {},
+	MethodAgentConfigSkillsList:       {},
+	MethodAgentConfigSkillsUpsert:     {},
+	MethodAgentConfigSkillsDelete:     {},
+	MethodAgentConfigSetToolExposure:  {},
+	MethodAgentConfigSetPromptLayers:  {},
+	MethodAgentConfigAddMCPConnection: {},
 }
 
 // canonicalAgentConfigAdminMethods is the closed sub-set of the
@@ -1044,15 +1061,16 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 // also admin-gated at the wire handler (the whole family is admin-scoped),
 // but this set names the WRITES for callers that distinguish them.
 var canonicalAgentConfigAdminMethods = map[Method]struct{}{
-	MethodAgentConfigSetRevision:     {},
-	MethodAgentConfigRollback:        {},
-	MethodAgentConfigSkillsUpsert:    {},
-	MethodAgentConfigSkillsDelete:    {},
-	MethodAgentConfigSetToolExposure: {},
-	MethodAgentConfigSetPromptLayers: {},
+	MethodAgentConfigSetRevision:      {},
+	MethodAgentConfigRollback:         {},
+	MethodAgentConfigSkillsUpsert:     {},
+	MethodAgentConfigSkillsDelete:     {},
+	MethodAgentConfigSetToolExposure:  {},
+	MethodAgentConfigSetPromptLayers:  {},
+	MethodAgentConfigAddMCPConnection: {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the ten
+// IsAgentConfigMethod reports whether m is one of the eleven
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

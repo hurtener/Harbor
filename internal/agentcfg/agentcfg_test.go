@@ -112,3 +112,58 @@ func TestOpen_UnknownDriver(t *testing.T) {
 		t.Fatalf("unknown driver must fail")
 	}
 }
+
+// TestNormalizePayload_Connections_CanonicalForm proves the connections
+// section is canonicalised: sorted by name, name-unique (last wins), with the
+// argv Command order preserved verbatim. Equal states hash equal.
+func TestNormalizePayload_Connections_CanonicalForm(t *testing.T) {
+	a := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
+		{Name: "zeta", Transport: agentcfg.MCPTransportStdio, Command: []string{"/bin/z", "--x"}},
+		{Name: "alpha", Transport: agentcfg.MCPTransportHTTP, URL: "https://a"},
+		{Name: "zeta", Transport: agentcfg.MCPTransportStdio, Command: []string{"/bin/z2"}}, // re-add: last wins
+	}}}
+	b := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
+		{Name: "alpha", Transport: agentcfg.MCPTransportHTTP, URL: "https://a"},
+		{Name: "zeta", Transport: agentcfg.MCPTransportStdio, Command: []string{"/bin/z2"}},
+	}}}
+	ha, err := agentcfg.ContentHash(a)
+	if err != nil {
+		t.Fatalf("hash a: %v", err)
+	}
+	hb, err := agentcfg.ContentHash(b)
+	if err != nil {
+		t.Fatalf("hash b: %v", err)
+	}
+	if ha != hb {
+		t.Fatalf("re-ordered + re-added connections must hash equal: %s != %s", ha, hb)
+	}
+	norm := agentcfg.NormalizePayload(a).ConnectionDescriptors()
+	if len(norm) != 2 || norm[0].Name != "alpha" || norm[1].Name != "zeta" {
+		t.Fatalf("normalize not sorted/deduped: %+v", norm)
+	}
+	if len(norm[1].Command) != 1 || norm[1].Command[0] != "/bin/z2" {
+		t.Errorf("last-wins dedup failed: %+v", norm[1])
+	}
+}
+
+// TestDiffConnections proves the structured by-name set-diff.
+func TestDiffConnections(t *testing.T) {
+	from := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
+		{Name: "keep", Transport: agentcfg.MCPTransportHTTP, URL: "https://k"},
+		{Name: "drop", Transport: agentcfg.MCPTransportHTTP, URL: "https://d"},
+	}}}
+	to := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
+		{Name: "keep", Transport: agentcfg.MCPTransportHTTP, URL: "https://k"},
+		{Name: "add", Transport: agentcfg.MCPTransportHTTP, URL: "https://n"},
+	}}}
+	d := agentcfg.DiffConnections(from, to)
+	if !d.Changed() {
+		t.Fatal("expected a change")
+	}
+	if len(d.Added) != 1 || d.Added[0] != "add" {
+		t.Errorf("added = %+v, want [add]", d.Added)
+	}
+	if len(d.Removed) != 1 || d.Removed[0] != "drop" {
+		t.Errorf("removed = %+v, want [drop]", d.Removed)
+	}
+}

@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 114 canonical event types a Harbor Runtime can publish, read from the live
+The 118 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -544,6 +544,54 @@ Payload `AppAvailablePayload` — safe payload (delivered typed, verbatim).
 | `RawHTMLTrusted` | `bool` |  |
 | `OccurredAt` | `time.Time` |  |
 
+## `mcp.connection.added`
+
+Payload `MCPConnectionLifecyclePayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ServerID` | `string` |  |
+| `Transport` | `string` |  |
+| `State` | `string` |  |
+| `RevisionID` | `string` |  |
+| `PauseToken` | `string` |  |
+| `Reason` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `mcp.connection.auth_required`
+
+Payload `MCPConnectionLifecyclePayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ServerID` | `string` |  |
+| `Transport` | `string` |  |
+| `State` | `string` |  |
+| `RevisionID` | `string` |  |
+| `PauseToken` | `string` |  |
+| `Reason` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `mcp.connection.failed`
+
+Payload `MCPConnectionLifecyclePayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ServerID` | `string` |  |
+| `Transport` | `string` |  |
+| `State` | `string` |  |
+| `RevisionID` | `string` |  |
+| `PauseToken` | `string` |  |
+| `Reason` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
 ## `mcp.connection.paused`
 
 Payload `MCPConnectionPausedPayload` — safe payload (delivered typed, verbatim).
@@ -554,6 +602,22 @@ Payload `MCPConnectionPausedPayload` — safe payload (delivered typed, verbatim
 | `AgentID` | `string` |  |
 | `ServerID` | `string` |  |
 | `RevisionID` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `mcp.connection.pending`
+
+Payload `MCPConnectionLifecyclePayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ServerID` | `string` |  |
+| `Transport` | `string` |  |
+| `State` | `string` |  |
+| `RevisionID` | `string` |  |
+| `PauseToken` | `string` |  |
+| `Reason` | `string` |  |
 | `OccurredAt` | `time.Time` |  |
 
 ## `mcp.connection.resumed`

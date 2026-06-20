@@ -337,6 +337,15 @@ type AssembleOpts struct {
 	// (it would clobber a caller-managed scratch dir). Use t.TempDir
 	// + DraftRoot together if you want both control and auto-cleanup.
 	DraftRoot string
+
+	// MCPStdioAllowlist is the fail-closed allowlist of permitted stdio
+	// commands (matched on argv[0]) for the admin-driven runtime add of a
+	// NEW MCP connection (`agent_config.add_mcp_connection`). Mirrors
+	// production `tools.mcp_add_connection.stdio_allowlist`. Empty rejects
+	// every stdio add (the secure default); an integration test that drives a
+	// real stdio fixture through the add path supplies the fixture binary path
+	// here.
+	MCPStdioAllowlist []string
 }
 
 // DevStack is the bundle Assemble returns. Fields are nil when the
@@ -1159,9 +1168,24 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// driver projects at run start (D-094 mirror of cmd/harbor) — so a
 		// skills edit through the mounted route reaches the next run.
 		if stack.AgentConfig != nil {
-			agentConfigService, acErr := agentcfgprotocol.NewService(stack.AgentConfig,
+			agentConfigOpts := []agentcfgprotocol.Option{
 				agentcfgprotocol.WithSkillStore(stack.Skills),
-				agentcfgprotocol.WithBus(bus))
+				agentcfgprotocol.WithBus(bus),
+				agentcfgprotocol.WithCoordinator(stack.Coordinator),
+				agentcfgprotocol.WithStdioAllowlist(append([]string(nil), opts.MCPStdioAllowlist...)),
+			}
+			// the runtime MCP-attach concrete (D-094 mirror of cmd/harbor's
+			// devMCPConnectionAttacher) drives the real dial → initialize →
+			// discover → register lifecycle for an admin add of a NEW MCP
+			// connection against the LIVE catalog + registry + bus. Built only
+			// when the catalog band is present.
+			if stack.Catalog != nil && stack.MCPRegistry != nil {
+				attacher := NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, nil,
+					resolveDevIdentity(opts))
+				stack.closeFns = append(stack.closeFns, attacher.Close)
+				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(attacher))
+			}
+			agentConfigService, acErr := agentcfgprotocol.NewService(stack.AgentConfig, agentConfigOpts...)
 			if acErr != nil {
 				return stack, fmt.Errorf("agent-config/protocol service: %w", acErr)
 			}
