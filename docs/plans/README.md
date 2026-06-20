@@ -178,9 +178,10 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |92a | Agent-config control plane: versioned desired-state registry + Protocol diff/rollback (the primitive) | agentcfg | §6.15, §6.16, §7.4 | 86, 87, 92b, 53a, 110a | 85% | Post-V1 |
 |92c | Agent-config: skills control (first consumer of 92a) | agentcfg/skills | §6.7, §6.16 | 92a, 37 | 85% | Post-V1 |
 |92d | Agent-config: MCP pause/resume + per-tool policy (next-turn projection) | agentcfg/tools | §6.4, §6.16 | 92a, 110a, 109i | 85% | Post-V1 |
-|92e | Agent-config: layered system prompt (operator base + user layer) | agentcfg/prompt | §6.2, §6.16 | 92a, 83a | n/a | Post-V1 (deferred) |
-|92f | Agent-config: add a new MCP connection (async dial + handshake + OAuth) | agentcfg/tools | §6.4, §7.4 | 92a, 92d, 30 | n/a | Post-V1 (deferred) |
-|92g | Agent-config: session-user safe subset (user prompt layer + already-allowed source toggles + ephemeral skills) | agentcfg | §6.16, §5.5 | 92a, 92c, 92d, 92e | n/a | Post-V1 (deferred) |
+|92e | Agent-config: layered system prompt (operator base + user layer) | agentcfg/prompt | §6.2, §6.16 | 92a, 83a, 92b | 85% | Post-V1 |
+|92f | Agent-config: add a new MCP connection (async dial + handshake + OAuth) | agentcfg/tools | §6.4, §7.4 | 92a, 92d, 28, 30, 50 | 85% | Post-V1 |
+|92g | Agent-config: session-user safe subset (user prompt layer + already-allowed source toggles + ephemeral skills) | agentcfg | §6.16, §5.5 | 92a, 92c, 92d, 92e | 85% | Post-V1 |
+|92h | Console: agent-config control panel (revisions/diff/rollback + skills + MCP policy + prompt + add-connection) | web/console | §7, §6.16 | 92a, 92c, 92d, 92e, 92f | n/a | Post-V1 |
 | 93 | Failover chains as Harbor policy              | governance           | §6.15       | 36a, 33               | n/a  | Post-V1  |
 | 94 | Provider circuit breakers (provider, key)     | governance           | §6.15       | 33, 93                | n/a  | Post-V1  |
 | 95 | LLM cache (exact-match + semantic)            | governance/cache     | §6.15       | 33                    | n/a  | Post-V1  |
