@@ -97,12 +97,13 @@ type tenantOverrideRecord struct {
 // accumulator uses. Within ONE runtime process (the writer and the run
 // loop share the same instance) a Set is immediately visible to the next
 // run, so the "every session's next run" guarantee holds. Across multiple
-// runtime replicas over a shared store, a replica that has already loaded
-// a tenant's record does NOT re-read it after another replica's Set, so it
-// serves the prior default until restart. A cross-replica cache
-// invalidation (a bus signal or a per-read freshness check) is the
-// documented follow-up for a multi-replica deployment; single-runtime is
-// the V1 wiring.
+// runtime replicas over a shared store, freshness holds too: every Get
+// re-reads the StateStore (per-read freshness — there is NO permanent
+// loaded cache), so a Set on replica A is visible to replica B on B's
+// next Get (the run loop's run-start resolution). The per-tenant mutex
+// serialises a tenant's read/write; different tenants are independent via
+// the sync.Map. The run loop already does StateStore reads at run start,
+// so the per-Get Load is in the existing cost envelope.
 type TenantOverridePolicy struct {
 	state       state.StateStore
 	bus         events.EventBus
@@ -114,13 +115,15 @@ type TenantOverridePolicy struct {
 	closed atomic.Bool
 }
 
-// tenantOverrideEntry is the per-tenant cache slot. The spec is loaded
-// lazily on first reference and write-through on every Set.
+// tenantOverrideEntry is the per-tenant slot. It exists to serialise the
+// per-tenant StateStore read/write under one mutex; reads are always
+// fresh (per-read reload — see the policy godoc on multi-replica
+// freshness), so the slot does NOT memoise across Gets. `spec`/`set` hold
+// the most-recently-loaded value purely transiently under the lock.
 type tenantOverrideEntry struct {
-	mu     sync.Mutex
-	loaded bool
-	spec   TenantOverrideSpec
-	set    bool // whether a record exists for this tenant
+	mu   sync.Mutex
+	spec TenantOverrideSpec
+	set  bool // whether a record exists for this tenant
 }
 
 // NewTenantOverridePolicy constructs the policy. `state` (the persistence
@@ -210,20 +213,10 @@ func (p *TenantOverridePolicy) Set(ctx context.Context, actor identity.Quadruple
 	}); err != nil {
 		return fmt.Errorf("%w: %w", ErrStateUnavailable, err)
 	}
-	// Update the cache write-through so a subsequent Get / run-start
-	// resolution sees the new value without a state round-trip.
-	e := p.entry(tenant)
-	e.mu.Lock()
-	e.spec = clean
-	// An all-nil spec is a CLEAR — the record exists on disk but carries
-	// no dimensions, so a subsequent Get reports set=false (the tenant
-	// inherits every config default). This MUST match the lazyLoad path's
-	// derivation, else a clear-then-read diverges between the cache and a
-	// fresh policy.
-	e.set = !clean.IsEmpty()
-	e.loaded = true
-	e.mu.Unlock()
-
+	// No cache write-through: reads are per-read fresh (every Get reloads
+	// from the StateStore — see reloadLocked + the policy godoc), so the
+	// StateStore is the single source of truth on the next Get. Writing the
+	// entry here would be dead (the reload overwrites it before any read).
 	p.emitSet(ctx, actor, tenant, clean, now)
 	return nil
 }
@@ -241,11 +234,11 @@ func (p *TenantOverridePolicy) Get(ctx context.Context, tenant string) (TenantOv
 		return TenantOverrideSpec{}, false, fmt.Errorf("%w: tenant is empty", ErrIdentityRequired)
 	}
 	e := p.entry(tenant)
-	if err := p.lazyLoad(ctx, tenant, e); err != nil {
-		return TenantOverrideSpec{}, false, err
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := p.reloadLocked(ctx, tenant, e); err != nil {
+		return TenantOverrideSpec{}, false, err
+	}
 	return e.spec, e.set, nil
 }
 
@@ -268,26 +261,24 @@ func (p *TenantOverridePolicy) entry(tenant string) *tenantOverrideEntry {
 	return te
 }
 
-// lazyLoad fills the entry from the StateStore on first reference. A
-// missing record marks the entry loaded with set=false (the common
-// "tenant has no override" case).
-func (p *TenantOverridePolicy) lazyLoad(ctx context.Context, tenant string, e *tenantOverrideEntry) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.loaded {
-		return nil
-	}
+// reloadLocked reads the tenant's current record from the StateStore and
+// refreshes the entry's transient spec/set. The caller MUST hold e.mu.
+// This runs on EVERY Get (per-read freshness — no permanent cache), so a
+// cross-replica Set is observed on the next Get. A missing record yields
+// set=false (the common "no override" case); a corrupt or forward-schema
+// record fails loud (no silent reset).
+func (p *TenantOverridePolicy) reloadLocked(ctx context.Context, tenant string, e *tenantOverrideEntry) error {
 	rec, err := p.state.Load(ctx, govTenantQuad(tenant), kindTenantOverrides)
 	if err != nil {
 		if errors.Is(err, state.ErrNotFound) {
-			e.loaded = true
+			e.spec = TenantOverrideSpec{}
 			e.set = false
 			return nil
 		}
 		return fmt.Errorf("%w: %w", ErrStateUnavailable, err)
 	}
 	if len(rec.Bytes) == 0 {
-		e.loaded = true
+		e.spec = TenantOverrideSpec{}
 		e.set = false
 		return nil
 	}
@@ -306,7 +297,6 @@ func (p *TenantOverridePolicy) lazyLoad(ctx context.Context, tenant string, e *t
 		ReasoningEffort:   tr.ReasoningEffort,
 	}
 	e.set = !e.spec.IsEmpty()
-	e.loaded = true
 	return nil
 }
 

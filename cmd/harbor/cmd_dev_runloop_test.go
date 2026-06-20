@@ -31,6 +31,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -1201,5 +1202,160 @@ func TestPerTaskRunLoopDriver_TenantOverrideResolutionError_MarksFailed(t *testi
 	case <-nextCalled:
 		t.Error("planner.Next fired despite a resolution error — the run was not short-circuited")
 	default:
+	}
+}
+
+// TestResolveLLMOverrides_SessionOverTenant covers Phase 92b composition:
+// a Consumed session override WINS over the tenant default per field, the
+// session's SystemPromptOverride (replace) is carried, the tenant's
+// ExtraInstructions (additive) survives, and the session slot is one-shot
+// (a second resolve sees only the tenant default).
+func TestResolveLLMOverrides_SessionOverTenant(t *testing.T) {
+	store := runsprotocol.NewStore()
+	q := validQuadForOv()
+	store.Set(q.Identity, runsprotocol.PendingOverride{
+		Model:                ovStr("session-model"),
+		SystemPromptOverride: ovStr("session-replace-prompt"),
+	})
+	d := &perTaskRunLoopDriver{
+		logger:           slog.Default(),
+		sessionOverrides: store,
+		tenantOverrides: fakeTenantOverrides{set: true, spec: governance.TenantOverrideSpec{
+			Model:             ovStr("tenant-model"),
+			Temperature:       ovF64(0.2),
+			ExtraInstructions: ovStr("tenant-additive-guidance"),
+		}},
+	}
+
+	ov, err := d.resolveLLMOverrides(context.Background(), q)
+	if err != nil {
+		t.Fatalf("resolveLLMOverrides: %v", err)
+	}
+	if ov == nil {
+		t.Fatal("nil overrides, want composed session+tenant")
+	}
+	// Session wins on Model.
+	if ov.Model == nil || *ov.Model != "session-model" {
+		t.Errorf("Model = %v, want session-model (session wins)", ov.Model)
+	}
+	// Tenant fills Temperature (session did not set it).
+	if ov.Temperature == nil || *ov.Temperature != 0.2 {
+		t.Errorf("Temperature = %v, want tenant 0.2", ov.Temperature)
+	}
+	// Session-only system-prompt REPLACE carried.
+	if ov.SystemPromptOverride == nil || *ov.SystemPromptOverride != "session-replace-prompt" {
+		t.Errorf("SystemPromptOverride = %v, want session-replace-prompt", ov.SystemPromptOverride)
+	}
+	// Tenant-only additive guidance survives.
+	if ov.ExtraInstructions == nil || *ov.ExtraInstructions != "tenant-additive-guidance" {
+		t.Errorf("ExtraInstructions = %v, want tenant-additive-guidance", ov.ExtraInstructions)
+	}
+
+	// One-shot: a second resolve has consumed the session override → only
+	// the tenant default remains.
+	ov2, err := d.resolveLLMOverrides(context.Background(), q)
+	if err != nil {
+		t.Fatalf("resolveLLMOverrides 2: %v", err)
+	}
+	if ov2 == nil || ov2.Model == nil || *ov2.Model != "tenant-model" {
+		t.Errorf("second resolve Model = %v, want tenant-model (session consumed)", ov2 != nil && ov2.Model != nil)
+	}
+	if ov2.SystemPromptOverride != nil {
+		t.Errorf("second resolve carried a session SystemPromptOverride; want none (one-shot)")
+	}
+}
+
+// TestResolveLLMOverrides_SessionOnly covers a session override with no
+// tenant default (session › config).
+func TestResolveLLMOverrides_SessionOnly(t *testing.T) {
+	store := runsprotocol.NewStore()
+	q := validQuadForOv()
+	store.Set(q.Identity, runsprotocol.PendingOverride{Model: ovStr("session-only-model")})
+	d := &perTaskRunLoopDriver{logger: slog.Default(), sessionOverrides: store}
+	ov, err := d.resolveLLMOverrides(context.Background(), q)
+	if err != nil {
+		t.Fatalf("resolveLLMOverrides: %v", err)
+	}
+	if ov == nil || ov.Model == nil || *ov.Model != "session-only-model" {
+		t.Fatalf("Model = %v, want session-only-model", ov)
+	}
+}
+
+// TestPerTaskRunLoopDriver_AppliesSessionOverride_ToRunContext is the
+// Phase 92b load-bearing wiring gate: a driver wired with a session
+// override Store MUST Consume the pending override at run start and pin
+// the composed result onto the planner's RunContext. Guards the runOne
+// Consume + the session arm of the composition — a fresh task whose
+// session has a pending override sees it; the override is one-shot.
+func TestPerTaskRunLoopDriver_AppliesSessionOverride_ToRunContext(t *testing.T) {
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	reg := mkDriverTestTaskRegistry(t, bus, red)
+	steerReg := steering.NewRegistry()
+	coord := pauseresume.New(pauseresume.WithBus(bus))
+	rl, err := steering.NewRunLoop(steerReg, coord, steering.WithRunLoopBus(bus))
+	if err != nil {
+		t.Fatalf("steering.NewRunLoop: %v", err)
+	}
+	// Pre-record a session override for the spawn identity.
+	store := runsprotocol.NewStore()
+	store.Set(runLoopDriverTestID, runsprotocol.PendingOverride{
+		Model:                ovStr("session-swap-model"),
+		SystemPromptOverride: ovStr("session-replace"),
+	})
+
+	ovCh := make(chan *planner.LLMOverrides, 4)
+	p := &driverTestPlanner{
+		finishGoalImmediately: true,
+		onRunContext: func(rc planner.RunContext) {
+			select {
+			case ovCh <- rc.LLMOverrides:
+			default:
+			}
+		},
+	}
+	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
+		bus:              bus,
+		runLoop:          rl,
+		planner:          p,
+		tasks:            reg,
+		sessionOverrides: store,
+		// tenant default also set — the session model must WIN over it.
+		tenantOverrides: fakeTenantOverrides{set: true, spec: governance.TenantOverrideSpec{
+			Model:       ovStr("tenant-model"),
+			Temperature: ovF64(0.7),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+	}
+	if err := driver.Start(context.Background()); err != nil {
+		t.Fatalf("driver.Start: %v", err)
+	}
+	defer func() { _ = driver.Close(context.Background()) }()
+
+	_ = spawnDriverTestTask(t, reg)
+
+	select {
+	case ov := <-ovCh:
+		if ov == nil {
+			t.Fatal("RunContext.LLMOverrides is nil — the session override never reached the planner")
+		}
+		if ov.Model == nil || *ov.Model != "session-swap-model" {
+			t.Errorf("Model = %v, want session-swap-model (session wins over tenant)", ov.Model)
+		}
+		if ov.SystemPromptOverride == nil || *ov.SystemPromptOverride != "session-replace" {
+			t.Errorf("SystemPromptOverride = %v, want session-replace", ov.SystemPromptOverride)
+		}
+		if ov.Temperature == nil || *ov.Temperature != 0.7 {
+			t.Errorf("Temperature = %v, want tenant 0.7 (session did not set it)", ov.Temperature)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("planner.Next never fired — driver did not pick up task.spawned")
+	}
+
+	// One-shot: the session override is consumed.
+	if _, found := store.Peek(runLoopDriverTestID); found {
+		t.Error("session override not consumed at run start (still in Store)")
 	}
 }

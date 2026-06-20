@@ -89,3 +89,52 @@ describe('Settings auth namespace', () => {
 		}
 	});
 });
+
+describe('Governance tenant-override namespace (Phase 92b)', () => {
+	it('routes get_tenant_overrides to POST /v1/governance/get_tenant_overrides', async () => {
+		const fetchImpl = vi.fn(async () =>
+			okResponse({ overrides: { model: 'm' }, set: true, protocol_version: '0.1.0' })
+		);
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		const resp = await client.governance.getTenantOverrides();
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://127.0.0.1:18080/v1/governance/get_tenant_overrides');
+		expect(init.method).toBe('POST');
+		expect(resp.set).toBe(true);
+		expect(resp.overrides.model).toBe('m');
+	});
+
+	it('routes set_tenant_overrides with the overrides payload', async () => {
+		const fetchImpl = vi.fn(async () =>
+			okResponse({ applied_at: '2026-06-20T00:00:00Z', protocol_version: '0.1.0' })
+		);
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		const resp = await client.governance.setTenantOverrides({ model: 'model-b', temperature: 0.3 });
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://127.0.0.1:18080/v1/governance/set_tenant_overrides');
+		expect(init.method).toBe('POST');
+		const body = JSON.parse(init.body as string);
+		expect(body.overrides).toEqual({ model: 'model-b', temperature: 0.3 });
+		expect(resp.applied_at).toBe('2026-06-20T00:00:00Z');
+	});
+
+	it('maps a 403 from set_tenant_overrides onto a ProtocolError with status preserved', async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ code: 'scope_mismatch', message: 'admin scope required' }), {
+					status: 403,
+					headers: { 'Content-Type': 'application/json' }
+				})
+		);
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		try {
+			await client.governance.setTenantOverrides({ model: 'm' });
+			expect.unreachable('expected a ProtocolError');
+		} catch (err) {
+			expect(err).toBeInstanceOf(ProtocolError);
+			const pe = err as ProtocolError;
+			expect(pe.code).toBe('scope_mismatch');
+			expect(pe.status).toBe(403);
+		}
+	});
+});

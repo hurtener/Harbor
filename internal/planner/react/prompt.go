@@ -177,7 +177,15 @@ func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string)
 // the trajectory replay. [buildRequest] splices the injection messages
 // in afterwards.
 func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
-	if systemPrompt == "" {
+	// A run-start SystemPromptOverride (the session layer's full REPLACE)
+	// wins over the agent's configured prompt for this run. An empty
+	// string is a valid override (it clears the base prompt — the operator
+	// drives the model entirely via the additive guidance / trajectory).
+	// The additive ExtraInstructions still renders into <additional_guidance>
+	// below, so a tenant default composes over a session replace.
+	if rc.LLMOverrides != nil && rc.LLMOverrides.SystemPromptOverride != nil {
+		systemPrompt = *rc.LLMOverrides.SystemPromptOverride
+	} else if systemPrompt == "" {
 		systemPrompt = DefaultSystemPrompt
 	}
 

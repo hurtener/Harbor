@@ -133,3 +133,66 @@ func TestApplyLLMOverrides_UnknownReasoningIgnored(t *testing.T) {
 		t.Errorf("req.ReasoningEffort = %q, want empty (unknown value ignored)", req.ReasoningEffort)
 	}
 }
+
+// TestApplyLLMOverrides_SystemPromptOverride_Replaces asserts the session
+// layer's SystemPromptOverride REPLACES the agent's base system prompt
+// (distinct from the additive ExtraInstructions), and that an additive
+// tenant ExtraInstructions still composes over the replaced base.
+func TestApplyLLMOverrides_SystemPromptOverride_Replaces(t *testing.T) {
+	cap := finishClient()
+	p := react.New(cap)
+	replaced := "SYSTEM-PROMPT-SENTINEL: you are a haiku bot."
+	rc := overrideRC(&planner.LLMOverrides{
+		SystemPromptOverride: strPtr(replaced),
+		ExtraInstructions:    strPtr("TENANT-GUIDANCE-SENTINEL"),
+	})
+	if _, err := p.Next(context.Background(), rc); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	req := cap.lastRequest()
+	if !messageBodyContains(req.Messages, replaced) {
+		t.Errorf("system prompt was not replaced by SystemPromptOverride")
+	}
+	// The additive tenant guidance still composes over the replaced base.
+	if !messageBodyContains(req.Messages, "TENANT-GUIDANCE-SENTINEL") {
+		t.Errorf("additive ExtraInstructions dropped when SystemPromptOverride set")
+	}
+	// The default base prompt must be GONE (replaced).
+	if messageBodyContains(req.Messages, "<tool_usage>") {
+		t.Errorf("default system prompt leaked despite SystemPromptOverride replace")
+	}
+}
+
+// TestApplyLLMOverrides_SystemPromptOverride_NilKeepsBase asserts a nil
+// SystemPromptOverride leaves the agent's base prompt intact.
+func TestApplyLLMOverrides_SystemPromptOverride_NilKeepsBase(t *testing.T) {
+	cap := finishClient()
+	p := react.New(cap)
+	rc := overrideRC(&planner.LLMOverrides{Temperature: f64Ptr(0.4)})
+	if _, err := p.Next(context.Background(), rc); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	req := cap.lastRequest()
+	if !messageBodyContains(req.Messages, "<tool_usage>") {
+		t.Errorf("base system prompt missing when no SystemPromptOverride set")
+	}
+}
+
+// TestApplyLLMOverrides_SystemPromptOverride_EmptyClears asserts an empty-
+// string SystemPromptOverride is a valid CLEAR (replaces the base prompt
+// with nothing — the operator drives the model entirely via guidance /
+// trajectory), distinct from a nil override (which keeps the base).
+func TestApplyLLMOverrides_SystemPromptOverride_EmptyClears(t *testing.T) {
+	cap := finishClient()
+	p := react.New(cap)
+	empty := ""
+	rc := overrideRC(&planner.LLMOverrides{SystemPromptOverride: &empty})
+	if _, err := p.Next(context.Background(), rc); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	req := cap.lastRequest()
+	// The default base sections must be GONE (cleared, not the default).
+	if messageBodyContains(req.Messages, "<tool_usage>") {
+		t.Errorf("empty SystemPromptOverride did not clear the base prompt (default sections present)")
+	}
+}
