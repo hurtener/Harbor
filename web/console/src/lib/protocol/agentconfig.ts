@@ -1,0 +1,193 @@
+/**
+ * Agent-config control-plane wire types — the `agent_config.*` Protocol
+ * family: the versioned desired-state registry (get / set_revision /
+ * list_revisions / diff / rollback) and its first consumer, skills control
+ * (skills.list / skills.upsert / skills.delete).
+ *
+ * # Wire types only — the client lives in `client.ts`
+ *
+ * These mirror `internal/protocol/types/agentconfig.go` field-for-field —
+ * the Go side is the single source (D-093 / D-223), kept in lockstep with
+ * `wire-manifest.gen.json` by `npm run lint`
+ * (`check-protocol-ts-lockstep.mjs`). A dropped/renamed/mistyped field
+ * fails the guard. The `AgentConfigNamespace` (in `client.ts`) issues the
+ * calls; these are the request/response shapes it sends and narrows.
+ *
+ * Every write (set_revision / rollback / skills.upsert / skills.delete) is
+ * admin-scoped (D-235) and applies to the agent's NEXT run (next-turn
+ * projection — never mid-flight, per D-025).
+ */
+
+import type { IdentityScope } from './memory-types';
+
+/** An agent's skills membership in a config revision — the set of skill
+ * names active for the agent. Mirrors `types.AgentConfigSkillsSelection`. */
+export interface AgentConfigSkillsSelection {
+	names: string[];
+}
+
+/** An agent-config envelope — every section optional and forward-compatible.
+ * Mirrors `types.AgentConfigPayload`. */
+export interface AgentConfigPayload {
+	skills?: AgentConfigSkillsSelection;
+}
+
+/** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
+export interface AgentConfigRevisionView {
+	revision_id: string;
+	parent_revision_id?: string;
+	content_hash: string;
+	author_tenant?: string;
+	author_user?: string;
+	/** RFC3339 timestamp. */
+	created_at: string;
+	payload: AgentConfigPayload;
+}
+
+/** The structured skills set-diff across two revisions. Mirrors
+ * `types.AgentConfigSkillsDiff`. */
+export interface AgentConfigSkillsDiff {
+	added?: string[];
+	removed?: string[];
+}
+
+/** A server-side revision compare. Mirrors `types.AgentConfigDiff`. */
+export interface AgentConfigDiff {
+	from_revision_id: string;
+	to_revision_id: string;
+	skills: AgentConfigSkillsDiff;
+}
+
+/** `agent_config.get` request. */
+export interface AgentConfigGetRequest {
+	identity: IdentityScope;
+	agent_id: string;
+}
+
+/** `agent_config.get` response. */
+export interface AgentConfigGetResponse {
+	revision?: AgentConfigRevisionView;
+	set: boolean;
+	protocol_version: string;
+}
+
+/** `agent_config.set_revision` request — admin-scoped. */
+export interface AgentConfigSetRevisionRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	payload: AgentConfigPayload;
+}
+
+/** `agent_config.set_revision` response. */
+export interface AgentConfigSetRevisionResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.list_revisions` request — admin-scoped. */
+export interface AgentConfigListRevisionsRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	limit?: number;
+}
+
+/** `agent_config.list_revisions` response — newest-first. */
+export interface AgentConfigListRevisionsResponse {
+	revisions: AgentConfigRevisionView[];
+	protocol_version: string;
+}
+
+/** `agent_config.diff` request — admin-scoped. */
+export interface AgentConfigDiffRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	from_revision: string;
+	to_revision: string;
+}
+
+/** `agent_config.diff` response. */
+export interface AgentConfigDiffResponse {
+	diff: AgentConfigDiff;
+	protocol_version: string;
+}
+
+/** `agent_config.rollback` request — admin-scoped. */
+export interface AgentConfigRollbackRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	revision_id: string;
+}
+
+/** `agent_config.rollback` response. */
+export interface AgentConfigRollbackResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** One skill in the agent's store — metadata only. Mirrors
+ * `types.AgentConfigSkillSummary`. */
+export interface AgentConfigSkillSummary {
+	name: string;
+	title?: string;
+	trigger?: string;
+	task_type?: string;
+	origin: string;
+	scope: string;
+	content_hash?: string;
+	/** RFC3339 timestamp. */
+	updated_at: string;
+}
+
+/** A skill-upsert input. Mirrors `types.AgentConfigSkillInput`. */
+export interface AgentConfigSkillInput {
+	name: string;
+	title?: string;
+	description?: string;
+	trigger: string;
+	task_type?: string;
+	tags?: string[];
+	steps: string[];
+	/** pack | generated. */
+	origin: string;
+	/** session | project | tenant | global. */
+	scope: string;
+}
+
+/** `agent_config.skills.list` request — admin-scoped. */
+export interface AgentConfigSkillsListRequest {
+	identity: IdentityScope;
+	agent_id: string;
+}
+
+/** `agent_config.skills.list` response. */
+export interface AgentConfigSkillsListResponse {
+	skills: AgentConfigSkillSummary[];
+	protocol_version: string;
+}
+
+/** `agent_config.skills.upsert` request — admin-scoped. */
+export interface AgentConfigSkillsUpsertRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	skill: AgentConfigSkillInput;
+}
+
+/** `agent_config.skills.upsert` response — the recorded revision + skill. */
+export interface AgentConfigSkillsUpsertResponse {
+	revision: AgentConfigRevisionView;
+	skill: AgentConfigSkillSummary;
+	protocol_version: string;
+}
+
+/** `agent_config.skills.delete` request — admin-scoped. */
+export interface AgentConfigSkillsDeleteRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+}
+
+/** `agent_config.skills.delete` response — the recorded revision. */
+export interface AgentConfigSkillsDeleteResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}

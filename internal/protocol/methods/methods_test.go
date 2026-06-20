@@ -101,6 +101,14 @@ var wantMethods = []methods.Method{
 	methods.MethodGovernanceSetTenantOverrides,
 	methods.MethodGovernanceGetTenantOverrides,
 	methods.MethodGovernanceRotateKey,
+	methods.MethodAgentConfigGet,
+	methods.MethodAgentConfigSetRevision,
+	methods.MethodAgentConfigListRevisions,
+	methods.MethodAgentConfigDiff,
+	methods.MethodAgentConfigRollback,
+	methods.MethodAgentConfigSkillsList,
+	methods.MethodAgentConfigSkillsUpsert,
+	methods.MethodAgentConfigSkillsDelete,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -118,9 +126,12 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + MCP Apps host three (mcp.servers.read_resource + mcp.apps.call_tool
 	// + mcp.apps.tool_context) = 83, + governance tenant-override admin
 	// pair two (governance.set_tenant_overrides +
-	// governance.get_tenant_overrides) = 85.
-	if len(got) != 86 {
-		t.Fatalf("Methods() returned %d methods, want 86", len(got))
+	// governance.get_tenant_overrides) = 85, + governance.rotate_key one
+	// = 86, + agent-config control plane eight (agent_config.get +
+	// set_revision + list_revisions + diff + rollback + skills.{list,
+	// upsert,delete}) = 94.
+	if len(got) != 94 {
+		t.Fatalf("Methods() returned %d methods, want 94", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -406,7 +417,8 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 		if methods.IsToolsMethod(m) || methods.IsTasksMethod(m) ||
 			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) ||
 			methods.IsSessionsMethod(m) || methods.IsRunsMethod(m) ||
-			methods.IsGovernanceAdminMethod(m) || methods.IsAuthMethod(m) {
+			methods.IsGovernanceAdminMethod(m) || methods.IsAgentConfigMethod(m) ||
+			methods.IsAuthMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

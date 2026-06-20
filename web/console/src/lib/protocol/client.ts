@@ -47,6 +47,18 @@ import type {
 	GovernanceGetTenantOverridesResponse,
 	GovernanceSetTenantOverridesResponse,
 } from './governance.js';
+import type {
+	AgentConfigPayload,
+	AgentConfigGetResponse,
+	AgentConfigSetRevisionResponse,
+	AgentConfigListRevisionsResponse,
+	AgentConfigDiffResponse,
+	AgentConfigRollbackResponse,
+	AgentConfigSkillInput,
+	AgentConfigSkillsListResponse,
+	AgentConfigSkillsUpsertResponse,
+	AgentConfigSkillsDeleteResponse,
+} from './agentconfig.js';
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -940,6 +952,88 @@ export class GovernanceNamespace {
 }
 
 /**
+ * The admin-scoped `agent_config.*` namespace — the agent-config control
+ * plane (D-234/D-235). An admin versions an agent's config (skills now)
+ * with diff + rollback; the change lands on the agent's next run. Every
+ * method is ADMIN-gated: a connection without the verified
+ * `auth.ScopeAdmin` claim gets a `ProtocolError` carrying `scope_mismatch`
+ * (HTTP 403). The Transport folds the identity triple into the body;
+ * callers send only the agent id + payload. The skills routes use the
+ * `skills/*` sub-path (the `agent_config.skills.*` methods).
+ */
+export class AgentConfigNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `agent_config.get` — read the agent's active config revision. */
+	get(agentId: string): Promise<AgentConfigGetResponse> {
+		return this.#t.request<AgentConfigGetResponse>('/v1/agent_config/get', {
+			agent_id: agentId,
+		});
+	}
+	/** `agent_config.set_revision` — write a new revision. */
+	setRevision(
+		agentId: string,
+		payload: AgentConfigPayload,
+	): Promise<AgentConfigSetRevisionResponse> {
+		return this.#t.request<AgentConfigSetRevisionResponse>('/v1/agent_config/set_revision', {
+			agent_id: agentId,
+			payload: payload as unknown as Record<string, unknown>,
+		});
+	}
+	/** `agent_config.list_revisions` — the agent's revision chain, newest-first. */
+	listRevisions(agentId: string, limit = 0): Promise<AgentConfigListRevisionsResponse> {
+		return this.#t.request<AgentConfigListRevisionsResponse>('/v1/agent_config/list_revisions', {
+			agent_id: agentId,
+			limit,
+		});
+	}
+	/** `agent_config.diff` — compare two existing revisions. */
+	diff(
+		agentId: string,
+		fromRevision: string,
+		toRevision: string,
+	): Promise<AgentConfigDiffResponse> {
+		return this.#t.request<AgentConfigDiffResponse>('/v1/agent_config/diff', {
+			agent_id: agentId,
+			from_revision: fromRevision,
+			to_revision: toRevision,
+		});
+	}
+	/** `agent_config.rollback` — repoint the active pointer to a revision. */
+	rollback(agentId: string, revisionId: string): Promise<AgentConfigRollbackResponse> {
+		return this.#t.request<AgentConfigRollbackResponse>('/v1/agent_config/rollback', {
+			agent_id: agentId,
+			revision_id: revisionId,
+		});
+	}
+	/** `agent_config.skills.list` — list the agent's skills (metadata only). */
+	skillsList(agentId: string): Promise<AgentConfigSkillsListResponse> {
+		return this.#t.request<AgentConfigSkillsListResponse>('/v1/agent_config/skills/list', {
+			agent_id: agentId,
+		});
+	}
+	/** `agent_config.skills.upsert` — upsert a skill; records a revision. */
+	skillsUpsert(
+		agentId: string,
+		skill: AgentConfigSkillInput,
+	): Promise<AgentConfigSkillsUpsertResponse> {
+		return this.#t.request<AgentConfigSkillsUpsertResponse>('/v1/agent_config/skills/upsert', {
+			agent_id: agentId,
+			skill: skill as unknown as Record<string, unknown>,
+		});
+	}
+	/** `agent_config.skills.delete` — delete a skill; records a revision. */
+	skillsDelete(agentId: string, name: string): Promise<AgentConfigSkillsDeleteResponse> {
+		return this.#t.request<AgentConfigSkillsDeleteResponse>('/v1/agent_config/skills/delete', {
+			agent_id: agentId,
+			name,
+		});
+	}
+}
+
+/**
  * The `search.*` namespace — the shipped global-search surface (Phase
  * 72c). Consumed by the app-shell top-bar ⌘K launcher (Phase 108b). The
  * Runtime mounts `search.query` on the control surface at
@@ -1002,6 +1096,7 @@ export interface ProtocolClient {
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
 	readonly governance: GovernanceNamespace;
+	readonly agentConfig: AgentConfigNamespace;
 	readonly search: SearchNamespace;
 
 	/**
@@ -1040,6 +1135,7 @@ export class HarborClient implements ProtocolClient {
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
 	readonly governance: GovernanceNamespace;
+	readonly agentConfig: AgentConfigNamespace;
 	readonly search: SearchNamespace;
 
 	// Round-8 F1 / phase 84a: per-connection capability cache. Pages
@@ -1071,6 +1167,7 @@ export class HarborClient implements ProtocolClient {
 		this.posture = new PostureNamespace(transport);
 		this.auth = new AuthNamespace(transport);
 		this.governance = new GovernanceNamespace(transport);
+		this.agentConfig = new AgentConfigNamespace(transport);
 		this.search = new SearchNamespace(transport);
 	}
 

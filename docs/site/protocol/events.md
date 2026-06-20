@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 110 canonical event types a Harbor Runtime can publish, read from the live
+The 112 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -18,6 +18,31 @@ cursor), `occurred_at`, the flat identity (`tenant` / `user` / `session` / `run`
   verbatim. Field keys are the Go field names (e.g. `TaskID`, capital `T`).
 - **Redacted payloads** — everything else is walked by the audit redactor on publish;
   the subscriber receives a redacted key/value map derived from the declared shape.
+
+## `agent.config.reverted`
+
+Payload `ConfigRevertedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `RevisionID` | `string` |  |
+| `FromRevisionID` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `agent.config.revised`
+
+Payload `ConfigRevisedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `RevisionID` | `string` |  |
+| `ParentRevisionID` | `string` |  |
+| `ContentHash` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
 
 ## `agent.deregistered`
 

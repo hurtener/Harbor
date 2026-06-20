@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 231 canonical Harbor Protocol wire types, generated from the single-source
+The 254 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -56,6 +56,239 @@ Declared in `internal/protocol/types`.
 | `model` | `string` |  |
 | `model_policy` | `map[string]string` | optional (`omitempty`) |
 | `max_steps` | `int` |  |
+
+## AgentConfigDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `from_revision_id` | `string` |  |
+| `to_revision_id` | `string` |  |
+| `skills` | `types.AgentConfigSkillsDiff` — see [`AgentConfigSkillsDiff`](./types.md#agentconfigskillsdiff) |  |
+
+## AgentConfigDiffRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `from_revision` | `string` |  |
+| `to_revision` | `string` |  |
+
+## AgentConfigDiffResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `diff` | `types.AgentConfigDiff` — see [`AgentConfigDiff`](./types.md#agentconfigdiff) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigGetRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+
+## AgentConfigGetResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `*types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) | optional (`omitempty`) |
+| `set` | `bool` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigListRevisionsRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `limit` | `int` | optional (`omitempty`) |
+
+## AgentConfigListRevisionsResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revisions` | `[]types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigPayload
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `skills` | `*types.AgentConfigSkillsSelection` — see [`AgentConfigSkillsSelection`](./types.md#agentconfigskillsselection) | optional (`omitempty`) |
+
+## AgentConfigRevisionView
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision_id` | `string` |  |
+| `parent_revision_id` | `string` | optional (`omitempty`) |
+| `content_hash` | `string` |  |
+| `author_tenant` | `string` | optional (`omitempty`) |
+| `author_user` | `string` | optional (`omitempty`) |
+| `created_at` | `time.Time` |  |
+| `payload` | `types.AgentConfigPayload` — see [`AgentConfigPayload`](./types.md#agentconfigpayload) |  |
+
+## AgentConfigRollbackRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `revision_id` | `string` |  |
+
+## AgentConfigRollbackResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSetRevisionRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `payload` | `types.AgentConfigPayload` — see [`AgentConfigPayload`](./types.md#agentconfigpayload) |  |
+
+## AgentConfigSetRevisionResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSkillInput
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `title` | `string` | optional (`omitempty`) |
+| `description` | `string` | optional (`omitempty`) |
+| `trigger` | `string` |  |
+| `task_type` | `string` | optional (`omitempty`) |
+| `tags` | `[]string` | optional (`omitempty`) |
+| `steps` | `[]string` |  |
+| `origin` | `string` |  |
+| `scope` | `string` |  |
+
+## AgentConfigSkillSummary
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `title` | `string` | optional (`omitempty`) |
+| `trigger` | `string` | optional (`omitempty`) |
+| `task_type` | `string` | optional (`omitempty`) |
+| `origin` | `string` |  |
+| `scope` | `string` |  |
+| `content_hash` | `string` | optional (`omitempty`) |
+| `updated_at` | `time.Time` |  |
+
+## AgentConfigSkillsDeleteRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+
+## AgentConfigSkillsDeleteResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSkillsDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `added` | `[]string` | optional (`omitempty`) |
+| `removed` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigSkillsListRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+
+## AgentConfigSkillsListResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `skills` | `[]types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSkillsSelection
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `names` | `[]string` |  |
+
+## AgentConfigSkillsUpsertRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `skill` | `types.AgentConfigSkillInput` — see [`AgentConfigSkillInput`](./types.md#agentconfigskillinput) |  |
+
+## AgentConfigSkillsUpsertResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+| `protocol_version` | `string` |  |
 
 ## AgentControlRequest
 

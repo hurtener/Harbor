@@ -110,6 +110,7 @@ import (
 	// wrappers — invisible under the mock driver, divergent against
 	// live providers). The dev-only mock LLM driver is NOT in the set;
 	// tests that need it blank-import `internal/llm/mock` themselves.
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/drivers/prod"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -121,6 +122,8 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
@@ -398,6 +401,15 @@ type DevStack struct {
 	// assertable). Nil when the run loop is skipped.
 	RunsOverrideStore *runsprotocol.Store
 
+	// AgentConfig is the agent-config control-plane registry shared by the
+	// mounted `agent_config.*` routes and the run-loop driver's run-start
+	// skills projection (the agent-config control plane). AgentConfigID is
+	// the dev agent's registration id the driver projects against — a test
+	// drives the Protocol surface against this id so a skills edit reflects
+	// on the next run. Nil/"" when the StateStore is unavailable.
+	AgentConfig   agentcfg.Registry
+	AgentConfigID string
+
 	// Catalog / Coordinator / Gates / OAuthProviders are nil when
 	// SkipCatalog is set. The Gates map is keyed by tool name and
 	// populated by the catalog Builder; tests that drive
@@ -611,6 +623,23 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	metricsReg := core.Metrics
 	llmPostureCfg := core.LLMSnapshot
 
+	// Agent-config control plane (D-094 mirror of cmd/harbor's wiring): the
+	// versioned desired-state registry keyed by the dev agent's
+	// registration id, reusing the assembled StateStore. The SAME registry
+	// is handed to the run-loop driver (run-start skills projection) and the
+	// mounted `agent_config.*` Protocol service, so a skills edit lands on
+	// the next run. Built whenever the assembly opened a StateStore.
+	const devAgentConfigID = "harbor-dev-agent"
+	if core.State != nil {
+		reg, regErr := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: core.State, Bus: bus})
+		if regErr != nil {
+			return stack, fmt.Errorf("agent-config registry: %w", regErr)
+		}
+		stack.AgentConfig = reg
+		stack.AgentConfigID = devAgentConfigID
+		stack.closeFns = append(stack.closeFns, reg.Close)
+	}
+
 	// Steering surface + run-loop driver. Skip-aware: the Mux phase
 	// below depends on the surface, so SkipSteering implies
 	// SkipTransports even if the caller did not set both flags.
@@ -711,6 +740,10 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// disposition policy (D-094 mirror of cmd_dev.go's
 				// projection).
 				dispositionPolicy: dispositionPolicy,
+				// agent-config registry — run-start skills projection
+				// (D-094 mirror of cmd_dev.go).
+				agentConfig:   stack.AgentConfig,
+				agentConfigID: stack.AgentConfigID,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1116,6 +1149,18 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			return stack, fmt.Errorf("runs/protocol service: %w", rsErr)
 		}
 		muxOpts = append(muxOpts, transports.WithRunsService(runsService))
+		// Mount the admin-scoped agent-config control-plane routes
+		// (`POST /v1/agent_config/*`) over the SAME registry the run-loop
+		// driver projects at run start (D-094 mirror of cmd/harbor) — so a
+		// skills edit through the mounted route reaches the next run.
+		if stack.AgentConfig != nil {
+			agentConfigService, acErr := agentcfgprotocol.NewService(stack.AgentConfig,
+				agentcfgprotocol.WithSkillStore(stack.Skills))
+			if acErr != nil {
+				return stack, fmt.Errorf("agent-config/protocol service: %w", acErr)
+			}
+			muxOpts = append(muxOpts, transports.WithAgentConfigService(agentConfigService))
+		}
 		mux, muxErr := transports.NewMux(stack.Surface, bus, muxOpts...)
 		if muxErr != nil {
 			return stack, fmt.Errorf("transports.NewMux: %w", muxErr)
@@ -1323,6 +1368,12 @@ type DevStackRunLoopDriver struct {
 	// runs.set_overrides through the mounted route reaches the run.
 	sessionOverrides *runsprotocol.Store
 
+	// agent-config registry + the agent's registration id, read once at run
+	// start to project the active skills-set (D-094 mirror of the
+	// production driver). Nil = no projection.
+	agentConfig   agentcfg.Registry
+	agentConfigID string
+
 	// Phase 107a parity (D-195 dated-note follow-up) — per-task
 	// trajectory map for the Enricher seam, the D-094 mirror of the
 	// production driver. Trajectories are stored before RunLoop.Run
@@ -1383,6 +1434,10 @@ type devStackRunLoopDriverOpts struct {
 
 	// session-level pending-override Store (D-094 mirror).
 	sessionOverrides *runsprotocol.Store
+
+	// agent-config registry + agent id (D-094 mirror of production).
+	agentConfig   agentcfg.Registry
+	agentConfigID string
 }
 
 // devStackTenantOverrideResolver mirrors cmd/harbor's
@@ -1426,8 +1481,18 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		dispositionPolicy: opts.dispositionPolicy,
 		tenantOverrides:   opts.tenantOverrides,
 		sessionOverrides:  opts.sessionOverrides,
+		agentConfig:       opts.agentConfig,
+		agentConfigID:     opts.agentConfigID,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
+}
+
+// projectAgentConfigSkills mirrors the production driver's run-start
+// agent-config skills projection (D-094): it calls the SAME shared
+// projection function the production driver uses, so the two binaries
+// cannot drift (CLAUDE.md §17.6).
+func (d *DevStackRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
+	return projection.ActiveSkillViews(ctx, d.agentConfig, d.agentConfigID, q, views)
 }
 
 func (d *DevStackRunLoopDriver) start(ctx context.Context) error {
@@ -1599,7 +1664,27 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			}
 			return
 		}
-		skillsCtx = runctx.ProjectSkillsDirectory(views)
+		// Project the agent's active config skills-set ONCE at run start —
+		// the D-094 mirror of the production driver's agent-config skills
+		// projection. A registry read error fails the run loudly.
+		gated, gErr := d.projectAgentConfigSkills(taskCtx, q, views)
+		if gErr != nil {
+			if d.logger != nil {
+				d.logger.Warn("devstack runloop: agent-config skills projection failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", gErr.Error()))
+			}
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "runtime_fetch_error",
+				Message: "agent-config skills projection: " + gErr.Error(),
+			}); fErr != nil && d.logger != nil {
+				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		skillsCtx = runctx.ProjectSkillsDirectory(gated)
 	}
 
 	counters := &planner.RepairCounters{}

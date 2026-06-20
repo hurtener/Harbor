@@ -84,6 +84,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
@@ -91,6 +92,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -193,6 +195,16 @@ type perTaskRunLoopDriverOpts struct {
 	// only). It is the SAME Store handed to the runs Service so a set and
 	// the consume meet.
 	sessionOverrides *runsprotocol.Store
+
+	// agentConfig resolves the agent's active config revision at run start
+	// (the agent-config control plane). OPTIONAL — a nil registry means
+	// "no agent-config projection" (the run uses every directory-visible
+	// skill). When supplied with a non-empty agentConfigID, the run reads
+	// the active revision ONCE at run start and pins the resolved
+	// skills-set into the per-run projection so a config edit applies on
+	// the NEXT run (next-turn-only), never mid-flight.
+	agentConfig   agentcfg.Registry
+	agentConfigID string
 }
 
 // tenantOverrideResolver is the narrow read seam the run loop uses to
@@ -245,6 +257,11 @@ type perTaskRunLoopDriver struct {
 
 	// session-level pending-override Store, Consumed at run start (nil = none).
 	sessionOverrides *runsprotocol.Store
+
+	// agent-config registry + the dev agent's registration id, read once at
+	// run start to project the agent's active skills-set (nil = none).
+	agentConfig   agentcfg.Registry
+	agentConfigID string
 
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
@@ -312,6 +329,8 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		dispositionPolicy: opts.dispositionPolicy,
 		tenantOverrides:   opts.tenantOverrides,
 		sessionOverrides:  opts.sessionOverrides,
+		agentConfig:       opts.agentConfig,
+		agentConfigID:     opts.agentConfigID,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 		tokenBudget:       opts.tokenBudget,
 		compression:       opts.compression,
@@ -531,6 +550,15 @@ func (d *perTaskRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identi
 	return runsprotocol.ComposeLLMOverrides(session, tenant), nil
 }
 
+// projectAgentConfigSkills resolves the agent's active config revision at
+// run start and, when it pins a skills membership, narrows the directory
+// views to that set (the agent-config control plane's run-start
+// projection). The logic is shared verbatim with the devstack twin via the
+// projection package so the two binaries cannot drift (CLAUDE.md §17.6).
+func (d *perTaskRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
+	return projection.ActiveSkillViews(ctx, d.agentConfig, d.agentConfigID, q, views)
+}
+
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
@@ -657,7 +685,29 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 			return
 		}
-		skillsCtx = runctx.ProjectSkillsDirectory(views)
+		// Project the agent's active config skills-set ONCE at run start:
+		// when the agent-config control plane pins a skills membership for
+		// this agent, the run sees only those skills (next-turn-only — a
+		// config edit applies on the NEXT run, never mid-flight). A
+		// registry read error fails the run LOUDLY (the registry IS the
+		// runtime StateStore — an error means the runtime is unhealthy).
+		gated, gErr := d.projectAgentConfigSkills(taskCtx, q, views)
+		if gErr != nil {
+			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: agent-config skills projection failed; failing run",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", gErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "runtime_fetch_error",
+				Message: "agent-config skills projection: " + gErr.Error(),
+			}); fErr != nil {
+				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		skillsCtx = runctx.ProjectSkillsDirectory(gated)
 	}
 
 	// Step 3: per-run RepairCounters. ONE pointer per run, threaded

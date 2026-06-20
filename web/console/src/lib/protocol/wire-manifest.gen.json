@@ -115,6 +115,447 @@
         }
       ]
     },
+    "AgentConfigDiff": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "from_revision_id",
+          "type": "string"
+        },
+        {
+          "key": "to_revision_id",
+          "type": "string"
+        },
+        {
+          "key": "skills",
+          "type": "object",
+          "ref": "AgentConfigSkillsDiff"
+        }
+      ]
+    },
+    "AgentConfigDiffRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "from_revision",
+          "type": "string"
+        },
+        {
+          "key": "to_revision",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigDiffResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "diff",
+          "type": "object",
+          "ref": "AgentConfigDiff"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigGetRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigGetResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView",
+          "optional": true
+        },
+        {
+          "key": "set",
+          "type": "boolean"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigListRevisionsRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "limit",
+          "type": "number",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigListRevisionsResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revisions",
+          "type": "array",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigPayload": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "skills",
+          "type": "object",
+          "ref": "AgentConfigSkillsSelection",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigRevisionView": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision_id",
+          "type": "string"
+        },
+        {
+          "key": "parent_revision_id",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "content_hash",
+          "type": "string"
+        },
+        {
+          "key": "author_tenant",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "author_user",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "created_at",
+          "type": "string"
+        },
+        {
+          "key": "payload",
+          "type": "object",
+          "ref": "AgentConfigPayload"
+        }
+      ]
+    },
+    "AgentConfigRollbackRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "revision_id",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigRollbackResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSetRevisionRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "payload",
+          "type": "object",
+          "ref": "AgentConfigPayload"
+        }
+      ]
+    },
+    "AgentConfigSetRevisionResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSkillInput": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "name",
+          "type": "string"
+        },
+        {
+          "key": "title",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "description",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "trigger",
+          "type": "string"
+        },
+        {
+          "key": "task_type",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "tags",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "steps",
+          "type": "array"
+        },
+        {
+          "key": "origin",
+          "type": "string"
+        },
+        {
+          "key": "scope",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSkillSummary": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "name",
+          "type": "string"
+        },
+        {
+          "key": "title",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "trigger",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "task_type",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "origin",
+          "type": "string"
+        },
+        {
+          "key": "scope",
+          "type": "string"
+        },
+        {
+          "key": "content_hash",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "updated_at",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSkillsDeleteRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "name",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSkillsDeleteResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSkillsDiff": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "added",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "removed",
+          "type": "array",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigSkillsListRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSkillsListResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "skills",
+          "type": "array",
+          "ref": "AgentConfigSkillSummary"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSkillsSelection": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "names",
+          "type": "array"
+        }
+      ]
+    },
+    "AgentConfigSkillsUpsertRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "skill",
+          "type": "object",
+          "ref": "AgentConfigSkillInput"
+        }
+      ]
+    },
+    "AgentConfigSkillsUpsertResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "skill",
+          "type": "object",
+          "ref": "AgentConfigSkillSummary"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
     "AgentControlRequest": {
       "home": "types",
       "fields": [
@@ -5222,6 +5663,14 @@
     }
   },
   "methods": [
+    "agent_config.diff",
+    "agent_config.get",
+    "agent_config.list_revisions",
+    "agent_config.rollback",
+    "agent_config.set_revision",
+    "agent_config.skills.delete",
+    "agent_config.skills.list",
+    "agent_config.skills.upsert",
     "agents.deregister",
     "agents.drain",
     "agents.force_stop",
@@ -5323,6 +5772,8 @@
     "unknown_method"
   ],
   "events": [
+    "agent.config.reverted",
+    "agent.config.revised",
     "agent.deregistered",
     "agent.drained",
     "agent.force_stopped",
