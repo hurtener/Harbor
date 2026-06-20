@@ -273,6 +273,12 @@ func revisionToWire(r agentcfg.Revision) prototypes.AgentConfigRevisionView {
 // payloadToWire projects a domain ConfigPayload onto the wire envelope.
 func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 	var out prototypes.AgentConfigPayload
+	if p.PromptLayers != nil {
+		out.PromptLayers = &prototypes.AgentConfigPromptLayers{
+			Base: copyStringPtr(p.PromptLayers.Base),
+			User: copyStringPtr(p.PromptLayers.User),
+		}
+	}
 	if p.Skills != nil {
 		out.Skills = &prototypes.AgentConfigSkillsSelection{Names: append([]string(nil), p.Skills.Names...)}
 	}
@@ -288,6 +294,12 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 // payloadToDomain projects a wire envelope onto the domain ConfigPayload.
 func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 	var out agentcfg.ConfigPayload
+	if p.PromptLayers != nil {
+		out.PromptLayers = &agentcfg.PromptLayers{
+			Base: copyStringPtr(p.PromptLayers.Base),
+			User: copyStringPtr(p.PromptLayers.User),
+		}
+	}
 	if p.Skills != nil {
 		out.Skills = &agentcfg.SkillsSelection{Names: append([]string(nil), p.Skills.Names...)}
 	}
@@ -315,5 +327,23 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			DisabledAdded:   append([]string(nil), d.ToolExposure.DisabledAdded...),
 			DisabledEnabled: append([]string(nil), d.ToolExposure.DisabledEnabled...),
 		},
+		PromptLayers: prototypes.AgentConfigPromptLayersDiff{
+			BaseChanged: d.PromptLayers.BaseChanged,
+			BaseFrom:    d.PromptLayers.BaseFrom,
+			BaseTo:      d.PromptLayers.BaseTo,
+			UserChanged: d.PromptLayers.UserChanged,
+			UserFrom:    d.PromptLayers.UserFrom,
+			UserTo:      d.PromptLayers.UserTo,
+		},
 	}
+}
+
+// copyStringPtr returns a fresh copy of a *string (nil stays nil) so the
+// wire↔domain projections never share a pointer with the caller's payload.
+func copyStringPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := *s
+	return &v
 }

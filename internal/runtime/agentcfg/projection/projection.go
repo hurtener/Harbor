@@ -14,6 +14,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -78,6 +79,75 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, agentI
 		return base, nil
 	}
 	return tools.NewExclusionView(base, paused, disabled), nil
+}
+
+// ActivePromptLayers resolves the agent's active-config layered system
+// prompt at run start. It returns the base + user layer text and whether the
+// active revision carries a prompt-layer section (ok). A nil registry, an
+// empty agentID, an agent with no active revision, or an active revision with
+// no prompt-layer section returns ("", "", false, nil) — the
+// backward-compatible "no durable prompt layers" path (the run keeps its
+// configured base). A registry read error is returned so the caller fails the
+// run loudly (CLAUDE.md §13): no silent fall-through on a read failure.
+//
+// An unset layer within a present section returns the empty string for that
+// layer (the caller treats empty as "inherit the configured default" for the
+// base, and "no user layer" for the user layer).
+//
+// The active revision is read ONCE per run; the returned values are plain
+// strings, so concurrent / in-flight runs keep their own snapshot (the
+// concurrent-reuse contract). Only the identity triple is used (the registry
+// is identity-scoped, never keyed by run).
+func ActivePromptLayers(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (base string, user string, ok bool, err error) {
+	if reg == nil || agentID == "" {
+		return "", "", false, nil
+	}
+	rev, found, rerr := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+	if rerr != nil {
+		return "", "", false, rerr
+	}
+	if !found || rev.Payload.PromptLayers == nil {
+		return "", "", false, nil
+	}
+	base, _ = rev.Payload.BasePrompt()
+	user, _ = rev.Payload.UserPrompt()
+	return base, user, true, nil
+}
+
+// ApplyPromptLayers overlays the agent's active-config durable prompt layers
+// onto the run's resolved per-run override bundle at run start. It is the
+// ONE shared seam both run-loop drivers (the production dev driver and the
+// harbortest devstack twin) call after resolving the LLM-parameter overrides,
+// so the two binaries cannot drift (CLAUDE.md §17.6).
+//
+// A non-empty base layer is set as ov.BasePromptLayer (overriding the run's
+// configured base at the prompt builder); a non-empty user layer is set as
+// ov.UserPromptLayer (composed below the base in the lower-trust position).
+// An empty layer is treated as unset (the base inherits the configured
+// default; no user layer is added) — so a run with no durable prompt layers
+// is unchanged. When ov is nil but a layer is present, a fresh bundle is
+// allocated. A registry read error is returned so the caller fails the run
+// loudly. The returned bundle is fresh-per-run (no shared mutable state).
+func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
+	base, user, ok, err := ActivePromptLayers(ctx, reg, agentID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || (base == "" && user == "") {
+		return ov, nil
+	}
+	if ov == nil {
+		ov = &planner.LLMOverrides{}
+	}
+	if base != "" {
+		b := base
+		ov.BasePromptLayer = &b
+	}
+	if user != "" {
+		u := user
+		ov.UserPromptLayer = &u
+	}
+	return ov, nil
 }
 
 // FilterSkillViewsByMembership keeps only the views whose Name is in the

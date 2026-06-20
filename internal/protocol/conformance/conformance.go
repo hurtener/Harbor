@@ -637,8 +637,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 95 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 95 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane nine)", len(got))
+	if len(got) != 96 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 96 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane ten)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -746,6 +746,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigSkillsUpsert:      {},
 		methods.MethodAgentConfigSkillsDelete:      {},
 		methods.MethodAgentConfigSetToolExposure:   {},
+		methods.MethodAgentConfigSetPromptLayers:   {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {

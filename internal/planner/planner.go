@@ -390,6 +390,17 @@ type RunContext struct {
 //     ExtraInstructions). When both are set, the base prompt is replaced
 //     AND the additive guidance still appends. An empty string is a valid
 //     override (it clears the base prompt for that run); nil = no replace.
+//   - BasePromptLayer is the durable, operator-owned base prompt layer
+//     resolved from the agent's active config at run start. When set it is
+//     the run's base system prompt (overriding the agent's configured
+//     default base); nil = inherit the configured default. A session
+//     SystemPromptOverride takes precedence over it for its single message.
+//   - UserPromptLayer is the durable, optional user-instruction layer
+//     resolved from the agent's active config at run start. When set it
+//     composes ABOVE the base in a distinctly-framed, lower-trust position
+//     — it can extend the operator's guidance but never precede, replace,
+//     or weaken the base. A session SystemPromptOverride replaces the whole
+//     base+user spine for its single message.
 type LLMOverrides struct {
 	Model                *string
 	Temperature          *float64
@@ -397,6 +408,8 @@ type LLMOverrides struct {
 	ReasoningEffort      *string
 	ExtraInstructions    *string
 	SystemPromptOverride *string
+	BasePromptLayer      *string
+	UserPromptLayer      *string
 }
 
 // ToolCallDeferred is a pending native tool-call the planner will

@@ -567,6 +567,15 @@ func (d *perTaskRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q 
 	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.agentConfigID, q, d.catalog, filter)
 }
 
+// projectAgentConfigPromptLayers overlays the agent's durable layered system
+// prompt (operator base + optional user layer) resolved from the active
+// config onto the run's resolved override bundle at run start, via the SAME
+// shared projection the devstack twin uses (CLAUDE.md §17.6). Next-turn-only;
+// the immutable per-run snapshot is undisturbed for in-flight runs.
+func (d *perTaskRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
+	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.agentConfigID, q, ov)
+}
+
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
@@ -868,6 +877,29 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Message: "tenant-override resolution failed: " + ovErr.Error(),
 		}); mErr != nil {
 			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after override-resolution error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
+	// Overlay the agent's durable layered system prompt (operator base +
+	// optional user layer) resolved from the active config at run start. The
+	// projection is shared verbatim with the devstack twin (CLAUDE.md §17.6);
+	// a read error fails the run loudly rather than silently dropping the
+	// operator's configured prompt.
+	llmOverrides, plErr := d.projectAgentConfigPromptLayers(taskCtx, q, llmOverrides)
+	if plErr != nil {
+		d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: prompt-layer projection failed; failing run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", plErr.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "prompt-layer projection failed: " + plErr.Error(),
+		}); mErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after prompt-layer-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))

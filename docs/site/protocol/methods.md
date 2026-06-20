@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 95 canonical Harbor Protocol methods, generated from the single-source registry
+The 96 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -198,6 +198,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agent_config.get` | `POST /v1/agent_config/get` | agent config — admin | [`AgentConfigGetRequest`](./types.md#agentconfiggetrequest) | [`AgentConfigGetResponse`](./types.md#agentconfiggetresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.list_revisions` | `POST /v1/agent_config/list_revisions` | agent config — admin | [`AgentConfigListRevisionsRequest`](./types.md#agentconfiglistrevisionsrequest) | [`AgentConfigListRevisionsResponse`](./types.md#agentconfiglistrevisionsresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.rollback` | `POST /v1/agent_config/rollback` | agent config — admin | [`AgentConfigRollbackRequest`](./types.md#agentconfigrollbackrequest) | [`AgentConfigRollbackResponse`](./types.md#agentconfigrollbackresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.set_prompt_layers` | `POST /v1/agent_config/set_prompt_layers` | agent config — admin | [`AgentConfigSetPromptLayersRequest`](./types.md#agentconfigsetpromptlayersrequest) | [`AgentConfigSetPromptLayersResponse`](./types.md#agentconfigsetpromptlayersresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.set_revision` | `POST /v1/agent_config/set_revision` | agent config — admin | [`AgentConfigSetRevisionRequest`](./types.md#agentconfigsetrevisionrequest) | [`AgentConfigSetRevisionResponse`](./types.md#agentconfigsetrevisionresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.set_tool_exposure` | `POST /v1/agent_config/set_tool_exposure` | agent config — admin | [`AgentConfigSetToolExposureRequest`](./types.md#agentconfigsettoolexposurerequest) | [`AgentConfigSetToolExposureResponse`](./types.md#agentconfigsettoolexposureresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.skills.delete` | `POST /v1/agent_config/skills/delete` | agent config — admin | [`AgentConfigSkillsDeleteRequest`](./types.md#agentconfigskillsdeleterequest) | [`AgentConfigSkillsDeleteResponse`](./types.md#agentconfigskillsdeleteresponse) | mutating; requires the verified `admin` scope claim |
