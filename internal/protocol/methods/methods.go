@@ -310,6 +310,15 @@ const (
 	// revision. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
 	// The wire-transport route is `POST /v1/agent_config/skills.delete`.
 	MethodAgentConfigSkillsDelete Method = "agent_config.skills.delete"
+	// MethodAgentConfigSetToolExposure — admin verb: sets the agent's
+	// MCP-exposure / per-tool policy (paused servers + disabled tools) as a
+	// desired-state replace of the tool-exposure section and records the
+	// change as a config revision. Pausing a server excludes its tools from
+	// the next run (the live transport stays warm) and rejects its App
+	// callbacks against current state; emits `mcp.connection.paused` /
+	// `.resumed`. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
+	// The wire-transport route is `POST /v1/agent_config/set_tool_exposure`.
+	MethodAgentConfigSetToolExposure Method = "agent_config.set_tool_exposure"
 
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
@@ -768,6 +777,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsList:        {},
 	MethodAgentConfigSkillsUpsert:      {},
 	MethodAgentConfigSkillsDelete:      {},
+	MethodAgentConfigSetToolExposure:   {},
 	MethodPauseList:                    {},
 	MethodTopologySnapshot:             {},
 	MethodArtifactsList:                {},
@@ -996,21 +1006,22 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the eight
+// canonicalAgentConfigMethods is the closed set of the nine
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
-// list_revisions / diff / rollback) plus the three skills-control verbs
-// (skills.list / skills.upsert / skills.delete). IsAgentConfigMethod is
-// O(1); the agent-config wire handler branches on the trailing path
-// segment to dispatch.
+// list_revisions / diff / rollback), the three skills-control verbs
+// (skills.list / skills.upsert / skills.delete), and the MCP-exposure verb
+// (set_tool_exposure). IsAgentConfigMethod is O(1); the agent-config wire
+// handler branches on the trailing path segment to dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
-	MethodAgentConfigGet:           {},
-	MethodAgentConfigSetRevision:   {},
-	MethodAgentConfigListRevisions: {},
-	MethodAgentConfigDiff:          {},
-	MethodAgentConfigRollback:      {},
-	MethodAgentConfigSkillsList:    {},
-	MethodAgentConfigSkillsUpsert:  {},
-	MethodAgentConfigSkillsDelete:  {},
+	MethodAgentConfigGet:             {},
+	MethodAgentConfigSetRevision:     {},
+	MethodAgentConfigListRevisions:   {},
+	MethodAgentConfigDiff:            {},
+	MethodAgentConfigRollback:        {},
+	MethodAgentConfigSkillsList:      {},
+	MethodAgentConfigSkillsUpsert:    {},
+	MethodAgentConfigSkillsDelete:    {},
+	MethodAgentConfigSetToolExposure: {},
 }
 
 // canonicalAgentConfigAdminMethods is the closed sub-set of the
@@ -1020,13 +1031,14 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 // also admin-gated at the wire handler (the whole family is admin-scoped),
 // but this set names the WRITES for callers that distinguish them.
 var canonicalAgentConfigAdminMethods = map[Method]struct{}{
-	MethodAgentConfigSetRevision:  {},
-	MethodAgentConfigRollback:     {},
-	MethodAgentConfigSkillsUpsert: {},
-	MethodAgentConfigSkillsDelete: {},
+	MethodAgentConfigSetRevision:     {},
+	MethodAgentConfigRollback:        {},
+	MethodAgentConfigSkillsUpsert:    {},
+	MethodAgentConfigSkillsDelete:    {},
+	MethodAgentConfigSetToolExposure: {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the eight
+// IsAgentConfigMethod reports whether m is one of the nine
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

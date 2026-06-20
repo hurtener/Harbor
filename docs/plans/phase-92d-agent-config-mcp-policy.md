@@ -24,7 +24,7 @@ The headline operator control of the agent-config plane: pause/resume an MCP ser
 
 ## Findings I'm departing from (if any)
 
-None.
+- **Exclusion-based `ToolExposure` instead of an active/deferred/disabled policy map.** This plan's prose described per-tool policy as a `LoadingMode` *map* (active / deferred / disabled). The wave's already-declared envelope (`agentcfg.ConfigPayload.ToolExposure = {PausedServers []string, DisabledTools []string}`, landed in 92a) is exclusion-based, and the implementation builds on THAT shape — pause/resume a server (`PausedServers`) + disable individual tools (`DisabledTools`). This is a §4.3 simplification: the binary "disabled" granularity ships now; the finer `deferred` per-tool policy (a tool stays discoverable but out of the initial context budget) is deferred to a follow-up, since `LoadingMode`-level per-tool deferral is a larger projection change than V1's pause/disable need. The exclusion shape composes cleanly with the existing `CatalogFilter`/`NewPlannerView` seam (a wrapping `tools.ExclusionView`) and with the diff/rollback machinery (a structured `ToolExposureDiff`). No RFC drift — RFC §6.16 content-hashes the exposure either way.
 
 ## Goals
 

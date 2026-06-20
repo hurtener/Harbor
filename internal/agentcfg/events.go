@@ -29,12 +29,31 @@ const (
 	// author identity. Rollback never mutates a revision; the event marks
 	// the active-pointer repoint.
 	EventTypeConfigReverted events.EventType = "agent.config.reverted"
+
+	// EventTypeMCPConnectionPaused — emitted when a tool-exposure edit newly
+	// pauses an MCP server (the server is added to the active revision's
+	// paused set). The transport stays warm — pause is projection-time, so
+	// the server's tools are excluded from the next run and its App callbacks
+	// are rejected against current state. Carries the agent id, the paused
+	// server id, the recording revision id, and the author identity — never a
+	// secret. Drives the operator-legible "paused by a system administrator"
+	// overlay (the client renders the canonical event; it never reaches into
+	// the App).
+	EventTypeMCPConnectionPaused events.EventType = "mcp.connection.paused"
+
+	// EventTypeMCPConnectionResumed — emitted when a tool-exposure edit newly
+	// resumes an MCP server (the server is removed from the active revision's
+	// paused set). Resume is an instant flag flip — no re-dial. Carries the
+	// same operator-visible audit metadata as the paused event.
+	EventTypeMCPConnectionResumed events.EventType = "mcp.connection.resumed"
 )
 
 func init() {
 	for _, t := range []events.EventType{
 		EventTypeConfigRevised,
 		EventTypeConfigReverted,
+		EventTypeMCPConnectionPaused,
+		EventTypeMCPConnectionResumed,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -76,5 +95,40 @@ type ConfigRevertedPayload struct {
 	// agent had no active pointer before the rollback).
 	FromRevisionID string
 	// OccurredAt is the rollback instant.
+	OccurredAt time.Time
+}
+
+// MCPConnectionPausedPayload is the typed payload for
+// EventTypeMCPConnectionPaused. SafePayload — every field is
+// operator-visible audit metadata; no secret-shaped content is carried.
+type MCPConnectionPausedPayload struct {
+	events.SafeSealed
+	// Author is the identity that recorded the pause.
+	Author identity.Quadruple
+	// AgentID is the agent whose MCP exposure changed (a registration
+	// identity, NOT an isolation principal).
+	AgentID string
+	// ServerID is the MCP source id newly paused.
+	ServerID string
+	// RevisionID is the tool-exposure revision that recorded the pause.
+	RevisionID string
+	// OccurredAt is the pause instant.
+	OccurredAt time.Time
+}
+
+// MCPConnectionResumedPayload is the typed payload for
+// EventTypeMCPConnectionResumed. SafePayload — operator-visible audit
+// metadata only.
+type MCPConnectionResumedPayload struct {
+	events.SafeSealed
+	// Author is the identity that recorded the resume.
+	Author identity.Quadruple
+	// AgentID is the agent whose MCP exposure changed.
+	AgentID string
+	// ServerID is the MCP source id newly resumed.
+	ServerID string
+	// RevisionID is the tool-exposure revision that recorded the resume.
+	RevisionID string
+	// OccurredAt is the resume instant.
 	OccurredAt time.Time
 }

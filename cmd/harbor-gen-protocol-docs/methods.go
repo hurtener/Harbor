@@ -442,6 +442,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigSkillsDeleteRequest", Response: "AgentConfigSkillsDeleteResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigSetToolExposure: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetToolExposure),
+			Mutates: true,
+			Request: "AgentConfigSetToolExposureRequest", Response: "AgentConfigSetToolExposureResponse",
+			Auth: adminNote,
+		},
 	}
 
 	// The nine steering controls share one wire shape; their per-control

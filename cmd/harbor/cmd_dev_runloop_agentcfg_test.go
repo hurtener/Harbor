@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 func acTestRegistry(t *testing.T) agentcfg.Registry {
@@ -128,5 +130,76 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 	}
 	if names := acViewNames(got); len(names) != 2 || names[0] != "a" || names[1] != "c" {
 		t.Fatalf("post-rollback projection = %v, want [a c]", names)
+	}
+}
+
+func acToolCatalog(t *testing.T) tools.ToolCatalog {
+	t.Helper()
+	cat := tools.NewCatalog()
+	reg := func(name string, source tools.ToolSourceID) {
+		t.Helper()
+		if err := cat.Register(tools.ToolDescriptor{
+			Tool: tools.Tool{Name: name, Source: source, Transport: tools.TransportMCP},
+			Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+				return tools.ToolResult{}, nil
+			},
+		}); err != nil {
+			t.Fatalf("register %q: %v", name, err)
+		}
+	}
+	reg("srvA_one", "srvA")
+	reg("srvA_two", "srvA")
+	reg("srvB_three", "srvB")
+	return cat
+}
+
+// TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart proves
+// the REAL run-loop driver method excludes a paused server's tools (and a
+// disabled tool) from the run's planner catalog view — the run-loop consumer
+// path of the agent-config tool-exposure projection, over a real registry +
+// real catalog.
+func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *testing.T) {
+	ctx := context.Background()
+	reg := acTestRegistry(t)
+	cat := acToolCatalog(t)
+	const agentID = "harbor-dev-agent"
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	filter := tools.CatalogFilter{TenantID: "t", UserID: "u", SessionID: "s"}
+
+	listNames := func(v tools.PlannerCatalogView) map[string]bool {
+		out := map[string]bool{}
+		for _, tl := range v.List() {
+			out[tl.Name] = true
+		}
+		return out
+	}
+
+	// No registry wired → ungated (all three tools visible).
+	bare := &perTaskRunLoopDriver{catalog: cat}
+	v, err := bare.projectAgentConfigCatalog(ctx, q, filter)
+	if err != nil {
+		t.Fatalf("bare: %v", err)
+	}
+	if len(v.List()) != 3 {
+		t.Fatalf("bare driver filtered the catalog: %v", listNames(v))
+	}
+
+	// Registry wired; pause srvA + disable srvB_three → next run sees neither.
+	d := &perTaskRunLoopDriver{agentConfig: reg, agentConfigID: agentID, catalog: cat}
+	if _, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}, DisabledTools: []string{"srvB_three"}},
+	}); err != nil {
+		t.Fatalf("set revision: %v", err)
+	}
+	v, err = d.projectAgentConfigCatalog(ctx, q, filter)
+	if err != nil {
+		t.Fatalf("projected: %v", err)
+	}
+	got := listNames(v)
+	if got["srvA_one"] || got["srvA_two"] {
+		t.Fatalf("paused server srvA tools still visible: %v", got)
+	}
+	if got["srvB_three"] {
+		t.Fatalf("disabled tool srvB_three still visible: %v", got)
 	}
 }

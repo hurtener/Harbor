@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 254 canonical Harbor Protocol wire types, generated from the single-source
+The 258 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -66,6 +66,7 @@ Declared in `internal/protocol/types`.
 | `from_revision_id` | `string` |  |
 | `to_revision_id` | `string` |  |
 | `skills` | `types.AgentConfigSkillsDiff` — see [`AgentConfigSkillsDiff`](./types.md#agentconfigskillsdiff) |  |
+| `tool_exposure` | `types.AgentConfigToolExposureDiff` — see [`AgentConfigToolExposureDiff`](./types.md#agentconfigtoolexposurediff) |  |
 
 ## AgentConfigDiffRequest
 
@@ -132,6 +133,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `skills` | `*types.AgentConfigSkillsSelection` — see [`AgentConfigSkillsSelection`](./types.md#agentconfigskillsselection) | optional (`omitempty`) |
+| `tool_exposure` | `*types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) | optional (`omitempty`) |
 
 ## AgentConfigRevisionView
 
@@ -177,6 +179,25 @@ Declared in `internal/protocol/types`.
 | `payload` | `types.AgentConfigPayload` — see [`AgentConfigPayload`](./types.md#agentconfigpayload) |  |
 
 ## AgentConfigSetRevisionResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSetToolExposureRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `tool_exposure` | `types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) |  |
+
+## AgentConfigSetToolExposureResponse
 
 Declared in `internal/protocol/types`.
 
@@ -289,6 +310,26 @@ Declared in `internal/protocol/types`.
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigToolExposure
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `paused_servers` | `[]string` | optional (`omitempty`) |
+| `disabled_tools` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigToolExposureDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `paused_added` | `[]string` | optional (`omitempty`) |
+| `paused_resumed` | `[]string` | optional (`omitempty`) |
+| `disabled_added` | `[]string` | optional (`omitempty`) |
+| `disabled_enabled` | `[]string` | optional (`omitempty`) |
 
 ## AgentControlRequest
 
