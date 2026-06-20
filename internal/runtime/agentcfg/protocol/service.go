@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -71,6 +72,7 @@ type Clock func() time.Time
 type Service struct {
 	registry agentcfg.Registry
 	skills   skills.SkillStore // optional — nil ⇒ skills methods return ErrSkillsUnavailable
+	bus      events.EventBus   // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
 	logger   *slog.Logger
 	now      Clock
 }
@@ -103,6 +105,18 @@ func WithSkillStore(st skills.SkillStore) Option {
 	return func(s *Service) {
 		if st != nil {
 			s.skills = st
+		}
+	}
+}
+
+// WithBus wires the EventBus the tool-exposure consumer publishes the
+// `mcp.connection.paused` / `.resumed` overlay events through. A nil bus
+// leaves those events unpublished (the revision is still recorded — the
+// generic `agent.config.revised` still fires from the registry).
+func WithBus(b events.EventBus) Option {
+	return func(s *Service) {
+		if b != nil {
+			s.bus = b
 		}
 	}
 }
@@ -262,6 +276,12 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 	if p.Skills != nil {
 		out.Skills = &prototypes.AgentConfigSkillsSelection{Names: append([]string(nil), p.Skills.Names...)}
 	}
+	if p.ToolExposure != nil {
+		out.ToolExposure = &prototypes.AgentConfigToolExposure{
+			PausedServers: append([]string(nil), p.ToolExposure.PausedServers...),
+			DisabledTools: append([]string(nil), p.ToolExposure.DisabledTools...),
+		}
+	}
 	return out
 }
 
@@ -270,6 +290,12 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 	var out agentcfg.ConfigPayload
 	if p.Skills != nil {
 		out.Skills = &agentcfg.SkillsSelection{Names: append([]string(nil), p.Skills.Names...)}
+	}
+	if p.ToolExposure != nil {
+		out.ToolExposure = &agentcfg.ToolExposure{
+			PausedServers: append([]string(nil), p.ToolExposure.PausedServers...),
+			DisabledTools: append([]string(nil), p.ToolExposure.DisabledTools...),
+		}
 	}
 	return out
 }
@@ -282,6 +308,12 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 		Skills: prototypes.AgentConfigSkillsDiff{
 			Added:   append([]string(nil), d.Skills.Added...),
 			Removed: append([]string(nil), d.Skills.Removed...),
+		},
+		ToolExposure: prototypes.AgentConfigToolExposureDiff{
+			PausedAdded:     append([]string(nil), d.ToolExposure.PausedAdded...),
+			PausedResumed:   append([]string(nil), d.ToolExposure.PausedResumed...),
+			DisabledAdded:   append([]string(nil), d.ToolExposure.DisabledAdded...),
+			DisabledEnabled: append([]string(nil), d.ToolExposure.DisabledEnabled...),
 		},
 	}
 }

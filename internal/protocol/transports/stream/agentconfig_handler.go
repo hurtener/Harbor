@@ -11,6 +11,7 @@
 //	POST /v1/agent_config/list_revisions  — the revision chain
 //	POST /v1/agent_config/diff            — compare two revisions
 //	POST /v1/agent_config/rollback        — repoint the active pointer
+//	POST /v1/agent_config/set_tool_exposure — set MCP pause/resume + per-tool policy
 //	POST /v1/agent_config/skills/list     — list the agent's skills
 //	POST /v1/agent_config/skills/upsert   — upsert a skill (records a rev)
 //	POST /v1/agent_config/skills/delete   — delete a skill (records a rev)
@@ -140,6 +141,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveDiff(w, r, body, wireID)
 	case "rollback":
 		h.serveRollback(w, r, body, wireID)
+	case "set_tool_exposure":
+		h.serveSetToolExposure(w, r, body, wireID)
 	case "skills/list":
 		h.serveSkillsList(w, r, body, wireID)
 	case "skills/upsert":
@@ -232,6 +235,23 @@ func (h *AgentConfigHandler) serveRollback(w http.ResponseWriter, r *http.Reques
 	resp, err := h.service.Rollback(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigRollback, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSetToolExposure(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSetToolExposureRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSetToolExposure) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SetToolExposure(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSetToolExposure, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)

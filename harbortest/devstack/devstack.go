@@ -936,6 +936,11 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				Store:       stack.Artifacts,
 				Bus:         bus,
 				ToolContext: stack.MCPToolContext,
+				// D-094 mirror of cmd_dev.go: the app→host exposure gate reads
+				// CURRENT agent-config desired state (the planner-snapshot /
+				// app-call-current asymmetry). Inert when no registry is wired.
+				AgentConfig: stack.AgentConfig,
+				AgentID:     stack.AgentConfigID,
 				Threshold:   cfg.Artifacts.HeavyOutputThresholdBytes,
 			})
 			if aaErr != nil {
@@ -1155,7 +1160,8 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// skills edit through the mounted route reaches the next run.
 		if stack.AgentConfig != nil {
 			agentConfigService, acErr := agentcfgprotocol.NewService(stack.AgentConfig,
-				agentcfgprotocol.WithSkillStore(stack.Skills))
+				agentcfgprotocol.WithSkillStore(stack.Skills),
+				agentcfgprotocol.WithBus(bus))
 			if acErr != nil {
 				return stack, fmt.Errorf("agent-config/protocol service: %w", acErr)
 			}
@@ -1495,6 +1501,13 @@ func (d *DevStackRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q 
 	return projection.ActiveSkillViews(ctx, d.agentConfig, d.agentConfigID, q, views)
 }
 
+// projectAgentConfigCatalog mirrors the production driver's run-start
+// agent-config tool-exposure projection (D-094): the SAME shared projection
+// excludes a paused MCP server's tools / disabled tools from the run's view.
+func (d *DevStackRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
+	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.agentConfigID, q, d.catalog, filter)
+}
+
 func (d *DevStackRunLoopDriver) start(ctx context.Context) error {
 	if d.started {
 		return nil
@@ -1701,12 +1714,33 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		// Phase 110a (D-194): the per-run view is the promoted
 		// `tools.NewPlannerView` — the same constructor production
 		// wires (the pre-110a devstack-local mirror is deleted).
-		catalogView = tools.NewPlannerView(d.catalog, tools.CatalogFilter{
+		// Agent-config tool-exposure projection (D-094 mirror of
+		// cmd_dev_runloop.go): a paused MCP server's tools / disabled tools
+		// are excluded via the SAME shared projection production uses; a
+		// registry read error fails the run loud.
+		view, vErr := d.projectAgentConfigCatalog(taskCtx, q, tools.CatalogFilter{
 			TenantID:      q.TenantID,
 			UserID:        q.UserID,
 			SessionID:     q.SessionID,
 			GrantedScopes: d.grantedScopes,
 		})
+		if vErr != nil {
+			if d.logger != nil {
+				d.logger.Warn("devstack runloop: agent-config tool-exposure projection failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", vErr.Error()))
+			}
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "runtime_fetch_error",
+				Message: "agent-config tool-exposure projection: " + vErr.Error(),
+			}); fErr != nil && d.logger != nil {
+				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		catalogView = view
 	}
 
 	// Phase 83m item 7 (D-094 mirror of cmd/harbor/cmd_dev_runloop.go):

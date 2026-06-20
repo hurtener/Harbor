@@ -942,6 +942,9 @@ func mapMCPError(method string, err error) error {
 	case isMCPIdentityMissing(err):
 		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
 			"method %q: %v", method, err)
+	case isAppToolExposureDenied(err):
+		return protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: %v", method, err)
 	default:
 		return protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: MCP read failed: %v", method, err)
@@ -966,6 +969,17 @@ func isMCPNotFound(err error) bool {
 
 func isMCPIdentityMissing(err error) bool {
 	return err != nil && containsMarker(err.Error(), "identity missing")
+}
+
+// isAppToolExposureDenied classifies the app→host current-state exposure
+// rejection (a paused server / disabled tool in the agent's active config).
+// It maps to CodeScopeMismatch — an authorization rejection, not a
+// not-found — driving the operator-legible "paused by an administrator"
+// overlay. String-based, like the markers above: the `protocol` package
+// does not import the `mcpconsole` accessor (no import cycle), and the
+// accessor's sentinel message carries this stable marker.
+func isAppToolExposureDenied(err error) bool {
+	return err != nil && containsMarker(err.Error(), "paused or disabled by agent configuration")
 }
 
 // mcpCountToWire converts a runtime int count (tool / resource /

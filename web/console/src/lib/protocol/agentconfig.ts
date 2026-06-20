@@ -26,10 +26,21 @@ export interface AgentConfigSkillsSelection {
 	names: string[];
 }
 
+/** An agent's MCP-exposure / per-tool policy in a config revision
+ * (exclusion-based): the paused MCP servers + individually-disabled tools.
+ * Pausing a server excludes its tools from the next run (the live transport
+ * stays warm); tools are keyed `<source>_<tool>`. Mirrors
+ * `types.AgentConfigToolExposure`. */
+export interface AgentConfigToolExposure {
+	paused_servers?: string[];
+	disabled_tools?: string[];
+}
+
 /** An agent-config envelope — every section optional and forward-compatible.
  * Mirrors `types.AgentConfigPayload`. */
 export interface AgentConfigPayload {
 	skills?: AgentConfigSkillsSelection;
+	tool_exposure?: AgentConfigToolExposure;
 }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
@@ -51,11 +62,21 @@ export interface AgentConfigSkillsDiff {
 	removed?: string[];
 }
 
+/** The structured MCP-exposure / per-tool policy set-diff across two
+ * revisions. Mirrors `types.AgentConfigToolExposureDiff`. */
+export interface AgentConfigToolExposureDiff {
+	paused_added?: string[];
+	paused_resumed?: string[];
+	disabled_added?: string[];
+	disabled_enabled?: string[];
+}
+
 /** A server-side revision compare. Mirrors `types.AgentConfigDiff`. */
 export interface AgentConfigDiff {
 	from_revision_id: string;
 	to_revision_id: string;
 	skills: AgentConfigSkillsDiff;
+	tool_exposure: AgentConfigToolExposureDiff;
 }
 
 /** `agent_config.get` request. */
@@ -120,6 +141,20 @@ export interface AgentConfigRollbackRequest {
 
 /** `agent_config.rollback` response. */
 export interface AgentConfigRollbackResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.set_tool_exposure` request — admin-scoped. Replaces ONLY
+ * the tool-exposure section (the skills + prompt sections are preserved). */
+export interface AgentConfigSetToolExposureRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	tool_exposure: AgentConfigToolExposure;
+}
+
+/** `agent_config.set_tool_exposure` response — the recorded revision. */
+export interface AgentConfigSetToolExposureResponse {
 	revision: AgentConfigRevisionView;
 	protocol_version: string;
 }

@@ -2,6 +2,7 @@ package projection_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/skills"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 const (
@@ -186,5 +188,156 @@ func TestActiveSkillViews_RollbackChangesProjection(t *testing.T) {
 	}
 	if !eq(names(got), []string{"a"}) {
 		t.Fatalf("post-rollback projection = %v, want [a]", names(got))
+	}
+}
+
+// --- tool-exposure projection (ActivePlannerCatalogView) ---
+
+func toolCatalog(t *testing.T) tools.ToolCatalog {
+	t.Helper()
+	cat := tools.NewCatalog()
+	reg := func(name string, source tools.ToolSourceID) {
+		t.Helper()
+		if err := cat.Register(tools.ToolDescriptor{
+			Tool: tools.Tool{Name: name, Source: source, Transport: tools.TransportMCP},
+			Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+				return tools.ToolResult{Value: "ok"}, nil
+			},
+		}); err != nil {
+			t.Fatalf("register %q: %v", name, err)
+		}
+	}
+	reg("srvA_alpha", "srvA")
+	reg("srvA_beta", "srvA")
+	reg("srvB_gamma", "srvB")
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool:   tools.Tool{Name: "local_tool"},
+		Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) { return tools.ToolResult{}, nil },
+	}); err != nil {
+		t.Fatalf("register local_tool: %v", err)
+	}
+	return cat
+}
+
+func viewNames(v tools.PlannerCatalogView) []string {
+	out := make([]string, 0)
+	for _, tl := range v.List() {
+		out = append(out, tl.Name)
+	}
+	return out
+}
+
+func hasName(vs []string, want string) bool {
+	for _, n := range vs {
+		if n == want {
+			return true
+		}
+	}
+	return false
+}
+
+func baseFilter() tools.CatalogFilter {
+	return tools.CatalogFilter{TenantID: projTenant, UserID: projUser, SessionID: projSess}
+}
+
+// TestActivePlannerCatalogView_NoConfig_PassThrough proves the
+// backward-compatible ungated path: a nil registry, an empty agent id, or no
+// active revision returns the unfiltered NewPlannerView.
+func TestActivePlannerCatalogView_NoConfig_PassThrough(t *testing.T) {
+	ctx := context.Background()
+	cat := toolCatalog(t)
+	// nil registry
+	v, err := projection.ActivePlannerCatalogView(ctx, nil, projAgent, projID(), cat, baseFilter())
+	if err != nil {
+		t.Fatalf("nil registry: %v", err)
+	}
+	if len(v.List()) != 4 {
+		t.Fatalf("nil registry filtered the catalog: %v", viewNames(v))
+	}
+	// registry present, no active revision
+	reg := newRegistry(t)
+	v, err = projection.ActivePlannerCatalogView(ctx, reg, projAgent, projID(), cat, baseFilter())
+	if err != nil {
+		t.Fatalf("no active revision: %v", err)
+	}
+	if len(v.List()) != 4 {
+		t.Fatalf("no active revision filtered the catalog: %v", viewNames(v))
+	}
+}
+
+// TestActivePlannerCatalogView_PausedServerExcluded proves a paused server's
+// tools are absent from the run's view while other tools remain — through the
+// REAL registry + REAL catalog.
+func TestActivePlannerCatalogView_PausedServerExcluded(t *testing.T) {
+	ctx := context.Background()
+	cat := toolCatalog(t)
+	reg := newRegistry(t)
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
+	}); err != nil {
+		t.Fatalf("set revision: %v", err)
+	}
+	v, err := projection.ActivePlannerCatalogView(ctx, reg, projAgent, projID(), cat, baseFilter())
+	if err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+	got := viewNames(v)
+	if hasName(got, "srvA_alpha") || hasName(got, "srvA_beta") {
+		t.Fatalf("paused server srvA tools still visible: %v", got)
+	}
+	if !hasName(got, "srvB_gamma") || !hasName(got, "local_tool") {
+		t.Fatalf("non-paused tools missing: %v", got)
+	}
+	if _, ok := v.Resolve("srvA_alpha"); ok {
+		t.Fatal("Resolve(srvA_alpha) succeeded against a paused server")
+	}
+}
+
+// TestActivePlannerCatalogView_DisabledToolExcluded proves an individually
+// disabled tool is excluded while siblings remain.
+func TestActivePlannerCatalogView_DisabledToolExcluded(t *testing.T) {
+	ctx := context.Background()
+	cat := toolCatalog(t)
+	reg := newRegistry(t)
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"srvA_alpha"}},
+	}); err != nil {
+		t.Fatalf("set revision: %v", err)
+	}
+	v, err := projection.ActivePlannerCatalogView(ctx, reg, projAgent, projID(), cat, baseFilter())
+	if err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+	got := viewNames(v)
+	if hasName(got, "srvA_alpha") {
+		t.Fatalf("disabled tool still visible: %v", got)
+	}
+	if !hasName(got, "srvA_beta") {
+		t.Fatalf("sibling srvA_beta wrongly hidden: %v", got)
+	}
+}
+
+// TestActivePlannerCatalogView_ResumeRestores proves resume (a new revision
+// clearing the paused set) restores the tools next-turn — no re-dial.
+func TestActivePlannerCatalogView_ResumeRestores(t *testing.T) {
+	ctx := context.Background()
+	cat := toolCatalog(t)
+	reg := newRegistry(t)
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
+	}); err != nil {
+		t.Fatalf("set paused: %v", err)
+	}
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{}, // resume all
+	}); err != nil {
+		t.Fatalf("set resumed: %v", err)
+	}
+	v, err := projection.ActivePlannerCatalogView(ctx, reg, projAgent, projID(), cat, baseFilter())
+	if err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+	if len(v.List()) != 4 {
+		t.Fatalf("resume did not restore tools: %v", viewNames(v))
 	}
 }
