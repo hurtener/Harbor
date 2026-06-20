@@ -391,6 +391,13 @@ type DevStack struct {
 	RunLoop       *steering.RunLoop
 	RunLoopDriver *DevStackRunLoopDriver
 
+	// RunsOverrideStore is the session-level pending-override Store shared
+	// by the mounted `runs.set_overrides` route and the run-loop driver's
+	// run-start Consume (Phase 92b, D-232). Exposed so kit consumers can
+	// drive a session override in a test (and so the shared-store seam is
+	// assertable). Nil when the run loop is skipped.
+	RunsOverrideStore *runsprotocol.Store
+
 	// Catalog / Coordinator / Gates / OAuthProviders are nil when
 	// SkipCatalog is set. The Gates map is keyed by tool name and
 	// populated by the catalog Builder; tests that drive
@@ -595,6 +602,12 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// Locals the test-kit legs below read.
 	bus := core.Bus
 	taskReg := core.Tasks
+	// Phase 92b (D-232) — ONE session-override Store shared by the run-loop
+	// driver (CONSUME at run start) and the runs Service (SET via
+	// runs.set_overrides), mirroring cmd/harbor's shared runsStore so a
+	// set through the mounted route actually reaches the run (D-094; closes
+	// the §17.6 cross-surface omission the adversarial pass found).
+	runsStore := runsprotocol.NewStore()
 	metricsReg := core.Metrics
 	llmPostureCfg := core.LLMSnapshot
 
@@ -664,6 +677,11 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				planner: core.Planner,
 				tasks:   taskReg, // D-098: helper mirrors production's FSM bridge (D-094 source-of-truth invariant)
 				logger:  opts.Logger,
+				// Phase 92b (D-232) — the session-override Store the driver
+				// Consumes at run start; the SAME instance is handed to the
+				// runs Service below so a runs.set_overrides reaches the run
+				// (D-094 mirror of cmd_dev.go's shared runsStore).
+				sessionOverrides: runsStore,
 				// Phase 83f (D-149): per-run consumer wiring. Explicit
 				// AssembleOpts overrides win; otherwise the cfg-opened
 				// stores + the SAME exported projections production uses
@@ -701,6 +719,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return stack, fmt.Errorf("devstack RunLoop driver start: %w", startErr)
 			}
 			stack.RunLoopDriver = driver
+			stack.RunsOverrideStore = runsStore
 			stack.closeFns = append(stack.closeFns, driver.close)
 		}
 	}
@@ -1082,14 +1101,16 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			muxOpts = append(muxOpts, transports.WithSearch(searchSurface))
 		}
-		// Phase 73n (D-130): mount the Console Playground-page route
-		// (`runs.set_overrides`). The devstack mirrors the production
-		// `cmd/harbor` boot path (CLAUDE.md §17.6) — the override Store
-		// is the same in-process artifact `cmd/harbor` constructs, so
-		// the wave-end E2E exercises the real route.
-		runsService, rsErr := runsprotocol.NewService(runsprotocol.NewStore(),
+		// Phase 73n (D-130) / 92b (D-232): mount the Console Playground-page
+		// route (`runs.set_overrides`) over the SAME `runsStore` the
+		// run-loop driver Consumes from (created at function scope above) —
+		// so a recorded session override actually reaches the next run, not
+		// a void. WithValidModels rejects an unknown session model swap at
+		// set time (fail loud, mirroring the tenant layer + cmd/harbor).
+		runsService, rsErr := runsprotocol.NewService(runsStore,
 			runsprotocol.WithBus(bus),
 			runsprotocol.WithRedactor(stack.Audit),
+			runsprotocol.WithValidModels(devstackValidModels(cfg)),
 		)
 		if rsErr != nil {
 			return stack, fmt.Errorf("runs/protocol service: %w", rsErr)
@@ -1218,6 +1239,17 @@ func resolveSkillsContextMax(opts AssembleOpts, cfg *config.Config) int {
 	return cfg.Planner.SkillsContextMaxResolved()
 }
 
+// devstackValidModels returns the configured model names (the keys of
+// `cfg.LLM.ModelProfiles`) the runs Service validates a session model swap
+// against at set time — the D-094 mirror of cmd/harbor's validModels.
+func devstackValidModels(cfg *config.Config) []string {
+	models := make([]string, 0, len(cfg.LLM.ModelProfiles))
+	for m := range cfg.LLM.ModelProfiles {
+		models = append(models, m)
+	}
+	return models
+}
+
 // resolvePlanningHints returns the per-task driver's planning hints:
 // an explicit AssembleOpts override wins; otherwise the cfg's YAML
 // block via the SAME exported projection production calls
@@ -1284,6 +1316,13 @@ type DevStackRunLoopDriver struct {
 	// tracks production so the mirror does not drift.
 	tenantOverrides devStackTenantOverrideResolver
 
+	// session-level pending-override Store — Consumed (one-shot) at run
+	// start and composed OVER the tenant default (session › tenant ›
+	// config), the D-094 mirror of the production driver. It is the SAME
+	// Store the devstack's runs Service writes into, so a
+	// runs.set_overrides through the mounted route reaches the run.
+	sessionOverrides *runsprotocol.Store
+
 	// Phase 107a parity (D-195 dated-note follow-up) — per-task
 	// trajectory map for the Enricher seam, the D-094 mirror of the
 	// production driver. Trajectories are stored before RunLoop.Run
@@ -1341,6 +1380,9 @@ type devStackRunLoopDriverOpts struct {
 
 	// admin-set tenant-default LLM override resolver (D-094 mirror).
 	tenantOverrides devStackTenantOverrideResolver
+
+	// session-level pending-override Store (D-094 mirror).
+	sessionOverrides *runsprotocol.Store
 }
 
 // devStackTenantOverrideResolver mirrors cmd/harbor's
@@ -1383,6 +1425,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		// Phase 84b (D-189) — disposition policy passthrough.
 		dispositionPolicy: opts.dispositionPolicy,
 		tenantOverrides:   opts.tenantOverrides,
+		sessionOverrides:  opts.sessionOverrides,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
@@ -1748,27 +1791,35 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 }
 
 // resolveLLMOverrides mirrors `cmd/harbor/cmd_dev_runloop.go`'s run-start
-// tenant-override resolution (D-094 parity). A nil resolver or a tenant
-// with no record returns (nil, nil) — the run uses agent/config defaults;
-// a resolver error propagates so the caller fails the run loudly.
+// resolution (D-094 parity): the tenant default (via the resolver) is
+// composed UNDER the Consumed one-shot session override (session › tenant
+// › config) via the production `runsprotocol.ComposeLLMOverrides`. A
+// resolver error propagates so the caller fails the run loudly; the
+// session Consume cannot error (in-process map read).
 func (d *DevStackRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quadruple) (*planner.LLMOverrides, error) {
-	if d.tenantOverrides == nil {
-		return nil, nil
+	var tenant *planner.LLMOverrides
+	if d.tenantOverrides != nil {
+		spec, set, err := d.tenantOverrides.Get(ctx, q.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		if set {
+			tenant = &planner.LLMOverrides{
+				Model:             spec.Model,
+				Temperature:       spec.Temperature,
+				MaxTokens:         spec.MaxTokens,
+				ReasoningEffort:   spec.ReasoningEffort,
+				ExtraInstructions: spec.ExtraInstructions,
+			}
+		}
 	}
-	spec, set, err := d.tenantOverrides.Get(ctx, q.TenantID)
-	if err != nil {
-		return nil, err
+	var session *runsprotocol.PendingOverride
+	if d.sessionOverrides != nil {
+		if po, found := d.sessionOverrides.Consume(q.Identity); found {
+			session = &po
+		}
 	}
-	if !set {
-		return nil, nil
-	}
-	return &planner.LLMOverrides{
-		Model:             spec.Model,
-		Temperature:       spec.Temperature,
-		MaxTokens:         spec.MaxTokens,
-		ReasoningEffort:   spec.ReasoningEffort,
-		ExtraInstructions: spec.ExtraInstructions,
-	}, nil
+	return runsprotocol.ComposeLLMOverrides(session, tenant), nil
 }
 
 // resolveSessionArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go`'s

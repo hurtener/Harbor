@@ -1742,6 +1742,7 @@ Declared in `internal/protocol/types`.
 | `temperature` | `*float64` | optional (`omitempty`) |
 | `max_tokens` | `*int` | optional (`omitempty`) |
 | `system_prompt_override` | `*string` | optional (`omitempty`) |
+| `model` | `*string` | optional (`omitempty`) |
 
 ## RunSetOverridesRequest
 

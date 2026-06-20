@@ -50,6 +50,12 @@ type RunOverrides struct {
 	// override (it clears the system prompt for that one message);
 	// nil means "leave the agent's configured system prompt in place".
 	SystemPromptOverride *string `json:"system_prompt_override,omitempty"`
+	// Model, when non-nil, overrides the model the next message's run
+	// requests. The runtime rejects a model with no configured
+	// `ModelProfile` with CodeInvalidRequest (fail loud at set time). The
+	// session-level model swap — it wins over the tenant default and the
+	// config default for that one message (session › tenant › config).
+	Model *string `json:"model,omitempty"`
 }
 
 // RunSetOverridesRequest is the wire request for the `runs.set_overrides`

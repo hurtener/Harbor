@@ -42,6 +42,11 @@ import type { EventAggregateRequest, EventAggregateResponse } from './events.js'
 import type { RuntimeCounters, RuntimeHealth } from './posture.js';
 import type { PauseListRequest, PauseListResponse } from './pause.js';
 import type { SearchRequest, SearchResponse } from './search.js';
+import type {
+	GovernanceTenantOverrides,
+	GovernanceGetTenantOverridesResponse,
+	GovernanceSetTenantOverridesResponse,
+} from './governance.js';
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -902,6 +907,39 @@ export class AuthNamespace {
 }
 
 /**
+ * The admin-scoped `governance.*` tenant-override namespace — Phase 92b /
+ * D-232. An admin reads + writes a tenant's default LLM parameters live
+ * (no redeploy); the change lands on every session's next run. Both
+ * methods are ADMIN-gated: a connection without the verified
+ * `auth.ScopeAdmin` claim gets a `ProtocolError` carrying `scope_mismatch`
+ * (HTTP 403). The tenant is the connection's verified tenant — the
+ * Transport folds the identity triple into the body; callers send only
+ * the override payload.
+ */
+export class GovernanceNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `governance.get_tenant_overrides` — read the tenant's current default overrides. */
+	getTenantOverrides(): Promise<GovernanceGetTenantOverridesResponse> {
+		return this.#t.request<GovernanceGetTenantOverridesResponse>(
+			'/v1/governance/get_tenant_overrides',
+			{},
+		);
+	}
+	/** `governance.set_tenant_overrides` — set (or clear) the tenant's default overrides. */
+	setTenantOverrides(
+		overrides: GovernanceTenantOverrides,
+	): Promise<GovernanceSetTenantOverridesResponse> {
+		return this.#t.request<GovernanceSetTenantOverridesResponse>(
+			'/v1/governance/set_tenant_overrides',
+			{ overrides: overrides as unknown as Record<string, unknown> },
+		);
+	}
+}
+
+/**
  * The `search.*` namespace — the shipped global-search surface (Phase
  * 72c). Consumed by the app-shell top-bar ⌘K launcher (Phase 108b). The
  * Runtime mounts `search.query` on the control surface at
@@ -963,6 +1001,7 @@ export interface ProtocolClient {
 	readonly pause: PauseNamespace;
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
+	readonly governance: GovernanceNamespace;
 	readonly search: SearchNamespace;
 
 	/**
@@ -1000,6 +1039,7 @@ export class HarborClient implements ProtocolClient {
 	readonly pause: PauseNamespace;
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
+	readonly governance: GovernanceNamespace;
 	readonly search: SearchNamespace;
 
 	// Round-8 F1 / phase 84a: per-connection capability cache. Pages
@@ -1030,6 +1070,7 @@ export class HarborClient implements ProtocolClient {
 		this.pause = new PauseNamespace(transport);
 		this.posture = new PostureNamespace(transport);
 		this.auth = new AuthNamespace(transport);
+		this.governance = new GovernanceNamespace(transport);
 		this.search = new SearchNamespace(transport);
 	}
 

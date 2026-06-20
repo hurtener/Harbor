@@ -25,6 +25,7 @@ import type {
 	LLMPostureResponse,
 	AuthRotateTokenResponse
 } from '$lib/protocol/settings.js';
+import type { GovernanceTenantOverrides } from '$lib/protocol/governance.js';
 
 /** A page-friendly error projection. */
 export interface PageError {
@@ -101,6 +102,7 @@ export const SETTINGS_SECTIONS = [
 	{ id: 'notifications-routing', label: 'Notifications Routing', group: 'console-local' },
 	{ id: 'runtime-info', label: 'Runtime Info', group: 'runtime-posture' },
 	{ id: 'governance-posture', label: 'Governance Posture', group: 'runtime-posture' },
+	{ id: 'tenant-defaults', label: 'Tenant Default Overrides', group: 'runtime-posture' },
 	{ id: 'storage-drivers', label: 'Storage Drivers', group: 'runtime-posture' },
 	{ id: 'llm-posture', label: 'LLM-Provider Posture', group: 'runtime-posture' },
 	{ id: 'about', label: 'About', group: 'runtime-posture' }
@@ -282,5 +284,120 @@ export class RotateTokenState {
 		this.expiresAt = null;
 		this.phase = 'idle';
 		this.error = null;
+	}
+}
+
+/**
+ * TenantDefaultOverridesState drives the admin tenant-default LLM-override
+ * control (Phase 92b / D-232). It reads the tenant's current default
+ * overrides (`governance.get_tenant_overrides`) and writes a replacement
+ * (`governance.set_tenant_overrides`) — both ADMIN-gated. The control is
+ * rendered disabled when `hasAdminScope` is false; the runtime ALSO gates
+ * (a forged call fails closed with a 403 the error phase surfaces).
+ *
+ * Four-state async contract (CONVENTIONS.md §4): idle → loading → ready,
+ * with saving / error transitions. The form binds the five optional
+ * dimensions; an empty field clears that dimension (desired-state replace).
+ */
+export class TenantDefaultOverridesState {
+	/** 'idle' | 'loading' | 'ready' | 'saving' | 'error'. */
+	phase = $state<'idle' | 'loading' | 'ready' | 'saving' | 'error'>('idle');
+	/** Whether a tenant-default record currently exists. */
+	exists = $state(false);
+	/** The bound form values (empty string = unset/clear). */
+	model = $state('');
+	extraInstructions = $state('');
+	temperature = $state('');
+	maxTokens = $state('');
+	reasoningEffort = $state('');
+	/** A one-shot "saved" confirmation flag, cleared on the next edit. */
+	saved = $state(false);
+	error = $state<PageError | null>(null);
+
+	/** True when the resolved connection carries the `admin` scope claim. */
+	get hasAdminScope(): boolean {
+		const conn = resolveConnection();
+		return conn !== null && conn.scopes.includes('admin');
+	}
+
+	/** True when the Console is attached to a Runtime. */
+	get connected(): boolean {
+		return resolveConnection() !== null;
+	}
+
+	/** load reads the tenant's current default overrides into the form. */
+	async load(): Promise<void> {
+		const client = buildClient();
+		if (client === null) {
+			this.phase = 'error';
+			this.error = { code: 'disconnected', message: 'Not attached to a Runtime.' };
+			return;
+		}
+		this.phase = 'loading';
+		this.error = null;
+		try {
+			const resp = await client.governance.getTenantOverrides();
+			this.applyToForm(resp.set ? resp.overrides : {});
+			this.exists = resp.set;
+			this.phase = 'ready';
+		} catch (e) {
+			this.error = describeError(e);
+			this.phase = 'error';
+		}
+	}
+
+	/** save writes the form as the tenant's new default-override record. */
+	async save(): Promise<void> {
+		const client = buildClient();
+		if (client === null) {
+			this.phase = 'error';
+			this.error = { code: 'disconnected', message: 'Not attached to a Runtime.' };
+			return;
+		}
+		this.phase = 'saving';
+		this.error = null;
+		this.saved = false;
+		try {
+			await client.governance.setTenantOverrides(this.formToOverrides());
+			this.exists = !this.isEmptyForm();
+			this.saved = true;
+			this.phase = 'ready';
+		} catch (e) {
+			this.error = describeError(e);
+			this.phase = 'error';
+		}
+	}
+
+	/** markEdited clears the one-shot saved confirmation. */
+	markEdited(): void {
+		this.saved = false;
+	}
+
+	private applyToForm(o: GovernanceTenantOverrides): void {
+		this.model = o.model ?? '';
+		this.extraInstructions = o.extra_instructions ?? '';
+		this.temperature = o.temperature != null ? String(o.temperature) : '';
+		this.maxTokens = o.max_tokens != null ? String(o.max_tokens) : '';
+		this.reasoningEffort = o.reasoning_effort ?? '';
+	}
+
+	private isEmptyForm(): boolean {
+		return (
+			this.model.trim() === '' &&
+			this.extraInstructions.trim() === '' &&
+			this.temperature.trim() === '' &&
+			this.maxTokens.trim() === '' &&
+			this.reasoningEffort.trim() === ''
+		);
+	}
+
+	private formToOverrides(): GovernanceTenantOverrides {
+		const o: GovernanceTenantOverrides = {};
+		if (this.model.trim() !== '') o.model = this.model.trim();
+		if (this.extraInstructions.trim() !== '') o.extra_instructions = this.extraInstructions;
+		if (this.temperature.trim() !== '') o.temperature = Number(this.temperature);
+		if (this.maxTokens.trim() !== '') o.max_tokens = Number(this.maxTokens);
+		if (this.reasoningEffort.trim() !== '') o.reasoning_effort = this.reasoningEffort.trim();
+		return o;
 	}
 }

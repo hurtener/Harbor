@@ -289,3 +289,50 @@ func TestSetOverrides_EmitsAuditEventOnBus(t *testing.T) {
 		t.Fatal("timed out waiting for runs.overrides_set event")
 	}
 }
+
+// TestSetOverrides_Model_ValidatesAgainstConfiguredModels covers the
+// session-level model swap (Phase 92b): with a validModels set, a valid
+// model is recorded and an unknown model is rejected at set time; with no
+// set configured, any model is accepted (deferred to the LLM edge).
+func TestSetOverrides_Model_ValidatesAgainstConfiguredModels(t *testing.T) {
+	id := identity.Identity{TenantID: testTenant, UserID: testUser, SessionID: testSession}
+
+	t.Run("valid model recorded", func(t *testing.T) {
+		svc, store := newService(t, runsprotocol.WithValidModels([]string{"model-a", "model-b"}))
+		if _, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
+			SessionID: testSession, Model: strPtr("model-b"),
+		})); err != nil {
+			t.Fatalf("SetOverrides: %v", err)
+		}
+		po, ok := store.Peek(id)
+		if !ok || po.Model == nil || *po.Model != "model-b" {
+			t.Errorf("recorded Model = %v, want model-b", po.Model)
+		}
+	})
+
+	t.Run("unknown model rejected at set time", func(t *testing.T) {
+		svc, store := newService(t, runsprotocol.WithValidModels([]string{"model-a"}))
+		_, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
+			SessionID: testSession, Model: strPtr("ghost-model"),
+		}))
+		if !errors.Is(err, runsprotocol.ErrInvalidRequest) {
+			t.Fatalf("error = %v, want ErrInvalidRequest", err)
+		}
+		if _, ok := store.Peek(id); ok {
+			t.Error("a rejected set must not record an override")
+		}
+	})
+
+	t.Run("no validModels configured accepts any model", func(t *testing.T) {
+		svc, store := newService(t) // no WithValidModels
+		if _, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
+			SessionID: testSession, Model: strPtr("anything-goes"),
+		})); err != nil {
+			t.Fatalf("SetOverrides: %v", err)
+		}
+		po, _ := store.Peek(id)
+		if po.Model == nil || *po.Model != "anything-goes" {
+			t.Errorf("recorded Model = %v, want anything-goes", po.Model)
+		}
+	})
+}

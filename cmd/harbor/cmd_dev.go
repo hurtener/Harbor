@@ -632,6 +632,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	for m := range llmCfg.ModelProfiles {
 		validModels = append(validModels, m)
 	}
+	// The session-level pending-override Store — created here (before the
+	// run-loop driver) so the SAME instance is shared by the driver (the
+	// CONSUME side, at run start) and the runs Service built below (the
+	// SET side, via runs.set_overrides). A set and the one-shot consume
+	// must meet on one Store.
+	runsStore := runsprotocol.NewStore()
 	tenantOverridePolicy, err := governance.NewTenantOverridePolicy(stack.State, bus, validModels, nil)
 	if err != nil {
 		closeAll(ctx)
@@ -724,6 +730,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// admin-set tenant-default override resolver — read once at run
 		// start and pinned into the run's RunContext (next-turn-only).
 		tenantOverrides: tenantOverridePolicy,
+		// session-level pending-override Store — Consumed (one-shot) at run
+		// start and composed OVER the tenant default (session › tenant ›
+		// config). The SAME Store the runs Service writes into.
+		sessionOverrides: runsStore,
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -970,10 +980,15 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// override slot is ephemeral per-runtime state — there is no
 	// persistence-shaped seam). Wired unconditionally so the Console
 	// Playground page can record next-message overrides out of the box.
-	runsService, err := runsprotocol.NewService(runsprotocol.NewStore(),
+	// runsStore was created earlier (before the run-loop driver) so the
+	// driver's CONSUME side and this Service's SET side share one Store.
+	// WithValidModels rejects an unknown session model swap at set time
+	// (fail loud, mirroring the tenant layer).
+	runsService, err := runsprotocol.NewService(runsStore,
 		runsprotocol.WithBus(bus),
 		runsprotocol.WithRedactor(red),
 		runsprotocol.WithLogger(opts.logger),
+		runsprotocol.WithValidModels(validModels),
 	)
 	if err != nil {
 		closeAll(ctx)

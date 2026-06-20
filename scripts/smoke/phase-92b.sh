@@ -4,12 +4,6 @@
 # Phase 92b smoke — tenant-override completion (session swap field + Console
 # admin UI + multi-replica freshness).
 #
-# Planning skeleton: SKIPs until the surface lands. At implementation,
-# assert (static): RunOverrides.Model present; the session-override consume
-# seam wired in the run loop; the five governance wire types typed (no
-# longer in protocol-ts-untyped-allow.json). Live: a session override wins
-# over a set tenant default on the next run.
-#
 # Conventions (AGENTS.md §4.2): 404/405/501 -> SKIP; OK >= 1 once shipped;
 # use scripts/smoke/common.sh helpers.
 
@@ -21,27 +15,41 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# RunOverrides gains a Model field (the session-level swap).
-if grep -rqE 'Model\s+\*string' internal/protocol/types/runs.go 2>/dev/null; then
-    ok 'phase 92b: RunOverrides.Model field present (session-level swap)'
-else
-    skip 'phase 92b: RunOverrides.Model not yet present'
-fi
+# 1. RunOverrides carries a Model field (the session-level swap).
+assert_grep_present 'Model \*string' \
+    internal/protocol/types/runs.go \
+    'phase 92b: RunOverrides.Model field present (session-level swap)'
 
-# The session-override consume seam is wired in the run loop (Store.Consume
-# called from production, not just tests).
-if grep -rqE '\.Consume\(' cmd/harbor/cmd_dev_runloop.go 2>/dev/null; then
-    ok 'phase 92b: session-override consume seam wired at run start'
-else
-    skip 'phase 92b: session-override consume seam not yet wired'
-fi
+# 2. The session-override consume seam is wired in the run loop (Store.Consume
+#    called from production).
+assert_grep_present '\.Consume\(' \
+    cmd/harbor/cmd_dev_runloop.go \
+    'phase 92b: session-override consume seam wired at run start'
 
-# The governance tenant-override wire types are typed (removed from the
-# untyped allow-list).
+# 3. The planner carries SystemPromptOverride (the session replace).
+assert_grep_present 'SystemPromptOverride \*string' \
+    internal/planner/planner.go \
+    'phase 92b: planner LLMOverrides.SystemPromptOverride (replace) present'
+
+# 4. Per-read freshness: the loaded-permanent gate is gone (reloadLocked).
+assert_grep_present 'reloadLocked' \
+    internal/governance/tenantoverride.go \
+    'phase 92b: per-read freshness reload present (multi-replica)'
+
+# 5. The governance tenant-override wire types are typed (removed from the
+#    untyped allow-list).
 if grep -q 'GovernanceTenantOverrides' web/console/scripts/protocol-ts-untyped-allow.json 2>/dev/null; then
-    skip 'phase 92b: governance tenant-override types still allow-listed (not yet typed)'
+    fail 'phase 92b: governance tenant-override types still allow-listed (not typed)'
 else
     ok 'phase 92b: governance tenant-override wire types typed (de-allow-listed)'
 fi
+
+# 6. The typed Console client + admin control exist.
+assert_grep_present 'export interface GovernanceTenantOverrides' \
+    web/console/src/lib/protocol/governance.ts \
+    'phase 92b: typed Console governance wire interfaces present'
+assert_grep_present 'class GovernanceNamespace' \
+    web/console/src/lib/protocol/client.ts \
+    'phase 92b: GovernanceNamespace typed client present'
 
 smoke_summary
