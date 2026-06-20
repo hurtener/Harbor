@@ -20,6 +20,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/skills"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -201,5 +202,79 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 	}
 	if got["srvB_three"] {
 		t.Fatalf("disabled tool srvB_three still visible: %v", got)
+	}
+}
+
+// TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart proves
+// the REAL run-loop driver method overlays the agent's active-config layered
+// system prompt (operator base + user layer) onto the run's resolved override
+// bundle at run start — the run-loop consumer path of the layered-prompt
+// projection, over a real registry. A rollback changes what the next run sees.
+func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *testing.T) {
+	ctx := context.Background()
+	reg := acTestRegistry(t)
+	const agentID = "harbor-dev-agent"
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	base := func(s string) *string { return &s }
+
+	// No registry wired → bundle passes through unchanged.
+	bare := &perTaskRunLoopDriver{}
+	ov, err := bare.projectAgentConfigPromptLayers(ctx, q, nil)
+	if err != nil {
+		t.Fatalf("bare driver: %v", err)
+	}
+	if ov != nil {
+		t.Fatalf("bare driver should not synthesise an override bundle: %+v", ov)
+	}
+
+	// Registry wired but no active revision → unchanged.
+	d := &perTaskRunLoopDriver{agentConfig: reg, agentConfigID: agentID}
+	ov, err = d.projectAgentConfigPromptLayers(ctx, q, nil)
+	if err != nil {
+		t.Fatalf("no-revision driver: %v", err)
+	}
+	if ov != nil {
+		t.Fatalf("no-revision driver should not synthesise a bundle: %+v", ov)
+	}
+
+	// Set an active revision pinning base+user → the next run carries them.
+	r1, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigPayload{
+		PromptLayers: &agentcfg.PromptLayers{Base: base("OPERATOR_BASE"), User: base("USER_LAYER")},
+	})
+	if err != nil {
+		t.Fatalf("set r1: %v", err)
+	}
+	ov, err = d.projectAgentConfigPromptLayers(ctx, q, nil)
+	if err != nil {
+		t.Fatalf("projected: %v", err)
+	}
+	if ov == nil || ov.BasePromptLayer == nil || *ov.BasePromptLayer != "OPERATOR_BASE" ||
+		ov.UserPromptLayer == nil || *ov.UserPromptLayer != "USER_LAYER" {
+		t.Fatalf("active-revision projection = %+v", ov)
+	}
+
+	// A later revision clears the user layer (base only); roll back to r1 →
+	// the next run sees the user layer again.
+	if _, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigPayload{
+		PromptLayers: &agentcfg.PromptLayers{Base: base("OPERATOR_BASE")},
+	}); err != nil {
+		t.Fatalf("set r2: %v", err)
+	}
+	ovR2, err := d.projectAgentConfigPromptLayers(ctx, q, &planner.LLMOverrides{})
+	if err != nil {
+		t.Fatalf("r2 projected: %v", err)
+	}
+	if ovR2.UserPromptLayer != nil {
+		t.Fatalf("r2 should have no user layer: %+v", ovR2.UserPromptLayer)
+	}
+	if _, err := reg.Rollback(ctx, q, agentID, r1.RevisionID); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	ov, err = d.projectAgentConfigPromptLayers(ctx, q, nil)
+	if err != nil {
+		t.Fatalf("post-rollback projected: %v", err)
+	}
+	if ov == nil || ov.UserPromptLayer == nil || *ov.UserPromptLayer != "USER_LAYER" {
+		t.Fatalf("post-rollback projection = %+v", ov)
 	}
 }

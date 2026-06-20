@@ -135,6 +135,11 @@
           "key": "tool_exposure",
           "type": "object",
           "ref": "AgentConfigToolExposureDiff"
+        },
+        {
+          "key": "prompt_layers",
+          "type": "object",
+          "ref": "AgentConfigPromptLayersDiff"
         }
       ]
     },
@@ -244,6 +249,12 @@
       "home": "types",
       "fields": [
         {
+          "key": "prompt_layers",
+          "type": "object",
+          "ref": "AgentConfigPromptLayers",
+          "optional": true
+        },
+        {
           "key": "skills",
           "type": "object",
           "ref": "AgentConfigSkillsSelection",
@@ -253,6 +264,54 @@
           "key": "tool_exposure",
           "type": "object",
           "ref": "AgentConfigToolExposure",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigPromptLayers": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "base",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "user",
+          "type": "string",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigPromptLayersDiff": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "base_changed",
+          "type": "boolean"
+        },
+        {
+          "key": "base_from",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "base_to",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "user_changed",
+          "type": "boolean"
+        },
+        {
+          "key": "user_from",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "user_to",
+          "type": "string",
           "optional": true
         }
       ]
@@ -313,6 +372,39 @@
       ]
     },
     "AgentConfigRollbackResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSetPromptLayersRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "prompt_layers",
+          "type": "object",
+          "ref": "AgentConfigPromptLayers"
+        }
+      ]
+    },
+    "AgentConfigSetPromptLayersResponse": {
       "home": "types",
       "fields": [
         {
@@ -5751,6 +5843,7 @@
     "agent_config.get",
     "agent_config.list_revisions",
     "agent_config.rollback",
+    "agent_config.set_prompt_layers",
     "agent_config.set_revision",
     "agent_config.set_tool_exposure",
     "agent_config.skills.delete",

@@ -43,10 +43,28 @@ type AgentConfigToolExposure struct {
 	DisabledTools []string `json:"disabled_tools,omitempty"`
 }
 
+// AgentConfigPromptLayers is the wire projection of an agent's layered
+// system prompt in a config revision: an operator-owned base layer plus an
+// optional user layer that composes ABOVE the base without mutating it. The
+// composition order is the security boundary — the user layer can extend
+// the operator's guidance but never precede, replace, or weaken the base.
+type AgentConfigPromptLayers struct {
+	// Base is the operator-owned base prompt layer. When set it is the run's
+	// base system prompt (overriding the agent's configured default base);
+	// unset inherits the configured default.
+	Base *string `json:"base,omitempty"`
+	// User is the optional higher user-instruction layer composed above the
+	// base in the lower-trust guidance position.
+	User *string `json:"user,omitempty"`
+}
+
 // AgentConfigPayload is the wire projection of an agent-config envelope.
 // Every section is optional so later consumers extend it without a schema
 // break.
 type AgentConfigPayload struct {
+	// PromptLayers, when non-nil, pins the agent's layered system prompt
+	// (operator base + optional user layer) for the revision.
+	PromptLayers *AgentConfigPromptLayers `json:"prompt_layers,omitempty"`
 	// Skills, when non-nil, pins the agent's skills membership for the
 	// revision.
 	Skills *AgentConfigSkillsSelection `json:"skills,omitempty"`
@@ -101,13 +119,30 @@ type AgentConfigToolExposureDiff struct {
 	DisabledEnabled []string `json:"disabled_enabled,omitempty"`
 }
 
+// AgentConfigPromptLayersDiff is the wire projection of the base + user
+// prompt-layer text delta across two revisions.
+type AgentConfigPromptLayersDiff struct {
+	// BaseChanged reports whether the base layer text differs.
+	BaseChanged bool `json:"base_changed"`
+	// BaseFrom / BaseTo are the base layer text in the from / to revision.
+	BaseFrom string `json:"base_from,omitempty"`
+	BaseTo   string `json:"base_to,omitempty"`
+	// UserChanged reports whether the user layer text differs.
+	UserChanged bool `json:"user_changed"`
+	// UserFrom / UserTo are the user layer text in the from / to revision.
+	UserFrom string `json:"user_from,omitempty"`
+	UserTo   string `json:"user_to,omitempty"`
+}
+
 // AgentConfigDiff is the wire projection of a server-side revision
-// compare — the structured skills + tool-exposure set-diffs.
+// compare — the structured skills + tool-exposure set-diffs and the
+// prompt-layer text delta.
 type AgentConfigDiff struct {
 	FromRevisionID string                      `json:"from_revision_id"`
 	ToRevisionID   string                      `json:"to_revision_id"`
 	Skills         AgentConfigSkillsDiff       `json:"skills"`
 	ToolExposure   AgentConfigToolExposureDiff `json:"tool_exposure"`
+	PromptLayers   AgentConfigPromptLayersDiff `json:"prompt_layers"`
 }
 
 // AgentConfigGetRequest is the `agent_config.get` request — read the
@@ -204,6 +239,26 @@ type AgentConfigSetToolExposureRequest struct {
 // response — the recorded config revision (or, on an idempotent re-set, the
 // existing active revision).
 type AgentConfigSetToolExposureResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigSetPromptLayersRequest is the admin-scoped
+// `agent_config.set_prompt_layers` request — set the agent's layered system
+// prompt (operator base and/or user layer) as a desired-state REPLACE of the
+// prompt-layer section (the skills + tool-exposure sections of the active
+// revision are preserved). The edit records a new config revision and applies
+// to the agent's NEXT run.
+type AgentConfigSetPromptLayersRequest struct {
+	Identity     IdentityScope           `json:"identity"`
+	AgentID      string                  `json:"agent_id"`
+	PromptLayers AgentConfigPromptLayers `json:"prompt_layers"`
+}
+
+// AgentConfigSetPromptLayersResponse is the `agent_config.set_prompt_layers`
+// response — the recorded config revision (or, on an idempotent re-set, the
+// existing active revision).
+type AgentConfigSetPromptLayersResponse struct {
 	Revision        AgentConfigRevisionView `json:"revision"`
 	ProtocolVersion string                  `json:"protocol_version"`
 }

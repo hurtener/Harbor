@@ -319,6 +319,16 @@ const (
 	// `.resumed`. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
 	// The wire-transport route is `POST /v1/agent_config/set_tool_exposure`.
 	MethodAgentConfigSetToolExposure Method = "agent_config.set_tool_exposure"
+	// MethodAgentConfigSetPromptLayers — admin verb: sets the agent's
+	// layered system prompt (operator base and/or user layer) as a
+	// desired-state replace of the prompt-layer section and records the
+	// change as a config revision. The base is the run's base system prompt;
+	// the user layer composes above it in the lower-trust guidance position
+	// (it can extend but never replace or weaken the operator base). The
+	// skills + tool-exposure sections are preserved. Applies to the agent's
+	// next run. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
+	// The wire-transport route is `POST /v1/agent_config/set_prompt_layers`.
+	MethodAgentConfigSetPromptLayers Method = "agent_config.set_prompt_layers"
 
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
@@ -778,6 +788,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsUpsert:      {},
 	MethodAgentConfigSkillsDelete:      {},
 	MethodAgentConfigSetToolExposure:   {},
+	MethodAgentConfigSetPromptLayers:   {},
 	MethodPauseList:                    {},
 	MethodTopologySnapshot:             {},
 	MethodArtifactsList:                {},
@@ -1006,12 +1017,13 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the nine
+// canonicalAgentConfigMethods is the closed set of the ten
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
-// (skills.list / skills.upsert / skills.delete), and the MCP-exposure verb
-// (set_tool_exposure). IsAgentConfigMethod is O(1); the agent-config wire
-// handler branches on the trailing path segment to dispatch.
+// (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
+// (set_tool_exposure), and the layered-prompt verb (set_prompt_layers).
+// IsAgentConfigMethod is O(1); the agent-config wire handler branches on the
+// trailing path segment to dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigGet:             {},
 	MethodAgentConfigSetRevision:     {},
@@ -1022,6 +1034,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsUpsert:    {},
 	MethodAgentConfigSkillsDelete:    {},
 	MethodAgentConfigSetToolExposure: {},
+	MethodAgentConfigSetPromptLayers: {},
 }
 
 // canonicalAgentConfigAdminMethods is the closed sub-set of the
@@ -1036,9 +1049,10 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsUpsert:    {},
 	MethodAgentConfigSkillsDelete:    {},
 	MethodAgentConfigSetToolExposure: {},
+	MethodAgentConfigSetPromptLayers: {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the nine
+// IsAgentConfigMethod reports whether m is one of the ten
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

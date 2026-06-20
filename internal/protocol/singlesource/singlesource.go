@@ -129,7 +129,7 @@ var CanonicalMethods = map[string]struct{}{
 	"governance.set_tenant_overrides": {},
 	"governance.get_tenant_overrides": {},
 	"governance.rotate_key":           {},
-	// agent-config control-plane cluster — nine admin-scoped methods.
+	// agent-config control-plane cluster — ten admin-scoped methods.
 	"agent_config.get":               {},
 	"agent_config.set_revision":      {},
 	"agent_config.list_revisions":    {},
@@ -139,6 +139,7 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.skills.upsert":     {},
 	"agent_config.skills.delete":     {},
 	"agent_config.set_tool_exposure": {},
+	"agent_config.set_prompt_layers": {},
 	"pause.list":                     {},
 	"topology.snapshot":              {},
 	"artifacts.list":                 {},
@@ -290,6 +291,8 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigSkillsSelection":         "types",
 	"AgentConfigToolExposure":            "types",
 	"AgentConfigToolExposureDiff":        "types",
+	"AgentConfigPromptLayers":            "types",
+	"AgentConfigPromptLayersDiff":        "types",
 	"AgentConfigPayload":                 "types",
 	"AgentConfigRevisionView":            "types",
 	"AgentConfigSkillsDiff":              "types",
@@ -314,6 +317,8 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigSkillsDeleteResponse":    "types",
 	"AgentConfigSetToolExposureRequest":  "types",
 	"AgentConfigSetToolExposureResponse": "types",
+	"AgentConfigSetPromptLayersRequest":  "types",
+	"AgentConfigSetPromptLayersResponse": "types",
 	// pause-list snapshot wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"PauseListRequest":  "types",
