@@ -12,6 +12,7 @@
 //	POST /v1/agent_config/diff            — compare two revisions
 //	POST /v1/agent_config/rollback        — repoint the active pointer
 //	POST /v1/agent_config/set_tool_exposure — set MCP pause/resume + per-tool policy
+//	POST /v1/agent_config/set_prompt_layers — set the layered system prompt (base + user)
 //	POST /v1/agent_config/skills/list     — list the agent's skills
 //	POST /v1/agent_config/skills/upsert   — upsert a skill (records a rev)
 //	POST /v1/agent_config/skills/delete   — delete a skill (records a rev)
@@ -143,6 +144,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveRollback(w, r, body, wireID)
 	case "set_tool_exposure":
 		h.serveSetToolExposure(w, r, body, wireID)
+	case "set_prompt_layers":
+		h.serveSetPromptLayers(w, r, body, wireID)
 	case "skills/list":
 		h.serveSkillsList(w, r, body, wireID)
 	case "skills/upsert":
@@ -252,6 +255,23 @@ func (h *AgentConfigHandler) serveSetToolExposure(w http.ResponseWriter, r *http
 	resp, err := h.service.SetToolExposure(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSetToolExposure, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSetPromptLayers(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSetPromptLayersRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSetPromptLayers) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SetPromptLayers(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSetPromptLayers, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)

@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -76,12 +77,17 @@ type SkillsSelection struct {
 	Names []string `json:"names"`
 }
 
-// PromptLayers is the forward-compatible prompt-layer section of the
-// config envelope. Reserved for the layered-prompt consumer; declared now
-// so the envelope evolves without a schema break. Not wired in the first
-// wave.
+// PromptLayers is the prompt-layer section of the config envelope: an
+// operator-owned, versioned base prompt layer plus an optional user layer
+// that composes ABOVE the base without mutating it. The composition order
+// is the structural security boundary — because Base and User are distinct
+// fields and the user layer is always appended below the base, a writer of
+// only User can extend the operator's guidance but can never precede,
+// replace, or weaken the operator base.
 type PromptLayers struct {
-	// Base is the admin-owned, versioned base prompt layer.
+	// Base is the admin-owned, versioned base prompt layer. When set it is
+	// the run's base system prompt (overriding the agent's configured
+	// default base); unset inherits the configured default.
 	Base *string `json:"base,omitempty"`
 	// User is the optional higher user-instruction layer that composes
 	// ABOVE the base without mutating it (the composition order is the
@@ -157,6 +163,8 @@ type Diff struct {
 	// ToolExposure is the structured set-diff of the MCP-exposure /
 	// per-tool policy.
 	ToolExposure ToolExposureDiff
+	// PromptLayers is the text delta of the base + user prompt layers.
+	PromptLayers PromptLayersDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -196,8 +204,17 @@ type Registry interface {
 // consumers (the skills + tool-exposure services) and the driver share one
 // canonical form.
 func NormalizePayload(p ConfigPayload) ConfigPayload {
-	out := ConfigPayload{
-		PromptLayers: p.PromptLayers,
+	out := ConfigPayload{}
+	if p.PromptLayers != nil {
+		// Normalise empty-string layers to nil so a semantically-equivalent
+		// "inherit the default" state (whether the client sent `nil` or `""`)
+		// produces one canonical form — equal states hash equal, no spurious
+		// revision on a re-set, no phantom diff. A section that normalises to
+		// both-nil drops out entirely.
+		pl := &PromptLayers{Base: emptyToNil(p.PromptLayers.Base), User: emptyToNil(p.PromptLayers.User)}
+		if pl.Base != nil || pl.User != nil {
+			out.PromptLayers = pl
+		}
 	}
 	if p.Skills != nil {
 		out.Skills = &SkillsSelection{Names: sortDedup(p.Skills.Names)}
@@ -265,6 +282,18 @@ func sortDedup(in []string) []string {
 	return out
 }
 
+// emptyToNil collapses a pointer to an empty (or whitespace-only) string to
+// nil, so "inherit the default" has one canonical representation regardless
+// of whether the client sent a nil pointer or an empty string. A non-empty
+// value is returned as-is (a fresh copy is not needed — callers treat the
+// payload as immutable after normalisation).
+func emptyToNil(s *string) *string {
+	if s == nil || strings.TrimSpace(*s) == "" {
+		return nil
+	}
+	return s
+}
+
 // SkillNames returns the agent's active skills membership from a payload,
 // or nil when the payload pins no skills section. A convenience for the
 // skills consumer.
@@ -292,6 +321,64 @@ func (p ConfigPayload) DisabledTools() []string {
 		return nil
 	}
 	return p.ToolExposure.DisabledTools
+}
+
+// BasePrompt returns the agent's base prompt layer from a payload and
+// whether it is set. A nil prompt-layer section or a nil Base returns
+// ("", false). A convenience for the layered-prompt run-start projection.
+func (p ConfigPayload) BasePrompt() (string, bool) {
+	if p.PromptLayers == nil || p.PromptLayers.Base == nil {
+		return "", false
+	}
+	return *p.PromptLayers.Base, true
+}
+
+// UserPrompt returns the agent's user prompt layer from a payload and
+// whether it is set. A nil prompt-layer section or a nil User returns
+// ("", false).
+func (p ConfigPayload) UserPrompt() (string, bool) {
+	if p.PromptLayers == nil || p.PromptLayers.User == nil {
+		return "", false
+	}
+	return *p.PromptLayers.User, true
+}
+
+// PromptLayersDiff is the text delta of the base + user prompt layers
+// across two revisions. An unset layer compares as the empty string, so a
+// set→unset change registers as a change to "".
+type PromptLayersDiff struct {
+	// BaseChanged reports whether the base layer text differs.
+	BaseChanged bool
+	// BaseFrom / BaseTo are the base layer text in the from / to revision.
+	BaseFrom string
+	BaseTo   string
+	// UserChanged reports whether the user layer text differs.
+	UserChanged bool
+	// UserFrom / UserTo are the user layer text in the from / to revision.
+	UserFrom string
+	UserTo   string
+}
+
+// Changed reports whether either prompt layer differs between the two
+// revisions.
+func (d PromptLayersDiff) Changed() bool { return d.BaseChanged || d.UserChanged }
+
+// DiffPromptLayers computes the text delta of two prompt-layer states.
+// Exported so the diff is one canonical implementation shared by the driver
+// and tests. An unset layer is compared as the empty string.
+func DiffPromptLayers(from, to ConfigPayload) PromptLayersDiff {
+	fb, _ := from.BasePrompt()
+	tb, _ := to.BasePrompt()
+	fu, _ := from.UserPrompt()
+	tu, _ := to.UserPrompt()
+	return PromptLayersDiff{
+		BaseChanged: fb != tb,
+		BaseFrom:    fb,
+		BaseTo:      tb,
+		UserChanged: fu != tu,
+		UserFrom:    fu,
+		UserTo:      tu,
+	}
 }
 
 // ToolExposureDiff is the structured set-diff of the MCP-exposure /

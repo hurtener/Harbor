@@ -50,12 +50,14 @@ import type {
 import type {
 	AgentConfigPayload,
 	AgentConfigToolExposure,
+	AgentConfigPromptLayers,
 	AgentConfigGetResponse,
 	AgentConfigSetRevisionResponse,
 	AgentConfigListRevisionsResponse,
 	AgentConfigDiffResponse,
 	AgentConfigRollbackResponse,
 	AgentConfigSetToolExposureResponse,
+	AgentConfigSetPromptLayersResponse,
 	AgentConfigSkillInput,
 	AgentConfigSkillsListResponse,
 	AgentConfigSkillsUpsertResponse,
@@ -1022,6 +1024,23 @@ export class AgentConfigNamespace {
 			{
 				agent_id: agentId,
 				tool_exposure: toolExposure as unknown as Record<string, unknown>,
+			},
+		);
+	}
+	/** `agent_config.set_prompt_layers` — set the layered system prompt
+	 * (operator base and/or user layer) as a desired-state replace of the
+	 * prompt-layer section; records a revision. The user layer composes above
+	 * the base in the lower-trust position; it can never replace or weaken the
+	 * operator base. The skills + tool-exposure sections are preserved. */
+	setPromptLayers(
+		agentId: string,
+		promptLayers: AgentConfigPromptLayers,
+	): Promise<AgentConfigSetPromptLayersResponse> {
+		return this.#t.request<AgentConfigSetPromptLayersResponse>(
+			'/v1/agent_config/set_prompt_layers',
+			{
+				agent_id: agentId,
+				prompt_layers: promptLayers as unknown as Record<string, unknown>,
 			},
 		);
 	}

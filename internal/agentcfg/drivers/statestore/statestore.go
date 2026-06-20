@@ -327,6 +327,7 @@ func (r *registry) Diff(ctx context.Context, id identity.Quadruple, agentID, fro
 		ToRevisionID:   toRev,
 		Skills:         agentcfg.DiffSkills(from.Payload.SkillNames(), to.Payload.SkillNames()),
 		ToolExposure:   agentcfg.DiffToolExposure(from.Payload, to.Payload),
+		PromptLayers:   agentcfg.DiffPromptLayers(from.Payload, to.Payload),
 	}, nil
 }
 

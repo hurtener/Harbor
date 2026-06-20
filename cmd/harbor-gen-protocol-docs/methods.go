@@ -448,6 +448,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigSetToolExposureRequest", Response: "AgentConfigSetToolExposureResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigSetPromptLayers: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetPromptLayers),
+			Mutates: true,
+			Request: "AgentConfigSetPromptLayersRequest", Response: "AgentConfigSetPromptLayersResponse",
+			Auth: adminNote,
+		},
 	}
 
 	// The nine steering controls share one wire shape; their per-control

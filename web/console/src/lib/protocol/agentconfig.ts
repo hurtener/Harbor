@@ -36,9 +36,20 @@ export interface AgentConfigToolExposure {
 	disabled_tools?: string[];
 }
 
+/** An agent's layered system prompt in a config revision: an operator-owned
+ * base layer plus an optional user layer composed ABOVE the base without
+ * mutating it. The composition order is the security boundary — the user layer
+ * can extend but never replace or weaken the operator base. Mirrors
+ * `types.AgentConfigPromptLayers`. */
+export interface AgentConfigPromptLayers {
+	base?: string;
+	user?: string;
+}
+
 /** An agent-config envelope — every section optional and forward-compatible.
  * Mirrors `types.AgentConfigPayload`. */
 export interface AgentConfigPayload {
+	prompt_layers?: AgentConfigPromptLayers;
 	skills?: AgentConfigSkillsSelection;
 	tool_exposure?: AgentConfigToolExposure;
 }
@@ -71,12 +82,24 @@ export interface AgentConfigToolExposureDiff {
 	disabled_enabled?: string[];
 }
 
+/** The base + user prompt-layer text delta across two revisions. Mirrors
+ * `types.AgentConfigPromptLayersDiff`. */
+export interface AgentConfigPromptLayersDiff {
+	base_changed: boolean;
+	base_from?: string;
+	base_to?: string;
+	user_changed: boolean;
+	user_from?: string;
+	user_to?: string;
+}
+
 /** A server-side revision compare. Mirrors `types.AgentConfigDiff`. */
 export interface AgentConfigDiff {
 	from_revision_id: string;
 	to_revision_id: string;
 	skills: AgentConfigSkillsDiff;
 	tool_exposure: AgentConfigToolExposureDiff;
+	prompt_layers: AgentConfigPromptLayersDiff;
 }
 
 /** `agent_config.get` request. */
@@ -155,6 +178,22 @@ export interface AgentConfigSetToolExposureRequest {
 
 /** `agent_config.set_tool_exposure` response — the recorded revision. */
 export interface AgentConfigSetToolExposureResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.set_prompt_layers` request — admin-scoped. Replaces ONLY
+ * the prompt-layer section (the skills + tool-exposure sections are
+ * preserved). The user layer composes above the base in the lower-trust
+ * position; it can never replace or weaken the operator base. */
+export interface AgentConfigSetPromptLayersRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	prompt_layers: AgentConfigPromptLayers;
+}
+
+/** `agent_config.set_prompt_layers` response — the recorded revision. */
+export interface AgentConfigSetPromptLayersResponse {
 	revision: AgentConfigRevisionView;
 	protocol_version: string;
 }

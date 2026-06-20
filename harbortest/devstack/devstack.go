@@ -1508,6 +1508,14 @@ func (d *DevStackRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q
 	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.agentConfigID, q, d.catalog, filter)
 }
 
+// projectAgentConfigPromptLayers overlays the agent's durable layered system
+// prompt resolved from the active config onto the run's resolved override
+// bundle at run start, via the SAME shared projection the production driver
+// uses (D-094 mirror, CLAUDE.md §17.6).
+func (d *DevStackRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
+	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.agentConfigID, q, ov)
+}
+
 func (d *DevStackRunLoopDriver) start(ctx context.Context) error {
 	if d.started {
 		return nil
@@ -1799,6 +1807,23 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			Message: "tenant-override resolution failed: " + ovErr.Error(),
 		}); mErr != nil && d.logger != nil {
 			d.logger.Warn("devstack runloop: MarkFailed after override-resolution error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
+	// Overlay the agent's durable layered system prompt resolved from the
+	// active config at run start, via the SAME shared projection the
+	// production driver uses (D-094 mirror, CLAUDE.md §17.6). A read error
+	// fails the run loudly.
+	llmOverrides, plErr := d.projectAgentConfigPromptLayers(taskCtx, q, llmOverrides)
+	if plErr != nil {
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "prompt-layer projection failed: " + plErr.Error(),
+		}); mErr != nil && d.logger != nil {
+			d.logger.Warn("devstack runloop: MarkFailed after prompt-layer-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("err", mErr.Error()))
 		}
