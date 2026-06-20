@@ -14,7 +14,7 @@ jobs:
     name: AGENTS.md ↔ CLAUDE.md mirror
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Verify mirror
         run: diff -q AGENTS.md CLAUDE.md
 
@@ -22,7 +22,7 @@ jobs:
     name: markdownlint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DavidAnson/markdownlint-cli2-action@v23
         with:
           globs: |
@@ -38,7 +38,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -56,7 +56,7 @@ jobs:
     name: golangci-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -86,7 +86,7 @@ jobs:
     name: examples build + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -118,7 +118,7 @@ jobs:
     # The frontend-e2e job runs Playwright, NOT these gates. Skips
     # gracefully when web/console/ is absent (the §4.2 SKIP analogue).
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Detect web/console/
         id: detect
         run: |
@@ -169,7 +169,7 @@ jobs:
     # analogue of the §4.2 "404/405/501 → SKIP" smoke convention).
     needs: [go]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Detect web/console/
         id: detect
         run: |
@@ -234,7 +234,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [go]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -271,7 +271,7 @@ jobs:
     # a 30% threshold (D-136). `benchstat` is fetched via `go run`
     # inside the script; it never enters the runtime binary's go.mod.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-go@v6
@@ -321,7 +321,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -366,7 +366,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -391,7 +391,7 @@ jobs:
     # dummy values per AGENTS.md §7 #2 — no real secrets cross this
     # boundary.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -454,7 +454,7 @@ jobs:
     name: cross-tenant isolation conformance harness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -480,7 +480,7 @@ jobs:
     name: goroutine-leak conformance harness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -502,7 +502,7 @@ jobs:
     name: chaos / fault-injection harness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'

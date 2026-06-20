@@ -32,7 +32,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-go@v6
@@ -78,7 +78,7 @@ jobs:
       id-token: write       # SLSA provenance — OIDC token for the attestor
       attestations: write   # SLSA provenance — write the attestation
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-go@v6
@@ -141,7 +141,7 @@ jobs:
     permissions:
       contents: write       # create the GitHub Release + upload assets
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
