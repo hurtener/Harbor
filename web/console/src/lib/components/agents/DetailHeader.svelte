@@ -59,6 +59,13 @@
       >
         Open in Playground
       </a>
+      <a
+        class="meta-btn"
+        data-testid="agent-open-config"
+        href={`/agent-config?agent=${encodeURIComponent(agent.id)}`}
+      >
+        Configure
+      </a>
     </div>
   </div>
 
