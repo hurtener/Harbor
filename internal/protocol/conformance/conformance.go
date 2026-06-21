@@ -637,8 +637,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 97 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 97 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane eleven)", len(got))
+	if len(got) != 102 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 102 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane eleven + agent-config session safe subset five)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -734,20 +734,25 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 
 		methods.MethodAuthRotateToken: {},
 
-		methods.MethodGovernanceSetTenantOverrides: {},
-		methods.MethodGovernanceGetTenantOverrides: {},
-		methods.MethodGovernanceRotateKey:          {},
-		methods.MethodAgentConfigGet:               {},
-		methods.MethodAgentConfigSetRevision:       {},
-		methods.MethodAgentConfigListRevisions:     {},
-		methods.MethodAgentConfigDiff:              {},
-		methods.MethodAgentConfigRollback:          {},
-		methods.MethodAgentConfigSkillsList:        {},
-		methods.MethodAgentConfigSkillsUpsert:      {},
-		methods.MethodAgentConfigSkillsDelete:      {},
-		methods.MethodAgentConfigSetToolExposure:   {},
-		methods.MethodAgentConfigSetPromptLayers:   {},
-		methods.MethodAgentConfigAddMCPConnection:  {},
+		methods.MethodGovernanceSetTenantOverrides:        {},
+		methods.MethodGovernanceGetTenantOverrides:        {},
+		methods.MethodGovernanceRotateKey:                 {},
+		methods.MethodAgentConfigGet:                      {},
+		methods.MethodAgentConfigSetRevision:              {},
+		methods.MethodAgentConfigListRevisions:            {},
+		methods.MethodAgentConfigDiff:                     {},
+		methods.MethodAgentConfigRollback:                 {},
+		methods.MethodAgentConfigSkillsList:               {},
+		methods.MethodAgentConfigSkillsUpsert:             {},
+		methods.MethodAgentConfigSkillsDelete:             {},
+		methods.MethodAgentConfigSetToolExposure:          {},
+		methods.MethodAgentConfigSetPromptLayers:          {},
+		methods.MethodAgentConfigAddMCPConnection:         {},
+		methods.MethodAgentConfigSessionSetUserPrompt:     {},
+		methods.MethodAgentConfigSessionSetSourceDisables: {},
+		methods.MethodAgentConfigSessionSkillsList:        {},
+		methods.MethodAgentConfigSessionSkillsUpsert:      {},
+		methods.MethodAgentConfigSessionSkillsDelete:      {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {

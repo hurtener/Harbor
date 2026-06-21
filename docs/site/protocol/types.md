@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 267 canonical Harbor Protocol wire types, generated from the single-source
+The 278 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -244,6 +244,113 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSessionOverlay
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `user_prompt` | `string` | optional (`omitempty`) |
+| `disabled_servers` | `[]string` | optional (`omitempty`) |
+| `disabled_tools` | `[]string` | optional (`omitempty`) |
+| `personal_skills` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigSessionSetSourceDisablesRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `disabled_servers` | `[]string` | optional (`omitempty`) |
+| `disabled_tools` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigSessionSetSourceDisablesResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `overlay` | `types.AgentConfigSessionOverlay` — see [`AgentConfigSessionOverlay`](./types.md#agentconfigsessionoverlay) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSessionSetUserPromptRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `user_prompt` | `string` |  |
+
+## AgentConfigSessionSetUserPromptResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `overlay` | `types.AgentConfigSessionOverlay` — see [`AgentConfigSessionOverlay`](./types.md#agentconfigsessionoverlay) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSessionSkillsDeleteRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+
+## AgentConfigSessionSkillsDeleteResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `overlay` | `types.AgentConfigSessionOverlay` — see [`AgentConfigSessionOverlay`](./types.md#agentconfigsessionoverlay) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSessionSkillsListRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+
+## AgentConfigSessionSkillsListResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `skills` | `[]types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSessionSkillsUpsertRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `skill` | `types.AgentConfigSkillInput` — see [`AgentConfigSkillInput`](./types.md#agentconfigskillinput) |  |
+
+## AgentConfigSessionSkillsUpsertResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+| `overlay` | `types.AgentConfigSessionOverlay` — see [`AgentConfigSessionOverlay`](./types.md#agentconfigsessionoverlay) |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigSetPromptLayersRequest

@@ -344,6 +344,40 @@ const (
 	// wire-transport route is `POST /v1/agent_config/add_mcp_connection`.
 	MethodAgentConfigAddMCPConnection Method = "agent_config.add_mcp_connection"
 
+	// MethodAgentConfigSessionSetUserPrompt — session-safe verb (the
+	// non-admin lower tier): a session-scoped end user sets a user
+	// prompt layer that composes ABOVE the operator base (it can extend the
+	// operator's guidance but never precede, replace, or weaken the base —
+	// the base is unwritable by a session caller). Identity-mandatory; does
+	// NOT require the admin scope (a valid identity is enough). The
+	// wire-transport route is `POST /v1/agent_config/session/set_user_prompt`.
+	MethodAgentConfigSessionSetUserPrompt Method = "agent_config.session.set_user_prompt"
+	// MethodAgentConfigSessionSetSourceDisables — session-safe verb: a
+	// session-scoped end user NARROWS (never widens) source/tool enablement
+	// by naming servers/tools to DISABLE within the admin-allowed set. The
+	// disable set is unioned into the admin exclusion set at run start, so it
+	// can only narrow the admin-allowed exposure — there is no enable path.
+	// Identity-mandatory; does NOT require the admin scope. The wire-transport
+	// route is `POST /v1/agent_config/session/set_source_disables`.
+	MethodAgentConfigSessionSetSourceDisables Method = "agent_config.session.set_source_disables"
+	// MethodAgentConfigSessionSkillsList — session-safe verb: lists the
+	// session's ephemeral personal skills (metadata only) under the caller's
+	// real triple. Identity-mandatory; does NOT require the admin scope. The
+	// wire-transport route is
+	// `POST /v1/agent_config/session/skills/list`.
+	MethodAgentConfigSessionSkillsList Method = "agent_config.session.skills.list"
+	// MethodAgentConfigSessionSkillsUpsert — session-safe verb: upserts an
+	// ephemeral personal skill under the caller's real triple. The skill is
+	// session-scoped and never promotes to the agent/tenant scope.
+	// Identity-mandatory; does NOT require the admin scope. The wire-transport
+	// route is `POST /v1/agent_config/session/skills/upsert`.
+	MethodAgentConfigSessionSkillsUpsert Method = "agent_config.session.skills.upsert"
+	// MethodAgentConfigSessionSkillsDelete — session-safe verb: deletes an
+	// ephemeral personal skill under the caller's real triple.
+	// Identity-mandatory; does NOT require the admin scope. The wire-transport
+	// route is `POST /v1/agent_config/session/skills/delete`.
+	MethodAgentConfigSessionSkillsDelete Method = "agent_config.session.skills.delete"
+
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
 	// the unified pause/resume Coordinator. Read-only: it
@@ -766,56 +800,61 @@ const (
 // The map exists so IsValidMethod is O(1) and Methods returns a
 // deterministic snapshot.
 var canonicalMethods = map[Method]struct{}{
-	MethodStart:                        {},
-	MethodCancel:                       {},
-	MethodPause:                        {},
-	MethodResume:                       {},
-	MethodRedirect:                     {},
-	MethodInjectContext:                {},
-	MethodApprove:                      {},
-	MethodReject:                       {},
-	MethodPrioritize:                   {},
-	MethodUserMessage:                  {},
-	MethodEventsSubscribe:              {},
-	MethodEventsAggregate:              {},
-	MethodSearchQuery:                  {},
-	MethodSearchSessions:               {},
-	MethodSearchTasks:                  {},
-	MethodSearchEvents:                 {},
-	MethodSearchArtifacts:              {},
-	MethodRuntimeInfo:                  {},
-	MethodRuntimeHealth:                {},
-	MethodRuntimeCounters:              {},
-	MethodRuntimeDrivers:               {},
-	MethodMetricsSnapshot:              {},
-	MethodGovernancePosture:            {},
-	MethodLLMPosture:                   {},
-	MethodGovernanceSetTenantOverrides: {},
-	MethodGovernanceGetTenantOverrides: {},
-	MethodGovernanceRotateKey:          {},
-	MethodAgentConfigGet:               {},
-	MethodAgentConfigSetRevision:       {},
-	MethodAgentConfigListRevisions:     {},
-	MethodAgentConfigDiff:              {},
-	MethodAgentConfigRollback:          {},
-	MethodAgentConfigSkillsList:        {},
-	MethodAgentConfigSkillsUpsert:      {},
-	MethodAgentConfigSkillsDelete:      {},
-	MethodAgentConfigSetToolExposure:   {},
-	MethodAgentConfigSetPromptLayers:   {},
-	MethodAgentConfigAddMCPConnection:  {},
-	MethodPauseList:                    {},
-	MethodTopologySnapshot:             {},
-	MethodArtifactsList:                {},
-	MethodArtifactsPut:                 {},
-	MethodArtifactsGetRef:              {},
-	MethodArtifactsDelete:              {},
-	MethodMemoryList:                   {},
-	MethodMemoryGet:                    {},
-	MethodMemoryHealth:                 {},
-	MethodMemoryStrategyTrace:          {},
-	MethodMemoryPut:                    {},
-	MethodMemoryDelete:                 {},
+	MethodStart:                               {},
+	MethodCancel:                              {},
+	MethodPause:                               {},
+	MethodResume:                              {},
+	MethodRedirect:                            {},
+	MethodInjectContext:                       {},
+	MethodApprove:                             {},
+	MethodReject:                              {},
+	MethodPrioritize:                          {},
+	MethodUserMessage:                         {},
+	MethodEventsSubscribe:                     {},
+	MethodEventsAggregate:                     {},
+	MethodSearchQuery:                         {},
+	MethodSearchSessions:                      {},
+	MethodSearchTasks:                         {},
+	MethodSearchEvents:                        {},
+	MethodSearchArtifacts:                     {},
+	MethodRuntimeInfo:                         {},
+	MethodRuntimeHealth:                       {},
+	MethodRuntimeCounters:                     {},
+	MethodRuntimeDrivers:                      {},
+	MethodMetricsSnapshot:                     {},
+	MethodGovernancePosture:                   {},
+	MethodLLMPosture:                          {},
+	MethodGovernanceSetTenantOverrides:        {},
+	MethodGovernanceGetTenantOverrides:        {},
+	MethodGovernanceRotateKey:                 {},
+	MethodAgentConfigGet:                      {},
+	MethodAgentConfigSetRevision:              {},
+	MethodAgentConfigListRevisions:            {},
+	MethodAgentConfigDiff:                     {},
+	MethodAgentConfigRollback:                 {},
+	MethodAgentConfigSkillsList:               {},
+	MethodAgentConfigSkillsUpsert:             {},
+	MethodAgentConfigSkillsDelete:             {},
+	MethodAgentConfigSetToolExposure:          {},
+	MethodAgentConfigSetPromptLayers:          {},
+	MethodAgentConfigAddMCPConnection:         {},
+	MethodAgentConfigSessionSetUserPrompt:     {},
+	MethodAgentConfigSessionSetSourceDisables: {},
+	MethodAgentConfigSessionSkillsList:        {},
+	MethodAgentConfigSessionSkillsUpsert:      {},
+	MethodAgentConfigSessionSkillsDelete:      {},
+	MethodPauseList:                           {},
+	MethodTopologySnapshot:                    {},
+	MethodArtifactsList:                       {},
+	MethodArtifactsPut:                        {},
+	MethodArtifactsGetRef:                     {},
+	MethodArtifactsDelete:                     {},
+	MethodMemoryList:                          {},
+	MethodMemoryGet:                           {},
+	MethodMemoryHealth:                        {},
+	MethodMemoryStrategyTrace:                 {},
+	MethodMemoryPut:                           {},
+	MethodMemoryDelete:                        {},
 
 	MethodFlowsList:         {},
 	MethodFlowsDescribe:     {},
@@ -1032,7 +1071,7 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the eleven
+// canonicalAgentConfigMethods is the closed set of the sixteen
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
@@ -1052,6 +1091,28 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSetToolExposure:  {},
 	MethodAgentConfigSetPromptLayers:  {},
 	MethodAgentConfigAddMCPConnection: {},
+	// Session-user safe subset (the non-admin lower tier).
+	MethodAgentConfigSessionSetUserPrompt:     {},
+	MethodAgentConfigSessionSetSourceDisables: {},
+	MethodAgentConfigSessionSkillsList:        {},
+	MethodAgentConfigSessionSkillsUpsert:      {},
+	MethodAgentConfigSessionSkillsDelete:      {},
+}
+
+// canonicalAgentConfigSessionMethods is the closed sub-set of the
+// `agent_config.session.*` SAFE-SUBSET methods — the non-admin lower tier of
+// the authorization matrix. A session-scoped (non-admin) caller is permitted
+// on EXACTLY these verbs: set the user prompt layer, narrow-only source/tool
+// disable, and ephemeral personal-skill upsert/delete/list. Every other
+// `agent_config.*` method is admin-gated. These verbs require a valid
+// identity but NOT the admin scope; authority derives from the verified ctx,
+// never the request body.
+var canonicalAgentConfigSessionMethods = map[Method]struct{}{
+	MethodAgentConfigSessionSetUserPrompt:     {},
+	MethodAgentConfigSessionSetSourceDisables: {},
+	MethodAgentConfigSessionSkillsList:        {},
+	MethodAgentConfigSessionSkillsUpsert:      {},
+	MethodAgentConfigSessionSkillsDelete:      {},
 }
 
 // canonicalAgentConfigAdminMethods is the closed sub-set of the
@@ -1070,7 +1131,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigAddMCPConnection: {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the eleven
+// IsAgentConfigMethod reports whether m is one of the sixteen
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new
@@ -1085,6 +1146,16 @@ func IsAgentConfigMethod(m Method) bool {
 // `auth.ScopeAdmin` claim (the agent-config authorization model).
 func IsAgentConfigAdminMethod(m Method) bool {
 	_, ok := canonicalAgentConfigAdminMethods[m]
+	return ok
+}
+
+// IsAgentConfigSessionMethod reports whether m is one of the
+// `agent_config.session.*` safe-subset verbs — the non-admin lower tier of
+// the authorization matrix. A session-scoped (non-admin) caller is permitted
+// on these verbs (and ONLY these among the agent-config family); every other
+// `agent_config.*` method requires the admin scope.
+func IsAgentConfigSessionMethod(m Method) bool {
+	_, ok := canonicalAgentConfigSessionMethods[m]
 	return ok
 }
 

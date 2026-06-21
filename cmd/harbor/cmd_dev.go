@@ -83,6 +83,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/devdraft"
@@ -561,6 +562,19 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	closers = append(closers, agentConfigRegistry.Close)
 
+	// The SESSION-scoped safe-subset overlay store (the non-admin lower tier
+	// of the authorization matrix) reuses the runtime StateStore for
+	// session-keyed identity isolation. The SAME store is handed to the
+	// run-loop driver (run-start composition) and the mounted session-safe
+	// `agent_config.session.*` Protocol service, so a session edit lands on
+	// the next run.
+	sessionOverlayStore, err := sessionoverlay.NewStore(stack.State, nil)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("agent-config session-overlay store: %w", err)
+	}
+	closers = append(closers, sessionOverlayStore.Close)
+
 	// the MCP Apps host surface — the two
 	// `mcp.servers.read_resource` / `mcp.apps.call_tool` methods that back
 	// the Console's sandboxed-iframe MCP App renderer. ReadResource fetches
@@ -708,6 +722,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithCoordinator(coord),
 		agentcfgprotocol.WithStdioAllowlist(mcpAddStdioAllowlist(cfg)),
+		// session-safe lower tier (non-admin): the overlay store backs the
+		// `agent_config.session.*` verbs.
+		agentcfgprotocol.WithSessionOverlay(sessionOverlayStore),
 	}
 	if toolCat != nil && mcpRegistry != nil {
 		mcpAttacher := newDevMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.logger,
@@ -794,6 +811,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// the next run.
 		agentConfig:   agentConfigRegistry,
 		agentConfigID: devAgentConfigID,
+		// session-scoped safe-subset overlay — run-start composition (the
+		// session user layer + narrow-only disables + personal skills).
+		sessionOverlay: sessionOverlayStore,
 	})
 	if err != nil {
 		closeAll(ctx)

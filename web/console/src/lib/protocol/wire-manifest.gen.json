@@ -503,6 +503,199 @@
         }
       ]
     },
+    "AgentConfigSessionOverlay": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "user_prompt",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "disabled_servers",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "disabled_tools",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "personal_skills",
+          "type": "array",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigSessionSetSourceDisablesRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "disabled_servers",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "disabled_tools",
+          "type": "array",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigSessionSetSourceDisablesResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "overlay",
+          "type": "object",
+          "ref": "AgentConfigSessionOverlay"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSessionSetUserPromptRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "user_prompt",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSessionSetUserPromptResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "overlay",
+          "type": "object",
+          "ref": "AgentConfigSessionOverlay"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSessionSkillsDeleteRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "name",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSessionSkillsDeleteResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "overlay",
+          "type": "object",
+          "ref": "AgentConfigSessionOverlay"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSessionSkillsListRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSessionSkillsListResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "skills",
+          "type": "array",
+          "ref": "AgentConfigSkillSummary"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSessionSkillsUpsertRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "skill",
+          "type": "object",
+          "ref": "AgentConfigSkillInput"
+        }
+      ]
+    },
+    "AgentConfigSessionSkillsUpsertResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "skill",
+          "type": "object",
+          "ref": "AgentConfigSkillSummary"
+        },
+        {
+          "key": "overlay",
+          "type": "object",
+          "ref": "AgentConfigSessionOverlay"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
     "AgentConfigSetPromptLayersRequest": {
       "home": "types",
       "fields": [
@@ -5962,6 +6155,11 @@
     "agent_config.get",
     "agent_config.list_revisions",
     "agent_config.rollback",
+    "agent_config.session.set_source_disables",
+    "agent_config.session.set_user_prompt",
+    "agent_config.session.skills.delete",
+    "agent_config.session.skills.list",
+    "agent_config.session.skills.upsert",
     "agent_config.set_prompt_layers",
     "agent_config.set_revision",
     "agent_config.set_tool_exposure",

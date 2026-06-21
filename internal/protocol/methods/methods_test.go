@@ -112,6 +112,11 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigSetToolExposure,
 	methods.MethodAgentConfigSetPromptLayers,
 	methods.MethodAgentConfigAddMCPConnection,
+	methods.MethodAgentConfigSessionSetUserPrompt,
+	methods.MethodAgentConfigSessionSetSourceDisables,
+	methods.MethodAgentConfigSessionSkillsList,
+	methods.MethodAgentConfigSessionSkillsUpsert,
+	methods.MethodAgentConfigSessionSkillsDelete,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -133,9 +138,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// = 86, + agent-config control plane eleven (agent_config.get +
 	// set_revision + list_revisions + diff + rollback + skills.{list,
 	// upsert,delete} + set_tool_exposure + set_prompt_layers +
-	// add_mcp_connection) = 97.
-	if len(got) != 97 {
-		t.Fatalf("Methods() returned %d methods, want 97", len(got))
+	// add_mcp_connection) = 97, + agent-config session safe subset five
+	// (agent_config.session.set_user_prompt + set_source_disables +
+	// skills.{list,upsert,delete}) = 102.
+	if len(got) != 102 {
+		t.Fatalf("Methods() returned %d methods, want 102", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

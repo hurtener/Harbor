@@ -231,7 +231,7 @@ func TestE2E_AgentConfig_MCPPolicy(t *testing.T) {
 
 	// Capture a pre-pause planner snapshot (run-start view) — it must keep the
 	// tool after the pause (the planner-snapshot / app-call-current asymmetry).
-	snapshot, err := projection.ActivePlannerCatalogView(ctx, h.registry, mpAgent, mpID(), h.catalog, mpFilter())
+	snapshot, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, mpAgent, mpID(), h.catalog, mpFilter())
 	if err != nil {
 		t.Fatalf("snapshot projection: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestE2E_AgentConfig_MCPPolicy(t *testing.T) {
 	}
 
 	// --- Next-run projection excludes the paused server's tools + disabled tool. ---
-	view, err := projection.ActivePlannerCatalogView(ctx, h.registry, mpAgent, mpID(), h.catalog, mpFilter())
+	view, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, mpAgent, mpID(), h.catalog, mpFilter())
 	if err != nil {
 		t.Fatalf("projection: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestE2E_AgentConfig_MCPPolicy(t *testing.T) {
 	if rp, ok := re.Payload.(agentcfg.MCPConnectionResumedPayload); !ok || rp.ServerID != "srvA" {
 		t.Fatalf("resumed payload=%+v", re.Payload)
 	}
-	view2, err := projection.ActivePlannerCatalogView(ctx, h.registry, mpAgent, mpID(), h.catalog, mpFilter())
+	view2, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, mpAgent, mpID(), h.catalog, mpFilter())
 	if err != nil {
 		t.Fatalf("post-resume projection: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestE2E_AgentConfig_MCPPolicy_Concurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			v, vErr := projection.ActivePlannerCatalogView(ctx, h.registry, mpAgent, mpID(), h.catalog, mpFilter())
+			v, vErr := projection.ActivePlannerCatalogView(ctx, h.registry, nil, mpAgent, mpID(), h.catalog, mpFilter())
 			if vErr != nil {
 				errCh <- vErr
 				return

@@ -78,7 +78,7 @@ func TestApplyPromptLayers_OverlaysOntoNil(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	ov, err := projection.ApplyPromptLayers(ctx, reg, projAgent, projID(), nil)
+	ov, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), nil)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestApplyPromptLayers_PreservesExistingOverrides(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 	existing := &planner.LLMOverrides{ExtraInstructions: ps("tenant default")}
-	ov, err := projection.ApplyPromptLayers(ctx, reg, projAgent, projID(), existing)
+	ov, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), existing)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestApplyPromptLayers_NoLayersUnchanged(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
 	existing := &planner.LLMOverrides{Model: ps("m")}
-	ov, err := projection.ApplyPromptLayers(ctx, reg, projAgent, projID(), existing)
+	ov, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), existing)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}

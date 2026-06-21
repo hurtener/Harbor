@@ -64,6 +64,11 @@ import type {
 	AgentConfigSkillsListResponse,
 	AgentConfigSkillsUpsertResponse,
 	AgentConfigSkillsDeleteResponse,
+	AgentConfigSessionSetUserPromptResponse,
+	AgentConfigSessionSetSourceDisablesResponse,
+	AgentConfigSessionSkillsListResponse,
+	AgentConfigSessionSkillsUpsertResponse,
+	AgentConfigSessionSkillsDeleteResponse,
 } from './agentconfig.js';
 
 /* ------------------------------------------------------------------ */
@@ -1089,6 +1094,68 @@ export class AgentConfigNamespace {
 			agent_id: agentId,
 			name,
 		});
+	}
+
+	// --- Session-user safe subset (the non-admin lower tier). These verbs
+	// require a valid identity but NOT the admin scope. ---
+
+	/** `agent_config.session.set_user_prompt` — set the SESSION user prompt
+	 * layer (composes ABOVE the operator base; never the base). Non-admin. */
+	sessionSetUserPrompt(
+		agentId: string,
+		userPrompt: string,
+	): Promise<AgentConfigSessionSetUserPromptResponse> {
+		return this.#t.request<AgentConfigSessionSetUserPromptResponse>(
+			'/v1/agent_config/session/set_user_prompt',
+			{ agent_id: agentId, user_prompt: userPrompt },
+		);
+	}
+	/** `agent_config.session.set_source_disables` — NARROW-only source/tool
+	 * disable within the admin-allowed set (unioned into the admin exclusion
+	 * set at run start; never widens). Non-admin. */
+	sessionSetSourceDisables(
+		agentId: string,
+		disabledServers?: string[],
+		disabledTools?: string[],
+	): Promise<AgentConfigSessionSetSourceDisablesResponse> {
+		return this.#t.request<AgentConfigSessionSetSourceDisablesResponse>(
+			'/v1/agent_config/session/set_source_disables',
+			{
+				agent_id: agentId,
+				disabled_servers: disabledServers,
+				disabled_tools: disabledTools,
+			},
+		);
+	}
+	/** `agent_config.session.skills.list` — list the session's ephemeral
+	 * personal skills (metadata only). Non-admin. */
+	sessionSkillsList(agentId: string): Promise<AgentConfigSessionSkillsListResponse> {
+		return this.#t.request<AgentConfigSessionSkillsListResponse>(
+			'/v1/agent_config/session/skills/list',
+			{ agent_id: agentId },
+		);
+	}
+	/** `agent_config.session.skills.upsert` — upsert an ephemeral personal
+	 * skill (session-scoped; never promotes). Non-admin. */
+	sessionSkillsUpsert(
+		agentId: string,
+		skill: AgentConfigSkillInput,
+	): Promise<AgentConfigSessionSkillsUpsertResponse> {
+		return this.#t.request<AgentConfigSessionSkillsUpsertResponse>(
+			'/v1/agent_config/session/skills/upsert',
+			{ agent_id: agentId, skill: skill as unknown as Record<string, unknown> },
+		);
+	}
+	/** `agent_config.session.skills.delete` — delete an ephemeral personal
+	 * skill. Non-admin. */
+	sessionSkillsDelete(
+		agentId: string,
+		name: string,
+	): Promise<AgentConfigSessionSkillsDeleteResponse> {
+		return this.#t.request<AgentConfigSessionSkillsDeleteResponse>(
+			'/v1/agent_config/session/skills/delete',
+			{ agent_id: agentId, name },
+		);
 	}
 }
 
