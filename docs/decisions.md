@@ -5766,3 +5766,45 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 **§4.3 deviations.** Scope is MCP-only (HTTP/A2A add deferred); destructive remove of an existing connection is deferred (pause/resume covers the disable need). Documented in the plan's non-goals.
 
 **Cross-references.** D-234 (registry/revision), D-235 (admin scope + the stdio-approval rule), D-173 (the app surface the asymmetry gate protects), D-059 (agent-bound token keying), §7.4 (tool-side OAuth + the unified pause/resume primitive). RFC §6.4, §7.4, §6.16. briefs 14 + 09. Plan: `docs/plans/phase-92f-agent-config-add-connection.md`.
+
+---
+
+## D-238 — Phase 92j: per-agent LLM parameters are a versioned agent-config section above a retained tenant-wide baseline
+
+**Date:** 2026-06-21
+
+**Status:** Accepted
+
+**Context.** The tenant-default override work (Phase 92 + the 92b completion) set the effective LLM defaults — model / temperature / max-tokens / reasoning-effort / extra-instructions — **tenant-wide**: one `TenantOverrideSpec` keyed by `{tenant, "__governance__", "__tenant_overrides__"}` that applies to EVERY agent loaded in the tenant. The intent was per-agent: an operator wants to pin a specific agent's model without changing the default for every other agent in the tenant. A tenant-wide-only knob is the wrong granularity for that workflow.
+
+**Decision.**
+
+1. **Per-agent LLM parameters are a new versioned section on the agent-config `ConfigPayload`** (`internal/agentcfg`): `LLMParams{Model, Temperature, MaxTokens, ReasoningEffort}`, all pointer-optional (each field independently set-or-unset; a partial section is valid). It rides the existing revision machinery — content-hash, `set_revision` (full payload), a sibling-preserving `set_llm_params` convenience verb, the server-side `diff` (a new LLM-params arm), `rollback`, and the `agent.config.revised` event — so per-agent model changes are durable, diffable, and roll back like any other config edit. Keyed by `{tenant, "__agentcfg__", agentID}` — `agent_id` is the registry key, NOT an isolation filter (§6).
+2. **The tenant-wide override is RETAINED as the baseline layer — this is additive, not a rescope.** The operator's call: a tenant default that every agent inherits unless it pins its own. The per-agent section sits BETWEEN the session override and the tenant-wide baseline. The effective per-run resolution is **session › per-agent (agentcfg) › tenant-wide baseline › config default**, composed per-field (an unset per-agent field falls through to the tenant baseline, then config). `ComposeLLMOverrides` gains the per-agent arm; there is exactly ONE resolution path (no parallel mechanism — brief 03's "two parallel modes is a toggle smell").
+3. **`ExtraInstructions` does NOT move into the per-agent section.** Additive system-prompt text is already the agent-config prompt layers (92e); duplicating it in LLM-params would create two homes for prompt text. The per-agent section is sampling parameters only. The tenant baseline keeps its `ExtraInstructions` field.
+4. **Resolution is shared between the production run loop and the devstack twin (D-094).** `projection.ActiveLLMOverrides` reads the active revision's `LLMParams` and is called by BOTH `cmd/harbor/cmd_dev_runloop.go::resolveLLMOverrides` and `harbortest/devstack`; a twin test asserts identical resolution (the §17.6 one-binary-only failure mode is pre-empted).
+5. **Writes are admin-scoped (the D-235 capability tier); authority from the verified ctx, never the body (D-219).** Pinning an agent's model is a deployment-level change. The session safe subset (92g) gets NO LLM-params verb; per-run session sampling stays on `runs.set_overrides`. A pinned model with no resolvable `ModelProfile` fails loud at run-start (parity with the Phase 92 tenant swap) — never a silent fallback (§13).
+
+**§4.3 deviations.** Per-tool / per-skill model routing is out of scope (a single agent-level sampling profile only). Console rendering (the "Model & sampling" area + the Settings "Tenant Default Overrides → tenant-wide baseline" copy clarification) is twinned in 92i, not this phase.
+
+**Cross-references.** D-231 (the tenant model-swap + unknown-model fail-loud this composes with), D-234 (registry/revision), D-235 (admin scope tier), D-219 (verified-ctx authority), D-094 (the devstack twin), D-025 (next-turn snapshot semantics). RFC §6.15, §6.16, §6.5. briefs 03 + 08. Plan: `docs/plans/phase-92j-agent-config-llm-params.md`.
+
+---
+
+## D-239 — Phase 92i: agent-config revision readability + safe rollback are a derived, client-side Console concern (no stored revision label)
+
+**Date:** 2026-06-21
+
+**Status:** Accepted
+
+**Context.** The agent-config panel (92h) lists revisions by content-hash + author + timestamp. Two operator questions exposed a gap: "if I can see the history but can't read what each revision MEANT, how do I roll back safely?" and "can I change prompt + temperature + model in ONE revision instead of three?". The naive answer to the first is a stored free-text revision label/note; the naive answer to the second is more convenience verbs.
+
+**Decision.**
+
+1. **The per-revision change summary is DERIVED, not stored.** The agent-config `Revision` stays metadata-only — no free-text label/note field is added. The Console derives a human-readable one-line summary (which sections changed vs the parent revision, ±) entirely client-side from the `payload` each `AgentConfigRevisionView` already carries (`list_revisions` returns full payloads). A derived summary is always accurate and never drifts from an out-of-date hand-typed message; a rollback revision (payload equals an ancestor) is recognised and labelled "Rolled back to <short-id>". No new Protocol round-trips, no backend primitive in a Console phase.
+2. **Rollback is gated by a mandatory diff preview — never a blind repoint.** Selecting "Roll back to this revision" renders the structured `agent_config.diff` (active → target) for explicit operator confirmation; the `rollback` (repoint) fires only on confirm. This is the safety answer to "can't read what they meant" — you confirm against the EXACT delta, not the opaque intent. Admin-gated, disabled-with-tooltip for a non-admin (the 92b "never faked" precedent, §13).
+3. **Multi-section edits commit as ONE revision via `set_revision`.** The panel's primary save path collects pending edits across all areas (prompt / skills / MCP policy / model & sampling) into one staged payload and commits a single `set_revision` (the full merged payload) → one revision, one `agent.config.revised` event, one diffable unit — answering "change prompt + temperature + model in one revision". The per-section convenience verbs remain for single-area quick edits, but the atomic Save-all is primary. `set_revision` is one atomic write, so Save-all is all-or-nothing by construction (no partial-revision risk); staged state clears only on confirmed success (a failed write keeps the edits + surfaces the error — no silent drop).
+
+**§4.3 deviations.** Pure Console; no Go / Protocol surface added (consumes 92a + 92j surfaces). The end-user (non-admin) revision surface is out of scope (operator Console only). Revision pruning / retention is a separate concern.
+
+**Cross-references.** D-234 (the revision/diff/rollback primitive), D-121 (Console conventions), D-238 (the LLM-params section the summary + Save-all + diff cover). RFC §7, §6.16. briefs 11 + 12. Plan: `docs/plans/phase-92i-console-revision-ux.md`.
