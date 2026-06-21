@@ -46,12 +46,31 @@ export interface AgentConfigPromptLayers {
 	user?: string;
 }
 
+/** One runtime-added MCP server connection — the NON-SECRET descriptor only
+ * (name, transport, stdio argv command or http URL). Secret auth material is
+ * NEVER part of this descriptor. Mirrors
+ * `types.AgentConfigMCPConnectionDescriptor`. */
+export interface AgentConfigMCPConnectionDescriptor {
+	name: string;
+	/** "stdio" | "http". */
+	transport: string;
+	command?: string[];
+	url?: string;
+}
+
+/** The runtime-added MCP-connection section of the config envelope. Mirrors
+ * `types.AgentConfigConnections`. */
+export interface AgentConfigConnections {
+	servers?: AgentConfigMCPConnectionDescriptor[];
+}
+
 /** An agent-config envelope — every section optional and forward-compatible.
  * Mirrors `types.AgentConfigPayload`. */
 export interface AgentConfigPayload {
 	prompt_layers?: AgentConfigPromptLayers;
 	skills?: AgentConfigSkillsSelection;
 	tool_exposure?: AgentConfigToolExposure;
+	connections?: AgentConfigConnections;
 }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
@@ -93,6 +112,13 @@ export interface AgentConfigPromptLayersDiff {
 	user_to?: string;
 }
 
+/** The structured runtime-added MCP-connection set-diff (by name) across two
+ * revisions. Mirrors `types.AgentConfigConnectionsDiff`. */
+export interface AgentConfigConnectionsDiff {
+	added?: string[];
+	removed?: string[];
+}
+
 /** A server-side revision compare. Mirrors `types.AgentConfigDiff`. */
 export interface AgentConfigDiff {
 	from_revision_id: string;
@@ -100,6 +126,7 @@ export interface AgentConfigDiff {
 	skills: AgentConfigSkillsDiff;
 	tool_exposure: AgentConfigToolExposureDiff;
 	prompt_layers: AgentConfigPromptLayersDiff;
+	connections: AgentConfigConnectionsDiff;
 }
 
 /** `agent_config.get` request. */
@@ -195,6 +222,32 @@ export interface AgentConfigSetPromptLayersRequest {
 /** `agent_config.set_prompt_layers` response — the recorded revision. */
 export interface AgentConfigSetPromptLayersResponse {
 	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.add_mcp_connection` request — admin-scoped. Adds a NEW MCP
+ * server connection (the async dial + initialize handshake + possible OAuth
+ * path). `headers` are OPTIONAL operator-supplied auth material used ONLY for
+ * the live attach — they are NEVER persisted in the revision, diff, or events.
+ * Mirrors `types.AgentConfigAddMCPConnectionRequest`. */
+export interface AgentConfigAddMCPConnectionRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	connection: AgentConfigMCPConnectionDescriptor;
+	headers?: Record<string, string>;
+}
+
+/** `agent_config.add_mcp_connection` response — the recorded revision (when
+ * one was recorded), the descriptor, and the explicit attach lifecycle state
+ * ("online" | "failed" | "auth_required"). Mirrors
+ * `types.AgentConfigAddMCPConnectionResponse`. */
+export interface AgentConfigAddMCPConnectionResponse {
+	revision?: AgentConfigRevisionView;
+	connection: AgentConfigMCPConnectionDescriptor;
+	/** "online" | "failed" | "auth_required". */
+	state: string;
+	reason?: string;
+	pause_token?: string;
 	protocol_version: string;
 }
 

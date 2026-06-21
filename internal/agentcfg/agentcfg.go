@@ -107,13 +107,64 @@ type ToolExposure struct {
 	DisabledTools []string `json:"disabled_tools,omitempty"`
 }
 
+// MCPTransport is the closed set of transports a runtime-added MCP
+// connection descriptor may declare. The control-plane add path supports
+// MCP over stdio (an operator-supplied argv command) and http (a URL);
+// other transports are out of scope for the runtime add.
+type MCPTransport string
+
+// The canonical runtime-add MCP transports.
+const (
+	// MCPTransportStdio — the server is an operator-supplied subprocess,
+	// launched argv-form (NEVER via a shell). The most privileged add (an
+	// RCE surface) — allowlist-gated at the control-plane edge.
+	MCPTransportStdio MCPTransport = "stdio"
+	// MCPTransportHTTP — the server is reachable over an HTTP(S) endpoint.
+	MCPTransportHTTP MCPTransport = "http"
+)
+
+// MCPConnectionDescriptor is the NON-SECRET shape of one runtime-added MCP
+// server connection, recorded in a config revision so the connection is
+// part of the agent's versioned desired state (diff / rollback). It
+// carries ONLY the non-secret descriptor — the server name, the transport,
+// and the stdio argv command or the http URL. Secret auth material (bearer
+// headers, OAuth tokens, credentials) is NEVER part of this descriptor: it
+// flows through the live attach + the tool-side OAuth / pause-resume path
+// and is never persisted in a revision, a diff, or an event (CLAUDE.md §7).
+type MCPConnectionDescriptor struct {
+	// Name is the unique MCP source id (the tool-name prefix the planner
+	// sees). Required.
+	Name string `json:"name"`
+	// Transport is the wire transport — "stdio" or "http".
+	Transport MCPTransport `json:"transport"`
+	// Command is the stdio argv (argv[0] is the binary; no shell). Set for
+	// the stdio transport; empty for http.
+	Command []string `json:"command,omitempty"`
+	// URL is the http(s) endpoint. Set for the http transport; empty for
+	// stdio.
+	URL string `json:"url,omitempty"`
+}
+
+// ConnectionsSection is the runtime-added MCP-connection section of the
+// config envelope: the set of NON-SECRET connection descriptors an admin
+// has added over the control plane. Declared as its own section so an add
+// REPLACES only this section, preserving Skills / ToolExposure /
+// PromptLayers (the bidirectional section-merge invariant).
+type ConnectionsSection struct {
+	// Servers is the set of runtime-added MCP connection descriptors,
+	// keyed by Name. Canonicalised sorted-by-name with a name-unique
+	// invariant so a re-ordering does not perturb the content hash.
+	Servers []MCPConnectionDescriptor `json:"servers,omitempty"`
+}
+
 // ConfigPayload is the forward-compatible config envelope. Every section
 // is an optional pointer so later consumers extend the envelope without a
 // schema break; only Skills is wired in the first wave.
 type ConfigPayload struct {
-	PromptLayers *PromptLayers    `json:"prompt_layers,omitempty"`
-	ToolExposure *ToolExposure    `json:"tool_exposure,omitempty"`
-	Skills       *SkillsSelection `json:"skills,omitempty"`
+	PromptLayers *PromptLayers       `json:"prompt_layers,omitempty"`
+	ToolExposure *ToolExposure       `json:"tool_exposure,omitempty"`
+	Skills       *SkillsSelection    `json:"skills,omitempty"`
+	Connections  *ConnectionsSection `json:"connections,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -165,6 +216,9 @@ type Diff struct {
 	ToolExposure ToolExposureDiff
 	// PromptLayers is the text delta of the base + user prompt layers.
 	PromptLayers PromptLayersDiff
+	// Connections is the structured set-diff of the runtime-added MCP
+	// connection descriptors (by name).
+	Connections ConnectionsDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -224,6 +278,50 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 			PausedServers: sortDedup(p.ToolExposure.PausedServers),
 			DisabledTools: sortDedup(p.ToolExposure.DisabledTools),
 		}
+	}
+	if p.Connections != nil {
+		servers := normalizeConnections(p.Connections.Servers)
+		if len(servers) > 0 {
+			out.Connections = &ConnectionsSection{Servers: servers}
+		}
+	}
+	return out
+}
+
+// normalizeConnections returns a name-unique, sorted-by-name copy of the
+// connection descriptors so a re-ordering or a re-add of the same name does
+// not perturb the content hash. The LAST descriptor for a given name wins
+// (a re-add replaces a prior descriptor of the same name). The argv Command
+// order is significant and is preserved verbatim (never sorted). A nil
+// input returns nil; an empty result returns nil so an all-empty section
+// drops out of the canonical form.
+func normalizeConnections(in []MCPConnectionDescriptor) []MCPConnectionDescriptor {
+	if len(in) == 0 {
+		return nil
+	}
+	byName := make(map[string]MCPConnectionDescriptor, len(in))
+	names := make([]string, 0, len(in))
+	for _, d := range in {
+		if strings.TrimSpace(d.Name) == "" {
+			continue
+		}
+		if _, seen := byName[d.Name]; !seen {
+			names = append(names, d.Name)
+		}
+		byName[d.Name] = MCPConnectionDescriptor{
+			Name:      d.Name,
+			Transport: d.Transport,
+			Command:   append([]string(nil), d.Command...),
+			URL:       d.URL,
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	out := make([]MCPConnectionDescriptor, 0, len(names))
+	for _, n := range names {
+		out = append(out, byName[n])
 	}
 	return out
 }
@@ -321,6 +419,16 @@ func (p ConfigPayload) DisabledTools() []string {
 		return nil
 	}
 	return p.ToolExposure.DisabledTools
+}
+
+// ConnectionDescriptors returns the agent's runtime-added MCP connection
+// descriptors from a payload, or nil when the payload pins no connections
+// section. A convenience for the add-connection consumer + the diff.
+func (p ConfigPayload) ConnectionDescriptors() []MCPConnectionDescriptor {
+	if p.Connections == nil {
+		return nil
+	}
+	return p.Connections.Servers
 }
 
 // BasePrompt returns the agent's base prompt layer from a payload and
@@ -439,6 +547,42 @@ func setDiff(from, to []string) (added, removed []string) {
 	sort.Strings(added)
 	sort.Strings(removed)
 	return added, removed
+}
+
+// ConnectionsDiff is the structured set-diff of the runtime-added MCP
+// connection descriptors across two revisions, by name. Deterministic:
+// every slice is sorted.
+type ConnectionsDiff struct {
+	// Added are the connection names present in the to-revision but not the
+	// from-revision.
+	Added []string
+	// Removed are the connection names present in the from-revision but not
+	// the to-revision.
+	Removed []string
+}
+
+// Changed reports whether the connections set differs between the two
+// revisions.
+func (d ConnectionsDiff) Changed() bool { return len(d.Added) > 0 || len(d.Removed) > 0 }
+
+// DiffConnections computes the structured set-diff (by name) of two
+// connection states. Exported so the diff is one canonical implementation
+// shared by the driver and tests.
+func DiffConnections(from, to ConfigPayload) ConnectionsDiff {
+	added, removed := setDiff(connectionNames(from.ConnectionDescriptors()), connectionNames(to.ConnectionDescriptors()))
+	return ConnectionsDiff{Added: added, Removed: removed}
+}
+
+// connectionNames projects a descriptor slice onto its name set.
+func connectionNames(in []MCPConnectionDescriptor) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, d := range in {
+		out = append(out, d.Name)
+	}
+	return out
 }
 
 // DiffSkills computes the structured set-diff of two skills memberships.

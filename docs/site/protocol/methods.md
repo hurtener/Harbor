@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 96 canonical Harbor Protocol methods, generated from the single-source registry
+The 97 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -194,6 +194,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
+| `agent_config.add_mcp_connection` | `POST /v1/agent_config/add_mcp_connection` | agent config — admin | [`AgentConfigAddMCPConnectionRequest`](./types.md#agentconfigaddmcpconnectionrequest) | [`AgentConfigAddMCPConnectionResponse`](./types.md#agentconfigaddmcpconnectionresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.diff` | `POST /v1/agent_config/diff` | agent config — admin | [`AgentConfigDiffRequest`](./types.md#agentconfigdiffrequest) | [`AgentConfigDiffResponse`](./types.md#agentconfigdiffresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.get` | `POST /v1/agent_config/get` | agent config — admin | [`AgentConfigGetRequest`](./types.md#agentconfiggetrequest) | [`AgentConfigGetResponse`](./types.md#agentconfiggetresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.list_revisions` | `POST /v1/agent_config/list_revisions` | agent config — admin | [`AgentConfigListRevisionsRequest`](./types.md#agentconfiglistrevisionsrequest) | [`AgentConfigListRevisionsResponse`](./types.md#agentconfiglistrevisionsresponse) | read-only; requires the verified `admin` scope claim |

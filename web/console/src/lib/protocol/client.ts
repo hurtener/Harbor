@@ -58,6 +58,8 @@ import type {
 	AgentConfigRollbackResponse,
 	AgentConfigSetToolExposureResponse,
 	AgentConfigSetPromptLayersResponse,
+	AgentConfigMCPConnectionDescriptor,
+	AgentConfigAddMCPConnectionResponse,
 	AgentConfigSkillInput,
 	AgentConfigSkillsListResponse,
 	AgentConfigSkillsUpsertResponse,
@@ -1042,6 +1044,27 @@ export class AgentConfigNamespace {
 				agent_id: agentId,
 				prompt_layers: promptLayers as unknown as Record<string, unknown>,
 			},
+		);
+	}
+	/** `agent_config.add_mcp_connection` — add a NEW MCP server connection
+	 * (the async dial + initialize handshake + possible OAuth path); records a
+	 * revision + emits the `mcp.connection.*` lifecycle events. `headers` are
+	 * used ONLY for the live attach and are never persisted. */
+	addMcpConnection(
+		agentId: string,
+		connection: AgentConfigMCPConnectionDescriptor,
+		headers?: Record<string, string>,
+	): Promise<AgentConfigAddMCPConnectionResponse> {
+		const body: Record<string, unknown> = {
+			agent_id: agentId,
+			connection: connection as unknown as Record<string, unknown>,
+		};
+		if (headers) {
+			body.headers = headers;
+		}
+		return this.#t.request<AgentConfigAddMCPConnectionResponse>(
+			'/v1/agent_config/add_mcp_connection',
+			body,
 		);
 	}
 	/** `agent_config.skills.list` — list the agent's skills (metadata only). */

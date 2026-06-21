@@ -48,6 +48,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
@@ -75,6 +76,23 @@ type Service struct {
 	bus      events.EventBus   // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
 	logger   *slog.Logger
 	now      Clock
+
+	// attacher drives the real MCP attach lifecycle for add_mcp_connection.
+	// Optional — nil ⇒ add_mcp_connection returns ErrConnectionAttachUnavailable
+	// (→ 501 at the wire edge). The concrete that calls the MCP driver is
+	// injected at the cmd/harbor + devstack boundary (the §4.4 boundary keeps
+	// the concrete MCP driver out of this package).
+	attacher ConnectionAttacher
+	// coordinator is the unified pause/resume primitive an auth-required
+	// attach parks on. Optional — nil ⇒ an auth-required attach fails loud
+	// with ErrCoordinatorUnavailable rather than silently dropping the auth
+	// requirement (CLAUDE.md §13).
+	coordinator pauseresume.Coordinator
+	// stdioAllowlist is the fail-closed set of permitted stdio commands
+	// (matched on argv[0]). A stdio add whose command[0] is absent from this
+	// set is rejected (an empty / nil set rejects EVERY stdio add — the
+	// secure default). http adds are admin-scoped but not gated here.
+	stdioAllowlist map[string]struct{}
 }
 
 // Option configures NewService.
@@ -118,6 +136,51 @@ func WithBus(b events.EventBus) Option {
 		if b != nil {
 			s.bus = b
 		}
+	}
+}
+
+// WithConnectionAttacher wires the concrete that drives the real MCP attach
+// lifecycle for `agent_config.add_mcp_connection`. A nil attacher leaves the
+// method returning ErrConnectionAttachUnavailable (→ 501 at the wire edge).
+// The concrete (which imports the MCP driver) is injected at the cmd/harbor +
+// devstack boundary; this package depends only on the interface.
+func WithConnectionAttacher(a ConnectionAttacher) Option {
+	return func(s *Service) {
+		if a != nil {
+			s.attacher = a
+		}
+	}
+}
+
+// WithCoordinator wires the unified pause/resume primitive an auth-required
+// MCP attach parks on. A nil coordinator leaves an auth-required attach
+// failing loud with ErrCoordinatorUnavailable (never a silent drop).
+func WithCoordinator(c pauseresume.Coordinator) Option {
+	return func(s *Service) {
+		if c != nil {
+			s.coordinator = c
+		}
+	}
+}
+
+// WithStdioAllowlist sets the fail-closed allowlist of permitted stdio
+// commands (matched on argv[0]) for `agent_config.add_mcp_connection`. A
+// stdio add whose command[0] is absent is rejected with ErrStdioNotAllowed.
+// An empty / nil allowlist rejects EVERY stdio add (the secure default);
+// http adds are unaffected. Adding a stdio server runs an operator-supplied
+// command (an RCE surface) — this gate is the §7 fail-closed boundary.
+func WithStdioAllowlist(commands []string) Option {
+	return func(s *Service) {
+		if len(commands) == 0 {
+			return
+		}
+		set := make(map[string]struct{}, len(commands))
+		for _, c := range commands {
+			if c != "" {
+				set[c] = struct{}{}
+			}
+		}
+		s.stdioAllowlist = set
 	}
 }
 
@@ -288,6 +351,47 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			DisabledTools: append([]string(nil), p.ToolExposure.DisabledTools...),
 		}
 	}
+	if p.Connections != nil {
+		out.Connections = &prototypes.AgentConfigConnections{
+			Servers: connectionsToWire(p.Connections.Servers),
+		}
+	}
+	return out
+}
+
+// connectionsToWire projects domain connection descriptors onto the wire
+// shape (defensive copies; no shared backing slices).
+func connectionsToWire(in []agentcfg.MCPConnectionDescriptor) []prototypes.AgentConfigMCPConnectionDescriptor {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]prototypes.AgentConfigMCPConnectionDescriptor, 0, len(in))
+	for _, d := range in {
+		out = append(out, prototypes.AgentConfigMCPConnectionDescriptor{
+			Name:      d.Name,
+			Transport: string(d.Transport),
+			Command:   append([]string(nil), d.Command...),
+			URL:       d.URL,
+		})
+	}
+	return out
+}
+
+// connectionsToDomain projects wire connection descriptors onto the domain
+// shape (defensive copies; no shared backing slices).
+func connectionsToDomain(in []prototypes.AgentConfigMCPConnectionDescriptor) []agentcfg.MCPConnectionDescriptor {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]agentcfg.MCPConnectionDescriptor, 0, len(in))
+	for _, d := range in {
+		out = append(out, agentcfg.MCPConnectionDescriptor{
+			Name:      d.Name,
+			Transport: agentcfg.MCPTransport(d.Transport),
+			Command:   append([]string(nil), d.Command...),
+			URL:       d.URL,
+		})
+	}
 	return out
 }
 
@@ -307,6 +411,11 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 		out.ToolExposure = &agentcfg.ToolExposure{
 			PausedServers: append([]string(nil), p.ToolExposure.PausedServers...),
 			DisabledTools: append([]string(nil), p.ToolExposure.DisabledTools...),
+		}
+	}
+	if p.Connections != nil {
+		out.Connections = &agentcfg.ConnectionsSection{
+			Servers: connectionsToDomain(p.Connections.Servers),
 		}
 	}
 	return out
@@ -334,6 +443,10 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			UserChanged: d.PromptLayers.UserChanged,
 			UserFrom:    d.PromptLayers.UserFrom,
 			UserTo:      d.PromptLayers.UserTo,
+		},
+		Connections: prototypes.AgentConfigConnectionsDiff{
+			Added:   append([]string(nil), d.Connections.Added...),
+			Removed: append([]string(nil), d.Connections.Removed...),
 		},
 	}
 }

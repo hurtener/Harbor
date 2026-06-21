@@ -58,6 +58,33 @@ type AgentConfigPromptLayers struct {
 	User *string `json:"user,omitempty"`
 }
 
+// AgentConfigMCPConnectionDescriptor is the wire projection of one
+// runtime-added MCP server connection — the NON-SECRET descriptor only
+// (name, transport, stdio argv command or http URL). Secret auth material
+// (bearer headers, OAuth tokens, credentials) is NEVER part of this
+// descriptor: it flows through the live attach + the tool-side OAuth /
+// pause-resume path and is never persisted in a revision, diff, or event.
+type AgentConfigMCPConnectionDescriptor struct {
+	// Name is the unique MCP source id. Required.
+	Name string `json:"name"`
+	// Transport is the wire transport — "stdio" or "http".
+	Transport string `json:"transport"`
+	// Command is the stdio argv (argv[0] is the binary; no shell). Set for
+	// the stdio transport.
+	Command []string `json:"command,omitempty"`
+	// URL is the http(s) endpoint. Set for the http transport.
+	URL string `json:"url,omitempty"`
+}
+
+// AgentConfigConnections is the wire projection of the runtime-added
+// MCP-connection section of the config envelope — the set of NON-SECRET
+// connection descriptors recorded in a revision (part of the agent's
+// versioned desired state for diff / rollback).
+type AgentConfigConnections struct {
+	// Servers is the set of runtime-added MCP connection descriptors.
+	Servers []AgentConfigMCPConnectionDescriptor `json:"servers,omitempty"`
+}
+
 // AgentConfigPayload is the wire projection of an agent-config envelope.
 // Every section is optional so later consumers extend it without a schema
 // break.
@@ -71,6 +98,9 @@ type AgentConfigPayload struct {
 	// ToolExposure, when non-nil, pins the agent's MCP-exposure / per-tool
 	// policy for the revision.
 	ToolExposure *AgentConfigToolExposure `json:"tool_exposure,omitempty"`
+	// Connections, when non-nil, pins the agent's runtime-added MCP
+	// connection descriptors (non-secret) for the revision.
+	Connections *AgentConfigConnections `json:"connections,omitempty"`
 }
 
 // AgentConfigRevisionView is the wire projection of one immutable config
@@ -134,15 +164,27 @@ type AgentConfigPromptLayersDiff struct {
 	UserTo   string `json:"user_to,omitempty"`
 }
 
+// AgentConfigConnectionsDiff is the wire projection of the structured
+// runtime-added MCP-connection set-diff (by name) across two revisions.
+type AgentConfigConnectionsDiff struct {
+	// Added are the connection names present in the to-revision but not the
+	// from-revision.
+	Added []string `json:"added,omitempty"`
+	// Removed are the connection names present in the from-revision but not
+	// the to-revision.
+	Removed []string `json:"removed,omitempty"`
+}
+
 // AgentConfigDiff is the wire projection of a server-side revision
-// compare — the structured skills + tool-exposure set-diffs and the
-// prompt-layer text delta.
+// compare — the structured skills + tool-exposure + connection set-diffs
+// and the prompt-layer text delta.
 type AgentConfigDiff struct {
 	FromRevisionID string                      `json:"from_revision_id"`
 	ToRevisionID   string                      `json:"to_revision_id"`
 	Skills         AgentConfigSkillsDiff       `json:"skills"`
 	ToolExposure   AgentConfigToolExposureDiff `json:"tool_exposure"`
 	PromptLayers   AgentConfigPromptLayersDiff `json:"prompt_layers"`
+	Connections    AgentConfigConnectionsDiff  `json:"connections"`
 }
 
 // AgentConfigGetRequest is the `agent_config.get` request — read the
@@ -261,6 +303,49 @@ type AgentConfigSetPromptLayersRequest struct {
 type AgentConfigSetPromptLayersResponse struct {
 	Revision        AgentConfigRevisionView `json:"revision"`
 	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigAddMCPConnectionRequest is the admin-scoped
+// `agent_config.add_mcp_connection` request — add a NEW MCP server
+// connection (the separable async-dial path). The runtime drives the real
+// attach lifecycle (dial → initialize handshake → discover → register),
+// records the NON-SECRET descriptor as a config revision (preserving the
+// skills / tool-exposure / prompt-layer sections), and — for a stdio add —
+// gates on the operator allowlist (fail-closed; argv-form only). An
+// auth-required server parks on the unified pause/resume primitive.
+type AgentConfigAddMCPConnectionRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Connection is the NON-SECRET descriptor (name, transport, command/URL).
+	Connection AgentConfigMCPConnectionDescriptor `json:"connection"`
+	// Headers are OPTIONAL operator-supplied auth headers used ONLY for the
+	// live attach (e.g. a bearer token for an http server). They are treated
+	// as SECRETS: they flow to the transport but are NEVER persisted in the
+	// recorded revision, the diff, or any emitted event (CLAUDE.md §7).
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// AgentConfigAddMCPConnectionResponse is the `agent_config.add_mcp_connection`
+// response — the recorded revision (when one was recorded), the descriptor,
+// and the explicit attach lifecycle state.
+type AgentConfigAddMCPConnectionResponse struct {
+	// Revision is the recorded config revision (set when State is "online"
+	// or "auth_required"; nil for a "failed" add, which records no revision).
+	Revision *AgentConfigRevisionView `json:"revision,omitempty"`
+	// Connection is the NON-SECRET descriptor that was added.
+	Connection AgentConfigMCPConnectionDescriptor `json:"connection"`
+	// State is the explicit attach lifecycle state: "online" (attached),
+	// "failed" (dial / handshake / discover failed — no half-attach), or
+	// "auth_required" (parked on the unified pause/resume primitive).
+	State string `json:"state"`
+	// Reason is a SAFE, operator-facing failure reason (set only when State
+	// is "failed"); never a secret.
+	Reason string `json:"reason,omitempty"`
+	// PauseToken is the unified-pause/resume token the auth_required attach
+	// parked on (set only when State is "auth_required"). An opaque runtime
+	// handle, NOT a credential.
+	PauseToken      string `json:"pause_token,omitempty"`
+	ProtocolVersion string `json:"protocol_version"`
 }
 
 // AgentConfigSkillSummary is the wire projection of one skill in the

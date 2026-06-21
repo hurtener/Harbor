@@ -46,6 +46,37 @@ const (
 	// paused set). Resume is an instant flag flip — no re-dial. Carries the
 	// same operator-visible audit metadata as the paused event.
 	EventTypeMCPConnectionResumed events.EventType = "mcp.connection.resumed"
+
+	// EventTypeMCPConnectionPending — emitted when an admin add of a NEW MCP
+	// server connection begins the attach lifecycle (dial → initialize →
+	// discover → register). Marks the `pending` lifecycle transition before
+	// the terminal added / failed / auth_required event. Carries the agent
+	// id, the server name, and the author identity — never a secret.
+	EventTypeMCPConnectionPending events.EventType = "mcp.connection.pending"
+
+	// EventTypeMCPConnectionAdded — emitted when an admin add of a NEW MCP
+	// server connection completes the attach lifecycle successfully: the
+	// transport dialled, the initialize handshake succeeded, discovery ran,
+	// and the server's tools were registered on the live catalog. Carries
+	// the agent id, the server name, the recording revision id, and the
+	// author identity — never a secret header / token / credential.
+	EventTypeMCPConnectionAdded events.EventType = "mcp.connection.added"
+
+	// EventTypeMCPConnectionFailed — emitted when an admin add of a NEW MCP
+	// server connection FAILS at any attach step (unreachable, handshake /
+	// version mismatch, malformed discovery). A half-attached server is NEVER
+	// registered (fail loud, no silent drop). Carries the agent id, the
+	// server name, and a SAFE failure reason — never a secret. No revision is
+	// recorded for a failed add (the broken connection is not desired state).
+	EventTypeMCPConnectionFailed events.EventType = "mcp.connection.failed"
+
+	// EventTypeMCPConnectionAuthRequired — emitted when an admin add of a NEW
+	// MCP server connection requires authorization: the attach parks on the
+	// unified pause/resume primitive (the tool-side OAuth lineage) and a
+	// resume completes the attach. Carries the agent id, the server name, the
+	// recording revision id, the pause token, and the author identity — never
+	// a secret / credential / auth code.
+	EventTypeMCPConnectionAuthRequired events.EventType = "mcp.connection.auth_required"
 )
 
 func init() {
@@ -54,6 +85,10 @@ func init() {
 		EventTypeConfigReverted,
 		EventTypeMCPConnectionPaused,
 		EventTypeMCPConnectionResumed,
+		EventTypeMCPConnectionPending,
+		EventTypeMCPConnectionAdded,
+		EventTypeMCPConnectionFailed,
+		EventTypeMCPConnectionAuthRequired,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -130,5 +165,37 @@ type MCPConnectionResumedPayload struct {
 	// RevisionID is the tool-exposure revision that recorded the resume.
 	RevisionID string
 	// OccurredAt is the resume instant.
+	OccurredAt time.Time
+}
+
+// MCPConnectionLifecyclePayload is the typed payload for the runtime
+// MCP-attach lifecycle events (pending / added / failed / auth_required).
+// SafePayload — every field is operator-visible audit metadata; NO secret
+// header / token / credential / auth code is ever carried (CLAUDE.md §7).
+type MCPConnectionLifecyclePayload struct {
+	events.SafeSealed
+	// Author is the identity that drove the add.
+	Author identity.Quadruple
+	// AgentID is the agent the connection was added to (a registration
+	// identity, NOT an isolation principal).
+	AgentID string
+	// ServerID is the MCP source id (name) of the connection being added.
+	ServerID string
+	// Transport is the connection transport ("stdio" / "http") — non-secret.
+	Transport string
+	// State is the lifecycle state the event marks ("pending" / "online" /
+	// "failed" / "auth_required").
+	State string
+	// RevisionID is the recording revision id (set for online / auth_required;
+	// empty for pending and for a failed add, which records no revision).
+	RevisionID string
+	// PauseToken is the unified-pause/resume token the auth_required attach
+	// parked on (set only for the auth_required state); empty otherwise. It
+	// is an opaque runtime handle, NOT a credential.
+	PauseToken string
+	// Reason is a SAFE, operator-facing failure reason (set only for the
+	// failed state); never a secret or raw transport payload.
+	Reason string
+	// OccurredAt is the lifecycle-transition instant.
 	OccurredAt time.Time
 }

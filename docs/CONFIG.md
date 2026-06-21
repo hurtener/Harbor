@@ -883,6 +883,33 @@ tools:
     display_modes: [inline, fullscreen, pip]
 ```
 
+### tools.mcp_add_connection
+
+Gates the admin-driven runtime add of a NEW MCP server connection over the
+Protocol (`agent_config.add_mcp_connection`). Adding a stdio MCP server spawns
+an operator-supplied command — an RCE surface — so the add path is
+**fail-closed**: a stdio add is permitted ONLY when its command `argv[0]` is
+listed exactly in `stdio_allowlist`. An empty / omitted block rejects **every**
+stdio add (the secure default). `http` adds are admin-scoped but are not gated
+by this allowlist.
+
+The command is always launched argv-form (never via a shell). Secret auth
+material (bearer headers, OAuth tokens) supplied with an add flows to the live
+transport only and is NEVER persisted in the recorded config revision, the
+diff, or any emitted event.
+
+Default: nil (every stdio add rejected). Restart-required.
+
+Example:
+
+```yaml
+tools:
+  mcp_add_connection:
+    stdio_allowlist:
+      - /usr/local/bin/harbor-mcptest-stdio
+      - /opt/mcp/servers/my-trusted-server
+```
+
 ---
 
 ## Planner

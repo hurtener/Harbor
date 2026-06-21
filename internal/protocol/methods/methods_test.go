@@ -111,6 +111,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigSkillsDelete,
 	methods.MethodAgentConfigSetToolExposure,
 	methods.MethodAgentConfigSetPromptLayers,
+	methods.MethodAgentConfigAddMCPConnection,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -129,11 +130,12 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + mcp.apps.tool_context) = 83, + governance tenant-override admin
 	// pair two (governance.set_tenant_overrides +
 	// governance.get_tenant_overrides) = 85, + governance.rotate_key one
-	// = 86, + agent-config control plane ten (agent_config.get +
+	// = 86, + agent-config control plane eleven (agent_config.get +
 	// set_revision + list_revisions + diff + rollback + skills.{list,
-	// upsert,delete} + set_tool_exposure + set_prompt_layers) = 96.
-	if len(got) != 96 {
-		t.Fatalf("Methods() returned %d methods, want 96", len(got))
+	// upsert,delete} + set_tool_exposure + set_prompt_layers +
+	// add_mcp_connection) = 97.
+	if len(got) != 97 {
+		t.Fatalf("Methods() returned %d methods, want 97", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

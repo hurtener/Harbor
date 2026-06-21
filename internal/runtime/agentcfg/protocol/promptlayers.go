@@ -57,6 +57,7 @@ func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfi
 	if hasActive {
 		payload.Skills = active.Payload.Skills
 		payload.ToolExposure = active.Payload.ToolExposure
+		payload.Connections = active.Payload.Connections
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, payload)
