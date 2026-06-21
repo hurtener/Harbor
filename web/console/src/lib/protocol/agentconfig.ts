@@ -318,3 +318,84 @@ export interface AgentConfigSkillsDeleteResponse {
 	revision: AgentConfigRevisionView;
 	protocol_version: string;
 }
+
+// --- Session-user safe subset (the non-admin lower tier of the
+// authorization matrix). A session-scoped caller may set a user prompt layer
+// (never the operator base), narrow-only source/tool disable, and ephemeral
+// personal skills. The session shapes carry NO base-prompt field and NO
+// enable field. ---
+
+/** A session's safe-subset overlay. Mirrors `types.AgentConfigSessionOverlay`.
+ * There is NO base-prompt field — base is unwritable by a session caller. */
+export interface AgentConfigSessionOverlay {
+	user_prompt?: string;
+	disabled_servers?: string[];
+	disabled_tools?: string[];
+	personal_skills?: string[];
+}
+
+/** `agent_config.session.set_user_prompt` request — session-safe (non-admin). */
+export interface AgentConfigSessionSetUserPromptRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	user_prompt: string;
+}
+
+/** `agent_config.session.set_user_prompt` response. */
+export interface AgentConfigSessionSetUserPromptResponse {
+	overlay: AgentConfigSessionOverlay;
+	protocol_version: string;
+}
+
+/** `agent_config.session.set_source_disables` request — narrow-only (non-admin). */
+export interface AgentConfigSessionSetSourceDisablesRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	disabled_servers?: string[];
+	disabled_tools?: string[];
+}
+
+/** `agent_config.session.set_source_disables` response. */
+export interface AgentConfigSessionSetSourceDisablesResponse {
+	overlay: AgentConfigSessionOverlay;
+	protocol_version: string;
+}
+
+/** `agent_config.session.skills.list` request — session-safe (non-admin). */
+export interface AgentConfigSessionSkillsListRequest {
+	identity: IdentityScope;
+	agent_id: string;
+}
+
+/** `agent_config.session.skills.list` response. */
+export interface AgentConfigSessionSkillsListResponse {
+	skills: AgentConfigSkillSummary[];
+	protocol_version: string;
+}
+
+/** `agent_config.session.skills.upsert` request — session-safe (non-admin). */
+export interface AgentConfigSessionSkillsUpsertRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	skill: AgentConfigSkillInput;
+}
+
+/** `agent_config.session.skills.upsert` response. */
+export interface AgentConfigSessionSkillsUpsertResponse {
+	skill: AgentConfigSkillSummary;
+	overlay: AgentConfigSessionOverlay;
+	protocol_version: string;
+}
+
+/** `agent_config.session.skills.delete` request — session-safe (non-admin). */
+export interface AgentConfigSessionSkillsDeleteRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+}
+
+/** `agent_config.session.skills.delete` response. */
+export interface AgentConfigSessionSkillsDeleteResponse {
+	overlay: AgentConfigSessionOverlay;
+	protocol_version: string;
+}

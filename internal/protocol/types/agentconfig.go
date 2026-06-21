@@ -424,3 +424,113 @@ type AgentConfigSkillsDeleteResponse struct {
 	Revision        AgentConfigRevisionView `json:"revision"`
 	ProtocolVersion string                  `json:"protocol_version"`
 }
+
+// --- Session-user safe subset (the non-admin lower tier of the
+// authorization matrix) ---
+//
+// These wire types back the NON-admin session-safe `agent_config.session.*`
+// verbs: a session-scoped end user may set a user prompt layer (never the
+// operator base), NARROW (never widen) source/tool enablement within the
+// admin-allowed set, and manage ephemeral personal skills. The session
+// shapes carry NO base-prompt field and NO enable field — the data model
+// itself bounds the safe subset (a session caller physically cannot widen a
+// capability or edit the operator base). Authority derives from the verified
+// ctx scope at the wire handler, never the request body.
+
+// AgentConfigSessionOverlay is the wire projection of a session's
+// safe-subset overlay: a user prompt layer that composes ABOVE the operator
+// base, a narrow-only source/tool disable set, and the names of the
+// session's ephemeral personal skills. There is intentionally NO base-prompt
+// field — a session caller cannot write the operator base.
+type AgentConfigSessionOverlay struct {
+	UserPrompt      string   `json:"user_prompt,omitempty"`
+	DisabledServers []string `json:"disabled_servers,omitempty"`
+	DisabledTools   []string `json:"disabled_tools,omitempty"`
+	PersonalSkills  []string `json:"personal_skills,omitempty"`
+}
+
+// AgentConfigSessionSetUserPromptRequest is the session-safe
+// `agent_config.session.set_user_prompt` request. It sets ONLY the user
+// prompt layer (the shape has no base field — base is unwritable by a
+// session caller).
+type AgentConfigSessionSetUserPromptRequest struct {
+	Identity   IdentityScope `json:"identity"`
+	AgentID    string        `json:"agent_id"`
+	UserPrompt string        `json:"user_prompt"`
+}
+
+// AgentConfigSessionSetUserPromptResponse is the
+// `agent_config.session.set_user_prompt` response — the resulting overlay.
+type AgentConfigSessionSetUserPromptResponse struct {
+	Overlay         AgentConfigSessionOverlay `json:"overlay"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// AgentConfigSessionSetSourceDisablesRequest is the session-safe
+// `agent_config.session.set_source_disables` request. It names the
+// servers/tools the session wants DISABLED — narrow-only. There is no enable
+// field; at projection the disable set is unioned into the admin exclusion
+// set, so it can only narrow the admin-allowed exposure, never widen it.
+type AgentConfigSessionSetSourceDisablesRequest struct {
+	Identity        IdentityScope `json:"identity"`
+	AgentID         string        `json:"agent_id"`
+	DisabledServers []string      `json:"disabled_servers,omitempty"`
+	DisabledTools   []string      `json:"disabled_tools,omitempty"`
+}
+
+// AgentConfigSessionSetSourceDisablesResponse is the
+// `agent_config.session.set_source_disables` response — the resulting
+// overlay.
+type AgentConfigSessionSetSourceDisablesResponse struct {
+	Overlay         AgentConfigSessionOverlay `json:"overlay"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// AgentConfigSessionSkillsListRequest is the session-safe
+// `agent_config.session.skills.list` request — lists the session's skills
+// (metadata only) under the caller's real triple.
+type AgentConfigSessionSkillsListRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+}
+
+// AgentConfigSessionSkillsListResponse is the
+// `agent_config.session.skills.list` response.
+type AgentConfigSessionSkillsListResponse struct {
+	Skills          []AgentConfigSkillSummary `json:"skills"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// AgentConfigSessionSkillsUpsertRequest is the session-safe
+// `agent_config.session.skills.upsert` request — upserts an ephemeral
+// personal skill under the caller's real triple. The skill never promotes
+// past the session.
+type AgentConfigSessionSkillsUpsertRequest struct {
+	Identity IdentityScope         `json:"identity"`
+	AgentID  string                `json:"agent_id"`
+	Skill    AgentConfigSkillInput `json:"skill"`
+}
+
+// AgentConfigSessionSkillsUpsertResponse is the
+// `agent_config.session.skills.upsert` response — the upserted skill summary
+// and the resulting overlay.
+type AgentConfigSessionSkillsUpsertResponse struct {
+	Skill           AgentConfigSkillSummary   `json:"skill"`
+	Overlay         AgentConfigSessionOverlay `json:"overlay"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// AgentConfigSessionSkillsDeleteRequest is the session-safe
+// `agent_config.session.skills.delete` request.
+type AgentConfigSessionSkillsDeleteRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	Name     string        `json:"name"`
+}
+
+// AgentConfigSessionSkillsDeleteResponse is the
+// `agent_config.session.skills.delete` response — the resulting overlay.
+type AgentConfigSessionSkillsDeleteResponse struct {
+	Overlay         AgentConfigSessionOverlay `json:"overlay"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}

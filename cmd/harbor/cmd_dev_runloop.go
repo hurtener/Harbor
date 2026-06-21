@@ -85,6 +85,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
@@ -205,6 +206,15 @@ type perTaskRunLoopDriverOpts struct {
 	// the NEXT run (next-turn-only), never mid-flight.
 	agentConfig   agentcfg.Registry
 	agentConfigID string
+
+	// sessionOverlay resolves the SESSION-scoped safe-subset overlay (the
+	// non-admin lower tier) at run start: the session's user prompt layer,
+	// narrow-only source/tool disables (UNIONED into the admin exclusion set
+	// — can only narrow, never widen), and ephemeral personal skills. Keyed
+	// by the REAL (tenant, user, session) triple, so it is session-isolated.
+	// OPTIONAL — nil means "no session overlay" (the run uses the admin agent
+	// config only). The SAME store the session-safe Protocol verbs write into.
+	sessionOverlay sessionoverlay.Store
 }
 
 // tenantOverrideResolver is the narrow read seam the run loop uses to
@@ -262,6 +272,11 @@ type perTaskRunLoopDriver struct {
 	// run start to project the agent's active skills-set (nil = none).
 	agentConfig   agentcfg.Registry
 	agentConfigID string
+
+	// session-scoped safe-subset overlay store, read once at run start to
+	// compose the session user layer + narrow-only disables + personal skills
+	// over the admin agent config (nil = none).
+	sessionOverlay sessionoverlay.Store
 
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
@@ -331,6 +346,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		sessionOverrides:  opts.sessionOverrides,
 		agentConfig:       opts.agentConfig,
 		agentConfigID:     opts.agentConfigID,
+		sessionOverlay:    opts.sessionOverlay,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 		tokenBudget:       opts.tokenBudget,
 		compression:       opts.compression,
@@ -556,7 +572,7 @@ func (d *perTaskRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identi
 // projection). The logic is shared verbatim with the devstack twin via the
 // projection package so the two binaries cannot drift (CLAUDE.md §17.6).
 func (d *perTaskRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
-	return projection.ActiveSkillViews(ctx, d.agentConfig, d.agentConfigID, q, views)
+	return projection.ActiveSkillViews(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, views)
 }
 
 // projectAgentConfigCatalog builds the run's planner catalog view, applying
@@ -564,7 +580,7 @@ func (d *perTaskRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q i
 // tools excluded) via the SAME shared projection the devstack twin uses
 // (CLAUDE.md §17.6). Next-turn-only; the live transport stays warm.
 func (d *perTaskRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
-	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.agentConfigID, q, d.catalog, filter)
+	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, d.catalog, filter)
 }
 
 // projectAgentConfigPromptLayers overlays the agent's durable layered system
@@ -573,7 +589,7 @@ func (d *perTaskRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q 
 // shared projection the devstack twin uses (CLAUDE.md §17.6). Next-turn-only;
 // the immutable per-run snapshot is undisturbed for in-flight runs.
 func (d *perTaskRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
-	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.agentConfigID, q, ov)
+	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, ov)
 }
 
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {

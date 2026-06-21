@@ -125,6 +125,11 @@ var methodToControlType = map[methods.Method]steering.ControlType{
 // methods (closed two-scope set).
 const adminNote = "requires the verified `admin` scope claim"
 
+// sessionSafeNote is the shared auth-posture string for the session-user
+// safe-subset methods (the non-admin lower tier): identity-mandatory but NOT
+// admin-gated.
+const sessionSafeNote = "identity-mandatory; does NOT require the `admin` scope (the session-user safe subset)"
+
 // controlRoute derives the concrete control-transport route for a
 // method from control.RoutePattern.
 func controlRoute(m methods.Method) string {
@@ -459,6 +464,36 @@ func methodTable() map[methods.Method]methodEntry {
 			Mutates: true,
 			Request: "AgentConfigAddMCPConnectionRequest", Response: "AgentConfigAddMCPConnectionResponse",
 			Auth: adminNote,
+		},
+		methods.MethodAgentConfigSessionSetUserPrompt: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSessionSetUserPrompt),
+			Mutates: true,
+			Request: "AgentConfigSessionSetUserPromptRequest", Response: "AgentConfigSessionSetUserPromptResponse",
+			Auth: sessionSafeNote,
+		},
+		methods.MethodAgentConfigSessionSetSourceDisables: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSessionSetSourceDisables),
+			Mutates: true,
+			Request: "AgentConfigSessionSetSourceDisablesRequest", Response: "AgentConfigSessionSetSourceDisablesResponse",
+			Auth: sessionSafeNote,
+		},
+		methods.MethodAgentConfigSessionSkillsList: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSessionSkillsList),
+			Mutates: false,
+			Request: "AgentConfigSessionSkillsListRequest", Response: "AgentConfigSessionSkillsListResponse",
+			Auth: sessionSafeNote,
+		},
+		methods.MethodAgentConfigSessionSkillsUpsert: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSessionSkillsUpsert),
+			Mutates: true,
+			Request: "AgentConfigSessionSkillsUpsertRequest", Response: "AgentConfigSessionSkillsUpsertResponse",
+			Auth: sessionSafeNote,
+		},
+		methods.MethodAgentConfigSessionSkillsDelete: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSessionSkillsDelete),
+			Mutates: true,
+			Request: "AgentConfigSessionSkillsDeleteRequest", Response: "AgentConfigSessionSkillsDeleteResponse",
+			Auth: sessionSafeNote,
 		},
 	}
 

@@ -238,7 +238,7 @@ func (h *acHarness) projectedSkillNames(t *testing.T) []string {
 	if err != nil {
 		t.Fatalf("directory view: %v", err)
 	}
-	projected, err := projection.ActiveSkillViews(context.Background(), h.registry, acAgent, id, views)
+	projected, err := projection.ActiveSkillViews(context.Background(), h.registry, nil, acAgent, id, views)
 	if err != nil {
 		t.Fatalf("projection.ActiveSkillViews: %v", err)
 	}
