@@ -103,7 +103,7 @@ func TestFilterSkillViewsByMembership_KeepsMembersDropsRest(t *testing.T) {
 // views are returned unchanged.
 func TestActiveSkillViews_NilRegistryOrEmptyAgentID_PassThrough(t *testing.T) {
 	in := views("a", "b")
-	got, err := projection.ActiveSkillViews(context.Background(), nil, projAgent, projID(), in)
+	got, err := projection.ActiveSkillViews(context.Background(), nil, nil, projAgent, projID(), in)
 	if err != nil {
 		t.Fatalf("nil registry: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestActiveSkillViews_NilRegistryOrEmptyAgentID_PassThrough(t *testing.T) {
 		t.Fatalf("nil registry filtered: %v", names(got))
 	}
 	reg := newRegistry(t)
-	got, err = projection.ActiveSkillViews(context.Background(), reg, "", projID(), in)
+	got, err = projection.ActiveSkillViews(context.Background(), reg, nil, "", projID(), in)
 	if err != nil {
 		t.Fatalf("empty agent id: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestActiveSkillViews_NilRegistryOrEmptyAgentID_PassThrough(t *testing.T) {
 // config revision sees the unfiltered directory (backward compatible).
 func TestActiveSkillViews_NoActiveRevision_PassThrough(t *testing.T) {
 	reg := newRegistry(t)
-	got, err := projection.ActiveSkillViews(context.Background(), reg, projAgent, projID(), views("a", "b"))
+	got, err := projection.ActiveSkillViews(context.Background(), reg, nil, projAgent, projID(), views("a", "b"))
 	if err != nil {
 		t.Fatalf("no active revision: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestActiveSkillViews_ActiveRevisionFilters(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
-	got, err := projection.ActiveSkillViews(ctx, reg, projAgent, projID(), views("a", "b", "c"))
+	got, err := projection.ActiveSkillViews(ctx, reg, nil, projAgent, projID(), views("a", "b", "c"))
 	if err != nil {
 		t.Fatalf("active filter: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestActiveSkillViews_RollbackChangesProjection(t *testing.T) {
 		t.Fatalf("set r2: %v", err)
 	}
 	// Active now is r2 → projection keeps a,b,c.
-	got, err := projection.ActiveSkillViews(ctx, reg, projAgent, projID(), views("a", "b", "c"))
+	got, err := projection.ActiveSkillViews(ctx, reg, nil, projAgent, projID(), views("a", "b", "c"))
 	if err != nil {
 		t.Fatalf("active r2: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestActiveSkillViews_RollbackChangesProjection(t *testing.T) {
 	if _, err := reg.Rollback(ctx, projID(), projAgent, r1.RevisionID); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-	got, err = projection.ActiveSkillViews(ctx, reg, projAgent, projID(), views("a", "b", "c"))
+	got, err = projection.ActiveSkillViews(ctx, reg, nil, projAgent, projID(), views("a", "b", "c"))
 	if err != nil {
 		t.Fatalf("active after rollback: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestActivePlannerCatalogView_NoConfig_PassThrough(t *testing.T) {
 	ctx := context.Background()
 	cat := toolCatalog(t)
 	// nil registry
-	v, err := projection.ActivePlannerCatalogView(ctx, nil, projAgent, projID(), cat, baseFilter())
+	v, err := projection.ActivePlannerCatalogView(ctx, nil, nil, projAgent, projID(), cat, baseFilter())
 	if err != nil {
 		t.Fatalf("nil registry: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestActivePlannerCatalogView_NoConfig_PassThrough(t *testing.T) {
 	}
 	// registry present, no active revision
 	reg := newRegistry(t)
-	v, err = projection.ActivePlannerCatalogView(ctx, reg, projAgent, projID(), cat, baseFilter())
+	v, err = projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, projID(), cat, baseFilter())
 	if err != nil {
 		t.Fatalf("no active revision: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestActivePlannerCatalogView_PausedServerExcluded(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
-	v, err := projection.ActivePlannerCatalogView(ctx, reg, projAgent, projID(), cat, baseFilter())
+	v, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, projID(), cat, baseFilter())
 	if err != nil {
 		t.Fatalf("projection: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestActivePlannerCatalogView_DisabledToolExcluded(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
-	v, err := projection.ActivePlannerCatalogView(ctx, reg, projAgent, projID(), cat, baseFilter())
+	v, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, projID(), cat, baseFilter())
 	if err != nil {
 		t.Fatalf("projection: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestActivePlannerCatalogView_ResumeRestores(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set resumed: %v", err)
 	}
-	v, err := projection.ActivePlannerCatalogView(ctx, reg, projAgent, projID(), cat, baseFilter())
+	v, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, projID(), cat, baseFilter())
 	if err != nil {
 		t.Fatalf("projection: %v", err)
 	}

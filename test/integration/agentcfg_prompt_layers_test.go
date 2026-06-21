@@ -95,7 +95,7 @@ func TestE2E_AgentConfig_PromptLayers(t *testing.T) {
 
 	// --- Run-start projection composes the layers into the real LLM request. ---
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: acTenant, UserID: acUser, SessionID: acSession}}
-	ov, err := projection.ApplyPromptLayers(ctx, h.registry, acAgent, id, nil)
+	ov, err := projection.ApplyPromptLayers(ctx, h.registry, nil, acAgent, id, nil)
 	if err != nil {
 		t.Fatalf("ApplyPromptLayers: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestE2E_AgentConfig_PromptLayers(t *testing.T) {
 	_ = decode[prototypes.AgentConfigRollbackResponse](t, h.call(t, "/v1/agent_config/rollback", prototypes.AgentConfigRollbackRequest{
 		AgentID: acAgent, RevisionID: rev1,
 	}, adminScopes()))
-	ovAfter, err := projection.ApplyPromptLayers(ctx, h.registry, acAgent, id, nil)
+	ovAfter, err := projection.ApplyPromptLayers(ctx, h.registry, nil, acAgent, id, nil)
 	if err != nil {
 		t.Fatalf("ApplyPromptLayers after rollback: %v", err)
 	}

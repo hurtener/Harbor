@@ -11,13 +11,32 @@ package projection
 
 import (
 	"context"
+	"sort"
+	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 )
+
+// loadOverlay reads the session's safe-subset overlay (the lower tier of the
+// authorization matrix) for the run's REAL (tenant, user, session) triple. A
+// nil store, an empty agentID, or an agent with no overlay returns the zero
+// overlay (and a nil error) — the backward-compatible "no session overlay"
+// path. An
+// overlay read error is returned so the caller fails the run loudly
+// (CLAUDE.md §13). The overlay is keyed by the real triple (NOT the synthetic
+// agentcfg identity), so it is session-isolated by construction.
+func loadOverlay(ctx context.Context, ov sessionoverlay.Store, agentID string, id identity.Quadruple) (sessionoverlay.Overlay, error) {
+	if ov == nil || agentID == "" {
+		return sessionoverlay.Overlay{}, nil
+	}
+	o, _, err := ov.Get(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+	return o, err
+}
 
 // ActiveSkillViews applies an agent's active-config skills membership to the
 // run's skill-directory views at run start. It resolves the agent's active
@@ -32,7 +51,18 @@ import (
 // concurrent / in-flight runs keep their own snapshot (the concurrent-reuse
 // contract). `id` carries the run's identity; only the triple is used (the
 // registry is identity-scoped, never keyed by run).
-func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
+func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
+	// Resolve the session's ephemeral personal-skill names FIRST: they are a
+	// safe-subset ADD (the session's own session-scoped skills, never a
+	// capability the admin restricts) that survive the admin membership
+	// filter below. They never promote past the session (the overlay + the
+	// SkillStore are both session-keyed).
+	overlay, oerr := loadOverlay(ctx, ov, agentID, id)
+	if oerr != nil {
+		return nil, oerr
+	}
+	personal := overlay.PersonalSkills
+
 	if reg == nil || agentID == "" {
 		return views, nil
 	}
@@ -41,9 +71,17 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, agentID string
 		return nil, err
 	}
 	if !ok || rev.Payload.Skills == nil {
+		// The admin pins no skills membership: every directory-visible skill
+		// (which already includes the session's personal skills, stored under
+		// the session triple) is in scope.
 		return views, nil
 	}
-	return FilterSkillViewsByMembership(views, rev.Payload.Skills.Names), nil
+	// The admin pinned a membership → keep the admin members AND add back the
+	// session's personal skills (the session-overlay ON TOP of the admin
+	// baseline). A personal name that no longer exists in views is harmless —
+	// FilterSkillViewsByMembership keeps only names present in views.
+	allowed := append(append([]string(nil), rev.Payload.Skills.Names...), personal...)
+	return FilterSkillViewsByMembership(views, allowed), nil
 }
 
 // ActivePlannerCatalogView builds the run's planner-facing catalog view at
@@ -61,20 +99,35 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, agentID string
 // concurrent / in-flight runs keep their own snapshot (the concurrent-reuse
 // contract). Only the identity triple is used (the registry is
 // identity-scoped, never keyed by run).
-func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
+func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
 	base := tools.NewPlannerView(cat, filter)
-	if reg == nil || agentID == "" {
-		return base, nil
+
+	// Admin exposure (the baseline).
+	var adminPaused, adminDisabled []string
+	if reg != nil && agentID != "" {
+		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+		if err != nil {
+			return nil, err
+		}
+		if ok && rev.Payload.ToolExposure != nil {
+			adminPaused = rev.Payload.PausedServers()
+			adminDisabled = rev.Payload.DisabledTools()
+		}
 	}
-	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
-	if err != nil {
-		return nil, err
+
+	// Session overlay (narrow-only): the session's disable set is UNIONED into
+	// the admin exclusion set — it can only ADD to the disabled set, never
+	// remove an admin exclusion. The exclusion set can only ever GROW, so a
+	// session edit can only narrow the admin-allowed exposure, never widen it.
+	// A session "disable" of a source the admin did not expose is inert (it is
+	// not in the catalog view), and there is no session "enable" path at all.
+	overlay, oerr := loadOverlay(ctx, ov, agentID, id)
+	if oerr != nil {
+		return nil, oerr
 	}
-	if !ok || rev.Payload.ToolExposure == nil {
-		return base, nil
-	}
-	paused := rev.Payload.PausedServers()
-	disabled := rev.Payload.DisabledTools()
+
+	paused := unionSorted(adminPaused, overlay.DisabledServers)
+	disabled := unionSorted(adminDisabled, overlay.DisabledTools)
 	if len(paused) == 0 && len(disabled) == 0 {
 		return base, nil
 	}
@@ -128,12 +181,26 @@ func ActivePromptLayers(ctx context.Context, reg agentcfg.Registry, agentID stri
 // is unchanged. When ov is nil but a layer is present, a fresh bundle is
 // allocated. A registry read error is returned so the caller fails the run
 // loudly. The returned bundle is fresh-per-run (no shared mutable state).
-func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
-	base, user, ok, err := ActivePromptLayers(ctx, reg, agentID, id)
+func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore sessionoverlay.Store, agentID string, id identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
+	base, adminUser, _, err := ActivePromptLayers(ctx, reg, agentID, id)
 	if err != nil {
 		return nil, err
 	}
-	if !ok || (base == "" && user == "") {
+
+	// Session user layer (the safe subset): the session writes ONLY the user
+	// layer — the overlay shape carries no base field, so a session caller
+	// physically cannot edit the operator base. The session layer composes
+	// ABOVE the admin base in the lower-trust `<user_instructions>` position
+	// (escaped by the prompt builder), appended below any admin user layer.
+	overlay, oerr := loadOverlay(ctx, overlayStore, agentID, id)
+	if oerr != nil {
+		return nil, oerr
+	}
+	user := composeUserLayer(adminUser, overlay.UserPrompt)
+
+	// The admin base is ALWAYS the spine — it is never sourced from the
+	// session overlay (base-unwritable-by-session is structural).
+	if base == "" && user == "" {
 		return ov, nil
 	}
 	if ov == nil {
@@ -148,6 +215,46 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, agentID strin
 		ov.UserPromptLayer = &u
 	}
 	return ov, nil
+}
+
+// composeUserLayer joins the durable admin user layer and the session user
+// layer (admin first, then session) into the single lower-trust
+// `<user_instructions>` block. Either may be empty; an empty pair yields "".
+func composeUserLayer(adminUser, sessionUser string) string {
+	adminUser = strings.TrimSpace(adminUser)
+	sessionUser = strings.TrimSpace(sessionUser)
+	switch {
+	case adminUser == "":
+		return sessionUser
+	case sessionUser == "":
+		return adminUser
+	default:
+		return adminUser + "\n\n" + sessionUser
+	}
+}
+
+// unionSorted returns the sorted, de-duplicated union of two string sets. The
+// union is the structural enforcement of NARROW-ONLY in the tool-exposure
+// projection: a session disable set can only ADD to the admin exclusion set,
+// never remove a member — so the resulting exclusion can only grow and the
+// session can only narrow the admin-allowed exposure.
+func unionSorted(a, b []string) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(a)+len(b))
+	for _, s := range a {
+		set[s] = struct{}{}
+	}
+	for _, s := range b {
+		set[s] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // FilterSkillViewsByMembership keeps only the views whose Name is in the

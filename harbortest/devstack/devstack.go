@@ -111,6 +111,7 @@ import (
 	// live providers). The dev-only mock LLM driver is NOT in the set;
 	// tests that need it blank-import `internal/llm/mock` themselves.
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	_ "github.com/hurtener/Harbor/internal/drivers/prod"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -419,6 +420,13 @@ type DevStack struct {
 	AgentConfig   agentcfg.Registry
 	AgentConfigID string
 
+	// SessionOverlay is the SESSION-scoped safe-subset overlay store (the
+	// non-admin lower tier of the authorization matrix) shared by the mounted
+	// session-safe `agent_config.session.*` routes and the run-loop driver's
+	// run-start composition. Keyed by the real (tenant, user, session) triple,
+	// so it is session-isolated. Nil when the StateStore is unavailable.
+	SessionOverlay sessionoverlay.Store
+
 	// Catalog / Coordinator / Gates / OAuthProviders are nil when
 	// SkipCatalog is set. The Gates map is keyed by tool name and
 	// populated by the catalog Builder; tests that drive
@@ -647,6 +655,17 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.AgentConfig = reg
 		stack.AgentConfigID = devAgentConfigID
 		stack.closeFns = append(stack.closeFns, reg.Close)
+
+		// The SESSION-scoped safe-subset overlay store (the non-admin lower
+		// tier) reuses the SAME StateStore for session-keyed identity
+		// isolation. Shared with the run-loop driver (run-start composition)
+		// and the mounted session-safe `agent_config.session.*` service.
+		ovStore, ovErr := sessionoverlay.NewStore(core.State, nil)
+		if ovErr != nil {
+			return stack, fmt.Errorf("agent-config session-overlay store: %w", ovErr)
+		}
+		stack.SessionOverlay = ovStore
+		stack.closeFns = append(stack.closeFns, ovStore.Close)
 	}
 
 	// Steering surface + run-loop driver. Skip-aware: the Mux phase
@@ -753,6 +772,9 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// (D-094 mirror of cmd_dev.go).
 				agentConfig:   stack.AgentConfig,
 				agentConfigID: stack.AgentConfigID,
+				// session-scoped safe-subset overlay — run-start composition
+				// (D-094 mirror of cmd_dev.go).
+				sessionOverlay: stack.SessionOverlay,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1173,6 +1195,9 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				agentcfgprotocol.WithBus(bus),
 				agentcfgprotocol.WithCoordinator(stack.Coordinator),
 				agentcfgprotocol.WithStdioAllowlist(append([]string(nil), opts.MCPStdioAllowlist...)),
+				// session-safe lower tier (non-admin): the overlay store backs
+				// the `agent_config.session.*` verbs (D-094 mirror of cmd/harbor).
+				agentcfgprotocol.WithSessionOverlay(stack.SessionOverlay),
 			}
 			// the runtime MCP-attach concrete (D-094 mirror of cmd/harbor's
 			// devMCPConnectionAttacher) drives the real dial → initialize →
@@ -1404,6 +1429,11 @@ type DevStackRunLoopDriver struct {
 	agentConfig   agentcfg.Registry
 	agentConfigID string
 
+	// session-scoped safe-subset overlay store (D-094 mirror of production):
+	// the session user layer + narrow-only disables + personal skills,
+	// composed over the admin agent config at run start. Nil = none.
+	sessionOverlay sessionoverlay.Store
+
 	// Phase 107a parity (D-195 dated-note follow-up) — per-task
 	// trajectory map for the Enricher seam, the D-094 mirror of the
 	// production driver. Trajectories are stored before RunLoop.Run
@@ -1468,6 +1498,9 @@ type devStackRunLoopDriverOpts struct {
 	// agent-config registry + agent id (D-094 mirror of production).
 	agentConfig   agentcfg.Registry
 	agentConfigID string
+
+	// session-scoped safe-subset overlay store (D-094 mirror of production).
+	sessionOverlay sessionoverlay.Store
 }
 
 // devStackTenantOverrideResolver mirrors cmd/harbor's
@@ -1513,6 +1546,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		sessionOverrides:  opts.sessionOverrides,
 		agentConfig:       opts.agentConfig,
 		agentConfigID:     opts.agentConfigID,
+		sessionOverlay:    opts.sessionOverlay,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
@@ -1522,14 +1556,14 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 // projection function the production driver uses, so the two binaries
 // cannot drift (CLAUDE.md §17.6).
 func (d *DevStackRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
-	return projection.ActiveSkillViews(ctx, d.agentConfig, d.agentConfigID, q, views)
+	return projection.ActiveSkillViews(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, views)
 }
 
 // projectAgentConfigCatalog mirrors the production driver's run-start
 // agent-config tool-exposure projection (D-094): the SAME shared projection
 // excludes a paused MCP server's tools / disabled tools from the run's view.
 func (d *DevStackRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
-	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.agentConfigID, q, d.catalog, filter)
+	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, d.catalog, filter)
 }
 
 // projectAgentConfigPromptLayers overlays the agent's durable layered system
@@ -1537,7 +1571,7 @@ func (d *DevStackRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q
 // bundle at run start, via the SAME shared projection the production driver
 // uses (D-094 mirror, CLAUDE.md §17.6).
 func (d *DevStackRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
-	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.agentConfigID, q, ov)
+	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, ov)
 }
 
 func (d *DevStackRunLoopDriver) start(ctx context.Context) error {

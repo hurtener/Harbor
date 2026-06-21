@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -93,6 +94,14 @@ type Service struct {
 	// set is rejected (an empty / nil set rejects EVERY stdio add — the
 	// secure default). http adds are admin-scoped but not gated here.
 	stdioAllowlist map[string]struct{}
+
+	// sessionOverlay backs the session-safe (non-admin) lower tier: the
+	// `agent_config.session.*` verbs write the session's user prompt layer +
+	// narrow-only disable set + ephemeral personal-skill names. Optional —
+	// nil ⇒ the session methods return ErrSessionOverlayUnavailable (→ 501 at
+	// the wire edge). Keyed by the REAL (tenant, user, session) triple, so it
+	// is session-isolated by construction.
+	sessionOverlay sessionoverlay.Store
 }
 
 // Option configures NewService.
@@ -181,6 +190,19 @@ func WithStdioAllowlist(commands []string) Option {
 			}
 		}
 		s.stdioAllowlist = set
+	}
+}
+
+// WithSessionOverlay wires the session-scoped safe-subset overlay store so
+// the NON-admin `agent_config.session.*` verbs are live. A nil store leaves
+// those methods returning ErrSessionOverlayUnavailable (→ 501 at the wire
+// edge). The store is keyed by the caller's real (tenant, user, session)
+// triple, so a session's overlay is invisible to another session.
+func WithSessionOverlay(st sessionoverlay.Store) Option {
+	return func(s *Service) {
+		if st != nil {
+			s.sessionOverlay = st
+		}
 	}
 }
 

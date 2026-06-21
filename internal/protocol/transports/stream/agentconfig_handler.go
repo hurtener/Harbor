@@ -41,6 +41,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -115,14 +116,23 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"identity scope incomplete: "+err.Error())
 		return
 	}
-	// Admin gate: the whole family reads/mutates the agent-config control
-	// plane and requires the verified `auth.ScopeAdmin` claim (the agent-config authorization model) —
-	// authority derives from the verified ctx, never the request body
-	// (authority from the verified ctx). A non-admin caller is rejected before any dispatch.
-	if !auth.HasScope(r.Context(), auth.ScopeAdmin) {
-		writeAgentConfigError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
-			"agent_config methods require the admin scope claim")
-		return
+	// Per-route authorization tier (the authorization scope matrix). The
+	// `session/*` routes are the SAFE SUBSET (the non-admin lower tier): a
+	// session-scoped caller may set the user prompt layer, narrow-only
+	// source/tool disable, and manage ephemeral personal skills — these
+	// require a valid identity but NOT the admin scope. EVERY other
+	// `agent_config.*` route reads/mutates the agent-level capability surface
+	// and requires the verified `auth.ScopeAdmin` claim. Authority derives
+	// from the verified ctx, never the request body; a non-admin caller on an
+	// admin route is rejected with CodeScopeMismatch before any dispatch
+	// (fail-closed).
+	route := strings.TrimPrefix(r.URL.Path, "/v1/agent_config/")
+	if !agentConfigSessionSafeRoutes[route] {
+		if !auth.HasScope(r.Context(), auth.ScopeAdmin) {
+			writeAgentConfigError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
+				"agent_config methods require the admin scope claim")
+			return
+		}
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAgentConfigBodyBytes))
 	if err != nil {
@@ -132,7 +142,7 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	wireID := prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
 
-	switch strings.TrimPrefix(r.URL.Path, "/v1/agent_config/") {
+	switch route {
 	case "get":
 		h.serveGet(w, r, body, wireID)
 	case "set_revision":
@@ -155,10 +165,35 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSkillsUpsert(w, r, body, wireID)
 	case "skills/delete":
 		h.serveSkillsDelete(w, r, body, wireID)
+	case "session/set_user_prompt":
+		h.serveSessionSetUserPrompt(w, r, body, wireID)
+	case "session/set_source_disables":
+		h.serveSessionSetSourceDisables(w, r, body, wireID)
+	case "session/skills/list":
+		h.serveSessionSkillsList(w, r, body, wireID)
+	case "session/skills/upsert":
+		h.serveSessionSkillsUpsert(w, r, body, wireID)
+	case "session/skills/delete":
+		h.serveSessionSkillsDelete(w, r, body, wireID)
 	default:
 		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown agent_config method route")
 	}
+}
+
+// agentConfigSessionSafeRoutes is the closed set of trailing path segments
+// that are the SAFE SUBSET (the non-admin lower tier of the authorization
+// matrix). A session-scoped caller is permitted on EXACTLY these routes
+// (identity-mandatory, no admin scope required); every other
+// `agent_config.*` route is admin-gated. The set mirrors
+// methods.canonicalAgentConfigSessionMethods — adding a session-safe verb
+// extends BOTH.
+var agentConfigSessionSafeRoutes = map[string]bool{
+	"session/set_user_prompt":     true,
+	"session/set_source_disables": true,
+	"session/skills/list":         true,
+	"session/skills/upsert":       true,
+	"session/skills/delete":       true,
 }
 
 func (h *AgentConfigHandler) serveGet(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -348,6 +383,93 @@ func (h *AgentConfigHandler) serveSkillsDelete(w http.ResponseWriter, r *http.Re
 	writeAgentConfigJSON(w, r, resp, h.logger)
 }
 
+// --- session-safe (non-admin) routes ---
+
+func (h *AgentConfigHandler) serveSessionSetUserPrompt(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSessionSetUserPromptRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSetUserPrompt) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SessionSetUserPrompt(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSetUserPrompt, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSessionSetSourceDisables(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSessionSetSourceDisablesRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSetSourceDisables) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SessionSetSourceDisables(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSetSourceDisables, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSessionSkillsList(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSessionSkillsListRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSkillsList) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SessionSkillsList(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSkillsList, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSessionSkillsUpsert(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSessionSkillsUpsertRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSkillsUpsert) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SessionSkillsUpsert(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSkillsUpsert, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSessionSkillsDelete(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSessionSkillsDeleteRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSkillsDelete) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SessionSkillsDelete(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSessionSkillsDelete, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
 // decode decodes the JSON body into req (rejecting unknown fields) and
 // writes a CodeInvalidRequest error on failure, returning false.
 func (h *AgentConfigHandler) decode(w http.ResponseWriter, body []byte, req any, method methods.Method) bool {
@@ -389,12 +511,19 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	switch {
 	case errors.Is(err, agentcfgprotocol.ErrIdentityRequired),
 		errors.Is(err, agentcfg.ErrIdentityRequired),
+		errors.Is(err, sessionoverlay.ErrIdentityRequired),
 		errors.Is(err, skills.ErrIdentityRequired):
 		return protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			m + ": identity scope incomplete"
+	case errors.Is(err, sessionoverlay.ErrInvalidInput):
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrSkillsUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": skills control is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrSessionOverlayUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			m + ": session safe-subset control is not wired on this runtime"
 	case errors.Is(err, agentcfgprotocol.ErrConnectionAttachUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": mcp connection attach is not wired on this runtime"
@@ -418,10 +547,11 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, skills.ErrInvalidSkill), errors.Is(err, agentcfg.ErrInvalidPayload):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
-	case errors.Is(err, agentcfg.ErrClosed), errors.Is(err, skills.ErrStoreClosed):
+	case errors.Is(err, agentcfg.ErrClosed), errors.Is(err, skills.ErrStoreClosed),
+		errors.Is(err, sessionoverlay.ErrClosed):
 		return protoerrors.CodeRuntimeError, http.StatusServiceUnavailable,
 			m + ": agent-config subsystem closed"
-	case errors.Is(err, agentcfg.ErrStateUnavailable):
+	case errors.Is(err, agentcfg.ErrStateUnavailable), errors.Is(err, sessionoverlay.ErrStateUnavailable):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			m + ": state store unavailable"
 	default:
