@@ -255,6 +255,25 @@ export class AgentConfigPanelState {
 		this.error = null;
 		this.info = null;
 
+		// The whole agent_config READ surface is admin-scoped (D-235 — reading
+		// an agent's control-plane config is privileged). A non-admin caller
+		// cannot load the panel at all, so route straight to the not-applicable
+		// info branch WITHOUT a doomed read (no scary error / Retry, no wasted
+		// 403 round-trip). The runtime still gates server-side; the catch below
+		// keeps the same info treatment as a fallback if a stale client scope
+		// claims admin but the token does not.
+		if (!this.hasAdminScope) {
+			this.subscription?.close();
+			this.subscription = null;
+			this.info = {
+				headline: 'Admin scope required',
+				detail:
+					'Viewing and managing an agent’s configuration requires the admin scope claim. Reconnect with an admin token to use this panel.'
+			};
+			this.status = 'info';
+			return;
+		}
+
 		// Open the live mcp.connection.* advisory stream once per load.
 		this.subscription?.close();
 		const sub = new EventsSubscription(this.#client.events);

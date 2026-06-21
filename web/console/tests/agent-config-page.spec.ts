@@ -111,27 +111,26 @@ test.describe("Console agent-config control panel", () => {
       ).toBeVisible();
     }
 
-    // The default area (Revision history) is in view; exactly one section
-    // renders at a time.
+    // The rail is the single-section selector and renders OUTSIDE the
+    // `<PageState>` async boundary, so its behaviour holds even when the
+    // harness Runtime carries no agent_config data (the active section's
+    // CONTENT is data-gated and is asserted in the vitest unit tests).
+    // Exactly one rail item is active at a time; Revision history is default.
     await expect(
-      page.locator("[data-testid='agent-config-section-revisions']"),
-      "the default area's section is in view",
-    ).toBeVisible();
-    await expect(
-      page.locator("[data-testid='agent-config-section-skills']"),
-      "a non-active area's section is not rendered",
-    ).toHaveCount(0);
+      page.locator("[data-testid='agent-config-subnav-revisions']"),
+      "Revision history is the default active area",
+    ).toHaveAttribute("aria-current", "true");
 
-    // Selecting another area swaps the single section in the right pane.
+    // Selecting another area moves the active highlight (single-section model).
     await page.locator("[data-testid='agent-config-subnav-skills']").click();
     await expect(
-      page.locator("[data-testid='agent-config-section-skills']"),
-      "selecting Skills shows its section",
-    ).toBeVisible();
+      page.locator("[data-testid='agent-config-subnav-skills']"),
+      "selecting Skills makes it the active area",
+    ).toHaveAttribute("aria-current", "true");
     await expect(
-      page.locator("[data-testid='agent-config-section-revisions']"),
-      "the previously-active section is no longer rendered",
-    ).toHaveCount(0);
+      page.locator("[data-testid='agent-config-subnav-revisions']"),
+      "the previously-active area is no longer active",
+    ).toHaveAttribute("aria-current", "false");
   });
 
   test("with the admin claim the write surface is live (no read-only banner)", async ({

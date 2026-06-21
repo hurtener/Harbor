@@ -159,11 +159,25 @@ describe('AgentConfigPanelState — four-state contract', () => {
 		expect(state.error?.message).toContain('boom');
 	});
 
-	it('routes a scope_mismatch read failure to the info branch (not error)', async () => {
+	it('a non-admin client routes to the info branch UP-FRONT, without a doomed read', async () => {
 		// The agent-config read surface is admin-scoped (D-235); a non-admin
-		// read 403s, and the panel surfaces a not-applicable info state with no
-		// scary error / meaningless Retry.
+		// client cannot load it, so the panel shows the not-applicable info
+		// state immediately — no scary error / Retry, and no wasted 403 read.
 		seedConnection('console:fleet');
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		expect(state.status).toBe('info');
+		expect(state.error).toBeNull();
+		expect(state.info?.headline).toContain('Admin scope');
+		// No read fired — the panel never attempted the admin-only surface.
+		expect(ac(client).get).not.toHaveBeenCalled();
+	});
+
+	it('a read scope_mismatch (stale admin client scope, non-admin token) still falls back to info', async () => {
+		// Defence-in-depth: the client scope claims admin but the token does
+		// not, so the read 403s — the catch routes to info, not the error branch.
+		seedConnection('admin');
 		const state = new AgentConfigPanelState();
 		await state.load(
 			fakeClient({
