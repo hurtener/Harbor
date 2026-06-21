@@ -62,7 +62,7 @@ This page is built against the shared foundation per `docs/design/console/CONVEN
 - `web/console/src/lib/components/agentconfig/` — the panel components (revision-history, diff-view, skills, mcp-policy, prompt-editor, add-connection) built from the shared `ui/` inventory.
 - `web/console/src/lib/agentconfig/state.svelte.ts` — the page state (runes; load/save; admin-scope getter), mirroring the 92b `TenantDefaultOverridesState`.
 - `web/console/src/lib/protocol/agentconfig.ts` + `client.ts` — any read-method client additions (most shipped in 92a–f; this phase only consumes).
-- `web/console/tests/agent-config-panel.spec.ts` — Playwright spec.
+- `web/console/tests/agent-config-page.spec.ts` — Playwright spec.
 - `scripts/smoke/phase-92h.sh`.
 - `docs/design/console/page-*.md` — the per-page spec for the panel (or an extension of the Agents page spec).
 
