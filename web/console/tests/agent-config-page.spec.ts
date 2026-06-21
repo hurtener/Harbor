@@ -1,15 +1,18 @@
 // Harbor Console e2e — agent-config control panel (the consolidated 92h
 // consumer).
 //
-// Covers the panel built against the D-121 design-system foundation:
+// Covers the panel built against the D-121 design-system foundation
+// (the Settings single-section composition — a left sub-nav rail listing
+// the five control-plane areas, exactly one area in view at a time):
 //   (a) the `/agent-config` route serves + hydrates inside the app shell
 //       and the panel root + agent selector render;
-//   (b) with the admin scope claim, the write surface is live — no
+//   (b) the sub-nav rail lists the five areas, and selecting one swaps the
+//       single section rendered in the right pane;
+//   (c) with the admin scope claim, the write surface is live — no
 //       read-only scope banner, the Load control is enabled;
-//   (c) WITHOUT the admin scope claim, the panel renders a read-only scope
-//       banner and the write controls are disabled-with-tooltip naming the
-//       admin claim (CONVENTIONS.md §5 — no stubbed action presented as
-//       done; the 92b precedent).
+//   (d) WITHOUT the admin scope claim, the panel routes to the admin-scope
+//       info state (no scary error / Retry) — the agent_config read surface
+//       is itself admin-scoped (D-235; the 92b precedent).
 //
 // SKIP semantics (mirrors `agents-page.spec.ts`): until the `harbor
 // console` subcommand + the agent_config surface are present in the
@@ -80,6 +83,55 @@ test.describe("Console agent-config control panel", () => {
       page.locator("[data-testid='agent-config-agent-input']"),
       "the agent selector renders",
     ).toBeVisible();
+  });
+
+  test("the sub-nav rail lists the five areas and selecting one swaps the section", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    await helpers.seedAuth(runtime.token);
+    await helpers.seedConnection();
+    await gotoPanel(page, runtime.baseURL);
+
+    // The rail (outside the async boundary) lists all five control-plane
+    // areas in display order.
+    const rail = page.locator("[data-testid='agent-config-subnav']");
+    await expect(rail, "the sub-nav rail renders").toBeVisible();
+    for (const area of [
+      "revisions",
+      "prompt",
+      "skills",
+      "mcp",
+      "add-connection",
+    ]) {
+      await expect(
+        page.locator(`[data-testid='agent-config-subnav-${area}']`),
+        `the rail lists the ${area} area`,
+      ).toBeVisible();
+    }
+
+    // The default area (Revision history) is in view; exactly one section
+    // renders at a time.
+    await expect(
+      page.locator("[data-testid='agent-config-section-revisions']"),
+      "the default area's section is in view",
+    ).toBeVisible();
+    await expect(
+      page.locator("[data-testid='agent-config-section-skills']"),
+      "a non-active area's section is not rendered",
+    ).toHaveCount(0);
+
+    // Selecting another area swaps the single section in the right pane.
+    await page.locator("[data-testid='agent-config-subnav-skills']").click();
+    await expect(
+      page.locator("[data-testid='agent-config-section-skills']"),
+      "selecting Skills shows its section",
+    ).toBeVisible();
+    await expect(
+      page.locator("[data-testid='agent-config-section-revisions']"),
+      "the previously-active section is no longer rendered",
+    ).toHaveCount(0);
   });
 
   test("with the admin claim the write surface is live (no read-only banner)", async ({

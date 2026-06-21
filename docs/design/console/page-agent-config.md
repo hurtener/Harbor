@@ -68,18 +68,33 @@ Registry has zero registered rows.
 
 ## 4. Page anatomy
 
+The panel adopts the Settings page's **calm single-section composition**
+(CONVENTIONS.md §3): a left sub-nav rail lists the areas; the right pane renders
+ONLY the active one. This replaces the earlier ragged two-column scrolling grid.
+
 - **Sidebar / top bar / app status bar** (shared app shell, CONVENTIONS.md §2).
-- **Header card** (outside the `<PageState>` boundary): title + subtitle, the
-  agent selector + Load control, and the non-admin read-only scope banner.
-- **Cards canvas** (inside `<PageState>`, scrolls internally — the Agents-108l /
-  Events-108h viewport-locked pattern): a two-column grid of carded area
-  components — Revision history, Layered prompt, Skills, MCP policy, and a
-  full-width Add MCP connection card.
+- **Page header** (outside the `<PageState>` boundary, full-width): a clean
+  title + a one-line description that wraps at a readable measure
+  (`--size-prose-max`) — never a narrow warped column. The title block is
+  `flex: 1 1 auto; min-width: 0`, so the description never collapses.
+- **Sub-nav rail** (left, fixed `--size-nav` width, outside the `<PageState>`
+  boundary so it stays usable while the pane loads): the **agent selector** + Load
+  control at the top, then the five areas as nav items — **Revision history**,
+  **Layered prompt**, **Skills**, **MCP policy**, **Add connection**. Exactly one
+  area is active at a time (the Settings `SubNavRail` vocabulary).
+- **Section pane** (right, inside `<PageState>`, scrolls internally — the
+  viewport-locked pattern; the document never full-page-scrolls): the single
+  active area rendered as one `panel card`. The non-admin read fails to the
+  admin-scope `info` branch (no scary error / Retry).
 
 ## 5. Components
 
 - `routes/(console)/agent-config/+page.svelte` — the panel route; composes the
-  agent selector + the five area cards inside the four-state `<PageState>`.
+  page header, the sub-nav rail (agent selector + the five areas), and the single
+  active area inside the four-state `<PageState>`.
+- `lib/components/agentconfig/AgentConfigSubNavRail.svelte` — the left sub-nav
+  rail listing the five areas (the Settings `SubNavRail` vocabulary over the same
+  token surface), with the agent selector in its header slot.
 - `lib/agentconfig/state.svelte.ts` — `AgentConfigPanelState`, the runes state
   controller (mirrors the 92b `TenantDefaultOverridesState`): the four-state
   primary load, the `hasAdminScope` getter, the per-area data + write actions +

@@ -22,17 +22,31 @@
   import { page } from '$app/stores';
   import { PageState } from '$lib/components/ui';
   import { DISCONNECTED_TOOLTIP } from '$lib/connection.js';
+  import AgentConfigSubNavRail from '$lib/components/agentconfig/AgentConfigSubNavRail.svelte';
   import RevisionHistoryCard from '$lib/components/agentconfig/RevisionHistoryCard.svelte';
   import SkillsCard from '$lib/components/agentconfig/SkillsCard.svelte';
   import McpPolicyCard from '$lib/components/agentconfig/McpPolicyCard.svelte';
   import PromptLayersCard from '$lib/components/agentconfig/PromptLayersCard.svelte';
   import AddConnectionCard from '$lib/components/agentconfig/AddConnectionCard.svelte';
-  import { AgentConfigPanelState } from '$lib/agentconfig/state.svelte.js';
+  import {
+    AgentConfigPanelState,
+    AGENT_CONFIG_AREAS,
+    type AgentConfigAreaId
+  } from '$lib/agentconfig/state.svelte.js';
   import type { ProtocolClient } from '$lib/protocol/harbor.js';
 
   let { client: injectedClient }: { client?: ProtocolClient } = $props();
 
   const panel = new AgentConfigPanelState();
+
+  /** The active control-plane area — drives the rail highlight + the single
+   * section rendered in the right pane (the Settings single-section model). */
+  let activeArea = $state<AgentConfigAreaId>('revisions');
+
+  /** The active area's descriptor (id / label) for the section heading. */
+  const activeAreaObj = $derived(
+    AGENT_CONFIG_AREAS.find((a) => a.id === activeArea) ?? AGENT_CONFIG_AREAS[0]
+  );
 
   // The agent-selector input (separate from the committed `panel.agentId`
   // so typing does not re-fire loads on every keystroke — the operator
@@ -74,120 +88,108 @@
 </svelte:head>
 
 <section class="agentcfg-page" data-testid="agent-config-page">
-  <section class="panel card header-card">
-    <div class="header-row">
-      <div class="title-block">
-        <h1 class="page-title">Agent configuration</h1>
-        <p class="page-sub">
-          Versioned, live control of one agent&rsquo;s prompt, skills, MCP policy,
-          and connections. Changes apply on the agent&rsquo;s next run.
-        </p>
-      </div>
-      <div class="agent-select">
-        <label class="field">
-          <span class="field-label">Agent</span>
-          <input
-            type="text"
-            class="agent-input"
-            data-testid="agent-config-agent-input"
-            placeholder="harbor-dev-agent"
-            bind:value={agentInput}
-            disabled={panel.disconnected}
-            title={panel.disconnected ? DISCONNECTED_TOOLTIP : undefined}
-            onkeydown={(e) => e.key === 'Enter' && commitAgent()}
-          />
-        </label>
-        <button
-          type="button"
-          class="primary"
-          data-testid="agent-config-load"
-          disabled={panel.disconnected || agentInput.trim() === ''}
-          title={panel.disconnected ? DISCONNECTED_TOOLTIP : 'Load this agent’s configuration'}
-          onclick={commitAgent}
-        >
-          Load
-        </button>
-      </div>
+  <header class="page-head">
+    <div class="title-block">
+      <h1 class="page-title">Agent configuration</h1>
+      <p class="page-sub">
+        Versioned, live control of one agent&rsquo;s prompt, skills, MCP policy,
+        and connections. Changes apply on the agent&rsquo;s next run.
+      </p>
     </div>
-  </section>
+  </header>
 
-  <div class="panel-scroll">
-    <PageState status={panel.status} error={panel.error} info={panel.info} onretry={() => void panel.reload()}>
-      {#snippet skeleton()}
-        <div class="cards-skeleton" aria-hidden="true">
-          <span class="skeleton-card"></span>
-          <span class="skeleton-card"></span>
-          <span class="skeleton-card"></span>
+  <div class="panel-layout">
+    <div class="rail-column">
+      <AgentConfigSubNavRail active={activeArea} onselect={(id) => (activeArea = id)}>
+      {#snippet header()}
+        <div class="agent-select">
+          <label class="field">
+            <span class="field-label">Agent</span>
+            <input
+              type="text"
+              class="agent-input"
+              data-testid="agent-config-agent-input"
+              placeholder="harbor-dev-agent"
+              bind:value={agentInput}
+              disabled={panel.disconnected}
+              title={panel.disconnected ? DISCONNECTED_TOOLTIP : undefined}
+              onkeydown={(e) => e.key === 'Enter' && commitAgent()}
+            />
+          </label>
+          <button
+            type="button"
+            class="primary"
+            data-testid="agent-config-load"
+            disabled={panel.disconnected || agentInput.trim() === ''}
+            title={panel.disconnected ? DISCONNECTED_TOOLTIP : 'Load this agent’s configuration'}
+            onclick={commitAgent}
+          >
+            Load
+          </button>
         </div>
       {/snippet}
+      </AgentConfigSubNavRail>
+    </div>
 
-      <div class="cards-grid">
-        <section class="panel card" data-testid="agent-config-section-revisions">
-          <h2 class="section-title">Revision history</h2>
-          <RevisionHistoryCard {panel} />
-        </section>
+    <div class="section-pane">
+      <PageState status={panel.status} error={panel.error} info={panel.info} onretry={() => void panel.reload()}>
+        {#snippet skeleton()}
+          <div class="cards-skeleton" aria-hidden="true">
+            <span class="skeleton-card"></span>
+          </div>
+        {/snippet}
 
-        <section class="panel card" data-testid="agent-config-section-prompt">
-          <h2 class="section-title">Layered prompt</h2>
-          <PromptLayersCard {panel} />
+        <section
+          class="panel card"
+          id="section-{activeAreaObj.id}"
+          data-testid="agent-config-section-{activeAreaObj.id}"
+        >
+          <h2 class="section-title">{activeAreaObj.label}</h2>
+          {#if activeArea === 'revisions'}
+            <RevisionHistoryCard {panel} />
+          {:else if activeArea === 'prompt'}
+            <PromptLayersCard {panel} />
+          {:else if activeArea === 'skills'}
+            <SkillsCard {panel} />
+          {:else if activeArea === 'mcp'}
+            <McpPolicyCard {panel} />
+          {:else if activeArea === 'add-connection'}
+            <AddConnectionCard {panel} />
+          {/if}
         </section>
-
-        <section class="panel card" data-testid="agent-config-section-skills">
-          <h2 class="section-title">Skills</h2>
-          <SkillsCard {panel} />
-        </section>
-
-        <section class="panel card" data-testid="agent-config-section-mcp">
-          <h2 class="section-title">MCP policy</h2>
-          <McpPolicyCard {panel} />
-        </section>
-
-        <section class="panel card wide" data-testid="agent-config-section-add-connection">
-          <h2 class="section-title">Add MCP connection</h2>
-          <AddConnectionCard {panel} />
-        </section>
-      </div>
-    </PageState>
+      </PageState>
+    </div>
   </div>
 </section>
 
 <style>
-  /* Viewport-locked: the header is fixed; the cards canvas scrolls
-     internally (the Agents-108l / Events-108h pattern). */
+  /* Viewport-locked: the page header is fixed; below it a two-pane layout
+     (left sub-nav rail + right section pane) mirrors the Settings page. Only
+     the right pane scrolls internally when a section is long — the document
+     never full-page-scrolls. */
   .agentcfg-page {
     display: flex;
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    gap: var(--space-3);
-    padding: var(--space-3);
+    gap: var(--space-4);
+    padding: var(--space-4);
     overflow: hidden;
   }
-  .card {
-    background: var(--color-surface);
-    border: var(--border-hairline);
-    border-radius: var(--radius-md);
-    padding: var(--space-4);
-    min-width: 0;
-  }
-  .header-card {
+  .page-head {
     flex-shrink: 0;
     display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-  .header-row {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
+    align-items: flex-start;
     gap: var(--space-4);
-    flex-wrap: wrap;
+    padding-bottom: var(--space-3);
+    border-bottom: var(--border-hairline);
   }
   .title-block {
+    flex: 1 1 auto;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
-    min-width: 0;
   }
   .page-title {
     margin: var(--space-0);
@@ -199,11 +201,50 @@
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
-    max-width: var(--size-session-max-width);
+    max-width: var(--size-prose-max);
   }
+  .panel-layout {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: var(--space-4);
+    align-items: flex-start;
+  }
+  .rail-column {
+    width: var(--size-nav);
+    flex-shrink: 0;
+  }
+  .section-pane {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+  /* The carded surface — same vocabulary as the Settings / Overview pages. */
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    min-width: 0;
+  }
+  .section-title {
+    margin: var(--space-0);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    color: var(--color-text-muted);
+  }
+  /* The agent selector lives at the top of the rail (a compact, stacked
+     control) so the page header stays a clean title + description. */
   .agent-select {
     display: flex;
-    align-items: flex-end;
+    flex-direction: column;
     gap: var(--space-2);
   }
   .field {
@@ -218,7 +259,7 @@
     letter-spacing: var(--tracking-wide);
   }
   .agent-input {
-    width: var(--size-input-compact);
+    width: 100%;
     padding: var(--space-1) var(--space-2);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
@@ -245,32 +286,9 @@
     opacity: 0.55;
     cursor: not-allowed;
   }
-  .panel-scroll {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-  }
-  .cards-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-3);
-    align-items: start;
-  }
-  .cards-grid .wide {
-    grid-column: 1 / -1;
-  }
-  .section-title {
-    margin: var(--space-0) var(--space-0) var(--space-3);
-    font-size: var(--text-sm);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-wide);
-    color: var(--color-text-muted);
-  }
   .cards-skeleton {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-direction: column;
     gap: var(--space-3);
   }
   .skeleton-card {

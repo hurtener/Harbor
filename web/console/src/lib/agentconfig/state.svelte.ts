@@ -58,6 +58,24 @@ export const MCP_CONNECTION_EVENT_TYPES = [
 	'mcp.connection.resumed'
 ] as const;
 
+/**
+ * The five control-plane areas the panel exposes, in display order. The
+ * panel renders a left sub-nav rail of these (the Settings page's
+ * single-section vocabulary — CONVENTIONS.md §3): exactly ONE area is in
+ * view at a time. The ids match the per-section `data-testid`s the e2e
+ * spec asserts. This is a pure UI nav descriptor — no Protocol surface.
+ */
+export const AGENT_CONFIG_AREAS = [
+	{ id: 'revisions', label: 'Revision history' },
+	{ id: 'prompt', label: 'Layered prompt' },
+	{ id: 'skills', label: 'Skills' },
+	{ id: 'mcp', label: 'MCP policy' },
+	{ id: 'add-connection', label: 'Add connection' }
+] as const;
+
+/** The id of one of the five control-plane areas (drives the rail + pane). */
+export type AgentConfigAreaId = (typeof AGENT_CONFIG_AREAS)[number]['id'];
+
 /** A page-friendly error projection (mirrors the Settings page's shape). */
 export interface PageError {
 	code: string;

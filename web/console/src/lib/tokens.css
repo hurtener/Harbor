@@ -157,6 +157,10 @@
   --size-px: 1px;
   --size-sr-square: 1px;
   --size-value-viewer-max: 16rem;
+  /* A readable prose measure for a page-header description so a one-line
+     subtitle wraps at a comfortable column instead of spanning an
+     ultra-wide viewport (used by the Agent Config header). */
+  --size-prose-max: 42rem;
   --size-search-min: 12rem;
   /* Phase 108k — a compact input width for the Tools filter strip so the
      dense saved-view + facet + search row fits one viewport-locked card

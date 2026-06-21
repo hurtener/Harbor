@@ -17,7 +17,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { STORAGE_KEYS } from '$lib/connection.js';
-import { AgentConfigPanelState, DEFAULT_AGENT_ID } from '../state.svelte.js';
+import { AgentConfigPanelState, DEFAULT_AGENT_ID, AGENT_CONFIG_AREAS } from '../state.svelte.js';
 import { ProtocolError } from '$lib/protocol/errors.js';
 import type { ProtocolClient } from '$lib/protocol/harbor.js';
 
@@ -102,6 +102,28 @@ afterEach(() => {
 	localStorage.clear();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+});
+
+describe('AGENT_CONFIG_AREAS — the rail descriptor (single-section composition)', () => {
+	it('lists the five control-plane areas in display order with rail-matching ids', () => {
+		// The panel renders these as a left sub-nav rail (the Settings
+		// single-section model); the ids must match the per-section
+		// `data-testid`s the e2e spec asserts.
+		expect(AGENT_CONFIG_AREAS.map((a) => a.id)).toEqual([
+			'revisions',
+			'prompt',
+			'skills',
+			'mcp',
+			'add-connection'
+		]);
+		expect(AGENT_CONFIG_AREAS.map((a) => a.label)).toEqual([
+			'Revision history',
+			'Layered prompt',
+			'Skills',
+			'MCP policy',
+			'Add connection'
+		]);
+	});
 });
 
 describe('AgentConfigPanelState — four-state contract', () => {
