@@ -115,6 +115,90 @@
         }
       ]
     },
+    "AgentConfigAddMCPConnectionRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "connection",
+          "type": "object",
+          "ref": "AgentConfigMCPConnectionDescriptor"
+        },
+        {
+          "key": "headers",
+          "type": "object",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigAddMCPConnectionResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView",
+          "optional": true
+        },
+        {
+          "key": "connection",
+          "type": "object",
+          "ref": "AgentConfigMCPConnectionDescriptor"
+        },
+        {
+          "key": "state",
+          "type": "string"
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "pause_token",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigConnections": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "servers",
+          "type": "array",
+          "ref": "AgentConfigMCPConnectionDescriptor",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigConnectionsDiff": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "added",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "removed",
+          "type": "array",
+          "optional": true
+        }
+      ]
+    },
     "AgentConfigDiff": {
       "home": "types",
       "fields": [
@@ -140,6 +224,11 @@
           "key": "prompt_layers",
           "type": "object",
           "ref": "AgentConfigPromptLayersDiff"
+        },
+        {
+          "key": "connections",
+          "type": "object",
+          "ref": "AgentConfigConnectionsDiff"
         }
       ]
     },
@@ -245,6 +334,29 @@
         }
       ]
     },
+    "AgentConfigMCPConnectionDescriptor": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "name",
+          "type": "string"
+        },
+        {
+          "key": "transport",
+          "type": "string"
+        },
+        {
+          "key": "command",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "url",
+          "type": "string",
+          "optional": true
+        }
+      ]
+    },
     "AgentConfigPayload": {
       "home": "types",
       "fields": [
@@ -264,6 +376,12 @@
           "key": "tool_exposure",
           "type": "object",
           "ref": "AgentConfigToolExposure",
+          "optional": true
+        },
+        {
+          "key": "connections",
+          "type": "object",
+          "ref": "AgentConfigConnections",
           "optional": true
         }
       ]
@@ -5839,6 +5957,7 @@
     }
   },
   "methods": [
+    "agent_config.add_mcp_connection",
     "agent_config.diff",
     "agent_config.get",
     "agent_config.list_revisions",
@@ -5995,7 +6114,11 @@
     "llm.provider_file.uploaded",
     "llm.retry_with_feedback",
     "mcp.app_available",
+    "mcp.connection.added",
+    "mcp.connection.auth_required",
+    "mcp.connection.failed",
     "mcp.connection.paused",
+    "mcp.connection.pending",
     "mcp.connection.resumed",
     "mcp.raw_html_trust_toggled",
     "mcp.resource_offloaded",

@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 262 canonical Harbor Protocol wire types, generated from the single-source
+The 267 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -57,6 +57,47 @@ Declared in `internal/protocol/types`.
 | `model_policy` | `map[string]string` | optional (`omitempty`) |
 | `max_steps` | `int` |  |
 
+## AgentConfigAddMCPConnectionRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `connection` | `types.AgentConfigMCPConnectionDescriptor` — see [`AgentConfigMCPConnectionDescriptor`](./types.md#agentconfigmcpconnectiondescriptor) |  |
+| `headers` | `map[string]string` | optional (`omitempty`) |
+
+## AgentConfigAddMCPConnectionResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `*types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) | optional (`omitempty`) |
+| `connection` | `types.AgentConfigMCPConnectionDescriptor` — see [`AgentConfigMCPConnectionDescriptor`](./types.md#agentconfigmcpconnectiondescriptor) |  |
+| `state` | `string` |  |
+| `reason` | `string` | optional (`omitempty`) |
+| `pause_token` | `string` | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
+
+## AgentConfigConnections
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `servers` | `[]types.AgentConfigMCPConnectionDescriptor` — see [`AgentConfigMCPConnectionDescriptor`](./types.md#agentconfigmcpconnectiondescriptor) | optional (`omitempty`) |
+
+## AgentConfigConnectionsDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `added` | `[]string` | optional (`omitempty`) |
+| `removed` | `[]string` | optional (`omitempty`) |
+
 ## AgentConfigDiff
 
 Declared in `internal/protocol/types`.
@@ -68,6 +109,7 @@ Declared in `internal/protocol/types`.
 | `skills` | `types.AgentConfigSkillsDiff` — see [`AgentConfigSkillsDiff`](./types.md#agentconfigskillsdiff) |  |
 | `tool_exposure` | `types.AgentConfigToolExposureDiff` — see [`AgentConfigToolExposureDiff`](./types.md#agentconfigtoolexposurediff) |  |
 | `prompt_layers` | `types.AgentConfigPromptLayersDiff` — see [`AgentConfigPromptLayersDiff`](./types.md#agentconfigpromptlayersdiff) |  |
+| `connections` | `types.AgentConfigConnectionsDiff` — see [`AgentConfigConnectionsDiff`](./types.md#agentconfigconnectionsdiff) |  |
 
 ## AgentConfigDiffRequest
 
@@ -127,6 +169,17 @@ Declared in `internal/protocol/types`.
 | `revisions` | `[]types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `protocol_version` | `string` |  |
 
+## AgentConfigMCPConnectionDescriptor
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `transport` | `string` |  |
+| `command` | `[]string` | optional (`omitempty`) |
+| `url` | `string` | optional (`omitempty`) |
+
 ## AgentConfigPayload
 
 Declared in `internal/protocol/types`.
@@ -136,6 +189,7 @@ Declared in `internal/protocol/types`.
 | `prompt_layers` | `*types.AgentConfigPromptLayers` — see [`AgentConfigPromptLayers`](./types.md#agentconfigpromptlayers) | optional (`omitempty`) |
 | `skills` | `*types.AgentConfigSkillsSelection` — see [`AgentConfigSkillsSelection`](./types.md#agentconfigskillsselection) | optional (`omitempty`) |
 | `tool_exposure` | `*types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) | optional (`omitempty`) |
+| `connections` | `*types.AgentConfigConnections` — see [`AgentConfigConnections`](./types.md#agentconfigconnections) | optional (`omitempty`) |
 
 ## AgentConfigPromptLayers
 

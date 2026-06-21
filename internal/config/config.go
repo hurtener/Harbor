@@ -822,6 +822,29 @@ type ToolsConfig struct {
 	// to the inline-only baseline (the mode the Console renders today).
 	// Restart-required.
 	MCPAppHost *MCPAppHostConfig `yaml:"mcp_app_host,omitempty"`
+
+	// MCPAddConnection gates the admin-driven runtime add of a NEW MCP
+	// server connection over the Protocol
+	// (`agent_config.add_mcp_connection`). Adding a stdio server spawns an
+	// operator-supplied command — an RCE surface — so it is fail-closed: a
+	// stdio add is permitted ONLY when its command argv[0] is listed in
+	// StdioAllowlist. An empty / nil block rejects every stdio add (the
+	// secure default); http adds are admin-scoped but not gated here.
+	// Optional. Restart-required.
+	MCPAddConnection *MCPAddConnectionConfig `yaml:"mcp_add_connection,omitempty"`
+}
+
+// MCPAddConnectionConfig declares the operator allowlist for the
+// admin-driven runtime add of a NEW MCP server connection. Adding a stdio
+// MCP server runs an operator-supplied command (an RCE surface); the add
+// path (`agent_config.add_mcp_connection`) permits a stdio add ONLY when the
+// command's argv[0] is exactly present in StdioAllowlist (fail-closed —
+// argv-form only, never a shell). An empty / nil allowlist rejects every
+// stdio add. http adds do not consult this gate. Restart-required.
+type MCPAddConnectionConfig struct {
+	// StdioAllowlist is the exact set of permitted stdio command binaries /
+	// paths (matched on argv[0]). Empty rejects every stdio add.
+	StdioAllowlist []string `yaml:"stdio_allowlist,omitempty"`
 }
 
 // MCPAppHostConfig declares the MCP App display modes this Harbor host can

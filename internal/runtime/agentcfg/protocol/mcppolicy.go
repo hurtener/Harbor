@@ -57,6 +57,7 @@ func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfi
 		prior = active.Payload
 		payload.Skills = active.Payload.Skills
 		payload.PromptLayers = active.Payload.PromptLayers
+		payload.Connections = active.Payload.Connections
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, payload)

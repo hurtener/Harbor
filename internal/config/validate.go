@@ -1207,6 +1207,22 @@ func (c *Config) validateTools() error {
 			seenMode[mode] = struct{}{}
 		}
 	}
+	// MCP add-connection stdio allowlist. Empty list is valid (fail-closed:
+	// every stdio add is rejected). Each entry must be a non-empty command /
+	// path; duplicates are rejected so the operator's intent is unambiguous.
+	if c.Tools.MCPAddConnection != nil {
+		seenCmd := make(map[string]struct{}, len(c.Tools.MCPAddConnection.StdioAllowlist))
+		for i, cmd := range c.Tools.MCPAddConnection.StdioAllowlist {
+			field := fmt.Sprintf("tools.mcp_add_connection.stdio_allowlist[%d]", i)
+			if strings.TrimSpace(cmd) == "" {
+				return fieldError(field, "must not be empty")
+			}
+			if _, dup := seenCmd[cmd]; dup {
+				return fieldError(field, fmt.Sprintf("duplicate command %q (must be unique)", cmd))
+			}
+			seenCmd[cmd] = struct{}{}
+		}
+	}
 	// A2A peers. Empty list is valid. Each entry must
 	// declare a non-empty URL, a TrustTier in [1, 5], a non-negative
 	// LatencyTierMS, and a non-negative AgentCardTTL. URL scheme
