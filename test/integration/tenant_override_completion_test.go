@@ -49,7 +49,9 @@ func TestE2E_TenantOverrideCompletion_SessionOverTenant(t *testing.T) {
 		t.Fatal("session override not recorded")
 	}
 
-	composed := runsprotocol.ComposeLLMOverrides(&session, tenant)
+	// No per-agent agent-config layer in this scenario (nil) — the per-agent
+	// LLM-params layer is exercised in agentcfg_llm_params_test.go.
+	composed := runsprotocol.ComposeLLMOverrides(&session, nil, tenant)
 	req := runWithOverrides(t, &capturingLLM{}, "t1", composed)
 
 	if req.Model != "model-b" {

@@ -329,6 +329,18 @@ const (
 	// next run. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
 	// The wire-transport route is `POST /v1/agent_config/set_prompt_layers`.
 	MethodAgentConfigSetPromptLayers Method = "agent_config.set_prompt_layers"
+	// MethodAgentConfigSetLLMParams — admin verb: sets the agent's per-agent
+	// LLM-parameter section (model / temperature / max-tokens /
+	// reasoning-effort) as a desired-state replace of the LLM-params section
+	// and records the change as a config revision. The per-agent params
+	// override the tenant-wide baseline (resolution session › per-agent ›
+	// tenant-wide baseline › config default) for the agent's next run. A set
+	// model is validated against the configured ModelProfiles (an unknown
+	// model is rejected). The prompt-layer + skills + tool-exposure +
+	// connection sections are preserved. Identity-mandatory; requires the
+	// `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/set_llm_params`.
+	MethodAgentConfigSetLLMParams Method = "agent_config.set_llm_params"
 	// MethodAgentConfigAddMCPConnection — admin verb: adds a NEW MCP server
 	// connection (the separable async-dial path). The runtime drives the real
 	// attach lifecycle (dial → initialize handshake → discover → register),
@@ -837,6 +849,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsDelete:             {},
 	MethodAgentConfigSetToolExposure:          {},
 	MethodAgentConfigSetPromptLayers:          {},
+	MethodAgentConfigSetLLMParams:             {},
 	MethodAgentConfigAddMCPConnection:         {},
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
@@ -1071,12 +1084,14 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the sixteen
+// canonicalAgentConfigMethods is the closed set of the seventeen
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
-// (set_tool_exposure), the layered-prompt verb (set_prompt_layers), and the
-// add-connection verb (add_mcp_connection). IsAgentConfigMethod is O(1); the
+// (set_tool_exposure), the layered-prompt verb (set_prompt_layers), the
+// per-agent LLM-params verb (set_llm_params), the add-connection verb
+// (add_mcp_connection), and the five session safe-subset verbs.
+// IsAgentConfigMethod is O(1); the
 // agent-config wire handler branches on the trailing path segment to
 // dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
@@ -1090,6 +1105,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsDelete:     {},
 	MethodAgentConfigSetToolExposure:  {},
 	MethodAgentConfigSetPromptLayers:  {},
+	MethodAgentConfigSetLLMParams:     {},
 	MethodAgentConfigAddMCPConnection: {},
 	// Session-user safe subset (the non-admin lower tier).
 	MethodAgentConfigSessionSetUserPrompt:     {},
@@ -1128,10 +1144,11 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsDelete:     {},
 	MethodAgentConfigSetToolExposure:  {},
 	MethodAgentConfigSetPromptLayers:  {},
+	MethodAgentConfigSetLLMParams:     {},
 	MethodAgentConfigAddMCPConnection: {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the sixteen
+// IsAgentConfigMethod reports whether m is one of the seventeen
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

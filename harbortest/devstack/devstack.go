@@ -1198,6 +1198,9 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// session-safe lower tier (non-admin): the overlay store backs
 				// the `agent_config.session.*` verbs (D-094 mirror of cmd/harbor).
 				agentcfgprotocol.WithSessionOverlay(stack.SessionOverlay),
+				// the configured ModelProfiles gate set_llm_params (D-094 mirror
+				// of cmd/harbor): a per-agent model pin is validated at set time.
+				agentcfgprotocol.WithValidModels(devstackValidModels(cfg)),
 			}
 			// the runtime MCP-attach concrete (D-094 mirror of cmd/harbor's
 			// devMCPConnectionAttacher) drives the real dial → initialize →
@@ -2015,13 +2018,21 @@ func (d *DevStackRunLoopDriver) resolveLLMOverrides(ctx context.Context, q ident
 			}
 		}
 	}
+	// Per-agent arm — the agent-config LLM-params section (admin-pinned,
+	// versioned), resolved via the SAME shared projection the production run
+	// loop calls (D-094 parity). It overrides the tenant-wide baseline per
+	// field.
+	agentLayer, err := projection.ActiveLLMOverrides(ctx, d.agentConfig, d.agentConfigID, q)
+	if err != nil {
+		return nil, err
+	}
 	var session *runsprotocol.PendingOverride
 	if d.sessionOverrides != nil {
 		if po, found := d.sessionOverrides.Consume(q.Identity); found {
 			session = &po
 		}
 	}
-	return runsprotocol.ComposeLLMOverrides(session, tenant), nil
+	return runsprotocol.ComposeLLMOverrides(session, agentLayer, tenant), nil
 }
 
 // resolveSessionArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go`'s

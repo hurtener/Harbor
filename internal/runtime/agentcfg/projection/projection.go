@@ -84,6 +84,72 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, ov sessionover
 	return FilterSkillViewsByMembership(views, allowed), nil
 }
 
+// ActiveLLMOverrides resolves the PER-AGENT LLM-parameter override layer from
+// the agent's active config revision at run start. It returns the per-agent
+// sampling defaults (model / temperature / max-tokens / reasoning-effort) the
+// agent has pinned, as a [planner.LLMOverrides] carrying ONLY those four
+// dimensions — the layer the run loop folds BETWEEN the session override and
+// the tenant-wide baseline (precedence session › per-agent › tenant-wide
+// baseline › config default).
+//
+// A nil registry, an empty agentID, an agent with no active revision, or an
+// active revision with no LLM-params section returns (nil, nil) — the
+// backward-compatible "no per-agent override" path. A registry read error is
+// returned so the caller fails the run loudly (CLAUDE.md §13): no silent
+// fall-through to the tenant baseline on a read failure.
+//
+// The active revision is read ONCE per run; the returned bundle is fresh
+// (its pointers are copies), so concurrent / in-flight runs keep their own
+// snapshot (the concurrent-reuse contract). `id` carries the run's identity;
+// only the triple is used (the registry is identity-scoped, never keyed by
+// run). This is sampling parameters only — ExtraInstructions / prompt layers
+// are resolved elsewhere (the agent-config prompt-layer projection), so the
+// per-agent LLM layer never carries prompt text.
+func ActiveLLMOverrides(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (*planner.LLMOverrides, error) {
+	if reg == nil || agentID == "" {
+		return nil, nil
+	}
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	lp, set := rev.Payload.LLMParamsView()
+	if !set {
+		return nil, nil
+	}
+	// Copy each pointer so the returned bundle never shares backing storage
+	// with the (immutable) stored revision.
+	out := &planner.LLMOverrides{}
+	any := false
+	if lp.Model != nil && *lp.Model != "" {
+		v := *lp.Model
+		out.Model = &v
+		any = true
+	}
+	if lp.Temperature != nil {
+		v := *lp.Temperature
+		out.Temperature = &v
+		any = true
+	}
+	if lp.MaxTokens != nil {
+		v := *lp.MaxTokens
+		out.MaxTokens = &v
+		any = true
+	}
+	if lp.ReasoningEffort != nil && *lp.ReasoningEffort != "" {
+		v := *lp.ReasoningEffort
+		out.ReasoningEffort = &v
+		any = true
+	}
+	if !any {
+		return nil, nil
+	}
+	return out, nil
+}
+
 // ActivePlannerCatalogView builds the run's planner-facing catalog view at
 // run start, applying the agent's active-config tool exposure: a paused MCP
 // server's tools and any individually-disabled tool are excluded from the

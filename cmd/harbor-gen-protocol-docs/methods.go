@@ -459,6 +459,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigSetPromptLayersRequest", Response: "AgentConfigSetPromptLayersResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigSetLLMParams: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetLLMParams),
+			Mutates: true,
+			Request: "AgentConfigSetLLMParamsRequest", Response: "AgentConfigSetLLMParamsResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigAddMCPConnection: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAddMCPConnection),
 			Mutates: true,

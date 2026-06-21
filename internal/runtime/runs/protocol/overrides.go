@@ -72,24 +72,48 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// ComposeLLMOverrides merges a Consumed session override OVER a tenant
-// default into the planner's per-run override bundle — the canonical
-// session › tenant resolution (the run loop reads it at run start). Per
-// field, a non-nil session value wins; the tenant value fills the rest.
-// The session's SystemPromptOverride (full system-prompt REPLACE) is
-// session-only; the tenant's ExtraInstructions (additive) is tenant-only —
-// both compose. Returns nil when neither layer set anything.
+// ComposeLLMOverrides merges the three per-run LLM-override layers into the
+// planner's override bundle in precedence order **session › per-agent ›
+// tenant-wide baseline** (the run loop reads it at run start). Per field, a
+// non-nil session value wins, then the per-agent (agent-config) value, then
+// the tenant-wide baseline fills the rest. The session's SystemPromptOverride
+// (full system-prompt REPLACE) is session-only; the tenant's ExtraInstructions
+// (additive) is tenant-only; the per-agent layer carries sampling parameters
+// only (model / temperature / max-tokens / reasoning-effort) — never prompt
+// text. Returns nil when no layer set anything. config defaults are applied
+// last by the planner's applyLLMOverrides (an unset field leaves the request
+// untouched).
 //
-// This is the ONE production composition; cmd/harbor's run loop and the
-// integration test both call it (no re-implemented copy — CLAUDE.md §17.4).
-func ComposeLLMOverrides(session *PendingOverride, tenant *planner.LLMOverrides) *planner.LLMOverrides {
-	if session == nil && tenant == nil {
+// This is the ONE production composition; cmd/harbor's run loop, the devstack
+// twin, and the integration test all call it (no re-implemented copy —
+// CLAUDE.md §17.4).
+func ComposeLLMOverrides(session *PendingOverride, agent, tenant *planner.LLMOverrides) *planner.LLMOverrides {
+	if session == nil && agent == nil && tenant == nil {
 		return nil
 	}
 	out := &planner.LLMOverrides{}
+	// Base: the tenant-wide baseline (Model/Temperature/MaxTokens/
+	// ReasoningEffort/ExtraInstructions).
 	if tenant != nil {
-		*out = *tenant // Model/Temperature/MaxTokens/ReasoningEffort/ExtraInstructions
+		*out = *tenant
 	}
+	// Per-agent layer overrides the tenant baseline per field (sampling
+	// parameters only — never ExtraInstructions / prompt text).
+	if agent != nil {
+		if agent.Model != nil {
+			out.Model = agent.Model
+		}
+		if agent.Temperature != nil {
+			out.Temperature = agent.Temperature
+		}
+		if agent.MaxTokens != nil {
+			out.MaxTokens = agent.MaxTokens
+		}
+		if agent.ReasoningEffort != nil {
+			out.ReasoningEffort = agent.ReasoningEffort
+		}
+	}
+	// Session override wins over everything, per field.
 	if session != nil {
 		if session.Model != nil {
 			out.Model = session.Model

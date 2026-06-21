@@ -162,6 +162,7 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.ToolExposure = active.Payload.ToolExposure
 		payload.PromptLayers = active.Payload.PromptLayers
 		payload.Connections = active.Payload.Connections
+		payload.LLMParams = active.Payload.LLMParams
 	}
 	return s.registry.SetRevision(ctx, q, agentID, payload)
 }

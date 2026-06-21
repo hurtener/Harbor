@@ -290,6 +290,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 		payload.Skills = active.Payload.Skills
 		payload.ToolExposure = active.Payload.ToolExposure
 		payload.PromptLayers = active.Payload.PromptLayers
+		payload.LLMParams = active.Payload.LLMParams
 	}
 	servers = append(servers, desc)
 	payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}
