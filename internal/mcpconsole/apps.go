@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
@@ -42,15 +43,20 @@ import (
 // compiled artifacts, and the adapter adds no mutable state. Per-call
 // identity rides ctx.
 type AppsAccessor struct {
-	reg       *mcp.Registry
-	cat       tools.ToolCatalog
-	store     artifacts.ArtifactStore
-	bus       events.EventBus
-	toolCtx   *ToolContextStore
-	agentCfg  agentcfg.Registry // optional — nil ⇒ the app-call exposure gate is inert
-	agentID   string            // the agent slot the gate reads current desired-state from
-	threshold int
-	clock     func() time.Time
+	reg      *mcp.Registry
+	cat      tools.ToolCatalog
+	store    artifacts.ArtifactStore
+	bus      events.EventBus
+	toolCtx  *ToolContextStore
+	agentCfg agentcfg.Registry // optional — nil ⇒ the app-call exposure gate is inert
+	agentID  string            // the agent slot the gate reads current desired-state from
+	// sessionOverlay is the session-safe narrow-only disable set the gate
+	// UNIONS into the admin exposure (parity with the run-start planner-view
+	// projection, which unions it too). Optional — nil ⇒ only the admin
+	// exposure gates. Keyed by the ctx (tenant, user, session) triple.
+	sessionOverlay sessionoverlay.Store
+	threshold      int
+	clock          func() time.Time
 }
 
 // AppsDeps bundles the runtime collaborators the AppsAccessor bridges.
@@ -87,6 +93,13 @@ type AppsDeps struct {
 	// AgentID is the agent slot the gate reads desired-state from. Required
 	// when AgentConfig is set; ignored when it is nil.
 	AgentID string
+	// SessionOverlay is the session-safe narrow-only disable set the app→host
+	// gate UNIONS into the admin exposure, so a tool a SESSION user disabled
+	// (via agent_config.session.set_source_disables) is also rejected from an
+	// App callback — parity with the run-start planner-view projection, which
+	// unions the same overlay. Optional: nil leaves only the admin exposure
+	// gating. Keyed by the ctx (tenant, user, session) triple.
+	SessionOverlay sessionoverlay.Store
 	// Threshold is the heavy-content threshold in bytes. ≤ 0 falls back
 	// to artifacts' shared default.
 	Threshold int
@@ -137,15 +150,16 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 		clock = time.Now
 	}
 	return &AppsAccessor{
-		reg:       deps.Registry,
-		cat:       deps.Catalog,
-		store:     deps.Store,
-		bus:       deps.Bus,
-		toolCtx:   deps.ToolContext,
-		agentCfg:  deps.AgentConfig,
-		agentID:   deps.AgentID,
-		threshold: threshold,
-		clock:     clock,
+		reg:            deps.Registry,
+		cat:            deps.Catalog,
+		store:          deps.Store,
+		bus:            deps.Bus,
+		toolCtx:        deps.ToolContext,
+		agentCfg:       deps.AgentConfig,
+		agentID:        deps.AgentID,
+		sessionOverlay: deps.SessionOverlay,
+		threshold:      threshold,
+		clock:          clock,
 	}, nil
 }
 
@@ -303,17 +317,32 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 	if err != nil {
 		return fmt.Errorf("mcpconsole: app-call exposure gate: read active config: %w", err)
 	}
-	if !has || rev.Payload.ToolExposure == nil {
-		return nil
+	// The effective exposure is the admin desired-state UNION the session
+	// overlay's narrow-only disables — the SAME composition the run-start
+	// planner-view projection applies. A tool/server the SESSION disabled must
+	// also be rejected from an App callback, else the two views of "currently
+	// exposed" diverge.
+	var pausedServers, disabledTools []string
+	if has && rev.Payload.ToolExposure != nil {
+		pausedServers = rev.Payload.PausedServers()
+		disabledTools = rev.Payload.DisabledTools()
+	}
+	if a.sessionOverlay != nil {
+		overlay, _, oerr := a.sessionOverlay.Get(ctx, identity.Quadruple{Identity: id}, a.agentID)
+		if oerr != nil {
+			return fmt.Errorf("mcpconsole: app-call exposure gate: read session overlay: %w", oerr)
+		}
+		pausedServers = append(pausedServers, overlay.DisabledServers...)
+		disabledTools = append(disabledTools, overlay.DisabledTools...)
 	}
 	if source != "" {
-		for _, s := range rev.Payload.PausedServers() {
+		for _, s := range pausedServers {
 			if tools.ToolSourceID(s) == source {
 				return fmt.Errorf("%w: tool %q is on server %q, which is paused", ErrAppToolExposureDenied, toolName, source)
 			}
 		}
 	}
-	for _, n := range rev.Payload.DisabledTools() {
+	for _, n := range disabledTools {
 		if n == toolName {
 			return fmt.Errorf("%w: tool %q is disabled", ErrAppToolExposureDenied, toolName)
 		}

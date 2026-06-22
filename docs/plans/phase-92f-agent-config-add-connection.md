@@ -28,7 +28,7 @@ None.
 
 - Admin-scoped Protocol method to add a new MCP server connection (transport + endpoint/command + auth config) — recorded as an agent-config revision (the connection descriptor lives in the registry; diff/rollback work).
 - Drive the real attach sequence: async dial → `initialize` handshake → Discover → register; fail loud on any step (record a `failed` connection state with the reason, never a silent half-attach).
-- OAuth-required connections park on the unified pause/resume primitive; resume completes the attach.
+- OAuth-required connections park on the unified pause/resume primitive. (As-built, wave-end audit 2026-06-22: the parking half shipped; the resume continuation that re-drives the attach to `online` is deferred to issue #375 — resume currently only releases the pause.)
 - Adding a stdio server (RCE surface) is the most privileged action: beyond admin scope it is allowlist-gated and/or approval-gated via the pause/resume primitive (D-235).
 - Emit `mcp.connection.added` (+ a `failed`/`pending` lifecycle event) so the Console (92h) renders the add + its OAuth/failed state.
 
@@ -43,7 +43,7 @@ None.
 
 - [ ] Admin-scoped Protocol method (e.g. `agent_config.add_mcp_connection`) records the connection descriptor as a revision (REPLACING/extending only the MCP-connection section, preserving Skills/ToolExposure/PromptLayers).
 - [ ] The runtime drives dial → `initialize` → Discover → register; a successful add surfaces the server + its tools; a dial/handshake failure records a `failed` state with the reason and emits a loud event — never a silent drop (§13).
-- [ ] An OAuth-required server parks on the unified pause/resume primitive (NOT a new mechanism); a resume completes the attach; the agent-bound token keys by the registration `agent_id`.
+- [ ] An OAuth-required server parks on the unified pause/resume primitive (NOT a new mechanism); the agent-bound token keys by the registration `agent_id`. (The resume continuation that completes the attach to `online` is deferred to issue #375 — see the as-built clarification on D-237 §2.)
 - [ ] Adding a stdio server is gated beyond plain admin: allowlist and/or approval via pause/resume (D-235, §7); the gate is fail-closed.
 - [ ] `mcp.connection.added` + the lifecycle (`pending`/`failed`) events emitted, redacted (no secrets/tokens).
 - [ ] Identity scoped by the triple; admin authority from verified ctx; the live transport for OTHER servers is untouched by an add.

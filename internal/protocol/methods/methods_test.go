@@ -649,3 +649,41 @@ func TestIsMemoryMethod(t *testing.T) {
 		}
 	}
 }
+
+// TestIsAgentConfigSessionMethod_Lockstep gives the session-tier classifier a
+// CONSUMER (it is otherwise orphaned — the wire handler keys on a parallel
+// route map) and pins it against drift on an authorization boundary (audit
+// C8): the five `agent_config.session.*` safe-subset verbs are session
+// methods; the admin verbs and a non-agent-config method are not. A session
+// method is always an agent-config method and never an admin method.
+func TestIsAgentConfigSessionMethod_Lockstep(t *testing.T) {
+	sessionMethods := []methods.Method{
+		methods.MethodAgentConfigSessionSetUserPrompt,
+		methods.MethodAgentConfigSessionSetSourceDisables,
+		methods.MethodAgentConfigSessionSkillsList,
+		methods.MethodAgentConfigSessionSkillsUpsert,
+		methods.MethodAgentConfigSessionSkillsDelete,
+	}
+	for _, m := range sessionMethods {
+		if !methods.IsAgentConfigSessionMethod(m) {
+			t.Errorf("IsAgentConfigSessionMethod(%q) = false, want true", m)
+		}
+		if !methods.IsAgentConfigMethod(m) {
+			t.Errorf("session method %q must also be an agent-config method", m)
+		}
+		if methods.IsAgentConfigAdminMethod(m) {
+			t.Errorf("session safe-subset method %q must NOT be admin-gated", m)
+		}
+	}
+	// Admin verbs + a non-agent-config method are NOT session methods.
+	for _, m := range []methods.Method{
+		methods.MethodAgentConfigSetPromptLayers,
+		methods.MethodAgentConfigSetLLMParams,
+		methods.MethodAgentConfigAddMCPConnection,
+		methods.MethodCancel,
+	} {
+		if methods.IsAgentConfigSessionMethod(m) {
+			t.Errorf("IsAgentConfigSessionMethod(%q) = true, want false", m)
+		}
+	}
+}

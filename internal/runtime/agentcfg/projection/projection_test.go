@@ -3,6 +3,7 @@ package projection_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -149,6 +150,53 @@ func TestActiveSkillViews_ActiveRevisionFilters(t *testing.T) {
 	}
 	if !eq(names(got), []string{"a", "c"}) {
 		t.Fatalf("active revision projection = %v, want [a c]", names(got))
+	}
+}
+
+// TestActiveSkillViews_AdminPinnedMissingBody_FailsLoud is the wave-end
+// regression for the silent-drop drift (audit W2): an admin-pinned membership
+// name whose body is absent from the directory view must fail LOUD per the
+// 92c plan (never the §13 silent-degradation shape), e.g. a rollback onto a
+// since-hard-deleted skill.
+func TestActiveSkillViews_AdminPinnedMissingBody_FailsLoud(t *testing.T) {
+	reg := newRegistry(t)
+	ctx := context.Background()
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+		Skills: &agentcfg.SkillsSelection{Names: []string{"a", "ghost"}},
+	}); err != nil {
+		t.Fatalf("set revision: %v", err)
+	}
+	// views lacks "ghost" (its body was hard-deleted) → loud, not silent.
+	_, err := projection.ActiveSkillViews(ctx, reg, nil, projAgent, projID(), views("a", "b"))
+	if !errors.Is(err, projection.ErrSkillBodyMissing) {
+		t.Fatalf("err = %v, want ErrSkillBodyMissing", err)
+	}
+}
+
+// TestActiveSkillViews_PersonalSkillMissingBody_Silent proves the exemption:
+// a SESSION-personal name absent from the view is NOT loud (a safe-subset add
+// that may legitimately not be in the directory) — only ADMIN-pinned names
+// fail loud.
+func TestActiveSkillViews_PersonalSkillMissingBody_Silent(t *testing.T) {
+	reg := newRegistry(t)
+	ov := newOverlay(t)
+	ctx := context.Background()
+	// Admin pins only "a" (present in views); the session adds a personal
+	// skill "p" whose body is NOT in views.
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
+	}); err != nil {
+		t.Fatalf("set revision: %v", err)
+	}
+	if _, err := ov.AddPersonalSkill(ctx, projID(), projAgent, "p"); err != nil {
+		t.Fatalf("add personal skill: %v", err)
+	}
+	got, err := projection.ActiveSkillViews(ctx, reg, ov, projAgent, projID(), views("a", "b"))
+	if err != nil {
+		t.Fatalf("a missing PERSONAL skill must not fail loud: %v", err)
+	}
+	if !eq(names(got), []string{"a"}) {
+		t.Fatalf("projection = %v, want [a] (personal 'p' absent from views is silently kept-if-present)", names(got))
 	}
 }
 

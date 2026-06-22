@@ -587,14 +587,15 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// is rejected against CURRENT desired state, while the live transport
 	// stays warm and any in-flight planner snapshot is undisturbed.
 	appsAccessor, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:    mcpRegistry,
-		Catalog:     toolCat,
-		Store:       artStore,
-		Bus:         bus,
-		ToolContext: mcpToolContext,
-		AgentConfig: agentConfigRegistry,
-		AgentID:     devAgentConfigID,
-		Threshold:   cfg.Artifacts.HeavyOutputThresholdBytes,
+		Registry:       mcpRegistry,
+		Catalog:        toolCat,
+		Store:          artStore,
+		Bus:            bus,
+		ToolContext:    mcpToolContext,
+		AgentConfig:    agentConfigRegistry,
+		AgentID:        devAgentConfigID,
+		SessionOverlay: sessionOverlayStore,
+		Threshold:      cfg.Artifacts.HeavyOutputThresholdBytes,
 	})
 	if err != nil {
 		closeAll(ctx)

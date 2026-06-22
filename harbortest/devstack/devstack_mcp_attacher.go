@@ -16,8 +16,9 @@ import (
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
-// devstack_mcp_attacher.go — the D-094 mirror of cmd/harbor's
-// devMCPConnectionAttacher (cmd/harbor/cmd_dev_mcp_attacher.go). It drives the
+// devstack_mcp_attacher.go — the production runtime MCP-attach concrete
+// mirrored from cmd/harbor's devMCPConnectionAttacher
+// (cmd/harbor/cmd_dev_mcp_attacher.go). It drives the
 // real MCP attach lifecycle (dial → initialize → discover → register) for the
 // admin-driven runtime add of a NEW MCP connection
 // (`agent_config.add_mcp_connection`) against the LIVE catalog + registry +

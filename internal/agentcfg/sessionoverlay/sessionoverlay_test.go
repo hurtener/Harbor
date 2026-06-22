@@ -192,3 +192,61 @@ func mustGet(t *testing.T, s sessionoverlay.Store, id identity.Quadruple) (sessi
 	}
 	return ov, found, err
 }
+
+// TestStore_ConcurrentSameSessionMutations_NoLostUpdate is the wave-end
+// regression for the same-session lost-update race (audit W1): mutate() is a
+// load → apply → save read-modify-write over a last-write-wins overlay row, so
+// two concurrent SAME-session edits via different verbs would each rebuild
+// from the other's pre-write snapshot, clobbering a sibling field. N≥100
+// concurrent AddPersonalSkill / SetSourceDisables / SetUserPrompt against ONE
+// shared store + ONE (triple, agent) slot must leave ALL THREE fields present.
+// Run under -race.
+func TestStore_ConcurrentSameSessionMutations_NoLostUpdate(t *testing.T) {
+	s := newOverlay(t)
+	ctx := context.Background()
+	id := quad("t", "u", "s")
+	const n = 120
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			var err error
+			switch i % 3 {
+			case 0:
+				_, err = s.AddPersonalSkill(ctx, id, overlayAgentID, fmt.Sprintf("skill-%d", i))
+			case 1:
+				_, err = s.SetSourceDisables(ctx, id, overlayAgentID, []string{fmt.Sprintf("srv-%d", i)}, nil)
+			case 2:
+				_, err = s.SetUserPrompt(ctx, id, overlayAgentID, fmt.Sprintf("prompt-%d", i))
+			}
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent same-session mutate failed: %v", err)
+	}
+
+	// All three fields must COEXIST: each was set by ≥1 goroutine, and the
+	// per-slot lock guarantees no verb rebuilt from a snapshot missing a
+	// concurrently-committed sibling field (the lost-update bug).
+	o, ok, err := s.Get(ctx, id, overlayAgentID)
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if o.UserPrompt == "" {
+		t.Error("user prompt lost under concurrent same-session mutation (lost-update race)")
+	}
+	if len(o.PersonalSkills) == 0 {
+		t.Error("personal skills lost under concurrent same-session mutation (lost-update race)")
+	}
+	if len(o.DisabledServers) == 0 {
+		t.Error("disabled servers lost under concurrent same-session mutation (lost-update race)")
+	}
+}

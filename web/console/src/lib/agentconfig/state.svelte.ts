@@ -76,7 +76,7 @@ export const AGENT_CONFIG_AREAS = [
 	{ id: 'add-connection', label: 'Add connection' }
 ] as const;
 
-/** The id of one of the five control-plane areas (drives the rail + pane). */
+/** The id of one of the six control-plane areas (drives the rail + pane). */
 export type AgentConfigAreaId = (typeof AGENT_CONFIG_AREAS)[number]['id'];
 
 /** A page-friendly error projection (mirrors the Settings page's shape). */
@@ -157,7 +157,7 @@ export function changedSectionLabels(
 /**
  * AgentConfigPanelState owns the consolidated panel's reactive state. It
  * exposes a primary `PageStatus` (the panel-level four-state boundary) plus
- * the five feature areas, each with its own data + write action + per-area
+ * the six feature areas, each with its own data + write action + per-area
  * busy / error / saved flag. The components are dumb views over this
  * controller (CONVENTIONS.md §6); the panel composes them.
  */
@@ -290,8 +290,12 @@ export class AgentConfigPanelState {
 	/* Derived projections                                               */
 	/* ================================================================ */
 
-	/** The live `mcp.connection.*` advisories for the selected agent,
-	 * newest-first — the pause/resume + attach-lifecycle feed. */
+	/** The live `mcp.connection.*` advisories for the connected runtime
+	 * (the caller's identity scope), newest-first — the pause/resume +
+	 * attach-lifecycle feed. NOTE: the canonical `mcp.connection.*` event
+	 * carries no top-level agent_id, so this stream is identity-scoped, NOT
+	 * filtered to the selected agent — switching the agent selector does not
+	 * re-scope it. Labelled accordingly in the UI. */
 	get mcpEvents() {
 		return this.subscription?.events ?? [];
 	}
@@ -316,7 +320,7 @@ export class AgentConfigPanelState {
 	 * history list is legible without N diff calls). The first revision (no
 	 * parent) is "Initial configuration". A revision whose `content_hash`
 	 * matches an EARLIER revision in the chain is a revert-by-re-set and is
-	 * labelled "Reverted to <short-id>". Otherwise it lists the sections that
+	 * labelled "Rolled back to <short-id>". Otherwise it lists the sections that
 	 * changed (e.g. "Prompt + Model & sampling"). An empty change set (only
 	 * metadata moved) reads "No section changes".
 	 */
@@ -337,7 +341,7 @@ export class AgentConfigPanelState {
 					older.content_hash === rev.content_hash &&
 					older.revision_id !== rev.parent_revision_id
 				) {
-					return `Reverted to ${shortRevision(older.revision_id)}`;
+					return `Rolled back to ${shortRevision(older.revision_id)}`;
 				}
 			}
 		}

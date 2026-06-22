@@ -296,19 +296,19 @@ const (
 	// MethodAgentConfigSkillsList — reads the agent's skills (metadata
 	// only) — the first consumer of the config-revision registry.
 	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
-	// wire-transport route is `POST /v1/agent_config/skills.list`.
+	// wire-transport route is `POST /v1/agent_config/skills/list`.
 	MethodAgentConfigSkillsList Method = "agent_config.skills.list"
 	// MethodAgentConfigSkillsUpsert — admin verb: upserts a skill into the
 	// agent's store and records the membership change as a config
 	// revision. A pack-origin skill is never silently overwritten — the
 	// refusal surfaces as a typed Protocol error. Identity-mandatory;
 	// requires the `auth.ScopeAdmin` claim. The wire-transport route is
-	// `POST /v1/agent_config/skills.upsert`.
+	// `POST /v1/agent_config/skills/upsert`.
 	MethodAgentConfigSkillsUpsert Method = "agent_config.skills.upsert"
 	// MethodAgentConfigSkillsDelete — admin verb: deletes a skill from the
 	// agent's store and records the membership change as a config
 	// revision. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
-	// The wire-transport route is `POST /v1/agent_config/skills.delete`.
+	// The wire-transport route is `POST /v1/agent_config/skills/delete`.
 	MethodAgentConfigSkillsDelete Method = "agent_config.skills.delete"
 	// MethodAgentConfigSetToolExposure — admin verb: sets the agent's
 	// MCP-exposure / per-tool policy (paused servers + disabled tools) as a
@@ -351,7 +351,8 @@ const (
 	// revision and never registers a half-attached server (fail loud). Adding
 	// a stdio server (an RCE surface) is gated beyond admin on an operator
 	// allowlist (fail-closed; argv-form only). An auth-required server parks
-	// on the unified pause/resume primitive; a resume completes the attach.
+	// on the unified pause/resume primitive (the resume continuation that
+	// re-drives the attach to online is not yet implemented — issue #375).
 	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
 	// wire-transport route is `POST /v1/agent_config/add_mcp_connection`.
 	MethodAgentConfigAddMCPConnection Method = "agent_config.add_mcp_connection"
