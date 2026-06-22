@@ -53,18 +53,23 @@ func newAgentCfgFixture(t *testing.T, stk tenantOverrideStack) agentCfgFixture {
 	return agentCfgFixture{reg: reg, svc: svc}
 }
 
+// llmTestTenant is the tenant every per-agent LLM-params E2E is scoped to
+// (cross-tenant isolation is exercised separately via a direct projection
+// call against a second tenant).
+const llmTestTenant = "t1"
+
 // agentScope is the admin identity scope a per-agent edit is authored under.
-func agentScope(tenant string) prototypes.IdentityScope {
-	return prototypes.IdentityScope{Tenant: tenant, User: "admin", Session: "admin-sess"}
+func agentScope() prototypes.IdentityScope {
+	return prototypes.IdentityScope{Tenant: llmTestTenant, User: "admin", Session: "admin-sess"}
 }
 
 // composeForRun mirrors cmd/harbor::resolveLLMOverrides exactly: tenant
 // baseline (resolver) under per-agent (projection) under session (consumed),
 // via the production ComposeLLMOverrides.
-func composeForRun(t *testing.T, fx agentCfgFixture, stk tenantOverrideStack, tenant, agentID string, session *runsprotocol.PendingOverride) *planner.LLMOverrides {
+func composeForRun(t *testing.T, fx agentCfgFixture, stk tenantOverrideStack, agentID string, session *runsprotocol.PendingOverride) *planner.LLMOverrides {
 	t.Helper()
-	tenantLayer := resolveOverrides(t, stk.policy, tenant)
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: "u", SessionID: "s"}}
+	tenantLayer := resolveOverrides(t, stk.policy, llmTestTenant)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: llmTestTenant, UserID: "u", SessionID: "s"}}
 	agentLayer, err := projection.ActiveLLMOverrides(context.Background(), fx.reg, agentID, q)
 	if err != nil {
 		t.Fatalf("ActiveLLMOverrides: %v", err)
@@ -86,14 +91,14 @@ func TestE2E_AgentCfgLLMParams_PerAgentOverridesTenantBaseline(t *testing.T) {
 	}
 	// Per-agent pin for llmParamsAgentID: model-b (overrides the baseline).
 	if _, err := fx.svc.SetLLMParams(context.Background(), prototypes.AgentConfigSetLLMParamsRequest{
-		Identity: agentScope("t1"), AgentID: llmParamsAgentID,
+		Identity: agentScope(), AgentID: llmParamsAgentID,
 		LLMParams: prototypes.AgentConfigLLMParams{Model: ptrS("model-b")},
 	}); err != nil {
 		t.Fatalf("SetLLMParams: %v", err)
 	}
 
 	// The pinned agent uses model-b; temperature falls through to the tenant 0.2.
-	req := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, "t1", llmParamsAgentID, nil))
+	req := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, llmParamsAgentID, nil))
 	if req.Model != "model-b" {
 		t.Errorf("pinned agent: req.Model = %q, want model-b (per-agent over tenant)", req.Model)
 	}
@@ -102,7 +107,7 @@ func TestE2E_AgentCfgLLMParams_PerAgentOverridesTenantBaseline(t *testing.T) {
 	}
 
 	// A different agent has no per-agent pin → tenant baseline model-a.
-	reqOther := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, "t1", "some-other-agent", nil))
+	reqOther := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, "some-other-agent", nil))
 	if reqOther.Model != "model-a" {
 		t.Errorf("unpinned agent: req.Model = %q, want tenant model-a", reqOther.Model)
 	}
@@ -114,13 +119,13 @@ func TestE2E_AgentCfgLLMParams_SessionBeatsPerAgent(t *testing.T) {
 	stk := newTenantOverrideStack(t, nil)
 	fx := newAgentCfgFixture(t, stk)
 	if _, err := fx.svc.SetLLMParams(context.Background(), prototypes.AgentConfigSetLLMParamsRequest{
-		Identity: agentScope("t1"), AgentID: llmParamsAgentID,
+		Identity: agentScope(), AgentID: llmParamsAgentID,
 		LLMParams: prototypes.AgentConfigLLMParams{Model: ptrS("model-a")},
 	}); err != nil {
 		t.Fatalf("SetLLMParams: %v", err)
 	}
 	session := &runsprotocol.PendingOverride{Model: ptrS("model-b")}
-	req := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, "t1", llmParamsAgentID, session))
+	req := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, llmParamsAgentID, session))
 	if req.Model != "model-b" {
 		t.Errorf("req.Model = %q, want model-b (session beats per-agent)", req.Model)
 	}
@@ -136,7 +141,7 @@ func TestE2E_AgentCfgLLMParams_RollbackRestoresBaseline(t *testing.T) {
 	}
 	// Revision 1: an empty payload (a base to roll back TO).
 	rev1, err := fx.svc.SetRevision(context.Background(), prototypes.AgentConfigSetRevisionRequest{
-		Identity: agentScope("t1"), AgentID: llmParamsAgentID,
+		Identity: agentScope(), AgentID: llmParamsAgentID,
 		Payload: prototypes.AgentConfigPayload{Skills: &prototypes.AgentConfigSkillsSelection{Names: []string{"a"}}},
 	})
 	if err != nil {
@@ -144,22 +149,22 @@ func TestE2E_AgentCfgLLMParams_RollbackRestoresBaseline(t *testing.T) {
 	}
 	// Revision 2: pin model-b.
 	if _, err := fx.svc.SetLLMParams(context.Background(), prototypes.AgentConfigSetLLMParamsRequest{
-		Identity: agentScope("t1"), AgentID: llmParamsAgentID,
+		Identity: agentScope(), AgentID: llmParamsAgentID,
 		LLMParams: prototypes.AgentConfigLLMParams{Model: ptrS("model-b")},
 	}); err != nil {
 		t.Fatalf("SetLLMParams: %v", err)
 	}
 	// With the pin active, the run uses model-b.
-	if req := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, "t1", llmParamsAgentID, nil)); req.Model != "model-b" {
+	if req := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, llmParamsAgentID, nil)); req.Model != "model-b" {
 		t.Fatalf("pre-rollback: req.Model = %q, want model-b", req.Model)
 	}
 	// Roll back to revision 1 (no LLM-params) → the run falls back to the tenant baseline.
 	if _, err := fx.svc.Rollback(context.Background(), prototypes.AgentConfigRollbackRequest{
-		Identity: agentScope("t1"), AgentID: llmParamsAgentID, RevisionID: rev1.Revision.RevisionID,
+		Identity: agentScope(), AgentID: llmParamsAgentID, RevisionID: rev1.Revision.RevisionID,
 	}); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
-	if req := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, "t1", llmParamsAgentID, nil)); req.Model != "model-a" {
+	if req := runWithOverrides(t, &capturingLLM{}, "t1", composeForRun(t, fx, stk, llmParamsAgentID, nil)); req.Model != "model-a" {
 		t.Errorf("post-rollback: req.Model = %q, want tenant baseline model-a", req.Model)
 	}
 }
@@ -171,7 +176,7 @@ func TestE2E_AgentCfgLLMParams_CrossTenantIsolation(t *testing.T) {
 	stk := newTenantOverrideStack(t, nil)
 	fx := newAgentCfgFixture(t, stk)
 	if _, err := fx.svc.SetLLMParams(context.Background(), prototypes.AgentConfigSetLLMParamsRequest{
-		Identity: agentScope("t1"), AgentID: llmParamsAgentID,
+		Identity: agentScope(), AgentID: llmParamsAgentID,
 		LLMParams: prototypes.AgentConfigLLMParams{Model: ptrS("model-b")},
 	}); err != nil {
 		t.Fatalf("SetLLMParams t1: %v", err)
@@ -199,7 +204,7 @@ func TestE2E_AgentCfgLLMParams_ConcurrentResolution(t *testing.T) {
 	// Two agents pinned to different models on the shared registry.
 	for agentID, model := range map[string]string{"agent-A": "model-a", "agent-B": "model-b"} {
 		if _, err := fx.svc.SetLLMParams(context.Background(), prototypes.AgentConfigSetLLMParamsRequest{
-			Identity: agentScope("t1"), AgentID: agentID,
+			Identity: agentScope(), AgentID: agentID,
 			LLMParams: prototypes.AgentConfigLLMParams{Model: ptrS(model)},
 		}); err != nil {
 			t.Fatalf("SetLLMParams %s: %v", agentID, err)
@@ -209,7 +214,7 @@ func TestE2E_AgentCfgLLMParams_ConcurrentResolution(t *testing.T) {
 	const n = 200
 	errCh := make(chan error, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
