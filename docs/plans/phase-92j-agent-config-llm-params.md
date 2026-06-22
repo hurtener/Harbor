@@ -48,7 +48,7 @@ None. The tenant-wide override is intentionally retained as the BASELINE layer (
 - [ ] `agent_config.diff` reports a structured LLM-params delta (which of model/temperature/max-tokens/reasoning-effort changed, with from/to values); the `agent.config.revised` event fires on every write.
 - [ ] Run-start resolution composes **session › per-agent › tenant-wide baseline › config**: a per-agent `Model` overrides the tenant-wide `Model`; an unset per-agent field falls through to the tenant baseline then config. A test asserts every field's precedence independently.
 - [ ] The resolution lives in the shared `projection` package and is called by BOTH `cmd/harbor/cmd_dev_runloop.go::resolveLLMOverrides` and the `harbortest/devstack` twin (D-094); a twin test asserts the two binaries resolve identically.
-- [ ] A pinned `Model` with no `ModelProfile` fails loudly at run-start (parity with the Phase 92 tenant swap), never silently falls back.
+- [ ] A pinned `Model` with no `ModelProfile` fails loudly at **set time** with `ErrUnknownModel` (a §4.3 strengthening of the original "at run-start" wording — validating on the write means an invalid model can never be persisted; the LLM safety edge remains the run-start backstop). Parity with the Phase 92 tenant swap; never silently falls back. See D-238 + `llmparams.go`.
 - [ ] Identity scoped by the full triple; the per-agent layer keys on `{tenant, "__agentcfg__", agentID}` — `agent_id` is the registry key, NOT an isolation filter (§6).
 - [ ] TS wire manifest + typed `AgentConfigNamespace` client + generated Protocol docs regenerated; `make protocol-ts-gen-check` and `make protocol-docs-gen-check` clean; `scripts/smoke/phase-92j.sh` green.
 

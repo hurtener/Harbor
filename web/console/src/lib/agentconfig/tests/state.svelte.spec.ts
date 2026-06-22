@@ -466,7 +466,7 @@ describe('AgentConfigPanelState.revisionSummary — derived, client-side (92i)',
 		const r2 = { revision_id: 'r2', parent_revision_id: 'rev-original', content_hash: 'hB', created_at: '', payload: { prompt_layers: { base: 'b' } } };
 		const r3 = { revision_id: 'r3', parent_revision_id: 'r2', content_hash: 'hA', created_at: '', payload: { prompt_layers: { base: 'a' } } };
 		const s = withRevisions([r3, r2, r1]); // newest-first
-		expect(s.revisionSummary(r3 as never)).toBe(`Reverted to ${shortRevision('rev-original')}`);
+		expect(s.revisionSummary(r3 as never)).toBe(`Rolled back to ${shortRevision('rev-original')}`);
 	});
 });
 
@@ -613,5 +613,59 @@ describe('AgentConfigPanelState — model & sampling (92j/92i)', () => {
 			model: 'model-x',
 			reasoning_effort: 'low'
 		});
+	});
+});
+
+describe('AgentConfigPanelState — failed-write paths keep state (§13 no silent drop, 92i)', () => {
+	it('saveAll: a rejected set_revision keeps the staged edits + surfaces the error (no reload)', async () => {
+		seedConnection();
+		const client = fakeClient({
+			setRevision: vi.fn(async () =>
+				Promise.reject(new ProtocolError('runtime_error', 'boom', 500))
+			)
+		});
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.promptBase = 'edited';
+		state.markPromptEdited();
+		expect(state.hasStagedChanges).toBe(true);
+
+		await state.saveAll();
+
+		expect(state.saveAllPhase).toBe('error');
+		expect(state.saveAllError?.message).toContain('boom');
+		// The staged edits are PRESERVED (a failed write must not silently
+		// discard them, and must not reload/re-seed the form).
+		expect(state.hasStagedChanges).toBe(true);
+		expect(state.promptDirty).toBe(true);
+		expect(state.promptBase).toBe('edited');
+	});
+
+	it('confirmRollbackPreview: a rejected rollback sets the error and leaves the preview open', async () => {
+		seedConnection();
+		const client = fakeClient({
+			rollback: vi.fn(async () => Promise.reject(new ProtocolError('runtime_error', 'nope', 500)))
+		});
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.requestRollback('rev-1');
+		await state.confirmRollbackPreview();
+		expect(state.rollbackError?.message).toContain('nope');
+		// The preview stays open so the operator can retry / cancel.
+		expect(state.rollbackTarget).toBe('rev-1');
+		expect(state.rolledBackTo).toBeNull();
+	});
+
+	it('requestRollback: a rejected diff lands the preview in the error state, never rolling back', async () => {
+		seedConnection();
+		const client = fakeClient({
+			diff: vi.fn(async () => Promise.reject(new ProtocolError('runtime_error', 'diff-fail', 500)))
+		});
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.requestRollback('rev-1');
+		expect(state.rollbackPreviewPhase).toBe('error');
+		expect(state.rollbackPreviewError?.message).toContain('diff-fail');
+		expect(ac(client).rollback).not.toHaveBeenCalled();
 	});
 });

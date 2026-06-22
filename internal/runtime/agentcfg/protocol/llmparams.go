@@ -47,6 +47,7 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 		return prototypes.AgentConfigSetLLMParamsResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	defer s.lockAgent(id.TenantID, req.AgentID)()
 
 	// Read the active revision so the new revision PRESERVES the prompt-layer
 	// + skills + tool-exposure + connection sections (an LLM-params edit

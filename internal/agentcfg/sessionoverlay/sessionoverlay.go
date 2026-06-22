@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -133,6 +134,29 @@ type store struct {
 	state  state.StateStore
 	clock  func() time.Time
 	closed atomic.Bool
+
+	// writeLocks serialises the mutate() read-modify-write per overlay slot
+	// (the full (tenant, user, session) triple + agent). The overlay row is
+	// last-write-wins, so two concurrent SAME-session edits (e.g.
+	// AddPersonalSkill racing SetSourceDisables) would each load → apply →
+	// save from the other's pre-write snapshot, losing one update. A per-slot
+	// lock held across the whole read-modify-write makes it atomic.
+	writeLocks sync.Map // map[string]*sync.Mutex
+}
+
+// lockSlot acquires the per-overlay-slot write lock and returns the release
+// func (call via defer). Keyed by the full triple + agent so distinct
+// sessions / agents never contend.
+func (s *store) lockSlot(id identity.Quadruple, agentID string) func() {
+	key := id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID + "\x00" + agentID
+	mu, _ := s.writeLocks.LoadOrStore(key, &sync.Mutex{})
+	m, ok := mu.(*sync.Mutex)
+	if !ok {
+		// Impossible by construction: writeLocks only ever stores *sync.Mutex.
+		panic("agentcfg/sessionoverlay: writeLocks held a non-mutex value")
+	}
+	m.Lock()
+	return m.Unlock
 }
 
 // NewStore builds a session-overlay Store over a StateStore. st is
@@ -239,6 +263,7 @@ func (s *store) mutate(ctx context.Context, id identity.Quadruple, agentID strin
 	if err := ctx.Err(); err != nil {
 		return Overlay{}, err
 	}
+	defer s.lockSlot(id, agentID)()
 	cur, _, err := s.load(ctx, id, agentID)
 	if err != nil {
 		return Overlay{}, err

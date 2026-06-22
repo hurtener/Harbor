@@ -42,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
@@ -130,6 +131,36 @@ type Service struct {
 	// service): the binary always wires the configured profiles, so an empty
 	// set signals model-pinning is unavailable, never a silent accept-all.
 	validModels map[string]struct{}
+
+	// writeLocks serialises the read-modify-write of each admin write verb
+	// PER AGENT. A convenience verb reads the active revision, rebuilds the
+	// sibling sections from that snapshot, then writes a new revision — and
+	// the registry is last-write-wins (no CAS). Without serialisation two
+	// concurrent edits to the SAME agent (e.g. set_skills racing
+	// set_tool_exposure) would each rebuild from the other's pre-write
+	// snapshot, silently reverting the concurrent sibling change (an MCP
+	// pause could vanish) and forking the parent chain. The Service is the
+	// sole registry-writer, so a per-(tenant, agent) lock held across the
+	// whole read-modify-write makes it atomic within the process. (Keyed by
+	// (tenant, agent) because the registry collapses user/session into the
+	// synthetic per-agent slot. Cross-replica atomicity would need StateStore
+	// CAS — out of scope while the registry is a single in-process artifact.)
+	writeLocks sync.Map // map[string]*sync.Mutex
+}
+
+// lockAgent acquires the per-(tenant, agent) write lock and returns the
+// release func (call via defer). It serialises every admin write verb's
+// read-modify-write against concurrent writes to the same agent.
+func (s *Service) lockAgent(tenant, agentID string) func() {
+	key := tenant + "\x00" + agentID
+	mu, _ := s.writeLocks.LoadOrStore(key, &sync.Mutex{})
+	m, ok := mu.(*sync.Mutex)
+	if !ok {
+		// Impossible by construction: writeLocks only ever stores *sync.Mutex.
+		panic("agentcfg/protocol: writeLocks held a non-mutex value")
+	}
+	m.Lock()
+	return m.Unlock
 }
 
 // Option configures NewService.
@@ -354,6 +385,7 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
+	defer s.lockAgent(id.TenantID, req.AgentID)()
 	// A full-payload set that pins per-agent LLM params is validated at set
 	// time (parity with set_llm_params / the tenant model-swap) so an invalid
 	// model or out-of-range sampling value can never be persisted.
@@ -421,6 +453,7 @@ func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollba
 	if err != nil {
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}
+	defer s.lockAgent(id.TenantID, req.AgentID)()
 	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID)
 	if err != nil {
 		return prototypes.AgentConfigRollbackResponse{}, err

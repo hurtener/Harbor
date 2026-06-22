@@ -48,7 +48,7 @@ assert_grep_present 'PageState' \
 
 # 5. The typed client covers the agent_config read+write methods the five
 #    areas consume (the panel adds NO Protocol surface — 92a–f shipped them).
-for method in list_revisions diff rollback set_tool_exposure set_prompt_layers add_mcp_connection skills/list skills/upsert skills/delete; do
+for method in get set_revision list_revisions diff rollback set_tool_exposure set_prompt_layers set_llm_params add_mcp_connection skills/list skills/upsert skills/delete; do
     assert_grep_present "/v1/agent_config/${method}" \
         "${CONSOLE}/lib/protocol/client.ts" \
         "phase 92h: typed client covers agent_config.${method}"
