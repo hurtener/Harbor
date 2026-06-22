@@ -22,7 +22,17 @@
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   }
+
+  /** Escape closes the rollback-preview modal (no write) — the dismissal
+   * affordance alongside Cancel + scrim-click. */
+  function onKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape' && panel.rollbackTarget !== null) {
+      panel.cancelRollbackPreview();
+    }
+  }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <div class="card-body" data-testid="agentcfg-revisions">
   <p class="note">
@@ -41,11 +51,18 @@
       {#each panel.revisions as rev (rev.revision_id)}
         <li class="rev-row" data-testid="agentcfg-revision-row">
           <div class="rev-main">
-            <code class="rev-id">{shortId(rev.revision_id)}</code>
-            {#if rev.revision_id === panel.activeRevisionId}
-              <StatusChip kind="accent" label="active" />
-            {/if}
-            <span class="rev-time">{fmtTime(rev.created_at)}</span>
+            <div class="rev-head">
+              <code class="rev-id">{shortId(rev.revision_id)}</code>
+              {#if rev.revision_id === panel.activeRevisionId}
+                <StatusChip kind="accent" label="active" />
+              {/if}
+              <span class="rev-time">{fmtTime(rev.created_at)}</span>
+            </div>
+            <!-- Derived, client-side change summary (no extra round-trip) — the
+                 readability answer: what this revision changed vs its parent. -->
+            <span class="rev-summary" data-testid="agentcfg-revision-summary">
+              {panel.revisionSummary(rev)}
+            </span>
           </div>
           <button
             type="button"
@@ -57,15 +74,79 @@
             title={panel.hasAdminScope
               ? rev.revision_id === panel.activeRevisionId
                 ? 'Already the active revision'
-                : 'Roll the active config back to this revision'
+                : 'Preview the diff, then roll the active config back to this revision'
               : 'Rolling back requires the admin scope claim'}
-            onclick={() => void panel.rollback(rev.revision_id)}
+            onclick={() => void panel.requestRollback(rev.revision_id)}
           >
-            {panel.rollbackBusy === rev.revision_id ? 'Rolling back…' : 'Rollback'}
+            {panel.rollbackBusy === rev.revision_id ? 'Rolling back…' : 'Rollback…'}
           </button>
         </li>
       {/each}
     </ul>
+
+    <!-- Diff-before-rollback preview (92i): a rollback NEVER repoints blindly;
+         the operator confirms against the structured active→target diff. -->
+    {#if panel.rollbackTarget !== null}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="modal-scrim" onclick={() => panel.cancelRollbackPreview()}>
+        <div
+          class="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm rollback"
+          tabindex="-1"
+          data-testid="agentcfg-rollback-preview"
+          onclick={(e) => e.stopPropagation()}
+        >
+          <h3 class="modal-title">
+            Roll back to {shortId(panel.rollbackTarget)}?
+          </h3>
+          <p class="note">
+            This repoints the active config to {shortId(panel.rollbackTarget)}.
+            The change below applies on the agent&rsquo;s next run. Review it,
+            then confirm.
+          </p>
+
+          <PageState
+            status={panel.rollbackPreviewPhase === 'loading'
+              ? 'loading'
+              : panel.rollbackPreviewPhase === 'error'
+                ? 'error'
+                : 'ready'}
+            error={panel.rollbackPreviewError}
+            onretry={() => void panel.requestRollback(panel.rollbackTarget ?? '')}
+            nested
+          >
+            {#if panel.rollbackPreviewDiff}
+              <DiffView diff={panel.rollbackPreviewDiff} />
+            {/if}
+          </PageState>
+
+          <div class="modal-actions">
+            <button
+              type="button"
+              class="ghost"
+              data-testid="agentcfg-rollback-cancel"
+              onclick={() => panel.cancelRollbackPreview()}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="primary"
+              data-testid="agentcfg-rollback-confirm"
+              disabled={!panel.hasAdminScope ||
+                panel.rollbackBusy !== null ||
+                panel.rollbackPreviewPhase !== 'ready'}
+              onclick={() => void panel.confirmRollbackPreview()}
+            >
+              {panel.rollbackBusy !== null ? 'Rolling back…' : 'Confirm rollback'}
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     {#if panel.rolledBackTo}
       <p class="saved" data-testid="agentcfg-rollback-saved">
@@ -157,6 +238,12 @@
   }
   .rev-main {
     display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+  .rev-head {
+    display: flex;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
@@ -169,6 +256,43 @@
   .rev-time {
     font-size: var(--text-xs);
     color: var(--color-text-muted);
+  }
+  .rev-summary {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+  .modal-scrim {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-4);
+    background: var(--color-overlay);
+  }
+  .modal {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    width: 100%;
+    max-width: var(--size-prose-max);
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: var(--space-4);
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+  }
+  .modal-title {
+    margin: var(--space-0);
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
   }
   .diff-controls {
     display: flex;

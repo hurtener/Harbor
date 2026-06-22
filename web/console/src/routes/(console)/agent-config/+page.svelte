@@ -27,7 +27,9 @@
   import SkillsCard from '$lib/components/agentconfig/SkillsCard.svelte';
   import McpPolicyCard from '$lib/components/agentconfig/McpPolicyCard.svelte';
   import PromptLayersCard from '$lib/components/agentconfig/PromptLayersCard.svelte';
+  import LLMParamsCard from '$lib/components/agentconfig/LLMParamsCard.svelte';
   import AddConnectionCard from '$lib/components/agentconfig/AddConnectionCard.svelte';
+  import SaveAllBar from '$lib/components/agentconfig/SaveAllBar.svelte';
   import {
     AgentConfigPanelState,
     AGENT_CONFIG_AREAS,
@@ -132,6 +134,11 @@
     </div>
 
     <div class="section-pane">
+      <!-- The atomic multi-section "Save all" bar renders OUTSIDE the
+           <PageState> async boundary (it is panel-level staging, visible
+           across every area) and self-gates on staged edits. -->
+      <SaveAllBar {panel} />
+
       <PageState status={panel.status} error={panel.error} info={panel.info} onretry={() => void panel.reload()}>
         {#snippet skeleton()}
           <div class="cards-skeleton" aria-hidden="true">
@@ -149,6 +156,8 @@
             <RevisionHistoryCard {panel} />
           {:else if activeArea === 'prompt'}
             <PromptLayersCard {panel} />
+          {:else if activeArea === 'llm'}
+            <LLMParamsCard {panel} />
           {:else if activeArea === 'skills'}
             <SkillsCard {panel} />
           {:else if activeArea === 'mcp'}
@@ -218,6 +227,9 @@
     flex: 1;
     min-width: 0;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
     overflow-y: auto;
     scrollbar-gutter: stable;
   }

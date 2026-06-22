@@ -39,7 +39,9 @@ import type {
 	AgentConfigSkillSummary,
 	AgentConfigSkillInput,
 	AgentConfigDiff,
-	AgentConfigMCPConnectionDescriptor
+	AgentConfigMCPConnectionDescriptor,
+	AgentConfigLLMParams,
+	AgentConfigPayload
 } from '$lib/protocol/agentconfig.js';
 
 /** The default agent the panel targets when no `?agent=` is supplied — the
@@ -59,7 +61,7 @@ export const MCP_CONNECTION_EVENT_TYPES = [
 ] as const;
 
 /**
- * The five control-plane areas the panel exposes, in display order. The
+ * The six control-plane areas the panel exposes, in display order. The
  * panel renders a left sub-nav rail of these (the Settings page's
  * single-section vocabulary — CONVENTIONS.md §3): exactly ONE area is in
  * view at a time. The ids match the per-section `data-testid`s the e2e
@@ -68,6 +70,7 @@ export const MCP_CONNECTION_EVENT_TYPES = [
 export const AGENT_CONFIG_AREAS = [
 	{ id: 'revisions', label: 'Revision history' },
 	{ id: 'prompt', label: 'Layered prompt' },
+	{ id: 'llm', label: 'Model & sampling' },
 	{ id: 'skills', label: 'Skills' },
 	{ id: 'mcp', label: 'MCP policy' },
 	{ id: 'add-connection', label: 'Add connection' }
@@ -111,6 +114,44 @@ export function describeError(e: unknown): PageError {
 		return { code: 'runtime_error', message: e.message };
 	}
 	return { code: 'runtime_error', message: 'Unknown error' };
+}
+
+/** shortRevision renders a copy-friendly short revision id (first 12 chars). */
+export function shortRevision(id: string): string {
+	return id.length > 12 ? `${id.slice(0, 12)}…` : id;
+}
+
+/** The display label for each config section, used by the derived
+ * per-revision change summary. */
+const SECTION_LABELS: { key: keyof AgentConfigPayload; label: string }[] = [
+	{ key: 'prompt_layers', label: 'Prompt' },
+	{ key: 'llm_params', label: 'Model & sampling' },
+	{ key: 'skills', label: 'Skills' },
+	{ key: 'tool_exposure', label: 'MCP policy' },
+	{ key: 'connections', label: 'Connections' }
+];
+
+/**
+ * changedSectionLabels compares two config payloads section-by-section and
+ * returns the display labels of the sections that differ, in display order.
+ * The payloads are the server's canonical (normalised, sorted) form, so a
+ * stable JSON encoding is an exact section-equality test. A nil section on
+ * one side and a present section on the other counts as a change. Pure;
+ * exported for the unit suite that pins each section's mapping.
+ */
+export function changedSectionLabels(
+	from: AgentConfigPayload | undefined,
+	to: AgentConfigPayload | undefined
+): string[] {
+	const a = from ?? {};
+	const b = to ?? {};
+	const out: string[] = [];
+	for (const { key, label } of SECTION_LABELS) {
+		if (JSON.stringify(a[key] ?? null) !== JSON.stringify(b[key] ?? null)) {
+			out.push(label);
+		}
+	}
+	return out;
 }
 
 /**
@@ -161,9 +202,6 @@ export class AgentConfigPanelState {
 	rollbackBusy = $state<string | null>(null);
 	rollbackError = $state<PageError | null>(null);
 	rolledBackTo = $state<string | null>(null);
-	/** Confirmation gate for rollback — overridable in tests. */
-	confirmRollback: (revisionId: string) => boolean = (revisionId) =>
-		globalThis.confirm?.(`Roll the active config back to revision ${revisionId}?`) ?? false;
 
 	/* ---- skills (92c) ---------------------------------------------- */
 	skills = $state<AgentConfigSkillSummary[]>([]);
@@ -191,6 +229,42 @@ export class AgentConfigPanelState {
 	promptPhase = $state<AreaPhase>('idle');
 	promptError = $state<PageError | null>(null);
 	promptSaved = $state<boolean>(false);
+
+	/* ---- model & sampling — per-agent LLM params (92j/92i) --------- */
+	/** The per-agent LLM-params form fields. The numeric fields bind to
+	 * `<input type="number">`, so Svelte holds them as `number | null` (an
+	 * empty input is `null` — "inherit the next layer": the tenant-wide
+	 * baseline, then config). Model + reasoning-effort are text/select. */
+	llmModel = $state<string>('');
+	llmTemperature = $state<number | null>(null);
+	llmMaxTokens = $state<number | null>(null);
+	llmReasoningEffort = $state<string>('');
+	llmPhase = $state<AreaPhase>('idle');
+	llmError = $state<PageError | null>(null);
+	llmSaved = $state<boolean>(false);
+
+	/* ---- atomic multi-section staging — "Save all" (92i) ----------- */
+	/** Per-form-area dirty flags: an edit in an area sets its flag; a
+	 * successful save (per-area or Save-all) or a discard clears it. The
+	 * Save-all bar reads {@link stagedAreaCount}. Skills + connections are
+	 * managed via discrete list operations (upsert/delete/add), not the
+	 * staged form, so they are not part of the Save-all payload. */
+	promptDirty = $state<boolean>(false);
+	exposureDirty = $state<boolean>(false);
+	llmDirty = $state<boolean>(false);
+	saveAllPhase = $state<AreaPhase>('idle');
+	saveAllError = $state<PageError | null>(null);
+	saveAllSaved = $state<boolean>(false);
+
+	/* ---- diff-before-rollback preview (92i) ------------------------ */
+	/** The revision a rollback is being previewed against (the modal target),
+	 * or null when no preview is open. A rollback NEVER repoints blindly: the
+	 * operator confirms against the structured `agent_config.diff` (active →
+	 * target) rendered in the preview. */
+	rollbackTarget = $state<string | null>(null);
+	rollbackPreviewDiff = $state<AgentConfigDiff | null>(null);
+	rollbackPreviewPhase = $state<AreaPhase>('idle');
+	rollbackPreviewError = $state<PageError | null>(null);
 
 	/* ---- add MCP connection (92f) ---------------------------------- */
 	connName = $state<string>('');
@@ -220,6 +294,62 @@ export class AgentConfigPanelState {
 	 * newest-first — the pause/resume + attach-lifecycle feed. */
 	get mcpEvents() {
 		return this.subscription?.events ?? [];
+	}
+
+	/** Count of form areas with unsaved staged edits (prompt / model &
+	 * sampling / MCP exposure). Skills + connections are discrete list
+	 * operations (upsert / delete / add), not staged into the Save-all
+	 * payload, so they are not counted. */
+	get stagedAreaCount(): number {
+		return (this.promptDirty ? 1 : 0) + (this.exposureDirty ? 1 : 0) + (this.llmDirty ? 1 : 0);
+	}
+
+	/** True when at least one form area has staged, unsaved edits. */
+	get hasStagedChanges(): boolean {
+		return this.stagedAreaCount > 0;
+	}
+
+	/**
+	 * revisionSummary derives a human-readable one-line description of what a
+	 * revision changed versus its PARENT — purely from the payloads
+	 * `list_revisions` already returns (no extra Protocol round-trip, so the
+	 * history list is legible without N diff calls). The first revision (no
+	 * parent) is "Initial configuration". A revision whose `content_hash`
+	 * matches an EARLIER revision in the chain is a revert-by-re-set and is
+	 * labelled "Reverted to <short-id>". Otherwise it lists the sections that
+	 * changed (e.g. "Prompt + Model & sampling"). An empty change set (only
+	 * metadata moved) reads "No section changes".
+	 */
+	revisionSummary(rev: AgentConfigRevisionView): string {
+		if (rev.parent_revision_id === undefined || rev.parent_revision_id === '') {
+			return 'Initial configuration';
+		}
+		// Revert detection: a content_hash equal to a STRICTLY-OLDER ancestor's
+		// (NOT the direct parent — that would be a no-op re-set, handled below as
+		// "No section changes") means this revision re-pinned that ancestor's
+		// exact payload.
+		const idx = this.revisions.findIndex((r) => r.revision_id === rev.revision_id);
+		if (idx >= 0) {
+			for (let j = idx + 1; j < this.revisions.length; j++) {
+				const older = this.revisions[j];
+				if (
+					older.content_hash !== '' &&
+					older.content_hash === rev.content_hash &&
+					older.revision_id !== rev.parent_revision_id
+				) {
+					return `Reverted to ${shortRevision(older.revision_id)}`;
+				}
+			}
+		}
+		const parent = this.revisions.find((r) => r.revision_id === rev.parent_revision_id);
+		if (parent === undefined) {
+			// The chain is always fully loaded in the shipped path (listRevisions
+			// has no limit), so this is defensive: don't diff against {} (which
+			// would over-report every section as changed) — name the gap instead.
+			return `Changes from ${shortRevision(rev.parent_revision_id)} (earlier revisions not loaded)`;
+		}
+		const changed = changedSectionLabels(parent.payload, rev.payload);
+		return changed.length === 0 ? 'No section changes' : changed.join(' + ');
 	}
 
 	/* ================================================================ */
@@ -281,16 +411,31 @@ export class AgentConfigPanelState {
 		this.subscription = sub;
 
 		try {
-			const [get, list, skills] = await Promise.all([
+			// The CORE reads (the active revision + the history) gate the panel —
+			// these are the agent-config control plane proper. Skills control is
+			// an OPTIONAL surface layered on top (a SkillStore must be wired), so
+			// it is fetched SEPARATELY and degrades on its own without sinking the
+			// whole panel (the revisions / prompt / model-&-sampling / MCP areas
+			// don't need it — §17.6: a live runtime without skills wired must
+			// still show the revision UX).
+			const [get, list] = await Promise.all([
 				this.#client.agentConfig.get(this.agentId),
-				this.#client.agentConfig.listRevisions(this.agentId),
-				this.#client.agentConfig.skillsList(this.agentId)
+				this.#client.agentConfig.listRevisions(this.agentId)
 			]);
 			this.revisions = list.revisions;
 			this.activeRevisionId = get.revision?.revision_id ?? '';
 			this.seedFromRevision(get.revision ?? null);
-			this.skills = skills.skills;
-			this.skillsPhase = 'ready';
+			try {
+				const skills = await this.#client.agentConfig.skillsList(this.agentId);
+				this.skills = skills.skills;
+				this.skillsPhase = 'ready';
+			} catch (e) {
+				// Skills control not wired (unknown_method) — surface it in the
+				// skills area only, keep the rest of the panel live.
+				this.skills = [];
+				this.skillsError = describeError(e);
+				this.skillsPhase = 'error';
+			}
 			// Default the diff selection to the two newest revisions.
 			if (this.revisions.length >= 2) {
 				this.toRevision = this.revisions[0].revision_id;
@@ -330,13 +475,23 @@ export class AgentConfigPanelState {
 		this.subscription = null;
 	}
 
-	/** Seeds the prompt + exposure form fields from an active revision. */
+	/** Seeds the prompt + exposure + model-&-sampling form fields from an
+	 * active revision and clears the staged-edit dirty flags (the form now
+	 * mirrors the persisted active revision). */
 	private seedFromRevision(rev: AgentConfigRevisionView | null): void {
 		const payload = rev?.payload;
 		this.promptBase = payload?.prompt_layers?.base ?? '';
 		this.promptUser = payload?.prompt_layers?.user ?? '';
 		this.pausedServers = [...(payload?.tool_exposure?.paused_servers ?? [])];
 		this.disabledTools = [...(payload?.tool_exposure?.disabled_tools ?? [])];
+		const llm = payload?.llm_params;
+		this.llmModel = llm?.model ?? '';
+		this.llmTemperature = llm?.temperature ?? null;
+		this.llmMaxTokens = llm?.max_tokens ?? null;
+		this.llmReasoningEffort = llm?.reasoning_effort ?? '';
+		this.promptDirty = false;
+		this.exposureDirty = false;
+		this.llmDirty = false;
 	}
 
 	/* ================================================================ */
@@ -364,17 +519,64 @@ export class AgentConfigPanelState {
 		}
 	}
 
-	/** Rolls the active pointer back to a revision (admin-gated; confirmed). */
-	async rollback(revisionId: string): Promise<void> {
+	/**
+	 * requestRollback opens the diff-before-rollback preview: it fetches the
+	 * structured `agent_config.diff` (active → target) and surfaces it for
+	 * explicit confirmation. The rollback NEVER repoints blindly — it only
+	 * fires from {@link confirmRollbackPreview} after the operator has seen the
+	 * exact delta. Admin-gated; a no-op for the already-active revision or when
+	 * the agent has no active revision to diff against.
+	 */
+	async requestRollback(revisionId: string): Promise<void> {
 		if (this.#client === null || !this.hasAdminScope) return;
+		if (revisionId === this.activeRevisionId || this.activeRevisionId === '') return;
+		this.rollbackTarget = revisionId;
+		this.rollbackPreviewDiff = null;
+		this.rollbackPreviewError = null;
+		this.rollbackError = null;
+		this.rolledBackTo = null;
+		this.rollbackPreviewPhase = 'loading';
+		try {
+			// active → target: the delta reverting to `target` will apply.
+			const resp = await this.#client.agentConfig.diff(
+				this.agentId,
+				this.activeRevisionId,
+				revisionId
+			);
+			this.rollbackPreviewDiff = resp.diff;
+			this.rollbackPreviewPhase = 'ready';
+		} catch (e) {
+			this.rollbackPreviewError = describeError(e);
+			this.rollbackPreviewPhase = 'error';
+		}
+	}
+
+	/** Cancels the rollback preview without writing — a pure no-op (the
+	 * active pointer is untouched). */
+	cancelRollbackPreview(): void {
+		this.rollbackTarget = null;
+		this.rollbackPreviewDiff = null;
+		this.rollbackPreviewPhase = 'idle';
+		this.rollbackPreviewError = null;
+	}
+
+	/**
+	 * confirmRollbackPreview repoints the active pointer to the previewed
+	 * target revision — the only path that actually rolls back, reached only
+	 * after the operator confirmed the rendered diff (never a blind repoint).
+	 * Admin-gated.
+	 */
+	async confirmRollbackPreview(): Promise<void> {
+		const revisionId = this.rollbackTarget;
+		if (this.#client === null || !this.hasAdminScope || revisionId === null) return;
 		if (this.rollbackBusy !== null) return;
-		if (!this.confirmRollback(revisionId)) return;
 		this.rollbackBusy = revisionId;
 		this.rollbackError = null;
 		this.rolledBackTo = null;
 		try {
 			await this.#client.agentConfig.rollback(this.agentId, revisionId);
 			this.rolledBackTo = revisionId;
+			this.cancelRollbackPreview();
 			await this.reload();
 		} catch (e) {
 			this.rollbackError = describeError(e);
@@ -447,6 +649,17 @@ export class AgentConfigPanelState {
 		if (this.#client === null) return;
 		const resp = await this.#client.agentConfig.listRevisions(this.agentId);
 		this.revisions = resp.revisions;
+		// Every caller of reloadRevisions just RECORDED a new revision (a per-area
+		// save / skill upsert / connection add), which the registry makes the
+		// active pointer. listRevisions is newest-first, so revisions[0] is that
+		// new active revision — keep activeRevisionId in lockstep so a later
+		// Save-all bases its whole-envelope merge on the TRUE active payload (not
+		// a stale pre-write one, which would DROP a just-added skill/connection),
+		// and so the active badge / rollback baseline / diff direction are
+		// correct. (A rollback REPOINTS to an existing revision without adding a
+		// row, so it goes through the full reload() — which re-reads the active
+		// pointer via agent_config.get — not this path.)
+		this.activeRevisionId = resp.revisions[0]?.revision_id ?? this.activeRevisionId;
 	}
 
 	/* ================================================================ */
@@ -457,6 +670,8 @@ export class AgentConfigPanelState {
 	 * until {@link saveExposure}). */
 	toggleServerPaused(server: string): void {
 		this.exposureSaved = false;
+		this.exposureDirty = true;
+		this.saveAllSaved = false;
 		this.pausedServers = this.pausedServers.includes(server)
 			? this.pausedServers.filter((s) => s !== server)
 			: [...this.pausedServers, server];
@@ -466,6 +681,8 @@ export class AgentConfigPanelState {
 	 * `<source>_<tool>` (the exposure wire convention). */
 	toggleToolDisabled(toolKey: string): void {
 		this.exposureSaved = false;
+		this.exposureDirty = true;
+		this.saveAllSaved = false;
 		this.disabledTools = this.disabledTools.includes(toolKey)
 			? this.disabledTools.filter((t) => t !== toolKey)
 			: [...this.disabledTools, toolKey];
@@ -484,6 +701,7 @@ export class AgentConfigPanelState {
 				disabled_tools: this.disabledTools
 			});
 			this.exposureSaved = true;
+			this.exposureDirty = false;
 			this.exposurePhase = 'ready';
 			await this.reloadRevisions();
 		} catch (e) {
@@ -496,9 +714,12 @@ export class AgentConfigPanelState {
 	/* Layered prompt (92e)                                              */
 	/* ================================================================ */
 
-	/** Marks the prompt form edited (clears the saved confirmation). */
+	/** Marks the prompt form edited (clears the saved confirmation + stages
+	 * the prompt area for Save-all). */
 	markPromptEdited(): void {
 		this.promptSaved = false;
+		this.promptDirty = true;
+		this.saveAllSaved = false;
 	}
 
 	/** Persists the operator base layer (and the user layer, read-only in
@@ -514,12 +735,142 @@ export class AgentConfigPanelState {
 				user: this.promptUser
 			});
 			this.promptSaved = true;
+			this.promptDirty = false;
 			this.promptPhase = 'ready';
 			await this.reloadRevisions();
 		} catch (e) {
 			this.promptError = describeError(e);
 			this.promptPhase = 'error';
 		}
+	}
+
+	/* ================================================================ */
+	/* Model & sampling — per-agent LLM params (92j/92i)                 */
+	/* ================================================================ */
+
+	/** Marks the model-&-sampling form edited (stages the area for Save-all). */
+	markLlmEdited(): void {
+		this.llmSaved = false;
+		this.llmDirty = true;
+		this.saveAllSaved = false;
+	}
+
+	/**
+	 * buildLLMParams projects the model-&-sampling form fields onto the wire
+	 * shape. An empty field is OMITTED (inherit the next layer — the
+	 * tenant-wide baseline, then config). The numeric fields bind to number
+	 * inputs (so they are already `number | null`); the sampling RANGES are
+	 * validated server-side at set time (ErrInvalidLLMParams → the inline
+	 * error), so the client does not re-validate. An all-empty form returns
+	 * `undefined`.
+	 */
+	private buildLLMParams(): AgentConfigLLMParams | undefined {
+		const params: AgentConfigLLMParams = {};
+		const model = this.llmModel.trim();
+		if (model !== '') params.model = model;
+		const re = this.llmReasoningEffort.trim();
+		if (re !== '') params.reasoning_effort = re;
+		if (this.llmTemperature !== null) params.temperature = this.llmTemperature;
+		if (this.llmMaxTokens !== null) params.max_tokens = this.llmMaxTokens;
+		return Object.keys(params).length > 0 ? params : undefined;
+	}
+
+	/** Persists the model-&-sampling section alone (`set_llm_params`); records
+	 * a revision. A set model + the sampling ranges are validated server-side
+	 * at set time (the rejection surfaces inline — never silently passed
+	 * through). */
+	async saveLlmParams(): Promise<void> {
+		if (this.#client === null || !this.hasAdminScope) return;
+		this.llmPhase = 'saving';
+		this.llmError = null;
+		this.llmSaved = false;
+		try {
+			await this.#client.agentConfig.setLlmParams(this.agentId, this.buildLLMParams() ?? {});
+			this.llmSaved = true;
+			this.llmDirty = false;
+			this.llmPhase = 'ready';
+			await this.reloadRevisions();
+		} catch (e) {
+			this.llmError = describeError(e);
+			this.llmPhase = 'error';
+		}
+	}
+
+	/* ================================================================ */
+	/* Atomic multi-section save — "Save all" (92i)                      */
+	/* ================================================================ */
+
+	/** The active revision's payload (or {} when none) — the base the
+	 * Save-all merge carries the non-form sections (skills / connections)
+	 * forward from. */
+	private activePayload(): AgentConfigPayload {
+		const active = this.revisions.find((r) => r.revision_id === this.activeRevisionId);
+		return active?.payload ?? {};
+	}
+
+	/**
+	 * saveAll commits the staged form edits across every area as ONE
+	 * `set_revision` (the full merged payload) — one revision, one
+	 * `agent.config.revised` event, one diffable unit (the operator's "change
+	 * prompt + temperature + model in one revision"). `set_revision` is a
+	 * whole-envelope replace, so the merged payload is built from the CURRENT
+	 * form values for the three form sections (prompt / model-&-sampling / MCP
+	 * exposure) PLUS the non-form sections (skills / connections) carried
+	 * forward from the active revision — so unedited sections are preserved.
+	 * A failed write keeps the staged edits + surfaces the error (no silent
+	 * drop — §13); a confirmed success re-seeds the forms (clearing dirty).
+	 */
+	async saveAll(): Promise<void> {
+		if (this.#client === null || !this.hasAdminScope) return;
+		if (!this.hasStagedChanges) return;
+		const base = this.activePayload();
+		const payload: AgentConfigPayload = {
+			skills: base.skills,
+			connections: base.connections
+		};
+		if (this.promptBase !== '' || this.promptUser !== '') {
+			payload.prompt_layers = {
+				base: this.promptBase || undefined,
+				user: this.promptUser || undefined
+			};
+		}
+		if (this.pausedServers.length > 0 || this.disabledTools.length > 0) {
+			payload.tool_exposure = {
+				paused_servers: this.pausedServers,
+				disabled_tools: this.disabledTools
+			};
+		}
+		const llm = this.buildLLMParams();
+		if (llm !== undefined) {
+			payload.llm_params = llm;
+		}
+		this.saveAllPhase = 'saving';
+		this.saveAllError = null;
+		this.saveAllSaved = false;
+		try {
+			await this.#client.agentConfig.setRevision(this.agentId, payload);
+			this.saveAllSaved = true;
+			this.saveAllPhase = 'ready';
+			// Re-seed the forms + clear every dirty flag from the new active
+			// revision (the next-turn projection — D-025).
+			await this.reload();
+		} catch (e) {
+			this.saveAllError = describeError(e);
+			this.saveAllPhase = 'error';
+		}
+	}
+
+	/** discardStaged drops all staged form edits, re-seeding the forms from
+	 * the active revision (no write). */
+	discardStaged(): void {
+		const active = this.revisions.find((r) => r.revision_id === this.activeRevisionId) ?? null;
+		this.seedFromRevision(active);
+		this.saveAllSaved = false;
+		this.saveAllError = null;
+		this.saveAllPhase = 'idle';
+		this.promptSaved = false;
+		this.exposureSaved = false;
+		this.llmSaved = false;
 	}
 
 	/* ================================================================ */

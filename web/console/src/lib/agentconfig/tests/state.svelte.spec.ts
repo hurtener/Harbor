@@ -17,7 +17,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { STORAGE_KEYS } from '$lib/connection.js';
-import { AgentConfigPanelState, DEFAULT_AGENT_ID, AGENT_CONFIG_AREAS } from '../state.svelte.js';
+import {
+	AgentConfigPanelState,
+	DEFAULT_AGENT_ID,
+	AGENT_CONFIG_AREAS,
+	changedSectionLabels,
+	shortRevision
+} from '../state.svelte.js';
 import { ProtocolError } from '$lib/protocol/errors.js';
 import type { ProtocolClient } from '$lib/protocol/harbor.js';
 
@@ -67,13 +73,16 @@ function fakeClient(overrides: Record<string, unknown> = {}): ProtocolClient {
 				skills: { added: ['recap'] },
 				tool_exposure: {},
 				prompt_layers: { base_changed: true, base_from: '', base_to: 'You are a base.', user_changed: false },
-				connections: {}
+				connections: {},
+				llm_params: { model_changed: false, temperature_changed: false, max_tokens_changed: false, reasoning_effort_changed: false }
 			},
 			protocol_version: '0.1.0'
 		})),
 		rollback: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
+		setRevision: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
 		setToolExposure: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
 		setPromptLayers: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
+		setLlmParams: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
 		skillsUpsert: vi.fn(async () => ({ revision: ACTIVE_REVISION, skill: { name: 's' }, protocol_version: '0.1.0' })),
 		skillsDelete: vi.fn(async () => ({ revision: ACTIVE_REVISION, protocol_version: '0.1.0' })),
 		addMcpConnection: vi.fn(async () => ({
@@ -105,13 +114,14 @@ afterEach(() => {
 });
 
 describe('AGENT_CONFIG_AREAS — the rail descriptor (single-section composition)', () => {
-	it('lists the five control-plane areas in display order with rail-matching ids', () => {
+	it('lists the six control-plane areas in display order with rail-matching ids', () => {
 		// The panel renders these as a left sub-nav rail (the Settings
 		// single-section model); the ids must match the per-section
-		// `data-testid`s the e2e spec asserts.
+		// `data-testid`s the e2e spec asserts. 92i adds "Model & sampling".
 		expect(AGENT_CONFIG_AREAS.map((a) => a.id)).toEqual([
 			'revisions',
 			'prompt',
+			'llm',
 			'skills',
 			'mcp',
 			'add-connection'
@@ -119,6 +129,7 @@ describe('AGENT_CONFIG_AREAS — the rail descriptor (single-section composition
 		expect(AGENT_CONFIG_AREAS.map((a) => a.label)).toEqual([
 			'Revision history',
 			'Layered prompt',
+			'Model & sampling',
 			'Skills',
 			'MCP policy',
 			'Add connection'
@@ -157,6 +168,27 @@ describe('AgentConfigPanelState — four-state contract', () => {
 		await state.load(fakeClient({ get: vi.fn(async () => Promise.reject(new Error('boom'))) }));
 		expect(state.status).toBe('error');
 		expect(state.error?.message).toContain('boom');
+	});
+
+	it('degrades gracefully when skills control is not wired (panel still ready)', async () => {
+		// §17.6 — a live runtime without a SkillStore returns unknown_method on
+		// skills.list. The core reads (active revision + history) gate the panel;
+		// a skills-list failure must NOT sink the whole panel (the revisions /
+		// prompt / model-&-sampling / MCP areas don't need skills).
+		seedConnection();
+		const state = new AgentConfigPanelState();
+		await state.load(
+			fakeClient({
+				skillsList: vi.fn(async () =>
+					Promise.reject(new ProtocolError('unknown_method', 'skills control not wired', 501))
+				)
+			})
+		);
+		expect(state.status).toBe('ready'); // panel is usable
+		expect(state.revisions.length).toBeGreaterThan(0); // core read succeeded
+		expect(state.skills).toEqual([]); // skills area degraded
+		expect(state.skillsPhase).toBe('error');
+		expect(state.skillsError?.code).toBe('unknown_method');
 	});
 
 	it('a non-admin client routes to the info branch UP-FRONT, without a doomed read', async () => {
@@ -200,10 +232,14 @@ describe('AgentConfigPanelState — admin-scope gate', () => {
 		await state.load(client);
 		expect(state.hasAdminScope).toBe(false);
 
-		state.confirmRollback = () => true;
-		await state.rollback('rev-1');
+		await state.requestRollback('rev-1');
+		await state.confirmRollbackPreview();
 		await state.savePrompt();
 		await state.saveExposure();
+		state.llmModel = 'model-x';
+		await state.saveLlmParams();
+		state.promptDirty = true;
+		await state.saveAll();
 		state.skillName = 'x';
 		state.skillTrigger = 'y';
 		await state.addSkill();
@@ -211,9 +247,12 @@ describe('AgentConfigPanelState — admin-scope gate', () => {
 		await state.addConnection();
 
 		const mocks = ac(client);
+		expect(mocks.diff).not.toHaveBeenCalled(); // requestRollback no-ops for non-admin
 		expect(mocks.rollback).not.toHaveBeenCalled();
 		expect(mocks.setPromptLayers).not.toHaveBeenCalled();
 		expect(mocks.setToolExposure).not.toHaveBeenCalled();
+		expect(mocks.setLlmParams).not.toHaveBeenCalled();
+		expect(mocks.setRevision).not.toHaveBeenCalled();
 		expect(mocks.skillsUpsert).not.toHaveBeenCalled();
 		expect(mocks.addMcpConnection).not.toHaveBeenCalled();
 	});
@@ -238,25 +277,51 @@ describe('AgentConfigPanelState — the five areas drive their client calls', ()
 		expect(state.diff?.skills.added).toEqual(['recap']);
 	});
 
-	it('rollback (admin + confirmed) calls rollback and records the target', async () => {
+	it('requestRollback fetches the active→target diff and does NOT roll back yet', async () => {
 		seedConnection();
 		const client = fakeClient();
 		const state = new AgentConfigPanelState();
-		await state.load(client);
-		state.confirmRollback = () => true;
-		await state.rollback('rev-1');
-		expect(ac(client).rollback).toHaveBeenCalledWith(DEFAULT_AGENT_ID, 'rev-1');
-		expect(state.rolledBackTo).toBe('rev-1');
+		await state.load(client); // active = rev-2
+		await state.requestRollback('rev-1');
+		// The preview diffs active (rev-2) → target (rev-1); rollback is NOT fired.
+		expect(ac(client).diff).toHaveBeenCalledWith(DEFAULT_AGENT_ID, 'rev-2', 'rev-1');
+		expect(state.rollbackTarget).toBe('rev-1');
+		expect(state.rollbackPreviewDiff).not.toBeNull();
+		expect(state.rollbackPreviewPhase).toBe('ready');
+		expect(ac(client).rollback).not.toHaveBeenCalled();
 	});
 
-	it('rollback respects the confirmation gate (declined → no call)', async () => {
+	it('confirmRollbackPreview repoints only after the preview is confirmed', async () => {
 		seedConnection();
 		const client = fakeClient();
 		const state = new AgentConfigPanelState();
 		await state.load(client);
-		state.confirmRollback = () => false;
-		await state.rollback('rev-1');
+		await state.requestRollback('rev-1');
+		await state.confirmRollbackPreview();
+		expect(ac(client).rollback).toHaveBeenCalledWith(DEFAULT_AGENT_ID, 'rev-1');
+		expect(state.rolledBackTo).toBe('rev-1');
+		expect(state.rollbackTarget).toBeNull(); // preview closed
+	});
+
+	it('cancelRollbackPreview is a no-op (never repoints)', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.requestRollback('rev-1');
+		state.cancelRollbackPreview();
+		expect(state.rollbackTarget).toBeNull();
 		expect(ac(client).rollback).not.toHaveBeenCalled();
+	});
+
+	it('requestRollback is a no-op for the already-active revision', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client); // active = rev-2
+		await state.requestRollback('rev-2');
+		expect(ac(client).diff).not.toHaveBeenCalled();
+		expect(state.rollbackTarget).toBeNull();
 	});
 
 	it('addSkill validates required fields before calling', async () => {
@@ -341,5 +406,212 @@ describe('AgentConfigPanelState — the five areas drive their client calls', ()
 		expect(state.addConnState).toBe('auth_required');
 		// The secret header material is write-only — cleared after submit.
 		expect(state.connHeaders).toBe('');
+	});
+});
+
+describe('changedSectionLabels — the derived per-revision summary mapping (92i)', () => {
+	it('maps each changed section to its display label, in display order', () => {
+		const from = { prompt_layers: { base: 'a' }, skills: { names: ['x'] } };
+		const to = {
+			prompt_layers: { base: 'b' }, // changed
+			skills: { names: ['x'] }, // unchanged
+			llm_params: { model: 'm' } // added
+		};
+		expect(changedSectionLabels(from, to)).toEqual(['Prompt', 'Model & sampling']);
+	});
+
+	it('treats a present-vs-absent section as a change', () => {
+		expect(changedSectionLabels({}, { tool_exposure: { paused_servers: ['s'] } })).toEqual([
+			'MCP policy'
+		]);
+		expect(changedSectionLabels({ connections: { servers: [] } }, {})).toEqual(['Connections']);
+	});
+
+	it('returns no labels for identical payloads', () => {
+		const p = { prompt_layers: { base: 'a' }, llm_params: { temperature: 0.5 } };
+		expect(changedSectionLabels(p, p)).toEqual([]);
+		expect(changedSectionLabels(undefined, undefined)).toEqual([]);
+	});
+});
+
+describe('AgentConfigPanelState.revisionSummary — derived, client-side (92i)', () => {
+	function withRevisions(revs: unknown[]): AgentConfigPanelState {
+		const s = new AgentConfigPanelState();
+		// revisions is public reactive state; seed it directly (no client).
+		(s as unknown as { revisions: unknown[] }).revisions = revs;
+		return s;
+	}
+
+	it('labels the first revision (no parent) "Initial configuration"', () => {
+		const rev = { revision_id: 'r1', content_hash: 'h1', created_at: '', payload: {} };
+		const s = withRevisions([rev]);
+		expect(s.revisionSummary(rev as never)).toBe('Initial configuration');
+	});
+
+	it('lists the changed sections vs the parent', () => {
+		const parent = { revision_id: 'r1', content_hash: 'h1', created_at: '', payload: { prompt_layers: { base: 'a' } } };
+		const child = {
+			revision_id: 'r2',
+			parent_revision_id: 'r1',
+			content_hash: 'h2',
+			created_at: '',
+			payload: { prompt_layers: { base: 'a' }, llm_params: { model: 'm' } }
+		};
+		const s = withRevisions([child, parent]); // newest-first
+		expect(s.revisionSummary(child as never)).toBe('Model & sampling');
+	});
+
+	it('recognises a revert-by-re-set (content_hash matches an older revision)', () => {
+		const r1 = { revision_id: 'rev-original', content_hash: 'hA', created_at: '', payload: { prompt_layers: { base: 'a' } } };
+		const r2 = { revision_id: 'r2', parent_revision_id: 'rev-original', content_hash: 'hB', created_at: '', payload: { prompt_layers: { base: 'b' } } };
+		const r3 = { revision_id: 'r3', parent_revision_id: 'r2', content_hash: 'hA', created_at: '', payload: { prompt_layers: { base: 'a' } } };
+		const s = withRevisions([r3, r2, r1]); // newest-first
+		expect(s.revisionSummary(r3 as never)).toBe(`Reverted to ${shortRevision('rev-original')}`);
+	});
+});
+
+describe('AgentConfigPanelState — atomic "Save all" (92i)', () => {
+	it('commits staged edits across areas as ONE set_revision (full merged payload)', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client); // active = rev-2 (prompt + exposure + skills)
+		expect(state.stagedAreaCount).toBe(0);
+
+		// Edit prompt + model & sampling (two areas).
+		state.promptBase = 'A new base.';
+		state.markPromptEdited();
+		state.llmModel = 'model-x';
+		state.llmTemperature = 0.4;
+		state.markLlmEdited();
+		expect(state.stagedAreaCount).toBe(2);
+		expect(state.hasStagedChanges).toBe(true);
+
+		await state.saveAll();
+
+		const mocks = ac(client);
+		// Exactly ONE write — set_revision — not the per-section verbs.
+		expect(mocks.setRevision).toHaveBeenCalledTimes(1);
+		expect(mocks.setPromptLayers).not.toHaveBeenCalled();
+		expect(mocks.setLlmParams).not.toHaveBeenCalled();
+		const payload = mocks.setRevision.mock.calls[0][1];
+		expect(payload.prompt_layers.base).toBe('A new base.');
+		expect(payload.llm_params).toEqual({ model: 'model-x', temperature: 0.4 });
+		// Non-form sections carried forward from the active revision (whole-
+		// envelope replace preserves them).
+		expect(payload.skills).toEqual({ names: ['recap'] });
+		// The exposure section (seeded, unedited) is reproduced from the form.
+		expect(payload.tool_exposure).toEqual({
+			paused_servers: ['github'],
+			disabled_tools: ['github_delete']
+		});
+	});
+
+	it('saveAll no-ops when nothing is staged', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.saveAll();
+		expect(ac(client).setRevision).not.toHaveBeenCalled();
+	});
+
+	it('a prior per-area write advances activeRevisionId so Save-all carries the FRESH sections (no data loss)', async () => {
+		// Regression for the stale-activeRevisionId data-loss bug: after a
+		// discrete write (e.g. add-connection) the registry advances the active
+		// pointer to the NEW revision (which carries the just-added section).
+		// A later Save-all must base its whole-envelope merge on THAT revision,
+		// not the pre-write one — else the connection/skills are dropped.
+		seedConnection();
+		// rev-3 is the post-add active revision: it carries a NEW connection +
+		// the skills, and is newest in the list (newest-first).
+		const rev3 = {
+			revision_id: 'rev-3',
+			parent_revision_id: 'rev-2',
+			content_hash: 'h3',
+			created_at: '2026-06-18T11:00:00Z',
+			payload: {
+				skills: { names: ['recap'] },
+				connections: { servers: [{ name: 'github', transport: 'stdio' }] }
+			}
+		};
+		const client = fakeClient({
+			// After the per-area save, the history (newest-first) leads with rev-3.
+			listRevisions: vi.fn(async () => ({
+				revisions: [rev3, ACTIVE_REVISION, { revision_id: 'rev-1', content_hash: 'h1', created_at: '2026-06-17T10:00:00Z', payload: {} }],
+				protocol_version: '0.1.0'
+			}))
+		});
+		const state = new AgentConfigPanelState();
+		await state.load(client); // get → ACTIVE_REVISION (rev-2)
+		expect(state.activeRevisionId).toBe('rev-2');
+
+		// A per-area save records rev-3 → reloadRevisions must advance the active id.
+		await state.savePrompt();
+		expect(state.activeRevisionId).toBe('rev-3');
+
+		// Now stage a prompt edit + Save-all: the merged payload must carry the
+		// connection (from rev-3), not drop it.
+		state.promptBase = 'edited again';
+		state.markPromptEdited();
+		await state.saveAll();
+		const payload = ac(client).setRevision.mock.calls[0][1];
+		expect(payload.connections).toEqual({ servers: [{ name: 'github', transport: 'stdio' }] });
+		expect(payload.skills).toEqual({ names: ['recap'] });
+	});
+
+	it('discardStaged drops staged edits and re-seeds the forms (no write)', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.promptBase = 'dirty';
+		state.markPromptEdited();
+		expect(state.hasStagedChanges).toBe(true);
+		state.discardStaged();
+		expect(state.hasStagedChanges).toBe(false);
+		expect(state.promptBase).toBe('You are a base.'); // re-seeded from active
+		expect(ac(client).setRevision).not.toHaveBeenCalled();
+	});
+});
+
+describe('AgentConfigPanelState — model & sampling (92j/92i)', () => {
+	it('saveLlmParams sends the parsed params and clears the dirty flag', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.llmModel = 'model-x';
+		state.llmTemperature = 0.7;
+		state.llmMaxTokens = 2048;
+		state.llmReasoningEffort = 'high';
+		state.markLlmEdited();
+		await state.saveLlmParams();
+		expect(ac(client).setLlmParams).toHaveBeenCalledWith(DEFAULT_AGENT_ID, {
+			model: 'model-x',
+			reasoning_effort: 'high',
+			temperature: 0.7,
+			max_tokens: 2048
+		});
+		expect(state.llmSaved).toBe(true);
+		expect(state.llmDirty).toBe(false);
+	});
+
+	it('saveLlmParams omits the unset (null) numeric fields — inherit the next layer', async () => {
+		seedConnection();
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		// Only a model + reasoning effort; temperature / max-tokens left null
+		// (the number inputs are empty → inherit the tenant baseline).
+		state.llmModel = 'model-x';
+		state.llmReasoningEffort = 'low';
+		state.llmTemperature = null;
+		state.llmMaxTokens = null;
+		await state.saveLlmParams();
+		expect(ac(client).setLlmParams).toHaveBeenCalledWith(DEFAULT_AGENT_ID, {
+			model: 'model-x',
+			reasoning_effort: 'low'
+		});
 	});
 });
