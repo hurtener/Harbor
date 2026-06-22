@@ -17,7 +17,87 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-(Next up: generated per-domain Protocol wire-type modules and the shared chat-module extraction — the D-093 / D-091 follow-ons.)
+(Next up: completing the runtime add-connection OAuth-resume attach + connection
+run-start reconciliation — issue [#375](https://github.com/hurtener/Harbor/issues/375);
+and the generated per-domain Protocol wire-type modules + the shared chat-module
+extraction — the D-093 / D-091 follow-ons.)
+
+## [1.5.0] — 2026-06-22
+
+The **agent-config control plane**: live, audited, versioned control of an
+agent's configuration over the Protocol — prompt, skills, MCP policy,
+connections, and model/sampling — plus the governance LLM-control surface it
+builds on (provider key rotation, tenant-default and per-agent LLM overrides)
+and the durable runtime infrastructure underneath (a StateStore-backed
+distributed bus and a durable TaskService). Every change is additive: the
+Harbor Protocol stays at `0.1.0`, all new configuration is optional, and no
+prior behavior changes. The defining property is **next-turn, snapshot-immutable
+semantics** — a config edit affects only an agent's NEXT run; in-flight runs
+keep the immutable view they snapshotted at run start (the D-025 concurrent-reuse
+contract), so there is no mid-flight mutation, draining, or forcible teardown.
+
+### Added
+
+- **Agent-config control plane (the headline).** A durable, identity-scoped,
+  VERSIONED desired-state registry: every edit is an immutable, content-addressed
+  revision with a parent pointer; the active config is a revision pointer;
+  **rollback is a repoint** (never a mutation); and a server-side **diff**
+  between revisions is a read method plus an `agent.config.revised` event. The
+  admin Protocol family `POST /v1/agent_config/*` covers `get` / `set_revision`
+  / `list_revisions` / `diff` / `rollback` and the per-section convenience verbs
+  — each verb replaces only its own section and preserves its siblings
+  (the bidirectional section-merge invariant). All writes are admin-scoped and
+  identity-mandatory; authority derives from the verified ctx, never the request
+  body. Persisted across the in-memory / SQLite / Postgres driver triad with
+  conformance parity.
+- **Layered system prompt.** An operator-owned `base` layer plus an optional
+  session-scoped `user` layer that composes ABOVE the base without weakening it
+  (`agent_config.set_prompt_layers`) — the composition order is the security
+  boundary.
+- **MCP pause/resume + per-tool policy.** Pause / resume an agent's MCP servers
+  and disable individual tools as next-turn projection (`agent_config.set_tool_exposure`);
+  the live transport stays warm while paused. A paused server's App callbacks
+  are rejected against CURRENT desired state (the planner-snapshot /
+  app-call-current asymmetry), with the operator-legible "paused by an
+  administrator" advisory driven by the canonical event.
+- **Runtime add-connection.** Add a NEW MCP server connection live
+  (`agent_config.add_mcp_connection`) — async dial → `initialize` handshake →
+  discover → register, recorded as a non-secret connection revision; a
+  half-attached server is never registered (fail loud). Adding a stdio server
+  (an RCE surface) is allowlist-gated beyond admin, argv-form only. (An
+  OAuth-required server currently PARKS on the unified pause/resume primitive;
+  completing the resume-to-online attach + connection run-start reconciliation
+  is tracked in [#375](https://github.com/hurtener/Harbor/issues/375).)
+- **Per-agent LLM parameters.** A versioned `model` / `temperature` /
+  `max_tokens` / `reasoning_effort` section (`agent_config.set_llm_params`),
+  resolved at run start as **session › per-agent › tenant-wide baseline ›
+  config**. A pinned model with no configured `ModelProfile` is rejected at set
+  time, never silently.
+- **Skills control.** Manage an agent's skill set over the Protocol
+  (`agent_config.skills.{list,upsert,delete}`) — each membership change is a
+  versioned revision (so skills inherit diff + rollback); a pack-origin skill is
+  never silently overwritten.
+- **Session-user safe subset.** A non-admin, session-scoped lower tier
+  (`agent_config.session.*`): set the user prompt layer, NARROW (never widen)
+  source/tool enablement within the admin-allowed set, and manage ephemeral
+  personal skills — the tier is derived from the verified scope, fail-closed.
+- **Governance LLM controls.** Live, no-redeploy admin control of LLM behavior:
+  `governance.rotate_key` rotates the provider API key (the new key is a secret
+  carried only on the request leg; events carry a fingerprint), and tenant-default
+  overrides (`governance.{set,get}_tenant_overrides`) set a tenant's default
+  model / sampling / additive instructions — composed UNDER the per-agent and
+  per-session layers.
+- **Console agent-config panel.** A consolidated `/agent-config` control panel
+  (admin-gated, four-state `<PageState>`, typed Protocol client) with: a derived
+  **per-revision change summary** (client-side, no extra round-trip), **diff-before-rollback**
+  (a rollback renders the structured diff for explicit confirmation, never a
+  blind repoint), an **atomic multi-section "Save all"** (commit edits across
+  every area as ONE revision), and a per-agent **"Configure"** entry point on the
+  Agents list.
+- **Durable distributed bus.** A StateStore-backed `MessageBus` driver with
+  cross-instance fan-out — the multi-replica substrate for the control plane.
+- **Durable TaskService.** The TaskService backend over an extracted shared task
+  engine, recovering in-flight tasks across a runtime restart.
 
 ## [1.4.1] — 2026-06-18
 
