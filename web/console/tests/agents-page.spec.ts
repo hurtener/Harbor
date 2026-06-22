@@ -173,6 +173,27 @@ test.describe("Console Agents page", () => {
     await expect(page).toHaveURL(/\/agents\/.+/);
   });
 
+  test("(c2) each agent card exposes a Configure link to its agent-config panel", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
+    await helpers.gotoPage("agents");
+    await page.waitForLoadState("load");
+
+    const cardCount = await page.locator("[data-testid='agent-card']").count();
+    test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
+
+    // The per-row Configure entry point (92i discoverability): one click from
+    // the Agents list to that agent's /agent-config panel — not buried behind
+    // the detail page. The href carries the agent id as the ?agent= deep-link.
+    const configure = page.locator("[data-testid='agent-card-configure']").first();
+    await expect(configure, "the card exposes a Configure link").toBeVisible();
+    await expect(configure).toHaveAttribute("href", /\/agent-config\?agent=.+/);
+  });
+
   test("(d) the detail tab strip cycles through all six tabs", async ({
     page,
     runtime,

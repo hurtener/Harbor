@@ -56,6 +56,15 @@ assert_grep_present "id: 'llm', label: 'Model & sampling'" \
     "${CONSOLE}/agentconfig/state.svelte.ts" \
     'phase 92i: Model & sampling (llm) area registered'
 
+# 4b. Discoverability: the per-agent entry point on the Agents list card
+#     (one click from the list to /agent-config?agent=<id> — not buried).
+assert_grep_present "data-testid=\"agent-card-configure\"" \
+    "${CONSOLE}/components/agents/AgentCard.svelte" \
+    'phase 92i: Agents-list per-card Configure entry point present'
+assert_grep_present "/agent-config\?agent=" \
+    "${CONSOLE}/components/agents/AgentCard.svelte" \
+    'phase 92i: Configure link deep-links the agent id'
+
 # 5. Tokens-only hygiene on the new components (no raw hex / px literals; the
 #    stylelint gate enforces this repo-wide, this is a fast trip-wire).
 for f in SaveAllBar LLMParamsCard; do

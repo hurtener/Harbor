@@ -33,47 +33,92 @@
   }
 </script>
 
-<button
-  type="button"
-  class="card"
-  data-testid="agent-card"
-  data-agent-id={agent.id}
-  onclick={() => onopen(agent.id)}
->
-  <div class="card-head">
-    <span class="name">{agent.name || agent.id}</span>
-    <StatusChip kind={healthKind(agent.health)} label={agent.health} />
+<div class="card">
+  <button
+    type="button"
+    class="card-main"
+    data-testid="agent-card"
+    data-agent-id={agent.id}
+    onclick={() => onopen(agent.id)}
+  >
+    <div class="card-head">
+      <span class="name">{agent.name || agent.id}</span>
+      <StatusChip kind={healthKind(agent.health)} label={agent.health} />
+    </div>
+    <span class="handle mono">{shortID(agent.id)}</span>
+    {#if agent.description}
+      <p class="description">{agent.description}</p>
+    {/if}
+    <div class="badges">
+      <span class="badge" data-testid="agent-card-planner">
+        {agent.planner_type || 'planner: n/a'}
+      </span>
+      <span class="badge">{agent.model || 'model: n/a'}</span>
+      <span class="badge">{agent.tools_count} tools</span>
+      <span class="badge">{agent.mcp_count} MCP</span>
+    </div>
+  </button>
+  <!-- Per-agent entry point to the agent-config control panel (92h/92i):
+       a direct link to this agent's Configure surface from the list, so it
+       is one click away (not buried behind the detail page). A sibling of
+       the navigate-to-detail button (a link nested in a button is invalid). -->
+  <div class="card-actions">
+    <a
+      class="configure"
+      data-testid="agent-card-configure"
+      href={`/agent-config?agent=${encodeURIComponent(agent.id)}`}
+      title="Open this agent's configuration panel"
+    >
+      Configure →
+    </a>
   </div>
-  <span class="handle mono">{shortID(agent.id)}</span>
-  {#if agent.description}
-    <p class="description">{agent.description}</p>
-  {/if}
-  <div class="badges">
-    <span class="badge" data-testid="agent-card-planner">
-      {agent.planner_type || 'planner: n/a'}
-    </span>
-    <span class="badge">{agent.model || 'model: n/a'}</span>
-    <span class="badge">{agent.tools_count} tools</span>
-    <span class="badge">{agent.mcp_count} MCP</span>
-  </div>
-</button>
+</div>
 
 <style>
   .card {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
-    padding: var(--space-3) var(--space-4);
     background: var(--color-surface);
     border: var(--border-hairline);
     border-radius: var(--radius-md);
+    width: 100%;
+    overflow: hidden;
+  }
+
+  .card-main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    background: transparent;
+    border: none;
     text-align: left;
     cursor: pointer;
     width: 100%;
   }
 
-  .card:hover {
+  .card-main:hover {
     background: var(--color-surface-raised);
+  }
+
+  .card-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--space-1) var(--space-3) var(--space-2);
+    border-top: var(--border-hairline);
+  }
+
+  .configure {
+    font-size: var(--text-xs);
+    color: var(--color-accent);
+    text-decoration: none;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+
+  .configure:hover {
+    background: var(--color-surface-raised);
+    text-decoration: underline;
   }
 
   .card-head {
