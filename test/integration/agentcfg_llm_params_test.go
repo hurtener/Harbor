@@ -245,7 +245,7 @@ func TestE2E_AgentCfgLLMParams_ConcurrentResolution(t *testing.T) {
 	// Goroutine baseline restored — ActiveLLMOverrides is synchronous and
 	// must spawn nothing per resolution (§11 leak clause).
 	var after int
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		after = runtime.NumGoroutine()
 		if after <= baseline+2 {
 			break

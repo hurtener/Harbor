@@ -150,7 +150,11 @@ type store struct {
 func (s *store) lockSlot(id identity.Quadruple, agentID string) func() {
 	key := id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID + "\x00" + agentID
 	mu, _ := s.writeLocks.LoadOrStore(key, &sync.Mutex{})
-	m := mu.(*sync.Mutex)
+	m, ok := mu.(*sync.Mutex)
+	if !ok {
+		// Impossible by construction: writeLocks only ever stores *sync.Mutex.
+		panic("agentcfg/sessionoverlay: writeLocks held a non-mutex value")
+	}
 	m.Lock()
 	return m.Unlock
 }

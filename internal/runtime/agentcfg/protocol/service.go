@@ -154,7 +154,11 @@ type Service struct {
 func (s *Service) lockAgent(tenant, agentID string) func() {
 	key := tenant + "\x00" + agentID
 	mu, _ := s.writeLocks.LoadOrStore(key, &sync.Mutex{})
-	m := mu.(*sync.Mutex)
+	m, ok := mu.(*sync.Mutex)
+	if !ok {
+		// Impossible by construction: writeLocks only ever stores *sync.Mutex.
+		panic("agentcfg/protocol: writeLocks held a non-mutex value")
+	}
 	m.Lock()
 	return m.Unlock
 }

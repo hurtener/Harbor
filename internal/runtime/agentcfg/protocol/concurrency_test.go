@@ -29,7 +29,7 @@ func TestService_ConcurrentSameAgentWrites_NoLostSibling(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -106,7 +106,7 @@ func TestService_ConcurrentSameAgentWrites_NoLostSibling(t *testing.T) {
 	// write path is synchronous; allow a brief settle for the just-joined
 	// workers to be reaped before asserting.
 	var after int
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		after = runtime.NumGoroutine()
 		if after <= baseline+2 {
 			break
