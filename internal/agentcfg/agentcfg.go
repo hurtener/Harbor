@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,6 +108,27 @@ type ToolExposure struct {
 	DisabledTools []string `json:"disabled_tools,omitempty"`
 }
 
+// LLMParams pins an agent's sampling defaults as a versioned config
+// section. Every field is pointer-optional: an unset field falls through
+// to the next resolution layer (the tenant-wide baseline, then the config
+// default) — the per-agent layer overrides ONLY the dimensions it sets.
+// This is sampling parameters only; additive system-prompt text lives in
+// PromptLayers (there is one home for prompt text).
+type LLMParams struct {
+	// Model, when set, is the model the agent's next run requests
+	// (overriding the tenant-wide baseline / config default). An empty
+	// string normalises to unset.
+	Model *string `json:"model,omitempty"`
+	// Temperature, when set, is the sampling temperature for the next run.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// MaxTokens, when set, is the per-message output-token ceiling.
+	MaxTokens *int `json:"max_tokens,omitempty"`
+	// ReasoningEffort, when set, is the reasoning-effort hint
+	// ("off" | "low" | "medium" | "high"). An empty string normalises to
+	// unset.
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+}
+
 // MCPTransport is the closed set of transports a runtime-added MCP
 // connection descriptor may declare. The control-plane add path supports
 // MCP over stdio (an operator-supplied argv command) and http (a URL);
@@ -165,6 +187,7 @@ type ConfigPayload struct {
 	ToolExposure *ToolExposure       `json:"tool_exposure,omitempty"`
 	Skills       *SkillsSelection    `json:"skills,omitempty"`
 	Connections  *ConnectionsSection `json:"connections,omitempty"`
+	LLMParams    *LLMParams          `json:"llm_params,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -219,6 +242,9 @@ type Diff struct {
 	// Connections is the structured set-diff of the runtime-added MCP
 	// connection descriptors (by name).
 	Connections ConnectionsDiff
+	// LLMParams is the per-field delta of the per-agent LLM-parameter
+	// section (model / temperature / max-tokens / reasoning-effort).
+	LLMParams LLMParamsDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -283,6 +309,21 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		servers := normalizeConnections(p.Connections.Servers)
 		if len(servers) > 0 {
 			out.Connections = &ConnectionsSection{Servers: servers}
+		}
+	}
+	if p.LLMParams != nil {
+		// Normalise empty Model / ReasoningEffort strings to nil so a
+		// semantically-equivalent "inherit the next layer" state produces one
+		// canonical form (equal states hash equal, no spurious revision, no
+		// phantom diff). A section that normalises to all-nil drops out.
+		lp := &LLMParams{
+			Model:           emptyToNil(p.LLMParams.Model),
+			Temperature:     copyFloatPtr(p.LLMParams.Temperature),
+			MaxTokens:       copyIntPtr(p.LLMParams.MaxTokens),
+			ReasoningEffort: emptyToNil(p.LLMParams.ReasoningEffort),
+		}
+		if lp.Model != nil || lp.Temperature != nil || lp.MaxTokens != nil || lp.ReasoningEffort != nil {
+			out.LLMParams = lp
 		}
 	}
 	return out
@@ -392,6 +433,25 @@ func emptyToNil(s *string) *string {
 	return s
 }
 
+// copyFloatPtr / copyIntPtr return a fresh copy of a numeric pointer (nil
+// stays nil) so the normalised payload never shares a pointer with the
+// caller's input.
+func copyFloatPtr(f *float64) *float64 {
+	if f == nil {
+		return nil
+	}
+	v := *f
+	return &v
+}
+
+func copyIntPtr(i *int) *int {
+	if i == nil {
+		return nil
+	}
+	v := *i
+	return &v
+}
+
 // SkillNames returns the agent's active skills membership from a payload,
 // or nil when the payload pins no skills section. A convenience for the
 // skills consumer.
@@ -451,6 +511,17 @@ func (p ConfigPayload) UserPrompt() (string, bool) {
 	return *p.PromptLayers.User, true
 }
 
+// LLMParamsView returns the agent's per-agent LLM-parameter section from a
+// payload and whether it is set. A nil section returns (nil, false). The
+// returned pointer is the payload's own (read-only) section — callers that
+// mutate must copy first.
+func (p ConfigPayload) LLMParamsView() (*LLMParams, bool) {
+	if p.LLMParams == nil {
+		return nil, false
+	}
+	return p.LLMParams, true
+}
+
 // PromptLayersDiff is the text delta of the base + user prompt layers
 // across two revisions. An unset layer compares as the empty string, so a
 // set→unset change registers as a change to "".
@@ -487,6 +558,83 @@ func DiffPromptLayers(from, to ConfigPayload) PromptLayersDiff {
 		UserFrom:    fu,
 		UserTo:      tu,
 	}
+}
+
+// LLMParamsDiff is the per-field delta of the per-agent LLM-parameter
+// section across two revisions. Each dimension reports whether it changed
+// plus its from / to values (formatted for display; an unset dimension is
+// the empty string). Deterministic.
+type LLMParamsDiff struct {
+	ModelChanged bool
+	ModelFrom    string
+	ModelTo      string
+
+	TemperatureChanged bool
+	TemperatureFrom    string
+	TemperatureTo      string
+
+	MaxTokensChanged bool
+	MaxTokensFrom    string
+	MaxTokensTo      string
+
+	ReasoningEffortChanged bool
+	ReasoningEffortFrom    string
+	ReasoningEffortTo      string
+}
+
+// Changed reports whether any LLM-parameter dimension differs between the
+// two revisions.
+func (d LLMParamsDiff) Changed() bool {
+	return d.ModelChanged || d.TemperatureChanged || d.MaxTokensChanged || d.ReasoningEffortChanged
+}
+
+// DiffLLMParams computes the per-field delta of two per-agent LLM-parameter
+// states. Exported so the diff is one canonical implementation shared by
+// the driver and tests. An unset dimension is compared as the empty string;
+// numeric dimensions are formatted canonically (so 0.7 vs unset registers a
+// change to/from "").
+func DiffLLMParams(from, to ConfigPayload) LLMParamsDiff {
+	fm, ft, fmax, fr := llmParamStrings(from.LLMParams)
+	tm, tt, tmax, tr := llmParamStrings(to.LLMParams)
+	return LLMParamsDiff{
+		ModelChanged: fm != tm,
+		ModelFrom:    fm,
+		ModelTo:      tm,
+
+		TemperatureChanged: ft != tt,
+		TemperatureFrom:    ft,
+		TemperatureTo:      tt,
+
+		MaxTokensChanged: fmax != tmax,
+		MaxTokensFrom:    fmax,
+		MaxTokensTo:      tmax,
+
+		ReasoningEffortChanged: fr != tr,
+		ReasoningEffortFrom:    fr,
+		ReasoningEffortTo:      tr,
+	}
+}
+
+// llmParamStrings renders a (possibly nil) LLM-parameter section to its
+// four canonical display strings (model, temperature, max-tokens,
+// reasoning-effort); an unset section or dimension renders "".
+func llmParamStrings(lp *LLMParams) (model, temperature, maxTokens, reasoningEffort string) {
+	if lp == nil {
+		return "", "", "", ""
+	}
+	if lp.Model != nil {
+		model = *lp.Model
+	}
+	if lp.Temperature != nil {
+		temperature = strconv.FormatFloat(*lp.Temperature, 'g', -1, 64)
+	}
+	if lp.MaxTokens != nil {
+		maxTokens = strconv.Itoa(*lp.MaxTokens)
+	}
+	if lp.ReasoningEffort != nil {
+		reasoningEffort = *lp.ReasoningEffort
+	}
+	return model, temperature, maxTokens, reasoningEffort
 }
 
 // ToolExposureDiff is the structured set-diff of the MCP-exposure /

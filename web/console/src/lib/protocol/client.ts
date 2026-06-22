@@ -58,6 +58,8 @@ import type {
 	AgentConfigRollbackResponse,
 	AgentConfigSetToolExposureResponse,
 	AgentConfigSetPromptLayersResponse,
+	AgentConfigLLMParams,
+	AgentConfigSetLLMParamsResponse,
 	AgentConfigMCPConnectionDescriptor,
 	AgentConfigAddMCPConnectionResponse,
 	AgentConfigSkillInput,
@@ -1048,6 +1050,24 @@ export class AgentConfigNamespace {
 			{
 				agent_id: agentId,
 				prompt_layers: promptLayers as unknown as Record<string, unknown>,
+			},
+		);
+	}
+	/** `agent_config.set_llm_params` — set the per-agent LLM-parameter section
+	 * (model / temperature / max-tokens / reasoning-effort) as a desired-state
+	 * replace of the LLM-params section; records a revision. The prompt-layer +
+	 * skills + tool-exposure + connection sections are preserved. A set model is
+	 * validated against the configured ModelProfiles at set time. The per-agent
+	 * params override the tenant-wide baseline for the agent's next run. */
+	setLlmParams(
+		agentId: string,
+		llmParams: AgentConfigLLMParams,
+	): Promise<AgentConfigSetLLMParamsResponse> {
+		return this.#t.request<AgentConfigSetLLMParamsResponse>(
+			'/v1/agent_config/set_llm_params',
+			{
+				agent_id: agentId,
+				llm_params: llmParams as unknown as Record<string, unknown>,
 			},
 		);
 	}

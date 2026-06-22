@@ -157,6 +157,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSetToolExposure(w, r, body, wireID)
 	case "set_prompt_layers":
 		h.serveSetPromptLayers(w, r, body, wireID)
+	case "set_llm_params":
+		h.serveSetLLMParams(w, r, body, wireID)
 	case "add_mcp_connection":
 		h.serveAddMCPConnection(w, r, body, wireID)
 	case "skills/list":
@@ -310,6 +312,23 @@ func (h *AgentConfigHandler) serveSetPromptLayers(w http.ResponseWriter, r *http
 	resp, err := h.service.SetPromptLayers(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSetPromptLayers, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSetLLMParams(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSetLLMParamsRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSetLLMParams) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SetLLMParams(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSetLLMParams, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -533,6 +552,14 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrInvalidConnection):
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrUnknownModel),
+		errors.Is(err, agentcfgprotocol.ErrInvalidLLMParams):
+		// A pinned model with no configured ModelProfile, or an out-of-range
+		// sampling value, is a CLIENT error (a bad request body), not a server
+		// fault — mirror the governance twin's ErrUnknownModel → 400 mapping
+		// and keep the offending value in the message.
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrCoordinatorUnavailable):

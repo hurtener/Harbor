@@ -229,6 +229,11 @@
           "key": "connections",
           "type": "object",
           "ref": "AgentConfigConnectionsDiff"
+        },
+        {
+          "key": "llm_params",
+          "type": "object",
+          "ref": "AgentConfigLLMParamsDiff"
         }
       ]
     },
@@ -298,6 +303,92 @@
         {
           "key": "protocol_version",
           "type": "string"
+        }
+      ]
+    },
+    "AgentConfigLLMParams": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "model",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "temperature",
+          "type": "number",
+          "optional": true
+        },
+        {
+          "key": "max_tokens",
+          "type": "number",
+          "optional": true
+        },
+        {
+          "key": "reasoning_effort",
+          "type": "string",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigLLMParamsDiff": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "model_changed",
+          "type": "boolean"
+        },
+        {
+          "key": "model_from",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "model_to",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "temperature_changed",
+          "type": "boolean"
+        },
+        {
+          "key": "temperature_from",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "temperature_to",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "max_tokens_changed",
+          "type": "boolean"
+        },
+        {
+          "key": "max_tokens_from",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "max_tokens_to",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "reasoning_effort_changed",
+          "type": "boolean"
+        },
+        {
+          "key": "reasoning_effort_from",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "reasoning_effort_to",
+          "type": "string",
+          "optional": true
         }
       ]
     },
@@ -382,6 +473,12 @@
           "key": "connections",
           "type": "object",
           "ref": "AgentConfigConnections",
+          "optional": true
+        },
+        {
+          "key": "llm_params",
+          "type": "object",
+          "ref": "AgentConfigLLMParams",
           "optional": true
         }
       ]
@@ -689,6 +786,39 @@
           "key": "overlay",
           "type": "object",
           "ref": "AgentConfigSessionOverlay"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigSetLLMParamsRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "llm_params",
+          "type": "object",
+          "ref": "AgentConfigLLMParams"
+        }
+      ]
+    },
+    "AgentConfigSetLLMParamsResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
         },
         {
           "key": "protocol_version",
@@ -6160,6 +6290,7 @@
     "agent_config.session.skills.delete",
     "agent_config.session.skills.list",
     "agent_config.session.skills.upsert",
+    "agent_config.set_llm_params",
     "agent_config.set_prompt_layers",
     "agent_config.set_revision",
     "agent_config.set_tool_exposure",

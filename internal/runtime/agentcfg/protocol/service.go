@@ -65,7 +65,26 @@ var (
 	// ErrSkillsUnavailable — a skills method was called but no SkillStore
 	// was wired into the Service.
 	ErrSkillsUnavailable = errors.New("agentcfg/protocol: skills control not wired on this runtime")
+	// ErrUnknownModel — a set_llm_params (or a set_revision carrying an
+	// LLMParams.Model) named a model with no configured ModelProfile. The
+	// per-agent model is validated at set time (parity with the tenant
+	// model-swap), so an invalid model can never be persisted — fail loud,
+	// never a silent fallback (CLAUDE.md §13).
+	ErrUnknownModel = errors.New("agentcfg/protocol: unknown model (no configured ModelProfile)")
+	// ErrInvalidLLMParams — a set_llm_params (or a set_revision carrying an
+	// LLMParams section) supplied an out-of-range sampling value (temperature
+	// outside [0,2], non-positive max-tokens, or an unknown reasoning-effort).
+	// Validated at set time so an invalid value never reaches a run (parity
+	// with runs.set_overrides), fail loud (CLAUDE.md §13).
+	ErrInvalidLLMParams = errors.New("agentcfg/protocol: invalid LLM parameters")
 )
+
+// validLLMReasoningEffort is the canonical reasoning-effort taxonomy the
+// per-agent LLM-params section accepts — the set the planner honours
+// (off | low | medium | high).
+var validLLMReasoningEffort = map[string]struct{}{
+	"off": {}, "low": {}, "medium": {}, "high": {},
+}
 
 // Clock is the time source the Service stamps response timestamps from.
 type Clock func() time.Time
@@ -102,6 +121,15 @@ type Service struct {
 	// the wire edge). Keyed by the REAL (tenant, user, session) triple, so it
 	// is session-isolated by construction.
 	sessionOverlay sessionoverlay.Store
+
+	// validModels is the set of model names with a configured ModelProfile.
+	// `set_llm_params` (and a `set_revision` carrying an LLMParams.Model)
+	// validate a set model against it — an unknown model is rejected with
+	// ErrUnknownModel (parity with the tenant model-swap). A nil / empty set
+	// means model validation is disabled (no model is pinnable via this
+	// service): the binary always wires the configured profiles, so an empty
+	// set signals model-pinning is unavailable, never a silent accept-all.
+	validModels map[string]struct{}
 }
 
 // Option configures NewService.
@@ -206,6 +234,78 @@ func WithSessionOverlay(st sessionoverlay.Store) Option {
 	}
 }
 
+// WithValidModels sets the set of model names with a configured
+// ModelProfile. `set_llm_params` (and a `set_revision` carrying an
+// LLMParams.Model) reject a model outside this set with ErrUnknownModel —
+// parity with the tenant model-swap, validated at SET time so an invalid
+// model can never be persisted (never a silent run-start fallback).
+//
+// An empty / nil set means model-pinning is UNAVAILABLE: every non-empty
+// model set fails loud (the binary always wires at least the bound default
+// model, so an empty set signals a misconfiguration, not "accept anything").
+// This matches the governance tenant-override policy's fail-loud-on-empty
+// stance; it deliberately DIFFERS from runs.set_overrides (the one-shot
+// session swap), which accepts any model when no set is configured.
+func WithValidModels(models []string) Option {
+	return func(s *Service) {
+		if len(models) == 0 {
+			return
+		}
+		set := make(map[string]struct{}, len(models))
+		for _, m := range models {
+			if m != "" {
+				set[m] = struct{}{}
+			}
+		}
+		s.validModels = set
+	}
+}
+
+// validateModel rejects a set, non-empty model that has no configured
+// ModelProfile. A nil model (the dimension is unset) is always allowed —
+// only a model the run would actually request is validated. With no
+// validModels configured, any model set fails loud (model-pinning is
+// unavailable on this service), so a misconfiguration cannot silently
+// accept an arbitrary model.
+func (s *Service) validateModel(model *string) error {
+	if model == nil || *model == "" {
+		return nil
+	}
+	if _, ok := s.validModels[*model]; !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownModel, *model)
+	}
+	return nil
+}
+
+// validateLLMParams validates a per-agent LLM-params section at set time: the
+// model (against the configured ModelProfiles) plus the sampling ranges
+// (temperature ∈ [0,2], max-tokens > 0, reasoning-effort in the canonical
+// taxonomy) — parity with runs.set_overrides so an out-of-range value never
+// reaches a run (fail loud, never silently passed through to the provider
+// edge). A nil section (no LLM-params edit) is a no-op. Each field is checked
+// only when set.
+func (s *Service) validateLLMParams(lp *prototypes.AgentConfigLLMParams) error {
+	if lp == nil {
+		return nil
+	}
+	if err := s.validateModel(lp.Model); err != nil {
+		return err
+	}
+	if lp.Temperature != nil && (*lp.Temperature < 0 || *lp.Temperature > 2) {
+		return fmt.Errorf("%w: temperature %v outside [0,2]", ErrInvalidLLMParams, *lp.Temperature)
+	}
+	if lp.MaxTokens != nil && *lp.MaxTokens <= 0 {
+		return fmt.Errorf("%w: max_tokens %d must be positive", ErrInvalidLLMParams, *lp.MaxTokens)
+	}
+	if lp.ReasoningEffort != nil && *lp.ReasoningEffort != "" {
+		if _, ok := validLLMReasoningEffort[*lp.ReasoningEffort]; !ok {
+			return fmt.Errorf("%w: unknown reasoning_effort %q (want off/low/medium/high)",
+				ErrInvalidLLMParams, *lp.ReasoningEffort)
+		}
+	}
+	return nil
+}
+
 // NewService builds the agent-config Service over a Registry. registry is
 // mandatory — a nil fails loud with ErrMisconfigured rather than building
 // a Service that would nil-panic on the first request (CLAUDE.md §5).
@@ -252,6 +352,12 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	}
 	id, err := identityFromScope(req.Identity, req.AgentID)
 	if err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
+	// A full-payload set that pins per-agent LLM params is validated at set
+	// time (parity with set_llm_params / the tenant model-swap) so an invalid
+	// model or out-of-range sampling value can never be persisted.
+	if err := s.validateLLMParams(req.Payload.LLMParams); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, payloadToDomain(req.Payload))
@@ -378,6 +484,14 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			Servers: connectionsToWire(p.Connections.Servers),
 		}
 	}
+	if p.LLMParams != nil {
+		out.LLMParams = &prototypes.AgentConfigLLMParams{
+			Model:           copyStringPtr(p.LLMParams.Model),
+			Temperature:     copyFloat64Ptr(p.LLMParams.Temperature),
+			MaxTokens:       copyIntPtr(p.LLMParams.MaxTokens),
+			ReasoningEffort: copyStringPtr(p.LLMParams.ReasoningEffort),
+		}
+	}
 	return out
 }
 
@@ -440,6 +554,14 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 			Servers: connectionsToDomain(p.Connections.Servers),
 		}
 	}
+	if p.LLMParams != nil {
+		out.LLMParams = &agentcfg.LLMParams{
+			Model:           copyStringPtr(p.LLMParams.Model),
+			Temperature:     copyFloat64Ptr(p.LLMParams.Temperature),
+			MaxTokens:       copyIntPtr(p.LLMParams.MaxTokens),
+			ReasoningEffort: copyStringPtr(p.LLMParams.ReasoningEffort),
+		}
+	}
 	return out
 }
 
@@ -470,6 +592,23 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			Added:   append([]string(nil), d.Connections.Added...),
 			Removed: append([]string(nil), d.Connections.Removed...),
 		},
+		LLMParams: prototypes.AgentConfigLLMParamsDiff{
+			ModelChanged: d.LLMParams.ModelChanged,
+			ModelFrom:    d.LLMParams.ModelFrom,
+			ModelTo:      d.LLMParams.ModelTo,
+
+			TemperatureChanged: d.LLMParams.TemperatureChanged,
+			TemperatureFrom:    d.LLMParams.TemperatureFrom,
+			TemperatureTo:      d.LLMParams.TemperatureTo,
+
+			MaxTokensChanged: d.LLMParams.MaxTokensChanged,
+			MaxTokensFrom:    d.LLMParams.MaxTokensFrom,
+			MaxTokensTo:      d.LLMParams.MaxTokensTo,
+
+			ReasoningEffortChanged: d.LLMParams.ReasoningEffortChanged,
+			ReasoningEffortFrom:    d.LLMParams.ReasoningEffortFrom,
+			ReasoningEffortTo:      d.LLMParams.ReasoningEffortTo,
+		},
 	}
 }
 
@@ -480,5 +619,24 @@ func copyStringPtr(s *string) *string {
 		return nil
 	}
 	v := *s
+	return &v
+}
+
+// copyFloat64Ptr / copyIntPtr return a fresh copy of a numeric pointer (nil
+// stays nil) so the wire↔domain projections never share a pointer with the
+// caller's payload.
+func copyFloat64Ptr(f *float64) *float64 {
+	if f == nil {
+		return nil
+	}
+	v := *f
+	return &v
+}
+
+func copyIntPtr(i *int) *int {
+	if i == nil {
+		return nil
+	}
+	v := *i
 	return &v
 }

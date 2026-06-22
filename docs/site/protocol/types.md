@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 278 canonical Harbor Protocol wire types, generated from the single-source
+The 282 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -110,6 +110,7 @@ Declared in `internal/protocol/types`.
 | `tool_exposure` | `types.AgentConfigToolExposureDiff` — see [`AgentConfigToolExposureDiff`](./types.md#agentconfigtoolexposurediff) |  |
 | `prompt_layers` | `types.AgentConfigPromptLayersDiff` — see [`AgentConfigPromptLayersDiff`](./types.md#agentconfigpromptlayersdiff) |  |
 | `connections` | `types.AgentConfigConnectionsDiff` — see [`AgentConfigConnectionsDiff`](./types.md#agentconfigconnectionsdiff) |  |
+| `llm_params` | `types.AgentConfigLLMParamsDiff` — see [`AgentConfigLLMParamsDiff`](./types.md#agentconfigllmparamsdiff) |  |
 
 ## AgentConfigDiffRequest
 
@@ -149,6 +150,36 @@ Declared in `internal/protocol/types`.
 | `revision` | `*types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) | optional (`omitempty`) |
 | `set` | `bool` |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigLLMParams
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `model` | `*string` | optional (`omitempty`) |
+| `temperature` | `*float64` | optional (`omitempty`) |
+| `max_tokens` | `*int` | optional (`omitempty`) |
+| `reasoning_effort` | `*string` | optional (`omitempty`) |
+
+## AgentConfigLLMParamsDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `model_changed` | `bool` |  |
+| `model_from` | `string` | optional (`omitempty`) |
+| `model_to` | `string` | optional (`omitempty`) |
+| `temperature_changed` | `bool` |  |
+| `temperature_from` | `string` | optional (`omitempty`) |
+| `temperature_to` | `string` | optional (`omitempty`) |
+| `max_tokens_changed` | `bool` |  |
+| `max_tokens_from` | `string` | optional (`omitempty`) |
+| `max_tokens_to` | `string` | optional (`omitempty`) |
+| `reasoning_effort_changed` | `bool` |  |
+| `reasoning_effort_from` | `string` | optional (`omitempty`) |
+| `reasoning_effort_to` | `string` | optional (`omitempty`) |
 
 ## AgentConfigListRevisionsRequest
 
@@ -190,6 +221,7 @@ Declared in `internal/protocol/types`.
 | `skills` | `*types.AgentConfigSkillsSelection` — see [`AgentConfigSkillsSelection`](./types.md#agentconfigskillsselection) | optional (`omitempty`) |
 | `tool_exposure` | `*types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) | optional (`omitempty`) |
 | `connections` | `*types.AgentConfigConnections` — see [`AgentConfigConnections`](./types.md#agentconfigconnections) | optional (`omitempty`) |
+| `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 
 ## AgentConfigPromptLayers
 
@@ -351,6 +383,25 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
 | `overlay` | `types.AgentConfigSessionOverlay` — see [`AgentConfigSessionOverlay`](./types.md#agentconfigsessionoverlay) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSetLLMParamsRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `llm_params` | `types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) |  |
+
+## AgentConfigSetLLMParamsResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigSetPromptLayersRequest
