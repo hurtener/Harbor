@@ -85,7 +85,7 @@ test.describe("Console agent-config control panel", () => {
     ).toBeVisible();
   });
 
-  test("the sub-nav rail lists the five areas and selecting one swaps the section", async ({
+  test("the sub-nav rail lists the six areas and selecting one swaps the section", async ({
     page,
     runtime,
     helpers,
@@ -94,13 +94,14 @@ test.describe("Console agent-config control panel", () => {
     await helpers.seedConnection();
     await gotoPanel(page, runtime.baseURL);
 
-    // The rail (outside the async boundary) lists all five control-plane
-    // areas in display order.
+    // The rail (outside the async boundary) lists all six control-plane
+    // areas in display order (92i adds "Model & sampling" / llm).
     const rail = page.locator("[data-testid='agent-config-subnav']");
     await expect(rail, "the sub-nav rail renders").toBeVisible();
     for (const area of [
       "revisions",
       "prompt",
+      "llm",
       "skills",
       "mcp",
       "add-connection",
@@ -131,6 +132,33 @@ test.describe("Console agent-config control panel", () => {
       page.locator("[data-testid='agent-config-subnav-revisions']"),
       "the previously-active area is no longer active",
     ).toHaveAttribute("aria-current", "false");
+  });
+
+  test("the Model & sampling area is selectable and the Save-all bar is absent until edits", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    await helpers.seedAuth(runtime.token);
+    await helpers.seedConnection();
+    await gotoPanel(page, runtime.baseURL);
+
+    // The 92i "Model & sampling" (llm) rail item selects like any other area
+    // (the rail renders OUTSIDE the data-gated <PageState>; the form CONTENT
+    // is asserted in vitest, where the client is mockable).
+    await page.locator("[data-testid='agent-config-subnav-llm']").click();
+    await expect(
+      page.locator("[data-testid='agent-config-subnav-llm']"),
+      "selecting Model & sampling makes it the active area",
+    ).toHaveAttribute("aria-current", "true");
+
+    // The atomic Save-all bar self-gates on staged edits — with the data-less
+    // harness Runtime (no agent_config data, nothing staged) it is absent,
+    // never a faked always-on control.
+    await expect(
+      page.locator("[data-testid='agent-config-save-all-bar']"),
+      "the Save-all bar is absent with no staged edits",
+    ).toHaveCount(0);
   });
 
   test("with the admin claim the write surface is live (no read-only banner)", async ({

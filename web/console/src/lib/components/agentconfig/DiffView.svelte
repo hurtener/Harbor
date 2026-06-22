@@ -23,8 +23,44 @@
     (diff.connections.added?.length ?? 0) > 0 || (diff.connections.removed?.length ?? 0) > 0
   );
   const hasPromptChanges = $derived(diff.prompt_layers.base_changed || diff.prompt_layers.user_changed);
+  const hasLlmChanges = $derived(
+    diff.llm_params.model_changed ||
+      diff.llm_params.temperature_changed ||
+      diff.llm_params.max_tokens_changed ||
+      diff.llm_params.reasoning_effort_changed
+  );
+  /** The per-field model-&-sampling deltas to render (only the changed ones).
+   * An unset value renders as "(inherit)". */
+  const llmDeltas = $derived(
+    [
+      {
+        label: 'Model',
+        changed: diff.llm_params.model_changed,
+        from: diff.llm_params.model_from,
+        to: diff.llm_params.model_to
+      },
+      {
+        label: 'Temperature',
+        changed: diff.llm_params.temperature_changed,
+        from: diff.llm_params.temperature_from,
+        to: diff.llm_params.temperature_to
+      },
+      {
+        label: 'Max tokens',
+        changed: diff.llm_params.max_tokens_changed,
+        from: diff.llm_params.max_tokens_from,
+        to: diff.llm_params.max_tokens_to
+      },
+      {
+        label: 'Reasoning effort',
+        changed: diff.llm_params.reasoning_effort_changed,
+        from: diff.llm_params.reasoning_effort_from,
+        to: diff.llm_params.reasoning_effort_to
+      }
+    ].filter((d) => d.changed)
+  );
   const hasAnyChange = $derived(
-    hasSkillChanges || hasExposureChanges || hasConnChanges || hasPromptChanges
+    hasSkillChanges || hasExposureChanges || hasConnChanges || hasPromptChanges || hasLlmChanges
   );
 </script>
 
@@ -102,6 +138,22 @@
       </div>
     </section>
   {/if}
+
+  {#if hasLlmChanges}
+    <section class="diff-section" data-testid="agentcfg-diff-llm">
+      <h4 class="diff-title">Model &amp; sampling</h4>
+      <div class="llm-deltas">
+        {#each llmDeltas as d (d.label)}
+          <div class="llm-delta" data-testid="agentcfg-diff-llm-row">
+            <span class="delta-label">{d.label}</span>
+            <code class="delta from">{d.from === undefined || d.from === '' ? '(inherit)' : d.from}</code>
+            <span class="arrow" aria-hidden="true">→</span>
+            <code class="delta to">{d.to === undefined || d.to === '' ? '(inherit)' : d.to}</code>
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -162,5 +214,23 @@
   }
   .delta.to {
     background: var(--color-success-soft);
+  }
+  .llm-deltas {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+  .llm-delta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+  .llm-delta .delta-label {
+    min-width: var(--size-nav);
+  }
+  .arrow {
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
   }
 </style>
