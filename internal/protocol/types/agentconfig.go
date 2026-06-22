@@ -58,6 +58,25 @@ type AgentConfigPromptLayers struct {
 	User *string `json:"user,omitempty"`
 }
 
+// AgentConfigLLMParams is the wire projection of an agent's per-agent
+// LLM-parameter section in a config revision: the sampling defaults pinned
+// for the agent (model / temperature / max-tokens / reasoning-effort).
+// Every field is pointer-optional — an unset field falls through to the
+// tenant-wide baseline, then the config default. Sampling parameters only;
+// additive system-prompt text lives in AgentConfigPromptLayers.
+type AgentConfigLLMParams struct {
+	// Model, when set, is the model the agent's next run requests
+	// (overriding the tenant-wide baseline / config default).
+	Model *string `json:"model,omitempty"`
+	// Temperature, when set, is the sampling temperature for the next run.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// MaxTokens, when set, is the per-message output-token ceiling.
+	MaxTokens *int `json:"max_tokens,omitempty"`
+	// ReasoningEffort, when set, is the reasoning-effort hint
+	// ("off" | "low" | "medium" | "high").
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+}
+
 // AgentConfigMCPConnectionDescriptor is the wire projection of one
 // runtime-added MCP server connection — the NON-SECRET descriptor only
 // (name, transport, stdio argv command or http URL). Secret auth material
@@ -101,6 +120,10 @@ type AgentConfigPayload struct {
 	// Connections, when non-nil, pins the agent's runtime-added MCP
 	// connection descriptors (non-secret) for the revision.
 	Connections *AgentConfigConnections `json:"connections,omitempty"`
+	// LLMParams, when non-nil, pins the agent's per-agent LLM-parameter
+	// section (model / temperature / max-tokens / reasoning-effort) for the
+	// revision.
+	LLMParams *AgentConfigLLMParams `json:"llm_params,omitempty"`
 }
 
 // AgentConfigRevisionView is the wire projection of one immutable config
@@ -175,9 +198,31 @@ type AgentConfigConnectionsDiff struct {
 	Removed []string `json:"removed,omitempty"`
 }
 
+// AgentConfigLLMParamsDiff is the wire projection of the per-agent
+// LLM-parameter per-field delta across two revisions. Each dimension
+// reports whether it changed plus its from / to display values (an unset
+// dimension is the empty string).
+type AgentConfigLLMParamsDiff struct {
+	ModelChanged bool   `json:"model_changed"`
+	ModelFrom    string `json:"model_from,omitempty"`
+	ModelTo      string `json:"model_to,omitempty"`
+
+	TemperatureChanged bool   `json:"temperature_changed"`
+	TemperatureFrom    string `json:"temperature_from,omitempty"`
+	TemperatureTo      string `json:"temperature_to,omitempty"`
+
+	MaxTokensChanged bool   `json:"max_tokens_changed"`
+	MaxTokensFrom    string `json:"max_tokens_from,omitempty"`
+	MaxTokensTo      string `json:"max_tokens_to,omitempty"`
+
+	ReasoningEffortChanged bool   `json:"reasoning_effort_changed"`
+	ReasoningEffortFrom    string `json:"reasoning_effort_from,omitempty"`
+	ReasoningEffortTo      string `json:"reasoning_effort_to,omitempty"`
+}
+
 // AgentConfigDiff is the wire projection of a server-side revision
-// compare — the structured skills + tool-exposure + connection set-diffs
-// and the prompt-layer text delta.
+// compare — the structured skills + tool-exposure + connection set-diffs,
+// the prompt-layer text delta, and the per-agent LLM-parameter delta.
 type AgentConfigDiff struct {
 	FromRevisionID string                      `json:"from_revision_id"`
 	ToRevisionID   string                      `json:"to_revision_id"`
@@ -185,6 +230,7 @@ type AgentConfigDiff struct {
 	ToolExposure   AgentConfigToolExposureDiff `json:"tool_exposure"`
 	PromptLayers   AgentConfigPromptLayersDiff `json:"prompt_layers"`
 	Connections    AgentConfigConnectionsDiff  `json:"connections"`
+	LLMParams      AgentConfigLLMParamsDiff    `json:"llm_params"`
 }
 
 // AgentConfigGetRequest is the `agent_config.get` request — read the
@@ -301,6 +347,28 @@ type AgentConfigSetPromptLayersRequest struct {
 // response — the recorded config revision (or, on an idempotent re-set, the
 // existing active revision).
 type AgentConfigSetPromptLayersResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigSetLLMParamsRequest is the admin-scoped
+// `agent_config.set_llm_params` request — set the agent's per-agent
+// LLM-parameter section (model / temperature / max-tokens / reasoning-effort)
+// as a desired-state REPLACE of the LLM-params section (the prompt-layer +
+// skills + tool-exposure + connection sections of the active revision are
+// preserved). A set Model is validated against the configured ModelProfiles
+// at set time (an unknown model is rejected). The edit records a new config
+// revision and applies to the agent's NEXT run.
+type AgentConfigSetLLMParamsRequest struct {
+	Identity  IdentityScope        `json:"identity"`
+	AgentID   string               `json:"agent_id"`
+	LLMParams AgentConfigLLMParams `json:"llm_params"`
+}
+
+// AgentConfigSetLLMParamsResponse is the `agent_config.set_llm_params`
+// response — the recorded config revision (or, on an idempotent re-set, the
+// existing active revision).
+type AgentConfigSetLLMParamsResponse struct {
 	Revision        AgentConfigRevisionView `json:"revision"`
 	ProtocolVersion string                  `json:"protocol_version"`
 }

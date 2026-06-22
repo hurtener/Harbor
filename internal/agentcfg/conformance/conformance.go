@@ -43,6 +43,43 @@ func Run(t *testing.T, mk Factory) {
 	t.Run("DiffDeterministic", func(t *testing.T) { testDiff(t, mk) })
 	t.Run("GetMissingFailsLoud", func(t *testing.T) { testGetMissing(t, mk) })
 	t.Run("IdentityRequired", func(t *testing.T) { testIdentityRequired(t, mk) })
+	t.Run("LLMParamsRoundTrip", func(t *testing.T) { testLLMParamsRoundTrip(t, mk) })
+}
+
+// testLLMParamsRoundTrip proves every driver round-trips the per-agent
+// LLM-parameters section through Set → Active → Get and surfaces its delta
+// through Diff (driver parity for the new section).
+func testLLMParamsRoundTrip(t *testing.T, mk Factory) {
+	ctx := context.Background()
+	r := mk(t)
+	id := admin()
+	model := "model-x"
+	temp := 0.4
+	rev1 := mustSet(t, r, id, agentcfg.ConfigPayload{
+		LLMParams: &agentcfg.LLMParams{Model: &model, Temperature: &temp},
+	})
+	got, ok, err := mustActive(t, r, id)
+	if err != nil || !ok {
+		t.Fatalf("Active: ok=%v err=%v", ok, err)
+	}
+	if got.Payload.LLMParams == nil || got.Payload.LLMParams.Model == nil || *got.Payload.LLMParams.Model != "model-x" {
+		t.Fatalf("LLM-params not round-tripped: %+v", got.Payload.LLMParams)
+	}
+	if got.Payload.LLMParams.Temperature == nil || *got.Payload.LLMParams.Temperature != 0.4 {
+		t.Fatalf("temperature not round-tripped: %+v", got.Payload.LLMParams)
+	}
+	// A second revision changing the model surfaces the delta via Diff.
+	model2 := "model-y"
+	rev2 := mustSet(t, r, id, agentcfg.ConfigPayload{
+		LLMParams: &agentcfg.LLMParams{Model: &model2, Temperature: &temp},
+	})
+	d, err := r.Diff(ctx, id, agentID, rev1.RevisionID, rev2.RevisionID)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if !d.LLMParams.ModelChanged || d.LLMParams.ModelFrom != "model-x" || d.LLMParams.ModelTo != "model-y" {
+		t.Fatalf("LLM-params diff = %+v", d.LLMParams)
+	}
 }
 
 func testSetActiveGet(t *testing.T, mk Factory) {

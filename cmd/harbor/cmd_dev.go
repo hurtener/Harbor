@@ -725,6 +725,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// session-safe lower tier (non-admin): the overlay store backs the
 		// `agent_config.session.*` verbs.
 		agentcfgprotocol.WithSessionOverlay(sessionOverlayStore),
+		// the configured ModelProfiles gate set_llm_params: a per-agent model
+		// pin is validated at set time (parity with the tenant model-swap).
+		agentcfgprotocol.WithValidModels(validModels),
 	}
 	if toolCat != nil && mcpRegistry != nil {
 		mcpAttacher := newDevMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.logger,

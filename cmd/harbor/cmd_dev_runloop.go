@@ -554,6 +554,14 @@ func (d *perTaskRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identi
 			}
 		}
 	}
+	// Per-agent arm — the agent-config LLM-params section (admin-pinned,
+	// versioned), resolved from the active revision via the shared projection
+	// (the devstack twin calls the SAME helper, so the two binaries cannot
+	// drift). It overrides the tenant-wide baseline per field.
+	agentLayer, err := projection.ActiveLLMOverrides(ctx, d.agentConfig, d.agentConfigID, q)
+	if err != nil {
+		return nil, err
+	}
 	// Session arm — Consume the one-shot pending override (read-once).
 	var session *runsprotocol.PendingOverride
 	if d.sessionOverrides != nil {
@@ -561,9 +569,10 @@ func (d *perTaskRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identi
 			session = &po
 		}
 	}
-	// Compose via the single production function (shared with the
-	// integration test — CLAUDE.md §17.4).
-	return runsprotocol.ComposeLLMOverrides(session, tenant), nil
+	// Compose via the single production function (shared with the devstack
+	// twin + the integration test — CLAUDE.md §17.4): session › per-agent ›
+	// tenant-wide baseline.
+	return runsprotocol.ComposeLLMOverrides(session, agentLayer, tenant), nil
 }
 
 // projectAgentConfigSkills resolves the agent's active config revision at

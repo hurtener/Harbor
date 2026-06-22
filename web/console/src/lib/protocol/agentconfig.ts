@@ -46,6 +46,18 @@ export interface AgentConfigPromptLayers {
 	user?: string;
 }
 
+/** An agent's per-agent LLM-parameter section — the sampling defaults pinned
+ * for the agent (model / temperature / max-tokens / reasoning-effort). Every
+ * field optional; an unset field falls through to the tenant-wide baseline,
+ * then the config default. Mirrors `types.AgentConfigLLMParams`. */
+export interface AgentConfigLLMParams {
+	model?: string;
+	temperature?: number;
+	max_tokens?: number;
+	/** "off" | "low" | "medium" | "high". */
+	reasoning_effort?: string;
+}
+
 /** One runtime-added MCP server connection — the NON-SECRET descriptor only
  * (name, transport, stdio argv command or http URL). Secret auth material is
  * NEVER part of this descriptor. Mirrors
@@ -71,6 +83,7 @@ export interface AgentConfigPayload {
 	skills?: AgentConfigSkillsSelection;
 	tool_exposure?: AgentConfigToolExposure;
 	connections?: AgentConfigConnections;
+	llm_params?: AgentConfigLLMParams;
 }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
@@ -119,6 +132,23 @@ export interface AgentConfigConnectionsDiff {
 	removed?: string[];
 }
 
+/** The per-agent LLM-parameter per-field delta across two revisions. Mirrors
+ * `types.AgentConfigLLMParamsDiff`. */
+export interface AgentConfigLLMParamsDiff {
+	model_changed: boolean;
+	model_from?: string;
+	model_to?: string;
+	temperature_changed: boolean;
+	temperature_from?: string;
+	temperature_to?: string;
+	max_tokens_changed: boolean;
+	max_tokens_from?: string;
+	max_tokens_to?: string;
+	reasoning_effort_changed: boolean;
+	reasoning_effort_from?: string;
+	reasoning_effort_to?: string;
+}
+
 /** A server-side revision compare. Mirrors `types.AgentConfigDiff`. */
 export interface AgentConfigDiff {
 	from_revision_id: string;
@@ -127,6 +157,7 @@ export interface AgentConfigDiff {
 	tool_exposure: AgentConfigToolExposureDiff;
 	prompt_layers: AgentConfigPromptLayersDiff;
 	connections: AgentConfigConnectionsDiff;
+	llm_params: AgentConfigLLMParamsDiff;
 }
 
 /** `agent_config.get` request. */
@@ -221,6 +252,23 @@ export interface AgentConfigSetPromptLayersRequest {
 
 /** `agent_config.set_prompt_layers` response — the recorded revision. */
 export interface AgentConfigSetPromptLayersResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.set_llm_params` request — admin-scoped. Replaces ONLY the
+ * LLM-params section (the prompt-layer + skills + tool-exposure + connection
+ * sections are preserved). A set `model` is validated against the configured
+ * ModelProfiles at set time (an unknown model is rejected). The per-agent
+ * params override the tenant-wide baseline for the agent's next run. */
+export interface AgentConfigSetLLMParamsRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	llm_params: AgentConfigLLMParams;
+}
+
+/** `agent_config.set_llm_params` response — the recorded revision. */
+export interface AgentConfigSetLLMParamsResponse {
 	revision: AgentConfigRevisionView;
 	protocol_version: string;
 }

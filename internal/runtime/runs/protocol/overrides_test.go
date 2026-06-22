@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 )
@@ -64,6 +65,76 @@ func wireReq(o prototypes.RunOverrides) prototypes.RunSetOverridesRequest {
 		Identity:  prototypes.IdentityScope{Tenant: testTenant, User: testUser, Session: testSession},
 		Overrides: o,
 	}
+}
+
+// TestComposeLLMOverrides_PerFieldPrecedence pins the three-layer
+// resolution session › per-agent › tenant-wide baseline. Each dimension is
+// resolved INDEPENDENTLY: a per-agent field overrides the tenant baseline,
+// a session field overrides both, and an unset field falls through to the
+// next layer.
+func TestComposeLLMOverrides_PerFieldPrecedence(t *testing.T) {
+	t.Run("nil all returns nil", func(t *testing.T) {
+		if got := runsprotocol.ComposeLLMOverrides(nil, nil, nil); got != nil {
+			t.Fatalf("ComposeLLMOverrides(nil,nil,nil) = %+v, want nil", got)
+		}
+	})
+
+	t.Run("per-agent overrides tenant baseline per field", func(t *testing.T) {
+		tenant := &planner.LLMOverrides{
+			Model:             strPtr("tenant-model"),
+			Temperature:       f64Ptr(0.2),
+			MaxTokens:         intPtr(1000),
+			ReasoningEffort:   strPtr("low"),
+			ExtraInstructions: strPtr("TENANT-ADDITIVE"),
+		}
+		agent := &planner.LLMOverrides{
+			Model:       strPtr("agent-model"),
+			Temperature: f64Ptr(0.9),
+			// MaxTokens + ReasoningEffort unset → fall through to tenant.
+		}
+		got := runsprotocol.ComposeLLMOverrides(nil, agent, tenant)
+		if got.Model == nil || *got.Model != "agent-model" {
+			t.Errorf("Model = %v, want agent-model (per-agent wins)", got.Model)
+		}
+		if got.Temperature == nil || *got.Temperature != 0.9 {
+			t.Errorf("Temperature = %v, want 0.9 (per-agent wins)", got.Temperature)
+		}
+		if got.MaxTokens == nil || *got.MaxTokens != 1000 {
+			t.Errorf("MaxTokens = %v, want tenant 1000 (per-agent unset)", got.MaxTokens)
+		}
+		if got.ReasoningEffort == nil || *got.ReasoningEffort != "low" {
+			t.Errorf("ReasoningEffort = %v, want tenant low (per-agent unset)", got.ReasoningEffort)
+		}
+		if got.ExtraInstructions == nil || *got.ExtraInstructions != "TENANT-ADDITIVE" {
+			t.Errorf("ExtraInstructions = %v, want tenant-only TENANT-ADDITIVE", got.ExtraInstructions)
+		}
+	})
+
+	t.Run("session overrides per-agent and tenant per field", func(t *testing.T) {
+		tenant := &planner.LLMOverrides{Model: strPtr("tenant-model"), Temperature: f64Ptr(0.2)}
+		agent := &planner.LLMOverrides{Model: strPtr("agent-model"), Temperature: f64Ptr(0.5)}
+		session := &runsprotocol.PendingOverride{
+			Model: strPtr("session-model"),
+			// Temperature unset → falls through to per-agent (0.5).
+		}
+		got := runsprotocol.ComposeLLMOverrides(session, agent, tenant)
+		if got.Model == nil || *got.Model != "session-model" {
+			t.Errorf("Model = %v, want session-model (session wins)", got.Model)
+		}
+		if got.Temperature == nil || *got.Temperature != 0.5 {
+			t.Errorf("Temperature = %v, want per-agent 0.5 (session unset, per-agent over tenant)", got.Temperature)
+		}
+	})
+
+	t.Run("per-agent layer carries no prompt text", func(t *testing.T) {
+		// A per-agent LLM layer with only sampling params must not introduce
+		// ExtraInstructions / SystemPromptOverride.
+		agent := &planner.LLMOverrides{Model: strPtr("agent-model")}
+		got := runsprotocol.ComposeLLMOverrides(nil, agent, nil)
+		if got.ExtraInstructions != nil || got.SystemPromptOverride != nil {
+			t.Errorf("per-agent layer leaked prompt text: extra=%v system=%v", got.ExtraInstructions, got.SystemPromptOverride)
+		}
+	})
 }
 
 func TestNewService_FailsLoudOnNilStore(t *testing.T) {
