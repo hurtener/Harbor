@@ -62,6 +62,14 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 	}
 	q := identity.Quadruple{Identity: id}
 	skill := skillFromInput(req.Skill)
+	// Ordering: the body is written to the SkillStore FIRST, then the
+	// membership revision. The two are not transactional — if the membership
+	// write fails, the body persists (and its skill.upserted already fired)
+	// but no membership revision references it, so projection never includes
+	// it; the operator gets the error and an idempotent retry self-heals
+	// (re-upsert is a no-op body write + the membership revision). A stranded
+	// body is inert (membership is the projection gate), never a silent
+	// partial success.
 	if err := s.skills.Upsert(ctx, q, skill); err != nil {
 		// ErrPackOverwriteRefused (and any validation error) propagate
 		// up — the wire handler classifies them. No silent overwrite.
@@ -129,6 +137,7 @@ const (
 // is a pure function of prior revisions — the SkillStore holds bodies, the
 // registry holds the versioned membership.
 func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadruple, agentID string, op membershipOp, name string) (agentcfg.Revision, error) {
+	defer s.lockAgent(q.TenantID, agentID)()
 	active, hasActive, err := s.registry.Active(ctx, q, agentID)
 	if err != nil {
 		return agentcfg.Revision{}, err

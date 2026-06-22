@@ -967,12 +967,14 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				Store:       stack.Artifacts,
 				Bus:         bus,
 				ToolContext: stack.MCPToolContext,
-				// D-094 mirror of cmd_dev.go: the app→host exposure gate reads
-				// CURRENT agent-config desired state (the planner-snapshot /
-				// app-call-current asymmetry). Inert when no registry is wired.
-				AgentConfig: stack.AgentConfig,
-				AgentID:     stack.AgentConfigID,
-				Threshold:   cfg.Artifacts.HeavyOutputThresholdBytes,
+				// Mirror of cmd_dev.go: the app→host exposure gate reads CURRENT
+				// agent-config desired state (the planner-snapshot /
+				// app-call-current asymmetry), UNIONing the session overlay's
+				// narrow-only disables. Inert when no registry is wired.
+				AgentConfig:    stack.AgentConfig,
+				AgentID:        stack.AgentConfigID,
+				SessionOverlay: stack.SessionOverlay,
+				Threshold:      cfg.Artifacts.HeavyOutputThresholdBytes,
 			})
 			if aaErr != nil {
 				return stack, fmt.Errorf("mcp apps accessor: %w", aaErr)

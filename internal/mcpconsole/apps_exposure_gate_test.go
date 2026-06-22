@@ -8,6 +8,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -113,6 +114,52 @@ func TestAppCallGate_DisabledTool_Rejected(t *testing.T) {
 	}
 	if _, err := acc.CallTool(ctx, "srv-a_other", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("sibling tool rejected: %v", err)
+	}
+}
+
+// TestAppCallGate_SessionOverlayDisable_Rejected is the wave-end regression
+// for the app-gate / session-overlay divergence (audit W3): the run-start
+// planner-view projection UNIONS the session overlay's narrow-only disables,
+// but the app→host gate previously read only the admin revision — so a tool a
+// SESSION user disabled was still invocable from an MCP App. The gate now
+// unions the overlay too. Here the admin revision pins NO tool-exposure; the
+// rejection comes solely from the session overlay.
+func TestAppCallGate_SessionOverlayDisable_Rejected(t *testing.T) {
+	ctx := idCtx(t)
+	cat := gateCatalog(t)
+	reg := gateRegistry(t)
+	ov, err := sessionoverlay.NewStore(newAppsState(t), nil)
+	if err != nil {
+		t.Fatalf("overlay store: %v", err)
+	}
+	// The session disables a server (srv-b) and an individual tool (srv-a_echo).
+	if _, err := ov.SetSourceDisables(ctx, gateID(), gateAgentID, []string{"srv-b"}, []string{"srv-a_echo"}); err != nil {
+		t.Fatalf("set session disables: %v", err)
+	}
+	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
+		Registry:       newAppsRegistry(t, nil),
+		Catalog:        cat,
+		Store:          newAppsStore(t),
+		Bus:            newAppsBus(t),
+		ToolContext:    newAppsToolCtx(t),
+		AgentConfig:    reg,
+		AgentID:        gateAgentID,
+		SessionOverlay: ov,
+		Threshold:      1024,
+	})
+	if err != nil {
+		t.Fatalf("NewAppsAccessor: %v", err)
+	}
+
+	if _, err := acc.CallTool(ctx, "srv-b_ping", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+		t.Fatalf("session-disabled SERVER call err = %v, want ErrAppToolExposureDenied", err)
+	}
+	if _, err := acc.CallTool(ctx, "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+		t.Fatalf("session-disabled TOOL call err = %v, want ErrAppToolExposureDenied", err)
+	}
+	// A tool neither admin- nor session-disabled still invokes.
+	if _, err := acc.CallTool(ctx, "srv-a_other", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("undisabled sibling rejected: %v", err)
 	}
 }
 

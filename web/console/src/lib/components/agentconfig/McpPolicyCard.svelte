@@ -144,7 +144,7 @@
 
   {#if panel.mcpEvents.length > 0}
     <section class="events">
-      <h4 class="policy-title">Live connection events</h4>
+      <h4 class="policy-title">Live connection events (runtime-wide)</h4>
       <ul class="event-list" data-testid="agentcfg-mcp-events">
         {#each panel.mcpEvents.slice(0, 6) as ev (ev.sequence)}
           <li class="event-row">

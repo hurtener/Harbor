@@ -15,8 +15,10 @@ package integration_test
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
@@ -212,6 +214,7 @@ func TestE2E_AgentCfgLLMParams_ConcurrentResolution(t *testing.T) {
 	}
 
 	const n = 200
+	baseline := runtime.NumGoroutine()
 	errCh := make(chan error, n)
 	var wg sync.WaitGroup
 	for i := range n {
@@ -237,6 +240,20 @@ func TestE2E_AgentCfgLLMParams_ConcurrentResolution(t *testing.T) {
 	close(errCh)
 	for err := range errCh {
 		t.Error(err)
+	}
+
+	// Goroutine baseline restored — ActiveLLMOverrides is synchronous and
+	// must spawn nothing per resolution (§11 leak clause).
+	var after int
+	for i := 0; i < 50; i++ {
+		after = runtime.NumGoroutine()
+		if after <= baseline+2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after > baseline+2 {
+		t.Errorf("goroutine leak: baseline=%d after=%d", baseline, after)
 	}
 }
 

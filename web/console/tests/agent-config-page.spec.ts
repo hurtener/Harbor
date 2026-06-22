@@ -174,10 +174,11 @@ test.describe("Console agent-config control panel", () => {
     await expect(
       page.locator("[data-testid='agent-config-page']"),
     ).toBeVisible();
-    // No read-only scope banner when the connection carries admin.
+    // With the admin claim the panel must NOT route to the admin-scope info
+    // branch (that is the non-admin path) — the write surface is reachable.
     await expect(
-      page.locator("[data-testid='agent-config-scope-banner']"),
-      "no read-only banner with the admin claim",
+      page.locator("[data-testid='page-state-info']"),
+      "the admin path does not show the admin-scope info state",
     ).toHaveCount(0);
     // The Load control is enabled (the agent selector is usable).
     await expect(

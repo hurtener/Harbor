@@ -11,6 +11,8 @@ package projection
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -21,6 +23,15 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 )
+
+// ErrSkillBodyMissing is returned by [ActiveSkillViews] when an agent's
+// active config pins an ADMIN skill-membership name whose body is absent
+// from the store (e.g. the skill was hard-deleted, or a rollback landed on a
+// revision referencing a since-deleted skill). Per the 92c plan this is a
+// LOUD failure at run-start projection — never a silent drop (CLAUDE.md §13).
+// Session-personal skill names are exempt (a safe-subset add that may
+// legitimately not be in the directory view).
+var ErrSkillBodyMissing = errors.New("agentcfg/projection: agent-config pins a skill whose body is absent from the store")
 
 // loadOverlay reads the session's safe-subset overlay (the lower tier of the
 // authorization matrix) for the run's REAL (tenant, user, session) triple. A
@@ -76,10 +87,25 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, ov sessionover
 		// the session triple) is in scope.
 		return views, nil
 	}
-	// The admin pinned a membership → keep the admin members AND add back the
-	// session's personal skills (the session-overlay ON TOP of the admin
-	// baseline). A personal name that no longer exists in views is harmless —
-	// FilterSkillViewsByMembership keeps only names present in views.
+	// The admin pinned a membership. An ADMIN-pinned name whose body is ABSENT
+	// from the directory view is a LOUD failure (the plan's "skill not found
+	// in store", §13) — a rollback onto a since-hard-deleted skill must fail
+	// the run, not quietly run without a skill the admin expects. (Session
+	// PERSONAL names stay silent below — a safe-subset add that may
+	// legitimately not be in the view.)
+	present := make(map[string]struct{}, len(views))
+	for _, v := range views {
+		present[v.Name] = struct{}{}
+	}
+	for _, name := range rev.Payload.Skills.Names {
+		if _, ok := present[name]; !ok {
+			return nil, fmt.Errorf("%w: agent %q pins skill %q", ErrSkillBodyMissing, agentID, name)
+		}
+	}
+	// Keep the admin members AND add back the session's personal skills (the
+	// session-overlay ON TOP of the admin baseline). A personal name absent
+	// from views is harmless — FilterSkillViewsByMembership keeps only names
+	// present in views.
 	allowed := append(append([]string(nil), rev.Payload.Skills.Names...), personal...)
 	return FilterSkillViewsByMembership(views, allowed), nil
 }

@@ -41,6 +41,7 @@ func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfi
 		return prototypes.AgentConfigSetPromptLayersResponse{}, err
 	}
 	q := identity.Quadruple{Identity: id}
+	defer s.lockAgent(id.TenantID, req.AgentID)()
 
 	// Read the active revision so the new revision PRESERVES the skills +
 	// tool-exposure sections (a prompt edit replaces only its own section).

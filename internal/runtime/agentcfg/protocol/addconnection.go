@@ -99,7 +99,11 @@ const (
 	// no half-attached server registered.
 	ConnectionStateFailed ConnectionState = "failed"
 	// ConnectionStateAuthRequired — the attach parked on the unified
-	// pause/resume primitive awaiting authorization; a resume completes it.
+	// pause/resume primitive awaiting authorization. NOTE: the resume
+	// continuation that re-drives the attach to online is not yet
+	// implemented — resume currently only releases the pause (tracked in
+	// issue #375). The descriptor revision is recorded; the server comes
+	// online on a subsequent (authorized) add.
 	ConnectionStateAuthRequired ConnectionState = "auth_required"
 )
 
@@ -279,6 +283,9 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 // section-merge invariant). The descriptor is NON-SECRET — no header / token
 // is ever part of the persisted payload.
 func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadruple, agentID string, desc agentcfg.MCPConnectionDescriptor) (agentcfg.Revision, error) {
+	// Serialise the registry read-modify-write per agent (NOT the preceding
+	// dial/handshake, which must not block a quick concurrent edit).
+	defer s.lockAgent(q.TenantID, agentID)()
 	active, hasActive, err := s.registry.Active(ctx, q, agentID)
 	if err != nil {
 		return agentcfg.Revision{}, err
@@ -301,7 +308,9 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 // auth-required MCP attach. The pause Payload carries ONLY non-secret
 // metadata (agent id, server name, the OAuth reason marker) — never a
 // credential or auth code. The agent-bound token keys by the agent's
-// registration identity; the resume completes the attach.
+// registration identity. NOTE: the resume continuation that re-drives the
+// attach to online is not yet implemented — resume currently only releases
+// the pause (tracked in issue #375).
 func (s *Service) parkForAuth(ctx context.Context, id identity.Identity, agentID string, desc agentcfg.MCPConnectionDescriptor) (pauseresume.Token, error) {
 	pause, err := s.coordinator.Request(ctx, pauseresume.PauseRequest{
 		Identity: id,
