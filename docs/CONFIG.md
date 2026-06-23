@@ -405,6 +405,25 @@ summary (D-242). Default: `0` → strategy default
 (`strategy.FullZoneTurns` = 4). Validation: >= 0. Ignored by the
 `none` and `truncation` strategies.
 
+### memory.summarizer.model
+
+Pins the model the `rolling_summary` compaction summariser requests,
+independent of the planner's model — set it to a cheaper/faster model
+to keep compaction cheap (D-243). Default: empty → the main LLM's
+default model (today's behavior). A model with no matching
+`model_profiles` entry fails at runtime like any unsupported model; it
+is not rejected at load time. Ignored by the `none` and `truncation`
+strategies.
+
+### memory.summarizer.prompt
+
+Operator guidance APPENDED to the baseline `rolling_summary`
+summariser system prompt behind an explicit "extend, do not override"
+separator (D-243) — it never replaces the baseline role framing or
+conciseness/preserve-goals guarantees. Default: empty → baseline
+prompt only (no behavior change). Ignored by the `none` and
+`truncation` strategies.
+
 ### memory.retrieval
 
 Opt-in retrieval mode layered ON TOP of the strategy (Phase 84d —

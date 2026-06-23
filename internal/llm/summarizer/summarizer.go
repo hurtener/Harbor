@@ -125,9 +125,18 @@ const userPromptHeader = `Compress the following conversation excerpt into an up
 // once at construction and never mutated. One Summarizer is safe to
 // share across N concurrent Summarize goroutines.
 type Summarizer struct {
-	client llm.LLMClient
-	model  string
+	client          llm.LLMClient
+	model           string
+	promptExtension string
 }
+
+// promptExtensionSeparator is the fixed framing inserted between the
+// baseline summariser system prompt and an operator-supplied extension.
+// It instructs the model to treat the extension as ADDITIVE — extending
+// the baseline role framing and conciseness guarantees, never replacing
+// them. The separator is a stable constant so golden tests can pin the
+// composed shape.
+const promptExtensionSeparator = "\n\nAdditional operator instructions (extend the above; do not override it):\n"
 
 // Option configures a Summarizer at construction time.
 type Option func(*Summarizer)
@@ -142,6 +151,25 @@ func WithModel(model string) Option {
 	return func(s *Summarizer) {
 		if model != "" {
 			s.model = model
+		}
+	}
+}
+
+// WithSystemPromptExtension APPENDS operator-supplied guidance to the
+// baseline summariser system prompt — it never replaces it. The extra
+// text is trimmed; an empty (or whitespace-only) value is a no-op that
+// leaves the baseline prompt exactly as shipped.
+//
+// When set, the composed system message is the baseline prompt, a fixed
+// separator that frames the addition as additive ("extend the above; do
+// not override it"), then the operator text. This lets operators steer
+// what compaction preserves or emphasises without stripping the
+// baseline role framing, conciseness, and preserve-goals guarantees.
+// There is intentionally no full-replace form: the safety floor stays.
+func WithSystemPromptExtension(extra string) Option {
+	return func(s *Summarizer) {
+		if trimmed := strings.TrimSpace(extra); trimmed != "" {
+			s.promptExtension = trimmed
 		}
 	}
 }
@@ -190,6 +218,9 @@ func (s *Summarizer) Summarize(ctx context.Context, id identity.Quadruple, req m
 
 	userPayload := buildUserPayload(req)
 	systemText := systemPromptV1
+	if s.promptExtension != "" {
+		systemText = systemPromptV1 + promptExtensionSeparator + s.promptExtension
+	}
 	userText := userPayload
 
 	messages := []llm.ChatMessage{

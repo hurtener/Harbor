@@ -5872,3 +5872,23 @@ Tracing the as-built code showed the faithful fix needs a credential the resume 
 **§4.3 deviations.** Artifact-spill of an oversized SINGLE conversation message (auto-offload one too-large turn to an `ArtifactRef` and embed the ref in the summary) is a genuinely new memory↔artifact integration and is deferred to a follow-up — a single turn larger than the budget is the one case the read-path guarantee cannot fully clamp (the newest turn stays verbatim). Documented as a non-goal.
 
 **Cross-references.** D-241 (the LLM-edge byte-check narrowing this pairs with), D-035 (truncation's `OverflowDropOldest` + the operator-tunable-budget precedent), D-034 (the recovery-backlog cap), D-025 (concurrent-reuse: the executor stays a shared compiled artifact; per-key state is mutex-guarded). RFC §6.5, §6.6, §6.10. briefs 04 + 13. Plan: `docs/plans/phase-123-memory-context-budget.md`.
+
+---
+
+## D-243 — The rolling_summary compaction summariser is operator-tunable: a switchable model and an append-only prompt extension
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** The production summariser (`internal/llm/summarizer`) is constructed at assembly with the main LLM client and the hardcoded `systemPromptV1` (its versioned role/conciseness prompt). Two operator needs were unmet: (a) compaction always ran on the planner's model, so an operator who wanted a cheaper/faster model for the high-frequency compaction calls had no knob; (b) a dev who wanted compaction to preserve or target specific content (numeric thresholds, decisions, entity names) had no way to steer the summariser without forking the prompt — and a full prompt override would strip the baseline role framing and the conciseness / preserve-goals guarantees that keep the summary safe.
+
+**Decision.**
+
+1. **`memory.summarizer.model` switches the compaction model.** A new `MemoryConfig.Summarizer MemorySummarizerConfig` sub-block carries `Model`, wired at the assembly construction site through the existing `summarizer.WithModel` option. Unset → the main LLM's default model (today's behavior, no change). A model with no matching `model_profiles` entry fails at runtime the same way any unsupported model does; it is NOT rejected at load time (consistent with how the planner's model is handled — no new validation that could reject a valid forward-looking config).
+2. **`memory.summarizer.prompt` extends the baseline prompt, append-only.** A new `summarizer.WithSystemPromptExtension(string)` option APPENDS the operator text to `systemPromptV1` behind a fixed separator (`"Additional operator instructions (extend the above; do not override it):"`) — it never replaces the baseline. The extension is trimmed; empty / whitespace-only is a no-op that leaves the system message exactly equal to today's `systemPromptV1` (no behavior change). This lets operators steer what compaction preserves/targets without stripping the baseline role framing or conciseness/preserve-goals guarantees.
+3. **Append-only by design — no full-replace override in this phase.** A `WithSystemPrompt` replace form is a deliberate future non-goal: keeping the baseline as a mandatory floor preserves the safety guarantees the versioned prompt encodes.
+
+**§4.3 deviations.** None — both fields are optional, default to today's behavior, and reuse existing seams (`WithModel` already existed; `WithSystemPromptExtension` is the only new primitive, and its first consumer — the assembly construction site — lands in the same change per §13).
+
+**Cross-references.** D-242 (the recent-turn / budget-enforcement work this rides alongside), D-035 (the operator-tunable-knob precedent), D-089 / §13 (fail-loud + no-stub-default — the summariser stays a real LLM composition, the prompt extension never replaces the baseline). RFC §6.5, §6.6. briefs 04 + 13. Plan: `docs/plans/phase-123-memory-context-budget.md`.
