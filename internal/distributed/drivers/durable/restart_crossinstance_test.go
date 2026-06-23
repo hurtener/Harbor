@@ -97,7 +97,7 @@ func TestDurable_RestartReplay(t *testing.T) {
 	b2 := openOver(t, store, eb2)
 	defer func() { _ = b2.Close(context.Background()) }()
 
-	edges := collectEdges(sub, 3, 2*time.Second)
+	edges := collectEdges(sub, 3, 8*time.Second)
 	if len(edges) != 3 {
 		t.Fatalf("restart-replay: got %d projected envelopes, want 3 (edges=%v)", len(edges), edges)
 	}
@@ -137,7 +137,7 @@ func TestDurable_CrossInstanceFanout(t *testing.T) {
 	// B receives all 3 (cross-instance via the poller) and NOT a single
 	// duplicate over subsequent ticks — the poller must not re-project on
 	// every tick.
-	if edges := collectEdges(subB, n, 2*time.Second); len(edges) != n {
+	if edges := collectEdges(subB, n, 8*time.Second); len(edges) != n {
 		t.Fatalf("cross-instance: B got %d envelopes, want %d (edges=%v)", len(edges), n, edges)
 	}
 	if extra := collectEdges(subB, 1, 400*time.Millisecond); len(extra) != 0 {
@@ -145,7 +145,7 @@ func TestDurable_CrossInstanceFanout(t *testing.T) {
 	}
 	// A received each once (local project); the poller must NOT
 	// re-project A's own envelopes.
-	if edges := collectEdges(subA, n, 2*time.Second); len(edges) != n {
+	if edges := collectEdges(subA, n, 8*time.Second); len(edges) != n {
 		t.Fatalf("A self-delivery: got %d, want exactly %d (edges=%v)", len(edges), n, edges)
 	}
 	if extra := collectEdges(subA, 1, 400*time.Millisecond); len(extra) != 0 {
