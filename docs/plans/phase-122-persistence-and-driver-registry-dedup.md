@@ -20,7 +20,9 @@ Consolidates three copy-paste clusters the 2026-06 audit confirmed: the SQLite f
 
 ## Findings I'm departing from (if any)
 
-None.
+**Scope cut (operator-approved, §4.3): this PR ships the `sqlmigrate` half only; `driverreg.Registry[T]` is deferred.** The plan's title covers both the migration-runner extraction and the generic driver registry. The driver-registry half is deliberately deferred to a follow-up because the ~18 registries include three genuine deviants (`tools/auth` returns errors from `Register` + carries 3 sentinels; `events` has `RegisterForTest` + an atomic counter; `distributed` is a dual bus/remote registry) — migrating all of them in one PR is high-churn for zero behavioural value, against the band's "no breakage" bar. Shipping `sqlmigrate` alone is the clean, conformance-gated win; the registry generic lands when there's a reason to touch those registries.
+
+**searchcache excluded from the shared SQLite runner (documented).** `internal/tools/drivers/searchcache` is materially divergent — its own `tool_cache_migrations` table (not `schema_migrations`), no per-migration transaction, body-side version recording, and a *silent* skip on a malformed filename. Conforming it would mean renaming a migrations table on existing DBs (a data-semantics change, not a refactor), so it stays standalone; `sqlmigrate` extracts only the **four** byte-identical-modulo-prefix SQLite runners (state/memory/artifacts/skills) + the three Postgres runners. Unifying searchcache is a separate, careful follow-up.
 
 ## Goals
 
