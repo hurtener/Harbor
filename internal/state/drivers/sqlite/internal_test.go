@@ -110,20 +110,8 @@ func TestIsMemoryDSN(t *testing.T) {
 	}
 }
 
-func TestListMigrations_OrdersByVersion(t *testing.T) {
-	files, err := listMigrations()
-	if err != nil {
-		t.Fatalf("listMigrations: %v", err)
-	}
-	if len(files) == 0 {
-		t.Fatal("listMigrations returned 0 files; expected at least 0001_init.sql")
-	}
-	for i := 1; i < len(files); i++ {
-		if files[i].version <= files[i-1].version {
-			t.Errorf("not sorted ascending at %d: %v", i, files)
-		}
-	}
-	if files[0].version != 1 {
-		t.Errorf("first migration version=%d, want 1", files[0].version)
-	}
-}
+// (TestListMigrations_OrdersByVersion removed in the sqlmigrate
+// extraction — the filename-parse + version-ordering logic now lives in
+// internal/persistence/sqlmigrate and is covered by its own tests; this
+// driver's end-to-end behaviour is covered by migration_test.go +
+// the state conformance suite.)
