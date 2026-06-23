@@ -295,27 +295,33 @@ func TestE2E_WaveC_ComposedStack_AllFeaturesOn(t *testing.T) {
 	})
 
 	// ── Leg 2a: the compaction-call-is-governed pin. Governance
-	// buckets are quadruple-keyed and persisted through the runtime's
-	// StateStore (`governance.bucket`); summing (capacity − level)
-	// across the run's bucket record(s) counts how many of the run's
-	// wire calls drained a governed bucket. The run made exactly 3
-	// wire Completes (planner ×2 + summariser ×1) — all 3 MUST have
-	// been governed. A bypassing compaction call would leave the total
-	// at 2. Read BEFORE the direct calls below mutate the session
-	// bucket. ────────────────────────────────────────────────────────
+	// buckets are persisted through the runtime's StateStore
+	// (`governance.bucket`), keyed by IDENTITY — per RFC §6.15 the rate
+	// bucket is per-(tenant,user,session) + model, NOT per-run (RunID is
+	// not part of identity). So the run's 3 wire Completes (planner ×2 +
+	// summariser ×1) all drain the identity bucket; summing (capacity −
+	// level) across it counts how many were governed. All 3 MUST have
+	// been — a bypassing compaction call would leave the total at 2. The
+	// per-run bucket is necessarily empty (identity-scoped keying). Read
+	// BEFORE the direct calls below drain the bucket further. ──────────
 	const tierCapacity = 4
 	runDrains := waveCBucketDrains(t, stack, identity.Quadruple{Identity: devID, RunID: runID}, tierCapacity)
-	sessionDrains := waveCBucketDrains(t, stack, identity.Quadruple{Identity: devID}, tierCapacity)
-	if runDrains+sessionDrains != 3 {
-		t.Errorf("governed drains after the run = %d (run-bucket %d + session-bucket %d), want 3 — a run LLM call bypassed the governance chain (compaction call ungoverned?)",
-			runDrains+sessionDrains, runDrains, sessionDrains)
+	identityDrains := waveCBucketDrains(t, stack, identity.Quadruple{Identity: devID}, tierCapacity)
+	if runDrains != 0 {
+		t.Errorf("per-run bucket drains = %d, want 0 — governance keys by identity, not run (RFC §6.15)", runDrains)
+	}
+	if identityDrains != 3 {
+		t.Errorf("governed drains after the run = %d on the identity bucket, want 3 — a run LLM call bypassed the governance chain (compaction call ungoverned?)", identityDrains)
 	}
 
 	// ── Leg 2b: enforcement live on the SAME composed stack (and the
-	// first failure mode): drain the session bucket's remaining slots
-	// with direct Completes, then the over-limit call fails closed
-	// with the typed sentinel, emits governance.rate_limited under the
-	// caller's identity, and never reaches the wire. ────────────────
+	// first failure mode). The run + these direct calls share ONE
+	// identity-scoped (identity, model) bucket (RFC §6.15), and the tier
+	// has no refill — so drive the bucket to empty by draining until the
+	// typed sentinel fires (bounded by capacity), rather than computing a
+	// remaining count that would conflate across runs/models. The
+	// over-limit call must fail closed, emit governance.rate_limited
+	// under the caller's identity, and never reach the wire. ───────────
 	direct := func(text string) error {
 		_, cerr := stack.LLMClient.Complete(idCtx, llm.CompleteRequest{
 			Model: scriptedModel,
@@ -325,18 +331,24 @@ func TestE2E_WaveC_ComposedStack_AllFeaturesOn(t *testing.T) {
 		})
 		return cerr
 	}
-	remaining := tierCapacity - sessionDrains
-	for i := range remaining {
-		if err := direct(fmt.Sprintf("governed direct call %d", i+1)); err != nil {
-			t.Fatalf("direct Complete %d/%d under the tier: %v", i+1, remaining, err)
-		}
-	}
 	wireBefore := len(server.Requests())
-	if err := direct("over the session bucket"); !errors.Is(err, governance.ErrRateLimited) {
-		t.Fatalf("over-limit Complete: got %v, want ErrRateLimited", err)
+	successes := 0
+	var rlErr error
+	for i := range tierCapacity + 1 { // bounded: a no-refill capacity-N bucket empties within N+1 calls
+		if err := direct(fmt.Sprintf("governed direct call %d", i+1)); err != nil {
+			rlErr = err
+			break
+		}
+		successes++
 	}
-	if got := len(server.Requests()); got != wireBefore {
-		t.Errorf("wire saw %d requests after the rejected call, want %d (rejection must fail at PreCall, never the provider)", got, wireBefore)
+	if !errors.Is(rlErr, governance.ErrRateLimited) {
+		t.Fatalf("draining the identity bucket: want ErrRateLimited within %d calls, got %v", tierCapacity+1, rlErr)
+	}
+	// The rejected call must fail at PreCall and never reach the wire:
+	// exactly the in-budget (successful) calls add a wire request.
+	if got := len(server.Requests()); got != wireBefore+successes {
+		t.Errorf("wire saw %d requests, want %d (only the %d in-budget direct calls reach the provider; the rejected one fails at PreCall)",
+			got, wireBefore+successes, successes)
 	}
 	awaitWaveCEvent(t, sub, governance.EventTypeRateLimited, devID, nil)
 

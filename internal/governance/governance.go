@@ -230,6 +230,20 @@ func quadKeyFor(q identity.Quadruple) quadKey {
 	}
 }
 
+// identityScoped clears RunID. Cost ceilings and rate limits are
+// per-IDENTITY — RFC §6.15: "per-identity cost ceilings" and "token
+// bucket per (identity, model)". RunID is not part of identity. Keying
+// the in-memory cache or the persisted record by RunID both (a) grows
+// the cache without bound (one entry per run, never reaped) and (b)
+// fragments the running total so a ceiling resets every run — a caller
+// could exceed a per-identity budget by spreading calls across runs.
+// Governance therefore scopes every cache + persistence key to the
+// identity triple; RunID="" is valid for state (see quadrupleFromCtx).
+func identityScoped(q identity.Quadruple) identity.Quadruple {
+	q.RunID = ""
+	return q
+}
+
 // ErrIs reports whether `err` wraps `target` and one of governance's
 // sentinels. Useful in callers that branch on policy outcome (e.g. the
 // runtime can route an ErrBudgetExceeded to the unified pause/resume

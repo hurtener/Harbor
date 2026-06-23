@@ -172,6 +172,7 @@ func (r *RateLimiter) Close(_ context.Context) error {
 }
 
 func (r *RateLimiter) keyState(ctx context.Context, q identity.Quadruple) (*bucketIdentityState, error) {
+	q = identityScoped(q) // rate limits are per-identity, never per-run (RFC §6.15)
 	k := quadKeyFor(q)
 	if v, ok := r.keys.Load(k); ok {
 		ks, _ := v.(*bucketIdentityState) //nolint:errcheck // keys map values are always *bucketIdentityState by construction
@@ -250,6 +251,7 @@ func (r *RateLimiter) refill(b *tokenBucket, cfg RateLimitConfig, now time.Time)
 // persistLocked writes the canonical JSON record. Caller MUST hold
 // `ks.mu`. State write failures are surfaced loud.
 func (r *RateLimiter) persistLocked(ctx context.Context, q identity.Quadruple, ks *bucketIdentityState) error {
+	q = identityScoped(q) // persist under the identity triple, never per-run (RFC §6.15)
 	br := bucketRecord{
 		ByModel:   ks.buckets,
 		UpdatedAt: ks.updateAt,
