@@ -62,6 +62,7 @@ type engineConfig struct {
 	runErrorHandler     RunErrorHandler
 	runCancelledHandler RunCancelledHandler
 	cancelTTL           time.Duration
+	capacityTTL         time.Duration
 	// eventBus, when non-nil, is the bus the engine publishes a
 	// `topology.changed` event onto at construction
 	// nil (the default) = no emit — the engine-test

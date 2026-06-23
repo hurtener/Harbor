@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/runtime/messages"
 )
@@ -18,6 +19,13 @@ import (
 // goroutines emitting on the same StreamID concurrently will
 // interleave (the engine has no per-StreamID lock); operators who
 // need cross-goroutine ordering must serialize the emit themselves.
+//
+// TTL caveat: the per-run Seq bookkeeping lives in the run's capacity
+// tracker, which the capacity sweeper reaps after DefaultCapacityTTL of
+// inactivity with no pending frames. A run that resumes streaming after
+// that window starts a fresh tracker — Seq restarts at 1 and a stream
+// previously marked Done is no longer remembered. Streams that complete
+// within the TTL (the overwhelming common case) are unaffected.
 type StreamFrame struct {
 	StreamID string
 	Seq      int
@@ -63,13 +71,18 @@ type runCapacity struct {
 	closed    map[string]bool // StreamID -> Done frame drained
 	stopped   bool            // engine Stop signalled; release waiters with ErrEngineStopped
 	cancelled bool            // Cancel(runID) signalled; release waiters with ErrRunCancelled
+	// lastActivity is the wall time of the most recent reserve/release.
+	// Read under mu by the capacity sweeper to reap trackers idle past
+	// the TTL (the run is over). Guarded by mu like every other field.
+	lastActivity time.Time
 }
 
 func newRunCapacity(capacity int) *runCapacity {
 	rc := &runCapacity{
-		capacity: capacity,
-		seqs:     make(map[string]int),
-		closed:   make(map[string]bool),
+		capacity:     capacity,
+		seqs:         make(map[string]int),
+		closed:       make(map[string]bool),
+		lastActivity: time.Now(),
 	}
 	rc.cond = sync.NewCond(&rc.mu)
 	return rc
@@ -136,6 +149,7 @@ func (rc *runCapacity) reserve(ctx context.Context, streamID string, done bool) 
 	seq := rc.seqs[streamID] + 1
 	rc.seqs[streamID] = seq
 	rc.pending++
+	rc.lastActivity = time.Now()
 	if done {
 		// Mark the stream closed at emit time — the producer side
 		// learns about closure before the consumer drains the Done
@@ -161,6 +175,7 @@ func (rc *runCapacity) release(streamID string, done bool) {
 	if rc.pending > 0 {
 		rc.pending--
 	}
+	rc.lastActivity = time.Now()
 	if done {
 		rc.closed[streamID] = true
 		delete(rc.seqs, streamID)
@@ -207,7 +222,10 @@ func (rc *runCapacity) cancel() {
 // Failure modes:
 //   - ErrSeqProvided: caller pre-filled frame.Seq.
 //   - ErrEmptyRunID: the originating envelope had no RunID.
-//   - ErrStreamClosed: the StreamID was previously Done-terminated.
+//   - ErrStreamClosed: the StreamID was previously Done-terminated —
+//     subject to the capacity-TTL caveat (see StreamFrame): if the run
+//     was idle past DefaultCapacityTTL its tracker is reaped, so a
+//     previously-Done StreamID is no longer remembered and Seq restarts.
 //   - ErrEngineStopped: Stop fired while waiting.
 //   - ctx.Err(): the caller's ctx cancelled while waiting.
 func (nctx *NodeContext) EmitChunk(ctx context.Context, frame StreamFrame) error {
@@ -285,8 +303,8 @@ func (e *engine) runCapacityFor(runID, nodeName string) int {
 	e.capMu.Lock()
 	override, hasOverride := e.runCapacityOverrides[runID]
 	e.capMu.Unlock()
-	if hasOverride && override > 0 {
-		return override
+	if hasOverride && override.n > 0 {
+		return override.n
 	}
 	if node, ok := e.nodes[nodeName]; ok && node.Policy.RunCapacity > 0 {
 		return node.Policy.RunCapacity
@@ -311,6 +329,10 @@ func (e *engine) acquireCapacity(runID string, capacity int) *runCapacity {
 		rc.stopped = true
 	}
 	e.capacities[runID] = rc
+	// The override (if any) was consumed by runCapacityFor when sizing
+	// this tracker; drop it so it doesn't outlive the run. The tracker
+	// itself is reaped by the capacity sweeper once idle.
+	delete(e.runCapacityOverrides, runID)
 	return rc
 }
 
@@ -350,6 +372,16 @@ func (e *engine) stopAllCapacities() {
 	}
 }
 
+// runOverride is a WithRunCapacity value plus the wall time it was
+// recorded. setAt lets the capacity sweeper reap an override whose run
+// never streamed (so no tracker was ever created to consume it) once it
+// is older than the TTL — the streamed-run case is reaped at tracker
+// creation in acquireCapacity.
+type runOverride struct {
+	n     int
+	setAt time.Time
+}
+
 // recordRunCapacityOverride stashes a WithRunCapacity override under
 // the run's RunID. Looked up by the first EmitChunk for that run.
 // Concurrent-safe.
@@ -360,7 +392,92 @@ func (e *engine) recordRunCapacityOverride(runID string, n int) {
 	e.capMu.Lock()
 	defer e.capMu.Unlock()
 	if e.runCapacityOverrides == nil {
-		e.runCapacityOverrides = make(map[string]int)
+		e.runCapacityOverrides = make(map[string]runOverride)
 	}
-	e.runCapacityOverrides[runID] = n
+	e.runCapacityOverrides[runID] = runOverride{n: n, setAt: time.Now()}
+}
+
+// DefaultCapacityTTL is how long a per-run streaming-capacity tracker is
+// retained after its last reserve/release before the capacity sweeper
+// reaps it. Generous relative to DefaultCancelTTL. Reaping inputs are
+// ONLY idle-time and pending count — NOT run liveness: a tracker is
+// reaped once it has had no reserve/release for this long AND has no
+// pending frames. So a run quiet *under* the TTL keeps its per-stream
+// bookkeeping; a run still live but idle past the TTL with nothing
+// pending (e.g. parked on a long HITL pause) is reaped and, if it later
+// resumes streaming, loses that bookkeeping — see reapIdleCapacities and
+// the StreamFrame godoc for the guarantees that lapse.
+const DefaultCapacityTTL = 10 * time.Minute
+
+// capacitySweepInterval is how often the capacity sweeper runs.
+const capacitySweepInterval = 30 * time.Second
+
+// WithCapacityTTL overrides DefaultCapacityTTL. Non-positive values
+// silently fall back to the default.
+func WithCapacityTTL(d time.Duration) Option {
+	return func(cfg *engineConfig) {
+		if d > 0 {
+			cfg.capacityTTL = d
+		}
+	}
+}
+
+// runCapacitySweeper periodically reaps idle per-run capacity trackers
+// and orphaned overrides. Runs in its own goroutine; joined by Stop via
+// the engine wg. Mirrors runCancellationSweeper.
+func (e *engine) runCapacitySweeper(ctx context.Context) {
+	ticker := time.NewTicker(capacitySweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.reapIdleCapacities(time.Now())
+		}
+	}
+}
+
+// reapIdleCapacities deletes capacity trackers idle longer than the
+// capacity TTL with no pending frames (plus their consumed overrides),
+// and orphan overrides for runs that never streamed. Called by the
+// sweeper goroutine; tests may invoke it directly with a chosen `now`.
+//
+// Lock order is capMu (engine) then rc.mu (per-tracker). No path takes
+// capMu while holding rc.mu (reserve/release touch only rc.mu), so this
+// cannot deadlock.
+//
+// Guarantee relaxation (deliberate, bounded by the TTL): reaping drops
+// the tracker's `seqs` and `closed` maps. If a run streams again after
+// its tracker is reaped, acquireCapacity rebuilds a fresh tracker, so
+// for that run BOTH the per-StreamID monotonic-Seq guarantee (Seq
+// restarts at 1) AND the post-Done ErrStreamClosed guarantee (a stream
+// previously Done'd is no longer remembered) lapse. This only affects a
+// stream idle past the capacity TTL with nothing pending — a stream that
+// completes within the TTL is unaffected. See the StreamFrame /
+// EmitChunk godoc.
+func (e *engine) reapIdleCapacities(now time.Time) {
+	ttl := e.cfg.capacityTTL
+	if ttl <= 0 {
+		ttl = DefaultCapacityTTL
+	}
+	e.capMu.Lock()
+	defer e.capMu.Unlock()
+	for runID, rc := range e.capacities {
+		rc.mu.Lock()
+		reap := rc.pending == 0 && now.Sub(rc.lastActivity) > ttl
+		rc.mu.Unlock()
+		if reap {
+			delete(e.capacities, runID)
+			delete(e.runCapacityOverrides, runID)
+		}
+	}
+	for runID, ov := range e.runCapacityOverrides {
+		if _, hasTracker := e.capacities[runID]; hasTracker {
+			continue
+		}
+		if now.Sub(ov.setAt) > ttl {
+			delete(e.runCapacityOverrides, runID)
+		}
+	}
 }

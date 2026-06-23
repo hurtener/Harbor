@@ -146,6 +146,10 @@ func (a *CostAccumulator) PreCall(ctx context.Context, req llm.CompleteRequest) 
 	}
 	total := math.Float64frombits(ks.totalBits.Load())
 	if total >= tier.BudgetCeilingUSD {
+		// quad (with its RunID) is passed to the event for OBSERVABILITY
+		// only — operators want to know which run tripped the
+		// per-identity ceiling. RunID never enters the keying/accumulation
+		// path (that is identityScoped); the ceiling itself is per-identity.
 		a.emitBudgetExceeded(ctx, quad, a.cfg.resolveTier(id), req.Model, total, tier.BudgetCeilingUSD)
 		return errorWith(ErrBudgetExceeded,
 			"identity=%s/%s/%s total=%.6f ceiling=%.6f",
@@ -233,6 +237,7 @@ func (a *CostAccumulator) Close(_ context.Context) error {
 // loads from StateStore (driver read failure → wrapped
 // ErrStateUnavailable). Subsequent calls return the cached value.
 func (a *CostAccumulator) keyState(ctx context.Context, q identity.Quadruple) (*costKeyState, error) {
+	q = identityScoped(q) // ceilings are per-identity, never per-run (RFC §6.15)
 	k := quadKeyFor(q)
 	if v, ok := a.keys.Load(k); ok {
 		ks, _ := v.(*costKeyState) //nolint:errcheck // keys map values are always *costKeyState by construction
@@ -337,6 +342,7 @@ func (a *CostAccumulator) touch(ks *costKeyState) {
 // state.Save sequence (only the persistence step is serialised; the
 // atomic add already happened).
 func (a *CostAccumulator) persist(ctx context.Context, q identity.Quadruple, ks *costKeyState) error {
+	q = identityScoped(q) // persist under the identity triple, never per-run (RFC §6.15)
 	ks.persistMu.Lock()
 	defer ks.persistMu.Unlock()
 	cr := costRecord{

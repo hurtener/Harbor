@@ -1,30 +1,14 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: static-only
 #
-# Phase NN smoke template. Copy to phase-NN.sh, set the surface assertions, make executable.
+# Phase 119 smoke — runtime retention + ctx hardening.
 #
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# Static-only: this phase fixes internal correctness (map reaping,
+# identity-scoped governance keys, a cancellable recovery ctx, two
+# control-flow cleanups) with no new HTTP/Protocol surface. The
+# behavioural guarantees are gated by `go test -race` in the touched
+# packages; these assertions pin the load-bearing source facts so a
+# regression that silently reverts a fix fails preflight.
 
 set -euo pipefail
 
@@ -34,17 +18,42 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase NN assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+ENG="internal/runtime/engine"
+GOV="internal/governance"
+MEM="internal/memory/strategy"
 
-skip "phase NN: smoke skeleton — replace with real assertions when the phase implements its surface"
+# 1. Engine capacity reap: the sweeper exists and is launched in Run,
+#    mirroring the cancellation sweeper.
+assert_grep_present 'func \(e \*engine\) reapIdleCapacities' "${ENG}/streaming.go" \
+    "engine: reapIdleCapacities reaper present"
+assert_grep_present 'func \(e \*engine\) runCapacitySweeper' "${ENG}/streaming.go" \
+    "engine: capacity sweeper present"
+assert_grep_present 'runCapacitySweeper\(internalCtx\)' "${ENG}/engine.go" \
+    "engine: capacity sweeper launched in Run"
+assert_grep_present 'lastActivity' "${ENG}/streaming.go" \
+    "engine: runCapacity tracks lastActivity for the idle-TTL reap"
+
+# 2. Governance identity-scoping (RFC §6.15): the helper exists and both
+#    subsystems strip RunID before keying / persisting.
+assert_grep_present 'func identityScoped' "${GOV}/governance.go" \
+    "governance: identityScoped helper present"
+assert_grep_present 'identityScoped\(q\)' "${GOV}/cost.go" \
+    "governance: cost accumulator strips RunID from its key"
+assert_grep_present 'identityScoped\(q\)' "${GOV}/ratelimit.go" \
+    "governance: rate limiter strips RunID from its key"
+
+# 3. Rolling-summary recovery loop uses a cancellable ctx, not
+#    context.Background(), and Close cancels it.
+assert_grep_present 'recoveryCancel' "${MEM}/rolling_summary.go" \
+    "rolling-summary: cancellable recovery ctx present"
+assert_grep_present 'ctx := e.recoveryCtx' "${MEM}/rolling_summary.go" \
+    "rolling-summary: recoverOne uses the cancellable recovery ctx"
+
+# 4. Low cleanups: the MapConcurrent dead select is gone; readAny reuses
+#    one timer instead of allocating time.After per poll cycle.
+assert_grep_absent 'time.After(time.Microsecond)' "${ENG}/engine.go" \
+    "engine: readAny no longer allocates time.After per poll cycle"
+assert_grep_present 'multiChannelPollInterval' "${ENG}/engine.go" \
+    "engine: readAny reuses a single poll timer"
 
 smoke_summary
