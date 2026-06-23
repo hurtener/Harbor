@@ -366,10 +366,18 @@ func TestE2E_Wave7a_RollingSummary_TriggersSummarizer(t *testing.T) {
 	// Direct driver construction is the path operators take to inject
 	// a Summarizer; the registry can't resolve one for `rolling_summary`
 	// today (Phase 32+ will land an LLM-backed default).
+	// The summariser fires on the count-based recent-window spill
+	// (the 5th turn overflows the FullZoneTurns=4 window into pending),
+	// independent of the token budget. The budget is set comfortably
+	// above the assembled context so the read-path budget clamp does not
+	// empty the EMITTED summary — a tiny budget smaller than a single
+	// recent turn would (correctly) clamp the emitted summary to "" (the
+	// single-oversize-turn residual case), which is not what this test
+	// is asserting.
 	mem, err := memorydriverinmem.New(memory.ConfigSnapshot{
 		Driver:       "inmem",
 		Strategy:     memory.StrategyRollingSummary,
-		BudgetTokens: 16, // tiny so 3 turns saturates
+		BudgetTokens: 512,
 	}, memory.Deps{State: store, Bus: bus}, memorydriverinmem.Options{
 		Summarizer: strategy.EchoSummarizer{},
 	})

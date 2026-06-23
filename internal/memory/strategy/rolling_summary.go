@@ -270,6 +270,26 @@ const maxCompactionChunksPerAddTurn = 4
 // (unbounded back-compat). When the key is degraded the loop bails —
 // the summariser is unavailable, and the read-path drop-oldest
 // guarantee keeps the emitted patch within budget.
+//
+// Same-key serialisation: AddTurn (and the compaction it triggers) is
+// serialised per memory key by contract — a session processes its turns
+// serially, so two concurrent AddTurns for the SAME key are not a
+// supported scenario. The concurrent-reuse guarantee is per identity key
+// (distinct sessions run fully concurrently, as the concurrent-reuse
+// test exercises); it does not promise atomicity for a read-modify-write
+// window on a single key. The summariser-is-unlocked gap below therefore
+// captures `prior`/`oldest` under the lock and re-validates the
+// recent-window length on re-acquire as defence in depth, not as a
+// same-key concurrency guarantee.
+//
+// Persisted-summary bound: the final persist defensively clamps the
+// stored summary to the budget so the StateStore row stays bounded
+// regardless of how well (or poorly) the summariser compresses — the
+// read-path clamp only bounds the EMITTED patch.
+//
+// Cost note: when a key is far over budget, a single AddTurn can issue
+// up to `maxCompactionChunksPerAddTurn` summariser (LLM) calls here, on
+// top of the one spill-path call AddTurn may already have made.
 func (e *rollingSummaryExec) enforceBudgetCompaction(ctx context.Context, id identity.Quadruple) error {
 	if e.budgetTokens <= 0 {
 		return nil
@@ -319,6 +339,15 @@ func (e *rollingSummaryExec) enforceBudgetCompaction(ctx context.Context, id ide
 	}
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
+	// Defensively bound the PERSISTED summary to the budget. The read
+	// path clamps only the EMITTED patch; without this floor a non- or
+	// poorly-compressing summariser could grow the StateStore row
+	// unbounded across turns. Real LLM summarisers compress and degraded
+	// mode bails before reaching here, so this is robustness, not the
+	// common path.
+	if e.budgetTokens > 0 && summaryTokens(ks.summary) > e.budgetTokens {
+		ks.summary = truncateSummaryToTokens(ks.summary, e.budgetTokens)
+	}
 	return persistRecord(ctx, e.state, id, memoryStateRecord{
 		Strategy: memory.StrategyRollingSummary,
 		Turns:    ks.recent,
@@ -409,12 +438,17 @@ func (e *rollingSummaryExec) GetLLMContext(ctx context.Context, id identity.Quad
 	if ks.health == memory.HealthDegraded {
 		summary = ""
 	}
-	// Cheap, no-LLM final budget guarantee. Even if the AddTurn-side
+	// Cheap, no-LLM final budget clamp. Even if the AddTurn-side
 	// compaction is behind (chunk cap) or the summariser is degraded /
-	// non-compressing, the emitted patch ALWAYS fits the budget: first
-	// drop oldest recent turns (keep the newest), then — if a single
-	// turn plus the summary still overflows — deterministically
-	// truncate the summary string to the remaining token budget.
+	// non-compressing, the emitted patch fits the budget: first drop
+	// oldest recent turns (keep the newest), then — if a single turn
+	// plus the summary still overflows — deterministically truncate the
+	// summary string to the remaining token budget. The one exception:
+	// when a SINGLE recent turn alone exceeds the budget, the freshest
+	// turn is preserved verbatim (its text is never mangled), the summary
+	// truncates to "", and the patch carries that one turn over budget.
+	// The always-on token-window guard (ErrContextWindowExceeded) is the
+	// backstop for that residual case.
 	if e.budgetTokens > 0 {
 		for len(recent) > 1 && summaryTokens(summary)+sumTokens(recent) > e.budgetTokens {
 			recent = recent[1:]

@@ -128,10 +128,10 @@ type Deps struct {
 // unbounded memory growth.
 const DefaultRecoveryBacklogMax = 16
 
-// FullZoneTurns is the recent-window size before turns spill into
-// the rolling-summary `pending` queue. Constant (the
-// design-brief knob is encoded as a constant; an operator who needs
-// to tune it files an RFC PR rather than fighting yaml).
+// FullZoneTurns is the DEFAULT recent-window size before turns spill
+// into the rolling-summary `pending` queue. Operators override it via
+// `memory.recent_turns` (threaded to `Deps.RecentTurns`); this constant
+// is the fallback used when that knob is unset.
 const FullZoneTurns = 4
 
 // New constructs the strategy executor for the given strategy.

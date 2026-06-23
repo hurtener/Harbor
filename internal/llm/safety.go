@@ -303,6 +303,14 @@ func validateContent(c Content) error {
 // they're remote references, not in-prompt bytes.
 func findContextLeak(req CompleteRequest, threshold int) (site string, size int, ok bool) {
 	for mi, m := range req.Messages {
+		// The byte heavy-content check covers RoleTool message text (this
+		// branch) and binary DataURL parts of ANY role (below). Tool- or
+		// task-derived content that is rendered under a CONVERSATION role —
+		// e.g. the legacy text-only-provider observation replay and the
+		// background-task outcome rendering in the react planner's prompt
+		// builder — is byte-exempt here. Those paths rely on dispatch-time
+		// source projection (the runtime stubs heavy results before
+		// rendering) as their offload guarantee, not on this edge backstop.
 		offloadableText := m.Role == RoleTool
 		// Text-mode content — only the offloadable (tool-result) class
 		// is subject to the byte check; conversation text is governed by

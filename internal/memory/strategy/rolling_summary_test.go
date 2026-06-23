@@ -203,6 +203,94 @@ func TestRollingSummary_Budget_ReplayStaysInBudget(t *testing.T) {
 	}
 	// EstimateTokens (internal, un-clamped) is allowed to exceed; the
 	// emitted patch is the guarantee surface.
+	//
+	// Byte/leak path is covered by the integration test
+	// test/integration/memory_llm_budget_test.go: the assembled summary
+	// can exceed the 32 KiB heavy threshold yet, being conversation text,
+	// must NOT trip ErrContextLeak at the LLM edge (D-241). That check
+	// lives at the llm-safety seam, not in this package.
+}
+
+// TestRollingSummary_Budget_SingleOversizeTurn documents the one
+// residual case the read-path clamp cannot fully bound (a single recent
+// turn whose own token count exceeds the budget): the freshest turn is
+// preserved verbatim (its text is never mangled), the summary clamps to
+// "", and the emitted patch carries that one turn over budget. The
+// always-on token-window guard is the backstop. Also exercises the
+// negative residual budget (budget - sumTokens(recent) < 0) to prove no
+// panic / slice-out-of-range.
+func TestRollingSummary_Budget_SingleOversizeTurn(t *testing.T) {
+	deps := buildDeps(t, strategy.EchoSummarizer{})
+	const budget = 10
+	deps.BudgetTokens = budget
+	exec, err := strategy.New(memory.StrategyRollingSummary, deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = exec.Close(context.Background()) }()
+
+	ctx := context.Background()
+	id := tripleA()
+	turn := bigTurn("only-", 200) // ≈103 tokens, far over the 10-token budget
+	if err := exec.AddTurn(ctx, id, turn); err != nil {
+		t.Fatalf("AddTurn: %v", err)
+	}
+	patch, err := exec.GetLLMContext(ctx, id)
+	if err != nil {
+		t.Fatalf("GetLLMContext: %v", err)
+	}
+	// Freshest (only) turn preserved verbatim — passthrough, not mangled.
+	if len(patch.RecentTurns) != 1 || patch.RecentTurns[0].UserMessage != turn.UserMessage {
+		t.Fatalf("freshest turn not preserved verbatim: %+v", patch.RecentTurns)
+	}
+	if patch.Summary != "" {
+		t.Errorf("summary should clamp to empty when the single turn alone overflows; got %q", patch.Summary)
+	}
+	// patch.Tokens is the surviving turn's own token count (chars/4+1 per
+	// role), over budget by construction.
+	want := len(turn.UserMessage)/4 + 1 + len(turn.AssistantResponse)/4 + 1
+	if patch.Tokens != want {
+		t.Errorf("patch.Tokens=%d, want the single turn's own token count %d", patch.Tokens, want)
+	}
+	if patch.Tokens <= budget {
+		t.Errorf("expected the single oversize turn to exceed budget=%d; Tokens=%d", budget, patch.Tokens)
+	}
+}
+
+// TestRollingSummary_Budget_PersistedSummaryStaysBounded asserts the
+// PERSISTED summary (StateStore row, read via StoredStateForTest) stays
+// bounded by the budget across many turns even with a non-compressing
+// (Echo) summariser — the defensive persist-time clamp in
+// enforceBudgetCompaction, independent of the read-path emit clamp.
+func TestRollingSummary_Budget_PersistedSummaryStaysBounded(t *testing.T) {
+	deps := buildDeps(t, strategy.EchoSummarizer{})
+	const budget = 80
+	deps.BudgetTokens = budget
+	deps.RecentTurns = 2
+	exec, err := strategy.New(memory.StrategyRollingSummary, deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = exec.Close(context.Background()) }()
+
+	r, ok := strategy.AsRollingSummary(exec)
+	if !ok {
+		t.Fatalf("AsRollingSummary: not a rolling-summary executor")
+	}
+
+	ctx := context.Background()
+	id := tripleA()
+	for i := range 40 {
+		if err := exec.AddTurn(ctx, id, bigTurn(fmt.Sprintf("t%d-", i), 60)); err != nil {
+			t.Fatalf("AddTurn %d: %v", i, err)
+		}
+		_, stored := r.StoredStateForTest(id)
+		// summaryTokens(stored) = len/4+1; assert the stored summary never
+		// exceeds the budget despite Echo never compressing.
+		if storedTokens := len(stored)/4 + 1; len(stored) > 0 && storedTokens > budget {
+			t.Fatalf("turn %d: persisted summary token estimate %d exceeds budget %d (len=%d)", i, storedTokens, budget, len(stored))
+		}
+	}
 }
 
 // TestRollingSummary_Budget_ConcurrentReuse — AC-8: N≥100 concurrent

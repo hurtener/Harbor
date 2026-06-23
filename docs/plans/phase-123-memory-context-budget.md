@@ -61,7 +61,7 @@ Not departing from D-026's "**V1 does not auto-truncate at the safety net; the p
 
 ## Acceptance criteria
 
-- [ ] AC-1: With `budget_tokens > 0`, `rolling_summary.GetLLMContext` returns a patch whose `Tokens` (summary + recent turns) is `≤ budget_tokens` for any sequence of `AddTurn` calls, including turns whose individual size approaches the budget.
+- [ ] AC-1: With `budget_tokens > 0`, `rolling_summary.GetLLMContext` returns a patch whose `Tokens` (summary + recent turns) is `≤ budget_tokens` for any sequence whose individual turns each fit the budget. (A single turn larger than the budget is preserved verbatim and carried over budget — the D-242 §4.3 non-goal; the token-window guard is the backstop.)
 - [ ] AC-2: When the recent-turn set (`recent_turns` verbatim) alone exceeds the budget, the executor summarizes the recent turns in oldest-first chunks, folding each chunk into the existing summary (prior summary content is preserved, not replaced wholesale), until `Tokens ≤ budget_tokens`.
 - [ ] AC-3: `budget_tokens == 0` preserves today's "no budget / unbounded" behavior (back-compat).
 - [ ] AC-4: `memory.recent_turns` config is honored; unset → `strategy.FullZoneTurns` default (4). Validated in `loader.go::Validate` (non-negative).
