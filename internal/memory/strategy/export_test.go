@@ -57,6 +57,23 @@ func (e *rollingSummaryExec) HealthForTest(id identity.Quadruple) memory.Health 
 	return ks.health
 }
 
+// StoredStateForTest returns the per-key recent window + stored
+// rolling summary as held in executor memory (pre read-path budget
+// clamp), so budget tests can assert compaction folded into — never
+// discarded — the prior summary. Exposed only in _test.go builds.
+func (e *rollingSummaryExec) StoredStateForTest(id identity.Quadruple) (recent []memory.ConversationTurn, summary string) {
+	v, ok := e.keys.Load(quadKeyFor(id))
+	if !ok {
+		return nil, ""
+	}
+	ks := v.(*rollingKeyState)
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	out := make([]memory.ConversationTurn, len(ks.recent))
+	copy(out, ks.recent)
+	return out, ks.summary
+}
+
 // AsRollingSummary asserts the executor is a rolling-summary
 // executor and returns the concrete type. Returns nil + false
 // otherwise. Exposed only in _test.go builds.

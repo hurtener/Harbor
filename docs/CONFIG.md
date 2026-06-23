@@ -397,6 +397,14 @@ Truncation / rolling-summary budget cap (token estimate). Default:
 Bounded queue size for the `rolling_summary` strategy's recovery
 loop (D-035). Default: `16`. Validation: >= 0.
 
+### memory.recent_turns
+
+Number of most-recent conversation turns the `rolling_summary`
+strategy keeps verbatim before older turns spill into the rolling
+summary (D-242). Default: `0` → strategy default
+(`strategy.FullZoneTurns` = 4). Validation: >= 0. Ignored by the
+`none` and `truncation` strategies.
+
 ### memory.retrieval
 
 Opt-in retrieval mode layered ON TOP of the strategy (Phase 84d —

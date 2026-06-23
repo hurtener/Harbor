@@ -251,6 +251,11 @@ func TestValidate_TableDriven(t *testing.T) {
 			func(c *config.Config) { c.Memory.RecoveryBacklogMax = -1 },
 			"memory.recovery_backlog_max",
 		},
+		{
+			"negative memory recent turns",
+			func(c *config.Config) { c.Memory.RecentTurns = -1 },
+			"memory.recent_turns",
+		},
 		// Phase 29 tools validation.
 		{
 			"a2a peer empty url",

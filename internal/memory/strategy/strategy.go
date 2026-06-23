@@ -98,6 +98,11 @@ type StrategyExecutor interface {
 // `RecoveryBacklogMax` is the bounded queue size for the
 // rolling-summary recovery loop. Zero defaults to
 // `DefaultRecoveryBacklogMax` (16).
+//
+// `RecentTurns` is the verbatim recent-window size the rolling-summary
+// strategy keeps before older turns spill into the summary. Zero
+// selects the `FullZoneTurns` default; positive values override it.
+// Ignored by the other strategies.
 // `Embedder` / `Retrieval` / `RetrievalTopK` configure the opt-in
 // semantic retrieval mode layered on top of the strategy executor.
 // `Embedder` is mandatory when `Retrieval == RetrievalSemantic` and
@@ -110,6 +115,7 @@ type Deps struct {
 	Summarizer         memory.Summarizer
 	BudgetTokens       int
 	RecoveryBacklogMax int
+	RecentTurns        int
 	Embedder           memory.Embedder
 	Retrieval          memory.RetrievalMode
 	RetrievalTopK      int

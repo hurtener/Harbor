@@ -283,20 +283,38 @@ func validateContent(c Content) error {
 // content checks the message-level Text field; multimodal checks
 // per-part Text + each part's DataURL.
 //
+// Scope: the byte heavy-content check governs OFFLOADABLE content —
+// content the runtime is expected to have routed to an ArtifactStub
+// instead of carrying inline:
+//
+//   - `RoleTool` message text (Content.Text + PartText) — tool / MCP
+//     observations, which the ObservationRenderer offloads when heavy.
+//   - Binary `DataURL` parts (Image / Audio / File) of ANY role —
+//     auto-materialized to ArtifactRef above the threshold.
+//
+// Plain conversation text on `RoleSystem` / `RoleUser` / `RoleAssistant`
+// messages (Content.Text and PartText, including an injected rolling
+// summary) is EXEMPT: it is legitimate conversation context that is not
+// offloadable to an ArtifactStub, and its size is governed by the
+// token-window guard (`ErrContextWindowExceeded`), not this byte check.
+//
 // Note: Artifact-shaped parts are skipped — they're exactly the
 // canonical form we expect. URL-shaped parts are skipped:
 // they're remote references, not in-prompt bytes.
 func findContextLeak(req CompleteRequest, threshold int) (site string, size int, ok bool) {
 	for mi, m := range req.Messages {
-		// Text-mode content
-		if m.Content.Text != nil && len(*m.Content.Text) >= threshold {
+		offloadableText := m.Role == RoleTool
+		// Text-mode content — only the offloadable (tool-result) class
+		// is subject to the byte check; conversation text is governed by
+		// the token-window guard.
+		if offloadableText && m.Content.Text != nil && len(*m.Content.Text) >= threshold {
 			return fmt.Sprintf("Messages[%d].Content.Text", mi), len(*m.Content.Text), true
 		}
 		// Multimodal parts
 		for pi, p := range m.Content.Parts {
 			switch p.Type {
 			case PartText:
-				if len(p.Text) >= threshold {
+				if offloadableText && len(p.Text) >= threshold {
 					return fmt.Sprintf("Messages[%d].Parts[%d].Text", mi, pi), len(p.Text), true
 				}
 			case PartImage:

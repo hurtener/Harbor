@@ -457,6 +457,13 @@ type RuntimeConfig struct{}
 // drops oldest and emits `memory.recovery_dropped` on the bus.
 // Ignored by the `none` and `truncation` strategies.
 //
+// `RecentTurns` is the number of most-recent conversation turns the
+// `rolling_summary` strategy keeps verbatim before older turns spill
+// into the rolling summary. Zero selects the strategy default
+// (`strategy.FullZoneTurns`, currently 4). Ignored by the `none`
+// strategy; the `truncation` strategy keeps every turn that fits the
+// budget so it does not consult this knob.
+//
 // Restart-required (no `reload:"live"`).
 type MemoryConfig struct {
 	Driver             string `yaml:"driver"`
@@ -464,6 +471,9 @@ type MemoryConfig struct {
 	Strategy           string `yaml:"strategy,omitempty"`
 	BudgetTokens       int    `yaml:"budget_tokens,omitempty"`
 	RecoveryBacklogMax int    `yaml:"recovery_backlog_max,omitempty"`
+	// RecentTurns is the verbatim recent-window size for the
+	// `rolling_summary` strategy. 0 → strategy default (FullZoneTurns).
+	RecentTurns int `yaml:"recent_turns,omitempty"`
 
 	// Retrieval is the opt-in retrieval mode. Empty (the default)
 	// keeps the strategy-shaped retrieval unchanged; `"semantic"`

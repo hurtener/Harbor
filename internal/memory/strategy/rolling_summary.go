@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -52,6 +53,7 @@ type rollingSummaryExec struct {
 	bus                events.EventBus
 	summarizer         memory.Summarizer
 	budgetTokens       int
+	recentTurns        int
 	recoveryBacklogMax int
 
 	keys sync.Map // map[quadKey]*rollingKeyState
@@ -92,11 +94,16 @@ func newRollingSummaryExec(deps Deps) *rollingSummaryExec {
 	if max == 0 {
 		max = DefaultRecoveryBacklogMax
 	}
+	recent := deps.RecentTurns
+	if recent <= 0 {
+		recent = FullZoneTurns
+	}
 	e := &rollingSummaryExec{
 		state:              deps.State,
 		bus:                deps.Bus,
 		summarizer:         deps.Summarizer,
 		budgetTokens:       deps.BudgetTokens,
+		recentTurns:        recent,
 		recoveryBacklogMax: max,
 		stop:               make(chan struct{}),
 	}
@@ -145,7 +152,7 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 	}
 	ks.recent = append(ks.recent, turn)
 	// Spill overflow into pending.
-	for len(ks.recent) > FullZoneTurns {
+	for len(ks.recent) > e.recentTurns {
 		ks.pending = append(ks.pending, ks.recent[0])
 		ks.recent = ks.recent[1:]
 	}
@@ -191,7 +198,11 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 	}
 
 	if !shouldCall {
-		return nil
+		// No spill batch to summarise (or degraded mode drained it to
+		// the recovery backlog). Still enforce the token budget: even
+		// without a spill, the recent window plus the summary can
+		// exceed the configured cap.
+		return e.enforceBudgetCompaction(ctx, id)
 	}
 
 	// Summariser call OUTSIDE the lock — the implementation may
@@ -202,9 +213,10 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 		Turns:           batch,
 	})
 	ks.mu.Lock()
-	defer ks.mu.Unlock()
 	if err != nil {
-		return e.onSummarizerFailure(ctx, ks, id, batch, prior, err)
+		ferr := e.onSummarizerFailure(ctx, ks, id, batch, prior, err)
+		ks.mu.Unlock()
+		return ferr
 	}
 	// Success path: collapse pending into the summary, reset retry
 	// counter, restore healthy if we were retrying.
@@ -220,6 +232,93 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 	if ks.health == memory.HealthRetry {
 		e.transitionHealth(ctx, ks, id, memory.HealthHealthy, "summarizer_succeeded")
 	}
+	persistErr2 := persistRecord(ctx, e.state, id, memoryStateRecord{
+		Strategy: memory.StrategyRollingSummary,
+		Turns:    ks.recent,
+		Summary:  ks.summary,
+	})
+	ks.mu.Unlock()
+	if persistErr2 != nil {
+		return persistErr2
+	}
+	// After folding the spilled batch, enforce the token budget: the
+	// recent window plus the (now larger) summary may still exceed the
+	// cap, in which case oldest recent turns are folded in too.
+	return e.enforceBudgetCompaction(ctx, id)
+}
+
+// maxCompactionChunksPerAddTurn bounds the number of LLM-backed
+// compaction calls a single AddTurn issues when the assembled context
+// (recent window + summary) exceeds the configured token budget.
+// Compaction folds the oldest recent turn into the summary one turn at
+// a time; this cap keeps the per-turn summariser cost bounded. If a key
+// is far over budget the remaining oldest turns fold on subsequent
+// AddTurns, and the read-path guarantee (GetLLMContext) always clamps
+// the emitted patch to the budget regardless of how far compaction got.
+const maxCompactionChunksPerAddTurn = 4
+
+// enforceBudgetCompaction folds oldest recent turns into the rolling
+// summary, oldest-first, until the assembled context (recent +
+// summary) fits `e.budgetTokens` or the per-call chunk cap is reached.
+// The prior summary is always threaded through `PreviousSummary` and
+// never discarded. Bounded work per call: at most
+// `maxCompactionChunksPerAddTurn` summariser calls.
+//
+// Lock discipline mirrors AddTurn's spill path: state is captured under
+// the per-key lock, the summariser is called unlocked, and the result
+// is re-applied under the lock. A zero/negative budget is a no-op
+// (unbounded back-compat). When the key is degraded the loop bails —
+// the summariser is unavailable, and the read-path drop-oldest
+// guarantee keeps the emitted patch within budget.
+func (e *rollingSummaryExec) enforceBudgetCompaction(ctx context.Context, id identity.Quadruple) error {
+	if e.budgetTokens <= 0 {
+		return nil
+	}
+	ks := e.keyState(id)
+	mutated := false
+	for range maxCompactionChunksPerAddTurn {
+		ks.mu.Lock()
+		if ks.health == memory.HealthDegraded {
+			ks.mu.Unlock()
+			break
+		}
+		// Fit, or nothing left to fold (the newest turn stays verbatim).
+		if len(ks.recent) <= 1 || sumTokens(ks.recent)+summaryTokens(ks.summary) <= e.budgetTokens {
+			ks.mu.Unlock()
+			break
+		}
+		oldest := ks.recent[0]
+		prior := ks.summary
+		ks.mu.Unlock()
+
+		resp, err := e.summarizer.Summarize(ctx, id, memory.SummarizeRequest{
+			PreviousSummary: prior,
+			Turns:           []memory.ConversationTurn{oldest},
+		})
+		ks.mu.Lock()
+		if err != nil {
+			// Fold the failure into the health FSM exactly like the
+			// spill path; the read-path guarantee still keeps the patch
+			// in budget while degraded.
+			_ = e.onSummarizerFailure(ctx, ks, id, []memory.ConversationTurn{oldest}, prior, err) //nolint:errcheck // onSummarizerFailure absorbs the failure into the health FSM (always-nil return, see its godoc).
+			ks.mu.Unlock()
+			break
+		}
+		// Drop the oldest recent turn we just folded. Re-check len under
+		// the re-acquired lock to defend against a concurrent same-key
+		// AddTurn having mutated the window.
+		if len(ks.recent) > 1 {
+			ks.recent = ks.recent[1:]
+		}
+		ks.summary = resp.Summary
+		mutated = true
+		ks.mu.Unlock()
+	}
+	if !mutated {
+		return nil
+	}
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
 	return persistRecord(ctx, e.state, id, memoryStateRecord{
 		Strategy: memory.StrategyRollingSummary,
 		Turns:    ks.recent,
@@ -238,8 +337,6 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 // godoc). Returning an error here would force AddTurn to
 // surface the summariser failure to the caller, which is exactly
 // the silent-context-loss path we're closing.
-//
-//nolint:unparam // the always-nil error return is deliberate (see godoc): a non-nil return would force AddTurn to surface the summariser failure, re-opening the silent-context-loss path closed. The signature keeps the `return e.onSummarizerFailure(...)` call site honest.
 func (e *rollingSummaryExec) onSummarizerFailure(
 	ctx context.Context,
 	ks *rollingKeyState,
@@ -301,23 +398,83 @@ func (e *rollingSummaryExec) GetLLMContext(ctx context.Context, id identity.Quad
 	if err := e.loadIfNeeded(ctx, ks, id); err != nil {
 		return memory.LLMContextPatch{}, err
 	}
-	// Copy recent turns so the caller can't mutate executor state.
+	// Copy recent turns so the caller can't mutate executor state. The
+	// budget clamp below operates entirely on these copies — the
+	// read path NEVER mutates executor state.
 	recent := make([]memory.ConversationTurn, len(ks.recent))
 	copy(recent, ks.recent)
-	patch := memory.LLMContextPatch{
-		Strategy:    memory.StrategyRollingSummary,
-		Summary:     ks.summary,
-		RecentTurns: recent,
-		Tokens:      sumTokens(ks.recent) + summaryTokens(ks.summary),
-	}
-	// Degraded fallback: drop the (stale) summary
-	// from the patch, return only the recent window so the planner
-	// keeps the conversation usable.
+	summary := ks.summary
+	// Degraded fallback: drop the (stale) summary so the planner keeps
+	// the conversation usable on the recent window alone.
 	if ks.health == memory.HealthDegraded {
-		patch.Summary = ""
-		patch.Tokens = sumTokens(ks.recent)
+		summary = ""
 	}
-	return patch, nil
+	// Cheap, no-LLM final budget guarantee. Even if the AddTurn-side
+	// compaction is behind (chunk cap) or the summariser is degraded /
+	// non-compressing, the emitted patch ALWAYS fits the budget: first
+	// drop oldest recent turns (keep the newest), then — if a single
+	// turn plus the summary still overflows — deterministically
+	// truncate the summary string to the remaining token budget.
+	if e.budgetTokens > 0 {
+		for len(recent) > 1 && summaryTokens(summary)+sumTokens(recent) > e.budgetTokens {
+			recent = recent[1:]
+		}
+		if summaryTokens(summary)+sumTokens(recent) > e.budgetTokens {
+			summary = truncateSummaryToTokens(summary, e.budgetTokens-sumTokens(recent))
+		}
+	}
+	return memory.LLMContextPatch{
+		Strategy:    memory.StrategyRollingSummary,
+		Summary:     summary,
+		RecentTurns: recent,
+		Tokens:      sumTokens(recent) + summaryTokens(summary),
+	}, nil
+}
+
+// compactionMarker is appended to a summary truncated by the read-path
+// budget guarantee so the planner can see that older context was
+// dropped rather than silently lost.
+const compactionMarker = " …[older context compacted]"
+
+// truncateSummaryToTokens deterministically shortens a rolling-summary
+// string so its token estimate (chars/4+1) fits within `maxTokens`.
+// Returns "" when `maxTokens <= 0` (no room for any summary). The
+// truncation lands on a UTF-8 rune boundary and, when there is room,
+// appends `compactionMarker`. The result always satisfies
+// `summaryTokens(result) <= maxTokens`.
+func truncateSummaryToTokens(s string, maxTokens int) string {
+	if maxTokens <= 0 {
+		return ""
+	}
+	if summaryTokens(s) <= maxTokens {
+		return s
+	}
+	// summaryTokens(x) = len(x)/4 + 1, so len(x) <= 4*(maxTokens-1)
+	// keeps the estimate within maxTokens.
+	maxBytes := 4 * (maxTokens - 1)
+	if maxBytes <= len(compactionMarker) {
+		// Not enough room for the marker — emit a bare rune-boundary
+		// truncation that still fits the byte budget.
+		return truncateOnRuneBoundary(s, maxBytes)
+	}
+	body := truncateOnRuneBoundary(s, maxBytes-len(compactionMarker))
+	return body + compactionMarker
+}
+
+// truncateOnRuneBoundary returns the longest prefix of `s` whose byte
+// length is `<= maxBytes` and which ends on a UTF-8 rune boundary.
+func truncateOnRuneBoundary(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	b := maxBytes
+	for b > 0 && !utf8.RuneStart(s[b]) {
+		b--
+	}
+	return s[:b]
 }
 
 func (e *rollingSummaryExec) EstimateTokens(ctx context.Context, id identity.Quadruple) (int, error) {

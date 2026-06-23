@@ -167,9 +167,10 @@ func TestPostgres_ConformanceSuite(t *testing.T) {
 				}
 				truncateAll(t, dsn)
 				return conformancetest.Harness{
-					Store:    m,
-					Bus:      bus,
-					Strategy: s,
+					Store:        m,
+					Bus:          bus,
+					Strategy:     s,
+					BudgetTokens: 64,
 					Cleanup: func() {
 						_ = m.Close(context.Background())
 					},
@@ -200,10 +201,11 @@ func TestPostgres_ConformanceSuite(t *testing.T) {
 			}
 			truncateAll(t, dsn)
 			return conformancetest.Harness{
-				Store:     m,
-				Bus:       bus,
-				Strategy:  memory.StrategyRollingSummary,
-				Retrieval: memory.RetrievalSemantic,
+				Store:        m,
+				Bus:          bus,
+				Strategy:     memory.StrategyRollingSummary,
+				Retrieval:    memory.RetrievalSemantic,
+				BudgetTokens: 64,
 				Cleanup: func() {
 					_ = m.Close(context.Background())
 				},

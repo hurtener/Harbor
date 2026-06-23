@@ -84,10 +84,11 @@ func newHarness(t *testing.T, s memory.Strategy, retrieval memory.RetrievalMode)
 		t.Fatalf("inmem.New(%q): %v", s, err)
 	}
 	return conformancetest.Harness{
-		Store:     mem,
-		Bus:       bus,
-		Strategy:  s,
-		Retrieval: retrieval,
+		Store:        mem,
+		Bus:          bus,
+		Strategy:     s,
+		Retrieval:    retrieval,
+		BudgetTokens: 64,
 		Cleanup: func() {
 			_ = mem.Close(context.Background())
 			_ = bus.Close(context.Background())

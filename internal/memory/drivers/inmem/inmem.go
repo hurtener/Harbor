@@ -100,6 +100,7 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps, opts Options) (memory.Memo
 		Summarizer:         opts.Summarizer,
 		BudgetTokens:       cfg.BudgetTokens,
 		RecoveryBacklogMax: backlog,
+		RecentTurns:        cfg.RecentTurns,
 		Embedder:           embedder,
 		Retrieval:          cfg.Retrieval,
 		RetrievalTopK:      cfg.RetrievalTopK,

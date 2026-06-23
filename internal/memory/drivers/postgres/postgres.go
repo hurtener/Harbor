@@ -129,6 +129,7 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 		Summarizer:         deps.Summarizer,
 		BudgetTokens:       cfg.BudgetTokens,
 		RecoveryBacklogMax: cfg.RecoveryBacklogMax,
+		RecentTurns:        cfg.RecentTurns,
 		Embedder:           deps.Embedder,
 		Retrieval:          cfg.Retrieval,
 		RetrievalTopK:      cfg.RetrievalTopK,
