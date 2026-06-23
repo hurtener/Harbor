@@ -111,7 +111,16 @@ type whardSeam struct {
 // EXACTLY as assemble.Assemble registers them (governance.CacheLen +
 // the bus DroppedCounter). A bus->metrics bridge goroutine runs so the
 // retention test has a real long-lived goroutine to join.
-func newWhardSeam(t *testing.T, budgetTokens, windowTokens int) *whardSeam {
+// whardBudgetTokens / whardWindowTokens are the fixed per-session token
+// budget and model context-window the wave seam runs with — constant
+// across every caller, so they are package constants, not newWhardSeam
+// parameters (unparam).
+const (
+	whardBudgetTokens = 8 * 1024
+	whardWindowTokens = 1 << 20
+)
+
+func newWhardSeam(t *testing.T) *whardSeam {
 	t.Helper()
 	ctx := context.Background()
 	var closers []func()
@@ -144,7 +153,7 @@ func newWhardSeam(t *testing.T, budgetTokens, windowTokens int) *whardSeam {
 	mem, err := inmem.New(memory.ConfigSnapshot{
 		Driver:       "inmem",
 		Strategy:     memory.StrategyRollingSummary,
-		BudgetTokens: budgetTokens,
+		BudgetTokens: whardBudgetTokens,
 	}, memory.Deps{State: store, Bus: bus, Summarizer: strategy.EchoSummarizer{}},
 		inmem.Options{Summarizer: strategy.EchoSummarizer{}})
 	if err != nil {
@@ -164,7 +173,7 @@ func newWhardSeam(t *testing.T, budgetTokens, windowTokens int) *whardSeam {
 		ContextWindowReserve: 0.05,
 		HeavyOutputThreshold: budgetHeavyThreshold,
 		ModelProfiles: map[string]llm.ModelProfile{
-			"m": {ContextWindowTokens: windowTokens, TokenEstimator: "chars_div_4"},
+			"m": {ContextWindowTokens: whardWindowTokens, TokenEstimator: "chars_div_4"},
 		},
 	}, llm.Deps{Artifacts: artStore, Bus: bus})
 	if err != nil {
@@ -282,11 +291,9 @@ func TestE2E_WaveRuntimeHardening_ConcurrentSessionIsolation(t *testing.T) {
 	const (
 		N             = 12
 		turnsPerSess  = 40
-		budget        = 8 * 1024
-		windowTokens  = 1 << 20 // unused by the memory path; large for safety
 		userFillChars = 2000
 	)
-	seam := newWhardSeam(t, budget, windowTokens)
+	seam := newWhardSeam(t)
 
 	var (
 		wg    sync.WaitGroup
@@ -322,9 +329,9 @@ func TestE2E_WaveRuntimeHardening_ConcurrentSessionIsolation(t *testing.T) {
 				return
 			}
 			// (a) per-session budget enforcement.
-			if patch.Tokens > budget {
+			if patch.Tokens > whardBudgetTokens {
 				t.Errorf("[sess %d] patch.Tokens=%d exceeds budget=%d — compaction did not hold the per-session budget",
-					i, patch.Tokens, budget)
+					i, patch.Tokens, whardBudgetTokens)
 				fails.Add(1)
 				return
 			}
@@ -449,7 +456,7 @@ func TestE2E_WaveRuntimeHardening_BudgetExemptionVsLeak(t *testing.T) {
 // are live without an engine host.
 func TestE2E_WaveRuntimeHardening_RuntimeGaugesObservable(t *testing.T) {
 	const distinctIdentities = 6
-	seam := newWhardSeam(t, 8*1024, 1<<20)
+	seam := newWhardSeam(t)
 
 	// Drive a modest concurrent memory load so the bus carries real
 	// memory.* events to the metrics bridge.
@@ -538,7 +545,7 @@ func TestE2E_WaveRuntimeHardening_RuntimeGaugesObservable(t *testing.T) {
 func TestE2E_WaveRuntimeHardening_RetentionNoGoroutineLeak(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
-	seam := newWhardSeam(t, 8*1024, 1<<20)
+	seam := newWhardSeam(t)
 
 	// Drive a load so any per-operation goroutines spin up and must be
 	// joined.
@@ -593,7 +600,7 @@ func TestE2E_WaveRuntimeHardening_RetentionNoGoroutineLeak(t *testing.T) {
 // closed store fails loud with a typed error — never a silent degradation
 // (§13). It covers three fail-loud paths across the composed seam.
 func TestE2E_WaveRuntimeHardening_FailLoudModes(t *testing.T) {
-	seam := newWhardSeam(t, 8*1024, 1<<20)
+	seam := newWhardSeam(t)
 
 	// 1) Memory store fails closed on an incomplete identity (no session).
 	badID := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}}
