@@ -65,3 +65,68 @@ export interface RuntimeHealth {
 	/** The per-subsystem readiness slice. */
 	subsystems: SubsystemHealth[];
 }
+
+// ── metrics.snapshot family ───────────────────────────────────────────
+// The `metrics.snapshot` Protocol projection over the telemetry
+// MetricsRegistry — counters, histograms, and the runtime observability
+// gauges (active runs, engine capacity-map entries, governance cache
+// entries, bus messages dropped). Mirrors `types.MetricsSnapshot` &
+// friends; kept in lockstep with the wire manifest (D-223). Labels are
+// the cardinality-firewalled low-cardinality set (no run_id/trace_id).
+
+/** One counter data point. Mirrors `types.NamedCounter`. */
+export interface NamedCounter {
+	/** The metric name (e.g. `harbor_events_total`). */
+	name: string;
+	/** The counter's current cumulative value. */
+	value: number;
+	/** The data point's low-cardinality label set. */
+	labels?: Record<string, string>;
+}
+
+/** One gauge data point. Mirrors `types.NamedGauge`. */
+export interface NamedGauge {
+	/** The metric name (e.g. `harbor_runtime_active_runs`). */
+	name: string;
+	/** The gauge's current reading. */
+	value: number;
+	/** The data point's low-cardinality label set (empty for runtime gauges). */
+	labels?: Record<string, string>;
+}
+
+/** One cumulative histogram bucket. Mirrors `types.HistogramBucket`. */
+export interface HistogramBucket {
+	/** The inclusive upper bound of the bucket. */
+	upper_bound: number;
+	/** The cumulative count at or below `upper_bound`. */
+	count: number;
+}
+
+/** One histogram data point. Mirrors `types.NamedHistogram`. */
+export interface NamedHistogram {
+	/** The metric name. */
+	name: string;
+	/** The total observation count. */
+	count: number;
+	/** The sum of all observed values. */
+	sum: number;
+	/** The cumulative buckets, if exported. */
+	buckets?: HistogramBucket[];
+	/** The data point's low-cardinality label set. */
+	labels?: Record<string, string>;
+}
+
+/**
+ * `metrics.snapshot` response — a Protocol-shaped projection over the
+ * telemetry MetricsRegistry. Mirrors `types.MetricsSnapshot`.
+ */
+export interface MetricsSnapshot {
+	/** The flat counter-data-point slice. */
+	counters: NamedCounter[];
+	/** The flat histogram-data-point slice. */
+	histograms: NamedHistogram[];
+	/** The flat gauge-data-point slice (runtime observability gauges). */
+	gauges: NamedGauge[];
+	/** The unix-millis timestamp the metrics were read. */
+	snapshot_at: number;
+}
