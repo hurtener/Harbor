@@ -855,6 +855,9 @@ func (c *Config) validateMemory() error {
 	if c.Memory.RecoveryBacklogMax < 0 {
 		return fieldError("memory.recovery_backlog_max", "must be >= 0")
 	}
+	if c.Memory.RecentTurns < 0 {
+		return fieldError("memory.recent_turns", "must be >= 0")
+	}
 	if _, ok := allowedRetrievalModes[c.Memory.Retrieval]; !ok {
 		return fieldError("memory.retrieval",
 			fmt.Sprintf("must be empty or %q, got %q", "semantic", c.Memory.Retrieval))

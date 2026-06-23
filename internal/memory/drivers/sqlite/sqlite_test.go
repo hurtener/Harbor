@@ -60,9 +60,10 @@ func TestSQLite_ConformanceSuite(t *testing.T) {
 					t.Fatalf("sqlite.New(%q): %v", s, err)
 				}
 				return conformancetest.Harness{
-					Store:    mem,
-					Bus:      bus,
-					Strategy: s,
+					Store:        mem,
+					Bus:          bus,
+					Strategy:     s,
+					BudgetTokens: 64,
 					Cleanup: func() {
 						_ = mem.Close(context.Background())
 					},
@@ -93,10 +94,11 @@ func TestSQLite_ConformanceSuite(t *testing.T) {
 				t.Fatalf("sqlite.New(semantic): %v", err)
 			}
 			return conformancetest.Harness{
-				Store:     mem,
-				Bus:       bus,
-				Strategy:  memory.StrategyRollingSummary,
-				Retrieval: memory.RetrievalSemantic,
+				Store:        mem,
+				Bus:          bus,
+				Strategy:     memory.StrategyRollingSummary,
+				Retrieval:    memory.RetrievalSemantic,
+				BudgetTokens: 64,
 				Cleanup: func() {
 					_ = mem.Close(context.Background())
 				},

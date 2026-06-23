@@ -40,10 +40,18 @@ func TestSafety_PlantedLeak_RawTextEmitsContextLeak(t *testing.T) {
 
 	ctx := withIdentity(t, context.Background())
 	// Build a string ≥ 32 KiB (the heavy-output threshold default).
+	// The byte check is scoped to offloadable content (D-241): a
+	// `RoleTool` observation is the offloadable class, so it must trip
+	// the leak. The tool message is paired with a preceding assistant
+	// tool_call so the wire-pairing validation passes first.
 	leaky := strings.Repeat("X", 33*1024)
+	callID := "call_leak"
 	req := llm.CompleteRequest{
-		Model:    "m",
-		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &leaky}}},
+		Model: "m",
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCallStructured{{ID: callID, Name: "probe"}}},
+			{Role: llm.RoleTool, ToolCallID: &callID, Content: llm.Content{Text: &leaky}},
+		},
 	}
 	_, err = client.Complete(ctx, req)
 	if !errors.Is(err, llm.ErrContextLeak) {
@@ -62,7 +70,7 @@ func TestSafety_PlantedLeak_RawTextEmitsContextLeak(t *testing.T) {
 		if p.Model != "m" {
 			t.Errorf("payload.Model=%q, want 'm'", p.Model)
 		}
-		if !strings.Contains(p.LeakSite, "Messages[0].Content.Text") {
+		if !strings.Contains(p.LeakSite, "Messages[1].Content.Text") {
 			t.Errorf("payload.LeakSite=%q does not name the leak site", p.LeakSite)
 		}
 	case <-time.After(2 * time.Second):
@@ -150,16 +158,23 @@ func TestSafety_PartTextLeak(t *testing.T) {
 	defer func() { _ = client.Close(context.Background()) }()
 
 	ctx := withIdentity(t, context.Background())
-	// Leaky payload inside a multimodal text part.
+	// Leaky payload inside a multimodal text part. PartText is
+	// offloadable only on a `RoleTool` observation (D-241); pair it with
+	// a preceding assistant tool_call so wire-pairing validation passes.
 	leaky := strings.Repeat("Y", 33*1024)
+	callID := "call_parttext"
 	req := llm.CompleteRequest{
 		Model: "m",
-		Messages: []llm.ChatMessage{{
-			Role: llm.RoleUser,
-			Content: llm.Content{Parts: []llm.ContentPart{
-				{Type: llm.PartText, Text: leaky},
-			}},
-		}},
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCallStructured{{ID: callID, Name: "probe"}}},
+			{
+				Role:       llm.RoleTool,
+				ToolCallID: &callID,
+				Content: llm.Content{Parts: []llm.ContentPart{
+					{Type: llm.PartText, Text: leaky},
+				}},
+			},
+		},
 	}
 	_, err = client.Complete(ctx, req)
 	if !errors.Is(err, llm.ErrContextLeak) {
@@ -167,6 +182,41 @@ func TestSafety_PartTextLeak(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Parts[0].Text") {
 		t.Errorf("err=%q does not name the part-text leak site", err.Error())
+	}
+}
+
+// TestFindContextLeak_RoleScope_ConversationGovernedByTokenGuard
+// covers AC-5's exemption (a heavy RoleUser conversation text is NOT a
+// byte leak) and AC-6 (the token-window guard remains the governor for
+// conversation size) through the public Complete path. The same bytes
+// on a RoleTool message would trip ErrContextLeak (covered by
+// TestSafety_PlantedLeak_RawTextEmitsContextLeak); on a RoleUser
+// message they flow past the byte check and are caught — if oversized —
+// by the token-window guard instead.
+func TestFindContextLeak_RoleScope_ConversationGovernedByTokenGuard(t *testing.T) {
+	deps, cleanup := makeDeps(t)
+	defer cleanup()
+	// Small context window so the oversized conversation trips the
+	// token-window guard rather than slipping through.
+	client, err := llm.Open(context.Background(), makeSnapshot("m", 200), deps)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close(context.Background()) }()
+
+	ctx := withIdentity(t, context.Background())
+	// ≥ 32 KiB of conversation text on a RoleUser message: exempt from
+	// the byte check (D-241), so it must NOT surface ErrContextLeak.
+	huge := strings.Repeat("Z", 33*1024)
+	_, err = client.Complete(ctx, llm.CompleteRequest{
+		Model:    "m",
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &huge}}},
+	})
+	if errors.Is(err, llm.ErrContextLeak) {
+		t.Fatalf("conversation text tripped ErrContextLeak; D-241 exempts it: %v", err)
+	}
+	if !errors.Is(err, llm.ErrContextWindowExceeded) {
+		t.Fatalf("err=%v, want ErrContextWindowExceeded (the token-window guard governs conversation size)", err)
 	}
 }
 

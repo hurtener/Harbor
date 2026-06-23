@@ -16,6 +16,7 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 		Strategy:           "rolling_summary",
 		BudgetTokens:       2048,
 		RecoveryBacklogMax: 32,
+		RecentTurns:        8,
 		Retrieval:          "semantic",
 		RetrievalTopK:      7,
 	})
@@ -25,6 +26,7 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 		Strategy:           StrategyRollingSummary,
 		BudgetTokens:       2048,
 		RecoveryBacklogMax: 32,
+		RecentTurns:        8,
 		Retrieval:          RetrievalSemantic,
 		RetrievalTopK:      7,
 	}
@@ -45,6 +47,7 @@ func TestSnapshotFromConfig_FieldParity_MemoryConfig(t *testing.T) {
 		"Strategy":           true,
 		"BudgetTokens":       true,
 		"RecoveryBacklogMax": true,
+		"RecentTurns":        true,
 		"Retrieval":          true,
 		"RetrievalTopK":      true,
 	}
@@ -53,6 +56,7 @@ func TestSnapshotFromConfig_FieldParity_MemoryConfig(t *testing.T) {
 	// It is projected by RecallFromConfig instead.
 	excluded := map[string]string{
 		"RetrievalMinScore": "recall-only: projected by RecallFromConfig, not SnapshotFromConfig",
+		"Summarizer":        "summariser-only: consumed at assembly to build the rolling_summary Summarizer (WithModel + WithSystemPromptExtension), not part of the store ConfigSnapshot",
 	}
 	typ := reflect.TypeOf(config.MemoryConfig{})
 	for i := range typ.NumField() {
@@ -119,6 +123,8 @@ func TestRecallFromConfig_FieldParity_RecallRelevant(t *testing.T) {
 		"Strategy":           "store config, not recall",
 		"BudgetTokens":       "store config, not recall",
 		"RecoveryBacklogMax": "store config, not recall",
+		"RecentTurns":        "store config, not recall",
+		"Summarizer":         "summariser config (model + prompt extension), consumed at assembly; not recall",
 	}
 	typ := reflect.TypeOf(config.MemoryConfig{})
 	for i := range typ.NumField() {

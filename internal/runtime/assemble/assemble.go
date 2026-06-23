@@ -536,7 +536,9 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 			if stack.LLM == nil {
 				return stack, fmt.Errorf("memory: strategy=rolling_summary requires an LLM (configure llm) so the default Summarizer can be built")
 			}
-			s, sErr := llmsummarizer.New(stack.LLM)
+			s, sErr := llmsummarizer.New(stack.LLM,
+				llmsummarizer.WithModel(cfg.Memory.Summarizer.Model),
+				llmsummarizer.WithSystemPromptExtension(cfg.Memory.Summarizer.Prompt))
 			if sErr != nil {
 				return stack, fmt.Errorf("summarizer: %w", sErr)
 			}
