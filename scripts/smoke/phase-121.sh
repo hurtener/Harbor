@@ -54,9 +54,10 @@ assert_grep_present 'runtimeGaugesFrom' "${CONSOLE}/components/live-runtime/heal
 assert_grep_absent 'fetch(' "${CONSOLE}/components/live-runtime/health-panel.svelte" \
     "phase 121: no hand-rolled fetch in the health panel"
 
-# 5. (live-server) metrics.snapshot is reachable on the dev server once up.
-if skip_if_404 "$(api_url /v1/control/metrics.snapshot)" 'phase 121: metrics.snapshot endpoint'; then
-    ok "phase 121: metrics.snapshot endpoint reachable on the dev server"
-fi
+# NOTE: the live metrics.snapshot route is already exercised by the
+# live-server phase-72f smoke (`probe_posture_method 'metrics.snapshot'`),
+# so this static-only smoke does not re-probe it — the Console RENDERING
+# is covered by vitest (health-gauges.test.ts) + the frontend CI job. A
+# live-server probe here would be redundant with 72f.
 
 smoke_summary

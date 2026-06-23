@@ -35,7 +35,9 @@ describe('runtimeGaugesFrom', () => {
 				{ name: 'harbor_runtime_events_dropped', value: 3 }
 			])
 		);
-		expect(rows).toEqual([{ label: 'Events dropped', value: 3 }]);
+		expect(rows).toEqual([
+			{ name: 'harbor_runtime_events_dropped', label: 'Events dropped', value: 3 }
+		]);
 	});
 
 	it('humanizes names and sorts rows by label', () => {
@@ -47,10 +49,21 @@ describe('runtimeGaugesFrom', () => {
 			])
 		);
 		expect(rows).toEqual([
-			{ label: 'Active runs', value: 2 },
-			{ label: 'Events dropped', value: 0 },
-			{ label: 'Governance cache entries', value: 7 }
+			{ name: 'harbor_runtime_active_runs', label: 'Active runs', value: 2 },
+			{ name: 'harbor_runtime_events_dropped', label: 'Events dropped', value: 0 },
+			{ name: 'harbor_runtime_governance_cache_entries', label: 'Governance cache entries', value: 7 }
 		]);
+	});
+
+	it('carries the raw metric name as a unique render key (collision-proof vs humanized labels)', () => {
+		const rows = runtimeGaugesFrom(
+			snap([
+				{ name: 'harbor_runtime_active_runs', value: 1 },
+				{ name: 'harbor_runtime_events_dropped', value: 2 }
+			])
+		);
+		const keys = rows.map((r) => r.name);
+		expect(new Set(keys).size).toBe(keys.length); // all keys distinct
 	});
 });
 

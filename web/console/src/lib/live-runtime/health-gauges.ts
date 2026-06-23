@@ -15,8 +15,11 @@ import type { MetricsSnapshot } from '$lib/protocol/posture.js';
 /** The metric-name prefix marking a Harbor runtime observability gauge. */
 export const RUNTIME_GAUGE_PREFIX = 'harbor_runtime_';
 
-/** One rendered gauge row: a humanized label + its current value. */
+/** One rendered gauge row: the raw metric name (a stable, unique render
+ * key — humanized labels could collide if a future gauge in the family is
+ * labelled), a humanized label, and its current value. */
 export interface RuntimeGaugeRow {
+	name: string;
 	label: string;
 	value: number;
 }
@@ -39,7 +42,7 @@ export function humanizeGauge(name: string): string {
 export function runtimeGaugesFrom(metrics: MetricsSnapshot | null): RuntimeGaugeRow[] {
 	return (metrics?.gauges ?? [])
 		.filter((g) => g.name.startsWith(RUNTIME_GAUGE_PREFIX))
-		.map((g) => ({ label: humanizeGauge(g.name), value: g.value }))
+		.map((g) => ({ name: g.name, label: humanizeGauge(g.name), value: g.value }))
 		.sort((a, b) => a.label.localeCompare(b.label));
 }
 

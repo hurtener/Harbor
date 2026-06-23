@@ -46,14 +46,17 @@
     </ul>
   {/if}
   {#if hasGauges}
-    <ul class="gauge-rows" data-testid="runtime-gauges" aria-label="Runtime gauges">
-      {#each runtimeGauges as g (g.label)}
-        <li class="gauge-row" data-testid="runtime-gauge">
-          <span class="gauge-label">{g.label}</span>
-          <span class="gauge-value">{formatGaugeValue(g.value)}</span>
-        </li>
-      {/each}
-    </ul>
+    <section class="gauges" data-testid="runtime-gauges" aria-label="Runtime gauges">
+      <h4 class="gauges-heading">Runtime gauges</h4>
+      <ul class="gauge-rows">
+        {#each runtimeGauges as g (g.name)}
+          <li class="gauge-row" data-testid="runtime-gauge">
+            <span class="gauge-label">{g.label}</span>
+            <span class="gauge-value">{formatGaugeValue(g.value)}</span>
+          </li>
+        {/each}
+      </ul>
+    </section>
   {/if}
 {:else}
   <div class="health-empty" data-testid="health-panel-empty">
@@ -110,11 +113,25 @@
     color: var(--color-danger);
   }
 
+  .gauges {
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: var(--border-hairline);
+  }
+
+  .gauges-heading {
+    margin: var(--space-0) var(--space-0) var(--space-1);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    color: var(--color-text-muted);
+  }
+
   .gauge-rows {
     list-style: none;
-    margin: var(--space-2) var(--space-0) var(--space-0);
-    padding: var(--space-2) var(--space-0) var(--space-0);
-    border-top: var(--border-hairline);
+    margin: var(--space-0);
+    padding: var(--space-0);
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
