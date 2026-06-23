@@ -40,6 +40,42 @@ type compoundSubsystem struct {
 	subs []Subsystem
 }
 
+// cacheSized is the optional capability a Subsystem member implements
+// when it holds an identity-scoped in-memory cache whose size is worth
+// observing (the CostAccumulator + RateLimiter; the MaxTokensEnforcer is
+// stateless and does not). Discovered by type assertion — it is NOT a
+// mandatory Subsystem method, so a stateless member contributes zero.
+type cacheSized interface {
+	CacheLen() int
+}
+
+// CacheLen sums the identity-scoped cache sizes of every member that
+// holds one. A member without a cache (MaxTokensEnforcer) contributes
+// nothing. The sum is bounded by the active-identity set — a safe
+// reading for the runtime governance-cache gauge.
+func (c *compoundSubsystem) CacheLen() int {
+	total := 0
+	for _, s := range c.subs {
+		if cs, ok := s.(cacheSized); ok {
+			total += cs.CacheLen()
+		}
+	}
+	return total
+}
+
+// CacheLen returns the total identity-scoped governance cache size for
+// s — the sum across any enforcer that holds an identity-keyed cache
+// (cost ceilings + rate-limit buckets). A Subsystem with no such cache
+// (or a nil Subsystem — the latent no-enforcement default) returns 0.
+// The runtime observability wiring calls this to source the
+// harbor_runtime_governance_cache_entries gauge.
+func CacheLen(s Subsystem) int {
+	if cs, ok := s.(cacheSized); ok {
+		return cs.CacheLen()
+	}
+	return 0
+}
+
 // PreCall fans out PreCall across members; the first non-nil return
 // short-circuits.
 func (c *compoundSubsystem) PreCall(ctx context.Context, req llm.CompleteRequest) error {

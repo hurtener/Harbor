@@ -135,7 +135,15 @@ func MetricsProvider(reg *telemetry.MetricsRegistry, log *slog.Logger) func(cont
 				Labels: cp.Labels,
 			})
 		}
-		return types.MetricsSnapshot{Counters: counters}
+		gauges := make([]types.NamedGauge, 0, len(snap.Gauges))
+		for _, gp := range snap.Gauges {
+			gauges = append(gauges, types.NamedGauge{
+				Name:   gp.Name,
+				Value:  gp.Value,
+				Labels: gp.Labels,
+			})
+		}
+		return types.MetricsSnapshot{Counters: counters, Gauges: gauges}
 	}
 }
 

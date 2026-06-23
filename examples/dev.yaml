@@ -36,6 +36,11 @@
 server:
   bind_addr: 127.0.0.1:8080
   shutdown_grace_period: 30s
+  # debug_addr enables the off-by-default pprof debug listener on its own
+  # loopback-only port (a separate http.Server, never the Protocol mux).
+  # Must be a loopback host:port; the validator rejects anything off-box.
+  # The HARBOR_DEBUG_ADDR env var overrides this for ad-hoc/preflight use.
+  # debug_addr: 127.0.0.1:6060
 
 identity:
   # Asymmetric algorithms only (Harbor §7 security rule 1). The

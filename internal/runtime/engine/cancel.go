@@ -334,6 +334,18 @@ func (e *engine) runHasActiveWorkers(runID string) bool {
 	return count > 0
 }
 
+// ActiveRunCount returns the number of distinct runs that currently
+// have at least one worker mid-invocation. It is a lock-safe read over
+// the same internally-synchronised activeRuns map markRunActive /
+// markRunDone maintain — no per-run state is stored on the engine, so
+// the count is a pure observation safe to call from any goroutine
+// (including an observability gauge callback at scrape time).
+func (e *engine) ActiveRunCount() int {
+	e.activeRunsMu.Lock()
+	defer e.activeRunsMu.Unlock()
+	return len(e.activeRuns)
+}
+
 // markRunActive / markRunDone bracket the worker's per-invocation
 // presence on a run. The pair lets Cancel report (true, nil) when a
 // worker is mid-invocation; lets Stop wait for graceful join; lets

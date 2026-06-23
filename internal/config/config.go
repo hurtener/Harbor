@@ -89,6 +89,14 @@ type ServerConfig struct {
 	ShutdownGracePeriod time.Duration `yaml:"shutdown_grace_period"`
 	AllowedOrigins      []string      `yaml:"allowed_origins,omitempty"`
 	CORSDevAllowAny     bool          `yaml:"cors_dev_allow_any,omitempty"`
+	// DebugAddr optionally enables the pprof debug HTTP listener on a
+	// SEPARATE host:port (never the Protocol mux). Empty (the default)
+	// disables it entirely. When set it MUST be a loopback address
+	// (127.0.0.0/8 or ::1) — the validator rejects any other host so the
+	// profiler surface can never be exposed off-box. The listener serves
+	// only net/http/pprof handlers and is off by default; it is a
+	// dev/diagnostic escape hatch, not a production surface.
+	DebugAddr string `yaml:"debug_addr,omitempty"`
 }
 
 // IdentityConfig configures JWT validation. Per AGENTS.md §7 the

@@ -21,7 +21,11 @@ Gives the running `harbor` binary the leak-detection and profiling surface it cu
 
 ## Findings I'm departing from (if any)
 
-None.
+Three implementation deviations (§4.3), recorded here and in the PR; the band's `D-248..D-251` formal `docs/decisions.md` entries are logged at the band wave-end per §17.7 step 3 (matching the D-241..D-247 precedent — reserved in-plan, logged on ship), not per-phase:
+
+1. **No `internal/telemetry/runtimegauges/` package.** The plan's "preferred alternative" (OTel observable instruments) was taken: the gauges live behind `(*telemetry.MetricsRegistry).RegisterRuntimeGauges` + `RuntimeGaugeSource` in `internal/telemetry/metrics.go`, not a separate package with a `prometheus.Collector`. This keeps the metrics-as-event-derivation discipline (no general `Meter()` accessor) and reaches `/metrics`, OTLP, and `metrics.snapshot` in one path. The `runtimegauges` package + its coverage-target / `prometheus.Collector` lines below are superseded.
+2. **Engine gauges' production wiring deferred.** `ActiveRuns` / `EngineCapacityEntries` are sourced by lock-safe `engine.ActiveRunCount()` / `CapacityEntryCount()` accessors and exercised end-to-end by `TestEngineCapacityGauge_ReturnsToBaseline` (engine → seam → `Snapshot`, return-to-baseline). But the V1 binary's `harbor dev` runtime is planner/RunLoop-shaped and hosts no `engine.Engine`, so `assemble.Assemble` wires only the `GovernanceCacheEntries` + `EventsDropped` gauges (the seam skips nil callbacks). The engine gauges activate when a future engine-graph runtime wires the accessors — the mechanism + accessors + their tests are ready. The seam has two live consumers, so this is not a primitive-without-consumer violation (§13).
+3. **`server.debug_addr` config field + `HARBOR_DEBUG_ADDR` env override** (not env-var-only). The durable knob is the validated config field; the env var overrides it for ad-hoc/preflight use, re-applying the same loopback gate via the shared `config.ValidateLoopbackAddr` (which both the config validator and `cmd/harbor` call — single source, resolving the plan's "reuse isLoopback" intent).
 
 ## Goals
 

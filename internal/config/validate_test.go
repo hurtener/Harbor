@@ -64,6 +64,21 @@ func TestValidate_TableDriven(t *testing.T) {
 			func(c *config.Config) { c.Server.ShutdownGracePeriod = 0 },
 			"server.shutdown_grace_period",
 		},
+		{
+			"debug_addr non-loopback host rejected",
+			func(c *config.Config) { c.Server.DebugAddr = "0.0.0.0:6060" },
+			"server.debug_addr",
+		},
+		{
+			"debug_addr public host rejected",
+			func(c *config.Config) { c.Server.DebugAddr = "10.0.0.5:6060" },
+			"server.debug_addr",
+		},
+		{
+			"debug_addr malformed rejected",
+			func(c *config.Config) { c.Server.DebugAddr = "not-a-host-port" },
+			"server.debug_addr",
+		},
 		// Phase 83v (D-162) — CORS allowlist validation.
 		{
 			"allowed_origins entry empty",
@@ -578,6 +593,20 @@ func TestValidate_TableDriven(t *testing.T) {
 				t.Errorf("err=%q missing path %q", err.Error(), tc.wantPath)
 			}
 		})
+	}
+}
+
+// TestValidate_DebugAddr_LoopbackAccepted asserts the pprof debug
+// listener address is accepted when empty (disabled — the default) or a
+// loopback host:port (IPv4 or IPv6), and only rejected off-loopback
+// (the rejection cases live in the table above).
+func TestValidate_DebugAddr_LoopbackAccepted(t *testing.T) {
+	for _, addr := range []string{"", "127.0.0.1:6060", "127.0.0.5:0", "[::1]:6060"} {
+		cfg := mustLoadValid(t)
+		cfg.Server.DebugAddr = addr
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate rejected loopback debug_addr %q: %v", addr, err)
+		}
 	}
 }
 

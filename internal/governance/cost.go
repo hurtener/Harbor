@@ -233,6 +233,18 @@ func (a *CostAccumulator) Close(_ context.Context) error {
 	return nil
 }
 
+// CacheLen returns the number of distinct identity-scoped cache keys the
+// accumulator currently holds. Identity-scoped keying (RFC §6.15) means
+// this counts identities, not runs, so the value is bounded by the
+// active-identity set — a safe, low-cardinality reading for the runtime
+// governance-cache gauge. It is a lock-safe Range count over the
+// internally-synchronised sync.Map; no per-run state is read.
+func (a *CostAccumulator) CacheLen() int {
+	n := 0
+	a.keys.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
 // keyState returns the per-key in-memory cache. On first miss it lazily
 // loads from StateStore (driver read failure → wrapped
 // ErrStateUnavailable). Subsequent calls return the cached value.

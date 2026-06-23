@@ -149,6 +149,22 @@ assert_json_path() {
     fi
 }
 
+# assert_body_contains <substring> <url> <description>
+# GET url; SKIP on 404/405/501/no-server; assert the response body
+# contains <substring>. Used for non-JSON surfaces (e.g. the Prometheus
+# /metrics text exposition format).
+assert_body_contains() {
+    local needle="$1" url="$2" desc="$3"
+    skip_if_404 "$url" "$desc" || return 0
+    local body
+    body=$(curl -s --max-time 5 "$url" || echo "")
+    if printf '%s' "$body" | grep -qF -- "$needle"; then
+        ok "${desc}: body contains '${needle}'"
+    else
+        fail "${desc}: body missing '${needle}' (${url})"
+    fi
+}
+
 # protocol_call <method> <params_json> <description>
 # Stub for Protocol JSON-RPC calls. Will be filled in once the Protocol lands.
 protocol_call() {
