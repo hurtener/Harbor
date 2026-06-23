@@ -23,14 +23,19 @@ Surfaces the Phase 120 runtime gauges (active runs, engine capacity-map size, go
 
 ## Findings I'm departing from (if any)
 
-None — this phase exists *because* the original 121a/121b plans departed from the shipped surface (they redefined `runtime.health`); this version is corrected to extend, not duplicate.
+This phase exists *because* the original 121a/121b plans departed from the shipped surface (they redefined `runtime.health`); this version is corrected to extend, not duplicate. Two further deviations surfaced at implementation (§4.3), reconciled here so the binding acceptance criteria below match what shipped:
+
+1. **No goroutine/heap rendering, and no trend sparkline / client-side ring buffer.** The plan promised a "goroutine/heap trend sparkline." That is not achievable through the Protocol as designed: `go_goroutines`/heap/GC are Go-collector metrics on the operator `/metrics` *scrape* only — they are NOT projected into `metrics.snapshot` (Phase 120 keeps them off the Protocol; the Console is a Protocol client and must not scrape `/metrics`). Only the bounded `harbor_runtime_*` gauges reach the Console. The sparkline is also dropped: the Live Runtime page has no auto-refresh/sampling model (gauges are point-in-time, refreshed on demand via the page's Refresh), so a ring buffer would collect at most one point per manual refresh. The gauges render as labelled numeric readouts; a trend view is deferred to a future phase that adds a sampling cadence (or a server-side metric-history surface).
+2. **The Health panel is a self-probing cockpit *spine* panel (D-177), not a four-state `<PageState>` component.** It renders subsystem pills + the runtime-gauges section, with an honest "not available" state when neither is present (the §13 fail-loudly path); the page's `loadMetrics`/`loadHealth` self-probe and pass `null` on a throw. The four-`<PageState>`-branch wording below is superseded by that spine-panel contract.
+
+The acceptance criteria / goals / test-plan lines that mention the sparkline, ring buffer, refresh timer, or the four `<PageState>` branches are struck or marked deferred per the above.
 
 ## Goals
 
 - The Phase 120 Harbor runtime gauges are registered on the telemetry `MetricsRegistry` (the source `metrics.snapshot` projects, `types/posture.go:215`), so they cross the Protocol through the **shipped** `metrics.snapshot` with no new method.
 - If Go-runtime liveness (goroutines / heap-in-use / GC pause) is not already retrievable through `metrics.snapshot.Gauges` after Phase 120, it is added as fields on the **existing** posture cluster (extend `runtime.counters` or add named gauges) — one surface, per §13 — never as a new or redefined `runtime.health` method/type. Any change to a shipped wire shape carries a §8 Protocol version bump + migrates the existing consumers in this same wave.
-- The existing `web/console/src/lib/components/live-runtime/health-panel.svelte` is extended (or a sibling panel is registered in `live-runtime/panels.ts`) to render the new gauges, with a goroutine/heap trend sparkline (client-side ring buffer); no new top-level panel component duplicating the shipped one.
-- The panel obeys the four-state `<PageState>` contract, the design tokens, Svelte 5 runes, and the typed `HarborClient` (no hand-rolled `fetch`); `svelte-check --fail-on-warnings` + the stylelint token rule pass.
+- The existing `web/console/src/lib/components/live-runtime/health-panel.svelte` is extended to render the new gauges as labelled numeric readouts; no new top-level panel component duplicating the shipped one. (~~goroutine/heap trend sparkline / client-side ring buffer~~ — deferred; see "Findings I'm departing from".)
+- The panel honours the design tokens, Svelte 5 runes, and the typed `HarborClient` (no hand-rolled `fetch`); `svelte-check --fail-on-warnings` + the stylelint token rule pass. (It is a self-probing cockpit spine panel per D-177, not a four-state `<PageState>` component — see departures.)
 - Scope behaviour matches the **implemented** posture gate (`posture.go:301-312`): process-global metrics are returned to authenticated callers / gated behind `console:fleet`/`admin` exactly as the existing posture reads are; this phase invents no new "session view" of process-global counters.
 
 ## Non-goals
@@ -38,14 +43,14 @@ None — this phase exists *because* the original 121a/121b plans departed from 
 - A new `runtime.health` method or a new `RuntimeHealth` type — both ship (Phase 72f). Redefining either is the §13 "two parallel implementations" violation this plan exists to avoid.
 - A new health panel component — `live-runtime/health-panel.svelte` exists and is registered; this phase extends it.
 - Raw pprof over the Protocol or in the Console — pprof is the off-Protocol loopback listener (Phase 120) only.
-- Server-side metric history — the trend is a bounded client-side ring buffer.
+- Server-side metric history AND any trend view — the gauges render as point-in-time numeric readouts; a trend/sparkline is deferred (no sampling cadence on the page; see departures).
 
 ## Acceptance criteria
 
 - [ ] The Phase 120 gauges (`active_runs`, engine capacity-map size, governance cache size, events-dropped) are retrievable via the shipped `metrics.snapshot` method (asserted: a `metrics.snapshot` call returns named gauges for each), with no new Protocol method registered for them.
 - [ ] If Go-runtime liveness fields are added, they extend an existing posture type/method (no new method name; `runtime.health`/`RuntimeHealth` are untouched in shape, OR a §8 version bump + consumer migration is included in this PR) — verified by `make protocol-ts-gen-check` + `make protocol-docs-gen-check` staying green.
 - [ ] The existing Live Runtime health panel renders the new gauges via the typed client; no new panel component duplicates it; no hand-rolled `fetch` in any `.svelte` file.
-- [ ] The panel renders all four `<PageState>` branches (loading / loaded / empty / error) and a goroutine/heap trend sparkline from a bounded client-side buffer; the refresh timer is cleared on unmount.
+- [ ] The Health spine panel renders the subsystem pills + a "Runtime gauges" section when present, and an honest "not available" state when neither is (the §13 fail-loudly path); `loadMetrics` self-probes and passes `null` on a throw. (~~four `<PageState>` branches / goroutine-heap trend sparkline / client-side buffer / refresh-timer-on-unmount~~ — superseded/deferred; see "Findings I'm departing from".)
 - [ ] An `admin`/`console:fleet` caller and a plain authenticated caller both get a coherent panel consistent with the existing posture gate's behaviour (no new scope semantics invented).
 - [ ] No raw color/spacing/type-scale literals in touched `.svelte` files; `svelte-check --fail-on-warnings` + `npm run lint` + `npm run build` pass; Svelte 5 runes only.
 
@@ -57,7 +62,8 @@ Per CLAUDE.md §4.5 item 12 + `docs/design/console/CONVENTIONS.md` (binding). Th
 
 - `internal/telemetry/` — register the Phase 120 Harbor gauges on the `MetricsRegistry` so `metrics.snapshot` projects them (the seam Phase 120 establishes; this phase consumes it). Possibly a posture-cluster field addition if Go-liveness needs the wire.
 - `internal/protocol/types/posture.go` — only if Go-liveness fields are added to an existing posture type (additive; with the lockstep gates re-run).
-- `web/console/src/lib/components/live-runtime/health-panel.svelte` — extend to render the new gauges + sparkline.
+- `web/console/src/lib/components/live-runtime/health-panel.svelte` — extend to render the new gauges (numeric readouts; no sparkline — deferred).
+- `web/console/src/lib/live-runtime/health-gauges.ts` (new) — the unit-tested `harbor_runtime_*` projection the panel renders.
 - `web/console/src/lib/live-runtime/panels.ts` — adjust the registration / panel data wiring if a sibling panel is warranted.
 - `web/console/src/lib/protocol/posture.ts` — only if a posture type gained fields (hand-mirrored; manifest regenerated).
 - `scripts/smoke/phase-121.sh`.
@@ -68,7 +74,7 @@ Per CLAUDE.md §4.5 item 12 + `docs/design/console/CONVENTIONS.md` (binding). Th
 
 ## Test plan
 
-- **Unit:** the gauge registration surfaces named gauges in a `metrics.snapshot` projection; the panel renders each `<PageState>` branch from fixtures; the trend buffer caps length.
+- **Unit:** `health-gauges.ts` projects only the `harbor_runtime_*` family, humanizes + label-sorts, carries a unique render key, and yields `[]` for a null/empty snapshot (`health-gauges.test.ts`). (~~`<PageState>` branch fixtures / trend-buffer length~~ — N/A; see departures.)
 - **Integration:** against a running Runtime, `metrics.snapshot` returns the new gauges and the panel populates + refreshes; the §17.8 fixture is captured from the **real** `metrics.snapshot`/posture response shape (not hand-authored); an unauthorized/insufficient-scope response routes to the error state; under `-race` on the Go side.
 - **Conformance:** the Protocol lockstep gates (`protocol-ts-gen-check`, `protocol-docs-gen-check`) stay green; if a posture type changed, the Go manifest + TS scan see it.
 - **Concurrency / leak:** N/A new artifact (Console + a metrics registration); the gauge accessors' concurrency is covered by Phase 120's concurrent-scrape guard.
@@ -112,7 +118,7 @@ Per CLAUDE.md §4.5 item 12 + `docs/design/console/CONVENTIONS.md` (binding). Th
 - [ ] Coverage on touched packages ≥ stated target
 - [ ] If multi-isolation paths changed: the posture scope gate is unchanged; if a posture type gained fields, the cross-tenant gate test still passes
 - [ ] **If this phase builds a reusable artifact:** N/A — a metrics-registry registration + Console components; gauge-accessor concurrency covered by Phase 120.
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam:** the panel consumes `metrics.snapshot`; the integration/component test seeds from a real snapshot fixture (§17.8), covers the unauthorized failure mode, and asserts the refresh timer clears on unmount.
+- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam:** the panel consumes `metrics.snapshot`; `health-gauges.test.ts` exercises the projection against snapshot fixtures, and `loadMetrics` degrades to `null` (gauges section omitted) on a throw. The live route is covered by the shipped phase-72f smoke; the Console rendering by the frontend CI job + a live Playwright check. (~~refresh timer clears on unmount~~ — N/A, no refresh timer; see departures.)
 - [ ] If Protocol types changed: `make protocol-ts-gen-check` + `make protocol-docs-gen-check` green; no second `runtime.health`/`RuntimeHealth`
 - [ ] If new vocabulary: glossary updated — N/A
 - [ ] If a brief finding was departed from: justified + decisions.md entry — N/A; proposed D-252 filed at implementation
