@@ -17,6 +17,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // pgx "pgx" driver for the env-gated Postgres test
 	_ "modernc.org/sqlite"
 
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
@@ -54,9 +55,12 @@ func appliedVersions(t *testing.T, db *sql.DB) []int {
 }
 
 func TestRunSQLite_AppliesAndIsIdempotent(t *testing.T) {
+	// Non-idempotent bodies (no IF NOT EXISTS): the second run MUST be a
+	// clean no-op via the version precheck — if the precheck didn't skip,
+	// re-executing `CREATE TABLE a` would error "table a already exists".
 	fsys := fstest.MapFS{
-		"migrations/0001_init.sql": mig(`CREATE TABLE IF NOT EXISTS a(id INTEGER PRIMARY KEY);`),
-		"migrations/0002_more.sql": mig(`CREATE TABLE IF NOT EXISTS b(id INTEGER PRIMARY KEY);`),
+		"migrations/0001_init.sql": mig(`CREATE TABLE a(id INTEGER PRIMARY KEY);`),
+		"migrations/0002_more.sql": mig(`CREATE TABLE b(id INTEGER PRIMARY KEY);`),
 	}
 	db := openMem(t)
 	ctx := context.Background()
@@ -83,15 +87,19 @@ func TestRunSQLite_AppliesAndIsIdempotent(t *testing.T) {
 }
 
 func TestRunSQLite_AppliesInVersionOrder(t *testing.T) {
-	// 0002 depends on the table 0001 creates; map iteration is random, so a
-	// clean apply proves the runner sorts ascending before applying.
+	// Version 10 (the table USER) depends on the table version 2 (the
+	// CREATOR) makes. Filenames are intentionally NOT zero-padded, so
+	// fs.ReadDir's name order ("10_..." before "2_...") is the REVERSE of
+	// numeric order — a clean apply therefore proves the runner sorts by
+	// the PARSED numeric version, not by filename. Drop the sort and "10"
+	// runs first → INSERT into a non-existent table → failure.
 	fsys := fstest.MapFS{
-		"migrations/0002_use.sql":  mig(`INSERT INTO base(id) VALUES (1);`),
-		"migrations/0001_base.sql": mig(`CREATE TABLE base(id INTEGER PRIMARY KEY);`),
+		"migrations/10_use.sql": mig(`INSERT INTO base(id) VALUES (1);`),
+		"migrations/2_base.sql": mig(`CREATE TABLE base(id INTEGER PRIMARY KEY);`),
 	}
 	db := openMem(t)
 	if err := sqlmigrate.RunSQLite(context.Background(), db, fsys, "test"); err != nil {
-		t.Fatalf("ordered apply failed (runner did not sort by version): %v", err)
+		t.Fatalf("ordered apply failed (runner did not sort by numeric version): %v", err)
 	}
 }
 
