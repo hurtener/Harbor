@@ -363,6 +363,55 @@ done:
 	}
 }
 
+// TestDroppedTotal_CountsDroppedEvents asserts the bus exposes a
+// cumulative drop count through the events.DroppedCounter capability and
+// that the count is zero before any drop and strictly positive after
+// the subscriber buffer saturates and drops oldest. This is the source
+// the runtime harbor_runtime_events_dropped gauge reads.
+func TestDroppedTotal_CountsDroppedEvents(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.SubscriberBufferSize = 4
+	cfg.DropWindow = 10 * time.Millisecond
+	bus, err := inmem.New(cfg, auditpatterns.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+
+	dc, ok := bus.(events.DroppedCounter)
+	if !ok {
+		t.Fatalf("inmem bus %T does not implement events.DroppedCounter", bus)
+	}
+	if n := dc.DroppedTotal(); n != 0 {
+		t.Fatalf("DroppedTotal before any publish = %d, want 0", n)
+	}
+
+	id := mkID(1)
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Cancel()
+
+	// Publish far more than the 4-slot buffer holds without consuming;
+	// the surplus is dropped-oldest.
+	const published = 50
+	for range published {
+		_ = bus.Publish(context.Background(), mkEvent(1))
+	}
+
+	got := dc.DroppedTotal()
+	if got <= 0 {
+		t.Fatalf("DroppedTotal after %d unconsumed publishes = %d, want > 0", published, got)
+	}
+	// The count can never exceed the number published (sanity bound).
+	if got > int64(published) {
+		t.Errorf("DroppedTotal = %d exceeds published count %d", got, published)
+	}
+}
+
 // TestReaper_CancelsIdleSubscription_SaturatedConsumer exercises the
 // reaper's CONSUMER-IDLE semantic: a subscriber whose buffer is full
 // AND has not had a clean (non-displacing) enqueue for IdleTimeout

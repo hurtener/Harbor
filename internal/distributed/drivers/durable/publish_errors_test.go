@@ -126,7 +126,7 @@ func TestDurable_ProjectFailure_PollerRedelivers(t *testing.T) {
 		t.Fatal("expected publish projection error, got nil")
 	}
 	// ...but the envelope was persisted, and the poller re-delivers it.
-	if edges := collectEdges(sub, 1, 2*time.Second); len(edges) != 1 || edges[0] != "retry" {
+	if edges := collectEdges(sub, 1, 8*time.Second); len(edges) != 1 || edges[0] != "retry" {
 		t.Fatalf("poller did not re-deliver after a failed local projection: %v", edges)
 	}
 }

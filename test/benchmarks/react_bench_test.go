@@ -1,0 +1,72 @@
+package benchmarks
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/planner/react"
+)
+
+// benchScriptedClient is a minimal, allocation-free llm.LLMClient for
+// the react-step benchmark: every Complete returns the same scripted
+// tool-call response, so each Planner.Next projects exactly one ReAct
+// step (an LLM call → a CallTool decision) without a network round-trip.
+// It is the benchmark fixture; the production planner runs against the
+// real bifrost-backed client.
+type benchScriptedClient struct {
+	resp llm.CompleteResponse
+}
+
+func (c *benchScriptedClient) Complete(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return c.resp, nil
+}
+
+func (c *benchScriptedClient) Close(_ context.Context) error { return nil }
+
+// BenchmarkReActPlanner_NextStep measures one ReAct planner step against
+// the REAL *react.ReActPlanner (no mock planner — only the LLM edge is a
+// scripted fixture, as a benchmark cannot call a live model). Each
+// iteration runs Planner.Next: prompt assembly, the LLM Complete call,
+// and the native-tool-call projection into a planner.Decision. The
+// planner is a compiled artifact built once and shared; per-step state
+// (the RunContext) lives on the stack, never on the planner.
+func BenchmarkReActPlanner_NextStep(b *testing.B) {
+	client := &benchScriptedClient{
+		resp: llm.CompleteResponse{
+			ToolCalls: []llm.ToolCallStructured{{
+				ID:   "call_1",
+				Name: "search_docs",
+				Args: json.RawMessage(`{"query":"harbor"}`),
+			}},
+		},
+	}
+	p := react.New(client)
+
+	// Documented dummy identity quadruple — no secrets (CLAUDE.md §13).
+	q := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "bench-tenant", UserID: "bench-user", SessionID: "bench-session"},
+		RunID:    "bench-run",
+	}
+	ctx, err := identity.WithRun(context.Background(), q.Identity, q.RunID)
+	if err != nil {
+		b.Fatalf("identity.WithRun: %v", err)
+	}
+	rc := planner.RunContext{
+		Quadruple: q,
+		Goal:      "answer the benchmark query",
+		Emit:      func(events.Event) {},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := p.Next(ctx, rc); err != nil {
+			b.Fatalf("Next: %v", err)
+		}
+	}
+}

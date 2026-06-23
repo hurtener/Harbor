@@ -72,6 +72,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	nhpprof "net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -119,6 +120,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
+	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -1282,6 +1284,23 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		//nolint:errcheck // readiness-probe response write; a failure is non-actionable and the probe just retries
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
+	// /metrics — the built-in Prometheus pull endpoint. Mounted on the
+	// SAME mux as /healthz: it is a read-only scrape of the
+	// MetricsRegistry's per-instance Gatherer (Go/process collectors +
+	// the runtime counters/gauges), with no identity-scoped data, so it
+	// rides the unauthenticated probe surface. This is deliberately
+	// DISTINCT from the pprof debug listener, which carries process
+	// internals and is therefore bound to a separate loopback-only port,
+	// never this mux. When the registry is OTLP-backed (push, no pull
+	// surface) PrometheusHandler returns ErrPrometheusHandlerUnavailable;
+	// we log once at INFO and skip the mount — boot is never failed for
+	// the absence of a pull endpoint.
+	if metricsHandler, mherr := telemetry.PrometheusHandler(metricsReg); mherr == nil {
+		router.Handle("/metrics", metricsHandler)
+	} else if opts.logger != nil {
+		opts.logger.InfoContext(ctx, "harbor "+subcommandLabel+": /metrics endpoint not mounted (registry has no Prometheus pull surface)",
+			slog.String("reason", mherr.Error()))
+	}
 	// `harbor dev` draft-save scaffolding. The
 	// draft store materialises agent skeletons under `.harbor/drafts/
 	// <tenant>/<user>/<session>/<draft_id>/` (operator's working dir;
@@ -1429,6 +1448,44 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
 	}
 
+	// pprof debug listener — OFF by default, loopback-only, on its OWN
+	// http.Server and its OWN http.ServeMux, NEVER the Protocol mux. We
+	// register the pprof handlers explicitly on a fresh mux (rather than
+	// blank-importing net/http/pprof, which would attach them to
+	// http.DefaultServeMux) so nothing lands on a shared global and the
+	// Protocol surface stays clean.
+	//
+	// Address resolution: the config field server.debug_addr is the
+	// durable knob (validated loopback-only at config.Load); the
+	// HARBOR_DEBUG_ADDR env var overrides it for ad-hoc dev/preflight use
+	// (it bypasses config.Load's validation, so we re-apply the same
+	// loopback gate here and fail loud — exposing a profiler off-box is a
+	// security footgun, CLAUDE.md §7).
+	debugAddr := cfg.Server.DebugAddr
+	if env := os.Getenv("HARBOR_DEBUG_ADDR"); env != "" {
+		if err := config.ValidateLoopbackAddr(env); err != nil {
+			return nil, fmt.Errorf("HARBOR_DEBUG_ADDR: %w", err)
+		}
+		debugAddr = env
+	}
+	var debugServer *http.Server
+	if debugAddr != "" {
+		debugMux := http.NewServeMux()
+		debugMux.HandleFunc("/debug/pprof/", nhpprof.Index)
+		debugMux.HandleFunc("/debug/pprof/cmdline", nhpprof.Cmdline)
+		debugMux.HandleFunc("/debug/pprof/profile", nhpprof.Profile)
+		debugMux.HandleFunc("/debug/pprof/symbol", nhpprof.Symbol)
+		debugMux.HandleFunc("/debug/pprof/trace", nhpprof.Trace)
+		debugServer = &http.Server{
+			Addr:              debugAddr,
+			Handler:           debugMux,
+			ReadHeaderTimeout: 10 * time.Second,
+			BaseContext:       func(_ net.Listener) context.Context { return ctx },
+		}
+		_, _ = fmt.Fprintf(opts.stderr,
+			"[DEV-ONLY pprof debug listener on %s — DO NOT EXPOSE]\n", debugAddr)
+	}
+
 	// Mint and print a default-identity dev token so an operator can
 	// curl the protocol surface without writing JWT-signing code. The
 	// production server (`harbor serve`, signer == nil) verifies tokens
@@ -1476,6 +1533,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		logger:          opts.logger,
 		stderr:          opts.stderr,
 		server:          server,
+		debugServer:     debugServer,
 		bindAddr:        bindAddr,
 		devToken:        token,
 		allowMock:       opts.allowMock,
@@ -1496,10 +1554,15 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 // `serve` binds the listener and runs until ctx cancels. `close`
 // runs every subsystem's Close in reverse dependency order.
 type devStack struct {
-	cfg             *config.Config
-	logger          *slog.Logger
-	stderr          interface{ Write(p []byte) (int, error) }
-	server          *http.Server
+	cfg    *config.Config
+	logger *slog.Logger
+	stderr interface{ Write(p []byte) (int, error) }
+	server *http.Server
+	// debugServer is the optional pprof debug listener (nil unless
+	// server.debug_addr is set). It runs on its own loopback-only
+	// http.Server with a private mux — never the Protocol mux — and is
+	// started/stopped alongside the main server in serve.
+	debugServer     *http.Server
 	bindAddr        string
 	devToken        string
 	allowMock       bool
@@ -1593,6 +1656,31 @@ func (s *devStack) serve(ctx context.Context) error {
 	s.bindAddr = boundAddr
 	_, _ = fmt.Fprintf(s.stderr, "HARBOR_DEV_BOUND=%s\n", boundAddr)
 	s.logger.InfoContext(ctx, "harbor "+label+": listener bound", slog.String("bind", boundAddr))
+
+	// Start the pprof debug listener (when enabled) on its own
+	// loopback-only listener. It is bound up front so a port collision
+	// fails loud; its Serve runs in a joined goroutine and is drained on
+	// teardown alongside the main server.
+	if s.debugServer != nil {
+		debugListener, derr := net.Listen("tcp", s.debugServer.Addr)
+		if derr != nil {
+			return fmt.Errorf("listen pprof debug %s: %w", s.debugServer.Addr, derr)
+		}
+		s.logger.InfoContext(ctx, "harbor "+label+": pprof debug listener bound",
+			slog.String("bind", debugListener.Addr().String()))
+		go func() {
+			if derr := s.debugServer.Serve(debugListener); derr != nil && !errors.Is(derr, http.ErrServerClosed) {
+				s.logger.Warn("harbor "+label+": pprof debug listener stopped with error",
+					slog.String("error", derr.Error()))
+			}
+		}()
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			//nolint:errcheck // best-effort drain of the debug listener on teardown
+			_ = s.debugServer.Shutdown(shutCtx)
+		}()
+	}
 
 	listenErr := make(chan error, 1)
 	go func() {

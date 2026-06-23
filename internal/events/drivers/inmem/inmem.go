@@ -162,6 +162,22 @@ type bus struct {
 	closeDone chan struct{}
 
 	reaperWG sync.WaitGroup
+
+	// droppedTotal is the cumulative count of events dropped across all
+	// subscribers under buffer backpressure since construction. Each
+	// subscription's recordDrop bumps it through the shared pointer it
+	// holds, so the count survives a subscriber being reaped. Read via
+	// DroppedTotal (the events.DroppedCounter capability) to source the
+	// runtime drop gauge. Atomic — no lock needed on the read path.
+	droppedTotal atomic.Int64
+}
+
+// DroppedTotal reports the cumulative number of events dropped under
+// subscriber-buffer backpressure since the bus was constructed.
+// Satisfies events.DroppedCounter so the runtime observability wiring
+// can source the harbor_runtime_events_dropped gauge from the live bus.
+func (b *bus) DroppedTotal() int64 {
+	return b.droppedTotal.Load()
 }
 
 // startReaper launches the idle-subscription sweep goroutine. The
@@ -352,10 +368,11 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 		},
 	}
 	s := &subscription{
-		id:     id,
-		filter: f,
-		bound:  bound,
-		ch:     make(chan events.Event, b.cfg.SubscriberBufferSize),
+		id:         id,
+		filter:     f,
+		bound:      bound,
+		ch:         make(chan events.Event, b.cfg.SubscriberBufferSize),
+		busDropped: &b.droppedTotal,
 	}
 	s.lastDrain.Store(b.clock.Now().UnixNano())
 	s.lastDropEmit.Store(b.clock.Now().UnixNano())
@@ -583,6 +600,11 @@ type subscription struct {
 	cancelled     atomic.Bool
 	cancelledOnce sync.Once
 	closeChanOnce sync.Once
+
+	// busDropped points at the owning bus's cumulative drop counter so
+	// recordDrop can bump a process-wide total that outlives this
+	// subscription (the per-window dropCount above resets each window).
+	busDropped *atomic.Int64
 }
 
 // Events implements events.Subscription. Returns s.ch directly so
@@ -728,7 +750,13 @@ func (s *subscription) enqueue(ev events.Event, b *bus) {
 // s.mu acquisition or they race against concurrent publishers.)
 
 // recordDrop accumulates dropped sequence range into the open window.
+// It also bumps the bus-level cumulative drop total (which outlives this
+// subscription's per-window accounting) so the runtime drop gauge sees
+// every drop, exactly once.
 func (s *subscription) recordDrop(fromSeq, toSeq uint64) {
+	if s.busDropped != nil {
+		s.busDropped.Add(1)
+	}
 	if !s.dropOpen {
 		s.dropOpen = true
 		s.dropFromSeq = fromSeq

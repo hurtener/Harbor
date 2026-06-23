@@ -6,16 +6,16 @@ package governance
 
 // CostKeysLen returns the number of distinct cache keys the accumulator
 // holds. Identity-scoped keying means this counts identities, not runs.
+// Delegates to the production CacheLen so the test asserts the same
+// accessor the runtime gauge reads.
 func CostKeysLen(a *CostAccumulator) int {
-	n := 0
-	a.keys.Range(func(_, _ any) bool { n++; return true })
-	return n
+	return a.CacheLen()
 }
 
 // RateKeysLen returns the number of distinct cache keys the limiter
 // holds. Identity-scoped keying means this counts identities, not runs.
+// Delegates to the production CacheLen so the test asserts the same
+// accessor the runtime gauge reads.
 func RateKeysLen(r *RateLimiter) int {
-	n := 0
-	r.keys.Range(func(_, _ any) bool { n++; return true })
-	return n
+	return r.CacheLen()
 }

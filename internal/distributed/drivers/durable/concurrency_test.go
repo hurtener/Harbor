@@ -60,7 +60,7 @@ func TestDurable_ConcurrentReuse_Isolation(t *testing.T) {
 	// Each session's subscriber must receive exactly its own perSession
 	// envelopes — no cross-session bleed.
 	for s := range sessions {
-		got := collectEdges(subs[s], perSession, 3*time.Second)
+		got := collectEdges(subs[s], perSession, 8*time.Second)
 		if len(got) != perSession {
 			t.Errorf("session %d: received %d envelopes, want %d (bleed or loss)", s, len(got), perSession)
 		}

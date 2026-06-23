@@ -107,6 +107,18 @@ const (
 	labelProducer  = "producer"
 	labelNode      = "node"
 
+	// Runtime-gauge metric names. These observable gauges report bounded
+	// internal sizes (no labels — cardinality-safe by construction) so an
+	// operator can watch them on /metrics and a Protocol client can read
+	// them via metrics.snapshot. Registered through RegisterRuntimeGauges,
+	// the single controlled seam onto the MeterProvider — there is no
+	// general Meter() accessor, preserving the metrics-as-derivation
+	// discipline (see the package doc + RegisterRuntimeGauges).
+	metricActiveRuns         = "harbor_runtime_active_runs"
+	metricEngineCapEntries   = "harbor_runtime_engine_capacity_entries"
+	metricGovernanceCacheLen = "harbor_runtime_governance_cache_entries"
+	metricEventsDroppedTotal = "harbor_runtime_events_dropped"
+
 	// extraKeyProducer / extraKeyNode are the reserved events.Event.Extra
 	// keys RegisterEvent reads. The events.Event doc reserves Extra for
 	// "the bounded low-cardinality metric labels"; these are
@@ -416,6 +428,77 @@ func (r *MetricsRegistry) RegisterEvent(ctx context.Context, ev events.Event) {
 	))
 }
 
+// RuntimeGaugeSource supplies the live, low-cardinality int64 readings
+// the runtime gauges report. Each field is a callback the OTel SDK
+// invokes at collection time (scrape / snapshot). All readings MUST be
+// bounded scalars read under whatever lock guards them — no labels, no
+// per-identity dimension (the cardinality firewall). A nil callback is
+// skipped, so a caller can register only the gauges it can source.
+//
+// This struct + RegisterRuntimeGauges are the ONLY controlled seam onto
+// the MeterProvider for non-event instruments. There is deliberately no
+// general Meter() accessor: a contributor cannot sprinkle ad-hoc
+// instruments across subsystems (package doc), and these gauges carry
+// fixed names with no labels so the cardinality-lint stays satisfiable.
+type RuntimeGaugeSource struct {
+	// ActiveRuns — engine runs currently in flight.
+	ActiveRuns func() int64
+	// EngineCapacityEntries — live entries in the engine's per-run
+	// streaming-capacity map (the map Phase 119's sweeper bounds).
+	EngineCapacityEntries func() int64
+	// GovernanceCacheEntries — identity-scoped entries in the governance
+	// cost + rate-limit caches.
+	GovernanceCacheEntries func() int64
+	// EventsDropped — cumulative bus messages dropped under backpressure.
+	EventsDropped func() int64
+}
+
+// RegisterRuntimeGauges registers the runtime observable gauges from src
+// on the registry's MeterProvider. Each non-nil callback becomes an
+// Int64ObservableGauge the SDK invokes at collection time; the readings
+// flow to /metrics, OTLP, and metrics.snapshot alike. Call once at boot,
+// after the subsystems whose sizes are reported exist.
+//
+// Fails loudly if an instrument cannot be created (a construction bug,
+// not a degradable condition — CLAUDE.md §5). Registering with an
+// all-nil src is a no-op.
+func (r *MetricsRegistry) RegisterRuntimeGauges(src RuntimeGaugeSource) error {
+	if r == nil || r.provider == nil {
+		return fmt.Errorf("%w: nil registry", ErrMetricsNotConfigured)
+	}
+	meter := r.provider.Meter(meterName)
+	reg := func(name, desc string, read func() int64) error {
+		if read == nil {
+			return nil
+		}
+		_, err := meter.Int64ObservableGauge(
+			name,
+			metric.WithDescription(desc),
+			metric.WithInt64Callback(func(_ context.Context, obs metric.Int64Observer) error {
+				obs.Observe(read())
+				return nil
+			}),
+		)
+		if err != nil {
+			return fmt.Errorf("telemetry: runtime gauge %q construction failed: %w", name, err)
+		}
+		return nil
+	}
+	if err := reg(metricActiveRuns, "Engine runs currently in flight.", src.ActiveRuns); err != nil {
+		return err
+	}
+	if err := reg(metricEngineCapEntries, "Live entries in the engine per-run streaming-capacity map.", src.EngineCapacityEntries); err != nil {
+		return err
+	}
+	if err := reg(metricGovernanceCacheLen, "Identity-scoped entries in the governance cost + rate-limit caches.", src.GovernanceCacheEntries); err != nil {
+		return err
+	}
+	if err := reg(metricEventsDroppedTotal, "Cumulative bus messages dropped under backpressure.", src.EventsDropped); err != nil {
+		return err
+	}
+	return nil
+}
+
 // CounterPoint is one counter data point in a MetricSnapshot — a metric
 // name, its current value, and its low-cardinality label set. It is a
 // telemetry-local, OTel-SDK-free struct so callers (the Protocol posture
@@ -433,14 +516,30 @@ type CounterPoint struct {
 	Labels map[string]string
 }
 
+// GaugePoint is one gauge data point in a MetricSnapshot — same shape as
+// CounterPoint (name, current value, low-cardinality labels), kept a
+// distinct type so callers can project counters and gauges onto the
+// right `types.MetricsSnapshot` slices.
+type GaugePoint struct {
+	// Name is the metric name (e.g. "harbor_runtime_active_runs").
+	Name string
+	// Value is the gauge's current reading.
+	Value float64
+	// Labels is the data point's low-cardinality label set (empty for the
+	// runtime gauges — they carry no labels by construction).
+	Labels map[string]string
+}
+
 // MetricSnapshot is the telemetry-local read-out of the registry's live
-// metrics — a flat slice of counter data points collected from the
-// active SDK reader. It is the source the Protocol `metrics.snapshot`
+// metrics — flat slices of counter + gauge data points collected from
+// the active SDK reader. It is the source the Protocol `metrics.snapshot`
 // projection maps onto `types.MetricsSnapshot`. The struct carries no
 // OTel SDK type so the Protocol boundary stays single-sourced.
 type MetricSnapshot struct {
 	// Counters is the flat counter-data-point slice.
 	Counters []CounterPoint
+	// Gauges is the flat gauge-data-point slice (runtime observable gauges).
+	Gauges []GaugePoint
 }
 
 // Snapshot collects the registry's live metrics from the active SDK
@@ -462,25 +561,36 @@ func (r *MetricsRegistry) Snapshot(ctx context.Context) (MetricSnapshot, error) 
 	if err := r.reader.Collect(ctx, &rm); err != nil {
 		return MetricSnapshot{}, fmt.Errorf("telemetry: metrics collect failed: %w", err)
 	}
-	out := MetricSnapshot{Counters: []CounterPoint{}}
+	out := MetricSnapshot{Counters: []CounterPoint{}, Gauges: []GaugePoint{}}
+	labelsOf := func(attrs attribute.Set) map[string]string {
+		labels := map[string]string{}
+		for _, kv := range attrs.ToSlice() {
+			labels[string(kv.Key)] = kv.Value.AsString()
+		}
+		return labels
+	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				// Only the int64 counter is exported at V1; a future
-				// histogram / gauge instrument extends this switch.
-				continue
-			}
-			for _, dp := range sum.DataPoints {
-				labels := map[string]string{}
-				for _, kv := range dp.Attributes.ToSlice() {
-					labels[string(kv.Key)] = kv.Value.AsString()
+			switch data := m.Data.(type) {
+			case metricdata.Sum[int64]:
+				for _, dp := range data.DataPoints {
+					out.Counters = append(out.Counters, CounterPoint{
+						Name:   m.Name,
+						Value:  float64(dp.Value),
+						Labels: labelsOf(dp.Attributes),
+					})
 				}
-				out.Counters = append(out.Counters, CounterPoint{
-					Name:   m.Name,
-					Value:  float64(dp.Value),
-					Labels: labels,
-				})
+			case metricdata.Gauge[int64]:
+				for _, dp := range data.DataPoints {
+					out.Gauges = append(out.Gauges, GaugePoint{
+						Name:   m.Name,
+						Value:  float64(dp.Value),
+						Labels: labelsOf(dp.Attributes),
+					})
+				}
+			default:
+				// Histograms (and other shapes) are not projected yet.
+				continue
 			}
 		}
 	}

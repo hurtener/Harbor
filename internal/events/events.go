@@ -469,6 +469,24 @@ type Replayer interface {
 	Replay(ctx context.Context, from Cursor, f Filter) ([]Event, error)
 }
 
+// DroppedCounter is the optional capability a bus driver implements to
+// report a cumulative count of messages dropped under backpressure. It
+// mirrors the Replayer shape: a single driver-specific read surface
+// discovered by type assertion, not a mandatory interface method (a
+// future durable bus may have no in-memory drop notion). The runtime
+// observability wiring asserts the bus for this capability to source
+// the harbor_runtime_events_dropped gauge; a bus that does not implement
+// it simply leaves that gauge unregistered (the gauge seam skips a nil
+// callback).
+//
+// The count is monotonic for the bus's lifetime and is safe to read
+// concurrently with publishing.
+type DroppedCounter interface {
+	// DroppedTotal returns the cumulative number of events dropped under
+	// subscriber-buffer backpressure since the bus was constructed.
+	DroppedTotal() int64
+}
+
 // Sentinel errors. Callers compare via errors.Is.
 var (
 	// ErrUnknownEventType — Publish was called with an EventType not

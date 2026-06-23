@@ -357,6 +357,17 @@ func (e *engine) signalDrainedFrame(env messages.Envelope) {
 	rc.release(frame.StreamID, frame.Done)
 }
 
+// CapacityEntryCount returns the number of live per-run streaming
+// capacity trackers. It is a lock-safe read over the same capMu-guarded
+// map the capacity sweeper bounds — no per-run state is stored on the
+// engine, so the count is a pure observation safe to call from any
+// goroutine (including an observability gauge callback at scrape time).
+func (e *engine) CapacityEntryCount() int {
+	e.capMu.Lock()
+	defer e.capMu.Unlock()
+	return len(e.capacities)
+}
+
 // stopAllCapacities releases every blocked EmitChunk waiter with
 // ErrEngineStopped. Called by engine.Stop after the workers have
 // joined; idempotent.
