@@ -58,7 +58,8 @@ func TestSafety_ProviderFileIDOnlyPart_IsLegalOverThreshold(t *testing.T) {
 // step rewrites the oversize DataURL to an Artifact reference exactly
 // as for any other part (the exemption is precise — it covers the
 // absence of bytes, never their presence), and a raw heavy TEXT part
-// in the same message still trips ErrContextLeak.
+// in the same OFFLOADABLE (RoleTool) message still trips ErrContextLeak
+// (D-241 scopes the text byte-check to tool observations).
 func TestSafety_ProviderFileIDPart_SmuggledBytesStillHandled(t *testing.T) {
 	deps, cleanup := makeDeps(t)
 	defer cleanup()
@@ -90,19 +91,26 @@ func TestSafety_ProviderFileIDPart_SmuggledBytesStillHandled(t *testing.T) {
 		t.Fatalf("Complete: %v — oversize DataURL must be auto-materialized, not fatal", err)
 	}
 
-	// Raw heavy text in a sibling part still trips the guard — the
-	// exemption never blankets the whole message.
+	// Raw heavy text in a sibling part of an OFFLOADABLE tool-result
+	// message still trips the guard — the ProviderFileID exemption
+	// never blankets the whole message. (Paired with a preceding
+	// assistant tool_call so wire-pairing validation passes first.)
+	callID := "call_smuggle"
 	leakReq := llm.CompleteRequest{
 		Model: "m",
-		Messages: []llm.ChatMessage{{
-			Role: llm.RoleUser,
-			Content: llm.Content{Parts: []llm.ContentPart{
-				{Type: llm.PartImage, Image: &llm.ImagePart{
-					ProviderFileID: "file-img-3", MIME: "image/png",
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCallStructured{{ID: callID, Name: "probe"}}},
+			{
+				Role:       llm.RoleTool,
+				ToolCallID: &callID,
+				Content: llm.Content{Parts: []llm.ContentPart{
+					{Type: llm.PartImage, Image: &llm.ImagePart{
+						ProviderFileID: "file-img-3", MIME: "image/png",
+					}},
+					{Type: llm.PartText, Text: strings.Repeat("Y", 40*1024)},
 				}},
-				{Type: llm.PartText, Text: strings.Repeat("Y", 40*1024)},
-			}},
-		}},
+			},
+		},
 	}
 	if _, err := client.Complete(ctx, leakReq); !errors.Is(err, llm.ErrContextLeak) {
 		t.Fatalf("err = %v, want ErrContextLeak for the sibling raw heavy text part", err)

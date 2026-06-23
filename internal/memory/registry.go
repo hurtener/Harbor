@@ -66,12 +66,18 @@ type Deps struct {
 // `RetrievalTopK` caps semantic results when the caller passes no
 // limit; zero → `DefaultSemanticTopK`. Both are ignored by the
 // default mode.
+//
+// `RecentTurns` is the verbatim recent-window size for the
+// `rolling_summary` strategy. Zero selects the strategy default
+// (`strategy.FullZoneTurns`); positive values override it. Ignored by
+// `none` and `truncation`.
 type ConfigSnapshot struct {
 	Driver             string
 	DSN                string
 	Strategy           Strategy
 	BudgetTokens       int
 	RecoveryBacklogMax int
+	RecentTurns        int
 	Retrieval          RetrievalMode
 	RetrievalTopK      int
 }

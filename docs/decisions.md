@@ -5833,3 +5833,62 @@ Tracing the as-built code showed the faithful fix needs a credential the resume 
 **§4.3 deviations.** Planning only — no code lands in this PR; the wave (92k–92q) is parked after approval. Scope is MCP HTTP transports (stdio OAuth is not a pattern; A2A `AUTH_REQUIRED` already converges on the same primitive). Detach-on-rollback deferred (decision 5). Per-phase decisions D-241..D-247 are reserved and logged on ship (§17.7 step 3).
 
 **Cross-references.** D-237 (the add-connection lifecycle this completes), D-059 (agent-bound token keys by `agent_id`), D-083 (the Phase 30 tool-side OAuth primitive reused), D-235 (admin scope + stdio gate), D-094 (devstack twin parity for the run-start projection), D-025 (concurrent-reuse contract for the Provider seam), D-061 (Console is a Protocol client). RFC §6.4, §6.16, §3.3, §7.4. briefs 09 + 14. Issue #375 (expanded, not closed by this PR). Plan: `docs/plans/wave-mcp-oauth-decomposition.md` + `docs/plans/phase-92{k,l,m,n,o,p,q}-*.md`.
+
+---
+
+## D-241 — Narrow the D-026 heavy-content byte check to offloadable content; conversation text is governed by the token-window guard
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** D-026 / RFC §6.5 state the LLM-edge safety net asserts, uniformly, that "no message reaching the LLM carries raw heavy content": any string / byte slice / `DataURL` whose size ≥ the heavy-output threshold (default 32 KiB) that is not already an `ArtifactStub` fails loudly with `ErrContextLeak`. Live profiling (2026-06-23) found a false positive: a long-lived `rolling_summary` session's rolling summary — legitimate **conversation context**, injected as `<read_only_conversation_memory>` (brief 13) — grows past 32 KiB of bytes and trips `ErrContextLeak` at planner step 0, poisoning every subsequent run. The byte threshold exists to force **offloadable** content (tool / MCP results, binary inputs) into an `ArtifactStub`; conversation text is not offloadable that way, so a growing summary crossing the byte threshold is a false positive, not a leak.
+
+**Decision.**
+
+1. **The byte heavy-content check (`internal/llm/safety.go::findContextLeak`) governs OFFLOADABLE content only:** (a) `RoleTool` message text (`Content.Text` + `PartText`) — tool / MCP observations, which the `ObservationRenderer` offloads to an `ArtifactStub` when heavy; and (b) binary `DataURL` parts (`PartImage` / `PartAudio` / `PartFile`) of ANY role — auto-materialized to an `ArtifactRef` above the threshold. The fail-loud `ErrContextLeak` invariant is UNCHANGED for these classes.
+2. **Plain conversation text on `RoleSystem` / `RoleUser` / `RoleAssistant` messages is EXEMPT from the byte check** (`Content.Text` and `PartText`, including an injected rolling summary). Its size is governed by the existing token-window guard (`ErrContextWindowExceeded`, RFC §6.5 step 2), which remains the governor for conversation size. The token-budget guard is unchanged by this decision.
+3. **This narrows, but does not remove, D-026.** The runtime still fails loudly when a producer leaks an un-offloaded tool result or raw binary into the prompt. What changes is that legitimate conversation text — which has no `ArtifactStub` offload path — is no longer measured against the byte threshold.
+
+**§4.3 deviations.** Decoupling the token budget (tokens) from the heavy threshold (bytes) means an operator can still set a `budget_tokens` whose byte footprint exceeds the (now tool-only) heavy threshold — harmless after this decision, since conversation text is exempt. Documented as a known, benign interaction. The narrowing also trades the edge byte-backstop on the two derived-conversation-role paths (the legacy text-only-provider observation replay and the background-task outcome rendering, both rendered under `RoleUser` in the react planner's prompt builder) for reliance on dispatch-time source projection (`dispatch.projectForLLM`, which stubs heavy results at the source before rendering); binary `DataURL` parts remain byte-covered on all roles.
+
+**Cross-references.** D-026 (the safety net this narrows), D-242 (the memory budget enforcement that bounds conversation size so the token-window guard rarely fires). RFC §6.5, §6.6. briefs 04 + 13. Plan: `docs/plans/phase-123-memory-context-budget.md`.
+
+---
+
+## D-242 — The rolling_summary recent-turn set is operator-configurable via `memory.recent_turns`; `FullZoneTurns` becomes the default
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** `rolling_summary` stored its configured `budget_tokens` but NEVER enforced it — the assembled `GetLLMContext` patch (recent turns + rolling summary) grew without bound, which is the root cause of the session-poisoning bug D-241 addresses at the LLM edge. The strategy's contract was always "keep the recent-turn set verbatim, summarize the rest, and fit the token budget" (mirroring `truncation`'s `OverflowDropOldest`); only the budget-enforcement step was missing. Separately, the recent-window size was the package constant `strategy.FullZoneTurns` (= 4) with the comment "an operator who needs to tune it files an RFC PR rather than fighting yaml" — too rigid now that the budget is enforced and operators need to balance verbatim recency against compaction.
+
+**Decision.**
+
+1. **`rolling_summary` enforces `budget_tokens` deterministically.** On write (`AddTurn`), after the existing spill+summarize step, a bounded compaction loop (cap `maxCompactionChunksPerAddTurn = 4` summariser calls per turn) folds the oldest recent turn into the summary — oldest-first, threading `PreviousSummary` so prior summary content is preserved, never discarded — until the assembled context fits the budget or the cap is reached. On read (`GetLLMContext`), a cheap, no-LLM final guarantee ALWAYS clamps the emitted patch to the budget on a COPY (never mutating executor state): drop oldest recent turns down to the newest, then deterministically truncate the summary string (rune-boundary, with a trailing marker) to the remaining token budget. This guarantees `patch.Tokens <= budget_tokens` even when the summariser is degraded or non-compressing. `budget_tokens == 0` preserves the prior unbounded behaviour (back-compat). No safety-net auto-recovery is added — the strategy self-bounds to its own configured budget (D-026's "the planner owns recovery" is unchanged).
+2. **The recent-turn set is operator-configurable via `memory.recent_turns`** (`MemoryConfig.RecentTurns`, threaded through `ConfigSnapshot` → driver → `strategy.Deps.RecentTurns`). Zero selects the `FullZoneTurns` default (4); positive values override it; validated `>= 0` in `loader.go::Validate`. Extends the operator-tunable surface beyond D-035's `RecoveryBacklogMax`; updates the superseded `FullZoneTurns` const comment. `FullZoneTurns` stays as the default constant.
+
+**§4.3 deviations.** Artifact-spill of an oversized SINGLE conversation message (auto-offload one too-large turn to an `ArtifactRef` and embed the ref in the summary) is a genuinely new memory↔artifact integration and is deferred to a follow-up — a single turn larger than the budget is the one case the read-path guarantee cannot fully clamp (the newest turn stays verbatim). Documented as a non-goal.
+
+**Cross-references.** D-241 (the LLM-edge byte-check narrowing this pairs with), D-035 (truncation's `OverflowDropOldest` + the operator-tunable-budget precedent), D-034 (the recovery-backlog cap), D-025 (concurrent-reuse: the executor stays a shared compiled artifact; per-key state is mutex-guarded). RFC §6.5, §6.6, §6.10. briefs 04 + 13. Plan: `docs/plans/phase-123-memory-context-budget.md`.
+
+---
+
+## D-243 — The rolling_summary compaction summariser is operator-tunable: a switchable model and an append-only prompt extension
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** The production summariser (`internal/llm/summarizer`) is constructed at assembly with the main LLM client and the hardcoded `systemPromptV1` (its versioned role/conciseness prompt). Two operator needs were unmet: (a) compaction always ran on the planner's model, so an operator who wanted a cheaper/faster model for the high-frequency compaction calls had no knob; (b) a dev who wanted compaction to preserve or target specific content (numeric thresholds, decisions, entity names) had no way to steer the summariser without forking the prompt — and a full prompt override would strip the baseline role framing and the conciseness / preserve-goals guarantees that keep the summary safe.
+
+**Decision.**
+
+1. **`memory.summarizer.model` switches the compaction model.** A new `MemoryConfig.Summarizer MemorySummarizerConfig` sub-block carries `Model`, wired at the assembly construction site through the existing `summarizer.WithModel` option. Unset → the main LLM's default model (today's behavior, no change). A model with no matching `model_profiles` entry fails at runtime the same way any unsupported model does; it is NOT rejected at load time (consistent with how the planner's model is handled — no new validation that could reject a valid forward-looking config).
+2. **`memory.summarizer.prompt` extends the baseline prompt, append-only.** A new `summarizer.WithSystemPromptExtension(string)` option APPENDS the operator text to `systemPromptV1` behind a fixed separator (`"Additional operator instructions (extend the above; do not override it):"`) — it never replaces the baseline. The extension is trimmed; empty / whitespace-only is a no-op that leaves the system message exactly equal to today's `systemPromptV1` (no behavior change). This lets operators steer what compaction preserves/targets without stripping the baseline role framing or conciseness/preserve-goals guarantees.
+3. **Append-only by design — no full-replace override in this phase.** A `WithSystemPrompt` replace form is a deliberate future non-goal: keeping the baseline as a mandatory floor preserves the safety guarantees the versioned prompt encodes.
+
+**§4.3 deviations.** None — both fields are optional, default to today's behavior, and reuse existing seams (`WithModel` already existed; `WithSystemPromptExtension` is the only new primitive, and its first consumer — the assembly construction site — lands in the same change per §13).
+
+**Cross-references.** D-242 (the recent-turn / budget-enforcement work this rides alongside), D-035 (the operator-tunable-knob precedent), D-089 / §13 (fail-loud + no-stub-default — the summariser stays a real LLM composition, the prompt extension never replaces the baseline). RFC §6.5, §6.6. briefs 04 + 13. Plan: `docs/plans/phase-123-memory-context-budget.md`.

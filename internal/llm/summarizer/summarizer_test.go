@@ -231,6 +231,95 @@ func TestSummarize_WithModel_PinsRequestModel(t *testing.T) {
 	}
 }
 
+// systemMessageText extracts the system message's Content.Text from a
+// recorded Complete call, or "" if there is no system message.
+func systemMessageText(rc recordedCall) string {
+	for _, m := range rc.req.Messages {
+		if m.Role == llm.RoleSystem && m.Content.Text != nil {
+			return *m.Content.Text
+		}
+	}
+	return ""
+}
+
+// TestSummarize_WithoutModel_LeavesRequestModelEmpty — the unset case of
+// AC-10: with no WithModel option the request Model is empty, so the LLM
+// client resolves its default model.
+func TestSummarize_WithoutModel_LeavesRequestModelEmpty(t *testing.T) {
+	client := newStubClient("summary")
+	s, _ := summarizer.New(client)
+	_, _ = s.Summarize(context.Background(), mkID("s-1"), memory.SummarizeRequest{
+		Turns: []memory.ConversationTurn{{UserMessage: "u", AssistantResponse: "a"}},
+	})
+	calls := client.seenCalls()
+	if calls[0].req.Model != "" {
+		t.Errorf("req.Model = %q, want empty (client default)", calls[0].req.Model)
+	}
+}
+
+// TestSummarize_WithSystemPromptExtension_AppendsToBaseline — AC-11: a
+// non-empty extension is APPENDED to the baseline prompt behind the
+// fixed separator; the composed system message contains the baseline
+// text, the separator, and the operator text — and equals exactly the
+// concatenation (proving append, not replace).
+func TestSummarize_WithSystemPromptExtension_AppendsToBaseline(t *testing.T) {
+	// Capture the baseline system message from a plain summariser.
+	baseClient := newStubClient("summary")
+	baseS, _ := summarizer.New(baseClient)
+	_, _ = baseS.Summarize(context.Background(), mkID("s-base"), memory.SummarizeRequest{
+		Turns: []memory.ConversationTurn{{UserMessage: "u", AssistantResponse: "a"}},
+	})
+	baseline := systemMessageText(baseClient.seenCalls()[0])
+	if baseline == "" {
+		t.Fatal("baseline system message is empty")
+	}
+
+	const operator = "Always preserve numeric thresholds and dollar amounts verbatim."
+	client := newStubClient("summary")
+	s, _ := summarizer.New(client, summarizer.WithSystemPromptExtension(operator))
+	_, _ = s.Summarize(context.Background(), mkID("s-1"), memory.SummarizeRequest{
+		Turns: []memory.ConversationTurn{{UserMessage: "u", AssistantResponse: "a"}},
+	})
+	got := systemMessageText(client.seenCalls()[0])
+
+	// Contains the baseline, the separator framing, and the operator text.
+	for _, want := range []string{baseline, "Additional operator instructions (extend the above; do not override it):", operator} {
+		if !strings.Contains(got, want) {
+			t.Errorf("composed system message missing %q\ncomposed:\n%s", want, got)
+		}
+	}
+	// Exact append shape (baseline first, operator last).
+	wantComposed := baseline + "\n\nAdditional operator instructions (extend the above; do not override it):\n" + operator
+	if got != wantComposed {
+		t.Errorf("composed system message = %q\nwant %q", got, wantComposed)
+	}
+}
+
+// TestSummarize_EmptyExtension_UsesBaselineExactly — AC-11 empty case: an
+// empty (or whitespace-only) extension is a no-op; the system message is
+// exactly the baseline (no behavior change).
+func TestSummarize_EmptyExtension_UsesBaselineExactly(t *testing.T) {
+	baseClient := newStubClient("summary")
+	baseS, _ := summarizer.New(baseClient)
+	_, _ = baseS.Summarize(context.Background(), mkID("s-base"), memory.SummarizeRequest{
+		Turns: []memory.ConversationTurn{{UserMessage: "u", AssistantResponse: "a"}},
+	})
+	baseline := systemMessageText(baseClient.seenCalls()[0])
+
+	client := newStubClient("summary")
+	s, _ := summarizer.New(client, summarizer.WithSystemPromptExtension("   \n  "))
+	_, _ = s.Summarize(context.Background(), mkID("s-1"), memory.SummarizeRequest{
+		Turns: []memory.ConversationTurn{{UserMessage: "u", AssistantResponse: "a"}},
+	})
+	got := systemMessageText(client.seenCalls()[0])
+	if got != baseline {
+		t.Errorf("empty extension changed system message:\ngot:      %q\nbaseline: %q", got, baseline)
+	}
+	if strings.Contains(got, "Additional operator instructions") {
+		t.Errorf("empty extension leaked the separator into the system message:\n%s", got)
+	}
+}
+
 // TestSummarize_ConcurrentReuse — D-025: one Summarizer is safe to
 // share across N goroutines under -race. Each call carries its own
 // session identity through to the client.

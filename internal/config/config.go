@@ -465,6 +465,13 @@ type RuntimeConfig struct{}
 // drops oldest and emits `memory.recovery_dropped` on the bus.
 // Ignored by the `none` and `truncation` strategies.
 //
+// `RecentTurns` is the number of most-recent conversation turns the
+// `rolling_summary` strategy keeps verbatim before older turns spill
+// into the rolling summary. Zero selects the strategy default
+// (`strategy.FullZoneTurns`, currently 4). Ignored by the `none`
+// strategy; the `truncation` strategy keeps every turn that fits the
+// budget so it does not consult this knob.
+//
 // Restart-required (no `reload:"live"`).
 type MemoryConfig struct {
 	Driver             string `yaml:"driver"`
@@ -472,6 +479,14 @@ type MemoryConfig struct {
 	Strategy           string `yaml:"strategy,omitempty"`
 	BudgetTokens       int    `yaml:"budget_tokens,omitempty"`
 	RecoveryBacklogMax int    `yaml:"recovery_backlog_max,omitempty"`
+	// RecentTurns is the verbatim recent-window size for the
+	// `rolling_summary` strategy. 0 → strategy default (FullZoneTurns).
+	RecentTurns int `yaml:"recent_turns,omitempty"`
+
+	// Summarizer tunes the `rolling_summary` compaction LLM: a
+	// switchable model and an append-only prompt extension. Ignored by
+	// the `none` and `truncation` strategies (which run no summariser).
+	Summarizer MemorySummarizerConfig `yaml:"summarizer,omitempty"`
 
 	// Retrieval is the opt-in retrieval mode. Empty (the default)
 	// keeps the strategy-shaped retrieval unchanged; `"semantic"`
@@ -492,6 +507,27 @@ type MemoryConfig struct {
 	// query, are filtered out while marginally-similar turns are
 	// admitted). Ignored unless `retrieval: semantic`.
 	RetrievalMinScore float64 `yaml:"retrieval_min_score,omitempty"`
+}
+
+// MemorySummarizerConfig tunes the `rolling_summary` strategy's
+// compaction LLM. Both fields are optional and apply only when
+// `memory.strategy: rolling_summary`.
+//
+// `Model`, when set, pins the model the compaction summariser requests
+// (routed through the summariser's model override) so operators can run
+// compaction on a cheaper/faster model independent of the planner's
+// model. Empty selects the main LLM's default model — today's behavior.
+// A model with no matching `model_profiles` entry fails at runtime the
+// same way any unsupported model does; it is not rejected at load time.
+//
+// `Prompt`, when set, is APPENDED to the baseline summariser system
+// prompt behind an explicit "extend, do not override" separator — it
+// never replaces the baseline role framing or conciseness guarantees.
+// Empty leaves the baseline prompt exactly as shipped (no behavior
+// change).
+type MemorySummarizerConfig struct {
+	Model  string `yaml:"model,omitempty"`  // "" → main LLM default model
+	Prompt string `yaml:"prompt,omitempty"` // "" → baseline only; else appended to the baseline summariser prompt
 }
 
 // SkillsConfig is owned by the skills subsystem phases.

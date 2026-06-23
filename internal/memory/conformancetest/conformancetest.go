@@ -66,7 +66,12 @@ type Harness struct {
 	Bus       events.EventBus
 	Strategy  memory.Strategy
 	Retrieval memory.RetrievalMode
-	Cleanup   func()
+	// BudgetTokens is the per-key token budget the Store was wired
+	// with. When > 0 the strategy-budget subtests assert the assembled
+	// GetLLMContext patch never exceeds it. Zero skips those assertions
+	// (a harness wired with no budget).
+	BudgetTokens int
+	Cleanup      func()
 }
 
 // strategy returns the configured strategy, defaulting to
@@ -277,6 +282,38 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if patch.Summary == "" {
 			t.Error("rolling_summary failed to produce a summary after 6 turns")
+		}
+	})
+
+	t.Run("RollingSummary_EnforcesBudget", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.strategy() != memory.StrategyRollingSummary {
+			t.Skipf("subtest only runs under StrategyRollingSummary; got %q", h.strategy())
+		}
+		if h.BudgetTokens <= 0 {
+			t.Skip("harness wired with no budget; skipping budget assertion")
+		}
+		ctx := context.Background()
+		// Each turn fits the budget individually (~32 tokens) but the
+		// accumulation (recent window + rolling summary) blows past it;
+		// the assembled context must stay within budget via compaction +
+		// the read-path guarantee — every driver honours this with parity.
+		big := memory.ConversationTurn{
+			UserMessage:       strings.Repeat("u", 60),
+			AssistantResponse: strings.Repeat("a", 60),
+		}
+		for i := range 12 {
+			if err := h.Store.AddTurn(ctx, tripleA(), big); err != nil {
+				t.Fatalf("AddTurn %d: %v", i, err)
+			}
+			patch, err := h.Store.GetLLMContext(ctx, tripleA())
+			if err != nil {
+				t.Fatalf("GetLLMContext %d: %v", i, err)
+			}
+			if patch.Tokens > h.BudgetTokens {
+				t.Fatalf("turn %d: rolling_summary did not enforce budget: Tokens=%d, want <= %d", i, patch.Tokens, h.BudgetTokens)
+			}
 		}
 	})
 

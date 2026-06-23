@@ -114,10 +114,19 @@ echo
 # Parse the CSV. For each metric block we track the unit (from the
 # 2nd header column, e.g. `sec/op` or `turns/sec`) and the `vs base`
 # column index. A regression is:
-#   - latency / alloc metric (sec/op, ns/op, B/op, allocs/op):
+#   - latency / byte metric (sec/op, ns/op, B/op):
 #     a POSITIVE delta past the threshold.
 #   - throughput metric (anything ending /sec — envelopes/sec,
 #     turns/sec, frames/sec): a NEGATIVE delta past the threshold.
+# `allocs/op` is REPORTED (the full benchstat report above always
+# prints it) but NOT gated: it is a small-integer count where a
+# percentage threshold is meaningless — a benign 1→2 reads as +100%,
+# far past any sane threshold — and that contradicts this gate's stated
+# intent (catch the regressions that matter: halved throughput /
+# doubled latency). A real allocation regression surfaces in `sec/op`
+# (the GC pressure it causes) and `B/op` (the bytes), both of which ARE
+# gated. So allocs/op stays in the human-readable report for eyeballing
+# without flaking the gate on integer-count bookkeeping changes.
 # `~` rows are non-significant and always pass. `geomean` rows are
 # aggregates and skipped.
 FAIL="$(
@@ -133,6 +142,7 @@ FAIL="$(
     # Data row: needs a vs-base column and a delta value present.
     {
       if (vb==0 || vb>NF) next;
+      if (unit ~ /allocs\/op/) next;        # allocs/op is reported, not gated (small-integer counts; see header note)
       d=$vb;
       if (d=="~" || d=="") next;            # non-significant → pass
       sign=substr(d,1,1);

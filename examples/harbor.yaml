@@ -348,8 +348,29 @@ memory:
   #                         registry-reachable today).
   strategy: none
   # Per-key token cap for truncation and rolling_summary; zero
-  # disables budget enforcement (turns accumulate unbounded).
+  # disables budget enforcement (turns accumulate unbounded). When
+  # set, rolling_summary keeps the recent-turn set verbatim and
+  # recursively compacts older turns into the rolling summary (folding
+  # into — never discarding — prior summary content) until the
+  # assembled context fits this budget.
   budget_tokens: 0
+  # Number of most-recent conversation turns rolling_summary keeps
+  # verbatim before older turns spill into the rolling summary.
+  # 0 → strategy default (FullZoneTurns = 4). Must be >= 0. Ignored by
+  # the `none` and `truncation` strategies.
+  recent_turns: 0
+  # Operator-tunable compaction summariser (rolling_summary only).
+  # `model` pins the model used for compaction LLM calls, independent
+  # of the planner's model — set it to a cheaper/faster model to keep
+  # compaction cheap. Unset → the main LLM's default model (today's
+  # behavior). A model with no `model_profiles` entry fails at runtime
+  # like any unsupported model. `prompt` is APPENDED to the baseline
+  # summariser system prompt behind an "extend, do not override"
+  # separator — it never replaces the baseline role framing or
+  # conciseness guarantees. Unset → baseline prompt only (no change).
+  # summarizer:
+  #   model: anthropic/claude-haiku
+  #   prompt: "Always preserve numeric thresholds and dollar amounts verbatim."
   # Bounded queue size for the rolling_summary recovery loop
   # (D-034). Overflow drops oldest and emits
   # `memory.recovery_dropped` on the events bus. Default 16; must
