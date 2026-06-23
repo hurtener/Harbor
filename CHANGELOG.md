@@ -22,6 +22,72 @@ run-start reconciliation — issue [#375](https://github.com/hurtener/Harbor/iss
 and the generated per-domain Protocol wire-type modules + the shared chat-module
 extraction — the D-093 / D-091 follow-ons.)
 
+## [1.5.1] — 2026-06-23
+
+Runtime hardening, observability, and a memory-context fix. This release bounds
+the runtime's long-lived state, adds first-class observability (pprof + standard
+collectors + runtime gauges, surfaced in the Console), and fixes a memory
+context-budget bug that could poison a long-lived session. Every change is
+additive or corrective: the Harbor Protocol stays at `0.1.0`, all new
+configuration is optional, and no prior INTENDED behavior changes.
+
+### Added
+
+- **Runtime observability foundation.** Standard Go + process collectors on a
+  per-instance Prometheus registry (`/metrics`), plus Harbor runtime gauges
+  (`harbor_runtime_{active_runs,engine_capacity_entries,governance_cache_entries,events_dropped}`)
+  registered on the `MetricsRegistry` so they reach `/metrics`, OTLP, AND the
+  already-shipped `metrics.snapshot` projection — no new Protocol method. A pprof
+  debug listener is available for live profiling, gated to a loopback address via
+  `server.debug_addr` / `HARBOR_DEBUG_ADDR` and NEVER mounted on the
+  Protocol/Console surface.
+- **Console runtime gauges.** The Live Runtime health panel surfaces the runtime
+  gauges through the existing `metrics.snapshot` (typed Protocol client; no new
+  method or page).
+- **Operator-tunable memory compaction.** `memory.recent_turns` sets the verbatim
+  recent-turn window for `rolling_summary` (default 4); `memory.summarizer.model`
+  runs compaction on a chosen model (unset → the main LLM); `memory.summarizer.prompt`
+  appends operator instructions to the baseline summariser prompt (extends, never
+  replaces it — so the role framing and conciseness guarantees are preserved).
+
+### Changed
+
+- **`rolling_summary` now enforces its configured `budget_tokens`.** The strategy
+  keeps the assembled context within the token budget — on write it compacts
+  oldest-first into the rolling summary (threading the prior summary so it is never
+  discarded), and on read a deterministic clamp guarantees the emitted patch fits
+  the budget even if the summariser is degraded. `budget_tokens: 0` preserves the
+  prior unbounded behavior. (D-242.)
+- **The context-window safety net's byte check is scoped to offloadable content.**
+  The 32 KiB heavy-content check now governs tool/MCP results and binary inputs
+  (which offload to an `ArtifactStub`); legitimate conversation text — including a
+  long rolling summary — is governed by the token-window guard instead, not the
+  byte threshold. (D-241.)
+- **Governance cost ceilings and rate limits are keyed by identity, not per-run**
+  (RFC §6.15) — closing a per-run ceiling-bypass and bounding the governance cache.
+  (D-249.)
+
+### Fixed
+
+- **Long-lived sessions no longer poison themselves.** A `rolling_summary`
+  session's accumulated context could cross the heavy-content byte threshold and
+  then fail EVERY subsequent run at planner step 0 with a context-leak error; the
+  budget enforcement + safety-net scoping above resolve it. Surfaced by runtime
+  profiling.
+- **Bounded runtime retention.** The engine's per-run streaming-capacity map and
+  the governance cache are now reaped on a true run-end idle-TTL sweep instead of
+  growing for the process lifetime. (D-248.)
+- **Clean shutdown under a hung summariser.** The `rolling_summary` recovery loop
+  runs under a cancellable context cancelled on `Close()`, so a hung or degraded
+  summariser can no longer pin runtime shutdown. (D-250.)
+
+### Internal
+
+- The seven per-driver SQL migration runners (SQLite + Postgres across state,
+  memory, artifacts, skills) are consolidated behind one shared
+  `internal/persistence/sqlmigrate` runner — no behavior change; migrations stay
+  forward-only and append-only. (D-253.)
+
 ## [1.5.0] — 2026-06-22
 
 The **agent-config control plane**: live, audited, versioned control of an
