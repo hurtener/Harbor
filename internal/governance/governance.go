@@ -239,6 +239,15 @@ func quadKeyFor(q identity.Quadruple) quadKey {
 // could exceed a per-identity budget by spreading calls across runs.
 // Governance therefore scopes every cache + persistence key to the
 // identity triple; RunID="" is valid for state (see quadrupleFromCtx).
+//
+// Upgrade note: earlier builds keyed governance state by the full
+// quadruple, so a deployment carrying pre-existing per-run cost/bucket
+// records sees a ONE-TIME re-baseline — reads/writes now use the
+// RunID="" record (initially absent → starts at zero), and the old
+// per-run rows are never read or reaped again (benign orphaned KV; the
+// StateStore is opaque key/value by identity+kind, so this is data
+// re-keying, not a schema migration). A near-ceiling identity briefly
+// resets until it re-accumulates under the identity key.
 func identityScoped(q identity.Quadruple) identity.Quadruple {
 	q.RunID = ""
 	return q

@@ -19,6 +19,13 @@ import (
 // goroutines emitting on the same StreamID concurrently will
 // interleave (the engine has no per-StreamID lock); operators who
 // need cross-goroutine ordering must serialize the emit themselves.
+//
+// TTL caveat: the per-run Seq bookkeeping lives in the run's capacity
+// tracker, which the capacity sweeper reaps after DefaultCapacityTTL of
+// inactivity with no pending frames. A run that resumes streaming after
+// that window starts a fresh tracker — Seq restarts at 1 and a stream
+// previously marked Done is no longer remembered. Streams that complete
+// within the TTL (the overwhelming common case) are unaffected.
 type StreamFrame struct {
 	StreamID string
 	Seq      int
@@ -215,7 +222,10 @@ func (rc *runCapacity) cancel() {
 // Failure modes:
 //   - ErrSeqProvided: caller pre-filled frame.Seq.
 //   - ErrEmptyRunID: the originating envelope had no RunID.
-//   - ErrStreamClosed: the StreamID was previously Done-terminated.
+//   - ErrStreamClosed: the StreamID was previously Done-terminated —
+//     subject to the capacity-TTL caveat (see StreamFrame): if the run
+//     was idle past DefaultCapacityTTL its tracker is reaped, so a
+//     previously-Done StreamID is no longer remembered and Seq restarts.
 //   - ErrEngineStopped: Stop fired while waiting.
 //   - ctx.Err(): the caller's ctx cancelled while waiting.
 func (nctx *NodeContext) EmitChunk(ctx context.Context, frame StreamFrame) error {
@@ -389,9 +399,14 @@ func (e *engine) recordRunCapacityOverride(runID string, n int) {
 
 // DefaultCapacityTTL is how long a per-run streaming-capacity tracker is
 // retained after its last reserve/release before the capacity sweeper
-// reaps it. Generous relative to DefaultCancelTTL: a tracker is reaped
-// only when the run has been idle this long AND has no pending frames,
-// so a live-but-quiet run keeps its per-stream seq bookkeeping intact.
+// reaps it. Generous relative to DefaultCancelTTL. Reaping inputs are
+// ONLY idle-time and pending count — NOT run liveness: a tracker is
+// reaped once it has had no reserve/release for this long AND has no
+// pending frames. So a run quiet *under* the TTL keeps its per-stream
+// bookkeeping; a run still live but idle past the TTL with nothing
+// pending (e.g. parked on a long HITL pause) is reaped and, if it later
+// resumes streaming, loses that bookkeeping — see reapIdleCapacities and
+// the StreamFrame godoc for the guarantees that lapse.
 const DefaultCapacityTTL = 10 * time.Minute
 
 // capacitySweepInterval is how often the capacity sweeper runs.
@@ -430,9 +445,17 @@ func (e *engine) runCapacitySweeper(ctx context.Context) {
 //
 // Lock order is capMu (engine) then rc.mu (per-tracker). No path takes
 // capMu while holding rc.mu (reserve/release touch only rc.mu), so this
-// cannot deadlock. A run that streams again after its tracker is reaped
-// lazily recreates one in acquireCapacity (seq restarts — acceptable
-// for a stream idle past the TTL with nothing pending).
+// cannot deadlock.
+//
+// Guarantee relaxation (deliberate, bounded by the TTL): reaping drops
+// the tracker's `seqs` and `closed` maps. If a run streams again after
+// its tracker is reaped, acquireCapacity rebuilds a fresh tracker, so
+// for that run BOTH the per-StreamID monotonic-Seq guarantee (Seq
+// restarts at 1) AND the post-Done ErrStreamClosed guarantee (a stream
+// previously Done'd is no longer remembered) lapse. This only affects a
+// stream idle past the capacity TTL with nothing pending — a stream that
+// completes within the TTL is unaffected. See the StreamFrame /
+// EmitChunk godoc.
 func (e *engine) reapIdleCapacities(now time.Time) {
 	ttl := e.cfg.capacityTTL
 	if ttl <= 0 {

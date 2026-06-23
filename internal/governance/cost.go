@@ -146,6 +146,10 @@ func (a *CostAccumulator) PreCall(ctx context.Context, req llm.CompleteRequest) 
 	}
 	total := math.Float64frombits(ks.totalBits.Load())
 	if total >= tier.BudgetCeilingUSD {
+		// quad (with its RunID) is passed to the event for OBSERVABILITY
+		// only — operators want to know which run tripped the
+		// per-identity ceiling. RunID never enters the keying/accumulation
+		// path (that is identityScoped); the ceiling itself is per-identity.
 		a.emitBudgetExceeded(ctx, quad, a.cfg.resolveTier(id), req.Model, total, tier.BudgetCeilingUSD)
 		return errorWith(ErrBudgetExceeded,
 			"identity=%s/%s/%s total=%.6f ceiling=%.6f",

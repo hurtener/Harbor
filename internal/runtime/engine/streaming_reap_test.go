@@ -9,6 +9,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -105,6 +106,49 @@ func TestReapIdleCapacities_SteadyState(t *testing.T) {
 	}
 	if nOver != 0 {
 		t.Errorf("runCapacityOverrides len = %d, want 0", nOver)
+	}
+}
+
+// TestReapIdleCapacities_ResumeAfterReap_RestartsSeq pins the documented,
+// TTL-bounded relaxation: a run that resumes streaming after its idle
+// tracker was reaped gets a fresh tracker — Seq restarts at 1 and a
+// stream previously Done'd is no longer remembered (no ErrStreamClosed).
+func TestReapIdleCapacities_ResumeAfterReap_RestartsSeq(t *testing.T) {
+	e := reapTestEngine(t)
+	ctx := context.Background()
+
+	rc := e.acquireCapacity("run", 4)
+	if seq, err := rc.reserve(ctx, "s", false); err != nil || seq != 1 {
+		t.Fatalf("first reserve: seq=%d err=%v, want seq=1", seq, err)
+	}
+	rc.release("s", false)
+	if seq, err := rc.reserve(ctx, "s", true); err != nil || seq != 2 {
+		t.Fatalf("done reserve: seq=%d err=%v, want seq=2", seq, err)
+	}
+	rc.release("s", true)
+	// Pre-reap, the Done'd stream is remembered: a further reserve fails fast.
+	if _, err := rc.reserve(ctx, "s", false); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("post-Done reserve before reap: err=%v, want ErrStreamClosed", err)
+	}
+
+	// Age past the TTL and reap (pending==0).
+	rc.mu.Lock()
+	rc.lastActivity = time.Now().Add(-2 * DefaultCapacityTTL)
+	rc.mu.Unlock()
+	e.reapIdleCapacities(time.Now())
+	if e.hasCapacity("run") {
+		t.Fatal("idle drained tracker was not reaped")
+	}
+
+	// Resume: a fresh tracker. Seq restarts at 1 and the Done'd stream is
+	// forgotten — the documented relaxation, not a regression.
+	rc2 := e.acquireCapacity("run", 4)
+	seq, err := rc2.reserve(ctx, "s", false)
+	if err != nil {
+		t.Fatalf("resume reserve after reap: %v (Done state should have been dropped)", err)
+	}
+	if seq != 1 {
+		t.Errorf("resume Seq=%d, want 1 — reap drops seq bookkeeping past the TTL (DefaultCapacityTTL godoc)", seq)
 	}
 }
 
