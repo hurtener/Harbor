@@ -1396,7 +1396,7 @@ The cut line is justified by RFC §12 (Out of Scope for V1):
 
 If under calendar pressure, **phase 19 (ArtifactStore S3-style)** and **phase 75 (Playwright CI gate)** are the most reasonable V1 → V1.1 slip candidates inside the V1 list, in that order.
 
-### Runtime hardening & observability (119–122)
+### Runtime hardening & observability (119–123)
 
 Origin: a read-only profiling/leak/refactor audit of the Go runtime (2026-06) found the concurrency, D-025 concurrent-reuse, ctx-first, and fail-loudly claims hold up under inspection — no send-on-closed, double-close, WaitGroup misuse, or unguarded per-run mutable artifact state — but surfaced two confirmed unbounded-growth maps and a complete absence of in-process profiling/leak-detection on the *running* binary. An adversarial review of the first-draft plans then caught that the runtime-health Protocol surface already ships (Phase 72f / D-111: `runtime.health`, `runtime.counters`, `metrics.snapshot`, with an existing `live-runtime/health-panel.svelte`), so the originally-planned 121a/121b "new method + new panel" were collapsed into a single Phase 121 that EXTENDS the shipped surface. Sequenced: 119 (correctness) → 120 (observability, must follow 119's bounded maps) → 121 (surface the gauges through the shipped `metrics.snapshot` in the existing panel) → 122 (opportunistic refactor).
 

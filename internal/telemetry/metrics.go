@@ -444,7 +444,8 @@ type RuntimeGaugeSource struct {
 	// ActiveRuns — engine runs currently in flight.
 	ActiveRuns func() int64
 	// EngineCapacityEntries — live entries in the engine's per-run
-	// streaming-capacity map (the map Phase 119's sweeper bounds).
+	// streaming-capacity map (reaped on run-end by the idle-TTL
+	// capacity sweeper, so this gauge returns toward zero when idle).
 	EngineCapacityEntries func() int64
 	// GovernanceCacheEntries — identity-scoped entries in the governance
 	// cost + rate-limit caches.
