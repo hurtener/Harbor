@@ -5892,3 +5892,107 @@ Tracing the as-built code showed the faithful fix needs a credential the resume 
 **§4.3 deviations.** None — both fields are optional, default to today's behavior, and reuse existing seams (`WithModel` already existed; `WithSystemPromptExtension` is the only new primitive, and its first consumer — the assembly construction site — lands in the same change per §13).
 
 **Cross-references.** D-242 (the recent-turn / budget-enforcement work this rides alongside), D-035 (the operator-tunable-knob precedent), D-089 / §13 (fail-loud + no-stub-default — the summariser stays a real LLM composition, the prompt extension never replaces the baseline). RFC §6.5, §6.6. briefs 04 + 13. Plan: `docs/plans/phase-123-memory-context-budget.md`.
+
+---
+
+## D-248 — Engine per-run capacity trackers are reaped on a true run-end idle-TTL sweep, never the per-invocation refcount
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** The engine's per-run streaming-capacity map accumulated a tracker per run without a reap path, an unbounded growth over a long-lived process. The obvious hook — `markRunDone` — is wrong: it is a per-invocation refcount that brackets a worker's presence on a run, so `activeRuns[runID]` cycles 1→0→1→0 as an envelope hops nodes; reaping when it hits zero would delete a still-running run's tracker mid-flight. The cancellation maps already solve the same "bound a per-run map over time" problem with a TTL sweeper.
+
+**Decision.** A capacity tracker is reaped by an idle-TTL **capacity sweeper** (mirroring the existing cancellation-map sweeper: stamp the tracker, prune once it has been idle past the TTL) keyed off the genuine run-end, NOT off `markRunDone`'s per-invocation refcount. The live entry count is exposed through a lock-safe accessor (`CapacityEntryCount()`) for the observability gauge — no per-run mutable state added to the compiled artifact (D-025).
+
+**§4.3 deviations.** None.
+
+**Cross-references.** D-249 + D-250 (the sibling retention/ctx fixes in the same phase), D-251 (the `harbor_runtime_engine_capacity_entries` gauge that observes this bounded map), D-025 (concurrent-reuse: count via lock-safe accessor, no per-run artifact state). RFC §6. Plan: `docs/plans/phase-119-runtime-retention-and-ctx-hardening.md`.
+
+---
+
+## D-249 — Governance cost ceilings and rate limits are keyed by identity, not per-run (RFC §6.15)
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** The governance cost-accumulator and rate-limit caches keyed their entries by a tuple that included `RunID`. RFC §6.15 scopes both to **identity** ("per-identity cost ceilings"; "token bucket per (identity, model)"), and `RunID` is not part of `identity`. Per-run keying therefore both fragmented the per-identity aggregate (each new run started with a fresh budget — a ceiling BYPASS) and grew the cache unbounded (a key per run).
+
+**Decision.** Strip `RunID` from the governance cache key — from the in-memory key AND the persisted StateStore key TOGETHER, so the identity-scoped aggregate survives a restart. An `identityScoped(q)` helper performs the strip before both keying and persistence. The compound live entry count is exposed via a lock-safe `CacheLen()` accessor for the observability gauge. This is the RFC-valid fix for a pre-existing correctness bug; there is no per-run alternative to weigh.
+
+**§4.3 deviations.** None — RFC-settled.
+
+**Cross-references.** D-248 + D-250 (sibling phase-119 fixes), D-251 (the `harbor_runtime_governance_cache_entries` gauge), master-plan rows 36a/36b (cost accumulator + rate-limit + MaxTokens). RFC §6.15. Plan: `docs/plans/phase-119-runtime-retention-and-ctx-hardening.md`.
+
+---
+
+## D-250 — The rolling_summary recovery loop runs under a cancellable context tied to Close()
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** The rolling-summary recovery-loop goroutine called the summariser with a non-cancellable context. A summariser that hangs (or a degraded backend) could pin shutdown — `Close()` blocks on `loopWG.Wait()` forever — because the in-flight `Summarize` never returns.
+
+**Decision.** The executor derives `recoveryCtx` via `context.WithCancel(context.Background())` at construction, stores the cancel func, and calls it in `Close()` BEFORE `loopWG.Wait()`. An in-flight `Summarize` that honours cancellation then unblocks promptly, bounding shutdown. (A summariser that ignores `ctx` can still block its current batch — bounded only by its own behaviour, not by this loop.) The `context.Background()` here is the correct root of the recovery loop's own lifecycle tree, not a business-path context (§5 "never store ctx; never `context.Background()` in business code" is not violated — this is an explicitly-documented unmanaged-async-boundary root).
+
+**§4.3 deviations.** None.
+
+**Cross-references.** D-248 + D-249 (sibling phase-119 fixes), D-025 (long-lived goroutines cancellable + joined on shutdown), the `goleak.VerifyTestMain` leak tests added in the observability phase. RFC §6.6. Plan: `docs/plans/phase-119-runtime-retention-and-ctx-hardening.md`.
+
+---
+
+## D-251 — Observability foundation: standard collectors on a per-instance registry, runtime gauges on the MetricsRegistry, pprof only on a gated loopback listener
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** Harbor shipped no goroutine / heap / process visibility and no runtime gauges; diagnosing the live runtime required attaching a profiler externally. The foundation had to add this without (a) polluting a process-global registry, (b) inventing a new Protocol method, or (c) ever exposing pprof on an operator-reachable surface.
+
+**Decision.**
+
+1. **Standard collectors on a per-INSTANCE registry.** The Go + Process collectors register on a per-instance prometheus registry (not the global default), exposed at `/metrics`; a per-registry isolation test guards against cross-instance bleed.
+2. **Runtime gauges on the `MetricsRegistry`.** `harbor_runtime_{active_runs,engine_capacity_entries,governance_cache_entries,events_dropped}` register via a new `RegisterRuntimeGauges` seam wired once in the shared `assemble.Assemble`, fed by lock-safe accessors (D-248/D-249; no per-run artifact state, D-025). Registering on the `MetricsRegistry` means they reach `/metrics`, OTLP, AND the already-shipped `metrics.snapshot` projection — zero new Protocol method.
+3. **pprof is never on the Protocol/Console mux.** It is served only by a gated loopback debug listener on its OWN `*http.Server` + private `ServeMux`, enabled via `server.debug_addr` / `HARBOR_DEBUG_ADDR` (loopback-validated), with a `[DEV-ONLY ...]` stderr banner. A smoke check asserts `/debug/pprof/` is 404 on the main mux.
+
+**§4.3 deviations.** Engine-capacity gauge *production* wiring is deferred where the binary has no `engine.Engine` host (the dev binary is planner/RunLoop-shaped): the mechanism + accessors + tests ship, and the governance-cache + events-dropped gauges are the live consumers — so the primitive has a real consumer in-wave (not a primitive-without-consumer violation, §13).
+
+**Cross-references.** D-248 + D-249 (the bounded maps these gauges observe), D-252 (the Console surfacing of these gauges), D-111 / Phase 72f (the `metrics.snapshot` + posture surface reused), D-025. RFC §5.2, §6. Plan: `docs/plans/phase-120-runtime-observability-foundation.md`.
+
+---
+
+## D-252 — Runtime gauges surface through the shipped `metrics.snapshot`; the Console extends the existing health panel (no new Protocol method)
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** The Console Live Runtime page needed to show the Phase 120 runtime gauges. The runtime-health Protocol surface ALREADY ships (Phase 72f / D-111: `runtime.health`, `runtime.counters`, `metrics.snapshot`), and the Console already registers `live-runtime/health-panel.svelte` via the 108e capability→panel registry. Adding a new method or panel would duplicate that surface.
+
+**Decision.** Route the runtime gauges through the SHIPPED `metrics.snapshot` (the gauges ride the existing `MetricsSnapshot.Gauges` projection — zero new Protocol method) and EXTEND the existing health panel to render the `harbor_runtime_*` family. The Console reads only via the typed Protocol client (never an internal Runtime type, §4.5 #10/#11); the hand-maintained TS wire types stay in lockstep with the Go manifest (the D-223 gate). Scope follows the implemented posture gate (RFC §5.5), not an invented session-vs-fleet view.
+
+**§4.3 deviations.** None.
+
+**Cross-references.** D-251 (the gauges this surfaces), D-111 / Phase 72f (the reused runtime-health + metrics.snapshot surface), D-093 / D-223 (TS↔Go wire-type lockstep), §4.5 (Console-as-Protocol-client). RFC §5.2, §7.1, §7.2. Plan: `docs/plans/phase-121-console-surface-runtime-gauges.md`.
+
+---
+
+## D-253 — Shared SQL migration runner (`internal/persistence/sqlmigrate`); searchcache deliberately excluded; the driver-registry generic deferred
+
+**Date:** 2026-06-23
+
+**Status:** Accepted
+
+**Context.** The four SQLite drivers (state / memory / artifacts sqlite, skills / localdb) and the three Postgres drivers each carried a near-identical private migration runner (filename version parse + numeric ordering + idempotent apply + `schema_migrations` bookkeeping; the PG copies additionally derived an advisory-lock key via FNV). Seven copies of one algorithm is a maintenance hazard — they had already begun to drift.
+
+**Decision.**
+
+1. **Extract one runner.** `sqlmigrate.RunSQLite(ctx, db, migrationsFS, errPrefix)` + `RunPostgres(ctx, db, migrationsFS, errPrefix, advisoryLockName)` + the centralised `fnv64aSigned` advisory-key derivation. All seven drivers delegate, carrying only their own `migrationsFS` + error prefix (+ a unique advisory-lock name per subsystem). Behaviour is UNCHANGED: forward-only, numeric-version-ordered, idempotent on re-run, fail-loud on a malformed filename, advisory-lock-serialised on Postgres. The parameter is `fs.FS` (not `embed.FS`) for testability.
+2. **searchcache is DELIBERATELY EXCLUDED.** It is materially divergent — its own `tool_cache_migrations` table, no `BeginTx`, version recorded from the SQL body (not the runner), and a silent `continue` on a malformed filename — and the shared signature cannot express that policy without erasing its behaviour. It stays standalone; a smoke assertion guards that `sqlmigrate` is never referenced from it.
+3. **The generic `driverreg.Registry[T]` consolidation is DEFERRED (§4.3 scope cut).** The three registry "deviants" (tools/auth returns errors + carries three sentinels; events has `RegisterForTest` + an atomic; distributed is a dual bus/remote registry) do not fit one generic cleanly; this decision records the extraction that DID land plus the sentinel-wrapping registry contract for when the generic is revisited.
+
+**§4.3 deviations.** The `driverreg` generic is deferred (above); the phase scoped to the migration-runner extraction only.
+
+**Cross-references.** §4.4 (the driver-seam pattern), §9 (persistence: forward-only / append-only migrations — no migration was edited), §13 (the append-only-migrations + no-second-blank-import-list rules). RFC §6. Plan: `docs/plans/phase-122-persistence-and-driver-registry-dedup.md`.
