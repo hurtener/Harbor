@@ -171,6 +171,18 @@ func (r *RateLimiter) Close(_ context.Context) error {
 	return nil
 }
 
+// CacheLen returns the number of distinct identity-scoped cache keys the
+// limiter currently holds. Identity-scoped keying (RFC §6.15) means this
+// counts identities, not runs, so the value is bounded by the
+// active-identity set — a safe, low-cardinality reading for the runtime
+// governance-cache gauge. It is a lock-safe Range count over the
+// internally-synchronised sync.Map; no per-run state is read.
+func (r *RateLimiter) CacheLen() int {
+	n := 0
+	r.keys.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
 func (r *RateLimiter) keyState(ctx context.Context, q identity.Quadruple) (*bucketIdentityState, error) {
 	q = identityScoped(q) // rate limits are per-identity, never per-run (RFC §6.15)
 	k := quadKeyFor(q)

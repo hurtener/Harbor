@@ -33,6 +33,7 @@ import (
 	"fmt"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
@@ -62,6 +63,20 @@ type exporter struct{}
 // telemetry.PrometheusHandler can recover the scrape registry.
 func (exporter) Reader(_ context.Context, _ config.TelemetryConfig) (sdkmetric.Reader, error) {
 	registry := promclient.NewRegistry()
+	// Standard runtime + process collectors so the scrape carries
+	// go_goroutines, go_memstats_*, go_gc_duration_seconds, and process
+	// RSS/FD — the signals that reveal a slow goroutine/heap leak in a
+	// long-running runtime. Registered on the per-instance registry (not
+	// the global default), preserving tenant-metric isolation. These are
+	// client_golang collectors, distinct from the OTel instrument path, so
+	// they surface on /metrics only — not in metrics.snapshot, which reads
+	// the OTel reader.
+	if err := registry.Register(collectors.NewGoCollector()); err != nil {
+		return nil, fmt.Errorf("prometheus: register Go collector: %w", err)
+	}
+	if err := registry.Register(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})); err != nil {
+		return nil, fmt.Errorf("prometheus: register process collector: %w", err)
+	}
 	exp, err := otelprom.New(otelprom.WithRegisterer(registry))
 	if err != nil {
 		return nil, fmt.Errorf("prometheus: exporter construction failed: %w", err)

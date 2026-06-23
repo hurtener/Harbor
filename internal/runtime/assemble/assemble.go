@@ -432,12 +432,17 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// SetFactory wins) — the binary assembles exactly one stack;
 	// multi-runtime embedders compose governance.Wrap per stack instead
 	// (see governance.SetFactory's godoc).
+	// govSub is captured for the runtime governance-cache gauge below; it
+	// stays nil in the latent no-enforcement default (empty tiers), in
+	// which case the gauge reports zero via governance.CacheLen(nil).
+	var govSub governance.Subsystem
 	if len(cfg.Governance.IdentityTiers) > 0 {
-		govSub, govErr := governance.NewSubsystemFromConfig(
+		sub, govErr := governance.NewSubsystemFromConfig(
 			governance.ConfigFromOperator(cfg.Governance), stateStore, bus)
 		if govErr != nil {
 			return stack, fmt.Errorf("governance: %w", govErr)
 		}
+		govSub = sub
 		governance.SetFactory(func(llm.ConfigSnapshot, llm.Deps) (governance.Subsystem, error) {
 			return govSub, nil
 		})
@@ -449,6 +454,32 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		governance.ClearFactory()
 	}
 	// ── end governance band ───────────────────────────────
+
+	// Runtime observability gauges. Register the low-cardinality
+	// internal-size gauges on the MetricsRegistry now that the bus + the
+	// governance enforcement subsystem (when configured) exist. The
+	// readings flow to /metrics, OTLP, and metrics.snapshot alike.
+	//
+	// This is the SINGLE wiring site for both the binary (cmd/harbor) and
+	// the test kit (harbortest/devstack) — both assemble through this
+	// function, so the two boot paths cannot diverge (the parity failure
+	// mode CLAUDE.md §17.6 warns about). The bus drop gauge is sourced via
+	// the optional events.DroppedCounter capability; the governance gauge
+	// via governance.CacheLen. The engine gauges (active runs, capacity
+	// entries) are left nil here: this planner/RunLoop-shaped stack hosts
+	// no engine.Engine node-graph, and the gauge seam skips a nil
+	// callback. A future engine-graph runtime sources them from its
+	// engine's ActiveRunCount / CapacityEntryCount accessors.
+	var eventsDropped func() int64
+	if dc, ok := bus.(events.DroppedCounter); ok {
+		eventsDropped = dc.DroppedTotal
+	}
+	if err := metricsReg.RegisterRuntimeGauges(telemetry.RuntimeGaugeSource{
+		GovernanceCacheEntries: func() int64 { return int64(governance.CacheLen(govSub)) },
+		EventsDropped:          eventsDropped,
+	}); err != nil {
+		return stack, fmt.Errorf("telemetry runtime gauges: %w", err)
+	}
 
 	// LLM — opened when the cfg names a driver (or the caller pinned a
 	// snapshot). Fail-loud LLM *requirement* policy is the binary's

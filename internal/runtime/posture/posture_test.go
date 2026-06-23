@@ -99,3 +99,39 @@ func TestMetricsProvider_ProjectsLiveSnapshot(t *testing.T) {
 		t.Error("MetricsProvider returned nil Counters slice")
 	}
 }
+
+// TestMetricsProvider_ProjectsGauges asserts the Metrics seam projects
+// the runtime observable gauges onto types.MetricsSnapshot.Gauges (not
+// just Counters) — the live runtime-size readings a metrics.snapshot
+// consumer reads.
+func TestMetricsProvider_ProjectsGauges(t *testing.T) {
+	cfg := config.TelemetryConfig{ServiceName: "harbor-posture-gauge-test"}
+	reg, shutdown, err := telemetry.NewMetricsRegistry(cfg,
+		telemetry.WithMetricReader(sdkmetric.NewManualReader()))
+	if err != nil {
+		t.Fatalf("NewMetricsRegistry: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	if err := reg.RegisterRuntimeGauges(telemetry.RuntimeGaugeSource{
+		ActiveRuns:    func() int64 { return 4 },
+		EventsDropped: func() int64 { return 9 },
+	}); err != nil {
+		t.Fatalf("RegisterRuntimeGauges: %v", err)
+	}
+
+	snap := MetricsProvider(reg, nil)(context.Background())
+	if snap.Gauges == nil {
+		t.Fatal("MetricsProvider returned nil Gauges slice")
+	}
+	got := map[string]float64{}
+	for _, g := range snap.Gauges {
+		got[g.Name] = g.Value
+	}
+	if got["harbor_runtime_active_runs"] != 4 {
+		t.Errorf("harbor_runtime_active_runs = %v, want 4 (gauges: %v)", got["harbor_runtime_active_runs"], got)
+	}
+	if got["harbor_runtime_events_dropped"] != 9 {
+		t.Errorf("harbor_runtime_events_dropped = %v, want 9 (gauges: %v)", got["harbor_runtime_events_dropped"], got)
+	}
+}

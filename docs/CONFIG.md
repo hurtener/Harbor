@@ -82,6 +82,27 @@ server:
 The middleware still emits the per-origin `Access-Control-Allow-
 Origin` echo (never `*`) so credentialed responses keep working.
 
+### server.debug_addr
+
+Optional address for the pprof debug HTTP listener. Empty (the
+default) disables it entirely. When set it MUST be a loopback
+`host:port` (`127.0.0.0/8` or `::1`) — the validator rejects any
+other host so the profiler is never exposed off-box. The listener
+runs on its OWN `http.Server` with a private mux serving only the
+`net/http/pprof` handlers; it is never mounted on the Protocol mux.
+Enabling it prints a stderr banner so the dev-only posture is
+visible. It is a diagnostic escape hatch, not a production surface.
+
+Default: `""` (disabled). Set explicitly:
+
+```yaml
+server:
+  debug_addr: "127.0.0.1:6060"
+```
+
+Then `go tool pprof http://127.0.0.1:6060/debug/pprof/heap` (or
+`/goroutine`, `/profile`) against the running runtime.
+
 ---
 
 ## Identity

@@ -116,6 +116,16 @@ func (c *Config) validateServer() error {
 	if c.Server.ShutdownGracePeriod <= 0 {
 		return fieldError("server.shutdown_grace_period", "must be > 0")
 	}
+	// The pprof debug listener is loopback-only by construction. An empty
+	// DebugAddr disables it; a non-empty one must be a loopback host:port
+	// — exposing a profiler off-box is a security footgun, so the
+	// validator fails closed (CLAUDE.md §7). The HARBOR_DEBUG_ADDR env
+	// override (cmd/harbor) applies the SAME gate via this shared helper.
+	if c.Server.DebugAddr != "" {
+		if err := ValidateLoopbackAddr(c.Server.DebugAddr); err != nil {
+			return fieldError("server.debug_addr", err.Error())
+		}
+	}
 	// CORS allowlist validation. Each entry must be
 	// an exact origin (`scheme://host[:port]`); wildcards are forbidden
 	// unless the operator explicitly opts in via `server.cors_dev_allow_any`.
@@ -1954,4 +1964,24 @@ func collectLiveReload(v reflect.Value, prefix []string, out *[]string) {
 			*out = append(*out, strings.Join(path, "."))
 		}
 	}
+}
+
+// ValidateLoopbackAddr reports whether addr is a loopback "host:port"
+// suitable for the pprof debug listener. It is the single gate shared by
+// server.debug_addr validation (config.Load) and the HARBOR_DEBUG_ADDR
+// env override (cmd/harbor) so the two paths cannot diverge. A non-nil
+// error means the address is malformed or not loopback — callers fail
+// closed (CLAUDE.md §7: a profiler is never exposed off-box). Loopback
+// is the numeric 127.0.0.0/8 or ::1 (matching the runtime's isLoopback
+// check); a hostname like "localhost" is intentionally rejected.
+func ValidateLoopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("must be host:port, got %q (%w)", addr, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("must be a loopback address (127.0.0.0/8 or ::1), got host %q — the pprof debug listener is never exposed off-box", host)
+	}
+	return nil
 }
