@@ -100,13 +100,14 @@ type engine struct {
 	//
 	// capMu guards capacities + runCapacityOverrides. Trackers are
 	// created lazily on first EmitChunk for a run; overrides are
-	// recorded on Engine.Emit when WithRunCapacity is passed. Both
-	// maps grow over time (one entry per run); a run's entry is NOT
-	// reaped on completion in V1 (the Cancel and a future
-	// run-end signal will manage cleanup).
+	// recorded on Engine.Emit when WithRunCapacity is passed. Both maps
+	// are bounded: the capacity sweeper reaps a tracker once it has been
+	// idle (no reserve/release) longer than the capacity TTL and has no
+	// pending frames; an override is dropped when its tracker is created
+	// (consumed), or swept if its run never streamed.
 	capMu                sync.Mutex
 	capacities           map[string]*runCapacity
-	runCapacityOverrides map[string]int
+	runCapacityOverrides map[string]runOverride
 
 	// per-run cancellation bookkeeping. cancelMu guards
 	// cancellations + cancelObservers; activeRunsMu guards
@@ -297,6 +298,15 @@ func (e *engine) Run(ctx context.Context) error {
 	go func() {
 		defer e.wg.Done()
 		e.runCancellationSweeper(internalCtx)
+	}()
+
+	// capacity-tracker reaper. Joined via wg on Stop. Prunes per-run
+	// streaming bookkeeping once a run has gone idle past the TTL so a
+	// long-lived engine doesn't accrue one tracker per run forever.
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.runCapacitySweeper(internalCtx)
 	}()
 
 	for _, n := range e.nodes {
@@ -675,6 +685,13 @@ func safeInvoke(ctx context.Context, fn NodeFunc, env messages.Envelope, nctx *N
 // signal. Returns (env, true, nil) on a successful read; (zero,
 // false, nil) when the channel closes (engine shutdown);
 // (zero, false, err) on ctx cancel.
+
+// multiChannelPollInterval is the yield between poll cycles in the
+// multi-incoming-channel read path. Kept tiny (unchanged from the prior
+// inline value) so latency is identical; the change is purely to reuse
+// one timer instead of allocating per cycle.
+const multiChannelPollInterval = time.Microsecond
+
 func (e *engine) readAny(ctx context.Context, channels []chan messages.Envelope) (messages.Envelope, bool, error) {
 	if len(channels) == 1 {
 		// Hot path: single incoming channel.
@@ -685,7 +702,14 @@ func (e *engine) readAny(ctx context.Context, channels []chan messages.Envelope)
 			return env, ok, nil
 		}
 	}
-	// Multi-channel select via reflect-free polling.
+	// Multi-channel select via reflect-free polling. Reuse a single
+	// timer across poll cycles rather than allocating a fresh
+	// time.After each iteration (the old form leaked a timer+channel
+	// per cycle for the lifetime of the read). Reset-before-wait is
+	// safe on Go 1.26: the timer is only ever Reset after its previous
+	// fire was consumed below, or fresh from construction.
+	poll := time.NewTimer(multiChannelPollInterval)
+	defer poll.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -707,10 +731,11 @@ func (e *engine) readAny(ctx context.Context, channels []chan messages.Envelope)
 		}
 		// Yield once before the next poll cycle. Tiny latency, no
 		// busy-spin.
+		poll.Reset(multiChannelPollInterval)
 		select {
 		case <-ctx.Done():
 			return messages.Envelope{}, false, ctx.Err()
-		case <-time.After(time.Microsecond):
+		case <-poll.C:
 		}
 	}
 }

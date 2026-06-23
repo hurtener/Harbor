@@ -79,12 +79,11 @@ func MapConcurrent(
 	}
 
 	for i, env := range in {
-		select {
-		case <-derivedCtx.Done():
-			// Either caller ctx cancelled or a prior fn errored.
-			break
-		default:
-		}
+		// Acquire a worker slot, or bail if the ctx was cancelled
+		// (caller cancel or a prior fn errored via captureErr→cancel).
+		// This select IS the cancellation check; a non-blocking
+		// pre-check with `break` would only break the select, not the
+		// loop, so it was a no-op and is omitted.
 		select {
 		case sem <- struct{}{}:
 		case <-derivedCtx.Done():

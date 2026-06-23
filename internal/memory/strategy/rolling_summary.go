@@ -60,6 +60,12 @@ type rollingSummaryExec struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	loopWG   sync.WaitGroup
+	// recoveryCtx is the context the recovery loop passes to the
+	// summariser. Close cancels it so an in-flight Summarize that
+	// honours cancellation unblocks promptly, bounding loopWG.Wait
+	// rather than letting a hung summariser pin shutdown forever.
+	recoveryCtx    context.Context
+	recoveryCancel context.CancelFunc
 
 	mu     sync.Mutex
 	closed bool
@@ -100,6 +106,7 @@ func newRollingSummaryExec(deps Deps) *rollingSummaryExec {
 		recoveryBacklogMax: max,
 		stop:               make(chan struct{}),
 	}
+	e.recoveryCtx, e.recoveryCancel = context.WithCancel(context.Background())
 	e.loopWG.Add(1)
 	go e.recoveryLoop()
 	return e
@@ -467,11 +474,15 @@ func (e *rollingSummaryExec) Close(_ context.Context) error {
 	if already {
 		return nil
 	}
+	// Cancel the recovery ctx first so an in-flight summariser call
+	// that honours cancellation returns promptly, THEN signal the loop
+	// to stop, THEN join. The wait is bounded by: a summariser already
+	// running returns on ctx cancel; one not yet running is gated by
+	// the next `stop` check before the call. A summariser that ignores
+	// ctx can still block its current batch — bounded only by that
+	// summariser's own behaviour, not by this loop.
+	e.recoveryCancel()
 	e.stopOnce.Do(func() { close(e.stop) })
-	// Drain the recovery loop goroutine. The loop honours `stop`
-	// and returns; the WaitGroup wait is bounded by the loop's
-	// next ticker tick (max defaultDegradedRetryEvery), plus the
-	// in-flight summariser call's own ctx-honouring shutdown.
 	e.loopWG.Wait()
 	return nil
 }
@@ -546,12 +557,12 @@ func (e *rollingSummaryExec) drainBacklogs() {
 // once per key per tick; the per-key mutex serialises the operation
 // against in-flight `AddTurn` calls.
 func (e *rollingSummaryExec) recoverOne(id identity.Quadruple, ks *rollingKeyState) {
-	// Use a fresh context so the recovery is not bound to a
-	// caller's ctx. Honour cancellation via the executor's `stop`
-	// channel — we re-check `isClosed` inside the lock and bail
-	// before doing the summariser call if the executor was closed
-	// between ticks.
-	ctx := context.Background()
+	// Use the executor's recovery context (not a caller's ctx, and not
+	// context.Background()): Close cancels it, so an in-flight summariser
+	// call that honours cancellation unblocks and `Close`'s loopWG.Wait
+	// is bounded. We also re-check `isClosed` inside the lock and bail
+	// before the summariser call if the executor closed between ticks.
+	ctx := e.recoveryCtx
 	ks.mu.Lock()
 	if len(ks.backlog) == 0 {
 		ks.mu.Unlock()
