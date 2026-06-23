@@ -39,7 +39,7 @@ import type {
 	MemoryHealthResponse
 } from './memory-types.js';
 import type { EventAggregateRequest, EventAggregateResponse } from './events.js';
-import type { RuntimeCounters, RuntimeHealth } from './posture.js';
+import type { RuntimeCounters, RuntimeHealth, MetricsSnapshot } from './posture.js';
 import type { PauseListRequest, PauseListResponse } from './pause.js';
 import type { SearchRequest, SearchResponse } from './search.js';
 import type {
@@ -848,6 +848,27 @@ export class RuntimeNamespace {
 }
 
 /**
+ * The `metrics.*` namespace — the read-only `metrics.snapshot` projection
+ * over the telemetry MetricsRegistry (counters / histograms / the runtime
+ * observability gauges). Already shipped on the Runtime (Phase 72f
+ * PostureSurface); the gauges land on it via the runtime-gauge seam. Like
+ * the other posture methods it routes through the control transport at
+ * `POST /v1/control/metrics.snapshot` (`methods.IsPostureMethod`). A pure
+ * read; identity is mandatory and a cross-tenant read requires
+ * `auth.ScopeAdmin` (D-079).
+ */
+export class MetricsNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `metrics.snapshot` — the current-instant counter/gauge/histogram read. */
+	snapshot(): Promise<MetricsSnapshot> {
+		return this.#t.request<MetricsSnapshot>('/v1/control/metrics.snapshot', {});
+	}
+}
+
+/**
  * The `pause.*` namespace — the read-only pause-snapshot surface the
  * Console Overview-page intervention queue (Phase 73a / D-127)
  * consumes. Phase 73a ships NO new Protocol method: `pause.list` is
@@ -1238,6 +1259,7 @@ export interface ProtocolClient {
 	readonly topology: TopologyNamespace;
 	readonly runs: RunsNamespace;
 	readonly runtime: RuntimeNamespace;
+	readonly metrics: MetricsNamespace;
 	readonly pause: PauseNamespace;
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
@@ -1277,6 +1299,7 @@ export class HarborClient implements ProtocolClient {
 	readonly topology: TopologyNamespace;
 	readonly runs: RunsNamespace;
 	readonly runtime: RuntimeNamespace;
+	readonly metrics: MetricsNamespace;
 	readonly pause: PauseNamespace;
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
@@ -1309,6 +1332,7 @@ export class HarborClient implements ProtocolClient {
 		this.topology = new TopologyNamespace(transport);
 		this.runs = new RunsNamespace(transport);
 		this.runtime = new RuntimeNamespace(transport);
+		this.metrics = new MetricsNamespace(transport);
 		this.pause = new PauseNamespace(transport);
 		this.posture = new PostureNamespace(transport);
 		this.auth = new AuthNamespace(transport);

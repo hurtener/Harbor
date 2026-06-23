@@ -11,33 +11,57 @@
   //
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
   import HeartPulse from '@lucide/svelte/icons/heart-pulse';
-  import type { RuntimeHealth } from '$lib/protocol/posture.js';
+  import type { RuntimeHealth, MetricsSnapshot } from '$lib/protocol/posture.js';
+  import { runtimeGaugesFrom, formatGaugeValue } from '$lib/live-runtime/health-gauges.js';
 
-  let { health }: { health: RuntimeHealth | null } = $props();
+  let {
+    health,
+    metrics = null,
+  }: { health: RuntimeHealth | null; metrics?: MetricsSnapshot | null } = $props();
 
   function pillKind(status: string): 'ready' | 'degraded' | 'unavailable' {
     if (status === 'ready') return 'ready';
     if (status === 'degraded') return 'degraded';
     return 'unavailable';
   }
+
+  // Runtime observability gauges (Phase 120) projected through the SHIPPED
+  // metrics.snapshot. Projection logic lives in health-gauges.ts (unit-tested);
+  // this component only renders. Raw Go/process collectors stay on the
+  // operator /metrics scrape, off the Protocol — so they never appear here.
+  const runtimeGauges = $derived(runtimeGaugesFrom(metrics));
+  const hasHealth = $derived(health !== null && health.subsystems.length > 0);
+  const hasGauges = $derived(runtimeGauges.length > 0);
 </script>
 
-{#if health !== null && health.subsystems.length > 0}
-  <ul class="health-pills" data-testid="health-pills">
-    {#each health.subsystems as sub (sub.subsystem)}
-      <li class="pill-row" data-testid="health-pill" data-status={pillKind(sub.status)}>
-        <span class="sub-name">{sub.subsystem}</span>
-        <span class="sub-status" data-status={pillKind(sub.status)}>{sub.status}</span>
-      </li>
-    {/each}
-  </ul>
+{#if hasHealth || hasGauges}
+  {#if hasHealth}
+    <ul class="health-pills" data-testid="health-pills">
+      {#each health!.subsystems as sub (sub.subsystem)}
+        <li class="pill-row" data-testid="health-pill" data-status={pillKind(sub.status)}>
+          <span class="sub-name">{sub.subsystem}</span>
+          <span class="sub-status" data-status={pillKind(sub.status)}>{sub.status}</span>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+  {#if hasGauges}
+    <ul class="gauge-rows" data-testid="runtime-gauges" aria-label="Runtime gauges">
+      {#each runtimeGauges as g (g.label)}
+        <li class="gauge-row" data-testid="runtime-gauge">
+          <span class="gauge-label">{g.label}</span>
+          <span class="gauge-value">{formatGaugeValue(g.value)}</span>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 {:else}
   <div class="health-empty" data-testid="health-panel-empty">
     <span class="empty-icon"><HeartPulse size={20} aria-hidden="true" /></span>
     <p class="empty-headline">Health not available on this runtime</p>
     <p class="empty-detail">
       This runtime does not advertise a health surface. Per-subsystem readiness
-      appears here on runtimes that expose one.
+      and runtime gauges appear here on runtimes that expose them.
     </p>
   </div>
 {/if}
@@ -84,6 +108,34 @@
 
   .sub-status[data-status='unavailable'] {
     color: var(--color-danger);
+  }
+
+  .gauge-rows {
+    list-style: none;
+    margin: var(--space-2) var(--space-0) var(--space-0);
+    padding: var(--space-2) var(--space-0) var(--space-0);
+    border-top: var(--border-hairline);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .gauge-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .gauge-label {
+    color: var(--color-text-muted);
+  }
+
+  .gauge-value {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--color-text);
   }
 
   .health-empty {

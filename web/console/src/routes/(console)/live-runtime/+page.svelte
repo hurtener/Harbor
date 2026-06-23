@@ -77,7 +77,7 @@
   import type { TaskListResponse } from '$lib/protocol/tasks.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
   import type { NodeState } from '$lib/live-runtime/topology-adapter.js';
-  import type { RuntimeCounters, RuntimeHealth } from '$lib/protocol/posture.js';
+  import type { RuntimeCounters, RuntimeHealth, MetricsSnapshot } from '$lib/protocol/posture.js';
   import type { PauseListResponse, PauseSnapshot } from '$lib/protocol/pause.js';
   import { DEFAULT_PAUSE_LIST_PAGE_SIZE } from '$lib/protocol/pause.js';
   import { projectCost } from '$lib/overview/cost.js';
@@ -123,6 +123,9 @@
 
   /* ---- health (self-probing spine panel) -------------------------- */
   let health = $state<RuntimeHealth | null>(null);
+  // Runtime gauges, projected through the SHIPPED metrics.snapshot (Phase
+  // 120/121). Rendered in the Health panel; self-probed like health.
+  let metrics = $state<MetricsSnapshot | null>(null);
 
   /* ---- topology (capability-gated) -------------------------------- */
   let projection = $state<TopologyProjection | null>(null);
@@ -190,6 +193,7 @@
       // one degrades just that panel — never the page).
       void loadCounters();
       void loadHealth();
+      void loadMetrics();
       void loadQueue();
 
       // Topology only when advertised — the D-164 short-circuit keeps the
@@ -222,6 +226,17 @@
     } catch {
       // unknown_method / unavailable → honest "not available" (no fabrication).
       health = null;
+    }
+  }
+
+  async function loadMetrics(): Promise<void> {
+    if (client === null) return;
+    try {
+      metrics = await client.metrics.snapshot();
+    } catch {
+      // metrics.snapshot unavailable → honest null; the Health panel simply
+      // omits the runtime-gauges section (no fabrication, CLAUDE.md §13).
+      metrics = null;
     }
   }
 
@@ -511,7 +526,7 @@
         {:else if panel.id === 'health'}
           <section class="panel card" data-testid="panel-health">
             <h2 class="panel-title">Health</h2>
-            <HealthPanel health={health} />
+            <HealthPanel health={health} metrics={metrics} />
           </section>
         {:else if panel.id === 'cost'}
           <section class="panel card" data-testid="panel-cost">

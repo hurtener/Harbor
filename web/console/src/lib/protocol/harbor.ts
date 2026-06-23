@@ -41,6 +41,7 @@ export {
 	TopologyNamespace,
 	RunsNamespace,
 	RuntimeNamespace,
+	MetricsNamespace,
 	PauseNamespace,
 	PostureNamespace,
 	AuthNamespace,
