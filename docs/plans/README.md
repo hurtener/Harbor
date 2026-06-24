@@ -247,6 +247,12 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |120 | Runtime observability foundation (Go + Process collectors via a new `metrics.go` registration seam; Harbor runtime gauges on the `MetricsRegistry`/`MeterProvider` so the shipped `metrics.snapshot` projects them; `goleak` added to RFC §10 + `VerifyTestMain`; `runtime/pprof` behind a gated loopback `HARBOR_DEBUG_ADDR` — never on the Protocol mux; benchmarks reconciled with the existing `test/benchmarks`, D-251) | internal/telemetry + internal/telemetry/runtimegauges + cmd/harbor + internal/config + RFC §10 | §6.14, §10 | 04, 119, 111f, 72f | 80% | Pending (V1.5.x) |
 |121 | Surface runtime gauges in the Console Live Runtime health panel (route the Phase 120 gauges through the SHIPPED `metrics.snapshot` — NO new method; `runtime.health`/`RuntimeHealth` already ship at Phase 72f; extend the existing `live-runtime/health-panel.svelte` via the 108e capability→panel registry, D-252) | internal/telemetry + internal/protocol (additive only) + web/console | §5.2, §7.1, §7.2 | 72f, 120, 108e, 117, 118, 113a | n/a (Console) | Pending (V1.5.x) |
 |122 | Persistence + driver-registry dedup (extract `internal/persistence/sqlmigrate` from the 4 conformant SQLite + 3 Postgres copies — searchcache handled separately; generic `internal/driverreg.Registry[T]` across the 15 `(registered:)` factories with one canonical message FORMAT wrapping each subsystem's `ErrUnknownDriver` sentinel; no behaviour change, D-253) | internal/persistence/sqlmigrate + internal/driverreg + persistence drivers | §9 | 15, 16, 18, 25, 37, 41, 110c | 90% | Pending (V1.5.x) |
+|124 | Durable event-bus sequence rehydration on restart (rehydrate the durable driver's `nextSeq` from the persisted head records at construction via the `ListKind` maintenance scan so post-restart sequences stay strictly monotonic and a client reconnecting at a high `Last-Event-ID` is not silently skipped; also close the same skip class for transient notices — `Sequence 0`, no SSE `id:` line; D-255) | internal/events/drivers/durable | §6.13, §6.11 | 06, 57, 60, 12, 13 | 85% | Pending (V1.6) |
+|125 | Session state-history windowed event-replay surface (ship the Pending RFC §5.2 `state.history` method — a by-id, identity-scoped, read-only TAIL-FIRST windowed read of the durable event stream: discover head/tail + a bounded backward page with a scroll-up cursor, heavy content by ROUTABLE artifact ref; client-side reduction; rewires the open-source Console session-reopen hydration off its full-load reconstruction; `CapStateSnapshots`, no ProtocolVersion bump; tight dep on 124; D-254) | internal/protocol + internal/events + web/console | §5.2, §6.5, §6.9, §6.10, §6.13 | 124, 72, 72a, 73, 58, 60, 113a, 118 | 85% | Pending (V1.6) |
+|126a| USER-scope agent-config tier: durable per-user config variant + user-keyed revision store + the one durable user-scope write verb (set/list/diff/rollback) | agentcfg | §5.5, §6.16, §6.3 | 92a, 92g, 116, 61 | 85% | Pending (V1.6) |
+|126b| USER-scope durable prompt-layer projection (PROJECTION-ONLY consumer of 126a's durable user_prompt: reads the active ConfigScopeUser revision and threads user_prompt into `<user_instructions>` as the middle segment — admin Base > admin User > USER-durable > session User; no new store/verb) | internal/runtime/agentcfg/projection | §6.16, §5.5 | 126a, 92e, 92g | 85% | Pending (V1.6) |
+| 126c | USER-scope tool-policy run-start projection | agentcfg | §6.16 | 126a, 92d | 85% | Pending (V1.6) |
+|127 | Protocol wire-manifest consumability (runtime.info digest) — STRETCH (a canonical `internal/protocol/wiresurface.Digest()` over the name-level wire surface — Protocol version + methods + errors + capabilities + wire-type names — returned as an additive `runtime.info.wire_surface_digest` field AND stamped into the committed `wire-manifest.gen.json`; a connected Protocol client compares the live digest against the vendored one and surfaces a loud drift signal; NO new method, NO version bump, NO field-shape exposure; Console app-shell status-bar connect-time drift check is the consumer, D-259) | internal/protocol/wiresurface + internal/protocol (additive) + cmd/harbor-protocol-ts-lockstep + web/console | §5, §5.2, §5.3 | 58, 118, 60, 72f | 90% | Pending (V1.6) |
 
 V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j + 85m (MCP client/host compliance — the prioritised first post-V1 work; 85k is the separate Harbor agent-builder skills phase). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Per the MCP 2026-07-28 RC re-plan (2026-05-28) the 85-band re-shapes: 85a / 85b / 85f are ready now; 85d / 85m revisit after SDK-RC (≈ Aug 2026); 85g / 85j revisit after RC-final (2026-07-28); 85c / 85e / 85h / 85i are cut. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100. The next release tag is V1.1.x — both the hygiene + positioning + UX band (101–104 + 108) and the Playground-depth band (105 + 106 + 107 + 107a + 107c + 107d) roll up under it; the previously-sketched V1.2 / V1.3 splits collapse. Phases 105–107c ship with this release: Console first-attach UX (105), Playground real assistant response (106), the streaming completion pipeline (107), reasoning trace projection (107a), and native tool-calling + deferred tools/skills + search meta-tools (107c) — the four built-in `*_search`/`*_get` meta-tools plus the optional `declarative_action` escape-hatch tool preserving brief 07's prompt-engineered path for weaker models. The 107b streaming answer extractor was deliberately superseded by 107c (one cutover instead of stop-gap-then-replace); the file at `docs/plans/phase-107b-streaming-answer-extractor.md` is kept as historical context. Phase 107d (shipped) is the native-tool-calling follow-up that closes 107c's documented serialization carve-out: it wires the already-shipped `internal/runtime/parallel.Executor` (Phase 47 / D-056) into the dev `ToolExecutor`, flips the React planner to native `CallParallel` emission for N>1 tool-calls, and pins the `JoinKind`-collapses-to-`JoinAll`-on-native semantic (D-169). Phase 107e (pending) closes the last `ErrDecisionShapeUnsupported` carve-out the dev `ToolExecutor` carries: it wires `planner.SpawnTask` + `planner.AwaitTask` dispatch through the already-shipped `tasks.TaskRegistry` (Phase 47 / D-056) and teaches the per-task RunLoop driver to drive `KindBackground` tasks (closing the D-097 dead-task gap for the background kind), bounded by a new `planner.absolute_max_spawn_depth` recursion cap; on the synchronous V1.1.x runloop a retain-turn spawn blocks in-decision and a non-retain-turn spawn is joined by an explicit `AwaitTask` (eager push wake-on-resolution is a documented steering-runloop follow-up). SpawnTask + AwaitTask dispatch land together per §13 (D-170). Phase 108 starts a 14-round page-by-page visual-polish series (one phase per Console page, anchored to `docs/design/console/page-*.md` + `docs/design/console/CONVENTIONS.md`) and is the largest piece still pending under V1.1.x. Background context for the native-tool-calling cutover: research brief 15. **Immediately after Phase 108, the three-phase "MCP Apps host" wave 109a–c lands (D-172):** 109a (MCP Apps runtime + Protocol surface — `_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy), 109b (Console sandboxed-iframe host + the official `ext-apps` AppBridge in manual-handler mode + inline DisplayMode), 109c (fullscreen-tab + pip-split DisplayMode layout). This wave **deprecates and supersedes Phase 85g**, pulling MCP Apps forward from the post-V1 85-band: Apps is a stable independent extension (`io.modelcontextprotocol/ui`), not gated on the July RC, and ships an official host bridge that removes 85g's hand-rolled-bridge risk. The architectural invariant is D-173 — the AppBridge runs in manual-handler mode and every app→host call is Protocol-proxied through the Runtime, never a direct MCP connection, so an in-iframe app stays inside the `(tenant, user, session)` isolation boundary and the unified approval/OAuth gates. The 14-round page-polish series continues from the next free integer after the 109 band; the band precedes it in execution order, it does not displace it. **Live Runtime reframe (2026-06-01, D-177):** after 108d shipped the topology-first Live Runtime page, an operator review found it low-value and Playground-overlapping on the dominant planner/RunLoop runtime (no engine graph). Phase 108e supersedes the topology-first composition (D-126) with a single-runtime **capability-adaptive cockpit** — the runtime's advertised `runtime.info` capabilities compose the page (an always-present spine + capability-gated topology / health / cost panels), so it is full on a planner runtime and richer on engine/multi-agent shapes with no rebuild. Plan: `docs/plans/phase-108e-live-runtime-capability-cockpit.md`. **Protocol auth-hardening sequence (114–116, D-219):** a planning + adversarial review of the Protocol surface found a steering-control privilege escalation — `dispatchControl` derived caller scope + tenant from the request *body* instead of the verified context identity, so a caller could assert `scope:"admin"` in the body and the cross-tenant gate could never fire. Phase 114 (shipped) closes it: the control surface now reads authority from `identity.From(ctx)` + the JWT scope claims, fails closed when no verified identity is present, and a non-admin caller can steer only runs it owns (admin for cross-tenant). 114 is the prerequisite hardening for the lesser-privileged-token work: Phase 115 adds production JWKS verification + a `harbor serve` auth path (giving the inert `JWKSURL`/`JWKSFile` config fields a consumer), and Phase 116 introduces the non-admin session-scoped token contract — the consumer that makes 114's derivation load-bearing and the seam where the `session_user` tier becomes safe to grant. Independently, Phase 117 hardens the chat module's encapsulation boundary (D-091) so it renders self-contained — its own theming contract, font-family inheritance, and host/theme parameterization — with no Console look-and-feel leakage, and Phase 118 builds the long-tracked `protocol-ts-gen-check` gate as a field-level lockstep VERIFICATION of the hand-maintained per-page TS client against a committed, Go-generated wire manifest (`cmd/harbor-protocol-ts-lockstep`) — a D-093 deviation (D-223): the "generate" half (per-domain generated TS type modules) is a deferred future phase and the `cmd/harbor-gen-protocol-ts` name stays reserved for it.
 
@@ -1404,6 +1410,186 @@ Origin: a read-only profiling/leak/refactor audit of the Go runtime (2026-06) fo
 - **120 — Runtime observability foundation.** Registers `NewGoCollector` + `NewProcessCollector` on the per-instance registry (built fresh for isolation but with the standard collectors never registered, so `go_goroutines` / `go_memstats_*` / `go_gc_duration_seconds` are absent from the one continuous-monitoring path) — via a NEW registration seam in `internal/telemetry/metrics.go`, since the registry is private with only a read-only `Gatherer` exposed today; adds Harbor runtime gauges (preferably as OTel observable instruments so they also reach OTLP and the shipped `metrics.snapshot`) so Phase 119's bounded maps are observable and regression-guarded; adds `go.uber.org/goleak` to the RFC §10 stack table (dependency gate) then `goleak.VerifyTestMain` in the goroutine-heavy packages; exposes `runtime/pprof` behind a gated loopback `HARBOR_DEBUG_ADDR` listener **deliberately kept off the authenticated Protocol/Console mux** (its own `*http.Server`, not `DefaultServeMux`); reconciles benchmarks with the existing `test/benchmarks/engine_bench_test.go`. RFC §6.14, §10, D-251. Deps: 04, 119, 111f, 72f. Plan: `docs/plans/phase-120-runtime-observability-foundation.md`.
 - **121 — Surface runtime gauges in the Console Live Runtime health panel.** The runtime-health Protocol surface ALREADY ships (Phase 72f / D-111) — `runtime.health` (`methods.go:198`), `RuntimeHealth` (a per-subsystem readiness rollup), `runtime.counters`, `metrics.snapshot` — and the Console already has `live-runtime/health-panel.svelte` registered via the 108e capability→panel registry. So this phase does NOT add a method or a panel: it routes the Phase 120 gauges through the shipped `metrics.snapshot` (zero new Protocol method; go-liveness fields, if needed, extend an existing posture type with a §8 version bump) and EXTENDS the existing panel to render them with a trend sparkline. Scope follows the implemented posture gate (`posture.go:301-312` / RFC §5.5), not an invented session-vs-fleet view. RFC §5.2, §7.1, §7.2, D-252. Deps: 72f, 120, 108e, 117, 118, 113a. Plan: `docs/plans/phase-121-console-surface-runtime-gauges.md`.
 - **122 — Persistence + driver-registry dedup (opportunistic).** Extracts a shared `internal/persistence/sqlmigrate` runner from the **four conformant** SQLite drivers + the Postgres advisory-lock runner across three (the fifth SQLite copy, `searchcache`, is materially divergent — own table, no `BeginTx`, silent bad-filename skip — and is conformed-first or scoped out, never erased), and a generic `internal/driverreg.Registry[T]` across the fifteen `(registered:)` factories that yields one canonical message FORMAT while wrapping each subsystem's exported `ErrUnknownDriver` sentinel (`errors.Is` still holds). No behaviour change — the per-driver conformance suites are the regression gate; migrations are not edited (§13). Lowest urgency; do when next touching migrations. RFC §9, D-253. Deps: 15, 16, 18, 25, 37, 41, 110c. Plan: `docs/plans/phase-122-persistence-and-driver-registry-dedup.md`.
+
+### Session hydration & user-scope agent-config (124–127)
+
+A V1.6 band that hardens durable-runtime resumability and opens a durable USER-scope agent-config tier for generic Protocol clients. Sequenced in two stages: stage 1 lands the durable-bus resumability fix (124), the windowed event-replay hydration surface that depends on it (125), and the durable user-scope agent-config tier + revision store (126a); stage 2 lands the two projection-only consumers of 126a (126b prompt layer, 126c tool-policy overlay) and the stretch wire-surface digest (127). All additive — `ProtocolVersion` holds at 0.1.0 across the band.
+
+### Phase 124 — Durable event-bus sequence rehydration on restart
+
+**Subsystem:** `internal/events/drivers/durable` (+ a small additive
+`internal/protocol/transports/stream` framing change).
+**RFC:** §6.13 (gap-free, resumable-across-restart sequence numbering +
+the `id:`/`Last-Event-ID` resume cursor), §6.11 (the `ListKind`
+maintenance scan used to read the head records).
+**Deps:** 06 (replay + cursor), 57 (durable driver), 60 (SSE transport),
+12/13 (runtime producers). **Coverage:** 85%. **Decision:** D-255.
+
+Fixes a correctness bug for generic Protocol clients: the durable driver's
+in-memory `nextSeq` counter was never rehydrated from the persisted log,
+so after a Runtime restart the first `Publish` re-used pre-restart
+sequence tokens and a client reconnecting with a high `Last-Event-ID` had
+every post-restart event silently skipped by `Replay`. Phase 124
+rehydrates `nextSeq` at construction from the per-session head records via
+`ListKind(ListScope{MaintenanceScoped: true}, "events.durable.head")`,
+taking the global max across sessions, fail-loud on scan/decode error, and
+recording the cross-identity scan via structured `slog` (the pause-sweeper
+posture). It also closes the same skip class for transient notices:
+`publishInternal` assigns the non-replayable sentinel `Sequence == 0` and
+stops advancing `nextSeq`, and `stream.encodeEvent` omits the SSE `id:`
+line for `Sequence == 0`, so no reconnect cursor can anchor on a transient
+tick. `New` gains a leading `ctx` (construction now does I/O). Binding
+regression tests: publish AFTER a simulated restart, and make a transient
+notice the highest pre-restart emission, asserting no collision and no
+skip. No Protocol surface change; `ProtocolVersion` held at 0.1.0
+(additive SSE refinement). **Risks:** O(sessions) boot read (bounded;
+global-max checkpoint is the noted follow-up); ctx bridged with
+`context.Background()` at the ctx-free `events.Register` factory boundary
+(threading it through the factory contract is the tracked follow-up).
+
+### Phase 125 — Session state-history windowed event-replay surface
+
+**Subsystem:** internal/protocol + internal/events + web/console
+**RFC:** §5.2 (State snapshots), §6.5/§6.10 (heavy-output by reference),
+§6.9 (Sessions), §6.13 (durable event log).
+**Deps:** 124 (tight — the gap-free durable stream), 72/72a (SSE + durable
+event-log driver + `events.Replayer`), 73 (Sessions/Playground surface +
+`auth.HasScope`), 58 (single-source), 60 (wire transport), 113a
+(protocol-docs gen), 118 (TS lockstep gate).
+**Decision:** D-254.
+
+Ships the Pending `state.history` method from RFC §5.2's State-snapshots
+row as a TAIL-FIRST WINDOWED read of the durable event stream (NOT memory —
+the default `StrategyNone` makes `AddTurn` a no-op, so memory holds no
+transcript). Adds the `events.HistoryReplayer` seam (`Bounds` discover
+head/tail + `Window` bounded backward read) implemented by the durable +
+inmem drivers, and a `state.history` Protocol handler that returns a page of
+flat `StateEvent` (heavy content by ROUTABLE `StateArtifactRef`, not
+`ArtifactRefSummary`) plus a scroll-up cursor. Reduction stays client-side.
+Single-sourced across `methods` / `types`; advertised via a new
+`CapStateSnapshots` capability with NO ProtocolVersion bump (additive
+minor-class per the `version.go` taxonomy). The §13 first consumer lands in
+the same wave through the real boot path: the open-source Console
+session-reopen hydration is rewired off its full-load `tasks.list` +
+N×`tasks.get` reconstruction to tail-first windowed + scroll-up, wired
+through both `cmd/harbor dev` and `harbortest/devstack.Assemble`, with the
+LIVE preflight returning OK for the windowed round-trip incl. a routable
+artifact ref (resolving to a presigned URL on S3, or the typed
+`CodePresignUnsupported`/501 on the default inmem/fs store).
+
+**Risks:** substrate gap-freedom (Phase 124's contract; window reads the
+gap-free persisted sequence list, fails loud on a missing entry); retention
+vs completeness (surfaced via `Truncated`, not hidden); cross-identity
+existence leak (return `CodeNotFound` — pinned to 404 exactly, never 403 or
+`CodeScopeMismatch`; admin authority from verified ctx only — D-219); ref
+dereference on the default CGo-free stores (inmem/fs are NON-Presigner, so
+`artifacts.get_ref` returns the typed 501 — the gate asserts the id ROUTES
+well-formed, with the 200-resolves leg gated behind `HARBOR_LIVE_*` S3 env
+per §17.8). Status: Pending (V1.6).
+
+> **Phase 126a — USER-scope agent-config tier (D-256).** Adds the missing
+> middle tier of the agent-config authorization matrix and the band's ONE
+> durable user-scope write surface: a durable, versioned per-user config
+> variant that spans a non-admin caller's own sessions, sitting between the
+> admin/tenant durable config (above) and the ephemeral session overlay
+> (below). Three pieces land together (primitive + consumer per §13): (1) a
+> new closed-set authority scope `agent_config:user` in
+> `internal/protocol/auth/scopes.go`; (2) a user-keyed durable revision
+> store — the `agentcfg.Registry` gains an `agentcfg.ConfigScope`
+> discriminator so the one implementation keys agent-level config under the
+> existing synthetic slot (`ConfigScopeAgent`, `agentcfg.*` kinds) and the
+> per-user variant under the caller's REAL `(tenant, user)` with `agent_id`
+> in the session slot (`ConfigScopeUser`, DISTINCT `agentcfg.user.*` kinds +
+> a `__agentcfg__` sentinel rejection so the two key spaces can never alias),
+> never widening the isolation tuple; and (3) the in-phase consumer — a
+> versioned `agent_config.user.*` verb family
+> (get/set_revision/list_revisions/diff/rollback) gated on the new scope,
+> with diff/rollback parity to the admin registry and a structurally-bounded
+> safe-subset payload (`AgentConfigUserPayload`) carrying the band-complete
+> field set (`user_prompt` + `disabled_servers`/`disabled_tools` +
+> `personal_skills`) so a user caller cannot widen capabilities or edit the
+> operator base. The `ConfigScope` parameter breaks all existing `Registry`
+> callers (projection ×4, the sibling protocol verbs, mcpconsole apps); all
+> are migrated to pass `ConfigScopeAgent` in the same PR so the tree builds
+> green. The two sibling phases are PROJECTION-ONLY consumers of this payload
+> (126b projects `user_prompt`; 126c projects the disable set), with no write
+> verb of their own. Adding an MCP connection, editing the base prompt,
+> widening the allowlist, and model swap stay admin-only and fail-closed.
+> Deps 92a, 92g, 116, 61. No `ProtocolVersion` bump (additive methods + wire
+> types — Minor-class per `internal/protocol/types/version.go`).
+
+#### Phase 126b — USER-scope durable prompt-layer projection
+
+- **Subsystem:** `internal/runtime/agentcfg/projection` (the run-start
+  prompt-layer projection only — no new package).
+- **RFC:** §6.16 (agent config read back at run start; `agent_id` is a key,
+  not an isolation principal), §5.5 (verified identity keys the read; the
+  durable layer was already gated at write time by 126a).
+- **Deps:** 126a (the durable USER-scope revision + `ConfigScopeUser` read +
+  the `user_prompt` field this projects), 92e (the admin layered prompt +
+  `composeUserLayer`), 92g (the session overlay this composes above).
+- **Decision:** D-257.
+- **What it delivers:** the run-start CONSUMER of 126a's durable `user_prompt`.
+  PROJECTION-ONLY — no new store, verb, method, or wire type.
+  `ApplyPromptLayers` reads the caller's active `ConfigScopeUser` revision via
+  126a's existing registry read and threads `user_prompt` into the existing
+  lower-trust `<user_instructions>` block as the MIDDLE segment, in precedence
+  order admin Base > admin User > USER-durable > session User;
+  `composeUserLayer` goes from two segments to three. One writer (126a's
+  `set_revision`), one reader (this projection) — closing the §13
+  two-writers/one-reader trap an earlier cut would have created.
+- **Risks:** the durable read must key by the run's identity triple
+  (`agent_id` in the session slot, never an isolation filter); the §17.6 seam
+  is the shared `ApplyPromptLayers` (no signature change, so both twins reach
+  the new behaviour through the one function).
+- **Status:** Pending (V1.6).
+
+#### Phase 126c — USER-scope tool-policy run-start projection
+
+- **Subsystem:** agentcfg (run-start tool-exposure projection)
+- **RFC:** §6.16 (agent-level capability surface; agent_id is not an isolation principal)
+- **Deps:** 126a (durable user-scope tier + ConfigScopeUser read + disable-set fields — consumed), 92d (MCP pause/resume + per-tool policy projection — extended)
+- **Decision:** D-258
+- **Delivers:** a PROJECTION-ONLY extension of the run-start tool-exposure
+  projection (`ActivePlannerCatalogView`): it reads the active USER-scope
+  revision via 126a's `reg.Active(..., ConfigScopeUser)` and unions its
+  narrow-only disable set into the exclusion set
+  (`admin ∪ user ∪ session`, order-independent, grow-only). No new store, no
+  new verb, no new authority scope, no binary rewiring — the user disable set
+  is persisted + audited at 126a's user tier.
+- **Boundary preserved:** adding a NEW MCP connection stays admin-only +
+  fail-closed; `agent_id` is a record/key discriminator on the user read,
+  never an isolation `WHERE` filter (isolation stays the run's
+  `(tenant, user)`).
+- **Coverage:** `internal/runtime/agentcfg/projection` ≥ 85% (maintained).
+- **Status:** Pending (V1.6)
+
+### Phase 127 — Protocol wire-manifest consumability (runtime.info digest) — STRETCH
+
+- **Subsystem:** internal/protocol/wiresurface (new sub-package) +
+  internal/protocol (additive RuntimeInfo field + handler) +
+  cmd/harbor-protocol-ts-lockstep (manifest digest) + web/console
+  (app-shell status-bar connect-time consumer).
+- **RFC:** §5, §5.2, §5.3 (§5.3 cited only for "bumping the version is an
+  RFC change"; the additive-vs-breaking taxonomy is version.go).
+- **Deps:** 58 (single-source + CanonicalWireTypes), 118 (lockstep gate /
+  D-223), 60 (wire transport), 72f (PostureSurface / runtime.info). NO dep
+  on 126a — staged into wave stage 2 for cadence only.
+- **What it delivers:** a canonical `wiresurface.Digest()` over the
+  name-level wire surface (version + methods + errors + capabilities +
+  wire-type names — EXCLUDES field shapes + event-type names); the digest
+  returned as an additive `runtime.info.wire_surface_digest` field AND
+  stamped into the committed `wire-manifest.gen.json`; a Console app-shell
+  status-bar connect-time drift check (the consumer) that surfaces a loud
+  signal on a mismatch and an informational note on an absent (old-runtime)
+  digest. NO new method, NO version bump, NO field-shape exposure over the
+  wire. Generated `types.md` regenerated (D-209).
+- **Why STRETCH:** the vendor-and-gate interim needs zero Harbor code, so
+  no client is blocked; this adds connect-time (vs build-time) drift
+  detection and closes the lockstep mechanism's missing runtime consumer.
+  First in the band to cut if V1.6 capacity is tight (recorded cut, D-259).
+- **Decision:** D-259.
+- **Status:** Pending (V1.6).
 
 ---
 
