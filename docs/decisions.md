@@ -5996,3 +5996,486 @@ Tracing the as-built code showed the faithful fix needs a credential the resume 
 **§4.3 deviations.** The `driverreg` generic is deferred (above); the phase scoped to the migration-runner extraction only.
 
 **Cross-references.** §4.4 (the driver-seam pattern), §9 (persistence: forward-only / append-only migrations — no migration was edited), §13 (the append-only-migrations + no-second-blank-import-list rules). RFC §6. Plan: `docs/plans/phase-122-persistence-and-driver-registry-dedup.md`.
+
+---
+
+## D-254 — `state.history` ships the State-snapshots surface as a tail-first windowed read of the durable event stream (not memory); additive (no ProtocolVersion bump)
+
+**Date:** 2026-06-24
+
+**Status:** Accepted
+
+**Context.** RFC §5.2's State-snapshots row names `state.history` /
+`state.list_trajectories` / `state.load_planner_checkpoint`, but no
+`state.*` Protocol method existed. A generic Protocol client (third-party
+console, IDE client, the SDK) — and Harbor's own open-source Console —
+reopens a conversation by reducing the EVENT STREAM
+(`web/console/src/lib/sessions/trajectory.ts` projects the
+`events.subscribe` frames; the Playground `hydratePastTurns` replays prior
+turns). The only replay primitive shipped was forward-only and unbounded:
+`internal/protocol/transports/stream/stream.go::replayFromCursor` replays
+every event with `Sequence > cursor` to the tail, and the SSE `id:` cursor
+is the raw `Sequence` (`frame.go::encodeEvent`). Reopening a long session
+therefore streams the entire history before the newest turn renders. An
+earlier draft proposed sourcing a transcript from `MemoryStore`; that is an
+inert-feature trap — the default `StrategyNone` makes `AddTurn` a no-op, so
+memory holds no transcript. The durable, gap-free event log (Phase 124) is
+the real substrate.
+
+**Decision.**
+
+1. **Ship `state.history` only — the first of the three State-snapshots
+   methods — as a windowed event-replay read.** Single-sourced: the name in
+   `internal/protocol/methods` (`MethodStateHistory` +
+   `canonicalStateMethods` + `IsStateMethod`), the wire shapes in
+   `internal/protocol/types/state.go` (`StateHistoryRequest` / `StateEvent`
+   / `StateArtifactRef` / `StateHistoryResponse`), reusing existing
+   `internal/protocol/errors` codes. `state.list_trajectories` and
+   `state.load_planner_checkpoint` are deferred to their own phases.
+
+2. **The substrate is the durable event stream, not memory.** Two reads are
+   added to the event-bus seam as an optional `events.HistoryReplayer`
+   capability (sibling to `events.Replayer`): `Bounds` (discover the
+   session's head/tail sequence) and `Window` (a bounded backward read —
+   events with `Sequence < before`, the most-recent K, returned
+   oldest-first). Both V1 replay-capable drivers implement it
+   (`events/drivers/durable` over the persisted per-session sequence list;
+   `events/drivers/inmem` over the ring). MemoryStore sourcing is dropped
+   (the `StrategyNone` inert-feature trap).
+
+3. **Reduction stays client-side; the surface returns events.**
+   `state.history` returns a page of flat `StateEvent` (the same field set
+   the SSE `wireEvent` carries), plus `HeadSequence` / `TailSequence` / a
+   `NextCursor` scroll-up cursor / `HasMore` / `Truncated`. The events →
+   chat-messages reduction stays on the reducer the Console already owns
+   (`trajectory.ts` + the Playground reducers) — no second server-side
+   transcript model is forked from the live stream's.
+
+4. **Heavy content by ROUTABLE reference.** A replayed event whose payload
+   was offloaded above the heavy-output threshold (RFC §6.5 / §6.10)
+   surfaces a flat `StateArtifactRef` with a content-addressed `ID` (+
+   `SHA256` / `SizeBytes` / `MimeType` / `Filename`). The ref-extractor
+   walks the durable `RedactedMap` shape (events are persisted
+   post-redaction) to pull the id/sha after redaction. The `ID` routes to
+   `artifacts.get_ref`: on an S3-compat Presigner store the resolver returns
+   a presigned URL; on the default CGo-free inmem/fs stores (deliberately
+   NON-Presigner per `internal/artifacts/presigner_test.go`) it returns the
+   typed `CodePresignUnsupported` (HTTP 501) — which still proves the id is
+   well-formed and reached the resolver. The Console mirrors its existing
+   fallback-Download degradation on 501. This deliberately does NOT reuse
+   `ArtifactRefSummary` (metadata-only, no `ID`/`SHA256` — unroutable); it
+   follows the `SearchArtifactRef` / `MemoryArtifactRef` precedent. No
+   inline heavy bytes ever travel through the surface.
+
+5. **Identity-mandatory, fail-closed.** A non-admin caller is hard-scoped to
+   its own `(tenant, user, session)`; `adminScoped` is derived SOLELY from
+   `auth.HasScope(ctx, ScopeAdmin)` on the verified ctx — the request body
+   carries no elevation knob (D-219). An unknown or cross-identity session
+   is `CodeNotFound` (404 — existence is never revealed across identities;
+   the smoke pins this to 404 exactly, never 403), mirroring `tasks.get` /
+   `sessions.list`. Honest about retention gaps via `Truncated`; an
+   un-projectable event fails loud with `CodeRuntimeError` (CLAUDE.md §5 /
+   §13).
+
+6. **First consumer lands in the same wave (§13), through the real boot
+   path.** The open-source Console session-reopen hydration
+   (`hydratePastTurns` in the Playground `+page.svelte`, today a full-load
+   via `tasks.list` + N×`tasks.get`) is rewired to call `state.history`
+   tail-first through the typed `HarborClient` and scroll up by
+   `NextCursor`. The surface is wired through BOTH
+   `cmd/harbor/cmd_dev.go::bootDevStack` and `harbortest/devstack.Assemble`
+   (the §17.6 dual-site lesson — not just `httptest`), and the LIVE
+   preflight server returns OK for the windowed round-trip including a
+   routable artifact ref.
+
+7. **Additive — no ProtocolVersion bump.** A new method + the
+   `CapStateSnapshots` capability is a backward-compatible surface addition
+   (`internal/protocol/types/version.go` `Version.Minor` taxonomy). The
+   pinned `ProtocolVersion` stays `0.1.0` while V1 is in flight (the
+   version.go contract + the `CapEventsSubscribe` / `CapRuntimePosture` /
+   `CapTopologySnapshot` precedent); clients negotiate via
+   `VersionHandshake.Accepts(CapStateSnapshots)`. Bumping the pinned string
+   is an RFC change (RFC §5.3) and is NOT done here.
+
+**§4.3 deviations.** Departs from the earlier v16 draft's MemoryStore
+sourcing (the `StrategyNone` inert-feature trap) — the substrate is the
+durable event stream. Deliberate scoping to one of the three State-snapshots
+methods. No RFC drift — RFC §5.2 already names the method.
+
+**Cross-references.** RFC §5.2 (the State-snapshots row), §6.5 / §6.10 (the
+heavy-output threshold + by-reference rule), §6.9 (the session triple),
+§6.13 (the durable event log). `internal/protocol/types/version.go`
+(additive-vs-breaking taxonomy). D-026 (the by-reference event payload
+shape), D-219 (verified-ctx scope authority), D-223 (the TS lockstep gate),
+D-209 (the generated Protocol-docs lockstep), D-027 (consumer-side typed
+reads atop the durable substrate). brief 05. Tight dep: Phase 124 (the
+gap-free durable stream). Plan:
+`docs/plans/phase-125-session-state-history-surface.md`.
+
+---
+
+## D-255 — Durable event-bus sequence counter is rehydrated from the persisted log on restart
+
+**Status:** Accepted.
+
+**Context.** The StateStore-backed durable event-log driver
+(`internal/events/drivers/durable`) assigns each event a monotonic,
+gap-free bus sequence from an in-memory `nextSeq` counter initialised to
+`0` at construction. That counter was never recovered from the persisted
+log: after a Runtime restart against the same StateStore the first
+`Publish` re-issued `Sequence=1,2,3…`, colliding with pre-restart tokens.
+A Protocol client reconnecting with a high `Last-Event-ID` then had every
+post-restart event silently skipped by `Replay` (which returns only
+sequences strictly greater than the cursor) until the counter climbed back
+past the old high-water mark — a direct violation of the §6.13 gap-free,
+resumable-across-restart contract. The original driver design noted "there
+is no list/scan method" and therefore did no max-sequence recovery; that
+assumption was made stale by the later addition of `StateStore.ListKind`
+(D-207, RFC §6.11), the explicitly-elevated maintenance scan. The same
+silent-skip class had a second instance: transient, non-persisted notices
+(`audit.admin_scope_used`, `audit.redaction_failed`) advanced the shared
+`nextSeq` and the SSE transport (`stream.encodeEvent`) emitted `id:` for
+them, so a live client could anchor `Last-Event-ID` on a transient tick
+that the post-restart recovery floor (max persisted) would not exceed.
+
+**Decision.** At construction, in durable mode only, the driver rehydrates
+`nextSeq` from the persisted per-session head records: it calls
+`ListKind(ctx, ListScope{MaintenanceScoped: true}, "events.durable.head")`,
+decodes each head record, and sets `nextSeq` to the global maximum sequence
+found across every record's `Sequences` list (0 for an empty log). It is
+another maintenance-scan consumer alongside the pause sweeper's
+crash-orphan rescan and the durable task / distributed / agent-config
+recovery paths. The recovery acts read-only and per-record under each
+record's own identity — it only reads sequence numbers, never widens a
+mutation scope — and follows the pause sweeper's posture of recording the
+cross-identity scan via structured `slog`, not a dedicated audit event. It
+is fail-loud: a scan error or an undecodable head record makes `New(...)`
+return a wrapped error (boot fails); the driver never silently starts at
+`0` (CLAUDE.md §13 "no silent degradation"). Best-effort ring mode
+(store == nil) persists nothing and skips recovery. To close the second
+instance of the skip class, transient bus-internal notices are removed from
+the replay sequence space: `publishInternal` assigns the non-replayable
+sentinel `Sequence == 0` and no longer advances `nextSeq`, and
+`stream.encodeEvent` omits the SSE `id:` line for any event with
+`Sequence == 0`, so a reconnecting client can never anchor `Last-Event-ID`
+on a transient notice. `New` gains a leading `ctx context.Context` (it now
+does construction-time I/O — CLAUDE.md §5); the ctx-free `events.Register`
+factory closures bridge with `context.Background()` (the §5
+unmanaged-boundary case, matching `newWithOwnedStore`'s existing
+`state.Open` precedent), with threading ctx through the factory contract
+itself tracked as a follow-up.
+
+**Consequences.** Post-restart sequences are strictly greater than any
+pre-restart persisted token; a client reconnecting at the pre-restart
+high-water mark receives every post-restart persisted event with no silent
+skip, and no transient notice can be a reconnect anchor. The fix is two
+binding regression tests: one that publishes AFTER a simulated restart (the
+prior `TestDurable_ReplayAcrossRestart_NoGaps` missed the bug because it
+only replayed pre-restart events), and one where a transient notice is the
+highest pre-restart emission. Boot does one O(sessions) head-record read; a
+single global-max checkpoint record is the noted follow-up if that ever
+bites. The SSE-framing change is additive — `ProtocolVersion` stays 0.1.0
+(`internal/protocol/types/version.go`: Major bumps only on a breaking
+change; RFC §5.3 governs only that *bumping* is an RFC change, which this
+phase does not do); no TS lockstep engaged.
+
+**Cross-references.** D-207 (`ListKind` maintenance scan this consumes),
+D-028 (the event-bus surface reconciliation), D-025 (concurrent-reuse
+contract the recovered bus still satisfies). RFC §6.13, §6.11. brief 06.
+Plan: `docs/plans/phase-124-durable-bus-sequence-rehydration.md`.
+
+---
+
+## D-256 — A durable USER-scope agent-config tier sits between the admin/tenant durable config and the ephemeral session overlay, and is the band's one durable user write surface
+
+**Context.** The agent-config control plane had exactly two durable
+ownership positions and one ephemeral one. Admin/tenant durable config is
+keyed under a synthetic `__agentcfg__` user slot (so it is agent-level and
+two non-admin users of the same agent share one slot); the only non-admin
+write path is the session overlay, keyed by the full real triple, ephemeral
+(dies with the session), with no versioning, diff, or rollback. The
+canonical scope set was binary (`admin`, `console:fleet`) — there was no
+user tier. A non-admin caller therefore could not own a durable, versioned
+config variant spanning their own sessions, which a richer generic Protocol
+client (a third-party console, an IDE client, the SDK) needs.
+
+**Decision.** Introduce a durable USER-scope tier and make it the ONE
+durable user-scope write surface for the agent-config band:
+
+1. A new closed-set authority scope `auth.ScopeAgentConfigUser`
+   (`"agent_config:user"`). It is the durable-agent-config-ownership
+   entitlement; unknown scopes stay dropped, so it cannot be forged (RFC
+   §5.5 fixes the closed scope universe). It is strictly below admin and
+   orthogonal to it — the user verbs gate on this scope specifically, not on
+   admin.
+2. An `agentcfg.ConfigScope` discriminator (`ConfigScopeAgent` /
+   `ConfigScopeUser`) threaded through the `agentcfg.Registry` methods. ONE
+   implementation, two keyings: `ConfigScopeAgent` keeps the synthetic
+   agent-level keying AND the existing `agentcfg.*` record kinds
+   (byte-identical to before — no migration); `ConfigScopeUser` keys the
+   variant under the caller's REAL `(tenant, user)` with `agent_id` in the
+   session slot, the run zeroed, AND a DISTINCT `agentcfg.user.*` record-kind
+   prefix. The distinct kind prefix is the structural guarantee the two key
+   spaces can never alias regardless of identity values; a `ConfigScopeUser`
+   call whose verified `user_id` equals the reserved `__agentcfg__` sentinel
+   is REJECTED (`ErrReservedUser`) as fail-loud defence-in-depth — closing a
+   latent privilege escalation where that identity value would have aliased
+   the agent-level admin chain. The discriminator is named with the
+   `ConfigScope` prefix to disambiguate from `tools/auth.BindingScope`
+   (`ScopeAgent`/`ScopeUser` = OAuth binding) and from
+   `auth.ScopeAgentConfigUser` (the Protocol JWT scope). The isolation tuple
+   is NOT widened: the real user is the isolation principal for the user
+   variant, `agent_id` stays a key, never a `WHERE`-clause isolation filter
+   (RFC §6.16 / §6 clarifying note). Threading the `scope` parameter through
+   the interface (rather than a parallel user-scope method set) breaks every
+   existing caller; all are migrated in the same PR to pass
+   `ConfigScopeAgent` — the projection (×4), the sibling protocol verbs, and
+   the MCP-console apps surface — so the tree builds green.
+3. A versioned `agent_config.user.*` verb family (get / set_revision /
+   list_revisions / diff / rollback) as the in-phase consumer, with full
+   diff/rollback parity to the admin registry verbs. Its input is a
+   structurally-bounded safe-subset payload (`AgentConfigUserPayload`) that
+   carries the BAND-COMPLETE field set — `user_prompt`, `disabled_servers`,
+   `disabled_tools`, `personal_skills` — and NO base / connections / enable /
+   model field, so a USER caller physically cannot widen a capability or edit
+   the operator base; the verified-ctx scope gate is defence-in-depth. The
+   per-owner write lock is scope-aware (`ConfigScopeUser` keys by
+   `(scope, tenant, real-user, agent)` so distinct users never serialise;
+   `ConfigScopeAgent` keys by `(scope, tenant, agent)`). Adding an MCP
+   connection, editing the operator base, widening the allowlist, and
+   swapping the model stay admin-only and fail-closed.
+
+**Consequences.** This is the band's single durable user write surface: a
+user revision is a "virtual agent" (a personal instruction layer + a
+narrow-only tool subset written atomically). The two sibling phases that
+follow are PROJECTION-ONLY — Phase 126b projects `user_prompt` into the
+run-start `<user_instructions>` composition and Phase 126c projects
+`disabled_servers`/`disabled_tools` into the narrow-only tool-exposure
+exclusion set; neither adds a write verb, because every projection-fed field
+is pinned in `AgentConfigUserPayload` here. Authority derives from the
+verified ctx, never the request body (consistent with the steering edge and
+the session safe subset). The user write is audited under the real
+`(tenant, user)` author anchor. The interface gains a `scope` parameter
+rather than a parallel method set (avoiding a §13 two-implementations smell);
+existing admin call sites pass `ConfigScopeAgent`. The methods + wire types
+are additive (Minor-class per `internal/protocol/types/version.go`) — no
+`ProtocolVersion` bump.
+
+---
+
+## D-257 — The durable USER-scope prompt layer is PROJECTION-ONLY: one writer (126a set_revision), one reader (run-start projection)
+
+**Date:** 2026-06-24
+
+**Status:** Accepted
+
+**Context.** Phase 126a persists a durable, versioned, user-keyed config
+revision and pins `AgentConfigUserPayload.user_prompt` as one of its
+band-complete fields — written through the ONE durable user-scope write verb
+`agent_config.user.set_revision`. But nothing reads `user_prompt` back at run
+start, so the field is inert: a user can store a standing personal instruction
+and it never reaches the LLM. `ApplyPromptLayers`
+(`internal/runtime/agentcfg/projection/projection.go`) composes the admin Base
+as the always-spine, then joins the admin User layer and the session overlay's
+user prompt into ONE lower-trust `<user_instructions>` block via
+`composeUserLayer`. The durable user layer has no slot in that composition yet.
+
+**Decision.** Add the run-start CONSUMER of 126a's durable `user_prompt`,
+PROJECTION-ONLY — no new store, no new verb, no new wire surface.
+
+1. **One writer, one reader.** The durable `user_prompt` is written ONLY by
+   126a's `agent_config.user.set_revision` (`ConfigScopeUser` revision) and
+   read back ONLY by this projection. An earlier cut proposed a SECOND
+   user-keyed store + a SECOND `agent_config.user.set_prompt` verb feeding the
+   same projection — that is a §13 "two parallel implementations of the same
+   conceptual feature" (two writers, one reader) with a guaranteed drift bug
+   the instant the two writers disagree on the durable user prompt. Rejected.
+   The durable user prompt has exactly one home: 126a's payload field.
+2. **Read via 126a's existing registry read.** `ApplyPromptLayers` reads the
+   caller's active USER-scope revision with
+   `reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID,
+   agentcfg.ConfigScopeUser)` and extracts `rev.Payload.UserPrompt()`. nil reg
+   / empty agentID / no active user revision / no user prompt yields `""` (the
+   backward-compatible "no durable user layer" path); a registry read error is
+   returned so the run fails loudly (no silent drop).
+3. **Precedence admin Base > admin User > USER-durable > session User.** The
+   admin Base stays the always-present spine. The other three compose, in that
+   order, into the SINGLE existing lower-trust `<user_instructions>` block —
+   `composeUserLayer` is extended from two ordered segments to three (admin
+   user, durable user, session user); the prompt builder's escaping is
+   unchanged. An empty durable layer leaves the run byte-identical to the prior
+   composition. The composition order is the security boundary (D-235): a
+   caller layer can extend the operator's standing instruction, never precede,
+   replace, or weaken the operator base. The durable layer carries no base
+   field (126a's payload has none), so base-unwritable-by-user stays
+   structural.
+4. **No new authority surface.** The durable write already passed through
+   126a's user-scope tier (`auth.ScopeAgentConfigUser`); the read-side
+   projection adds NO new auth gate, scope, verb, method constant, or wire
+   type. It reads under the run's already-verified identity. The exported
+   `ApplyPromptLayers` signature is UNCHANGED (the durable layer reads from the
+   registry the function already takes), so both run-loop twins reach the new
+   behaviour through the one shared seam and cannot drift (§17.6).
+5. **Consumer of the 126a primitive (the "no primitive without a consumer"
+   rule).** 126a's durable user write surface is the primitive; this projection
+   is the run-start consumer that makes `user_prompt` load-bearing, with a
+   round-trip integration test (write via `set_revision` → appears in the next
+   run's `<user_instructions>`).
+
+**§4.3 deviations.** None beyond the re-scope: this phase ships no store, verb,
+wire type, or Console surface (all explicitly deleted from an earlier cut in
+favour of consuming 126a's). No new wire element, so `ProtocolVersion` is
+untouched (RFC §5.3 / CLAUDE.md §8 / `internal/protocol/types/version.go`
+govern only a bump, which this phase does not approach).
+
+**Cross-references.** D-256 (126a — the durable USER-scope tier + the user
+write surface this phase consumes), D-235 (the prompt-layer composition-order
+security boundary), D-025 (the concurrent-reuse contract for the shared
+projection seam — no NEW artifact here), D-061 (the Console is a Protocol
+client; the layer's write+readback flow over 126a's Protocol verbs). RFC
+§6.16, §5.5. brief 13, brief 11. Depends on Phase 126a (the durable write
+surface), Phase 92e (the admin layered prompt + `composeUserLayer`), Phase 92g
+(the session overlay). Plan:
+`docs/plans/phase-126b-user-scope-prompt-layer.md`.
+
+---
+
+## D-258 — Phase 126c: the USER-scope tool policy is a projection-only run-start consumer of 126a's durable disable set, unioned (order-independent) into the grow-only exclusion set
+
+A user's tool/server toggles must survive the session that set them AND shape
+that user's runs against the agent. The durable disable set is ALREADY
+persisted: Phase 126a's user-scope revision payload (`AgentConfigUserPayload`)
+carries `disabled_servers` / `disabled_tools` as versioned fields, written
+atomically through the one user-tier `agent_config.user.set_revision` verb
+(gated on `agent_config:user`, audited, keyed under the caller's REAL
+`(tenant, user)` with `agent_id` in the session slot). What was missing was the
+run-start effect.
+
+The decision: 126c is a PROJECTION-ONLY consumer — no new store, no new verb,
+no new authority scope, no binary rewiring. The run-start tool-exposure
+projection (`ActivePlannerCatalogView`) reads the active user-scope revision
+via 126a's `reg.Active(..., agentcfg.ConfigScopeUser)` and unions its
+`PausedServers()` / `DisabledTools()` into the existing exclusion set.
+
+Threefold rationale. (1) **Narrow-only by construction, reusing the existing
+projection.** The three disable sets — admin (`ConfigScopeAgent`), user
+(`ConfigScopeUser`), session (the overlay) — are UNIONED (order-independent;
+union is commutative and idempotent) into a single grow-only exclusion set.
+There is NO precedence for tool exposure; the set can only GROW, so neither the
+user nor the session tier can re-widen past the admin-provisioned palette. The
+data model (no enable field anywhere) is the first guard, the union the second.
+(2) **No duplicate store, no second write path, no extra auth tier.** An
+earlier draft proposed a separate `useroverlay` store and `get/set_tool_policy`
+verbs; both are DROPPED. The narrow-only disable set is persisted and audited
+once, at 126a's user tier. A second store would be a §13 "two parallel
+implementations" smell; a second write verb would duplicate 126a's auth gate.
+(3) **`agent_id` is a record/key discriminator, NEVER an isolation filter.**
+The `ConfigScopeUser` read isolates by the run's `(tenant, user)`; the
+session + run components are zeroed ONLY inside the registry's key derivation (126a's
+pinned keying), never in the projection; `agent_id` rides the session slot as
+the per-agent key, never a `WHERE`-clause isolation filter (RFC §6.16).
+brief 09 §170's peer-principal recommendation is declined.
+
+The privilege boundary is untouched: adding a NEW MCP connection (esp. stdio)
+stays admin-only + fail-closed (`CodeScopeMismatch`); 126c opens no widening
+path. This is the run-start consumer of 126a's durable user-scope tier and
+lands in the same band, satisfying the no-primitive-without-a-consumer rule.
+126c adds no Protocol method or wire type — it consumes 126a's already-additive
+fields — so `ProtocolVersion` holds at `0.1.0` (per
+`internal/protocol/types/version.go`; RFC §5.3 governs only that *bumping* the
+constant is an RFC change, not done here).
+
+---
+
+## D-259 — Protocol wire-surface digest: connect-time wire-drift detection for any Protocol client via an additive runtime.info field + a manifest-stamped digest
+
+**Date:** 2026-06-24
+
+**Status:** Accepted (planning)
+
+**Context.** The Phase 118 / D-223 lockstep mechanism (`CanonicalWireTypes`
+→ reflected `wire-manifest.gen.json` → field-level `.mjs` guard + git-diff
+/ go-test / lint gates) is robust for Harbor's OWN Console but is NOT
+downstream-consumable: the manifest + guard + allowlist live inside
+`web/console/` with no module export, and the manifest is never served
+over the wire. `runtime.info` advertises only `ProtocolVersion` +
+`Capabilities`, so a connected Protocol client (a third-party Console, an
+IDE/TUI client, an SDK consumer) cannot detect, at connect-time, that the
+runtime it attached to drifted from the wire shapes it was built against.
+This is a §13 primitive-with-consumer gap read one layer up: the lockstep
+*build artifact* exists, but no *runtime* surface exposes it to a client.
+
+**Decision.**
+
+1. **A canonical wire-surface digest, computed from the Go single
+   sources.** A new light package `internal/protocol/wiresurface` exposes
+   `Digest() string` = `"sha256:" + hex(sha256(serialization))` over a
+   deterministic, `harbor-wire-surface/v1`-prefixed, lexicographically
+   sorted, newline-labelled encoding of: `types.ProtocolVersion`,
+   `methods.Methods()`, `protoerrors.Codes()`, `types.Capabilities()`
+   (the canonical capability UNIVERSE, not a per-instance subset), and
+   the `singlesource.CanonicalWireTypes` keys. The function is pure,
+   `sync.Once`-memoised, and imports only the light canonical packages
+   (no `internal/protocol`, no drivers) — no import cycle, no dependency
+   balloon for the lockstep tool that also calls it. The digest is a
+   coarse NAME-LEVEL fingerprint: it covers the shape of names and
+   EXCLUDES both field shapes and event-type names.
+2. **Additive `runtime.info` field, not a new method.** `types.RuntimeInfo`
+   gains `WireSurfaceDigest string \`json:"wire_surface_digest"\``;
+   `PostureSurface.handleInfo` populates it. A new `protocol.wire_manifest`
+   method was rejected: the digest is opaque posture data, `runtime.info`
+   is the attach-time negotiation call already, and an additive field is
+   backward-compatible (old clients ignore it) and one fewer round-trip.
+3. **Digest stamped into the committed manifest.** The
+   `cmd/harbor-protocol-ts-lockstep` `Manifest` gains a top-level
+   `wire_surface_digest` (= `wiresurface.Digest()`); a lockstep test pins
+   `Manifest.WireSurfaceDigest == wiresurface.Digest()`, and the existing
+   `make protocol-ts-gen-check` git-diff + go-test gates keep the manifest
+   and the runtime in lockstep automatically. A client vendors the
+   manifest at build time and compares its `wire_surface_digest` against
+   the live `runtime.info.wire_surface_digest`.
+4. **The consumer lands in the same wave (§13).** The Console app-shell
+   status bar (`web/console/src/lib/components/ui/AppStatusBar.svelte`),
+   which already fetches `runtime.info` at `onMount`, compares the attached
+   runtime's digest against the manifest's digest (via a pure
+   `compareWireDigest` helper exported from `connection.ts`) and surfaces a
+   loud, operator-visible drift signal on a `drift` mismatch — never a
+   silent swallow. A runtime that reports no digest is classified
+   `unsupported` ("predates digest support") and surfaced as an
+   informational note, NOT a drift alarm. `connection.ts` itself stays a
+   pure synchronous resolver — the fetch + surfacing live in the component,
+   not in the resolver.
+5. **Name-level scope; field shapes stay build-time and off the wire.**
+   The digest hashes method/error/capability/type *names* + version, not
+   field shapes (RFC §5.1: shapes are not exposed over the wire). A
+   field-type swap on a same-named struct does not move the digest; that
+   drift remains the build-time `.mjs` gate's job for any manifest-vendoring
+   client.
+6. **Events excluded.** Runtime event-type enumeration would require
+   seating driver registries (the manifest uses a build-time textual scan
+   to avoid driver blank-imports, §13); including events would re-introduce
+   that coupling into the runtime path. The digest is scoped to the
+   request/response/capability contract a client binds to. A driver-free
+   canonical event registry could let events join the digest later.
+7. **No version bump.** The new field is additive — a Minor-class change in
+   the `internal/protocol/types/version.go` Major/Minor/Patch taxonomy ("a
+   new optional wire field is backward-compatible"). RFC §5.3's rule that
+   *bumping `ProtocolVersion` is an RFC change* is precisely why this stays
+   additive: `ProtocolVersion` holds at 0.1.0. The generated Protocol type
+   reference (`docs/site/protocol/types.md`) is regenerated with
+   `make protocol-docs-gen` and committed in the same PR (D-209).
+
+**§4.3 deviations.** STRETCH/optional: the vendor-and-gate interim needs
+zero Harbor code, so no client is blocked without this phase; it is
+recommended for V1.6 as the minimal high-value slice and is the first in
+its band to cut if capacity is tight (a recorded cut, not a silent drop).
+The npm-publish pipeline and the full `cmd/harbor-gen-protocol-ts` type
+generator (reserved name) stay out of scope.
+
+**Cross-references.** D-223 (the lockstep gate this stamps the digest
+into), D-209 (the generated Protocol-docs regen gate), D-093 (the original
+generate/verify Protocol-client decision), D-061 (Console is a Protocol
+client), D-025 (concurrent-reuse contract for the memoised digest + the
+shared PostureSurface). RFC §5, §5.2, §5.3. `internal/protocol/types/version.go`
+(additive-vs-breaking taxonomy). brief 06. Plan:
+`docs/plans/phase-127-protocol-wire-manifest-consumability.md`.
