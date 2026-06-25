@@ -19,8 +19,80 @@ Two versions move independently in Harbor (RFC §5.3):
 
 (Next up: completing the runtime add-connection OAuth-resume attach + connection
 run-start reconciliation — issue [#375](https://github.com/hurtener/Harbor/issues/375);
-and the generated per-domain Protocol wire-type modules + the shared chat-module
-extraction — the D-093 / D-091 follow-ons.)
+identity-scoped `StateStore` enumeration to bound the user-scope revision scan —
+issue [#396](https://github.com/hurtener/Harbor/issues/396); and the generated
+per-domain Protocol wire-type modules + the shared chat-module extraction — the
+D-093 / D-091 follow-ons.)
+
+## [1.6.0] — 2026-06-25
+
+Session hydration and user-scope agent configuration. This release adds a
+windowed session-state history surface backed by a durable event bus that
+rehydrates across a Runtime restart, a per-user durable agent-configuration tier
+that layers between the admin config and the ephemeral session overlay, and a
+connect-time wire-surface drift signal for Protocol clients. The Harbor
+Protocol's wire surface grows (a new `state.history` surface and an additive
+`runtime.info` field) but stays semver `0.1.0` — every change is additive or
+corrective, and no prior INTENDED behavior changes.
+
+### Added
+
+- **Session-state history.** A new Protocol surface (`POST /v1/state/history`)
+  for windowed, identity-scoped replay of a session's event history: tail-first
+  paging that scrolls back to the head, with offloaded heavy payloads surfaced
+  by artifact reference. Cross-tenant reads return `404` (no existence leak) and
+  an unidentified read returns `401`.
+- **Durable event-bus rehydration across restart.** The durable EventBus
+  rehydrates its monotonic sequence counter from the persisted log on
+  construction, so a Runtime restart continues a session's event sequence above
+  its pre-restart high-water mark instead of resetting to 1 — the foundation
+  that lets `state.history` return a gap-free, strictly-monotonic window across
+  a restart boundary.
+- **User-scope agent configuration.** A per-user durable config-variant tier
+  layered between the admin/agent config and the ephemeral session overlay. A
+  user owns a standing variant via `agent_config/user/set_revision`
+  (set / list / diff / rollback), keyed by the real `(tenant, user)` and
+  isolated per user — never by `agent_id`, which is a key, not an isolation
+  principal.
+  - **Prompt layers** compose at run start with the precedence admin Base >
+    admin User > user-durable > session User.
+  - **Tool exposure** projects as a grow-only three-set union
+    (admin ∪ user ∪ session): a user can disable more tools/servers, never
+    re-widen past the admin-provisioned palette.
+- **Wire-surface drift detection.** `runtime.info` now returns a
+  `wire_surface_digest` — a coarse, stable `sha256:` fingerprint of the
+  Protocol's name-level wire surface (version + method / error / capability /
+  wire-type names; field shapes and event-type names are deliberately excluded).
+  The committed wire manifest is stamped with the same digest, so a Console (or
+  any client that vendors the manifest) raises a loud drift signal at
+  connect-time when it was built against a different Protocol surface. Additive
+  field; the Harbor Protocol stays `0.1.0`.
+
+### Changed
+
+- **Agent-config write serialisation is memory-bounded.** The per-owner
+  read-modify-write lock is striped across a fixed shard array instead of an
+  unbounded per-owner map, so the lock memory stays constant regardless of how
+  many users ever write a durable variant. Same-owner writes still serialise.
+
+### Fixed
+
+- **Agent-config keying fails closed on an unrecognised scope.** The config
+  scope discriminator is matched explicitly; an out-of-range value now returns
+  an error instead of defaulting to the more-privileged agent tier.
+
+### Internal
+
+- A composing wave-end end-to-end test exercises the durable-bus-restart →
+  `state.history` rehydration seam together with the user-scope projection (real
+  drivers across every seam, identity propagation, ≥1 failure mode per track,
+  and an N≥48 concurrency stress under the race detector) — closing the one
+  cross-phase seam no per-phase test covered.
+- godoc hygiene on operator-visible surfaces, a scan-cost note on the user-scope
+  `ListRevisions` path (tracked for an identity-scoped enumeration in
+  [#396](https://github.com/hurtener/Harbor/issues/396)), and test coverage
+  tightened to the phase-plan claims (prompt-layer subsets, the tool-exposure
+  union's order-independence, and the Console wire-drift match branch).
 
 ## [1.5.1] — 2026-06-23
 
