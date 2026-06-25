@@ -26,7 +26,7 @@ export const hero = {
     "Most agent loops live in a goroutine and die with it. Harbor persists run state, so a paused run survives a process restart. Multi-isolation is mandatory from the first line — one user can hold many concurrent, isolated sessions. The Planner is swappable; the Runtime owns the mechanism. It all ships as one CGo-free static binary.",
   install: "go install github.com/hurtener/Harbor/cmd/harbor@latest",
   ctas: [
-    { label: "Get started", link: "/skills/scaffold-a-harbor-agent/SKILL", kind: "primary" },
+    { label: "Get started", link: "/get-started", kind: "primary" },
     { label: "Read the design RFC", link: "/reference/rfc", kind: "secondary" },
   ] as CTA[],
   terminal: {
@@ -49,11 +49,11 @@ export const announcement = {
 };
 
 export const navLinks = [
-  { text: "Docs", link: "/skills/" },
-  { text: "Recipes", link: "/recipes/" },
+  { text: "Get started", link: "/get-started" },
+  { text: "Concepts", link: "/concepts/" },
+  { text: "Guides", link: "/guides/" },
   { text: "Protocol", link: "/protocol/" },
-  { text: "RFC", link: "/reference/rfc" },
-  { text: "Changelog", link: "/reference/changelog" },
+  { text: "Reference", link: "/reference/" },
 ];
 
 /* ── Code showcase (Scaffold & run / Embed in Go) ───────────────────────── */
@@ -316,21 +316,21 @@ export const finalCta = {
   install: "go install github.com/hurtener/Harbor/cmd/harbor@latest",
   run: "harbor dev",
   ctas: [
-    { label: "Get started", link: "/skills/scaffold-a-harbor-agent/SKILL", kind: "primary" },
-    { label: "Browse recipes", link: "/recipes/", kind: "secondary" },
+    { label: "Get started", link: "/get-started", kind: "primary" },
+    { label: "Explore the concepts", link: "/concepts/", kind: "secondary" },
   ] as CTA[],
 };
 
 /* ── Footer ─────────────────────────────────────────────────────────────── */
 export const footerNav = [
   {
-    group: "Product",
+    group: "Learn",
     links: [
-      { text: "Scaffold an agent", link: "/skills/scaffold-a-harbor-agent/SKILL" },
-      { text: "Run the dev loop", link: "/skills/run-the-dev-loop/SKILL" },
+      { text: "Get started", link: "/get-started" },
+      { text: "Concepts", link: "/concepts/" },
+      { text: "How do I…?", link: "/guides/" },
       { text: "Operator skills", link: "/skills/" },
       { text: "Recipes", link: "/recipes/" },
-      { text: "Changelog", link: "/reference/changelog" },
     ],
   },
   {

@@ -10,6 +10,7 @@ import type { Theme, Directive } from "vitepress/theme";
 import Layout from "./Layout.vue";
 
 import "./styles/tokens.css";
+import "./styles/docs.css";
 import "./styles/landing.css";
 
 // v-reveal: a scroll-into-view fade. SSR-safe — the server-rendered HTML stays

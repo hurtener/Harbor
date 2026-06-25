@@ -42,6 +42,9 @@ export default defineConfig({
   description:
     "Harbor — a Go-native runtime for durable, steerable, event-driven AI agents.",
   cleanUrls: true,
+  // Default to the dark, navy theme so the docs match the landing's mood; the
+  // light/dark toggle stays available for readers who prefer it.
+  appearance: "dark",
   // Branding: the favicon + a mask icon, plus Open Graph / Twitter cards so a
   // shared link renders the lighthouse mark and the one-line pitch. Paths are
   // base-prefixed so they resolve under the GitHub Pages "/Harbor/" path.
@@ -95,12 +98,21 @@ export default defineConfig({
     siteTitle: "Harbor",
     logo: "/harbor_logo.svg",
     nav: [
-      { text: "Operator skills", link: "/skills/" },
-      { text: "Recipes", link: "/recipes/" },
-      { text: "Protocol", link: "/protocol/" },
+      { text: "Get started", link: "/get-started" },
+      { text: "Concepts", link: "/concepts/", activeMatch: "/concepts/" },
+      {
+        text: "Guides",
+        items: [
+          { text: "How do I…?", link: "/guides/" },
+          { text: "Operator skills", link: "/skills/" },
+          { text: "Recipes", link: "/recipes/" },
+        ],
+      },
+      { text: "Protocol", link: "/protocol/", activeMatch: "/protocol/" },
       {
         text: "Reference",
         items: [
+          { text: "Overview", link: "/reference/" },
           { text: "RFC-001", link: "/reference/rfc" },
           { text: "Configuration (harbor.yaml)", link: "/reference/config" },
           { text: "Glossary", link: "/reference/glossary" },
@@ -112,6 +124,65 @@ export default defineConfig({
       },
     ],
     sidebar: {
+      // The conceptual track — the mental-model layer between the quickstart
+      // and the wire-level reference. Distils the RFC; links down to it.
+      "/concepts/": [
+        {
+          text: "Concepts",
+          items: [{ text: "Overview", link: "/concepts/" }],
+        },
+        {
+          text: "Architecture",
+          items: [
+            { text: "The four-layer architecture", link: "/concepts/architecture" },
+            { text: "Runtime and Planner", link: "/concepts/runtime-and-planner" },
+          ],
+        },
+        {
+          text: "Isolation & control",
+          items: [
+            { text: "Identity and multi-isolation", link: "/concepts/identity-and-isolation" },
+            { text: "Pause, resume, and steering", link: "/concepts/pause-resume-and-steering" },
+          ],
+        },
+        {
+          text: "Capabilities",
+          items: [
+            { text: "Tools and transports", link: "/concepts/tools" },
+            { text: "Memory and skills", link: "/concepts/memory-and-skills" },
+            { text: "Sessions, tasks, and events", link: "/concepts/sessions-tasks-and-events" },
+            {
+              text: "Artifacts and the context-window safety net",
+              link: "/concepts/artifacts-and-context-safety",
+            },
+          ],
+        },
+        {
+          text: "Operations",
+          items: [
+            { text: "The persistence triad", link: "/concepts/persistence" },
+            { text: "Governance and security", link: "/concepts/governance-and-security" },
+            { text: "Observability and the Console", link: "/concepts/observability" },
+          ],
+        },
+      ],
+      // The task-oriented Guides hub — its own "How do I…?" index plus
+      // jump-offs into the two existing practical tracks so a reader who
+      // entered via Guides can reach them without backtracking to the nav.
+      "/guides/": [
+        {
+          text: "Guides",
+          items: [{ text: "How do I…?", link: "/guides/" }],
+        },
+        {
+          text: "Operator skills",
+          items: [{ text: "Browse all skills", link: "/skills/" }],
+        },
+        {
+          text: "Recipes",
+          items: [{ text: "Browse all recipes", link: "/recipes/" }],
+        },
+      ],
       "/skills/": [
         {
           text: "Operator skills",
@@ -226,6 +297,7 @@ export default defineConfig({
         {
           text: "Reference",
           items: [
+            { text: "Overview", link: "/reference/" },
             { text: "RFC-001 — Harbor", link: "/reference/rfc" },
             { text: "Configuration (harbor.yaml)", link: "/reference/config" },
             { text: "Glossary", link: "/reference/glossary" },
