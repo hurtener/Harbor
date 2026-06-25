@@ -1,13 +1,15 @@
 // Harbor Console — Sessions detail Trajectory projection (Phase 108g /
 // D-179).
 //
-// Pure, DOM-free projection of the session-filtered `events.subscribe`
-// stream into a chronological planner-step timeline (decision → tool →
-// result → decision …). The Trajectory tab is a READ-ONLY projection of
-// the SAME shipped event stream the other dock tabs read — there is no
-// new Protocol method (the Phase 73 `state.list_trajectories` /
-// `state.history` surface is still `Pending`; this reconstructs the
-// trajectory from the lifecycle events the runtime already emits).
+// Pure, DOM-free projection of a session-filtered event window into a
+// chronological planner-step timeline (decision → tool → result →
+// decision …). The Trajectory tab is a READ-ONLY projection of the SAME
+// lifecycle events the other dock tabs read. It accepts either the live
+// `events.subscribe` frames or a historical window fetched through the
+// shipped `state.history` surface (D-254) — both are the same flat event
+// shape, so the reducer is unchanged. (`state.list_trajectories` /
+// `state.load_planner_checkpoint` — the other two RFC §5.2 State-snapshots
+// methods — remain `Pending` for their own phases.)
 //
 // Extracted as a pure module so it is unit-testable against captured
 // real wire frames (the SSE payload is PascalCase Go field names, not

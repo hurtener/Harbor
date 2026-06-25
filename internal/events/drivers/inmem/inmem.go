@@ -151,7 +151,12 @@ type bus struct {
 	ringBuf  []events.Event
 	ringHead int
 	ringFull bool
-	ringCap  int
+	// evicted is the precise "history became lossy" signal: true once an
+	// append has overwritten a previously-occupied slot (distinct from
+	// ringFull, which is true at exactly-capacity BEFORE any eviction). It
+	// flows to HistoryReplayer.Bounds' truncated return.
+	evicted bool
+	ringCap int
 
 	mu    sync.RWMutex
 	subs  map[uint64]*subscription
@@ -428,6 +433,11 @@ func (b *bus) assignSeqAndStore(ev *events.Event) {
 // ringAppendLocked writes ev to the next ring slot and advances the
 // head. Caller must hold publishMu. Called only when ringCap > 0.
 func (b *bus) ringAppendLocked(ev events.Event) {
+	if b.ringFull {
+		// The ring is already at capacity, so this append overwrites the
+		// oldest retained event — the first actual eviction.
+		b.evicted = true
+	}
 	b.ringBuf[b.ringHead] = ev
 	b.ringHead++
 	if b.ringHead >= b.ringCap {
@@ -546,6 +556,123 @@ func (b *bus) Replay(_ context.Context, from events.Cursor, f events.Filter) ([]
 		return nil, nil
 	}
 	return out, nil
+}
+
+// Bounds implements events.HistoryReplayer. It reports the lowest and
+// highest retained sequence among the ring events matching f, or
+// events.ErrNoHistory when none match. Identity-scoped exactly like
+// Subscribe / Replay. Best-effort: the ring is a bounded retention
+// window, so the reported head reflects what the ring still holds.
+func (b *bus) Bounds(_ context.Context, f events.Filter) (head, tail uint64, truncated bool, err error) {
+	if b.closed.Load() {
+		return 0, 0, false, events.ErrBusClosed
+	}
+	if b.ringCap == 0 {
+		return 0, 0, false, events.ErrReplayUnavailable
+	}
+	if !f.Admin && !f.HasFullTriple() {
+		return 0, 0, false, events.ErrIdentityScopeRequired
+	}
+	if f.Admin {
+		b.emitAdminScopeUsedAndFanOut(f)
+	}
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	// evicted is the honest "older events were dropped" signal: once an
+	// append has overwritten an occupied slot, the oldest retained sequence
+	// is NOT the session's first. Read under the same lock that mutates it.
+	evicted := b.evicted
+	b.publishMu.Unlock()
+
+	var lo, hi uint64
+	found := false
+	for _, ev := range snapshot {
+		// MatchesScoped, never Matches: this is a by-id read scoped to the
+		// named session even under Admin — Admin must not fan the whole
+		// ring across sessions/tenants.
+		if events.IsBusInternalNotice(ev.Type) || !f.MatchesScoped(ev) {
+			continue
+		}
+		if !found || ev.Sequence < lo {
+			lo = ev.Sequence
+		}
+		if ev.Sequence > hi {
+			hi = ev.Sequence
+		}
+		found = true
+	}
+	if !found {
+		return 0, 0, false, events.ErrNoHistory
+	}
+	return lo, hi, evicted, nil
+}
+
+// Window implements events.HistoryReplayer. It returns at most limit
+// events matching f whose Sequence < before (before==0 ⇒ from the tail),
+// the most-recent K, returned oldest-first within the window. Scoped to
+// the named session (MatchesScoped) even under Admin — a by-id read.
+//
+// Window does NOT emit audit.admin_scope_used: the handler always calls
+// Bounds first, which emits it once per state.history request (a paired
+// Bounds+Window must not double-audit a single read).
+func (b *bus) Window(_ context.Context, before uint64, limit int, f events.Filter) ([]events.Event, error) {
+	if b.closed.Load() {
+		return nil, events.ErrBusClosed
+	}
+	if b.ringCap == 0 {
+		return nil, events.ErrReplayUnavailable
+	}
+	if !f.Admin && !f.HasFullTriple() {
+		return nil, events.ErrIdentityScopeRequired
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	b.publishMu.Unlock()
+
+	if len(snapshot) == 0 {
+		return nil, nil
+	}
+	out := make([]events.Event, 0, limit)
+	for i := len(snapshot) - 1; i >= 0; i-- {
+		ev := snapshot[i]
+		if before != 0 && ev.Sequence >= before {
+			continue
+		}
+		if events.IsBusInternalNotice(ev.Type) || !f.MatchesScoped(ev) {
+			continue
+		}
+		out = append(out, ev)
+		if len(out) >= limit {
+			break
+		}
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// emitAdminScopeUsedAndFanOut surfaces admin-scope use on the bus so
+// abuse is retroactively detectable — mirrors the Replay admin path.
+func (b *bus) emitAdminScopeUsedAndFanOut(f events.Filter) {
+	notice := events.Event{
+		Type:       events.EventTypeAdminScopeUsed,
+		Identity:   identity.Quadruple{Identity: identity.Identity{TenantID: f.Tenant, UserID: f.User, SessionID: f.Session}},
+		OccurredAt: b.clock.Now(),
+		Payload: events.AdminScopeUsedPayload{
+			Tenant:  f.Tenant,
+			User:    f.User,
+			Session: f.Session,
+		},
+	}
+	b.assignSeqAndStore(&notice)
+	b.fanOut(notice)
 }
 
 // Close idempotently shuts the bus down. After Close, Publish and
@@ -840,11 +967,12 @@ func (s *subscription) resetDropWindow(now time.Time) {
 	s.markEnqueueProgress(now.UnixNano())
 }
 
-// Compile-time assertion that bus implements events.EventBus AND
-// events.Replayer.
+// Compile-time assertion that bus implements events.EventBus,
+// events.Replayer AND events.HistoryReplayer.
 var (
-	_ events.EventBus = (*bus)(nil)
-	_ events.Replayer = (*bus)(nil)
+	_ events.EventBus        = (*bus)(nil)
+	_ events.Replayer        = (*bus)(nil)
+	_ events.HistoryReplayer = (*bus)(nil)
 )
 
 // Compile-time assertion: subscription.Cancel is exported via the

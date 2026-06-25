@@ -15,7 +15,7 @@ The Harbor Protocol is the canonical event/state contract between Runtime and an
 Three properties make this practical:
 
 1. **A generated, drift-gated contract reference** — the published [Protocol adoption track](https://hurtener.github.io/Harbor/protocol/) carries four pages (methods / events / errors / types) emitted by `cmd/harbor-gen-protocol-docs` from the Go single sources and gated in CI by `make protocol-docs-gen-check`, plus an executed quickstart, five choreography guides, a worked build-a-client walkthrough, and the conformance-certification path. For typed TS wire shapes, vendor the Console's hand-maintained `web/console/src/lib/protocol.ts` (the D-093 TS *generator* was deferred per D-132 — `protocol.ts` is hand-maintained today, kept honest by the Console's own CI).
-2. **Capability advertisement** — `runtime.info.capabilities` tells you at attach which Protocol surfaces this Runtime advertises (`task_control`, `events_subscribe`, `runtime_posture`, `topology_snapshot`). Your UI degrades gracefully on stripped-down runtimes.
+2. **Capability advertisement** — `runtime.info.capabilities` tells you at attach which Protocol surfaces this Runtime advertises (`task_control`, `events_subscribe`, `runtime_posture`, `topology_snapshot`, `state_snapshots`). Your UI degrades gracefully on stripped-down runtimes.
 3. **Stable Protocol versioning** — breaking changes go through a deprecation window; same-major versions are compatible. Pin the major in your client; tolerate additive change. The full adopter contract is the published [versioning & compatibility choreography](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility).
 
 The Protocol is what makes Harbor headless. The Runtime never imports Console code; the Console never reads internal Runtime objects. Your UI sits in the same posture as the Console.
@@ -155,6 +155,37 @@ For a chat UI, you'd:
 4. Append `llm.completion.chunk` content to a streaming "assistant turn" bubble.
 5. Render `tool.invoked` / `tool.result` as collapsed cards inside the assistant bubble.
 6. Close the bubble on `task.completed`.
+
+## 4a. Reopening a long session — `state.history`
+
+`events.subscribe` is the LIVE tail. To **reopen** a closed conversation you don't want to re-stream every event from sequence 1 — a 5 000-event session would flood the client before the newest turn renders. The `state.history` method (capability `state_snapshots`) is the bounded, **tail-first** windowed read of the same durable event stream:
+
+```http
+POST /v1/state/history
+Authorization: Bearer <JWT>
+Content-Type: application/json
+
+{ "session_id": "<session_id>", "before": 0, "limit": 50 }
+```
+
+`before: 0` means "from the tail" (the newest retained events); `limit` is the window size K (default 50, max 200). The response is a page of flat events **oldest-first within the window**, plus the bounds and a scroll-up cursor:
+
+```json
+{
+  "events": [ { "type": "...", "sequence": 4951, "occurred_at": "...", "payload": {...}, "artifacts": [...] }, ... ],
+  "head_sequence": 1,
+  "tail_sequence": 5000,
+  "next_cursor": 4951,
+  "has_more": true,
+  "truncated": false
+}
+```
+
+To **scroll up** (load one window older), pass the previous response's `next_cursor` back as `before`. When `next_cursor` is `0`, you've reached the retained head — no older events remain. Reduction of events → chat messages stays **on your client** (the same reducer you use for the live stream): the surface returns flat events, not pre-reduced turns.
+
+Heavy payloads (a large tool result offloaded above the heavy-output threshold) ride by a **routable** `StateArtifactRef` on `events[].artifacts[]` — a content-addressed `id` (+ `sha256`), never inline bytes. Resolve it the same way as any artifact: POST the `id` to `artifacts.get_ref` (presigned URL on an S3-compat store; the typed `presign_unsupported`/501 on the default inmem/fs stores).
+
+Identity rules: identity is mandatory (an incomplete triple is `identity_required`/401); an unknown or cross-identity `session_id` is `not_found`/404 (existence is never revealed across identities — never a 403); a cross-tenant read requires the verified `admin` scope claim.
 
 ## 5. Pause + steer + resume
 

@@ -373,6 +373,13 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "RunSetOverridesRequest", Response: "RunSetOverridesResponse",
 		},
 
+		// --- State snapshots: read-only windowed event-replay. A by-id
+		// read; cross-identity returns not_found (no fan-in gate).
+		methods.MethodStateHistory: {
+			Route: stream.StateHistoryRoutePattern, Mutates: false,
+			Request: "StateHistoryRequest", Response: "StateHistoryResponse",
+		},
+
 		// --- Auth.
 		methods.MethodAuthRotateToken: {
 			Route: wildcardRoute(stream.AuthRoutePattern, "auth.", methods.MethodAuthRotateToken), Mutates: true,
@@ -622,6 +629,8 @@ func classify(m methods.Method) string {
 		return "sessions (read-only)"
 	case methods.IsRunsMethod(m):
 		return "runs"
+	case methods.IsStateMethod(m):
+		return "state snapshots (read-only)"
 	case methods.IsAuthMethod(m):
 		return "auth"
 	case methods.IsGovernanceAdminMethod(m):
@@ -658,6 +667,7 @@ var methodClusters = []struct {
 	{"MCP servers", methods.IsMCPServersMethod, "mcp-servers"},
 	{"MCP apps", methods.IsMCPAppsMethod, "mcp-apps"},
 	{"Runs", methods.IsRunsMethod, "runs"},
+	{"State snapshots", methods.IsStateMethod, "state-snapshots"},
 	{"Auth", methods.IsAuthMethod, "auth"},
 	{"Governance admin", methods.IsGovernanceAdminMethod, "governance-admin"},
 	{"Agent config", methods.IsAgentConfigMethod, "agent-config"},

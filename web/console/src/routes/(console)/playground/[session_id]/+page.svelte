@@ -72,6 +72,11 @@
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
   import { parseAnswerFromDetail, parseReasoningSteps } from './answer-envelope.js';
+  import {
+    loadSessionHistory,
+    reduceHistoryTurns,
+    type HistoryTurn
+  } from '$lib/sessions/history.js';
   import type { ReasoningStep } from '$lib/chat/types.js';
   import { applyChunk, applyReasoningChunk, finalizeStream } from './chunk-stream.js';
   import {
@@ -120,6 +125,12 @@
   // to `ready` with messages flowing — the trace toggle becomes the
   // surface that surfaces the info banner instead.
   let pageInfo = $state<{ headline: string; detail: string } | null>(null);
+  // A non-fatal note about the reopen hydration: set when older history was
+  // trimmed by retention (Truncated), or when loading earlier messages
+  // failed for an UNEXPECTED reason (a real transport error — never a silent
+  // swallow, CLAUDE.md §13). Null when hydration loaded cleanly (or the
+  // runtime simply has no `state.history` surface / no prior history).
+  let historyNotice = $state<string | null>(null);
 
   /* ---- chat stream ------------------------------------------------ */
   let messages = $state<ChatMessage[]>([]);
@@ -864,77 +875,103 @@
   /* ================================================================ */
 
   // hydratePastTurns reloads the conversation's prior turns when opening
-  // an existing session (the per-session client scopes tasks.list to the
-  // URL session). Each completed task becomes a user bubble (its query) +
-  // an agent bubble (its result_inline answer). No-op when the stream is
-  // already populated (a live conversation) or the session has no tasks.
+  // an existing session. It drives off the `state.history` windowed
+  // event-replay surface (D-254): a TAIL-FIRST, scroll-up-by-cursor read of
+  // the session's durable event stream, reduced CLIENT-SIDE into turns (the
+  // agent answer + reasoning are reconstructed from the run's
+  // `llm.completion.chunk` deltas — the same channel the live stream
+  // reduces). This replaces the former full-load `tasks.list` + N×`tasks.get`
+  // reconstruction. The user query text is NOT carried in the durable event
+  // payloads (the task lifecycle payloads omit it), so it is folded in from
+  // a SINGLE `tasks.list` catalog lookup keyed by run id. No-op when the
+  // session has no events.
   async function hydratePastTurns(): Promise<void> {
-    if (client === null) return;
+    if (client === null || sessionID === '') return;
     const c = client;
+    historyNotice = null;
     try {
-      const resp = await c.tasks.list<{
-        rows?: Array<{
-          id: string;
-          query?: string;
-          status?: string;
-          started_at?: string;
-          duration_ms?: number;
-        }>;
-      }>({ filter: {}, page_size: 50 });
-      const rows = [...(resp.rows ?? [])].sort((a, b) =>
-        (a.started_at ?? '').localeCompare(b.started_at ?? '')
-      );
-      // Dedup against turns already in the stream. A live turn sent before
-      // hydration finished must not be duplicated AND (the bug this fixes)
-      // must not cause the reloaded history to be DISCARDED: the prior
-      // all-or-nothing `messages.length === 0` guard threw the whole
-      // reloaded history away if any message arrived first, so a reload
-      // followed by a quick send showed only the post-reload message.
-      const present = new Set(messages.map((m) => m.taskID).filter(Boolean));
-      const fresh = rows.filter((r) => !present.has(r.id));
-      // Sum the active-work time of the reloaded turns into the Duration
-      // KPI (foreground + background tasks; `tasks.list` returns both). The
-      // live turns already counted via recordTurn are excluded by the
-      // `present` dedup, so this never double-counts.
-      activeWorkMs += fresh.reduce((sum, r) => sum + (r.duration_ms ?? 0), 0);
-      // Fetch each completed turn's answer in PARALLEL — sequential gets
-      // were slow enough (one round-trip per turn) to lose the race with a
-      // fast send after reload.
-      const details = await Promise.all(
-        fresh.map((r) =>
-          r.status === 'complete'
-            ? c.tasks
-                .get<{ result_inline?: string; trajectory?: { steps?: ReasoningStep[] } }>(r.id)
-                .catch(() => null)
-            : Promise.resolve(null)
-        )
-      );
-      const hydrated: ChatMessage[] = [];
-      fresh.forEach((row, i) => {
-        const at = row.started_at ?? new Date().toISOString();
-        if (row.query) {
-          hydrated.push({ id: `h-${row.id}-u`, role: 'user', text: row.query, taskID: row.id, at });
-        }
-        const detail = details[i];
-        if (row.status === 'complete' && detail !== null) {
-          const reasoningSteps = parseReasoningSteps(detail);
-          hydrated.push({
-            id: `h-${row.id}-a`,
-            role: 'agent',
-            text: parseAnswerFromDetail(detail),
-            taskID: row.id,
-            at,
-            reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined
+      // 1. Window the durable event stream tail-first, scrolling up by
+      //    next_cursor (the new `state.history` consumer), and reduce the
+      //    loaded events into per-run turns client-side.
+      const loaded = await loadSessionHistory(c, sessionID, { pageLimit: 50 });
+      // Honest retention signal: when the durable substrate (or a wrapped
+      // best-effort ring) dropped events older than the loaded window, say
+      // so rather than presenting a trimmed history as complete (§13).
+      if (loaded.truncated) {
+        historyNotice =
+          'Older messages were trimmed by retention — showing the most recent history.';
+      }
+      const turns: HistoryTurn[] = reduceHistoryTurns(loaded.events);
+      if (turns.length === 0) return;
+
+      // 2. One catalog lookup for the user query text + per-turn timing
+      //    (the query is not in the event payloads). Keyed by run id.
+      const catalog = new Map<string, { query: string; at: string; durationMs: number }>();
+      try {
+        const resp = await c.tasks.list<{
+          rows?: Array<{
+            id: string;
+            query?: string;
+            started_at?: string;
+            duration_ms?: number;
+          }>;
+        }>({ filter: {}, page_size: 200 });
+        for (const r of resp.rows ?? []) {
+          catalog.set(r.id, {
+            query: r.query ?? '',
+            at: r.started_at ?? '',
+            durationMs: r.duration_ms ?? 0
           });
         }
-      });
+      } catch {
+        /* query text is best-effort; agent answers still hydrate */
+      }
+
+      // Dedup against turns already in the stream so a live turn sent
+      // before hydration finished is neither duplicated nor discarded.
+      const present = new Set(messages.map((m) => m.taskID).filter(Boolean));
+      const fresh = turns.filter((t) => !present.has(t.runID));
+      if (fresh.length === 0) return;
+
+      const hydrated: ChatMessage[] = [];
+      for (const turn of fresh) {
+        const meta = catalog.get(turn.runID);
+        activeWorkMs += meta?.durationMs ?? 0;
+        const at = meta?.at || turn.at || new Date().toISOString();
+        const query = meta?.query ?? '';
+        if (query) {
+          hydrated.push({ id: `h-${turn.runID}-u`, role: 'user', text: query, taskID: turn.runID, at });
+        }
+        if (turn.answer || turn.terminal) {
+          hydrated.push({
+            id: `h-${turn.runID}-a`,
+            role: 'agent',
+            text: turn.answer || '(no answer recorded)',
+            taskID: turn.runID,
+            at,
+            reasoningText: turn.reasoning || undefined
+          });
+        }
+      }
       if (hydrated.length === 0) return;
       // Prepend — the reloaded turns predate any live message sent after
       // reload, so history sits above the live tail.
       messages = [...hydrated, ...messages];
       if (sessionStartedAt === null && hydrated[0]?.at) sessionStartedAt = hydrated[0].at;
-    } catch {
-      /* reload is best-effort; a runtime without tasks.list just starts empty */
+    } catch (err) {
+      // Distinguish EXPECTED-empty from a real transport failure (§13 — no
+      // silent swallow). A runtime that predates the surface
+      // (`unknown_method`) or a session with no retained history
+      // (`not_found`) legitimately starts empty. Any other error (e.g. the
+      // bus has no windowed-read capability → `runtime_error`, or a network
+      // fault) is surfaced as a non-fatal notice rather than masked behind a
+      // blank conversation.
+      if (isUnknownMethod(err) || (err instanceof ProtocolError && err.code === 'not_found')) {
+        return;
+      }
+      const detail = err instanceof ProtocolError ? `${err.code}: ${err.message}` : String(err);
+      console.warn('hydratePastTurns: could not load earlier messages:', detail);
+      historyNotice = `Could not load earlier messages (${detail}). The conversation continues from here.`;
     }
   }
 
@@ -1588,6 +1625,11 @@
           </div>
         {/snippet}
 
+        {#if historyNotice !== null}
+          <p class="history-notice" data-testid="history-notice" role="status">
+            {historyNotice}
+          </p>
+        {/if}
         {#if chatClient !== null}
           <ChatPanel
             messages={pagedMessages}
@@ -1804,6 +1846,16 @@
   .pip-bar {
     display: flex;
     justify-content: flex-end;
+  }
+
+  .history-notice {
+    margin: 0 var(--space-3) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    background: var(--color-surface-raised);
+    color: var(--color-text-muted);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
   }
 
   .rail-toggle {

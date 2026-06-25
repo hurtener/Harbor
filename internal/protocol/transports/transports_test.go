@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/audit"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
@@ -509,5 +511,59 @@ func TestNewMux_UnknownRoute_404(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown route status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestNewMux_WithStateHistory_MountsRoute — WithStateHistory mounts
+// POST /v1/state/history; an identity-less POST is rejected by the handler
+// (401), proving the route reached the handler (not the unmounted-route
+// default 404). Without the option the route is NOT mounted.
+func TestNewMux_WithStateHistory_MountsRoute(t *testing.T) {
+	deps := newTestDeps(t)
+	defer deps.cleanup()
+	store, err := artifacts.Open(context.Background(), config.ArtifactsConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("artifacts.Open: %v", err)
+	}
+	defer func() { _ = store.Close(context.Background()) }()
+
+	mux, err := transports.NewMux(deps.surface, deps.bus,
+		transports.WithoutValidator(),
+		transports.WithStateHistory(deps.bus, store),
+	)
+	if err != nil {
+		t.Fatalf("NewMux: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Identity-less POST → 401 (the handler ran, not a route-miss 404).
+	resp, err := http.Post(srv.URL+"/v1/state/history", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (handler reached)", resp.StatusCode)
+	}
+}
+
+func TestNewMux_WithoutStateHistory_RouteUnmounted(t *testing.T) {
+	deps := newTestDeps(t)
+	defer deps.cleanup()
+	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithoutValidator())
+	if err != nil {
+		t.Fatalf("NewMux: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1/state/history", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (route unmounted — skip_if_404 keeps preflight green)", resp.StatusCode)
 	}
 }

@@ -381,6 +381,37 @@ func TestCapRuntimePosture_Registered(t *testing.T) {
 	}
 }
 
+// TestCapStateSnapshots_Registered pins the State-snapshots capability
+// (D-254): CapStateSnapshots is registered, IsValidCapability returns
+// true, Capabilities() includes it, the current handshake advertises it,
+// and adding it did NOT bump the pinned ProtocolVersion string (additive
+// minor-class surface addition).
+func TestCapStateSnapshots_Registered(t *testing.T) {
+	if string(types.CapStateSnapshots) != "state_snapshots" {
+		t.Fatalf("CapStateSnapshots wire string = %q, want %q",
+			string(types.CapStateSnapshots), "state_snapshots")
+	}
+	if !types.IsValidCapability(types.CapStateSnapshots) {
+		t.Error("IsValidCapability(CapStateSnapshots) = false, want true")
+	}
+	var found bool
+	for _, c := range types.Capabilities() {
+		if c == types.CapStateSnapshots {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Capabilities() = %v, missing CapStateSnapshots", types.Capabilities())
+	}
+	if !types.CurrentHandshake().Accepts(types.CapStateSnapshots) {
+		t.Error("CurrentHandshake().Accepts(CapStateSnapshots) = false, want true")
+	}
+	// Additive — no version bump.
+	if types.ProtocolVersion != "0.1.0" {
+		t.Errorf("ProtocolVersion = %q, want unchanged 0.1.0 — a new capability is an additive minor-class change, not a version bump", types.ProtocolVersion)
+	}
+}
+
 func TestVersionHandshake_CurrentAndAccepts(t *testing.T) {
 	h := types.CurrentHandshake()
 	if h.ProtocolVersion != types.ProtocolVersion {

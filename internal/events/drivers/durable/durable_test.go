@@ -579,3 +579,203 @@ func TestDurable_NewChunkPublisherContext_CancellationBoundsPersistence(t *testi
 		t.Fatalf("cancelled chunk publish did not Warn loudly; log: %q", buf.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// HistoryReplayer — Bounds + Window (the state.history substrate)
+// ---------------------------------------------------------------------------
+
+func historyReplayer(t *testing.T, bus events.EventBus) events.HistoryReplayer {
+	t.Helper()
+	hr, ok := bus.(events.HistoryReplayer)
+	if !ok {
+		t.Fatalf("durable bus does not implement events.HistoryReplayer")
+	}
+	return hr
+}
+
+func TestDurable_Bounds_ReportsHeadAndTail(t *testing.T) {
+	bus, _ := newDurableBus(t, newInmemStore(t))
+	hr := historyReplayer(t, bus)
+	id := quad("t1", "u1", "s1")
+	publishN(t, bus, id, 5)
+
+	head, tail, _, err := hr.Bounds(context.Background(), filterFor(id))
+	if err != nil {
+		t.Fatalf("Bounds: %v", err)
+	}
+	if head != 1 || tail != 5 {
+		t.Fatalf("Bounds = (%d, %d), want (1, 5)", head, tail)
+	}
+}
+
+func TestDurable_Bounds_EmptySession_ErrNoHistory(t *testing.T) {
+	bus, _ := newDurableBus(t, newInmemStore(t))
+	hr := historyReplayer(t, bus)
+	_, _, _, err := hr.Bounds(context.Background(), filterFor(quad("t1", "u1", "empty")))
+	if !errors.Is(err, events.ErrNoHistory) {
+		t.Fatalf("Bounds(empty session) err = %v, want ErrNoHistory", err)
+	}
+}
+
+func TestDurable_Bounds_EmptyTriple_ErrIdentityScopeRequired(t *testing.T) {
+	bus, _ := newDurableBus(t, newInmemStore(t))
+	hr := historyReplayer(t, bus)
+	_, _, _, err := hr.Bounds(context.Background(), events.Filter{Tenant: "t1"}) // no user/session
+	if !errors.Is(err, events.ErrIdentityScopeRequired) {
+		t.Fatalf("Bounds(partial triple) err = %v, want ErrIdentityScopeRequired", err)
+	}
+}
+
+func TestDurable_Window_TailFirst_MostRecentK_OldestFirst(t *testing.T) {
+	bus, _ := newDurableBus(t, newInmemStore(t))
+	hr := historyReplayer(t, bus)
+	id := quad("t1", "u1", "s1")
+	publishN(t, bus, id, 10) // sequences 1..10
+
+	// before==0 ⇒ from the tail; limit 3 ⇒ the most-recent 3 (8,9,10),
+	// returned oldest-first.
+	win, err := hr.Window(context.Background(), 0, 3, filterFor(id))
+	if err != nil {
+		t.Fatalf("Window: %v", err)
+	}
+	if len(win) != 3 {
+		t.Fatalf("Window len = %d, want 3", len(win))
+	}
+	if win[0].Sequence != 8 || win[1].Sequence != 9 || win[2].Sequence != 10 {
+		t.Fatalf("Window seqs = [%d %d %d], want [8 9 10]", win[0].Sequence, win[1].Sequence, win[2].Sequence)
+	}
+}
+
+func TestDurable_Window_BeforeCursor_ScrollsUp(t *testing.T) {
+	bus, _ := newDurableBus(t, newInmemStore(t))
+	hr := historyReplayer(t, bus)
+	id := quad("t1", "u1", "s1")
+	publishN(t, bus, id, 10)
+
+	// before==8 ⇒ events with Sequence < 8, most-recent 3 (5,6,7).
+	win, err := hr.Window(context.Background(), 8, 3, filterFor(id))
+	if err != nil {
+		t.Fatalf("Window: %v", err)
+	}
+	if len(win) != 3 || win[0].Sequence != 5 || win[2].Sequence != 7 {
+		t.Fatalf("Window(before=8) = %v, want seqs 5,6,7", seqs(win))
+	}
+}
+
+func TestDurable_Window_EmptySession_Nil(t *testing.T) {
+	bus, _ := newDurableBus(t, newInmemStore(t))
+	hr := historyReplayer(t, bus)
+	win, err := hr.Window(context.Background(), 0, 50, filterFor(quad("t1", "u1", "empty")))
+	if err != nil {
+		t.Fatalf("Window(empty) err = %v, want nil", err)
+	}
+	if len(win) != 0 {
+		t.Fatalf("Window(empty) len = %d, want 0", len(win))
+	}
+}
+
+func TestDurable_Window_ReachesHead(t *testing.T) {
+	bus, _ := newDurableBus(t, newInmemStore(t))
+	hr := historyReplayer(t, bus)
+	id := quad("t1", "u1", "s1")
+	publishN(t, bus, id, 4)
+	// A window larger than the retained range returns everything.
+	win, err := hr.Window(context.Background(), 0, 50, filterFor(id))
+	if err != nil {
+		t.Fatalf("Window: %v", err)
+	}
+	if len(win) != 4 || win[0].Sequence != 1 || win[3].Sequence != 4 {
+		t.Fatalf("Window(all) = %v, want seqs 1..4", seqs(win))
+	}
+}
+
+func seqs(evs []events.Event) []uint64 {
+	out := make([]uint64, len(evs))
+	for i, e := range evs {
+		out[i] = e.Sequence
+	}
+	return out
+}
+
+func TestDurable_HistoryReplayer_BestEffortRing(t *testing.T) {
+	// store=nil ⇒ best-effort in-memory ring (loud-degraded). The
+	// HistoryReplayer methods read the ring.
+	cfg := durableCfg()
+	cfg.ReplayBufferSize = 32
+	bus, err := durable.New(context.Background(), cfg, auditpatterns.New(), nil,
+		durable.WithLogger(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))))
+	if err != nil {
+		t.Fatalf("durable.New (best-effort): %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	hr := historyReplayer(t, bus)
+	id := quad("t1", "u1", "s1")
+	publishN(t, bus, id, 6)
+
+	head, tail, _, err := hr.Bounds(context.Background(), filterFor(id))
+	if err != nil {
+		t.Fatalf("best-effort Bounds: %v", err)
+	}
+	if head != 1 || tail != 6 {
+		t.Fatalf("best-effort Bounds = (%d,%d), want (1,6)", head, tail)
+	}
+	win, err := hr.Window(context.Background(), 0, 2, filterFor(id))
+	if err != nil {
+		t.Fatalf("best-effort Window: %v", err)
+	}
+	if len(win) != 2 || win[0].Sequence != 5 || win[1].Sequence != 6 {
+		t.Fatalf("best-effort Window = %v, want seqs 5,6", seqs(win))
+	}
+	// A session with no matching events ⇒ ErrNoHistory from Bounds.
+	if _, _, _, err := hr.Bounds(context.Background(), filterFor(quad("t1", "u1", "other"))); !errors.Is(err, events.ErrNoHistory) {
+		t.Fatalf("best-effort Bounds(no-match) = %v, want ErrNoHistory", err)
+	}
+
+	// By-id scope under Admin: a second session in the SAME ring (different
+	// tenant) must NOT bleed into an admin read of the first. Before the fix
+	// the best-effort ring scan used Matches, whose Admin mode returned the
+	// whole ring across tenants.
+	publishN(t, bus, quad("t2", "u2", "sB"), 4)
+	adminS1 := events.Filter{Admin: true, Tenant: "t1", User: "u1", Session: "s1"}
+	win2, err := hr.Window(context.Background(), 0, 100, adminS1)
+	if err != nil {
+		t.Fatalf("best-effort admin Window: %v", err)
+	}
+	if len(win2) != 6 {
+		t.Fatalf("admin Window for s1 returned %d events, want 6 (no cross-session bleed): %v", len(win2), seqs(win2))
+	}
+	for _, ev := range win2 {
+		if ev.Identity.SessionID != "s1" || ev.Identity.TenantID != "t1" {
+			t.Fatalf("best-effort admin bleed: %+v", ev.Identity)
+		}
+	}
+}
+
+func TestDurable_HistoryReplayer_ErrorBranches(t *testing.T) {
+	bus, _ := newDurableBus(t, newInmemStore(t))
+	hr := historyReplayer(t, bus)
+
+	// Window with a non-positive limit ⇒ (nil, nil).
+	win, err := hr.Window(context.Background(), 0, 0, filterFor(quad("t1", "u1", "s1")))
+	if err != nil || win != nil {
+		t.Fatalf("Window(limit=0) = (%v,%v), want (nil,nil)", win, err)
+	}
+	// Window with an empty-triple non-admin filter ⇒ ErrIdentityScopeRequired.
+	if _, err := hr.Window(context.Background(), 0, 5, events.Filter{Tenant: "t1"}); !errors.Is(err, events.ErrIdentityScopeRequired) {
+		t.Fatalf("Window(partial triple) = %v, want ErrIdentityScopeRequired", err)
+	}
+	// An admin filter that names only a session (no tenant/user) cannot
+	// resolve the storage key ⇒ ErrIdentityScopeRequired.
+	if _, _, _, err := hr.Bounds(context.Background(), events.Filter{Admin: true, Session: "s1"}); !errors.Is(err, events.ErrIdentityScopeRequired) {
+		t.Fatalf("Bounds(admin, no triple) = %v, want ErrIdentityScopeRequired", err)
+	}
+
+	// After Close, the methods report the bus is closed.
+	_ = bus.Close(context.Background())
+	if _, _, _, err := hr.Bounds(context.Background(), filterFor(quad("t1", "u1", "s1"))); !errors.Is(err, events.ErrBusClosed) {
+		t.Fatalf("Bounds(closed) = %v, want ErrBusClosed", err)
+	}
+	if _, err := hr.Window(context.Background(), 0, 5, filterFor(quad("t1", "u1", "s1"))); !errors.Is(err, events.ErrBusClosed) {
+		t.Fatalf("Window(closed) = %v, want ErrBusClosed", err)
+	}
+}

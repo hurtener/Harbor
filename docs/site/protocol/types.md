@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 282 canonical Harbor Protocol wire types, generated from the single-source
+The 286 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -2534,6 +2534,59 @@ Declared in `internal/protocol/types`.
 | `task_id` | `string` |  |
 | `reused` | `bool` |  |
 | `protocol_version` | `string` |  |
+
+## StateArtifactRef
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `id` | `string` |  |
+| `mime_type` | `string` | optional (`omitempty`) |
+| `size_bytes` | `int64` | optional (`omitempty`) |
+| `filename` | `string` | optional (`omitempty`) |
+| `sha256` | `string` | optional (`omitempty`) |
+
+## StateEvent
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `type` | `string` |  |
+| `sequence` | `uint64` |  |
+| `occurred_at` | `time.Time` |  |
+| `tenant` | `string` |  |
+| `user` | `string` |  |
+| `session` | `string` |  |
+| `run` | `string` | optional (`omitempty`) |
+| `payload` | `any` | optional (`omitempty`) |
+| `extra` | `map[string]string` | optional (`omitempty`) |
+| `artifacts` | `[]types.StateArtifactRef` — see [`StateArtifactRef`](./types.md#stateartifactref) | optional (`omitempty`) |
+
+## StateHistoryRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `session_id` | `string` |  |
+| `before` | `uint64` | optional (`omitempty`) |
+| `limit` | `int` | optional (`omitempty`) |
+
+## StateHistoryResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `events` | `[]types.StateEvent` — see [`StateEvent`](./types.md#stateevent) |  |
+| `head_sequence` | `uint64` |  |
+| `tail_sequence` | `uint64` |  |
+| `next_cursor` | `uint64` |  |
+| `has_more` | `bool` |  |
+| `truncated` | `bool` | optional (`omitempty`) |
 
 ## SubsystemDriver
 

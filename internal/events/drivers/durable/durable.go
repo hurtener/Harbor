@@ -328,7 +328,13 @@ type bus struct {
 	ringBuf  []events.Event
 	ringHead int
 	ringFull bool
-	ringCap  int
+	// evicted is the precise "history became lossy" signal for the
+	// best-effort ring: true once an append has overwritten a
+	// previously-occupied slot (distinct from ringFull, which is true at
+	// exactly-capacity before any eviction). Flows to
+	// HistoryReplayer.Bounds' truncated return.
+	evicted bool
+	ringCap int
 
 	mu    sync.RWMutex
 	subs  map[uint64]*subscription
@@ -473,6 +479,11 @@ func (b *bus) loadHeadLocked(ctx context.Context, sessionID identity.Quadruple) 
 // ringAppendLocked writes ev to the next best-effort ring slot. Caller
 // holds publishMu; called only when bestEffort && ringCap > 0.
 func (b *bus) ringAppendLocked(ev events.Event) {
+	if b.ringFull {
+		// The ring is already at capacity, so this append overwrites the
+		// oldest retained event — the first actual eviction.
+		b.evicted = true
+	}
 	b.ringBuf[b.ringHead] = ev
 	b.ringHead++
 	if b.ringHead >= b.ringCap {
@@ -636,6 +647,155 @@ func (b *bus) replayBestEffort(from events.Cursor, f events.Filter) ([]events.Ev
 		return nil, nil
 	}
 	return out, nil
+}
+
+// Bounds implements events.HistoryReplayer. It returns the lowest (head)
+// and highest (tail) retained sequence for the filter's session, or
+// events.ErrNoHistory when the session has no retained events. It is
+// identity-scoped exactly like Replay.
+func (b *bus) Bounds(ctx context.Context, f events.Filter) (head, tail uint64, truncated bool, err error) {
+	if b.closed.Load() {
+		return 0, 0, false, events.ErrBusClosed
+	}
+	if !f.Admin && !f.HasFullTriple() {
+		return 0, 0, false, events.ErrIdentityScopeRequired
+	}
+	if f.Admin {
+		b.emitAdminScopeUsed(f)
+	}
+	if b.bestEffort {
+		return b.boundsBestEffort(f)
+	}
+	sessionID, err := resolveWindowSessionKey(f)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	hd, err := b.loadHead(ctx, sessionID)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("durable: bounds load head: %w", err)
+	}
+	lo, hi, ok := minMaxSeq(hd.Sequences)
+	if !ok {
+		return 0, 0, false, events.ErrNoHistory
+	}
+	// The durable (persisted) log keeps the per-session sequence list
+	// gap-free and untrimmed in V1, so the retained head IS the session's
+	// first sequence — never truncated.
+	return lo, hi, false, nil
+}
+
+// Window implements events.HistoryReplayer. It returns at most limit
+// events whose Sequence < before (before==0 ⇒ from the tail), the
+// most-recent K selected, returned oldest-first within the window,
+// matching f. It is a by-id read scoped to the named session
+// (MatchesScoped) even under Admin.
+//
+// Window does NOT emit audit.admin_scope_used: the handler always calls
+// Bounds first, which emits it once per state.history request (a paired
+// Bounds+Window must not double-audit a single read).
+func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Filter) ([]events.Event, error) {
+	if b.closed.Load() {
+		return nil, events.ErrBusClosed
+	}
+	if !f.Admin && !f.HasFullTriple() {
+		return nil, events.ErrIdentityScopeRequired
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	if b.bestEffort {
+		return b.windowBestEffort(before, limit, f)
+	}
+	sessionID, err := resolveWindowSessionKey(f)
+	if err != nil {
+		return nil, err
+	}
+	head, err := b.loadHead(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("durable: window load head: %w", err)
+	}
+	if len(head.Sequences) == 0 {
+		return nil, nil
+	}
+	seqs := append([]uint64(nil), head.Sequences...)
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] > seqs[j] }) // descending: newest first
+
+	// Walk newest-first, skip sequences at/above `before`, collect up to
+	// `limit` MATCHING events, then reverse to oldest-first.
+	out := make([]events.Event, 0, limit)
+	for _, seq := range seqs {
+		if before != 0 && seq >= before {
+			continue
+		}
+		rec, err := b.store.Load(ctx, sessionID, kindEntryPrefix+seqToken(seq))
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				// The head lists a sequence whose entry record is missing —
+				// a torn write or storage bug. Fail loudly rather than
+				// serving a gap (RFC §6.13 / CLAUDE.md §13).
+				return nil, fmt.Errorf("durable: window gap — head lists seq=%d but entry record is missing: %w",
+					seq, err)
+			}
+			return nil, fmt.Errorf("durable: window load entry seq=%d: %w", seq, err)
+		}
+		ev, err := decodeEvent(rec.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("durable: window decode entry seq=%d: %w", seq, err)
+		}
+		if events.IsBusInternalNotice(ev.Type) || !f.MatchesScoped(ev) {
+			continue
+		}
+		out = append(out, ev)
+		if len(out) >= limit {
+			break
+		}
+	}
+	reverseEvents(out)
+	return out, nil
+}
+
+// boundsBestEffort reports the head/tail from the in-memory ring. The
+// best-effort ring EVICTS on overflow, so it reports truncated=evicted:
+// once an append has overwritten an occupied slot, older events were
+// dropped and the retained head is NOT the session's first sequence (the
+// honest never-silently-lossy signal — CLAUDE.md §13).
+func (b *bus) boundsBestEffort(f events.Filter) (uint64, uint64, bool, error) {
+	if b.ringCap == 0 {
+		return 0, 0, false, events.ErrReplayUnavailable
+	}
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	evicted := b.evicted
+	b.publishMu.Unlock()
+	var lo, hi uint64
+	found := false
+	for _, ev := range snapshot {
+		if events.IsBusInternalNotice(ev.Type) || !f.MatchesScoped(ev) {
+			continue
+		}
+		if !found || ev.Sequence < lo {
+			lo = ev.Sequence
+		}
+		if ev.Sequence > hi {
+			hi = ev.Sequence
+		}
+		found = true
+	}
+	if !found {
+		return 0, 0, false, events.ErrNoHistory
+	}
+	return lo, hi, evicted, nil
+}
+
+// windowBestEffort serves a backward window from the in-memory ring.
+func (b *bus) windowBestEffort(before uint64, limit int, f events.Filter) ([]events.Event, error) {
+	if b.ringCap == 0 {
+		return nil, events.ErrReplayUnavailable
+	}
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	b.publishMu.Unlock()
+	return windowFromSnapshot(snapshot, before, limit, f), nil
 }
 
 // loadHead reads a session's head record outside publishMu (used by
@@ -852,8 +1012,80 @@ func unixNanoToTime(n int64) time.Time {
 	return time.Unix(0, n).UTC()
 }
 
-// Compile-time assertions: bus implements both interfaces.
+// resolveWindowSessionKey resolves the StateStore key (the session
+// triple) the windowed read scans. The durable log is keyed by the full
+// triple, so a non-admin filter carries it directly and an admin filter
+// must still name a tenant/user/session to resolve the storage key —
+// mirrors replayDurable's resolution.
+func resolveWindowSessionKey(f events.Filter) (identity.Quadruple, error) {
+	if f.Session == "" {
+		return identity.Quadruple{}, fmt.Errorf("%w: windowed read requires a SessionID on the filter",
+			events.ErrIdentityScopeRequired)
+	}
+	if f.Tenant == "" || f.User == "" {
+		return identity.Quadruple{}, fmt.Errorf("%w: windowed read requires the full identity triple on the filter",
+			events.ErrIdentityScopeRequired)
+	}
+	return identity.Quadruple{Identity: identity.Identity{
+		TenantID:  f.Tenant,
+		UserID:    f.User,
+		SessionID: f.Session,
+	}}, nil
+}
+
+// minMaxSeq returns the lowest and highest values in seqs, or ok=false
+// when seqs is empty.
+func minMaxSeq(seqs []uint64) (lo, hi uint64, ok bool) {
+	for i, s := range seqs {
+		if i == 0 {
+			lo, hi = s, s
+			continue
+		}
+		if s < lo {
+			lo = s
+		}
+		if s > hi {
+			hi = s
+		}
+	}
+	return lo, hi, len(seqs) > 0
+}
+
+// reverseEvents reverses out in place (newest-first → oldest-first).
+func reverseEvents(out []events.Event) {
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+}
+
+// windowFromSnapshot selects, from a sequence-ordered snapshot
+// (oldest-first), at most limit MATCHING events with Sequence < before
+// (before==0 ⇒ from the tail), the most-recent K, returned oldest-first.
+func windowFromSnapshot(snapshot []events.Event, before uint64, limit int, f events.Filter) []events.Event {
+	if limit <= 0 || len(snapshot) == 0 {
+		return nil
+	}
+	out := make([]events.Event, 0, limit)
+	for i := len(snapshot) - 1; i >= 0; i-- {
+		ev := snapshot[i]
+		if before != 0 && ev.Sequence >= before {
+			continue
+		}
+		if events.IsBusInternalNotice(ev.Type) || !f.MatchesScoped(ev) {
+			continue
+		}
+		out = append(out, ev)
+		if len(out) >= limit {
+			break
+		}
+	}
+	reverseEvents(out)
+	return out
+}
+
+// Compile-time assertions: bus implements all three interfaces.
 var (
-	_ events.EventBus = (*bus)(nil)
-	_ events.Replayer = (*bus)(nil)
+	_ events.EventBus        = (*bus)(nil)
+	_ events.Replayer        = (*bus)(nil)
+	_ events.HistoryReplayer = (*bus)(nil)
 )

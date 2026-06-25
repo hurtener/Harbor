@@ -1008,6 +1008,14 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		if stack.Memory != nil {
 			muxOpts = append(muxOpts, transports.WithMemory(stack.Memory, cfg.Memory.Driver))
 		}
+		// Phase 125: mount the `state.history` windowed event-replay
+		// route. The devstack mirrors the production `cmd/harbor` boot
+		// path (CLAUDE.md §17.6) — the durable bus + the artifact store
+		// are the same instances the runtime publishes/stores against,
+		// so the wave-end E2E exercises the real windowed read.
+		if stack.Artifacts != nil {
+			muxOpts = append(muxOpts, transports.WithStateHistory(bus, stack.Artifacts))
+		}
 		// Phase 73f: mount the `tools.*` route family. The devstack
 		// mirrors the production `cmd/harbor` boot path (CLAUDE.md
 		// §17.6) — the catalog projector is built over the same tool
