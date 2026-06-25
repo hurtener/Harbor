@@ -85,11 +85,13 @@ the coherent "Protocol-edge hardening" slice next on the critical path.
   cascade primitive (single mandatory interface, conformance parity across
   in-mem / SQLite / Postgres). All single-sourced.
 - **Consumer (same phase, §13):** the real three-store cascade handler
-  (refuse-if-running → artifacts → memory → state → session-record hard-
-  delete → redacted `session.erased` event) over the production drivers,
-  exercised end-to-end (delete → subsequent read `not_found`, cross-store
-  erasure proven, cross-tenant 403, running-task 409) and by a live smoke
-  client.
+  (refuse-if-running [load+verify + probe] → artifacts → memory →
+  `DeleteScope` [removes the `session.lifecycle` record + all kinds under the
+  triple] → clear in-memory map → redacted `session.erased` event under the
+  ACTOR scope) over the production drivers, exercised end-to-end (delete →
+  subsequent read `not_found`, cross-store erasure proven, foreign-target 401,
+  running-task 409) and by a live smoke client. Own-session-only — no admin /
+  cross-tenant erasure path this phase.
 
 ## Staging — a single stage of three parallel worktree agents
 
@@ -115,6 +117,9 @@ concurrently they will three-way-conflict. The conflict surface:
 | `internal/protocol/conformance/conformance.go` | canonical-set count 5 → 6, `wantCaps` + `Accepts` | the same count assertion advances again (6 → 7) + its own cap |
 | `internal/protocol/methods/methods.go` | — | adds `MethodSessionsDelete` + `canonicalMethods` + `IsSessionsMethod` (method-count assertion in `methods_test.go`) |
 | `internal/protocol/singlesource/singlesource.go` | — | registers `SessionsDeleteRequest`/`SessionsDeleteResponse` in `CanonicalWireTypes` |
+| `internal/protocol/posture.go` | adds `AgentConfigAvailable` to `PostureDeps` + an `agentConfig` param to `wiredCapabilitiesFor` | adds `SessionLifecycleAvailable` to the same `PostureDeps` + a `sessionLifecycle` param to `wiredCapabilitiesFor` |
+| `cmd/harbor/cmd_dev.go` | wires the agent-config flag into the posture deps | wires the eraser / session-lifecycle flag into the posture deps |
+| `harbortest/devstack/devstack.go` | wires the agent-config flag on the devstack boot path | wires the eraser / session-lifecycle flag on the devstack boot path |
 | `web/console/src/lib/protocol/wire-manifest.gen.json` | regenerated (digest shifts — new capability member) | regenerated (new method + code + capability + types) |
 | `docs/site/protocol/{methods,errors,types}.md` | no-diff (capability-only) | regenerated (D-209) |
 | `docs/decisions.md` | D-260 (pre-assigned) | D-262 (pre-assigned) |
@@ -129,23 +134,40 @@ then 130 rebases onto it:
 
 1. Merge **128**. Its conformance count lands at 6; its capability member
    lands in the registry; the manifest digest regenerates once.
-2. **Rebase 130 on the merged 128** before merging. The rebase resolves
-   trivially because the changes are *additive at the tail* of each shared
-   list (another `Capability` const, another `canonicalCapabilities` entry,
-   the count assertion advances 6 → 7, another `CanonicalWireTypes`
-   registration, another manifest member). After the rebase, 130 re-runs
-   `make protocol-ts-gen` (so the committed manifest reflects BOTH the new
-   capability from 128 *and* 130's method/code/types) and
-   `make protocol-docs-gen`, then re-runs `make protocol-ts-gen-check`
-   + `make protocol-docs-gen-check` green before merge.
+2. **Rebase 130 on the merged 128** before merging. For the shared *lists*
+   the rebase is an *additive-at-the-tail* append (another `Capability`
+   const, another `canonicalCapabilities` entry, the count assertion advances
+   6 → 7, another `CanonicalWireTypes` registration, another manifest member).
+   For the three shared *code* files — `internal/protocol/posture.go`,
+   `cmd/harbor/cmd_dev.go`, `harbortest/devstack/devstack.go` — it is NOT a
+   list-tail append but a **struct-field + function-signature addition**: 130
+   adds a second `PostureDeps` field (`SessionLifecycleAvailable`) and a
+   second `wiredCapabilitiesFor` parameter alongside 128's
+   `AgentConfigAvailable` field / parameter, and threads it through both boot
+   paths. This still rebases cleanly (each side appends a distinct field /
+   parameter / call-site argument within the same struct and signature), but
+   it is a signature change, not the trivial list-tail append the lists are.
+   After the rebase, 130 re-runs `make protocol-ts-gen` (so the committed
+   manifest reflects BOTH the new capability from 128 *and* 130's
+   method/code/types) and `make protocol-docs-gen`, then re-runs
+   `make protocol-ts-gen-check` + `make protocol-docs-gen-check` green before
+   merge.
 3. The pre-assigned D-numbers (D-260, D-261, D-262) and pre-assigned
    capability/method/code names guarantee no symbol collision; the only
-   mechanical conflict is adjacency in the shared lists, which the
+   mechanical conflict is adjacency in the shared lists and the shared
+   `PostureDeps` struct / `wiredCapabilitiesFor` signature, which the
    128-before-130 order makes a clean append rather than a three-way merge.
 
+**The merge STRATEGY is UNCHANGED.** The existing "128 before 130; rebase 130
+on merged 128" already covers the three shared code files
+(`posture.go` / `cmd_dev.go` / `devstack.go`) exactly as it covers the shared
+lists — only the conflict table and the "additive at the tail" wording above
+were incomplete in naming them. No new ordering or rebase step is required.
+
 **Method-count assertion note (130).** `internal/protocol/methods/methods_test.go`
-asserts a fixed canonical method count. Only 130 adds a method, so only 130
-advances that count — 128 does not touch `methods.go`. No conflict there
+asserts a fixed canonical method count, which 130 advances **109 → 110** (and
+`IsSessionsMethod` advances **2 → 3**). Only 130 adds a method, so only 130
+advances those counts — 128 does not touch `methods.go`. No conflict there
 *between* the two phases, but the implementing agent for 130 must bump the
 count assertion in lockstep with the `canonicalMethods` append.
 
@@ -199,8 +221,10 @@ is alive together:
     successful refresh resets staleness and it verifies again.
   - **130 fail-loud refusal:** a `sessions.delete` against a session with a
     RUNNING task is refused `409 session_running` with **all stores
-    untouched**; a cross-tenant erasure without `auth.ScopeAdmin` is
-    `403 scope_mismatch`.
+    untouched**; erasure is **own-session-only** (no admin / cross-tenant
+    erasure path this phase), so a foreign-target attempt — a body identity
+    component ≠ the verified triple — is rejected `401 identity_required` by
+    `assertSessionsIdentity`, **with all stores untouched**.
 - **Identity propagation** asserted end-to-end through every layer the test
   wires (the multi-isolation triple flows from the verified token through the
   handler into the scoped stores; cross-tenant isolation lives or dies here).

@@ -183,14 +183,28 @@ None.
       contain it when false — proven by a posture unit test that builds the
       surface both ways and asserts presence/absence (mirrors the existing
       `topology_snapshot` conditional-advertisement test).
-- [ ] The CONSUMER is wired to the ACTUAL surface mount: in
-      `cmd/harbor/cmd_dev.go` and `harbortest/devstack`, the boolean that
-      decides whether `transports.WithAgentConfigService(...)` is supplied
-      ALSO sets `PostureDeps.AgentConfigAvailable`, derived from one
-      source-of-truth variable (e.g. `agentConfigEnabled := agentConfigService != nil`)
-      so the advertisement can never drift from the mount. A test (or the
-      integration test below) asserts the production wiring advertises
-      `agent_config`.
+- [ ] The CONSUMER is wired to the ACTUAL surface mount, with a
+      PER-BOOT-PATH source of truth (the two boot paths gate the mount
+      differently, so one shared expression cannot be correct on both):
+      - `harbortest/devstack`: `transports.WithAgentConfigService(...)` is
+        supplied only inside `if stack.AgentConfig != nil`, and the
+        `agentConfigService` variable does not yet exist at the point
+        `NewPostureSurface` is constructed — so
+        `AgentConfigAvailable: agentConfigService != nil` would not even
+        compile there. The flag is set from the SAME boolean that gates the
+        mount: `AgentConfigAvailable: stack.AgentConfig != nil`.
+      - `cmd/harbor/cmd_dev.go`: `agentConfigService` is built and mounted
+        UNCONDITIONALLY (the surface is always present on this path), so
+        `agent_config` is advertised unconditionally —
+        `AgentConfigAvailable: true` by construction. Do NOT make this path's
+        mount or advertisement conditional to match devstack; the binding
+        rule is "advertise iff mounted", and on cmd_dev the surface is always
+        mounted.
+      On each path the advertisement derives from the SAME condition that
+      gates the mount on that path, so it can never drift from it. The
+      "advertised iff mounted" integration assertion below pins the
+      devstack-shaped (conditional) path. A test (or that integration test)
+      asserts the production wiring advertises `agent_config`.
 - [ ] `internal/protocol/conformance/conformance.go` `runVersionHandshake`
       is updated: the canonical-set count goes 5 → 6, `CapAgentConfig` is
       added to `wantCaps`, and an `h.Accepts(types.CapAgentConfig)`
@@ -255,7 +269,7 @@ internal/protocol/types/version_test.go       # TestCapAgentConfig_Registered (m
 internal/protocol/posture.go                  # PostureDeps.AgentConfigAvailable; wiredCapabilitiesFor(topology, agentConfig)
 internal/protocol/posture_test.go             # agent_config advertised iff AgentConfigAvailable; absence when false
 internal/protocol/conformance/conformance.go  # runVersionHandshake: 5->6, +CapAgentConfig, +Accepts assertion
-cmd/harbor/cmd_dev.go                          # PostureDeps.AgentConfigAvailable wired from agentConfigService != nil (CONSUMER)
+cmd/harbor/cmd_dev.go                          # PostureDeps.AgentConfigAvailable always-on — service mounted unconditionally (CONSUMER)
 harbortest/devstack/devstack.go                # same single-boolean wiring on the devstack boot path (CONSUMER)
 web/console/src/lib/protocol/wire-manifest.gen.json  # regenerated — wire_surface_digest changes — GENERATED, do not hand-edit
 test/integration/phase128_agent_config_capability_test.go  # E2E: runtime.info advertises agent_config iff surface mounted; missing-identity 401
@@ -430,10 +444,14 @@ integration test drives `runtime.info` through — is a transitive prereq of
   two different call sites in the boot path. If they drift, `runtime.info`
   lies about the wire — the exact failure the `topology_snapshot`
   comment warns against ("Advertising `topology_snapshot` here would lie
-  about the wire"). MITIGATION (binding in the acceptance criteria): both
-  derive from ONE source-of-truth boolean per boot path
-  (`agentConfigEnabled := agentConfigService != nil`), and the integration
-  test pins "advertised iff mounted" against the real wiring. A future
+  about the wire"). MITIGATION (binding in the acceptance criteria): on EACH
+  boot path the advertisement derives from the SAME condition that gates the
+  mount on that path — `stack.AgentConfig != nil` on `harbortest/devstack`
+  (where the surface is conditional and `agentConfigService` does not yet
+  exist at the posture construction point) and `true` by construction on
+  `cmd/harbor/cmd_dev.go` (where the service is mounted unconditionally, so
+  the capability is always-on). The integration test pins "advertised iff
+  mounted" against the real, devstack-shaped (conditional) wiring. A future
   hardening could fold both into a single `WithAgentConfig(service)` option
   that sets the posture flag too — out of scope here; noted.
 - **`sessions.*` and `artifacts.*` capabilities — DEFERRED, not trivial.**
@@ -587,11 +605,13 @@ the gap.
    `PostureDeps` gains `AgentConfigAvailable bool`; `wiredCapabilitiesFor`
    appends `CapAgentConfig` only when set; `runtime.info.capabilities`
    advertises `agent_config` iff this runtime mounted the surface — the
-   `topology_snapshot` conditional pattern. The boot paths
-   (`cmd/harbor/cmd_dev.go`, `harbortest/devstack`) set the flag from the
-   SAME source-of-truth boolean that decides `WithAgentConfigService`
-   (`agentConfigService != nil`), so the advertisement can never claim an
-   absent surface.
+   `topology_snapshot` conditional pattern. Each boot path sets the flag from
+   the SAME condition that gates `WithAgentConfigService` ON THAT PATH:
+   `stack.AgentConfig != nil` on `harbortest/devstack` (where the mount is
+   conditional and `agentConfigService` is not yet in scope at posture
+   construction) and `true` on `cmd/harbor/cmd_dev.go` (where the service is
+   mounted unconditionally, so the capability is always-on by construction).
+   The advertisement can never claim an absent surface.
 3. **The consumer lands in the same phase (CLAUDE.md §13).** The primitive
    (the capability constant) ships with its consumer (the runtime-side
    conditional advertisement wired to the real surface mount) and a

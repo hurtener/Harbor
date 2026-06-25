@@ -113,23 +113,40 @@ behavior*, not from any brief finding.
 
 <!-- Binding + testable. -->
 
-- [ ] `internal/config.IdentityConfig` gains
-      `JWKSMaxStale time.Duration `yaml:"jwks_max_stale,omitempty"``.
+- [ ] `internal/config.IdentityConfig` gains a `JWKSMaxStale time.Duration`
+      field with the struct tag `yaml:"jwks_max_stale,omitempty"`.
       `validateIdentity` rejects a **negative** value
       (`identity.jwks_max_stale must not be negative`) and rejects a
       positive value **below the floor** (a ceiling smaller than the
-      minimum possible refresh window can never be satisfied —
-      `identity.jwks_max_stale must be >= 1m or 0 for the safe default`).
+      minimum possible refresh window can never be satisfied). The floor is
+      a single named const `jwksMaxStaleFloor` (1m); the rejection message
+      derives the bound from that const rather than hardcoding the literal —
+      `fmt.Sprintf("identity.jwks_max_stale must be >= %s or 0 for the safe default", jwksMaxStaleFloor)`.
       A zero value is accepted and means "apply the safe default."
 - [ ] `auth.JWKSKeySet` carries an immutable `maxStale time.Duration` set
       once at construction via a new `WithJWKSMaxStale(d time.Duration)`
       option (a non-positive value leaves it at the package default
       `defaultJWKSMaxStale`); it is never mutated after construction.
-- [ ] **Primitive — the ceiling fails closed.** When `maxStale > 0` and the
-      cached snapshot's age (`now - fetchedAt`) is `>= maxStale` after a
-      bounded refresh attempt, `KeyByID` returns a wrapped `ErrJWKSStale`
-      **regardless of whether the `kid` resolves** — a possibly-revoked key
-      in a too-old snapshot is never served.
+- [ ] **Primitive — the ceiling fails closed, on the hot path.** The
+      `KeyByID` hot-path early return
+      (`if entry, fresh, ok := ks.lookup(kid); ok && fresh { return … }`) is
+      additionally gated on the ceiling: the cached key is returned from the
+      hot path only when the snapshot age (`now - fetchedAt`) is `< maxStale`
+      (within the ceiling). When `maxStale > 0` and the snapshot age is
+      `>= maxStale` — whether that age is still below the cache TTL (a
+      **sub-TTL ceiling**) or past it — the hot path does **not** return;
+      `KeyByID` attempts one bounded refresh and, if the snapshot is still
+      past the ceiling, returns a wrapped `ErrJWKSStale` **regardless of
+      whether the `kid` resolves** — a possibly-revoked key in a too-old
+      snapshot is never served. Gating the hot path (not only the
+      post-`maybeRefresh` path) is load-bearing: the hot path computes
+      freshness against the 5m cache TTL (`defaultJWKSTTL`), so a configured
+      ceiling in `[floor, ttl)` would otherwise be silently raised to the
+      TTL — the hot path would return a key whose age already exceeds the
+      ceiling, and `maybeRefresh` (and its ceiling check) would never run.
+      With the gate, any ceiling `>= jwksMaxStaleFloor` is enforced exactly,
+      with **zero behavior change** for the 1h default (1h ≫ 5m, so the
+      default never trips the new gate before the TTL does).
 - [ ] **Consumer (same phase) — the Validator surfaces it distinctly.** The
       validator's keyfunc propagates `ErrJWKSStale` as `ErrJWKSStale` (not
       masked as `ErrUnknownKey`); `mapParserError` honors `ErrJWKSStale`
@@ -153,9 +170,13 @@ behavior*, not from any brief finding.
       through the existing `auth.rejected` audit + (when wired) bus emit
       with `reason` distinguishable as the staleness sentinel. No raw token
       is logged (CLAUDE.md §7 rule 7).
-- [ ] **`from_config` wiring.** `NewJWKSValidator` threads the effective
-      ceiling into the keyset: `cfg.JWKSMaxStale` when `> 0`, else
-      `defaultJWKSMaxStale`. A `harbor serve` boot with a negative/too-low
+- [ ] **`from_config` wiring.** `NewJWKSValidator` passes `cfg.JWKSMaxStale`
+      straight through to `WithJWKSMaxStale` — it does **not** re-apply the
+      default. The default lives in exactly one place: `WithJWKSMaxStale`
+      maps a non-positive value to the single named const
+      `defaultJWKSMaxStale`. An unset config field (`0`) thus reaches the
+      option as `0` and the option applies the default; a validated positive
+      value is honored verbatim. A `harbor serve` boot with a negative/too-low
       `jwks_max_stale` fails loud at config validation, naming the field.
 - [ ] **Concurrent-reuse (reusable artifact).** The existing JWKSKeySet /
       Validator concurrent-reuse test is extended: N≥100 concurrent
@@ -177,7 +198,7 @@ internal/protocol/auth/auth.go          # keyfunc propagates ErrJWKSStale distin
 internal/protocol/auth/auth_test.go     # mapParserError ordering; Validate surfaces ErrJWKSStale (consumer test)
 internal/protocol/auth/middleware.go    # reasonForWire arm: ErrJWKSStale -> "jwks_stale"
 internal/protocol/auth/middleware_test.go   # wire reason "jwks_stale"; protocolErrorFor still CodeAuthRejected/401
-internal/protocol/auth/from_config.go   # thread effective ceiling (cfg or default) into NewJWKSKeySet
+internal/protocol/auth/from_config.go   # pass cfg.JWKSMaxStale straight to WithJWKSMaxStale (the option owns the single default)
 internal/protocol/auth/from_config_test.go  # default applied when unset; explicit value honored
 internal/config/config.go               # IdentityConfig.JWKSMaxStale field + godoc
 internal/config/validate.go             # validateIdentity: negative / below-floor rejection
@@ -248,15 +269,26 @@ No new Protocol method, error `Code`, wire type, or capability. The
     `fetchedAt` and the key resolves again; (d) the escalated `slog.Error`
     fires at most once per minimum-refresh window (captured via a test
     `slog.Handler`); (e) `maxStale <= 0` (option) keeps the package default
-    — the ceiling is never disabled.
+    — the ceiling is never disabled; (f) **sub-TTL ceiling (the hot-path
+    gap)** — `maxStale` configured *below* the 5m cache TTL (e.g. `2m`) with
+    the snapshot age driven into `[maxStale, ttl)` (e.g. `3m`): the snapshot
+    is still "fresh" by the TTL, so the un-gated hot path *would* serve it,
+    yet `KeyByID` MUST reject with `ErrJWKSStale` because the hot-path early
+    return is ceiling-gated. This exercises the exact window the
+    past-both-thresholds case (b) misses — (b) drives staleness past BOTH the
+    ceiling and the TTL (so the snapshot goes non-`fresh` and only the
+    post-`maybeRefresh` check fires), leaving the sub-TTL hot-path path
+    untested. Controllable clock only — no `time.Sleep`.
   - `auth_test.go`: the **consumer** path — `Validate` returns an error for
     which `errors.Is(err, ErrJWKSStale)` holds (not `ErrUnknownKey`);
     `mapParserError` honors `ErrJWKSStale` ahead of `ErrUnknownKey`.
   - `middleware_test.go`: `reasonForWire(ErrJWKSStale) == "jwks_stale"`;
     `protocolErrorFor(ErrJWKSStale)` is `(CodeAuthRejected, 401)`.
   - `validate_test.go` / `from_config_test.go`: negative and below-floor
-    `jwks_max_stale` rejected with the field-naming message; zero applies
-    `defaultJWKSMaxStale`; an explicit positive value is threaded through.
+    `jwks_max_stale` rejected with the field-naming message (derived from
+    `jwksMaxStaleFloor`, not a hardcoded literal); zero reaches the option
+    and the option applies `defaultJWKSMaxStale` (the single default source);
+    an explicit positive value is passed through verbatim.
 - **Integration (`test/integration/jwks_max_stale_test.go`):** a real
   `auth` middleware over the real wire edge (`httptest.Server`) behind a
   JWKS-backed validator with an injected clock + a controllable fetcher.
@@ -362,17 +394,20 @@ checks since this phase ships no new endpoint or Protocol method.
   starts failing closed. This is a deliberate fail-closed posture
   improvement, not a regression; the default is set **generously** (see
   below) to minimize surprise, and the change is called out in the decision
-  + the README/changelog note. There is intentionally no opt-out
+  and the README/changelog note. There is intentionally no opt-out
   (CLAUDE.md §13 — no identity-downgrading knobs); an operator tunes the
   ceiling, they do not remove it.
 - **Default value choice.** `defaultJWKSMaxStale` is proposed at **1 hour**
   — ~12× the 5-minute refresh TTL: tight enough to bound a revoked key to
   ~1h of continued acceptance, loose enough to ride out a transient IdP
   outage without auth flapping. The validation **floor** is the minimum
-  refresh interval (1 minute): a ceiling below the smallest possible
-  refresh window can never be satisfied. Both values are documented in
-  godoc + the example config + the glossary; revisit if operator feedback
-  wants a tighter shipped default.
+  refresh interval, held in a single named const `jwksMaxStaleFloor`
+  (1 minute) that the validation message derives from rather than hardcoding
+  the literal: a ceiling below the smallest possible refresh window can never
+  be satisfied. Both the default (`defaultJWKSMaxStale`) and the floor
+  (`jwksMaxStaleFloor`) are single named consts referenced everywhere they
+  apply, and are documented in godoc + the example config + the glossary;
+  revisit if operator feedback wants a tighter shipped default.
 - **Bounds, not instant, revocation — and the rotation guidance.** The
   ceiling caps the *window* in which a revoked key is honored; it does not
   evict a key the instant the IdP revokes it. The plan, the godoc, and the
@@ -396,12 +431,21 @@ checks since this phase ships no new endpoint or Protocol method.
   manifest change), the escalated `slog.Error`, and the existing
   `auth.rejected` bus event. Recorded in D-261; a future phase may promote
   it to a dedicated code if a client needs to branch on it.
-- **Single-flight + ceiling interaction.** The ceiling check sits *after*
-  `maybeRefresh()` on the `KeyByID` path, so a request that arrives just as
-  the snapshot ages out still gets one bounded refresh attempt before being
-  rejected — the ceiling never short-circuits a recovery fetch. The Error
-  log is gated to the rate-limited `maybeRefresh` failure path so a flood
-  of rejected requests does not flood the logs.
+- **Single-flight + ceiling interaction (hot path vs. refresh).** The
+  ceiling gates two points on the `KeyByID` path, not one. (1) The hot-path
+  early return is gated on the ceiling — a cached key is returned *without* a
+  refresh only when the snapshot age is within `maxStale`. This is what
+  enforces a sub-TTL ceiling: the hot path's own freshness check is against
+  the 5m cache TTL, not the ceiling, so without this gate a ceiling tighter
+  than the TTL would be silently raised to the TTL (the hot path would return
+  a key past the ceiling and `maybeRefresh` — with its ceiling check — would
+  never run). (2) When the snapshot is at/over the ceiling the path falls
+  through to one bounded `maybeRefresh()` attempt and re-checks the ceiling
+  afterward, so a request that arrives just as the snapshot ages out still
+  gets one recovery fetch before being rejected — the ceiling never
+  short-circuits a recovery fetch. The Error log is gated to the rate-limited
+  `maybeRefresh` failure path so a flood of rejected requests does not flood
+  the logs.
 - **`ProtocolVersion` impact: none.** No method, wire type, error code, or
   capability changes; `internal/protocol/types/version.go` is untouched; no
   `make protocol-ts-gen` / `make protocol-docs-gen` regeneration is
@@ -492,11 +536,16 @@ unreachable.
    `auth.JWKSKeySet` gains an immutable `maxStale` (set via
    `WithJWKSMaxStale`, defaulting to `defaultJWKSMaxStale` = 1h). When the
    cached snapshot's age (time since the last *successful* fetch) reaches
-   the ceiling after a bounded refresh attempt, `KeyByID` fails closed with
-   a wrapped `ErrJWKSStale` regardless of whether the `kid` resolves — a
-   possibly-revoked key in a too-old snapshot is never served. The ceiling
-   check sits after `maybeRefresh()` so a recovery fetch is always attempted
-   first.
+   the ceiling, `KeyByID` fails closed with a wrapped `ErrJWKSStale`
+   regardless of whether the `kid` resolves — a possibly-revoked key in a
+   too-old snapshot is never served. The ceiling gates the `KeyByID` hot-path
+   early return (so a cached key is served without a refresh only when its
+   age is within `maxStale` — this enforces a ceiling tighter than the 5m
+   cache TTL, which the hot path's own freshness check would otherwise miss)
+   AND the post-`maybeRefresh()` re-check (so a request that arrives as the
+   snapshot ages out still gets one recovery fetch first). The default (1h)
+   and floor (1m) each live in a single named const (`defaultJWKSMaxStale`,
+   `jwksMaxStaleFloor`) referenced everywhere they apply.
 2. **The Validator is the same-phase consumer (§13).** A primitive with no
    consumer bit-rots; the consumer here is the `Validator` keyfunc, which
    propagates `ErrJWKSStale` distinctly (not masked as `ErrUnknownKey`);

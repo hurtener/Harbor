@@ -13,14 +13,15 @@ consumer) has no method to satisfy a data-lifecycle / right-to-erasure
 request. This phase adds an identity-scoped `sessions.delete` method that
 deletes a session and **cascades deletion of its scoped State, Memory, and
 Artifacts**, refusing fail-loud to delete a session with a RUNNING task
-(mirroring the GC never-reap-running invariant), gated by the same
-own-identity / `auth.ScopeAdmin` scope contract as `sessions.list`, and
-emitting a redacted audited lifecycle event. The primitive (method + wire
+(mirroring the GC never-reap-running invariant), scoped own-session-only —
+a caller may erase only their own verified `(tenant, user, session)`, with
+no admin / cross-tenant path — and emitting a redacted audited lifecycle
+event. The primitive (method + wire
 types + error code + capability + the StateStore cascade primitive) lands
 with its consumer in the same phase (CLAUDE.md §13): a server handler that
 performs the real three-store cascade, exercised end-to-end by an
 integration test (delete → subsequent read returns `not_found`,
-cross-store erasure proven, cross-tenant rejected, running-task refused)
+cross-store erasure proven, foreign-target rejected, running-task refused)
 and a live smoke client.
 
 ## RFC anchor
@@ -86,16 +87,19 @@ None.
   the target session has a RUNNING task, mirroring the GC never-reap-running
   invariant (RFC §6.9). The runtime never partially erases a running
   session.
-- The same scope contract as `sessions.list` / `state.history`: a non-admin
-  caller may erase **only their own** `(tenant, user, session)`; a
-  cross-tenant or other-user erasure requires the verified `auth.ScopeAdmin`
-  claim on the ctx (the request body carries no elevation knob).
+- An **own-session-only** scope contract: a caller may erase **only their
+  own** verified `(tenant, user, session)`. A body identity mismatching the
+  verified identity is rejected `identity_required` (401) via the existing
+  `assertSessionsIdentity` defence-in-depth; a session absent under the
+  verified triple is `not_found` (404, existence never revealed). There is
+  NO admin / cross-tenant erasure path in this phase (no elevation knob, no
+  `auth.ScopeAdmin`) — that is a deferred non-goal.
 - A real cascade **consumer in the same phase** (§13): a server handler
   (extending the existing `POST /v1/sessions/` handler with a `delete`
   branch) that performs the three-store cascade through the production
   drivers, proven end-to-end by an integration test and a live smoke
   assertion — delete → subsequent `sessions.inspect` / `state.history`
-  returns `not_found` / empty, cross-store erasure asserted, cross-tenant
+  returns `not_found` / empty, cross-store erasure asserted, foreign-target
   rejected, running-task refused.
 - A negotiable destructive surface: a new `CapSessionLifecycle` capability
   so a read-only client can detect (via `runtime.info`) whether the runtime
@@ -103,7 +107,14 @@ None.
   call time.
 - An auditable, observable erasure: a redacted `session.erased` event on
   the canonical bus + an audit-sink record, carrying NO user content and
-  NOT re-persisted under the erased session's own identity.
+  NOT re-persisted under the erased session's own identity. The mechanism:
+  the durable event bus encodes every published event as a `StateRecord`
+  keyed by `ev.Identity.{Tenant,User,Session}`, so the event MUST be emitted
+  under the **actor's** identity scope (the caller's verified triple / a
+  tenant-or-admin observability scope), NOT the erased session's triple —
+  the erased session id rides as a payload field. Emitting under the erased
+  triple would re-create a durable record and make post-erasure
+  `state.history` non-empty.
 - A StateStore cascade primitive `DeleteScope(ctx, identity.Identity)
   (int, error)` added to the single mandatory interface with conformance
   parity across in-mem / SQLite / Postgres (RFC §6.11, §9 — no driver-only
@@ -111,6 +122,13 @@ None.
 
 ## Non-goals
 
+- **Cross-tenant / admin erasure of another identity's session.** This phase
+  is own-session-only — a caller erases solely their own verified
+  `(tenant, user, session)`. Erasing another identity's session is deferred
+  to a separate elevated verb (its own scope-claim + audit design); there is
+  NO `auth.ScopeAdmin` path here. The handler's `assertSessionsIdentity`
+  rejects ANY body-identity mismatch as `identity_required` (401) before any
+  elevation could be reached, so a foreign target can never be named.
 - **Cross-session / bulk erasure (a "delete everything for this user /
   tenant" verb).** `sessions.delete` erases ONE session per call. A
   user-wide or tenant-wide purge is a heavier surface (it crosses the
@@ -151,15 +169,17 @@ None.
   Method = "sessions.delete"` is added in `internal/protocol/methods/methods.go`
   ONLY, added to `canonicalMethods` and to the `IsSessionsMethod` set, with
   the wire route `POST /v1/sessions/delete`. No second definition site; the
-  single-source checker stays green.
+  single-source checker stays green. The canonical method-count assertion in
+  `methods_test.go` advances **109 → 110**; `wantMethods` gains
+  `MethodSessionsDelete`; the `IsSessionsMethod` set advances 2 → 3.
 - [ ] **Single-source error code.** `protoerrors.CodeSessionRunning Code =
   "session_running"` is added in `internal/protocol/errors/errors.go` ONLY,
   added to `canonicalCodes`, and maps to HTTP **409 Conflict** in the
   sessions wire handler. `errors.Codes()` / `IsValidCode` reflect it. No
-  other erasure failure invents a new code — incomplete identity is
-  `identity_required` (401), cross-identity is `not_found` (404, existence
-  never revealed across identities — mirrors `tasks.get` / `state.history`),
-  cross-tenant-without-admin is `scope_mismatch` (403).
+  other erasure failure invents a new code — incomplete identity OR a body
+  identity mismatching the verified triple is `identity_required` (401), a
+  session absent under the verified triple is `not_found` (404, existence
+  never revealed across identities — mirrors `tasks.get` / `state.history`).
 - [ ] **Single-source wire types.** `SessionsDeleteRequest` /
   `SessionsDeleteResponse` are defined ONLY in
   `internal/protocol/types/sessions.go` and registered in
@@ -196,32 +216,47 @@ None.
   via `ArtifactStore.List(scope)` and `Delete(scope, id)`s each (both
   idempotent); after erasure `List(scope)` returns empty. Counted into
   `artifacts_deleted`.
-- [ ] **Session-record hard-delete.** A new `Registry.Erase(ctx, id)
-  error` removes the persisted SessionRegistry record (not a `Closed=true`
-  tombstone) and the open-sessions map entry, after verifying the ctx
-  identity matches the target. A subsequent `sessions.inspect` returns
-  `not_found`; a subsequent `state.history` returns empty / `not_found`.
-- [ ] **Fail-loud running-task refusal.** `Registry.Erase` consults the
-  configured `RunningProbe` (the same seam GC uses); when it returns true,
-  Erase returns a distinct sentinel `ErrSessionRunning`, the Service surfaces
-  it, and the handler returns `session_running` (409). **No store is touched
-  on refusal** (the probe is checked before any delete). Proven by a test
-  with a RUNNING task on the probe.
-- [ ] **Scope contract (own-identity vs admin).** A non-admin caller erases
-  only their own verified `(tenant, user, session)`; a body identity
-  mismatching the verified identity is rejected `identity_required` (the
-  existing `assertSessionsIdentity` defence-in-depth); a session belonging to
-  another identity is `not_found` (existence not revealed). A cross-tenant /
-  other-user erasure succeeds ONLY with the verified `auth.ScopeAdmin` claim
-  on the ctx, and that admin erasure emits the `audit.admin_scope_used`
-  event (mirroring `sessions.list`).
+- [ ] **Session-record hard-delete.** The durable SessionRegistry record is
+  hard-deleted (not a `Closed=true` tombstone). Because the
+  `session.lifecycle` registry record is itself a StateStore record under the
+  triple, the kind-agnostic `DeleteScope` step removes it — `DeleteScope`
+  (not `Registry.Erase`) performs the durable record deletion. A new
+  `Registry.Erase(ctx, id) error` runs FIRST as a pre-flight: it LOADs and
+  VERIFIES the record exists under the caller's verified identity (and probes
+  the running-task seam), then, after the cascade, clears the in-memory
+  open-sessions / id-index map entry — it performs no durable delete of its
+  own. A subsequent `sessions.inspect` returns `not_found`; a subsequent
+  `state.history` returns empty / `not_found`.
+- [ ] **Fail-loud running-task refusal.** `Registry.Erase`'s up-front
+  pre-flight — load+verify the record under the caller's identity, then
+  consult the configured `RunningProbe` (the same seam GC uses) — runs before
+  any store is touched; when the probe returns true, Erase returns a distinct
+  sentinel `ErrSessionRunning`, the Service surfaces it, and the handler
+  returns `session_running` (409). **No store is touched on refusal** (both
+  the verify and the probe precede any delete). Proven by a test with a
+  RUNNING task on the probe.
+- [ ] **Scope contract (own-session-only).** A caller erases only their own
+  verified `(tenant, user, session)`. A body identity mismatching the
+  verified identity is rejected `identity_required` (401) via the existing
+  `assertSessionsIdentity` defence-in-depth — which fires before any further
+  scope logic, so a foreign target can never even be named. A session absent
+  under the verified triple is `not_found` (404, existence not revealed).
+  There is NO `auth.ScopeAdmin` success path, NO `scope_mismatch` (403), and
+  NO `audit.admin_scope_used` emit — cross-tenant / admin erasure is a
+  deferred non-goal.
 - [ ] **Audited, observable, content-free erasure.** A successful erasure
   emits a redacted `session.erased` event on the canonical bus (session id +
   actor scope + per-store deletion counts + timestamp; run through the
   `audit.Redactor`; NO user content) for cross-cutting observers + the audit
-  sink. The event is **NOT re-persisted under the erased session's own
-  identity** — a post-erasure `state.history` for that triple returns empty,
-  not "one erasure event". Asserted by a test.
+  sink. **Mechanism:** the durable event bus encodes every published event as
+  a `StateRecord` keyed by `ev.Identity.{Tenant,User,Session}`, so the event
+  is emitted under the **actor's** identity scope (the caller's verified
+  triple / a tenant-or-admin observability scope), NOT the erased session's
+  triple — the erased session id rides as a payload field. Emitting under the
+  erased triple would re-create a durable record and leave `state.history`
+  non-empty. A test asserts the durable record for `session.erased` is keyed
+  under the **actor**, not the erased triple, and that post-erasure
+  `state.history` for the erased triple is empty (not "one erasure event").
 - [ ] **Idempotent / retry-safe cascade.** Each per-store delete is
   idempotent, so a cascade interrupted by a transient store error returns
   the error loudly (never a partial silent success) and is safe to re-invoke
@@ -236,9 +271,10 @@ None.
   the test asserts (a) `200` with the deletion counts, (b) a subsequent
   `sessions.inspect` → `not_found`, (c) `state.history` → empty, (d) the
   artifact `List(scope)` → empty, (e) memory `GetLLMContext` → clean, (f) a
-  cross-tenant erasure without admin → `403 scope_mismatch`, (g) an erasure
-  of a session with a RUNNING task → `409 session_running` with all stores
-  untouched. Identity propagation asserted end-to-end. Runs under `-race`.
+  foreign-target erasure — a body identity component ≠ the verified triple —
+  → `identity_required` / 401, (g) an erasure of a session with a RUNNING
+  task → `409 session_running` with all stores untouched. Identity
+  propagation asserted end-to-end. Runs under `-race`.
 - [ ] **Hand-mirrored TS client + manifest lockstep (D-223).** The
   hand-maintained TS wire module (`web/console/src/lib/sessions/types.ts`)
   declares `SessionsDeleteRequest` / `SessionsDeleteResponse` with every
@@ -256,7 +292,7 @@ None.
   registration (method, code, capability, TS mirror), the build gates
   (`protocol-ts-gen-check`, `protocol-docs-gen-check`), the Go tests under
   `-race`, and — when the live dev server exposes the route — a real
-  delete→inspect-404 round-trip + the cross-tenant 403 + the running-task
+  delete→inspect-404 round-trip + the foreign-target 401 + the running-task
   409, skipping per the 404/405/501 convention when the route or a dev token
   is unavailable. FAIL = 0.
 
@@ -274,10 +310,10 @@ internal/protocol/types/version_test.go         # capability registration + Capa
 internal/protocol/singlesource/singlesource.go  # register the two new wire types in CanonicalWireTypes
 internal/sessions/registry.go                   # Registry.Erase(ctx, id) + ErrSessionRunning + ErrSessionNotFound reuse
 internal/sessions/registry_test.go              # Erase happy path / running-refusal / idempotency / identity mismatch
-internal/sessions/erasure.go                    # Cascade orchestrator: refuse-if-running -> artifacts -> memory -> state -> session record -> audited event
+internal/sessions/erasure.go                    # Cascade orchestrator: refuse-if-running (load+verify + probe) -> artifacts -> memory -> DeleteScope (removes session.lifecycle + all kinds under the triple) -> clear in-memory map entry -> audited event (under actor scope)
 internal/sessions/erasure_test.go               # cascade ordering, forced mid-cascade error (loud + retry-safe), event content-free
-internal/sessions/protocol/protocol.go          # Eraser seam + Service.Delete(ctx, req, adminScoped) + ErrSessionRunning mapping
-internal/sessions/protocol/protocol_test.go     # Service.Delete scope matrix + admin audit emit
+internal/sessions/protocol/protocol.go          # Eraser seam + Service.Delete(ctx, req) + ErrSessionRunning mapping
+internal/sessions/protocol/protocol_test.go     # Service.Delete scope matrix (own-session success + identity-mismatch + running-refusal)
 internal/state/state.go                         # StateStore.DeleteScope added to the interface + ErrIdentityRequired doc
 internal/state/drivers/inmem/*.go               # DeleteScope impl
 internal/state/drivers/sqlite/*.go              # DeleteScope impl (forward-only migration NOT needed — DELETE query only)
@@ -322,9 +358,11 @@ const CodeSessionRunning Code = "session_running" // HTTP 409 — erasure refuse
 // internal/protocol/types
 const CapSessionLifecycle Capability = "session_lifecycle"
 
-// SessionsDeleteRequest is the sessions.delete request body. Identity is
-// the verified triple; the body carries NO elevation knob — a cross-tenant
-// erasure is authorized by the verified auth.ScopeAdmin claim on the ctx.
+// SessionsDeleteRequest is the sessions.delete request body. The body
+// Identity must equal the caller's verified identity — there is NO elevation
+// knob and NO cross-tenant path; a caller erases only their own
+// (tenant, user, session). A body identity mismatching the verified identity
+// is rejected identity_required.
 type SessionsDeleteRequest struct {
     Identity IdentityScope `json:"identity"`
 }
@@ -349,13 +387,18 @@ type SessionsDeleteResponse struct {
 // the number of records deleted.
 DeleteScope(ctx context.Context, id identity.Identity) (int, error)
 
-// internal/sessions — the session-record hard-delete + cascade.
+// internal/sessions — the session-record pre-flight + in-memory map clear.
 //
-// Erase removes the SessionRegistry record (hard delete, not a Closed
-// tombstone) for the session in ctx after verifying the ctx identity
-// matches. Returns ErrSessionRunning when the configured RunningProbe
-// reports a RUNNING task (no record is touched), ErrSessionNotFound when no
-// record is visible to the caller's identity.
+// Erase runs the up-front pre-flight for the cascade: it LOADs and VERIFIEs
+// the SessionRegistry record exists under the caller's verified ctx identity,
+// probes the configured RunningProbe, and — once the cascade has completed —
+// clears the in-memory open-sessions / id-index map entry. It performs NO
+// durable record delete of its own: the durable SessionRegistry record is a
+// StateStore record under the triple and is removed by the kind-agnostic
+// StateStore.DeleteScope step of the cascade (hard delete, not a Closed
+// tombstone). Returns ErrSessionRunning when the RunningProbe reports a
+// RUNNING task (no store is touched), ErrSessionNotFound when no record is
+// visible to the caller's identity.
 func (r *Registry) Erase(ctx context.Context, id string) error
 
 var ErrSessionRunning = errors.New("sessions: cannot erase a session with a running task")
@@ -365,10 +408,10 @@ var ErrSessionRunning = errors.New("sessions: cannot erase a session with a runn
 type Eraser interface {
     // Erase performs the full three-store cascade + session-record delete
     // for the verified identity, refusing fail-loud on a running task.
-    Erase(ctx context.Context, id identity.Identity, adminScoped bool) (prototypes.SessionsDeleteResponse, error)
+    Erase(ctx context.Context, id identity.Identity) (prototypes.SessionsDeleteResponse, error)
 }
 
-func (s *Service) Delete(ctx context.Context, req prototypes.SessionsDeleteRequest, adminScoped bool) (prototypes.SessionsDeleteResponse, error)
+func (s *Service) Delete(ctx context.Context, req prototypes.SessionsDeleteRequest) (prototypes.SessionsDeleteResponse, error)
 ```
 
 ```typescript
@@ -393,25 +436,32 @@ export interface SessionsDeleteResponse {
   - `types` — `SessionsDelete*` JSON round-trip; `CapSessionLifecycle`
     in `Capabilities()` universe; `version_test` capability registration.
   - `singlesource` — the two new wire types resolve in `CanonicalWireTypes`.
-  - `internal/sessions` — `Registry.Erase`: happy-path hard-delete (record
-    gone, map entry gone), running-task refusal (`ErrSessionRunning`, no
-    store touched), identity-mismatch rejection, already-absent →
-    `ErrSessionNotFound`. `erasure.go` — cascade ordering, a forced
-    mid-cascade store error returns loud + leaves a retry-safe state, the
-    `session.erased` event carries counts but NO user content (redactor
-    asserted), the event is not re-persisted under the erased triple.
+  - `internal/sessions` — `Registry.Erase`: happy-path pre-flight + map
+    clear (record gone after `DeleteScope`, map entry gone), running-task
+    refusal (`ErrSessionRunning`, no store touched), identity-mismatch
+    rejection, already-absent → `ErrSessionNotFound`. `erasure.go` — cascade
+    ordering (refuse-if-running [load+verify + probe] → artifacts → memory →
+    `DeleteScope` [removes `session.lifecycle` + all kinds under the triple]
+    → clear in-memory map entry → audited event), a forced mid-cascade store
+    error returns loud + leaves a retry-safe state, the `session.erased`
+    event carries counts but NO user content (redactor asserted), and the
+    event's durable record is keyed under the **actor**, not the erased
+    triple — post-erasure `state.history` for the erased triple is empty.
   - `internal/sessions/protocol` — `Service.Delete` scope matrix
-    (own-identity success; cross-tenant refused without admin →
-    `ErrCrossTenantScope`; admin success emits `audit.admin_scope_used`).
+    (own-session success; a body identity mismatching the verified identity →
+    `identity_required`; a session absent under the verified triple →
+    `not_found`; a running-task → `ErrSessionRunning`). No admin /
+    cross-tenant arms — own-session-only.
 - **Integration:** `test/integration/phase130_session_erasure_test.go` —
   REAL State / Memory / Artifact production drivers + a real Registry behind
   the REAL `POST /v1/sessions/` handler in an `httptest.Server`. Full
   lifecycle: open → write state + turn + artifact + a completed task →
   `sessions.delete` over the wire → assert counts, then assert
   `sessions.inspect` 404, `state.history` empty, artifact `List` empty,
-  memory `GetLLMContext` clean. Failure modes: cross-tenant without admin →
-  403 `scope_mismatch`; RUNNING-task → 409 `session_running` with stores
-  untouched. Identity propagation asserted end-to-end. `-race`.
+  memory `GetLLMContext` clean. Failure modes: a foreign-target body (an
+  identity component ≠ the verified triple) → 401 `identity_required`;
+  RUNNING-task → 409 `session_running` with stores untouched. Identity
+  propagation asserted end-to-end. `-race`.
 - **Conformance:** `state/conformancetest` gains a `DeleteScope` case all
   three drivers pass (deletes all kinds/runs for the triple, idempotent,
   identity-required); `memory/conformancetest` gains a post-`Flush`
@@ -447,7 +497,8 @@ curl wrappers):
   `POST /v1/sessions/delete`, open a throwaway dev session, write a marker,
   `assert_post_status 200` the delete with the dev identity body, then assert
   a follow-up `sessions.inspect` returns 404 `not_found`; assert a
-  cross-tenant delete body is rejected 403; assert a delete of a session with
+  foreign-target delete body (identity ≠ the verified triple) is rejected 401;
+  assert a delete of a session with
   a running task is rejected 409. SKIP when the route 404s or no dev token is
   available (same posture as `phase-72f.sh` / the sessions smoke).
 
@@ -465,15 +516,15 @@ curl wrappers):
 - Phase 08 — Sessions + SessionManager (the `Registry`, the `RunningProbe`
   GC seam, the session record this phase hard-deletes).
 - Phase 11 — StateStore (the interface this phase extends with `DeleteScope`
-  + the conformance suite).
+  plus the conformance suite).
 - Phase 17 — Memory store (the `Flush` erasure primitive + conformance).
 - Phase 18 — Artifacts store (`List` + `Delete` cascade).
 - Phase 58 — `internal/protocol` single-source layout + `CanonicalWireTypes`
   (the registration home for the new method / code / capability / types).
 - Phase 60 — the wire transport (`POST /v1/sessions/` handler + the control
   transport the integration test drives the method through).
-- Phase 61 — auth (the verified identity + `auth.ScopeAdmin` scope the
-  erasure scope contract reads at the edge).
+- Phase 61 — auth (the verified identity the own-session-only erasure scope
+  contract reads at the edge).
 
 ## Risks / open questions
 
@@ -489,13 +540,20 @@ curl wrappers):
 - **No ACID transaction across three independent stores — fail-loud,
   idempotent, ordered cascade instead.** State / Memory / Artifacts are
   separate drivers, possibly on different backends; a single distributed
-  transaction is impossible. The cascade is ordered (refuse-if-running →
-  artifacts → memory → state → session record → audited event) with
-  per-store idempotent deletes; a mid-cascade error returns **loudly**
-  (never a partial silent success — CLAUDE.md §13) and is safe to re-invoke
-  to convergence. The running-probe check happens FIRST so a refusal touches
-  nothing. Documented in D-262; the unit test forces a mid-cascade error and
-  asserts loud-return + retry-safety.
+  transaction is impossible. The cascade is ordered (refuse-if-running
+  [load+verify the record + probe] → artifacts → memory → `DeleteScope`
+  [removes the `session.lifecycle` registry record + all kinds under the
+  triple] → clear the in-memory map entry → audited event) with per-store
+  idempotent deletes; a mid-cascade error returns **loudly** (never a partial
+  silent success — CLAUDE.md §13) and is safe to re-invoke to convergence.
+  The load+verify and running-probe checks happen FIRST so a refusal touches
+  nothing. Because `DeleteScope` is kind-agnostic it removes the durable
+  SessionRegistry record itself; `Registry.Erase` therefore performs the
+  up-front pre-flight and the final in-memory-map clear, not a durable delete
+  of its own (running `DeleteScope` before a separate `Registry.Erase`
+  durable delete would leave nothing for the latter to find). Documented in
+  D-262; the unit test forces a mid-cascade error and asserts loud-return +
+  retry-safety.
 - **USER-scope agent-config revision purge — OUT OF SCOPE (lean).** The
   durable per-user agent-config variant + its revision history is keyed by
   `(tenant, user)`, not by session; it deliberately survives any single
@@ -512,17 +570,23 @@ curl wrappers):
   `MemoryStore.Purge` addition is the fallback — recorded as the residual
   open question, but the lean is `Flush` suffices.
 - **The `session.erased` event must not re-create per-session durable
-  state.** The durable event bus persists events by identity; emitting the
-  erasure event naively could write a new record under the just-erased
-  triple, leaving `state.history` non-empty. The cascade emits the erasure
-  observation to the bus/audit sink for cross-cutting observers but does NOT
-  re-persist it under the erased identity; a test asserts `state.history` for
-  the triple is empty post-erasure. (RFC §6.13 / §7.)
-- **Existence non-disclosure across identities.** A non-admin erasure of a
-  session belonging to another `(tenant, user)` returns `not_found`, never
-  `scope_mismatch` — existence is never revealed across identities (mirrors
-  `tasks.get` / `state.history`). Cross-tenant *with* admin is the only path
-  that may act on another identity, and it audits.
+  state.** The durable event bus encodes every published event as a
+  `StateRecord` keyed by `ev.Identity.{Tenant,User,Session}`; emitting the
+  erasure event under the just-erased triple would write a new record there,
+  leaving `state.history` non-empty. The mechanism that prevents this: the
+  cascade emits `session.erased` under the **actor's** identity scope (the
+  caller's verified triple / a tenant-or-admin observability scope), NOT the
+  erased session's triple — the erased session id rides as a payload field. A
+  test asserts the durable record is keyed under the actor and that
+  `state.history` for the erased triple is empty post-erasure. (RFC §6.13 /
+  §7.)
+- **Existence non-disclosure across identities.** A body identity mismatching
+  the caller's verified identity is rejected `identity_required` (401) by the
+  `assertSessionsIdentity` defence-in-depth before any lookup; a session
+  absent under the verified triple returns `not_found` (404) — existence is
+  never revealed across identities (mirrors `tasks.get` / `state.history`).
+  There is no path that acts on another identity's session: cross-tenant /
+  admin erasure is a deferred non-goal.
 - **Concurrent erase vs in-flight read.** A session being erased while
   another caller reads a *different* session must not cross-talk; the
   concurrency test pins this. A read of the *same* session racing its
@@ -569,7 +633,7 @@ curl wrappers):
       distinct sessions, no race / bleed / cross-cancel / leak (`-race`).
 - [ ] **Integration test exists** — real State/Memory/Artifact drivers +
       real wire transport end-to-end, identity propagation, ≥1 failure mode
-      (running-task 409 + cross-tenant 403), `-race`
+      (running-task 409 + foreign-target 401), `-race`
       (`test/integration/phase130_session_erasure_test.go`).
 - [ ] If new vocabulary: glossary updated (`session erasure`,
       `erasure cascade`)
@@ -590,7 +654,7 @@ and `## D-NNN` headings in `docs/decisions.md`).
 Append (the table sorts by phase number; this row sorts after 127):
 
 ```text
-|130 | Session erasure Protocol method (data-lifecycle deletion) (ship the additive identity-scoped `sessions.delete` — deletes a session and CASCADES deletion of its scoped State + Memory + Artifacts; refuses fail-loud on a RUNNING task with a distinct `session_running` (409) mirroring the GC never-reap-running invariant; own-identity vs `auth.ScopeAdmin` scope contract mirrors `sessions.list`; new `DeleteScope` StateStore primitive with conformance parity; redacted audited `session.erased` event; new `CapSessionLifecycle` capability; consumer = the real three-store cascade handler + E2E; NO ProtocolVersion bump; D-262) | internal/protocol + internal/sessions + internal/state + web/console | §5.2, §6.9, §6.11, §6.13, §7 | 08, 11, 17, 18, 58, 60, 61 | 85% | Pending (V1.7) |
+|130 | Session erasure Protocol method (data-lifecycle deletion) (ship the additive identity-scoped `sessions.delete` — deletes a session and CASCADES deletion of its scoped State + Memory + Artifacts; refuses fail-loud on a RUNNING task with a distinct `session_running` (409) mirroring the GC never-reap-running invariant; own-session-only scope contract (no admin / cross-tenant path); new `DeleteScope` StateStore primitive with conformance parity; redacted audited `session.erased` event; new `CapSessionLifecycle` capability; consumer = the real three-store cascade handler + E2E; NO ProtocolVersion bump; D-262) | internal/protocol + internal/sessions + internal/state + web/console | §5.2, §6.9, §6.11, §6.13, §7 | 08, 11, 17, 18, 58, 60, 61 | 85% | Pending (V1.7) |
 ```
 
 ### (b) `docs/decisions.md` entry (markdownlint-clean — note the blank lines)
@@ -638,30 +702,45 @@ the same wire contract.
 
 3. **A three-store cascade + session-record hard-delete.** A new
    `internal/sessions` cascade orchestrator runs, in order:
-   refuse-if-running → `ArtifactStore.List`/`Delete` each →
-   `MemoryStore.Flush` → `StateStore.DeleteScope` (a new cascade primitive
-   added to the single mandatory StateStore interface that deletes every
-   record matching the `(tenant, user, session)` triple regardless of
-   `run_id`/`kind`, with conformance parity across in-mem / SQLite /
-   Postgres) → `Registry.Erase` (hard-deletes the SessionRegistry record,
-   NOT a `Closed=true` tombstone) → emit a redacted `session.erased` event.
-   There is no ACID transaction across the independent stores; the cascade
-   is fail-loud and idempotent — a mid-cascade error returns loudly and is
-   safe to re-invoke to convergence (each per-store delete is idempotent).
+   refuse-if-running (`Registry.Erase` load+verifies the record under the
+   caller's identity and probes the running seam) → `ArtifactStore.List`/
+   `Delete` each → `MemoryStore.Flush` → `StateStore.DeleteScope` (a new
+   cascade primitive added to the single mandatory StateStore interface that
+   deletes every record matching the `(tenant, user, session)` triple
+   regardless of `run_id`/`kind` — including the `session.lifecycle`
+   SessionRegistry record itself, so `DeleteScope` performs the durable
+   record hard-delete, NOT a `Closed=true` tombstone — with conformance
+   parity across in-mem / SQLite / Postgres) → `Registry.Erase` clears the
+   in-memory open-sessions / id-index map entry (no durable delete of its
+   own; `DeleteScope` already removed the record) → emit a redacted
+   `session.erased` event under the **actor's** identity scope. The order is
+   deliberate: running `DeleteScope` before a separate durable
+   `Registry.Erase` delete would leave nothing for the latter to load. There
+   is no ACID transaction across the independent stores; the cascade is
+   fail-loud and idempotent — a mid-cascade error returns loudly and is safe
+   to re-invoke to convergence (each per-store delete is idempotent).
 
-4. **The same scope contract as `sessions.list`.** A non-admin caller may
-   erase only their own verified `(tenant, user, session)`; a body identity
-   mismatch is `identity_required`; another identity's session is
-   `not_found` (existence never revealed across identities); a cross-tenant
-   / other-user erasure requires the verified `auth.ScopeAdmin` claim on the
-   ctx and emits `audit.admin_scope_used`.
+4. **An own-session-only scope contract.** A caller may erase only their own
+   verified `(tenant, user, session)`. A body identity mismatching the
+   verified identity is `identity_required` (401) — the handler's
+   `assertSessionsIdentity` defence-in-depth rejects any mismatch before any
+   further scope logic, so a foreign target can never be named; a session
+   absent under the verified triple is `not_found` (404, existence never
+   revealed). There is NO `auth.ScopeAdmin` path, NO `scope_mismatch` (403),
+   and NO `audit.admin_scope_used` emit in this phase: cross-tenant / admin
+   erasure of another identity's session is a deferred non-goal (a separate
+   elevated verb with its own scope-claim + audit design).
 
 5. **Hard-delete the data; tombstone only the fact.** Right-to-erasure
    requires the State / Memory / Artifact bytes to be actually removed, not
    flagged. The only durable trace is the redacted `session.erased` audit
    record (session id + actor + counts + timestamp, NO content) in the
    audit/compliance sink — NOT re-persisted under the erased session's own
-   identity (a post-erasure `state.history` for the triple returns empty).
+   identity. Mechanism: the durable event bus encodes every published event
+   as a `StateRecord` keyed by `ev.Identity.{Tenant,User,Session}`, so the
+   event is emitted under the **actor's** identity scope (the erased session
+   id rides as a payload field), never the erased triple — a post-erasure
+   `state.history` for that triple returns empty.
 
 6. **A negotiable capability.** A new `CapSessionLifecycle`
    (`session_lifecycle`) is advertised on `runtime.info` only when an eraser
@@ -671,7 +750,7 @@ the same wire contract.
 7. **The consumer lands in the same phase (§13).** The cascade handler over
    the production State / Memory / Artifact drivers + a real Registry is the
    consumer; an integration test proves delete → subsequent read
-   `not_found`, cross-store erasure, cross-tenant 403, running-task 409
+   `not_found`, cross-store erasure, foreign-target 401, running-task 409
    end-to-end. A Console "delete chat" UI is a follow-on consumer (the typed
    TS client gains the request/response types regardless, per the D-223
    lockstep gate).
@@ -758,7 +837,8 @@ fi
 #   assert_post_status 200 "$(api_url /v1/sessions/delete)" "$body" \
 #     "phase 130: live sessions.delete answers 200 for own session"
 #   then POST sessions/inspect for the same id and assert 404 not_found.
-#   Also: a cross-tenant delete body -> 403; a session with a running task -> 409.
+#   Also: a foreign-target delete body (identity != the verified triple) -> 401;
+#   a session with a running task -> 409.
 #   SKIP when the route 404s or no dev token is available (same posture as
 #   the sessions smoke / phase-72f.sh).
 ```
@@ -788,13 +868,14 @@ mirror the 127/125 blocks):
 - **What it delivers:** the additive identity-scoped `sessions.delete`
   method that deletes a session and cascades deletion of its scoped State +
   Memory + Artifacts; a fail-loud `session_running` (409) refusal on a
-  RUNNING task; the own-identity vs `auth.ScopeAdmin` scope contract
-  mirroring `sessions.list`; a new `StateStore.DeleteScope` primitive with
-  in-mem/SQLite/Postgres conformance parity; a redacted audited
-  `session.erased` event (content-free, not re-persisted under the erased
-  identity); a negotiable `CapSessionLifecycle` capability. Consumer = the
-  real three-store cascade handler exercised by an E2E test (delete →
-  inspect-404 + cross-store erasure + cross-tenant 403 + running-task 409).
+  RUNNING task; an own-session-only scope contract (a caller erases only
+  their own verified triple; no admin / cross-tenant path); a new
+  `StateStore.DeleteScope` primitive with in-mem/SQLite/Postgres conformance
+  parity; a redacted audited `session.erased` event (content-free, emitted
+  under the actor scope, not re-persisted under the erased identity); a
+  negotiable `CapSessionLifecycle` capability. Consumer = the real three-store
+  cascade handler exercised by an E2E test (delete → inspect-404 + cross-store
+  erasure + foreign-target 401 + running-task 409).
   NO ProtocolVersion bump. Generated Protocol docs regenerated (D-209).
 - **Decision:** D-262.
 - **Status:** Pending (V1.7).
