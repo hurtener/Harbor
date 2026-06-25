@@ -602,3 +602,122 @@ type AgentConfigSessionSkillsDeleteResponse struct {
 	Overlay         AgentConfigSessionOverlay `json:"overlay"`
 	ProtocolVersion string                    `json:"protocol_version"`
 }
+
+// --- User-scope durable config variant (the middle tier of the
+// authorization matrix) ---
+//
+// These wire types back the NON-admin `agent_config.user.*` verb family: a
+// caller carrying the `auth.ScopeAgentConfigUser` claim owns a DURABLE,
+// versioned safe-subset config variant keyed under their REAL (tenant, user),
+// with full diff/rollback. The set verb's input is structurally bounded to
+// the safe subset (user prompt + narrow-only disables + personal-skill
+// names) — there is NO base / connections / enable / model field, so a user
+// caller physically cannot widen a capability or edit the operator base. The
+// responses REUSE the canonical AgentConfigRevisionView / AgentConfigDiff
+// (payload sections the user tier never sets stay nil), giving literal
+// diff/rollback parity with the admin registry surface. Authority derives
+// from the verified ctx scope at the wire handler, never the request body.
+
+// AgentConfigUserPayload is the bounded safe-subset a user-scope revision
+// persists — the ONE durable user write surface for the agent-config band. It
+// mirrors the session overlay's field set (user prompt + narrow-only disables
+// + personal skills) and has NO base / connections / enable / model field.
+// The two PROJECTION-ONLY sibling phases consume its fields: the prompt
+// projection reads UserPrompt; the tool-exposure projection reads
+// DisabledServers / DisabledTools.
+type AgentConfigUserPayload struct {
+	// UserPrompt is the user instruction layer that composes ABOVE the
+	// operator base (the prompt projection consumes this).
+	UserPrompt string `json:"user_prompt,omitempty"`
+	// DisabledServers names the MCP servers the user narrows out (the
+	// tool-exposure projection consumes this); narrow-only — there is no
+	// enable path.
+	DisabledServers []string `json:"disabled_servers,omitempty"`
+	// DisabledTools names the individual tools the user narrows out (the
+	// tool-exposure projection consumes this).
+	DisabledTools []string `json:"disabled_tools,omitempty"`
+	// PersonalSkills names the user's personal skill membership for the
+	// variant.
+	PersonalSkills []string `json:"personal_skills,omitempty"`
+}
+
+// AgentConfigUserGetRequest is the `agent_config.user.get` request — read the
+// caller's own durable variant's active revision.
+type AgentConfigUserGetRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+}
+
+// AgentConfigUserGetResponse is the `agent_config.user.get` response.
+type AgentConfigUserGetResponse struct {
+	// Revision is the active revision; nil when the caller has no durable
+	// variant (Set is false).
+	Revision *AgentConfigRevisionView `json:"revision,omitempty"`
+	// Set reports whether an active user revision exists.
+	Set             bool   `json:"set"`
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// AgentConfigUserSetRevisionRequest is the `agent_config.user.set_revision`
+// request — write a new revision of the caller's durable variant from the
+// bounded safe-subset payload.
+type AgentConfigUserSetRevisionRequest struct {
+	Identity IdentityScope          `json:"identity"`
+	AgentID  string                 `json:"agent_id"`
+	Payload  AgentConfigUserPayload `json:"payload"`
+}
+
+// AgentConfigUserSetRevisionResponse is the `agent_config.user.set_revision`
+// response — the new (or, on an idempotent re-set, existing) revision.
+type AgentConfigUserSetRevisionResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigUserListRevisionsRequest is the
+// `agent_config.user.list_revisions` request — the caller's own variant
+// revision chain, newest-first.
+type AgentConfigUserListRevisionsRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Limit caps the returned chain length. 0 = no cap.
+	Limit int `json:"limit,omitempty"`
+}
+
+// AgentConfigUserListRevisionsResponse is the
+// `agent_config.user.list_revisions` response.
+type AgentConfigUserListRevisionsResponse struct {
+	Revisions       []AgentConfigRevisionView `json:"revisions"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// AgentConfigUserDiffRequest is the `agent_config.user.diff` request —
+// compare two existing revisions of the caller's own variant.
+type AgentConfigUserDiffRequest struct {
+	Identity     IdentityScope `json:"identity"`
+	AgentID      string        `json:"agent_id"`
+	FromRevision string        `json:"from_revision"`
+	ToRevision   string        `json:"to_revision"`
+}
+
+// AgentConfigUserDiffResponse is the `agent_config.user.diff` response.
+type AgentConfigUserDiffResponse struct {
+	Diff            AgentConfigDiff `json:"diff"`
+	ProtocolVersion string          `json:"protocol_version"`
+}
+
+// AgentConfigUserRollbackRequest is the `agent_config.user.rollback`
+// request — repoint the caller's own variant active pointer to an existing
+// revision.
+type AgentConfigUserRollbackRequest struct {
+	Identity   IdentityScope `json:"identity"`
+	AgentID    string        `json:"agent_id"`
+	RevisionID string        `json:"revision_id"`
+}
+
+// AgentConfigUserRollbackResponse is the `agent_config.user.rollback`
+// response — the revision the active pointer now points to.
+type AgentConfigUserRollbackResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}

@@ -119,6 +119,11 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigSessionSkillsList,
 	methods.MethodAgentConfigSessionSkillsUpsert,
 	methods.MethodAgentConfigSessionSkillsDelete,
+	methods.MethodAgentConfigUserGet,
+	methods.MethodAgentConfigUserSetRevision,
+	methods.MethodAgentConfigUserListRevisions,
+	methods.MethodAgentConfigUserDiff,
+	methods.MethodAgentConfigUserRollback,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -143,9 +148,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// set_llm_params + add_mcp_connection) = 98, + agent-config session
 	// safe subset five (agent_config.session.set_user_prompt +
 	// set_source_disables + skills.{list,upsert,delete}) = 103,
-	// + State-snapshots state.history one = 104.
-	if len(got) != 104 {
-		t.Fatalf("Methods() returned %d methods, want 104", len(got))
+	// + State-snapshots state.history one = 104,
+	// + agent-config USER tier five (agent_config.user.get + set_revision +
+	// list_revisions + diff + rollback) = 109.
+	if len(got) != 109 {
+		t.Fatalf("Methods() returned %d methods, want 109", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -725,6 +732,47 @@ func TestIsAgentConfigSessionMethod_Lockstep(t *testing.T) {
 	} {
 		if methods.IsAgentConfigSessionMethod(m) {
 			t.Errorf("IsAgentConfigSessionMethod(%q) = true, want false", m)
+		}
+	}
+}
+
+// TestIsAgentConfigUserMethod_Lockstep pins the user-tier classifier on the
+// authorization boundary: the five `agent_config.user.*` verbs are user-tier
+// methods; the admin verbs, the session safe-subset verbs, and a non-agent-
+// config method are not. A user method is always an agent-config method and
+// never an admin or a session method (the three tiers are disjoint).
+func TestIsAgentConfigUserMethod_Lockstep(t *testing.T) {
+	userMethods := []methods.Method{
+		methods.MethodAgentConfigUserGet,
+		methods.MethodAgentConfigUserSetRevision,
+		methods.MethodAgentConfigUserListRevisions,
+		methods.MethodAgentConfigUserDiff,
+		methods.MethodAgentConfigUserRollback,
+	}
+	for _, m := range userMethods {
+		if !methods.IsAgentConfigUserMethod(m) {
+			t.Errorf("IsAgentConfigUserMethod(%q) = false, want true", m)
+		}
+		if !methods.IsAgentConfigMethod(m) {
+			t.Errorf("user method %q must also be an agent-config method", m)
+		}
+		if methods.IsAgentConfigAdminMethod(m) {
+			t.Errorf("user-tier method %q must NOT be admin-gated", m)
+		}
+		if methods.IsAgentConfigSessionMethod(m) {
+			t.Errorf("user-tier method %q must NOT be a session method", m)
+		}
+	}
+	// Admin verbs, a session verb, and a non-agent-config method are NOT
+	// user methods.
+	for _, m := range []methods.Method{
+		methods.MethodAgentConfigSetRevision,
+		methods.MethodAgentConfigRollback,
+		methods.MethodAgentConfigSessionSetUserPrompt,
+		methods.MethodCancel,
+	} {
+		if methods.IsAgentConfigUserMethod(m) {
+			t.Errorf("IsAgentConfigUserMethod(%q) = true, want false", m)
 		}
 	}
 }

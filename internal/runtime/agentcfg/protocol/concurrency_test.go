@@ -117,3 +117,91 @@ func TestService_ConcurrentSameAgentWrites_NoLostSibling(t *testing.T) {
 		t.Errorf("goroutine leak: baseline=%d after=%d", baseline, after)
 	}
 }
+
+// TestService_ConcurrentMixedScopeWrites is the user-tier concurrent-reuse
+// gate (D-025 + the scope-aware write lock): N≥100 concurrent invocations
+// against ONE shared Service mixing admin-scope writes (to the agent chain),
+// user-scope writes from DISTINCT users, and repeated user-scope writes from
+// the SAME user. It asserts no data races (run under -race), no context bleed
+// (each user's final active is its OWN content, never another user's or the
+// agent chain's), and no goroutine leak. Because the per-owner write lock keys
+// ConfigScopeUser by (scope, tenant, real-user, agent), distinct users use
+// distinct mutexes and never serialise across each other.
+func TestService_ConcurrentMixedScopeWrites(t *testing.T) {
+	s := svc(t, false)
+	ctx := context.Background()
+	const users = 40
+	const repeatsPerUser = 3
+
+	baseline := runtime.NumGoroutine()
+	var wg sync.WaitGroup
+	errs := make(chan error, users*repeatsPerUser+users)
+
+	// Admin-scope writers (distinct agents so each is its own owner).
+	for a := range users {
+		wg.Add(1)
+		go func(a int) {
+			defer wg.Done()
+			agent := fmt.Sprintf("agent-%d", a)
+			if _, err := s.SetPromptLayers(ctx, prototypes.AgentConfigSetPromptLayersRequest{
+				Identity: scope(), AgentID: agent,
+				PromptLayers: prototypes.AgentConfigPromptLayers{Base: strPtr("admin-base")},
+			}); err != nil {
+				errs <- fmt.Errorf("admin %d: %w", a, err)
+			}
+		}(a)
+	}
+
+	// User-scope writers: distinct users, each writing repeatsPerUser times to
+	// the SAME shared agent. The final per-user active must be the user's own
+	// latest content.
+	for u := range users {
+		for r := range repeatsPerUser {
+			wg.Add(1)
+			go func(u, r int) {
+				defer wg.Done()
+				user := fmt.Sprintf("user-%d", u)
+				if _, err := s.UserSetRevision(ctx, prototypes.AgentConfigUserSetRevisionRequest{
+					Identity: prototypes.IdentityScope{Tenant: "t", User: user, Session: "s"}, AgentID: testAgentID,
+					Payload: prototypes.AgentConfigUserPayload{UserPrompt: fmt.Sprintf("prompt-%d-%d", u, r)},
+				}); err != nil {
+					errs <- fmt.Errorf("user %d/%d: %w", u, r, err)
+				}
+			}(u, r)
+		}
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent mixed-scope write failed: %v", err)
+	}
+
+	// Each user's active reflects ONE of their own prompts (never another
+	// user's, never the agent base) — no context bleed.
+	for u := range users {
+		user := fmt.Sprintf("user-%d", u)
+		get, err := s.UserGet(ctx, prototypes.AgentConfigUserGetRequest{
+			Identity: prototypes.IdentityScope{Tenant: "t", User: user, Session: "s"}, AgentID: testAgentID,
+		})
+		if err != nil || !get.Set || get.Revision == nil || get.Revision.Payload.PromptLayers == nil || get.Revision.Payload.PromptLayers.User == nil {
+			t.Fatalf("user %d get: set=%v err=%v", u, get.Set, err)
+		}
+		want := fmt.Sprintf("prompt-%d-", u)
+		if got := *get.Revision.Payload.PromptLayers.User; len(got) < len(want) || got[:len(want)] != want {
+			t.Fatalf("context bleed: user %d active prompt=%q, want prefix %q", u, got, want)
+		}
+	}
+
+	var after int
+	for range 50 {
+		after = runtime.NumGoroutine()
+		if after <= baseline+2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after > baseline+2 {
+		t.Errorf("goroutine leak: baseline=%d after=%d", baseline, after)
+	}
+}

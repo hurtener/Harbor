@@ -17,14 +17,17 @@
 //	POST /v1/agent_config/skills/list     — list the agent's skills
 //	POST /v1/agent_config/skills/upsert   — upsert a skill (records a rev)
 //	POST /v1/agent_config/skills/delete   — delete a skill (records a rev)
+//	POST /v1/agent_config/user/*          — the durable per-user variant tier
 //
-// Every route is identity-mandatory AND admin-scoped (the whole family
-// changes/reads what an agent can do — a capability surface): the
-// verified `auth.ScopeAdmin` claim is required. A non-admin caller is
-// rejected with CodeScopeMismatch (403) before the request reaches the
-// service. Authority derives from the verified ctx, never the request body
-// (authority from the verified ctx). The handler overlays the verified identity onto the request
-// body.
+// The routes span THREE authorization tiers. The `session/*` routes are the
+// SAFE SUBSET (identity-mandatory, no scope). The `user/*` routes are the
+// middle tier (identity-mandatory PLUS the verified `auth.ScopeAgentConfigUser`
+// claim — NOT admin). EVERY other route reads/mutates the agent-level
+// capability surface and requires the verified `auth.ScopeAdmin` claim. A
+// caller without the matching tier's claim is rejected with CodeScopeMismatch
+// (403) before the request reaches the service. Authority derives from the
+// verified ctx, never the request body. The handler overlays the verified
+// identity onto the request body.
 //
 // AgentConfigHandler is a concurrency-safe compiled artifact — service /
 // logger are set once at construction; ServeHTTP holds no per-request
@@ -127,7 +130,22 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// admin route is rejected with CodeScopeMismatch before any dispatch
 	// (fail-closed).
 	route := strings.TrimPrefix(r.URL.Path, "/v1/agent_config/")
-	if !agentConfigSessionSafeRoutes[route] {
+	switch {
+	case agentConfigSessionSafeRoutes[route]:
+		// Session-safe lower tier: a valid identity is enough (no scope).
+	case agentConfigUserRoutes[route]:
+		// User tier (the middle tier): requires the verified
+		// auth.ScopeAgentConfigUser claim SPECIFICALLY — an admin token does
+		// NOT implicitly own per-user variants, and a no-scope caller is
+		// rejected. Authority derives from the verified ctx, never the body.
+		if !auth.HasScope(r.Context(), auth.ScopeAgentConfigUser) {
+			writeAgentConfigError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
+				"agent_config user methods require the agent_config:user scope claim")
+			return
+		}
+	default:
+		// Admin tier: the agent-level capability surface (a user-only token
+		// is rejected here — the user scope does not admit an admin route).
 		if !auth.HasScope(r.Context(), auth.ScopeAdmin) {
 			writeAgentConfigError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
 				"agent_config methods require the admin scope claim")
@@ -177,6 +195,16 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSessionSkillsUpsert(w, r, body, wireID)
 	case "session/skills/delete":
 		h.serveSessionSkillsDelete(w, r, body, wireID)
+	case "user/get":
+		h.serveUserGet(w, r, body, wireID)
+	case "user/set_revision":
+		h.serveUserSetRevision(w, r, body, wireID)
+	case "user/list_revisions":
+		h.serveUserListRevisions(w, r, body, wireID)
+	case "user/diff":
+		h.serveUserDiff(w, r, body, wireID)
+	case "user/rollback":
+		h.serveUserRollback(w, r, body, wireID)
 	default:
 		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown agent_config method route")
@@ -196,6 +224,20 @@ var agentConfigSessionSafeRoutes = map[string]bool{
 	"session/skills/list":         true,
 	"session/skills/upsert":       true,
 	"session/skills/delete":       true,
+}
+
+// agentConfigUserRoutes is the closed set of trailing path segments that are
+// the USER TIER (the middle tier of the authorization matrix): a caller is
+// permitted on EXACTLY these routes iff they carry the verified
+// auth.ScopeAgentConfigUser claim (NOT admin). The set mirrors
+// methods.canonicalAgentConfigUserMethods — adding a user-tier verb extends
+// BOTH.
+var agentConfigUserRoutes = map[string]bool{
+	"user/get":            true,
+	"user/set_revision":   true,
+	"user/list_revisions": true,
+	"user/diff":           true,
+	"user/rollback":       true,
 }
 
 func (h *AgentConfigHandler) serveGet(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -489,6 +531,93 @@ func (h *AgentConfigHandler) serveSessionSkillsDelete(w http.ResponseWriter, r *
 	writeAgentConfigJSON(w, r, resp, h.logger)
 }
 
+// --- user-tier (the middle tier) routes ---
+
+func (h *AgentConfigHandler) serveUserGet(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserGetRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserGet) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserGet(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserGet, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserSetRevision(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSetRevisionRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSetRevision) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserSetRevision(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSetRevision, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserListRevisions(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserListRevisionsRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserListRevisions) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserListRevisions(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserListRevisions, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserDiff(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserDiffRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserDiff) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserDiff(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserDiff, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserRollback(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserRollbackRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserRollback) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserRollback(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserRollback, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
 // decode decodes the JSON body into req (rejecting unknown fields) and
 // writes a CodeInvalidRequest error on failure, returning false.
 func (h *AgentConfigHandler) decode(w http.ResponseWriter, body []byte, req any, method methods.Method) bool {
@@ -564,6 +693,12 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrCoordinatorUnavailable):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfg.ErrReservedUser):
+		// A user-scope call whose verified user id collides with the reserved
+		// internal sentinel — fail-loud defence-in-depth (it can never alias
+		// onto the agent-level chain). An authorization failure.
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,

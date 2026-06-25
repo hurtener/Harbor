@@ -79,7 +79,7 @@ func TestAppCallGate_PausedServer_Rejected(t *testing.T) {
 	ctx := idCtx(t)
 	cat := gateCatalog(t)
 	reg := gateRegistry(t)
-	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srv-a"}},
 	}); err != nil {
 		t.Fatalf("set paused: %v", err)
@@ -102,7 +102,7 @@ func TestAppCallGate_DisabledTool_Rejected(t *testing.T) {
 	ctx := idCtx(t)
 	cat := gateCatalog(t)
 	reg := gateRegistry(t)
-	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"srv-a_echo"}},
 	}); err != nil {
 		t.Fatalf("set disabled: %v", err)
@@ -170,7 +170,7 @@ func TestAppCallGate_NotPaused_Allowed(t *testing.T) {
 	cat := gateCatalog(t)
 	reg := gateRegistry(t)
 	// An active revision with only a skills section — no tool exposure.
-	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"x"}},
 	}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -220,7 +220,7 @@ func TestAppCallGate_Asymmetry_SnapshotVsCurrent(t *testing.T) {
 	}
 
 	// Admin pauses srv-a AFTER the snapshot was captured.
-	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, gateID(), gateAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srv-a"}},
 	}); err != nil {
 		t.Fatalf("pause: %v", err)

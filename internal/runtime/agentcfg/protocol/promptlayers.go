@@ -45,7 +45,7 @@ func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfi
 
 	// Read the active revision so the new revision PRESERVES the skills +
 	// tool-exposure sections (a prompt edit replaces only its own section).
-	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID)
+	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigSetPromptLayersResponse{}, err
 	}
@@ -62,7 +62,7 @@ func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfi
 		payload.LLMParams = active.Payload.LLMParams
 	}
 
-	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, payload)
+	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
 	if err != nil {
 		return prototypes.AgentConfigSetPromptLayersResponse{}, err
 	}

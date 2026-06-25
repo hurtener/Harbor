@@ -391,6 +391,37 @@ const (
 	// route is `POST /v1/agent_config/session/skills/delete`.
 	MethodAgentConfigSessionSkillsDelete Method = "agent_config.session.skills.delete"
 
+	// MethodAgentConfigUserGet — user-tier verb (the middle tier of the
+	// authorization matrix): reads the caller's OWN durable, versioned
+	// config variant — the active revision keyed under their real
+	// (tenant, user). Identity-mandatory; requires the verified
+	// `auth.ScopeAgentConfigUser` claim (NOT admin). The wire-transport route
+	// is `POST /v1/agent_config/user/get`.
+	MethodAgentConfigUserGet Method = "agent_config.user.get"
+	// MethodAgentConfigUserSetRevision — user-tier verb: writes a NEW
+	// immutable revision of the caller's durable config variant from a
+	// structurally-bounded safe-subset payload (user prompt + narrow-only
+	// disables + personal-skill names) — no base / connections / model, so a
+	// user caller physically cannot widen a capability. Requires the verified
+	// `auth.ScopeAgentConfigUser` claim. The wire-transport route is
+	// `POST /v1/agent_config/user/set_revision`.
+	MethodAgentConfigUserSetRevision Method = "agent_config.user.set_revision"
+	// MethodAgentConfigUserListRevisions — user-tier verb: reads the caller's
+	// own variant revision chain, newest-first. Requires the verified
+	// `auth.ScopeAgentConfigUser` claim. The wire-transport route is
+	// `POST /v1/agent_config/user/list_revisions`.
+	MethodAgentConfigUserListRevisions Method = "agent_config.user.list_revisions"
+	// MethodAgentConfigUserDiff — user-tier verb: server-side compare of two
+	// existing revisions of the caller's own variant. Requires the verified
+	// `auth.ScopeAgentConfigUser` claim. The wire-transport route is
+	// `POST /v1/agent_config/user/diff`.
+	MethodAgentConfigUserDiff Method = "agent_config.user.diff"
+	// MethodAgentConfigUserRollback — user-tier verb: repoints the caller's
+	// own variant active pointer to an existing revision WITHOUT mutating any
+	// revision. Requires the verified `auth.ScopeAgentConfigUser` claim. The
+	// wire-transport route is `POST /v1/agent_config/user/rollback`.
+	MethodAgentConfigUserRollback Method = "agent_config.user.rollback"
+
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
 	// the unified pause/resume Coordinator. Read-only: it
@@ -876,6 +907,11 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSessionSkillsList:        {},
 	MethodAgentConfigSessionSkillsUpsert:      {},
 	MethodAgentConfigSessionSkillsDelete:      {},
+	MethodAgentConfigUserGet:                  {},
+	MethodAgentConfigUserSetRevision:          {},
+	MethodAgentConfigUserListRevisions:        {},
+	MethodAgentConfigUserDiff:                 {},
+	MethodAgentConfigUserRollback:             {},
 	MethodPauseList:                           {},
 	MethodTopologySnapshot:                    {},
 	MethodArtifactsList:                       {},
@@ -1106,14 +1142,15 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the seventeen
+// canonicalAgentConfigMethods is the closed set of the twenty-two
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
 // (set_tool_exposure), the layered-prompt verb (set_prompt_layers), the
 // per-agent LLM-params verb (set_llm_params), the add-connection verb
-// (add_mcp_connection), and the five session safe-subset verbs.
-// IsAgentConfigMethod is O(1); the
+// (add_mcp_connection), the five session safe-subset verbs, and the five
+// user-tier verbs (user.get / user.set_revision / user.list_revisions /
+// user.diff / user.rollback). IsAgentConfigMethod is O(1); the
 // agent-config wire handler branches on the trailing path segment to
 // dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
@@ -1135,6 +1172,28 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSessionSkillsList:        {},
 	MethodAgentConfigSessionSkillsUpsert:      {},
 	MethodAgentConfigSessionSkillsDelete:      {},
+	// User tier (the durable per-user variant — the middle tier).
+	MethodAgentConfigUserGet:           {},
+	MethodAgentConfigUserSetRevision:   {},
+	MethodAgentConfigUserListRevisions: {},
+	MethodAgentConfigUserDiff:          {},
+	MethodAgentConfigUserRollback:      {},
+}
+
+// canonicalAgentConfigUserMethods is the closed sub-set of the five
+// `agent_config.user.*` verbs — the durable per-user config-variant tier
+// (the middle tier of the authorization matrix). A caller is permitted on
+// these verbs iff they carry the verified `auth.ScopeAgentConfigUser` claim
+// (NOT admin — an admin token does not implicitly own per-user variants).
+// IsAgentConfigUserMethod is O(1); the agent-config wire handler uses it to
+// apply the user-tier scope gate. Authority derives from the verified ctx,
+// never the request body.
+var canonicalAgentConfigUserMethods = map[Method]struct{}{
+	MethodAgentConfigUserGet:           {},
+	MethodAgentConfigUserSetRevision:   {},
+	MethodAgentConfigUserListRevisions: {},
+	MethodAgentConfigUserDiff:          {},
+	MethodAgentConfigUserRollback:      {},
 }
 
 // canonicalAgentConfigSessionMethods is the closed sub-set of the
@@ -1170,13 +1229,24 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigAddMCPConnection: {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the seventeen
+// IsAgentConfigMethod reports whether m is one of the twenty-two
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new
 // agent-config method extends THIS predicate, never the steering inbox.
 func IsAgentConfigMethod(m Method) bool {
 	_, ok := canonicalAgentConfigMethods[m]
+	return ok
+}
+
+// IsAgentConfigUserMethod reports whether m is one of the five
+// `agent_config.user.*` verbs — the durable per-user config-variant tier
+// (the middle tier of the authorization matrix). The agent-config wire
+// handler uses it to gate those routes on the verified
+// `auth.ScopeAgentConfigUser` claim (NOT admin). A user method is always an
+// agent-config method and never a session safe-subset or admin method.
+func IsAgentConfigUserMethod(m Method) bool {
+	_, ok := canonicalAgentConfigUserMethods[m]
 	return ok
 }
 

@@ -125,6 +125,10 @@ var methodToControlType = map[methods.Method]steering.ControlType{
 // methods (closed two-scope set).
 const adminNote = "requires the verified `admin` scope claim"
 
+// userTierNote is the shared auth-posture string for the durable per-user
+// agent-config tier (the middle tier of the authorization matrix).
+const userTierNote = "identity-mandatory; requires the verified `agent_config:user` scope claim (NOT admin — the durable per-user variant tier)"
+
 // sessionSafeNote is the shared auth-posture string for the session-user
 // safe-subset methods (the non-admin lower tier): identity-mandatory but NOT
 // admin-gated.
@@ -508,6 +512,36 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigSessionSkillsDeleteRequest", Response: "AgentConfigSessionSkillsDeleteResponse",
 			Auth: sessionSafeNote,
 		},
+		methods.MethodAgentConfigUserGet: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserGet),
+			Mutates: false,
+			Request: "AgentConfigUserGetRequest", Response: "AgentConfigUserGetResponse",
+			Auth: userTierNote,
+		},
+		methods.MethodAgentConfigUserSetRevision: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSetRevision),
+			Mutates: true,
+			Request: "AgentConfigUserSetRevisionRequest", Response: "AgentConfigUserSetRevisionResponse",
+			Auth: userTierNote,
+		},
+		methods.MethodAgentConfigUserListRevisions: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserListRevisions),
+			Mutates: false,
+			Request: "AgentConfigUserListRevisionsRequest", Response: "AgentConfigUserListRevisionsResponse",
+			Auth: userTierNote,
+		},
+		methods.MethodAgentConfigUserDiff: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserDiff),
+			Mutates: false,
+			Request: "AgentConfigUserDiffRequest", Response: "AgentConfigUserDiffResponse",
+			Auth: userTierNote,
+		},
+		methods.MethodAgentConfigUserRollback: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserRollback),
+			Mutates: true,
+			Request: "AgentConfigUserRollbackRequest", Response: "AgentConfigUserRollbackResponse",
+			Auth: userTierNote,
+		},
 	}
 
 	// The nine steering controls share one wire shape; their per-control
@@ -635,6 +669,10 @@ func classify(m methods.Method) string {
 		return "auth"
 	case methods.IsGovernanceAdminMethod(m):
 		return "governance — admin"
+	case methods.IsAgentConfigUserMethod(m):
+		return "agent config — user"
+	case methods.IsAgentConfigSessionMethod(m):
+		return "agent config — session"
 	case methods.IsAgentConfigMethod(m):
 		return "agent config — admin"
 	default:

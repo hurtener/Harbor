@@ -43,7 +43,7 @@ func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfi
 	// Read the active revision so the new revision PRESERVES the skills +
 	// prompt sections (a tool-exposure edit replaces only its own section)
 	// and so the paused/resumed delta is computed against current state.
-	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID)
+	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigSetToolExposureResponse{}, err
 	}
@@ -62,7 +62,7 @@ func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfi
 		payload.LLMParams = active.Payload.LLMParams
 	}
 
-	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, payload)
+	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
 	if err != nil {
 		return prototypes.AgentConfigSetToolExposureResponse{}, err
 	}

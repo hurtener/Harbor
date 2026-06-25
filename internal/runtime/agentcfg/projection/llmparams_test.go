@@ -18,7 +18,7 @@ func ip(i int) *int         { return &i }
 func TestActiveLLMOverrides_ResolvesPinnedSection(t *testing.T) {
 	reg := newRegistry(t)
 	ctx := context.Background()
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		LLMParams: &agentcfg.LLMParams{
 			Model:           sp("model-x"),
 			Temperature:     fp(0.4),
@@ -59,7 +59,7 @@ func TestActiveLLMOverrides_ResolvesPinnedSection(t *testing.T) {
 func TestActiveLLMOverrides_PartialSection(t *testing.T) {
 	reg := newRegistry(t)
 	ctx := context.Background()
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		LLMParams: &agentcfg.LLMParams{Temperature: fp(0.7)},
 	}); err != nil {
 		t.Fatalf("SetRevision: %v", err)
@@ -107,7 +107,7 @@ func TestActiveLLMOverrides_NoOverridePaths(t *testing.T) {
 
 	t.Run("active revision without an LLM-params section", func(t *testing.T) {
 		reg := newRegistry(t)
-		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
 		}); err != nil {
 			t.Fatalf("SetRevision: %v", err)

@@ -351,7 +351,7 @@ func TestE2E_AgentConfig_MCPPolicy(t *testing.T) {
 func TestE2E_AgentConfig_MCPPolicy_Concurrency(t *testing.T) {
 	h := newMPHarness(t)
 	ctx := context.Background()
-	if _, err := h.registry.SetRevision(ctx, mpID(), mpAgent, agentcfg.ConfigPayload{
+	if _, err := h.registry.SetRevision(ctx, mpID(), mpAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
 	}); err != nil {
 		t.Fatalf("seed pause: %v", err)

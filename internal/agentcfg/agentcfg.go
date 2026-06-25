@@ -64,6 +64,35 @@ var (
 	ErrStateUnavailable = errors.New("agentcfg: state store unavailable")
 	// ErrInvalidPayload — the supplied ConfigPayload failed validation.
 	ErrInvalidPayload = errors.New("agentcfg: invalid config payload")
+	// ErrReservedUser — a user-scoped call carried a verified user id equal
+	// to the reserved internal sentinel ("__agentcfg__"); fails closed so the
+	// per-user key space can never alias onto the agent-level chain.
+	ErrReservedUser = errors.New("agentcfg: user id collides with the reserved internal slot")
+)
+
+// ConfigScope is the durable-config ownership discriminator. One Registry
+// implementation serves two keyings: the admin/tenant durable config (keyed
+// under a synthetic per-agent slot) and the per-user durable config variant
+// (keyed under the caller's real (tenant, user) with the agent id as a key).
+//
+// It is named with the ConfigScope prefix to disambiguate from the unrelated
+// tools/auth.BindingScope constants (ScopeAgent / ScopeUser = OAuth token
+// binding) and from the Protocol JWT scope auth.ScopeAgentConfigUser. The
+// isolation tuple is never widened: the real user is the isolation principal
+// for the user variant; the agent id stays a key, never a WHERE-clause
+// isolation filter (RFC §6.16 / CLAUDE.md §6 clarifying note).
+type ConfigScope uint8
+
+const (
+	// ConfigScopeAgent is the admin/tenant durable config, keyed under the
+	// synthetic per-agent identity slot and the agentcfg.* record kinds. The
+	// default (zero value).
+	ConfigScopeAgent ConfigScope = iota
+	// ConfigScopeUser is the per-user durable config variant, keyed under the
+	// caller's real (tenant, user) with the agent id in the session slot and a
+	// DISTINCT agentcfg.user.* record-kind prefix. The distinct prefix is the
+	// structural guarantee the two key spaces can never alias.
+	ConfigScopeUser
 )
 
 // SkillsSelection is the membership set of skill names active for an
@@ -255,23 +284,23 @@ type Registry interface {
 	// advances the active pointer to it. An idempotent re-set of
 	// byte-identical canonical content (relative to the current active
 	// revision) is a no-op that returns the existing active revision.
-	SetRevision(ctx context.Context, id identity.Quadruple, agentID string, payload ConfigPayload) (Revision, error)
+	SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope, payload ConfigPayload) (Revision, error)
 	// Active returns the agent's current active revision and whether one
 	// exists. No active pointer returns (zero, false, nil).
-	Active(ctx context.Context, id identity.Quadruple, agentID string) (Revision, bool, error)
+	Active(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope) (Revision, bool, error)
 	// Get returns the revision identified by revisionID. A missing
 	// revision fails loud with ErrRevisionNotFound.
-	Get(ctx context.Context, id identity.Quadruple, agentID, revisionID string) (Revision, error)
+	Get(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope) (Revision, error)
 	// ListRevisions returns the agent's revision chain newest-first,
 	// capped at limit (0 = no cap). Enumeration uses the elevated
 	// maintenance scan and filters to the agent's identity slot.
-	ListRevisions(ctx context.Context, id identity.Quadruple, agentID string, limit int) ([]Revision, error)
+	ListRevisions(ctx context.Context, id identity.Quadruple, agentID string, scope ConfigScope, limit int) ([]Revision, error)
 	// Rollback writes a new active pointer to an existing revision
 	// WITHOUT mutating or deleting any revision. A missing target fails
 	// loud with ErrRevisionNotFound.
-	Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string) (Revision, error)
+	Rollback(ctx context.Context, id identity.Quadruple, agentID, revisionID string, scope ConfigScope) (Revision, error)
 	// Diff returns the deterministic compare of two existing revisions.
-	Diff(ctx context.Context, id identity.Quadruple, agentID, fromRev, toRev string) (Diff, error)
+	Diff(ctx context.Context, id identity.Quadruple, agentID, fromRev, toRev string, scope ConfigScope) (Diff, error)
 	// Close releases resources. Idempotent.
 	Close(ctx context.Context) error
 }
