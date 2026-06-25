@@ -1,0 +1,71 @@
+/*
+ * Harbor landing-page design tokens.
+ *
+ * These mirror the Harbor Console brand surface (web/console/src/lib/tokens.css):
+ * the lighthouse teal on deep navy. Variables only — defining them on :root is
+ * safe (no visual leak into the stock VitePress docs pages); all *layout* lives
+ * behind the `.landing` root in landing.css / scoped component styles.
+ */
+:root {
+  /* Surfaces — deep navy, lighter as panels stack */
+  --hb-bg: #0d1117;
+  --hb-bg-soft: #0f1620;
+  --hb-panel: #0d2430;
+  --hb-panel-2: #102a38;
+  --hb-border: #1d2b36;
+  --hb-border-strong: #2b3947;
+
+  /* Text ramp — calm grayscale on navy */
+  --hb-fg: #e6edf3;
+  --hb-fg-muted: #9fb0bd;
+  --hb-fg-dim: #6b7d8a;
+
+  /* Accent — lighthouse teal, used sparingly */
+  --hb-accent: #2bb6cc;
+  --hb-accent-bright: #48d6d2;
+  --hb-accent-weak: rgba(43, 182, 204, 0.12);
+  --hb-accent-line: rgba(72, 214, 210, 0.34);
+  --hb-beacon: #f4c76b;
+
+  /* Status (matched to the Console palette) */
+  --hb-ok: #3fb950;
+  --hb-warn: #d29922;
+
+  /* Type scale */
+  --hb-fs-display: clamp(2.5rem, 5.2vw, 4.1rem);
+  --hb-fs-h2: clamp(1.7rem, 3vw, 2.45rem);
+  --hb-fs-h3: clamp(1.1rem, 1.6vw, 1.3rem);
+  --hb-fs-lead: clamp(1.05rem, 1.4vw, 1.28rem);
+  --hb-fs-body: 1rem;
+  --hb-fs-mono: 0.88rem;
+  --hb-fs-eyebrow: 0.8rem;
+
+  --hb-font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", "Menlo",
+    "Consolas", monospace;
+
+  /* Spacing ramp (4px base) */
+  --hb-space-1: 0.25rem;
+  --hb-space-2: 0.5rem;
+  --hb-space-3: 0.75rem;
+  --hb-space-4: 1rem;
+  --hb-space-5: 1.5rem;
+  --hb-space-6: 2rem;
+  --hb-space-8: 3rem;
+  --hb-space-10: 4rem;
+  --hb-section-y: clamp(4rem, 8vw, 7rem);
+  --hb-maxw: 1140px;
+
+  /* Radii + elevation */
+  --hb-radius-sm: 6px;
+  --hb-radius: 10px;
+  --hb-radius-lg: 16px;
+  --hb-shadow: 0 1px 0 rgba(255, 255, 255, 0.02),
+    0 12px 32px -16px rgba(0, 0, 0, 0.6);
+  --hb-shadow-lg: 0 24px 60px -24px rgba(0, 0, 0, 0.7);
+
+  /* Motion */
+  --hb-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --hb-dur-fast: 140ms;
+  --hb-dur: 320ms;
+  --hb-dur-slow: 680ms;
+}

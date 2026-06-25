@@ -42,6 +42,28 @@ export default defineConfig({
   description:
     "Harbor — a Go-native runtime for durable, steerable, event-driven AI agents.",
   cleanUrls: true,
+  // Branding: the favicon + a mask icon, plus Open Graph / Twitter cards so a
+  // shared link renders the lighthouse mark and the one-line pitch. Paths are
+  // base-prefixed so they resolve under the GitHub Pages "/Harbor/" path.
+  head: [
+    ["link", { rel: "icon", type: "image/svg+xml", href: `${base}favicon.svg` }],
+    ["link", { rel: "mask-icon", href: `${base}favicon.svg`, color: "#2bb6cc" }],
+    ["meta", { name: "theme-color", content: "#0d1117" }],
+    ["meta", { property: "og:type", content: "website" }],
+    ["meta", { property: "og:title", content: "Harbor — durable, steerable AI agents in Go" }],
+    [
+      "meta",
+      {
+        property: "og:description",
+        content:
+          "A Go-native runtime for durable, steerable, event-driven AI agents. One static binary; multi-isolation from day one; a swappable planner on a versioned Protocol.",
+      },
+    ],
+    ["meta", { property: "og:image", content: `${base}harbor_logo.svg` }],
+    ["meta", { name: "twitter:card", content: "summary" }],
+    ["meta", { name: "twitter:title", content: "Harbor — durable, steerable AI agents in Go" }],
+    ["meta", { name: "twitter:image", content: `${base}harbor_logo.svg` }],
+  ],
   // The build fails on a dead internal link (modulo the repo-tree
   // carve-out above). Surfacing a 404 before publish is the point of
   // having a docs build step in CI.
@@ -71,6 +93,7 @@ export default defineConfig({
   },
   themeConfig: {
     siteTitle: "Harbor",
+    logo: "/harbor_logo.svg",
     nav: [
       { text: "Operator skills", link: "/skills/" },
       { text: "Recipes", link: "/recipes/" },

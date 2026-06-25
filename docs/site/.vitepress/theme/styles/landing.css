@@ -1,0 +1,120 @@
+/*
+ * Landing-only base layout. EVERYTHING here is scoped under `.landing` so it
+ * cannot leak into the stock VitePress docs pages (which keep the default
+ * theme). tokens.css holds the variables; this holds shared structure.
+ */
+
+.landing {
+  background: var(--hb-bg);
+  color: var(--hb-fg);
+  font-size: var(--hb-fs-body);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  /* Defensive: no element may introduce a horizontal scrollbar. Code blocks
+     manage their own overflow internally (overflow-x: auto on the <pre>). */
+  overflow-x: clip;
+}
+
+/* Long unbreakable tokens (URLs, package paths) wrap instead of overflowing. */
+.landing h1,
+.landing h2,
+.landing h3,
+.landing p {
+  overflow-wrap: break-word;
+}
+
+.landing .hb-wrap {
+  width: 100%;
+  max-width: var(--hb-maxw);
+  margin: 0 auto;
+}
+
+/* Eyebrow — the small teal label above each section headline */
+.landing .hb-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  font: 600 var(--hb-fs-eyebrow) / 1 var(--hb-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hb-accent-bright);
+}
+.landing .hb-eyebrow__beam {
+  width: 22px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--hb-accent-bright), transparent);
+}
+
+/* Buttons — shared across nav, hero, sections, CTAs */
+.landing .hb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.78rem 1.3rem;
+  border-radius: var(--hb-radius);
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: transform var(--hb-dur-fast) var(--hb-ease),
+    background var(--hb-dur-fast) var(--hb-ease),
+    border-color var(--hb-dur-fast) var(--hb-ease),
+    box-shadow var(--hb-dur-fast) var(--hb-ease);
+}
+.landing .hb-btn--sm {
+  padding: 0.5rem 0.9rem;
+  font-size: 0.88rem;
+}
+.landing .hb-btn--primary {
+  color: #04161c;
+  background: var(--hb-accent);
+  box-shadow: 0 8px 24px -12px rgba(43, 182, 204, 0.8);
+}
+.landing .hb-btn--primary:hover {
+  background: var(--hb-accent-bright);
+  transform: translateY(-2px);
+}
+.landing .hb-btn--ghost {
+  color: var(--hb-fg);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--hb-border-strong);
+}
+.landing .hb-btn--ghost:hover {
+  border-color: var(--hb-accent);
+  color: var(--hb-fg);
+  transform: translateY(-2px);
+}
+.landing .hb-btn:focus-visible {
+  outline: 2px solid var(--hb-accent-bright);
+  outline-offset: 2px;
+}
+
+/* Scroll-reveal — applied via the v-reveal directive */
+.landing [data-reveal] {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity var(--hb-dur-slow) var(--hb-ease),
+    transform var(--hb-dur-slow) var(--hb-ease);
+  will-change: opacity, transform;
+}
+.landing [data-reveal].is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+/* Respect reduced-motion: show everything immediately, kill transitions */
+@media (prefers-reduced-motion: reduce) {
+  .landing [data-reveal] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .landing * {
+    scroll-behavior: auto;
+  }
+}
