@@ -91,8 +91,10 @@ discriminator — never as an isolation `WHERE` clause.
   `(tenant, user, session)` identity; the `ConfigScopeUser` storage key is
   derived (session + run zeroed) ONLY inside the registry, never in the
   projection. A run reaching the projection with an incomplete triple fails
-  loud at the user read (`identity_required`), never silently skips the user
-  tier.
+  loud at the first identity-mandatory registry read (`identity_required`) —
+  the admin-tier read runs first, so both tiers are identity-mandatory and the
+  run never silently skips the user tier or falls through to the unfiltered
+  view.
 - Preserve the proven privilege boundary intact: adding a NEW MCP connection
   stays admin-only + fail-closed (`CodeScopeMismatch`). This phase adds NO new
   Protocol verb, NO new authority scope, NO new store, and NO connection-add
@@ -164,10 +166,14 @@ governs ONLY the trip-wire that *bumping* the pinned constant is an RFC change
 - [ ] The projection passes the run's FULL verified `(tenant, user, session)`
       triple to the user read. The run-loop wire edge already enforces
       `identity.MustFrom` (the full triple is mandatory to start a run); a run
-      reaching the projection with an INCOMPLETE triple fails loud at the user
-      read (`identity_required` from the registry's identity-mandatory guard),
-      never silently skips the user tier or falls through to the unfiltered
-      view (CLAUDE.md §13). A reject-missing-session test covers this.
+      reaching the projection with an INCOMPLETE triple fails loud
+      (`identity_required` from the registry's identity-mandatory guard) — the
+      admin-tier read runs first, so the incomplete triple trips at that first
+      identity-mandatory read; either way the run never silently skips the user
+      tier or falls through to the unfiltered view (CLAUDE.md §13). A
+      reject-missing-session test (in the integration suite) covers this, and
+      `TestPlannerCatalog_UserReadError_FailsLoud` covers the user-tier
+      loud-fail directly via a fake registry.
 - [ ] Persistence-across-sessions: a user revision carrying `disabled_tools`
       set (via 126a's `user/set_revision`) under `(tenantA, userA, sessionX)`
       is reflected in a run started under `(tenantA, userA, sessionY)` (a
