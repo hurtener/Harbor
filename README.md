@@ -279,7 +279,12 @@ Next: the Console-side MCP-Apps data-delivery push — reverted over a
 `ui/initialize` handshake regression and tracked for re-land in
 [#347](https://github.com/hurtener/Harbor/issues/347) — plus the generated
 per-domain Protocol wire-type modules and the shared chat-module extraction
-(the D-093 / D-091 follow-ons). Post-V1 work — additional planner concretes,
+(the D-093 / D-091 follow-ons). On the Protocol-tooling side, `runtime.info`
+now also carries a `wire_surface_digest` — a stable `sha256:` fingerprint of
+the canonical wire surface (Protocol version, method/error/capability/type
+names) that a connected client compares against the digest it was built
+against, so coarse wire drift is caught at connect-time instead of
+field-by-field at runtime. Post-V1 work — additional planner concretes,
 a durable distributed bus, governance extensions — is tracked in the master
 phase plan.
 

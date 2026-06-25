@@ -2443,6 +2443,7 @@ Declared in `internal/protocol/types`.
 | `capabilities` | `[]types.Capability` |  |
 | `uptime_seconds` | `int64` |  |
 | `mcp_app_display_modes` | `[]string` | optional (`omitempty`) |
+| `wire_surface_digest` | `string` |  |
 
 ## RuntimeInfoRequest
 

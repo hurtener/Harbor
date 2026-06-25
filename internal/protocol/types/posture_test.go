@@ -3,6 +3,7 @@ package types_test
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -31,19 +32,24 @@ func TestRuntimeInfoRequest_JSONRoundTrip(t *testing.T) {
 
 func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 	in := types.RuntimeInfo{
-		InstanceID:      "inst-001",
-		DisplayName:     "harbor-dev",
-		BuildVersion:    "v0.0.0-dev",
-		BuildCommit:     "abc1234",
-		BuildDate:       "2026-05-19T00:00:00Z",
-		BuildGoVersion:  "go1.26.0",
-		ProtocolVersion: types.ProtocolVersion,
-		Capabilities:    []types.Capability{types.CapTaskControl, types.CapRuntimePosture},
-		UptimeSeconds:   3600,
+		InstanceID:        "inst-001",
+		DisplayName:       "harbor-dev",
+		BuildVersion:      "v0.0.0-dev",
+		BuildCommit:       "abc1234",
+		BuildDate:         "2026-05-19T00:00:00Z",
+		BuildGoVersion:    "go1.26.0",
+		ProtocolVersion:   types.ProtocolVersion,
+		Capabilities:      []types.Capability{types.CapTaskControl, types.CapRuntimePosture},
+		UptimeSeconds:     3600,
+		WireSurfaceDigest: "sha256:" + strings.Repeat("a", 64),
 	}
 	b, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
+	}
+	// The additive digest field carries its snake_case wire key.
+	if !strings.Contains(string(b), `"wire_surface_digest":"sha256:`) {
+		t.Errorf("RuntimeInfo JSON missing wire_surface_digest key: %s", b)
 	}
 	var out types.RuntimeInfo
 	if err := json.Unmarshal(b, &out); err != nil {
@@ -51,6 +57,9 @@ func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
+	}
+	if out.WireSurfaceDigest != in.WireSurfaceDigest {
+		t.Errorf("WireSurfaceDigest round-trip = %q, want %q", out.WireSurfaceDigest, in.WireSurfaceDigest)
 	}
 }
 
