@@ -1,50 +1,40 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: static-only
 #
-# Phase NN smoke template. Copy to phase-NN.sh, set the surface assertions, make executable.
+# Phase 126b smoke — the durable USER-scope prompt-layer PROJECTION. This
+# phase is projection-only: it adds no store, verb, or route, so the smoke is
+# static. It asserts the 3-segment composeUserLayer, the ConfigScopeUser
+# durable read in ApplyPromptLayers, and that BOTH run-loop twins route
+# prompt-layer projection through the single shared ApplyPromptLayers seam
+# (the §17.6 twin-parity grep, pointed at the run-loop files). The run-start
+# behaviour itself is covered by
+# test/integration/phase126b_user_prompt_layer_test.go.
 #
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# Conventions (AGENTS.md §4.2): use scripts/smoke/common.sh helpers; FAIL = 0.
 
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
-
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase NN assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+# 1. The 3-segment composition (admin user, durable user, session user).
+assert_grep_present 'func composeUserLayer\(adminUser, durableUser, sessionUser string\)' \
+    internal/runtime/agentcfg/projection/projection.go \
+    'phase 126b: composeUserLayer joins three ordered segments'
 
-skip "phase NN: smoke skeleton — replace with real assertions when the phase implements its surface"
+# 2. ApplyPromptLayers reads the durable USER-scope revision (126a's read).
+assert_grep_present 'ConfigScopeUser' \
+    internal/runtime/agentcfg/projection/projection.go \
+    'phase 126b: ApplyPromptLayers reads the ConfigScopeUser durable layer'
+
+# 3. The §17.6 twin-parity grep — BOTH run-loop drivers route prompt-layer
+#    projection through the single shared ApplyPromptLayers seam.
+assert_grep_present 'projection.ApplyPromptLayers' \
+    cmd/harbor/cmd_dev_runloop.go \
+    'phase 126b: prod run-loop driver routes through the shared ApplyPromptLayers seam'
+assert_grep_present 'projection.ApplyPromptLayers' \
+    harbortest/devstack/devstack.go \
+    'phase 126b: devstack twin routes through the shared ApplyPromptLayers seam'
 
 smoke_summary

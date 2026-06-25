@@ -288,7 +288,18 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore 
 	if oerr != nil {
 		return nil, oerr
 	}
-	user := composeUserLayer(adminUser, overlay.UserPrompt)
+
+	// Durable USER-scope layer (the per-user standing instruction the durable
+	// user-scope config tier persists): read back the active user-scope
+	// revision's user_prompt and
+	// compose it BETWEEN the admin user layer and the ephemeral session
+	// overlay — admin Base > admin User > USER-durable > session User. A read
+	// error fails the run loudly (no silent drop of the durable layer).
+	durableUser, derr := activeDurableUserPrompt(ctx, reg, agentID, id)
+	if derr != nil {
+		return nil, derr
+	}
+	user := composeUserLayer(adminUser, durableUser, overlay.UserPrompt)
 
 	// The admin base is ALWAYS the spine — it is never sourced from the
 	// session overlay (base-unwritable-by-session is structural).
@@ -309,20 +320,45 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore 
 	return ov, nil
 }
 
-// composeUserLayer joins the durable admin user layer and the session user
-// layer (admin first, then session) into the single lower-trust
-// `<user_instructions>` block. Either may be empty; an empty pair yields "".
-func composeUserLayer(adminUser, sessionUser string) string {
-	adminUser = strings.TrimSpace(adminUser)
-	sessionUser = strings.TrimSpace(sessionUser)
-	switch {
-	case adminUser == "":
-		return sessionUser
-	case sessionUser == "":
-		return adminUser
-	default:
-		return adminUser + "\n\n" + sessionUser
+// composeUserLayer joins the three caller-authored user layers — the admin
+// user layer, the durable user-scope layer, and the ephemeral session user
+// layer, IN THAT ORDER — into the single lower-trust `<user_instructions>`
+// block. The order is the security boundary (admin Base, the always-present
+// spine, sits above all three): a later, lower-trust layer can EXTEND the
+// operator's standing instruction, never precede or weaken it. Any segment
+// may be empty (whitespace-only segments are dropped); an all-empty input
+// yields "".
+func composeUserLayer(adminUser, durableUser, sessionUser string) string {
+	segs := make([]string, 0, 3)
+	for _, s := range []string{adminUser, durableUser, sessionUser} {
+		if t := strings.TrimSpace(s); t != "" {
+			segs = append(segs, t)
+		}
 	}
+	return strings.Join(segs, "\n\n")
+}
+
+// activeDurableUserPrompt resolves the caller's active USER-scope durable
+// config revision and returns its user_prompt — the durable user-scope prompt
+// layer. It keys by the run's identity triple with agent_id as the per-agent
+// key (the USER config scope), so the real (tenant, user) is the isolation
+// principal and the tuple is never widened. nil registry / empty agentID / no
+// active user revision / a revision with no user prompt yields "" (the
+// backward-compatible "no durable user layer" path). A registry read error is
+// returned so the caller fails the run loudly — never a silent drop.
+func activeDurableUserPrompt(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (string, error) {
+	if reg == nil || agentID == "" {
+		return "", nil
+	}
+	rev, found, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeUser)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", nil
+	}
+	user, _ := rev.Payload.UserPrompt()
+	return user, nil
 }
 
 // unionSorted returns the sorted, de-duplicated union of two string sets. The
