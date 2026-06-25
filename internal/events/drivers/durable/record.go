@@ -18,8 +18,8 @@ import (
 // as events.RedactedMap{Data: ...} — the exact same generic
 // post-redaction shape the inmem bus already produces for any payload
 // that is not SafePayload (see internal/events/drivers/inmem
-// wrapRedacted). Replay consumers read fields via RedactedMap.Data.
-// records this fidelity boundary.
+// wrapRedacted). Replay consumers read fields via RedactedMap.Data;
+// persistedEvent records this fidelity boundary.
 type persistedEvent struct {
 	Type       events.EventType  `json:"type"`
 	TenantID   string            `json:"tenant_id"`

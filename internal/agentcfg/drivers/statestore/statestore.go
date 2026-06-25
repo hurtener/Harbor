@@ -78,14 +78,24 @@ type scopeKeys struct {
 	revPfx     string
 }
 
-// keysFor resolves the keying for scope. ConfigScopeAgent keeps the existing
-// synthetic-slot keying AND the agentcfg.* kinds (byte-identical to before).
-// ConfigScopeUser keys under the caller's REAL (tenant, user) with the agent
-// id in the session slot AND the distinct agentcfg.user.* kinds; a verified
-// user id equal to the reserved sentinel is REJECTED loud (ErrReservedUser)
-// BEFORE any read or write, as fail-loud defence-in-depth.
+// keysFor resolves the keying for scope. ConfigScopeAgent (the zero value)
+// keeps the existing synthetic-slot keying AND the agentcfg.* kinds
+// (byte-identical to before). ConfigScopeUser keys under the caller's REAL
+// (tenant, user) with the agent id in the session slot AND the distinct
+// agentcfg.user.* kinds; a verified user id equal to the reserved sentinel is
+// REJECTED loud (ErrReservedUser) BEFORE any read or write, as fail-loud
+// defence-in-depth. The scope discriminator is matched EXPLICITLY: an
+// unrecognized value fails closed with an error rather than defaulting to the
+// more-privileged agent tier — this keying function is a security boundary, so
+// an out-of-range scope is a loud error, not a silent privilege grant (§13).
 func keysFor(scope agentcfg.ConfigScope, id identity.Quadruple, agentID string) (scopeKeys, error) {
 	switch scope {
+	case agentcfg.ConfigScopeAgent:
+		return scopeKeys{
+			quad:       syntheticQuad(id.TenantID, agentID),
+			activeKind: kindActive,
+			revPfx:     kindRevisionPfx,
+		}, nil
 	case agentcfg.ConfigScopeUser:
 		if id.UserID == agentCfgUser {
 			return scopeKeys{}, fmt.Errorf("%w: user_id=%q", agentcfg.ErrReservedUser, id.UserID)
@@ -95,12 +105,8 @@ func keysFor(scope agentcfg.ConfigScope, id identity.Quadruple, agentID string) 
 			activeKind: kindUserActive,
 			revPfx:     kindUserRevisionPfx,
 		}, nil
-	default: // ConfigScopeAgent
-		return scopeKeys{
-			quad:       syntheticQuad(id.TenantID, agentID),
-			activeKind: kindActive,
-			revPfx:     kindRevisionPfx,
-		}, nil
+	default:
+		return scopeKeys{}, fmt.Errorf("agentcfg/statestore: unrecognized config scope %d", scope)
 	}
 }
 
@@ -296,6 +302,16 @@ func (r *registry) Get(ctx context.Context, id identity.Quadruple, agentID, revi
 	return rec.toRevision(), nil
 }
 
+// ListRevisions returns the revision history for the (identity, agent, scope)
+// slot, newest first.
+//
+// Cost note: ListKind has no identity-scoped enumeration, so this reads every
+// record carrying keys.revPfx across identities (a maintenance-scoped scan)
+// and narrows to keys.quad in Go below. The narrowing is correct and isolation
+// is preserved, but for ConfigScopeUser the scanned cardinality scales with
+// the whole user population rather than the smaller agent count. An
+// identity-scoped enumeration on the StateStore interface would bound this; it
+// is tracked as a follow-up rather than retrofitted here.
 func (r *registry) ListRevisions(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, limit int) ([]agentcfg.Revision, error) {
 	if err := r.validate(id, agentID); err != nil {
 		return nil, err

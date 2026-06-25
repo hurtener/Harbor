@@ -236,9 +236,9 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 // carry a state.StateStore, the registry-path factory opens the
 // StateStore itself from EventsConfig.StateDriver / StateDSN.
 //
-// PR #91 amended per the CLAUDE.md §13 "Test stubs as
-// production defaults on operator-facing seams" rule: the
-// registry-path factory now fails LOUD AT BOOT when StateDriver is
+// Per the CLAUDE.md §13 "Test stubs as production defaults on
+// operator-facing seams" rule, the
+// registry-path factory fails LOUD AT BOOT when StateDriver is
 // empty rather than auto-degrading to the in-memory ring. An
 // operator who explicitly selected `events.driver = "durable"` has
 // signalled they want durability; silently producing a non-durable
@@ -264,9 +264,9 @@ func init() {
 	//     it exactly like the plain registry path.
 	//  2. Otherwise a non-nil deps.State is shared (not owned).
 	//  3. Otherwise fail loud — same posture as the plain factory; the
-	//     error names both ways out (PR #91's §13 amendment carried
-	//     forward: an operator who selected `durable` signalled they
-	//     want durability; silently degrading is forbidden).
+	//     error names both ways out (the §13 fail-loud-at-boot posture
+	//     carried forward: an operator who selected `durable` signalled
+	//     they want durability; silently degrading is forbidden).
 	events.RegisterWithDeps("durable", func(cfg config.EventsConfig, r audit.Redactor, deps events.Deps) (events.EventBus, error) {
 		if cfg.StateDriver != "" {
 			return newWithOwnedStore(cfg, r)

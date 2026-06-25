@@ -83,7 +83,7 @@ type PostureSurface struct {
 	displayName string
 	instanceID  string
 	// wiredCaps is the per-instance subset of canonical Protocol
-	// capabilities this Runtime actually wires (/ round-8).
+	// capabilities this Runtime actually wires.
 	// `handleInfo` projects it as `RuntimeInfo.Capabilities`. The
 	// always-on capabilities (task_control, events_subscribe,
 	// runtime_posture) are added at construction; conditional ones
@@ -151,7 +151,7 @@ type PostureDeps struct {
 	// TopologyAvailable indicates this Runtime hosts an engine-graph
 	// projection — when true, `runtime.info.capabilities` advertises
 	// `topology_snapshot` so Protocol clients gate their topology
-	// fetches at attach time (. The
+	// fetches at attach time. The
 	// `topology.snapshot` method itself stays gated by the matching
 	// `ControlSurface.topology` accessor; this flag is the *advertised*
 	// projection of that wiring decision. Optional — defaults false
@@ -228,7 +228,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // canonical Protocol capabilities this Runtime instance has actually
 // wired. Always-on surfaces (task control, events subscribe, runtime
 // posture) are unconditional in the dev binary; conditional ones come
-// in via the matching deps flag (. Adding a new
+// in via the matching deps flag. Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
 func wiredCapabilitiesFor(topologyAvailable bool) []types.Capability {
@@ -350,7 +350,7 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	// canonical capability universe, so it is invariant to this instance's
 	// wired-capability subset.
 	out.WireSurfaceDigest = wiresurface.Digest()
-	// Per-instance wired subset (. Conditional
+	// Per-instance wired subset. Conditional
 	// surfaces (currently `topology_snapshot`) appear here only when
 	// the matching seam was wired at construction; the static
 	// `types.Capabilities()` is the handshake/registry surface, not

@@ -27,8 +27,9 @@ import (
 // ErrSkillBodyMissing is returned by [ActiveSkillViews] when an agent's
 // active config pins an ADMIN skill-membership name whose body is absent
 // from the store (e.g. the skill was hard-deleted, or a rollback landed on a
-// revision referencing a since-deleted skill). Per the 92c plan this is a
-// LOUD failure at run-start projection — never a silent drop (CLAUDE.md §13).
+// revision referencing a since-deleted skill). An admin-pinned skill whose
+// body is absent from the store is a LOUD failure at run-start projection —
+// never a silent drop (CLAUDE.md §13).
 // Session-personal skill names are exempt (a safe-subset add that may
 // legitimately not be in the directory view).
 var ErrSkillBodyMissing = errors.New("agentcfg/projection: agent-config pins a skill whose body is absent from the store")

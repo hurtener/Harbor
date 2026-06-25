@@ -176,11 +176,16 @@ governs ONLY the trip-wire that *bumping* the pinned constant is an RFC change
 - [ ] Cross-user / cross-tenant isolation: user A's user-scope disable set
       never affects user B's runs (different `user_id`) and never crosses
       tenants. A concurrent N≥10 multi-user run stress asserts no cross-talk.
-- [ ] Adding a NEW MCP connection (`agent_config.add_mcp_connection`, esp.
+- [x] Adding a NEW MCP connection (`agent_config.add_mcp_connection`, esp.
       stdio) stays admin-only + fail-closed (`CodeScopeMismatch`): a non-admin
       caller is rejected before dispatch — unchanged by this phase. 126c adds
-      NO verb, NO scope, NO store, and NO connection-add path; the smoke
-      re-verifies the boundary stayed closed.
+      NO verb, NO scope, NO store, and NO connection-add path.
+      **Deviation (§4.3):** the shipped `scripts/smoke/phase-126c.sh` is
+      intentionally STATIC-ONLY — this projection-only phase owns no new route,
+      so the live connection-add boundary is exercised upstream by
+      `scripts/smoke/phase-92f.sh` / `92h.sh` / `92n.sh` / `92m.sh` (the phases
+      that own the connection-add surface), not re-asserted here. No coverage
+      hole; the live appendix below is retained as design intent.
 - [ ] 126c adds NO new Protocol method / wire type / error code and NO new Go
       store: the single-source discipline (`internal/protocol/{methods,types,
       singlesource}`) and the TS client + wire manifest are UNTOUCHED. No
@@ -530,6 +535,15 @@ constant is an RFC change, not done here).
 ```
 
 ### (c) `scripts/smoke/phase-126c.sh` assertions to add
+
+> **As-shipped note (§4.3 deviation):** only the two STATIC assertions below
+> landed in `scripts/smoke/phase-126c.sh`. The live connection-add /
+> dependency-check block that follows is design intent, not shipped — the
+> connection-add boundary is a pre-existing surface owned by phases
+> 92f/92h/92n/92m and is asserted live in THEIR smokes; re-running it here
+> would duplicate coverage for a route 126c does not own. The static checks
+> guard the one thing 126c actually changes (the projection folding the user
+> tier into the exclusion set).
 
 ```bash
 # Static — the projection folds the user tier into the exclusion set.
