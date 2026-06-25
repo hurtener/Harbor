@@ -1185,6 +1185,8 @@ Additions to this set are RFC PRs.
 
 ## U
 
+**user-scope tool-exposure projection** — the run-start projection step (`ActivePlannerCatalogView`) that reads the active USER-scope agent-config revision (the `ConfigScopeUser` durable variant — D-256) and unions its narrow-only disable set (`disabled_servers` / `disabled_tools`) into the grow-only tool-exposure exclusion set, between the admin baseline and the ephemeral session overlay. The three disable sets compose as `admin ∪ user ∪ session` — order-independent and grow-only, so neither the user nor the session tier can re-widen past the admin-provisioned palette. It is read-only (the write + audit are the user tier's, Phase 126a) and narrow-only by construction (union never subtracts; no enable field). `agent_id` is the per-agent key, never an isolation filter — isolation stays the run's `(tenant, user)`. Phase 126c, D-258. RFC §6.16.
+
 **`ui://` resource** — an MCP resource whose URI uses the `ui://` scheme, carrying the HTML of an MCP App. Referenced from a tool's `_meta.ui.resourceUri` — canonically on the tool **definition** (captured at discovery — D-216); the runtime recognises it distinctly from ordinary (`file://` / `https://`) resources (Phase 109a), projects the reference onto the tool-result Protocol surface, and serves its content via `mcp.servers.read_resource` (identity-scoped, D-026 heavy-content aware). RFC §6.4, D-172, D-216.
 
 **`UnionRouter`** — Router (Phase 14) that dispatches by payload tag (a string discriminator). Used for sum-type-shaped payloads (e.g. planner `Decision` variants in Phase 42). RFC §6.1.
