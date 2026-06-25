@@ -2,9 +2,11 @@ package projection_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 )
@@ -128,3 +130,130 @@ func TestApplyPromptLayers_NoLayersUnchanged(t *testing.T) {
 		t.Fatal("bundle should be returned unchanged when no durable layers exist")
 	}
 }
+
+// TestApplyPromptLayers_DurableUserLayer_Precedence proves the durable
+// USER-scope layer composes BETWEEN the admin user layer and the session
+// overlay — admin Base > admin User > USER-durable > session User — in the
+// single lower-trust <user_instructions> block.
+func TestApplyPromptLayers_DurableUserLayer_Precedence(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	ov := newOverlay(t)
+	// admin Base + admin User (ConfigScopeAgent).
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		PromptLayers: &agentcfg.PromptLayers{Base: ps("admin-base"), User: ps("admin-user")},
+	}); err != nil {
+		t.Fatalf("set admin: %v", err)
+	}
+	// the durable USER-scope layer (ConfigScopeUser).
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+		PromptLayers: &agentcfg.PromptLayers{User: ps("durable-user")},
+	}); err != nil {
+		t.Fatalf("set durable: %v", err)
+	}
+	// the ephemeral session overlay.
+	if _, err := ov.SetUserPrompt(ctx, projID(), projAgent, "session-user"); err != nil {
+		t.Fatalf("set session: %v", err)
+	}
+
+	got, err := projection.ApplyPromptLayers(ctx, reg, ov, projAgent, projID(), nil)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.BasePromptLayer == nil || *got.BasePromptLayer != "admin-base" {
+		t.Fatalf("admin base not the spine: %+v", got.BasePromptLayer)
+	}
+	want := "admin-user\n\ndurable-user\n\nsession-user"
+	if got.UserPromptLayer == nil || *got.UserPromptLayer != want {
+		t.Fatalf("user composition wrong:\n got=%q\nwant=%q", deref(got.UserPromptLayer), want)
+	}
+}
+
+// TestApplyPromptLayers_DurableUserLayer_AloneReachesRun proves the durable
+// layer alone (no admin, no session) reaches the run.
+func TestApplyPromptLayers_DurableUserLayer_AloneReachesRun(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+		PromptLayers: &agentcfg.PromptLayers{User: ps("just-durable")},
+	}); err != nil {
+		t.Fatalf("set durable: %v", err)
+	}
+	got, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), nil)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got == nil || got.UserPromptLayer == nil || *got.UserPromptLayer != "just-durable" {
+		t.Fatalf("durable-only layer did not reach the run: %+v", got)
+	}
+}
+
+// TestApplyPromptLayers_EmptyDurable_ByteIdentical proves a run with no durable
+// USER-scope layer composes exactly as before this phase (admin User + session
+// User, no durable segment).
+func TestApplyPromptLayers_EmptyDurable_ByteIdentical(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	ov := newOverlay(t)
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		PromptLayers: &agentcfg.PromptLayers{User: ps("admin-user")},
+	}); err != nil {
+		t.Fatalf("set admin: %v", err)
+	}
+	if _, err := ov.SetUserPrompt(ctx, projID(), projAgent, "session-user"); err != nil {
+		t.Fatalf("set session: %v", err)
+	}
+	got, err := projection.ApplyPromptLayers(ctx, reg, ov, projAgent, projID(), nil)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	want := "admin-user\n\nsession-user"
+	if got.UserPromptLayer == nil || *got.UserPromptLayer != want {
+		t.Fatalf("empty-durable composition not byte-identical:\n got=%q\nwant=%q", deref(got.UserPromptLayer), want)
+	}
+}
+
+// TestApplyPromptLayers_DurableReadError_FailsLoud proves a registry read error
+// on the durable USER-scope layer fails the run loudly (no silent drop).
+func TestApplyPromptLayers_DurableReadError_FailsLoud(t *testing.T) {
+	ctx := context.Background()
+	sentinel := errSentinel("durable read exploded")
+	reg := &userScopeErrRegistry{err: sentinel}
+	_, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), nil)
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Fatalf("durable read error must fail loud, got %v", err)
+	}
+}
+
+type errSentinel string
+
+func (e errSentinel) Error() string { return string(e) }
+
+// userScopeErrRegistry is a fake agentcfg.Registry that errors ONLY on a
+// ConfigScopeUser Active read (the durable user-layer read), and is a no-op on
+// the ConfigScopeAgent path, so it isolates the durable-read fail-loud path
+// from the admin-layer read.
+type userScopeErrRegistry struct{ err error }
+
+func (r *userScopeErrRegistry) Active(_ context.Context, _ identity.Quadruple, _ string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
+	if scope == agentcfg.ConfigScopeUser {
+		return agentcfg.Revision{}, false, r.err
+	}
+	return agentcfg.Revision{}, false, nil
+}
+func (r *userScopeErrRegistry) SetRevision(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, agentcfg.ConfigPayload) (agentcfg.Revision, error) {
+	return agentcfg.Revision{}, nil
+}
+func (r *userScopeErrRegistry) Get(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope) (agentcfg.Revision, error) {
+	return agentcfg.Revision{}, nil
+}
+func (r *userScopeErrRegistry) ListRevisions(context.Context, identity.Quadruple, string, agentcfg.ConfigScope, int) ([]agentcfg.Revision, error) {
+	return nil, nil
+}
+func (r *userScopeErrRegistry) Rollback(context.Context, identity.Quadruple, string, string, agentcfg.ConfigScope) (agentcfg.Revision, error) {
+	return agentcfg.Revision{}, nil
+}
+func (r *userScopeErrRegistry) Diff(context.Context, identity.Quadruple, string, string, string, agentcfg.ConfigScope) (agentcfg.Diff, error) {
+	return agentcfg.Diff{}, nil
+}
+func (r *userScopeErrRegistry) Close(context.Context) error { return nil }
