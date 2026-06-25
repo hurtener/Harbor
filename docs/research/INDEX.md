@@ -23,6 +23,7 @@ The briefs themselves live alongside this file (`docs/research/01..NN.md`). Brie
 | 13 | React planner prompt engineering (system prompt depth, dynamic augmentation, UNTRUSTED memory framing) | ~3400 | 2026-05-18 |
 | 14 | MCP client/host compliance (spec 2025-11-25 — capability matrix audit + 85-band decomposition) | ~3600 | 2026-05-21 |
 | 15 | Native tool-calling + deferred loading + tag-based scoping (V1.4 React migration tradeoff) | ~3500 | 2026-05-26 |
+| 16 | Agent-pattern foundations (Anthropic write-ups → Harbor mapping; consultation primitive; three DNA boundaries) | ~8100 | 2026-06-25 |
 
 ## Subsystem → briefs reverse index
 
@@ -32,6 +33,10 @@ When authoring a phase plan whose subsystem matches the left column, **read at l
 |-----------|-------|--------|
 | Core runtime — engine, messages, streaming, routers, concurrency, playbooks | §6.1 | **01** |
 | Planner interface + Trajectory + RunContext | §6.2 | **02**, 07 |
+| Agent-pattern foundations — post-V1 planner behaviors, consultation primitive (verify+advise), composition vs concretes | §6.2, §3.2, §12 | **16**, 02 |
+| Human-agent boundary (HITL/HOTL posture), steering layering, deterministic policy seams | §3.3, §6.3 | **16**, 02 |
+| Agent identity vs isolation principal, credential-scope seam, compound authorization | §4, §7 | **16**, 09 |
+| Artifacts as versioned deliverables (vs context-safety store) | §6.10 | **16**, 05 |
 | React planner prompt engineering (Phases 83a–d) | §6.2 | **13**, 02, 03, 07 |
 | React-native planner migration + deferred tool loading + tag scoping (V1.4, Phase 110-band) | §6.2, §6.4, §6.5 | **15**, 13, 03, 04 |
 | Steering and unified pause/resume | §3.3, §6.3 | **02** |
