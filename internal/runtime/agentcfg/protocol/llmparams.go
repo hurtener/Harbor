@@ -52,7 +52,7 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 	// Read the active revision so the new revision PRESERVES the prompt-layer
 	// + skills + tool-exposure + connection sections (an LLM-params edit
 	// replaces only its own section).
-	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID)
+	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigSetLLMParamsResponse{}, err
 	}
@@ -71,7 +71,7 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 		payload.Connections = active.Payload.Connections
 	}
 
-	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, payload)
+	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
 	if err != nil {
 		return prototypes.AgentConfigSetLLMParamsResponse{}, err
 	}

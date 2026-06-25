@@ -77,7 +77,7 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, ov sessionover
 	if reg == nil || agentID == "" {
 		return views, nil
 	}
-	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func ActiveLLMOverrides(ctx context.Context, reg agentcfg.Registry, agentID stri
 	if reg == nil || agentID == "" {
 		return nil, nil
 	}
-	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +197,7 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	// Admin exposure (the baseline).
 	var adminPaused, adminDisabled []string
 	if reg != nil && agentID != "" {
-		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
 		if err != nil {
 			return nil, err
 		}
@@ -247,7 +247,7 @@ func ActivePromptLayers(ctx context.Context, reg agentcfg.Registry, agentID stri
 	if reg == nil || agentID == "" {
 		return "", "", false, nil
 	}
-	rev, found, rerr := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID)
+	rev, found, rerr := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
 	if rerr != nil {
 		return "", "", false, rerr
 	}

@@ -155,7 +155,7 @@ func TestAddMCPConnection_OnlineRecordsRevision_SecretHygiene(t *testing.T) {
 	}
 
 	// Secret hygiene #1: the persisted revision payload carries no secret.
-	active, set, err := h.reg.Active(ctx, qScope(), testAgentID)
+	active, set, err := h.reg.Active(ctx, qScope(), testAgentID, agentcfg.ConfigScopeAgent)
 	if err != nil || !set {
 		t.Fatalf("Active: %v set=%v", err, set)
 	}
@@ -230,7 +230,7 @@ func TestAddMCPConnection_SectionMergeBothDirections(t *testing.T) {
 	if _, err := h.svc.AddMCPConnection(ctx, addReq(stdioConn(), nil)); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	active, _, _ := h.reg.Active(ctx, qScope(), testAgentID)
+	active, _, _ := h.reg.Active(ctx, qScope(), testAgentID, agentcfg.ConfigScopeAgent)
 	if len(active.Payload.SkillNames()) != 1 || active.Payload.SkillNames()[0] != "skA" {
 		t.Errorf("skills not preserved by add: %+v", active.Payload.SkillNames())
 	}
@@ -251,7 +251,7 @@ func TestAddMCPConnection_SectionMergeBothDirections(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("tool-exposure edit: %v", err)
 	}
-	active2, _, _ := h.reg.Active(ctx, qScope(), testAgentID)
+	active2, _, _ := h.reg.Active(ctx, qScope(), testAgentID, agentcfg.ConfigScopeAgent)
 	if len(active2.Payload.ConnectionDescriptors()) != 1 {
 		t.Errorf("connection dropped by a tool-exposure edit: %+v", active2.Payload.ConnectionDescriptors())
 	}
@@ -289,7 +289,7 @@ func TestAddMCPConnection_FailedDial_LoudEvent_NoRevision(t *testing.T) {
 		t.Error("failed add recorded a revision (broken connection must not be desired state)")
 	}
 	// No active revision recorded.
-	if _, set, _ := h.reg.Active(ctx, qScope(), testAgentID); set {
+	if _, set, _ := h.reg.Active(ctx, qScope(), testAgentID, agentcfg.ConfigScopeAgent); set {
 		t.Error("failed add left an active revision")
 	}
 	select {

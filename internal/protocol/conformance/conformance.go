@@ -637,8 +637,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 104 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 104 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane twelve + agent-config session safe subset five + state.history one)", len(got))
+	if len(got) != 109 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 109 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane twelve + agent-config session safe subset five + state.history one + agent-config user tier five)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -756,6 +756,11 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigSessionSkillsList:        {},
 		methods.MethodAgentConfigSessionSkillsUpsert:      {},
 		methods.MethodAgentConfigSessionSkillsDelete:      {},
+		methods.MethodAgentConfigUserGet:                  {},
+		methods.MethodAgentConfigUserSetRevision:          {},
+		methods.MethodAgentConfigUserListRevisions:        {},
+		methods.MethodAgentConfigUserDiff:                 {},
+		methods.MethodAgentConfigUserRollback:             {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {

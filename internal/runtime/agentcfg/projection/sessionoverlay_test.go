@@ -61,7 +61,7 @@ func TestActivePlannerCatalogView_NarrowOnly_AdminPauseSurvivesSessionEmpty(t *t
 	cat := toolCatalog(t)
 	reg := newRegistry(t)
 	ov := newOverlay(t)
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}},
 	}); err != nil {
 		t.Fatalf("admin pause: %v", err)
@@ -96,7 +96,7 @@ func TestActivePlannerCatalogView_NarrowOnly_SessionCannotEnableAdminDisabledToo
 	cat := toolCatalog(t)
 	reg := newRegistry(t)
 	ov := newOverlay(t)
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"srvA_alpha"}},
 	}); err != nil {
 		t.Fatalf("admin disable: %v", err)
@@ -126,7 +126,7 @@ func TestApplyPromptLayers_SessionUserComposesAboveAdminBase(t *testing.T) {
 	reg := newRegistry(t)
 	ov := newOverlay(t)
 	adminBase := "OPERATOR BASE — guardrails"
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: &adminBase},
 	}); err != nil {
 		t.Fatalf("admin base: %v", err)
@@ -155,7 +155,7 @@ func TestApplyPromptLayers_AdminAndSessionUserLayersJoin(t *testing.T) {
 	ov := newOverlay(t)
 	base := "BASE"
 	adminUser := "admin user layer"
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: &base, User: &adminUser},
 	}); err != nil {
 		t.Fatalf("admin layers: %v", err)
@@ -206,7 +206,7 @@ func TestActiveSkillViews_PersonalSkillSurvivesAdminMembershipFilter(t *testing.
 	reg := newRegistry(t)
 	ov := newOverlay(t)
 	// Admin pins membership {a}. Session adds personal skill "p".
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
 	}); err != nil {
 		t.Fatalf("admin membership: %v", err)

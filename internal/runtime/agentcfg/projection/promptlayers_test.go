@@ -36,7 +36,7 @@ func TestActivePromptLayers_NoActiveRevision(t *testing.T) {
 func TestActivePromptLayers_ResolvesBaseAndUser(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: ps("the base"), User: ps("the user")},
 	}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -55,7 +55,7 @@ func TestActivePromptLayers_ResolvesBaseAndUser(t *testing.T) {
 func TestActivePromptLayers_NoPromptSection(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
 	}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -73,7 +73,7 @@ func TestActivePromptLayers_NoPromptSection(t *testing.T) {
 func TestApplyPromptLayers_OverlaysOntoNil(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: ps("B"), User: ps("U")},
 	}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -93,7 +93,7 @@ func TestApplyPromptLayers_OverlaysOntoNil(t *testing.T) {
 func TestApplyPromptLayers_PreservesExistingOverrides(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
-	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigPayload{
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		PromptLayers: &agentcfg.PromptLayers{Base: ps("B")},
 	}); err != nil {
 		t.Fatalf("set: %v", err)

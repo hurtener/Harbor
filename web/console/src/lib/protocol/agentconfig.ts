@@ -447,3 +447,87 @@ export interface AgentConfigSessionSkillsDeleteResponse {
 	overlay: AgentConfigSessionOverlay;
 	protocol_version: string;
 }
+
+// --- User-scope durable config variant (the middle tier of the
+// authorization matrix). A caller carrying the `agent_config:user` scope owns
+// a DURABLE, versioned safe-subset config variant keyed under their real
+// (tenant, user), with full diff/rollback. The payload is structurally bounded
+// (user prompt + narrow-only disables + personal skills) — NO base /
+// connections / enable / model field, so a user caller cannot widen. The
+// responses REUSE AgentConfigRevisionView / AgentConfigDiff. ---
+
+/** The bounded safe-subset a user-scope revision persists.
+ * Mirrors `types.AgentConfigUserPayload`. */
+export interface AgentConfigUserPayload {
+	user_prompt?: string;
+	disabled_servers?: string[];
+	disabled_tools?: string[];
+	personal_skills?: string[];
+}
+
+/** `agent_config.user.get` request — read the caller's own durable variant. */
+export interface AgentConfigUserGetRequest {
+	identity: IdentityScope;
+	agent_id: string;
+}
+
+/** `agent_config.user.get` response. */
+export interface AgentConfigUserGetResponse {
+	revision?: AgentConfigRevisionView;
+	set: boolean;
+	protocol_version: string;
+}
+
+/** `agent_config.user.set_revision` request — write a new revision of the
+ * caller's durable variant (user-tier; requires the `agent_config:user` scope). */
+export interface AgentConfigUserSetRevisionRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	payload: AgentConfigUserPayload;
+}
+
+/** `agent_config.user.set_revision` response. */
+export interface AgentConfigUserSetRevisionResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.user.list_revisions` request. */
+export interface AgentConfigUserListRevisionsRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	limit?: number;
+}
+
+/** `agent_config.user.list_revisions` response. */
+export interface AgentConfigUserListRevisionsResponse {
+	revisions: AgentConfigRevisionView[];
+	protocol_version: string;
+}
+
+/** `agent_config.user.diff` request. */
+export interface AgentConfigUserDiffRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	from_revision: string;
+	to_revision: string;
+}
+
+/** `agent_config.user.diff` response. */
+export interface AgentConfigUserDiffResponse {
+	diff: AgentConfigDiff;
+	protocol_version: string;
+}
+
+/** `agent_config.user.rollback` request. */
+export interface AgentConfigUserRollbackRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	revision_id: string;
+}
+
+/** `agent_config.user.rollback` response. */
+export interface AgentConfigUserRollbackResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}

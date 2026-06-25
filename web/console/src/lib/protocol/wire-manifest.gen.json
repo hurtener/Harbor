@@ -1173,6 +1173,198 @@
         }
       ]
     },
+    "AgentConfigUserDiffRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "from_revision",
+          "type": "string"
+        },
+        {
+          "key": "to_revision",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigUserDiffResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "diff",
+          "type": "object",
+          "ref": "AgentConfigDiff"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigUserGetRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigUserGetResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView",
+          "optional": true
+        },
+        {
+          "key": "set",
+          "type": "boolean"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigUserListRevisionsRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "limit",
+          "type": "number",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigUserListRevisionsResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revisions",
+          "type": "array",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigUserPayload": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "user_prompt",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "disabled_servers",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "disabled_tools",
+          "type": "array",
+          "optional": true
+        },
+        {
+          "key": "personal_skills",
+          "type": "array",
+          "optional": true
+        }
+      ]
+    },
+    "AgentConfigUserRollbackRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "revision_id",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigUserRollbackResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
+    "AgentConfigUserSetRevisionRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "agent_id",
+          "type": "string"
+        },
+        {
+          "key": "payload",
+          "type": "object",
+          "ref": "AgentConfigUserPayload"
+        }
+      ]
+    },
+    "AgentConfigUserSetRevisionResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "revision",
+          "type": "object",
+          "ref": "AgentConfigRevisionView"
+        },
+        {
+          "key": "protocol_version",
+          "type": "string"
+        }
+      ]
+    },
     "AgentControlRequest": {
       "home": "types",
       "fields": [
@@ -6431,6 +6623,11 @@
     "agent_config.skills.delete",
     "agent_config.skills.list",
     "agent_config.skills.upsert",
+    "agent_config.user.diff",
+    "agent_config.user.get",
+    "agent_config.user.list_revisions",
+    "agent_config.user.rollback",
+    "agent_config.user.set_revision",
     "agents.deregister",
     "agents.drain",
     "agents.force_stop",

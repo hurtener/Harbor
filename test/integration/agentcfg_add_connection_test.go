@@ -177,17 +177,17 @@ func TestE2E_AgentConfig_AddConnection(t *testing.T) {
 	if resp3.State != "online" || resp3.Revision == nil {
 		t.Fatalf("second stdio add state = %q", resp3.State)
 	}
-	diff, derr := h.registry.Diff(context.Background(), addcQuad(), addcAgent, firstRev, resp3.Revision.RevisionID)
+	diff, derr := h.registry.Diff(context.Background(), addcQuad(), addcAgent, firstRev, resp3.Revision.RevisionID, agentcfg.ConfigScopeAgent)
 	if derr != nil {
 		t.Fatalf("Diff: %v", derr)
 	}
 	if len(diff.Connections.Added) != 1 || diff.Connections.Added[0] != "mcptest2" {
 		t.Errorf("diff connections added = %+v, want [mcptest2]", diff.Connections.Added)
 	}
-	if _, rerr := h.registry.Rollback(context.Background(), addcQuad(), addcAgent, firstRev); rerr != nil {
+	if _, rerr := h.registry.Rollback(context.Background(), addcQuad(), addcAgent, firstRev, agentcfg.ConfigScopeAgent); rerr != nil {
 		t.Fatalf("Rollback: %v", rerr)
 	}
-	active, _, _ := h.registry.Active(context.Background(), addcQuad(), addcAgent)
+	active, _, _ := h.registry.Active(context.Background(), addcQuad(), addcAgent, agentcfg.ConfigScopeAgent)
 	if active.RevisionID != firstRev {
 		t.Errorf("rollback active = %q, want %q", active.RevisionID, firstRev)
 	}

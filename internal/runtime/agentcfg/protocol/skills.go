@@ -138,7 +138,7 @@ const (
 // registry holds the versioned membership.
 func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadruple, agentID string, op membershipOp, name string) (agentcfg.Revision, error) {
 	defer s.lockAgent(q.TenantID, agentID)()
-	active, hasActive, err := s.registry.Active(ctx, q, agentID)
+	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -173,7 +173,7 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.Connections = active.Payload.Connections
 		payload.LLMParams = active.Payload.LLMParams
 	}
-	return s.registry.SetRevision(ctx, q, agentID, payload)
+	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload)
 }
 
 // skillFromInput maps a wire skill input onto a runtime skills.Skill. The

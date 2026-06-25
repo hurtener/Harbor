@@ -14,6 +14,7 @@ func TestScopes_IsValidScope(t *testing.T) {
 	}{
 		{auth.ScopeAdmin, true},
 		{auth.ScopeConsoleFleet, true},
+		{auth.ScopeAgentConfigUser, true},
 		{auth.Scope("future:scope"), false},
 		{auth.Scope(""), false},
 	}
@@ -26,15 +27,36 @@ func TestScopes_IsValidScope(t *testing.T) {
 
 func TestScopes_CanonicalScopes_ReturnsClosedSet(t *testing.T) {
 	got := auth.CanonicalScopes()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 canonical scopes, got %d (%v)", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 canonical scopes, got %d (%v)", len(got), got)
 	}
 	seen := map[auth.Scope]bool{}
 	for _, s := range got {
 		seen[s] = true
 	}
-	if !seen[auth.ScopeAdmin] || !seen[auth.ScopeConsoleFleet] {
+	if !seen[auth.ScopeAdmin] || !seen[auth.ScopeConsoleFleet] || !seen[auth.ScopeAgentConfigUser] {
 		t.Errorf("missing canonical scope: %v", seen)
+	}
+}
+
+func TestScopes_AgentConfigUser_RetainedAndGated(t *testing.T) {
+	ctx := context.Background()
+	// A token carrying the user scope plus an unknown scope retains the user
+	// scope (closed-set) and drops the unknown one.
+	ctx = auth.WithScopes(ctx, []auth.Scope{
+		auth.ScopeAgentConfigUser,
+		auth.Scope("future:scope"),
+	})
+	if !auth.HasScope(ctx, auth.ScopeAgentConfigUser) {
+		t.Fatalf("HasScope(agent_config:user): false after WithScopes")
+	}
+	// The user scope is NOT admin: a user-only token has no admin claim.
+	if auth.HasScope(ctx, auth.ScopeAdmin) {
+		t.Errorf("HasScope(admin): true on a user-only token")
+	}
+	scopes, _ := auth.ScopesFrom(ctx)
+	if len(scopes) != 1 || scopes[0] != auth.ScopeAgentConfigUser {
+		t.Errorf("unknown scope not dropped or user scope lost: %v", scopes)
 	}
 }
 

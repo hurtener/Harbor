@@ -148,11 +148,26 @@ type Service struct {
 	writeLocks sync.Map // map[string]*sync.Mutex
 }
 
-// lockAgent acquires the per-(tenant, agent) write lock and returns the
-// release func (call via defer). It serialises every admin write verb's
-// read-modify-write against concurrent writes to the same agent.
+// lockAgent acquires the agent-tier write lock for (tenant, agent) and
+// returns the release func (call via defer). It serialises every admin write
+// verb's read-modify-write against concurrent writes to the same agent.
 func (s *Service) lockAgent(tenant, agentID string) func() {
-	key := tenant + "\x00" + agentID
+	return s.lockOwner(agentcfg.ConfigScopeAgent, tenant, "", agentID)
+}
+
+// lockOwner acquires the scope-aware per-owner write lock and returns the
+// release func. The key includes the scope so the two tiers never contend
+// across each other: a ConfigScopeAgent write serialises by (scope, tenant,
+// agent) — the user slot is intentionally excluded so all of an agent's
+// admin writers serialise — while a ConfigScopeUser write serialises by
+// (scope, tenant, real-user, agent) so distinct users NEVER serialise.
+func (s *Service) lockOwner(scope agentcfg.ConfigScope, tenant, user, agentID string) func() {
+	var key string
+	if scope == agentcfg.ConfigScopeUser {
+		key = "u\x00" + tenant + "\x00" + user + "\x00" + agentID
+	} else {
+		key = "a\x00" + tenant + "\x00" + agentID
+	}
 	mu, _ := s.writeLocks.LoadOrStore(key, &sync.Mutex{})
 	m, ok := mu.(*sync.Mutex)
 	if !ok {
@@ -363,7 +378,7 @@ func (s *Service) Get(ctx context.Context, req prototypes.AgentConfigGetRequest)
 	if err != nil {
 		return prototypes.AgentConfigGetResponse{}, err
 	}
-	rev, set, err := s.registry.Active(ctx, identity.Quadruple{Identity: id}, req.AgentID)
+	rev, set, err := s.registry.Active(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigGetResponse{}, err
 	}
@@ -392,7 +407,7 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err := s.validateLLMParams(req.Payload.LLMParams); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
-	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, payloadToDomain(req.Payload))
+	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payloadToDomain(req.Payload))
 	if err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
@@ -411,7 +426,7 @@ func (s *Service) ListRevisions(ctx context.Context, req prototypes.AgentConfigL
 	if err != nil {
 		return prototypes.AgentConfigListRevisionsResponse{}, err
 	}
-	revs, err := s.registry.ListRevisions(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.Limit)
+	revs, err := s.registry.ListRevisions(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, req.Limit)
 	if err != nil {
 		return prototypes.AgentConfigListRevisionsResponse{}, err
 	}
@@ -434,7 +449,7 @@ func (s *Service) Diff(ctx context.Context, req prototypes.AgentConfigDiffReques
 	if err != nil {
 		return prototypes.AgentConfigDiffResponse{}, err
 	}
-	d, err := s.registry.Diff(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.FromRevision, req.ToRevision)
+	d, err := s.registry.Diff(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.FromRevision, req.ToRevision, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigDiffResponse{}, err
 	}
@@ -454,7 +469,7 @@ func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollba
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
-	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID)
+	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}

@@ -2,6 +2,7 @@ package statestore_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -15,8 +16,272 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
+
+// reserved sentinel + record kinds mirrored from the driver (an unexported
+// constant; the test asserts the pinned keying scheme directly against the
+// StateStore records).
+const (
+	reservedUser        = "__agentcfg__"
+	kindActive          = "agentcfg.active"
+	kindUserActive      = "agentcfg.user.active"
+	kindUserRevisionPfx = "agentcfg.user.revision."
+)
+
+// newRegistryWithStore builds a registry AND returns the underlying
+// StateStore so a test can inspect the persisted record keying/kinds (the
+// PINNED keying scheme is asserted directly against the store).
+func newRegistryWithStore(t *testing.T) (agentcfg.Registry, state.StateStore) {
+	t.Helper()
+	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state inmem: %v", err)
+	}
+	bus, err := eventsinmem.New(config.EventsConfig{
+		Driver:                   "inmem",
+		MaxSubscribersPerSession: 16,
+		SubscriberBufferSize:     64,
+		IdleTimeout:              60 * time.Second,
+		DropWindow:               time.Second,
+	}, auditpatterns.New())
+	if err != nil {
+		t.Fatalf("events inmem: %v", err)
+	}
+	reg, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: st, Bus: bus})
+	if err != nil {
+		t.Fatalf("agentcfg.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = reg.Close(context.Background())
+		_ = bus.Close(context.Background())
+		_ = st.Close(context.Background())
+	})
+	return reg, st
+}
+
+const tenantT = "t"
+
+//nolint:unparam // test helper — agent id is a fixed fixture across the cases, kept as a param for call-site readability.
+func agentQuad(agentID string) identity.Quadruple {
+	return identity.Quadruple{Identity: identity.Identity{TenantID: tenantT, UserID: reservedUser, SessionID: agentID}}
+}
+
+func userQuad(user, agentID string) identity.Quadruple {
+	return identity.Quadruple{Identity: identity.Identity{TenantID: tenantT, UserID: user, SessionID: agentID}}
+}
+
+// TestStateStore_UserScope_KeyingAndKinds asserts a ConfigScopeUser write
+// persists under the caller's REAL (tenant, user) + agent-in-session AND the
+// distinct agentcfg.user.* kinds — and writes NOTHING onto the agent-level
+// synthetic chain.
+func TestStateStore_UserScope_KeyingAndKinds(t *testing.T) {
+	ctx := context.Background()
+	r, st := newRegistryWithStore(t)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
+	const agent = "a1"
+	if _, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("u1")); err != nil {
+		t.Fatalf("user set: %v", err)
+	}
+	// The user active pointer lives under the REAL (tenant, user)+agent slot
+	// and the agentcfg.user.active kind.
+	if _, err := st.Load(ctx, userQuad("alice", agent), kindUserActive); err != nil {
+		t.Fatalf("user active pointer not at the user key/kind: %v", err)
+	}
+	// The agent-level synthetic chain is untouched — no agentcfg.active record.
+	if _, err := st.Load(ctx, agentQuad(agent), kindActive); err == nil {
+		t.Fatalf("user write leaked onto the agent-level synthetic chain")
+	}
+}
+
+// TestStateStore_AgentScope_Golden_KindsUnchanged pins that the
+// ConfigScopeAgent keying + kinds are byte-identical to before (the synthetic
+// slot + agentcfg.active / agentcfg.revision.), and that an agent write puts
+// NOTHING onto the user chain.
+func TestStateStore_AgentScope_Golden_KindsUnchanged(t *testing.T) {
+	ctx := context.Background()
+	r, st := newRegistryWithStore(t)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
+	const agent = "a1"
+	rev, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, skills("g1"))
+	if err != nil {
+		t.Fatalf("agent set: %v", err)
+	}
+	// active pointer + the revision record persist at the synthetic identity
+	// and the existing kinds.
+	if _, err := st.Load(ctx, agentQuad(agent), kindActive); err != nil {
+		t.Fatalf("agent active pointer not at the synthetic key/kind: %v", err)
+	}
+	if _, err := st.Load(ctx, agentQuad(agent), "agentcfg.revision."+rev.RevisionID); err != nil {
+		t.Fatalf("agent revision not at the synthetic key/kind: %v", err)
+	}
+	// Nothing on the user chain.
+	if _, err := st.Load(ctx, userQuad("alice", agent), kindUserActive); err == nil {
+		t.Fatalf("agent write leaked onto the user chain")
+	}
+}
+
+// TestStateStore_CrossUserIsolation proves user A's variant is invisible to
+// user B: B's Active is empty, and B's Diff/Rollback of A's revision id fail
+// loud with ErrRevisionNotFound (the id lives under A's key).
+func TestStateStore_CrossUserIsolation(t *testing.T) {
+	ctx := context.Background()
+	r := newRegistry(t)
+	const agent = "a1"
+	a := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "sa"}}
+	b := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "bob", SessionID: "sb"}}
+	aRev, err := r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("alice-only"))
+	if err != nil {
+		t.Fatalf("alice set: %v", err)
+	}
+	if _, set, err := r.Active(ctx, b, agent, agentcfg.ConfigScopeUser); err != nil || set {
+		t.Fatalf("bob sees alice's variant: set=%v err=%v", set, err)
+	}
+	if _, err := r.Rollback(ctx, b, agent, aRev.RevisionID, agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
+		t.Fatalf("bob rolled back alice's revision: %v", err)
+	}
+	if _, err := r.Diff(ctx, b, agent, aRev.RevisionID, aRev.RevisionID, agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
+		t.Fatalf("bob diffed alice's revision: %v", err)
+	}
+	// Direct Get of alice's revision id under bob's identity must also
+	// fail closed (the id lives under alice's key, not bob's) — no
+	// existence leak, even by id.
+	if _, err := r.Get(ctx, b, agent, aRev.RevisionID, agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
+		t.Fatalf("bob got alice's revision by id: %v", err)
+	}
+}
+
+// TestStateStore_SentinelCollisionRejected proves a ConfigScopeUser call
+// whose verified user id equals the reserved sentinel is rejected loud AND
+// neither reads nor clobbers the agent-level chain.
+func TestStateStore_SentinelCollisionRejected(t *testing.T) {
+	ctx := context.Background()
+	r, st := newRegistryWithStore(t)
+	const agent = "a1"
+	// Seed an agent-level revision (the chain the sentinel would alias).
+	admin := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "admin", SessionID: "s"}}
+	if _, err := r.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("operator-secret")); err != nil {
+		t.Fatalf("seed agent chain: %v", err)
+	}
+	before, err := st.Load(ctx, agentQuad(agent), kindActive)
+	if err != nil {
+		t.Fatalf("load seeded active: %v", err)
+	}
+	// A user-scope caller whose user id IS the reserved sentinel is rejected
+	// before any read or write.
+	sentinel := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: reservedUser, SessionID: "s"}}
+	if _, _, err := r.Active(ctx, sentinel, agent, agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrReservedUser) {
+		t.Fatalf("sentinel Active not rejected: %v", err)
+	}
+	if _, err := r.SetRevision(ctx, sentinel, agent, agentcfg.ConfigScopeUser, skills("attacker")); !errors.Is(err, agentcfg.ErrReservedUser) {
+		t.Fatalf("sentinel SetRevision not rejected: %v", err)
+	}
+	// The agent-level active pointer's bytes are unchanged (no read, no clobber).
+	after, err := st.Load(ctx, agentQuad(agent), kindActive)
+	if err != nil {
+		t.Fatalf("reload active: %v", err)
+	}
+	if string(before.Bytes) != string(after.Bytes) {
+		t.Fatalf("agent-level active pointer clobbered by a rejected sentinel call")
+	}
+}
+
+// TestStateStore_UserScope_IdempotentReset proves the idempotent re-set
+// parity holds on the user arm.
+func TestStateStore_UserScope_IdempotentReset(t *testing.T) {
+	ctx := context.Background()
+	r := newRegistry(t)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
+	const agent = "a1"
+	r1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("a", "b"))
+	if err != nil {
+		t.Fatalf("set1: %v", err)
+	}
+	r2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, skills("b", "a"))
+	if err != nil {
+		t.Fatalf("set2: %v", err)
+	}
+	if r1.RevisionID != r2.RevisionID {
+		t.Fatalf("idempotent re-set minted a new revision: %q != %q", r1.RevisionID, r2.RevisionID)
+	}
+	revs, err := r.ListRevisions(ctx, id, agent, agentcfg.ConfigScopeUser, 0)
+	if err != nil || len(revs) != 1 {
+		t.Fatalf("user list after idempotent re-set: n=%d err=%v", len(revs), err)
+	}
+}
+
+// TestStateStore_UserScope_ListRevisionsFilter proves ListRevisions on the
+// user arm returns only the caller's own revisions (filtered to the user slot
+// + the agentcfg.user.revision. prefix), never the agent chain or another
+// user's.
+func TestStateStore_UserScope_ListRevisionsFilter(t *testing.T) {
+	ctx := context.Background()
+	r := newRegistry(t)
+	const agent = "a1"
+	a := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
+	b := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "bob", SessionID: "s"}}
+	admin := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "admin", SessionID: "s"}}
+	_, _ = r.SetRevision(ctx, admin, agent, agentcfg.ConfigScopeAgent, skills("agent"))
+	_, _ = r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("a1"))
+	_, _ = r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeUser, skills("a1", "a2"))
+	_, _ = r.SetRevision(ctx, b, agent, agentcfg.ConfigScopeUser, skills("b1"))
+	aList, err := r.ListRevisions(ctx, a, agent, agentcfg.ConfigScopeUser, 0)
+	if err != nil {
+		t.Fatalf("alice list: %v", err)
+	}
+	if len(aList) != 2 {
+		t.Fatalf("alice user list should have exactly 2 (not agent or bob): got %d", len(aList))
+	}
+}
+
+// TestStateStore_UserScope_GuardBranches covers the cheap-to-reach guard
+// branches on the user arm: a cancelled context fails fast on every method,
+// and an empty revision id / empty diff arg fails loud.
+func TestStateStore_UserScope_GuardBranches(t *testing.T) {
+	r := newRegistry(t)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "alice", SessionID: "s"}}
+	const agent = "a1"
+
+	// Empty revision id / empty diff args fail loud (not-found), independent
+	// of ctx.
+	bg := context.Background()
+	if _, err := r.Get(bg, id, agent, "", agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
+		t.Errorf("empty-id Get should be ErrRevisionNotFound: %v", err)
+	}
+	if _, err := r.Rollback(bg, id, agent, "", agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
+		t.Errorf("empty-id Rollback should be ErrRevisionNotFound: %v", err)
+	}
+	if _, err := r.Diff(bg, id, agent, "", "x", agentcfg.ConfigScopeUser); !errors.Is(err, agentcfg.ErrRevisionNotFound) {
+		t.Errorf("empty-from Diff should be ErrRevisionNotFound: %v", err)
+	}
+
+	// A cancelled context fails fast on every method (after the cheap guards).
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := r.SetRevision(cctx, id, agent, agentcfg.ConfigScopeUser, skills("x")); err == nil {
+		t.Error("SetRevision ignored a cancelled ctx")
+	}
+	if _, _, err := r.Active(cctx, id, agent, agentcfg.ConfigScopeUser); err == nil {
+		t.Error("Active ignored a cancelled ctx")
+	}
+	if _, err := r.Get(cctx, id, agent, "rev", agentcfg.ConfigScopeUser); err == nil {
+		t.Error("Get ignored a cancelled ctx")
+	}
+	if _, err := r.ListRevisions(cctx, id, agent, agentcfg.ConfigScopeUser, 0); err == nil {
+		t.Error("ListRevisions ignored a cancelled ctx")
+	}
+	if _, err := r.Rollback(cctx, id, agent, "rev", agentcfg.ConfigScopeUser); err == nil {
+		t.Error("Rollback ignored a cancelled ctx")
+	}
+	if _, err := r.Diff(cctx, id, agent, "a", "b", agentcfg.ConfigScopeUser); err == nil {
+		t.Error("Diff ignored a cancelled ctx")
+	}
+}
+
+func skills(names ...string) agentcfg.ConfigPayload {
+	return agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: names}}
+}
 
 func newRegistry(t *testing.T) agentcfg.Registry {
 	t.Helper()
@@ -60,14 +325,14 @@ func TestStateStore_TenantIsolation_SameAgentID(t *testing.T) {
 	a := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-a", UserID: "u", SessionID: "s"}}
 	b := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-b", UserID: "u", SessionID: "s"}}
 	const agent = "shared-agent-id"
-	if _, err := r.SetRevision(ctx, a, agent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"alpha"}}}); err != nil {
+	if _, err := r.SetRevision(ctx, a, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"alpha"}}}); err != nil {
 		t.Fatalf("set a: %v", err)
 	}
-	if _, err := r.SetRevision(ctx, b, agent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"beta"}}}); err != nil {
+	if _, err := r.SetRevision(ctx, b, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"beta"}}}); err != nil {
 		t.Fatalf("set b: %v", err)
 	}
-	ra, _, _ := r.Active(ctx, a, agent)
-	rb, _, _ := r.Active(ctx, b, agent)
+	ra, _, _ := r.Active(ctx, a, agent, agentcfg.ConfigScopeAgent)
+	rb, _, _ := r.Active(ctx, b, agent, agentcfg.ConfigScopeAgent)
 	if got := ra.Payload.SkillNames(); len(got) != 1 || got[0] != "alpha" {
 		t.Fatalf("tenant-a leaked: %v", got)
 	}
@@ -75,7 +340,7 @@ func TestStateStore_TenantIsolation_SameAgentID(t *testing.T) {
 		t.Fatalf("tenant-b leaked: %v", got)
 	}
 	// ListRevisions must not cross tenants.
-	la, _ := r.ListRevisions(ctx, a, agent, 0)
+	la, _ := r.ListRevisions(ctx, a, agent, agentcfg.ConfigScopeAgent, 0)
 	if len(la) != 1 {
 		t.Fatalf("tenant-a list crossed tenant boundary: %d", len(la))
 	}
@@ -101,17 +366,17 @@ func TestStateStore_ConcurrentReuse(t *testing.T) {
 				TenantID: fmt.Sprintf("tenant-%d", i), UserID: "u", SessionID: "s",
 			}}
 			agent := fmt.Sprintf("agent-%d", i)
-			rev1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{fmt.Sprintf("skill-%d-a", i)}}})
+			rev1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{fmt.Sprintf("skill-%d-a", i)}}})
 			if err != nil {
 				errs <- fmt.Errorf("set1 %d: %w", i, err)
 				return
 			}
-			rev2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{fmt.Sprintf("skill-%d-a", i), fmt.Sprintf("skill-%d-b", i)}}})
+			rev2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{fmt.Sprintf("skill-%d-a", i), fmt.Sprintf("skill-%d-b", i)}}})
 			if err != nil {
 				errs <- fmt.Errorf("set2 %d: %w", i, err)
 				return
 			}
-			active, ok, err := r.Active(ctx, id, agent)
+			active, ok, err := r.Active(ctx, id, agent, agentcfg.ConfigScopeAgent)
 			if err != nil || !ok {
 				errs <- fmt.Errorf("active %d ok=%v: %w", i, ok, err)
 				return
@@ -121,7 +386,7 @@ func TestStateStore_ConcurrentReuse(t *testing.T) {
 				errs <- fmt.Errorf("context bleed at %d: active=%q want %q", i, active.RevisionID, rev2.RevisionID)
 				return
 			}
-			d, err := r.Diff(ctx, id, agent, rev1.RevisionID, rev2.RevisionID)
+			d, err := r.Diff(ctx, id, agent, rev1.RevisionID, rev2.RevisionID, agentcfg.ConfigScopeAgent)
 			if err != nil {
 				errs <- fmt.Errorf("diff %d: %w", i, err)
 				return
@@ -157,13 +422,13 @@ func TestStateStore_NewRevisionAfterRollbackChainsFromActive(t *testing.T) {
 	r := newRegistry(t)
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
 	const agent = "a"
-	rev1, _ := r.SetRevision(ctx, id, agent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a"}}})
-	_, _ = r.SetRevision(ctx, id, agent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a", "b"}}})
-	if _, err := r.Rollback(ctx, id, agent, rev1.RevisionID); err != nil {
+	rev1, _ := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a"}}})
+	_, _ = r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a", "b"}}})
+	if _, err := r.Rollback(ctx, id, agent, rev1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	// A new revision after rollback chains from rev1 (the now-active).
-	rev3, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a", "z"}}})
+	rev3, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"a", "z"}}})
 	if err != nil {
 		t.Fatalf("set rev3: %v", err)
 	}

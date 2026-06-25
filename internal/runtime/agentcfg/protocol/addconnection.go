@@ -286,7 +286,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 	// Serialise the registry read-modify-write per agent (NOT the preceding
 	// dial/handshake, which must not block a quick concurrent edit).
 	defer s.lockAgent(q.TenantID, agentID)()
-	active, hasActive, err := s.registry.Active(ctx, q, agentID)
+	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -301,7 +301,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 	}
 	servers = append(servers, desc)
 	payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}
-	return s.registry.SetRevision(ctx, q, agentID, payload)
+	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload)
 }
 
 // parkForAuth records a pause on the unified pause/resume primitive for an

@@ -25,15 +25,26 @@ type Scope string
 // this scope to subscribe to events from outside its single
 // (tenant, user, session) triple. Distinct from a hypothetical
 // "fleet:control" scope (deferred).
+//
+// ScopeAgentConfigUser is the durable per-user agent-config entitlement:
+// the middle tier of the agent-config authorization matrix, strictly below
+// admin and orthogonal to it. A non-admin caller carrying it owns a
+// durable, versioned safe-subset config variant spanning their own
+// sessions (the `agent_config.user.*` verb family gates on this scope
+// specifically — an admin token does NOT implicitly own per-user variants).
+// RFC §5.5 fixes the closed scope universe, so this constant is the only
+// place the entitlement is minted; an unknown scope on a JWT stays dropped.
 const (
-	ScopeAdmin        Scope = "admin"
-	ScopeConsoleFleet Scope = "console:fleet"
+	ScopeAdmin           Scope = "admin"
+	ScopeConsoleFleet    Scope = "console:fleet"
+	ScopeAgentConfigUser Scope = "agent_config:user"
 )
 
 // canonicalScopes is the closed set. IsValidScope checks membership.
 var canonicalScopes = map[Scope]struct{}{
-	ScopeAdmin:        {},
-	ScopeConsoleFleet: {},
+	ScopeAdmin:           {},
+	ScopeConsoleFleet:    {},
+	ScopeAgentConfigUser: {},
 }
 
 // IsValidScope reports whether s is one of the canonical scopes. An

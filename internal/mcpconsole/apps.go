@@ -313,7 +313,7 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 	if !ok || id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
 		return fmt.Errorf("mcpconsole: app-call exposure gate: %w", mcp.ErrIdentityMissing)
 	}
-	rev, has, err := a.agentCfg.Active(ctx, identity.Quadruple{Identity: id}, a.agentID)
+	rev, has, err := a.agentCfg.Active(ctx, identity.Quadruple{Identity: id}, a.agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return fmt.Errorf("mcpconsole: app-call exposure gate: read active config: %w", err)
 	}

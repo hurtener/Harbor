@@ -72,6 +72,12 @@ import type {
 	AgentConfigSessionSkillsListResponse,
 	AgentConfigSessionSkillsUpsertResponse,
 	AgentConfigSessionSkillsDeleteResponse,
+	AgentConfigUserPayload,
+	AgentConfigUserGetResponse,
+	AgentConfigUserSetRevisionResponse,
+	AgentConfigUserListRevisionsResponse,
+	AgentConfigUserDiffResponse,
+	AgentConfigUserRollbackResponse,
 } from './agentconfig.js';
 
 /* ------------------------------------------------------------------ */
@@ -1197,6 +1203,63 @@ export class AgentConfigNamespace {
 		return this.#t.request<AgentConfigSessionSkillsDeleteResponse>(
 			'/v1/agent_config/session/skills/delete',
 			{ agent_id: agentId, name },
+		);
+	}
+
+	// --- User tier (the durable per-user config variant — the middle tier).
+	// Requires the `agent_config:user` scope claim (NOT admin). ---
+
+	/** `agent_config.user.get` — read the caller's OWN durable config variant
+	 * active revision. User-tier (requires the `agent_config:user` scope). */
+	userGet(agentId: string): Promise<AgentConfigUserGetResponse> {
+		return this.#t.request<AgentConfigUserGetResponse>('/v1/agent_config/user/get', {
+			agent_id: agentId,
+		});
+	}
+	/** `agent_config.user.set_revision` — write a new revision of the caller's
+	 * durable variant from the bounded safe-subset payload. User-tier. */
+	userSetRevision(
+		agentId: string,
+		payload: AgentConfigUserPayload,
+	): Promise<AgentConfigUserSetRevisionResponse> {
+		return this.#t.request<AgentConfigUserSetRevisionResponse>(
+			'/v1/agent_config/user/set_revision',
+			{ agent_id: agentId, payload: payload as unknown as Record<string, unknown> },
+		);
+	}
+	/** `agent_config.user.list_revisions` — the caller's own variant revision
+	 * chain, newest-first. User-tier. */
+	userListRevisions(
+		agentId: string,
+		limit?: number,
+	): Promise<AgentConfigUserListRevisionsResponse> {
+		return this.#t.request<AgentConfigUserListRevisionsResponse>(
+			'/v1/agent_config/user/list_revisions',
+			{ agent_id: agentId, limit },
+		);
+	}
+	/** `agent_config.user.diff` — compare two existing revisions of the
+	 * caller's own variant. User-tier. */
+	userDiff(
+		agentId: string,
+		fromRevision: string,
+		toRevision: string,
+	): Promise<AgentConfigUserDiffResponse> {
+		return this.#t.request<AgentConfigUserDiffResponse>('/v1/agent_config/user/diff', {
+			agent_id: agentId,
+			from_revision: fromRevision,
+			to_revision: toRevision,
+		});
+	}
+	/** `agent_config.user.rollback` — repoint the caller's own variant active
+	 * pointer to an existing revision. User-tier. */
+	userRollback(
+		agentId: string,
+		revisionId: string,
+	): Promise<AgentConfigUserRollbackResponse> {
+		return this.#t.request<AgentConfigUserRollbackResponse>(
+			'/v1/agent_config/user/rollback',
+			{ agent_id: agentId, revision_id: revisionId },
 		);
 	}
 }

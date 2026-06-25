@@ -140,6 +140,53 @@ func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
 	}
 }
 
+// TestTierMatrix_UserTierIsADistinctChain extends the tier matrix with the
+// user tier: a user-scope write lands on the caller's OWN durable chain and
+// leaves the admin/agent chain's sections entirely intact (the distinct
+// ConfigScopeUser key space). It pins the three-tier separation — admin chain,
+// user variant, and (elsewhere) the ephemeral session overlay are independent.
+func TestTierMatrix_UserTierIsADistinctChain(t *testing.T) {
+	s := svc(t, false)
+	ctx := context.Background()
+	// Seed a full agent-level (admin) revision.
+	if _, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{
+			PromptLayers: &prototypes.AgentConfigPromptLayers{Base: strPtr("operator-base")},
+			ToolExposure: &prototypes.AgentConfigToolExposure{PausedServers: []string{"admin-srv"}},
+			Skills:       &prototypes.AgentConfigSkillsSelection{Names: []string{"admin-skill"}},
+		},
+	}); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	// A user writes their own variant.
+	if _, err := s.UserSetRevision(ctx, prototypes.AgentConfigUserSetRevisionRequest{
+		Identity: prototypes.IdentityScope{Tenant: "t", User: "alice", Session: "s"}, AgentID: testAgentID,
+		Payload: prototypes.AgentConfigUserPayload{UserPrompt: "alice-only", DisabledServers: []string{"admin-srv"}},
+	}); err != nil {
+		t.Fatalf("user set: %v", err)
+	}
+	// The agent chain's active is UNCHANGED — operator base, paused server, and
+	// admin skill all intact (the user write never touched the agent chain).
+	get, err := s.Get(ctx, prototypes.AgentConfigGetRequest{Identity: scope(), AgentID: testAgentID})
+	if err != nil || !get.Set || get.Revision == nil {
+		t.Fatalf("admin get: set=%v err=%v", get.Set, err)
+	}
+	p := get.Revision.Payload
+	if p.PromptLayers == nil || p.PromptLayers.Base == nil || *p.PromptLayers.Base != "operator-base" {
+		t.Errorf("user write disturbed the operator base: %+v", p.PromptLayers)
+	}
+	if p.PromptLayers.User != nil {
+		t.Errorf("user write leaked the user layer onto the agent chain: %+v", p.PromptLayers)
+	}
+	if p.ToolExposure == nil || len(p.ToolExposure.PausedServers) != 1 || p.ToolExposure.PausedServers[0] != "admin-srv" {
+		t.Errorf("user write disturbed the agent tool-exposure: %+v", p.ToolExposure)
+	}
+	if p.Skills == nil || !containsStr(p.Skills.Names, "admin-skill") {
+		t.Errorf("user write disturbed the agent skills: %+v", p.Skills)
+	}
+}
+
 func containsStr(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {
