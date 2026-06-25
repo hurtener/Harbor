@@ -179,7 +179,11 @@ func ActiveLLMOverrides(ctx context.Context, reg agentcfg.Registry, agentID stri
 // ActivePlannerCatalogView builds the run's planner-facing catalog view at
 // run start, applying the agent's active-config tool exposure: a paused MCP
 // server's tools and any individually-disabled tool are excluded from the
-// view (next-turn projection — the live transport stays WARM). It always
+// view (next-turn projection — the live transport stays WARM). The exclusion
+// set is the order-independent union of THREE narrow-only disable tiers — the
+// admin baseline, the durable per-user disable set (which spans that user's
+// sessions for the agent), and the ephemeral session overlay — so it can only
+// ever grow: no tier can re-expose a tool a higher tier disabled. It always
 // returns a usable view: a nil registry, an empty agentID, an agent with no
 // active revision, or an active revision with no tool-exposure section (or an
 // empty one) returns the plain [tools.NewPlannerView] over cat+filter — the
@@ -207,19 +211,44 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 		}
 	}
 
+	// Durable user-scope exposure: the per-user narrow-only disable set that
+	// spans the user's sessions for this agent. The run's full triple is
+	// passed; the user-scope storage key (session + run zeroed, agent_id in the
+	// session slot) is derived INSIDE the registry — agent_id is a per-agent
+	// key here, NEVER an isolation filter, so isolation stays the run's
+	// (tenant, user). A read error fails the run loudly (an incomplete triple
+	// surfaces identity_required); a missing active user revision is the
+	// ungated path. The set is narrow-only — there is no user enable field.
+	var userPaused, userDisabled []string
+	if reg != nil && agentID != "" {
+		urev, uok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeUser)
+		if err != nil {
+			return nil, err
+		}
+		if uok && urev.Payload.ToolExposure != nil {
+			userPaused = urev.Payload.PausedServers()
+			userDisabled = urev.Payload.DisabledTools()
+		}
+	}
+
 	// Session overlay (narrow-only): the session's disable set is UNIONED into
-	// the admin exclusion set — it can only ADD to the disabled set, never
-	// remove an admin exclusion. The exclusion set can only ever GROW, so a
-	// session edit can only narrow the admin-allowed exposure, never widen it.
-	// A session "disable" of a source the admin did not expose is inert (it is
-	// not in the catalog view), and there is no session "enable" path at all.
+	// the exclusion set — it can only ADD to the disabled set, never remove an
+	// admin or user exclusion. The exclusion set can only ever GROW, so a
+	// session edit can only narrow the allowed exposure, never widen it. A
+	// session "disable" of a source not in the catalog view is inert, and there
+	// is no session "enable" path at all.
 	overlay, oerr := loadOverlay(ctx, ov, agentID, id)
 	if oerr != nil {
 		return nil, oerr
 	}
 
-	paused := unionSorted(adminPaused, overlay.DisabledServers)
-	disabled := unionSorted(adminDisabled, overlay.DisabledTools)
+	// The three disable sets — admin, user, session — are UNIONED into one
+	// grow-only exclusion set. unionSorted is commutative and idempotent, so
+	// admin ∪ user ∪ session is order-independent: there is no precedence for
+	// tool exposure, only narrowing. Neither the user nor the session tier can
+	// re-widen past the admin-provisioned palette.
+	paused := unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
+	disabled := unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
 	if len(paused) == 0 && len(disabled) == 0 {
 		return base, nil
 	}
