@@ -35,7 +35,7 @@ func TestConcurrentReuse_DurableBus(t *testing.T) {
 	const perGoroutine = 8
 
 	store := newInmemStore(t)
-	bus, err := durable.New(durableCfg(), auditpatterns.New(), store)
+	bus, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
 	}
@@ -116,5 +116,103 @@ func TestConcurrentReuse_DurableBus(t *testing.T) {
 	if leaked := runtime.NumGoroutine() - baseline; leaked > 2 {
 		t.Fatalf("goroutine leak: baseline=%d now=%d (leaked ~%d)",
 			baseline, runtime.NumGoroutine(), leaked)
+	}
+}
+
+// TestConcurrentReuse_DurableBus_RecoveredInstance proves the sequence
+// rehydration composes with the D-025 concurrent-reuse contract: the
+// shared instance under stress is one constructed over a NON-empty log
+// (its counter was recovered at construction). N>=100 goroutines publish
+// to distinct sessions against the recovered bus under -race; every
+// post-recovery sequence must be strictly greater than the recovered
+// floor, with no data race, no context bleed, and no goroutine leak.
+func TestConcurrentReuse_DurableBus_RecoveredInstance(t *testing.T) {
+	const seed = 25
+	const n = 100
+	const perGoroutine = 4
+
+	store := newInmemStore(t)
+
+	// First Runtime: seed a non-empty log so the recovered bus starts
+	// with nextSeq == seed.
+	bus1, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), store)
+	if err != nil {
+		t.Fatalf("durable.New (seed): %v", err)
+	}
+	publishN(t, bus1, quad("t0", "u0", "seed"), seed)
+	if err := bus1.Close(context.Background()); err != nil {
+		t.Fatalf("close seed bus: %v", err)
+	}
+
+	// Second Runtime: the recovered instance is the shared artifact.
+	bus, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), store)
+	if err != nil {
+		t.Fatalf("durable.New (recovered): %v", err)
+	}
+	rp := bus.(events.Replayer)
+
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	errCh := make(chan error, n)
+
+	for i := range n {
+		go func(idx int) {
+			defer wg.Done()
+			id := identity.Quadruple{Identity: identity.Identity{
+				TenantID:  fmt.Sprintf("tenant-%d", idx),
+				UserID:    fmt.Sprintf("user-%d", idx),
+				SessionID: fmt.Sprintf("session-%d", idx),
+			}}
+			for j := range perGoroutine {
+				ev := events.Event{
+					Type:     events.EventTypeRuntimeWarning,
+					Identity: id,
+					Payload:  runtimeWarn(fmt.Sprintf("g%d-e%d", idx, j)),
+				}
+				if perr := bus.Publish(context.Background(), ev); perr != nil {
+					errCh <- fmt.Errorf("goroutine %d publish: %w", idx, perr)
+					return
+				}
+			}
+			got, rerr := rp.Replay(context.Background(),
+				events.Cursor{SessionID: id.SessionID}, filterFor(id))
+			if rerr != nil {
+				errCh <- fmt.Errorf("goroutine %d replay: %w", idx, rerr)
+				return
+			}
+			for _, ev := range got {
+				if ev.Identity.SessionID != id.SessionID {
+					errCh <- fmt.Errorf("goroutine %d: context bleed — %+v", idx, ev.Identity)
+					return
+				}
+				if ev.Sequence <= seed {
+					errCh <- fmt.Errorf("goroutine %d: post-recovery sequence %d not above recovered floor %d",
+						idx, ev.Sequence, seed)
+					return
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for e := range errCh {
+		t.Error(e)
+	}
+
+	if err := bus.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		runtime.GC()
+	}
+	if leaked := runtime.NumGoroutine() - baseline; leaked > 2 {
+		t.Fatalf("goroutine leak: baseline=%d now=%d (leaked ~%d)", baseline, runtime.NumGoroutine(), leaked)
 	}
 }

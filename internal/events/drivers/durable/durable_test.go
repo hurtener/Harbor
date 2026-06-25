@@ -50,7 +50,7 @@ func newInmemStore(t *testing.T) state.StateStore {
 // (so tests can simulate a restart by reusing it).
 func newDurableBus(t *testing.T, store state.StateStore) (events.EventBus, events.Replayer) {
 	t.Helper()
-	bus, err := durable.New(durableCfg(), auditpatterns.New(), store)
+	bus, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDurable_RegistryOpen_WithStateDriver_OpensSuccessfully(t *testing.T) {
 }
 
 func TestDurable_New_RejectsNilRedactor(t *testing.T) {
-	if _, err := durable.New(durableCfg(), nil, newInmemStore(t)); err == nil {
+	if _, err := durable.New(context.Background(), durableCfg(), nil, newInmemStore(t)); err == nil {
 		t.Fatalf("expected error for nil redactor")
 	}
 }
@@ -229,7 +229,7 @@ func TestDurable_ReplayAcrossRestart_NoGaps(t *testing.T) {
 	id := quad("t1", "u1", "s1")
 
 	// First Runtime: publish 8 events, then tear down the bus.
-	bus1, err := durable.New(durableCfg(), auditpatterns.New(), store)
+	bus1, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), store)
 	if err != nil {
 		t.Fatalf("durable.New (run 1): %v", err)
 	}
@@ -241,7 +241,7 @@ func TestDurable_ReplayAcrossRestart_NoGaps(t *testing.T) {
 	// Second Runtime: a fresh bus over the SAME store. A late
 	// subscriber replays from the beginning and must see all 8 with
 	// no gaps.
-	bus2, err := durable.New(durableCfg(), auditpatterns.New(), store)
+	bus2, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), store)
 	if err != nil {
 		t.Fatalf("durable.New (run 2): %v", err)
 	}
@@ -361,7 +361,7 @@ func TestDurable_NoStateStore_DegradesLoudly(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	bus, err := durable.New(durableCfg(), auditpatterns.New(), nil, durable.WithLogger(logger))
+	bus, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), nil, durable.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("durable.New (no store): %v", err)
 	}
@@ -388,7 +388,7 @@ func TestDurable_NoStateStore_DegradesLoudly(t *testing.T) {
 func TestDurable_NoStateStore_RingZero_ReplayUnavailable(t *testing.T) {
 	cfg := durableCfg()
 	cfg.ReplayBufferSize = 0
-	bus, err := durable.New(cfg, auditpatterns.New(), nil,
+	bus, err := durable.New(context.Background(), cfg, auditpatterns.New(), nil,
 		durable.WithLogger(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))))
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
@@ -404,7 +404,7 @@ func TestDurable_NoStateStore_RingZero_ReplayUnavailable(t *testing.T) {
 func TestDurable_BestEffort_CursorTooOld(t *testing.T) {
 	cfg := durableCfg()
 	cfg.ReplayBufferSize = 4 // small ring so older events are evicted
-	bus, err := durable.New(cfg, auditpatterns.New(), nil,
+	bus, err := durable.New(context.Background(), cfg, auditpatterns.New(), nil,
 		durable.WithLogger(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))))
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
@@ -443,7 +443,7 @@ func (f *failingStore) Close(context.Context) error { return nil }
 
 func TestDurable_PersistFailure_SurfacesLoudly(t *testing.T) {
 	sentinel := errors.New("disk on fire")
-	bus, err := durable.New(durableCfg(), auditpatterns.New(), &failingStore{saveErr: sentinel})
+	bus, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), &failingStore{saveErr: sentinel})
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
 	}

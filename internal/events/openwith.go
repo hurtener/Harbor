@@ -6,7 +6,7 @@
 // runtime's StateStore: the registry-path factory opens a private
 // store from `events.state_driver` / `events.state_dsn`, and the only
 // way to share the runtime's store was cmd-only direct construction
-// (`durable.New(cfg, r, store)`), bypassing the §4.4 registry.
+// (`durable.New(ctx, cfg, r, store)`), bypassing the §4.4 registry.
 //
 // `OpenWith` adds a PARALLEL entry point rather than breaking the
 // registered `Factory` signature: drivers that want deps

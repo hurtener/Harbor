@@ -604,6 +604,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Node (engine)** — A typed async function inside the engine. Wraps a `NodeFunc` plus `NodePolicy` (Phase 11) and a per-node `AllowCycle` opt-in. One worker goroutine per node; one bounded channel per outgoing adjacency. RFC §6.1, brief 01 §2.
 
+**Non-replayable sequence (Sequence 0)** — the sentinel bus sequence the durable event log assigns to a transient, non-persisted notice (`audit.admin_scope_used`, `audit.redaction_failed`). It occupies no replay position and does not advance the persisted-replay counter, and the SSE transport omits the `id:` line for it (Phase 124 / D-255), so a reconnecting client can never anchor `Last-Event-ID` on a transient tick — which the post-restart recovery floor (max persisted) would not exceed, leaving the next persisted event silently skipped by `Replay`. The first persisted sequence is 1, so 0 is an unambiguous "no replay position". See also **sequence rehydration**. RFC §6.13.
+
 **`NodePolicy`** — Per-node reliability config: `Validate`, `TimeoutMS`, `MaxRetries`, `BackoffBase`/`Mult`/`MaxBackoff`, `ValidateFunc`, `RunCapacity` (Phase 12). Zero value is "no policy" (Phase 10's bare worker). Sensible defaults are set explicitly, not silently — fail-loud per AGENTS.md §5. RFC §6.1.
 
 **NetworkDefaults** — operator-tunable defaults (Phase 33a) bifrost applies to every provider (native + custom) when the per-provider override is absent. Fields: `Timeout`, `MaxRetries`, `RetryBackoffInitial`, `RetryBackoffMax`, `Concurrency`, `BufferSize`. Zero-valued fields fall through to bifrost's package-level defaults; non-zero values override. Configured at `llm.network_defaults`. Restart-required. RFC §6.5, D-042.
@@ -855,6 +857,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`RuntimeHealth`** — Phase 72f wire type carrying the `runtime.health` response: a `Subsystems []SubsystemHealth` slice. Each `SubsystemHealth` entry pins one subsystem's `Status` (`"ready"` / `"degraded"` / `"unavailable"`) and an optional `Detail` reason string.
 
 ## S
+
+**sequence rehydration** — the construction-time recovery of the durable event bus's monotonic, gap-free sequence counter from the persisted per-session head records (Phase 124 / D-255). In durable mode `durable.New` runs the `StateStore.ListKind` maintenance scan over the `events.durable.head` prefix, decodes each head record, and floors `nextSeq` at the global maximum sequence across all sessions, so a Runtime rebuilt against the same StateStore issues sequences strictly greater than any pre-restart token — a client reconnecting at a high `Last-Event-ID` is never silently skipped by `Replay`. Fail-loud: a scan or decode error fails the boot rather than silently starting at 0 (CLAUDE.md §13). See also **Non-replayable sequence (Sequence 0)**. RFC §6.13, §6.11.
 
 **Session-user safe subset** — the lower tier of the agent-config authorization matrix (D-235, Phase 92g): a session-scoped, non-admin caller may set the user prompt layer (composes above the operator base, can't weaken it), narrow (never widen) source/tool enablement within the admin-allowed set, and manage ephemeral personal skills — never the base prompt, add/remove servers, or allowlist widening. The tier is derived from the verified ctx scope (no admin claim → safe subset only), fail-closed (D-219); narrow-only is enforced by intersecting the session's disable set with the admin exposure, so no session edit ever grants a capability the admin didn't.
 

@@ -131,7 +131,7 @@ func TestE2E_Phase57_DurableReplay_AllStateDrivers(t *testing.T) {
 			id := dq("tenant-a", "user-a", "session-a")
 
 			// --- First Runtime: publish 12 events, tear the bus down.
-			bus1, err := durable.New(durableEventsCfg(), auditpatterns.New(), store)
+			bus1, err := durable.New(context.Background(), durableEventsCfg(), auditpatterns.New(), store)
 			if err != nil {
 				t.Fatalf("durable.New (run 1): %v", err)
 			}
@@ -143,7 +143,7 @@ func TestE2E_Phase57_DurableReplay_AllStateDrivers(t *testing.T) {
 			}
 
 			// --- Second Runtime: a fresh bus over the SAME store.
-			bus2, err := durable.New(durableEventsCfg(), auditpatterns.New(), store)
+			bus2, err := durable.New(context.Background(), durableEventsCfg(), auditpatterns.New(), store)
 			if err != nil {
 				t.Fatalf("durable.New (run 2): %v", err)
 			}
@@ -185,6 +185,44 @@ func TestE2E_Phase57_DurableReplay_AllStateDrivers(t *testing.T) {
 				t.Fatalf("%s: expected events 10..12 from cursor 9, got %d (first=%d)",
 					sc.name, len(tail), firstSeq(tail))
 			}
+
+			// Sequence rehydration: a publish AFTER the restart must extend
+			// the sequence strictly past the pre-restart high-water mark —
+			// no collision with a pre-restart token — on EVERY driver (the
+			// recovered nextSeq is read from the persisted head record at
+			// construction, so this exercises sqlite/postgres, not just
+			// inmem).
+			for i := range 3 {
+				publishWarn(t, bus2, id, fmt.Sprintf("run2-%d", i))
+			}
+			full, err := rp.Replay(context.Background(),
+				events.Cursor{SessionID: "session-a"},
+				events.Filter{Tenant: "tenant-a", User: "user-a", Session: "session-a"})
+			if err != nil {
+				t.Fatalf("%s: Replay after post-restart publish: %v", sc.name, err)
+			}
+			if len(full) != 15 {
+				t.Fatalf("%s: expected 15 events after restart+republish, got %d", sc.name, len(full))
+			}
+			for i, ev := range full {
+				if ev.Sequence != uint64(i+1) {
+					t.Fatalf("%s: post-restart sequence collision/gap — position %d has Sequence %d (want %d)",
+						sc.name, i, ev.Sequence, i+1)
+				}
+			}
+
+			// A client reconnecting at the pre-restart high-water mark (12)
+			// receives exactly the 3 post-restart events, none skipped.
+			resumed, err := rp.Replay(context.Background(),
+				events.Cursor{SessionID: "session-a", Sequence: 12},
+				events.Filter{Tenant: "tenant-a", User: "user-a", Session: "session-a"})
+			if err != nil {
+				t.Fatalf("%s: resume from high-water mark: %v", sc.name, err)
+			}
+			if len(resumed) != 3 || resumed[0].Sequence != 13 {
+				t.Fatalf("%s: reconnect at seq=12 must return the 3 post-restart events (13..15), got %d (first=%d)",
+					sc.name, len(resumed), firstSeq(resumed))
+			}
 		})
 	}
 }
@@ -200,7 +238,7 @@ func TestE2E_Phase57_DurableReplay_CrossTenantIsolation(t *testing.T) {
 			store := sc.newFunc(t)
 			t.Cleanup(func() { _ = store.Close(context.Background()) })
 
-			bus, err := durable.New(durableEventsCfg(), auditpatterns.New(), store)
+			bus, err := durable.New(context.Background(), durableEventsCfg(), auditpatterns.New(), store)
 			if err != nil {
 				t.Fatalf("durable.New: %v", err)
 			}
@@ -255,7 +293,7 @@ func TestE2E_Phase57_DurableLog_ClosedStoreFailsLoudly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stateinmem.New: %v", err)
 	}
-	bus, err := durable.New(durableEventsCfg(), auditpatterns.New(), store)
+	bus, err := durable.New(context.Background(), durableEventsCfg(), auditpatterns.New(), store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
 	}
@@ -290,7 +328,7 @@ func TestE2E_Phase57_DurableLog_ConcurrencyStress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stateinmem.New: %v", err)
 	}
-	bus, err := durable.New(durableEventsCfg(), auditpatterns.New(), store)
+	bus, err := durable.New(context.Background(), durableEventsCfg(), auditpatterns.New(), store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
 	}
