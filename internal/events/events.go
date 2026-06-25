@@ -400,6 +400,66 @@ func (f Filter) Matches(ev Event) bool {
 	return false
 }
 
+// MatchesScoped reports whether ev belongs to the identity the filter
+// NAMES, scoping by every non-empty triple field (tenant, user, session,
+// run) and the Types selector — ALWAYS, even when Admin is set.
+//
+// It is the BY-ID counterpart to Matches. Matches' Admin mode fans IN
+// across identities (the fleet-view Subscribe/Replay tail wants every
+// session's events); MatchesScoped never does — a by-id read
+// (HistoryReplayer.Bounds/Window backing state.history) names exactly one
+// session, and an admin reading session A must never receive session B's
+// events from a shared best-effort ring. Admin authority is decided at the
+// call edge (it authorises crossing the verified-tenant boundary to read
+// the named session); it is not a licence to widen the scan. This closes a
+// cross-session/cross-tenant disclosure on the ring-backed drivers, where
+// Matches(ev) under Admin returned the whole ring.
+func (f Filter) MatchesScoped(ev Event) bool {
+	if f.Tenant != "" && ev.Identity.TenantID != f.Tenant {
+		return false
+	}
+	if f.User != "" && ev.Identity.UserID != f.User {
+		return false
+	}
+	if f.Session != "" && ev.Identity.SessionID != f.Session {
+		return false
+	}
+	if f.Run != "" && ev.Identity.RunID != f.Run {
+		return false
+	}
+	if len(f.Types) == 0 {
+		return true
+	}
+	for _, t := range f.Types {
+		if ev.Type == t {
+			return true
+		}
+	}
+	return false
+}
+
+// IsBusInternalNotice reports whether t is a transient, bus-internal
+// observability notice — `bus.dropped`, `bus.subscription_idle_closed`,
+// `audit.redaction_failed`, `audit.admin_scope_used`. These are emitted BY
+// the bus (not by a session's producers), are not part of a session's
+// conversation history, and the durable log never persists them. A
+// HistoryReplayer windowed read (the `state.history` substrate) excludes
+// them so a ring-backed driver matches the durable driver's history shape —
+// and, critically, so the `audit.admin_scope_used` notice an admin read
+// emits (scoped to the REQUESTED identity) cannot self-match the by-id scan
+// and turn a not-found into a page containing only that notice.
+func IsBusInternalNotice(t EventType) bool {
+	switch t {
+	case EventTypeBusDropped,
+		EventTypeBusSubscriptionIdleClosed,
+		EventTypeAuditRedactionFailed,
+		EventTypeAdminScopeUsed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Subscription delivers events to one consumer.
 //
 // Events() returns a receive-only channel. The channel is closed by
@@ -469,6 +529,63 @@ type Replayer interface {
 	Replay(ctx context.Context, from Cursor, f Filter) ([]Event, error)
 }
 
+// HistoryReplayer is the optional capability interface a replay-capable
+// driver implements to support a BOUNDED, TAIL-FIRST windowed read of a
+// session's retained event history — the substrate the `state.history`
+// Protocol method projects. It is a sibling to Replayer
+// (forward-from-cursor): where Replayer answers "everything strictly
+// newer than this cursor, oldest-first to the tail" (the SSE reconnect
+// path), HistoryReplayer answers two reopen-a-long-conversation reads:
+//
+//  1. Bounds — discover the session's retained head/tail sequence, so a
+//     client knows where the window range sits without streaming the log.
+//  2. Window — a bounded backward page: the most-recent K events with
+//     Sequence < before (before==0 ⇒ from the tail), returned OLDEST-FIRST
+//     within the window so the client appends them in order.
+//
+// Both reads are BY-ID: they answer for exactly the session the filter
+// names. Unlike Subscribe / Replay — whose Admin mode fans IN across
+// identities for a fleet-view tail — a HistoryReplayer read ALWAYS scopes
+// to the filter's named session triple, even under Admin. Admin authority
+// is decided at the call edge (it authorises reading ANOTHER identity's
+// session); it never widens the per-session scan to return other sessions'
+// events from a shared ring. Drivers implement this with MatchesScoped
+// (which honours the named triple regardless of Admin), never Matches. An
+// empty-triple non-admin filter is still rejected with
+// ErrIdentityScopeRequired; a driver that retains no events for the
+// filter's session returns ErrNoHistory from Bounds.
+//
+// The type assertion bus.(events.HistoryReplayer) is a compile-shaped
+// contract; a driver that does not implement it (or whose replay surface
+// is configured off) leaves the windowed-read surface unavailable, which
+// the handler surfaces loudly rather than as a silent empty page.
+type HistoryReplayer interface {
+	// Bounds returns the lowest (head) and highest (tail) RETAINED
+	// sequence for the filter's session, or ErrNoHistory when the session
+	// has no retained events. Scoped to the named session (MatchesScoped),
+	// never fanning in under Admin.
+	//
+	// truncated reports whether older events than the retained head may
+	// have been evicted — true once a best-effort ring has overwritten an
+	// occupied slot (the head is then the ring's oldest retained, NOT the
+	// session's first sequence), false for the gap-free durable log (which
+	// never trims the per-session sequence list in V1) and for a ring that
+	// is merely at-capacity with nothing yet evicted. It is the honest "history may be incomplete"
+	// signal that flows to StateHistoryResponse.Truncated, so a windowed
+	// read over a wrapped ring is never silently presented as complete
+	// (CLAUDE.md §13 "never silently lossy"). It is conservative for the
+	// ring: a wrap evicts SOME session's oldest events, possibly not this
+	// one's, so a true value means "older events may be missing", not
+	// "definitely are".
+	Bounds(ctx context.Context, f Filter) (head, tail uint64, truncated bool, err error)
+	// Window returns at most limit events whose Sequence < before
+	// (before==0 ⇒ from the tail), the most-recent K selected, returned
+	// OLDEST-FIRST within the window, matching f. An empty window (no
+	// events below before) returns (nil, nil). Identity-scoped exactly
+	// like Subscribe / Replay.
+	Window(ctx context.Context, before uint64, limit int, f Filter) ([]Event, error)
+}
+
 // DroppedCounter is the optional capability a bus driver implements to
 // report a cumulative count of messages dropped under backpressure. It
 // mirrors the Replayer shape: a single driver-specific read surface
@@ -528,6 +645,11 @@ var (
 	// time, so the same call sites work whether replay is enabled or
 	// not.
 	ErrReplayUnavailable = errors.New("events: replay not available on this driver")
+	// ErrNoHistory — HistoryReplayer.Bounds was called for a session that
+	// has no retained event history. Distinct from an empty window (which
+	// Window returns as (nil, nil)): Bounds cannot report a head/tail for
+	// a session that never published.
+	ErrNoHistory = errors.New("events: session has no retained event history")
 )
 
 // ValidateEvent does structural validation: the EventType is in the

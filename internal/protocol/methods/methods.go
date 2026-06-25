@@ -805,6 +805,25 @@ const (
 	// sessions / tasks method — `IsRunsMethod` is its own O(1)
 	// predicate. The wire-transport route is `POST /v1/runs/set_overrides`.
 	MethodRunsSetOverrides Method = "runs.set_overrides"
+
+	// MethodStateHistory — the State-snapshots surface's by-id,
+	// identity-scoped, read-only TAIL-FIRST windowed read of a session's
+	// durable event stream. Returns a bounded backward page of flat
+	// `StateEvent` (events with `Sequence < before`, the most-recent K,
+	// oldest-first within the window) plus the discovered head/tail
+	// sequence and a scroll-up cursor; heavy content rides by a routable
+	// `StateArtifactRef`, never inline. Reduction to chat messages stays
+	// client-side. Identity-mandatory: an incomplete triple is rejected
+	// with CodeIdentityRequired; an unknown or cross-identity session is
+	// CodeNotFound (existence is never revealed across identities,
+	// mirroring `tasks.get`); a cross-tenant read requires the verified
+	// `auth.ScopeAdmin` claim on the ctx (the request body carries no
+	// elevation knob). NOT a control / streaming-events / search /
+	// posture / pause / topology / artifacts / memory / mcp / tools /
+	// flows / agents / sessions / tasks / runs method — `IsStateMethod`
+	// is its own O(1) predicate. The wire-transport route is
+	// `POST /v1/state/history`.
+	MethodStateHistory Method = "state.history"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -893,6 +912,8 @@ var canonicalMethods = map[Method]struct{}{
 	MethodSessionsInspect: {},
 
 	MethodRunsSetOverrides: {},
+
+	MethodStateHistory: {},
 
 	MethodAuthRotateToken: {},
 
@@ -1343,6 +1364,29 @@ func IsRunsMethod(m Method) bool {
 	return ok
 }
 
+// canonicalStateMethods is the closed sub-set of the State-snapshots
+// `state.*` methods. Today it holds the single `state.history` windowed
+// event-replay read; `state.list_trajectories` and
+// `state.load_planner_checkpoint` (the other two RFC §5.2 State-snapshots
+// methods) land in their own phases and extend this set. IsStateMethod is
+// O(1); the stream transport branches on it to route the request through
+// the state-history handler instead of the task-control surface.
+var canonicalStateMethods = map[Method]struct{}{
+	MethodStateHistory: {},
+}
+
+// IsStateMethod reports whether m is one of the canonical State-snapshots
+// `state.*` methods (— today just `state.history`). The stream transport
+// branches on this to route the request through the state-history handler
+// instead of the task-control / search / posture / pause / topology /
+// artifacts / memory / mcp / tools / flows / agents / sessions / runs
+// surfaces. NOT a control method — a new non-control state method extends
+// THIS predicate, never the steering inbox.
+func IsStateMethod(m Method) bool {
+	_, ok := canonicalStateMethods[m]
+	return ok
+}
+
 // canonicalAuthMethods is the closed sub-set of the `auth.*` methods
 // landed earlier. Today it holds the single
 // `auth.rotate_token` method. IsAuthMethod is O(1); the stream
@@ -1567,6 +1611,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsRunsMethod(m) {
+		return false
+	}
+	if IsStateMethod(m) {
 		return false
 	}
 	if IsGovernanceAdminMethod(m) {

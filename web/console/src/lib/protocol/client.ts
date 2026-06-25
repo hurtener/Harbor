@@ -42,6 +42,7 @@ import type { EventAggregateRequest, EventAggregateResponse } from './events.js'
 import type { RuntimeCounters, RuntimeHealth, MetricsSnapshot } from './posture.js';
 import type { PauseListRequest, PauseListResponse } from './pause.js';
 import type { SearchRequest, SearchResponse } from './search.js';
+import type { StateHistoryRequest, StateHistoryResponse } from './state.js';
 import type {
 	GovernanceTenantOverrides,
 	GovernanceGetTenantOverridesResponse,
@@ -1224,6 +1225,33 @@ export class SearchNamespace {
 	}
 }
 
+/**
+ * The `state.*` namespace — the State-snapshots surface (D-254). The
+ * Runtime mounts `state.history` at `POST /v1/state/history`. It is a
+ * by-id, identity-scoped, read-only TAIL-FIRST windowed read of a session's
+ * durable event stream: a bounded backward page with a scroll-up cursor,
+ * heavy content carried by a routable `StateArtifactRef`. The events →
+ * chat-messages reduction stays client-side (the reducer the Console owns).
+ */
+export class StateNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/**
+	 * `state.history` — a bounded, tail-first window of a session's durable
+	 * event stream. `before` is the exclusive upper bound (zero ⇒ from the
+	 * tail); pass the prior response's `next_cursor` back as `before` to
+	 * scroll one window older.
+	 */
+	history(req: StateHistoryRequest): Promise<StateHistoryResponse> {
+		return this.#t.request<StateHistoryResponse>(
+			'/v1/state/history',
+			req as unknown as Record<string, unknown>
+		);
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -1266,6 +1294,7 @@ export interface ProtocolClient {
 	readonly governance: GovernanceNamespace;
 	readonly agentConfig: AgentConfigNamespace;
 	readonly search: SearchNamespace;
+	readonly state: StateNamespace;
 
 	/**
 	 * Round-8 F1 / phase 84a: returns the per-instance Protocol
@@ -1306,6 +1335,7 @@ export class HarborClient implements ProtocolClient {
 	readonly governance: GovernanceNamespace;
 	readonly agentConfig: AgentConfigNamespace;
 	readonly search: SearchNamespace;
+	readonly state: StateNamespace;
 
 	// Round-8 F1 / phase 84a: per-connection capability cache. Pages
 	// with optional Protocol surfaces (Live Runtime topology view,
@@ -1339,6 +1369,7 @@ export class HarborClient implements ProtocolClient {
 		this.governance = new GovernanceNamespace(transport);
 		this.agentConfig = new AgentConfigNamespace(transport);
 		this.search = new SearchNamespace(transport);
+		this.state = new StateNamespace(transport);
 	}
 
 	/**

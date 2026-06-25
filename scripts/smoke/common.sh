@@ -203,6 +203,36 @@ assert_post_status() {
     fi
 }
 
+# assert_json_path_resolves <ref_id> <get_ref_url> <auth_header> <id_header_tenant> <id_header_user> <id_header_session> <description>
+# POSTs <ref_id> to the artifacts.get_ref resolver and asserts the id ROUTES:
+# HTTP 200 (+ presigned_url, an S3-compat Presigner store) OR 501/presign_unsupported
+# (the default CGo-free inmem/fs store — both prove the id reached the resolver
+# well-formed). The strict 200-resolves assertion is gated behind a HARBOR_LIVE_* S3 env.
+assert_json_path_resolves() {
+    local ref_id="$1" get_ref_url="$2" auth="$3" tn="$4" us="$5" se="$6" desc="$7"
+    if ! command -v curl >/dev/null 2>&1; then
+        skip "${desc}: curl not available"
+        return
+    fi
+    if [ -z "${ref_id}" ] || [ "${ref_id}" = "null" ]; then
+        skip "${desc}: no ref id to route (no heavy turn seeded)"
+        return
+    fi
+    local body status
+    body="{\"identity\":{\"tenant\":\"${tn}\",\"user\":\"${us}\",\"session\":\"${se}\"},\"id\":\"${ref_id}\",\"scope\":{\"tenant\":\"${tn}\",\"user\":\"${us}\",\"session\":\"${se}\"}}"
+    status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+        -X POST -H "Authorization: Bearer ${auth}" -H 'Content-Type: application/json' \
+        -d "${body}" "${get_ref_url}" || true)
+    case "${status}" in
+        200|501)
+            ok "${desc}: ref id ROUTES to artifacts.get_ref (${status})"
+            ;;
+        *)
+            fail "${desc}: ref id did not route well-formed (status ${status}, want 200 or 501)"
+            ;;
+    esac
+}
+
 # smoke_summary
 # Print final counters. Exit 1 if any FAIL; else 0.
 smoke_summary() {

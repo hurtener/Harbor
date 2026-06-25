@@ -637,8 +637,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 103 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 103 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane twelve + agent-config session safe subset five)", len(got))
+	if len(got) != 104 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 104 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane twelve + agent-config session safe subset five + state.history one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -731,6 +731,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodSessionsInspect: {},
 
 		methods.MethodRunsSetOverrides: {},
+
+		methods.MethodStateHistory: {},
 
 		methods.MethodAuthRotateToken: {},
 
@@ -994,6 +996,17 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsRunsMethod(m) {
 				t.Skip("phase-73n: runs.* methods exercised by internal/runtime/runs/protocol tests + stream runs_handler tests + test/integration/playground_overrides_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
+			// state.history routes through its own stream-transport handler
+			// (POST /v1/state/history), NOT the REST ControlSurface — it
+			// needs an events.HistoryReplayer-bearing bus + an ArtifactStore
+			// the conformance Stack does not wire. Its happy-path + failure
+			// modes are exercised by the stream state_history_handler tests,
+			// the concurrent-reuse test, and
+			// test/integration/phase125_state_history_test.go (real durable
+			// bus + real ArtifactStore + real wire transport).
+			if methods.IsStateMethod(m) {
+				t.Skip("state.* methods exercised by the stream state_history_handler tests + test/integration/phase125_state_history_test.go; conformance-suite scenario lands when the Stack wires a HistoryReplayer bus")
+			}
 			// auth.rotate_token routes through its own
 			// stream-transport handler (AuthHandler over auth.RotateSurface),
 			// not the ControlSurface — its happy path is exercised by
@@ -1240,6 +1253,12 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// auth_handler_test.go + internal/protocol/auth/rotate_token_test.go.
 			if methods.IsAuthMethod(m) {
 				t.Skip("phase-73m: auth.rotate_token malformed-request paths covered by internal/protocol/transports/stream/auth_handler_test.go")
+			}
+			// state.history routes through its own stream-transport handler,
+			// not the ControlSurface — its malformed-request paths are
+			// covered by internal/protocol/transports/stream/state_history_handler_test.go.
+			if methods.IsStateMethod(m) {
+				t.Skip("state.history malformed-request paths covered by internal/protocol/transports/stream/state_history_handler_test.go")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)
@@ -1703,20 +1722,23 @@ func runVersionHandshake(t *testing.T) {
 	}
 	caps := types.Capabilities()
 	// task-control + streaming-events +
-	// runtime-posture + topology-snapshot = 4 capabilities
+	// runtime-posture + topology-snapshot + state-snapshots = 5 capabilities
 	// at Protocol 0.1.0. (The capability constants live in
 	// internal/protocol/types/version.go; a new capability is a new
 	// constant + a new entry in canonicalCapabilities. A checkpoint fix
 	// — `topology_snapshot` is in the canonical *registry*; per-instance
-	// advertisement is conditional via `PostureDeps.TopologyAvailable`.)
-	if len(caps) != 4 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 4 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot) at Protocol 0.1.0", len(caps))
+	// advertisement is conditional via `PostureDeps.TopologyAvailable`.
+	// `state_snapshots` is the windowed event-replay surface — additive,
+	// no ProtocolVersion bump.)
+	if len(caps) != 5 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 5 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot + CapStateSnapshots) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:      {},
 		types.CapEventsSubscribe:  {},
 		types.CapRuntimePosture:   {},
 		types.CapTopologySnapshot: {},
+		types.CapStateSnapshots:   {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {

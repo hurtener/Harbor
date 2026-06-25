@@ -207,6 +207,16 @@ type muxConfig struct {
 	// convention). Built only alongside governanceService. Production
 	// wiring supplies it so an admin can rotate the LLM provider key live.
 	governanceKeyRotate *governanceprotocol.KeyRotateService
+	// stateHistoryBus + stateHistoryArtifacts feed the `state.history`
+	// windowed event-replay handler — the `POST /v1/state/history` route.
+	// Both are OPTIONAL in the mux config so existing call-sites compile
+	// unchanged — when either is unsupplied the `state.history` route is
+	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight
+	// green on a partial build. Production wiring (`harbor dev` /
+	// `harbortest/devstack`) supplies both so the Console session-reopen
+	// hydration has a live windowed-read surface.
+	stateHistoryBus       events.EventBus
+	stateHistoryArtifacts artifacts.ArtifactStore
 	// agentConfigService feeds the admin-scoped agent-config control-plane
 	// handler — the `POST /v1/agent_config/*` routes. OPTIONAL: when
 	// unsupplied the `/v1/agent_config/*` route is NOT mounted, so the
@@ -659,6 +669,32 @@ func WithAgentConfigService(s *agentcfgprotocol.Service) Option {
 	}
 }
 
+// WithStateHistory wires the `state.history` windowed event-replay
+// handler into NewMux — the `POST /v1/state/history` route. bus is the
+// durable event bus the windowed read scans (it MUST implement
+// events.HistoryReplayer to serve a non-error page; a bus without the
+// capability surfaces CodeRuntimeError per request); arts is the
+// ArtifactStore the heavy-payload refs are enriched from.
+//
+// Both are required together — supplying the option with a nil bus or a
+// nil store leaves the `state.history` route UN-mounted (the route's
+// smoke `skip_if_404` keeps preflight green on a partial build). When
+// supplied correctly the route is mounted and, when WithValidator is
+// also set, wrapped in auth.Middleware like every other transport.
+//
+// state.history is READ-ONLY (CLAUDE.md §13) — it projects the durable
+// event log; no mutation path is mounted.
+func WithStateHistory(bus events.EventBus, arts artifacts.ArtifactStore) Option {
+	return func(c *muxConfig) {
+		if bus != nil {
+			c.stateHistoryBus = bus
+		}
+		if arts != nil {
+			c.stateHistoryArtifacts = arts
+		}
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -949,6 +985,23 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		governanceHandler = gh
 	}
 
+	// The `state.history` windowed event-replay handler. Built only when
+	// WithStateHistory supplied a non-nil bus AND a non-nil artifact
+	// store. When either is missing the `POST /v1/state/history` route is
+	// left un-mounted — the smoke `skip_if_404` keeps preflight green on a
+	// partial build.
+	var stateHistoryHandler *stream.StateHistoryHandler
+	if cfg.stateHistoryBus != nil && cfg.stateHistoryArtifacts != nil {
+		shh, err := stream.NewStateHistoryHandler(
+			cfg.stateHistoryBus, cfg.stateHistoryArtifacts,
+			stream.WithStateHistoryLogger(cfg.logger),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("transports: build state.history handler: %w", err)
+		}
+		stateHistoryHandler = shh
+	}
+
 	// The admin-scoped agent-config control-plane handler. Built only when
 	// WithAgentConfigService supplied a non-nil service. When unsupplied
 	// the `/v1/agent_config/*` route is left un-mounted — the smoke
@@ -1098,6 +1151,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedAgentConfig = mw(agentConfigHandler)
 		}
 		mux.Handle(stream.AgentConfigRoutePattern, mountedAgentConfig)
+	}
+
+	if stateHistoryHandler != nil {
+		mountedStateHistory := stateHistoryHandler.Handler()
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedStateHistory = mw(mountedStateHistory)
+		}
+		mux.Handle(stream.StateHistoryRoutePattern, mountedStateHistory)
 	}
 	return mux, nil
 }

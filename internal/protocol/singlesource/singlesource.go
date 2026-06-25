@@ -192,6 +192,8 @@ var CanonicalMethods = map[string]struct{}{
 	"sessions.inspect": {},
 	// Console-Playground-page cluster — one method.
 	"runs.set_overrides": {},
+	// State-snapshots cluster — one method (the windowed event-replay read).
+	"state.history": {},
 	// Console-Settings-page cluster — one method.
 	"auth.rotate_token": {},
 	// Console-Flows-page cluster — six methods.
@@ -579,6 +581,14 @@ var CanonicalWireTypes = map[string]string{
 	// otherwise a pure consumer of the posture surfaces.
 	"AuthRotateTokenRequest":  "types",
 	"AuthRotateTokenResponse": "types",
+	// State-snapshots windowed event-replay wire types — the
+	// `state.history` request/response + the flat routable artifact ref +
+	// the flat event projection live in
+	// internal/protocol/types (internal/protocol/types/state.go).
+	"StateHistoryRequest":  "types",
+	"StateArtifactRef":     "types",
+	"StateEvent":           "types",
+	"StateHistoryResponse": "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

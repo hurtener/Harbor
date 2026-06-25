@@ -1214,6 +1214,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// the Console intervention queue works out of the box (no seam
 		// for the operator to wire — CLAUDE.md §13).
 		transports.WithPauseList(coord, artStore, cfg.Artifacts.HeavyOutputThresholdBytes),
+		// mount the `state.history` windowed event-replay route so the
+		// Console session-reopen hydration can tail-first page a long
+		// conversation off the durable event log instead of full-loading
+		// it. The durable bus is the windowed substrate; the artifact
+		// store enriches heavy-payload refs.
+		transports.WithStateHistory(bus, artStore),
 		// mount the three `memory.*` read routes for
 		// the Console Memory page. The handler reuses the artifact
 		// store + heavy-content threshold supplied to WithPauseList for

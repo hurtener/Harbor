@@ -384,3 +384,77 @@ func TestSeal_ConcreteTypesImplementEventPayload(t *testing.T) {
 		t.Error("RedactedMap should NOT implement SafePayload")
 	}
 }
+
+// TestHistoryReplayer_InterfaceContract pins the optional windowed-read
+// capability interface shape (D-254) and the ErrNoHistory sentinel. A
+// driver advertises the capability via a static type assertion; the
+// concrete driver tests exercise the behaviour.
+func TestHistoryReplayer_InterfaceContract(t *testing.T) {
+	var _ events.HistoryReplayer = stubHistoryReplayer{}
+	if events.ErrNoHistory == nil {
+		t.Fatal("events.ErrNoHistory sentinel is nil")
+	}
+	if events.ErrNoHistory.Error() == "" {
+		t.Fatal("events.ErrNoHistory has an empty message")
+	}
+}
+
+// TestFilter_MatchesScoped_IgnoresAdminFanIn pins the by-id contract:
+// MatchesScoped scopes to the named session EVEN under Admin, where Matches
+// fans in. This is the property the ring-backed HistoryReplayer drivers
+// rely on to avoid the cross-session/cross-tenant disclosure.
+func TestFilter_MatchesScoped_IgnoresAdminFanIn(t *testing.T) {
+	evA := events.Event{Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "sA"}}}
+	evB := events.Event{Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "t2", UserID: "u2", SessionID: "sB"}}}
+	adminA := events.Filter{Admin: true, Tenant: "t1", User: "u1", Session: "sA"}
+
+	// Matches (Admin) fans in — matches BOTH.
+	if !adminA.Matches(evA) || !adminA.Matches(evB) {
+		t.Fatal("Matches with Admin should fan in across sessions (baseline)")
+	}
+	// MatchesScoped never fans in — matches ONLY the named session.
+	if !adminA.MatchesScoped(evA) {
+		t.Fatal("MatchesScoped must match the named session under Admin")
+	}
+	if adminA.MatchesScoped(evB) {
+		t.Fatal("MatchesScoped must NOT match a different session/tenant under Admin (by-id scope)")
+	}
+	// A non-admin scoped filter still matches its own session and not others.
+	nonAdmin := events.Filter{Tenant: "t1", User: "u1", Session: "sA"}
+	if !nonAdmin.MatchesScoped(evA) || nonAdmin.MatchesScoped(evB) {
+		t.Fatal("MatchesScoped non-admin scoping incorrect")
+	}
+}
+
+func TestIsBusInternalNotice(t *testing.T) {
+	for _, ty := range []events.EventType{
+		events.EventTypeBusDropped,
+		events.EventTypeBusSubscriptionIdleClosed,
+		events.EventTypeAuditRedactionFailed,
+		events.EventTypeAdminScopeUsed,
+	} {
+		if !events.IsBusInternalNotice(ty) {
+			t.Errorf("IsBusInternalNotice(%q) = false, want true", ty)
+		}
+	}
+	for _, ty := range []events.EventType{
+		events.EventTypeRuntimeWarning,
+		events.EventTypeRuntimeRunCancelled,
+		"llm.completion.chunk",
+		"task.completed",
+	} {
+		if events.IsBusInternalNotice(ty) {
+			t.Errorf("IsBusInternalNotice(%q) = true, want false (real session history)", ty)
+		}
+	}
+}
+
+type stubHistoryReplayer struct{}
+
+func (stubHistoryReplayer) Bounds(context.Context, events.Filter) (uint64, uint64, bool, error) {
+	return 0, 0, false, events.ErrNoHistory
+}
+
+func (stubHistoryReplayer) Window(context.Context, uint64, int, events.Filter) ([]events.Event, error) {
+	return nil, nil
+}

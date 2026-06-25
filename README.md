@@ -166,7 +166,11 @@ Harbor is four layers, each with a hard boundary:
 
 Because the Console only ever speaks Protocol, the same surface powers a
 remote attach, a third-party dashboard, or an IDE/TUI client. Nothing about
-observability is privileged to the first-party UI.
+observability is privileged to the first-party UI. Reopening a long
+conversation is a first-class read: the `state.history` method serves a
+bounded, tail-first window of a session's durable event stream with a
+scroll-up cursor, so a client rehydrates the newest turn first instead of
+re-streaming the whole history.
 
 **Persistence** ships as three conformance-equal drivers everywhere it matters
 (StateStore, ArtifactStore, MemoryStore, …): in-memory for dev, SQLite

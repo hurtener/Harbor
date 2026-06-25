@@ -97,6 +97,7 @@ var wantMethods = []methods.Method{
 	methods.MethodSessionsList,
 	methods.MethodSessionsInspect,
 	methods.MethodRunsSetOverrides,
+	methods.MethodStateHistory,
 	methods.MethodAuthRotateToken,
 	methods.MethodGovernanceSetTenantOverrides,
 	methods.MethodGovernanceGetTenantOverrides,
@@ -141,9 +142,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// upsert,delete} + set_tool_exposure + set_prompt_layers +
 	// set_llm_params + add_mcp_connection) = 98, + agent-config session
 	// safe subset five (agent_config.session.set_user_prompt +
-	// set_source_disables + skills.{list,upsert,delete}) = 103.
-	if len(got) != 103 {
-		t.Fatalf("Methods() returned %d methods, want 103", len(got))
+	// set_source_disables + skills.{list,upsert,delete}) = 103,
+	// + State-snapshots state.history one = 104.
+	if len(got) != 104 {
+		t.Fatalf("Methods() returned %d methods, want 104", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -430,7 +432,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) ||
 			methods.IsSessionsMethod(m) || methods.IsRunsMethod(m) ||
 			methods.IsGovernanceAdminMethod(m) || methods.IsAgentConfigMethod(m) ||
-			methods.IsAuthMethod(m) {
+			methods.IsAuthMethod(m) || methods.IsStateMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {
@@ -440,6 +442,45 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	// An unknown method is not a control method.
 	if methods.IsControlMethod(methods.Method("bogus")) {
 		t.Error("IsControlMethod(bogus) = true, want false")
+	}
+}
+
+// TestIsStateMethod — the State-snapshots `state.history` method routes
+// through the state-history handler, not the steering inbox, and is
+// classified by IsStateMethod alone among the Is*Method predicates.
+func TestIsStateMethod(t *testing.T) {
+	if string(methods.MethodStateHistory) != "state.history" {
+		t.Fatalf("MethodStateHistory wire string = %q, want %q",
+			string(methods.MethodStateHistory), "state.history")
+	}
+	if !methods.IsValidMethod(methods.MethodStateHistory) {
+		t.Error("IsValidMethod(state.history) = false, want true")
+	}
+	if !methods.IsStateMethod(methods.MethodStateHistory) {
+		t.Error("IsStateMethod(state.history) = false, want true")
+	}
+	if methods.IsStateMethod(methods.MethodStart) {
+		t.Error("IsStateMethod(start) = true, want false")
+	}
+	if methods.IsStateMethod(methods.Method("bogus")) {
+		t.Error("IsStateMethod(bogus) = true, want false")
+	}
+	// state.history is NOT a control / search / sessions / streaming /
+	// memory method — it has its own predicate.
+	if methods.IsControlMethod(methods.MethodStateHistory) {
+		t.Error("IsControlMethod(state.history) = true, want false")
+	}
+	for name, got := range map[string]bool{
+		"IsSearchMethod":          methods.IsSearchMethod(methods.MethodStateHistory),
+		"IsSessionsMethod":        methods.IsSessionsMethod(methods.MethodStateHistory),
+		"IsStreamingEventsMethod": methods.IsStreamingEventsMethod(methods.MethodStateHistory),
+		"IsMemoryMethod":          methods.IsMemoryMethod(methods.MethodStateHistory),
+		"IsTasksMethod":           methods.IsTasksMethod(methods.MethodStateHistory),
+		"IsRunsMethod":            methods.IsRunsMethod(methods.MethodStateHistory),
+	} {
+		if got {
+			t.Errorf("%s(state.history) = true, want false", name)
+		}
 	}
 }
 

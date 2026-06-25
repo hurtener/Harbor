@@ -5168,6 +5168,140 @@
         }
       ]
     },
+    "StateArtifactRef": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "id",
+          "type": "string"
+        },
+        {
+          "key": "mime_type",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "size_bytes",
+          "type": "number",
+          "optional": true
+        },
+        {
+          "key": "filename",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "sha256",
+          "type": "string",
+          "optional": true
+        }
+      ]
+    },
+    "StateEvent": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "type",
+          "type": "string"
+        },
+        {
+          "key": "sequence",
+          "type": "number"
+        },
+        {
+          "key": "occurred_at",
+          "type": "string"
+        },
+        {
+          "key": "tenant",
+          "type": "string"
+        },
+        {
+          "key": "user",
+          "type": "string"
+        },
+        {
+          "key": "session",
+          "type": "string"
+        },
+        {
+          "key": "run",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "payload",
+          "type": "any",
+          "optional": true
+        },
+        {
+          "key": "extra",
+          "type": "object",
+          "optional": true
+        },
+        {
+          "key": "artifacts",
+          "type": "array",
+          "ref": "StateArtifactRef",
+          "optional": true
+        }
+      ]
+    },
+    "StateHistoryRequest": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
+        },
+        {
+          "key": "session_id",
+          "type": "string"
+        },
+        {
+          "key": "before",
+          "type": "number",
+          "optional": true
+        },
+        {
+          "key": "limit",
+          "type": "number",
+          "optional": true
+        }
+      ]
+    },
+    "StateHistoryResponse": {
+      "home": "types",
+      "fields": [
+        {
+          "key": "events",
+          "type": "array",
+          "ref": "StateEvent"
+        },
+        {
+          "key": "head_sequence",
+          "type": "number"
+        },
+        {
+          "key": "tail_sequence",
+          "type": "number"
+        },
+        {
+          "key": "next_cursor",
+          "type": "number"
+        },
+        {
+          "key": "has_more",
+          "type": "boolean"
+        },
+        {
+          "key": "truncated",
+          "type": "boolean",
+          "optional": true
+        }
+      ]
+    },
     "SubsystemDriver": {
       "home": "types",
       "fields": [
@@ -6372,6 +6506,7 @@
     "sessions.inspect",
     "sessions.list",
     "start",
+    "state.history",
     "tasks.get",
     "tasks.list",
     "tools.content_stats",

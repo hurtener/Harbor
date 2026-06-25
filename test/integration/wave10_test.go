@@ -344,9 +344,15 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapTopologySnapshot) {
 		t.Fatal("handshake.Accepts(CapTopologySnapshot) = false; the Phase 74 topology-snapshot surface (phase 84a) must appear in the canonical capability set")
 	}
+	// Phase 125 (D-254) added the state-snapshots capability (the
+	// `state.history` windowed event-replay surface) — additive, no
+	// ProtocolVersion bump. A §17.6 paired update with this pin.
+	if !h.Accepts(types.CapStateSnapshots) {
+		t.Fatal("handshake.Accepts(CapStateSnapshots) = false; the Phase 125 state-snapshots surface must appear in the canonical capability set")
+	}
 	caps := h.Capabilities
-	if len(caps) != 4 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot}", caps)
+	if len(caps) != 5 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

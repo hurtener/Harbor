@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 103 canonical Harbor Protocol methods, generated from the single-source registry
+The 104 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -175,6 +175,12 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
 | `runs.set_overrides` | `POST /v1/runs/set_overrides` | runs | [`RunSetOverridesRequest`](./types.md#runsetoverridesrequest) | [`RunSetOverridesResponse`](./types.md#runsetoverridesresponse) | mutating |
+
+## State snapshots
+
+| Method | Route | Classification | Request | Response | Auth (beyond identity) |
+|---|---|---|---|---|---|
+| `state.history` | `POST /v1/state/history` | state snapshots (read-only) | [`StateHistoryRequest`](./types.md#statehistoryrequest) | [`StateHistoryResponse`](./types.md#statehistoryresponse) | read-only |
 
 ## Auth
 

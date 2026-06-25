@@ -864,3 +864,232 @@ func drainN(t *testing.T, sub events.Subscription, n int, timeout time.Duration)
 	}
 	return out
 }
+
+// ---------------------------------------------------------------------------
+// HistoryReplayer — Bounds + Window (the state.history substrate)
+// ---------------------------------------------------------------------------
+
+func newHistoryBus(t *testing.T) (events.EventBus, events.HistoryReplayer) {
+	t.Helper()
+	bus, err := inmem.New(replayCfg(), auditpatterns.New())
+	if err != nil {
+		t.Fatalf("inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	hr, ok := bus.(events.HistoryReplayer)
+	if !ok {
+		t.Fatalf("inmem bus does not implement events.HistoryReplayer")
+	}
+	return bus, hr
+}
+
+func historyID() identity.Quadruple {
+	return identity.Quadruple{Identity: identity.Identity{
+		TenantID: "t-h", UserID: "u-h", SessionID: "s-h",
+	}}
+}
+
+func publishHistory(t *testing.T, bus events.EventBus, id identity.Quadruple, n int) {
+	t.Helper()
+	for i := range n {
+		ev := events.Event{
+			Type:     events.EventTypeRuntimeError,
+			Identity: id,
+			Payload:  events.SubscriptionIdleClosedPayload{SubscriberID: uint64(i)},
+		}
+		if err := bus.Publish(context.Background(), ev); err != nil {
+			t.Fatalf("Publish #%d: %v", i, err)
+		}
+	}
+}
+
+func histFilter(id identity.Quadruple) events.Filter {
+	return events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
+}
+
+func histSeqs(evs []events.Event) []uint64 {
+	out := make([]uint64, len(evs))
+	for i, e := range evs {
+		out[i] = e.Sequence
+	}
+	return out
+}
+
+func TestInmem_Bounds_ReportsHeadTail(t *testing.T) {
+	bus, hr := newHistoryBus(t)
+	id := historyID()
+	publishHistory(t, bus, id, 5)
+	head, tail, _, err := hr.Bounds(context.Background(), histFilter(id))
+	if err != nil {
+		t.Fatalf("Bounds: %v", err)
+	}
+	if head != 1 || tail != 5 {
+		t.Fatalf("Bounds = (%d, %d), want (1, 5)", head, tail)
+	}
+}
+
+// TestInmem_HistoryWindow_AdminScopesToNamedSession is the regression for
+// the cross-session/cross-tenant disclosure on the ring: a HistoryReplayer
+// read is BY-ID, so even an admin filter naming session A must receive ONLY
+// session A's events — never the whole shared ring. Before the fix the ring
+// scan used Filter.Matches, whose Admin mode ignores Session and returned
+// every session's events across tenants.
+func TestInmem_HistoryWindow_AdminScopesToNamedSession(t *testing.T) {
+	bus, hr := newHistoryBus(t)
+	idA := identity.Quadruple{Identity: identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "sA"}}
+	idB := identity.Quadruple{Identity: identity.Identity{TenantID: "t2", UserID: "u2", SessionID: "sB"}}
+	publishHistory(t, bus, idA, 3) // seq 1,2,3
+	publishHistory(t, bus, idB, 3) // seq 4,5,6 — DIFFERENT tenant
+
+	// An admin caller naming session A (the handler's cross-identity path).
+	adminA := events.Filter{Admin: true, Tenant: "t1", User: "u1", Session: "sA"}
+
+	// Window does NOT emit an audit notice, so it returns sA's events
+	// cleanly: EXACTLY the 3 published sA events, NONE from session B /
+	// tenant t2. Before the fix this returned the whole ring (1..6).
+	evs, err := hr.Window(context.Background(), 0, 100, adminA)
+	if err != nil {
+		t.Fatalf("Window(adminA): %v", err)
+	}
+	if len(evs) != 3 {
+		t.Fatalf("admin Window for sA returned %d events, want 3 (no cross-session/cross-tenant bleed): %v", len(evs), histSeqs(evs))
+	}
+	for _, ev := range evs {
+		if ev.Identity.SessionID != "sA" || ev.Identity.TenantID != "t1" {
+			t.Fatalf("cross-identity bleed: admin sA window returned %+v", ev.Identity)
+		}
+	}
+
+	// Bounds also scopes to sA: its head is sA's first sequence (1), never a
+	// session-B sequence. (Bounds emits an admin_scope_used notice scoped to
+	// sA, which may extend sA's own tail — that belongs to sA, not a bleed.)
+	head, _, _, err := hr.Bounds(context.Background(), adminA)
+	if err != nil {
+		t.Fatalf("Bounds(adminA): %v", err)
+	}
+	if head != 1 {
+		t.Fatalf("admin Bounds head for sA = %d, want 1 (sA's first; must NOT start at session B's 4)", head)
+	}
+}
+
+// TestInmem_HistoryWindow_AdminReadExcludesSelfEmittedNotice is the
+// regression for the admin self-match disclosure: an admin Bounds/Window
+// emits an audit.admin_scope_used notice SCOPED TO THE REQUESTED identity;
+// that notice lands in the shared ring and, without the bus-notice
+// exclusion, self-matches the by-id scan — turning a not-found (no events
+// for the requested identity) into a page containing only that notice. The
+// windowed read must exclude transient bus-internal notices, so an admin
+// read of an identity with NO real events returns ErrNoHistory.
+func TestInmem_HistoryWindow_AdminReadExcludesSelfEmittedNotice(t *testing.T) {
+	bus, hr := newHistoryBus(t)
+	// Real events exist only under (t-h, u-h, s-h).
+	publishHistory(t, bus, historyID(), 3)
+
+	// An admin read of a DIFFERENT tenant/session that has no real events.
+	adminForeign := events.Filter{Admin: true, Tenant: "t-foreign", User: "u-h", Session: "s-foreign"}
+
+	// Bounds emits an admin_scope_used notice scoped to (t-foreign, …); it
+	// must NOT be reported as this identity's history.
+	if _, _, _, err := hr.Bounds(context.Background(), adminForeign); !errors.Is(err, events.ErrNoHistory) {
+		t.Fatalf("admin Bounds of an identity with no real events = %v, want ErrNoHistory (the self-emitted admin notice must be excluded)", err)
+	}
+	// Window likewise returns nothing (the notice is excluded; no real events).
+	win, err := hr.Window(context.Background(), 0, 100, adminForeign)
+	if err != nil {
+		t.Fatalf("admin Window: %v", err)
+	}
+	for _, ev := range win {
+		if events.IsBusInternalNotice(ev.Type) {
+			t.Fatalf("windowed read leaked a transient bus notice: %s", ev.Type)
+		}
+	}
+	if len(win) != 0 {
+		t.Fatalf("admin Window of an identity with no real events returned %d events, want 0", len(win))
+	}
+}
+
+// TestInmem_Bounds_WrappedRing_ReportsTruncated pins the never-silently-
+// lossy contract on the best-effort ring: once the ring has wrapped
+// (evicting older events), Bounds reports truncated=true so a windowed read
+// is never presented as a complete from-seq-1 conversation.
+func TestInmem_Bounds_WrappedRing_ReportsTruncated(t *testing.T) {
+	bus, err := inmem.New(replayCfgN(4), auditpatterns.New())
+	if err != nil {
+		t.Fatalf("inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	hr := bus.(events.HistoryReplayer)
+	id := historyID()
+
+	// Fill exactly to capacity — no wrap yet.
+	publishHistory(t, bus, id, 4)
+	if _, _, truncated, err := hr.Bounds(context.Background(), histFilter(id)); err != nil || truncated {
+		t.Fatalf("Bounds at capacity: truncated=%v err=%v, want truncated=false", truncated, err)
+	}
+
+	// Overflow — the ring wraps and evicts the oldest events.
+	publishHistory(t, bus, id, 6) // 10 total into a ring of 4
+	_, _, truncated, err := hr.Bounds(context.Background(), histFilter(id))
+	if err != nil {
+		t.Fatalf("Bounds after wrap: %v", err)
+	}
+	if !truncated {
+		t.Fatalf("a wrapped ring must report truncated=true (older events evicted) — never silently lossy")
+	}
+}
+
+func TestInmem_Bounds_NoMatch_ErrNoHistory(t *testing.T) {
+	bus, hr := newHistoryBus(t)
+	publishHistory(t, bus, historyID(), 3)
+	_, _, _, err := hr.Bounds(context.Background(),
+		events.Filter{Tenant: "t-h", User: "u-h", Session: "other"})
+	if !errors.Is(err, events.ErrNoHistory) {
+		t.Fatalf("Bounds(no-match) err = %v, want ErrNoHistory", err)
+	}
+}
+
+func TestInmem_Bounds_EmptyTriple_ErrIdentityScopeRequired(t *testing.T) {
+	_, hr := newHistoryBus(t)
+	_, _, _, err := hr.Bounds(context.Background(), events.Filter{Tenant: "t-h"})
+	if !errors.Is(err, events.ErrIdentityScopeRequired) {
+		t.Fatalf("Bounds(partial) err = %v, want ErrIdentityScopeRequired", err)
+	}
+}
+
+func TestInmem_Window_TailFirst_OldestFirst(t *testing.T) {
+	bus, hr := newHistoryBus(t)
+	id := historyID()
+	publishHistory(t, bus, id, 10)
+	win, err := hr.Window(context.Background(), 0, 3, histFilter(id))
+	if err != nil {
+		t.Fatalf("Window: %v", err)
+	}
+	if len(win) != 3 || win[0].Sequence != 8 || win[2].Sequence != 10 {
+		t.Fatalf("Window(tail,3) = %v, want seqs 8,9,10", histSeqs(win))
+	}
+}
+
+func TestInmem_Window_BeforeCursor(t *testing.T) {
+	bus, hr := newHistoryBus(t)
+	id := historyID()
+	publishHistory(t, bus, id, 10)
+	win, err := hr.Window(context.Background(), 8, 3, histFilter(id))
+	if err != nil {
+		t.Fatalf("Window: %v", err)
+	}
+	if len(win) != 3 || win[0].Sequence != 5 || win[2].Sequence != 7 {
+		t.Fatalf("Window(before=8) = %v, want seqs 5,6,7", histSeqs(win))
+	}
+}
+
+func TestInmem_Window_ReplayDisabled_ErrReplayUnavailable(t *testing.T) {
+	bus, err := inmem.New(defaultCfg(), auditpatterns.New()) // ReplayBufferSize == 0
+	if err != nil {
+		t.Fatalf("inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	hr := bus.(events.HistoryReplayer)
+	if _, err := hr.Window(context.Background(), 0, 10, histFilter(historyID())); !errors.Is(err, events.ErrReplayUnavailable) {
+		t.Fatalf("Window(ring off) err = %v, want ErrReplayUnavailable", err)
+	}
+}

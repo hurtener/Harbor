@@ -385,6 +385,14 @@ const (
 	// surface (. Backward-compatible (RFC §5.3
 	// minor-class addition) — no version bump.
 	CapTopologySnapshot Capability = "topology_snapshot"
+	// CapStateSnapshots — the State-snapshots surface (RFC §5.2 "State
+	// snapshots" row): the `state.history` windowed event-replay read (the
+	// first of the three State-snapshots methods to land). A Protocol
+	// client negotiates "does this Runtime advertise the state-history
+	// surface?" via `VersionHandshake.Accepts(CapStateSnapshots)` rather
+	// than discovering a missing route by a 404. The addition is
+	// backward-compatible (RFC §5.3 minor-class change) — no version bump.
+	CapStateSnapshots Capability = "state_snapshots"
 )
 
 // canonicalCapabilities is the registered set — the universe of
@@ -403,6 +411,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapEventsSubscribe:  {},
 	CapRuntimePosture:   {},
 	CapTopologySnapshot: {},
+	CapStateSnapshots:   {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol
