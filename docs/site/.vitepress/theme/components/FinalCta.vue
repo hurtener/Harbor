@@ -72,8 +72,8 @@ const combined = `${f.install}\n${f.run}`;
   max-width: 100%;
   margin-top: var(--hb-space-6);
   padding: var(--hb-space-4) var(--hb-space-4) var(--hb-space-4) var(--hb-space-5);
-  background: #08151c;
-  border: 1px solid var(--hb-border-strong);
+  background: var(--hb-code-bg);
+  border: 1px solid var(--hb-code-border);
   border-radius: var(--hb-radius);
   text-align: left;
 }
@@ -87,10 +87,10 @@ const combined = `${f.install}\n${f.run}`;
 }
 .hb-final__cmd code {
   font: var(--hb-fs-mono) / 1.7 var(--hb-font-mono);
-  color: var(--hb-fg);
+  color: var(--hb-code-fg);
 }
 .hb-final__cmd .p {
-  color: var(--hb-accent-bright);
+  color: var(--hb-code-prompt);
   user-select: none;
 }
 .hb-final__cta {

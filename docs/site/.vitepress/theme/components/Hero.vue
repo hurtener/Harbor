@@ -112,15 +112,15 @@ const terminalCode = hero.terminal.lines.join("\n");
   gap: var(--hb-space-3);
   margin-top: var(--hb-space-5);
   padding: 0.5rem 0.5rem 0.5rem 0.9rem;
-  background: #08151c;
-  border: 1px solid var(--hb-border-strong);
+  background: var(--hb-code-bg);
+  border: 1px solid var(--hb-code-border);
   border-radius: var(--hb-radius);
   max-width: 100%;
   overflow: hidden;
 }
 .hb-hero__install code {
   font: var(--hb-fs-mono) / 1 var(--hb-font-mono);
-  color: var(--hb-fg);
+  color: var(--hb-code-fg);
   white-space: nowrap;
   overflow-x: auto;
 }

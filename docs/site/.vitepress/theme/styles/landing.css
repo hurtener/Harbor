@@ -71,17 +71,18 @@
   font-size: 0.88rem;
 }
 .landing .hb-btn--primary {
-  color: #04161c;
+  color: var(--hb-on-accent);
   background: var(--hb-accent);
   box-shadow: 0 8px 24px -12px rgba(43, 182, 204, 0.8);
 }
 .landing .hb-btn--primary:hover {
   background: var(--hb-accent-bright);
+  color: var(--hb-on-accent);
   transform: translateY(-2px);
 }
 .landing .hb-btn--ghost {
   color: var(--hb-fg);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--hb-btn-ghost-bg);
   border-color: var(--hb-border-strong);
 }
 .landing .hb-btn--ghost:hover {
@@ -92,6 +93,19 @@
 .landing .hb-btn:focus-visible {
   outline: 2px solid var(--hb-accent-bright);
   outline-offset: 2px;
+}
+
+/* Theme-toggle icon: show the affordance for the OTHER theme — a moon in
+   light (click → dark), a sun in dark (click → light). Pure CSS keyed on the
+   html.dark class so SSR + client markup are identical (no hydration mismatch). */
+.landing .hb-icon-sun {
+  display: none;
+}
+.dark .landing .hb-icon-sun {
+  display: inline;
+}
+.dark .landing .hb-icon-moon {
+  display: none;
 }
 
 /* Scroll-reveal — applied via the v-reveal directive */

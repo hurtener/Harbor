@@ -28,12 +28,14 @@ async function copy() {
 </template>
 
 <style scoped>
+/* The copy button always sits on dark code chrome, so it uses the
+   mode-independent code tokens — never the light/dark surface tokens. */
 .hb-copy {
   font: 600 0.72rem var(--hb-font-mono);
   letter-spacing: 0.02em;
-  color: var(--hb-fg-muted);
+  color: var(--hb-code-muted);
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--hb-border-strong);
+  border: 1px solid var(--hb-code-border);
   border-radius: var(--hb-radius-sm);
   padding: 0.28rem 0.55rem;
   cursor: pointer;
@@ -42,12 +44,12 @@ async function copy() {
     background var(--hb-dur-fast) var(--hb-ease);
 }
 .hb-copy:hover {
-  color: var(--hb-fg);
-  border-color: var(--hb-accent);
-  background: var(--hb-accent-weak);
+  color: var(--hb-code-fg);
+  border-color: var(--hb-code-kw);
+  background: rgba(43, 182, 204, 0.14);
 }
 .hb-copy:focus-visible {
-  outline: 2px solid var(--hb-accent-bright);
+  outline: 2px solid var(--hb-code-prompt);
   outline-offset: 2px;
 }
 .sr-only {

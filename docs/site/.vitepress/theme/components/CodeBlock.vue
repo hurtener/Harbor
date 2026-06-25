@@ -28,8 +28,8 @@ const html = computed(() => highlight(props.code, props.lang));
 
 <style scoped>
 .hb-code {
-  background: #08151c;
-  border: 1px solid var(--hb-border-strong);
+  background: var(--hb-code-bg);
+  border: 1px solid var(--hb-code-border);
   border-radius: var(--hb-radius);
   overflow: hidden;
   box-shadow: var(--hb-shadow);
@@ -39,8 +39,8 @@ const html = computed(() => highlight(props.code, props.lang));
   align-items: center;
   gap: var(--hb-space-3);
   padding: 0.55rem 0.75rem;
-  background: rgba(255, 255, 255, 0.02);
-  border-bottom: 1px solid var(--hb-border);
+  background: var(--hb-code-bar);
+  border-bottom: 1px solid var(--hb-code-border);
 }
 .hb-code__dots {
   display: inline-flex;
@@ -50,19 +50,19 @@ const html = computed(() => highlight(props.code, props.lang));
   width: 0.66rem;
   height: 0.66rem;
   border-radius: 50%;
-  background: var(--hb-border-strong);
+  background: var(--hb-code-border);
 }
 .hb-code__file {
   flex: 1;
   font: 500 0.74rem var(--hb-font-mono);
-  color: var(--hb-fg-dim);
+  color: var(--hb-code-muted);
 }
 .hb-code__pre {
   margin: 0;
   padding: var(--hb-space-4) var(--hb-space-5);
   overflow-x: auto;
   font: var(--hb-fs-mono) / 1.7 var(--hb-font-mono);
-  color: var(--hb-fg);
+  color: var(--hb-code-fg);
 }
 .hb-code__pre :deep(.ln) {
   display: block;
@@ -76,7 +76,7 @@ const html = computed(() => highlight(props.code, props.lang));
   color: #8be9e6;
 }
 .hb-code__pre :deep(.tok-kw) {
-  color: var(--hb-accent);
+  color: var(--hb-code-kw);
 }
 .hb-code__pre :deep(.tok-fn) {
   color: #d6e8ee;
@@ -85,7 +85,7 @@ const html = computed(() => highlight(props.code, props.lang));
   color: var(--hb-beacon);
 }
 .hb-code__pre :deep(.tok-prompt) {
-  color: var(--hb-accent-bright);
+  color: var(--hb-code-prompt);
   user-select: none;
 }
 </style>
