@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/singlesource"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/protocol/wiresurface"
 )
 
 // manifestHeader is the value of the manifest's `_comment` field. The
@@ -38,6 +39,15 @@ type Manifest struct {
 	// ProtocolVersion is the pinned Harbor Protocol version the contract
 	// belongs to (RFC §5.3 — bumping it is an RFC change).
 	ProtocolVersion string `json:"protocol_version"`
+	// WireSurfaceDigest is the canonical name-level wire-surface digest
+	// (wiresurface.Digest()): a `sha256:…` fingerprint over the Protocol
+	// version + method names + error codes + capability strings + wire-type
+	// names. The runtime reports the same digest on runtime.info, so a
+	// client that vendored this manifest at build time has the expected
+	// digest to compare the live runtime against. A lockstep test pins this
+	// field equal to wiresurface.Digest(); the git-diff gate keeps the
+	// committed value fresh.
+	WireSurfaceDigest string `json:"wire_surface_digest"`
 	// Types maps each canonical wire-type name to its field-level shape.
 	Types map[string]TypeShape `json:"types"`
 	// Methods is the sorted set of canonical Protocol method names.
@@ -108,12 +118,13 @@ func BuildManifest(root string) (Manifest, error) {
 	}
 
 	return Manifest{
-		Comment:         manifestHeader,
-		ProtocolVersion: types.ProtocolVersion,
-		Types:           typeShapes,
-		Methods:         methodNames(),
-		Errors:          errorCodes(),
-		Events:          events,
+		Comment:           manifestHeader,
+		ProtocolVersion:   types.ProtocolVersion,
+		WireSurfaceDigest: wiresurface.Digest(),
+		Types:             typeShapes,
+		Methods:           methodNames(),
+		Errors:            errorCodes(),
+		Events:            events,
 	}, nil
 }
 

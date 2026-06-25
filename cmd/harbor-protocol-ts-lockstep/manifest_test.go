@@ -5,8 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"testing"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/protocol/wiresurface"
 )
 
 // TestRun_WritesDeterministicManifest drives the whole program behind the
@@ -116,6 +119,53 @@ func TestStructFields_TokenMapping(t *testing.T) {
 		if f.Optional != w.optional {
 			t.Errorf("field %q optional = %v, want %v", key, f.Optional, w.optional)
 		}
+	}
+}
+
+// TestManifest_WireSurfaceDigest pins the manifest's top-level
+// wire_surface_digest equal to wiresurface.Digest() — the committed
+// manifest's digest can never drift from the runtime's within a build — and
+// asserts the reflected RuntimeInfo type-shape carries the new
+// wire_surface_digest field so a manifest-vendoring client sees it.
+func TestManifest_WireSurfaceDigest(t *testing.T) {
+	m, err := BuildManifest(repoRoot)
+	if err != nil {
+		t.Fatalf("BuildManifest: %v", err)
+	}
+
+	if m.WireSurfaceDigest != wiresurface.Digest() {
+		t.Errorf("manifest WireSurfaceDigest = %q, want wiresurface.Digest() = %q",
+			m.WireSurfaceDigest, wiresurface.Digest())
+	}
+	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(m.WireSurfaceDigest) {
+		t.Errorf("manifest WireSurfaceDigest = %q, want a sha256: name-level digest", m.WireSurfaceDigest)
+	}
+
+	ri, ok := m.Types["RuntimeInfo"]
+	if !ok {
+		t.Fatal("RuntimeInfo missing from manifest")
+	}
+	if _, present := fieldMap(ri)["wire_surface_digest"]; !present {
+		t.Error("RuntimeInfo type-shape missing the wire_surface_digest field")
+	}
+}
+
+// TestManifest_WireSurfaceDigest_Committed cross-checks the committed
+// manifest file's top-level wire_surface_digest equals wiresurface.Digest(),
+// so a stale committed digest fails `go test` directly (belt-and-suspenders
+// alongside the git-diff gate).
+func TestManifest_WireSurfaceDigest_Committed(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot, committedManifestPath))
+	if err != nil {
+		t.Fatalf("read committed manifest: %v", err)
+	}
+	var committed Manifest
+	if err := json.Unmarshal(raw, &committed); err != nil {
+		t.Fatalf("decode committed manifest: %v", err)
+	}
+	if committed.WireSurfaceDigest != wiresurface.Digest() {
+		t.Errorf("committed manifest wire_surface_digest = %q, want %q — run 'make protocol-ts-gen' and commit",
+			committed.WireSurfaceDigest, wiresurface.Digest())
 	}
 }
 

@@ -77,14 +77,16 @@ A real response from a dev Runtime:
   "build_go_version": "go1.26.3",
   "protocol_version": "0.1.0",
   "capabilities": ["events_subscribe", "runtime_posture", "task_control"],
-  "uptime_seconds": 16
+  "uptime_seconds": 16,
+  "wire_surface_digest": "sha256:f870c37dce2b26e8b4b35af1fbf51e056c1a5c9a7a1d93bda6682aee8c5ba861"
 }
 ```
 
-Two things to read and act on:
+Three things to read and act on:
 
 - `protocol_version` — the wire-contract version (distinct from `build_version`, the Runtime's own release). Same major ⇒ compatible; on a major mismatch, warn loudly or refuse.
 - `capabilities` — the advertised Protocol surfaces. Shape your UI on this list: a runtime that doesn't advertise `topology_snapshot` gets the topology panel disabled, not a crash. A method outside the Runtime's registry returns the canonical `404 {"code": "unknown_method"}` envelope — treat it (and 405 / 501) as "not served here, degrade", the same SKIP posture Harbor's own smoke scripts encode.
+- `wire_surface_digest` — an opaque, stable `sha256:` fingerprint of the Runtime's canonical wire surface (the Protocol version + method / error / capability / wire-type *names*; it deliberately excludes field shapes and event-type names). Stamp the digest your client was built against into the build, then compare it here at attach: equal ⇒ same surface; different ⇒ surface drift, surface it loudly; absent/empty ⇒ the Runtime predates digest support (an informational note, never a drift alarm). It is a coarse name-level early-warning, not a substitute for the field-level checks a client that vendors the wire manifest runs at build time.
 
 ## 3. Starting a task — the chat-message equivalent
 

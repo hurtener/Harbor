@@ -44,6 +44,15 @@ export interface RuntimeInfo {
 	 * are a host-context value, not an MCP capability. Absent when none.
 	 */
 	mcp_app_display_modes?: string[];
+	/**
+	 * The opaque, stable name-level digest of the runtime's canonical Protocol
+	 * wire surface (`sha256:…` over the Protocol version + method names + error
+	 * codes + capability strings + wire-type names). The Console compares it
+	 * against the digest baked into the vendored `wire-manifest.gen.json` and
+	 * surfaces a loud drift signal on a mismatch. Empty/absent when the runtime
+	 * predates digest support (classified `unsupported`, not drift).
+	 */
+	wire_surface_digest?: string;
 }
 
 /** One subsystem's readiness in the `runtime.health` rollup. */

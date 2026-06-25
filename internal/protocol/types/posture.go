@@ -75,6 +75,15 @@ type RuntimeInfo struct {
 	// are a host-context value, not an MCP capability field. Empty when the
 	// deployment declared none.
 	MCPAppDisplayModes []string `json:"mcp_app_display_modes,omitempty"`
+	// WireSurfaceDigest is the opaque, stable name-level digest of the
+	// runtime's canonical Protocol wire surface — a `sha256:…` fingerprint
+	// over the Protocol version, method names, error codes, capability
+	// strings, and wire-type names. A client compares it against the digest
+	// it was built against and surfaces a loud drift signal on a mismatch,
+	// so coarse wire drift is detectable at connect-time without exposing
+	// field shapes over the wire. It covers the SHAPE OF NAMES, not field
+	// shapes and not event-type names.
+	WireSurfaceDigest string `json:"wire_surface_digest"`
 }
 
 // SubsystemHealth is one subsystem's readiness entry in a RuntimeHealth

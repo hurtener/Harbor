@@ -3,6 +3,9 @@ package protocol_test
 import (
 	stderrors "errors"
 	"reflect"
+	"regexp"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/protocol/wiresurface"
 )
 
 // fixedClock returns a deterministic time so handler assertions are
@@ -252,6 +256,120 @@ func TestPostureDispatch_RuntimeInfo(t *testing.T) {
 	}
 	if !hasPostureCap {
 		t.Errorf("runtime.info Capabilities %v missing CapRuntimePosture", info.Capabilities)
+	}
+	// The wire-surface digest is populated from the canonical package and
+	// matches the build-global digest exactly.
+	if info.WireSurfaceDigest != wiresurface.Digest() {
+		t.Errorf("runtime.info WireSurfaceDigest = %q, want %q", info.WireSurfaceDigest, wiresurface.Digest())
+	}
+	if !digestRe.MatchString(info.WireSurfaceDigest) {
+		t.Errorf("runtime.info WireSurfaceDigest = %q, want a sha256: name-level digest", info.WireSurfaceDigest)
+	}
+}
+
+// digestRe pins the wire-surface digest shape: "sha256:" + 64 lowercase hex.
+var digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// TestPostureDispatch_RuntimeInfo_DigestInvariantToWiring asserts the
+// reported digest is identical for a surface wired WITH vs WITHOUT the
+// conditional topology capability — the digest hashes the canonical
+// capability universe, not the per-instance wired subset, so capability
+// gating never moves it.
+func TestPostureDispatch_RuntimeInfo_DigestInvariantToWiring(t *testing.T) {
+	mk := func(topology bool) *types.RuntimeInfo {
+		deps := protocol.PostureDeps{
+			Build:    types.RuntimeInfo{BuildVersion: "v0", BuildGoVersion: "go1.26"},
+			Clock:    fixedClock,
+			BootedAt: fixedClock(),
+			Health:   func(_ context.Context) []types.SubsystemHealth { return nil },
+			Counters: func(_ context.Context, _ identity.Identity) types.RuntimeCounters {
+				return types.RuntimeCounters{}
+			},
+			Drivers:           func() []types.SubsystemDriver { return nil },
+			Metrics:           func(_ context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
+			Governance:        newPostureGovernance(),
+			LLM:               newPostureLLM(),
+			Redactor:          patterns.New(),
+			Bus:               newPostureBus(t),
+			DisplayName:       "digest-invariance",
+			InstanceID:        "inst-digest-001",
+			TopologyAvailable: topology,
+		}
+		s, err := protocol.NewPostureSurface(deps)
+		if err != nil {
+			t.Fatalf("NewPostureSurface: %v", err)
+		}
+		out, err := s.Dispatch(context.Background(), methods.MethodRuntimeInfo, validRequest())
+		if err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		ri, ok := out.(*types.RuntimeInfo)
+		if !ok {
+			t.Fatalf("resp type = %T, want *RuntimeInfo", out)
+		}
+		return ri
+	}
+
+	withTopo := mk(true)
+	withoutTopo := mk(false)
+
+	// The wired capability subset differs...
+	if reflect.DeepEqual(withTopo.Capabilities, withoutTopo.Capabilities) {
+		t.Fatal("fixture invalid: the wired capability subsets should differ between topology on/off")
+	}
+	// ...but the digest is identical and equal to the canonical digest.
+	if withTopo.WireSurfaceDigest != withoutTopo.WireSurfaceDigest {
+		t.Errorf("digest moved with capability wiring: with=%q without=%q",
+			withTopo.WireSurfaceDigest, withoutTopo.WireSurfaceDigest)
+	}
+	if withTopo.WireSurfaceDigest != wiresurface.Digest() {
+		t.Errorf("reported digest %q != canonical %q", withTopo.WireSurfaceDigest, wiresurface.Digest())
+	}
+}
+
+// TestPostureDispatch_RuntimeInfo_ConcurrentIdenticalDigest dispatches
+// runtime.info from N>=100 goroutines against a single shared PostureSurface
+// and asserts every reported wire_surface_digest is byte-identical with no
+// data race (the surface is immutable; the digest is memoised).
+func TestPostureDispatch_RuntimeInfo_ConcurrentIdenticalDigest(t *testing.T) {
+	s := newPostureFixture(t)
+
+	baseline := runtime.NumGoroutine()
+	const n = 128
+	var wg sync.WaitGroup
+	digests := make([]string, n)
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			out, err := s.Dispatch(context.Background(), methods.MethodRuntimeInfo, validRequest())
+			if err != nil {
+				digests[i] = "ERR:" + err.Error()
+				return
+			}
+			ri, ok := out.(*types.RuntimeInfo)
+			if !ok {
+				digests[i] = "ERR:wrong-type"
+				return
+			}
+			digests[i] = ri.WireSurfaceDigest
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	want := wiresurface.Digest()
+	for i, d := range digests {
+		if d != want {
+			t.Fatalf("goroutine %d reported digest %q, want %q", i, d, want)
+		}
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if after := runtime.NumGoroutine(); after > baseline+8 {
+		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
 	}
 }
 

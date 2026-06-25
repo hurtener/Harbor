@@ -16,6 +16,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/protocol/wiresurface"
 )
 
 // PostureSurface is the transport-agnostic Harbor Protocol posture
@@ -343,6 +344,12 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	out.InstanceID = s.instanceID
 	out.DisplayName = s.displayName
 	out.ProtocolVersion = types.ProtocolVersion
+	// The canonical wire-surface digest — a build-global, identity-agnostic
+	// name-level fingerprint a connected client compares against the digest
+	// it vendored, to detect coarse wire drift at attach time. Hashes the
+	// canonical capability universe, so it is invariant to this instance's
+	// wired-capability subset.
+	out.WireSurfaceDigest = wiresurface.Digest()
 	// Per-instance wired subset (. Conditional
 	// surfaces (currently `topology_snapshot`) appear here only when
 	// the matching seam was wired at construction; the static

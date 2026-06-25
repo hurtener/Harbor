@@ -176,6 +176,43 @@ export interface AttachConnectionOptions {
  * once per page mount (CONVENTIONS.md §6); the Settings page's
  * add-runtime form triggers the reload explicitly.
  */
+/**
+ * The outcome of comparing a live runtime's reported wire-surface digest
+ * against the digest this Console build vendored from the committed
+ * `wire-manifest.gen.json`.
+ */
+export type WireDigestComparison = 'match' | 'drift' | 'unsupported';
+
+/**
+ * Compare a live runtime's reported wire-surface digest against the digest
+ * this Console build vendored from `wire-manifest.gen.json`.
+ *
+ *   - `'match'`       — identical; the runtime speaks the build's wire surface.
+ *   - `'drift'`       — both present and non-equal — surface a LOUD signal.
+ *   - `'unsupported'` — the runtime reported no/empty digest (it predates
+ *                       digest support) — surface as an informational note,
+ *                       NEVER a drift alarm (absence proves nothing about
+ *                       drift) and never folded into a transport-failure catch.
+ *
+ * Pure and synchronous — the fetch + surfacing live in the calling component,
+ * never in this resolver. A whitespace-only live OR vendored digest is treated
+ * as empty (`unsupported`): the vendored digest is always present at build time
+ * via the gate-enforced manifest field, but guarding both sides keeps the
+ * comparator total and self-documenting — an empty vendored digest can never
+ * masquerade as `drift`.
+ */
+export function compareWireDigest(
+	live: string | undefined,
+	vendored: string
+): WireDigestComparison {
+	const liveDigest = (live ?? '').trim();
+	const vendoredDigest = (vendored ?? '').trim();
+	if (liveDigest === '' || vendoredDigest === '') {
+		return 'unsupported';
+	}
+	return liveDigest === vendoredDigest ? 'match' : 'drift';
+}
+
 export function attachConnection(baseURL: string, opts: AttachConnectionOptions = {}): void {
 	if (typeof localStorage === 'undefined') {
 		return;

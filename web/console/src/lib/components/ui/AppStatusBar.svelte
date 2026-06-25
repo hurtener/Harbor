@@ -15,10 +15,18 @@
   //
   // Design tokens only; no raw literals.
   import { onMount } from 'svelte';
-  import { resolveConnection } from '$lib/connection.js';
+  import { resolveConnection, compareWireDigest } from '$lib/connection.js';
+  import type { WireDigestComparison } from '$lib/connection.js';
   import { HarborClient } from '$lib/protocol/harbor.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
+  import wireManifest from '$lib/protocol/wire-manifest.gen.json';
+
+  // The wire-surface digest this Console build vendored from the committed
+  // manifest. We compare it against the live runtime's reported digest at
+  // attach to detect coarse, connect-time wire drift (never field shapes).
+  const VENDORED_WIRE_DIGEST: string =
+    (wireManifest as { wire_surface_digest?: string }).wire_surface_digest ?? '';
 
   let {
     status
@@ -42,22 +50,34 @@
   let runtimeName = $state('');
   let protocolVersion = $state('—');
   let eventsLive = $state(false);
+  // The connect-time wire-surface drift verdict. 'unknown' until runtime.info
+  // resolves; a transport failure leaves it 'unknown' (the catch path is for
+  // transport failure, NOT drift — the two stay distinct).
+  let wireDrift = $state<WireDigestComparison | 'unknown'>('unknown');
 
   onMount(() => {
     const conn = resolveConnection();
     if (conn === null) return;
     void (async () => {
-      // Protocol version + events-stream availability from runtime.info.
+      // Protocol version + events-stream availability + wire-surface digest
+      // from runtime.info.
       try {
         const client = new HarborClient({ connection: conn });
         const info = await client.posture.info<{
           protocol_version?: string;
           capabilities?: string[];
+          wire_surface_digest?: string;
         }>();
         if (info.protocol_version) protocolVersion = info.protocol_version;
         eventsLive = (info.capabilities ?? []).includes('events_subscribe');
+        // Connect-time wire-drift check: compare the live runtime's reported
+        // digest against the digest baked into this build's vendored manifest.
+        // A 'drift' verdict surfaces a loud signal; 'unsupported' (the runtime
+        // predates digest support) is an informational note, never an alarm.
+        wireDrift = compareWireDigest(info.wire_surface_digest, VENDORED_WIRE_DIGEST);
       } catch {
-        /* leave defaults — bar still shows the connection segment */
+        /* leave defaults — bar still shows the connection segment. A
+           transport failure is NOT wire drift, so wireDrift stays 'unknown'. */
       }
       // Runtime display name from the Console DB address book.
       try {
@@ -92,6 +112,16 @@
         <span class="dot" data-status={eventsLive ? 'connected' : 'disconnected'} aria-hidden="true"></span>
         Events Stream: {eventsLive ? 'Live' : 'Off'}
       </span>
+      {#if wireDrift === 'drift'}
+        <span class="wire-drift" role="alert" data-testid="wire-drift" data-wire-state="drift">
+          <span class="dot" data-status="disconnected" aria-hidden="true"></span>
+          Wire surface drift — this Console was built against a different Protocol surface
+        </span>
+      {:else if wireDrift === 'unsupported'}
+        <span class="wire-note" data-testid="wire-unsupported" data-wire-state="unsupported">
+          Runtime predates wire-digest support
+        </span>
+      {/if}
     {/if}
   </div>
 
@@ -138,6 +168,18 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
+  }
+
+  .wire-drift {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--color-danger);
+  }
+
+  .wire-note {
+    color: var(--color-text-muted);
+    font-style: italic;
   }
 
   .label {
