@@ -17,6 +17,10 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import wireManifest from '$lib/protocol/wire-manifest.gen.json';
+
+// The exact digest this build vendored — what a healthy runtime reports back.
+const VENDORED_DIGEST = (wireManifest as { wire_surface_digest: string }).wire_surface_digest;
 
 // A fixed fake connection so the bar treats the Console as attached.
 const FAKE_CONN = {
@@ -114,5 +118,24 @@ describe('AppStatusBar — connect-time wire-surface drift', () => {
 		expect(note.getAttribute('data-wire-state')).toBe('unsupported');
 		// It is NOT a drift alarm.
 		expect(root.querySelector("[data-testid='wire-drift']")).toBeNull();
+	});
+
+	it('surfaces neither signal when the live digest matches the vendored manifest', async () => {
+		live.digest = VENDORED_DIGEST; // a healthy runtime on this build's surface
+		const root = render();
+
+		// Wait until the resolved wire state lands on 'match' (proves the
+		// fetch + compare ran), THEN assert neither the drift alert nor the
+		// unsupported note is rendered — a match is silent.
+		const bar = await vi.waitFor(() => {
+			const el = root.querySelector("[data-testid='app-status-bar']");
+			if (el?.getAttribute('data-wire-state') !== 'match') {
+				throw new Error('match state not yet resolved');
+			}
+			return el;
+		});
+		expect(bar.getAttribute('data-wire-state')).toBe('match');
+		expect(root.querySelector("[data-testid='wire-drift']")).toBeNull();
+		expect(root.querySelector("[data-testid='wire-unsupported']")).toBeNull();
 	});
 });

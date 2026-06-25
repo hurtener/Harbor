@@ -99,7 +99,7 @@
   );
 </script>
 
-<footer class="app-status-bar" data-testid="app-status-bar">
+<footer class="app-status-bar" data-testid="app-status-bar" data-wire-state={wireDrift}>
   <div class="seg left" data-testid="connection-footer">
     <span class="dot" data-status={resolvedStatus} aria-hidden="true"></span>
     <span class="label">{leftLabel}</span>

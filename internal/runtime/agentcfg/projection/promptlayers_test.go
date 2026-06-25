@@ -213,6 +213,71 @@ func TestApplyPromptLayers_EmptyDurable_ByteIdentical(t *testing.T) {
 	}
 }
 
+// composedUserLayer builds a fresh registry + overlay with the given (admin,
+// durable, session) user segments — a segment is set only when non-empty, so
+// "" models an absent tier and a whitespace string models a present-but-blank
+// one — then returns the projected <user_instructions> composition. Helper for
+// the subset table below.
+func composedUserLayer(t *testing.T, adminUser, durableUser, sessionUser string) string {
+	t.Helper()
+	ctx := context.Background()
+	reg := newRegistry(t)
+	ov := newOverlay(t)
+	if adminUser != "" {
+		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+			PromptLayers: &agentcfg.PromptLayers{User: ps(adminUser)},
+		}); err != nil {
+			t.Fatalf("set admin: %v", err)
+		}
+	}
+	if durableUser != "" {
+		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+			PromptLayers: &agentcfg.PromptLayers{User: ps(durableUser)},
+		}); err != nil {
+			t.Fatalf("set durable: %v", err)
+		}
+	}
+	if sessionUser != "" {
+		if _, err := ov.SetUserPrompt(ctx, projID(), projAgent, sessionUser); err != nil {
+			t.Fatalf("set session: %v", err)
+		}
+	}
+	got, err := projection.ApplyPromptLayers(ctx, reg, ov, projAgent, projID(), nil)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got == nil || got.UserPromptLayer == nil {
+		return ""
+	}
+	return *got.UserPromptLayer
+}
+
+// TestApplyPromptLayers_UserLayerSubsets covers EVERY remaining subset of the
+// three user segments (the precedence/alone/empty-durable tests above cover
+// all-three, durable-only, admin+session, and none) plus the whitespace-only
+// drop — composeUserLayer trims each segment and joins only the non-empty ones,
+// so a blank segment must vanish from the composition, not leave a dangling
+// "\n\n".
+func TestApplyPromptLayers_UserLayerSubsets(t *testing.T) {
+	cases := []struct {
+		name, admin, durable, session, want string
+	}{
+		{"admin+durable", "admin-user", "durable-user", "", "admin-user\n\ndurable-user"},
+		{"durable+session", "", "durable-user", "session-user", "durable-user\n\nsession-user"},
+		{"admin-only", "admin-user", "", "", "admin-user"},
+		{"session-only", "", "", "session-user", "session-user"},
+		{"whitespace admin dropped", "   ", "durable-user", "session-user", "durable-user\n\nsession-user"},
+		{"whitespace durable dropped", "admin-user", "  \t ", "session-user", "admin-user\n\nsession-user"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composedUserLayer(t, tc.admin, tc.durable, tc.session); got != tc.want {
+				t.Fatalf("composed user layer = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestApplyPromptLayers_DurableReadError_FailsLoud proves a registry read error
 // on the durable USER-scope layer fails the run loudly (no silent drop).
 func TestApplyPromptLayers_DurableReadError_FailsLoud(t *testing.T) {
