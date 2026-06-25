@@ -15,6 +15,12 @@
 //   - Replay reads from the StateStore — not an in-memory ring — so a
 //     late subscriber that connects after the Runtime was rebuilt
 //     against the same StateStore sees the full, gap-free history.
+//   - At construction (durable mode) the monotonic sequence counter is
+//     rehydrated from the persisted head records (recoverNextSeq, via the
+//     StateStore.ListKind maintenance scan) so a Runtime rebuilt against
+//     the same StateStore issues sequences strictly greater than any
+//     pre-restart token — a client reconnecting at a high Last-Event-ID
+//     is never silently skipped.
 //   - When NO StateStore is configured the driver auto-degrades to a
 //     best-effort in-memory ring buffer AND emits a loud runtime.warning
 //     event plus an slog.Warn (CLAUDE.md §13 "no silent
@@ -115,8 +121,16 @@ func optWithOwnedStore() Option {
 // New constructs the durable driver directly. Exposed for tests and
 // for cmd/harbor's wiring path (which opens the StateStore and hands
 // it in). When store is nil the driver runs in best-effort
-// ring-buffer mode and emits a loud warning — see the package doc and
-func New(cfg config.EventsConfig, r audit.Redactor, store state.StateStore, opts ...Option) (events.EventBus, error) {
+// ring-buffer mode and emits a loud warning — see the package doc.
+//
+// In durable mode New does construction-time I/O: it rehydrates the
+// monotonic sequence counter from the persisted head records (see
+// recoverNextSeq) so post-restart sequences stay strictly greater than
+// any pre-restart token. ctx is the first parameter because of that I/O
+// (CLAUDE.md §5) and bounds the recovery scan. A scan or decode failure
+// fails the construction loudly — the driver never silently starts the
+// counter at 0 (CLAUDE.md §13).
+func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store state.StateStore, opts ...Option) (events.EventBus, error) {
 	if r == nil {
 		return nil, fmt.Errorf("durable: audit.Redactor required (got nil)")
 	}
@@ -153,8 +167,69 @@ func New(cfg config.EventsConfig, r audit.Redactor, store state.StateStore, opts
 		b.logger.Warn("durable event log: no StateStore configured — degrading to best-effort in-memory ring buffer; replay is NOT durable across restarts",
 			slog.String("driver", "durable"),
 			slog.Int("ring_buffer_size", b.ringCap))
+		// Best-effort mode persists nothing, so there is nothing to
+		// rehydrate — recovery is a durable-mode-only step (Non-goals).
+		return b, nil
+	}
+	if err := b.recoverNextSeq(ctx); err != nil {
+		return nil, err
 	}
 	return b, nil
+}
+
+// recoverNextSeq rehydrates the monotonic sequence counter from the
+// persisted log at construction (durable mode only). Without it, a
+// Runtime rebuilt against the same StateStore would re-issue
+// Sequence=1,2,3… and collide with pre-restart tokens, so a Protocol
+// client reconnecting with a high Last-Event-ID would have every
+// post-restart event silently skipped by Replay (RFC §6.13 gap-free,
+// resumable-across-restart contract).
+//
+// It enumerates the per-session head records via the explicitly-elevated
+// maintenance scan (StateStore.ListKind with MaintenanceScoped set — RFC
+// §6.11), decodes each, and floors nextSeq at the GLOBAL maximum sequence
+// across every record's Sequences list (0 for an empty log). It is
+// another maintenance-scan consumer alongside the pause sweeper's
+// crash-orphan rescan: it reads sequence numbers only, mutates nothing,
+// and records the cross-identity scan via structured slog rather than a
+// dedicated audit event (the sweeper's posture).
+//
+// Fail-loud (CLAUDE.md §13): a scan error or an undecodable head record
+// returns a wrapped error so New fails the boot; the counter is never
+// silently started at 0.
+func (b *bus) recoverNextSeq(ctx context.Context) error {
+	recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindHead)
+	if err != nil {
+		return fmt.Errorf("durable: recover sequence counter: scan head records: %w", err)
+	}
+	var maxSeq uint64
+	for _, rec := range recs {
+		// ListKind matches kindHead as a literal PREFIX. Today only the
+		// exact head kind starts with it (entry records use the disjoint
+		// "events.durable.entry/" prefix), but a future sibling kind under
+		// the same dotted stem (e.g. a "events.durable.head.checkpoint"
+		// global-max record — the noted scaling follow-up) would be swept
+		// in and fail decodeHead. Guard on the exact kind so the scan stays
+		// correct if such a sibling lands.
+		if rec.Kind != kindHead {
+			continue
+		}
+		head, err := decodeHead(rec.Bytes)
+		if err != nil {
+			return fmt.Errorf("durable: recover sequence counter: decode head record (id=%s): %w", rec.ID, err)
+		}
+		for _, seq := range head.Sequences {
+			if seq > maxSeq {
+				maxSeq = seq
+			}
+		}
+	}
+	b.nextSeq = maxSeq
+	b.logger.Info("durable event log: rehydrated sequence counter from persisted head records",
+		slog.String("driver", "durable"),
+		slog.Uint64("recovered_max_sequence", maxSeq),
+		slog.Int("session_count", len(recs)))
+	return nil
 }
 
 // init registers the durable factory. Because events.Factory does not
@@ -197,7 +272,12 @@ func init() {
 			return newWithOwnedStore(cfg, r)
 		}
 		if deps.State != nil {
-			return New(cfg, r, deps.State)
+			// The events.RegisterWithDeps factory contract is ctx-free, so
+			// the recovery ctx bridges with context.Background() — the §5
+			// unmanaged-async-boundary case, matching newWithOwnedStore's
+			// state.Open precedent. Threading a real boot ctx through the
+			// factory contract is the tracked follow-up.
+			return New(context.Background(), cfg, r, deps.State)
 		}
 		return nil, fmt.Errorf("durable: no StateStore available — set events.state_driver (dedicated event-log store) or call events.OpenWith with Deps.State (share the runtime's store), or pick events.driver=inmem")
 	})
@@ -208,14 +288,18 @@ func init() {
 // Close disposes of the store. Shared by the plain and deps-aware
 // factory paths when the operator configured an explicit driver.
 func newWithOwnedStore(cfg config.EventsConfig, r audit.Redactor) (events.EventBus, error) {
-	store, err := state.Open(context.Background(), config.StateConfig{
+	// One boot ctx for both the store open and the sequence-recovery scan
+	// (the §5 unmanaged-async-boundary bridge — the events.Register factory
+	// contract is ctx-free).
+	ctx := context.Background()
+	store, err := state.Open(ctx, config.StateConfig{
 		Driver: cfg.StateDriver,
 		DSN:    cfg.StateDSN,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("durable: open StateStore driver %q: %w", cfg.StateDriver, err)
 	}
-	return New(cfg, r, store, optWithOwnedStore())
+	return New(ctx, cfg, r, store, optWithOwnedStore())
 }
 
 // bus is the durable driver. It is a compiled artifact: every field is
@@ -677,23 +761,27 @@ func (b *bus) emitRedactionFailure(_ context.Context, original events.Event, cau
 	b.publishInternal(ev)
 }
 
-// publishInternal sequences and fans out a bus-internal SafePayload
-// notice (admin-scope-used, redaction-failed). These notices are
-// per-call observability, NOT session event history — an
-// admin_scope_used event for a fully-admin filter does not even carry
-// a complete identity triple, so it cannot be a StateStore record.
-// They are therefore assigned a bus sequence (for live ordering) and
-// fanned out, but NOT persisted to the durable log. The durable log
-// is the gap-free session history; transient notices are not part of
-// it.
+// publishInternal fans out a bus-internal SafePayload notice
+// (admin-scope-used, redaction-failed). These notices are per-call
+// observability, NOT session event history — an admin_scope_used event
+// for a fully-admin filter does not even carry a complete identity
+// triple, so it cannot be a StateStore record. They are fanned out but
+// NOT persisted to the durable log.
+//
+// A transient notice carries NO replay position: it is assigned the
+// non-replayable sentinel Sequence == 0 and does NOT advance nextSeq (the
+// shared persisted-replay counter). The SSE transport omits the id: line
+// for Sequence == 0, so a reconnecting client can never anchor
+// Last-Event-ID on a transient tick — which the post-restart recovery
+// floor (max persisted) would not exceed, leaving the next persisted
+// event silently skipped by Replay. The highest sequence ever surfaced
+// with an id: line is therefore exactly the max persisted sequence.
+// Live fan-out order is unchanged: notices still arrive in call order.
 func (b *bus) publishInternal(ev events.Event) {
 	if ev.OccurredAt.IsZero() {
 		ev.OccurredAt = b.clock.Now()
 	}
-	b.publishMu.Lock()
-	b.nextSeq++
-	ev.Sequence = b.nextSeq
-	b.publishMu.Unlock()
+	ev.Sequence = 0
 	b.fanOut(ev)
 }
 

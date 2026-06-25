@@ -20,7 +20,7 @@ func (f fixedClock) Now() time.Time { return f.t }
 func TestDurable_WithClock_StampsOccurredAt(t *testing.T) {
 	store := newInmemStore(t)
 	fixed := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
-	bus, err := durable.New(durableCfg(), auditpatterns.New(), store,
+	bus, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), store,
 		durable.WithClock(fixedClock{t: fixed}))
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
@@ -124,7 +124,7 @@ func TestDurable_Subscriber_DropOldest_EmitsBusDropped(t *testing.T) {
 	cfg := durableCfg()
 	cfg.SubscriberBufferSize = 4 // tiny buffer to force saturation
 	cfg.DropWindow = time.Nanosecond
-	bus, err := durable.New(cfg, auditpatterns.New(), store)
+	bus, err := durable.New(context.Background(), cfg, auditpatterns.New(), store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestDurable_RedactionFailure_EmitsSiblingAndReturnsError(t *testing.T) {
 	store := newInmemStore(t)
 	cfg := durableCfg()
 	sentinel := errors.New("redactor refused")
-	bus, err := durable.New(cfg, failingRedactor{err: sentinel}, store)
+	bus, err := durable.New(context.Background(), cfg, failingRedactor{err: sentinel}, store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
 	}

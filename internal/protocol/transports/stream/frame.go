@@ -56,6 +56,12 @@ func toWireEvent(ev events.Event) wireEvent {
 // JSON-encoded wire event. The frame is terminated by a blank line per
 // the SSE grammar.
 //
+// An event with no assigned replay position (Sequence == 0 — the sentinel
+// the durable bus assigns to transient, non-persisted notices) carries NO
+// `id:` line, so a reconnecting client keeps its prior Last-Event-ID and
+// can never anchor its reconnect cursor on a transient notice. The first
+// persisted sequence is 1, so 0 is an unambiguous "no replay position".
+//
 // A `data:` payload that contains newlines is split across multiple
 // `data:` lines per the SSE spec — JSON from encoding/json is
 // single-line, but the split is defensive against a future payload
@@ -71,9 +77,11 @@ func encodeEvent(ev events.Event) ([]byte, error) {
 	b.WriteString("event: ")
 	b.WriteString(string(ev.Type))
 	b.WriteByte('\n')
-	b.WriteString("id: ")
-	b.WriteString(strconv.FormatUint(ev.Sequence, 10))
-	b.WriteByte('\n')
+	if ev.Sequence != 0 {
+		b.WriteString("id: ")
+		b.WriteString(strconv.FormatUint(ev.Sequence, 10))
+		b.WriteByte('\n')
+	}
 	for _, line := range strings.Split(string(data), "\n") {
 		b.WriteString("data: ")
 		b.WriteString(line)

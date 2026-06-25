@@ -76,3 +76,45 @@ func TestRetryFrame_Shape(t *testing.T) {
 		t.Errorf("retryFrame(3000) = %q, want \"retry: 3000\\n\\n\"", got)
 	}
 }
+
+// TestStream_EncodeEvent_OmitsIDForZeroSequence pins the additive SSE
+// framing rule: an event with no assigned replay position (Sequence == 0
+// — the durable bus's transient-notice sentinel) carries NO id: line, so
+// a reconnecting client can never anchor Last-Event-ID on it; any event
+// with a sequence >= 1 still emits id:<n>.
+func TestStream_EncodeEvent_OmitsIDForZeroSequence(t *testing.T) {
+	base := events.Event{
+		Type:       events.EventTypeAdminScopeUsed,
+		OccurredAt: time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+		Identity:   identity.Quadruple{Identity: identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}},
+		Payload:    events.AdminScopeUsedPayload{Tenant: "t1", User: "u1", Session: "s1"},
+	}
+
+	// Sequence 0 — no id: line.
+	zero := base
+	zero.Sequence = 0
+	frame, err := encodeEvent(zero)
+	if err != nil {
+		t.Fatalf("encodeEvent(seq=0): %v", err)
+	}
+	got := string(frame)
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "id:") {
+			t.Fatalf("Sequence 0 must carry NO id: line, frame was:\n%s", got)
+		}
+	}
+	if !strings.Contains(got, "event: audit.admin_scope_used\n") {
+		t.Errorf("Sequence 0 frame still needs its event: line\n%s", got)
+	}
+
+	// Sequence 7 — id: 7.
+	seven := base
+	seven.Sequence = 7
+	frame, err = encodeEvent(seven)
+	if err != nil {
+		t.Fatalf("encodeEvent(seq=7): %v", err)
+	}
+	if !strings.Contains(string(frame), "id: 7\n") {
+		t.Errorf("Sequence 7 frame missing id: 7 line\n%s", frame)
+	}
+}
