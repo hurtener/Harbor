@@ -1,0 +1,122 @@
+/*
+ * Harbor landing-page design tokens.
+ *
+ * The landing follows the same light/dark toggle as the docs. Tokens split
+ * three ways:
+ *   1. Shared (type, spacing, radii, motion) — mode-independent.
+ *   2. Code-chrome (`--hb-code-*`) — ALSO mode-independent: terminals and code
+ *      blocks stay dark in both themes (the standard treatment, as on Stripe /
+ *      Vercel light docs), so their text never collides with a light surface.
+ *   3. Surface / text / accent — light values are the base on `.landing`; the
+ *      dark overrides live under `.dark .landing` (VitePress toggles `.dark` on
+ *      <html>). These mirror the Harbor Console brand (lighthouse teal on navy).
+ *
+ * Scoped to `.landing` so none of this leaks into the stock VitePress pages
+ * (which are themed separately by docs.css via the `--vp-*` vars).
+ */
+
+.landing {
+  /* ── Shared: type scale ── */
+  --hb-fs-display: clamp(2.5rem, 5.2vw, 4.1rem);
+  --hb-fs-h2: clamp(1.7rem, 3vw, 2.45rem);
+  --hb-fs-h3: clamp(1.1rem, 1.6vw, 1.3rem);
+  --hb-fs-lead: clamp(1.05rem, 1.4vw, 1.28rem);
+  --hb-fs-body: 1rem;
+  --hb-fs-mono: 0.88rem;
+  --hb-fs-eyebrow: 0.8rem;
+  --hb-font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", "Menlo",
+    "Consolas", monospace;
+
+  /* ── Shared: spacing ── */
+  --hb-space-1: 0.25rem;
+  --hb-space-2: 0.5rem;
+  --hb-space-3: 0.75rem;
+  --hb-space-4: 1rem;
+  --hb-space-5: 1.5rem;
+  --hb-space-6: 2rem;
+  --hb-space-8: 3rem;
+  --hb-space-10: 4rem;
+  --hb-section-y: clamp(4rem, 8vw, 7rem);
+  --hb-maxw: 1140px;
+
+  /* ── Shared: radii ── */
+  --hb-radius-sm: 6px;
+  --hb-radius: 10px;
+  --hb-radius-lg: 16px;
+
+  /* ── Shared: motion ── */
+  --hb-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --hb-dur-fast: 140ms;
+  --hb-dur: 320ms;
+  --hb-dur-slow: 680ms;
+
+  /* ── Shared: code chrome (always dark in both themes) ── */
+  --hb-code-bg: #08151c;
+  --hb-code-fg: #dbe7ee;
+  --hb-code-bar: rgba(255, 255, 255, 0.02);
+  --hb-code-border: #1f2d36;
+  --hb-code-muted: #8b9aa5;
+  --hb-code-kw: #2bb6cc;
+  --hb-code-prompt: #48d6d2;
+  --hb-beacon: #f4c76b;
+
+  /* ── Light mode (base): calm slate-on-white with deep-teal accent ── */
+  --hb-bg: #ffffff;
+  --hb-bg-soft: #f3f6f8;
+  --hb-panel: #ffffff;
+  --hb-panel-2: #eef3f6;
+  --hb-border: #e2e8ed;
+  --hb-border-strong: #cbd6dd;
+
+  --hb-fg: #0c1c25;
+  --hb-fg-muted: #45565f;
+  --hb-fg-dim: #6a7882;
+
+  --hb-accent: #0e8aa0;
+  --hb-accent-bright: #0b6f83;
+  --hb-accent-weak: rgba(14, 138, 160, 0.1);
+  --hb-accent-line: rgba(14, 138, 160, 0.3);
+  --hb-on-accent: #ffffff;
+
+  --hb-ok: #1a7f37;
+  --hb-warn: #9a6700;
+
+  --hb-nav-bg: rgba(255, 255, 255, 0.74);
+  --hb-nav-bg-scrolled: rgba(255, 255, 255, 0.9);
+  --hb-btn-ghost-bg: rgba(12, 28, 37, 0.03);
+
+  --hb-shadow: 0 1px 2px rgba(13, 28, 37, 0.05),
+    0 14px 34px -18px rgba(13, 28, 37, 0.16);
+  --hb-shadow-lg: 0 26px 60px -28px rgba(13, 28, 37, 0.24);
+}
+
+/* ── Dark mode: the Harbor navy surface ramp + bright teal accent ── */
+.dark .landing {
+  --hb-bg: #0d1117;
+  --hb-bg-soft: #0f1620;
+  --hb-panel: #0d2430;
+  --hb-panel-2: #102a38;
+  --hb-border: #1d2b36;
+  --hb-border-strong: #2b3947;
+
+  --hb-fg: #e6edf3;
+  --hb-fg-muted: #9fb0bd;
+  --hb-fg-dim: #6b7d8a;
+
+  --hb-accent: #2bb6cc;
+  --hb-accent-bright: #48d6d2;
+  --hb-accent-weak: rgba(43, 182, 204, 0.12);
+  --hb-accent-line: rgba(72, 214, 210, 0.34);
+  --hb-on-accent: #04161c;
+
+  --hb-ok: #3fb950;
+  --hb-warn: #d29922;
+
+  --hb-nav-bg: rgba(13, 17, 23, 0.7);
+  --hb-nav-bg-scrolled: rgba(13, 17, 23, 0.86);
+  --hb-btn-ghost-bg: rgba(255, 255, 255, 0.03);
+
+  --hb-shadow: 0 1px 0 rgba(255, 255, 255, 0.02),
+    0 12px 32px -16px rgba(0, 0, 0, 0.6);
+  --hb-shadow-lg: 0 24px 60px -24px rgba(0, 0, 0, 0.7);
+}

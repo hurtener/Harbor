@@ -1,0 +1,77 @@
+/*
+ * Site-wide brand theme for the default VitePress pages (everything that is
+ * NOT the bespoke landing — skills, recipes, protocol, reference, concepts).
+ *
+ * This overrides VitePress's own `--vp-*` design tokens so the whole docs site
+ * carries Harbor's lighthouse-teal-on-navy identity, matching the landing. It
+ * styles by re-tokening the default theme — no component overrides, no forked
+ * layouts — so VitePress upgrades stay clean. The landing keeps its own `--hb-*`
+ * tokens (tokens.css) and is unaffected.
+ */
+
+/* ── Brand accent (links, active nav/sidebar, buttons, custom-block bars) ── */
+:root {
+  /* Light mode: a deeper teal so text/links clear WCAG AA on white. */
+  --vp-c-brand-1: #0c7286;
+  --vp-c-brand-2: #1b8fa3;
+  --vp-c-brand-3: #2bb6cc;
+  --vp-c-brand-soft: rgba(43, 182, 204, 0.14);
+
+  /* Brand buttons (e.g. "Edit this page", hero actions on stock pages). */
+  --vp-button-brand-bg: var(--vp-c-brand-3);
+  --vp-button-brand-hover-bg: var(--vp-c-brand-2);
+  --vp-button-brand-active-bg: var(--vp-c-brand-1);
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-text: #04161c;
+  --vp-button-brand-hover-text: #04161c;
+  --vp-button-brand-active-text: #04161c;
+
+  /* Inline-code keeps the brand tint subtle. */
+  --vp-c-default-soft: rgba(43, 182, 204, 0.06);
+}
+
+/* ── Dark mode: the Harbor navy surface ramp + bright teal accent ────────── */
+.dark {
+  --vp-c-bg: #0d1117;
+  --vp-c-bg-alt: #0a0e13;
+  --vp-c-bg-soft: #161b22;
+  --vp-c-bg-elv: #161b22;
+
+  --vp-c-border: #21262d;
+  --vp-c-divider: #1d2b36;
+  --vp-c-gutter: #08090c;
+
+  --vp-c-text-1: #e6edf3;
+  --vp-c-text-2: #9fb0bd;
+  --vp-c-text-3: #6b7d8a;
+
+  --vp-c-brand-1: #48d6d2;
+  --vp-c-brand-2: #2bb6cc;
+  --vp-c-brand-3: #2bb6cc;
+  --vp-c-brand-soft: rgba(43, 182, 204, 0.16);
+
+  /* Code surfaces a touch deeper than panels, matching the landing. */
+  --vp-code-block-bg: #08151c;
+  --vp-c-bg-soft: #11202b;
+}
+
+/* ── Small brand flourishes that re-token cleanly ────────────────────────── */
+:root {
+  /* The home-feature / custom-block accent border picks up the brand. */
+  --vp-custom-block-tip-border: transparent;
+  --vp-custom-block-tip-text: var(--vp-c-text-1);
+  --vp-custom-block-tip-bg: var(--vp-c-brand-soft);
+  --vp-custom-block-tip-code-bg: var(--vp-c-brand-soft);
+}
+
+/* Logo in the nav sits a hair larger so the lighthouse reads. */
+.VPNavBarTitle .logo {
+  height: 26px;
+}
+
+/* Brand the active sidebar item's left rail with the lighthouse teal. */
+.dark .VPSidebarItem.is-active > .item .text {
+  color: var(--vp-c-brand-1);
+}
