@@ -132,21 +132,34 @@ type Service struct {
 	// set signals model-pinning is unavailable, never a silent accept-all.
 	validModels map[string]struct{}
 
-	// writeLocks serialises the read-modify-write of each admin write verb
-	// PER AGENT. A convenience verb reads the active revision, rebuilds the
-	// sibling sections from that snapshot, then writes a new revision — and
-	// the registry is last-write-wins (no CAS). Without serialisation two
-	// concurrent edits to the SAME agent (e.g. set_skills racing
+	// writeLocks serialises the read-modify-write of each write verb PER
+	// OWNER. A convenience verb reads the active revision, rebuilds the sibling
+	// sections from that snapshot, then writes a new revision — and the
+	// registry is last-write-wins (no CAS). Without serialisation two
+	// concurrent edits to the SAME owner (e.g. set_skills racing
 	// set_tool_exposure) would each rebuild from the other's pre-write
-	// snapshot, silently reverting the concurrent sibling change (an MCP
-	// pause could vanish) and forking the parent chain. The Service is the
-	// sole registry-writer, so a per-(tenant, agent) lock held across the
-	// whole read-modify-write makes it atomic within the process. (Keyed by
-	// (tenant, agent) because the registry collapses user/session into the
-	// synthetic per-agent slot. Cross-replica atomicity would need StateStore
-	// CAS — out of scope while the registry is a single in-process artifact.)
-	writeLocks sync.Map // map[string]*sync.Mutex
+	// snapshot, silently reverting the concurrent sibling change (an MCP pause
+	// could vanish) and forking the parent chain. The Service is the sole
+	// registry-writer, so an owner lock held across the whole read-modify-write
+	// makes it atomic within the process. Cross-replica atomicity would need
+	// StateStore CAS — out of scope while the registry is a single in-process
+	// artifact.
+	//
+	// Owners are STRIPED across a fixed array of mutexes (keyed by hash) rather
+	// than held in a per-owner map: the lock memory is constant regardless of
+	// how many distinct owners ever write, instead of a map that grows with the
+	// user population and is never reclaimed. The same owner always maps to the
+	// same shard, so same-owner read-modify-write stays atomic; two distinct
+	// owners that hash to the same shard serialise occasionally, which is benign
+	// (config writes are infrequent, and a brief unrelated serialisation costs
+	// nothing and never affects correctness).
+	writeLocks [writeLockShards]sync.Mutex
 }
+
+// writeLockShards bounds the per-owner write-lock memory. 256 shards keep
+// cross-owner collisions rare for realistic owner counts while costing a fixed
+// ~2KiB regardless of how many owners ever write.
+const writeLockShards = 256
 
 // lockAgent acquires the agent-tier write lock for (tenant, agent) and
 // returns the release func (call via defer). It serialises every admin write
@@ -156,11 +169,15 @@ func (s *Service) lockAgent(tenant, agentID string) func() {
 }
 
 // lockOwner acquires the scope-aware per-owner write lock and returns the
-// release func. The key includes the scope so the two tiers never contend
-// across each other: a ConfigScopeAgent write serialises by (scope, tenant,
-// agent) — the user slot is intentionally excluded so all of an agent's
-// admin writers serialise — while a ConfigScopeUser write serialises by
-// (scope, tenant, real-user, agent) so distinct users NEVER serialise.
+// release func. The key includes the scope so the two tiers are never treated
+// as the same owner: a ConfigScopeAgent write keys by (scope, tenant, agent) —
+// the user slot is intentionally excluded so all of an agent's admin writers
+// serialise — while a ConfigScopeUser write keys by (scope, tenant, real-user,
+// agent), so distinct users (and the two tiers) own distinct keys. The key is
+// striped onto a shard mutex; the same owner always resolves to the same shard,
+// so same-owner writes still serialise. Distinct owners (including an agent and
+// a user write) may hash to the same shard and serialise occasionally — benign
+// over-locking, never a correctness loss; see the writeLocks field doc.
 func (s *Service) lockOwner(scope agentcfg.ConfigScope, tenant, user, agentID string) func() {
 	var key string
 	if scope == agentcfg.ConfigScopeUser {
@@ -168,14 +185,26 @@ func (s *Service) lockOwner(scope agentcfg.ConfigScope, tenant, user, agentID st
 	} else {
 		key = "a\x00" + tenant + "\x00" + agentID
 	}
-	mu, _ := s.writeLocks.LoadOrStore(key, &sync.Mutex{})
-	m, ok := mu.(*sync.Mutex)
-	if !ok {
-		// Impossible by construction: writeLocks only ever stores *sync.Mutex.
-		panic("agentcfg/protocol: writeLocks held a non-mutex value")
-	}
+	m := &s.writeLocks[writeLockShard(key)]
 	m.Lock()
 	return m.Unlock
+}
+
+// writeLockShard maps an owner key to a stable shard index in
+// [0, writeLockShards). It is FNV-1a over the key bytes — deterministic and
+// allocation-free — so the same owner key always resolves to the same shard,
+// which is what preserves per-owner serialisation.
+func writeLockShard(key string) uint32 {
+	const (
+		offset = 2166136261
+		prime  = 16777619
+	)
+	h := uint32(offset)
+	for i := range len(key) {
+		h ^= uint32(key[i])
+		h *= prime
+	}
+	return h % writeLockShards
 }
 
 // Option configures NewService.
