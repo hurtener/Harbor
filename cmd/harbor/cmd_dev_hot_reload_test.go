@@ -18,10 +18,15 @@
 //     cfg fast-path (Enabled=false / Policy=disabled).
 //
 // The integration shape (file mutation → real bus events observed by a
-// real subscriber) lives in `test/integration/phase65_hot_reload_test.go`
-// per CLAUDE.md §17.2 — that's the test that drives a real harbor.yaml
-// edit against a real bootDevStack and asserts dev.hot_reload.triggered /
-// completed land on the bus.
+// real subscriber) lives IN THIS PACKAGE:
+// TestHotReloadSupervisor_FileChangeTriggersRebuild and
+// TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus drive a real
+// file mutation against a real supervisor and assert
+// dev.hot_reload.triggered / completed land on a real bus. It cannot
+// live under `test/integration/` because `cmd/harbor` is `package main`
+// and the supervisor is not importable from there (same constraint the
+// wave-end E2E documents in `test/integration/wave12_test.go`), so the
+// real-bus coverage stays in-package per CLAUDE.md §17.2.
 
 package main
 
