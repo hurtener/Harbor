@@ -1139,6 +1139,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// `topology_snapshot` here would lie about the wire. Future
 		// engine-graph runtimes flip this true at construction.
 		TopologyAvailable: false,
+		// `harbor dev` mounts the agent-config control plane
+		// unconditionally (WithAgentConfigService below is not gated), so
+		// `runtime.info.capabilities` advertises `agent_config` always —
+		// the advertisement matches the always-present mount on this path.
+		AgentConfigAvailable: true,
 	})
 	if err != nil {
 		closeAll(ctx)

@@ -350,9 +350,18 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapStateSnapshots) {
 		t.Fatal("handshake.Accepts(CapStateSnapshots) = false; the Phase 125 state-snapshots surface must appear in the canonical capability set")
 	}
+	// Phase 128 (D-260) added the agent-config capability (the
+	// `agent_config.*` control plane) to the canonical registry —
+	// per-instance advertisement is conditional via
+	// PostureDeps.AgentConfigAvailable, but the handshake universe is
+	// unconditional. Additive, no ProtocolVersion bump. A §17.6 paired
+	// update with this pin.
+	if !h.Accepts(types.CapAgentConfig) {
+		t.Fatal("handshake.Accepts(CapAgentConfig) = false; the Phase 128 agent-config surface must appear in the canonical capability set")
+	}
 	caps := h.Capabilities
-	if len(caps) != 5 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots}", caps)
+	if len(caps) != 6 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

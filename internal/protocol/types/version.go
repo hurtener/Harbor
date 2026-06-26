@@ -393,6 +393,18 @@ const (
 	// than discovering a missing route by a 404. The addition is
 	// backward-compatible (RFC §5.3 minor-class change) — no version bump.
 	CapStateSnapshots Capability = "state_snapshots"
+	// CapAgentConfig — the agent-config control plane (RFC §6.16): the
+	// versioned desired-state surface for an agent's prompt layers,
+	// tool/MCP exposure, per-tool policy, and skills (the agent's content
+	// surface), exposed as the `agent_config.*` methods. A Protocol client
+	// negotiates "does this Runtime host the agent-config surface?" via
+	// `VersionHandshake.Accepts(CapAgentConfig)` / the
+	// `runtime.info.capabilities` list, instead of method-probing the
+	// `agent_config.*` verbs and catching a 501/404. Conditional
+	// per-instance: a Runtime advertises it only when the agent-config
+	// surface is mounted. Backward-compatible (RFC §5.3 minor-class
+	// addition) — no version bump.
+	CapAgentConfig Capability = "agent_config"
 )
 
 // canonicalCapabilities is the registered set — the universe of
@@ -412,6 +424,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapRuntimePosture:   {},
 	CapTopologySnapshot: {},
 	CapStateSnapshots:   {},
+	CapAgentConfig:      {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

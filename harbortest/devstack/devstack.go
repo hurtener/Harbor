@@ -911,6 +911,12 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			// planner/RunLoop-shaped (same as the production `harbor
 			// dev` boot); no engine-graph topology accessor is wired.
 			TopologyAvailable: false,
+			// The agent-config control plane is mounted below only when
+			// stack.AgentConfig != nil; advertise `agent_config` from the
+			// SAME boolean so the capability can never claim an absent
+			// surface (the agentConfigService variable does not exist yet
+			// at this construction point).
+			AgentConfigAvailable: stack.AgentConfig != nil,
 		})
 		if postErr != nil {
 			return stack, fmt.Errorf("protocol.NewPostureSurface: %w", postErr)
