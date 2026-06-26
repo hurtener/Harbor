@@ -38,7 +38,7 @@ export const hero = {
       "  ✓ config valid",
       "$ harbor dev         # runtime + Protocol server",
       "  → listening on http://127.0.0.1:18080",
-      "  → healthz ok · ReAct planner · 3 drivers registered",
+      "  → healthz ok · ReAct planner",
     ],
   },
 };
@@ -188,7 +188,7 @@ export const durable = {
 export const protocol = {
   eyebrow: "The Harbor Protocol",
   headline: "A versioned wire contract, not an internal function call",
-  sub: "The seam most agent frameworks never draw: a canonical, versioned contract between the Runtime and anything observing or controlling it — 109 canonical methods at v1.6, over SSE + REST.",
+  sub: "The seam most agent frameworks never draw: a canonical, versioned contract between the Runtime and anything observing or controlling it — 110 canonical methods, over SSE + REST.",
   families: [
     { name: "Task control", detail: "start · cancel · pause · resume · redirect · inject_context · approve · reject · prioritize" },
     { name: "events.subscribe", detail: "identity-scoped streaming event subscription" },
@@ -233,7 +233,7 @@ export const persistence = {
     ],
   },
   deploy: [
-    { cmd: "harbor dev", body: "Local Runtime, Protocol server, and hot reload on your laptop. The Console is served separately by harbor console." },
+    { cmd: "harbor dev", body: "Local Runtime, Protocol server, and config reload on your laptop — edit harbor.yaml and the dev stack rebuilds in place. The Console is served separately by harbor console." },
     { cmd: "harbor serve", body: "The headless production sibling: verifies JWTs against a JWKS source (asymmetric algorithms only), mints no dev token, embeds no Console." },
   ],
   note: "Same binary, no CGo, one file to ship.",
@@ -268,7 +268,7 @@ export const rigor = {
   stats: [
     { value: "1", label: "static CGo-free binary" },
     { value: "11", label: "CLI subcommands" },
-    { value: "109", label: "canonical Protocol methods" },
+    { value: "110", label: "canonical Protocol methods" },
     { value: "3", label: "conformance-equal stores" },
     { value: "2", label: "planners on one interface" },
     { value: "0.1.0", label: "Protocol, versioned apart" },
