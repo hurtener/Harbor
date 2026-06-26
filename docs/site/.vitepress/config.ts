@@ -287,6 +287,10 @@ export default defineConfig({
           items: [
             { text: "Build a client", link: "/protocol/build-a-client" },
             {
+              text: "Production identity setup",
+              link: "/protocol/production-identity-setup",
+            },
+            {
               text: "Conformance certification",
               link: "/protocol/conformance-certification",
             },

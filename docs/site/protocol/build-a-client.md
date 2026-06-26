@@ -61,7 +61,10 @@ if token == "" {
 ```
 
 In production there is no bootstrap endpoint — your identity provider mints
-the JWT.
+the JWT (or you self-issue with `harbor token`). The full setup — OIDC app
+registration, the claim shape `harbor serve` verifies, the `iss`/`aud`
+exact-match contract, and both attach on-ramps — is the
+[production identity setup guide](./production-identity-setup.md).
 
 ### 2. Handshake: runtime.info
 
