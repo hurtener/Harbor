@@ -107,6 +107,17 @@ type IdentityConfig struct {
 	Audience      string   `yaml:"audience"`
 	JWKSURL       string   `yaml:"jwks_url,omitempty"`
 	JWKSFile      string   `yaml:"jwks_file,omitempty"`
+	// JWKSMaxStale bounds how long a cached JWKS key snapshot is honored
+	// without a successful refresh. Past this age the validator fails
+	// closed (rejects tokens with a distinct staleness reason) rather
+	// than serving a possibly-revoked key during a prolonged IdP outage.
+	// Zero (the default when omitted) applies the safe built-in ceiling;
+	// a negative or below-floor value is a validation error. There is no
+	// "disable" path — Harbor's posture is fail-closed; the field tunes
+	// the ceiling, it does not remove it. This BOUNDS — it does not make
+	// instantaneous — key revocation: pair a tight ceiling with
+	// overlapping IdP signing keys and short token TTLs.
+	JWKSMaxStale time.Duration `yaml:"jwks_max_stale,omitempty"`
 }
 
 // TelemetryConfig configures slog and OpenTelemetry export.

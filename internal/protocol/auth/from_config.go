@@ -46,9 +46,14 @@ type ValidatorDeps struct {
 func NewJWKSValidator(ctx context.Context, cfg config.IdentityConfig, deps ValidatorDeps, opts ...JWKSOption) (Validator, error) {
 	src := JWKSSource{URL: cfg.JWKSURL, File: cfg.JWKSFile}
 
-	keyOpts := opts
+	// The config's max-stale ceiling is passed straight through — the
+	// option owns the single default: a zero/unset field maps to
+	// defaultJWKSMaxStale inside WithJWKSMaxStale, a validated positive
+	// value is honored verbatim. Re-applying the default here would be a
+	// second source of truth.
+	keyOpts := append([]JWKSOption{WithJWKSMaxStale(cfg.JWKSMaxStale)}, opts...)
 	if deps.Logger != nil {
-		keyOpts = append([]JWKSOption{WithJWKSLogger(deps.Logger)}, opts...)
+		keyOpts = append([]JWKSOption{WithJWKSLogger(deps.Logger)}, keyOpts...)
 	}
 
 	keys, err := NewJWKSKeySet(ctx, src, cfg.JWTAlgorithms, keyOpts...)

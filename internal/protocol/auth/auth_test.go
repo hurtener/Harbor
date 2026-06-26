@@ -10,8 +10,10 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +56,24 @@ func (s *staticKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 		return nil, "", errors.New("kid not found")
 	}
 	return entry.key, entry.alg, nil
+}
+
+// toggleStaleKeySet resolves the configured key until `stale` is set,
+// then returns a wrapped ErrJWKSStale — the exact shape the production
+// JWKSKeySet produces once its snapshot ages past the max-stale ceiling.
+// Used to assert the Validator (the same-phase consumer) surfaces
+// staleness distinctly rather than masking it as ErrUnknownKey.
+type toggleStaleKeySet struct {
+	key   crypto.PublicKey
+	alg   string
+	stale atomic.Bool
+}
+
+func (k *toggleStaleKeySet) KeyByID(_ string) (crypto.PublicKey, string, error) {
+	if k.stale.Load() {
+		return nil, "", fmt.Errorf("%w: snapshot age 9m exceeds the 2m ceiling", auth.ErrJWKSStale)
+	}
+	return k.key, k.alg, nil
 }
 
 // loadTestRS256 reads the dummy RS256 keypair from testdata/. The
@@ -223,6 +243,41 @@ func newESValidator(t *testing.T, fixedNow time.Time) (auth.Validator, *ecdsa.Pr
 
 // fixedNow is the deterministic clock the time-sensitive tests use.
 var fixedNow = time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+// TestValidate_JWKSStale_SurfacedDistinctly_NotMaskedAsUnknownKey is the
+// consumer test: when the KeySet fails closed with ErrJWKSStale (its
+// snapshot aged past the ceiling), the Validator propagates it as
+// ErrJWKSStale — NOT collapsed into ErrUnknownKey — so an operator sees
+// "JWKS too stale", not "unknown key". This exercises the keyfunc's
+// distinct-propagation arm and mapParserError honoring ErrJWKSStale
+// ahead of ErrUnknownKey.
+func TestValidate_JWKSStale_SurfacedDistinctly_NotMaskedAsUnknownKey(t *testing.T) {
+	priv, pub := loadTestRS256(t)
+	ks := &toggleStaleKeySet{key: pub, alg: "RS256"}
+	v, err := auth.NewValidator(ks,
+		auth.WithClock(func() time.Time { return fixedNow }),
+		withTestRedactor(),
+	)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+	tok := signRS256(t, priv, validClaims(fixedNow), "k1")
+
+	// Fresh: verifies.
+	if _, err := v.Validate(context.Background(), tok); err != nil {
+		t.Fatalf("fresh Validate: %v", err)
+	}
+
+	// Stale: the keyset fails closed — surfaced as ErrJWKSStale, not masked.
+	ks.stale.Store(true)
+	_, err = v.Validate(context.Background(), tok)
+	if !errors.Is(err, auth.ErrJWKSStale) {
+		t.Fatalf("stale Validate err = %v, want ErrJWKSStale", err)
+	}
+	if errors.Is(err, auth.ErrUnknownKey) {
+		t.Fatalf("staleness must NOT be masked as ErrUnknownKey: %v", err)
+	}
+}
 
 func TestNewValidator_NilKeySet_FailsLoud(t *testing.T) {
 	_, err := auth.NewValidator(nil, withTestRedactor())

@@ -132,6 +132,19 @@ empty. Validation: one of `jwks_url` or `jwks_file` MUST be set.
 Filesystem path to a static JWKS document (offline / air-gapped
 scenarios). Default: empty. Validation: see `jwks_url`.
 
+### identity.jwks_max_stale
+
+Max-stale ceiling: the longest a cached JWKS key snapshot is honored
+without a successful refresh before the validator fails closed (rejects
+tokens with a distinct `jwks_stale` reason) rather than serving a
+possibly-revoked key during a prolonged IdP outage. Default: `0`, which
+applies the safe built-in ceiling (1h). Validation: a negative value is
+rejected; a positive value below the 1m floor is rejected (a ceiling
+below the minimum refresh window can never be satisfied). There is no
+"disable" path — Harbor's posture is fail-closed. This bounds — it does
+not make instantaneous — key revocation; pair a tight ceiling with
+overlapping IdP signing keys and short token TTLs.
+
 ---
 
 ## Telemetry

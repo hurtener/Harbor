@@ -28,6 +28,14 @@ var (
 	allowedDrivers    = map[string]struct{}{"inmem": {}, "sqlite": {}, "postgres": {}}
 )
 
+// jwksMaxStaleFloor is the smallest configurable `identity.jwks_max_stale`
+// ceiling. A ceiling below the minimum possible JWKS refresh window can
+// never be satisfied, so a positive value below this floor is rejected.
+// Zero is accepted and means "apply the safe built-in default." The
+// single source for the floor; validateIdentity derives its rejection
+// message from this const rather than hardcoding the literal.
+const jwksMaxStaleFloor = 1 * time.Minute
+
 // Validate runs every section validator and returns the first error,
 // formatted with the offending YAML path and the source filename
 // (when known). Nil on success.
@@ -196,6 +204,18 @@ func (c *Config) validateIdentity() error {
 	if c.Identity.JWKSURL != "" && c.Identity.JWKSFile != "" {
 		return fieldError("identity",
 			"set only one of jwks_url or jwks_file, not both")
+	}
+	// The max-stale ceiling fails closed: a negative value is nonsense,
+	// and a positive value below the refresh-window floor can never be
+	// satisfied. Zero is accepted and means "apply the safe default."
+	// There is intentionally no "disable" sentinel — Harbor's posture is
+	// fail-closed (no identity-downgrading knobs).
+	if c.Identity.JWKSMaxStale < 0 {
+		return fieldError("identity.jwks_max_stale", "must not be negative")
+	}
+	if c.Identity.JWKSMaxStale > 0 && c.Identity.JWKSMaxStale < jwksMaxStaleFloor {
+		return fieldError("identity.jwks_max_stale",
+			fmt.Sprintf("must be >= %s or 0 for the safe default", jwksMaxStaleFloor))
 	}
 	return nil
 }

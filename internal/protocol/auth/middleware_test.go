@@ -149,6 +149,33 @@ func TestMiddleware_ValidatorRejects_AlgNotAllowed_401_AuthRejected(t *testing.T
 	}
 }
 
+// TestMiddleware_ValidatorRejects_JWKSStale_401_AuthRejected_DistinctReason
+// asserts the staleness rejection surfaces on the wire as the distinct
+// `jwks_stale` reason (so operators can tell it from `unknown_key`) while
+// reusing the existing CodeAuthRejected / HTTP 401 mapping — no new wire
+// code is added.
+func TestMiddleware_ValidatorRejects_JWKSStale_401_AuthRejected_DistinctReason(t *testing.T) {
+	stub := &stubValidator{err: auth.ErrJWKSStale}
+	mw := auth.Middleware(stub)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	r.Header.Set("Authorization", "Bearer faketoken")
+	mw(echoHandler(t)).ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want 401", w.Code)
+	}
+	perr := readErrorBody(t, w)
+	if perr.Code != protoerrors.CodeAuthRejected {
+		t.Errorf("error code: got %q, want %q", perr.Code, protoerrors.CodeAuthRejected)
+	}
+	if !strings.Contains(perr.Message, "jwks_stale") {
+		t.Errorf("message should carry the distinct jwks_stale wire reason, got %q", perr.Message)
+	}
+	if strings.Contains(perr.Message, "unknown_key") {
+		t.Errorf("staleness must not surface as unknown_key, got %q", perr.Message)
+	}
+}
+
 func TestMiddleware_ValidatorRejects_SignatureInvalid_401_AuthRejected(t *testing.T) {
 	stub := &stubValidator{err: auth.ErrSignatureInvalid}
 	mw := auth.Middleware(stub)
