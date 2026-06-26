@@ -86,6 +86,14 @@ func HTTPStatus(code protoerrors.Code) int {
 		// an `artifacts.put` body exceeded
 		// the configured MaxRequestBytes bound. 413 Payload Too Large.
 		return http.StatusRequestEntityTooLarge // 413
+	case protoerrors.CodeSessionRunning:
+		// a `sessions.delete` erasure was refused because the target
+		// session has a RUNNING task (mirroring the GC never-reap-running
+		// invariant). The request is well-formed and authorised, but the
+		// session's current state forbids the operation. 409 Conflict —
+		// distinct from a 404 (the session does not exist) and a 400 (a
+		// malformed body).
+		return http.StatusConflict // 409
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it

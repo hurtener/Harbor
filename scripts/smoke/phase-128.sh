@@ -42,13 +42,13 @@ assert_grep_present 'AgentConfigAvailable' "internal/protocol/posture.go" \
 assert_grep_present 'CapAgentConfig' "internal/protocol/posture.go" \
     "phase 128: wiredCapabilitiesFor appends CapAgentConfig"
 
-# Static: the conformance trip-wire stayed updated (6 + named).
+# Static: the conformance trip-wire names the capability. (The canonical-set
+# COUNT is asserted by the owning phase's smoke — it advances as later phases
+# add capabilities, e.g. session_lifecycle took it to 7 — so this phase pins
+# only that its own capability is present, not a brittle absolute count.)
 assert_grep_present 'CapAgentConfig' \
     "internal/protocol/conformance/conformance.go" \
     "phase 128: conformance handshake names CapAgentConfig"
-assert_grep_present '!= 6' \
-    "internal/protocol/conformance/conformance.go" \
-    "phase 128: conformance canonical-set count is 6"
 
 # Single-source defence: the capability string is defined only in version.go.
 assert_grep_absent 'Capability = "agent_config"' \

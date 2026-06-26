@@ -436,6 +436,9 @@ func (f *failingStore) LoadByEventID(context.Context, state.EventID) (state.Stat
 	return state.StateRecord{}, state.ErrNotFound
 }
 func (f *failingStore) Delete(context.Context, identity.Quadruple, string) error { return nil }
+func (f *failingStore) DeleteScope(context.Context, identity.Identity) (int, error) {
+	return 0, nil
+}
 func (f *failingStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
 	return nil, nil
 }

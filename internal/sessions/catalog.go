@@ -104,6 +104,49 @@ func (r *Registry) addToCatalog(ctx context.Context, tenant, user, sessionID str
 	return nil
 }
 
+// removeFromCatalog drops sessionID from the (tenant, user) catalog. A
+// no-op when the id is absent (idempotent). The catalog record is keyed
+// by (tenant, user) — NOT by the session triple — so a session-scoped
+// StateStore.DeleteScope never reaches it; the erasure cascade calls
+// this explicitly so an erased session leaves no dangling catalog entry
+// to re-hydrate after a restart. Caller need not hold r.mu — the
+// StateStore is its own concurrency boundary, and the read-modify-write
+// is a set-difference (removing an absent id is a no-op).
+func (r *Registry) removeFromCatalog(ctx context.Context, tenant, user, sessionID string) error {
+	cat, err := r.loadCatalog(ctx, tenant, user)
+	if err != nil {
+		return err
+	}
+	kept := make([]string, 0, len(cat.SessionIDs))
+	found := false
+	for _, id := range cat.SessionIDs {
+		if id == sessionID {
+			found = true
+			continue
+		}
+		kept = append(kept, id)
+	}
+	if !found {
+		return nil // already absent
+	}
+	cat.SessionIDs = kept
+	bytes, merr := json.Marshal(cat)
+	if merr != nil {
+		return fmt.Errorf("sessions: marshal catalog: %w", merr)
+	}
+	rec := state.StateRecord{
+		ID:        state.NewEventID(),
+		Identity:  catalogQuad(tenant, user),
+		Kind:      catalogKind,
+		Bytes:     bytes,
+		UpdatedAt: r.clock.Now(),
+	}
+	if serr := r.store.Save(ctx, rec); serr != nil {
+		return fmt.Errorf("sessions: save catalog: %w", serr)
+	}
+	return nil
+}
+
 // hydrateFromCatalog repopulates the in-memory idIndex / openSessions
 // for a (tenant, user) from the persisted catalog. Called lazily on the
 // read path so a fresh process re-discovers a prior process's sessions.

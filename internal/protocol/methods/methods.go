@@ -820,6 +820,22 @@ const (
 	// cross-tenant scope contract as MethodSessionsList. The
 	// wire-transport route is `POST /v1/sessions/inspect`.
 	MethodSessionsInspect Method = "sessions.inspect"
+	// MethodSessionsDelete — the identity-scoped data-lifecycle erasure
+	// method: deletes a whole session and CASCADES deletion of its
+	// scoped State, Memory, and Artifacts. Own-session-only — a caller
+	// erases solely their own verified `(tenant, user, session)`; a body
+	// identity mismatching the verified identity is rejected
+	// `identity_required` before any further logic, and there is NO
+	// admin / cross-tenant erasure path. A session with a RUNNING task is
+	// refused fail-loud with the distinct `session_running` (409) code,
+	// mirroring the GC never-reap-running invariant — no store is touched
+	// on refusal. A successful erasure emits a redacted, content-free
+	// `session.erased` audit event under the actor's observability scope
+	// (never re-persisted under the erased triple). The mutating sibling
+	// of `sessions.list` / `sessions.inspect`; it routes through the same
+	// Sessions handler. Identity-mandatory. The wire-transport route is
+	// `POST /v1/sessions/delete`.
+	MethodSessionsDelete Method = "sessions.delete"
 
 	// MethodRunsSetOverrides — Records the
 	// reasoning-effort / temperature / max-tokens / system-prompt
@@ -946,6 +962,7 @@ var canonicalMethods = map[Method]struct{}{
 
 	MethodSessionsList:    {},
 	MethodSessionsInspect: {},
+	MethodSessionsDelete:  {},
 
 	MethodRunsSetOverrides: {},
 
@@ -1389,19 +1406,23 @@ func IsFlowsMethod(m Method) bool {
 	return ok
 }
 
-// canonicalSessionsMethods is the closed sub-set of the two Sessions-
-// page methods landed earlier — `sessions.list`
-// and `sessions.inspect`. IsSessionsMethod is O(1); the stream
-// transport branches on it to route the request through the Sessions
-// handler instead of the task-control surface. Both are read-only.
+// canonicalSessionsMethods is the closed sub-set of the three Sessions-
+// page methods — the two read methods `sessions.list` and
+// `sessions.inspect`, plus the mutating `sessions.delete` data-lifecycle
+// erasure verb. IsSessionsMethod is O(1); the stream transport branches
+// on it to route the request through the Sessions handler instead of the
+// task-control surface. The first two are read-only; `sessions.delete`
+// mutates (it gates its own own-session-only erasure at the handler /
+// service edge).
 var canonicalSessionsMethods = map[Method]struct{}{
 	MethodSessionsList:    {},
 	MethodSessionsInspect: {},
+	MethodSessionsDelete:  {},
 }
 
-// IsSessionsMethod reports whether m is one of the two canonical
-// Sessions-page methods (— `sessions.list`,
-// `sessions.inspect`). The stream transport branches on this to route
+// IsSessionsMethod reports whether m is one of the three canonical
+// Sessions-page methods (— `sessions.list`, `sessions.inspect`,
+// `sessions.delete`). The stream transport branches on this to route
 // the request through the Sessions handler instead of the task-control
 // / search / posture / pause / topology / artifacts / memory / mcp /
 // tools / flows surfaces. NOT a control method — a new non-control

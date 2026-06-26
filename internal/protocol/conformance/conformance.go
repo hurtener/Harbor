@@ -462,6 +462,7 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeIdentityScopeRequired: http.StatusForbidden,
 	protoerrors.CodePresignUnsupported:    http.StatusNotImplemented,
 	protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
+	protoerrors.CodeSessionRunning:        http.StatusConflict,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -488,6 +489,13 @@ var errorCodeMatrix = []protoerrors.Code{
 	// posture as the search.* / posture / pause / topology clusters).
 	protoerrors.CodePresignUnsupported,
 	protoerrors.CodeRequestTooLarge,
+	// sessions surface — `CodeSessionRunning` (a `sessions.delete` erasure
+	// refused because the target session has a RUNNING task, mirroring the
+	// GC never-reap-running invariant). Exercised end-to-end by the
+	// sessions handler unit tests + test/integration/phase130_session_erasure_test.go;
+	// the conformance-suite scenario lands when the Stack wires the
+	// Sessions eraser (same posture as the artifacts codes above).
+	protoerrors.CodeSessionRunning,
 }
 
 // methodScopeFor returns the steering scope the suite uses when
@@ -637,8 +645,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 109 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 109 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane twelve + agent-config session safe subset five + state.history one + agent-config user tier five)", len(got))
+	if len(got) != 110 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 110 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane twelve + agent-config session safe subset five + state.history one + agent-config user tier five + sessions.delete one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -729,6 +737,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 
 		methods.MethodSessionsList:    {},
 		methods.MethodSessionsInspect: {},
+		methods.MethodSessionsDelete:  {},
 
 		methods.MethodRunsSetOverrides: {},
 
@@ -1727,18 +1736,21 @@ func runVersionHandshake(t *testing.T) {
 	}
 	caps := types.Capabilities()
 	// task-control + streaming-events +
-	// runtime-posture + topology-snapshot + state-snapshots + agent-config
-	// = 6 capabilities at Protocol 0.1.0. (The capability constants live in
+	// runtime-posture + topology-snapshot + state-snapshots + agent-config +
+	// session-lifecycle
+	// = 7 capabilities at Protocol 0.1.0. (The capability constants live in
 	// internal/protocol/types/version.go; a new capability is a new
 	// constant + a new entry in canonicalCapabilities. A checkpoint fix
 	// — `topology_snapshot` is in the canonical *registry*; per-instance
 	// advertisement is conditional via `PostureDeps.TopologyAvailable`.
 	// `state_snapshots` is the windowed event-replay surface; `agent_config`
-	// advertises the agent-config control plane, conditional per-instance
-	// via `PostureDeps.AgentConfigAvailable` — both additive, no
+	// advertises the agent-config control plane (conditional per-instance via
+	// `PostureDeps.AgentConfigAvailable`); `session_lifecycle` advertises the
+	// `sessions.delete` erasure surface (conditional via
+	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 6 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 6 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot + CapStateSnapshots + CapAgentConfig) at Protocol 0.1.0", len(caps))
+	if len(caps) != 7 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 7 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot + CapStateSnapshots + CapAgentConfig + CapSessionLifecycle) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:      {},
@@ -1747,6 +1759,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapTopologySnapshot: {},
 		types.CapStateSnapshots:   {},
 		types.CapAgentConfig:      {},
+		types.CapSessionLifecycle: {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {

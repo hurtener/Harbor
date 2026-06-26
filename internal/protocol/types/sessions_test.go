@@ -196,3 +196,50 @@ func TestSessionsListRequest_ZeroValueIdentityIsIncomplete(t *testing.T) {
 		t.Error("incomplete identity must survive the round-trip as incomplete (no silent default)")
 	}
 }
+
+func TestSessionsDeleteRequestResponse_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+	req := types.SessionsDeleteRequest{
+		Identity: types.IdentityScope{Tenant: "t1", User: "u1", Session: "s1"},
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal request: %v", err)
+	}
+	var gotReq types.SessionsDeleteRequest
+	if err := json.Unmarshal(raw, &gotReq); err != nil {
+		t.Fatalf("Unmarshal request: %v", err)
+	}
+	if gotReq.Identity.Session != "s1" || gotReq.Identity.Tenant != "t1" || gotReq.Identity.User != "u1" {
+		t.Errorf("request round-trip mismatch: %+v", gotReq)
+	}
+
+	resp := types.SessionsDeleteResponse{
+		SessionID:           "s1",
+		Deleted:             true,
+		StateRecordsDeleted: 4,
+		ArtifactsDeleted:    2,
+		MemoryPurged:        true,
+	}
+	rawResp, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("Marshal response: %v", err)
+	}
+	// Confirm the snake_case wire keys are stable (a third-party client
+	// branches on them).
+	for _, want := range []string{
+		`"session_id"`, `"deleted"`, `"state_records_deleted"`,
+		`"artifacts_deleted"`, `"memory_purged"`,
+	} {
+		if !contains(string(rawResp), want) {
+			t.Errorf("response JSON missing key %s: %s", want, rawResp)
+		}
+	}
+	var gotResp types.SessionsDeleteResponse
+	if err := json.Unmarshal(rawResp, &gotResp); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if gotResp != resp {
+		t.Errorf("response round-trip mismatch: got %+v want %+v", gotResp, resp)
+	}
+}

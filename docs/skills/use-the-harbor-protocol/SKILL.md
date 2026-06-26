@@ -189,6 +189,20 @@ Heavy payloads (a large tool result offloaded above the heavy-output threshold) 
 
 Identity rules: identity is mandatory (an incomplete triple is `identity_required`/401); an unknown or cross-identity `session_id` is `not_found`/404 (existence is never revealed across identities — never a 403); a cross-tenant read requires the verified `admin` scope claim.
 
+## 4b. Erasing a session — `sessions.delete`
+
+To satisfy a data-lifecycle / right-to-erasure request, `sessions.delete` (capability `session_lifecycle`) **deletes a whole session and cascades deletion of its scoped State, Memory, and Artifacts**. It is **own-session-only** — you erase solely your own verified `(tenant, user, session)`; there is no admin / cross-tenant path. The route is `POST /v1/sessions/delete`:
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/sessions/delete" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {"tenant": "dev", "user": "dev", "session": "'$SESSION'"}}'
+# → 200 {"session_id":"...","deleted":true,"state_records_deleted":N,"artifacts_deleted":M,"memory_purged":true}
+```
+
+The response carries non-sensitive deletion telemetry only — never erased content. The bytes are **hard-deleted** (not tombstoned); the only durable trace is a redacted, content-free `session.erased` audit event written under your observability scope (so a follow-up `state.history` for the erased session returns empty). Rules: identity is mandatory (`identity_required`/401, which a body identity mismatching your verified triple also hits); a session with a **RUNNING task is refused** `session_running`/409 with **no store touched** — wait for the task to finish (or cancel it) and retry; an absent session is `not_found`/404. Check `runtime.info.capabilities` for `session_lifecycle` before calling — a runtime that did not wire an eraser does not advertise it and answers a 404 at the route.
+
 ## 5. Pause + steer + resume
 
 The unified pause/resume primitive (RFC §3.3) is one wire choreography for every cause — HITL approval, tool-side OAuth, operator pause. The steering verbs share one route shape, `POST /v1/control/{method}`, with the run id and your steering scope in the body's `identity`:

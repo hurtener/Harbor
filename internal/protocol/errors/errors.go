@@ -134,6 +134,16 @@ const (
 	// than silently truncating the upload. Maps to HTTP 413 (Payload Too
 	// Large).
 	CodeRequestTooLarge Code = "request_too_large"
+	// CodeSessionRunning — sessions surface: a `sessions.delete` erasure
+	// was refused because the target session has a RUNNING task. The
+	// erasure mirrors the GC never-reap-running invariant (RFC §6.9) — a
+	// session with in-flight work is durable execution state, not a
+	// cache entry, so it is refused fail-loud and NO store is touched.
+	// Distinct from CodeNotFound (the session does not exist under the
+	// caller's identity) and CodeInvalidRequest (a malformed body). Maps
+	// to HTTP 409 (Conflict) — the request is well-formed and authorised,
+	// but the session's current state forbids the operation.
+	CodeSessionRunning Code = "session_running"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -151,6 +161,7 @@ var canonicalCodes = map[Code]struct{}{
 	CodeIdentityScopeRequired: {},
 	CodePresignUnsupported:    {},
 	CodeRequestTooLarge:       {},
+	CodeSessionRunning:        {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

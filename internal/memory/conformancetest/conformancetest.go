@@ -358,6 +358,52 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("Flush_LeavesNoResidualContext", func(t *testing.T) {
+		// The session-erasure gate (§17.6): after a Flush the
+		// memory MUST be reset to a clean state — GetLLMContext returns no
+		// recent turns / empty summary / zero tokens, and (for a semantic
+		// store) SearchTurns finds no residual embedded turns. Runs for
+		// EVERY strategy / retrieval mode: StrategyNone is a trivially-clean
+		// no-op, and the persisting strategies must prove Flush genuinely
+		// purges. A driver whose Flush leaves retrievable residue fails
+		// HERE — and is fixed in the same phase that found it.
+		h := factory()
+		defer h.Cleanup()
+		ctx := context.Background()
+		// Seed a few turns (a no-op under StrategyNone; persisted under the
+		// truncation / rolling-summary strategies).
+		for range 3 {
+			if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
+				t.Fatalf("AddTurn: %v", err)
+			}
+		}
+		if err := h.Store.Flush(ctx, tripleA()); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		patch, err := h.Store.GetLLMContext(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("GetLLMContext after Flush: %v", err)
+		}
+		if len(patch.RecentTurns) != 0 {
+			t.Errorf("Flush left %d recent turn(s) in the LLM context", len(patch.RecentTurns))
+		}
+		if patch.Summary != "" {
+			t.Errorf("Flush left a residual summary: %q", patch.Summary)
+		}
+		if patch.Tokens != 0 {
+			t.Errorf("Flush left %d residual tokens in the LLM context", patch.Tokens)
+		}
+		if h.Retrieval == memory.RetrievalSemantic {
+			got, serr := h.Store.SearchTurns(ctx, tripleA(), sampleTurn().UserMessage, 5)
+			if serr != nil {
+				t.Fatalf("SearchTurns after Flush: %v", serr)
+			}
+			if len(got) != 0 {
+				t.Errorf("Flush left %d embedded turn(s) retrievable by SearchTurns", len(got))
+			}
+		}
+	})
+
 	t.Run("Health_ReturnsHealthy", func(t *testing.T) {
 		h := factory()
 		defer h.Cleanup()

@@ -167,6 +167,16 @@ type PostureDeps struct {
 	// the agent-config transport is mounted, so the advertisement cannot
 	// claim a surface the Runtime does not serve.
 	AgentConfigAvailable bool
+	// SessionLifecycleAvailable indicates this Runtime wired a session
+	// eraser (the three scoped stores + the SessionRegistry behind the
+	// `sessions.delete` cascade) — when true, `runtime.info.capabilities`
+	// advertises `session_lifecycle` so Protocol clients detect erasure
+	// support at attach time instead of by a 404 at call time. The
+	// `sessions.delete` route itself stays gated by the Sessions Service's
+	// wired Eraser; this flag is the *advertised* projection of that
+	// wiring decision. Optional — defaults false (a read-only or headless
+	// runtime that did not wire an eraser).
+	SessionLifecycleAvailable bool
 }
 
 // ErrPostureMisconfigured — NewPostureSurface was called with a missing
@@ -229,7 +239,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt:    bootedAt,
 		displayName: deps.DisplayName,
 		instanceID:  deps.InstanceID,
-		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable),
+		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.SessionLifecycleAvailable),
 	}, nil
 }
 
@@ -240,7 +250,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // in via the matching deps flag. Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, sessionLifecycleAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -251,6 +261,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable bool) []types.
 	}
 	if agentConfigAvailable {
 		caps = append(caps, types.CapAgentConfig)
+	}
+	if sessionLifecycleAvailable {
+		caps = append(caps, types.CapSessionLifecycle)
 	}
 	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
 	return caps

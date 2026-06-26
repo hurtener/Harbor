@@ -350,6 +350,9 @@ func (s *listFailingStore) LoadByEventID(context.Context, state.EventID) (state.
 	return state.StateRecord{}, state.ErrNotFound
 }
 func (s *listFailingStore) Delete(context.Context, identity.Quadruple, string) error { return nil }
+func (s *listFailingStore) DeleteScope(context.Context, identity.Identity) (int, error) {
+	return 0, nil
+}
 func (s *listFailingStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
 	return nil, s.listErr
 }
@@ -369,6 +372,9 @@ func (s *scopeRecordingStore) LoadByEventID(context.Context, state.EventID) (sta
 	return state.StateRecord{}, state.ErrNotFound
 }
 func (s *scopeRecordingStore) Delete(context.Context, identity.Quadruple, string) error { return nil }
+func (s *scopeRecordingStore) DeleteScope(context.Context, identity.Identity) (int, error) {
+	return 0, nil
+}
 func (s *scopeRecordingStore) ListKind(_ context.Context, scope state.ListScope, _ string) ([]state.StateRecord, error) {
 	if !scope.MaintenanceScoped {
 		return nil, state.ErrMaintenanceScopeRequired

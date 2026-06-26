@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 11 canonical Harbor Protocol error codes, generated from the single-source
+The 12 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -27,4 +27,5 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 | `request_too_large` | 413 | An `artifacts.put` body exceeded the configured `protocol.max_request_bytes` bound. The upload is refused loudly, never truncated. | No — shrink the payload or raise the operator-side bound. |
 | `runtime_error` | 500 | An unclassified runtime-side failure — the catch-all. Also used on the SSE surface for subscriber-limit (429) and bus-closed (503) conditions. | Yes, with backoff — the request shape is not the problem. |
 | `scope_mismatch` | 403 | The caller's steering scope claim is below the control method's RFC §6.3 minimum, or a cross-tenant steering / mutation was attempted without `admin`. | No — the operation needs a higher scope. |
+| `session_running` | 409 | A `sessions.delete` erasure was refused because the target session has a RUNNING task, mirroring the GC never-reap-running invariant. No store is touched on refusal — a session with in-flight work is durable execution state, not a cache entry. | Yes — re-issue after the session's task finishes (or cancel it first). |
 | `unknown_method` | 404 | The method name is not in the canonical registry ([methods.md](./methods.md)). | No — check the method name and this Runtime's advertised capabilities (`runtime.info`). |

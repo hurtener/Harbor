@@ -96,6 +96,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentsDeregister,
 	methods.MethodSessionsList,
 	methods.MethodSessionsInspect,
+	methods.MethodSessionsDelete,
 	methods.MethodRunsSetOverrides,
 	methods.MethodStateHistory,
 	methods.MethodAuthRotateToken,
@@ -150,9 +151,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// set_source_disables + skills.{list,upsert,delete}) = 103,
 	// + State-snapshots state.history one = 104,
 	// + agent-config USER tier five (agent_config.user.get + set_revision +
-	// list_revisions + diff + rollback) = 109.
-	if len(got) != 109 {
-		t.Fatalf("Methods() returned %d methods, want 109", len(got))
+	// list_revisions + diff + rollback) = 109,
+	// + Sessions-page erasure one (sessions.delete) = 110.
+	if len(got) != 110 {
+		t.Fatalf("Methods() returned %d methods, want 110", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -248,6 +250,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 
 		methods.MethodSessionsList:    "sessions.list",
 		methods.MethodSessionsInspect: "sessions.inspect",
+		methods.MethodSessionsDelete:  "sessions.delete",
 
 		methods.MethodRunsSetOverrides: "runs.set_overrides",
 		methods.MethodAuthRotateToken:  "auth.rotate_token",
@@ -384,6 +387,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	// Sessions-page handler, NOT the steering inbox.
 	for _, m := range []methods.Method{
 		methods.MethodSessionsList, methods.MethodSessionsInspect,
+		methods.MethodSessionsDelete,
 	} {
 		if methods.IsControlMethod(m) {
 			t.Errorf("IsControlMethod(%q) = true, want false — sessions.* methods are read-only, route through the Sessions handler", m)

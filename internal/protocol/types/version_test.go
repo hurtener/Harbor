@@ -443,6 +443,40 @@ func TestCapAgentConfig_Registered(t *testing.T) {
 	}
 }
 
+// TestCapSessionLifecycle_Registered pins the session data-lifecycle
+// capability: CapSessionLifecycle is registered in the canonical
+// universe, IsValidCapability returns true, Capabilities() includes it,
+// the current handshake (the canonical surface) advertises it, and
+// adding it did NOT bump the pinned ProtocolVersion string (additive
+// minor-class surface addition). The PER-INSTANCE advertisement is
+// conditional on a wired eraser — pinned in the posture surface tests,
+// not here.
+func TestCapSessionLifecycle_Registered(t *testing.T) {
+	if string(types.CapSessionLifecycle) != "session_lifecycle" {
+		t.Fatalf("CapSessionLifecycle wire string = %q, want %q",
+			string(types.CapSessionLifecycle), "session_lifecycle")
+	}
+	if !types.IsValidCapability(types.CapSessionLifecycle) {
+		t.Error("IsValidCapability(CapSessionLifecycle) = false, want true")
+	}
+	var found bool
+	for _, c := range types.Capabilities() {
+		if c == types.CapSessionLifecycle {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Capabilities() = %v, missing CapSessionLifecycle", types.Capabilities())
+	}
+	if !types.CurrentHandshake().Accepts(types.CapSessionLifecycle) {
+		t.Error("CurrentHandshake().Accepts(CapSessionLifecycle) = false, want true")
+	}
+	// Additive — no version bump.
+	if types.ProtocolVersion != "0.1.0" {
+		t.Errorf("ProtocolVersion = %q, want unchanged 0.1.0 — a new capability is an additive minor-class change, not a version bump", types.ProtocolVersion)
+	}
+}
+
 func TestVersionHandshake_CurrentAndAccepts(t *testing.T) {
 	h := types.CurrentHandshake()
 	if h.ProtocolVersion != types.ProtocolVersion {

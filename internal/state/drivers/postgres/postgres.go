@@ -335,6 +335,33 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 // maintenance scan (RFC §6.11). The prefix matches literally:
 // LIKE metacharacters in kindPrefix are escaped so a prefix containing
 // `%` or `_` cannot widen the scan.
+// DeleteScope implements state.StateStore — the kind-agnostic cascade
+// primitive. A single DELETE removes every row whose (tenant, user,
+// session) matches id, regardless of run or kind. Identity-scoped and
+// idempotent: an absent scope affects zero rows and returns (0, nil).
+func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, error) {
+	if d.closed.Load() {
+		return 0, state.ErrStoreClosed
+	}
+	if err := state.ValidateIdentity(identity.Quadruple{Identity: id}); err != nil {
+		return 0, err
+	}
+
+	const q1 = `
+		DELETE FROM state_records
+		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
+	`
+	res, err := d.db.ExecContext(ctx, q1, id.TenantID, id.UserID, id.SessionID)
+	if err != nil {
+		return 0, d.translateErr(err, "postgres: delete scope")
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, d.translateErr(err, "postgres: delete scope rows affected")
+	}
+	return int(n), nil
+}
+
 func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
 	if d.closed.Load() {
 		return nil, state.ErrStoreClosed

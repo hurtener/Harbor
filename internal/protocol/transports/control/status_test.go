@@ -23,6 +23,7 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 		protoerrors.CodeIdentityScopeRequired: http.StatusForbidden,
 		protoerrors.CodePresignUnsupported:    http.StatusNotImplemented,
 		protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
+		protoerrors.CodeSessionRunning:        http.StatusConflict,
 	}
 	for code, want := range cases {
 		if got := HTTPStatus(code); got != want {
@@ -49,6 +50,7 @@ func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 		protoerrors.CodeIdentityScopeRequired: {},
 		protoerrors.CodePresignUnsupported:    {},
 		protoerrors.CodeRequestTooLarge:       {},
+		protoerrors.CodeSessionRunning:        {},
 	}
 	for code := range mapped {
 		if !protoerrors.IsValidCode(code) {

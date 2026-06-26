@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 118 canonical event types a Harbor Runtime can publish, read from the live
+The 119 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -933,6 +933,18 @@ Payload `SessionClosedPayload` — safe payload (delivered typed, verbatim).
 | `SessionID` | `string` |  |
 | `ClosedAt` | `int64` |  |
 | `Reason` | `string` |  |
+
+## `session.erased`
+
+Payload `SessionErasedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `SessionID` | `string` |  |
+| `StateRecordsDeleted` | `int` |  |
+| `ArtifactsDeleted` | `int` |  |
+| `MemoryPurged` | `bool` |  |
+| `ErasedAt` | `int64` |  |
 
 ## `session.gc_reaped`
 

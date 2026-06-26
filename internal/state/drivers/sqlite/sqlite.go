@@ -564,6 +564,34 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 	return nil
 }
 
+// DeleteScope implements state.StateStore — the kind-agnostic cascade
+// primitive. A single DELETE removes every row whose (tenant, user,
+// session) matches id, regardless of run or kind; the unique event_id
+// index travels with each deleted row, so the secondary lookup is
+// cleared atomically. Identity-scoped and idempotent: an absent scope
+// affects zero rows and returns (0, nil).
+func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, error) {
+	if d.closed.Load() {
+		return 0, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateIdentity(identity.Quadruple{Identity: id}); err != nil {
+		return 0, err
+	}
+
+	const del = `
+        DELETE FROM state_records
+        WHERE tenant = ? AND user = ? AND session = ?`
+	res, err := d.db.ExecContext(ctx, del, id.TenantID, id.UserID, id.SessionID)
+	if err != nil {
+		return 0, fmt.Errorf("state/sqlite: delete scope: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("state/sqlite: delete scope rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
 // ListKind implements state.StateStore — the explicitly-elevated
 // maintenance scan (RFC §6.11). The prefix matches literally:
 // LIKE metacharacters in kindPrefix are escaped so a prefix containing
