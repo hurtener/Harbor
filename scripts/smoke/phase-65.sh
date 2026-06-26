@@ -94,4 +94,63 @@ else
     skip "harbor dev: canonical bus event type probe (bin/harbor not built or strings unavailable)"
 fi
 
+# ----------------------------------------------------------------------
+# Assertion 4 (Phase 138, D-268) — live `.go`-edit honesty.
+#
+# A static `strings` grep CANNOT distinguish this case: the
+# `dev.hot_reload.completed` string stays in the binary for the YAML
+# rebuild path, so the false-success can only be caught by a LIVE
+# edit-and-observe. The preflight server boots with `--config
+# examples/dev.yaml`, so `examples/` is a hot-reload watch root (the
+# config file's parent dir). We write a `.go` file directly into
+# `examples/` (the watcher is non-recursive), wait past the debounce
+# window, and assert:
+#
+#   (a) the honest WARN line fires ("Go source change detected"), AND
+#   (b) NO in-process rebuild fired for the edit — the rebuild path
+#       logs "hot-reload: file change observed" at its start, so the
+#       count of that line is UNCHANGED across the .go edit. That is the
+#       observable proxy for "no dev.hot_reload.completed{Success=true}"
+#       (completed is emitted ONLY on the reboot path).
+#
+# The probe file name is `_`-prefixed so the Go toolchain ignores it
+# (it never enters a build) while fsnotify still observes it; it is
+# removed immediately after. A `.go` edit is SAFE to perform against the
+# long-running preflight server precisely because Phase 138 makes it a
+# no-reboot WARN — it does not tear the server down (unlike a YAML edit,
+# which this smoke deliberately does NOT perform; the YAML rebuild path
+# is covered by cmd/harbor/cmd_dev_hot_reload_test.go).
+# ----------------------------------------------------------------------
+if [ -n "${HARBOR_DATA_DIR:-}" ] && [ -f "${HARBOR_DATA_DIR}/server.log" ] \
+   && grep -q "hot-reload: watcher started" "${HARBOR_DATA_DIR}/server.log" 2>/dev/null; then
+    log_file="${HARBOR_DATA_DIR}/server.log"
+    probe="${ROOT}/examples/_hotreload_probe_138.go"
+    # Self-clean even if the script is SIGKILLed in the write/sleep window
+    # (preflight runs inside the pre-commit hook): an EXIT trap guarantees
+    # no stray untracked probe file is left in the working tree.
+    trap 'rm -f "${probe}"' EXIT
+    # Snapshot the rebuild-path log count BEFORE the .go edit. The
+    # repo-standard `$(...) || var=0` form keeps grep -c's "0"-and-exit-1
+    # from leaking a non-zero status under `set -e`.
+    reboot_before=$(grep -c "hot-reload: file change observed" "${log_file}" 2>/dev/null) || reboot_before=0
+    # Write a .go file directly under the watched examples/ dir, then
+    # remove it (cleanup even if a later assertion fails).
+    printf 'package examples\n\n// hot-reload honesty probe %s\n' "$(date +%s)" > "${probe}"
+    sleep 2
+    rm -f "${probe}"
+    if grep -q "hot-reload: Go source change detected" "${log_file}" 2>/dev/null; then
+        ok "harbor dev: live .go edit logs honest WARN + rebuild guidance"
+    else
+        fail "harbor dev: live .go edit did NOT log the honest WARN (false-success guard)"
+    fi
+    reboot_after=$(grep -c "hot-reload: file change observed" "${log_file}" 2>/dev/null) || reboot_after=0
+    if [ "${reboot_after}" -eq "${reboot_before}" ]; then
+        ok "harbor dev: live .go edit did NOT trigger an in-process rebuild (no false dev.hot_reload.completed)"
+    else
+        fail "harbor dev: live .go edit triggered a rebuild (observed ${reboot_before} -> ${reboot_after}); false-success regression"
+    fi
+else
+    skip "harbor dev: live .go-edit honesty probe (server log / watcher not reachable; Phase 65/138 not yet shipped)"
+fi
+
 smoke_summary

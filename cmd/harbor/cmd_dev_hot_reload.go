@@ -23,9 +23,22 @@
 // acceptance criterion is "new code picked up" — at the dev-time
 // granularity (operator edits a file, restart picks up the change),
 // the in-process devStack rebuild satisfies it for every config /
-// scaffold change, and operators who genuinely changed Go source
-// rebuild + re-launch the binary manually (the same cycle they'd run
-// today without hot-reload). This is documented in.
+// scaffold change.
+//
+// A Go-source (`.go`) change is a different case: the in-process
+// devStack rebuild re-reads config from disk and re-wires the stack,
+// but it does NOT recompile the binary — so the edited Go is never
+// picked up. Driving a rebuild and reporting a successful hot-reload
+// in that case is a loud false-success (the inverse of the §13
+// no-silent-degradation rule: do not claim success for work that did
+// not happen). The watcher therefore CLASSIFIES every event: config /
+// YAML / scaffold changes take the in-process rebuild path, while a
+// `.go` change takes a WARN-and-guide path that logs the change and
+// tells the operator to run `make build` and restart `harbor dev` — it
+// does NOT reboot and does NOT emit dev.hot_reload.completed. The
+// recompile-and-re-exec policy (auto `go build` + re-exec on a `.go`
+// change) is deferred. This is documented in the dev-loop recipe
+// (docs/recipes/run-harbor-dev.md).
 //
 // # Concurrency contract
 //
@@ -298,6 +311,7 @@ func (s *hotReloadSupervisor) Run(ctx context.Context) error {
 		debounce      *time.Timer
 		lastPath      string
 		lastOp        string
+		lastGoWarn    time.Time
 		debounceFired = make(chan struct{}, 1)
 	)
 	cleanup := func() {
@@ -335,20 +349,35 @@ func (s *hotReloadSupervisor) Run(ctx context.Context) error {
 				cleanup()
 				return nil
 			}
-			if !shouldTrigger(ev) {
+			switch classifyEvent(ev) {
+			case reloadGoSourceWarn:
+				// A `.go` change cannot be hot-reloaded — the in-process
+				// rebuild never recompiles the binary. WARN and guide the
+				// operator to rebuild manually; do NOT reboot and do NOT
+				// emit dev.hot_reload.completed (that would be a loud
+				// false-success). Throttle to one WARN per debounce window
+				// so an editor's rename-and-replace save burst collapses to
+				// a single line.
+				if time.Since(lastGoWarn) >= debounceWindow {
+					s.warnGoSourceChange(ev.Name, ev.Op.String())
+					lastGoWarn = time.Now()
+				}
+				continue
+			case reloadRebuild:
+				lastPath = ev.Name
+				lastOp = ev.Op.String()
+				if debounce != nil {
+					debounce.Stop()
+				}
+				debounce = time.AfterFunc(debounceWindow, func() {
+					select {
+					case debounceFired <- struct{}{}:
+					default:
+					}
+				})
+			default: // reloadIgnore — Chmod-only, non-content op, db sidecar.
 				continue
 			}
-			lastPath = ev.Name
-			lastOp = ev.Op.String()
-			if debounce != nil {
-				debounce.Stop()
-			}
-			debounce = time.AfterFunc(debounceWindow, func() {
-				select {
-				case debounceFired <- struct{}{}:
-				default:
-				}
-			})
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				s.logger.Info("hot-reload: watcher errors channel closed")
@@ -548,39 +577,97 @@ func (s *hotReloadSupervisor) emitCompleted(
 	}
 }
 
-// shouldTrigger filters fsnotify events down to those that warrant a
-// rebuild. We trigger on Write, Create, Rename, Remove — the common
-// editor-save shapes. Chmod-only events (a `touch` or permission
-// change) are skipped — they don't reflect content changes.
+// reloadClass categorises a watched-file event into the action the
+// supervisor takes for it.
+type reloadClass int
+
+const (
+	// reloadIgnore — the event warrants no action: a Chmod-only event, a
+	// non-content op, or a database engine sidecar rewrite.
+	reloadIgnore reloadClass = iota
+	// reloadRebuild — a config / YAML / scaffold change. The supervisor
+	// performs an in-process devStack rebuild (re-read config, drain,
+	// reboot, re-bind). This picks up the change because nothing needed
+	// recompiling.
+	reloadRebuild
+	// reloadGoSourceWarn — a Go-source (`.go`) change. An in-process
+	// rebuild would NOT recompile the binary, so the edit would never be
+	// picked up and a "completed" event would be a false success. The
+	// supervisor logs a WARN that guides a manual `make build` + restart
+	// and does not reboot.
+	reloadGoSourceWarn
+)
+
+// classifyEvent maps an fsnotify event to the supervisor's action.
 //
-// Hidden files (those starting with `.`) are NOT skipped: an operator
+// We act on Write, Create, Rename, Remove — the common editor-save
+// shapes. Chmod-only events (a `touch` or permission change) are
+// ignored — they don't reflect content changes.
+//
+// Hidden files (those starting with `.`) are NOT ignored: an operator
 // might be editing `.harbor/agents/foo.yaml` and that path's leading
 // `.` is structural. Editor-temp-file conventions vary across editors
 // (vim's `.swp`, emacs's `#`, JetBrains's `___jb_tmp___`); filtering
 // by name pattern would create vendor drift. We accept the small cost
 // of an occasional spurious restart on swap files — the debounce
-// window collapses bursts anyway, so the operator-visible effect is
-// "the editor save triggered one restart" regardless of how many
-// fsnotify events the swap-file dance produced.
+// window collapses bursts anyway.
 //
-// Database engine sidecar files ARE skipped:
-// SQLite's WAL/SHM/journal companions get rewritten on every commit,
-// which under the default `sqlite` state + skills drivers means a
-// reboot loop the moment the planner writes anything. The skip list
-// is fixed; an operator with an exotic db backend can submit a PR.
-// Operator-supplied path-pattern ignores stay deferred (would need a
-// config schema addition); the fixed-list approach unblocks v1.1.
-func shouldTrigger(ev fsnotify.Event) bool {
+// Database engine sidecar files are ignored: SQLite's WAL/SHM/journal
+// companions get rewritten on every commit, which under the default
+// `sqlite` state + skills drivers means a reboot loop the moment the
+// planner writes anything. The skip list is fixed; an operator with an
+// exotic db backend can submit a PR.
+//
+// Go-source (`.go`) changes route to reloadGoSourceWarn, not
+// reloadRebuild: the in-process rebuild cannot recompile the binary, so
+// rebooting on a `.go` edit re-reads config without picking up the code
+// change while reporting a successful hot-reload — a loud false-success.
+// The honest action is a WARN that guides a manual rebuild.
+func classifyEvent(ev fsnotify.Event) reloadClass {
 	if ev.Op == fsnotify.Chmod {
-		return false
+		return reloadIgnore
 	}
 	if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
-		return false
+		return reloadIgnore
 	}
 	if isDBSidecar(ev.Name) {
-		return false
+		return reloadIgnore
 	}
-	return true
+	if isGoSource(ev.Name) {
+		return reloadGoSourceWarn
+	}
+	return reloadRebuild
+}
+
+// isGoSource reports whether the path is a Go source file. A `.go`
+// change cannot be hot-reloaded by the in-process devStack rebuild
+// (which never recompiles the binary), so it routes to the
+// WARN-and-guide path rather than a reboot.
+func isGoSource(path string) bool {
+	return strings.HasSuffix(filepath.Base(path), ".go")
+}
+
+// shouldTrigger reports whether an fsnotify event warrants an
+// in-process devStack rebuild. Only config / YAML / scaffold changes
+// (reloadRebuild) qualify; `.go` changes and ignorable events do not.
+// Retained as the rebuild-gate predicate the supervisor's tests pin.
+func shouldTrigger(ev fsnotify.Event) bool {
+	return classifyEvent(ev) == reloadRebuild
+}
+
+// warnGoSourceChange logs the honest no-recompile guidance for a Go
+// source change. It does NOT reboot the devStack and does NOT emit
+// dev.hot_reload.completed — an in-process rebuild cannot recompile the
+// binary, so the edit would not be picked up. Reporting success would
+// be a false success; the operator must rebuild + restart manually.
+func (s *hotReloadSupervisor) warnGoSourceChange(path, op string) {
+	s.logger.Warn(
+		"hot-reload: Go source change detected — harbor dev does not recompile Go; "+
+			"run `make build` and restart `harbor dev` to pick it up "+
+			"(config / YAML changes hot-reload in-process; .go changes do not)",
+		slog.String("path", path),
+		slog.String("op", op),
+	)
 }
 
 // dbSidecarSuffixes lists filename suffixes for engine artifacts the

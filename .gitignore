@@ -1,5 +1,6 @@
 # Build artifacts
 /bin/
+/harbor
 /dist/
 /build/
 *.exe
