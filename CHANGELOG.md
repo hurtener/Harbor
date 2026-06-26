@@ -24,6 +24,68 @@ issue [#396](https://github.com/hurtener/Harbor/issues/396); and the generated
 per-domain Protocol wire-type modules + the shared chat-module extraction — the
 D-093 / D-091 follow-ons.)
 
+## [1.7.0] — 2026-06-26
+
+Protocol-edge hardening: capability negotiation, key-revocation safety, and
+data-lifecycle erasure. This release lets a generic Protocol client learn which
+conditionally-mounted surfaces a runtime serves at attach (instead of probing
+for a `404`), bounds how long the JWKS validator will honor a possibly-revoked
+key during an IdP outage, and adds the Protocol's first identity-scoped session
+**erasure** verb with a real three-store cascade. The Harbor Protocol's wire
+surface grows (two new capabilities + one method + one error code + wire types)
+but stays semver `0.1.0` — every change is additive or corrective, and no prior
+INTENDED behavior changes.
+
+### Added
+
+- **Agent-config capability negotiation.** `runtime.info` now advertises an
+  `agent_config` capability — but only when the agent-config control plane is
+  actually mounted — so a Protocol client (Console, IDE/TUI, SDK) gates the
+  `agent_config.*` surfaces at attach instead of method-probing for a `501` /
+  `unknown_method`. The advertisement is wired from the same source-of-truth as
+  the mount in every boot path, so it can never claim a surface the runtime does
+  not serve. (D-260.)
+- **Session erasure — `sessions.delete`.** A new identity-scoped,
+  **own-session-only** Protocol method that erases a session and cascades
+  deletion of its scoped State, Memory, and Artifacts — Harbor's first canonical
+  right-to-erasure surface, satisfiable through the wire contract instead of a
+  privileged back-door. It refuses fail-loud with `session_running` (409) when
+  the session has a running task (mirroring the GC never-reap-running
+  invariant), emits a redacted, content-free `session.erased` audit event under
+  the actor's observability scope (never the erased identity), and advertises a
+  `session_lifecycle` capability when an eraser is wired. Backed by a new
+  mandatory `StateStore.DeleteScope` cascade primitive with in-memory / SQLite /
+  Postgres conformance parity. (D-262.)
+- **JWKS max-stale / revocation ceiling.** A configurable `identity.jwks_max_stale`
+  bound on the production JWKS validator: past the ceiling, with refreshes
+  failing, it fails **closed** with a distinct `jwks_stale` rejection reason
+  instead of serving a possibly-revoked signing key indefinitely during an
+  identity-provider outage. The bound is identity-agnostic (it gates before a
+  verified identity exists), has no opt-out knob, and defaults to a safe 1h. No
+  new wire type — it reuses the existing `401` auth-rejected envelope. (D-261.)
+
+### Fixed
+
+- **Erasure is durable under concurrency.** A session erased while a task was
+  still publishing lifecycle events could leave orphaned durable events readable
+  via `state.history` (the events landed on the durable bus after the cascade's
+  scope-delete). A new identity-scoped event **fence** — taken by the cascade
+  before the sweep and lifted when the session id is reused — closes the race:
+  a late publish is either swept or dropped, so a post-erasure `state.history`
+  for the erased session is genuinely empty. Surfaced by live testing.
+
+### Internal
+
+- A composing wave-end end-to-end test exercises all three surfaces together
+  with real drivers — both capabilities coexisting in one `runtime.info`
+  projection (a self-consistent 7-capability universe), the full erasure
+  lifecycle, the JWKS staleness fail-closed-then-recover path, cross-tenant
+  isolation, and an N≥10 concurrency stress — under the race detector.
+- Only the wire-surface digest in the committed manifest moves (it hashes the
+  capability / method / error / type names); `ProtocolVersion` holds at `0.1.0`,
+  consistent with the precedent that capabilities and additive methods are
+  advertised, not version-gated.
+
 ## [1.6.0] — 2026-06-25
 
 Session hydration and user-scope agent configuration. This release adds a
