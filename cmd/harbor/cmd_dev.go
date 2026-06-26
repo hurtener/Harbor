@@ -116,6 +116,7 @@ import (
 	searchsessions "github.com/hurtener/Harbor/internal/search/sessions"
 	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
 	"github.com/hurtener/Harbor/internal/server"
+	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -1051,11 +1052,36 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		closeAll(ctx)
 		return nil, fmt.Errorf("sessions/protocol projector: %w", err)
 	}
-	sessionsService, err := sessionsprotocol.NewService(sessionsProjector,
+	// The session-erasure cascade (`sessions.delete`) is wired only
+	// when every scoped store the cascade deletes is present (the
+	// SessionRegistry + State + Memory + Artifacts). The same condition
+	// drives the eraser wiring here and the CapSessionLifecycle
+	// advertisement on the posture surface below, so the capability is
+	// honest about the route.
+	sessionLifecycleAvailable := sessionRegistry != nil && stack.State != nil &&
+		memStore != nil && artStore != nil
+	sessionsOpts := []sessionsprotocol.Option{
 		sessionsprotocol.WithBus(bus),
 		sessionsprotocol.WithRedactor(red),
 		sessionsprotocol.WithLogger(opts.logger),
-	)
+	}
+	if sessionLifecycleAvailable {
+		eraser, eraserErr := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+			Registry:  sessionRegistry,
+			State:     stack.State,
+			Memory:    memStore,
+			Artifacts: artStore,
+			Bus:       bus,
+			Redactor:  red,
+			Logger:    opts.logger,
+		})
+		if eraserErr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("sessions/protocol eraser: %w", eraserErr)
+		}
+		sessionsOpts = append(sessionsOpts, sessionsprotocol.WithEraser(eraser))
+	}
+	sessionsService, err := sessionsprotocol.NewService(sessionsProjector, sessionsOpts...)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("sessions/protocol service: %w", err)
@@ -1144,6 +1170,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// `runtime.info.capabilities` advertises `agent_config` always —
 		// the advertisement matches the always-present mount on this path.
 		AgentConfigAvailable: true,
+		// Advertise session_lifecycle iff the `sessions.delete` eraser was
+		// wired above.
+		SessionLifecycleAvailable: sessionLifecycleAvailable,
 	})
 	if err != nil {
 		closeAll(ctx)

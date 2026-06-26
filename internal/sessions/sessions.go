@@ -201,6 +201,12 @@ var (
 	ErrSessionAlreadyOpen = errors.New("sessions: session already open")
 	// ErrRegistryClosed — any operation called after CloseRegistry.
 	ErrRegistryClosed = errors.New("sessions: registry is closed")
+	// ErrSessionRunning — Erase was refused because the target session
+	// has a RUNNING task. Erasure mirrors the GC never-reap-running
+	// invariant (RFC §6.9): a session with in-flight work is durable
+	// execution state, not a cache entry, so it is refused fail-loud and
+	// NO store is touched. The caller retries after the task finishes.
+	ErrSessionRunning = errors.New("sessions: cannot erase a session with a running task")
 )
 
 // Clock abstracts time so GC tests are deterministic without

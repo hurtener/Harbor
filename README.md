@@ -284,9 +284,13 @@ now also carries a `wire_surface_digest` — a stable `sha256:` fingerprint of
 the canonical wire surface (Protocol version, method/error/capability/type
 names) that a connected client compares against the digest it was built
 against, so coarse wire drift is caught at connect-time instead of
-field-by-field at runtime. Post-V1 work — additional planner concretes,
-a durable distributed bus, governance extensions — is tracked in the master
-phase plan.
+field-by-field at runtime. The Protocol also gains `sessions.delete` — an
+identity-scoped, own-session-only data-lifecycle erasure that deletes a
+session and cascades deletion of its scoped State, Memory, and Artifacts,
+refusing fail-loud on a running task and writing only a redacted,
+content-free `session.erased` audit record. Post-V1 work — additional
+planner concretes, a durable distributed bus, governance extensions — is
+tracked in the master phase plan.
 
 ## Releases
 

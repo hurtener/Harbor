@@ -65,6 +65,10 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		When:  "An `artifacts.get_ref` request reached an ArtifactStore driver without presigned-URL support (in-mem / fs / sqlite / postgres blob drivers). The resolver fails loud instead of silently streaming bytes.",
 		Retry: "No — the configured driver cannot satisfy it; use a presign-capable store (S3 family) or download via the Console proxy.",
 	},
+	protoerrors.CodeSessionRunning: {
+		When:  "A `sessions.delete` erasure was refused because the target session has a RUNNING task, mirroring the GC never-reap-running invariant. No store is touched on refusal — a session with in-flight work is durable execution state, not a cache entry.",
+		Retry: "Yes — re-issue after the session's task finishes (or cancel it first).",
+	},
 	protoerrors.CodeRuntimeError: {
 		When:  "An unclassified runtime-side failure — the catch-all. Also used on the SSE surface for subscriber-limit (429) and bus-closed (503) conditions.",
 		Retry: "Yes, with backoff — the request shape is not the problem.",

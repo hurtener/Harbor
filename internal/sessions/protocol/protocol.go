@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/sessions"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto
@@ -69,12 +70,39 @@ var (
 	// ErrInvalidRequest — the request was structurally invalid (an
 	// out-of-range limit, an unknown enum, a malformed cursor).
 	ErrInvalidRequest = errors.New("sessions/protocol: invalid request")
-	// ErrSessionNotFound — `sessions.inspect` targeted a session id with
-	// no record visible to the caller's identity scope.
+	// ErrSessionNotFound — `sessions.inspect` / `sessions.delete` targeted
+	// a session id with no record visible to the caller's identity scope.
 	ErrSessionNotFound = errors.New("sessions/protocol: session not found")
+	// ErrSessionRunning — `sessions.delete` was refused because the target
+	// session has a RUNNING task (mirroring the GC never-reap-running
+	// invariant). The handler maps it to CodeSessionRunning (409). No
+	// store is touched on refusal.
+	ErrSessionRunning = errors.New("sessions/protocol: cannot erase a session with a running task")
+	// ErrErasureUnsupported — `sessions.delete` reached a Service that was
+	// built without an Eraser (the runtime does not advertise the
+	// CapSessionLifecycle capability). The handler maps it to
+	// CodeUnknownMethod (404) so a client that probed the route detects
+	// the unwired surface exactly as it would a missing route.
+	ErrErasureUnsupported = errors.New("sessions/protocol: session erasure is not wired on this runtime")
 	// ErrMisconfigured — NewService was called with a nil Projector.
 	ErrMisconfigured = errors.New("sessions/protocol: NewService missing a mandatory dependency")
 )
+
+// Eraser is the seam the Service depends on for `sessions.delete`. The
+// V1 production implementation is the in-runtime cascade orchestrator
+// (`sessions.CascadeEraser`), which performs the real three-store
+// cascade + session-record delete for the verified identity, refusing
+// fail-loud on a running task. The Service depends ONLY on this
+// interface (CLAUDE.md §4.4) — a future remote / cross-runtime eraser
+// slots in behind it without reshaping the Service.
+type Eraser interface {
+	// Erase performs the full erasure cascade for the verified identity
+	// (own-session-only — the scope contract is enforced at the Service
+	// edge before Erase is reached). Returns the deletion telemetry, or a
+	// refusal: sessions.ErrSessionRunning (a RUNNING task) /
+	// sessions.ErrSessionNotFound (absent under the caller's identity).
+	Erase(ctx context.Context, id identity.Identity) (prototypes.SessionsDeleteResponse, error)
+}
 
 // Projector is the read seam the Service depends on. The V1 production
 // implementation is ListerProjector. Every method takes the verified
@@ -96,6 +124,7 @@ type Projector interface {
 // safe for concurrent reuse compiled artifact — immutable after NewService.
 type Service struct {
 	projector Projector
+	eraser    Eraser          // optional — nil ⇒ sessions.delete is unsupported (capability not wired)
 	bus       events.EventBus // optional — nil ⇒ admin audit emit is logged only
 	redactor  audit.Redactor  // optional — defence-in-depth before the emit
 	logger    *slog.Logger
@@ -124,6 +153,20 @@ func WithRedactor(r audit.Redactor) Option {
 	return func(s *Service) {
 		if r != nil {
 			s.redactor = r
+		}
+	}
+}
+
+// WithEraser wires the Eraser the Service dispatches `sessions.delete`
+// to. When unsupplied (or nil) the Service answers `sessions.delete` with
+// ErrErasureUnsupported (the handler maps it to a 404) and the runtime
+// does NOT advertise the CapSessionLifecycle capability — capability
+// gating: a runtime that did not wire an eraser is honestly read-only on
+// the Sessions surface. A non-nil eraser enables the erasure path.
+func WithEraser(e Eraser) Option {
+	return func(s *Service) {
+		if e != nil {
+			s.eraser = e
 		}
 	}
 }
@@ -308,6 +351,58 @@ func (s *Service) Inspect(ctx context.Context, req prototypes.SessionsInspectReq
 	}
 	if len(resp.RecentArtifacts) > prototypes.MaxSessionArtifactSummaries {
 		resp.RecentArtifacts = resp.RecentArtifacts[:prototypes.MaxSessionArtifactSummaries]
+	}
+	return resp, nil
+}
+
+// Compile-time assertion: the V1 production cascade orchestrator
+// (sessions.CascadeEraser) satisfies the Eraser seam the Service
+// dispatches `sessions.delete` to. The assertion lives here (the seam's
+// home) rather than in package sessions, which cannot import this package
+// without a cycle.
+var _ Eraser = (*sessions.CascadeEraser)(nil)
+
+// HasEraser reports whether the Service was wired with an Eraser — i.e.
+// whether `sessions.delete` is supported and the runtime should advertise
+// the CapSessionLifecycle capability. The wiring layer uses it to gate
+// the capability advertisement so a read-only runtime stays honest.
+func (s *Service) HasEraser() bool { return s.eraser != nil }
+
+// Delete implements the `sessions.delete` method — the identity-scoped,
+// own-session-only data-lifecycle erasure of a whole session and its
+// scoped State, Memory, and Artifacts.
+//
+// The scope contract is own-session-only: the request identity IS the
+// caller's verified identity (the wire handler overlays the verified
+// triple and rejects any body-identity mismatch as identity_required
+// before this method is reached), so there is no admin / cross-tenant
+// path. A nil eraser (the capability was not wired) is reported as
+// ErrErasureUnsupported. A refusal on a RUNNING task surfaces as
+// ErrSessionRunning (409); an absent session as ErrSessionNotFound (404).
+func (s *Service) Delete(ctx context.Context, req prototypes.SessionsDeleteRequest) (prototypes.SessionsDeleteResponse, error) {
+	id, err := validIdentity(req.Identity)
+	if err != nil {
+		return prototypes.SessionsDeleteResponse{}, err
+	}
+	if s.eraser == nil {
+		return prototypes.SessionsDeleteResponse{}, ErrErasureUnsupported
+	}
+	resp, err := s.eraser.Erase(ctx, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, sessions.ErrSessionRunning):
+			return prototypes.SessionsDeleteResponse{},
+				fmt.Errorf("%w: %w", ErrSessionRunning, err)
+		case errors.Is(err, sessions.ErrSessionNotFound):
+			return prototypes.SessionsDeleteResponse{},
+				fmt.Errorf("%w: %w", ErrSessionNotFound, err)
+		case errors.Is(err, sessions.ErrIdentityMismatch):
+			return prototypes.SessionsDeleteResponse{},
+				fmt.Errorf("%w: %w", ErrIdentityRequired, err)
+		default:
+			return prototypes.SessionsDeleteResponse{},
+				fmt.Errorf("sessions/protocol: delete: %w", err)
+		}
 	}
 	return resp, nil
 }

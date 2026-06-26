@@ -56,6 +56,11 @@ type Factory func() (state.StateStore, func())
 //   - Save_CrossSession_Isolation
 //   - Save_AcceptsEmptyRunID (session-scoped state)
 //   - Delete_Idempotent
+//   - DeleteScope_RemovesAllKindsAndRuns
+//   - DeleteScope_Idempotent_AbsentScope
+//   - DeleteScope_Identity_Mandatory
+//   - DeleteScope_CrossTenant_Isolation
+//   - DeleteScope_AfterClose_Errors
 //   - ListKind_PrefixMatchesAcrossIdentities
 //   - ListKind_RequiresMaintenanceScope
 //   - ListKind_EmptyPrefixRejected
@@ -394,6 +399,114 @@ func Run(t *testing.T, factory Factory) {
 		_, err = s.LoadByEventID(ctx, rec.ID)
 		if !errors.Is(err, state.ErrNotFound) {
 			t.Errorf("LoadByEventID after Delete: err=%v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("DeleteScope_RemovesAllKindsAndRuns", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		scope := identity.Identity{TenantID: "tenant-A", UserID: "user-1", SessionID: "sess-1"}
+		// Seed multiple kinds + runs under the scope, plus one record in a
+		// DIFFERENT session that must survive.
+		seeds := []state.StateRecord{
+			{ID: "01HABXXX00000000DS", Identity: identity.Quadruple{Identity: scope}, Kind: "session.lifecycle", Bytes: []byte("life")},
+			{ID: "01HABXXX00000001DS", Identity: identity.Quadruple{Identity: scope, RunID: "run-1"}, Kind: "task.checkpoint", Bytes: []byte("ckpt")},
+			{ID: "01HABXXX00000002DS", Identity: identity.Quadruple{Identity: scope}, Kind: "events.durable.entry/0001", Bytes: []byte("ev")},
+			{ID: "01HABXXX00000003DS", Identity: identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-A", UserID: "user-1", SessionID: "sess-OTHER"}}, Kind: "session.lifecycle", Bytes: []byte("keep")},
+		}
+		for _, r := range seeds {
+			if err := s.Save(ctx, r); err != nil {
+				t.Fatalf("Save(%s): %v", r.Kind, err)
+			}
+		}
+		n, err := s.DeleteScope(ctx, scope)
+		if err != nil {
+			t.Fatalf("DeleteScope: %v", err)
+		}
+		if n != 3 {
+			t.Fatalf("DeleteScope deleted %d records, want 3 (all kinds + runs under the triple)", n)
+		}
+		// The three scoped slots are gone.
+		if _, err := s.Load(ctx, identity.Quadruple{Identity: scope}, "session.lifecycle"); !errors.Is(err, state.ErrNotFound) {
+			t.Errorf("session.lifecycle survived DeleteScope: err=%v", err)
+		}
+		if _, err := s.Load(ctx, identity.Quadruple{Identity: scope, RunID: "run-1"}, "task.checkpoint"); !errors.Is(err, state.ErrNotFound) {
+			t.Errorf("run-scoped task.checkpoint survived DeleteScope: err=%v", err)
+		}
+		// The EventID secondary index for a deleted record is also cleared.
+		if _, err := s.LoadByEventID(ctx, "01HABXXX00000000DS"); !errors.Is(err, state.ErrNotFound) {
+			t.Errorf("DeleteScope left an EventID resolvable: err=%v", err)
+		}
+		// The other session is untouched.
+		other := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-A", UserID: "user-1", SessionID: "sess-OTHER"}}
+		got, err := s.Load(ctx, other, "session.lifecycle")
+		if err != nil {
+			t.Fatalf("sibling session erased by DeleteScope: %v", err)
+		}
+		if string(got.Bytes) != "keep" {
+			t.Errorf("sibling session bytes corrupted: %q", got.Bytes)
+		}
+	})
+
+	t.Run("DeleteScope_Idempotent_AbsentScope", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		n, err := s.DeleteScope(context.Background(),
+			identity.Identity{TenantID: "tenant-A", UserID: "user-1", SessionID: "never-existed"})
+		if err != nil {
+			t.Fatalf("DeleteScope absent: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("DeleteScope on absent scope deleted %d, want 0", n)
+		}
+	})
+
+	t.Run("DeleteScope_Identity_Mandatory", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		cases := []identity.Identity{
+			{},
+			{UserID: "U", SessionID: "S"},
+			{TenantID: "T", SessionID: "S"},
+			{TenantID: "T", UserID: "U"},
+		}
+		for i, id := range cases {
+			if _, err := s.DeleteScope(ctx, id); !errors.Is(err, state.ErrIdentityRequired) {
+				t.Errorf("case %d (%+v): err=%v, want ErrIdentityRequired", i, id, err)
+			}
+		}
+	})
+
+	t.Run("DeleteScope_CrossTenant_Isolation", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		if err := s.Save(ctx, state.StateRecord{ID: "01HABXXX00000010DS", Identity: tripleA(), Kind: "k", Bytes: []byte("A")}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Save(ctx, state.StateRecord{ID: "01HABXXX00000011DS", Identity: tripleB(), Kind: "k", Bytes: []byte("B")}); err != nil {
+			t.Fatal(err)
+		}
+		// Erase tenant A's scope — tenant B's record must survive.
+		if _, err := s.DeleteScope(ctx, tripleA().Identity); err != nil {
+			t.Fatalf("DeleteScope tenant A: %v", err)
+		}
+		if got, err := s.Load(ctx, tripleB(), "k"); err != nil || string(got.Bytes) != "B" {
+			t.Errorf("tenant B record affected by tenant A DeleteScope: got=%q err=%v", got.Bytes, err)
+		}
+	})
+
+	t.Run("DeleteScope_AfterClose_Errors", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		if err := s.Close(ctx); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, err := s.DeleteScope(ctx, tripleA().Identity); !errors.Is(err, state.ErrStoreClosed) {
+			t.Fatalf("err=%v, want errors.Is ErrStoreClosed", err)
 		}
 	})
 

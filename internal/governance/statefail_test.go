@@ -41,6 +41,10 @@ func (failingStateStore) Delete(_ context.Context, _ identity.Quadruple, _ strin
 	return errStateProbe
 }
 
+func (failingStateStore) DeleteScope(_ context.Context, _ identity.Identity) (int, error) {
+	return 0, errStateProbe
+}
+
 func (failingStateStore) ListKind(_ context.Context, _ state.ListScope, _ string) ([]state.StateRecord, error) {
 	return nil, errStateProbe
 }

@@ -6560,3 +6560,116 @@ that plane). RFC §5.2, §5.3, §6.16.
 `internal/protocol/types/version.go` (additive-vs-breaking taxonomy +
 `CapTopologySnapshot` precedent). brief 06, brief 11. Plan:
 `docs/plans/phase-128-agent-config-capability.md`.
+
+---
+
+## D-262 — Session erasure: an identity-scoped sessions.delete that cascades State/Memory/Artifact deletion, refuses fail-loud on a running task, and audits content-free
+
+**Date:** 2026-06-25
+
+**Status:** Accepted (planning)
+
+**Context.** The Harbor Protocol exposes read surfaces for sessions
+(`sessions.list` / `sessions.inspect` / `state.history`) and a single-object
+`artifacts.delete`, but NO operator- or client-initiated way to erase a
+whole session and its scoped data. The SessionManager GC (RFC §6.9) only
+reaps *idle* sessions on its own schedule and never reaps a session with a
+RUNNING task. A generic Protocol client (a third-party Console, an IDE/TUI
+client, an SDK consumer) therefore cannot satisfy a data-lifecycle /
+right-to-erasure request — the session's State, Memory, and Artifacts (each
+identity-scoped, possibly on different drivers) persist with no deletion
+verb. This is a Protocol-surface gap, not a Console gap: erasure must be a
+canonical, identity-mandatory, fail-loud method any client invokes through
+the same wire contract.
+
+**Decision.**
+
+1. **A new additive method `sessions.delete`** (single-sourced in
+   `internal/protocol/methods`, wire route `POST /v1/sessions/delete`,
+   reusing the existing `POST /v1/sessions/` handler with a `delete`
+   branch). Identity-mandatory. Request body carries only the identity
+   scope (no elevation knob); response carries non-sensitive deletion
+   telemetry only (`session_id`, `deleted`, `state_records_deleted`,
+   `artifacts_deleted`, `memory_purged`) — never erased content.
+
+2. **A fail-loud running-task refusal.** `sessions.delete` consults the same
+   `RunningProbe` seam the GC uses; a session with a RUNNING task is refused
+   with a distinct new error code `session_running` (HTTP 409) and NO store
+   is touched — mirroring the RFC §6.9 GC never-reap-running invariant. The
+   runtime never partially erases a running session.
+
+3. **A three-store cascade + session-record hard-delete.** A new
+   `internal/sessions` cascade orchestrator runs, in order:
+   refuse-if-running (`Registry.Erase` load+verifies the record under the
+   caller's identity and probes the running seam) → `ArtifactStore.List`/
+   `Delete` each → `MemoryStore.Flush` → `StateStore.DeleteScope` (a new
+   cascade primitive added to the single mandatory StateStore interface that
+   deletes every record matching the `(tenant, user, session)` triple
+   regardless of `run_id`/`kind` — including the `session.lifecycle`
+   SessionRegistry record itself, so `DeleteScope` performs the durable
+   record hard-delete, NOT a `Closed=true` tombstone — with conformance
+   parity across in-mem / SQLite / Postgres) → `Registry.Erase` clears the
+   in-memory open-sessions / id-index map entry (no durable delete of its
+   own; `DeleteScope` already removed the record) → emit a redacted
+   `session.erased` event under the **actor's** identity scope. The order is
+   deliberate: running `DeleteScope` before a separate durable
+   `Registry.Erase` delete would leave nothing for the latter to load. There
+   is no ACID transaction across the independent stores; the cascade is
+   fail-loud and idempotent — a mid-cascade error returns loudly and is safe
+   to re-invoke to convergence (each per-store delete is idempotent).
+
+4. **An own-session-only scope contract.** A caller may erase only their own
+   verified `(tenant, user, session)`. A body identity mismatching the
+   verified identity is `identity_required` (401) — the handler's
+   `assertSessionsIdentity` defence-in-depth rejects any mismatch before any
+   further scope logic, so a foreign target can never be named; a session
+   absent under the verified triple is `not_found` (404, existence never
+   revealed). There is NO `auth.ScopeAdmin` path, NO `scope_mismatch` (403),
+   and NO `audit.admin_scope_used` emit in this phase: cross-tenant / admin
+   erasure of another identity's session is a deferred non-goal (a separate
+   elevated verb with its own scope-claim + audit design).
+
+5. **Hard-delete the data; tombstone only the fact.** Right-to-erasure
+   requires the State / Memory / Artifact bytes to be actually removed, not
+   flagged. The only durable trace is the redacted `session.erased` audit
+   record (session id + actor + counts + timestamp, NO content) in the
+   audit/compliance sink — NOT re-persisted under the erased session's own
+   identity. Mechanism: the durable event bus encodes every published event
+   as a `StateRecord` keyed by `ev.Identity.{Tenant,User,Session}`, so the
+   event is emitted under the **actor's** observability scope (the erased
+   session id rides as a payload field), never the erased triple — a
+   post-erasure `state.history` for that triple returns empty.
+
+6. **A negotiable capability.** A new `CapSessionLifecycle`
+   (`session_lifecycle`) is advertised on `runtime.info` only when an eraser
+   is wired, so a client detects erasure support via capability negotiation
+   rather than a 404 at call time.
+
+7. **The consumer lands in the same phase (§13).** The cascade handler over
+   the production State / Memory / Artifact drivers + a real Registry is the
+   consumer; an integration test proves delete → subsequent read
+   `not_found`, cross-store erasure, foreign-target 401, running-task 409
+   end-to-end. A Console "delete chat" UI is a follow-on consumer (the typed
+   TS client gains the request/response types regardless, per the D-223
+   lockstep gate).
+
+8. **No version bump.** Method + error code + capability + wire types + the
+   StateStore method are all additive — a Minor-class change in the
+   `internal/protocol/types/version.go` taxonomy. RFC §5.3's rule that
+   bumping `ProtocolVersion` is an RFC change is exactly why this stays
+   additive: `ProtocolVersion` holds. The generated Protocol reference
+   (`docs/site/protocol/{methods,errors,types}.md`) is regenerated with
+   `make protocol-docs-gen` and committed in the same PR (D-209).
+
+**Out of scope.** Bulk/user-wide/tenant-wide erasure (one session per
+call); purging the USER-scope agent-config revision store (keyed by
+`(tenant, user)`, survives a session, a separate config-plane concern); a
+new transport or scope.
+
+**§4.3 deviations.** None — additive surface on existing seams.
+
+**Cross-references.** D-223 (the TS lockstep gate the new types regen
+into), D-209 (the generated Protocol-docs regen gate), D-061 (Console is a
+Protocol client), D-025 (concurrent-reuse contract for the shared erasure
+Service). RFC §5.2, §6.9, §6.11, §6.13, §7. brief 05, brief 06. Plan:
+`docs/plans/phase-130-session-erasure-method.md`.

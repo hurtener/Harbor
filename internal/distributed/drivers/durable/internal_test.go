@@ -31,6 +31,9 @@ func (f *fakeStore) LoadByEventID(context.Context, state.EventID) (state.StateRe
 	return state.StateRecord{}, state.ErrNotFound
 }
 func (f *fakeStore) Delete(context.Context, identity.Quadruple, string) error { return nil }
+func (f *fakeStore) DeleteScope(context.Context, identity.Identity) (int, error) {
+	return 0, nil
+}
 func (f *fakeStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
 	return f.listRecs, f.listErr
 }

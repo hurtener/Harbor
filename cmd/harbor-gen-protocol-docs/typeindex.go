@@ -259,6 +259,8 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"SearchResultRow":                             reflect.TypeOf(types.SearchResultRow{}),
 	"SessionFilter":                               reflect.TypeOf(types.SessionFilter{}),
 	"SessionRow":                                  reflect.TypeOf(types.SessionRow{}),
+	"SessionsDeleteRequest":                       reflect.TypeOf(types.SessionsDeleteRequest{}),
+	"SessionsDeleteResponse":                      reflect.TypeOf(types.SessionsDeleteResponse{}),
 	"SessionsInspectRequest":                      reflect.TypeOf(types.SessionsInspectRequest{}),
 	"SessionsInspectResponse":                     reflect.TypeOf(types.SessionsInspectResponse{}),
 	"SessionsListRequest":                         reflect.TypeOf(types.SessionsListRequest{}),

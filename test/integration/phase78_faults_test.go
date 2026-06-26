@@ -117,6 +117,13 @@ func (f *faultyStateStore) Delete(ctx context.Context, id identity.Quadruple, ki
 	return f.inner.Delete(ctx, id, kind)
 }
 
+func (f *faultyStateStore) DeleteScope(ctx context.Context, id identity.Identity) (int, error) {
+	if f.faulted() {
+		return 0, errStateDisconnected
+	}
+	return f.inner.DeleteScope(ctx, id)
+}
+
 func (f *faultyStateStore) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
 	if f.faulted() {
 		return nil, errStateDisconnected

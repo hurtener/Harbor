@@ -10,8 +10,12 @@
 //
 //	POST /v1/sessions/list     — paginated, filtered session catalog
 //	POST /v1/sessions/inspect  — a single session's full snapshot
+//	POST /v1/sessions/delete   — own-session data-lifecycle erasure
 //
-// Both routes are read-only and identity-mandatory. A cross-tenant
+// The list / inspect routes are read-only; `sessions.delete` mutates
+// (it erases the caller's own session and cascades deletion of its scoped
+// State, Memory, and Artifacts). All three are identity-mandatory. A
+// cross-tenant
 // `sessions.list` filter (a `tenant_ids` entry outside the caller's
 // verified tenant) is gated on the verified `auth.ScopeAdmin` claim
 // (closed two-scope set — NO new scope is minted); the
@@ -127,6 +131,8 @@ func (h *SessionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveList(w, r, body, wireID, adminScoped)
 	case "inspect":
 		h.serveInspect(w, r, body, wireID, adminScoped)
+	case "delete":
+		h.serveDelete(w, r, body, wireID)
 	default:
 		writeSessionsError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown sessions method route")
@@ -168,6 +174,32 @@ func (h *SessionsHandler) serveInspect(w http.ResponseWriter, r *http.Request, b
 	resp, err := h.service.Inspect(r.Context(), req, adminScoped)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodSessionsInspect, err)
+		return
+	}
+	writeSessionsJSON(w, r, resp, h.logger)
+}
+
+// serveDelete handles `POST /v1/sessions/delete` — the own-session-only
+// data-lifecycle erasure. The body identity must match the verified
+// identity (defence-in-depth via assertSessionsIdentity); a mismatch is
+// rejected identity_required (401) BEFORE any erasure logic, so a foreign
+// target can never be named. There is NO admin / cross-tenant path —
+// adminScoped is deliberately not threaded into Delete.
+func (h *SessionsHandler) serveDelete(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.SessionsDeleteRequest
+	if err := decodeSessionsBody(body, &req); err != nil {
+		writeSessionsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			"failed to decode sessions.delete request: "+err.Error())
+		return
+	}
+	if perr := assertSessionsIdentity(req.Identity, wireID); perr != "" {
+		writeSessionsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.Delete(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodSessionsDelete, err)
 		return
 	}
 	writeSessionsJSON(w, r, resp, h.logger)
@@ -227,6 +259,12 @@ func classifySessionsError(method methods.Method, err error) (protoerrors.Code, 
 	case errors.Is(err, sessionsprotocol.ErrSessionNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": session not found"
+	case errors.Is(err, sessionsprotocol.ErrSessionRunning):
+		return protoerrors.CodeSessionRunning, http.StatusConflict,
+			m + ": cannot erase a session with a running task"
+	case errors.Is(err, sessionsprotocol.ErrErasureUnsupported):
+		return protoerrors.CodeUnknownMethod, http.StatusNotFound,
+			m + ": session erasure is not supported on this runtime"
 	case errors.Is(err, sessionsprotocol.ErrInvalidRequest):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": invalid request — " + err.Error()

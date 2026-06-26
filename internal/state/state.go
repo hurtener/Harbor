@@ -112,6 +112,25 @@ type StateStore interface {
 	// record is absent (idempotent), wrapped error on store failure.
 	Delete(ctx context.Context, id identity.Quadruple, kind string) error
 
+	// DeleteScope removes EVERY record whose (tenant, user, session)
+	// matches id, regardless of run_id or kind. It is the kind-agnostic
+	// cascade primitive a session-erasure (`sessions.delete`) runs to
+	// remove all data scoped to a session in one call — the session
+	// lifecycle record, run-scoped trajectories, planner checkpoints, and
+	// the durable event stream all live under the triple and all go.
+	//
+	// Unlike ListKind, DeleteScope is identity-scoped — NOT a
+	// maintenance-elevated cross-identity scan. It deletes only the
+	// caller's OWN session, so it needs no ListScope claim: the triple IS
+	// the scope. It fails closed with ErrIdentityRequired on an
+	// incomplete triple (empty tenant / user / session); empty RunID is
+	// irrelevant — the match ignores run_id entirely.
+	//
+	// It is idempotent: an absent scope returns (0, nil), never an error,
+	// so a cascade interrupted mid-flight is safe to re-invoke to
+	// convergence. Returns the number of records deleted.
+	DeleteScope(ctx context.Context, id identity.Identity) (int, error)
+
 	// ListKind enumerates every record whose Kind starts with
 	// kindPrefix — the store's ONE maintenance-scan surface
 	// (RFC §6.11). Unlike every other method, the scan crosses

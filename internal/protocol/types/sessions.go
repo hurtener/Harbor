@@ -296,3 +296,44 @@ type SessionsInspectResponse struct {
 	// (≤ MaxSessionArtifactSummaries), most-recent first.
 	RecentArtifacts []ArtifactRefSummary `json:"recent_artifacts"`
 }
+
+// SessionsDeleteRequest is the `sessions.delete` request body — the
+// identity-scoped data-lifecycle erasure of a whole session and its
+// scoped data.
+//
+// The body Identity MUST equal the caller's verified identity: there is
+// NO elevation knob and NO cross-tenant path; a caller erases only their
+// own `(tenant, user, session)`. A body identity mismatching the
+// verified identity is rejected `identity_required` (the
+// defence-in-depth check fires before any further scope logic, so a
+// foreign target can never be named). A session absent under the
+// verified triple is `not_found` (existence is never revealed across
+// identities). A session with a RUNNING task is refused `session_running`
+// (409).
+type SessionsDeleteRequest struct {
+	// Identity is the (tenant, user, session) scope to erase. Mandatory —
+	// an incomplete triple fails closed with CodeIdentityRequired.
+	Identity IdentityScope `json:"identity"`
+}
+
+// SessionsDeleteResponse reports the erasure outcome with non-sensitive
+// deletion telemetry only — never any erased user content. The counts
+// let an operator confirm the cascade reached every scoped store.
+type SessionsDeleteResponse struct {
+	// SessionID is the session that was erased.
+	SessionID string `json:"session_id"`
+	// Deleted is true when the cascade completed (the session and its
+	// scoped data were removed).
+	Deleted bool `json:"deleted"`
+	// StateRecordsDeleted is the number of StateStore records removed by
+	// the kind-agnostic scope delete (the session.lifecycle record, run-
+	// scoped trajectories, planner checkpoints, and the durable event
+	// stream all live under the triple and all go).
+	StateRecordsDeleted int `json:"state_records_deleted"`
+	// ArtifactsDeleted is the number of artifacts removed from the
+	// session's scope.
+	ArtifactsDeleted int `json:"artifacts_deleted"`
+	// MemoryPurged is true when the session's memory was flushed to a
+	// clean state.
+	MemoryPurged bool `json:"memory_purged"`
+}

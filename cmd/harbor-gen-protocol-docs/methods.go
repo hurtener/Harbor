@@ -358,6 +358,11 @@ func methodTable() map[methods.Method]methodEntry {
 			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsInspect), Mutates: false,
 			Request: "SessionsInspectRequest", Response: "SessionsInspectResponse",
 		},
+		methods.MethodSessionsDelete: {
+			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsDelete), Mutates: true,
+			Request: "SessionsDeleteRequest", Response: "SessionsDeleteResponse",
+			Auth: "Own-session-only — a caller erases solely their own verified `(tenant, user, session)`; a body identity mismatching the verified identity is rejected `identity_required`. No admin / cross-tenant path.",
+		},
 
 		// --- Flows: five reads + the one admin run.
 		methods.MethodFlowsList:         flowsRead(methods.MethodFlowsList, "FlowListRequest", "FlowListResponse", crossTenantAdminOnly),

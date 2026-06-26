@@ -176,6 +176,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	sessions.EventTypeSessionTouched:  {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionTouchedPayload{})}},
 	sessions.EventTypeSessionClosed:   {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionClosedPayload{})}},
 	sessions.EventTypeSessionGCReaped: {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionGCReapedPayload{})}},
+	sessions.EventTypeSessionErased:   {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionErasedPayload{})}},
 
 	// --- Skills.
 	skills.EventTypeSkillUpserted:             {Payloads: []reflect.Type{reflect.TypeOf(skills.SkillUpsertedPayload{})}},

@@ -359,9 +359,15 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapAgentConfig) {
 		t.Fatal("handshake.Accepts(CapAgentConfig) = false; the Phase 128 agent-config surface must appear in the canonical capability set")
 	}
+	// Phase 130 (D-262) added the session-lifecycle capability (the
+	// `sessions.delete` data-lifecycle erasure surface) — additive, no
+	// ProtocolVersion bump. A §17.6 paired update with this pin.
+	if !h.Accepts(types.CapSessionLifecycle) {
+		t.Fatal("handshake.Accepts(CapSessionLifecycle) = false; the Phase 130 session-lifecycle surface must appear in the canonical capability set")
+	}
 	caps := h.Capabilities
-	if len(caps) != 6 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config}", caps)
+	if len(caps) != 7 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config, session_lifecycle}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

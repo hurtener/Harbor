@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 109 canonical Harbor Protocol methods, generated from the single-source registry
+The 110 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -47,6 +47,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
+| `sessions.delete` | `POST /v1/sessions/delete` | sessions (read-only) | [`SessionsDeleteRequest`](./types.md#sessionsdeleterequest) | [`SessionsDeleteResponse`](./types.md#sessionsdeleteresponse) | mutating; Own-session-only — a caller erases solely their own verified `(tenant, user, session)`; a body identity mismatching the verified identity is rejected `identity_required`. No admin / cross-tenant path. |
 | `sessions.inspect` | `POST /v1/sessions/inspect` | sessions (read-only) | [`SessionsInspectRequest`](./types.md#sessionsinspectrequest) | [`SessionsInspectResponse`](./types.md#sessionsinspectresponse) | read-only |
 | `sessions.list` | `POST /v1/sessions/list` | sessions (read-only) | [`SessionsListRequest`](./types.md#sessionslistrequest) | [`SessionsListResponse`](./types.md#sessionslistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 

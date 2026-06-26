@@ -870,6 +870,13 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			// `WithoutValidator` for that explicit opt-out.
 			muxOpts = append(muxOpts, transports.WithoutValidator())
 		}
+		// The session-erasure cascade (`sessions.delete`) is wired
+		// only when every scoped store the cascade deletes is present (the
+		// SessionRegistry + State + Memory + Artifacts). The same condition
+		// drives the eraser wiring below and the CapSessionLifecycle
+		// advertisement here, so the capability is honest about the route.
+		sessionLifecycleAvailable := stack.Sessions != nil && stack.State != nil &&
+			stack.Memory != nil && stack.Artifacts != nil
 		// Phase 72f / 72g (D-111 / D-112): mirror `bootDevStack` — wire
 		// the single posture surface so all seven posture methods route
 		// through it. Governance identity-tier ENFORCEMENT is wired by
@@ -917,6 +924,9 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			// surface (the agentConfigService variable does not exist yet
 			// at this construction point).
 			AgentConfigAvailable: stack.AgentConfig != nil,
+			// Advertise session_lifecycle iff the `sessions.delete` eraser
+			// is wired below.
+			SessionLifecycleAvailable: sessionLifecycleAvailable,
 		})
 		if postErr != nil {
 			return stack, fmt.Errorf("protocol.NewPostureSurface: %w", postErr)
@@ -1121,10 +1131,29 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			if spErr != nil {
 				return stack, fmt.Errorf("sessions/protocol projector: %w", spErr)
 			}
-			sessionsService, ssErr := sessionsprotocol.NewService(sessionsProjector,
+			sessionsOpts := []sessionsprotocol.Option{
 				sessionsprotocol.WithBus(bus),
 				sessionsprotocol.WithRedactor(stack.Audit),
-			)
+			}
+			// Wire the session-erasure cascade (`sessions.delete`)
+			// over the real scoped stores when all are present, so an
+			// integration test exercises the full three-store erasure path.
+			// Mirrors production `cmd/harbor/cmd_dev.go::bootDevStack`.
+			if sessionLifecycleAvailable {
+				eraser, eErr := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+					Registry:  stack.Sessions,
+					State:     stack.State,
+					Memory:    stack.Memory,
+					Artifacts: stack.Artifacts,
+					Bus:       bus,
+					Redactor:  stack.Audit,
+				})
+				if eErr != nil {
+					return stack, fmt.Errorf("sessions/protocol eraser: %w", eErr)
+				}
+				sessionsOpts = append(sessionsOpts, sessionsprotocol.WithEraser(eraser))
+			}
+			sessionsService, ssErr := sessionsprotocol.NewService(sessionsProjector, sessionsOpts...)
 			if ssErr != nil {
 				return stack, fmt.Errorf("sessions/protocol service: %w", ssErr)
 			}

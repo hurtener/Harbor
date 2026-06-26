@@ -88,13 +88,14 @@ assert_grep_present 'auth\.HasScope\(r\.Context\(\), auth\.ScopeAdmin\)' "${CONT
 # CodePayloadInvalid / CodeUnknownMethod / CodeNotFound /
 # CodeRuntimeError / CodeAuthRejected) plus CodeIdentityScopeRequired
 # (Phase 72 / D-105) plus CodePresignUnsupported + CodeRequestTooLarge
-# (Phase 73l / D-120 artifacts surface) = 11. The count is updated per
+# (Phase 73l / D-120 artifacts surface) plus CodeSessionRunning (Phase
+# 130 / D-262 session-erasure surface) = 12. The count is updated per
 # CLAUDE.md §17.6 ("fix what the integration test finds — no matter
 # where the bug lives") as the canonical set grows; the load-bearing
 # 72b assertion is that NO code was minted by 72b, which still holds.
 assert_grep_count 'Code[A-Z][A-Za-z]+[[:space:]]+Code[[:space:]]*=' \
-    internal/protocol/errors/errors.go 11 \
-    "phase 72b: internal/protocol/errors carries the canonical 11-code set (8 Phase 56 + Phase 72 + 2 Phase 73l) — no new code minted by 72b"
+    internal/protocol/errors/errors.go 12 \
+    "phase 72b: internal/protocol/errors carries the canonical 12-code set (8 Phase 56 + Phase 72 + 2 Phase 73l + Phase 130) — no new code minted by 72b"
 
 # 5. No Console import from the impersonation surface (CLAUDE.md
 # §13 — the Runtime never imports Console code). Defence in depth

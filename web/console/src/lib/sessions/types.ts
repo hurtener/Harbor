@@ -117,6 +117,27 @@ export interface SessionsInspectResponse {
   recent_artifacts: ArtifactRefSummary[];
 }
 
+/**
+ * The `sessions.delete` request body — the own-session-only data-lifecycle
+ * erasure (D-262). The `identity` MUST equal the caller's verified identity
+ * (no admin / cross-tenant path); a mismatch is rejected `identity_required`.
+ */
+export interface SessionsDeleteRequest {
+  identity: SessionIdentityScope;
+}
+
+/**
+ * The `sessions.delete` reply — non-sensitive deletion telemetry only, never
+ * erased user content (D-262).
+ */
+export interface SessionsDeleteResponse {
+  session_id: string;
+  deleted: boolean;
+  state_records_deleted: number;
+  artifacts_deleted: number;
+  memory_purged: boolean;
+}
+
 /** The Sessions-page pagination bounds — mirror the Go-side constants. */
 export const DEFAULT_SESSION_LIST_LIMIT = 50;
 export const MAX_SESSION_LIST_LIMIT = 200;

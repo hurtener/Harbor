@@ -211,6 +211,33 @@ func (d *driver) Delete(_ context.Context, q identity.Quadruple, kind string) er
 	return nil
 }
 
+// DeleteScope implements state.StateStore — the kind-agnostic cascade
+// primitive. It removes every record whose (tenant, user, session)
+// matches id, regardless of run or kind, and evicts each removed
+// record's EventID from the secondary index. Identity-scoped (no
+// maintenance claim) and idempotent: an absent scope returns (0, nil).
+func (d *driver) DeleteScope(_ context.Context, id identity.Identity) (int, error) {
+	if d.closed.Load() {
+		return 0, state.ErrStoreClosed
+	}
+	if err := state.ValidateIdentity(identity.Quadruple{Identity: id}); err != nil {
+		return 0, err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	deleted := 0
+	for key, rec := range d.records {
+		if key.Tenant != id.TenantID || key.User != id.UserID || key.Session != id.SessionID {
+			continue
+		}
+		delete(d.records, key)
+		delete(d.eventIdx, rec.ID)
+		deleted++
+	}
+	return deleted, nil
+}
+
 // ListKind implements state.StateStore — the explicitly-elevated
 // maintenance scan (RFC §6.11). The prefix matches literally
 // via strings.HasPrefix; results carry value copies with cloned Bytes

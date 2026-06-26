@@ -375,6 +375,96 @@ func (r *Registry) Close(ctx context.Context, id string, reason string) error {
 	return nil
 }
 
+// Erase is the registry-side pre-flight + in-memory clear for a session
+// erasure (`sessions.delete`). It runs the fail-loud preconditions that
+// MUST hold before any store is touched — load+verify the record under
+// the caller's verified ctx identity, then probe the RunningProbe seam —
+// and, when they pass, clears the in-memory open-sessions / id-index map
+// entry and the per-(tenant, user) discovery catalog.
+//
+// Erase performs NO durable record delete of its own: the durable
+// `session.lifecycle` record is itself a StateStore record under the
+// triple, removed by the kind-agnostic StateStore.DeleteScope step of
+// the cascade. Calling Erase standalone leaves the durable record in
+// place (the caller is expected to run DeleteScope); the erasure
+// orchestrator composes the two via the unexported preflightErase /
+// clearErased halves so the probe runs FIRST (a refusal touches
+// nothing) and the in-memory clear runs LAST (after DeleteScope).
+//
+// Identity-mandatory: the ctx identity scopes the read, and its
+// SessionID must equal id. Returns ErrSessionNotFound when no record is
+// visible to the caller's identity, ErrSessionRunning when the probe
+// reports a RUNNING task (no store touched), ErrIdentityMismatch when
+// the stored identity disagrees with the caller's.
+func (r *Registry) Erase(ctx context.Context, id string) error {
+	ident, err := r.preflightErase(ctx, id)
+	if err != nil {
+		return err
+	}
+	return r.clearErased(ctx, ident)
+}
+
+// preflightErase runs the fail-loud preconditions for an erasure without
+// mutating anything: it validates the ctx identity (its SessionID must
+// equal id), loads+verifies the session record under that identity, and
+// probes the RunningProbe seam. A refusal (ErrSessionNotFound /
+// ErrSessionRunning / ErrIdentityMismatch) touches no store. On success
+// it returns the verified identity the cascade scopes its deletions to.
+func (r *Registry) preflightErase(ctx context.Context, id string) (identity.Identity, error) {
+	if r.closed.Load() {
+		return identity.Identity{}, ErrRegistryClosed
+	}
+	ident, ok := identity.From(ctx)
+	if !ok {
+		return identity.Identity{}, fmt.Errorf("sessions: Erase requires identity in ctx: %w", identity.ErrIdentityMissing)
+	}
+	if ident.SessionID != id {
+		return identity.Identity{}, fmt.Errorf("sessions: Erase id=%q does not match ctx SessionID=%q", id, ident.SessionID)
+	}
+	stored, err := r.loadSession(ctx, ident)
+	if err != nil {
+		return identity.Identity{}, err
+	}
+	if !sameIdentity(stored.Identity, ident) {
+		return identity.Identity{}, fmt.Errorf("%w: stored=(%s,%s,%s) ctx=(%s,%s,%s)",
+			ErrIdentityMismatch,
+			stored.Identity.TenantID, stored.Identity.UserID, stored.Identity.SessionID,
+			ident.TenantID, ident.UserID, ident.SessionID)
+	}
+	if r.gcPolicy.RunningProbe != nil {
+		running, perr := r.gcPolicy.RunningProbe(ctx, identity.Quadruple{Identity: ident})
+		if perr != nil {
+			return identity.Identity{}, fmt.Errorf("sessions: Erase probe: %w", perr)
+		}
+		if running {
+			return identity.Identity{}, fmt.Errorf("%w: SessionID=%q", ErrSessionRunning, id)
+		}
+	}
+	return ident, nil
+}
+
+// clearErased removes the session's in-memory catalogs (openSessions +
+// idIndex) and its persisted per-(tenant, user) discovery catalog entry.
+// It performs no session-record delete (DeleteScope owns that). The
+// in-memory map deletes are guarded by r.mu; the catalog read-modify-
+// write goes through the StateStore (its own concurrency boundary).
+// Idempotent — clearing an already-cleared session is a no-op.
+func (r *Registry) clearErased(ctx context.Context, ident identity.Identity) error {
+	if r.closed.Load() {
+		return ErrRegistryClosed
+	}
+	r.mu.Lock()
+	delete(r.openSessions, ident.SessionID)
+	delete(r.idIndex, ident.SessionID)
+	r.mu.Unlock()
+	// Remove the session from the (tenant, user) discovery catalog so a
+	// later process does not re-hydrate a now-erased session id.
+	if err := r.removeFromCatalog(ctx, ident.TenantID, ident.UserID, ident.SessionID); err != nil {
+		return fmt.Errorf("sessions: Erase catalog cleanup: %w", err)
+	}
+	return nil
+}
+
 // Inspect returns a SessionSnapshot. Running is derived from the
 // configured RunningProbe at inspection time.
 func (r *Registry) Inspect(ctx context.Context, id string) (*SessionSnapshot, error) {

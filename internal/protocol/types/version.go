@@ -405,6 +405,18 @@ const (
 	// surface is mounted. Backward-compatible (RFC §5.3 minor-class
 	// addition) — no version bump.
 	CapAgentConfig Capability = "agent_config"
+	// CapSessionLifecycle — the session data-lifecycle surface: the
+	// `sessions.delete` identity-scoped erasure method that deletes a
+	// session and cascades deletion of its scoped State, Memory, and
+	// Artifacts. Conditional: a runtime advertises it ONLY when it wired
+	// an eraser (the three scoped stores + the SessionRegistry behind the
+	// cascade). A read-only or headless runtime that did not wire an
+	// eraser does NOT advertise it, so a Protocol client detects erasure
+	// support via `VersionHandshake.Accepts(CapSessionLifecycle)` rather
+	// than discovering a missing route by a 404 at call time. The addition
+	// is backward-compatible (RFC §5.3 minor-class change) — no version
+	// bump.
+	CapSessionLifecycle Capability = "session_lifecycle"
 )
 
 // canonicalCapabilities is the registered set — the universe of
@@ -425,6 +437,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapTopologySnapshot: {},
 	CapStateSnapshots:   {},
 	CapAgentConfig:      {},
+	CapSessionLifecycle: {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol
