@@ -6829,3 +6829,75 @@ forward-references), D-261 (the JWKS max-stale ceiling on the same verifier).
 RFC §5.5 (Authentication), §4.2 (mandatory identity), §8 (CLI layer). brief 06,
 brief 09. Plan: `docs/plans/phase-131a-production-identity-setup.md`. Wave
 coordination: `docs/plans/wave-v18-coordination.md` §3.
+
+---
+
+## D-265 — The embed one-call runner is a single blocking `Stack.RunOnce`; `NewRunContext` is the shared RunContext factory
+
+**Date:** 2026-06-26
+
+**Status:** Accepted (planning)
+
+**Context.** Harbor advertises three adopter paths; the embed path was
+honest about *assembly* (`assemble.Assemble` is a genuine one-call
+composer) but not about *running a goal*: after assembly an embedder
+still hand-built a `planner.RunContext` and a `steering.RunSpec` and
+drove `RunLoop.Run` itself — ~15–27 lines of ceremony per run that
+re-derived the memory / skills / artifact / streaming projections the
+run-loop drivers already compose. There was no production one-call
+runner (`RunOnce` existed only as the `harbortest` test kit), and the
+RunContext-population projection lived as two near-identical bodies
+(`cmd/harbor/cmd_dev_runloop.go` and `harbortest/devstack`) that already
+share the underlying helpers but build the `RunContext` shell twice.
+
+**Decision.** Ship two paired symbols (primitive + consumer, same wave,
+§13):
+
+1. **`runctx.NewRunContext(ctx, src, quad, goal, opts...)`** — the ONE
+   shared factory that projects stack-derived subsystem handles into a
+   fully-populated `planner.RunContext`, composing the EXISTING
+   projection helpers (`FetchMemoryBlocks`, `ProjectSkillsDirectory`
+   over `Directory.View`, `ResolveInputArtifacts`, the bus chunk
+   publisher) — never a third hand-rolled construction site. Identity is
+   mandatory and fails loud. A parity test pins field-equality with each
+   helper called directly, so a refactor cannot fork the factory off the
+   shared helpers. The dev-driver bodies are NOT rewritten (their
+   per-task projection threads control-plane resolutions the headless
+   factory omits by design); they keep calling the same helpers.
+
+2. **`Stack.RunOnce(ctx, goal, identity, opts ...RunOption)`** — a
+   SINGLE blocking runner (no sync/async split, no `Sync` suffix) that
+   builds the RunContext via `NewRunContext`, drives the assembled
+   `RunLoop`, writes the session memory turn on a goal-satisfying finish
+   (best-effort, mirroring the drivers), and returns the canonical
+   `planner.AnswerEnvelope`. Blocking matches the verified house style
+   (`harbortest.RunOnce` and `steering.RunLoop.Run` both block on the
+   calling goroutine; "async" is the caller's own `go`). A non-runnable
+   stack (no planner/run loop) returns `ErrNotRunnable`, never a silent
+   no-op. Both symbols gain `sdk/` facade aliases (`sdk/assemble`,
+   `sdk/runctx`).
+
+**Why a single blocking method (no sync/async split).** A second
+`RunOnceAsync` would be a parallel implementation of the same
+conceptual feature (§13 forbids that) — the caller's `go stack.RunOnce(…)`
+already gives async with zero new surface. The streaming variant is the
+sibling **D-266** (132-stream): a `WithStream` sink on the SAME blocking
+`RunOnce`, not a separate method. `RunOption` / `runctx.Option` are
+functional-option types so the sink lands without a signature change.
+
+**Concurrency (D-025).** The compiled `Stack` is immutable after
+`Assemble`; `RunOnce` reads run-specific data only from its arguments and
+allocates fresh per-run `RepairCounters` / `Trajectory` / projections.
+An N≥100 concurrent-reuse `-race` test against one shared Stack pins no
+data races, no context bleed, no cross-cancellation, and a restored
+goroutine baseline after Close.
+
+**Deviations.** None from a brief; the dev-driver bodies are
+deliberately left intact (documented above), not a silent departure.
+
+**Cross-references.** `assemble.Assemble` + the `Stack` shape (D-197),
+the production driver aggregator (D-196), the shared RunContext-population
+helpers, `planner.AnswerEnvelope` (D-194), the SDK facade (D-204/D-205),
+D-266 (the `WithStream` sibling), D-025 (concurrent-reuse contract). RFC
+§3.6 / §6.2 / §6.4. brief 01, brief 02. Plan:
+`docs/plans/phase-132-embed-runonce.md`.

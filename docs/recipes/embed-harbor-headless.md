@@ -26,6 +26,8 @@ references real exported symbols (Phase 110d, D-197).
 | Config baseline | `config.Defaults()` | 110c (D-196) |
 | Headless validation | `cfg.ValidateCore()` | 110c (D-196) |
 | The ONE fan-out | `assemble.Assemble(ctx, cfg, opts)` | 110d (D-197) |
+| The one-call runner | `Stack.RunOnce(ctx, goal, identity, opts...)` | 132 (D-265) |
+| The RunContext factory | `runctx.NewRunContext(ctx, src, quad, goal, opts...)` | 132 (D-265) |
 | Tool dispatch | `Stack.Executor` (the promoted `dispatch.NewToolExecutor` concrete) | 110a (D-194) |
 | The run loop | `Stack.RunLoop.Run(ctx, steering.RunSpec{...})` | 53 / 83i |
 | The answer | `planner.AnswerEnvelope` | 110a (D-194) |
@@ -106,9 +108,47 @@ Register your own in-process tools before assembling via
 ## 4. Run one goal
 
 Identity is mandatory (§6): every run carries the
-`(tenant, user, session)` triple plus a run ID. Drive the shared
-`RunLoop` directly — the same loop `harbor dev` drives per spawned
-task — with the assembled planner and executor.
+`(tenant, user, session)` triple. Two ways to run a goal:
+
+- **4a — `Stack.RunOnce` (the shorthand).** One blocking call builds
+  the RunContext, drives the run loop, and returns the answer envelope.
+  Reach for this first.
+- **4b — drive `RunLoop.Run` yourself.** The explicit path when you need
+  to hand-shape the `RunContext` / `RunSpec` (a custom catalog filter,
+  pre-resolved input artifacts, a non-default budget). Both are
+  test-gated.
+
+### 4a. The one-call runner — `Stack.RunOnce`
+
+`RunOnce` is the production counterpart to the hand-built loop below:
+it composes the same memory / skills / artifact / streaming projections
+through `runctx.NewRunContext`, drives the assembled `RunLoop`, and
+returns the terminal `planner.AnswerEnvelope`. It BLOCKS on the calling
+goroutine (no `Sync` suffix) — wrap it in your own `go` for concurrency;
+the stack is safe to share across goroutines (D-025).
+
+```go
+env, err := stack.RunOnce(ctx,
+    "Summarise the latest deployment status.",
+    identity.Identity{TenantID: "acme", UserID: "u-42", SessionID: "s-1"})
+if err != nil {
+    return fmt.Errorf("run: %w", err)
+}
+fmt.Println(env.Answer) // env.FinishReason == "goal" on success
+```
+
+A fresh run ID is synthesised per call; pin one with
+`assemble.WithRunID("…")`, and pre-resolve operator-uploaded inputs with
+`assemble.WithInputArtifacts(ids...)`. A stack assembled without a
+planner/run loop (no LLM driver, or `SkipRunLoop`) returns
+`assemble.ErrNotRunnable` — never a silent no-op. The checked-in
+`examples/embed-runonce/` is this exact program; the Phase 112b smoke
+compiles it.
+
+### 4b. Drive the run loop yourself
+
+Drive the shared `RunLoop` directly — the same loop `harbor dev` drives
+per spawned task — with the assembled planner and executor.
 
 ```go
 q := identity.Quadruple{

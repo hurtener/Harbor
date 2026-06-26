@@ -343,4 +343,50 @@ else
     tail -40 "${probe_log}" | sed 's/^/    /'
 fi
 
+# --- 6. The embed one-call runner — Stack.RunOnce (phase 132, D-265) ----------
+#
+# The production one-call runner ships with a checked-in worked example
+# (examples/embed-runonce/, sdk/-facade only) and the mandatory tests:
+# the NewRunContext projection-parity table and the N>=100 concurrent-
+# reuse -race stress against ONE shared Stack (D-025). This leg builds
+# the real example file (a heredoc would be gameable) and asserts both
+# test surfaces exist and pass.
+
+# 6a — the example is a real, checked-in, sdk-facade-only program.
+assert_grep_present 'github.com/hurtener/Harbor/sdk/assemble' \
+    "${ROOT}/examples/embed-runonce/main.go" \
+    'phase 132: embed-runonce example imports the sdk/ facade'
+assert_grep_present 'RunOnce' \
+    "${ROOT}/examples/embed-runonce/main.go" \
+    'phase 132: embed-runonce example calls Stack.RunOnce'
+assert_grep_absent 'hurtener/Harbor/internal' \
+    "${ROOT}/examples/embed-runonce/main.go" \
+    'phase 132: embed-runonce example emits no internal/ import'
+
+runonce_build_log="${TMPDIR}/runonce-build.log"
+if elapsed=$(run_bounded "${runonce_build_log}" "${ROOT}" sh -c 'go build -o /dev/null ./examples/embed-runonce/'); then
+    ok "phase 132: embed-runonce example compiles (go build, ${elapsed}s)"
+else
+    fail 'phase 132: embed-runonce example does NOT compile (see tail)'
+    tail -40 "${runonce_build_log}" | sed 's/^/    /'
+fi
+
+# 6b — the mandatory tests exist (grep) AND pass under -race. The N>=100
+# concurrent-reuse stress + the projection-parity table are the D-265 /
+# §11 gate; a SKIP-that-should-be-OK here would be a false green.
+assert_grep_present 'TestRunOnce_ConcurrentReuse_NoBleedNoLeak' \
+    "${ROOT}/internal/runtime/assemble/runonce_test.go" \
+    'phase 132: N>=100 concurrent-reuse RunOnce -race test exists'
+assert_grep_present 'TestNewRunContext_MemoryParity' \
+    "${ROOT}/internal/runtime/runctx/newruncontext_test.go" \
+    'phase 132: NewRunContext projection-parity test exists'
+
+runonce_test_log="${TMPDIR}/runonce-test.log"
+if elapsed=$(run_bounded "${runonce_test_log}" "${ROOT}" sh -c 'go test -race -run "TestRunOnce|TestNewRunContext" ./internal/runtime/assemble/ ./internal/runtime/runctx/'); then
+    ok "phase 132: RunOnce + NewRunContext parity/concurrency tests pass under -race (${elapsed}s)"
+else
+    fail 'phase 132: RunOnce + NewRunContext tests FAILED under -race (see tail)'
+    tail -40 "${runonce_test_log}" | sed 's/^/    /'
+fi
+
 smoke_summary
