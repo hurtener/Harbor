@@ -797,7 +797,7 @@ func TestE2E_WaveV17_ConcurrencyStress(t *testing.T) {
 
 	// Interleave runtime.info posts (control session token).
 	const infoWorkers = 8
-	for w := 0; w < infoWorkers; w++ {
+	for range infoWorkers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -815,7 +815,7 @@ func TestE2E_WaveV17_ConcurrencyStress(t *testing.T) {
 
 	// Interleave direct JWKS Validate calls — assert no identity bleed.
 	const validateWorkers = 8
-	for w := 0; w < validateWorkers; w++ {
+	for range validateWorkers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
