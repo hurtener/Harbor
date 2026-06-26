@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -200,6 +201,14 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 	if cerr := r.addToCatalog(ctx, ident.TenantID, ident.UserID, id); cerr != nil {
 		return nil, cerr
 	}
+
+	// A fresh session on this triple may be REUSING a session id whose
+	// prior occupant was erased (`sessions.delete`). The erasure fenced the
+	// triple on the event bus to drop a defunct task's late events; lift the
+	// fence now so this new session's events — starting with the
+	// session.opened below — are retained normally (events.Fencer). Ordered
+	// before the publish so the opened event itself is not dropped.
+	r.unfenceSession(ctx, ident)
 
 	// Emit session.opened.
 	r.publish(ctx, q, events.Event{
@@ -680,6 +689,25 @@ func (r *Registry) save(ctx context.Context, s Session) error {
 // triple (caller is the registry, which always has it).
 func (r *Registry) publish(ctx context.Context, _ identity.Quadruple, ev events.Event) {
 	_ = r.bus.Publish(ctx, ev) //nolint:errcheck // best-effort emit; StateStore is source of truth (see doc above)
+}
+
+// unfenceSession lifts any erasure fence on the triple so a reused session
+// id retains events normally (events.Fencer). Best-effort, mirroring the
+// publish posture: the fence is an optional bus capability, and a fence
+// lift only matters when the id is genuinely being reused after an erasure;
+// a lift error (only ErrBusClosed) is logged, not fatal to the Open.
+func (r *Registry) unfenceSession(ctx context.Context, ident identity.Identity) {
+	fencer, ok := r.bus.(events.Fencer)
+	if !ok {
+		return
+	}
+	if err := fencer.Unfence(ctx, ident); err != nil {
+		slog.WarnContext(ctx, "sessions: event-bus unfence on open failed — a reused session id may briefly drop events",
+			slog.String("session_id", ident.SessionID),
+			slog.String("tenant_id", ident.TenantID),
+			slog.String("user_id", ident.UserID),
+			slog.String("error", err.Error()))
+	}
 }
 
 // sameIdentity is a triple equality check.

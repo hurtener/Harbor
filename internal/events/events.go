@@ -586,6 +586,57 @@ type HistoryReplayer interface {
 	Window(ctx context.Context, before uint64, limit int, f Filter) ([]Event, error)
 }
 
+// Fencer is the optional capability a replay/history-capable bus driver
+// implements so a session-erasure cascade can durably FENCE a session
+// triple against late, asynchronously-emitted events. It is a sibling to
+// Replayer / HistoryReplayer, discovered by type assertion.
+//
+// The failure it closes: a `sessions.delete` erasure sweeps a session's
+// persisted history (the StateStore.DeleteScope step), but a task that was
+// still finishing concurrently can emit its lifecycle events AFTER the
+// sweep — re-creating retained history under the just-erased triple, so a
+// subsequent `state.history` read is non-empty. Fence shuts that window:
+// after Fence(id) the bus
+//
+//   - DROPS (does not retain, does not fan out) every event whose identity
+//     triple equals id, so a late event from the defunct task is never
+//     persisted; and
+//   - reports the fenced triple as having NO retained history (Bounds ⇒
+//     ErrNoHistory, Window / Replay ⇒ empty), so any event that slipped
+//     into the retention substrate before the fence took hold is invisible
+//     to the read surface.
+//
+// Fence MUST synchronise with the driver's publish path so an in-flight
+// Publish either completes before Fence returns (its event is then swept by
+// the cascade's DeleteScope, which runs after Fence) or observes the fence
+// and is dropped — leaving no event retained past the fence. It is keyed by
+// the identity triple (tenant, user, session) — the isolation principal —
+// never by agent_id (CLAUDE.md §6).
+//
+// Unfence(id) lifts the fence: the SessionRegistry calls it when a brand
+// new session is opened on the same triple (a freshly-reused conversation
+// id) so the new session's events are retained normally. The fence is held
+// in-memory — its sole job is to fence events from a now-defunct in-process
+// task, which cannot outlive the bus process; a Runtime restart drops the
+// task and the (never-persisted) fence together, and the never-retained
+// events stay gone.
+//
+// A bus that does not implement Fencer leaves the cascade's late-event
+// window open; the erasure's primary sweep (DeleteScope) still removes all
+// already-retained history, so the basic right-to-erasure guarantee holds —
+// the fence is the concurrency hardening on top. Both V1 bus drivers (inmem,
+// durable) implement it.
+type Fencer interface {
+	// Fence marks the triple id as erased: subsequent events for it are
+	// dropped, and its retained history reads empty. Idempotent. Returns
+	// ErrBusClosed after Close.
+	Fence(ctx context.Context, id identity.Identity) error
+	// Unfence lifts a fence set by Fence (a reused session id is being
+	// opened afresh). Idempotent — unfencing a triple that was never fenced
+	// is a no-op. Returns ErrBusClosed after Close.
+	Unfence(ctx context.Context, id identity.Identity) error
+}
+
 // DroppedCounter is the optional capability a bus driver implements to
 // report a cumulative count of messages dropped under backpressure. It
 // mirrors the Replayer shape: a single driver-specific read surface

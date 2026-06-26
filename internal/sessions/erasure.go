@@ -157,6 +157,20 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, perr
 	}
 
+	// 1b. Fence the session on the event bus BEFORE the sweep. The
+	//     running-task probe cannot see a task that the asynchronous
+	//     `control.start` path has not yet registered, so a task can still be
+	//     finishing concurrently and emit lifecycle events to the durable
+	//     event log AFTER the State sweep below — re-creating retained
+	//     history under the just-erased triple. The fence closes that window:
+	//     it synchronises with the bus's publish path (an in-flight Publish
+	//     either completes before Fence returns, and is then swept by
+	//     DeleteScope, or observes the fence and is dropped) and makes the
+	//     erased triple read as empty history regardless. A bus that lacks
+	//     the capability still gets the primary sweep below; the gap-closing
+	//     fence is logged-loud-skipped, never silently assumed.
+	e.fenceSession(ctx, id)
+
 	// 2. Artifacts.
 	artifactsDeleted, err := e.eraseArtifacts(ctx, id)
 	if err != nil {
@@ -191,6 +205,41 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	}
 	e.emitErased(ctx, id, resp)
 	return resp, nil
+}
+
+// fenceSession marks the session's triple erased on the event bus so a
+// task still finishing concurrently cannot re-create retained history under
+// the just-erased triple (see events.Fencer). It runs BEFORE the State
+// sweep so the sweep removes anything an in-flight Publish persisted before
+// the fence took hold, and the fence drops everything after.
+//
+// The bus is the canonical events.EventBus; the fence is an optional
+// capability. When the configured bus implements it (both V1 drivers do),
+// a Fence error fails the erasure loud — a half-applied fence would leave
+// the late-event window open and silently degrade the erasure guarantee
+// (CLAUDE.md §13). When the bus does NOT implement it, the erasure proceeds
+// on the primary State sweep alone (which removes all already-retained
+// history); the un-closable late-event window is logged loudly so the
+// degraded posture is observable, never silently assumed.
+func (e *CascadeEraser) fenceSession(ctx context.Context, id identity.Identity) {
+	fencer, ok := e.bus.(events.Fencer)
+	if !ok {
+		e.logger.WarnContext(ctx, "sessions: event bus does not support fencing — erasure proceeds on the State sweep alone; late events from an in-flight task may briefly re-appear in state.history",
+			slog.String("session_id", id.SessionID),
+			slog.String("tenant_id", id.TenantID),
+			slog.String("user_id", id.UserID))
+		return
+	}
+	if err := fencer.Fence(ctx, id); err != nil {
+		// Loud, but non-fatal to the cascade: the primary sweep still
+		// erases all already-retained history. Surface so the gap-closing
+		// failure is observable rather than silently swallowed.
+		e.logger.ErrorContext(ctx, "sessions: event-bus fence failed — erasure proceeds on the State sweep alone",
+			slog.String("session_id", id.SessionID),
+			slog.String("tenant_id", id.TenantID),
+			slog.String("user_id", id.UserID),
+			slog.String("error", err.Error()))
+	}
 }
 
 // eraseArtifacts enumerates the session's artifacts (across every task)
