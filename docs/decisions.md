@@ -6901,3 +6901,80 @@ helpers, `planner.AnswerEnvelope` (D-194), the SDK facade (D-204/D-205),
 D-266 (the `WithStream` sibling), D-025 (concurrent-reuse contract). RFC
 §3.6 / §6.2 / §6.4. brief 01, brief 02. Plan:
 `docs/plans/phase-132-embed-runonce.md`.
+
+---
+
+## D-267 — The scaffold's golden test exercises the register-and-dispatch path, not just compilation, whenever the agent declares tools
+
+**Date:** 2026-06-26
+
+**Status:** Accepted (planning)
+
+**Context.** Harbor advertises a CLI adopter path:
+`harbor init → scaffold → validate → dev`. The scaffold, when the
+operator's `harbor.yaml` declares tools (`tools.custom` and/or
+`tools.built_in`), generates a `RegisterTools` function in `agent.go`
+and a typed stub per custom tool. The standing external-module gate
+(`scripts/smoke/phase-112b.sh`, D-206) proved the tool-declaring scaffold
+COMPILES as an external module — the headline SDK-friction break. But it
+stopped at `go build`: the generated `agent_test.go` only exercised the
+toolless `EchoAgent` round-trip and never called `RegisterTools`. Because
+Go does not flag an unused exported function, a tools-declaring agent
+COMPILED and its tests PASSED while no tool was ever registered or
+invoked — a textbook §13 false-green on the operator-facing CLI surface,
+and exactly the §1 honesty problem the v1.8.0 adopter-path wave exists to
+close.
+
+**Decision.** The scaffold's golden test exercises the
+**register-and-dispatch** path — not just compilation — whenever the
+agent declares tools. Concretely:
+
+1. `agent_test.go.tmpl` gains a `{{if or .BuiltIns .CustomTools}}` block
+   that, when tools are declared, calls `RegisterTools(cat)` on a real
+   `tools.NewCatalog()` AND drives ≥1 declared tool **through the
+   catalog/executor** under a Harbor identity (via `harbortest.RunOnce`),
+   then asserts an **observable dispatch signal**. The signal is a real
+   catalog dispatch — `cat.Resolve(name)` (registration actually placed
+   the tool) followed by `desc.Invoke(ctx, args)` (the executor ran the
+   handler) — not a check that `RegisterTools` is merely defined. For a
+   custom tool the asserted effect is the tool's typed `ToolResult.Value`;
+   for a built-ins-only scaffold, reaching the executor is the signal and
+   only `ErrToolNotFound` (registration produced nothing) fails the gate.
+2. When no tools are declared, the rendered test is unchanged — no tool
+   block, no `sdk/tools` / `customtools` imports.
+3. `scripts/smoke/phase-112b.sh` adds a `go test ./...` execution leg on
+   the tool-declaring external scaffold (the EXTERNAL EXECUTION GATE),
+   and a self-test that rewrites the registration name so the module
+   still COMPILES but `go test` FAILS — proving the gate bites (§17.8
+   anti-rubber-stamp). The heavy gate extends `phase-112b.sh` (which
+   already pays the external-module build cost) rather than spawning a
+   new smoke; `scripts/smoke/phase-133.sh` carries the static
+   template-surface pins.
+
+**Why dispatch, not just registration.** The runtime owns tool dispatch
+at the catalog/executor level (RFC §6.4 "Code-level tool dispatch"), so
+the honest proof that a scaffolded tool is live is a catalog round-trip:
+resolve the descriptor off the catalog and invoke it. A test that only
+referenced `RegisterTools` (e.g. `var _ = RegisterTools`) would compile
+and pass with a no-op body — the very false-green this closes.
+
+**Consequences.** A tools-declaring scaffold that registers nothing — or
+registers a tool under a name it never dispatches — now FAILS its own
+`go test`, and the smoke gate fails loud. Operators who scaffold a
+tools-declaring agent get a generated test that is a working example of
+register-and-dispatch, not an inert stub. No Go API changes: the template
+and the smoke are the only surface touched; `RegisterTools`'s signature
+is unchanged.
+
+**Deviations.** None from the RFC. A §4.3 call records that the heavy
+execution gate EXTENDS `phase-112b.sh` (no new heavy smoke file); the
+thin `phase-133.sh` carries the §16-mandated static surface pins.
+
+**Cross-references.** D-204/D-206 (the SDK facade + the standing
+external-module compile gate this extends), the scaffold engine + the
+per-custom-tool stubs (`harbor scaffold`), `harbortest.RunOnce` (the
+identity-bearing run harness the dispatch test drives), D-025 (the
+catalog/descriptor concurrent-reuse contract). CLAUDE.md §1, §13
+(false-green), §17.6 (test↔production parity), §17.8 (a test that can't
+tell right from wrong is a rubber stamp). RFC §8, §6.4. brief 06,
+brief 07. Plan: `docs/plans/phase-133-scaffold-tools-execution.md`.

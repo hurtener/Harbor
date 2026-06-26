@@ -96,7 +96,7 @@ my-first-agent/
 └── harbor.yaml                 # the same yaml init dropped (copied verbatim)
 ```
 
-When the yaml declares tools (`tools.built_in` / `tools.custom`), `agent.go` gains a generated `RegisterTools` function and each custom tool gets a typed stub (input struct, output struct, handler) under `tools/`. The generated imports are the public `sdk/` facade paths, so the project builds as a standalone external module. Use the stubs as the template for your real tools (see [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md)).
+When the yaml declares tools (`tools.built_in` / `tools.custom`), `agent.go` gains a generated `RegisterTools` function and each custom tool gets a typed stub (input struct, output struct, handler) under `tools/`. The generated imports are the public `sdk/` facade paths, so the project builds as a standalone external module. The generated `agent_test.go` also gains a register-and-dispatch test that calls `RegisterTools` and invokes a declared tool **through the tool catalog** — so `go test ./...` proves your tools are actually wired, not just that the project compiles. Keep that test green as you replace the stubs with real tools. Use the stubs as the template for your real tools (see [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md)).
 
 ## 5. Boot the runtime
 
