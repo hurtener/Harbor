@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -175,6 +176,102 @@ type bus struct {
 	// DroppedTotal (the events.DroppedCounter capability) to source the
 	// runtime drop gauge. Atomic — no lock needed on the read path.
 	droppedTotal atomic.Int64
+
+	// fenced is the set of erased session triples (see events.Fencer). It
+	// is guarded by publishMu — the SAME lock that serialises ring
+	// append + every history read snapshots under — so the fence, the ring,
+	// and the reads never disagree. A fenced triple's events are not
+	// appended to the ring (so nothing is retained) and read as empty
+	// history; Fence also physically purges any already-retained entries for
+	// the triple (the ring has no DeleteScope to lean on, unlike the durable
+	// driver).
+	fenced map[string]struct{}
+}
+
+// fenceKey renders a session triple as the fenced-set key. The NUL
+// separator can never appear in an id, so distinct triples never collide.
+func fenceKey(id identity.Identity) string {
+	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID
+}
+
+// fencedLocked reports whether the event's session triple is fenced.
+// Caller must hold publishMu.
+func (b *bus) fencedLocked(id identity.Quadruple) bool {
+	if b.fenced == nil {
+		return false
+	}
+	_, ok := b.fenced[fenceKey(id.Identity)]
+	return ok
+}
+
+// isFenced is the lock-acquiring sibling of fencedLocked (the Publish-edge
+// fast check).
+func (b *bus) isFenced(id identity.Quadruple) bool {
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	return b.fencedLocked(id)
+}
+
+// Fence implements events.Fencer. It marks the triple erased — future
+// events for it are not retained and its history reads empty — and
+// physically purges any already-retained ring entries for the triple, so a
+// later session reusing the same id (after Unfence) can never observe the
+// erased session's events.
+func (b *bus) Fence(_ context.Context, id identity.Identity) error {
+	if b.closed.Load() {
+		return events.ErrBusClosed
+	}
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	if b.fenced == nil {
+		b.fenced = map[string]struct{}{}
+	}
+	b.fenced[fenceKey(id)] = struct{}{}
+	b.purgeFencedLocked(identity.Quadruple{Identity: id})
+	return nil
+}
+
+// Unfence implements events.Fencer. Idempotent.
+func (b *bus) Unfence(_ context.Context, id identity.Identity) error {
+	if b.closed.Load() {
+		return events.ErrBusClosed
+	}
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	delete(b.fenced, fenceKey(id))
+	return nil
+}
+
+// purgeFencedLocked rebuilds the ring with every event for the given
+// triple removed, preserving sequence order for the survivors. Caller must
+// hold publishMu. The monotonic sequence counter (nextSeq) is left
+// untouched — sequences stay globally monotonic; the purge only drops
+// retained slots.
+func (b *bus) purgeFencedLocked(id identity.Quadruple) {
+	if b.ringCap == 0 {
+		return
+	}
+	snapshot := b.ringSnapshotLocked()
+	kept := make([]events.Event, 0, len(snapshot))
+	for _, ev := range snapshot {
+		if fenceKey(ev.Identity.Identity) == fenceKey(id.Identity) {
+			continue
+		}
+		kept = append(kept, ev)
+	}
+	if len(kept) == len(snapshot) {
+		return // nothing for this triple was retained
+	}
+	// Rewrite the ring from the survivors (oldest-first). Removal can only
+	// shrink the live set, so the ring is no longer full unless it happened
+	// to stay at exactly capacity. evicted is preserved: if history was
+	// already lossy it stays flagged.
+	for i := range b.ringBuf {
+		b.ringBuf[i] = events.Event{}
+	}
+	copy(b.ringBuf, kept)
+	b.ringHead = len(kept) % b.ringCap
+	b.ringFull = len(kept) == b.ringCap
 }
 
 // DroppedTotal reports the cumulative number of events dropped under
@@ -257,6 +354,16 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	}
 	if err := events.ValidateEvent(ev); err != nil {
 		return err
+	}
+
+	// Fenced-session drop. The session was erased; its events have no
+	// history to land in. Dropping is the CORRECT outcome, logged loudly so
+	// it is observable (CLAUDE.md §13), not silent degradation. The append
+	// guard in assignSeqAndStore closes the window where Fence lands between
+	// this check and the ring append.
+	if b.isFenced(ev.Identity) {
+		b.logFencedDrop(ctx, ev)
+		return nil
 	}
 
 	// Redaction: skip for SafePayload, otherwise run through the
@@ -424,10 +531,26 @@ func (b *bus) assignSeqAndStore(ev *events.Event) {
 	b.publishMu.Lock()
 	b.nextSeq++
 	ev.Sequence = b.nextSeq
-	if b.ringCap > 0 {
+	// Do not retain events for a fenced (erased) session — closes the window
+	// where Fence lands between Publish's edge check and this append. The
+	// sequence still advances (globally monotonic); only the ring slot is
+	// withheld.
+	if b.ringCap > 0 && !b.fencedLocked(ev.Identity) {
 		b.ringAppendLocked(*ev)
 	}
 	b.publishMu.Unlock()
+}
+
+// logFencedDrop records a dropped event for an erased (fenced) session at
+// Info — the drop is a correct outcome, surfaced for observability rather
+// than hidden (CLAUDE.md §13).
+func (b *bus) logFencedDrop(ctx context.Context, ev events.Event) {
+	slog.InfoContext(ctx, "events(inmem): dropped event for erased (fenced) session",
+		slog.String("driver", "inmem"),
+		slog.String("event_type", string(ev.Type)),
+		slog.String("tenant_id", ev.Identity.TenantID),
+		slog.String("user_id", ev.Identity.UserID),
+		slog.String("session_id", ev.Identity.SessionID))
 }
 
 // ringAppendLocked writes ev to the next ring slot and advances the
@@ -513,9 +636,14 @@ func (b *bus) Replay(_ context.Context, from events.Cursor, f events.Filter) ([]
 	// acquisition so the head boundary is consistent with the
 	// snapshot's contents.
 	b.publishMu.Lock()
+	fenced := b.fencedLocked(identity.Quadruple{Identity: identity.Identity{TenantID: f.Tenant, UserID: f.User, SessionID: f.Session}})
 	snapshot := b.ringSnapshotLocked()
 	headSeq := b.nextSeq
 	b.publishMu.Unlock()
+	if fenced {
+		// Erased session — no history to replay (events.Fencer).
+		return nil, nil
+	}
 
 	if len(snapshot) == 0 {
 		return nil, nil
@@ -577,12 +705,17 @@ func (b *bus) Bounds(_ context.Context, f events.Filter) (head, tail uint64, tru
 		b.emitAdminScopeUsedAndFanOut(f)
 	}
 	b.publishMu.Lock()
+	fenced := b.fencedLocked(identity.Quadruple{Identity: identity.Identity{TenantID: f.Tenant, UserID: f.User, SessionID: f.Session}})
 	snapshot := b.ringSnapshotLocked()
 	// evicted is the honest "older events were dropped" signal: once an
 	// append has overwritten an occupied slot, the oldest retained sequence
 	// is NOT the session's first. Read under the same lock that mutates it.
 	evicted := b.evicted
 	b.publishMu.Unlock()
+	if fenced {
+		// Erased session — reads as no retained history (events.Fencer).
+		return 0, 0, false, events.ErrNoHistory
+	}
 
 	var lo, hi uint64
 	found := false
@@ -629,8 +762,13 @@ func (b *bus) Window(_ context.Context, before uint64, limit int, f events.Filte
 		return nil, nil
 	}
 	b.publishMu.Lock()
+	fenced := b.fencedLocked(identity.Quadruple{Identity: identity.Identity{TenantID: f.Tenant, UserID: f.User, SessionID: f.Session}})
 	snapshot := b.ringSnapshotLocked()
 	b.publishMu.Unlock()
+	if fenced {
+		// Erased session — no retained history window (events.Fencer).
+		return nil, nil
+	}
 
 	if len(snapshot) == 0 {
 		return nil, nil
@@ -973,6 +1111,7 @@ var (
 	_ events.EventBus        = (*bus)(nil)
 	_ events.Replayer        = (*bus)(nil)
 	_ events.HistoryReplayer = (*bus)(nil)
+	_ events.Fencer          = (*bus)(nil)
 )
 
 // Compile-time assertion: subscription.Cancel is exported via the

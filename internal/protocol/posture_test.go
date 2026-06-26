@@ -676,7 +676,7 @@ func assertPostureCode(t *testing.T, err error, want protoerrors.Code) {
 func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 	t.Parallel()
 
-	mkSurface := func(t *testing.T, topology, agentConfig bool) *protocol.PostureSurface {
+	mkSurface := func(t *testing.T, topology, agentConfig, sessionLifecycle bool) *protocol.PostureSurface {
 		t.Helper()
 		deps := protocol.PostureDeps{
 			Build:    types.RuntimeInfo{BuildVersion: "v0", BuildGoVersion: "go1.26"},
@@ -692,14 +692,15 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			Metrics: func(_ context.Context) types.MetricsSnapshot {
 				return types.MetricsSnapshot{}
 			},
-			Governance:           newPostureGovernance(),
-			LLM:                  newPostureLLM(),
-			Redactor:             patterns.New(),
-			Bus:                  newPostureBus(t),
-			DisplayName:          "wired-caps-test",
-			InstanceID:           "inst-wired-001",
-			TopologyAvailable:    topology,
-			AgentConfigAvailable: agentConfig,
+			Governance:                newPostureGovernance(),
+			LLM:                       newPostureLLM(),
+			Redactor:                  patterns.New(),
+			Bus:                       newPostureBus(t),
+			DisplayName:               "wired-caps-test",
+			InstanceID:                "inst-wired-001",
+			TopologyAvailable:         topology,
+			AgentConfigAvailable:      agentConfig,
+			SessionLifecycleAvailable: sessionLifecycle,
 		}
 		s, err := protocol.NewPostureSurface(deps)
 		if err != nil {
@@ -728,7 +729,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 
 	t.Run("topology-disabled-omits-cap", func(t *testing.T) {
 		t.Parallel()
-		ri := dispatch(t, mkSurface(t, false, false))
+		ri := dispatch(t, mkSurface(t, false, false, false))
 		want := []types.Capability{
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
@@ -746,7 +747,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 
 	t.Run("topology-enabled-includes-cap-lexicographically", func(t *testing.T) {
 		t.Parallel()
-		ri := dispatch(t, mkSurface(t, true, false))
+		ri := dispatch(t, mkSurface(t, true, false, false))
 		want := []types.Capability{
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
@@ -760,7 +761,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 
 	t.Run("agent-config-disabled-omits-cap", func(t *testing.T) {
 		t.Parallel()
-		ri := dispatch(t, mkSurface(t, false, false))
+		ri := dispatch(t, mkSurface(t, false, false, false))
 		for _, c := range ri.Capabilities {
 			if c == types.CapAgentConfig {
 				t.Fatalf("agent_config leaked into capabilities when AgentConfigAvailable=false")
@@ -772,7 +773,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		t.Parallel()
 		// agent_config sorts before events_subscribe lexicographically,
 		// pinning the deterministic wire ordering.
-		ri := dispatch(t, mkSurface(t, false, true))
+		ri := dispatch(t, mkSurface(t, false, true, false))
 		want := []types.Capability{
 			types.CapAgentConfig,
 			types.CapEventsSubscribe,
@@ -784,13 +785,40 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		}
 	})
 
-	t.Run("both-conditional-caps-enabled-sorted", func(t *testing.T) {
+	t.Run("session-lifecycle-disabled-omits-cap", func(t *testing.T) {
 		t.Parallel()
-		ri := dispatch(t, mkSurface(t, true, true))
+		ri := dispatch(t, mkSurface(t, false, false, false))
+		for _, c := range ri.Capabilities {
+			if c == types.CapSessionLifecycle {
+				t.Fatalf("session_lifecycle leaked into capabilities when SessionLifecycleAvailable=false")
+			}
+		}
+	})
+
+	t.Run("session-lifecycle-enabled-includes-cap-lexicographically", func(t *testing.T) {
+		t.Parallel()
+		// session_lifecycle sorts between runtime_posture and task_control,
+		// pinning the deterministic wire ordering of the third conditional cap.
+		ri := dispatch(t, mkSurface(t, false, false, true))
+		want := []types.Capability{
+			types.CapEventsSubscribe,
+			types.CapRuntimePosture,
+			types.CapSessionLifecycle,
+			types.CapTaskControl,
+		}
+		if !reflect.DeepEqual(ri.Capabilities, want) {
+			t.Fatalf("capabilities = %v, want %v", ri.Capabilities, want)
+		}
+	})
+
+	t.Run("all-conditional-caps-enabled-sorted", func(t *testing.T) {
+		t.Parallel()
+		ri := dispatch(t, mkSurface(t, true, true, true))
 		want := []types.Capability{
 			types.CapAgentConfig,
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
+			types.CapSessionLifecycle,
 			types.CapTaskControl,
 			types.CapTopologySnapshot,
 		}

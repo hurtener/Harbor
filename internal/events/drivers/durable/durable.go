@@ -76,6 +76,12 @@ const (
 	kindEntryPrefix = "events.durable.entry/"
 )
 
+// errEventFenced is the internal sentinel sequenceAndStore returns when
+// an event's session triple is fenced (erased) — Publish maps it to a
+// logged, successful no-op rather than persisting or fanning the event
+// out (see events.Fencer).
+var errEventFenced = errors.New("durable: event dropped — session is fenced (erased)")
+
 // Clock abstracts time so tests do not depend on the wall clock.
 type Clock interface {
 	Now() time.Time
@@ -340,7 +346,67 @@ type bus struct {
 	subs  map[uint64]*subscription
 	subID atomic.Uint64
 
+	// fenceMu guards fenced — the set of erased session triples (see
+	// events.Fencer). A fenced triple drops new events on the persist path
+	// and reads as empty history. Held briefly; never nested under publishMu
+	// EXCEPT in the documented publishMu→fenceMu order (Fence + the persist
+	// fenced-check both take publishMu first, so the order is consistent and
+	// deadlock-free).
+	fenceMu sync.RWMutex
+	fenced  map[string]struct{}
+
 	closed atomic.Bool
+}
+
+// fenceKey renders a session triple as the fenced-set key. The NUL
+// separator can never appear in a tenant/user/session id, so distinct
+// triples never collide.
+func fenceKey(id identity.Identity) string {
+	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID
+}
+
+// isFenced reports whether the event's session triple is fenced (erased).
+func (b *bus) isFenced(id identity.Quadruple) bool {
+	b.fenceMu.RLock()
+	defer b.fenceMu.RUnlock()
+	if b.fenced == nil {
+		return false
+	}
+	_, ok := b.fenced[fenceKey(id.Identity)]
+	return ok
+}
+
+// Fence implements events.Fencer. It marks the triple erased so the
+// persist path drops its future events and its history reads empty. It
+// acquires publishMu first so any in-flight Publish for the triple has
+// finished persisting before Fence returns — the cascade's DeleteScope
+// then sweeps that just-persisted event; nothing is retained past the
+// fence.
+func (b *bus) Fence(_ context.Context, id identity.Identity) error {
+	if b.closed.Load() {
+		return events.ErrBusClosed
+	}
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	b.fenceMu.Lock()
+	defer b.fenceMu.Unlock()
+	if b.fenced == nil {
+		b.fenced = map[string]struct{}{}
+	}
+	b.fenced[fenceKey(id)] = struct{}{}
+	return nil
+}
+
+// Unfence implements events.Fencer. It lifts a fence so a reused session
+// id opened afresh retains events normally. Idempotent.
+func (b *bus) Unfence(_ context.Context, id identity.Identity) error {
+	if b.closed.Load() {
+		return events.ErrBusClosed
+	}
+	b.fenceMu.Lock()
+	defer b.fenceMu.Unlock()
+	delete(b.fenced, fenceKey(id))
+	return nil
 }
 
 // Publish validates, redacts, sequences, persists, and fans out ev.
@@ -381,6 +447,19 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	}
 
 	if err := b.sequenceAndStore(ctx, &ev); err != nil {
+		if errors.Is(err, errEventFenced) {
+			// The session was erased while this event was in flight. Dropping
+			// it is the CORRECT outcome (the erased session has no history to
+			// land in), not silent degradation — it is logged loudly so the
+			// drop is observable (CLAUDE.md §13).
+			b.logger.InfoContext(ctx, "durable: dropped event for erased (fenced) session",
+				slog.String("driver", "durable"),
+				slog.String("event_type", string(ev.Type)),
+				slog.String("tenant_id", ev.Identity.TenantID),
+				slog.String("user_id", ev.Identity.UserID),
+				slog.String("session_id", ev.Identity.SessionID))
+			return nil
+		}
 		return err
 	}
 
@@ -400,6 +479,13 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 	b.publishMu.Lock()
 	defer b.publishMu.Unlock()
+
+	// Fenced-session drop. Checked under publishMu (the same lock Fence
+	// acquires) so the fence and the persist never disagree: an event that
+	// reaches here after Fence took hold is dropped and never retained.
+	if b.isFenced(ev.Identity) {
+		return errEventFenced
+	}
 
 	seq := b.nextSeq + 1
 	ev.Sequence = seq
@@ -568,6 +654,10 @@ func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Fi
 		return nil, fmt.Errorf("%w: durable replay requires the full identity triple on the filter",
 			events.ErrIdentityScopeRequired)
 	}
+	if b.isFenced(sessionID) {
+		// Erased session — no history to replay (events.Fencer).
+		return nil, nil
+	}
 
 	head, err := b.loadHead(ctx, sessionID)
 	if err != nil {
@@ -670,6 +760,10 @@ func (b *bus) Bounds(ctx context.Context, f events.Filter) (head, tail uint64, t
 	if err != nil {
 		return 0, 0, false, err
 	}
+	if b.isFenced(sessionID) {
+		// Erased session — reads as no retained history (events.Fencer).
+		return 0, 0, false, events.ErrNoHistory
+	}
 	hd, err := b.loadHead(ctx, sessionID)
 	if err != nil {
 		return 0, 0, false, fmt.Errorf("durable: bounds load head: %w", err)
@@ -709,6 +803,10 @@ func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Fil
 	sessionID, err := resolveWindowSessionKey(f)
 	if err != nil {
 		return nil, err
+	}
+	if b.isFenced(sessionID) {
+		// Erased session — no retained history window (events.Fencer).
+		return nil, nil
 	}
 	head, err := b.loadHead(ctx, sessionID)
 	if err != nil {
@@ -1088,4 +1186,5 @@ var (
 	_ events.EventBus        = (*bus)(nil)
 	_ events.Replayer        = (*bus)(nil)
 	_ events.HistoryReplayer = (*bus)(nil)
+	_ events.Fencer          = (*bus)(nil)
 )
