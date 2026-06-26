@@ -87,8 +87,8 @@ type PostureSurface struct {
 	// `handleInfo` projects it as `RuntimeInfo.Capabilities`. The
 	// always-on capabilities (task_control, events_subscribe,
 	// runtime_posture) are added at construction; conditional ones
-	// (currently `topology_snapshot`) come in via the matching deps flag.
-	// Sorted lexicographically so the wire shape is deterministic.
+	// (`topology_snapshot`, `agent_config`) come in via the matching deps
+	// flag. Sorted lexicographically so the wire shape is deterministic.
 	wiredCaps []types.Capability
 }
 
@@ -158,6 +158,15 @@ type PostureDeps struct {
 	// (planner/RunLoop runtimes like `harbor dev` against an agent
 	// yaml).
 	TopologyAvailable bool
+	// AgentConfigAvailable indicates this Runtime mounted the agent-config
+	// control plane. When true, `runtime.info.capabilities` advertises
+	// `agent_config` so a Protocol client gates the surface at attach
+	// rather than method-probing the `agent_config.*` verbs. Optional —
+	// defaults false (a Runtime that does not wire the agent-config
+	// service). MUST be set from the same condition that decides whether
+	// the agent-config transport is mounted, so the advertisement cannot
+	// claim a surface the Runtime does not serve.
+	AgentConfigAvailable bool
 }
 
 // ErrPostureMisconfigured — NewPostureSurface was called with a missing
@@ -220,7 +229,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt:    bootedAt,
 		displayName: deps.DisplayName,
 		instanceID:  deps.InstanceID,
-		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable),
+		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable),
 	}, nil
 }
 
@@ -231,7 +240,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // in via the matching deps flag. Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -239,6 +248,9 @@ func wiredCapabilitiesFor(topologyAvailable bool) []types.Capability {
 	}
 	if topologyAvailable {
 		caps = append(caps, types.CapTopologySnapshot)
+	}
+	if agentConfigAvailable {
+		caps = append(caps, types.CapAgentConfig)
 	}
 	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
 	return caps
@@ -351,7 +363,7 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	// wired-capability subset.
 	out.WireSurfaceDigest = wiresurface.Digest()
 	// Per-instance wired subset. Conditional
-	// surfaces (currently `topology_snapshot`) appear here only when
+	// surfaces (`topology_snapshot`, `agent_config`) appear here only when
 	// the matching seam was wired at construction; the static
 	// `types.Capabilities()` is the handshake/registry surface, not
 	// the per-instance advertisement.

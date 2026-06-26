@@ -1727,16 +1727,18 @@ func runVersionHandshake(t *testing.T) {
 	}
 	caps := types.Capabilities()
 	// task-control + streaming-events +
-	// runtime-posture + topology-snapshot + state-snapshots = 5 capabilities
-	// at Protocol 0.1.0. (The capability constants live in
+	// runtime-posture + topology-snapshot + state-snapshots + agent-config
+	// = 6 capabilities at Protocol 0.1.0. (The capability constants live in
 	// internal/protocol/types/version.go; a new capability is a new
 	// constant + a new entry in canonicalCapabilities. A checkpoint fix
 	// — `topology_snapshot` is in the canonical *registry*; per-instance
 	// advertisement is conditional via `PostureDeps.TopologyAvailable`.
-	// `state_snapshots` is the windowed event-replay surface — additive,
-	// no ProtocolVersion bump.)
-	if len(caps) != 5 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 5 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot + CapStateSnapshots) at Protocol 0.1.0", len(caps))
+	// `state_snapshots` is the windowed event-replay surface; `agent_config`
+	// advertises the agent-config control plane, conditional per-instance
+	// via `PostureDeps.AgentConfigAvailable` — both additive, no
+	// ProtocolVersion bump.)
+	if len(caps) != 6 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 6 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot + CapStateSnapshots + CapAgentConfig) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:      {},
@@ -1744,6 +1746,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapRuntimePosture:   {},
 		types.CapTopologySnapshot: {},
 		types.CapStateSnapshots:   {},
+		types.CapAgentConfig:      {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {
@@ -1769,6 +1772,9 @@ func runVersionHandshake(t *testing.T) {
 	}
 	if !h.Accepts(types.CapTopologySnapshot) {
 		t.Fatal("handshake.Accepts(CapTopologySnapshot) = false; the topology-snapshot surface must appear in the canonical capability set (per-instance advertisement is conditional, but the handshake universe is unconditional)")
+	}
+	if !h.Accepts(types.CapAgentConfig) {
+		t.Fatal("handshake.Accepts(CapAgentConfig) = false; the agent-config control plane must appear in the canonical capability set (per-instance advertisement is conditional, but the handshake universe is unconditional)")
 	}
 
 	// The deprecation registry is empty at 0.1.0 — nothing has been

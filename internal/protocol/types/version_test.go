@@ -412,6 +412,37 @@ func TestCapStateSnapshots_Registered(t *testing.T) {
 	}
 }
 
+// TestCapAgentConfig_Registered pins the agent-config control-plane
+// capability: CapAgentConfig is registered, IsValidCapability returns
+// true, Capabilities() includes it, the current handshake advertises it,
+// and adding it did NOT bump the pinned ProtocolVersion string (additive
+// minor-class surface addition).
+func TestCapAgentConfig_Registered(t *testing.T) {
+	if string(types.CapAgentConfig) != "agent_config" {
+		t.Fatalf("CapAgentConfig wire string = %q, want %q",
+			string(types.CapAgentConfig), "agent_config")
+	}
+	if !types.IsValidCapability(types.CapAgentConfig) {
+		t.Error("IsValidCapability(CapAgentConfig) = false, want true")
+	}
+	var found bool
+	for _, c := range types.Capabilities() {
+		if c == types.CapAgentConfig {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Capabilities() = %v, missing CapAgentConfig", types.Capabilities())
+	}
+	if !types.CurrentHandshake().Accepts(types.CapAgentConfig) {
+		t.Error("CurrentHandshake().Accepts(CapAgentConfig) = false, want true")
+	}
+	// Additive — no version bump.
+	if types.ProtocolVersion != "0.1.0" {
+		t.Errorf("ProtocolVersion = %q, want unchanged 0.1.0 — a new capability is an additive minor-class change, not a version bump", types.ProtocolVersion)
+	}
+}
+
 func TestVersionHandshake_CurrentAndAccepts(t *testing.T) {
 	h := types.CurrentHandshake()
 	if h.ProtocolVersion != types.ProtocolVersion {

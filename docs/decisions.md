@@ -6479,3 +6479,84 @@ client), D-025 (concurrent-reuse contract for the memoised digest + the
 shared PostureSurface). RFC §5, §5.2, §5.3. `internal/protocol/types/version.go`
 (additive-vs-breaking taxonomy). brief 06. Plan:
 `docs/plans/phase-127-protocol-wire-manifest-consumability.md`.
+
+---
+
+## D-260 — Advertise the agent-config control plane as a Protocol capability (agent_config) via an additive runtime.info-conditional capability, not a new method
+
+**Date:** 2026-06-25
+
+**Status:** Accepted (planning)
+
+**Context.** The agent-config control plane (`agent_config.*` — the
+admin verbs, the session-safe subset, and the durable user tier) is
+mounted CONDITIONALLY (`transports.WithAgentConfigService`; when not
+supplied the `/v1/agent_config/*` routes are absent). But
+`runtime.info.capabilities` advertises nothing for it, so a Protocol
+client (a third-party Console, an IDE/TUI client, an SDK consumer) can
+only discover the surface by firing a real call and catching the
+`501`/`unknown_method` (or a transport 404) — a clumsy, racy, wasted
+round-trip. Every other conditionally-mounted Protocol surface
+(`topology_snapshot`) is negotiable via a capability; agent-config was
+the gap.
+
+**Decision.**
+
+1. **One canonical capability constant.** `internal/protocol/types/version.go`
+   gains `CapAgentConfig Capability = "agent_config"` in the `Capability`
+   const block and a `canonicalCapabilities` entry — the ONE home for
+   capability constants (no second definition site, no registration escape
+   hatch). `types.Capabilities()` / `CurrentHandshake()` enumerate it
+   unconditionally (the negotiable universe).
+2. **Conditional per-instance advertisement, wired to the actual mount.**
+   `PostureDeps` gains `AgentConfigAvailable bool`; `wiredCapabilitiesFor`
+   appends `CapAgentConfig` only when set; `runtime.info.capabilities`
+   advertises `agent_config` iff this runtime mounted the surface — the
+   `topology_snapshot` conditional pattern. Each boot path sets the flag from
+   the SAME condition that gates `WithAgentConfigService` ON THAT PATH:
+   `stack.AgentConfig != nil` on `harbortest/devstack` (where the mount is
+   conditional and `agentConfigService` is not yet in scope at posture
+   construction) and `true` on `cmd/harbor/cmd_dev.go` (where the service is
+   mounted unconditionally, so the capability is always-on by construction).
+   The advertisement can never claim an absent surface.
+3. **The consumer lands in the same phase (CLAUDE.md §13).** The primitive
+   (the capability constant) ships with its consumer (the runtime-side
+   conditional advertisement wired to the real surface mount) and a
+   conformance/handshake test asserting a runtime with the surface
+   advertises `agent_config` and one without it does not. A Console phase
+   that gates the agent-config control panel on `caps.has('agent_config')`
+   (replacing its method-probe) is the natural next consumer, under the
+   §13 "no Console page without its feeding Protocol surface" rule.
+4. **No new method.** A dedicated `agent_config.available` method was
+   rejected: `runtime.info.capabilities` already carries the per-instance
+   wired subset, the client calls `runtime.info` at attach anyway, and a
+   capability is strictly less surface and one fewer round-trip.
+5. **`sessions.*` and `artifacts.*` capabilities deferred.** Evaluated and
+   scoped out: each needs its own `PostureDeps` flag, boot wiring, and
+   integration test (its own advertisement-vs-mount drift surface);
+   bundling them would dilute focus. Clean siblings for a follow-up phase,
+   same pattern. A recorded scoping decision, not a silent drop.
+6. **No version bump.** A new capability is a Minor-class, backward-
+   compatible surface addition per the `internal/protocol/types/version.go`
+   Major/Minor/Patch taxonomy; the four capabilities added since 0.1.0
+   (`events_subscribe`, `runtime_posture`, `topology_snapshot`,
+   `state_snapshots`) set the precedent — none bumped `ProtocolVersion`.
+   RFC §5.3's rule that *bumping the version is an RFC change* is precisely
+   why this stays additive: `ProtocolVersion` holds at 0.1.0. The
+   capability addition changes `types.Capabilities()`, hence
+   `wiresurface.Digest()`, hence the committed `wire-manifest.gen.json`
+   digest — regenerated via `make protocol-ts-gen` and pinned by the
+   existing lockstep gate (D-223/D-259). The conformance handshake set
+   goes 5→6.
+
+**§4.3 deviations.** None. Additive, follows the established
+conditional-capability pattern exactly.
+
+**Cross-references.** D-259 (the wire-surface digest the manifest stamps,
+which this capability addition shifts), D-223 (the lockstep gate),
+D-209 (the generated-docs regen gate), D-234..D-237 (the agent-config
+control plane this advertises), D-256/D-257 (the durable user tier under
+that plane). RFC §5.2, §5.3, §6.16.
+`internal/protocol/types/version.go` (additive-vs-breaking taxonomy +
+`CapTopologySnapshot` precedent). brief 06, brief 11. Plan:
+`docs/plans/phase-128-agent-config-capability.md`.
