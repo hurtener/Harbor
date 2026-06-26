@@ -87,6 +87,14 @@ const (
 	defaultJWKSMinRefreshInterval = 1 * time.Minute
 	// defaultJWKSHTTPTimeout bounds a single keyset fetch.
 	defaultJWKSHTTPTimeout = 10 * time.Second
+	// defaultJWKSMaxStale is the safe default max-stale ceiling: the
+	// longest a cached key snapshot is honored without a successful
+	// refresh before KeyByID fails closed. ~12× the refresh TTL — tight
+	// enough to bound a revoked key to roughly this window of continued
+	// acceptance, loose enough to ride out a transient IdP outage without
+	// auth flapping. The single source for the default; referenced
+	// everywhere the ceiling defaults.
+	defaultJWKSMaxStale = 1 * time.Hour
 	// maxJWKSBytes caps the response body a URL source will read — a
 	// misbehaving IdP cannot stream an unbounded keyset into memory.
 	maxJWKSBytes = 1 << 20 // 1 MiB
@@ -106,6 +114,19 @@ var ErrJWKSSource = errors.New("auth: JWKS source misconfigured (set exactly one
 // malformed entries cannot verify any Harbor token; fail closed.
 var ErrJWKSNoUsableKeys = errors.New("auth: JWKS contained no usable asymmetric signing keys")
 
+// ErrJWKSStale — the cached JWKS key snapshot exceeded the configured
+// max-stale ceiling without a successful refresh: the runtime can no
+// longer vouch for the cached keys (a key the IdP has revoked may still
+// be present in the stale snapshot), so KeyByID fails CLOSED rather than
+// serving a possibly-revoked key. Distinct from ErrUnknownKey (the kid
+// never resolved). The Validator surfaces it onto the "jwks_stale" wire
+// reason; the middleware maps it onto the existing auth-rejected
+// Protocol code (HTTP 401). The ceiling BOUNDS — it does not make
+// instantaneous — revocation: a revoked key may still be honored until
+// the snapshot ages past the ceiling. Pair a tight ceiling with
+// overlapping IdP signing keys and short token TTLs.
+var ErrJWKSStale = errors.New("auth: JWKS key set too stale (max-stale ceiling exceeded); failing closed")
+
 // JWKSSource selects where a JWKSKeySet loads its JWK Set. Exactly one
 // of URL or File must be set.
 type JWKSSource struct {
@@ -124,6 +145,7 @@ type JWKSOption func(*jwksConfig)
 type jwksConfig struct {
 	ttl        time.Duration
 	minRefresh time.Duration
+	maxStale   time.Duration
 	now        func() time.Time
 	httpClient *http.Client
 	logger     *slog.Logger
@@ -147,6 +169,22 @@ func WithJWKSMinRefreshInterval(d time.Duration) JWKSOption {
 	return func(c *jwksConfig) {
 		if d > 0 {
 			c.minRefresh = d
+		}
+	}
+}
+
+// WithJWKSMaxStale sets the maximum age a cached key snapshot may reach,
+// without a successful refresh, before KeyByID fails closed with
+// ErrJWKSStale. A non-positive value keeps the package default
+// (defaultJWKSMaxStale) — the ceiling is never disabled (Harbor's
+// posture is fail-closed; there is no "unbounded" path). The ceiling
+// BOUNDS — but does not make instantaneous — revocation: a revoked key
+// may still be honored until the snapshot ages past the ceiling. Pair a
+// tight ceiling with overlapping IdP signing keys and short token TTLs.
+func WithJWKSMaxStale(d time.Duration) JWKSOption {
+	return func(c *jwksConfig) {
+		if d > 0 {
+			c.maxStale = d
 		}
 	}
 }
@@ -208,17 +246,22 @@ type jwksEntry struct {
 //     flight, concurrent miss/stale lookups block on it (bounded by the
 //     HTTP timeout); hits against the cached snapshot never block.
 //   - When a refresh fetch fails (IdP unreachable / malformed), the
-//     prior snapshot is retained and served — availability is preferred
-//     over hard-failing every request during an IdP outage. The
-//     consequence: a key the IdP has REMOVED (revoked) stays accepted
-//     until the next SUCCESSFUL fetch. There is no max-stale ceiling;
-//     an operator who needs revocation to take effect within a bound
-//     must ensure the IdP stays reachable.
+//     prior snapshot is retained and served up to the MAX-STALE CEILING
+//     — availability is preferred over hard-failing every request during
+//     a transient IdP outage, but only within a bound. Once the snapshot
+//     ages past the ceiling without a successful refresh, KeyByID fails
+//     closed with ErrJWKSStale: the runtime can no longer vouch for the
+//     cached keys, so a key the IdP has REMOVED (revoked) is no longer
+//     honored. The ceiling BOUNDS — it does not make instantaneous —
+//     revocation: an operator who needs a tighter revocation window sets
+//     a smaller ceiling and pairs it with overlapping IdP signing keys
+//     and short token TTLs.
 type JWKSKeySet struct {
 	fetch      jwksFetcher
 	allowed    map[string]struct{}
 	ttl        time.Duration
 	minRefresh time.Duration
+	maxStale   time.Duration
 	now        func() time.Time
 	logger     *slog.Logger
 
@@ -245,6 +288,7 @@ func NewJWKSKeySet(ctx context.Context, src JWKSSource, allowedAlgs []string, op
 	cfg := jwksConfig{
 		ttl:        defaultJWKSTTL,
 		minRefresh: defaultJWKSMinRefreshInterval,
+		maxStale:   defaultJWKSMaxStale,
 		now:        time.Now,
 		logger:     slog.Default(),
 	}
@@ -264,6 +308,7 @@ func NewJWKSKeySet(ctx context.Context, src JWKSSource, allowedAlgs []string, op
 		allowed:    allowed,
 		ttl:        cfg.ttl,
 		minRefresh: cfg.minRefresh,
+		maxStale:   cfg.maxStale,
 		now:        cfg.now,
 		logger:     cfg.logger,
 	}
@@ -358,36 +403,56 @@ func newJWKSFetcher(src JWKSSource, client *http.Client) (jwksFetcher, error) {
 }
 
 // KeyByID implements auth.KeySet. It serves from cache while the cache
-// is fresh and the kid resolves; a miss or a stale cache triggers a
-// bounded refresh. A kid that does not resolve after the bounded
-// refresh returns a wrapped ErrUnknownKey.
+// is fresh, within the max-stale ceiling, and the kid resolves; a miss,
+// a TTL-stale cache, or a snapshot at/over the ceiling triggers a
+// bounded refresh. A kid that does not resolve after the bounded refresh
+// returns a wrapped ErrUnknownKey; a snapshot still past the ceiling
+// after the refresh returns a wrapped ErrJWKSStale — regardless of
+// whether the kid resolves — so a possibly-revoked key in a too-old
+// snapshot is never served.
 func (ks *JWKSKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
-	// Hot path: a fresh cache that already carries the kid.
-	if entry, fresh, ok := ks.lookup(kid); ok && fresh {
+	// Hot path: a cache that already carries the kid, is fresh by the
+	// TTL, AND is within the max-stale ceiling. The ceiling gate here is
+	// load-bearing: the freshness check is against the cache TTL, so a
+	// ceiling tighter than the TTL would otherwise be silently raised to
+	// the TTL — the hot path would return a key already past the ceiling
+	// and the refresh-and-recheck below would never run.
+	if entry, fresh, age, ok := ks.lookup(kid); ok && fresh && age < ks.maxStale {
 		return entry.key, entry.alg, nil
 	}
 
-	// Miss or stale — attempt a bounded refresh, then re-check. The
-	// refresh runs under a context bound by the default HTTP timeout so
-	// a slow IdP cannot wedge a verification indefinitely; the
-	// per-request ctx is not available on the KeySet interface, so this
-	// boundary owns the deadline.
+	// Miss, TTL-stale, or past the ceiling — attempt a bounded refresh,
+	// then re-check. The refresh runs under a context bound by the
+	// default HTTP timeout so a slow IdP cannot wedge a verification
+	// indefinitely; the per-request ctx is not available on the KeySet
+	// interface, so this boundary owns the deadline.
 	ks.maybeRefresh()
 
-	if entry, _, ok := ks.lookup(kid); ok {
+	entry, _, age, ok := ks.lookup(kid)
+	// Ceiling re-check AFTER the recovery fetch: a snapshot still past
+	// the ceiling can no longer be vouched for — fail closed regardless
+	// of whether the kid resolves. A request that arrived just as the
+	// snapshot aged out still got its one recovery fetch above; the
+	// ceiling never short-circuits a recovery attempt.
+	if age >= ks.maxStale {
+		return nil, "", fmt.Errorf("%w: snapshot age %s exceeds the %s ceiling", ErrJWKSStale, age, ks.maxStale)
+	}
+	if ok {
 		return entry.key, entry.alg, nil
 	}
 	return nil, "", fmt.Errorf("%w: kid %q not in JWK set", ErrUnknownKey, kid)
 }
 
-// lookup reads the current snapshot under the read lock. fresh reports
-// whether the snapshot is within its TTL.
-func (ks *JWKSKeySet) lookup(kid string) (entry jwksEntry, fresh bool, ok bool) {
+// lookup reads the current snapshot under the read lock. age is the time
+// since the snapshot's last successful fetch; fresh reports whether the
+// snapshot is within its TTL.
+func (ks *JWKSKeySet) lookup(kid string) (entry jwksEntry, fresh bool, age time.Duration, ok bool) {
 	ks.snapMu.RLock()
 	defer ks.snapMu.RUnlock()
 	entry, ok = ks.keys[kid]
-	fresh = ks.now().Sub(ks.fetchedAt) < ks.ttl
-	return entry, fresh, ok
+	age = ks.now().Sub(ks.fetchedAt)
+	fresh = age < ks.ttl
+	return entry, fresh, age, ok
 }
 
 // maybeRefresh performs at most one network fetch per minimum-refresh
@@ -422,20 +487,43 @@ func (ks *JWKSKeySet) maybeRefresh() {
 	defer cancel()
 	raw, err := ks.fetch(ctx)
 	if err != nil {
-		ks.logger.Warn("auth: JWKS refresh fetch failed; serving prior cache",
-			slog.String("error", err.Error()))
+		ks.logRefreshFailure("auth: JWKS refresh fetch failed", err, now)
 		return
 	}
 	keys, err := ks.parse(raw)
 	if err != nil {
-		ks.logger.Warn("auth: JWKS refresh parse failed; serving prior cache",
-			slog.String("error", err.Error()))
+		ks.logRefreshFailure("auth: JWKS refresh parse failed", err, now)
 		return
 	}
 	ks.snapMu.Lock()
 	ks.keys = keys
 	ks.fetchedAt = now
 	ks.snapMu.Unlock()
+}
+
+// logRefreshFailure records a failed refresh. When the retained snapshot
+// is still within the max-stale ceiling it logs at Warn (availability is
+// preferred — the prior cache is still served). When the snapshot is
+// already AT/OVER the ceiling it escalates to Error: the runtime is now
+// failing closed and an operator needs to know the key source has been
+// unreachable past the bound. The log is naturally rate-bounded — it
+// only fires on the refresh path, which maybeRefresh gates to at most
+// once per minimum-refresh window — so a flood of rejected requests does
+// not flood the logs. No raw token is involved (only the fetch/parse
+// error and the snapshot age).
+func (ks *JWKSKeySet) logRefreshFailure(msg string, err error, now time.Time) {
+	ks.snapMu.RLock()
+	age := now.Sub(ks.fetchedAt)
+	ks.snapMu.RUnlock()
+	if age >= ks.maxStale {
+		ks.logger.Error(msg+"; snapshot past max-stale ceiling — failing closed",
+			slog.String("error", err.Error()),
+			slog.Duration("snapshot_age", age),
+			slog.Duration("max_stale", ks.maxStale))
+		return
+	}
+	ks.logger.Warn(msg+"; serving prior cache",
+		slog.String("error", err.Error()))
 }
 
 // jwk is one entry in a JWK Set, decoded from JSON. Only the fields

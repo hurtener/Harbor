@@ -40,6 +40,15 @@ identity:
   # Alternatively, load the JWK Set from a local file synced out of band
   # (air-gapped deployments). Set EXACTLY ONE of jwks_url / jwks_file.
   # jwks_file: /etc/harbor/jwks.json
+  # Max-stale ceiling: the longest a cached JWKS snapshot is honored
+  # WITHOUT a successful refresh before the verifier fails closed (rejects
+  # tokens) rather than serving a possibly-revoked key during a prolonged
+  # IdP outage. Omit (or 0) to apply the safe default (1h). A negative or
+  # below-1m value is rejected at boot. There is no "disable" — the field
+  # tunes the ceiling, it does not remove it. This BOUNDS, but does not
+  # make instantaneous, key revocation: pair a tight ceiling with
+  # overlapping IdP signing keys and short token TTLs.
+  # jwks_max_stale: 1h
 
 telemetry:
   log_format: json

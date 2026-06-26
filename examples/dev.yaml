@@ -57,6 +57,10 @@ identity:
   issuer: https://issuer.example.com
   audience: harbor
   jwks_url: https://issuer.example.com/.well-known/jwks.json
+  # Max-stale ceiling for the cached JWKS snapshot. Omit (or 0) for the
+  # safe default (1h): past this age WITHOUT a successful refresh the
+  # verifier fails closed rather than serving a possibly-revoked key.
+  # jwks_max_stale: 1h
 
 telemetry:
   log_format: text

@@ -150,6 +150,16 @@ func TestValidate_TableDriven(t *testing.T) {
 			"identity",
 		},
 		{
+			"negative jwks_max_stale",
+			func(c *config.Config) { c.Identity.JWKSMaxStale = -1 * time.Second },
+			"identity.jwks_max_stale",
+		},
+		{
+			"below-floor jwks_max_stale",
+			func(c *config.Config) { c.Identity.JWKSMaxStale = 30 * time.Second },
+			"identity.jwks_max_stale",
+		},
+		{
 			"unknown log_format",
 			func(c *config.Config) { c.Telemetry.LogFormat = "csv" },
 			"telemetry.log_format",
@@ -662,6 +672,37 @@ func TestValidate_HappyPath(t *testing.T) {
 	cfg := mustLoadValid(t)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate on the canonical fixture failed: %v", err)
+	}
+}
+
+// TestValidate_JWKSMaxStale covers the max-stale ceiling field: zero
+// (apply the safe default) and a valid above-floor value are accepted; a
+// negative value and a positive-but-below-floor value are rejected with a
+// field-naming message derived from the floor const (not a hardcoded
+// literal).
+func TestValidate_JWKSMaxStale(t *testing.T) {
+	// Accepted: zero (default) and an above-floor value.
+	for _, d := range []time.Duration{0, 1 * time.Minute, 2 * time.Hour} {
+		cfg := mustLoadValid(t)
+		cfg.Identity.JWKSMaxStale = d
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate rejected jwks_max_stale=%s: %v", d, err)
+		}
+	}
+
+	// Rejected below-floor: the message must name the field AND derive the
+	// bound from the floor const (the "1m0s" rendering of jwksMaxStaleFloor).
+	cfg := mustLoadValid(t)
+	cfg.Identity.JWKSMaxStale = 10 * time.Second
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted a below-floor jwks_max_stale")
+	}
+	if !strings.Contains(err.Error(), "identity.jwks_max_stale") {
+		t.Errorf("err=%q missing path identity.jwks_max_stale", err.Error())
+	}
+	if !strings.Contains(err.Error(), "1m0s") {
+		t.Errorf("err=%q should derive the bound from the floor const (1m0s)", err.Error())
 	}
 }
 

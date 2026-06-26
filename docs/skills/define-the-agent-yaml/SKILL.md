@@ -26,9 +26,10 @@ identity:
   issuer: https://issuer.example.com           # exact match against the JWT `iss` claim
   audience: my-agent                           # exact match against the JWT `aud` claim
   jwks_url: https://issuer.example.com/.well-known/jwks.json
+  jwks_max_stale: 1h                           # OPTIONAL — max age a cached JWKS snapshot is honored without a refresh (0/omit = 1h default)
 ```
 
-For local dev, the scaffold drops placeholders — these pass `harbor validate` but reject any real token. `harbor dev` mints its own ephemeral signing key and bypasses the issuer/jwks_url path entirely (see [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md)). For production, point `issuer` + `jwks_url` at your real IdP. HS256 / `none` are forbidden — the loader rejects them at boot.
+For local dev, the scaffold drops placeholders — these pass `harbor validate` but reject any real token. `harbor dev` mints its own ephemeral signing key and bypasses the issuer/jwks_url path entirely (see [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md)). For production, point `issuer` + `jwks_url` at your real IdP. HS256 / `none` are forbidden — the loader rejects them at boot. `jwks_max_stale` bounds how long the verifier keeps trusting a cached signing key when your IdP is unreachable: past this age it fails closed (rejects tokens) rather than serving a key your IdP may have revoked. Omit it (or set `0`) for the safe 1h default; a negative or below-1m value is rejected at boot. There is no way to disable the ceiling — it tunes, it does not remove. Pair a tight ceiling with overlapping IdP signing keys and short token TTLs.
 
 ### `llm`
 

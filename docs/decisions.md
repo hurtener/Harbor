@@ -6673,3 +6673,92 @@ into), D-209 (the generated Protocol-docs regen gate), D-061 (Console is a
 Protocol client), D-025 (concurrent-reuse contract for the shared erasure
 Service). RFC §5.2, §6.9, §6.11, §6.13, §7. brief 05, brief 06. Plan:
 `docs/plans/phase-130-session-erasure-method.md`.
+
+---
+
+## D-261 — JWKS max-stale / revocation ceiling: fail closed instead of serving a possibly-revoked key forever
+
+**Date:** 2026-06-25
+
+**Status:** Accepted (planning)
+
+**Context.** The production JWKS-backed `auth.JWKSKeySet` prefers
+availability over revocation: when a refresh fetch fails (IdP unreachable
+or returning malformed data) it retains and serves the prior key
+snapshot, and there is no upper bound on how long it does so. A key the
+IdP has rotated out / revoked therefore stays accepted until the next
+*successful* fetch — indefinitely during a prolonged outage. The keyset's
+own godoc named this as a known gap. For any external-issuer deployment
+this is a real security weakness: revocation never takes effect while the
+IdP is unreachable.
+
+**Decision.**
+
+1. **A configurable max-stale ceiling on the keyset (the primitive).**
+   `auth.JWKSKeySet` gains an immutable `maxStale` (set via
+   `WithJWKSMaxStale`, defaulting to `defaultJWKSMaxStale` = 1h). When the
+   cached snapshot's age (time since the last *successful* fetch) reaches
+   the ceiling, `KeyByID` fails closed with a wrapped `ErrJWKSStale`
+   regardless of whether the `kid` resolves — a possibly-revoked key in a
+   too-old snapshot is never served. The ceiling gates the `KeyByID`
+   hot-path early return (so a cached key is served without a refresh only
+   when its age is within `maxStale` — this enforces a ceiling tighter
+   than the 5m cache TTL, which the hot path's own freshness check would
+   otherwise miss) AND the post-`maybeRefresh()` re-check (so a request
+   that arrives as the snapshot ages out still gets one recovery fetch
+   first). The default (1h) and floor (1m) each live in a single named
+   const (`defaultJWKSMaxStale` in the auth keyset; `jwksMaxStaleFloor` in
+   the config validator, which cannot import the auth package).
+
+2. **The Validator is the same-phase consumer.** A primitive with no
+   consumer bit-rots; the consumer here is the `Validator` keyfunc, which
+   propagates `ErrJWKSStale` distinctly (not masked as `ErrUnknownKey`);
+   `mapParserError` honors it ahead of `ErrUnknownKey`; and
+   `middleware.reasonForWire` emits `"jwks_stale"`. Proven end-to-end by a
+   controllable-clock test (no `time.Sleep`): a key served past the
+   ceiling with failing refreshes is rejected, and a successful refresh
+   resets staleness so the same token verifies again.
+
+3. **Fail loud, distinctly.** Operators see *"JWKS too stale"*, not a
+   generic auth failure: the Go sentinel `ErrJWKSStale`, the wire `reason`
+   `jwks_stale`, an escalated `slog.Error` on the rate-bounded refresh
+   failure path, and the existing `auth.rejected` audit + bus emit
+   carrying the reason (rejections surface on the canonical bus, not a
+   side channel). No raw token is logged.
+
+4. **A new config field, fail-closed by default.** `IdentityConfig` gains
+   `JWKSMaxStale time.Duration` (`identity.jwks_max_stale`). Validation
+   rejects negative and below-floor (< 1m) values; zero applies the safe
+   default. There is intentionally **no opt-out** — the field tunes the
+   ceiling, it does not remove it (no identity-downgrading knobs).
+   Existing deployments thus gain a bounded default where they previously
+   had unbounded staleness: a deliberate security-posture improvement,
+   documented in the README/changelog.
+
+5. **No wire change, no version bump.** A dedicated availability-class
+   Protocol error code (e.g. `key_source_unavailable`) was considered and
+   **deferred** — a new `Code` is a wire-surface change (single-source
+   errors, manifest + generated-docs regen, deprecation-window
+   consideration). This phase reuses `CodeAuthRejected` (HTTP 401) and
+   delivers operator distinctness through the sentinel + the free-form
+   wire `reason` value + logs/events. `internal/protocol/types/version.go`
+   `ProtocolVersion` is untouched; no `make protocol-ts-gen` /
+   `make protocol-docs-gen` regen.
+
+**Operational note (binding on the docs).** The ceiling **bounds** — it
+does not make instantaneous — revocation. The IdP should publish
+overlapping signing keys across a rotation (so a normal rotation never
+trips the ceiling), and deployments should pair the ceiling with short
+token TTLs (the token's `exp` is the first-line revocation bound; the
+ceiling is the key-material backstop).
+
+**Deviations.** Departs from the *current code's* documented "no
+max-stale ceiling" behavior (a deliberate gap-closure, not a brief
+departure). The dedicated availability error code is the only deferred
+sub-decision.
+
+**Cross-references.** The production JWKS keyset + `from_config`
+projection this extends, the JWT validation core (sentinel / `errors.Is`
+discipline), the Protocol auth middleware mapping, D-025 (concurrent-reuse
+contract for the shared keyset/validator). RFC §5.5. brief 06. Plan:
+`docs/plans/phase-129-jwks-max-stale-ceiling.md`.

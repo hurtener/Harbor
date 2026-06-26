@@ -240,6 +240,8 @@ func reasonForWire(err error) string {
 		return "token_expired"
 	case errors.Is(err, ErrTokenNotYetValid):
 		return "token_not_yet_valid"
+	case errors.Is(err, ErrJWKSStale):
+		return "jwks_stale"
 	case errors.Is(err, ErrUnknownKey):
 		return "unknown_key"
 	case errors.Is(err, ErrIdentityClaimMissing):

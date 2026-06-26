@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -550,6 +551,334 @@ func TestJWKSKeySet_LiveURL(t *testing.T) {
 	// cleanly (the construction above already proved parse succeeded).
 	if _, _, err := ks.KeyByID("definitely-not-a-real-kid"); !errors.Is(err, auth.ErrUnknownKey) {
 		t.Fatalf("live unknown kid err = %v, want ErrUnknownKey", err)
+	}
+}
+
+// --- max-stale ceiling -------------------------------------------------
+
+// staleFetchTransport serves the fixture body on demand and can be
+// flipped to fail every subsequent fetch (simulating an IdP that goes
+// unreachable). The first fetch — the synchronous construction fetch —
+// always succeeds; flip `setFail(true)` afterward to drive staleness.
+type staleFetchTransport struct {
+	mu      sync.Mutex
+	count   int
+	body    []byte
+	failing bool
+}
+
+func (t *staleFetchTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	t.count++
+	failing := t.failing
+	body := t.body
+	t.mu.Unlock()
+	if failing {
+		return nil, fmt.Errorf("simulated IdP unreachable")
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func (t *staleFetchTransport) setFail(b bool) {
+	t.mu.Lock()
+	t.failing = b
+	t.mu.Unlock()
+}
+
+// levelHandler captures each record's level + message so a test can
+// assert the refresh-failure log ESCALATES to Error once the snapshot is
+// past the ceiling, and that the escalation is rate-bounded.
+type levelHandler struct {
+	mu   sync.Mutex
+	recs []struct {
+		level slog.Level
+		msg   string
+	}
+}
+
+func (h *levelHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *levelHandler) Handle(_ context.Context, rec slog.Record) error {
+	h.mu.Lock()
+	h.recs = append(h.recs, struct {
+		level slog.Level
+		msg   string
+	}{rec.Level, rec.Message})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *levelHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *levelHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *levelHandler) countErrorsContaining(sub string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.recs {
+		if r.level == slog.LevelError && strings.Contains(r.msg, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// newStaleKeySet builds a URL-backed keyset over a staleFetchTransport
+// with a controllable clock and the supplied ceiling. The clock starts
+// at a fixed instant; the keyset's construction fetch succeeds.
+func newStaleKeySet(t *testing.T, clk *fakeClock, maxStale time.Duration, extra ...auth.JWKSOption) (*auth.JWKSKeySet, *staleFetchTransport) {
+	t.Helper()
+	tr := &staleFetchTransport{body: loadFixture(t, "jwks.json")}
+	opts := []auth.JWKSOption{
+		auth.WithJWKSHTTPClient(&http.Client{Transport: tr}),
+		auth.WithJWKSClock(clk.now),
+		auth.WithJWKSMinRefreshInterval(time.Minute),
+		auth.WithJWKSRefreshTTL(5 * time.Minute),
+		auth.WithJWKSMaxStale(maxStale),
+	}
+	opts = append(opts, extra...)
+	ks, err := auth.NewJWKSKeySet(context.Background(), auth.JWKSSource{URL: "http://jwks.test/keys"}, nil, opts...)
+	if err != nil {
+		t.Fatalf("NewJWKSKeySet: %v", err)
+	}
+	return ks, tr
+}
+
+// TestJWKSKeySet_MaxStale_PastBothThresholds_FailsClosed drives the
+// snapshot age past BOTH the cache TTL and the ceiling with refreshes
+// failing: KeyByID must fail closed with ErrJWKSStale even for a kid
+// that IS present in the (now untrustworthy) snapshot — a possibly
+// revoked key in a too-old snapshot is never served.
+func TestJWKSKeySet_MaxStale_PastBothThresholds_FailsClosed(t *testing.T) {
+	t.Parallel()
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	ks, tr := newStaleKeySet(t, clk, 10*time.Minute)
+
+	// Fresh: the kid resolves.
+	if _, _, err := ks.KeyByID(fixtureRSAKID); err != nil {
+		t.Fatalf("fresh KeyByID: %v", err)
+	}
+
+	// IdP goes unreachable; advance past both the 5m TTL and the 10m
+	// ceiling. The kid is still present in the cached snapshot.
+	tr.setFail(true)
+	clk.advance(11 * time.Minute)
+	_, _, err := ks.KeyByID(fixtureRSAKID)
+	if !errors.Is(err, auth.ErrJWKSStale) {
+		t.Fatalf("past-ceiling KeyByID err = %v, want ErrJWKSStale", err)
+	}
+	if errors.Is(err, auth.ErrUnknownKey) {
+		t.Fatalf("a stale-but-present kid must not be reported as ErrUnknownKey: %v", err)
+	}
+
+	// Recovery: the IdP comes back, the clock advances past the refresh
+	// window, the next lookup refetches and resets staleness.
+	tr.setFail(false)
+	clk.advance(2 * time.Minute)
+	if _, _, err := ks.KeyByID(fixtureRSAKID); err != nil {
+		t.Fatalf("after recovery KeyByID err = %v, want nil (staleness reset)", err)
+	}
+}
+
+// TestJWKSKeySet_MaxStale_SubTTLCeiling_HotPathGated is the load-bearing
+// case the past-both-thresholds test misses: a ceiling TIGHTER than the
+// cache TTL (2m ceiling, 5m TTL) with the snapshot aged into
+// [ceiling, TTL) (3m). The snapshot is still "fresh" by the TTL, so an
+// un-gated hot path WOULD serve it — but the hot-path early return is
+// ceiling-gated, so KeyByID falls through to the bounded refresh (which
+// fails) and rejects with ErrJWKSStale.
+func TestJWKSKeySet_MaxStale_SubTTLCeiling_HotPathGated(t *testing.T) {
+	t.Parallel()
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	ks, tr := newStaleKeySet(t, clk, 2*time.Minute)
+
+	if _, _, err := ks.KeyByID(fixtureRSAKID); err != nil {
+		t.Fatalf("fresh KeyByID: %v", err)
+	}
+
+	// Age into [2m ceiling, 5m TTL): still TTL-fresh, but past the
+	// ceiling. Refreshes fail.
+	tr.setFail(true)
+	clk.advance(3 * time.Minute)
+	_, _, err := ks.KeyByID(fixtureRSAKID)
+	if !errors.Is(err, auth.ErrJWKSStale) {
+		t.Fatalf("sub-TTL ceiling KeyByID err = %v, want ErrJWKSStale (hot path must be ceiling-gated)", err)
+	}
+}
+
+// TestJWKSKeySet_MaxStale_NonPositiveOptionKeepsDefault asserts the
+// ceiling is never disabled: WithJWKSMaxStale(0) keeps the package
+// default. Advancing past the default (1h) with refreshes failing trips
+// the ceiling — proving a finite default applies rather than "unbounded."
+func TestJWKSKeySet_MaxStale_NonPositiveOptionKeepsDefault(t *testing.T) {
+	t.Parallel()
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	ks, tr := newStaleKeySet(t, clk, 0) // 0 ⇒ keep the package default
+
+	if _, _, err := ks.KeyByID(fixtureRSAKID); err != nil {
+		t.Fatalf("fresh KeyByID: %v", err)
+	}
+
+	// Within the default ceiling (and past the TTL) with the IdP down:
+	// the prior cache is still served (availability within the bound).
+	tr.setFail(true)
+	clk.advance(30 * time.Minute)
+	if _, _, err := ks.KeyByID(fixtureRSAKID); err != nil {
+		t.Fatalf("within default ceiling KeyByID err = %v, want nil (served from cache)", err)
+	}
+
+	// Past the default ceiling: fail closed — the default is finite.
+	clk.advance(31 * time.Minute) // 61m total ≥ 1h default
+	if _, _, err := ks.KeyByID(fixtureRSAKID); !errors.Is(err, auth.ErrJWKSStale) {
+		t.Fatalf("past default ceiling KeyByID err = %v, want ErrJWKSStale (ceiling never disabled)", err)
+	}
+}
+
+// TestJWKSKeySet_MaxStale_ErrorLogRateBounded asserts the refresh-failure
+// log escalates to Error once the snapshot is past the ceiling, and that
+// the escalation is rate-bounded to at most once per minimum-refresh
+// window (a flood of rejected requests does not flood the logs).
+func TestJWKSKeySet_MaxStale_ErrorLogRateBounded(t *testing.T) {
+	t.Parallel()
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	lh := &levelHandler{}
+	ks, tr := newStaleKeySet(t, clk, 2*time.Minute, auth.WithJWKSLogger(slog.New(lh)))
+
+	if _, _, err := ks.KeyByID(fixtureRSAKID); err != nil {
+		t.Fatalf("fresh KeyByID: %v", err)
+	}
+
+	// Past the ceiling, IdP down. Many lookups inside one refresh window
+	// → exactly one Error log (the refresh is rate-bounded).
+	tr.setFail(true)
+	clk.advance(3 * time.Minute)
+	for range 5 {
+		if _, _, err := ks.KeyByID(fixtureRSAKID); !errors.Is(err, auth.ErrJWKSStale) {
+			t.Fatalf("KeyByID err = %v, want ErrJWKSStale", err)
+		}
+	}
+	if got := lh.countErrorsContaining("max-stale ceiling"); got != 1 {
+		t.Fatalf("Error logs in window 1 = %d, want 1 (rate-bounded)", got)
+	}
+
+	// Next refresh window → exactly one more Error log.
+	clk.advance(90 * time.Second)
+	for range 5 {
+		_, _, _ = ks.KeyByID(fixtureRSAKID)
+	}
+	if got := lh.countErrorsContaining("max-stale ceiling"); got != 2 {
+		t.Fatalf("Error logs after window 2 = %d, want 2 (one per window)", got)
+	}
+}
+
+// TestJWKSValidator_MaxStale_ControllableClock_Consumer is the
+// end-to-end consumer test (CLAUDE.md §11 — controllable clock, no
+// time.Sleep): a token verifies while fresh; once the clock advances
+// past the ceiling with refreshes failing, Validate rejects with
+// ErrJWKSStale; a subsequent successful refresh resets staleness and the
+// SAME token verifies again.
+func TestJWKSValidator_MaxStale_ControllableClock_Consumer(t *testing.T) {
+	t.Parallel()
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	ks, tr := newStaleKeySet(t, clk, 2*time.Minute)
+	v, err := auth.NewValidator(ks, withTestRedactor(),
+		auth.WithIssuer("https://issuer.example.com"),
+		auth.WithAudience("harbor"),
+		auth.WithClock(clk.now),
+	)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	// The token's exp is far in the future relative to the test clock so
+	// the only failing axis is JWKS staleness.
+	claims := validIdentityClaims(clk.now())
+	claims["exp"] = clk.now().Add(24 * time.Hour).Unix()
+	claims["nbf"] = clk.now().Add(-time.Minute).Unix()
+	tok := signToken(t, jwt.SigningMethodRS256, loadRSAPriv(t), fixtureRSAKID, claims)
+
+	if _, err := v.Validate(context.Background(), tok); err != nil {
+		t.Fatalf("fresh Validate: %v", err)
+	}
+
+	// Past the ceiling, IdP down → rejected as ErrJWKSStale.
+	tr.setFail(true)
+	clk.advance(3 * time.Minute)
+	if _, err := v.Validate(context.Background(), tok); !errors.Is(err, auth.ErrJWKSStale) {
+		t.Fatalf("stale Validate err = %v, want ErrJWKSStale", err)
+	}
+
+	// IdP recovers, clock advances past the refresh window → staleness
+	// resets and the same token verifies again.
+	tr.setFail(false)
+	clk.advance(2 * time.Minute)
+	if _, err := v.Validate(context.Background(), tok); err != nil {
+		t.Fatalf("recovered Validate err = %v, want nil (staleness reset)", err)
+	}
+}
+
+// TestJWKSKeySet_MaxStale_ConcurrentReuse extends the concurrent-reuse
+// coverage across the fresh → stale → recovered transitions: N≥100
+// goroutines hammer a single shared keyset/validator while the clock and
+// the IdP availability are driven through the lifecycle. Under -race this
+// pins no data race, no goroutine leak.
+func TestJWKSKeySet_MaxStale_ConcurrentReuse(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	ks, tr := newStaleKeySet(t, clk, 2*time.Minute)
+	v, err := auth.NewValidator(ks, withTestRedactor(),
+		auth.WithIssuer("https://issuer.example.com"),
+		auth.WithAudience("harbor"),
+		auth.WithClock(clk.now),
+	)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+	claims := validIdentityClaims(clk.now())
+	claims["exp"] = clk.now().Add(24 * time.Hour).Unix()
+	claims["nbf"] = clk.now().Add(-time.Minute).Unix()
+	tok := signToken(t, jwt.SigningMethodRS256, loadRSAPriv(t), fixtureRSAKID, claims)
+
+	baseline := goruntime.NumGoroutine()
+
+	const workers = 150
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for range 10 {
+				_, err := v.Validate(context.Background(), tok)
+				// During fresh/recovered phases err is nil; during the
+				// stale phase err Is ErrJWKSStale. Both are acceptable —
+				// the assertion is "no race / no leak / no panic", not a
+				// fixed outcome (the clock races the goroutines by design).
+				if err != nil && !errors.Is(err, auth.ErrJWKSStale) {
+					t.Errorf("unexpected Validate err: %v", err)
+					return
+				}
+				_, _, _ = ks.KeyByID(fixtureRSAKID)
+			}
+		}()
+	}
+	// Drive the lifecycle while the workers run.
+	tr.setFail(true)
+	clk.advance(3 * time.Minute)
+	tr.setFail(false)
+	clk.advance(2 * time.Minute)
+	wg.Wait()
+
+	for range 50 {
+		if goruntime.NumGoroutine() <= baseline+2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := goruntime.NumGoroutine(); got > baseline+5 {
+		t.Fatalf("goroutine leak: baseline=%d after=%d", baseline, got)
 	}
 }
 

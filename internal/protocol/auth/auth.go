@@ -386,6 +386,16 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		kidSeen = kid
 		key, alg, err := v.keys.KeyByID(kid)
 		if err != nil {
+			// A max-stale-ceiling failure is categorically different
+			// from an unknown kid: the key source can no longer be
+			// vouched for (a revoked key may still be present in the
+			// stale snapshot), so the runtime fails CLOSED. Propagate
+			// ErrJWKSStale as-is rather than masking it under
+			// ErrUnknownKey, so the operator sees "JWKS too stale", not
+			// "unknown key".
+			if errors.Is(err, ErrJWKSStale) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("%w: %w", ErrUnknownKey, err)
 		}
 		// Defence in depth: if the KeySet returns an algorithm name
@@ -667,6 +677,13 @@ func isAllowedMethod(method jwt.SigningMethod) bool {
 //  5. Unverifiable / malformed → ErrTokenMalformed (the fall-through
 //     for an unparseable JWT).
 func mapParserError(err error) error {
+	// (0) the max-stale-ceiling failure is honoured BEFORE ErrUnknownKey:
+	// the keyfunc returns ErrJWKSStale un-masked, and a stale snapshot is
+	// a "fail closed, key source untrustworthy" outcome distinct from "the
+	// kid never resolved". errors.Is unwraps the parser's wrap.
+	if errors.Is(err, ErrJWKSStale) {
+		return ErrJWKSStale
+	}
 	// (1) honour our keyfunc-returned sentinels first — they are
 	// wrapped through ErrTokenUnverifiable but errors.Is unwraps.
 	if errors.Is(err, ErrAlgNotAllowed) {
