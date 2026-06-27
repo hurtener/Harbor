@@ -74,10 +74,11 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	default:
 	}
 
-	// Single regular tool-call.
+	// Single regular tool-call. Resolve the provider-returned name back
+	// to the real catalog name (declarations are sent sanitized).
 	if len(resp.ToolCalls) == 1 {
 		return planner.CallTool{
-			Tool:   first.Name,
+			Tool:   resolveDeclaredToolName(rc, first.Name),
 			Args:   first.Args,
 			CallID: first.ID,
 		}, nil
@@ -91,7 +92,7 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		branches := make([]planner.CallTool, len(resp.ToolCalls))
 		for i, tc := range resp.ToolCalls {
 			branches[i] = planner.CallTool{
-				Tool:   tc.Name,
+				Tool:   resolveDeclaredToolName(rc, tc.Name),
 				Args:   tc.Args,
 				CallID: tc.ID,
 			}
@@ -102,13 +103,13 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	// Serialization fallback (parallel_tool_calls: false):
 	// dispatch the head, queue the tail on rc.PendingToolCalls.
 	call := planner.CallTool{
-		Tool:   first.Name,
+		Tool:   resolveDeclaredToolName(rc, first.Name),
 		Args:   first.Args,
 		CallID: first.ID,
 	}
 	for _, tc := range resp.ToolCalls[1:] {
 		rc.PendingToolCalls = append(rc.PendingToolCalls, planner.ToolCallDeferred{
-			Name:   tc.Name,
+			Name:   resolveDeclaredToolName(rc, tc.Name),
 			Args:   tc.Args,
 			CallID: tc.ID,
 		})

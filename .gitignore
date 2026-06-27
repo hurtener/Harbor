@@ -5,6 +5,8 @@
 # harbor-protocol-ts-types, harbor-mcptest-stdio) — anchored at root, so this
 # does NOT match the harbortest/ dir or the cmd/harbor-*/ source packages.
 /harbor-*
+# Stray root builds of example clients (examples/protocol-clients/*).
+/event-viewer
 /dist/
 /build/
 *.exe
