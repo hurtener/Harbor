@@ -24,6 +24,113 @@ issue [#396](https://github.com/hurtener/Harbor/issues/396); and the generated
 per-domain Protocol wire-type modules + the shared chat-module extraction — the
 D-093 / D-091 follow-ons.)
 
+## [1.8.0] — 2026-06-27
+
+The adopter-path release: make all three advertised ways into Harbor — embed,
+CLI, and Protocol — work end to end, and make the public surface honest about
+what ships. v1.7 advertised the paths; only one was honest end-to-end. This
+release closes the serve-attach cliff with two on-ramps, delivers a production
+one-call runner with first-class streaming, makes a scaffolded tools agent
+actually invoke a tool against a real provider, and ships discoverable examples
+plus a vendorable TypeScript wire-type generator. Purely additive public API +
+docs; the Harbor Protocol holds at `0.1.0` (no method, error, event, or wire-type
+change this release).
+
+### Added
+
+- **`Stack.RunOnce` — the production one-call runner.** *(embed)* One blocking
+  call turns a goal + the `(tenant, user, session)` identity into the terminal
+  answer envelope, replacing ~15–27 lines of hand-built `RunContext` / `RunSpec`
+  ceremony per run. It is built on a shared `runctx.NewRunContext` factory that
+  composes the same memory / skills / artifact / streaming projections the dev
+  drivers use (parity-tested, never a third construction site), with
+  `sdk/assemble` + `sdk/runctx` facade aliases and an N≥100 concurrent-reuse
+  guarantee. (D-265.)
+- **`WithStream` — first-class streaming on `RunOnce`.** *(embed)* One run
+  option observes token / tool / step events as they happen, on the **same**
+  blocking method — wired to the synchronous planner `OnChunk` + steering
+  `OnToolDispatched` seam, so streamed chunks deterministically precede the
+  final envelope. New public `StreamEvent` type. (D-266.)
+- **`harbor token` — the no-IdP self-issuing on-ramp.** *(protocol)* A new CLI
+  subcommand for an operator with no identity provider: `harbor token keygen`
+  generates an asymmetric keypair (ES256 default / RS256 opt-in) and the
+  matching public JWK Set (its `kid` is the RFC-7638 thumbprint); `harbor token
+  mint` self-issues the JWTs `harbor serve` verifies. serve's verifier is
+  unchanged — it trusts the key only because you point `identity.jwks_file` at
+  the emitted JWK Set, identical to pointing at a real IdP, so serve still mints
+  nothing. Least-privilege defaults (no scopes unless `--scopes`, a short ttl),
+  `private.pem` written `0600`, and mandatory `--issuer` / `--audience` that
+  must match `serve.yaml` or attach 401s. (D-264.)
+- **Production-identity guide, skill, and worked OIDC client.** *(protocol)*
+  `docs/site/protocol/production-identity-setup.md` documents both attach
+  on-ramps (a real IdP and the `harbor token` self-issuing path), lifting the
+  JWT claim shape — including the `iss` / `aud` exact-match contract serve
+  hard-rejects — from the authoritative parser; the `configure-production-identity`
+  operator skill operationalizes it; and
+  `examples/protocol-clients/oidc-client-example/` is an SDK-free worked client
+  that obtains a JWT via the OAuth2 client-credentials grant and attaches. (D-263.)
+- **External-client TypeScript wire-type generator.** *(protocol)*
+  `cmd/harbor-protocol-ts-types` reflects over the canonical Protocol surface
+  and emits a vendorable, dependency-free TypeScript wire-type module for
+  third-party clients (consumed by a worked `event-viewer-ts`), under its own
+  `make protocol-ts-types-gen[-check]` targets — distinct from, and
+  non-interfering with, the reserved Console generator and its lockstep gate.
+  Partially retires the TypeScript-generation deferral for external clients. (D-269.)
+- **Runnable `sdk` examples and an in-tree conformance worked example.** The
+  first `Example_` functions under `sdk/` — the facade's first contact on
+  pkg.go.dev — and a `go test`-compiled `conformance-fork` harness wiring a
+  custom `Factory` + `RunSuite`.
+
+### Changed
+
+- **`harbor dev` is honest about `.go` edits.** *(cli)* A `.go` change now warns
+  and guides a manual rebuild instead of driving an in-process reboot that
+  reported `dev.hot_reload.completed{Success=true}` without recompiling the
+  binary — a loud false success. Config / YAML reload still rebuilds in place.
+  (D-268.)
+- **The scaffolded tools agent actually invokes a tool.** *(cli)* When an agent
+  declares tools, the scaffold's golden test now registers **and** dispatches a
+  declared tool through the executor (not merely that `RegisterTools` is
+  defined), closing a compile-only false-green. (D-267.)
+- **Native tool-calling sanitizes catalog tool names.** *(runtime)* The React
+  planner maps a tool name to the provider-safe form (`^[a-zA-Z0-9_-]{1,64}$`)
+  for native tool-calling and resolves it back on dispatch, so Harbor's dotted
+  convention — every built-in (`clock.now`) and the default scaffolded custom
+  name (`inventory.check`) — no longer 400s against OpenAI-compatible providers.
+  Transparent: the catalog name, the config, and the public API are unchanged.
+  (D-270.)
+- **A public surface that tracks the shipped reality.** The marketing surface
+  now states the current canonical method count, the genuine config-reload
+  capability, and the v1.8.0 release surfaces.
+
+### Fixed
+
+- **Dotted tool names against real providers.** Any built-in or default-named
+  custom tool previously failed the first LLM call on an OpenAI-compatible
+  provider with a `400`, because the catalog name was sent verbatim as the
+  function name. The 107c/107d native-tool-calling tests and the scaffold gate
+  all used a scripted LLM, which bypasses provider name-validation — surfaced by
+  building a real scaffolded agent against a live provider. (Fixed by the
+  native-tool-calling change above.)
+- **The `embed-runonce` worked example runs, not just compiles.** It now
+  declares a `ModelProfiles` entry, so an operator who copies it gets an answer
+  instead of a runtime error. Surfaced by live verification.
+
+### Internal
+
+- A composing wave-end end-to-end test (`wave_v18_test.go`) exercises all three
+  adopter paths together on real drivers under `-race`: embed `RunOnce` +
+  `WithStream`, both Protocol on-ramps (the hermetic mock-OIDC issuer and
+  `harbor token`) against a real `harbor serve` with a mismatched-`iss` 401,
+  in-process MCP tool dispatch, identity propagation, and an N≥16 concurrency
+  stress. A net-new integration test also proves a planner invoking an
+  MCP-sourced tool through the executor.
+- Three pre-existing, load-induced CI flakes were hardened (a `t.Parallel`
+  goroutine-leak check, a durable-bus drain deadline, and a spawn/await settle
+  window), and two long-committed root build artifacts were removed.
+- Purely additive public API + docs: no Protocol method / error / event / type
+  change, so `ProtocolVersion` and the committed wire-surface digest both hold.
+
 ## [1.7.0] — 2026-06-26
 
 Protocol-edge hardening: capability negotiation, key-revocation safety, and
