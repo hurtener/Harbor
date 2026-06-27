@@ -239,33 +239,40 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 	}
 	reserved := reservedPlannerControlDeclarations()
 	decls := make([]llm.ToolDeclaration, 0, len(reserved)+len(always)+len(discovered))
+	// Dedup on the SANITIZED name — that is the function name the LLM
+	// sees, so two catalog names that sanitize to the same string would
+	// otherwise be sent as duplicate declarations and confuse provider
+	// dispatch. On such a (pathological) collision the second tool is
+	// dropped for the turn rather than declared ambiguously.
 	seen := make(map[string]struct{}, len(reserved)+len(always)+len(discovered))
 	for _, r := range reserved {
-		seen[r.Name] = struct{}{}
+		seen[sanitizeToolName(r.Name)] = struct{}{}
 		decls = append(decls, r)
 	}
 	for _, t := range always {
 		if t.Name == "" {
 			continue
 		}
-		if _, dup := seen[t.Name]; dup {
+		key := sanitizeToolName(t.Name)
+		if _, dup := seen[key]; dup {
 			continue
 		}
-		seen[t.Name] = struct{}{}
+		seen[key] = struct{}{}
 		decls = append(decls, toolToDeclaration(t))
 	}
 	for _, name := range discovered {
 		if name == "" {
 			continue
 		}
-		if _, dup := seen[name]; dup {
+		key := sanitizeToolName(name)
+		if _, dup := seen[key]; dup {
 			continue
 		}
 		t, ok := rc.Catalog.Resolve(name)
 		if !ok {
 			continue
 		}
-		seen[name] = struct{}{}
+		seen[key] = struct{}{}
 		decls = append(decls, toolToDeclaration(t))
 	}
 	return decls
@@ -370,7 +377,9 @@ var (
 // adapters) consume this shape directly.
 func toolToDeclaration(t tools.Tool) llm.ToolDeclaration {
 	return llm.ToolDeclaration{
-		Name:        t.Name,
+		// Sanitize the catalog name to the provider-safe form native
+		// tool-calling requires; the projector reverses it on dispatch.
+		Name:        sanitizeToolName(t.Name),
 		Description: t.Description,
 		Schema:      t.ArgsSchema,
 	}

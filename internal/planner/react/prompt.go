@@ -904,8 +904,11 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 		Role:    llm.RoleAssistant,
 		Content: asstContent,
 		ToolCalls: []llm.ToolCallStructured{{
-			ID:   callID,
-			Name: call.Tool,
+			ID: callID,
+			// Replay the tool name under its sanitized (provider-safe)
+			// form — it must match the declared function name, or the
+			// provider 400s on the follow-up turn.
+			Name: sanitizeToolName(call.Tool),
 			Args: json.RawMessage(safeArgs(call.Args)),
 		}},
 	}
@@ -1085,8 +1088,9 @@ func renderNativeParallelStep(step planner.Step, call planner.CallParallel, repl
 			cid = fmt.Sprintf("react.callid.%d.%d", stepIdx, bi)
 		}
 		toolCalls[bi] = llm.ToolCallStructured{
-			ID:   cid,
-			Name: b.Tool,
+			ID: cid,
+			// Sanitized so the replayed name matches the declaration.
+			Name: sanitizeToolName(b.Tool),
 			Args: json.RawMessage(safeArgs(b.Args)),
 		}
 	}

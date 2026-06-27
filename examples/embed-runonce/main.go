@@ -44,6 +44,11 @@ func run() error {
 	cfg.LLM.Provider = "openrouter"
 	cfg.LLM.Model = "anthropic/claude-sonnet-4"
 	cfg.LLM.APIKey = "env.OPENROUTER_API_KEY" // env-var indirection — never inline a key
+	// Every model the run drives needs a profile (its context window) — the
+	// run loop fails loud without one. Declare it for the model above.
+	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+		"anthropic/claude-sonnet-4": {ContextWindowTokens: 200000},
+	}
 	if err := cfg.ValidateCore(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}

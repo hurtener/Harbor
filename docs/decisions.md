@@ -7215,3 +7215,45 @@ never cross-run (brief 01 §"Backpressure inside streaming").
 **Protocol additions.** None — no Harbor Protocol method, error code, event type, or wire type changed. The generated module is a read-only projection of the existing canonical surface.
 
 **Cross-references.** D-132 (the TS-generation deferral this partially retires for external clients), D-223 (the Console lockstep gate + the reserved `cmd/harbor-gen-protocol-ts` name, both untouched), D-209 (the sibling `cmd/harbor-gen-protocol-docs` reflect-over-`CanonicalWireTypes` generator whose shape this mirrors), D-002 (the Go single source for wire types). RFC §5 (the Harbor Protocol contract), §5.3 (versioning — the module pins `PROTOCOL_VERSION`), §3.6 (the adopter-facing client surface). CLAUDE.md §4.5(5) (the lockstep rule + the reserved name), §8 (Protocol single source), §13 (primitive-with-consumer — the `event-viewer-ts` consumer), §18 (the same-PR skill-drift update). Plan: `docs/plans/phase-135-ts-types-generator.md`.
+
+---
+
+## D-270 — Native tool-calling sanitizes catalog tool names to the provider-safe form, and resolves them back on dispatch
+
+**Date:** 2026-06-27
+
+**Status:** Settled (shipped in the v1.8.0 Adopter-Path wave)
+
+**Context.** Live verification of the scaffold-with-tools adopter path (Phase
+133) found that Harbor's dotted tool-naming convention — the built-ins
+`clock.now` / `text.echo` and scaffolded custom tools like `inventory.check`
+— breaks native tool-calling against OpenAI-compatible providers. Those
+providers reject any function name not matching `^[a-zA-Z0-9_-]{1,64}$` with a
+`400`. The React planner declared the catalog name verbatim in `req.Tools`
+and replayed it verbatim in the assistant `tool_calls` history, so any
+dotted-tool agent failed on the first (declaration) or follow-up (history)
+LLM call. The 107c/107d native-tool-calling tests and the 133 scaffold gate
+all used a scripted LLM, which bypasses provider name-validation — the §17.8
+"fixture that can't tell right-field from wrong-field" hazard.
+
+**Decision.** The React planner sanitizes every tool name it sends to the LLM
+(the `req.Tools` declarations and the replayed assistant `tool_calls`) to the
+provider-safe form via `sanitizeToolName` (disallowed characters → `_`,
+capped at 64), and resolves a provider-returned name back to the real catalog
+name via `resolveDeclaredToolName` before building the `CallTool` decision.
+The catalog name stays the canonical key — sanitization is a wire-edge
+transform, invisible to operators and to the executor. Declarations dedup on
+the sanitized name so the LLM never sees two identical function names; a
+(pathological) sanitized-name collision drops the second tool from the turn.
+This is the same provider-rejection class D-already-shipped handled for
+*undeclared* reserved-control names, now extended to *invalid-character*
+catalog names.
+
+**Consequences.** Dotted-name agents (the default scaffold output and every
+built-in) work against real OpenAI-compatible providers. No operator-facing
+change; no catalog/config/API change. A deterministic round-trip unit test
+(a dotted name through declaration + projection) is the regression guard the
+scripted-LLM tests lacked.
+
+**Cross-references.** D-167 / D-169 (107c/107d native `tool_calls`), Phase 133
+(scaffold-with-tools, whose live verification surfaced this). RFC §6.2, §6.4.
