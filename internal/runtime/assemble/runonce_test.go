@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	// Dev-only mock LLM (D-089): explicit opt-in, never in the aggregator.
 	_ "github.com/hurtener/Harbor/internal/llm/mock"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -67,6 +69,55 @@ func TestRunOnce_GoldenPath_ReturnsAnswer(t *testing.T) {
 	}
 	if env.Answer == "" {
 		t.Error("expected a non-empty answer on the golden path")
+	}
+}
+
+// TestRunOnce_ProjectsSkillsAndInputArtifacts exercises the two RunOnce
+// construction branches the golden-path tests skip: the skills-Directory
+// build (reached only when the stack carries a SkillStore) and the
+// WithInputArtifacts input-artifact pass-through. A future divergence in
+// the DirectoryFromConfig args or the Sources wiring would error here even
+// while the golden path stays green.
+func TestRunOnce_ProjectsSkillsAndInputArtifacts(t *testing.T) {
+	ctx := context.Background()
+	cfg := minimalCfg(t)
+	cfg.LLM.Model = "mock/echo"
+	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+		"mock/echo": {ContextWindowTokens: 100000, TokenEstimator: "chars_div_4"},
+	}
+	// A real SkillStore makes RunOnce build the skills Directory.
+	cfg.Skills = config.SkillsConfig{
+		Driver: "localdb",
+		DSN:    filepath.Join(t.TempDir(), "skills.sqlite"),
+	}
+	stack, err := assemble.Assemble(ctx, cfg, assemble.Options{})
+	if err != nil {
+		t.Fatalf("Assemble (with skills): %v", err)
+	}
+	defer func() { _ = stack.Close(ctx) }()
+	if stack.Skills == nil {
+		t.Fatal("expected a wired SkillStore from cfg.Skills.Driver=localdb")
+	}
+
+	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
+
+	// Seed an input artifact and pass it via WithInputArtifacts so the
+	// ResolveInputArtifacts projection branch executes for a real ref.
+	ref, err := stack.Artifacts.PutText(ctx,
+		artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID},
+		"the quarterly deployment report",
+		artifacts.PutOpts{MimeType: "text/plain", Filename: "report.txt"})
+	if err != nil {
+		t.Fatalf("PutText (seed input artifact): %v", err)
+	}
+
+	env, err := stack.RunOnce(ctx, "Summarise the attached report.", id,
+		assemble.WithInputArtifacts(ref.ID))
+	if err != nil {
+		t.Fatalf("RunOnce(skills+artifacts): %v", err)
+	}
+	if env.FinishReason != string(planner.FinishGoal) {
+		t.Errorf("FinishReason = %q, want %q", env.FinishReason, planner.FinishGoal)
 	}
 }
 

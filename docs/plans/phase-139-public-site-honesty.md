@@ -75,7 +75,8 @@ None.
 - [ ] `landingSpec.ts` dev banner no longer contains "3 drivers registered".
 - [ ] `cmd/harbor/cmd_dev_hot_reload_test.go` godoc references the in-package
       real-bus tests, not `test/integration/phase65_hot_reload_test.go`; the
-      stale string appears nowhere in the repo.
+      stale string appears nowhere in `cmd_dev_hot_reload_test.go` (the file the
+      `phase-139.sh` gate greps).
 - [ ] `scripts/smoke/phase-139.sh` (static-only honesty greps) passes with
       FAIL=0.
 - [ ] Console gates pass (`npm run check && npm run lint && npm run build`).

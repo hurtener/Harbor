@@ -138,10 +138,6 @@ the [setup guide](https://hurtener.github.io/Harbor/protocol/production-identity
 
 ## B. No IdP — the `harbor token` self-issuing on-ramp
 
-> **Forthcoming in v1.8.0.** The `harbor token` subcommand ships in the same
-> wave as this skill; until it lands, use on-ramp A. The flow is documented here
-> so the self-issuing path is ready the moment the subcommand is on your binary.
-
 Standing up an IdP is **not** a prerequisite for `harbor serve`. The cliff was
 never "you must buy an IdP" — it was that the self-issuing path was undocumented.
 `harbor token` closes it: generate a keypair, point `serve`'s

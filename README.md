@@ -246,21 +246,37 @@ below — the repo stays the source of truth.
 
 ## Status
 
-**Harbor v1.4.1.** The production-adoption line. A server's tool can now
-declare a `ui://` resource (`io.modelcontextprotocol/ui`) that the Console
-renders as an interactive, sandboxed app inline in the Playground — the
-**MCP Apps host**, built on the official `ext-apps` AppBridge in
-manual-handler mode, so every app→host call is Protocol-proxied and never
-escapes the `(tenant, user, session)` isolation boundary; it ships three
-display modes (inline / fullscreen tab / pip split) and inline discovery via
-the `mcp.app_available` event. Agents now accept image, audio, and video
-attachments end-to-end: provider-native upload happens inside the LLM driver,
-an attachment-disposition policy keeps heavy bytes out of the context window,
+**Harbor v1.8.0.** The adopter-path line — all three ways into Harbor now
+work end to end. **Embed** it as a library: `assemble.Assemble` composes a
+headless runtime and `Stack.RunOnce` turns a goal plus the
+`(tenant, user, session)` identity into an answer envelope in one blocking
+call, with `WithStream` delivering token / tool / step events as they happen
+on the same method. **Scaffold** from the CLI: `harbor init` / `scaffold`
+generate an agent whose golden test actually registers and dispatches a tool
+through the executor, and `harbor dev` is honest about `.go` edits — it warns
+and guides a rebuild rather than reporting a hot-reload that never recompiled.
+**Attach over the Protocol**: `harbor serve` verifies JWTs against whatever
+JWKS you configure, and for an operator with no identity provider,
+`harbor token keygen` / `mint` self-issues the JWTs it verifies — serve's
+verifier is unchanged; it trusts the key only because you pointed
+`identity.jwks_file` at it. A vendorable TypeScript wire-type generator
+(`harbor-protocol-ts-types`) plus worked OIDC and conformance-fork clients
+under `examples/protocol-clients/` close the loop for third-party tooling.
+
+Building on the v1.4 production line: a server's tool can declare a `ui://`
+resource (`io.modelcontextprotocol/ui`) that the Console renders as an
+interactive, sandboxed app inline in the Playground — the **MCP Apps host**,
+built on the official `ext-apps` AppBridge in manual-handler mode, so every
+app→host call is Protocol-proxied and never escapes the
+`(tenant, user, session)` isolation boundary; it ships three display modes
+(inline / fullscreen tab / pip split) and inline discovery via the
+`mcp.app_available` event. Agents accept image, audio, and video attachments
+end-to-end: provider-native upload happens inside the LLM driver, an
+attachment-disposition policy keeps heavy bytes out of the context window,
 and an opt-in `Embedder` seam adds semantic memory + skill retrieval. And
-`harbor serve` — the headless production sibling of `harbor dev` — verifies
-JWTs against a JWKS source (`identity.jwks_url` / `jwks_file`, asymmetric
-algorithms only) and boots with no dev-only surfaces, failing loud at boot
-when a real provider or JWKS source is missing.
+`harbor serve` — the headless production sibling of `harbor dev` — boots with
+no dev-only surfaces, failing loud at boot when a real provider or JWKS
+source is missing.
 
 v1.4.1 hardened the MCP Apps backend into a spec-conformant host: the MCP
 southbound driver advertises the host's renderable modes during the initialize

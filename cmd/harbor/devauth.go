@@ -9,10 +9,10 @@
 // each boot mints a fresh pair so a leaked token from one run cannot
 // be reused against a later run. Operators wiring a real OIDC
 // provider for non-local deployments replace this surface entirely
-// via `harbor.yaml`'s `identity.jwks_url` (the validator-side wiring
-// for that lands in a later release-engineering phase). The dev key
-// path is gated behind the `harbor dev` subcommand boundary —
-// nothing else in the binary touches it.
+// via `harbor.yaml`'s `identity.jwks_url` (or `identity.jwks_file`),
+// which `harbor serve` fetches and verifies against the configured
+// issuer and audience. The dev key path is gated behind the `harbor
+// dev` subcommand boundary — nothing else in the binary touches it.
 //
 // # Why ES256, not RS256
 //

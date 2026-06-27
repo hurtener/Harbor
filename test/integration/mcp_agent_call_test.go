@@ -332,16 +332,18 @@ func TestE2E_Phase83g_MCPAgentCallsTool(t *testing.T) {
 			if !jsonContains(t, step.Action, "mcptest_echo") {
 				continue
 			}
-			// The executor stamps a {"error": ...} observation on a
-			// failed dispatch (steering runloop fail-loud path). The
-			// MCP error is wrapped with the "mcp:" prefix.
-			if jsonContains(t, step.Observation, "error") || jsonContains(t, step.LLMObservation, "error") || step.Error != "" {
+			// The executor stamps the failed dispatch with the MCP wire
+			// error, wrapped with the documented "mcp:" prefix
+			// (ErrMCPToolError). Asserting that prefix — not merely the
+			// generic word "error" — pins the rejection to a real
+			// subprocess/wire failure rather than any pre-dispatch error.
+			if jsonContains(t, step.Observation, "mcp:") || jsonContains(t, step.LLMObservation, "mcp:") || strings.Contains(step.Error, "mcp:") {
 				foundErrStep = true
 			}
 			break
 		}
 		if !foundErrStep {
-			t.Fatal("the mcptest_echo step carries no error observation — the bad-args dispatch was not rejected through the executor")
+			t.Fatal("the mcptest_echo step carries no mcp:-prefixed error observation — the bad-args dispatch was not rejected through the executor by the real MCP subprocess")
 		}
 
 		reqs := server.Requests()

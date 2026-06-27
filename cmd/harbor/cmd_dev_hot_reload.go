@@ -90,7 +90,7 @@ import (
 
 // Canonical event types the hot-reload supervisor emits on the bus.
 // Registered with the canonical events registry via init() so a wire
-// consumer subscribing to them is accepted. Pinned in.
+// consumer subscribing to them is accepted.
 const (
 	// EventTypeDevHotReloadTriggered fires the moment the supervisor
 	// observes a watched file change and decides to restart. Payload
@@ -671,21 +671,19 @@ func (s *hotReloadSupervisor) warnGoSourceChange(path, op string) {
 }
 
 // dbSidecarSuffixes lists filename suffixes for engine artifacts the
-// hot-reload watcher skips — these files get
-// rewritten on every commit by the running binary, so triggering a
-// reload on them creates a feedback loop that reboots the binary
-// indefinitely. The suffixes cover SQLite (WAL/SHM/journal) and the
-// rollback-journal forms other lightweight engines use.
+// hot-reload watcher skips — these files get rewritten on every commit
+// by the running binary, so triggering a reload on them creates a
+// feedback loop that reboots the binary indefinitely. The suffixes
+// cover SQLite (WAL/SHM/journal) and the rollback-journal forms other
+// lightweight engines use.
 //
-// the MAIN `.sqlite` / `.db` files are also
-// skipped. The fix covered only the WAL/SHM/journal sidecars,
-// but SQLite rewrites the main file on every commit too (transient
-// metadata changes are normal — they fire fsnotify Write events even
-// when the operator did not touch the file). Skipping only the sidecars
-// produced a slower reboot loop on every persisted state change rather
-// than closing it; the §17.5 audit pinned this as the remaining half of
-// the same bug shape. A SQLite-managed file should never trigger
-// hot-reload regardless of which file in the bundle is being rewritten.
+// The MAIN `.sqlite` / `.db` files are skipped for the same reason:
+// SQLite rewrites the main file on every commit too (transient metadata
+// changes fire fsnotify Write events even when the operator did not
+// touch the file). Skipping only the sidecars would leave a slower
+// reboot loop on every persisted state change, so a SQLite-managed file
+// never triggers hot-reload regardless of which file in the bundle is
+// being rewritten.
 var dbSidecarSuffixes = []string{
 	".sqlite-wal",
 	".sqlite-shm",
