@@ -76,6 +76,22 @@ composition, your fork — you wire a `Factory` that assembles YOUR stack
 `RunSuite`. A future Protocol transport (WebSocket, stdio) is certified
 through the same seam: no second conformance implementation, ever.
 
+**A worked example lives in the repository** at
+`examples/protocol-clients/conformance-fork/`. Because `RunSuite` is bound to
+`*testing.T` and the suite is in-tree (see *Scope, honestly* below), the
+example is a `go test`-compiled harness — not a runnable client binary like
+the SDK-free [event-viewer](./build-a-client.md). It wires a full custom
+`Factory` (its own event bus, state store, task registry, control surface,
+wire mux, and ES256 validator — real drivers on every seam) and runs the
+entire suite over that assembly:
+
+```bash
+go test -race ./examples/protocol-clients/conformance-fork/
+```
+
+Copy that harness, replace each component with your fork's, and the suite is
+the gate: a mis-wired surface fails it, never silently.
+
 ## What a pass claims
 
 Stated carefully, because a certification that oversells is worse than none:
