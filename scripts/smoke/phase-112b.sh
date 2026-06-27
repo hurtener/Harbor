@@ -512,4 +512,36 @@ else
     tail -40 "${runonce_test_log}" | sed 's/^/    /'
 fi
 
+# --- 7. The WithStream streaming sink — RunOnce (phase 132-stream, D-266) -----
+#
+# The streaming sink ships on the SAME blocking RunOnce. Its gate lives
+# here (no new smoke file for the assertion): the §13 primitive-with-
+# consumer e2e test asserts ordered token/step chunks arrive BEFORE the
+# final envelope (deterministic — the OnChunk seam fires synchronously on
+# the run goroutine), and the N>=100 concurrent-reuse -race test is
+# extended to assert NO cross-run chunk bleed (run A's chunks never reach
+# run B's sink). The grep legs pin existence so a deletion fails loud;
+# the -race run executes the streaming + extended-concurrency tests.
+
+assert_grep_present 'func WithStream' \
+    "${ROOT}/internal/runtime/assemble/stream.go" \
+    'phase 132-stream: WithStream sink on RunOnce exists'
+assert_grep_present 'TestRunOnce_WithStream_ChunksArriveBeforeEnvelope' \
+    "${ROOT}/internal/runtime/assemble/runonce_stream_test.go" \
+    'phase 132-stream: ordered-chunks-before-envelope e2e test exists'
+assert_grep_present 'CROSS-RUN CHUNK BLEED' \
+    "${ROOT}/internal/runtime/assemble/runonce_test.go" \
+    'phase 132-stream: concurrent-reuse test asserts no cross-run chunk bleed'
+assert_grep_present 'WithStream' \
+    "${ROOT}/sdk/assemble/assemble.go" \
+    'phase 132-stream: sdk/assemble re-exports WithStream'
+
+stream_test_log="${TMPDIR}/runonce-stream-test.log"
+if elapsed=$(run_bounded "${stream_test_log}" "${ROOT}" sh -c 'go test -race -run "TestRunOnce_WithStream|TestRunOnce_StreamEventKinds|TestRunOnce_ConcurrentReuse" ./internal/runtime/assemble/'); then
+    ok "phase 132-stream: WithStream e2e + kind-mapping + no-cross-run-bleed tests pass under -race (${elapsed}s)"
+else
+    fail 'phase 132-stream: WithStream streaming tests FAILED under -race (see tail)'
+    tail -40 "${stream_test_log}" | sed 's/^/    /'
+fi
+
 smoke_summary

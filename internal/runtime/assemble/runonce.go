@@ -46,11 +46,13 @@ var (
 )
 
 // runOnceConfig holds the per-call knobs RunOption sets. The type is
-// extensible: a future streaming sink adds a field here without
-// touching RunOnce's signature.
+// extensible: a new per-run knob adds a field here without touching
+// RunOnce's signature. The streaming sink (WithStream) is one such
+// sibling addition.
 type runOnceConfig struct {
 	runID            string
 	inputArtifactIDs []string
+	stream           func(StreamEvent)
 }
 
 // RunOption configures a RunOnce invocation. The functional-option
@@ -89,6 +91,11 @@ func WithInputArtifacts(ids ...string) RunOption {
 // its FinishReason verbatim (the caller maps it via
 // planner.TaskErrorCodeForFinish); a RunLoop error is wrapped and
 // returned.
+//
+// Streaming: pass WithStream(sink) to observe token deltas, planner-step
+// boundaries, and tool dispatches as they occur. RunOnce still blocks
+// and returns the same envelope; the sink fires synchronously on the run
+// goroutine, so every StreamEvent arrives before RunOnce returns.
 //
 // Concurrent reuse: RunOnce is safe to call from N concurrent
 // goroutines against a single shared Stack — every invocation builds
@@ -161,6 +168,26 @@ func (s *Stack) RunOnce(
 		return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce: %w", err)
 	}
 
+	// Streaming sink wiring. WithStream rides the SAME blocking RunOnce
+	// call by tapping the two callbacks the run loop fires SYNCHRONOUSLY
+	// on this goroutine: planner.RunContext.OnChunk (token deltas + step
+	// boundaries) and steering.RunSpec.OnToolDispatched (tool dispatches).
+	// Both are additive — any bus-backed publisher NewRunContext already
+	// wired stays in place; the sink composes on top. Because the taps
+	// fire inline, every StreamEvent reaches the sink before RunOnce
+	// returns the envelope, and each call captures its own sink so
+	// concurrent runs never cross chunks (the concurrent-reuse contract).
+	if cfg.stream != nil {
+		sink := cfg.stream
+		prevOnChunk := base.OnChunk
+		base.OnChunk = func(delta string, done bool, kind planner.ChunkKind) {
+			if prevOnChunk != nil {
+				prevOnChunk(delta, done, kind)
+			}
+			sink(streamChunkEvent(delta, done, kind))
+		}
+	}
+
 	spec := steering.RunSpec{
 		Planner:      s.Planner,
 		Base:         base,
@@ -168,6 +195,19 @@ func (s *Stack) RunOnce(
 		ToolExecutor: s.Executor,
 		MaxSteps:     s.Cfg.Planner.MaxSteps,
 		Compression:  s.Compression,
+	}
+	if cfg.stream != nil {
+		sink := cfg.stream
+		prevDispatch := spec.OnToolDispatched
+		spec.OnToolDispatched = func(hookCtx context.Context) error {
+			if prevDispatch != nil {
+				if err := prevDispatch(hookCtx); err != nil {
+					return err
+				}
+			}
+			sink(StreamEvent{Kind: StreamToolDispatched})
+			return nil
+		}
 	}
 
 	fin, err := s.RunLoop.Run(runCtx, spec)

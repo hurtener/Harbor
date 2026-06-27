@@ -114,22 +114,33 @@ func TestRunOnce_NotRunnable_FailsLoud(t *testing.T) {
 
 // TestRunOnce_ConcurrentReuse_NoBleedNoLeak — the mandatory D-025
 // concurrent-reuse stress: N≥100 concurrent RunOnce invocations against
-// ONE shared Stack, each with a distinct identity triple. Asserts no
-// data races (-race), no context bleed (every run's answer + finish is
-// independently successful), no cross-cancellation (a band of runs whose
-// ctx is cancelled fail WITHOUT taking down the others), and no
-// goroutine leak (baseline restored after Close).
+// ONE shared Stack, each with a distinct identity triple AND its own
+// WithStream sink. Asserts no data races (-race), no context bleed
+// (every run's answer + finish is independently successful), no
+// cross-cancellation (a band of runs whose ctx is cancelled fail WITHOUT
+// taking down the others), no goroutine leak (baseline restored after
+// Close), and — the D-266 extension — NO CROSS-RUN CHUNK BLEED: every
+// run's sink receives ONLY its own run's streamed chunks (run A's tokens
+// never reach run B's sink).
 func TestRunOnce_ConcurrentReuse_NoBleedNoLeak(t *testing.T) {
 	baseline := goruntime.NumGoroutine()
 	ctx := context.Background()
 	stack := runnableStack(t)
 
 	const n = 120
+	// Per-run goal markers are delimiter-wrapped so no marker is a prefix
+	// of another ("goal#1#" is not a substring of "goal#12#") — the chunk
+	// no-bleed assertion below depends on that uniqueness.
+	goalFor := func(i int) string { return fmt.Sprintf("goal#%d#", i) }
 	type result struct {
 		idx       int
 		env       planner.AnswerEnvelope
 		err       error
 		cancelled bool
+		// chunks is the run's OWN sink's assembled content tokens. Written
+		// only on this run's goroutine (the sink fires synchronously) and
+		// read after RunOnce returns — no shared access.
+		chunks string
 	}
 	results := make([]result, n)
 	var wg sync.WaitGroup
@@ -152,8 +163,18 @@ func TestRunOnce_ConcurrentReuse_NoBleedNoLeak(t *testing.T) {
 				UserID:    "u-" + fmt.Sprint(i),
 				SessionID: "s-" + fmt.Sprint(i),
 			}
-			env, err := stack.RunOnce(runCtx, "goal "+fmt.Sprint(i), id, assemble.WithRunID("run-"+fmt.Sprint(i)))
-			results[i] = result{idx: i, env: env, err: err, cancelled: cancelled}
+			// Each run captures its OWN sink — the no-cross-run-bleed
+			// fixture. A bug that shared a sink across runs (a mutable
+			// field on the compiled Stack) would mix run j's tokens in here.
+			var sb strings.Builder
+			sink := func(e assemble.StreamEvent) {
+				if e.Kind == assemble.StreamToken && !e.Reasoning {
+					sb.WriteString(e.Text)
+				}
+			}
+			env, err := stack.RunOnce(runCtx, goalFor(i), id,
+				assemble.WithRunID("run-"+fmt.Sprint(i)), assemble.WithStream(sink))
+			results[i] = result{idx: i, env: env, err: err, cancelled: cancelled, chunks: sb.String()}
 		}(i)
 	}
 	wg.Wait()
@@ -182,8 +203,23 @@ func TestRunOnce_ConcurrentReuse_NoBleedNoLeak(t *testing.T) {
 		// a concurrent run's. The mock LLM echoes the goal text back into
 		// the answer, so run i receiving run j's content fails here — this
 		// is what makes the no-bleed guarantee in the test name load-bearing.
-		if want := "goal " + fmt.Sprint(r.idx); !strings.Contains(r.env.Answer, want) {
-			t.Errorf("run %d: answer %q does not contain its own goal %q — context bleed across concurrent runs", r.idx, r.env.Answer, want)
+		own := goalFor(r.idx)
+		if !strings.Contains(r.env.Answer, own) {
+			t.Errorf("run %d: answer %q does not contain its own goal %q — context bleed across concurrent runs", r.idx, r.env.Answer, own)
+		}
+		// No CROSS-RUN CHUNK bleed: the run's OWN sink received its OWN
+		// streamed chunks (assembled content tokens contain its goal) and
+		// NO foreign run's chunks (no other run's goal marker appears).
+		if !strings.Contains(r.chunks, own) {
+			t.Errorf("run %d: own sink chunks %q do not contain its goal %q — chunks lost or misrouted", r.idx, r.chunks, own)
+		}
+		for j := range n {
+			if j == r.idx {
+				continue
+			}
+			if strings.Contains(r.chunks, goalFor(j)) {
+				t.Errorf("run %d: own sink chunks %q contain run %d's goal %q — CROSS-RUN CHUNK BLEED", r.idx, r.chunks, j, goalFor(j))
+			}
 		}
 	}
 
