@@ -83,7 +83,11 @@ fi
 
 # --- 4. No-behavior guard (advisory) -----------------------------------------
 
-func_count=$(grep -rE '^func ' sdk/ --include='*.go' | grep -cv 'sdk/tools/inproc/inproc.go') || func_count=0
+# Scans the SHIPPED facade surface only: production .go files. `_test.go`
+# files are exempt — runnable godoc `Example_*` functions legitimately
+# carry func bodies in test files (the first land under sdk/ in phase 134)
+# and are not part of the alias-only forwarding surface (CLAUDE.md §5).
+func_count=$(grep -rE '^func ' sdk/ --include='*.go' --exclude='*_test.go' | grep -cv 'sdk/tools/inproc/inproc.go') || func_count=0
 if [ "${func_count}" -eq 0 ]; then
     ok 'phase 112a: no func bodies in the facade outside the documented generic forward'
 else
