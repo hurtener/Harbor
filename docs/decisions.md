@@ -6762,3 +6762,70 @@ projection this extends, the JWT validation core (sentinel / `errors.Is`
 discipline), the Protocol auth middleware mapping, D-025 (concurrent-reuse
 contract for the shared keyset/validator). RFC §5.5. brief 06. Plan:
 `docs/plans/phase-129-jwks-max-stale-ceiling.md`.
+
+---
+
+## D-263 — Serve-attach: keep `harbor serve` strictly IdP-/JWKS-config-driven; solve first-attach with two documented on-ramps, never by minting inside serve
+
+**Date:** 2026-06-26
+
+**Status:** Accepted (planning)
+
+**Context.** Harbor advertises three adopter paths (embed / CLI / protocol).
+The PROTOCOL path has a P0 cliff: `harbor serve` boots a correct JWKS verifier
+and (by design, D-220) mints **no token**, but there was no documented way to
+obtain a JWT and **attach** a client — and no on-ramp at all for an adopter
+with no IdP or who issues their own tokens. The original wave plan proposed a
+gated dev-token mint *inside* `harbor serve`. That was rejected in the wave
+review: it silently reversed D-220, never explained how a minted token would
+pass serve's IdP-only JWKS verifier, and would have widened serve's production
+trust edge (a second signing key baked into the production auth surface).
+
+**Decision.**
+
+1. **`harbor serve` stays strictly IdP-/JWKS-config-driven. Its verifier is
+   untouched.** It accepts a token for exactly one reason: the operator
+   explicitly configured `identity.jwks_url` / `identity.jwks_file` to trust
+   that key — identical whether the JWKS belongs to Auth0 or to a key the
+   operator generated. No code change to serve's auth edge, no composite
+   keyset, no trust-edge widening.
+
+2. **First-attach is solved by two documented on-ramps, never by minting inside
+   serve:**
+   - **Have an IdP** (Auth0 / Okta / Keycloak / Cognito) → the **131a**
+     production-identity guide (`docs/site/protocol/production-identity-setup.md`)
+     plus the **131c** worked OIDC client and binding serve round-trip smoke.
+   - **No IdP / issuing your own** → **131d**, a separate `harbor token`
+     subcommand (`keygen` + `mint`) that produces operator-managed self-issued
+     JWTs; the operator points `serve`'s `jwks_file` at the emitted JWKS and
+     mints with `--issuer`/`--audience` matching `serve.yaml`. D-264 records
+     that subcommand and its §7/§13 posture.
+
+3. **The claim shape both on-ramps target is lifted from the authoritative
+   parser** `internal/protocol/auth/auth.go` (the JWT claim parser is the
+   source of truth, not the illustrative godoc comment): the mandatory
+   `(tenant, user, session)` triple, optional `scopes`, plus the `iss`/`aud`
+   exact-match contract serve hard-rejects on mismatch — and `Config.Validate`
+   mandates a non-empty `identity.issuer` / `identity.audience` for the serve
+   profile, so those optional verifier checks become mandatory at runtime.
+
+**Why this is correct.** D-220 stays literally true — `harbor serve` still
+mints nothing; a *separate* subcommand mints, and serve only accepts the result
+because the operator chose to trust its JWKS. This is the "your chosen issuer
+mints; serve verifies" contract D-220 already describes, now with a tool for
+the self-issuing case and a manual for the IdP case. The self-issuing on-ramp
+carries an explicit grade callout (single-issuer / self-hosting; graduate to a
+real IdP for multi-user SSO), so honesty is preserved.
+
+**Scope.** 131a is documentation-only: a guide page + same-PR site nav,
+cross-links, and a §18 skill forward-pointer. No Go, no Protocol surface, no
+config schema change.
+
+**Cross-references.** D-220 (Phase 115 — production JWT verification +
+`harbor serve`; the "serve mints nothing, your issuer mints" contract this
+preserves and does **not** supersede), D-264 (the `harbor token`
+bring-your-own-issuer subcommand — the no-IdP on-ramp this guide
+forward-references), D-261 (the JWKS max-stale ceiling on the same verifier).
+RFC §5.5 (Authentication), §4.2 (mandatory identity), §8 (CLI layer). brief 06,
+brief 09. Plan: `docs/plans/phase-131a-production-identity-setup.md`. Wave
+coordination: `docs/plans/wave-v18-coordination.md` §3.

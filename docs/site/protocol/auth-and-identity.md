@@ -112,7 +112,11 @@ the `identity:` config block (`issuer`, `audience`, `jwks_url`,
 `jwt_algorithms`). Your identity provider mints the tokens; the bootstrap
 endpoint does not exist on `harbor serve`. An `admin`-scoped operator can
 rotate their own token via `auth.rotate_token` (one-time reveal; every
-rotation emits a redacted audit event).
+rotation emits a redacted audit event). The end-to-end setup — registering an
+OIDC app, mapping the `(tenant, user, session)` + `scopes` claims, the
+`iss`/`aud` exact-match contract, the mint-and-test loop, and the no-IdP
+`harbor token` self-issuing on-ramp — is the
+[production identity setup guide](./production-identity-setup.md).
 
 ## What 401 / 403 mean (branch on `code`, not on the status alone)
 
