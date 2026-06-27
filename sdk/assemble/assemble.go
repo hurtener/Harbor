@@ -41,6 +41,31 @@ var WithRunID = internal.WithRunID
 // the run's first-turn multimodal inputs.
 var WithInputArtifacts = internal.WithInputArtifacts
 
+// StreamEvent is one observation a WithStream sink receives while
+// RunOnce drives a run — a token delta, a planner-step boundary, or a
+// tool dispatch. Minimal by design: progress signals only, never raw
+// tool arguments or results.
+type StreamEvent = internal.StreamEvent
+
+// StreamEventKind is the sealed enum discriminating a StreamEvent
+// (token / tool_dispatched / step).
+type StreamEventKind = internal.StreamEventKind
+
+// Streaming-sink event kinds: StreamToken (incremental output delta),
+// StreamToolDispatched (a tool was dispatched), StreamStep (a
+// planner-step boundary).
+const (
+	StreamToken          = internal.StreamToken
+	StreamToolDispatched = internal.StreamToolDispatched
+	StreamStep           = internal.StreamStep
+)
+
+// WithStream registers a per-run streaming sink on a RunOnce
+// invocation. RunOnce still blocks and returns the terminal answer
+// envelope; the sink receives StreamEvents synchronously on the run
+// goroutine, so every event arrives before RunOnce returns.
+var WithStream = internal.WithStream
+
 // ErrNotRunnable is returned by Stack.RunOnce when the stack was
 // assembled without a planner/run loop (no LLM driver, or
 // SkipSteering/SkipRunLoop). Compare via errors.Is.

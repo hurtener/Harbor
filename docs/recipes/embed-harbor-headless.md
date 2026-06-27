@@ -145,6 +145,31 @@ planner/run loop (no LLM driver, or `SkipRunLoop`) returns
 `examples/embed-runonce/` is this exact program; the Phase 112b smoke
 compiles it.
 
+**Streaming the run — `assemble.WithStream`.** Pass a `WithStream` sink
+to observe token deltas, planner-step boundaries, and tool dispatches as
+they occur. `RunOnce` still blocks and returns the same envelope; the
+sink fires synchronously on the run goroutine, so every `StreamEvent`
+arrives before `RunOnce` returns.
+
+```go
+env, err := stack.RunOnce(ctx, goal,
+    identity.Identity{TenantID: "acme", UserID: "u-42", SessionID: "s-1"},
+    assemble.WithStream(func(e assemble.StreamEvent) {
+        switch e.Kind {
+        case assemble.StreamToken:
+            fmt.Print(e.Text) // live answer (or reasoning) tokens
+        case assemble.StreamToolDispatched:
+            fmt.Println("\n[tool dispatched]")
+        case assemble.StreamStep:
+            // a planner step finished streaming
+        }
+    }))
+```
+
+The sink runs on the run goroutine — keep it non-blocking (push to a
+buffered channel for fan-out). Each `RunOnce` call captures its own sink,
+so concurrent runs against one shared `Stack` never cross chunks.
+
 ### 4b. Drive the run loop yourself
 
 Drive the shared `RunLoop` directly — the same loop `harbor dev` drives

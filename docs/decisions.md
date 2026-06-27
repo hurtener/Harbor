@@ -7124,3 +7124,71 @@ ceiling on the same verifier). RFC §5.5 (Authentication), §7 (security), §8
 (CLI layer). brief 06, brief 09. Plan:
 `docs/plans/phase-131d-harbor-token.md`. Wave coordination:
 `docs/plans/wave-v18-coordination.md` §3 / §4 (131d detail block).
+
+---
+
+## D-266 — `WithStream` is one sink on the same blocking `RunOnce`, wired to the synchronous `OnChunk` + `OnToolDispatched` seam
+
+**Date:** 2026-06-26
+
+**Status:** Accepted (planning)
+
+**Context.** D-265 shipped the embed one-call runner `Stack.RunOnce` as a
+single blocking method and deliberately deferred streaming to a sibling
+phase, leaving `RunOption` / `runOnceConfig` functional-option-shaped so a
+sink could land without a signature change. An agent framework without
+first-class streaming is a 2026 adoption blocker — an embed adopter needs
+live token output as a run progresses, not just the terminal envelope.
+The run loop already fires two callbacks SYNCHRONOUSLY on the run
+goroutine: `planner.RunContext.OnChunk` (per-token deltas + a `done=true`
+terminal per LLM call) and `steering.RunSpec.OnToolDispatched` (after each
+successful executor dispatch). No separate streaming package sits on the
+`RunOnce` path.
+
+**Decision.** Add `WithStream(func(StreamEvent)) RunOption` — ONE sink on
+the SAME blocking `RunOnce`. `RunOnce` still blocks and returns the
+terminal `planner.AnswerEnvelope`; the sink receives `StreamEvent`s as
+they occur. The sink is wired to the existing seam:
+
+1. **`planner.RunContext.OnChunk`** carries token deltas (mapped to
+   `StreamToken`, with `Reasoning` distinguishing the thinking channel)
+   and the per-LLM-call `done=true` terminal (mapped to `StreamStep`, a
+   planner-step boundary). The wiring WRAPS any bus-backed chunk
+   publisher `runctx.NewRunContext` already installed — the sink is
+   additive, so a Console on the run's event bus and an embed sink both
+   observe the chunks.
+2. **`steering.RunSpec.OnToolDispatched`** carries tool dispatches
+   (mapped to `StreamToolDispatched`; the dispatch is the signal — raw
+   tool arguments/results are never streamed, §7).
+
+A new public `StreamEvent` type carries three sealed kinds (token /
+tool_dispatched / step). `sdk/assemble` re-exports `WithStream` +
+`StreamEvent` + the kind constants.
+
+**Why no sync/async method split.** A second `RunOnceStream` /
+`RunOnceAsync` would be a parallel implementation of the same conceptual
+feature (§13 forbids that). The sink rides the one blocking call; the
+caller's own `go stack.RunOnce(…, WithStream(sink))` gives async with no
+new surface.
+
+**Why deterministic ordering (chunks before the envelope).** Both seam
+callbacks fire INLINE on the run goroutine inside `RunLoop.Run`, which
+`RunOnce` blocks on. Every `StreamEvent` therefore reaches the sink
+before `RunOnce` returns — the ordering is structural, not a race to
+engineer around. A test pins it: a sink that observed any event after the
+envelope returned fails loud.
+
+**Concurrency (D-025).** Each `RunOnce` call captures its own sink in its
+own per-run `OnChunk`/`OnToolDispatched` closure (built from per-call
+`runOnceConfig`, never on the shared `Stack`). The N≥100 concurrent-reuse
+`-race` test is extended: each run gets its own sink and asserts it
+received ONLY its own run's chunks (no cross-run chunk bleed). A blocking
+sink stalls its own run goroutine only — natural per-run backpressure,
+never cross-run (brief 01 §"Backpressure inside streaming").
+
+**Deviations.** None from a brief.
+
+**Cross-references.** D-265 (the `RunOnce` runner this extends), D-025
+(concurrent-reuse contract), the SDK facade (D-204/D-205). RFC §3.6 /
+§6.2 / §6.4. brief 01. Plan:
+`docs/plans/phase-132-stream-withstream.md`.
