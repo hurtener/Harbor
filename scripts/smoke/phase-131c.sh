@@ -64,12 +64,22 @@ else
 fi
 
 # ── 3. The binding round-trip (mock-OIDC → serve → runtime.info) ────────
-# The Go test self-SKIPs on a pre-`harbor serve` build; `go test` exits
-# zero either way, so a clean run is the gate.
-if go test -race -count=1 -run 'TestE2E_OIDCClient' ./test/integration/ >/dev/null 2>&1; then
+# The Go test self-SKIPs on a pre-`harbor serve` build. `go test` exits
+# zero on both PASS and SKIP, so an exit-zero check alone would let a
+# silent all-skip (or a renamed/zero-matched test) ride green — the §4.2
+# "SKIP that should be an OK" failure mode. Run with -v and branch on the
+# actual result line: PASS → OK, SKIP → honest SKIP, neither → FAIL.
+roundtrip_out="$(go test -race -count=1 -v -run 'TestE2E_OIDCClient' ./test/integration/ 2>&1)"
+roundtrip_rc=$?
+if [[ ${roundtrip_rc} -ne 0 ]]; then
+    fail "OIDC serve round-trip failed — run: go test -race -v -run 'TestE2E_OIDCClient' ./test/integration/"
+    printf '%s\n' "${roundtrip_out}" | tail -20 | sed 's/^/    /'
+elif printf '%s\n' "${roundtrip_out}" | grep -q '^--- PASS: TestE2E_OIDCClient'; then
     ok "OIDC client-credentials → serve JWKS-verify → runtime.info round-trip passes (+ unpublished-key rejection)"
+elif printf '%s\n' "${roundtrip_out}" | grep -q '^--- SKIP: TestE2E_OIDCClient'; then
+    skip "OIDC serve round-trip SKIPPED — surface predates 'harbor serve' on this build"
 else
-    fail "OIDC serve round-trip failed — run: go test -race -run 'TestE2E_OIDCClient' ./test/integration/"
+    fail "OIDC serve round-trip neither PASSED nor SKIPPED — 'go test' matched no TestE2E_OIDCClient test (a silent all-skip / renamed-test false-green)"
 fi
 
 smoke_summary

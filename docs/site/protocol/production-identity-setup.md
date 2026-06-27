@@ -62,7 +62,7 @@ IdP to add them (the per-provider sections below show how).
 | `tenant` | **yes** | string, non-empty | The connection's tenant — the outermost isolation scope. |
 | `user` | **yes** | string, non-empty | The connection's user. |
 | `session` | **yes** | string, non-empty | A **default** session id. The live conversation is normally chosen per-request via the `X-Harbor-Session` header; the claim is the fallback used when that header is absent (see the note below). It must still be a non-empty string in the token. |
-| `scopes` | no | array of strings | Elevated scopes — `admin` and/or `console:fleet`. Absent or empty = an authenticated but unprivileged connection. |
+| `scopes` | no | array of strings | Elevated scopes from the closed set of three — `admin`, `console:fleet`, `agent_config:user` (see [the scope vocabulary](#the-scope-vocabulary)). Absent or empty = an authenticated but unprivileged connection. |
 | `iss` | **yes** in production | string | Must equal `identity.issuer` **exactly**. |
 | `aud` | **yes** in production | string or array | Must equal (or contain) `identity.audience`. |
 | `exp` | **yes** | numeric date | A token with no `exp` is rejected as expired. Keep it short. |
@@ -268,9 +268,9 @@ Prove the loop end-to-end before you ship a client.
    harbor serve --config serve.yaml
    ```
 
-   It prints that it mints no token and verifies against your JWKS. If
-   `issuer`/`audience`/JWKS are misconfigured it exits non-zero with a
-   named-field error — fix that first.
+   It boots behind the JWKS verifier and mints no token of its own (unlike
+   `harbor dev`). If `issuer`/`audience`/JWKS are misconfigured it exits
+   non-zero with a named-field error — fix that first.
 
 2. **Obtain a token** the way a backend client will. For client-credentials:
 
@@ -315,8 +315,8 @@ Prove the loop end-to-end before you ship a client.
 5. **Attach a real client.** The same token + the `X-Harbor-Session` header
    drive every method. The end-to-end client recipe is
    [build a client](./build-a-client.md); a complete, SDK-free worked OIDC
-   client ships in the v1.8.0 wave alongside this guide, under
-   `examples/protocol-clients/`, doing exactly this flow against `serve`.
+   client lives at `examples/protocol-clients/oidc-client-example/`, doing
+   exactly this flow against `serve`.
 
 ## On-ramp B: no IdP, issue your own tokens
 

@@ -6769,7 +6769,7 @@ contract for the shared keyset/validator). RFC §5.5. brief 06. Plan:
 
 **Date:** 2026-06-26
 
-**Status:** Accepted (planning)
+**Status:** Settled (shipped in the v1.8.0 Adopter-Path wave)
 
 **Context.** Harbor advertises three adopter paths (embed / CLI / protocol).
 The PROTOCOL path has a P0 cliff: `harbor serve` boots a correct JWKS verifier
@@ -6836,7 +6836,7 @@ coordination: `docs/plans/wave-v18-coordination.md` §3.
 
 **Date:** 2026-06-26
 
-**Status:** Accepted (planning)
+**Status:** Settled (shipped in the v1.8.0 Adopter-Path wave)
 
 **Context.** Harbor advertises three adopter paths; the embed path was
 honest about *assembly* (`assemble.Assemble` is a genuine one-call
@@ -6908,7 +6908,7 @@ D-266 (the `WithStream` sibling), D-025 (concurrent-reuse contract). RFC
 
 **Date:** 2026-06-26
 
-**Status:** Accepted (planning)
+**Status:** Settled (shipped in the v1.8.0 Adopter-Path wave)
 
 **Context.** Harbor advertises a CLI adopter path:
 `harbor init → scaffold → validate → dev`. The scaffold, when the
@@ -6985,7 +6985,7 @@ brief 07. Plan: `docs/plans/phase-133-scaffold-tools-execution.md`.
 
 **Date:** 2026-06-26
 
-**Status:** Accepted (planning)
+**Status:** Settled (shipped in the v1.8.0 Adopter-Path wave)
 
 **Context.** `harbor dev`'s fsnotify hot-reload supervisor drove an
 in-process `bootDevStack` rebuild on every watched change and emitted
@@ -7055,7 +7055,7 @@ Plan: `docs/plans/phase-138-hot-reload-go-honesty.md`.
 
 **Date:** 2026-06-26
 
-**Status:** Accepted
+**Status:** Settled (shipped in the v1.8.0 Adopter-Path wave)
 
 **Context.** `harbor serve` verifies every `/v1/*` JWT against the JWK Set the
 operator configures via `identity.jwks_url` / `identity.jwks_file` and mints
@@ -7131,7 +7131,7 @@ ceiling on the same verifier). RFC §5.5 (Authentication), §7 (security), §8
 
 **Date:** 2026-06-26
 
-**Status:** Accepted (planning)
+**Status:** Settled (shipped in the v1.8.0 Adopter-Path wave)
 
 **Context.** D-265 shipped the embed one-call runner `Stack.RunOnce` as a
 single blocking method and deliberately deferred streaming to a sibling

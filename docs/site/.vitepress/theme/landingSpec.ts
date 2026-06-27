@@ -19,7 +19,7 @@ export const GITHUB = "https://github.com/hurtener/Harbor";
 export const LICENSE_URL = `${GITHUB}/blob/main/LICENSE`;
 
 export const hero = {
-  eyebrow: "Go-native agent runtime · v1.6",
+  eyebrow: "Go-native agent runtime · v1.8",
   name: "Harbor",
   tagline: "Durable, steerable, event-driven AI agents in Go.",
   lead:
@@ -44,7 +44,7 @@ export const hero = {
 };
 
 export const announcement = {
-  text: "v1.6.0 just shipped — session-state history + user-scope agent configuration",
+  text: "v1.8.0 just shipped — the adopter on-ramps: harbor token self-issuing, Stack.RunOnce + streaming, and the external-client TypeScript wire-type generator",
   link: "/reference/changelog",
 };
 
@@ -286,24 +286,24 @@ export const rigor = {
 /* ── What's new ─────────────────────────────────────────────────────────── */
 export const whatsNew = {
   eyebrow: "Recently shipped",
-  headline: "v1.6.0 — session hydration + user-scope agent config",
-  date: "2026-06-25",
+  headline: "v1.8.0 — the adopter paths land",
+  date: "2026-06-27",
   bullets: [
     {
-      title: "Session-state history",
-      body: "POST /v1/state/history serves identity-scoped, tail-first windowed event replay, with heavy payloads surfaced by artifact reference. Cross-tenant reads 404 with no existence leak; unidentified reads 401.",
+      title: "harbor token — self-issuing on-ramp",
+      body: "harbor token keygen / mint lets an operator with no IdP issue the JWTs serve verifies, signed with a key they manage; serve's verifier is unchanged — it trusts the key only because you point identity.jwks_file at the emitted JWK Set.",
     },
     {
-      title: "User-scope durable agent configuration",
-      body: "A per-user config tier between the admin config and the session overlay — set / list / diff / rollback, layered prompt precedence, and a grow-only tool-exposure union (narrow the palette, never re-widen).",
+      title: "Stack.RunOnce + first-class streaming",
+      body: "One blocking call turns a goal + identity into the answer envelope; WithStream observes token / tool / step events as they happen, on the same method.",
     },
     {
-      title: "Wire-surface drift detection",
-      body: "runtime.info now returns a sha256: wire_surface_digest, so a client built against a different Protocol surface raises a loud drift signal at connect time.",
+      title: "External-client TypeScript wire types",
+      body: "cmd/harbor-protocol-ts-types generates a vendorable TypeScript wire-type module from the canonical Protocol surface, so a third-party client stays in lockstep without hand-transcribing types.",
     },
     {
-      title: "Durable event-bus rehydration",
-      body: "The durable EventBus restores its monotonic sequence counter from the persisted log on restart, so a session's event sequence stays gap-free across a restart boundary.",
+      title: "Worked protocol-client examples",
+      body: "examples/protocol-clients/ now ships an SDK-free OIDC client and an in-tree conformance-fork harness — copy-pasteable proof of the attach and certification flows.",
     },
   ],
   cta: { label: "Read the full changelog", link: "/reference/changelog" },
