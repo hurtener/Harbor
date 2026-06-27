@@ -1304,6 +1304,8 @@ harbor validate          Validate config / skills / agent definitions without bo
 harbor inspect-events    Tail or filter the event bus of a running Runtime
 harbor inspect-runs      List recent runs; show a run's trajectory
 harbor inspect-topology  Render a run's node graph as ASCII
+harbor token keygen      Generate a signing keypair + public JWK Set (bring-your-own-issuer)
+harbor token mint        Mint a Harbor JWT signed with that key (no-IdP self-issuing on-ramp)
 harbor version           Print version, build hash, supported Protocol version
 ```
 
@@ -1313,6 +1315,7 @@ harbor version           Print version, build hash, supported Protocol version
 - `harbor dev` boots the Runtime headless on `127.0.0.1:<port>`, opens the Protocol, starts the embedded Console, watches the project directory for changes, hot-reloads on Go-source changes (graceful-stop in-flight runs first; configurable), and exposes a draft-save scratchpad endpoint for dynamic agent scaffolding.
 - The dynamic scaffolding flow: a developer iterates on an agent in the dev loop, saves drafts (project-local `.harbor/drafts/`), and only commits to a final scaffold when satisfied.
 - `deploy` and `package` subcommands are NOT V1. They land with Harbor Cloud's shape. (Resolves brief 06 Q-5.)
+- `harbor token` is the bring-your-own-issuer on-ramp for an operator who runs no external identity provider. `harbor token keygen` generates an asymmetric keypair (ES256 default, RS256 opt-in — both on the §5.5 allowlist) and emits the public JWK Set; `harbor token mint` self-issues a Harbor JWT signed with that key, with `--issuer` / `--audience` mandatory so they match the operator's `identity.issuer` / `identity.audience`. `harbor serve` is **unchanged**: it accepts a minted token only because the operator points `identity.jwks_file` at the emitted JWK Set — identical to pointing at an external provider. serve still mints nothing. This is a single-issuer / small-production posture; multi-user SSO graduates to a real IdP. (D-264.)
 
 CLI subcommand additions are an RFC update, not a casual change.
 

@@ -3,7 +3,7 @@ harbor is the command-line entry point for the Harbor agent runtime SDK.
 Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
-  Production          serve
+  Production          serve, token
   Run inspection      inspect-events, inspect-runs, inspect-topology
   Build information   version
 
@@ -26,6 +26,7 @@ Available Commands:
   scaffold         generate a new agent skeleton from a template
   serve            serve the headless Runtime + Protocol surface behind a production JWKS verifier
   skill            manage the runtime skill catalog (import / rm)
+  token            self-issue JWTs harbor serve verifies (bring-your-own-issuer)
   validate         validate config / skills / agent definitions without booting
   version          print harbor semver, protocol version, and build hash
 
