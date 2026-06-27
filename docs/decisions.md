@@ -7048,3 +7048,79 @@ the only deferred sub-decision.
 corrects), §13 (no silent degradation / no false-success), §17.8 (the live
 edit-and-observe gate over a false-green static probe). RFC §8. brief 06.
 Plan: `docs/plans/phase-138-hot-reload-go-honesty.md`.
+
+---
+
+## D-264 — `harbor token`: a separate bring-your-own-issuer subcommand that self-issues operator-managed JWTs; serve's verifier unchanged
+
+**Date:** 2026-06-26
+
+**Status:** Accepted
+
+**Context.** `harbor serve` verifies every `/v1/*` JWT against the JWK Set the
+operator configures via `identity.jwks_url` / `identity.jwks_file` and mints
+nothing itself (D-220). That is correct for an operator with an external
+identity provider, but it left a cliff for the adopter who runs **no** IdP and
+wants to issue their own tokens: Harbor documented no self-issuing path and
+shipped no tool for it. The temptation — a gated dev-token mint inside
+`harbor serve` — was rejected (D-263): it would silently reverse D-220 and
+widen serve's production trust edge with a second baked-in signing key.
+
+**Decision.** Ship `harbor token`, a **separate** CLI subcommand (not a serve
+mode) that lets the operator self-issue the JWTs serve already verifies:
+
+1. `harbor token keygen --out <dir> [--alg ES256|RS256]` — generate an
+   asymmetric keypair (ES256 default; RS256 opt-in — both on the §5.5/§7
+   asymmetric allowlist), write `private.pem` (mode **0600**, parent dir
+   **0700**; refuse to overwrite without `--force`; stderr "keep this out of
+   version control" warning) and a public `jwks.json` (RFC 7517 JWK Set) whose
+   `kid` is the **RFC 7638 JWK thumbprint** of the key — content-derived, not a
+   hardcoded constant. The JWK Set emitter is hand-written stdlib (the
+   `internal/protocol/auth` JWKS surface is consumer-only — it parses JWKs, it
+   never emitted one).
+2. `harbor token mint --key … --tenant T --user U --session S --issuer ISS
+   --audience AUD [--kid …] [--scopes …] [--ttl 1h]` — mint a Harbor JWT with
+   the claim shape the authoritative parser (`internal/protocol/auth/auth.go`)
+   enforces, signed with the keypair. `--issuer` / `--audience` are
+   **mandatory** and must equal the operator's `identity.issuer` /
+   `identity.audience` (serve hard-rejects a mismatch with 401, and
+   `Config.Validate` mandates both non-empty for the serve profile).
+   **Least-privilege defaults:** **no scopes** unless `--scopes` is passed (NOT
+   the dev signer's `admin` default); a short `--ttl` (1h) echoed to stderr.
+
+The operator points `identity.jwks_file` at the emitted `jwks.json` and
+attaches with the minted token.
+
+**§7 / §13 compliance.** Asymmetric algorithms only (ES256/RS256). The private
+key is operator-managed: written 0600 under a 0700 directory, never logged,
+never printed (only the minted token — the command's product — reaches stdout).
+The two CLI signers share **only** the JWT claim shaper (`harborClaims`); the
+`harbor token` signer is a distinct persistable, issuer/audience-parameterized
+signer with its own keygen / PEM I/O / JWK-emit / RS256 branch (the dev signer
+has none of these and never touches disk).
+
+**Cross-reference to D-220 — the tension, named.** D-264 reintroduces a
+self-issuing single-key posture, which D-220 ("serve mints nothing; your chosen
+issuer mints, serve verifies") deliberately kept out of `harbor serve`. The
+tension is resolved, **not** by superseding D-220, but by bounding the
+self-issuing to an **explicit operator opt-in**: a subcommand the operator runs
+deliberately, never a silent runtime default, and serve trusts the key only
+because the operator configured `jwks_file` to point at it — identical to
+pointing at an external IdP. `harbor serve` itself still mints nothing and is
+unchanged (`cmd/harbor/cmd_serve.go` is untouched; no composite keyset —
+`Config.Validate` forbids one). Because the mint path is a deliberate operator
+action rather than a stub wired as a binary default, §13's no-stub-default /
+dev-only-escape-hatch rules are satisfied **without** a runtime banner (there is
+no runtime surface to banner — the subcommand is the opt-in).
+
+**Honesty callout.** These tokens are signed by a key the operator manages:
+eval- / single-issuer- / small-production-grade. For multi-user SSO, graduate
+to a real IdP (`docs/site/protocol/production-identity-setup.md`).
+
+**Cross-references.** D-220 (production JWT verification + `harbor serve` "serve
+mints nothing" contract — preserved, not superseded), D-263 (serve-attach
+resolution: two on-ramps, never mint inside serve), D-261 (JWKS max-stale
+ceiling on the same verifier). RFC §5.5 (Authentication), §7 (security), §8
+(CLI layer). brief 06, brief 09. Plan:
+`docs/plans/phase-131d-harbor-token.md`. Wave coordination:
+`docs/plans/wave-v18-coordination.md` §3 / §4 (131d detail block).

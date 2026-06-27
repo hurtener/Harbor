@@ -40,6 +40,21 @@ identity:
   # Alternatively, load the JWK Set from a local file synced out of band
   # (air-gapped deployments). Set EXACTLY ONE of jwks_url / jwks_file.
   # jwks_file: /etc/harbor/jwks.json
+  #
+  # No external identity provider? Self-issue with `harbor token` (the
+  # bring-your-own-issuer on-ramp):
+  #
+  #   harbor token keygen --out /etc/harbor/keys
+  #   # then set:  jwks_file: /etc/harbor/keys/jwks.json
+  #   harbor token mint --key /etc/harbor/keys/private.pem \
+  #     --tenant acme --user alice --session sess-1 \
+  #     --issuer https://issuer.example.com --audience harbor
+  #
+  # The minted token's --issuer / --audience MUST equal the issuer /
+  # audience above — serve hard-rejects a mismatch with 401. serve's
+  # verifier is unchanged; it trusts the key only because jwks_file points
+  # at it. Single-issuer / small-production posture; for multi-user SSO,
+  # graduate to a real IdP (the jwks_url path above).
   # Max-stale ceiling: the longest a cached JWKS snapshot is honored
   # WITHOUT a successful refresh before the verifier fails closed (rejects
   # tokens) rather than serving a possibly-revoked key during a prolonged

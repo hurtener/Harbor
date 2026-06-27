@@ -320,12 +320,6 @@ Prove the loop end-to-end before you ship a client.
 
 ## On-ramp B: no IdP, issue your own tokens
 
-> **Forthcoming in v1.8.0.** The `harbor token` subcommand shown below ships in
-> the same wave as this guide; the commands are not available in an earlier
-> binary. Until it lands, use On-ramp A (a real IdP). The walkthrough is
-> documented here so the self-issuing path is ready the moment the subcommand
-> is on your `harbor`.
-
 Standing up an IdP is not a prerequisite for `harbor serve`. The cliff was
 never "you must buy an IdP" — it was that the self-issuing path was
 undocumented. The **`harbor token`** subcommand closes it: you generate an
@@ -355,11 +349,33 @@ harbor token mint --key ./identity/private.pem \
 token is held to. Mint with no `--scopes` for a least-privileged token (the
 default); add `console:fleet` or `admin` only when the connection needs them.
 
-> The full `harbor token` reference — `keygen` algorithm choices, key-file
-> permissions, and the complete `mint` flag surface — ships with that
-> subcommand. The attach flow it documents is identical to the one above; the
-> only difference is *who holds the signing key.*
->
+### `harbor token` reference
+
+`keygen` writes two files under `--out`:
+
+| File | Mode | Purpose |
+| --- | --- | --- |
+| `private.pem` | `0600` (parent dir `0700`) | Your signing key — **keep it private**. keygen refuses to overwrite it without `--force`. |
+| `jwks.json` | `0644` | The public JWK Set (RFC 7517) you point `identity.jwks_file` at. |
+
+- `--alg` selects the algorithm: **`ES256`** (ECDSA P-256, the default — fast
+  keygen) or **`RS256`** (RSA-2048, opt-in). Both are on `serve`'s asymmetric
+  allowlist (`HS*` / `none` are never accepted).
+- The JWK Set's key id (`kid`) is the **RFC 7638 JWK thumbprint** of the key —
+  content-derived, not a constant. `mint` stamps the same `kid` into the token
+  header by default, so the verifier resolves the key automatically. Pass
+  `--kid` only if you manage a multi-key set by hand.
+
+`mint` flags: `--key` (the `private.pem`), the identity triple
+(`--tenant` / `--user` / `--session`), `--issuer` / `--audience` (mandatory,
+exact-match), and the optional `--kid`, `--scopes` (comma-separated; default
+none), and `--ttl` (default `1h`, echoed to stderr). The signed token is the
+only thing written to stdout — capture it with `TOKEN=$(harbor token mint …)`.
+The private key is never logged or printed.
+
+The attach flow is identical to On-ramp A; the only difference is *who holds the
+signing key.*
+
 > **Honesty note — know what grade this is.** Self-issued tokens are signed by
 > a key **you** manage. Protect the private key (it is the entire trust root —
 > anyone who holds it can mint any identity), keep it out of version control,

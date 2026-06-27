@@ -132,20 +132,10 @@ func (s *devSigner) SignDevToken(now time.Time, tenant, user, session string, sc
 		return "", fmt.Errorf("dev signer: identity triple incomplete (tenant=%q, user=%q, session=%q)",
 			tenant, user, session)
 	}
-	claims := jwt.MapClaims{
-		"iss":     "harbor-dev",
-		"sub":     user,
-		"aud":     "harbor",
-		"exp":     now.Add(DevTokenTTL).Unix(),
-		"nbf":     now.Add(-1 * time.Minute).Unix(),
-		"iat":     now.Unix(),
-		"tenant":  tenant,
-		"user":    user,
-		"session": session,
-	}
-	if len(scopes) > 0 {
-		claims["scopes"] = scopes
-	}
+	// The dev signer stamps the shared Harbor claim shape with its own
+	// fixed issuer / audience / TTL; the operator-managed `harbor token`
+	// signer parameterizes all three.
+	claims := harborClaims(now, DevTokenTTL, "harbor-dev", "harbor", tenant, user, session, scopes)
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
 	tok.Header["kid"] = s.keys.kid
 	signed, err := tok.SignedString(s.priv)
