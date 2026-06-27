@@ -20,9 +20,23 @@
 #      `go build ./...`. FAIL on compile error. Runtime is measured
 #      and bounded (module cache keeps it in single-digit seconds
 #      warm; GATE_DEADLINE_SECS caps cold-cache pathology).
-#   4. Gate self-test (failure mode): a deliberately-broken Go file
-#      injected into a scaffolded module makes the same build step
-#      fail — proving the gate detects compile errors loudly.
+#   3b. THE EXECUTION GATE (D-267): `go test ./...` on the SAME
+#      tool-declaring scaffold. The scaffolded agent_test.go carries a
+#      register-and-dispatch test that, when tools are declared, calls
+#      RegisterTools AND drives >=1 tool THROUGH the catalog/executor,
+#      asserting an observable dispatch signal — not merely that
+#      RegisterTools is defined (Go does not flag an unused exported
+#      func). A tools-declaring scaffold that registers nothing fails
+#      here. Closes the §1 CLI false-green: a tools-declaring agent that
+#      compiles + passes while no tool is ever invoked.
+#   3c. Execution-gate self-test (failure mode): the registration name
+#      in a scaffolded agent.go is rewritten so RegisterTools registers
+#      the tool under the WRONG name. The module still COMPILES (proving
+#      this is a dispatch failure, distinct from the §3 compile gate)
+#      but `go test ./...` now FAILS — proving the execution gate bites.
+#   4. Compile-gate self-test (failure mode): a deliberately-broken Go
+#      file injected into a scaffolded module makes the build step
+#      fail — proving the compile gate detects compile errors loudly.
 #   5. The harbortest external probe: a second external module
 #      constructs harbortest.Deps (bus via sdk/events + sdk/audit,
 #      identity via sdk/identity), runs an agent that publishes a
@@ -116,6 +130,41 @@ tools:
 YAML
 }
 
+# write_builtin_only_yaml <path> — a validator-passing harbor.yaml
+# declaring a built-in tool and NO custom tool. This renders the
+# scaffold test template's built-in-only branch (`{{if and .BuiltIns
+# (not .CustomTools)}}`), which carries its own uniquely-conditional
+# `errors` import and built-in dispatch path — a branch the
+# tool-declaring probe above (which always declares a custom tool)
+# never exercises.
+write_builtin_only_yaml() {
+    cat > "$1" <<'YAML'
+server:
+  bind_addr: 127.0.0.1:8080
+  shutdown_grace_period: 30s
+identity:
+  jwt_algorithms: [RS256]
+  issuer: https://issuer.example.com
+  audience: phase-112b-gate
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+telemetry:
+  log_format: json
+  log_level: info
+  service_name: phase-112b-gate
+llm:
+  provider: openrouter
+  model: anthropic/claude-haiku-4-5
+  api_key: env.OPENROUTER_API_KEY
+  timeout: 60s
+  model_profiles:
+    anthropic/claude-haiku-4-5:
+      context_window_tokens: 200000
+tools:
+  built_in:
+    - clock.now
+YAML
+}
+
 # with_deadline <cmd...> — portable bounded execution (macOS ships no
 # coreutils `timeout`; perl's alarm is the fallback).
 with_deadline() {
@@ -169,13 +218,87 @@ else
     build_log="${TMPDIR}/gate-build.log"
     if elapsed=$(run_bounded "${build_log}" "${GATE_OUT}" sh -c 'go mod tidy && go build ./...'); then
         ok "phase 112b: EXTERNAL COMPILE GATE green — tool-declaring scaffold builds as an external module in ${elapsed}s (bound ${GATE_DEADLINE_SECS}s)"
+
+        # 3b. THE EXECUTION GATE (D-267) — the module is already tidied;
+        # `go test ./...` runs the scaffolded register-and-dispatch test
+        # that drives a declared tool through the catalog/executor.
+        test_log="${TMPDIR}/gate-test.log"
+        if elapsed=$(run_bounded "${test_log}" "${GATE_OUT}" sh -c 'go test ./...'); then
+            ok "phase 112b: EXTERNAL EXECUTION GATE green — tool-declaring scaffold's register-and-dispatch test passes (a tool is registered AND invoked through the catalog) in ${elapsed}s"
+        else
+            fail 'phase 112b: EXTERNAL EXECUTION GATE RED — the tool-declaring scaffold compiles but its register-and-dispatch test fails (the §1 CLI false-green; see tail)'
+            tail -40 "${test_log}" | sed 's/^/    /'
+        fi
     else
         fail 'phase 112b: EXTERNAL COMPILE GATE RED — tool-declaring scaffold does NOT build externally (the audit-§5 break is back; see tail)'
         tail -40 "${build_log}" | sed 's/^/    /'
     fi
 fi
 
-# --- 4. Gate self-test — a broken module must fail the same step --------------
+# --- 3c. Execution-gate self-test — a register/dispatch-name mismatch must
+#         compile but FAIL `go test` (proving the D-267 gate bites) ------------
+
+DISPATCH_OUT="${TMPDIR}/dispatch-selftest-agent"
+if ! (cd "${TMPDIR}" && "${BIN}" scaffold --name dispatch-selftest --output "${DISPATCH_OUT}" --from-config "${TMPDIR}/harbor.yaml") >/dev/null 2>&1; then
+    fail 'phase 112b: scaffold for execution-gate self-test failed'
+else
+    {
+        printf '\n'
+        printf 'replace github.com/hurtener/Harbor => %s\n' "${ROOT}"
+    } >> "${DISPATCH_OUT}/go.mod"
+    # Break dispatch WITHOUT breaking the build: register the custom tool
+    # under a different name so the scaffolded test's Resolve finds
+    # nothing. The standalone registration-name arg line is unique (the
+    # error-wrap occurrence keeps its closing paren, not a trailing
+    # comma), so only the registration name is rewritten.
+    sed -i.bak 's/^\([[:space:]]*\)"weather.lookup",$/\1"weather.lookup.DISPATCH_BROKEN",/' "${DISPATCH_OUT}/agent.go"
+    if grep -q 'DISPATCH_BROKEN' "${DISPATCH_OUT}/agent.go"; then
+        ok 'phase 112b: execution-gate self-test — registration name rewritten (dispatch deliberately broken)'
+    else
+        fail 'phase 112b: execution-gate self-test — could not apply the break (template formatting drifted; the self-test cannot prove the gate bites)'
+    fi
+    # The module must still COMPILE (proves this is a dispatch failure,
+    # not a build failure) but `go test` must FAIL.
+    dispatch_build_log="${TMPDIR}/dispatch-build.log"
+    if elapsed=$(run_bounded "${dispatch_build_log}" "${DISPATCH_OUT}" sh -c 'go mod tidy && go build ./...'); then
+        dispatch_test_log="${TMPDIR}/dispatch-test.log"
+        if elapsed=$(run_bounded "${dispatch_test_log}" "${DISPATCH_OUT}" sh -c 'go test ./...'); then
+            fail 'phase 112b: execution-gate self-test — `go test` PASSED a scaffold whose tool is registered under the wrong name (the dispatch gate detects nothing)'
+        else
+            ok 'phase 112b: execution-gate self-test — the register-and-dispatch test fails loudly when RegisterTools dispatches nothing under the expected name (D-267 gate bites)'
+        fi
+    else
+        fail 'phase 112b: execution-gate self-test — the broken-dispatch module did NOT compile; the self-test cannot isolate a dispatch failure from a build failure (see tail)'
+        tail -40 "${dispatch_build_log}" | sed 's/^/    /'
+    fi
+fi
+
+# --- 3d. Built-in-only branch coverage (D-267) — a scaffold declaring a
+#         built-in and NO custom tool renders the template's `{{- else}}`
+#         branch (its uniquely-conditional `errors` import + built-in
+#         dispatch). The custom-tool probe above never renders it, so
+#         absent this leg the branch could silently regress to an
+#         uncompilable scaffold for built-in-only adopters. -----------------
+
+write_builtin_only_yaml "${TMPDIR}/builtin-only.yaml"
+BUILTIN_OUT="${TMPDIR}/builtin-only-agent"
+if ! (cd "${TMPDIR}" && "${BIN}" scaffold --name builtin-only --output "${BUILTIN_OUT}" --from-config "${TMPDIR}/builtin-only.yaml") >/dev/null 2>&1; then
+    fail 'phase 112b: harbor scaffold --from-config (built-in-only) failed'
+else
+    {
+        printf '\n'
+        printf 'replace github.com/hurtener/Harbor => %s\n' "${ROOT}"
+    } >> "${BUILTIN_OUT}/go.mod"
+    builtin_log="${TMPDIR}/builtin-only.log"
+    if elapsed=$(run_bounded "${builtin_log}" "${BUILTIN_OUT}" sh -c 'go mod tidy && go test ./...'); then
+        ok "phase 112b: built-in-only branch green — a built-in-only scaffold compiles AND its register-and-dispatch test drives the built-in through the catalog in ${elapsed}s"
+    else
+        fail 'phase 112b: built-in-only branch RED — the built-in-only scaffold (template `{{- else}}` branch) does not compile or its register-and-dispatch test fails (see tail)'
+        tail -40 "${builtin_log}" | sed 's/^/    /'
+    fi
+fi
+
+# --- 4. Compile-gate self-test — a broken module must fail the build step -----
 
 SELFTEST_OUT="${TMPDIR}/selftest-agent"
 if ! (cd "${TMPDIR}" && "${BIN}" scaffold --name selftest-agent --output "${SELFTEST_OUT}" --from-config "${TMPDIR}/harbor.yaml") >/dev/null 2>&1; then
