@@ -482,7 +482,11 @@ func TestExecutor_ParallelCancel_NoCrossTalk(t *testing.T) {
 // returns to within tolerance of baseline.
 func assertGoroutineBaseline(t *testing.T, baseline int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	// Generous settle window: spawn/await tests start background tasks whose
+	// goroutines reap asynchronously, and under heavy `-race` CI load the
+	// scheduler reaps them slowly — a tight deadline flakes. A real leak
+	// never settles, so a long bound stays a faithful leak check.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if runtime.NumGoroutine() <= baseline+5 {
 			return

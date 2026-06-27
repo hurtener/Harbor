@@ -245,7 +245,10 @@ func TestEnsureOpen_RestartHonoursCreateOnFirstUseForExistingOpen(t *testing.T) 
 // (tenant, user) against a single shared registry race-clean, with no
 // cross-talk (every session is its own record) and no goroutine leak.
 func TestEnsureOpen_ConcurrentReuse_NoRaceNoLeak(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel: this test measures the process-global goroutine count,
+	// so it must run in isolation — a sibling parallel test's goroutines
+	// would otherwise perturb the baseline and flake the leak check under
+	// heavy `-race` CI load.
 	reg, _ := testWiring(t)
 
 	const n = 128
@@ -280,8 +283,19 @@ func TestEnsureOpen_ConcurrentReuse_NoRaceNoLeak(t *testing.T) {
 	}
 
 	// Goroutine-leak check: EnsureOpen starts no per-call goroutines, so
-	// the count returns to baseline (a small slack for the runtime).
-	if after := runtime.NumGoroutine(); after > baseline+4 {
+	// the count returns to baseline. Poll within a bounded window — the
+	// runtime may take a beat to reap the joined worker goroutines under
+	// load, so an immediate read flakes; a real leak never settles.
+	deadline := time.Now().Add(3 * time.Second)
+	var after int
+	for {
+		after = runtime.NumGoroutine()
+		if after <= baseline+4 || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after > baseline+4 {
 		t.Fatalf("goroutine leak: baseline=%d after=%d", baseline, after)
 	}
 }
