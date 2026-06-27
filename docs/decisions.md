@@ -6978,3 +6978,73 @@ catalog/descriptor concurrent-reuse contract). CLAUDE.md §1, §13
 (false-green), §17.6 (test↔production parity), §17.8 (a test that can't
 tell right from wrong is a rubber stamp). RFC §8, §6.4. brief 06,
 brief 07. Plan: `docs/plans/phase-133-scaffold-tools-execution.md`.
+
+---
+
+## D-268 — `harbor dev` is honest about `.go` changes: WARN + manual-rebuild guidance, not a false hot-reload success
+
+**Date:** 2026-06-26
+
+**Status:** Accepted (planning)
+
+**Context.** `harbor dev`'s fsnotify hot-reload supervisor drove an
+in-process `bootDevStack` rebuild on every watched change and emitted
+`dev.hot_reload.completed{Success=true}` when the rebuild returned. The
+in-process rebuild re-reads `harbor.yaml` and re-wires the stack, but it
+never invokes the Go compiler — so a `.go` source edit was never picked
+up, while the runtime still reported a *successful* hot-reload. That is a
+loud false-success: the inverse of the §13 no-silent-degradation rule
+(do not claim success for work that did not happen). The dangling
+`cmd/harbor/cmd_dev_hot_reload.go` package-doc sentence ("This is
+documented in.") was the visible tail of the same gap.
+
+**Decision.**
+
+1. **Classify, don't blanket-reboot.** The watcher now classifies every
+   fsnotify event: config / YAML / scaffold changes take the existing
+   in-process `bootDevStack` rebuild path (unchanged), and a Go-source
+   (`.go`) change takes a WARN-and-guide path. `shouldTrigger` is retained
+   as the rebuild-gate predicate (`classifyEvent(ev) == reloadRebuild`) and
+   now returns false for `.go`.
+
+2. **WARN, never a false `completed`.** A `.go` change logs a WARN — "Go
+   source change detected — harbor dev does not recompile Go; run
+   `make build` and restart `harbor dev` to pick it up" — and does NOT
+   reboot the devStack and does NOT emit `dev.hot_reload.completed`. The
+   WARN is throttled to one line per debounce window so an editor's
+   rename-and-replace save burst does not spam the log.
+
+3. **`policy: rebuild-binary` is deferred.** The optional auto-compile +
+   re-exec policy (wrap `bootDevStack` in a `go build` plus a process
+   re-exec on a `.go` change) is out of scope for this phase — WARN +
+   guidance only. It can layer on later without changing the supervisor's
+   shape.
+
+4. **Documented where operators read.** The dev-loop recipe
+   (`docs/recipes/run-harbor-dev.md`) gains the `.go`-vs-config caveat and
+   completes the package-doc reference. The `run-the-dev-loop` skill is
+   already honest about `.go` reload and is left untouched; no other skill
+   over-claims `.go` hot-reload. The README carries no hot-reload claim;
+   the marketing-site over-claim is the sibling honesty-sweep phase's
+   target, not this one.
+
+**Verification.** The gate is a LIVE edit-and-observe — a static binary
+`strings` grep cannot distinguish this case because the
+`dev.hot_reload.completed` string remains in the binary for the YAML
+rebuild path. `scripts/smoke/phase-65.sh` writes a `.go` file into the
+watched `examples/` dir against the running preflight dev server and
+asserts the honest WARN fires and the rebuild-path log marker count is
+unchanged (the observable proxy for "no `completed` emitted"). The
+in-package `cmd/harbor/cmd_dev_hot_reload_test.go` pins both halves: a
+live `.go` edit warns and does not swap the stack, and a subsequent YAML
+edit DOES swap the stack (the rebuild path is unchanged).
+
+**§4.3 deviations.** Departs from the supervisor's original "every watched
+change drives a rebuild" behavior (D-099) for the `.go` case — a deliberate
+honesty correction, not a brief departure. The `rebuild-binary` policy is
+the only deferred sub-decision.
+
+**Cross-references.** D-099 (the in-process-rebuild hot-reload shape this
+corrects), §13 (no silent degradation / no false-success), §17.8 (the live
+edit-and-observe gate over a false-green static probe). RFC §8. brief 06.
+Plan: `docs/plans/phase-138-hot-reload-go-honesty.md`.

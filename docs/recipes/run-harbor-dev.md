@@ -81,5 +81,30 @@ real provider (CLAUDE.md §13).
 - Hot reload watches the config file's directory and
   `.harbor/agents` by default; an edit to `harbor.yaml` triggers a
   drained reload.
+- **Config and YAML changes hot-reload; `.go` changes do not.** The
+  watcher rebuilds the running stack *in process* — it re-reads
+  `harbor.yaml`, re-wires the LLM / tools / memory, and re-binds the
+  Protocol server. That picks up every config / YAML / scaffold edit
+  because nothing needed recompiling. A change to an in-process tool's
+  `.go` source is different: an in-process rebuild does **not** invoke
+  the Go compiler, so the edited code is never loaded. Rather than
+  reboot and falsely report a successful reload, `harbor dev` logs a
+  warning and tells you to rebuild by hand:
+
+  ```text
+  WARN hot-reload: Go source change detected — harbor dev does not
+  recompile Go; run `make build` and restart `harbor dev` to pick it up
+  (config / YAML changes hot-reload in-process; .go changes do not)
+  ```
+
+  The fix is the same two-step cycle you'd run without hot reload:
+
+  ```sh
+  make build && harbor dev
+  ```
+
+  (An opt-in `policy: rebuild-binary` that runs `go build` and re-execs
+  on a `.go` change is not implemented — `harbor dev` warns and guides
+  only.)
 - To inspect a running dev server, use `harbor inspect-events` and
   `harbor inspect-runs` against the same loopback.

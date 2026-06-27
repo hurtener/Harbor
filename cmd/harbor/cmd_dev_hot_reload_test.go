@@ -31,11 +31,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,7 +155,10 @@ func TestShouldTrigger_SkipsDBSidecars(t *testing.T) {
 		{"sqlite_main_skipped", "media-helper-agent-state.sqlite", false},
 		{"db_main_skipped", "harbor.db", false},
 		{"nested_sqlite_main_skipped", "/tmp/harbor-validation/media-helper-agent-state.sqlite", false},
-		{"go_source_fires", "agent.go", true},
+		// Phase 138 (D-268): a `.go` change no longer triggers an
+		// in-process rebuild — it routes to the WARN-and-guide path
+		// (classifyEvent → reloadGoSourceWarn), so shouldTrigger is false.
+		{"go_source_does_not_rebuild", "agent.go", false},
 		{"nested_wal_skipped", "/tmp/harbor-validation/media-helper-agent-state.sqlite-wal", false},
 	}
 	for _, tc := range cases {
@@ -162,6 +168,56 @@ func TestShouldTrigger_SkipsDBSidecars(t *testing.T) {
 				t.Errorf("shouldTrigger(%q) = %v, want %v", tc.path, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestClassifyEvent_RoutesGoSourceToWarn — Phase 138 (D-268): a `.go`
+// change classifies as reloadGoSourceWarn (the WARN-and-guide path, no
+// reboot), config / YAML / scaffold changes classify as reloadRebuild
+// (the in-process rebuild path), and Chmod-only / db-sidecar events
+// classify as reloadIgnore.
+func TestClassifyEvent_RoutesGoSourceToWarn(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   fsnotify.Event
+		want reloadClass
+	}{
+		{"go_source_warns", fsnotify.Event{Name: "agent.go", Op: fsnotify.Write}, reloadGoSourceWarn},
+		{"nested_go_source_warns", fsnotify.Event{Name: "/proj/tools/echo.go", Op: fsnotify.Create}, reloadGoSourceWarn},
+		{"go_source_rename_warns", fsnotify.Event{Name: "agent.go", Op: fsnotify.Rename}, reloadGoSourceWarn},
+		{"yaml_rebuilds", fsnotify.Event{Name: "harbor.yaml", Op: fsnotify.Write}, reloadRebuild},
+		{"yml_rebuilds", fsnotify.Event{Name: "config.yml", Op: fsnotify.Write}, reloadRebuild},
+		{"draft_rebuilds", fsnotify.Event{Name: ".harbor/agents/foo.yaml", Op: fsnotify.Create}, reloadRebuild},
+		{"chmod_ignored", fsnotify.Event{Name: "harbor.yaml", Op: fsnotify.Chmod}, reloadIgnore},
+		{"db_sidecar_ignored", fsnotify.Event{Name: "state.sqlite-wal", Op: fsnotify.Write}, reloadIgnore},
+		{"db_main_ignored", fsnotify.Event{Name: "state.sqlite", Op: fsnotify.Write}, reloadIgnore},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyEvent(tc.ev); got != tc.want {
+				t.Errorf("classifyEvent(%+v) = %d, want %d", tc.ev, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsGoSource — the `.go` detector underpinning the honest WARN path.
+func TestIsGoSource(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"agent.go", true},
+		{"/a/b/c/tool.go", true},
+		{"harbor.yaml", false},
+		{"state.sqlite", false},
+		{"gofile_without_ext", false},
+		{"README.gohtml", false},
+	}
+	for _, tc := range cases {
+		if got := isGoSource(tc.path); got != tc.want {
+			t.Errorf("isGoSource(%q) = %v, want %v", tc.path, got, tc.want)
+		}
 	}
 }
 
@@ -517,6 +573,120 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 	}
 }
 
+// TestHotReloadSupervisor_GoSourceChange_WarnsNoRebuild — Phase 138
+// (D-268), the load-bearing honesty test. A live `.go` edit under a
+// watched root must:
+//
+//  1. Log the honest WARN ("Go source change detected") guiding a
+//     manual `make build` + restart — observed via a captured logger.
+//  2. NOT drive an in-process rebuild — CurrentStack() stays pinned to
+//     the initial stack (a reboot swaps in a fresh *devStack), which is
+//     the observable proxy for "no dev.hot_reload.completed{Success=
+//     true} was emitted for the .go edit" (completed is emitted ONLY on
+//     the reboot path, immediately after the swap).
+//
+// The same test then proves the rebuild path is UNCHANGED: a subsequent
+// non-`.go` (YAML) edit DOES swap the stack — config / YAML changes
+// still hot-reload in-process. This pins both halves of the routing.
+func TestHotReloadSupervisor_GoSourceChange_WarnsNoRebuild(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	watchDir := filepath.Join(dir, "watched")
+	if err := os.MkdirAll(watchDir, 0o700); err != nil {
+		t.Fatalf("mkdir watched: %v", err)
+	}
+
+	// Capture log output so we can assert the honest WARN fired. The
+	// supervisor logs from its Run goroutine while the test reads the
+	// buffer, so the writer is mutex-guarded.
+	buf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	bootCtx, bootCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer bootCancel()
+
+	bootOpts := devBootOptions{
+		cfgPath:   cfgPath,
+		allowMock: true,
+		logger:    logger,
+		stderr:    io.Discard,
+		port:      0,
+	}
+	stack, err := bootDevStack(bootCtx, bootOpts)
+	if err != nil {
+		t.Fatalf("bootDevStack: %v", err)
+	}
+
+	sup, err := newHotReloadSupervisor(logger, bootOpts, stack,
+		config.DevHotReloadConfig{
+			Policy:       config.DevHotReloadPolicyDrain,
+			DrainTimeout: 2 * time.Second,
+			WatchRoots:   []string{watchDir},
+		},
+		[]string{watchDir})
+	if err != nil {
+		t.Fatalf("newHotReloadSupervisor: %v", err)
+	}
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- sup.Run(runCtx) }()
+	t.Cleanup(func() {
+		runCancel()
+		<-runDone
+		final := sup.CurrentStack()
+		if final != nil && final != stack {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			final.close(closeCtx)
+		}
+	})
+
+	// Watcher-Add grace (no observable "watcher ready" signal; see the
+	// note in TestHotReloadSupervisor_FileChangeTriggersRebuild).
+	time.Sleep(100 * time.Millisecond)
+
+	// --- Phase 1: a `.go` edit warns and does NOT rebuild. ---
+	goFile := filepath.Join(watchDir, "agent.go")
+	if err := os.WriteFile(goFile, []byte("package watched\n"), 0o600); err != nil {
+		t.Fatalf("write .go file: %v", err)
+	}
+
+	// Give the watcher + debounce window ample room. If a rebuild were
+	// (incorrectly) going to fire, it would within this window.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "Go source change detected") {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !strings.Contains(buf.String(), "Go source change detected") {
+		t.Fatalf("expected honest WARN for .go change; log was:\n%s", buf.String())
+	}
+	// The .go edit must NOT have swapped the stack — no in-process
+	// rebuild, hence no dev.hot_reload.completed for this edit.
+	if sup.CurrentStack() != stack {
+		t.Fatal(".go change triggered an in-process rebuild (stack swapped) — false-success regression")
+	}
+
+	// --- Phase 2: a YAML edit DOES rebuild (path unchanged). ---
+	yamlFile := filepath.Join(watchDir, "extra.yaml")
+	if err := os.WriteFile(yamlFile, []byte("key: value\n"), 0o600); err != nil {
+		t.Fatalf("write .yaml file: %v", err)
+	}
+	if !waitForCondition(func() bool {
+		cur := sup.CurrentStack()
+		return cur != nil && cur != stack
+	}) {
+		t.Fatal("YAML change did NOT trigger an in-process rebuild — the rebuild path regressed")
+	}
+}
+
 // TestHotReloadSupervisor_CtxCancel_ReturnsCleanly — cancelling the
 // supervisor's ctx returns nil from Run and leaves CurrentStack
 // pointing at the initial (un-rebuilt) stack. No goroutine leak
@@ -692,6 +862,25 @@ func waitForCondition(f func() bool) bool {
 		time.Sleep(25 * time.Millisecond)
 	}
 	return f()
+}
+
+// syncBuffer is a goroutine-safe bytes.Buffer for capturing slog output
+// the supervisor writes from its Run goroutine while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // boolPtrFor is the in-test counterpart of `config.boolPtr` (unexported
