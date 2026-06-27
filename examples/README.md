@@ -14,6 +14,7 @@ examples/
 ├── README.md              this file
 ├── harbor.yaml            annotated reference configuration
 ├── dev.yaml               `harbor dev` loop configuration
+├── embed-runonce/         headless assemble → Stack.RunOnce one-call run
 ├── agents/
 │   └── echo/              worked harbortest.Agent + test
 └── tools/
@@ -40,6 +41,16 @@ harbor validate ./examples/harbor.yaml
 produces) and is driven end-to-end by `harbortest.RunOnce`. Copy the
 package, keep the interface satisfaction and the compile-time
 assertion, and replace `Run`'s body with your agent's real logic.
+
+## Example programs
+
+[`embed-runonce/`](embed-runonce/) — the embed adopter path end to end:
+build a config, `assemble.Assemble` a headless stack, then run a goal
+with a single blocking `stack.RunOnce(ctx, goal, identity)` call and
+print the answer envelope. Every import is the public `sdk/` facade, so
+it builds verbatim from an external module. See
+[`docs/recipes/embed-harbor-headless.md`](../docs/recipes/embed-harbor-headless.md)
+step 4a for the walkthrough.
 
 ## Example tools
 

@@ -29,3 +29,19 @@ var DefaultMCPIdentity = internal.DefaultMCPIdentity
 // validated config, with partial-failure cleanup (a failed Assemble
 // returns the partial Stack so the caller can drain it via Close).
 var Assemble = internal.Assemble
+
+// RunOption configures a Stack.RunOnce invocation. The functional-option
+// shape keeps RunOnce's signature stable as new per-run knobs land.
+type RunOption = internal.RunOption
+
+// WithRunID pins the run's RunID instead of synthesising a fresh ULID.
+var WithRunID = internal.WithRunID
+
+// WithInputArtifacts pre-resolves operator-uploaded artifact IDs into
+// the run's first-turn multimodal inputs.
+var WithInputArtifacts = internal.WithInputArtifacts
+
+// ErrNotRunnable is returned by Stack.RunOnce when the stack was
+// assembled without a planner/run loop (no LLM driver, or
+// SkipSteering/SkipRunLoop). Compare via errors.Is.
+var ErrNotRunnable = internal.ErrNotRunnable

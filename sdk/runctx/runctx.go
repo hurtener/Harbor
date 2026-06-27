@@ -9,6 +9,33 @@ import (
 	internal "github.com/hurtener/Harbor/internal/runtime/runctx"
 )
 
+// NewRunContext projects stack-derived subsystem handles into a
+// fully-formed planner.RunContext, composing the same memory / skills /
+// artifact / streaming projection helpers the run-loop drivers use. The
+// shared factory a one-call runner or a headless RunSpec builder
+// composes (D-265).
+var NewRunContext = internal.NewRunContext
+
+// Sources carries the stack-derived subsystem handles NewRunContext
+// projects into a planner.RunContext. Every field is optional except an
+// identity-complete quadruple.
+type Sources = internal.Sources
+
+// Option configures a NewRunContext call (functional-option shape).
+type Option = internal.Option
+
+// WithInputArtifacts pre-resolves operator-uploaded artifact IDs into
+// the run's first-turn multimodal inputs.
+var WithInputArtifacts = internal.WithInputArtifacts
+
+// WithInputArtifactDispositions supplies the per-attachment disposition
+// hint map (the top precedence layer).
+var WithInputArtifactDispositions = internal.WithInputArtifactDispositions
+
+// WithDispositionPolicy supplies the per-agent disposition policy map
+// (the middle precedence layer).
+var WithDispositionPolicy = internal.WithDispositionPolicy
+
 // ExtractAssistantAnswer extracts the assistant answer string from a
 // terminal Finish.
 var ExtractAssistantAnswer = internal.ExtractAssistantAnswer
