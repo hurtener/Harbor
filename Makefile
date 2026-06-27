@@ -1,4 +1,4 @@
-.PHONY: help build console-build test vet lint lint-revive preflight drift-audit markdownlint check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun docs docs-install protocol-docs-gen protocol-docs-gen-check protocol-ts-gen protocol-ts-gen-check
+.PHONY: help build console-build test vet lint lint-revive preflight drift-audit markdownlint check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun docs docs-install protocol-docs-gen protocol-docs-gen-check protocol-ts-gen protocol-ts-gen-check protocol-ts-types-gen protocol-ts-types-gen-check
 
 help:
 	@echo "Harbor — make targets"
@@ -20,6 +20,8 @@ help:
 	@echo "  protocol-docs-gen-check  Regenerate + fail if docs/site/protocol is stale (CI gate)"
 	@echo "  protocol-ts-gen          Regenerate the Console wire-surface manifest from the canonical Protocol sources"
 	@echo "  protocol-ts-gen-check    Regenerate + Go lockstep + TS-source scan: the Console Protocol-client lockstep gate"
+	@echo "  protocol-ts-types-gen    Regenerate the vendorable external-client TS wire-type module from the canonical Protocol sources"
+	@echo "  protocol-ts-types-gen-check  Regenerate + git-diff + Go lockstep: the external-client TS-types gate"
 	@echo "  check-mirror    Verify AGENTS.md == CLAUDE.md"
 	@echo "  install-hooks   Install the pre-commit hook (one-time per clone)"
 	@echo "  dev             Run ./bin/harbor dev (skipped until Phase 1 lands)"
@@ -172,6 +174,35 @@ protocol-ts-gen-check: protocol-ts-gen
 	go test ./cmd/harbor-protocol-ts-lockstep/...
 	node web/console/scripts/check-protocol-ts-lockstep.mjs
 	@echo "protocol-ts-gen-check: Console Protocol client is in lockstep with the wire manifest"
+
+# protocol-ts-types-gen regenerates the committed vendorable external-client
+# TypeScript wire-type module
+# (examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts) from the
+# canonical Protocol single sources. Run after any change to a Protocol
+# method, error code, event type, or wire type. This module is a copy-vendor
+# target for third-party Protocol clients; it is INDEPENDENT of the Console's
+# hand-maintained protocol.ts and of the wire manifest above — it does not
+# touch either, and the reserved cmd/harbor-gen-protocol-ts name (the full
+# Console TS-client generator) stays unused.
+protocol-ts-types-gen:
+	go run ./cmd/harbor-protocol-ts-types -out examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts -root .
+
+# protocol-ts-types-gen-check is the external-client TS-types gate: (1)
+# regenerate the module + assert the working tree is clean (a Go-side wire
+# change without a regenerated module fails here); (2) the Go lockstep tests
+# (a new canonical method / error / event / type without coverage fails
+# `go test`, and a stale committed module fails the in-sync test). It is
+# separate from and additive to protocol-ts-gen-check (the Console gate),
+# which it does not invoke or disturb.
+protocol-ts-types-gen-check: protocol-ts-types-gen
+	@if ! git diff --exit-code -- examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts; then \
+		echo ""; \
+		echo "ERROR: examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts is stale relative to the canonical Protocol sources." >&2; \
+		echo "  Run 'make protocol-ts-types-gen' and commit the regenerated module." >&2; \
+		exit 1; \
+	fi
+	go test ./cmd/harbor-protocol-ts-types/...
+	@echo "protocol-ts-types-gen-check: external-client TS wire types in sync with the canonical Protocol surface"
 
 # markdownlint runs the SAME markdownlint-cli2 version CI pins
 # (DavidAnson/markdownlint-cli2-action@v23 bundles markdownlint-cli2

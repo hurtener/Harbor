@@ -1,0 +1,14 @@
+{
+  "name": "harbor-event-viewer-ts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dependency-free TypeScript Harbor Protocol client: tails one session's SSE event stream using wire types vendored from the generated harbor-protocol.gen.ts module.",
+  "scripts": {
+    "start": "node --experimental-strip-types event-viewer.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  }
+}
