@@ -220,6 +220,7 @@ export default defineConfig({
           text: "Ship",
           items: [
             { text: "validate-and-package", link: "/skills/validate-and-package/SKILL" },
+            { text: "configure-production-identity", link: "/skills/configure-production-identity/SKILL" },
           ],
         },
         {

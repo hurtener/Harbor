@@ -39,6 +39,7 @@ That's the load-bearing path. Everything else is built around it.
 ### Ship
 
 - [validate-and-package](validate-and-package/SKILL.md) — `harbor validate` + `make preflight` + production checklist.
+- [configure-production-identity](configure-production-identity/SKILL.md) — get a verifiable JWT into a client and attach it to `harbor serve` (OIDC IdP or the no-IdP `harbor token` path).
 
 ### Build a custom frontend
 
