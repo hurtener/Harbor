@@ -1,6 +1,10 @@
 # Build artifacts
 /bin/
 /harbor
+# Root-level cmd binaries from `go build ./cmd/harbor-*` (e.g.
+# harbor-protocol-ts-types, harbor-mcptest-stdio) — anchored at root, so this
+# does NOT match the harbortest/ dir or the cmd/harbor-*/ source packages.
+/harbor-*
 /dist/
 /build/
 *.exe

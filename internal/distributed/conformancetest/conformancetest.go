@@ -234,7 +234,11 @@ func RunBus(t *testing.T, factory BusFactory) {
 		wg.Wait()
 
 		// Drain: wait until received count stabilises at workers*perWorker.
-		deadline := time.Now().Add(5 * time.Second)
+		// The window is generous because a poll-based driver (the durable
+		// bus) delivers on its poll interval, which stretches under heavy
+		// `-race` CI load — a tight deadline flakes as "lost messages or
+		// stalled" when the messages are merely still in flight.
+		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			if received.Load() >= int64(workers*perWorker) {
 				break
