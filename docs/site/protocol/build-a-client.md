@@ -153,21 +153,35 @@ the intervention verbs — all single POSTs; see
 The closing pseudocode in [streaming semantics](./streaming-semantics.md) is
 the upgrade path.
 
-## The two doors up
+## The doors up
 
-When the event viewer stops being enough, two reference implementations show
-the full pattern — read them, vendor from them:
+When the event viewer stops being enough, three reference points show the
+full pattern — read them, vendor from them:
 
-1. **The Console's TypeScript client module** —
+1. **The generated external-client TypeScript types module** —
+   `examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts` in the
+   Harbor repo, emitted by `cmd/harbor-protocol-ts-types` from the canonical
+   Go single sources and drift-gated by `make protocol-ts-types-gen-check`.
+   It is a self-contained, dependency-free module of TypeScript `interface`s
+   for every wire type plus `HarborMethod` / `HarborErrorCode` /
+   `HarborEventType` string-union types and the pinned `PROTOCOL_VERSION` /
+   `WIRE_SURFACE_DIGEST` constants — **types only, no client logic**. For a
+   TypeScript client this is the door to start at: copy the one generated
+   file and write your transport against it. The worked
+   [`event-viewer-ts`](https://github.com/hurtener/Harbor/tree/main/examples/protocol-clients/event-viewer-ts)
+   client consumes it against the dev runtime.
+2. **The Console's TypeScript client module** —
    `web/console/src/lib/protocol.ts` in the Harbor repo: every wire type plus
    a typed `HarborClient`, the module the bundled Console runs on. It is
    **hand-maintained in lockstep with the Go wire types and kept honest by
-   the Console's own CI** — there is no TS generator today (that remains an
-   open deferral, D-132), so treat it as a high-quality reference to vendor,
-   not as generated ground truth. The generated ground truth is the
+   the Console's own CI** — vendor it when you want the typed transport, not
+   just the types. The external-client *types* generator above partially
+   retired the long-standing TS-generation deferral (D-269); the FULL
+   Console-`protocol.ts` generator stays deferred (D-132). The generated
+   ground truth for the types alone is the
    [types reference](./types.md), regenerated from the Go sources on every
    wire change.
-2. **The Console itself** — the canonical full client: chat, fleet
+3. **The Console itself** — the canonical full client: chat, fleet
    observation, the intervention queue, artifacts, topology. Everything it
    renders arrives through the same surface documented in this track; it
    holds no privileged access (RFC §5.1). When you wonder "how should a
