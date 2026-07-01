@@ -7263,8 +7263,8 @@ scripted-LLM tests lacked.
 ## D-271 — External tool-credential provisioning is PULL-based token exchange behind the D-095 driver seam (`tokenexchange`); push injection over the Protocol is rejected as credential passthrough
 
 **Date:** 2026-07-01
-**Status:** Settled (design); implementation is Phase 142, tentative V1.9 band
-**Where it lives:** `docs/plans/phase-142-tool-credential-exchange.md`, RFC §6.4 (the "External tool-credential provisioning (planned — D-271)" paragraph), `internal/tools/auth/registry.go` (the D-095 seam this extends), `internal/tools/auth/drivers/tokenexchange/` (when Phase 142 lands), `docs/glossary.md` ("Credential broker", "`tokenexchange` driver").
+**Status:** Shipped (Phase 142, V1.9)
+**Where it lives:** `docs/plans/phase-142-tool-credential-exchange.md`, RFC §6.4 (the "External tool-credential provisioning (D-271)" paragraph), `internal/tools/auth/registry.go` (the D-095 seam this extends), `internal/tools/auth/drivers/tokenexchange/` (the shipped driver), `internal/tools/auth/events.go` (`tool.credential_exchanged` + `ErrNonInteractive`), `docs/glossary.md` ("Credential broker", "`tokenexchange` driver").
 
 **The question.** A fleet orchestrator coordinating many Harbor runtimes as a Protocol client wants to hold each user's DOWNSTREAM integration credentials (M365, Google Workspace — foreign-IdP tokens used to call third-party tools) in ONE central place and provide them to whichever runtime's tool call needs them, instead of today's shape: every runtime independently OAuth-acquires and seals its own copy (N consents, N encrypted copies). Should Harbor support external provisioning of tool-side credentials, and in what shape?
 

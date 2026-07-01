@@ -252,6 +252,31 @@ tools:
   #     auth_url: https://github.com/login/oauth/authorize
   #     token_url: https://github.com/login/oauth/access_token
   #     redirect_url: https://your-deployment.example.com/oauth/callback
+  #
+  #   # The `tokenexchange` driver: pull-based external-credential
+  #   # provisioning. Instead of the interactive authorization-code flow,
+  #   # the runtime obtains a downstream tool credential from an external
+  #   # credential broker (a fleet orchestrator, an enterprise token
+  #   # vault, an STS) via an RFC-8693 token exchange keyed on the
+  #   # VERIFIED ctx identity triple. Brokered tokens are TTL-cached in
+  #   # memory only — never persisted — so one central grant serves N
+  #   # runtimes without N consents. `token_url` is the broker's
+  #   # token-exchange endpoint and is MANDATORY; `auth_url` /
+  #   # `redirect_url` are interactive-flow fields and are NOT used.
+  #   # `client_id_env` / `client_secret_env` name the env vars holding
+  #   # the runtime's OWN credential for authenticating to the broker.
+  #   # Optional `extra` knobs: `audience` (RFC-8693 audience; defaults
+  #   # to the provider name) and `cache_ttl_cap` (max in-memory cache
+  #   # lifetime; a Go duration, default 5m).
+  #   - name: m365-broker
+  #     driver: tokenexchange
+  #     client_id_env: HARBOR_BROKER_CLIENT_ID
+  #     client_secret_env: HARBOR_BROKER_CLIENT_SECRET
+  #     scopes: ["Mail.Read", "Calendars.Read"]
+  #     token_url: https://broker.example.com/oauth2/token
+  #     extra:
+  #       audience: https://graph.microsoft.com
+  #       cache_ttl_cap: 5m
 
 # Phase 65 (D-099) — `harbor dev` hot-reload supervisor. The block is
 # opt-out: every field has a loader-applied default that mirrors the

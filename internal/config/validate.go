@@ -1322,6 +1322,17 @@ func (c *Config) validateTools() error {
 			return fieldError(prefix+".client_secret_env",
 				"must not be empty (env var name holding the client_secret; §7 rule 2 — never hardcoded)")
 		}
+		// Per-driver endpoint requirements. The `tokenexchange` driver
+		// (pull-based external-credential provisioning) talks to a
+		// credential broker's RFC-8693 token-exchange endpoint only —
+		// `token_url` is mandatory; `auth_url` / `redirect_url` are
+		// interactive-flow fields and are waived. The `oauth2` driver
+		// validates its own endpoints at construction (it may discover
+		// them), so no validate-time endpoint check applies there.
+		if p.Driver == "tokenexchange" && p.TokenURL == "" {
+			return fieldError(prefix+".token_url",
+				"must not be empty for driver \"tokenexchange\" (the credential broker's RFC-8693 token-exchange endpoint; auth_url / redirect_url are not used by this driver)")
+		}
 	}
 	if len(c.Tools.OAuthProviders) > 0 && c.Tools.OAuthTokenKEKEnv == "" {
 		return fieldError("tools.oauth_token_kek_env",
@@ -1509,7 +1520,8 @@ var allowedOAuthBindingScopes = map[string]struct{}{
 // auth-package test `TestRegisteredDriversMatchConfigAllowlist`
 // asserts no drift between the two surfaces.
 var allowedOAuthDrivers = map[string]struct{}{
-	"oauth2": {},
+	"oauth2":        {},
+	"tokenexchange": {},
 }
 
 // allowedPlannerDrivers mirrors the `internal/planner` driver registry

@@ -156,6 +156,13 @@ import (
 	// driver under `internal/tools/auth/drivers/<name>/` + a blank
 	// import here, per the §4.4 seam pattern.
 	_ "github.com/hurtener/Harbor/internal/tools/auth/drivers/oauth2"
+	// Tools external-credential provisioning driver. The
+	// `tokenexchange` driver self-registers under that name via init()
+	// so `tools.oauth_providers[].driver: tokenexchange` resolves at
+	// boot — the pull-based, RFC-8693-shaped acquisition strategy that
+	// obtains downstream tool credentials from an external credential
+	// broker instead of Harbor's interactive authorization-code flow.
+	_ "github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
 	// Planner driver (closes issue #126). The `react` driver
 	// self-registers under that name via init() so
 	// `planner.driver: react` resolves at boot. New planner concretes

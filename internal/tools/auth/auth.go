@@ -432,6 +432,21 @@ var (
 	// in-process admin discriminator until a later phase wires JWT-side
 	// scope claims; the call site flips the bit deliberately.
 	ErrAdminScopeRequired = errors.New("auth: admin scope required for ScopeAgent flow")
+
+	// ErrNonInteractive — an authorization-code-flow method
+	// (InitiateFlow / CompleteFlow / DenyFlow) was called on a
+	// non-interactive acquisition driver (one that pulls credentials
+	// from an external authority rather than driving a user through an
+	// authorization-code redirect). The typed sentinel is returned
+	// rather than a silent no-op (CLAUDE.md §13 forbids silent
+	// degradation): a caller that assumes every OAuthProvider can
+	// InitiateFlow branches on errors.Is(err, auth.ErrNonInteractive)
+	// and skips the interactive prompt. The pull-based drivers surface
+	// a broker consent refusal through the SAME typed *ErrAuthRequired
+	// the interactive flow uses, so the run still parks on the unified
+	// pause/resume primitive — only the completion mechanism differs
+	// (a resume re-drives Token() rather than a callback CompleteFlow).
+	ErrNonInteractive = errors.New("auth: provider is non-interactive (no authorization-code flow)")
 )
 
 // Validate reports whether the OAuthConfig is structurally valid.
