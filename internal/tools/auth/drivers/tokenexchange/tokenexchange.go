@@ -33,9 +33,14 @@
 // of the broker-advertised expiry and the operator cache-TTL cap
 // (extra.cache_ttl_cap, default 5m) — a token is never served past the
 // broker's own expiry. Separately, RE-EXCHANGE is rate-floored at 30s
-// per key: a broker advertising an expiry shorter than the floor (a
-// misconfiguration) fails the call loudly instead of spamming the
-// broker and the audit bus with one exchange per tool call.
+// per key: within 30s of the previous exchange a re-exchange fails
+// loudly (a typed exchange error naming the floor) rather than
+// round-tripping the broker; once the window elapses the next Token()
+// call re-exchanges normally. The floor only ever bites when the
+// broker advertises an expiry shorter than 30s (a broker
+// misconfiguration) — the net effect there is at most one exchange per
+// 30s window with loud failures in between, never one exchange + one
+// audit event per tool call.
 //
 // Cache granularity: the subject_token presented to the broker carries
 // the full verified (tenant, user, session) triple, but the cache and
@@ -405,10 +410,17 @@ func (p *provider) exchangeSingleFlight(ctx context.Context, id identity.Identit
 // caller, owns the round-trip).
 func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, key string, call *exchangeCall) {
 	defer func() {
-		close(call.done)
+		// Ordering is load-bearing: the flight MUST leave the table
+		// BEFORE its result is published. Once done closes, waiters are
+		// released and a released caller may immediately issue a fresh
+		// Token(); were the completed flight still findable in the
+		// table, that caller would join it and receive THIS attempt's
+		// stale result (e.g. a rate-floor error frozen at an earlier
+		// clock instant) instead of starting a new exchange.
 		p.flightMu.Lock()
 		delete(p.flight, key)
 		p.flightMu.Unlock()
+		close(call.done)
 	}()
 
 	// Detach from the initiating caller's cancellation, keeping its

@@ -301,10 +301,15 @@ func refreshKey(t Token) string {
 // round-trip).
 func (p *Provider) runRefresh(callerCtx context.Context, cfg OAuthConfig, current Token, key string, call *refreshCall) {
 	defer func() {
-		close(call.done)
+		// Ordering is load-bearing: the flight MUST leave the table
+		// BEFORE its result is published (done closed). Otherwise a
+		// caller released by the close can issue a fresh Token(), find
+		// the completed flight still in the table, join it, and receive
+		// this attempt's stale result instead of starting a new refresh.
 		p.refreshMu.Lock()
 		delete(p.refreshFlight, key)
 		p.refreshMu.Unlock()
+		close(call.done)
 	}()
 
 	// Detach from the initiating caller's cancellation, keeping its

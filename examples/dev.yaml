@@ -271,8 +271,11 @@ tools:
   #   # rejected at boot). A cached token is served until the EARLIER of
   #   # the broker-advertised expiry and the cap — never past the
   #   # broker's own expiry. Re-exchange is rate-floored at 30s per
-  #   # subject: a broker advertising an expiry shorter than the floor
-  #   # fails the tool call loudly instead of spamming exchanges.
+  #   # subject: within 30s of the previous exchange a re-exchange
+  #   # fails loudly; once the window elapses the next call
+  #   # re-exchanges normally. The floor only bites when the broker
+  #   # advertises an expiry shorter than 30s (a misconfiguration) —
+  #   # at most one exchange per 30s window, loud failures in between.
   #   - name: m365-broker
   #     driver: tokenexchange
   #     client_id_env: HARBOR_BROKER_CLIENT_ID
