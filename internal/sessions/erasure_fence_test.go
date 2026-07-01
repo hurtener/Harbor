@@ -301,6 +301,11 @@ func TestCascadeEraser_FenceError_FailsLoud_NothingDeleted_RetrySafe(t *testing.
 	if len(refs) != 1 {
 		t.Errorf("fence failure touched artifacts: %d, want 1", len(refs))
 	}
+	// The registry's catalog is untouched too (clearErased never ran):
+	// the session still resolves through the registry's read surface.
+	if _, gerr := f.reg.Get(ictx, id.SessionID); gerr != nil {
+		t.Errorf("fence failure cleared the registry catalog: Get = %v, want the session still resolvable", gerr)
+	}
 
 	// Clear the transient fault and re-invoke — the cascade converges to a
 	// full, successful erasure.
@@ -321,6 +326,10 @@ func TestCascadeEraser_FenceError_FailsLoud_NothingDeleted_RetrySafe(t *testing.
 	}
 	if len(refs) != 0 {
 		t.Errorf("artifacts survived the retry: %d", len(refs))
+	}
+	// And the registry catalog is cleared by the successful retry.
+	if _, gerr := f.reg.Get(ictx, id.SessionID); gerr == nil {
+		t.Error("registry catalog still resolves the session after a successful erasure")
 	}
 }
 

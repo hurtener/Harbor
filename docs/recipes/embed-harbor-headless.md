@@ -171,6 +171,11 @@ The sink runs on the run goroutine — keep it non-blocking (push to a
 buffered channel for fan-out). Each `RunOnce` call captures its own sink,
 so concurrent runs against one shared `Stack` never cross chunks.
 
+Note the `tool_dispatched` cardinality (D-274): the sink receives one
+event PER dispatched tool — a parallel tool call emits N events (one per
+branch) — and task spawn/await decisions emit none (v1.8 emitted one
+event per spawn/await dispatch; they are not tool invocations).
+
 ### 4b. Drive the run loop yourself
 
 Drive the shared `RunLoop` directly — the same loop `harbor dev` drives

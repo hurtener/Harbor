@@ -137,7 +137,12 @@ type TaskRow struct {
 	// ErrorClass is the short failure-class string; set only when
 	// Status is "failed" ("" otherwise).
 	ErrorClass string `json:"error_class,omitempty"`
-	// ToolCount is the count of child tool tasks spawned by this task.
+	// ToolCount is the running count of tool invocations the task's run
+	// successfully dispatched: a single tool call counts once, a
+	// parallel tool call counts once per branch, and spawned/awaited
+	// child tasks are NOT counted (spawning or joining a task is not a
+	// tool invocation). Failed dispatches are not counted either — the
+	// counter advances only when the executor returns without error.
 	ToolCount int `json:"tool_count"`
 	// BackgroundAcknowledged latches true once a completed background
 	// task has been acknowledged (the `task.background_acknowledged`

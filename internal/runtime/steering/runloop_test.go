@@ -697,6 +697,14 @@ func TestRun_OnToolDispatched_InvokedOnSuccess(t *testing.T) {
 // per branch and not once total with count 1. This is the D-274 fix for
 // the Console Tasks-page tool_count: before the fix, a 3-branch
 // CallParallel silently under-reported as a single dispatch.
+//
+// The test also pins the SEAM composition: the runloop-APPENDED
+// trajectory (not a hand-built fixture — runloop.go boxes the decision
+// onto Step.Action itself) must count 3 through
+// planner.CountToolInvocations, so a future refactor that changes how
+// the runloop boxes Step.Action (a pointer, a wrapper type) cannot
+// silently zero the envelope's ToolCallsSeen while the unit tests over
+// hand-built trajectories stay green.
 func TestRun_OnToolDispatched_CallParallel_CountsBranches(t *testing.T) {
 	rl, _, _ := newTestRunLoop(t)
 	p := &scriptedPlanner{
@@ -709,6 +717,7 @@ func TestRun_OnToolDispatched_CallParallel_CountsBranches(t *testing.T) {
 	}
 	var hookCalls, totalCount int
 	spec := runSpecFor(runA, p)
+	spec.Base.Trajectory = &planner.Trajectory{}
 	spec.ToolExecutor = &recordingExecutor{}
 	spec.OnToolDispatched = func(_ context.Context, count int) error {
 		hookCalls++
@@ -723,6 +732,11 @@ func TestRun_OnToolDispatched_CallParallel_CountsBranches(t *testing.T) {
 	}
 	if totalCount != 3 {
 		t.Errorf("OnToolDispatched total count = %d, want 3 (one per branch)", totalCount)
+	}
+	// Seam assertion: the trajectory the RUNLOOP appended (the exact
+	// shape every envelope producer counts) yields the same 3.
+	if got := planner.CountToolInvocations(spec.Base.Trajectory); got != 3 {
+		t.Errorf("CountToolInvocations(runloop-appended trajectory) = %d, want 3", got)
 	}
 }
 

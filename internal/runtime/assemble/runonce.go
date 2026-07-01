@@ -197,22 +197,11 @@ func (s *Stack) RunOnce(
 		Compression:  s.Compression,
 	}
 	if cfg.stream != nil {
-		sink := cfg.stream
-		prevDispatch := spec.OnToolDispatched
-		spec.OnToolDispatched = func(hookCtx context.Context, count int) error {
-			if prevDispatch != nil {
-				if err := prevDispatch(hookCtx, count); err != nil {
-					return err
-				}
-			}
-			// One StreamToolDispatched event PER dispatched tool: a
-			// CallParallel dispatch carries count == len(Branches), so
-			// the stream reports N tool dispatches, not one.
-			for range count {
-				sink(StreamEvent{Kind: StreamToolDispatched})
-			}
-			return nil
-		}
+		// One StreamToolDispatched event PER dispatched tool: a
+		// CallParallel dispatch carries count == len(Branches), so the
+		// stream reports N tool dispatches, not one (see
+		// streamDispatchHook).
+		spec.OnToolDispatched = streamDispatchHook(spec.OnToolDispatched, cfg.stream)
 	}
 
 	fin, err := s.RunLoop.Run(runCtx, spec)

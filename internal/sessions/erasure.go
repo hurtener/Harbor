@@ -258,7 +258,10 @@ func (e *CascadeEraser) fenceSession(ctx context.Context, id identity.Identity) 
 		return nil
 	}
 	if err := fencer.Fence(ctx, id); err != nil {
-		return fmt.Errorf("sessions: event-bus fence failed for session %q: %w", id.SessionID, err)
+		// No "sessions:" prefix here — Erase wraps this error with
+		// "sessions: erase fence:", and a doubled package prefix reads
+		// as noise in the operator-facing error chain.
+		return fmt.Errorf("event-bus fence failed for session %q: %w", id.SessionID, err)
 	}
 	return nil
 }

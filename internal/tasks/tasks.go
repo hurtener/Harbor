@@ -287,8 +287,14 @@ type TaskSummary struct {
 //	{
 //	  "answer":          string,  // the LLM's natural-language answer
 //	  "finish_reason":   string,  // planner.FinishReason as string
-//	  "tool_calls_seen": int      // len(traj.Steps) at finish
+//	  "tool_calls_seen": int      // planner.CountToolInvocations at finish
 //	}
+//
+// `tool_calls_seen` is the true tool-invocation count recorded on the
+// run's trajectory (planner.CountToolInvocations): a CallTool step
+// counts once, a CallParallel step counts once PER branch, and
+// SpawnTask / AwaitTask steps count zero — it is NOT the trajectory
+// step count.
 //
 // Consumers (Console Playground, CLI, third-party UIs) MAY rely on
 // this shape. Future planners that return richer answers (markdown

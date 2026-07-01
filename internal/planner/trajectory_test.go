@@ -88,7 +88,8 @@ func TestCountToolInvocations_EmptySteps_CountsZero(t *testing.T) {
 // TestDecisionInvocationCount_UnknownShape_CountsZero — a step Action
 // that is neither a Decision nor nil (e.g. a bare map[string]any, the
 // shape a JSON-deserialised-then-not-retyped trajectory step carries)
-// counts as zero rather than panicking on the type switch.
+// counts as zero rather than panicking on the type switch. Typed-nil
+// pointers count zero too — never a nil-dereference panic.
 func TestDecisionInvocationCount_UnknownShape_CountsZero(t *testing.T) {
 	t.Parallel()
 	cases := []any{
@@ -96,6 +97,8 @@ func TestDecisionInvocationCount_UnknownShape_CountsZero(t *testing.T) {
 		map[string]any{"tool": "clock.now"},
 		Finish{Reason: FinishGoal},
 		RequestPause{Reason: PauseApprovalRequired},
+		(*CallTool)(nil),
+		(*CallParallel)(nil),
 	}
 	for _, c := range cases {
 		if got := DecisionInvocationCount(c); got != 0 {
