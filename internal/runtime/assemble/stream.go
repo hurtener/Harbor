@@ -16,7 +16,11 @@
 
 package assemble
 
-import "github.com/hurtener/Harbor/internal/planner"
+import (
+	"context"
+
+	"github.com/hurtener/Harbor/internal/planner"
+)
 
 // StreamEventKind enumerates the streaming-sink event kinds a WithStream
 // sink observes. It is a sealed string enum.
@@ -32,7 +36,10 @@ const (
 	// StreamToolDispatched marks a tool the run dispatched and the
 	// executor returned for WITHOUT error. Text is empty: the dispatch is
 	// the signal, and raw tool arguments/results are never streamed (they
-	// route through the audit redactor — CLAUDE.md §7).
+	// route through the audit redactor — CLAUDE.md §7). The sink receives
+	// one event PER dispatched tool: a parallel tool call emits N events
+	// (one per branch), and spawning or awaiting a child task emits none —
+	// those are runtime decisions, not tool invocations.
 	StreamToolDispatched StreamEventKind = "tool_dispatched"
 
 	// StreamStep marks a planner-step boundary — one LLM call finished
@@ -86,4 +93,25 @@ func streamChunkEvent(delta string, done bool, kind planner.ChunkKind) StreamEve
 		return StreamEvent{Kind: StreamStep, Reasoning: reasoning}
 	}
 	return StreamEvent{Kind: StreamToken, Text: delta, Reasoning: reasoning}
+}
+
+// streamDispatchHook builds the OnToolDispatched wrapper a WithStream
+// run installs: it chains any previously-installed hook (its error
+// short-circuits), then emits one StreamToolDispatched event PER
+// dispatched tool — the run loop's count is 1 for a single tool call
+// and len(Branches) for a parallel call, so a parallel dispatch streams
+// N events, not one. Spawn/await dispatches never reach the hook
+// (count 0 is skipped by the run loop), so they emit nothing.
+func streamDispatchHook(prev func(ctx context.Context, count int) error, sink func(StreamEvent)) func(ctx context.Context, count int) error {
+	return func(hookCtx context.Context, count int) error {
+		if prev != nil {
+			if err := prev(hookCtx, count); err != nil {
+				return err
+			}
+		}
+		for range count {
+			sink(StreamEvent{Kind: StreamToolDispatched})
+		}
+		return nil
+	}
 }

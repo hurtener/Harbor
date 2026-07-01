@@ -33,8 +33,20 @@ type AnswerEnvelope struct {
 	// FinishReason is the planner's Finish.Reason, verbatim
 	// (string-typed on the wire).
 	FinishReason string `json:"finish_reason"`
-	// ToolCallsSeen is the number of trajectory steps the run
-	// accumulated (the tool-dispatch count the operator sees).
+	// ToolCallsSeen is the number of actual tool invocations the run
+	// dispatched — computed via CountToolInvocations, NOT
+	// len(Trajectory.Steps). A CallTool step counts once; a
+	// CallParallel step counts once PER branch (the runtime dispatches
+	// N tools concurrently, not one); SpawnTask and AwaitTask steps
+	// count zero — they are runtime decisions, never tool dispatches.
+	//
+	// This field's semantics were redefined from an earlier len(Steps)
+	// reading, which silently miscounted: undercounting a CallParallel
+	// step (1 instead of N branches) and overcounting a SpawnTask /
+	// AwaitTask step (a dispatch that never happened). This is a
+	// value-semantics change on an SDK-visible field — embedders
+	// comparing ToolCallsSeen against a fixed expectation should
+	// re-check it after upgrading.
 	ToolCallsSeen int `json:"tool_calls_seen"`
 }
 

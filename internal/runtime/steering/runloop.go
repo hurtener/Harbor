@@ -362,23 +362,33 @@ type RunSpec struct {
 	// fall-through that pretends compression happened.
 	Compression *planner.CompressionRunner
 
-	// OnToolDispatched is the optional per-run hook the runloop
-	// invokes after the ToolExecutor returns WITHOUT ERROR (
-	// item 7). The dev binary wires it to
+	// OnToolDispatched is the optional per-run hook the runloop invokes
+	// after the ToolExecutor returns WITHOUT ERROR. The dev binary
+	// wires it to loop `count` calls of
 	// `taskReg.IncrementToolCount(ctx, taskID)` so the Console Tasks
-	// page reflects the per-task tool-dispatch count. A nil hook is
-	// the legacy / test path (no counter wired); a hook that errors
-	// fails the run loud — silent degradation of an observability
-	// counter is forbidden per §13 (the counter is an integrity
-	// surface, not a best-effort log line).
+	// page's tool_count reflects the per-task count of SUCCESSFUL tool
+	// dispatches, using the same per-decision counting rule as
+	// `planner.DecisionInvocationCount`. Note the deliberate failure-axis
+	// difference from `planner.AnswerEnvelope.ToolCallsSeen`: tool_count
+	// counts successful dispatches only (this hook is skipped on an
+	// executor error), while ToolCallsSeen counts ATTEMPTED invocations
+	// recorded on the trajectory — a failed dispatch still appends its
+	// step, so the envelope counts it. A nil hook is the legacy / test
+	// path (no counter wired); a hook that errors fails the run loud —
+	// silent degradation of an observability counter is forbidden per
+	// §13 (the counter is an integrity surface, not a best-effort log
+	// line).
 	//
-	// The runloop calls the hook for every successful executor
-	// dispatch — CallTool today, CallParallel + SpawnTask + AwaitTask
-	// once those executor shapes land. A dispatch that the executor
-	// reports as failed (the executor's own error path) does NOT
-	// invoke the hook; the planner's repair / re-plan flow records
-	// the failure on the trajectory and the counter stays put.
-	OnToolDispatched func(ctx context.Context) error
+	// count is the decision's tool-invocation count
+	// (planner.DecisionInvocationCount): 1 for a successfully-dispatched
+	// CallTool, len(Branches) for a CallParallel. The runloop only calls
+	// the hook when count > 0 — a SpawnTask / AwaitTask dispatch never
+	// invokes it, because spawning or joining a task is not a tool
+	// invocation. A dispatch the executor reports as failed (the
+	// executor's own error path) also does NOT invoke the hook; the
+	// planner's repair / re-plan flow records the failure on the
+	// trajectory and the counter stays put.
+	OnToolDispatched func(ctx context.Context, count int) error
 }
 
 // Run drives the planner to a terminal planner.Finish decision. It Opens
@@ -770,16 +780,23 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 				} else {
 					observation = obs
 					llmObservation = llmObs
-					// item 7: notify the per-run dispatch hook
-					// on a successful executor return. The dev binary
-					// wires this to `taskReg.IncrementToolCount` so the
-					// Console Tasks page's tool_count reflects the
-					// running per-task dispatch count. Hook errors are
-					// surfaced loud — silent degradation of an
-					// observability counter is §13-forbidden.
+					// Notify the per-run dispatch hook on a successful
+					// executor return, with the decision's true
+					// tool-invocation count — 1 for CallTool,
+					// len(Branches) for CallParallel. SpawnTask /
+					// AwaitTask carry count == 0 and do NOT invoke the
+					// hook: spawning or joining a task is not a tool
+					// invocation. The dev binary wires this to
+					// `taskReg.IncrementToolCount` so the Console Tasks
+					// page's tool_count reflects the true per-task
+					// tool-invocation count. Hook errors are surfaced
+					// loud — silent degradation of an observability
+					// counter is §13-forbidden.
 					if spec.OnToolDispatched != nil {
-						if hookErr := spec.OnToolDispatched(runCtx); hookErr != nil {
-							return planner.Finish{}, fmt.Errorf("steering: tool-dispatched hook: %w", hookErr)
+						if n := planner.DecisionInvocationCount(decision); n > 0 {
+							if hookErr := spec.OnToolDispatched(runCtx, n); hookErr != nil {
+								return planner.Finish{}, fmt.Errorf("steering: tool-dispatched hook: %w", hookErr)
+							}
 						}
 					}
 				}

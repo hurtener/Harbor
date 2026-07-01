@@ -822,17 +822,20 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// writing past teardown.
 	emit := events.IdentityStampingEmitterContext(d.subCtx, d.bus, q, d.logger)
 
-	// item 7: per-run OnToolDispatched hook that advances
-	// the task's `ToolCount` registry-side after every successful
-	// CallTool dispatch. The dev binary closes the seam from the
+	// per-run OnToolDispatched hook that advances the
+	// task's `ToolCount` registry-side by `count` after every
+	// successful tool dispatch (count is 1 for a CallTool, len(Branches)
+	// for a CallParallel). The dev binary closes the seam from the
 	// runloop's side (the executor returned without error) to the
 	// tasks.TaskRegistry surface the Console Tasks page reads. A
 	// best-effort log + non-fatal continuation would mask a counter
-	// drift the operator depends on for visibility — the hook
-	// surfaces an IncrementToolCount error loud, matching §13.
-	dispatchHook := func(hookCtx context.Context) error {
-		if err := d.tasks.IncrementToolCount(hookCtx, taskID); err != nil {
-			return fmt.Errorf("tasks.IncrementToolCount(%q): %w", taskID, err)
+	// drift the operator depends on for visibility — the hook surfaces
+	// an IncrementToolCount error loud, matching §13.
+	dispatchHook := func(hookCtx context.Context, count int) error {
+		for range count {
+			if err := d.tasks.IncrementToolCount(hookCtx, taskID); err != nil {
+				return fmt.Errorf("tasks.IncrementToolCount(%q): %w", taskID, err)
+			}
 		}
 		return nil
 	}
@@ -1039,7 +1042,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		payload := planner.AnswerEnvelope{
 			Answer:        runctx.ExtractAssistantAnswer(fin),
 			FinishReason:  string(fin.Reason),
-			ToolCallsSeen: len(traj.Steps),
+			ToolCallsSeen: planner.CountToolInvocations(traj),
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
