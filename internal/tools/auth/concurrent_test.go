@@ -197,3 +197,141 @@ func TestProvider_ConcurrentReuse_RefreshSingleFlight(t *testing.T) {
 			tokenCalls, N)
 	}
 }
+
+// TestProvider_RefreshSingleFlight_LeaderCancelDoesNotPoisonFollowers
+// pins the D-025 cancellation-cross-talk guarantee on the refresh
+// single-flight: the refresh round-trip runs detached from the
+// initiating caller, so cancelling the caller that STARTED the flight
+// must not fail a follower collapsed onto the same flight with a
+// "context canceled" it never asked for.
+func TestProvider_RefreshSingleFlight_LeaderCancelDoesNotPoisonFollowers(t *testing.T) {
+	t.Parallel()
+
+	h := newProviderHarness(t)
+	id := mkIdentity(t)
+	baseCtx := mkCtx(t, id)
+
+	// Seed an expired token + refresh-token so Token() hits the
+	// refresh path.
+	expired := Token{
+		Source:       h.userCfg.Source,
+		BindingScope: ScopeUser,
+		TenantID:     id.TenantID,
+		UserID:       id.UserID,
+		AccessToken:  "old-access",
+		RefreshToken: "dummy-refresh",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(-time.Hour),
+	}
+	if err := h.store.Put(baseCtx, expired); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+
+	// Gate the refresh grant: signal arrival, then block until released.
+	started := make(chan struct{}, 2)
+	gate := make(chan struct{})
+	h.server.refreshHook = func() {
+		started <- struct{}{}
+		<-gate
+	}
+
+	// Leader: starts the refresh flight, then gets cancelled mid-flight.
+	leaderCtx, cancelLeader := context.WithCancel(baseCtx)
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := h.provider.Token(leaderCtx, h.userCfg.Source)
+		leaderErr <- err
+	}()
+	<-started // refresh in flight; flight registered
+
+	// Follower joins the same flight.
+	type res struct {
+		tok Token
+		err error
+	}
+	followerRes := make(chan res, 1)
+	go func() {
+		tok, err := h.provider.Token(baseCtx, h.userCfg.Source)
+		followerRes <- res{tok, err}
+	}()
+
+	// Cancel the leader while the server is still gated.
+	cancelLeader()
+	if err := <-leaderErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader: want context.Canceled, got %v", err)
+	}
+
+	// Release the server: the follower must get the refreshed token —
+	// never the leader's cancellation.
+	close(gate)
+	r := <-followerRes
+	if r.err != nil {
+		t.Fatalf("follower poisoned by leader cancellation: %v", r.err)
+	}
+	if r.tok.AccessToken == "old-access" || r.tok.AccessToken == "" {
+		t.Fatalf("follower did not receive a refreshed token: %q", r.tok.AccessToken)
+	}
+}
+
+// TestProvider_RefreshSingleFlight_CrossTenantSameUserID_NotShared
+// pins the multi-isolation contract on the refresh single-flight key:
+// two TENANTS sharing a user ID must never collapse onto one refresh
+// flight (the follower would receive the leader tenant's token).
+func TestProvider_RefreshSingleFlight_CrossTenantSameUserID_NotShared(t *testing.T) {
+	t.Parallel()
+
+	h := newProviderHarness(t)
+	idA := identity.Identity{TenantID: "tenant-A", UserID: "alice", SessionID: "sA"}
+	idB := identity.Identity{TenantID: "tenant-B", UserID: "alice", SessionID: "sB"}
+	ctxA := mkCtx(t, idA)
+	ctxB := mkCtx(t, idB)
+
+	// Seed an expired token per tenant — same user ID, same source.
+	for _, seed := range []struct {
+		ctx context.Context
+		id  identity.Identity
+	}{{ctxA, idA}, {ctxB, idB}} {
+		if err := h.store.Put(seed.ctx, Token{
+			Source:       h.userCfg.Source,
+			BindingScope: ScopeUser,
+			TenantID:     seed.id.TenantID,
+			UserID:       seed.id.UserID,
+			AccessToken:  "old-access-" + seed.id.TenantID,
+			RefreshToken: "dummy-refresh-" + seed.id.TenantID,
+			TokenType:    "Bearer",
+			ExpiresAt:    time.Now().Add(-time.Hour),
+		}); err != nil {
+			t.Fatalf("seed Put (%s): %v", seed.id.TenantID, err)
+		}
+	}
+
+	// Concurrent refreshes for both tenants. The fake server mints a
+	// fresh random token per /token call, so a SHARED flight would hand
+	// both tenants the SAME access token.
+	var wg sync.WaitGroup
+	toks := make([]Token, 2)
+	errs := make([]error, 2)
+	for i, c := range []context.Context{ctxA, ctxB} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			toks[i], errs[i] = h.provider.Token(c, h.userCfg.Source)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Token[%d]: %v", i, err)
+		}
+	}
+	if toks[0].AccessToken == toks[1].AccessToken {
+		t.Fatalf("cross-tenant refresh flight shared: both tenants received %q", toks[0].AccessToken)
+	}
+	if toks[0].TenantID != "tenant-A" || toks[1].TenantID != "tenant-B" {
+		t.Fatalf("tenant stamp bleed: A=%q B=%q", toks[0].TenantID, toks[1].TenantID)
+	}
+	// Two distinct flights → two /token round-trips.
+	if calls := h.server.TokenCalls(); calls != 2 {
+		t.Fatalf("expected 2 refresh round-trips (one per tenant), got %d", calls)
+	}
+}

@@ -17,10 +17,15 @@ import (
 // TestProvider_ConcurrentReuse_NoIdentityBleed pins the D-025
 // concurrent-reuse contract for the tokenexchange driver: one shared
 // provider instance serves N=128 concurrent Token() calls across mixed
-// identity triples under -race. Asserts:
+// identity triples under -race. The identity scheme DELIBERATELY
+// reuses user IDs across tenants (user = i%8 over tenants = i%3, and 8
+// is not a multiple of 3, so the same user ID appears under several
+// tenants) — a cache or single-flight key that omits the tenant fails
+// the per-goroutine tenant assertions. Asserts:
 //   - no data races (run under -race in CI)
-//   - no identity bleed (each goroutine's token carries ITS OWN subject;
-//     two triples never observe each other's token)
+//   - no identity bleed (each goroutine's token carries ITS OWN tenant
+//     AND user — asserted broker-side via the tenant-embedding access
+//     token; cross-tenant same-user-ID pairs never share a token)
 //   - no cancellation cross-talk (a cancelled goroutine does not affect
 //     any other goroutine's exchange)
 //   - no goroutine leaks (NumGoroutine returns to baseline after
@@ -42,9 +47,12 @@ func TestProvider_ConcurrentReuse_NoIdentityBleed(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// tenant = i%3, user = i%8: the same user ID recurs under
+			// different tenants (e.g. user-1 under tenant-1, tenant-0,
+			// tenant-2) — the cross-tenant-same-user-ID leg.
 			id := identity.Identity{
-				TenantID:  fmt.Sprintf("tenant-%d", i%4),
-				UserID:    fmt.Sprintf("user-%d", i),
+				TenantID:  fmt.Sprintf("tenant-%d", i%3),
+				UserID:    fmt.Sprintf("user-%d", i%8),
 				SessionID: fmt.Sprintf("session-%d", i),
 			}
 			ctx, err := identity.With(context.Background(), id)
@@ -52,7 +60,7 @@ func TestProvider_ConcurrentReuse_NoIdentityBleed(t *testing.T) {
 				errCh <- fmt.Errorf("g%d identity.With: %w", i, err)
 				return
 			}
-			// One goroutine per identity cancels mid-flight to prove no
+			// One goroutine per stripe cancels mid-flight to prove no
 			// cross-talk: cancelling THIS ctx must not fail the others.
 			if i%16 == 0 {
 				cctx, cancel := context.WithCancel(ctx)
@@ -65,8 +73,9 @@ func TestProvider_ConcurrentReuse_NoIdentityBleed(t *testing.T) {
 				errCh <- fmt.Errorf("g%d Token: %w", i, err)
 				return
 			}
-			// The token's subject must be THIS goroutine's user — never
-			// another's.
+			// The token's subject must be THIS goroutine's tenant+user —
+			// never another's. The broker embeds both in the access
+			// token, so a cross-tenant cache hit fails here.
 			if tok.UserID != id.UserID {
 				errCh <- fmt.Errorf("g%d identity bleed: tok.UserID=%q want %q", i, tok.UserID, id.UserID)
 				return
@@ -75,8 +84,9 @@ func TestProvider_ConcurrentReuse_NoIdentityBleed(t *testing.T) {
 				errCh <- fmt.Errorf("g%d tenant bleed: tok.TenantID=%q want %q", i, tok.TenantID, id.TenantID)
 				return
 			}
-			if !strings.HasPrefix(tok.AccessToken, "brokered-access-"+id.UserID+"-") {
-				errCh <- fmt.Errorf("g%d token cross-talk: %q", i, tok.AccessToken)
+			if !strings.HasPrefix(tok.AccessToken, tokenPrefix(id)) {
+				errCh <- fmt.Errorf("g%d token cross-talk (tenant or user of another goroutine): %q, want prefix %q",
+					i, tok.AccessToken, tokenPrefix(id))
 				return
 			}
 		}()
@@ -104,7 +114,7 @@ func TestProvider_ConcurrentReuse_NoIdentityBleed(t *testing.T) {
 
 // TestProvider_SingleFlight_CollapsesBurst asserts a burst of M
 // concurrent misses for ONE subject produces exactly one broker
-// request — the single-flight gate keyed (scope, subject, source).
+// request — the single-flight gate keyed (scope, tenant, user, source).
 func TestProvider_SingleFlight_CollapsesBurst(t *testing.T) {
 	t.Parallel()
 	const M = 64

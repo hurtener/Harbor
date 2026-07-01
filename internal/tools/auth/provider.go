@@ -246,26 +246,60 @@ func (p *Provider) isExpired(t Token) bool {
 }
 
 // refreshLocked performs a refresh via the configured token endpoint
-// under a single-flight gate keyed by (scope, subject, source). N
-// concurrent callers see one HTTP exchange.
+// under a single-flight gate keyed by (tenant, scope, subject, source)
+// — the token store's composite key. N concurrent callers see one
+// HTTP exchange.
+//
+// The refresh round-trip runs in its own goroutine on a context
+// DETACHED from the initiating caller's cancellation (values are
+// preserved; the deadline is the HTTP client timeout), so a cancelled
+// caller never poisons the collapsed waiters: every caller — the
+// initiator included — waits on the shared flight result or its OWN
+// ctx, whichever resolves first.
 func (p *Provider) refreshLocked(ctx context.Context, cfg OAuthConfig, current Token) (Token, error) {
-	key := string(cfg.BindingScope) + "." + current.SubjectID() + "." + string(cfg.Source)
+	key := refreshKey(current)
 
 	p.refreshMu.Lock()
 	call, inflight := p.refreshFlight[key]
-	if inflight {
-		p.refreshMu.Unlock()
-		select {
-		case <-call.done:
-			return call.token, call.err
-		case <-ctx.Done():
-			return Token{}, ctx.Err()
-		}
+	if !inflight {
+		call = &refreshCall{done: make(chan struct{})}
+		p.refreshFlight[key] = call
+		go p.runRefresh(ctx, cfg, current, key, call)
 	}
-	call = &refreshCall{done: make(chan struct{})}
-	p.refreshFlight[key] = call
 	p.refreshMu.Unlock()
 
+	select {
+	case <-call.done:
+		return call.token, call.err
+	case <-ctx.Done():
+		return Token{}, ctx.Err()
+	}
+}
+
+// refreshKey composes the refresh single-flight key: the token store's
+// composite (tenant, scope, subject, source), length-prefixed so
+// external-input IDs containing separator bytes cannot collide two
+// keys. Tenant is part of the key — two tenants sharing a user/agent
+// ID must never collapse onto one refresh flight (the follower would
+// receive the leader tenant's token).
+func refreshKey(t Token) string {
+	scope := string(t.BindingScope)
+	subj := t.SubjectID()
+	src := string(t.Source)
+	return fmt.Sprintf("%d:%s;%d:%s;%d:%s;%d:%s",
+		len(t.TenantID), t.TenantID,
+		len(scope), scope,
+		len(subj), subj,
+		len(src), src)
+}
+
+// runRefresh is the refresh single-flight worker body: one token
+// refresh shared by every caller collapsed onto the flight. The
+// goroutine's lifetime is bounded by the HTTP client timeout; it
+// deliberately outlives a cancelled initiator so the remaining waiters
+// still get their result (the flight, not the caller, owns the
+// round-trip).
+func (p *Provider) runRefresh(callerCtx context.Context, cfg OAuthConfig, current Token, key string, call *refreshCall) {
 	defer func() {
 		close(call.done)
 		p.refreshMu.Lock()
@@ -273,10 +307,21 @@ func (p *Provider) refreshLocked(ctx context.Context, cfg OAuthConfig, current T
 		p.refreshMu.Unlock()
 	}()
 
+	// Detach from the initiating caller's cancellation, keeping its
+	// values (identity, trace context); bound by the HTTP client
+	// timeout so a wedged authorization server cannot leak the
+	// goroutine.
+	timeout := p.httpClient.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(callerCtx), timeout)
+	defer cancel()
+
 	tokenURL, _, _, err := p.resolveEndpoints(ctx, cfg)
 	if err != nil {
 		call.err = err
-		return Token{}, err
+		return
 	}
 
 	body := url.Values{}
@@ -292,7 +337,7 @@ func (p *Provider) refreshLocked(ctx context.Context, cfg OAuthConfig, current T
 	resp, err := p.postForm(ctx, tokenURL, body)
 	if err != nil {
 		call.err = err
-		return Token{}, err
+		return
 	}
 
 	t := Token{
@@ -310,10 +355,9 @@ func (p *Provider) refreshLocked(ctx context.Context, cfg OAuthConfig, current T
 	}
 	if err := p.store.Put(ctx, t); err != nil {
 		call.err = err
-		return Token{}, err
+		return
 	}
 	call.token = t
-	return t, nil
 }
 
 func refreshTokenOrCurrent(refreshed, current string) string {

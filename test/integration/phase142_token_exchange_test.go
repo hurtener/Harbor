@@ -135,8 +135,10 @@ func (b *p142Broker) handle(w http.ResponseWriter, r *http.Request) {
 			"consent_url": "https://broker.example.test/consent",
 		})
 	default:
+		// The issued token embeds the subject triple's tenant + user so
+		// a cross-tenant bleed is assertable broker-side.
 		var triple struct {
-			TenantID, UserID, SessionID string
+			TenantID, UserID string
 		}
 		if raw, err := base64.RawURLEncoding.DecodeString(r.Form.Get("subject_token")); err == nil {
 			var st struct {
@@ -145,11 +147,12 @@ func (b *p142Broker) handle(w http.ResponseWriter, r *http.Request) {
 				SessionID string `json:"session_id"`
 			}
 			_ = json.Unmarshal(raw, &st)
+			triple.TenantID = st.TenantID
 			triple.UserID = st.UserID
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "brokered-" + triple.UserID,
+			"access_token": "brokered-" + triple.TenantID + "-" + triple.UserID,
 			"token_type":   "Bearer",
 			"expires_in":   3600,
 			"scope":        r.Form.Get("scope"),
@@ -319,7 +322,7 @@ func TestE2E_Phase142_TokenExchange_ThroughCatalog(t *testing.T) {
 	if ev.Identity.Identity.UserID != "alice" {
 		t.Fatalf("event identity: %+v", ev.Identity)
 	}
-	if b, _ := json.Marshal(ev.Payload); strings.Contains(string(b), "brokered-alice") {
+	if b, _ := json.Marshal(ev.Payload); strings.Contains(string(b), "brokered-tenant-1-alice") {
 		t.Fatalf("TOKEN LEAK in credential_exchanged event: %s", b)
 	}
 
@@ -351,8 +354,63 @@ func TestE2E_Phase142_TwoIdentityIsolation(t *testing.T) {
 	if tokA.AccessToken == tokB.AccessToken {
 		t.Fatalf("identity bleed: shared token %q", tokA.AccessToken)
 	}
-	if tokA.AccessToken != "brokered-alice" || tokB.AccessToken != "brokered-bob" {
+	if tokA.AccessToken != "brokered-tenant-1-alice" || tokB.AccessToken != "brokered-tenant-1-bob" {
 		t.Fatalf("broker-side subject mismatch: A=%q B=%q", tokA.AccessToken, tokB.AccessToken)
+	}
+}
+
+// TestE2E_Phase142_CrossTenantSameUserID_Isolation proves two TENANTS
+// sharing a user ID never observe each other's brokered token —
+// asserted broker-side (the token embeds the tenant), cache-side (the
+// second tenant is a cache miss, not a hit on the first tenant's
+// entry), and through Revoke (revoking one tenant leaves the other's
+// cache intact). The cross-tenant credential-bleed regression guard.
+func TestE2E_Phase142_CrossTenantSameUserID_Isolation(t *testing.T) {
+	t.Parallel()
+	env := newP142Env(t)
+	idA := identity.Identity{TenantID: "tenant-1", UserID: "alice", SessionID: "sA"}
+	idB := identity.Identity{TenantID: "tenant-2", UserID: "alice", SessionID: "sB"}
+	ctxA := p142Ctx(t, idA)
+	ctxB := p142Ctx(t, idB)
+	src := tools.ToolSourceID(p142Provider)
+
+	tokA, err := env.provider.Token(ctxA, src)
+	if err != nil {
+		t.Fatalf("Token A: %v", err)
+	}
+	// Tenant-2's same-user call MUST be its own exchange (cache miss),
+	// yielding its own tenant-scoped token — asserted broker-side.
+	tokB, err := env.provider.Token(ctxB, src)
+	if err != nil {
+		t.Fatalf("Token B: %v", err)
+	}
+	if env.broker.callCount() != 2 {
+		t.Fatalf("cross-tenant cache bleed: %d broker calls (want 2)", env.broker.callCount())
+	}
+	if tokA.AccessToken != "brokered-tenant-1-alice" || tokB.AccessToken != "brokered-tenant-2-alice" {
+		t.Fatalf("cross-tenant token bleed: A=%q B=%q", tokA.AccessToken, tokB.AccessToken)
+	}
+	if tokA.TenantID != "tenant-1" || tokB.TenantID != "tenant-2" {
+		t.Fatalf("tenant stamp bleed: A=%q B=%q", tokA.TenantID, tokB.TenantID)
+	}
+
+	// Revoke isolation: revoking tenant-1 leaves tenant-2's cache
+	// intact; tenant-1 re-exchanges.
+	if err := env.provider.Revoke(ctxA, src); err != nil {
+		t.Fatalf("Revoke A: %v", err)
+	}
+	tokB2, err := env.provider.Token(ctxB, src)
+	if err != nil {
+		t.Fatalf("Token B after A's revoke: %v", err)
+	}
+	if tokB2.AccessToken != tokB.AccessToken || env.broker.callCount() != 2 {
+		t.Fatalf("revoke crossed tenants: B %q→%q (calls=%d)", tokB.AccessToken, tokB2.AccessToken, env.broker.callCount())
+	}
+	if _, err := env.provider.Token(ctxA, src); err != nil {
+		t.Fatalf("Token A after revoke: %v", err)
+	}
+	if env.broker.callCount() != 3 {
+		t.Fatalf("tenant-1 should re-exchange after its revoke: %d calls", env.broker.callCount())
 	}
 }
 
@@ -391,7 +449,7 @@ func TestE2E_Phase142_ConsentParkResumeSucceed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Token after grant: %v", err)
 	}
-	if tok.AccessToken != "brokered-carol" {
+	if tok.AccessToken != "brokered-tenant-1-carol" {
 		t.Fatalf("unexpected token %q", tok.AccessToken)
 	}
 }

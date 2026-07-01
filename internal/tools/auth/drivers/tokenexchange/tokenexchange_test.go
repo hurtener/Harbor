@@ -42,8 +42,10 @@ const (
 // fakeBroker is an httptest server emulating an RFC-8693 credential
 // broker. It asserts the exact 8693 params ON THE BROKER SIDE (§17.8),
 // so a driver wired to the wrong field fails the test. Its response
-// posture is switchable (grant / consent_required / 5xx) so the tests
-// drive the park/resume/fail-loud legs.
+// posture is switchable (grant / consent_required / 5xx / gated slow
+// grant) so the tests drive the park/resume/fail-loud/cancellation
+// legs. Issued access tokens embed the SUBJECT TRIPLE's tenant + user
+// so cross-tenant bleed is assertable broker-side.
 type fakeBroker struct {
 	server *httptest.Server
 
@@ -51,9 +53,15 @@ type fakeBroker struct {
 	tokenCalls int
 	lastForm   url.Values
 	perSubject int          // access-token suffix bump so each exchange is distinguishable
-	posture    atomic.Value // string: "grant" | "consent" | "error500"
+	posture    atomic.Value // string: "grant" | "consent" | "error500" | "slow"
 	expiresIn  int
 	consentURL string
+
+	// started receives one signal per "slow"-posture request as it
+	// arrives; gate blocks the response until closed. Both are set by
+	// the test BEFORE switching posture to "slow".
+	started chan struct{}
+	gate    chan struct{}
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -130,19 +138,35 @@ func (b *fakeBroker) handleToken(w http.ResponseWriter, r *http.Request) {
 			"consent_url":       b.consentURL,
 		})
 		return
+	case "slow":
+		// Signal arrival, then block until the test releases the gate;
+		// respond as a normal grant afterwards.
+		b.started <- struct{}{}
+		<-b.gate
+		b.writeGrant(w, r, n)
 	default: // grant
-		// Decode the subject_token so the test can assert the triple
-		// round-trips and derive a per-subject access token.
-		subj := decodeSubject(r.Form.Get("subject_token"))
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token":      "brokered-access-" + subj.UserID + "-" + itoa(n),
-			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
-			"token_type":        "Bearer",
-			"expires_in":        b.expiresIn,
-			"scope":             r.Form.Get("scope"),
-		})
+		b.writeGrant(w, r, n)
 	}
+}
+
+// writeGrant responds with a granted token embedding the subject
+// triple's tenant + user (so cross-tenant bleed fails assertions).
+func (b *fakeBroker) writeGrant(w http.ResponseWriter, r *http.Request, n int) {
+	subj := decodeSubject(r.Form.Get("subject_token"))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token":      "brokered-access-" + subj.TenantID + "-" + subj.UserID + "-" + itoa(n),
+		"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+		"token_type":        "Bearer",
+		"expires_in":        b.brokerExpiresIn(),
+		"scope":             r.Form.Get("scope"),
+	})
+}
+
+func (b *fakeBroker) brokerExpiresIn() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.expiresIn
 }
 
 type subjectTriple struct {
@@ -260,7 +284,18 @@ func mkDeps(t *testing.T) (auth.FactoryDeps, pauseresume.Coordinator, events.Eve
 
 func mkProvider(t *testing.T, broker *fakeBroker) (auth.OAuthProvider, pauseresume.Coordinator, events.EventBus) {
 	t.Helper()
+	return mkProviderClock(t, broker, nil)
+}
+
+// mkProviderClock builds the provider with an optional controllable
+// clock (nil → wall clock) — the TTL tests advance time instead of
+// sleeping (CLAUDE.md §11).
+func mkProviderClock(t *testing.T, broker *fakeBroker, clock func() time.Time) (auth.OAuthProvider, pauseresume.Coordinator, events.EventBus) {
+	t.Helper()
 	deps, coord, bus := mkDeps(t)
+	if clock != nil {
+		deps.Clock = clock
+	}
 	cfg := auth.ProviderConfig{
 		Name:         tProviderName,
 		ClientID:     tDummyBrokerClient,
@@ -275,6 +310,32 @@ func mkProvider(t *testing.T, broker *fakeBroker) (auth.OAuthProvider, pauseresu
 	}
 	t.Cleanup(func() { _ = prov.Close(context.Background()) })
 	return prov, coord, bus
+}
+
+// fakeClock is a mutex-guarded controllable clock.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newFakeClock() *fakeClock { return &fakeClock{t: time.Now()} }
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// tokenPrefix is the broker-issued access-token prefix for an identity
+// — embeds tenant + user so a cross-tenant bleed fails the assertion.
+func tokenPrefix(id identity.Identity) string {
+	return "brokered-access-" + id.TenantID + "-" + id.UserID + "-"
 }
 
 func mkCtx(t *testing.T, id identity.Identity) context.Context {
@@ -312,6 +373,9 @@ func TestNew_FailsLoud_MissingConfig(t *testing.T) {
 		{"missing client secret", func(c *auth.ProviderConfig) { c.ClientSecret = "" }, tokenexchange.ErrMissingClientSecret},
 		{"missing token url", func(c *auth.ProviderConfig) { c.TokenURL = "" }, tokenexchange.ErrMissingTokenURL},
 		{"bad cache ttl cap", func(c *auth.ProviderConfig) { c.Extra = map[string]string{"cache_ttl_cap": "not-a-duration"} }, tokenexchange.ErrBadCacheTTLCap},
+		// A cap below the re-exchange floor is rejected loudly, never
+		// silently clamped (fail-loud seam).
+		{"sub-floor cache ttl cap", func(c *auth.ProviderConfig) { c.Extra = map[string]string{"cache_ttl_cap": "10s"} }, tokenexchange.ErrBadCacheTTLCap},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -363,7 +427,7 @@ func TestToken_HappyPath_ExchangeAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
-	if !strings.HasPrefix(tok.AccessToken, "brokered-access-"+tDummyUser) {
+	if !strings.HasPrefix(tok.AccessToken, tokenPrefix(aliceID())) {
 		t.Fatalf("unexpected access token %q", tok.AccessToken)
 	}
 	if tok.TenantID != tDummyTenant || tok.UserID != tDummyUser {
@@ -554,30 +618,88 @@ func TestToken_MissingIdentity_FailsClosed(t *testing.T) {
 	if err := prov.Revoke(context.Background(), "any"); !errors.Is(err, auth.ErrIdentityRequired) {
 		t.Fatalf("Revoke (no id): want ErrIdentityRequired, got %v", err)
 	}
+
+	// Partial triples: identity.With is the only door onto a ctx and it
+	// rejects every partial triple, so a partial triple can never reach
+	// Token(). Pin that boundary here (plus the driver's own
+	// identity.Validate defence for a hypothetical future ctx door):
+	// each missing component fails identity.With, leaving the original
+	// (identity-free) ctx — which Token() then fails closed on.
+	partials := []struct {
+		name string
+		id   identity.Identity
+	}{
+		{"missing tenant", identity.Identity{UserID: tDummyUser, SessionID: tDummySession}},
+		{"missing user", identity.Identity{TenantID: tDummyTenant, SessionID: tDummySession}},
+		{"missing session", identity.Identity{TenantID: tDummyTenant, UserID: tDummyUser}},
+	}
+	for _, tc := range partials {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, err := identity.With(context.Background(), tc.id)
+			if err == nil {
+				t.Fatalf("identity.With accepted a partial triple: %+v", tc.id)
+			}
+			// The returned ctx carries no identity — Token fails closed.
+			if _, terr := prov.Token(ctx, "any"); !errors.Is(terr, auth.ErrIdentityRequired) {
+				t.Fatalf("Token (partial %s): want ErrIdentityRequired, got %v", tc.name, terr)
+			}
+		})
+	}
 }
 
-func TestToken_TTLCapFloor(t *testing.T) {
+// TestToken_NeverServedPastBrokerExpiry_ReexchangeRateFloored pins the
+// TTL semantics: a token is NEVER served from cache past the
+// broker-advertised expiry, and RE-EXCHANGE (not the serve window) is
+// rate-floored at 30s — a broker advertising a shorter expiry than the
+// floor fails loudly instead of spamming the bus.
+func TestToken_NeverServedPastBrokerExpiry_ReexchangeRateFloored(t *testing.T) {
 	t.Parallel()
 	broker := newFakeBroker(t)
 	broker.expiresIn = 1 // pathological near-zero broker expiry
-	prov, _, _ := mkProvider(t, broker)
+	clock := newFakeClock()
+	prov, _, _ := mkProviderClock(t, broker, clock.Now)
 	ctx := mkCtx(t, aliceID())
 
 	tok, err := prov.Token(ctx, "any")
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
-	// The cache expiry is floored at >=30s despite the 1s broker
-	// expiry — guards against event/bus spam.
-	if until := time.Until(tok.ExpiresAt); until < 25*time.Second {
-		t.Fatalf("cache TTL not floored: expires in %v", until)
+	// Token.ExpiresAt is the BROKER validity — 1s, never inflated to
+	// the floor (serving a stale token 29s past broker expiry was the
+	// inverted posture this pins against).
+	if got := tok.ExpiresAt.Sub(clock.Now()); got > 2*time.Second {
+		t.Fatalf("Token.ExpiresAt inflated past broker expiry: %v", got)
 	}
-	// Immediate re-call is a cache hit (no second broker request).
+	// Within the broker validity: cache hit.
 	if _, err := prov.Token(ctx, "any"); err != nil {
 		t.Fatalf("Token (cache): %v", err)
 	}
 	if broker.calls() != 1 {
-		t.Fatalf("floor should prevent re-exchange: %d broker calls", broker.calls())
+		t.Fatalf("expected cache hit within broker validity: %d broker calls", broker.calls())
+	}
+
+	// Past broker expiry but within the re-exchange floor: the stale
+	// token is NOT served and the re-exchange is rate-floored →
+	// fail-loud ErrExchangeFailed naming the floor.
+	clock.Advance(2 * time.Second)
+	_, err = prov.Token(ctx, "any")
+	if !errors.Is(err, auth.ErrExchangeFailed) {
+		t.Fatalf("want ErrExchangeFailed within re-exchange floor, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "re-exchange floor") {
+		t.Fatalf("error does not name the floor: %v", err)
+	}
+	if broker.calls() != 1 {
+		t.Fatalf("rate floor must prevent a broker round-trip: %d calls", broker.calls())
+	}
+
+	// Past the floor: re-exchange proceeds.
+	clock.Advance(30 * time.Second)
+	if _, err := prov.Token(ctx, "any"); err != nil {
+		t.Fatalf("Token after floor elapsed: %v", err)
+	}
+	if broker.calls() != 2 {
+		t.Fatalf("expected re-exchange after floor: %d calls", broker.calls())
 	}
 }
 
@@ -618,8 +740,10 @@ func TestToken_CtxCancelled(t *testing.T) {
 func TestNew_ValidCacheTTLCapParses(t *testing.T) {
 	t.Parallel()
 	broker := newFakeBroker(t)
-	broker.expiresIn = 0 // no broker expiry → cap governs
+	broker.expiresIn = 0 // no broker expiry → the cap governs the serve horizon
+	clock := newFakeClock()
 	deps, _, _ := mkDeps(t)
+	deps.Clock = clock.Now
 	cfg := auth.ProviderConfig{
 		Name: tProviderName, ClientID: tDummyBrokerClient, ClientSecret: tDummyBrokerSecret,
 		Scopes: []string{"Mail.Read"}, TokenURL: broker.tokenURL(),
@@ -630,17 +754,35 @@ func TestNew_ValidCacheTTLCapParses(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = prov.Close(context.Background()) })
-	tok, err := prov.Token(mkCtx(t, aliceID()), "any")
+	ctx := mkCtx(t, aliceID())
+	tok, err := prov.Token(ctx, "any")
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
-	// Cap of 45s governs when the broker advertises no expiry.
-	if until := time.Until(tok.ExpiresAt); until < 40*time.Second || until > 46*time.Second {
-		t.Fatalf("cache_ttl_cap not applied: expires in %v", until)
+	// No broker expiry advertised → Token.ExpiresAt is zero (the cache
+	// horizon is internal and capped, not reported as token validity).
+	if !tok.ExpiresAt.IsZero() {
+		t.Fatalf("Token.ExpiresAt should be zero when broker advertises no expiry, got %v", tok.ExpiresAt)
 	}
 	// audience defaults to the provider name when extra.audience is unset.
 	if got := broker.form().Get("audience"); got != tProviderName {
 		t.Fatalf("audience default: want %q, got %q", tProviderName, got)
+	}
+	// Within the 45s cap: cache hit.
+	clock.Advance(40 * time.Second)
+	if _, err := prov.Token(ctx, "any"); err != nil {
+		t.Fatalf("Token (within cap): %v", err)
+	}
+	if broker.calls() != 1 {
+		t.Fatalf("expected cache hit within cap: %d broker calls", broker.calls())
+	}
+	// Past the 45s cap: re-exchange.
+	clock.Advance(10 * time.Second)
+	if _, err := prov.Token(ctx, "any"); err != nil {
+		t.Fatalf("Token (past cap): %v", err)
+	}
+	if broker.calls() != 2 {
+		t.Fatalf("expected re-exchange past cap: %d broker calls", broker.calls())
 	}
 }
 
@@ -657,6 +799,185 @@ func TestToken_ConsentRequired_NoConsentURL(t *testing.T) {
 	}
 	if authErr.AuthorizeURL != "" {
 		t.Fatalf("expected empty AuthorizeURL when broker supplies none, got %q", authErr.AuthorizeURL)
+	}
+}
+
+// TestToken_CrossTenant_SameUserID_Isolated pins the §6 isolation
+// contract on the cache / single-flight / revocation key: two TENANTS
+// sharing a user ID never observe each other's brokered token — not
+// from the broker, not from the cache, and not through Revoke.
+func TestToken_CrossTenant_SameUserID_Isolated(t *testing.T) {
+	t.Parallel()
+	broker := newFakeBroker(t)
+	prov, _, _ := mkProvider(t, broker)
+
+	idA := identity.Identity{TenantID: "tenant-A", UserID: "alice", SessionID: "sA"}
+	idB := identity.Identity{TenantID: "tenant-B", UserID: "alice", SessionID: "sB"}
+	ctxA := mkCtx(t, idA)
+	ctxB := mkCtx(t, idB)
+
+	tokA, err := prov.Token(ctxA, "any")
+	if err != nil {
+		t.Fatalf("Token A: %v", err)
+	}
+	// Tenant-B same-user MUST be a cache miss → its own exchange, its
+	// own token (asserted broker-side via the tenant-embedding token).
+	tokB, err := prov.Token(ctxB, "any")
+	if err != nil {
+		t.Fatalf("Token B: %v", err)
+	}
+	if broker.calls() != 2 {
+		t.Fatalf("cross-tenant cache bleed: %d broker calls (want 2)", broker.calls())
+	}
+	if tokA.AccessToken == tokB.AccessToken {
+		t.Fatalf("cross-tenant token bleed: shared %q", tokA.AccessToken)
+	}
+	if !strings.HasPrefix(tokA.AccessToken, tokenPrefix(idA)) {
+		t.Fatalf("tenant-A token wrong subject: %q", tokA.AccessToken)
+	}
+	if !strings.HasPrefix(tokB.AccessToken, tokenPrefix(idB)) {
+		t.Fatalf("tenant-B token wrong subject: %q", tokB.AccessToken)
+	}
+	if tokA.TenantID != "tenant-A" || tokB.TenantID != "tenant-B" {
+		t.Fatalf("tenant stamp bleed: A=%q B=%q", tokA.TenantID, tokB.TenantID)
+	}
+
+	// Each tenant now cache-hits its OWN entry.
+	againA, err := prov.Token(ctxA, "any")
+	if err != nil {
+		t.Fatalf("Token A (cache): %v", err)
+	}
+	if againA.AccessToken != tokA.AccessToken || broker.calls() != 2 {
+		t.Fatalf("tenant-A cache readback drift: %q (calls=%d)", againA.AccessToken, broker.calls())
+	}
+
+	// Revoke isolation: revoking tenant-A leaves tenant-B's cache
+	// intact; tenant-A re-exchanges.
+	if err := prov.Revoke(ctxA, "any"); err != nil {
+		t.Fatalf("Revoke A: %v", err)
+	}
+	tokB2, err := prov.Token(ctxB, "any")
+	if err != nil {
+		t.Fatalf("Token B after A's revoke: %v", err)
+	}
+	if tokB2.AccessToken != tokB.AccessToken || broker.calls() != 2 {
+		t.Fatalf("revoke crossed tenants: B token %q → %q (calls=%d)", tokB.AccessToken, tokB2.AccessToken, broker.calls())
+	}
+	if _, err := prov.Token(ctxA, "any"); err != nil {
+		t.Fatalf("Token A after revoke: %v", err)
+	}
+	if broker.calls() != 3 {
+		t.Fatalf("tenant-A should re-exchange after its revoke: %d calls", broker.calls())
+	}
+}
+
+// TestSingleFlight_LeaderCancelDoesNotPoisonFollowers pins the D-025
+// cancellation-cross-talk guarantee on the single-flight gate: the
+// broker round-trip runs detached from the initiating caller, so
+// cancelling the caller that STARTED the flight must not fail a
+// follower collapsed onto the same flight.
+func TestSingleFlight_LeaderCancelDoesNotPoisonFollowers(t *testing.T) {
+	t.Parallel()
+	broker := newFakeBroker(t)
+	broker.started = make(chan struct{}, 2)
+	broker.gate = make(chan struct{})
+	broker.setPosture("slow")
+	prov, _, _ := mkProvider(t, broker)
+	id := aliceID()
+
+	// Leader: starts the flight, then gets cancelled mid-exchange.
+	leaderCtx, cancelLeader := context.WithCancel(mkCtx(t, id))
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := prov.Token(leaderCtx, "any")
+		leaderErr <- err
+	}()
+
+	// Wait for the exchange to be in flight (flight registered + broker
+	// reached), then start the follower — it collapses onto the flight.
+	<-broker.started
+	type res struct {
+		tok auth.Token
+		err error
+	}
+	followerRes := make(chan res, 1)
+	go func() {
+		tok, err := prov.Token(mkCtx(t, id), "any")
+		followerRes <- res{tok, err}
+	}()
+
+	// Cancel the leader while the broker is still gated. The leader's
+	// own frame errors with its ctx error...
+	cancelLeader()
+	if err := <-leaderErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader: want context.Canceled, got %v", err)
+	}
+
+	// ...and the follower, once the broker responds, still gets a real
+	// token — never the leader's "context canceled".
+	close(broker.gate)
+	r := <-followerRes
+	if r.err != nil {
+		t.Fatalf("follower poisoned by leader cancellation: %v", r.err)
+	}
+	if !strings.HasPrefix(r.tok.AccessToken, tokenPrefix(id)) {
+		t.Fatalf("follower token wrong subject: %q", r.tok.AccessToken)
+	}
+}
+
+// TestRevoke_RacingInFlightExchange_NotRecached pins the revocation
+// generation counter: a Revoke landing while an exchange is in flight
+// must not be silently lost — the in-flight exchange declines to
+// repopulate the cache, so the next Token() re-exchanges.
+func TestRevoke_RacingInFlightExchange_NotRecached(t *testing.T) {
+	t.Parallel()
+	broker := newFakeBroker(t)
+	broker.started = make(chan struct{}, 2)
+	broker.gate = make(chan struct{})
+	broker.setPosture("slow")
+	prov, _, _ := mkProvider(t, broker)
+	ctx := mkCtx(t, aliceID())
+
+	tokCh := make(chan auth.Token, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		tok, err := prov.Token(ctx, "any")
+		tokCh <- tok
+		errCh <- err
+	}()
+
+	// Exchange in flight (gated at the broker) — Revoke now.
+	<-broker.started
+	if err := prov.Revoke(ctx, "any"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	// Release the broker; the in-flight caller still receives the
+	// freshly minted token (the broker really issued it)...
+	broker.setPosture("grant")
+	close(broker.gate)
+	tok := <-tokCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("in-flight Token: %v", err)
+	}
+	if tok.AccessToken == "" {
+		t.Fatalf("in-flight caller got no token")
+	}
+	if broker.calls() != 1 {
+		t.Fatalf("setup drift: %d broker calls", broker.calls())
+	}
+
+	// ...but the revoked-mid-flight token was NOT cached: the next
+	// Token() re-exchanges instead of serving it.
+	tok2, err := prov.Token(ctx, "any")
+	if err != nil {
+		t.Fatalf("Token after racing revoke: %v", err)
+	}
+	if broker.calls() != 2 {
+		t.Fatalf("revoke was silently lost: %d broker calls (want 2 — the post-revoke call must re-exchange)", broker.calls())
+	}
+	if tok2.AccessToken == tok.AccessToken {
+		t.Fatalf("post-revoke Token served the revoked-mid-flight token %q", tok.AccessToken)
 	}
 }
 

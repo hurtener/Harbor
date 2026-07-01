@@ -24,13 +24,26 @@
 // # Never persisted
 //
 // Brokered tokens are TTL-cached in memory only, single-flight per
-// (scope, subject, source). The shared TokenStore's Put is NEVER
+// (scope, tenant, user, source). The shared TokenStore's Put is NEVER
 // called: the broker stays the single source of truth, so revocation
 // at the broker is not defeated by a live sealed copy in N runtimes
-// (the shadow-source-of-truth smell read southbound). The cache TTL is
-// bounded by the broker-advertised expiry, the operator TTL cap, and a
-// small floor that guards against a pathological zero-TTL broker
-// spamming the audit bus.
+// (the shadow-source-of-truth smell read southbound).
+//
+// Cache TTL semantics: a token is served from cache until the EARLIER
+// of the broker-advertised expiry and the operator cache-TTL cap
+// (extra.cache_ttl_cap, default 5m) — a token is never served past the
+// broker's own expiry. Separately, RE-EXCHANGE is rate-floored at 30s
+// per key: a broker advertising an expiry shorter than the floor (a
+// misconfiguration) fails the call loudly instead of spamming the
+// broker and the audit bus with one exchange per tool call.
+//
+// Cache granularity: the subject_token presented to the broker carries
+// the full verified (tenant, user, session) triple, but the cache and
+// single-flight key deliberately scope by (binding scope, tenant,
+// user, source) — the user-bound granularity. Two sessions of the same
+// (tenant, user) share the cached credential by design; a broker that
+// scopes grants per-session should advertise a short expiry (the cache
+// never outlives it).
 //
 // # Fail loud, one mode per source
 //
@@ -112,17 +125,21 @@ const (
 	subjectTokenTypeIdentityTriple = "urn:harbor:oauth:token-type:identity-triple" //nolint:gosec // G101 false positive: subject-token-type URN, not a credential
 )
 
-// TTL knobs. The cache TTL is min(broker expires_in, cacheTTLCap),
-// floored at minTTL.
+// TTL knobs. A cached token is served until min(broker expiry,
+// now+cacheTTLCap) — never past the broker expiry; re-exchange is
+// rate-floored at minTTL per key.
 const (
 	// defaultCacheTTLCap bounds how long a brokered token is served
 	// from cache when the broker advertises a longer (or no) expiry.
-	// Overridable per provider via extra.cache_ttl_cap.
+	// Overridable per provider via extra.cache_ttl_cap (values below
+	// minTTL are rejected at construction — fail-loud, not clamped).
 	defaultCacheTTLCap = 5 * time.Minute
-	// minTTL is the floor on the cache TTL. It guards against a
-	// pathological zero-/near-zero-TTL broker spamming the audit bus
-	// with one exchange per Token() call: the runtime re-exchanges at
-	// most once per minTTL per subject.
+	// minTTL is the floor on the RE-EXCHANGE rate (not the serve
+	// window — a token is never served past the broker's expiry). It
+	// guards against a pathological zero-/near-zero-TTL broker
+	// spamming the broker and the audit bus with one exchange per
+	// Token() call: a re-exchange for a key whose previous exchange is
+	// younger than minTTL fails loudly instead.
 	minTTL = 30 * time.Second
 )
 
@@ -187,8 +204,11 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		if err != nil {
 			return nil, fmt.Errorf("%w (provider name=%q, got %q): %w", ErrBadCacheTTLCap, cfg.Name, raw, err)
 		}
+		// Fail loudly on a sub-floor cap instead of silently clamping —
+		// the operator asked for something the driver will not honour.
 		if parsed < minTTL {
-			parsed = minTTL
+			return nil, fmt.Errorf("%w (provider name=%q): extra.cache_ttl_cap %q is below the %s re-exchange floor",
+				ErrBadCacheTTLCap, cfg.Name, raw, minTTL)
 		}
 		cacheTTLCap = parsed
 	}
@@ -224,6 +244,7 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		coordinator:  deps.Coordinator,
 		store:        deps.Store, // held to honour the FactoryDeps contract; Put is NEVER called
 		cache:        make(map[string]cachedToken),
+		gens:         make(map[string]uint64),
 		flight:       make(map[string]*exchangeCall),
 	}, nil
 }
@@ -257,24 +278,38 @@ type provider struct {
 	// the single source of truth).
 	store auth.TokenStore
 
-	// cacheMu guards cache. Short critical sections only — never held
-	// across the broker HTTP round-trip.
+	// cacheMu guards cache + gens. Short critical sections only — never
+	// held across the broker HTTP round-trip.
 	cacheMu sync.Mutex
 	cache   map[string]cachedToken
+	// gens is the per-key revocation generation counter. Revoke bumps
+	// the key's generation; an exchange that was in flight when the
+	// Revoke landed observes the bump and declines to (re)populate the
+	// cache — closing the "revoke racing an in-flight exchange is
+	// silently lost" window.
+	gens map[string]uint64
 
-	// flightMu guards flight — the per-(scope,subject,source)
+	// flightMu guards flight — the per-(scope,tenant,user,source)
 	// single-flight table collapsing a burst of concurrent misses onto
-	// one broker request.
+	// one broker request. The flight's broker round-trip runs on a
+	// context DETACHED from the initiating caller (values preserved,
+	// cancellation dropped, bounded by the HTTP client timeout) so
+	// cancelling one collapsed caller never poisons the others.
 	flightMu sync.Mutex
 	flight   map[string]*exchangeCall
 
 	closed atomic.Bool
 }
 
-// cachedToken is one in-memory brokered token plus its cache expiry.
+// cachedToken is one in-memory brokered token plus its serve horizon
+// and exchange timestamp (the re-exchange rate-floor input). A stale
+// entry (past serveUntil) is deliberately retained until the next
+// successful exchange overwrites it — the exchangedAt timestamp is
+// what rate-floors a re-exchange against a short-expiry broker.
 type cachedToken struct {
-	token     auth.Token
-	expiresAt time.Time
+	token       auth.Token
+	serveUntil  time.Time
+	exchangedAt time.Time
 }
 
 // exchangeCall is one in-flight broker exchange shared by N callers.
@@ -309,23 +344,19 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 	if err != nil {
 		return auth.Token{}, err
 	}
-	subj := id.UserID // ScopeUser: the subject is the ctx user
-	if subj == "" {
-		return auth.Token{}, fmt.Errorf("auth/tokenexchange: %w: subject (user) empty", auth.ErrIdentityRequired)
-	}
-	key := cacheKey(subj, p.source)
+	key := p.cacheKey(id)
 
 	// Hot path: fresh cache hit → return immediately, emit nothing.
 	p.cacheMu.Lock()
 	ct, ok := p.cache[key]
-	if ok && p.now().Before(ct.expiresAt) {
+	if ok && p.now().Before(ct.serveUntil) {
 		tok := ct.token
 		p.cacheMu.Unlock()
 		return tok, nil
 	}
 	p.cacheMu.Unlock()
 
-	tok, err := p.exchangeSingleFlight(ctx, id, subj, key)
+	tok, err := p.exchangeSingleFlight(ctx, id, key)
 	if err != nil {
 		var ce *consentError
 		if errors.As(err, &ce) {
@@ -339,26 +370,40 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 }
 
 // exchangeSingleFlight collapses a burst of concurrent misses for one
-// (scope, subject, source) onto a single broker request, mirroring the
-// interactive Provider's refresh single-flight. The leader performs the
-// exchange, caches the result, and emits tool.credential_exchanged
-// exactly once; waiters receive the shared token/err and emit nothing.
-func (p *provider) exchangeSingleFlight(ctx context.Context, id identity.Identity, subj, key string) (auth.Token, error) {
+// (scope, tenant, user, source) key onto a single broker request,
+// mirroring the interactive Provider's refresh single-flight. The
+// broker round-trip runs in its own goroutine on a context DETACHED
+// from the initiating caller's cancellation (values — identity, trace
+// — are preserved; the deadline is the HTTP client timeout), so a
+// cancelled caller never poisons the collapsed waiters: every caller,
+// the initiator included, waits on the shared flight result or its
+// OWN ctx, whichever resolves first.
+func (p *provider) exchangeSingleFlight(ctx context.Context, id identity.Identity, key string) (auth.Token, error) {
 	p.flightMu.Lock()
 	call, inflight := p.flight[key]
-	if inflight {
-		p.flightMu.Unlock()
-		select {
-		case <-call.done:
-			return call.token, call.err
-		case <-ctx.Done():
-			return auth.Token{}, fmt.Errorf("auth/tokenexchange: Token cancelled: %w", ctx.Err())
-		}
+	if !inflight {
+		call = &exchangeCall{done: make(chan struct{})}
+		p.flight[key] = call
+		go p.runExchange(ctx, id, key, call)
 	}
-	call = &exchangeCall{done: make(chan struct{})}
-	p.flight[key] = call
 	p.flightMu.Unlock()
 
+	select {
+	case <-call.done:
+		return call.token, call.err
+	case <-ctx.Done():
+		return auth.Token{}, fmt.Errorf("auth/tokenexchange: Token cancelled: %w", ctx.Err())
+	}
+}
+
+// runExchange is the single-flight worker body: one broker exchange
+// shared by every caller collapsed onto the flight. It performs the
+// exchange, emits tool.credential_exchanged exactly once, and caches
+// the result. The goroutine's lifetime is bounded by the HTTP client
+// timeout (it deliberately outlives a cancelled initiator so the
+// remaining waiters still get their result — the flight, not the
+// caller, owns the round-trip).
+func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, key string, call *exchangeCall) {
 	defer func() {
 		close(call.done)
 		p.flightMu.Lock()
@@ -366,21 +411,45 @@ func (p *provider) exchangeSingleFlight(ctx context.Context, id identity.Identit
 		p.flightMu.Unlock()
 	}()
 
-	// Re-check the cache under the flight: a flight that completed
-	// between our miss and acquiring leadership may have populated it.
-	p.cacheMu.Lock()
-	if ct, ok := p.cache[key]; ok && p.now().Before(ct.expiresAt) {
-		tok := ct.token
-		p.cacheMu.Unlock()
-		call.token = tok
-		return tok, nil
+	// Detach from the initiating caller's cancellation, keeping its
+	// values (identity, trace context); bound by the HTTP client
+	// timeout so a wedged broker cannot leak the goroutine.
+	timeout := p.httpClient.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(callerCtx), timeout)
+	defer cancel()
+
+	now := p.now()
+	p.cacheMu.Lock()
+	if ct, ok := p.cache[key]; ok {
+		// Re-check under the flight: a flight that completed between
+		// the caller's miss and this flight's start may have populated
+		// the cache.
+		if now.Before(ct.serveUntil) {
+			call.token = ct.token
+			p.cacheMu.Unlock()
+			return
+		}
+		// Re-exchange rate floor. This only bites when the broker
+		// advertises an expiry shorter than the floor (a broker
+		// misconfiguration) — fail loud naming the constraint instead
+		// of one broker exchange + one audit event per tool call.
+		if now.Before(ct.exchangedAt.Add(minTTL)) {
+			p.cacheMu.Unlock()
+			call.err = fmt.Errorf("%w: broker %s advertised a token expiry shorter than the %s re-exchange floor (previous exchange %s ago); raise the broker's expires_in",
+				auth.ErrExchangeFailed, p.brokerHost, minTTL, now.Sub(ct.exchangedAt))
+			return
+		}
+	}
+	gen := p.gens[key]
 	p.cacheMu.Unlock()
 
-	tok, err := p.exchange(ctx, id, subj)
+	tok, err := p.exchange(ctx, id)
 	if err != nil {
 		call.err = err
-		return auth.Token{}, err
+		return
 	}
 
 	// Audit the ACTUAL exchange before caching. A redaction / emit
@@ -389,14 +458,37 @@ func (p *provider) exchangeSingleFlight(ctx context.Context, id identity.Identit
 	// rather than silently served without its audit trail.
 	if err := p.emitCredentialExchanged(ctx, id, tok); err != nil {
 		call.err = err
-		return auth.Token{}, err
+		return
 	}
 
 	p.cacheMu.Lock()
-	p.cache[key] = cachedToken{token: tok, expiresAt: tok.ExpiresAt}
+	// A Revoke that raced this exchange bumped the key's generation —
+	// honour it by NOT caching. The collapsed callers still receive the
+	// freshly minted token (the broker really issued it, and the audit
+	// event fired); the next Token() call re-exchanges.
+	if p.gens[key] == gen {
+		p.cache[key] = cachedToken{
+			token:       tok,
+			serveUntil:  p.serveUntil(tok.ExpiresAt),
+			exchangedAt: p.now(),
+		}
+	}
 	p.cacheMu.Unlock()
 	call.token = tok
-	return tok, nil
+}
+
+// serveUntil computes the cache-serve horizon for a freshly exchanged
+// token: the EARLIER of the broker-advertised expiry and
+// now+cacheTTLCap. A token is never served from cache past the
+// broker's own expiry (the minTTL floor rate-limits re-exchange, not
+// the serve window). A zero brokerExpiry ("no expiry advertised")
+// yields the cap alone.
+func (p *provider) serveUntil(brokerExpiry time.Time) time.Time {
+	capped := p.now().Add(p.cacheTTLCap)
+	if brokerExpiry.IsZero() || capped.Before(brokerExpiry) {
+		return capped
+	}
+	return brokerExpiry
 }
 
 // brokerResponse is the RFC-8693 token-exchange response (a superset of
@@ -422,7 +514,7 @@ type brokerError struct {
 
 // exchange performs one RFC-8693 token-exchange POST against the broker
 // and maps the outcome onto (token / *consentError / ErrExchangeFailed).
-func (p *provider) exchange(ctx context.Context, id identity.Identity, subj string) (auth.Token, error) {
+func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Token, error) {
 	subjectToken, err := encodeSubjectToken(id)
 	if err != nil {
 		return auth.Token{}, fmt.Errorf("%w: encode subject token: %w", auth.ErrExchangeFailed, err)
@@ -475,34 +567,26 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity, subj stri
 		return auth.Token{}, fmt.Errorf("%w: empty access_token in broker response", auth.ErrExchangeFailed)
 	}
 
+	// ExpiresAt is the broker-advertised token validity (zero when the
+	// broker advertises none) — the cache-serve horizon is computed
+	// separately and never exceeds it.
+	var expiresAt time.Time
+	if br.ExpiresIn > 0 {
+		expiresAt = p.now().Add(time.Duration(br.ExpiresIn) * time.Second)
+	}
 	tok := auth.Token{
 		Source:       p.source,
 		BindingScope: auth.ScopeUser,
 		TenantID:     id.TenantID,
-		UserID:       subj,
+		UserID:       id.UserID,
 		AccessToken:  br.AccessToken,
 		TokenType:    firstNonEmpty(br.TokenType, "Bearer"),
-		ExpiresAt:    p.now().Add(p.cacheTTL(br.ExpiresIn)),
+		ExpiresAt:    expiresAt,
 		Scopes:       splitScopes(br.Scope),
 		// RefreshToken deliberately empty: refresh is re-exchange, and a
 		// brokered token is never persisted.
 	}
 	return tok, nil
-}
-
-// cacheTTL computes the effective in-memory cache TTL from the broker's
-// advertised expires_in, the operator TTL cap, and the floor.
-func (p *provider) cacheTTL(expiresIn int) time.Duration {
-	ttl := p.cacheTTLCap
-	if expiresIn > 0 {
-		if adv := time.Duration(expiresIn) * time.Second; adv < ttl {
-			ttl = adv
-		}
-	}
-	if ttl < minTTL {
-		ttl = minTTL
-	}
-	return ttl
 }
 
 // buildConsentRequired parks the calling run on the unified pause
@@ -536,6 +620,14 @@ func (p *provider) buildConsentRequired(ctx context.Context, id identity.Identit
 		PauseToken:   string(pause.Token),
 		Scopes:       append([]string(nil), p.scopes...),
 	}
+	// Emit ordering: the pause is requested BEFORE the event so the
+	// payload can carry the pause token. An emit failure after a
+	// successful Request leaves the pause record allocated without its
+	// announcing event — deliberate and mirrors the interactive
+	// provider's posture: the record is discoverable via the
+	// coordinator's own pause.requested event and its List/Status
+	// surface, and a retried Token() call simply parks anew; unwinding
+	// the pause here would race a resume that already claimed it.
 	if err := p.emit(ctx, auth.EventTypeToolAuthRequired, id, payload); err != nil {
 		return fmt.Errorf("auth/tokenexchange: emit tool.auth_required: %w", err)
 	}
@@ -607,9 +699,12 @@ func (p *provider) PendingFlow(_ string) (auth.PendingFlowInfo, bool) {
 }
 
 // Revoke implements auth.OAuthProvider.Revoke by clearing the local
-// cache entry for (ctx identity, source). Idempotent — no error when
-// nothing is cached. Broker-side custody is untouched (revocation there
-// is the broker's concern; the TTL cap bounds our staleness).
+// cache entry for (ctx identity, source) and bumping the key's
+// revocation generation, so an exchange that was already in flight
+// when the Revoke landed declines to repopulate the cache. Idempotent
+// — no error when nothing is cached. Broker-side custody is untouched
+// (revocation there is the broker's concern; the serve horizon bounds
+// our staleness).
 func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	if p.closed.Load() {
 		return auth.ErrProviderClosed
@@ -621,12 +716,9 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	if err != nil {
 		return err
 	}
-	subj := id.UserID
-	if subj == "" {
-		return fmt.Errorf("auth/tokenexchange: %w: subject (user) empty", auth.ErrIdentityRequired)
-	}
-	key := cacheKey(subj, p.source)
+	key := p.cacheKey(id)
 	p.cacheMu.Lock()
+	p.gens[key]++
 	delete(p.cache, key)
 	p.cacheMu.Unlock()
 	return nil
@@ -666,10 +758,21 @@ func encodeSubjectToken(id identity.Identity) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// cacheKey composes the (scope, subject, source) cache / single-flight
-// key. The V1 driver serves ScopeUser only.
-func cacheKey(subject string, source tools.ToolSourceID) string {
-	return string(auth.ScopeUser) + "." + subject + "." + string(source)
+// cacheKey composes the cache / single-flight / revocation key for the
+// verified ctx identity: (binding scope, tenant, user, source) — the
+// same composite the sealed token store keys by. Components are
+// length-prefixed so external-input IDs containing separator bytes
+// cannot collide two keys (tenant "a;1" + user "b" vs tenant "a" +
+// user "1;b"). The session is deliberately NOT part of the key —
+// ScopeUser granularity; see the package godoc.
+func (p *provider) cacheKey(id identity.Identity) string {
+	scope := string(auth.ScopeUser)
+	src := string(p.source)
+	return fmt.Sprintf("%d:%s;%d:%s;%d:%s;%d:%s",
+		len(scope), scope,
+		len(id.TenantID), id.TenantID,
+		len(id.UserID), id.UserID,
+		len(src), src)
 }
 
 // isConsentRequired reports whether an OAuth error code is a

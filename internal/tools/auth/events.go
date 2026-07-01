@@ -116,8 +116,9 @@ type ToolCredentialExchangedPayload struct {
 	// GrantedScopes is the scope list the broker granted (may be a
 	// subset of the requested scopes).
 	GrantedScopes []string
-	// ExpiresAt is the wall-clock expiry of the cached brokered token
-	// (min of the broker-advertised expiry and the operator TTL cap).
-	// Zero when no expiry was advertised.
+	// ExpiresAt is the broker-advertised wall-clock validity of the
+	// exchanged token. Zero when the broker advertised no expiry. The
+	// runtime's in-memory cache-serve horizon is bounded by (never
+	// exceeds) this value.
 	ExpiresAt time.Time
 }
