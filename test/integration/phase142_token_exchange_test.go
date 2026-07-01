@@ -31,7 +31,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,10 +62,9 @@ const (
 type p142Broker struct {
 	server *httptest.Server
 
-	mu       sync.Mutex
-	calls    int
-	lastForm url.Values
-	posture  atomic.Value // "grant" | "consent" | "error500"
+	mu      sync.Mutex
+	calls   int
+	posture atomic.Value // "grant" | "consent" | "error500"
 }
 
 func newP142Broker(t *testing.T) *p142Broker {
@@ -89,12 +87,6 @@ func (b *p142Broker) callCount() int {
 	return b.calls
 }
 
-func (b *p142Broker) form() url.Values {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.lastForm
-}
-
 func (b *p142Broker) handle(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -102,7 +94,6 @@ func (b *p142Broker) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	b.mu.Lock()
 	b.calls++
-	b.lastForm = r.Form
 	b.mu.Unlock()
 
 	// §17.8: broker-side wire assertions. A driver wired to the wrong
@@ -319,7 +310,7 @@ func TestE2E_Phase142_TokenExchange_ThroughCatalog(t *testing.T) {
 	if p.BindingScope != "user" || p.SubjectKind != "user" {
 		t.Fatalf("payload: %+v", p)
 	}
-	if ev.Identity.Identity.UserID != "alice" {
+	if ev.Identity.UserID != "alice" {
 		t.Fatalf("event identity: %+v", ev.Identity)
 	}
 	if b, _ := json.Marshal(ev.Payload); strings.Contains(string(b), "brokered-tenant-1-alice") {
