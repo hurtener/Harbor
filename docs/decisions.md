@@ -7285,3 +7285,41 @@ scripted-LLM tests lacked.
 **Semver.** Fully additive: a new driver directory + one `internal/drivers/prod` blank import (D-196), a new accepted `driver:` value with `Extra`-carried knobs (`audience`, `cache_ttl_cap`), one new sentinel + one new event type. The interactive path, `OAuthProvider`, `TokenStore`, `WrapWithOAuth`, and all wire types are untouched.
 
 **Cross-references.** D-083 (the tool-OAuth subsystem this extends), D-095 (the driver registry — the seam), D-090 (`WrapWithOAuth`, the §13 consumer path), D-011/D-067 (the unified pause primitive the consent path rides), D-025 (per-run state discipline), D-219 (authority from verified ctx), D-061 (no shadow store), D-196 (the blank-import home), D-240..D-247 (the 92k–92q runtime MCP OAuth band this composes with — 92l's typed-`ErrAuthRequired` park must also handle `ErrNonInteractive`), D-129/D-220/D-264 (the northbound external-authority precedents). RFC §6.4, §3.3. Brief 09. CLAUDE.md §4.4, §6, §7, §13.
+
+---
+
+## D-272 — Run-level structured output is an opt-in `RunOnce` run option: buffered, validated, retried terminal payload on an additive envelope key; partial-object streaming is the named follow-up
+
+**Date:** 2026-07-01
+**Status:** Settled (design); implementation is Phase 143, V1.9 band
+**Where it lives:** `docs/plans/phase-143-run-level-structured-output.md`, RFC §6.5 (the "Run-level structured output (planned — D-272)" paragraph), RFC §6.2 ("schema mode" among the runtime-level run options), `internal/runtime/assemble/` + `internal/planner/` (when Phase 143 lands), `docs/glossary.md` ("Run output schema", "Answer payload").
+
+**The question.** The v1.8 embed surface answers in a string: `AnswerEnvelope.Answer`. Every SDK adopters compare Harbor against leads with a typed, schema-validated final result (`output_type`-style). Where does run-level typed output live, and how does it interact with streaming?
+
+**Decision.** An opt-in `assemble.WithOutputSchema(schema)` `RunOption` — filling the "schema mode" slot RFC §6.2 already enumerates among "runtime-level run options, not planner state". Four binding properties:
+
+1. **Opt-in with zero default-path change.** No schema → byte-identical v1.8 behavior; the substrate it consumes (`CompleteRequest.ResponseFormat`, the `Validator` retry-with-feedback wrapper, the `OutputMode` strategy + downgrade chain — all shipped, nearly consumer-less) stays nil-default. This half of the posture is universal across every surveyed framework (14/14).
+2. **Validation is runtime mechanism, planner-agnostic; generation steering is the React driver's concern.** The terminal `Finish` payload is validated against the schema at the `RunOnce` edge for EVERY planner — no `Supports*` capability ceremony (§4.4). The React driver additionally constrains the terminal completion (riding the profile's EXISTING `OutputMode` selection — no new toggle) and engages the corrective retry bounded by `ModelProfile.MaxRetries`. Schema-invalid after the budget → typed `planner.ErrOutputInvalid`. Never a silent fallback to unvalidated text (§13).
+3. **Buffered terminal delivery; streaming preserved.** `WithStream` composes: `tool_dispatched` + `step` events stream as today; assistant-content `token` chunks are suppressed for a schema-constrained run and the validated answer arrives once, as the additive `answer_payload` envelope key (`Answer` keeps the string rendering; the pinned envelope bytes are untouched). Rationale: a validate-and-retry loop cannot compose with live-streaming the constrained answer — tokens already emitted cannot be retracted on a corrective re-ask. The survey confirms the pairing: the Claude Agent SDK (buffered `structured_output` on the terminal result + re-prompt-on-mismatch) and LangGraph `response_format` (a separate post-loop call) are the closest published precedents; no surveyed framework that retries also live-streams the constrained answer. Suppressing terminal token deltas is deliberately MORE conservative than OpenAI/Anthropic (which stream raw JSON deltas) — a documented behavior choice, stated in the option godoc + the embed recipe, not a regression.
+4. **Partial-object streaming is the NAMED follow-up, not silence.** Progressively-delivered partial payloads (validated partials or `DeepPartial`-style frames) ship in roughly half the surveyed surfaces and are the UI-builder default in two of them. It maps onto an additive `StreamEventKind` when demand arrives; recorded here so the v1 buffered-only choice reads as sequencing, not ignorance.
+
+**Cross-references.** D-043 (the LLM-edge chain + `Validator`-keyed retry this consumes), D-194 (the pinned `AnswerEnvelope` this extends additively), D-265/D-266 (`RunOnce` + `WithStream`), D-026 (heavy-output guard on the task-result path the payload rides), D-025 (schema is per-run state, never on the Stack), D-273 (the typed binding consuming this option). RFC §6.5, §6.2, §3.6. Briefs 03, 07, 08. CLAUDE.md §4.4, §13.
+
+---
+
+## D-273 — The typed embed binding is a generic free function (`assemble.RunTyped[T]`), the facade's SECOND documented generic-func carve-out (amending D-205); it is deliberately not named `Agent`
+
+**Date:** 2026-07-01
+**Status:** Settled (design); implementation is Phase 144, V1.9 band
+**Where it lives:** `docs/plans/phase-144-typed-embed-binding.md`, RFC §3.6, `sdk/assemble/` + `internal/tools/schema/` (when Phase 144 lands), `docs/glossary.md` ("`RunTyped`").
+
+**The question.** Phase 143 delivers schema-in/raw-JSON-out. The `output_type T` ergonomics adopters expect need a generic entry point — but `sdk/` is alias-only (D-204) and D-205 item 1 pins "exactly ONE `func`" (`sdk/tools/inproc.RegisterFunc`). Where does the typed surface live, and what is it called?
+
+**Decision.** `assemble.RunTyped[T any](ctx, stack, goal, id, opts...) (T, planner.AnswerEnvelope, error)` — derive the schema from `T`, run with `WithOutputSchema`, unmarshal the validated payload. Four binding properties:
+
+1. **D-205 item 1 is amended, not eroded.** Go cannot express a generic function as a `var` forward — the IDENTICAL rationale that justified the first carve-out. The facade's no-behavior smoke flips from "exactly one func" to an ENUMERATED allow-list of exactly two ({`sdk/tools/inproc.RegisterFunc`, `sdk/assemble.RunTyped`}) and fails on any third; the gate stays mechanical, additions stay decision-gated. The wrapper body lives internally; the forward adds no behavior.
+2. **One derivation implementation, §13-compliant home.** The Go-type→JSON-Schema derivation is promoted from the inproc tool driver into the neutral `internal/tools/schema` package (callers must not import a concrete driver — §13); the driver re-bases on it, golden-pinned byte-identical. `RunTyped` and `RegisterFunc` consume ONE implementation.
+3. **Not named `Agent`, and no stateful binding object.** The noun is taken twice (`harbortest.Agent`, the Agent Registry's registration entities — whose `agent_id` is explicitly not an isolation principal, D-059); a production type named `Agent` meaning "bound config + typed output" invites exactly the confusion §6's clarifying note exists to prevent. The bind-once surface remains `config` + `Assemble` → `Stack` (D-025-immutable, identity per-call); `RunTyped` is a free function over it. A future stateful binding object is a NEW decision against this one, not an extension.
+4. **Fallback named up front.** If the amendment is rejected in review, v1.9 still ships whole: Phase 143 alone delivers typed output with two caller-side lines (`WithOutputSchema(schema)` + `json.Unmarshal(env.AnswerPayload, &out)`); Phase 144 slips without blocking the wave.
+
+**Cross-references.** D-204/D-205/D-206 (the facade + the carve-out being amended), D-272 (the mechanism this sugars), D-024 (the derivation machinery's origin), D-059 (agent identity vocabulary), D-025 (immutability + per-call identity). RFC §3.6, §6.2, §6.4. Briefs 03, 07. CLAUDE.md §4.4, §6, §13.
