@@ -8,7 +8,7 @@ If a rule below conflicts with a section of the RFC or a phase plan, the **RFC w
 
 ## Starting a new session — orientation (READ THIS FIRST)
 
-If this is the start of a fresh Claude Code session (or your first time touching this repo), the design surface is large and intentionally so — Harbor is an ~80-phase, multi-month solo build that uses doc-driven hygiene to prevent drift. **Skim these in order before substantive work:**
+If this is the start of a fresh Claude Code session (or your first time touching this repo), the design surface is large and intentionally so — Harbor is a mature, wave-delivered project (140+ phases shipped across v1.0–v1.8) that uses doc-driven hygiene to prevent drift. **Skim these in order before substantive work:**
 
 1. **§1 ("What Harbor is")** — the four-layer architecture and the three non-negotiable product properties.
 2. **§2 ("Authoritative sources")** — the priority chain: RFC > phase plans > this file > research briefs > code comments. When two artifacts disagree, the higher-priority one wins.
@@ -64,93 +64,58 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 
 ```text
 .
-├── RFC-001-Harbor.md          # design RFC
+├── RFC-001-Harbor.md           # design RFC
 ├── README.md                   # quickstart + pointers
+├── CHANGELOG.md                # release notes (vX.Y.Z tags cut from main)
 ├── AGENTS.md / CLAUDE.md       # this file (verbatim copies)
 ├── Makefile                    # canonical build / test / lint commands
 ├── .github/                    # workflows, dependabot, codeowners, PR template
-├── .golangci.yml
-├── .markdownlint.yaml
-├── .editorconfig
-├── .gitignore
-├── go.mod / go.sum             # added in Phase 0
-├── cmd/harbor/                 # main binary, subcommands
-├── internal/                   # production code
+├── go.mod / go.sum             # module: github.com/hurtener/Harbor
+├── cmd/                        # harbor binary + tooling binaries (harbor-gen-*, lockstep checkers)
+├── internal/                   # production code — one directory per subsystem
 │   ├── identity/               # (tenant, user, session) triple
-│   ├── runtime/                # orchestration kernel
-│   │   ├── engine/             # node graph + executor
-│   │   ├── messages/           # envelopes, headers, trace_id
-│   │   ├── streaming/          # chunked outputs + parent-trace correlation
-│   │   ├── routers/            # routing + retry/timeout policies
-│   │   ├── concurrency/        # map_concurrent, join_k, etc.
-│   │   ├── playbooks/          # composable subflows
-│   │   ├── pauseresume/        # the unified pause/resume primitive
-│   │   ├── steering/           # cancel/redirect/inject/pause/resume control
-│   │   ├── registry/           # Agent Registry — registration identity + agent.* events
-│   │   └── ...
-│   ├── planner/                # Planner interface + concrete planners
-│   │   ├── ifaces/
-│   │   ├── react/              # reference ReAct implementation
-│   │   └── ...                 # future: planexecute, workflow, graph
-│   ├── tools/                  # transport-agnostic tool catalog
-│   │   ├── catalog/
-│   │   ├── inproc/             # in-process tool driver
-│   │   ├── http/               # HTTP tool driver
-│   │   ├── mcp/                # MCP southbound driver
-│   │   └── a2a/                # A2A southbound driver
+│   ├── runtime/                # orchestration kernel (engine, messages, streaming, routers,
+│   │                           #   concurrency, playbooks, pauseresume, steering, registry, ...)
+│   ├── planner/                # Planner interface + concrete planners (react, ...)
+│   ├── tools/                  # transport-agnostic tool catalog (inproc / http / mcp / a2a)
 │   ├── llm/                    # LLM client + provider correction
 │   ├── memory/                 # memory subsystem
-│   │   ├── ifaces/
-│   │   └── drivers/{inmem,sqlite,postgres}/
-│   ├── skills/                 # token-savvy skill subsystem
-│   │   ├── catalog/
-│   │   ├── importer/           # Skills.md importer
-│   │   ├── generator/          # in-runtime skill generator
-│   │   └── drivers/{localdb,portico,...}/  # §4.4 seam — `SkillStore` drivers
-│   ├── governance/             # cost ceilings + rate limits + MaxTokens (V1); key rotation + model swap + failover (post-V1)
+│   ├── skills/                 # token-savvy skill subsystem (catalog, importer, generator, drivers)
+│   ├── governance/             # cost ceilings + rate limits + MaxTokens
 │   ├── tasks/                  # unified foreground/background TaskService
 │   ├── sessions/               # SessionManager + lifecycle
 │   ├── artifacts/              # artifact store
-│   │   ├── ifaces/
-│   │   └── drivers/{inmem,fs,sqlite,postgres}/
 │   ├── state/                  # StateStore
-│   │   ├── ifaces/
-│   │   └── drivers/{inmem,sqlite,postgres}/
 │   ├── events/                 # typed event bus
-│   ├── distributed/            # MessageBus + RemoteTransport (A2A) contracts
-│   │   ├── a2a/                # A2A v1 Go shapes (hand-transcribed from proto)
-│   │   ├── conformancetest/    # driver conformance suites
-│   │   └── drivers/{loopback}/ # V1 in-process driver (post-V1: durable bus; Phase 29: A2A wire)
-│   ├── drivers/                # cross-subsystem driver aggregation (Phase 110c, D-196)
-│   │   └── prod/               # production blank-import aggregator — THE §4.4 blank-import home (imported by cmd/harbor, devstack, embedders)
+│   ├── distributed/            # MessageBus + RemoteTransport (A2A) contracts + drivers
+│   ├── drivers/prod/           # production blank-import aggregator — THE §4.4 blank-import home
 │   ├── protocol/               # Harbor Protocol — wire types, methods, errors, transports
-│   │   ├── types/
-│   │   ├── methods/
-│   │   ├── errors/
-│   │   └── transports/{stream,control}/
 │   ├── server/                 # protocol server (Runtime's network surface)
 │   ├── telemetry/              # slog + OTel
 │   ├── config/                 # configuration loader
-│   └── audit/                  # audit redaction + emit
-├── examples/
-│   ├── tools/                  # example tools (in-proc, HTTP, MCP, A2A)
-│   └── *.yaml                  # example configs
+│   ├── audit/                  # audit redaction + emit
+│   └── ...                     # further subsystems follow the same shape (§4.4 seam:
+│                               #   ifaces/ + drivers/<name>/ + factory). Package godoc is
+│                               #   authoritative below the depth shown here.
+├── sdk/                        # public SDK facade — curated re-exports (RFC §3.6, D-204)
 ├── harbortest/                 # public test kit — operator-importable from outside the module
-├── sdk/                        # public SDK facade — curated alias-based re-exports of the runtime surface (RFC §3.6, D-204)
+├── web/console/                # Harbor Console — SvelteKit SPA, a Protocol client (§4.5)
+├── examples/                   # example tools + example configs
 ├── test/integration/
-├── scripts/
-│   ├── preflight.sh            # the preflight gate
-│   ├── smoke/                  # per-phase smoke scripts
-│   ├── hooks/pre-commit        # pre-commit hook
-│   └── install-hooks.sh
+├── scripts/                    # preflight.sh, smoke/ (per-phase), drift-audit.sh, hooks/
 └── docs/
-    ├── plans/                  # phase implementation plans
+    ├── plans/                  # phase implementation plans (master index: plans/README.md)
     ├── rfc/                    # merged RFCs
     ├── research/               # phase-planning research briefs
-    └── skills/                 # operator skills — Claude-Code-style playbooks for building agents (V1.1.5+; see §18 drift rule)
+    ├── skills/                 # operator skills — Claude-Code-style playbooks (§18 drift rule)
+    ├── recipes/                # operator recipes (rendered on the docs site)
+    ├── site/                   # published docs site (VitePress; §18 same-PR rule)
+    ├── design/                 # binding design conventions (e.g. design/console/CONVENTIONS.md)
+    ├── notes/                  # engineering notes + hygiene case studies
+    └── decisions.md, glossary.md, and sibling reference docs
 ```
 
-The Console (a separate product in the Harbor ecosystem) lives in its own repo. If it later monorepos into `web/console/`, the binding rules in §4.5 still apply.
+The Console lives in `web/console/` and is architecturally its own product — a Protocol client, never a Runtime dependency. The binding rules are in §4.5.
 
 Anything that doesn't have a home above is wrong. If you need a new top-level directory, propose it in the RFC first.
 
@@ -161,7 +126,7 @@ Anything that doesn't have a home above is wrong. If you need a new top-level di
 All targets are canonical and run by CI.
 
 ```bash
-# Build the binary (CGo-free, single static binary — once Phase 1 lands)
+# Build the binary (CGo-free, single static binary)
 make build
 
 # Run the test suite with the race detector
@@ -188,8 +153,8 @@ Coverage targets per phase plan are non-negotiable. If a PR drops coverage below
 
 Static checks (vet, lint, tests) catch a lot but **not** "the binary boots and the Protocol surface still works." Harbor's pre-commit hook and CI both run a live preflight that:
 
-1. Builds `./bin/harbor` (no-op if `cmd/harbor/main.go` absent).
-2. Boots `./bin/harbor dev` on `127.0.0.1:18080` with a temp data dir (no-op until Phase 1 lands).
+1. Builds `./bin/harbor`.
+2. Boots `./bin/harbor dev` on `127.0.0.1:18080` with a temp data dir.
 3. Waits for `/healthz` to return 200.
 4. Runs each `scripts/smoke/phase-NN.sh` against the running server.
 5. Tears down (graceful TERM, then KILL, then cleanup).
@@ -225,8 +190,8 @@ When implementing **Phase N**, the following are part of the work — not option
 7. **New env vars or config keys**: document in the relevant phase plan AND the example config AND, if the smoke script needs them, the smoke script itself.
 8. **New CLI subcommands**: include a degradation path so the smoke still works on builds that don't yet have the subcommand.
 9. **Done definition**: a phase is done when (a) all phase plan acceptance criteria pass, (b) coverage targets met, (c) `scripts/smoke/phase-NN.sh` shows OK ≥ the count of acceptance criteria it covers and FAIL = 0, (d) prior phases' smoke scripts still pass against the new build (no regressions).
-10. **Keep `README.md` current.** When a phase ships, update the Status table in the root `README.md` so a fresh visitor sees what's landed. The table flips that phase's status from "Pending" to "Shipped" and, if the phase introduced a new reader-facing surface (a CLI subcommand, an example config, an installable package), adds a one-line pointer in the relevant section. README updates ride in the same PR as the phase work — not as a follow-up.
-11. **Keep `docs/plans/README.md` current.** The master phase plan acts as the canonical execution index. When a phase ships, flip its row's `Status` column from `Pending` to `Shipped` in the same PR. If a phase plan deviated permanently (per §4.3), reflect the deviation in the master plan's detail block too — not just the per-phase plan file. Stale `Pending` rows for shipped phases are a drift signal.
+10. **Keep `README.md` current.** When a phase ships, flip its row in the root README's Status table to "Shipped" and, if it introduced a reader-facing surface (CLI subcommand, example config, installable package), add a one-line pointer in the relevant section — in the same PR, not a follow-up.
+11. **Keep `docs/plans/README.md` current.** The master phase plan is the canonical execution index: flip the phase's `Status` row to `Shipped` in the same PR, and reflect any permanent deviation (§4.3) in the master plan's detail block too — not just the per-phase plan file. Stale `Pending` rows for shipped phases are a drift signal.
 
 ### 4.3 Reasonable plan deviations
 
@@ -247,7 +212,7 @@ The shape:
 1. Interface in `internal/<area>/ifaces/` (or `internal/<area>/<area>.go` when more natural).
 2. Concrete implementations in `internal/<area>/drivers/<driver>/` — one driver per subdirectory.
 3. A factory + registry at `internal/<area>/<area>.go` that dispatches by name.
-4. Drivers self-register from their `init()` and are pulled in via blank import (`_ "github.com/.../drivers/<driver>"`) — since Phase 110c (D-196), in ONE place: the production driver aggregator `internal/drivers/prod`, whose doc-commented blank-import block is the single sanctioned home of driver registrations. Binary entry points (`cmd/harbor/main.go`), `harbortest/devstack`, and headless embedders import the aggregator (`_ "github.com/hurtener/Harbor/internal/drivers/prod"`) instead of hand-curating per-driver lists (the hand-curated copies drifted — SDK friction audit §7). New drivers add their blank import to the aggregator, not to main.go. Dev-only escape hatches (the mock LLM driver) stay OUT of the aggregator and are imported explicitly at their gated boundary (D-089).
+4. Drivers self-register from their `init()` and are pulled in via blank import in ONE place: the production driver aggregator `internal/drivers/prod` (D-196), whose doc-commented blank-import block is the single sanctioned home of driver registrations. Binary entry points, `harbortest/devstack`, and headless embedders import the aggregator (`_ "github.com/hurtener/Harbor/internal/drivers/prod"`) instead of hand-curating per-driver lists (hand-curated copies drifted; see the SDK friction audit). New drivers add their blank import to the aggregator, not to main.go. Dev-only escape hatches (the mock LLM driver) stay OUT of the aggregator and are imported explicitly at their gated boundary (D-089).
 5. Callers depend ONLY on the interface package. Nothing else imports a concrete driver except `internal/drivers/prod` (the aggregator's blank imports), `cmd/harbor` (for dev-only gated imports like the mock LLM), and tests scoped to that driver.
 6. The factory's error message lists registered drivers so misconfigurations are obvious.
 
@@ -260,19 +225,19 @@ The Console is a SvelteKit SPA built with `@sveltejs/adapter-static` (default; a
 Binding conventions:
 
 1. **Stack: SvelteKit + Vite + TypeScript + Svelte 5 (runes mode).** Not React, not Next, not Vue. Not Svelte 4. The choice is settled. `web/console/svelte.config.js` ships with `compilerOptions: { runes: true }`; `package.json` pins `"svelte": "^5.0.0"`. Legacy Svelte 4 reactivity (`$:`, top-level `let` as reactive state, `export let` props, store auto-subscription via `$store` in scripts) is rejected by `svelte-check --fail-on-warnings`. See D-092.
-2. **Decoupled deployment via `harbor console` (D-091).** The Runtime ships headless. The full Console is served by the `harbor console` subcommand, which bakes the static SvelteKit build into `cmd/harbor` via `embed.FS`. The Console can also run on a different machine, in a browser tab attached to a remote Runtime, or as a third-party implementation. The Runtime binary's `harbor dev` subcommand does NOT serve the Console. A future packed single-agent dev UI in `harbor dev` (post-V1) reuses the Console's chat/playground components via a shared library; the full Console stays on `harbor console`.
-3. **Design tokens live in one place, mechanically enforced.** `web/console/src/lib/tokens.css` defines the full token surface as CSS custom properties (colors, spacings, type scale, radii, motion). Components reference tokens, not raw values. PRs that introduce raw color/spacing literals in `.svelte` files are rejected (see §13). Enforcement is mechanical: `web/console/.stylelintrc.cjs` (lands with the first Console phase that creates `web/console/`) disallows hex / rgb() / named colors and arbitrary `px` / `rem` / `em` values outside the token surface. `npm run lint` fails CI on raw literals — no reviewer hunting needed.
+2. **Decoupled deployment via `harbor console` (D-091).** The Runtime ships headless. The full Console is served by the `harbor console` subcommand, which bakes the static SvelteKit build into `cmd/harbor` via `embed.FS`; it can equally run on another machine, in a browser tab attached to a remote Runtime, or as a third-party implementation. `harbor dev` does NOT serve the Console. A future packed single-agent dev UI in `harbor dev` reuses the chat/playground module (item 11); the full Console stays on `harbor console`.
+3. **Design tokens live in one place, mechanically enforced.** `web/console/src/lib/tokens.css` defines the full token surface as CSS custom properties (colors, spacings, type scale, radii, motion). Components reference tokens, not raw values. PRs that introduce raw color/spacing literals in `.svelte` files are rejected (see §13). Enforcement is mechanical: `web/console/.stylelintrc.cjs` disallows hex / rgb() / named colors and arbitrary `px` / `rem` / `em` values outside the token surface. `npm run lint` fails CI on raw literals — no reviewer hunting needed.
 4. **Lean on a component library; do not rebuild from scratch.** Default: Skeleton (`@skeletonlabs/skeleton`). Alternates that satisfy the same constraints are acceptable when justified in the PR (Flowbite-Svelte, shadcn-svelte). The project anchors on **one** library; pick once and don't fragment.
-5. **Typed Protocol client, hand-maintained but mechanically LOCKSTEP-GATED against `CanonicalWireTypes` (D-093, D-223).** The Console talks to the Runtime through a typed client whose wire types are hand-authored across per-page modules (`web/console/src/lib/protocol.ts` + `web/console/src/lib/protocol/<page>.ts` + `web/console/src/lib/sessions/types.ts` + `web/console/src/lib/flows/types.ts`), kept in lockstep with `internal/protocol/singlesource.CanonicalWireTypes`. D-093 originally specified a `cmd/harbor-gen-protocol-ts` generator that would REGENERATE the client from the Go single source; D-223 superseded the "generate" half with a field-level **VERIFICATION** gate (the per-page split is correct modularity and stays). The gate is `make protocol-ts-gen-check`: a Go tool (`cmd/harbor-protocol-ts-lockstep`) reflects over `CanonicalWireTypes` and emits a committed wire manifest (`web/console/src/lib/protocol/wire-manifest.gen.json`); the gate then (a) `git diff --exit-code`s the regenerated manifest, (b) runs a Go lockstep test (a new canonical method/error/event/type without manifest coverage fails `go test`), and (c) runs a TS-source scan (`web/console/scripts/check-protocol-ts-lockstep.mjs`, wired into `npm run lint`) that fails when a hand-written interface drops/renames/mistypes a manifest field, or when a new Go wire type lands with neither a TS interface nor a justified entry in `web/console/scripts/protocol-ts-untyped-allow.json`. **`protocol.ts` and its sibling per-page modules are hand-maintained: any Go-side wire-type change MUST be mirrored into them by hand AND the manifest regenerated (`make protocol-ts-gen`)** — the gate catches a missed mirror. The committed `wire-manifest.gen.json` IS generated and never hand-edited. Hand-rolled `fetch` calls in components are still not allowed (go through the typed client). FULL generation of the per-domain TypeScript type modules is a deferred future deliverable; until it lands the `cmd/harbor-gen-protocol-ts` name is reserved for it.
-6. **`svelte-check` is part of CI with `--fail-on-warnings`.** A `frontend` CI job runs `npm ci && npm run check && npm run lint && npm run build` in `web/console/` (when present). The strict-mode flag catches Svelte 4 syntax drift early.
+5. **Typed Protocol client, hand-maintained but mechanically LOCKSTEP-GATED against `CanonicalWireTypes` (D-093, D-223).** The Console talks to the Runtime through a typed client whose wire types are hand-authored across per-page modules (`web/console/src/lib/protocol.ts` + `web/console/src/lib/protocol/<page>.ts` + siblings), kept in lockstep with `internal/protocol/singlesource.CanonicalWireTypes`. **Any Go-side wire-type change MUST be mirrored into them by hand AND the manifest regenerated (`make protocol-ts-gen`).** The `make protocol-ts-gen-check` gate catches a missed mirror three ways: a `git diff --exit-code` on the regenerated `wire-manifest.gen.json`, a Go lockstep test (new canonical method/error/event/type without manifest coverage fails `go test`), and a TS-source scan wired into `npm run lint` (a dropped/renamed/mistyped manifest field, or a new Go wire type with neither a TS interface nor a justified allow-list entry, fails). The committed `wire-manifest.gen.json` IS generated and never hand-edited. Hand-rolled `fetch` calls in components are not allowed — go through the typed client. Full mechanics and history (the superseded generator, the reserved `cmd/harbor-gen-protocol-ts` name): D-093 / D-223 in `docs/decisions.md`.
+6. **`svelte-check` is part of CI with `--fail-on-warnings`.** A `frontend` CI job runs `npm ci && npm run check && npm run lint && npm run build` in `web/console/`. The strict-mode flag catches Svelte 4 syntax drift early.
 7. **Routing**: SvelteKit file-based routes under `src/routes/`. Client-side; no SSR.
 8. **Package manager: `npm`.** Lockfile committed.
 9. **No build artifacts in git.**
 10. **Never read internal Runtime objects.** All data flows through the Protocol's canonical events/state. A Console component that imports a Runtime Go type is a bug.
-11. **Shared chat/playground module — encapsulate first, extract on second consumer (D-091).** The chat + playground + MCP-Apps content renderer + file-upload + trace-toggle components ship as a self-contained module at `web/console/src/lib/chat/`. The introducing phase enforces: (a) no imports of other Console internals from the chat module; (b) a typed `ProtocolClient` interface the caller injects, never a Console-specific singleton; (c) the MCP-Apps renderer registry lives at `web/console/src/lib/chat/renderers/`. When a second consumer (the future packed dev UI in `harbor dev`) lands, the extraction to `web/shared/chat/` is mechanical (`git mv`).
+11. **Shared chat/playground module — encapsulate first, extract on second consumer (D-091).** The chat + playground + MCP-Apps content renderer + file-upload + trace-toggle components ship as a self-contained module at `web/console/src/lib/chat/`: (a) no imports of other Console internals; (b) a typed `ProtocolClient` interface the caller injects, never a Console-specific singleton; (c) the MCP-Apps renderer registry lives at `web/console/src/lib/chat/renderers/`. When a second consumer lands, the extraction to `web/shared/chat/` is mechanical (`git mv`).
 12. **Console design-system conventions are binding — `docs/design/console/CONVENTIONS.md` (D-121).** Every Console page is built against the shared foundation: one SvelteKit route group `web/console/src/routes/(console)/` (no `/console/` URL prefix), one app shell, the shared `web/console/src/lib/components/ui/` inventory, the four-state `<PageState>` async contract, the unified `HarborClient` + `connection.ts`, and the one reconciled `tokens.css` scale. `CONVENTIONS.md` is the authority; every Console page phase plan MUST carry a "Console consistency" section citing it, and a page PR that diverges from a convention is rejected on sight.
 
-The Console is its own repo (or `web/console/` monorepo) and its own product. Forbidden practices added (see §13): hand-rolled component primitives that the chosen library already provides; raw color or spacing values in `.svelte` files; mixing package managers; build artifacts committed to git; React/Vue/etc. dependencies in the Console; **the Runtime importing the Console package, in any direction**; Svelte 4 reactivity syntax in `web/console/`; hand-editing the generated wire manifest `web/console/src/lib/protocol/wire-manifest.gen.json` (regenerate via `make protocol-ts-gen`) or letting the hand-maintained `protocol.ts` / per-page wire modules drift from it (the `make protocol-ts-gen-check` lockstep gate, D-223); embedding the Console build into any Runtime subcommand other than `harbor console`.
+The Console lives in `web/console/` and is its own product. The matching rejection-on-sight practices (raw literals, hand-rolled primitives, mixed package managers, committed build artifacts, non-Svelte deps, Svelte 4 syntax, hand-edited wire manifest, Runtime↔Console imports in either direction, embedding the Console build anywhere but `harbor console`) are enumerated in §13's Console block.
 
 ---
 
@@ -380,7 +345,7 @@ These rules are integrity-critical. A violation is a security bug, not a style n
 9. **Identity is mandatory.** Memory drivers, state drivers, event subscribers — all reject requests with a missing identity component. There is no opt-out knob: the runtime fails closed.
 10. **Concurrency-leak tests are mandatory.** Any new code path touching identity has a test running N concurrent sessions and asserting no cross-talk.
 
-**Clarifying note — `agent_id` is NOT part of the isolation tuple.** Agents are runtime *entities* with a registration identity (`agent_id`, minted and persisted by the Agent Registry — RFC §6.16, D-059). That registration identity is **not** an isolation principal: the isolation boundary is and stays the tuple `(tenant, user, session)` (+ `run` for the quadruple). An agent runs *within* `(tenant, user, session)`; it does not widen the boundary. Storage methods, event filters, and memory/state drivers scope by the tuple, never by `agent_id`. Do not add `agent_id` to `WHERE` clauses as an isolation filter.
+**Clarifying note — `agent_id` is NOT part of the isolation tuple.** Agents are runtime *entities* with a registration identity minted by the Agent Registry (RFC §6.16, D-059), but that identity is not an isolation principal: the boundary is and stays `(tenant, user, session)` (+ `run` for the quadruple). An agent runs *within* the tuple; it does not widen it. Storage methods, event filters, and memory/state drivers scope by the tuple, never by `agent_id` — do not add `agent_id` to `WHERE` clauses as an isolation filter.
 
 If a change cannot satisfy these without contortion, the design is wrong — propose a fix in the RFC first.
 
@@ -392,7 +357,7 @@ If a change cannot satisfy these without contortion, the design is wrong — pro
 2. **No hardcoded secrets**, including in tests. Tests use fixtures from `internal/<area>/testdata/` with documented dummy values.
 3. **No credential passthrough by default.** OAuth flows use token exchange (RFC 8693). Passthrough requires explicit configuration AND emits audit events.
 4. **The unified pause/resume primitive is the ONE path** for HITL approval, tool-side OAuth, A2A `AUTH_REQUIRED`/`INPUT_REQUIRED`, and operator/Console PAUSE. Don't reinvent pause coordination in any subsystem.
-5. **Path traversal**: any code that takes a relative path from a manifest, config, or API input MUST normalize via `filepath.Clean` and verify with `strings.HasPrefix(absPath, allowedRoot)`. Use the helper in `internal/skills/importer/path_safety.go` once it lands; don't reinvent.
+5. **Path traversal**: any code that takes a relative path from a manifest, config, or API input MUST normalize via `filepath.Clean` and verify with `strings.HasPrefix(absPath, allowedRoot)`. Use the helper in `internal/skills/importer/path_safety.go`; don't reinvent.
 6. **Audit redaction**: every payload goes through `audit.Redactor`. Don't write events bypassing it.
 7. **No untyped tool arguments in audit payloads.** Summarize, truncate, or redact — full args are not safe to persist.
 8. **No `exec.Command` with shell strings.** Always argv-form, never `sh -c "..."`.
@@ -449,7 +414,7 @@ If a change cannot satisfy these without contortion, the design is wrong — pro
 - **Goroutine leak tests**: long-lived components have a test that asserts `runtime.NumGoroutine` returns to baseline after shutdown.
 - **Conformance suites**: subsystems with multiple drivers have a single conformance test suite that all drivers must pass.
 - **Pause/resume serialization tests** are mandatory: assert `ErrUnserializable` is raised loudly when a non-serializable handle is in pause state. No silent `nil`/`None` returns.
-- **Concurrent-reuse tests are mandatory** for any phase that builds a reusable artifact (engines, tools, planners, drivers, redactors, clients, catalogs). Test N≥100 concurrent invocations against a single shared instance under `-race`, asserting: no data races, no context bleed, no cross-cancellation, no goroutine leaks (baseline-restored after all runs return). See §5 "Concurrent reuse contract" for the full rule and D-025 for the rationale.
+- **Concurrent-reuse tests are mandatory** for any phase that builds a reusable artifact (engines, tools, planners, drivers, redactors, clients, catalogs): N≥100 concurrent invocations against a single shared instance under `-race`, asserting the four guarantees. Full contract in §5 "Concurrent reuse contract" (D-025).
 
 ---
 
@@ -500,34 +465,35 @@ These will cause the PR to be rejected on sight.
 - ❌ `git push --force` to `main`.
 - ❌ Committing with `--no-verify` to skip the preflight hook except in a documented emergency.
 - ❌ Adding a new Protocol method or REST endpoint without extending the relevant `scripts/smoke/phase-NN.sh`.
-- ❌ Importing a concrete driver package from anywhere except `internal/drivers/prod` (the §4.4 production aggregator — the single sanctioned blank-import home since Phase 110c / D-196), `cmd/harbor` (dev-only gated imports such as the mock LLM driver), or that driver's own tests. Hand-curating a second driver blank-import list in a production binary or an embedding surface instead of importing the aggregator is the same violation. Tight carve-out: test-scoped harnesses — driver conformance suites (e.g. `internal/planner/conformance`, `internal/protocol/conformance`) and deliberately-lightweight test kits (e.g. `harbortest`'s runonce kit) — may curate a minimal driver set when pulling the full aggregator would defeat their purpose; each such blank import carries a one-line comment naming why.
+- ❌ Importing a concrete driver package from anywhere except `internal/drivers/prod` (the §4.4 production aggregator — the single sanctioned blank-import home, D-196), `cmd/harbor` (dev-only gated imports such as the mock LLM driver), or that driver's own tests. Hand-curating a second driver blank-import list in a production binary or an embedding surface is the same violation. Tight carve-out: test-scoped harnesses (driver conformance suites, deliberately-lightweight test kits like `harbortest`'s runonce kit) may curate a minimal driver set when pulling the full aggregator would defeat their purpose; each such blank import carries a one-line comment naming why.
 - ❌ Building a new subsystem with plausible alternate implementations as a single concrete type instead of an interface + factory + registry (see §4.4).
 - ❌ **The Console reads or imports any Runtime internal type.** All data flows through the Protocol's canonical events/state.
 - ❌ **The Runtime imports the Console package**, in any direction.
 - ❌ **A Console DB used as a shadow source of truth for runtime entities** (agents, sessions, tasks, tools, events, artifacts). A Console-side datastore holds Console-local state only — saved views, layouts, preferences, annotations. Runtime entities flow exclusively through the Protocol. See RFC §7, D-061.
 - ❌ **A Console page phase shipping without its feeding Protocol-surface phase** landing first or in the same wave. This is the "no primitive without its consumer" rule read backwards — it keeps the Console honest as a Protocol client instead of letting it grow private hooks. See RFC §7, D-062.
 - ❌ **Two parallel implementations of the same conceptual feature** (e.g. "with-flag-X / without-flag-X" toggles for the same purpose). Pick one and deepen it.
-- ❌ **Shipping a primitive without its first consumer in the same wave.** A primitive (interface, control instruction, decision shape, runtime mechanism) that lands without a concrete that exercises it will bit-rot, drift from the design that motivated it, or be silently dropped at the next refactor. **The rule is binary:** the wave that introduces a primitive MUST also introduce at least one consumer that exercises the primitive end-to-end with a test. If a primitive lands in V1, its first consumer lands in V1 — not "later." Two concrete consequences of this rule, called out so they don't get re-litigated:
-  - **`SpawnTask` and `AwaitTask` emission MUST land in the same phase.** A planner that can spawn a background task but cannot join it produces orphan work the runtime cannot recover. The pair is the unit of value; splitting them across phases violates this rule. The Decision sum already pins both shapes (Phase 42 / D-047) — the emission paths are what must twin.
-  - **The unified pause/resume primitive requires a `RequestPause`-emitting consumer in the same wave.** Phase 50 (the primitive) cannot ship without at least one planner (or planner upgrade) emitting `RequestPause` for a real reason — HITL approval, tool-side OAuth, or A2A `AUTH_REQUIRED`. A pause primitive with no producer is dead code; a pause primitive whose first producer lands "in the next wave" routinely drifts because the primitive's design was never validated against a real call site.
+- ❌ **Shipping a primitive without its first consumer in the same wave.** A primitive (interface, control instruction, decision shape, runtime mechanism) that lands without a concrete that exercises it will bit-rot, drift from the design that motivated it, or be silently dropped at the next refactor. **The rule is binary:** the wave that introduces a primitive MUST also introduce at least one consumer that exercises the primitive end-to-end with a test — never "later." Two settled consequences (don't re-litigate): `SpawnTask` and `AwaitTask` emission twin in the same phase (a spawner without a joiner produces orphan work; D-047), and the unified pause/resume primitive shipped with a real `RequestPause`-emitting planner in the same wave (a pause primitive with no producer is dead code whose design was never validated against a real call site).
 - ❌ **Silent degradation.** No `try { ... } catch { return nil }`-shaped patterns. Errors are explicit; capabilities are mandatory; identity is mandatory.
-- ❌ **Test stubs as production defaults on operator-facing seams.** Stubs (`EchoSummarizer`, `staticSummariser`, the `mock` LLM driver, and future equivalents — anything whose godoc carries phrases like "test-grade," "canned responses," or "deterministic for tests") live in `*_test.go` files or a `testfixtures` subpackage gated by a build tag. They are NEVER a registry's `DefaultDriver`, and they are never the only shipped implementation of an interface the binary will resolve at boot. A V1 binary must produce real behavior on the golden path with zero configuration ceremony — operators get a working agent runtime out of the box, not a kit of seams to wire themselves. Two concrete consequences:
-  - **Fail loudly at boot when a required external dependency is missing.** Missing LLM provider / API key / external store → the binary exits non-zero with an error message that names the missing config key and points to the relevant `examples/` file. Silent fallback to a stub when nothing is configured is forbidden.
-  - **Dev-only escape hatches are explicit, never the default.** A `--mock` CLI flag (or a single, prominently-banner'd env var like `HARBOR_DEV_ALLOW_MOCK=1`) is acceptable for first-clone convenience and CI smoke; the default path with no flag set must demand a real provider. When the escape hatch fires, every boot prints a stderr banner like `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]`.
+- ❌ **Test stubs as production defaults on operator-facing seams.** Stubs (the `mock` LLM driver, echo/static summarizers, anything whose godoc says "test-grade" / "canned responses" / "deterministic for tests") live in `*_test.go` files or a build-tag-gated `testfixtures` subpackage. They are NEVER a registry's `DefaultDriver`, and never the only shipped implementation of an interface the binary resolves at boot — the binary must produce real behavior on the golden path with zero configuration ceremony. Two concrete consequences:
+  - **Fail loudly at boot when a required external dependency is missing.** Missing LLM provider / API key / external store → exit non-zero, naming the missing config key and pointing to the relevant `examples/` file. Silent fallback to a stub is forbidden.
+  - **Dev-only escape hatches are explicit, never the default.** A `--mock` flag or a prominently-banner'd env var (`HARBOR_DEV_ALLOW_MOCK=1`) is acceptable for first-clone convenience and CI smoke; when it fires, every boot prints a stderr banner like `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]`.
 
-  This rule closes the same failure mode the primitive-with-consumer rule (above) closes, one layer up: there the concern is library primitives that never get exercised under real call sites; here the concern is operator-facing seams that never get exercised under real workloads because the binary defaults to a stub. A phase plan that ships an operator-facing seam without a non-stub default violates this rule, even if a test stub satisfies the primitive-with-consumer rule. When a deliberate carve-out is required (e.g. a subsystem whose real implementation genuinely cannot land in V1), file an RFC PR + a new `docs/decisions.md` entry — never quietly ship a stub as the default and rationalize it as "fail-safe."
-- ❌ **Internal phase numbering in godoc-visible Go source** — `Phase NN` / `phase-NN`, inline `D-NNN`, `brief NN`, or wave-band references (`Wave 8`, `Round 3`, `Stage A`) in non-test Go source under `internal/` or `cmd/`. pkg.go.dev renders these comments as Harbor's public API docs; phase plans, the decisions log, and research briefs are contributor concepts that stay out of the operator-facing surface. Rewrite to name the FEATURE, not the number ("Phase 17 ships the in-memory driver" → "The in-memory driver ships as the default"). `_test.go` files are exempt. Enforced mechanically by `scripts/drift-audit.sh` + `scripts/smoke/phase-102.sh`.
+  A deliberate carve-out (a seam whose real implementation genuinely cannot land yet) requires an RFC PR + a new `docs/decisions.md` entry — never quietly ship a stub as the default and rationalize it as "fail-safe."
+- ❌ **Internal phase numbering in godoc-visible Go source** — `Phase NN` / `phase-NN`, inline `D-NNN`, `brief NN`, or wave-band references (`Wave 8`, `Round 3`, `Stage A`) in non-test Go source under `internal/` or `cmd/`. pkg.go.dev renders these comments as Harbor's public API docs; phases, decisions, and briefs are contributor concepts. Rewrite to name the FEATURE, not the number ("Phase 17 ships the in-memory driver" → "The in-memory driver ships as the default"). `_test.go` files are exempt. Enforced mechanically by `scripts/drift-audit.sh` + `scripts/smoke/phase-102.sh`.
 - ❌ **Naming the predecessor project anywhere in this repo** — neither the predecessor's project name nor any synonym ("the prior project", abbreviations, author names) appears in committed text. Internal context is fine in chat; the repo is Harbor-only.
 - ❌ Optional `Supports*` capability protocols when all V1 drivers implement everything (see §4.4).
 - ❌ Adding identity-downgrading knobs (`require_explicit_key`-style flags that allow missing tenant/user/session). Identity is mandatory.
 - ❌ Mutable state on compiled artifacts that crosses run boundaries. A `count int` field on `Engine` / `Tool` / `Planner` / etc. is a bug. Use `atomic.*` primitives for genuinely shared counters, or move per-run state into `ctx` / `RunContext`. See §5 "Concurrent reuse contract" + D-025.
 - ❌ Shipping a reusable artifact phase without a concurrent-reuse test (N≥100 invocations against a single instance under `-race`). See §11.
 - ❌ Raw heavy content in a message reaching the `LLMClient`. Any string / byte slice / `DataURL` ≥ heavy-output threshold that is not already an `ArtifactStub` is a leak. The runtime's LLM-edge enforcement pass fails loudly with `ErrContextLeak` and emits `llm.context_leak`. See RFC §6.5 "Context-window safety net" + D-026.
-- ❌ Raw color / spacing / type-scale literals in `.svelte` files (when Console code lands).
+- ❌ Raw color / spacing / type-scale literals in `.svelte` files.
 - ❌ Hand-rolling a component the chosen library (default Skeleton) already provides.
-- ❌ Mixing package managers (`pnpm`/`yarn`) inside `web/console/` (when it lands). `npm` only.
+- ❌ Mixing package managers (`pnpm`/`yarn`) inside `web/console/`. `npm` only.
 - ❌ Committing `web/console/build/` or `web/console/node_modules/`.
 - ❌ Adding a non-Svelte frontend dependency (React/Vue/etc.) to `web/console/`.
+- ❌ Svelte 4 reactivity syntax in `web/console/` — runes mode only (see §4.5, D-092).
+- ❌ Hand-editing the generated wire manifest `web/console/src/lib/protocol/wire-manifest.gen.json` (regenerate via `make protocol-ts-gen`), or letting the hand-maintained `protocol.ts` / per-page wire modules drift from it (the `make protocol-ts-gen-check` lockstep gate; see §4.5, D-223).
+- ❌ Embedding the Console build into any Runtime subcommand other than `harbor console` (D-091).
 - ❌ Hand-rolled `fetch` calls in `.svelte` files — go through the typed Protocol client.
 
 ---
@@ -536,7 +502,7 @@ These will cause the PR to be rejected on sight.
 
 Before requesting review, run through this:
 
-- [ ] `make vet test build` passes locally (once Go code exists).
+- [ ] `make vet test build` passes locally.
 - [ ] `make lint` is clean.
 - [ ] `make preflight` passes locally (build + boot + smoke against impacted/new surfaces).
 - [ ] If you added an endpoint or Protocol method, the relevant `scripts/smoke/phase-NN.sh` exercises it and asserts response shape.
@@ -588,15 +554,15 @@ This is the canonical workflow for any contributor (human or AI) starting work o
 - A phase plan deletes or renames a heading another phase plan references — drift-audit will catch it on the dependent plan, but the originating PR is responsible for migrating references.
 - A phase plan adds a new top-level directory not in §3 — RFC PR first; §3 is the binding layout.
 
-This workflow exists because the volume (~80 phase plans across months) makes drift cumulative. Hygiene up front is cheaper than retrofit.
+This workflow exists because the volume (250+ phase plans and counting) makes drift cumulative. Hygiene up front is cheaper than retrofit.
 
 ---
 
 ## 17. End-to-end + cross-subsystem integration testing
 
-Per-package unit tests catch most bugs but miss two classes the Wave 2 checkpoint audit (PR #11) pinned:
+Per-package unit tests catch most bugs but miss two classes that wave-end checkpoint audits repeatedly pin (the incidents behind every rule in this section are preserved in `docs/notes/hygiene-case-studies.md`):
 
-1. **Cross-package wiring gaps** — two phases each ship their seam, neither connects them. The Wave 2 instance was the `BusEmitter` ↔ `EventBus` wiring; both Phase 04 and Phase 05 plans assumed the OTHER would close the seam.
+1. **Cross-package wiring gaps** — two phases each ship their seam, neither connects them; each plan assumes the OTHER closes it.
 2. **Cross-subsystem concurrency interactions** — boundary-level races (e.g. close-during-publish on the bus) that don't surface inside one package's tests.
 
 The hygiene response below is binding. Skipping it is the same kind of drift signal as skipping §16's brief-reading.
@@ -649,24 +615,19 @@ At every wave boundary (every 2-4 phases), a checkpoint audit runs BEFORE the ne
 3. Produces a categorised punch list (FAIL / WARN / NIT) with file:line refs and one-line fix directives.
 4. Lands as a single `chore(checkpoint): wave-N audit fixes` PR.
 
-The audit is a forking task — the auditor runs read-only, the operator fixes from the punch list. PR #11 (the Wave 2 audit) is the reference.
+The audit is a forking task — the auditor runs read-only, the operator fixes from the punch list. PR #11 (the first checkpoint audit) is the reference shape.
 
 The audit is mandatory at wave boundaries; it is also acceptable to trigger one ad-hoc when scope drift is suspected.
 
 ### 17.6 Fix what the integration test finds — no matter where the bug lives
 
-When an integration test (especially a wave-end smoke or checkpoint audit) surfaces a bug, **fix it in the same PR — even when the root cause is in a previously-shipped phase's code.** Examples that this rule covers, regardless of which phase originally shipped the surface:
+When an integration test (especially a wave-end smoke or checkpoint audit) surfaces a bug, **fix it in the same PR — even when the root cause is in a previously-shipped phase's code.** This covers, regardless of which phase originally shipped the surface: test-time non-idempotency that only surfaces under `go test -count=N` or a later stress run; cross-package wiring gaps where each phase's tests pass in isolation but the seam between them is dead; validator regressions where an old test helper stops satisfying a rule a later phase tightened; and races, goroutine leaks, or stale-doc references only visible when the larger surface composes. (Each of these has a concrete incident with PR references in `docs/notes/hygiene-case-studies.md`.)
 
-- Test-time non-idempotency that surfaces under `go test -count=N` (e.g. PR #16's `TestOpen_HonoursCfgDriver` flake — registered a process-wide driver name without cleanup; lived since Phase 05; surfaced when Wave 3's stress run flushed it out).
-- Cross-package wiring gaps where each phase's tests pass in isolation but the seam between them is dead (PR #11's `BusEmitter` ↔ `EventBus` gap).
-- Validator regressions where a previous phase's test config helper stops validating after a later phase tightens a rule (Wave 2's `wave2Config()` becoming stale once Phase 08's `validateSessions` required non-zero fields — fixed in PR #15).
-- Race conditions, goroutine leaks, or stale-doc references that are only visible when the larger surface composes.
-
-**When the test fixture's bug shape mirrors a latent production bug, fix BOTH in the same PR.** A common failure mode: an integration test surfaces a bug that the test fixture itself reproduces (e.g. a missing constructor option, a misconfigured driver). The temptation is to patch the fixture alone and call it done — the test goes green. But if the production code has the same omission, the fixture-only fix silently perpetuates the test↔production divergence; the test no longer guards what it was meant to guard. The Wave 11.5 §17.5 closeout audit pinned this in F1: PR #121 patched the bus-wiring omission in `harbortest/devstack.Assemble` but missed the same omission at `cmd/harbor/cmd_dev.go::bootDevStack`. The wave-end E2E "passed" only because devstack carried the fix; production silently emitted no `pause.resumed` events on the bus. **Whenever you fix a bug shape on the test side, grep production for the same call site and fix it too.** If you can't fix both (because production's fix has a larger blast radius), the test-side patch must include a top-of-test comment naming the unfixed production gap and a tracking issue.
+**When the test fixture's bug shape mirrors a latent production bug, fix BOTH in the same PR.** An integration test often surfaces a bug the fixture itself reproduces (a missing constructor option, a misconfigured driver). Patching the fixture alone turns the test green while production keeps the same omission — the test no longer guards what it was meant to guard (the devstack bus-wiring incident in the case-studies note is the canonical instance). **Whenever you fix a bug shape on the test side, grep production for the same call site and fix it too.** If production's fix has a larger blast radius, the test-side patch must include a top-of-test comment naming the unfixed production gap and a tracking issue.
 
 **Don't defer with "this is a Phase N issue, file a follow-up."** That defeats the gate's purpose: the test exists to catch drift, and drift in old phases is just as load-bearing as drift in new ones. A wave-end smoke that "passes" only by ignoring the issues it surfaced is not a gate, it's noise.
 
-The PR's title and body should call out the cross-phase fix (e.g. `feat(...) wave-3 + fix Phase 05 driver-registration flake`) so reviewers see what's bundled. Fixing across phase boundaries is **expected**, not exceptional, when integration tests do their job.
+The PR's title and body should call out the cross-phase fix (e.g. `feat(...) wave-N + fix driver-registration flake`) so reviewers see what's bundled. Fixing across phase boundaries is **expected**, not exceptional, when integration tests do their job.
 
 If a discovered bug is genuinely too large for the current PR (full subsystem rewrite, new RFC required), the PR description must (a) name the bug with file:line precision, (b) link a tracking issue, and (c) explain why it's deferred — *and* the integration test that surfaced it must `t.Skip` with the issue link, never silently mask the failure.
 
@@ -685,13 +646,13 @@ Harbor is built in **waves** — a wave is ~3–8 phases that form a coherent su
 
 ### 17.8 External-protocol conformance fixtures derive from the real spec
 
-When a phase implements a host or client for an external wire protocol (MCP, the `io.modelcontextprotocol/ui` ext-apps dialect, A2A, OAuth), its tests MUST exercise a fixture derived from the canonical spec artifact — the vendored/official schema, the official package's types, or a captured transcript from a real server — NOT a hand-authored fixture encoding the implementer's interpretation. A self-consistent hand fixture passes while the code is wired to the wrong field or placement, so the test goes green while the feature is inert against real servers. The MCP Apps `_meta.ui` discovery shipped four phases of green tests that all put `_meta.ui` on the tool RESULT, matching the code but not the spec; the canonical schema (and every real ext-apps server) puts it on the tool DEFINITION, so discovery never fired against a real server (D-216 corrected both the code and the fixture). Where a real server can be driven in dev (a stdio MCP binary, a local fixture server), a probe against it is the gate — env-gated so CI skips it (the `HARBOR_LIVE_*` pattern); where it can't, capture the real server's transcript and commit it as the fixture. This is the §17.6 "fix what the test finds" rule read upstream: a fixture that can't tell right-field from wrong-field is not a gate, it is a rubber stamp.
+When a phase implements a host or client for an external wire protocol (MCP, the `io.modelcontextprotocol/ui` ext-apps dialect, A2A, OAuth), its tests MUST exercise a fixture derived from the canonical spec artifact — the vendored/official schema, the official package's types, or a captured transcript from a real server — NOT a hand-authored fixture encoding the implementer's interpretation. A self-consistent hand fixture passes while the code is wired to the wrong field or placement, so the test goes green while the feature is inert against real servers (the D-216 `_meta.ui` placement bug shipped four phases of green tests exactly this way; see `docs/notes/hygiene-case-studies.md`). Where a real server can be driven in dev (a stdio MCP binary, a local fixture server), a probe against it is the gate — env-gated so CI skips it (the `HARBOR_LIVE_*` pattern); where it can't, capture the real server's transcript and commit it as the fixture. This is the §17.6 "fix what the test finds" rule read upstream: a fixture that can't tell right-field from wrong-field is not a gate, it is a rubber stamp.
 
 ---
 
-## 18. Operator-skill hygiene — same-PR drift prevention (effective V1.1.5)
+## 18. Operator-skill hygiene — same-PR drift prevention
 
-`docs/skills/<slug>/SKILL.md` is Harbor's operator-facing adoption surface — Claude-Code-style playbooks for the activities Harbor's CLI / Console / Protocol expose. The skills only earn operator trust when they STAY in sync with the surface they document. Effective V1.1.5 (the first cut that ships the skills), the §17.6-style "fix what the test finds" rule extends here:
+`docs/skills/<slug>/SKILL.md` is Harbor's operator-facing adoption surface — Claude-Code-style playbooks for the activities Harbor's CLI / Console / Protocol expose. The skills only earn operator trust when they STAY in sync with the surface they document. The §17.6-style "fix what the test finds" rule extends here:
 
 **A change that mutates a documented surface MUST update the matching skill in the SAME PR.** "Documented surface" includes any of:
 
@@ -703,7 +664,7 @@ When a phase implements a host or client for an external wire protocol (MCP, the
 
 **How to know which skill is affected.** Every skill carries a frontmatter `metadata.surface` value (`cli` / `agent-yaml` / `tools` / `mcp` / `llm` / `memory` / `playground` / `console` / `tasks` / `protocol`). When a PR touches one of these surfaces, grep `docs/skills/` for matching `surface:` lines and read the SKILL.md bodies — the affected skill is usually obvious in <60 seconds.
 
-**Failure mode this closes.** Without this rule, skills drift silently: the surface evolves, the skill doesn't, an operator follows a stale step, hits a wall, and abandons Harbor. The first-five-minutes adoption guarantee (`scaffold-a-harbor-agent` → `run-the-dev-loop` → `drive-the-playground` in <5 min) is only meaningful if every operator who follows it today gets the same five-minute experience tomorrow.
+**Failure mode this closes.** Without this rule, skills drift silently: the surface evolves, the skill doesn't, an operator follows a stale step, hits a wall, and abandons Harbor. The first-five-minutes adoption guarantee (`scaffold-a-harbor-agent` → `run-the-dev-loop` → `drive-the-playground` in <5 min) only holds if the playbooks track the surface.
 
 **What the drift-audit catches mechanically.** `scripts/skills/check-frontmatter.sh` (invoked by `make drift-audit`) verifies every `SKILL.md` has a well-formed frontmatter (`name` / `description` / `license` / `metadata.framework: harbor` / `metadata.surface` in the recognised set / `metadata.verbs`). A skill with a removed-from-the-codebase surface keyword in its `verbs:` still passes the audit — drift-audit cannot read prose. The human-review side of this rule is therefore the LOAD-BEARING gate; the audit is the trip-wire for the trivial regressions.
 
@@ -711,9 +672,9 @@ When a phase implements a host or client for an external wire protocol (MCP, the
 
 **When two surfaces compete for one skill update.** A change that affects two skills (e.g. a `harbor.yaml` config field renamed AND a CLI flag that reads it) updates BOTH in the same PR. The skill-frontmatter helper lists every `SKILL.md` that names the affected surface; touch them all.
 
-**The docs site renders these surfaces — keep its navigation manifest in the same PR (Phase 103).** The published docs site (`docs/site/`, VitePress, deployed by `.github/workflows/docs.yml`) mirrors the canonical in-repo docs via include stubs: one page per operator skill, one per recipe, one per reference document. A PR that adds, renames, or removes a skill, a recipe, or a mirrored reference doc MUST update the matching stub under `docs/site/` AND the navigation in `docs/site/.vitepress/config.ts` in the same PR. Two trip-wires back this up mechanically: `scripts/smoke/phase-103.sh` fails preflight when a repo skill or recipe has no site page, and the VitePress build (every PR, via the docs workflow) fails on a dead site-internal link.
+**The docs site renders these surfaces — keep its navigation manifest in the same PR.** The published docs site (`docs/site/`, VitePress, deployed by `.github/workflows/docs.yml`) mirrors the canonical in-repo docs via include stubs: one page per operator skill, recipe, and mirrored reference doc. A PR that adds, renames, or removes any of those MUST update the matching stub under `docs/site/` AND the navigation in `docs/site/.vitepress/config.ts` in the same PR. Trip-wires: `scripts/smoke/phase-103.sh` fails preflight when a repo skill or recipe has no site page, and the VitePress build fails on a dead site-internal link.
 
-**The generated Protocol reference regenerates in the same PR (Phase 113a, D-209).** The published Protocol adoption track (`docs/site/protocol/`) carries four GENERATED pages — `methods.md` / `events.md` / `errors.md` / `types.md`, emitted by `cmd/harbor-gen-protocol-docs` from the canonical Protocol sources and headed `CODE GENERATED ... DO NOT EDIT`. A Go-side change to a Protocol method, error code, canonical event type, or wire type MUST run `make protocol-docs-gen` and commit the regenerated pages in the same PR — mechanically backed by `make protocol-docs-gen-check` (`git diff --exit-code` after regeneration), which runs in the docs workflow before the site build, and by the generator's lockstep tests (a new method / error code / event type / wire type without its docs join row fails `go test`). Hand-editing a generated page is rejection-on-sight. The track's hand-written pages join the "documented surface" list above for the methods they demonstrate: the quickstart (`docs/site/protocol/quickstart.md`, whose tagged curl steps `scripts/smoke/phase-113a.sh` EXECUTES against the preflight dev server — a wire change that breaks a step fails preflight) and the choreography guides (whose "Methods demonstrated" lines are lockstep-grepped against the generated `methods.md`).
+**The generated Protocol reference regenerates in the same PR (D-209).** `docs/site/protocol/` carries four GENERATED pages — `methods.md` / `events.md` / `errors.md` / `types.md`, emitted by `cmd/harbor-gen-protocol-docs` and headed `CODE GENERATED ... DO NOT EDIT`. A Go-side change to a Protocol method, error code, canonical event type, or wire type MUST run `make protocol-docs-gen` and commit the regenerated pages in the same PR — backed by `make protocol-docs-gen-check` in the docs workflow and by the generator's lockstep tests (a new method / error / event / type without its docs join row fails `go test`). Hand-editing a generated page is rejection-on-sight. The track's hand-written pages join the "documented surface" list above: the quickstart's tagged curl steps are EXECUTED against the preflight dev server by `scripts/smoke/phase-113a.sh` (a wire change that breaks a step fails preflight), and the choreography guides' "Methods demonstrated" lines are lockstep-grepped against the generated `methods.md`.
 
 **Dockyard precedent.** Dockyard's sibling skills (`~/Repos/Dockyard/skills/`) carry the same drift discipline. The cross-references between Harbor and Dockyard skills work because both repos enforce same-PR updates on their respective surfaces.
 
