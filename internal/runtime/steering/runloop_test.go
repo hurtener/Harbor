@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // ---------------------------------------------------------------------------
@@ -659,9 +660,10 @@ func TestRun_EmptyReasoning_RoundTripsAsEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRun_OnToolDispatched_InvokedOnSuccess — the hook fires once per
-// successful executor dispatch. This is the seam the dev binary wires
-// to `taskReg.IncrementToolCount` so the Console Tasks page's tool_count
-// reflects the running per-task dispatch count.
+// successful executor dispatch, each carrying count == 1 for a CallTool.
+// This is the seam the dev binary wires to `taskReg.IncrementToolCount`
+// so the Console Tasks page's tool_count reflects the running per-task
+// tool-invocation count (D-274).
 func TestRun_OnToolDispatched_InvokedOnSuccess(t *testing.T) {
 	rl, _, _ := newTestRunLoop(t)
 	p := &scriptedPlanner{
@@ -671,11 +673,12 @@ func TestRun_OnToolDispatched_InvokedOnSuccess(t *testing.T) {
 			{dec: planner.Finish{Reason: planner.FinishGoal}},
 		},
 	}
-	var hookCalls int
+	var hookCalls, totalCount int
 	spec := runSpecFor(runA, p)
 	spec.ToolExecutor = &recordingExecutor{}
-	spec.OnToolDispatched = func(_ context.Context) error {
+	spec.OnToolDispatched = func(_ context.Context, count int) error {
 		hookCalls++
+		totalCount += count
 		return nil
 	}
 	if _, err := rl.Run(context.Background(), spec); err != nil {
@@ -683,6 +686,71 @@ func TestRun_OnToolDispatched_InvokedOnSuccess(t *testing.T) {
 	}
 	if hookCalls != 2 {
 		t.Errorf("OnToolDispatched calls = %d, want 2 (one per successful dispatch)", hookCalls)
+	}
+	if totalCount != 2 {
+		t.Errorf("OnToolDispatched total count = %d, want 2 (each CallTool carries count 1)", totalCount)
+	}
+}
+
+// TestRun_OnToolDispatched_CallParallel_CountsBranches — a CallParallel
+// dispatch invokes the hook ONCE with count == len(Branches), not once
+// per branch and not once total with count 1. This is the D-274 fix for
+// the Console Tasks-page tool_count: before the fix, a 3-branch
+// CallParallel silently under-reported as a single dispatch.
+func TestRun_OnToolDispatched_CallParallel_CountsBranches(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	p := &scriptedPlanner{
+		script: []scriptStep{
+			{dec: planner.CallParallel{Branches: []planner.CallTool{
+				{Tool: "a"}, {Tool: "b"}, {Tool: "c"},
+			}}},
+			{dec: planner.Finish{Reason: planner.FinishGoal}},
+		},
+	}
+	var hookCalls, totalCount int
+	spec := runSpecFor(runA, p)
+	spec.ToolExecutor = &recordingExecutor{}
+	spec.OnToolDispatched = func(_ context.Context, count int) error {
+		hookCalls++
+		totalCount += count
+		return nil
+	}
+	if _, err := rl.Run(context.Background(), spec); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if hookCalls != 1 {
+		t.Errorf("OnToolDispatched calls = %d, want 1 (one hook call for the CallParallel step)", hookCalls)
+	}
+	if totalCount != 3 {
+		t.Errorf("OnToolDispatched total count = %d, want 3 (one per branch)", totalCount)
+	}
+}
+
+// TestRun_OnToolDispatched_SpawnAwait_NeverInvoked — SpawnTask and
+// AwaitTask dispatches never invoke the hook: spawning or joining a task
+// is not a tool invocation (D-274), so the Console Tasks-page tool_count
+// must not advance for them.
+func TestRun_OnToolDispatched_SpawnAwait_NeverInvoked(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	p := &scriptedPlanner{
+		script: []scriptStep{
+			{dec: planner.SpawnTask{Kind: tasks.KindBackground, Spec: planner.SpawnSpec{Query: "q"}}},
+			{dec: planner.AwaitTask{TaskID: "t-1"}},
+			{dec: planner.Finish{Reason: planner.FinishGoal}},
+		},
+	}
+	var hookCalls int
+	spec := runSpecFor(runA, p)
+	spec.ToolExecutor = &recordingExecutor{}
+	spec.OnToolDispatched = func(_ context.Context, _ int) error {
+		hookCalls++
+		return nil
+	}
+	if _, err := rl.Run(context.Background(), spec); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if hookCalls != 0 {
+		t.Errorf("OnToolDispatched calls = %d, want 0 (SpawnTask/AwaitTask are not tool invocations)", hookCalls)
 	}
 }
 
@@ -701,7 +769,7 @@ func TestRun_OnToolDispatched_SkippedOnExecutorError(t *testing.T) {
 	var hookCalls int
 	spec := runSpecFor(runA, p)
 	spec.ToolExecutor = &recordingExecutor{err: errors.New("tool blew up")}
-	spec.OnToolDispatched = func(_ context.Context) error {
+	spec.OnToolDispatched = func(_ context.Context, _ int) error {
 		hookCalls++
 		return nil
 	}
@@ -726,7 +794,7 @@ func TestRun_OnToolDispatched_HookError_FailsLoud(t *testing.T) {
 	hookErr := errors.New("counter blew up")
 	spec := runSpecFor(runA, p)
 	spec.ToolExecutor = &recordingExecutor{}
-	spec.OnToolDispatched = func(_ context.Context) error { return hookErr }
+	spec.OnToolDispatched = func(_ context.Context, _ int) error { return hookErr }
 	_, err := rl.Run(context.Background(), spec)
 	if err == nil {
 		t.Fatal("Run should fail loud on a hook error — silent degradation forbidden (§13)")

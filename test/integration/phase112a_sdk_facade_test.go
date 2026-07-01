@@ -171,7 +171,7 @@ func phase112aRunGoal(ctx context.Context, stack *sdkassemble.Stack, q sdkidenti
 	return sdkplanner.AnswerEnvelope{
 		Answer:        sdkrunctx.ExtractAssistantAnswer(fin),
 		FinishReason:  string(fin.Reason),
-		ToolCallsSeen: len(traj.Steps),
+		ToolCallsSeen: sdkplanner.CountToolInvocations(traj),
 	}, nil
 }
 

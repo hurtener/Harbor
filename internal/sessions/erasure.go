@@ -43,7 +43,10 @@ const erasureAuditSession = "<erasure-audit>"
 // mid-cascade error surfaces loudly (never a partial silent success —
 // CLAUDE.md §13) and the cascade is safe to re-invoke to convergence.
 // The refuse-if-running pre-flight runs FIRST so a refusal touches
-// nothing.
+// nothing; the event-bus fence (see fenceSession) runs immediately after
+// it and BEFORE any destructive step, and a present-but-failing fence
+// capability fails the whole cascade loud right there — the same
+// retry-safe posture as a mid-cascade store error, just earlier.
 //
 // A constructed *CascadeEraser is immutable after construction and safe
 // to share across N concurrent goroutines, each erasing a distinct
@@ -125,19 +128,25 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 //
 //  1. refuse-if-running: load+verify the session record under id and
 //     probe the running-task seam. A refusal touches NO store.
-//  2. artifacts: enumerate the session's artifacts and delete each.
-//  3. memory: flush the session's memory to a clean state.
-//  4. state: kind-agnostic scope delete (the session-lifecycle record,
+//  2. fence: mark the triple erased on the event bus, BEFORE any
+//     destructive step. A present-but-failing Fence capability fails the
+//     WHOLE erasure loud here — nothing has been touched yet, so this is
+//     retry-safe. A bus that does not implement the capability at all is
+//     a logged downgrade, not an error (see fenceSession).
+//  3. artifacts: enumerate the session's artifacts and delete each.
+//  4. memory: flush the session's memory to a clean state.
+//  5. state: kind-agnostic scope delete (the session-lifecycle record,
 //     run-scoped trajectories, planner checkpoints, and the durable event
 //     stream all live under the triple and all go).
-//  5. clear the registry's in-memory catalogs + discovery-catalog entry.
-//  6. emit the redacted, content-free `session.erased` audit event under
+//  6. clear the registry's in-memory catalogs + discovery-catalog entry.
+//  7. emit the redacted, content-free `session.erased` audit event under
 //     the actor's observability scope.
 //
 // Returns ErrSessionRunning (refused — 409), ErrSessionNotFound (absent
-// under the caller's identity — 404), or a wrapped store error (loud,
-// retry-safe). The response carries non-sensitive deletion telemetry
-// only.
+// under the caller's identity — 404), or a wrapped store/fence error (loud,
+// retry-safe: every step through state.DeleteScope is idempotent, and the
+// fence step (2) runs before step 3 ever touches a store). The response
+// carries non-sensitive deletion telemetry only.
 func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
 	if err := identity.Validate(id); err != nil {
@@ -157,7 +166,7 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, perr
 	}
 
-	// 1b. Fence the session on the event bus BEFORE the sweep. The
+	// 2. Fence the session on the event bus BEFORE the sweep. The
 	//     running-task probe cannot see a task that the asynchronous
 	//     `control.start` path has not yet registered, so a task can still be
 	//     finishing concurrently and emit lifecycle events to the durable
@@ -169,32 +178,42 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	//     erased triple read as empty history regardless. A bus that lacks
 	//     the capability still gets the primary sweep below; the gap-closing
 	//     fence is logged-loud-skipped, never silently assumed.
-	e.fenceSession(ctx, id)
+	//
+	//     A Fence error (the capability IS present but the call failed)
+	//     fails the ENTIRE erasure loud, here, before step 3 touches any
+	//     store (CLAUDE.md §13 — silent degradation is forbidden). This is
+	//     safe precisely because fenceSession runs before any destructive
+	//     step: nothing has been deleted yet, so the cascade is a clean,
+	//     retry-safe no-op on this error — the documented idempotent-retry
+	//     contract converges once the transient fault clears.
+	if err := e.fenceSession(ctx, id); err != nil {
+		return zero, fmt.Errorf("sessions: erase fence: %w", err)
+	}
 
-	// 2. Artifacts.
+	// 3. Artifacts.
 	artifactsDeleted, err := e.eraseArtifacts(ctx, id)
 	if err != nil {
 		return zero, fmt.Errorf("sessions: erase artifacts: %w", err)
 	}
 
-	// 3. Memory.
+	// 4. Memory.
 	if err := e.memory.Flush(ctx, identity.Quadruple{Identity: id}); err != nil {
 		return zero, fmt.Errorf("sessions: erase memory: %w", err)
 	}
 
-	// 4. State scope delete (removes the session-lifecycle record + every
+	// 5. State scope delete (removes the session-lifecycle record + every
 	//    kind/run under the triple, including the durable event stream).
 	stateDeleted, err := e.state.DeleteScope(ctx, id)
 	if err != nil {
 		return zero, fmt.Errorf("sessions: erase state: %w", err)
 	}
 
-	// 5. Clear the registry's in-memory catalogs + discovery catalog.
+	// 6. Clear the registry's in-memory catalogs + discovery catalog.
 	if err := e.registry.clearErased(ctx, id); err != nil {
 		return zero, fmt.Errorf("sessions: erase registry clear: %w", err)
 	}
 
-	// 6. Emit the content-free audit event under the actor's
+	// 7. Emit the content-free audit event under the actor's
 	//    observability scope (never the erased triple).
 	resp := prototypes.SessionsDeleteResponse{
 		SessionID:           id.SessionID,
@@ -214,32 +233,34 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 // the fence took hold, and the fence drops everything after.
 //
 // The bus is the canonical events.EventBus; the fence is an optional
-// capability. When the configured bus implements it (both V1 drivers do),
-// a Fence error fails the erasure loud — a half-applied fence would leave
-// the late-event window open and silently degrade the erasure guarantee
-// (CLAUDE.md §13). When the bus does NOT implement it, the erasure proceeds
-// on the primary State sweep alone (which removes all already-retained
-// history); the un-closable late-event window is logged loudly so the
-// degraded posture is observable, never silently assumed.
-func (e *CascadeEraser) fenceSession(ctx context.Context, id identity.Identity) {
+// capability, and the two failure shapes have DIFFERENT postures:
+//
+//   - Capability absent (the bus does not implement events.Fencer): a
+//     documented, logged-loud DOWNGRADE, not an error. Erase proceeds on
+//     the primary State sweep alone (which removes all already-retained
+//     history); the un-closable late-event window is logged loudly so the
+//     degraded posture is observable, never silently assumed.
+//   - Capability present but Fence(ctx, id) returns an error: fenceSession
+//     returns the error and Erase fails the WHOLE erasure loud, BEFORE any
+//     destructive step runs (step 3 is the first store mutation). A
+//     half-applied fence would leave the late-event window open while the
+//     caller believes erasure succeeded — the exact silent-degradation
+//     shape CLAUDE.md §13 forbids. Because nothing has been deleted yet,
+//     failing here is retry-safe: the documented idempotent-retry
+//     contract converges once the transient fault clears.
+func (e *CascadeEraser) fenceSession(ctx context.Context, id identity.Identity) error {
 	fencer, ok := e.bus.(events.Fencer)
 	if !ok {
 		e.logger.WarnContext(ctx, "sessions: event bus does not support fencing — erasure proceeds on the State sweep alone; late events from an in-flight task may briefly re-appear in state.history",
 			slog.String("session_id", id.SessionID),
 			slog.String("tenant_id", id.TenantID),
 			slog.String("user_id", id.UserID))
-		return
+		return nil
 	}
 	if err := fencer.Fence(ctx, id); err != nil {
-		// Loud, but non-fatal to the cascade: the primary sweep still
-		// erases all already-retained history. Surface so the gap-closing
-		// failure is observable rather than silently swallowed.
-		e.logger.ErrorContext(ctx, "sessions: event-bus fence failed — erasure proceeds on the State sweep alone",
-			slog.String("session_id", id.SessionID),
-			slog.String("tenant_id", id.TenantID),
-			slog.String("user_id", id.UserID),
-			slog.String("error", err.Error()))
+		return fmt.Errorf("sessions: event-bus fence failed for session %q: %w", id.SessionID, err)
 	}
+	return nil
 }
 
 // eraseArtifacts enumerates the session's artifacts (across every task)

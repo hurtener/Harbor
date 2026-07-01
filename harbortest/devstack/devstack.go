@@ -1857,14 +1857,17 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		catalogView = view
 	}
 
-	// Phase 83m item 7 (D-094 mirror of cmd/harbor/cmd_dev_runloop.go):
-	// per-run OnToolDispatched hook that advances Task.ToolCount via the
-	// registry after every successful executor dispatch. Errors are
-	// surfaced loud — silent degradation of an observability counter is
-	// forbidden per §13.
-	dispatchHook := func(hookCtx context.Context) error {
-		if err := d.tasks.IncrementToolCount(hookCtx, taskID); err != nil {
-			return fmt.Errorf("tasks.IncrementToolCount(%q): %w", taskID, err)
+	// D-094 mirror of cmd/harbor/cmd_dev_runloop.go: per-run
+	// OnToolDispatched hook that advances Task.ToolCount via the
+	// registry by `count` after every successful tool dispatch (D-274:
+	// count is 1 for a CallTool, len(Branches) for a CallParallel).
+	// Errors are surfaced loud — silent degradation of an observability
+	// counter is forbidden per §13.
+	dispatchHook := func(hookCtx context.Context, count int) error {
+		for range count {
+			if err := d.tasks.IncrementToolCount(hookCtx, taskID); err != nil {
+				return fmt.Errorf("tasks.IncrementToolCount(%q): %w", taskID, err)
+			}
 		}
 		return nil
 	}
@@ -2012,7 +2015,7 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		envelope := planner.AnswerEnvelope{
 			Answer:        runctx.ExtractAssistantAnswer(fin),
 			FinishReason:  string(fin.Reason),
-			ToolCallsSeen: len(traj.Steps),
+			ToolCallsSeen: planner.CountToolInvocations(traj),
 		}
 		raw, encErr := json.Marshal(envelope)
 		if encErr != nil {

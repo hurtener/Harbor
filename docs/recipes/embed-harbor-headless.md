@@ -31,6 +31,7 @@ references real exported symbols (Phase 110d, D-197).
 | Tool dispatch | `Stack.Executor` (the promoted `dispatch.NewToolExecutor` concrete) | 110a (D-194) |
 | The run loop | `Stack.RunLoop.Run(ctx, steering.RunSpec{...})` | 53 / 83i |
 | The answer | `planner.AnswerEnvelope` | 110a (D-194) |
+| The tool-invocation count | `planner.CountToolInvocations(traj)` | D-274 |
 
 ## 1. Imports
 
@@ -227,10 +228,15 @@ if s, ok := fin.Payload.(string); ok {
 envelope := planner.AnswerEnvelope{
     Answer:        answer,
     FinishReason:  string(fin.Reason),
-    ToolCallsSeen: len(traj.Steps),
+    ToolCallsSeen: planner.CountToolInvocations(traj),
 }
 fmt.Println(envelope.Answer)
 ```
+
+`ToolCallsSeen` is the true tool-invocation count, not the trajectory step
+count: `planner.CountToolInvocations` counts a `CallParallel` step once PER
+branch and excludes `SpawnTask` / `AwaitTask` steps entirely (D-274) — don't
+reconstruct it with `len(traj.Steps)`.
 
 `fin.Reason == planner.FinishGoal` is the success case; any other
 `FinishReason` maps to a task-error code via

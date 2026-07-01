@@ -109,7 +109,7 @@ func runRecipeGoal(t *testing.T, ctx context.Context, stack *assemble.Stack, q i
 	return planner.AnswerEnvelope{
 		Answer:        answer,
 		FinishReason:  string(fin.Reason),
-		ToolCallsSeen: len(traj.Steps),
+		ToolCallsSeen: planner.CountToolInvocations(traj),
 	}
 }
 

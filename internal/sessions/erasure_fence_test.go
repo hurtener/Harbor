@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/state"
 )
@@ -203,5 +206,176 @@ func TestCascadeEraser_FenceConcurrent_NoLateHistory(t *testing.T) {
 		if _, err := f.store.Load(ctx, identity.Quadruple{Identity: id}, "events.durable.head"); !errors.Is(err, state.ErrNotFound) {
 			t.Errorf("session %s: durable head survived erasure under concurrency: %v", id.SessionID, err)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D-274 — fenceSession fail-loud posture.
+// ---------------------------------------------------------------------------
+
+// flakyFencerBus wraps a real Fencer-capable bus and forces Fence to fail
+// while its toggle is set — the seam for forcing the fenceSession
+// fail-loud path (D-274). Delegation only, mirroring erasure_test.go's
+// flakyArts: the embedded events.EventBus promotes Publish / Subscribe /
+// Close to the real bus, and Fence / Unfence explicitly delegate to the
+// real bus's Fencer (captured separately) once the toggle clears — so a
+// retry after the transient fault exercises the REAL fence semantics.
+type flakyFencerBus struct {
+	events.EventBus
+	fencer events.Fencer
+	fail   *atomic.Bool
+}
+
+func (b *flakyFencerBus) Fence(ctx context.Context, id identity.Identity) error {
+	if b.fail.Load() {
+		return errors.New("flaky bus: forced fence failure")
+	}
+	return b.fencer.Fence(ctx, id)
+}
+
+func (b *flakyFencerBus) Unfence(ctx context.Context, id identity.Identity) error {
+	return b.fencer.Unfence(ctx, id)
+}
+
+// TestCascadeEraser_FenceError_FailsLoud_NothingDeleted_RetrySafe pins the
+// D-274 fail-loud posture: when the configured bus DOES implement
+// events.Fencer but Fence(ctx, id) errors, Erase fails loud, no store is
+// touched (fenceSession runs BEFORE any destructive step), and a retry
+// after the transient fault clears converges to a full, successful
+// erasure — the same idempotent-retry contract a mid-cascade store error
+// already gets.
+func TestCascadeEraser_FenceError_FailsLoud_NothingDeleted_RetrySafe(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-fenceerr", "u-fenceerr", "s-fenceerr")
+	ictx := ctxFor(id)
+
+	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.mem.AddTurn(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+		UserMessage: "hello", AssistantResponse: "world",
+	}); err != nil {
+		t.Fatalf("AddTurn: %v", err)
+	}
+	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
+	if _, err := f.arts.PutBytes(ctx, scope, []byte("blob"), artifacts.PutOpts{Namespace: "test"}); err != nil {
+		t.Fatalf("PutBytes: %v", err)
+	}
+
+	realFencer, ok := f.bus.(events.Fencer)
+	if !ok {
+		t.Fatalf("fixture bus must implement events.Fencer")
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	flaky := &flakyFencerBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
+
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: flaky,
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+
+	// First attempt: the fence fails → the WHOLE erasure fails loud.
+	if _, ferr := eraser.Erase(ctx, id); ferr == nil {
+		t.Fatal("fence failure did not surface loudly")
+	}
+
+	// Nothing was deleted — the fence runs before any destructive step.
+	if _, lerr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); lerr != nil {
+		t.Errorf("fence failure deleted the session record: %v", lerr)
+	}
+	patch, gerr := f.mem.GetLLMContext(ctx, identity.Quadruple{Identity: id})
+	if gerr != nil {
+		t.Fatalf("GetLLMContext: %v", gerr)
+	}
+	if len(patch.RecentTurns) == 0 {
+		t.Error("fence failure purged memory before any destructive step ran")
+	}
+	refs, lerr := f.arts.List(ctx, scope)
+	if lerr != nil {
+		t.Fatalf("List: %v", lerr)
+	}
+	if len(refs) != 1 {
+		t.Errorf("fence failure touched artifacts: %d, want 1", len(refs))
+	}
+
+	// Clear the transient fault and re-invoke — the cascade converges to a
+	// full, successful erasure.
+	fail.Store(false)
+	resp, rerr := eraser.Erase(ctx, id)
+	if rerr != nil {
+		t.Fatalf("retry after fence recovers failed: %v", rerr)
+	}
+	if !resp.Deleted {
+		t.Errorf("retry response = %+v, want Deleted", resp)
+	}
+	if _, lerr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); !errors.Is(lerr, state.ErrNotFound) {
+		t.Errorf("session.lifecycle survived the retry: err=%v", lerr)
+	}
+	refs, lerr = f.arts.List(ctx, scope)
+	if lerr != nil {
+		t.Fatalf("List after retry: %v", lerr)
+	}
+	if len(refs) != 0 {
+		t.Errorf("artifacts survived the retry: %d", len(refs))
+	}
+}
+
+// nonFencerBus wraps a real EventBus but deliberately does NOT implement
+// events.Fencer — delegation only, never embedding the underlying bus
+// (embedding would promote its Fence/Unfence methods and defeat the
+// point of the test). Exercises the CascadeEraser's not-a-Fencer
+// capability-downgrade branch (warn + proceed, D-274).
+type nonFencerBus struct {
+	inner events.EventBus
+}
+
+func (b *nonFencerBus) Publish(ctx context.Context, ev events.Event) error {
+	return b.inner.Publish(ctx, ev)
+}
+
+func (b *nonFencerBus) Subscribe(ctx context.Context, f events.Filter) (events.Subscription, error) {
+	return b.inner.Subscribe(ctx, f)
+}
+
+func (b *nonFencerBus) Close(ctx context.Context) error {
+	return b.inner.Close(ctx)
+}
+
+// TestCascadeEraser_NonFencerBus_Erase_Succeeds_WarnOnly pins the OTHER
+// half of the D-274 posture: a bus that does not implement events.Fencer
+// at all is a documented capability downgrade (warn + proceed on the
+// primary State sweep alone), never an error — Erase still completes
+// with Deleted: true.
+func TestCascadeEraser_NonFencerBus_Erase_Succeeds_WarnOnly(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-nofence", "u-nofence", "s-nofence")
+	ictx := ctxFor(id)
+
+	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts,
+		Bus: &nonFencerBus{inner: f.bus},
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+
+	resp, err := eraser.Erase(ctx, id)
+	if err != nil {
+		t.Fatalf("Erase over a non-Fencer bus should succeed (warn + proceed), got: %v", err)
+	}
+	if !resp.Deleted {
+		t.Errorf("response = %+v, want Deleted", resp)
+	}
+	if _, lerr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); !errors.Is(lerr, state.ErrNotFound) {
+		t.Errorf("session.lifecycle survived erasure: err=%v", lerr)
 	}
 }

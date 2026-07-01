@@ -83,3 +83,54 @@ type HandleRegistry = trajectory.HandleRegistry
 func NewProcessLocalRegistry() HandleRegistry {
 	return trajectory.NewProcessLocalRegistry()
 }
+
+// CountToolInvocations counts the actual tool invocations recorded
+// across t's steps — the shared semantics behind both
+// AnswerEnvelope.ToolCallsSeen and the Console Tasks-page tool_count.
+// A CallTool step counts as one invocation; a CallParallel step counts
+// as len(Branches) (the runtime dispatches N tools concurrently, not
+// one); SpawnTask, AwaitTask, and any other step value count as zero —
+// they are runtime decisions the planner made, never tool dispatches. A
+// nil Trajectory counts as zero.
+//
+// This replaces an earlier len(t.Steps) reading, which silently
+// miscounted in both directions: one CallParallel step holding N
+// branches undercounted (reported 1 instead of N), and a SpawnTask /
+// AwaitTask step overcounted (reported a dispatch that never happened).
+func CountToolInvocations(t *Trajectory) int {
+	if t == nil {
+		return 0
+	}
+	n := 0
+	for _, step := range t.Steps {
+		n += DecisionInvocationCount(step.Action)
+	}
+	return n
+}
+
+// DecisionInvocationCount returns the number of tool invocations a
+// single decision represents: 1 for CallTool, len(Branches) for
+// CallParallel, 0 for SpawnTask / AwaitTask / RequestPause / Finish /
+// any other value (including a trajectory step restored from JSON
+// without being re-typed through the Decision sum — e.g. a bare
+// map[string]any).
+//
+// action is typed `any`, not Decision: trajectory.Step.Action is `any`
+// to avoid a planner<->trajectory import cycle (see Step's godoc); the
+// type switch here is the seam that recovers the concrete Decision
+// shape when the caller has one (a live, in-process Step.Action, or a
+// Decision passed directly from a run-loop dispatch site).
+func DecisionInvocationCount(action any) int {
+	switch d := action.(type) {
+	case CallTool:
+		return 1
+	case *CallTool:
+		return 1
+	case CallParallel:
+		return len(d.Branches)
+	case *CallParallel:
+		return len(d.Branches)
+	default:
+		return 0
+	}
+}

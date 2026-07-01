@@ -199,13 +199,18 @@ func (s *Stack) RunOnce(
 	if cfg.stream != nil {
 		sink := cfg.stream
 		prevDispatch := spec.OnToolDispatched
-		spec.OnToolDispatched = func(hookCtx context.Context) error {
+		spec.OnToolDispatched = func(hookCtx context.Context, count int) error {
 			if prevDispatch != nil {
-				if err := prevDispatch(hookCtx); err != nil {
+				if err := prevDispatch(hookCtx, count); err != nil {
 					return err
 				}
 			}
-			sink(StreamEvent{Kind: StreamToolDispatched})
+			// One StreamToolDispatched event PER dispatched tool: a
+			// CallParallel dispatch carries count == len(Branches), so
+			// the stream reports N tool dispatches, not one.
+			for range count {
+				sink(StreamEvent{Kind: StreamToolDispatched})
+			}
 			return nil
 		}
 	}
@@ -231,14 +236,10 @@ func (s *Stack) RunOnce(
 		}
 	}
 
-	steps := 0
-	if base.Trajectory != nil {
-		steps = len(base.Trajectory.Steps)
-	}
 	return planner.AnswerEnvelope{
 		Answer:        answer,
 		FinishReason:  string(fin.Reason),
-		ToolCallsSeen: steps,
+		ToolCallsSeen: planner.CountToolInvocations(base.Trajectory),
 	}, nil
 }
 

@@ -347,6 +347,16 @@ var IsValidPauseReason = internal.IsValidPauseReason
 // task-error code.
 var TaskErrorCodeForFinish = internal.TaskErrorCodeForFinish
 
+// CountToolInvocations counts the actual tool invocations recorded
+// across a Trajectory's steps — the shared semantics behind
+// AnswerEnvelope.ToolCallsSeen (D-274). See internal.CountToolInvocations
+// for the counting rule.
+var CountToolInvocations = internal.CountToolInvocations
+
+// DecisionInvocationCount returns the number of tool invocations a
+// single decision represents (D-274).
+var DecisionInvocationCount = internal.DecisionInvocationCount
+
 // ResolveWakeMode resolves a planner's effective WakeMode (WakePush
 // unless the concrete declares otherwise via WakeAware).
 var ResolveWakeMode = internal.ResolveWakeMode
