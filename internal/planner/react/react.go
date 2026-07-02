@@ -117,12 +117,14 @@ package react
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/output"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/repair"
 )
@@ -615,6 +617,22 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// rc, never from the shared planner artifact.
 	applyLLMOverrides(&req, rc.LLMOverrides)
 
+	// Run-level structured output. When the run carries an output schema
+	// the terminal answer must validate against it. We render the schema
+	// into ResponseFormat{FormatJSONSchema} on EVERY turn and let the
+	// profile's already-selected OutputMode strategy + downgrade chain
+	// (owned by the LLM client, applied transparently) decide the actual
+	// wire shaping — no new toggle (one strategy surface). Providers
+	// accept a schema alongside tool declarations; a tool-calling turn
+	// carries no content, so only the content-bearing terminal turn is
+	// constrained. The Validator makes that precise: it is tool-call
+	// aware, passing a turn that emitted tool calls (a non-terminal step)
+	// and validating the content only on the terminal turn, so a
+	// schema-invalid terminal answer engages the retry-with-feedback loop
+	// bounded by ModelProfile.MaxRetries. Reads from rc, never from the
+	// shared planner artifact.
+	applyOutputSchema(&req, rc.OutputSchema)
+
 	// AC-17: populate the per-turn native tool-calling surface.
 	// `rc.Catalog.List()` already returns the always-loaded subset
 	// filtered by the run's identity + GrantedScopes (the
@@ -904,4 +922,55 @@ func applyLLMOverrides(req *llm.CompleteRequest, ov *planner.LLMOverrides) {
 			req.ReasoningEffort = llm.ReasoningEffort(*ov.ReasoningEffort)
 		}
 	}
+}
+
+// applyOutputSchema wires a run-level output schema onto a built
+// request: the FormatJSONSchema ResponseFormat (which the profile's
+// OutputMode strategy + downgrade chain shape transparently inside the
+// LLM client) and a tool-call-aware Validator that engages the
+// retry-with-feedback wrapper only on the content-bearing terminal turn.
+// A nil validator (no schema) is a no-op — the request is untouched and
+// the run behaves exactly as a plain run. Reads from rc, never from the
+// shared planner artifact.
+//
+// Tools-mode unwrap: under [llm.OutputModeTools] the downgrade chain
+// instructs the model to emit a `{"name":"respond_with","arguments":...}`
+// envelope (see internal/llm/output's write half); validating the raw
+// envelope against the caller's schema would fail even a perfectly
+// compliant model, since the envelope's shape is never the caller's
+// schema shape. [output.ParseRespondWith] is the matching read half:
+// [unwrapTerminalContent] attempts the unwrap BEFORE validation on every
+// terminal turn, so the schema sees the caller's `arguments` payload.
+// Native/Prompted content that never matches the envelope shape passes
+// through unchanged (ok=false is not an error).
+func applyOutputSchema(req *llm.CompleteRequest, schema *planner.OutputSchemaValidator) {
+	if schema == nil {
+		return
+	}
+	req.ResponseFormat = &llm.ResponseFormat{
+		Kind:       llm.FormatJSONSchema,
+		JSONSchema: schema.Raw(),
+	}
+	req.Validator = func(resp llm.CompleteResponse) error {
+		// A turn that emitted tool calls is a non-terminal planner step:
+		// its content is a preamble, not the schema-constrained answer.
+		// Passing it keeps the constraint on the terminal turn only.
+		if len(resp.ToolCalls) > 0 {
+			return nil
+		}
+		return schema.Validate(unwrapTerminalContent(resp.Content))
+	}
+}
+
+// unwrapTerminalContent is the terminal-answer read half shared by the
+// per-turn Validator (above) and [projectResponse]'s Finish{Goal}
+// projection: it attempts [output.ParseRespondWith] first (the
+// OutputModeTools envelope) and falls back to the raw content bytes
+// unchanged when content is not envelope-shaped (Native/Prompted
+// content, or a model that ignored the Tools-mode instruction).
+func unwrapTerminalContent(content string) json.RawMessage {
+	if args, ok := output.ParseRespondWith(content); ok {
+		return args
+	}
+	return json.RawMessage(content)
 }

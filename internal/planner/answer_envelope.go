@@ -1,5 +1,7 @@
 package planner
 
+import "encoding/json"
+
 // AnswerEnvelope is the canonical JSON shape `tasks.TaskResult.Value`
 // carries when a run-loop driver completes a task from a
 // [Finish] with reason [FinishGoal]:
@@ -48,6 +50,20 @@ type AnswerEnvelope struct {
 	// comparing ToolCallsSeen against a fixed expectation should
 	// re-check it after upgrading.
 	ToolCallsSeen int `json:"tool_calls_seen"`
+	// AnswerPayload is the schema-validated raw-JSON terminal answer of
+	// a structured-output run — the run the caller opened with
+	// assemble.WithOutputSchema. It is ADDITIVE and omitted (`omitempty`)
+	// on plain runs, so the three pre-existing keys and their byte-shape
+	// are untouched (the golden encoding test still pins them). When
+	// present it carries the exact validated bytes captured at the
+	// validation site (never a lossy string round-trip); Answer carries
+	// the same payload's string rendering for backward compatibility.
+	//
+	// A structured-output run whose terminal answer failed validation
+	// after the correction budget never reaches an envelope at all — the
+	// runner returns ErrOutputInvalid instead (CLAUDE.md §13: no silent
+	// fallback to unvalidated text).
+	AnswerPayload json.RawMessage `json:"answer_payload,omitempty"`
 }
 
 // Terminal task-error codes a run-loop driver stamps on

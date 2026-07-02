@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -75,5 +76,37 @@ func run() error {
 	fmt.Printf("answer:        %s\n", env.Answer)
 	fmt.Printf("finish_reason: %s\n", env.FinishReason)
 	fmt.Printf("tool_calls:    %d\n", env.ToolCallsSeen)
+
+	// 4. Typed output — ask the run for a schema-conforming final answer.
+	// WithOutputSchema validates the terminal answer against the schema
+	// and delivers the validated raw JSON on env.AnswerPayload (Answer
+	// carries its string rendering). A schema-invalid answer after the
+	// correction budget returns planner.ErrOutputInvalid — never a silent
+	// fallback to unvalidated text. Streaming note: assistant-content
+	// token deltas are suppressed for a schema-constrained run (the
+	// validated answer arrives once, in the envelope).
+	schema := json.RawMessage(`{
+		"type": "object",
+		"required": ["sentiment"],
+		"properties": {
+			"sentiment": {"type": "string", "enum": ["positive", "negative", "neutral"]},
+			"confidence": {"type": "number"}
+		},
+		"additionalProperties": false
+	}`)
+	typedEnv, err := stack.RunOnce(ctx, "Classify the sentiment of the last deployment note.",
+		identity.Identity{TenantID: "acme", UserID: "u-42", SessionID: "s-1"},
+		assemble.WithOutputSchema(schema))
+	if err != nil {
+		return fmt.Errorf("typed run: %w", err)
+	}
+	var out struct {
+		Sentiment  string  `json:"sentiment"`
+		Confidence float64 `json:"confidence"`
+	}
+	if err := json.Unmarshal(typedEnv.AnswerPayload, &out); err != nil {
+		return fmt.Errorf("decode typed answer: %w", err)
+	}
+	fmt.Printf("typed answer:  sentiment=%s confidence=%.2f\n", out.Sentiment, out.Confidence)
 	return nil
 }

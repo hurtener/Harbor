@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/output"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -31,9 +32,26 @@ import (
 func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallelEnabled bool) (planner.Decision, error) {
 	if len(resp.ToolCalls) == 0 {
 		if resp.Content != "" {
+			// Tools-mode unwrap (S1 seam closure): a schema-constrained
+			// run whose profile is on OutputModeTools carries a
+			// `{"name":"respond_with","arguments":...}` envelope in
+			// resp.Content (see internal/llm/output's write half). Unwrap
+			// it BEFORE it becomes the terminal Payload, so the runtime-
+			// edge validation and AnswerPayload see the caller's schema
+			// shape, never the envelope. A non-envelope answer (no
+			// schema on this run, or a Native/Prompted profile) is
+			// untouched — Payload stays the plain string exactly as
+			// before (capturePayloadJSON's `string` case and
+			// runctx.ExtractAssistantAnswer both depend on that shape).
+			var payload any = resp.Content
+			if rc.OutputSchema != nil {
+				if args, ok := output.ParseRespondWith(resp.Content); ok {
+					payload = args
+				}
+			}
 			return planner.Finish{
 				Reason:  planner.FinishGoal,
-				Payload: resp.Content,
+				Payload: payload,
 				Metadata: map[string]any{
 					"via":        "react.projectResponse",
 					"goal_reach": true,

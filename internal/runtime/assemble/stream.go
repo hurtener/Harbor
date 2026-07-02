@@ -80,6 +80,19 @@ type StreamEvent struct {
 // WithStream composes with any bus-backed streaming the stack already
 // wires: the sink is additive, so a Console attached to the same run's
 // event bus and an embed sink both observe the run's chunks.
+//
+// Composing with WithOutputSchema: on a schema-constrained run ALL token
+// deltas — content AND reasoning — are SUPPRESSED at the sink — step and
+// tool_dispatched events still stream, but the validated terminal answer
+// arrives once, in the envelope's AnswerPayload, not as a token stream.
+// A validate-and-retry loop cannot retract tokens it already emitted, so
+// buffered-whole delivery is the correct pairing. Every
+// delivered StreamEvent still precedes the final envelope. Expect MORE
+// step events per planner turn on a schema-constrained run than on a
+// plain one: each corrective retry / downgrade attempt the schema
+// constraint engages is its own LLM attempt and emits its own step
+// boundary, so multiple step events per turn is the expected shape, not
+// a bug.
 func WithStream(sink func(StreamEvent)) RunOption {
 	return func(c *runOnceConfig) { c.stream = sink }
 }

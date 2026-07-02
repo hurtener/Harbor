@@ -176,6 +176,44 @@ event PER dispatched tool — a parallel tool call emits N events (one per
 branch) — and task spawn/await decisions emit none (v1.8 emitted one
 event per spawn/await dispatch; they are not tool invocations).
 
+**Typed output — `assemble.WithOutputSchema`.** Ask a run for a
+schema-conforming final answer in one line. The terminal answer is
+validated against the JSON Schema and delivered as the envelope's
+additive `AnswerPayload` (the validated raw JSON); `Answer` carries the
+same payload's string rendering. A schema-invalid answer after the
+correction budget returns `planner.ErrOutputInvalid` — never a silent
+fallback to unvalidated text (§13). A nil/empty schema is a loud config
+error.
+
+```go
+schema := json.RawMessage(`{
+    "type": "object",
+    "required": ["sentiment"],
+    "properties": {"sentiment": {"type": "string", "enum": ["positive","negative","neutral"]}},
+    "additionalProperties": false
+}`)
+env, err := stack.RunOnce(ctx, "Classify the sentiment.",
+    identity.Identity{TenantID: "acme", UserID: "u-42", SessionID: "s-1"},
+    assemble.WithOutputSchema(schema))
+if err != nil {
+    return fmt.Errorf("typed run: %w", err) // errors.Is(err, planner.ErrOutputInvalid) on schema failure
+}
+var out struct{ Sentiment string `json:"sentiment"` }
+_ = json.Unmarshal(env.AnswerPayload, &out) // the validated payload
+```
+
+Under the hood the run rides the profile's existing structured-output
+strategy (the `OutputMode` selection + downgrade chain) and the
+validate-and-retry loop bounded by `ModelProfile.MaxRetries` — no new
+knob. **Streaming caveat:** `WithOutputSchema` composes with
+`WithStream`, but ALL token chunks — content AND reasoning — are
+SUPPRESSED for a schema-constrained run — a validate-and-retry loop
+cannot retract tokens it already streamed, so the validated answer
+arrives once, in the envelope. `step` and `tool_dispatched` events still
+stream (D-272); expect MORE `step` events per turn than a plain run when
+a corrective retry / downgrade attempt fires (each attempt is its own
+LLM call and its own step boundary).
+
 ### 4b. Drive the run loop yourself
 
 Drive the shared `RunLoop` directly — the same loop `harbor dev` drives
@@ -246,6 +284,11 @@ reconstruct it with `len(traj.Steps)`.
 `fin.Reason == planner.FinishGoal` is the success case; any other
 `FinishReason` maps to a task-error code via
 `planner.TaskErrorCodeForFinish`.
+
+On a schema-constrained run (`WithOutputSchema`, §4a), the envelope also
+carries `AnswerPayload` — the validated raw JSON — which `Answer` mirrors
+as a string. `json.Unmarshal(env.AnswerPayload, &yourType)` is the typed
+read; the `RunOnce` shorthand fills it for you.
 
 ## 6. Shut down
 

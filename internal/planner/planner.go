@@ -369,6 +369,23 @@ type RunContext struct {
 	// Concurrent-reuse: the manifest is per-run state on rc,
 	// never on the shared planner artifact.
 	SessionArtifacts []ArtifactManifestEntry
+
+	// OutputSchema is the optional, opt-in run-level output schema the
+	// caller supplied (via the assemble.WithOutputSchema run option).
+	// When non-nil the run is a structured-output run: the terminal
+	// answer must validate against this schema. A generation-steering
+	// planner (the ReAct driver) renders OutputSchema.Raw() into its
+	// terminal completion's ResponseFormat and installs a
+	// schema-Validator so the corrective retry-with-feedback loop
+	// engages; every planner's terminal Finish is additionally validated
+	// against this schema at the runtime edge (planner-agnostic, no
+	// capability ceremony). Nil means "no schema" — the run is plain
+	// text exactly as before.
+	//
+	// The schema is compiled ONCE per run at the runtime edge and the
+	// compiled validator threads here; the planner reads only. Per-run
+	// state on rc, never on the shared planner artifact.
+	OutputSchema *OutputSchemaValidator
 }
 
 // LLMOverrides is the per-run bundle of run-start-resolved LLM-parameter

@@ -273,7 +273,10 @@ func TestSafety_UsesCfgTimeout(t *testing.T) {
 				captured time.Time
 				hasDL    bool
 			)
-			factoryName := "capture-deadline-driver-" + tc.name
+			// uniqueDriverName keeps registration idempotent across
+			// `go test -count=N` (a fixed per-subtest name collides with
+			// itself on the second iteration).
+			factoryName := uniqueDriverName("capture-deadline-driver-" + tc.name)
 			llm.Register(factoryName, func(_ llm.ConfigSnapshot, _ llm.Deps) (llm.Driver, error) {
 				return &captureDeadlineDriver{
 					mu:       &mu,
@@ -332,7 +335,10 @@ func TestSafety_PreservesCallerDeadline(t *testing.T) {
 		captured time.Time
 		hasDL    bool
 	)
-	const factoryName = "capture-deadline-driver-preserve"
+	// uniqueDriverName keeps registration idempotent across
+	// `go test -count=N` (a fixed name collides with itself on the
+	// second iteration).
+	factoryName := uniqueDriverName("capture-deadline-driver-preserve")
 	llm.Register(factoryName, func(_ llm.ConfigSnapshot, _ llm.Deps) (llm.Driver, error) {
 		return &captureDeadlineDriver{
 			mu:       &mu,
