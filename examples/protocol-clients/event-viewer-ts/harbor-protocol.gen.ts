@@ -260,6 +260,7 @@ export type HarborEventType =
   | "tool.auth_completed"
   | "tool.auth_required"
   | "tool.completed"
+  | "tool.credential_exchanged"
   | "tool.failed"
   | "tool.invalid_args"
   | "tool.invoked"

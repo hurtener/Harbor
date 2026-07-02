@@ -53,6 +53,10 @@ type fakeAuthServer struct {
 	tokenIssuer func() (access, refresh string)
 	// callCount tracks the number of /token POSTs.
 	tokenCalls int
+	// refreshHook, when non-nil, runs at the top of every
+	// refresh_token grant — tests set it (BEFORE issuing requests) to
+	// gate the response for cancellation-cross-talk legs.
+	refreshHook func()
 }
 
 func newFakeAuthServer(t *testing.T) *fakeAuthServer {
@@ -191,6 +195,12 @@ func (f *fakeAuthServer) handleAuthCodeGrant(w http.ResponseWriter, r *http.Requ
 }
 
 func (f *fakeAuthServer) handleRefreshGrant(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	hook := f.refreshHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	rt := r.PostForm.Get("refresh_token")
 	if rt == "" {
 		http.Error(w, "missing refresh_token", http.StatusBadRequest)

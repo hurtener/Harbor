@@ -205,19 +205,20 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	runctx.EventTypeInputDispositionResolved:  {Payloads: []reflect.Type{reflect.TypeOf(runctx.InputDispositionResolvedPayload{})}},
 
 	// --- Tools execution + approval + OAuth + MCP southbound.
-	tools.EventTypeToolInvoked:              {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolInvokedPayload{})}},
-	tools.EventTypeToolCompleted:            {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolCompletedPayload{})}},
-	tools.EventTypeToolFailed:               {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolFailedPayload{})}},
-	tools.EventTypeToolInvalidArgs:          {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolInvalidArgsPayload{})}},
-	tools.EventTypeToolPolicyExhausted:      {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolPolicyExhaustedPayload{})}},
-	approval.EventTypeToolApprovalRequested: {Payloads: []reflect.Type{reflect.TypeOf(approval.ToolApprovalRequestedPayload{})}},
-	approval.EventTypeToolApproved:          {Payloads: []reflect.Type{reflect.TypeOf(approval.ToolApprovedPayload{})}},
-	approval.EventTypeToolRejected:          {Payloads: []reflect.Type{reflect.TypeOf(approval.ToolRejectedPayload{})}},
-	toolauth.EventTypeToolAuthRequired:      {Payloads: []reflect.Type{reflect.TypeOf(toolauth.ToolAuthRequiredPayload{})}},
-	toolauth.EventTypeToolAuthCompleted:     {Payloads: []reflect.Type{reflect.TypeOf(toolauth.ToolAuthCompletedPayload{})}},
-	mcptool.EventTypeMCPResourceUpdated:     {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ResourceUpdatedPayload{})}},
-	mcptool.EventTypeMCPResourceOffloaded:   {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ResourceOffloadedPayload{})}},
-	mcptool.EventTypeMCPAppAvailable:        {Payloads: []reflect.Type{reflect.TypeOf(mcptool.AppAvailablePayload{})}},
+	tools.EventTypeToolInvoked:                {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolInvokedPayload{})}},
+	tools.EventTypeToolCompleted:              {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolCompletedPayload{})}},
+	tools.EventTypeToolFailed:                 {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolFailedPayload{})}},
+	tools.EventTypeToolInvalidArgs:            {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolInvalidArgsPayload{})}},
+	tools.EventTypeToolPolicyExhausted:        {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolPolicyExhaustedPayload{})}},
+	approval.EventTypeToolApprovalRequested:   {Payloads: []reflect.Type{reflect.TypeOf(approval.ToolApprovalRequestedPayload{})}},
+	approval.EventTypeToolApproved:            {Payloads: []reflect.Type{reflect.TypeOf(approval.ToolApprovedPayload{})}},
+	approval.EventTypeToolRejected:            {Payloads: []reflect.Type{reflect.TypeOf(approval.ToolRejectedPayload{})}},
+	toolauth.EventTypeToolAuthRequired:        {Payloads: []reflect.Type{reflect.TypeOf(toolauth.ToolAuthRequiredPayload{})}},
+	toolauth.EventTypeToolAuthCompleted:       {Payloads: []reflect.Type{reflect.TypeOf(toolauth.ToolAuthCompletedPayload{})}},
+	toolauth.EventTypeToolCredentialExchanged: {Payloads: []reflect.Type{reflect.TypeOf(toolauth.ToolCredentialExchangedPayload{})}},
+	mcptool.EventTypeMCPResourceUpdated:       {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ResourceUpdatedPayload{})}},
+	mcptool.EventTypeMCPResourceOffloaded:     {Payloads: []reflect.Type{reflect.TypeOf(mcptool.ResourceOffloadedPayload{})}},
+	mcptool.EventTypeMCPAppAvailable:          {Payloads: []reflect.Type{reflect.TypeOf(mcptool.AppAvailablePayload{})}},
 }
 
 // safePayloadIface / eventPayloadIface back the mechanical Safe-vs-

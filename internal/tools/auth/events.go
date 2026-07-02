@@ -1,6 +1,10 @@
 package auth
 
-import "github.com/hurtener/Harbor/internal/events"
+import (
+	"time"
+
+	"github.com/hurtener/Harbor/internal/events"
+)
 
 // Canonical tool-auth event types. Registered from this package's
 // init() so a Publish never trips events.ErrUnknownEventType.
@@ -20,11 +24,23 @@ const (
 	// EventTypeToolAuthCompleted — emitted by CompleteFlow on
 	// successful token exchange. Payload is ToolAuthCompletedPayload.
 	EventTypeToolAuthCompleted events.EventType = "tool.auth_completed"
+
+	// EventTypeToolCredentialExchanged — emitted once per ACTUAL
+	// downstream-credential exchange against an external credential
+	// broker (the pull-based, non-interactive acquisition strategy;
+	// cache hits emit nothing). Payload is
+	// ToolCredentialExchangedPayload. SafePayload by construction: it
+	// carries the source, binding scope, subject kind, broker host,
+	// granted scopes, and expiry — NEVER access / refresh token bytes.
+	// The emission satisfies §7's "external credential provisioning
+	// requires explicit configuration AND emits audit events".
+	EventTypeToolCredentialExchanged events.EventType = "tool.credential_exchanged" //nolint:gosec // G101 false positive: this is a canonical event-type name, not a credential
 )
 
 func init() {
 	events.RegisterEventType(EventTypeToolAuthRequired)
 	events.RegisterEventType(EventTypeToolAuthCompleted)
+	events.RegisterEventType(EventTypeToolCredentialExchanged)
 }
 
 // ToolAuthRequiredPayload is the typed payload for a
@@ -71,4 +87,38 @@ type ToolAuthCompletedPayload struct {
 	// PauseToken is the unified pause/resume Coordinator's Token —
 	// observers can correlate this to the pause.resumed event.
 	PauseToken string
+}
+
+// ToolCredentialExchangedPayload is the typed payload for a
+// `tool.credential_exchanged` event — one downstream-credential
+// exchange against an external credential broker (the pull-based
+// `tokenexchange` acquisition strategy). SafePayload by construction:
+// every field is the runtime's own bookkeeping or operator-supplied
+// configuration metadata; NO access / refresh token plaintext, NO
+// broker-response bytes. Emitted once per ACTUAL exchange — a cache
+// hit emits nothing.
+type ToolCredentialExchangedPayload struct {
+	events.SafeSealed
+	// Source is the ToolSourceID the exchanged credential authorises.
+	Source string
+	// BindingScope is "user" or "agent" — echoes the attachment's
+	// binding scope (the V1 `tokenexchange` driver serves "user").
+	BindingScope string
+	// SubjectKind names which principal the broker minted the token
+	// for: "user" for a user-bound exchange. Never the subject value
+	// itself (that is identity, carried on the event's Identity
+	// quadruple), only the kind.
+	SubjectKind string
+	// BrokerHost is the host of the configured broker `token_url` —
+	// the external authority the exchange targeted. Host only; never
+	// the full URL with query material.
+	BrokerHost string
+	// GrantedScopes is the scope list the broker granted (may be a
+	// subset of the requested scopes).
+	GrantedScopes []string
+	// ExpiresAt is the broker-advertised wall-clock validity of the
+	// exchanged token. Zero when the broker advertised no expiry. The
+	// runtime's in-memory cache-serve horizon is bounded by (never
+	// exceeds) this value.
+	ExpiresAt time.Time
 }
