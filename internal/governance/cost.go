@@ -158,13 +158,19 @@ func (a *CostAccumulator) PreCall(ctx context.Context, req llm.CompleteRequest) 
 	return nil
 }
 
-// PostCall accumulates `resp.Cost.TotalCost` regardless of `callErr`.
-// Failures still incur whatever cost the provider reported (some report
-// 0 on failure; that's fine — the accumulator records 0).
+// PostCall accumulates `resp.Cost.TotalCost` plus any intermediate
+// provider-attempt spend the retry / downgrade wrappers reported into the
+// per-call attempt-cost tap, regardless of `callErr`. Failures still incur
+// whatever cost the provider reported (some report 0 on failure; that's
+// fine — the accumulator records 0), and attempt spend accumulates even
+// when the outer call ultimately errors (retry / downgrade exhaustion —
+// spend is spend).
 //
 // The accumulator path is in-band synchronous (RFC §6.15 line 1128)
 // rather than event-subscriber: the next PreCall sees the latest total
-// without a bus-delivery race.
+// without a bus-delivery race. The attempt-cost tap extends that in-band
+// posture one level deeper — intermediate attempts are folded here, not
+// re-accumulated off a bus subscription.
 //
 // `governance.budget_exceeded` events are NOT emitted from PostCall;
 // they fire only from PreCall on the NEXT call that exceeds. A PostCall
@@ -181,20 +187,42 @@ func (a *CostAccumulator) PostCall(ctx context.Context, req llm.CompleteRequest,
 	if err != nil {
 		return err
 	}
-	if resp.Cost.TotalCost == 0 && len(resp.Content) == 0 && resp.Usage.TotalTokens == 0 {
+	// Peek (do not drain yet) the attempt-cost tap so the zero-work early
+	// return below never swallows reported intermediate-attempt spend. The
+	// actual drain happens only after keyState resolution succeeds, so a
+	// keyState failure strands the tap loudly rather than silently
+	// discarding a drained value.
+	tapPending, tapAttempts := llm.PeekAttemptCost(ctx)
+	if resp.Cost.TotalCost == 0 && len(resp.Content) == 0 && resp.Usage.TotalTokens == 0 &&
+		tapPending == 0 && tapAttempts == 0 {
 		// No accounting work to do — likely a failed call that the
-		// provider didn't price. The bifrost driver still emits
-		// llm.cost.recorded; governance just doesn't accumulate zero.
+		// provider didn't price, with no reported attempt spend. The
+		// bifrost driver still emits llm.cost.recorded; governance just
+		// doesn't accumulate zero.
 		return nil
 	}
 	ks, err := a.keyState(ctx, quad)
 	if err != nil {
+		if tapPending != 0 {
+			// The tap is left undrained (this call returns before the
+			// drain), so its attempt spend is lost to accounting. Surface
+			// it loudly with the at-risk amount named — this mirrors the
+			// existing observability-only posture for the final call's cost
+			// on the same failure (RFC §6.15) and is strictly better than
+			// today's silent 100% attempt loss.
+			return fmt.Errorf("%w (attempt cost %.6f USD at risk: keyState load failed before drain)", err, tapPending)
+		}
 		return err
 	}
-	a.addAtomic(ks, req.Model, resp.Cost.TotalCost)
+	// Drain exactly once now that key state is resolved, then fold the
+	// intermediate-attempt total with the final response's cost in ONE
+	// accumulation delta under the identity/model key.
+	tapTotal, _ := llm.DrainAttemptCost(ctx)
+	folded := resp.Cost.TotalCost + tapTotal
+	a.addAtomic(ks, req.Model, folded)
 	a.touch(ks)
 	if err := a.persist(ctx, quad, ks); err != nil {
-		return fmt.Errorf("governance/cost: persist: %w", err)
+		return fmt.Errorf("governance/cost: persist: %w (folded cost %.6f USD at risk)", err, folded)
 	}
 	return nil
 }
