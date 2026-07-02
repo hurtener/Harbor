@@ -210,7 +210,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |107b| Streaming answer extractor (React planner `streamAnswerFilter`) | internal/planner/react | §1, §6.2, §6.5, §7 | 107, 83a, 83b, 83c, 83d, 83e | n/a | Superseded by 107c (not shipped) |
 |107c| Native tool-calling + deferred tools/skills + search meta-tools (alt to 107b — collapses Path B into one wave) | internal/llm + internal/tools + internal/planner/react + internal/config + cmd/harbor | §1, §6.2, §6.4, §6.5, §6.7, §7 | 107, 83a, 83b, 83c, 83d, 83e, 83n, 37, 26, 32, 33, 33a | n/a | Shipped |
 |107d| Native parallel tool-calls (dev executor `CallParallel` branch + React `CallParallel` emission + default flip; closes 107c's serialization carve-out) | cmd/harbor + internal/runtime/parallel + internal/planner/react + internal/config | §6.2, §6.5 | 107c, 47, 83i | n/a | Shipped (V1.1.x) |
-|107e| SpawnTask + AwaitTask dev-executor dispatch (background-task execution; closes the last `ErrDecisionShapeUnsupported` carve-out) | cmd/harbor + internal/config | §6.2, §6.5, §6.8 | 107c, 47, 83i, 83f | n/a | Pending (V1.1.x) |
+|107e| SpawnTask + AwaitTask dev-executor dispatch (background-task execution; closes the last `ErrDecisionShapeUnsupported` carve-out) | cmd/harbor + internal/config | §6.2, §6.5, §6.8 | 107c, 47, 83i, 83f | n/a | Shipped (V1.1.x) |
 |107f| Session artifact manifest (read-only `<session_artifacts>` prompt block + provenance canonicalisation) | internal/planner + cmd/harbor + internal/protocol + internal/runtime/flow | §6.2, §6.4, §6.5 | 107c, 17, 33 | n/a | Shipped (V1.1.x) |
 |108 | Playground page polish + Console shell layout (first of 14 page-polish phases) | web/console | §1, §7 | 73n, 105, 106 | n/a | Pending (V1.1.x) |
 |109a| MCP Apps runtime + Protocol surface (`_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy) | internal/tools/drivers/mcp + internal/protocol + cmd/harbor | §6.4, §6.5, §7 | 28, 85a, 84a | n/a | Shipped (V1.1.x) |
@@ -274,6 +274,13 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |142 | External tool-credential provisioning: the `tokenexchange` OAuth driver (an external credential authority — a fleet orchestrator, an enterprise token vault, an STS — holds a user's downstream integration credentials centrally and a runtime PULLS them at token-miss time via an RFC-8693-shaped exchange, instead of every runtime independently OAuth-acquiring + sealing its own copy (today: N consents, N encrypted copies); a new non-interactive driver on the D-095 OAuth flow-strategy registry (`tools.oauth_providers[].driver: tokenexchange`, broker knobs on the reserved `extra` map — no config-schema change), keyed on the VERIFIED ctx identity triple (D-219 posture), brokered tokens TTL-cached in memory only + single-flighted and NEVER `TokenStore.Put` (no shadow copy of the broker's truth — D-061 southbound), broker failure fails the run loudly with NO silent interactive fallback, a broker `consent_required` refusal surfaces the existing typed `*auth.ErrAuthRequired` and parks on the unified pause primitive (§7 rule 4 — one pause path) with resume re-driving `Token()`, interactive-flow methods return the new typed `ErrNonInteractive`, every actual exchange emits the new canonical `tool.credential_exchanged` SafePayload event (+ protocol-docs regen); push-style credential injection over the Protocol is REJECTED as §7 credential passthrough, recorded in D-271 so it is not re-litigated; D-271) | internal/tools/auth/drivers/tokenexchange + internal/tools/auth + internal/config | §6.4, §3.3 | 30, 50, 64a | 85% | Shipped (V1.9) |
 |143 | Run-level structured output: the `WithOutputSchema` run option (the run-level typed-output mechanism — an opt-in `assemble.WithOutputSchema(schema) RunOption` on `Stack.RunOnce` threading a caller-supplied final-answer JSON Schema through `runctx` → `planner.RunContext` into the React driver's terminal completion, riding the shipped-but-nearly-consumerless LLM substrate (`CompleteRequest.ResponseFormat` + the `Validator` retry-with-feedback wrapper bounded by `ModelProfile.MaxRetries` + the `OutputMode` strategy/downgrade chain — no new toggle, brief 03); final validation is RUNTIME mechanism at the RunOnce edge for every planner (no `Supports*` ceremony — the deterministic planner's structured `Finish` payload just validates), schema-invalid after the budget → typed `planner.ErrOutputInvalid`, never silent unvalidated text (§13); the validated answer lands on the ADDITIVE `answer_payload` envelope key (pinned bytes untouched, `Answer` keeps the string rendering, golden test extended); `WithStream` composes — `tool_dispatched`/`step` stream as today, assistant-content `token` chunks are suppressed for a schema-constrained run and the answer arrives once, validated (the Claude-Agent-SDK/LangGraph buffered pairing with a retry loop — D-272; partial-object streaming is the NAMED follow-up, not silence); mixed-traffic N≥100 D-025 test (distinct schemas, no bleed); `sdk/assemble`/`sdk/planner` re-exports; embed recipe + example updated same-PR (§18); D-272) | internal/runtime/assemble + internal/runtime/runctx + internal/planner + internal/planner/react + sdk | §6.5, §6.2, §3.6 | 35, 36, 110a, 132, 132-stream | 80% | Shipped (V1.9) |
 |144 | Typed embed binding: `RunTyped[T]` + the shared schema-derivation home (the typed sugar over 143 — a generic free function `assemble.RunTyped[T any](ctx, stack, goal, id, opts...) (T, planner.AnswerEnvelope, error)` deriving the output schema from `T`, running with `WithOutputSchema`, unmarshaling the validated `answer_payload` into `T`; the Go-type→JSON-Schema derivation is PROMOTED from the inproc tool driver into the neutral `internal/tools/schema` package (§13 forbids importing a concrete driver — one implementation, golden-pinned byte-identical, both `RegisterFunc` and `RunTyped` consume it); the `sdk/assemble.RunTyped` forward is the facade's SECOND documented generic-func carve-out amending D-205 item 1 (identical "Go has no generic function values" rationale; the no-behavior smoke flips to an enumerated two-func allow-list and fails on any third); deliberately NOT named `Agent` (noun taken twice: `harbortest.Agent` + the Agent Registry entities, D-059) and NO stateful binding object (the bind-once surface remains `config`+`Assemble`→`Stack`); unsupported `T` fails loud at call time before LLM spend; mixed-`T` N≥100 D-025 test; scaffold/example consumer through the external-module compile gate + pkg.go.dev `Example_runTyped`; fallback named up front — if the amendment is rejected, 143 alone ships typed output with two caller-side lines and 144 slips without blocking the wave; D-273) | internal/tools/schema + internal/runtime/assemble + internal/tools/drivers/inproc + sdk | §3.6, §6.2, §6.4 | 143, 26, 112a | 85% | Shipped (V1.9) |
+|145 | Governance attempt-level cost accounting (closes D-272's "Known accounting gap": governance composes OUTSIDE retry — D-043/D-044, unchanged — so `CostAccumulator.PostCall` sees only the FINAL `(resp, err)` of the retry-with-feedback loop × downgrade chain; worst case `(MaxRetries+1)×3` uncounted provider calls per turn, live since 143 made the `Validator` loop production-real; fix = a synchronous in-band **attempt-cost tap** in `internal/llm`: `governance.Wrap` installs a per-call ctx-carried accumulator after `PreCall` permits, the retry wrapper reports each validator-rejected NON-final attempt and the downgrade wrapper reports every errored attempt (its error paths discard the attempt's resp entirely), `PostCall` drains once and folds tap total + final `resp.Cost` under the existing identity-triple key — the propagate-or-report invariant makes accounting exactly-once and compose-order-independent; NOT an `llm.cost.recorded` subscriber (would re-litigate the settled in-band rationale + §13 parallel-implementation); PreCall short-circuit semantics, `resp.Cost` semantics, compose order all unchanged; attempt spend accumulates even when the outer call errors (fail-loud, §13); exactness test with distinct per-attempt costs across success/retry-exhausted/downgrade-exhausted terminals; ceiling test where intermediate attempts trip the NEXT PreCall; N≥100 shared-chain D-025 stress; stale bifrost "subscriber" doc comment corrected same-PR; D-275) | internal/governance + internal/llm + internal/llm/retry + internal/llm/output | §6.15, §6.5 | 33, 35, 36, 36a, 143 | 85% | Pending |
+|146 | Per-task structured output: the `answer_payload` per-task producer (closes the D-272 reservation recorded at `dispatch.go::taskOutcomeObservation` + `tasks.go::TaskResult` — "per-task Protocol runs do not yet produce it"; a new ADDITIVE `output_schema` field on the `start` wire request (`types.StartRequest`, per-run granularity — deliberately NOT agent config, D-234 is per-agent next-turn desired state) rides request → `tasks.SpawnRequest` → the persisted `Task` record → both per-task RunLoop drivers (production + devstack twin, §17.6/D-094), which compile ONCE at run start via `planner.CompileOutputSchema` (the edge also compile-rejects with `CodeInvalidRequest` before Spawn), set `RunSpec.Base.OutputSchema` so the React per-turn steering engages with zero planner change, and validate the terminal Finish through ONE promoted shared `runctx` envelope builder (the RunOnce-edge validation + `capturePayloadJSON` move there; RunOnce re-bases, goldens byte-identical — `steering.RunLoop.Run` deliberately does not validate, so each run-edge caller invokes the same builder, §13); validated payload lands as `answer_payload` on the task envelope → `tasks.get` `result_inline` + the AwaitTask parent observation (generic parse, D-026 `projectForLLM` offload already applies and is test-pinned); schema-invalid after the retry budget → task fails LOUD with new terminal code `planner.TaskErrorCodeOutputInvalid`, never a schemaless success; token deltas suppressed on schema tasks (D-272 posture mirrored); full D-223 lockstep (manifest regen + typed-client `outputSchema` opt) + D-209 docs regen; §13 consumer = the v1.9-audit AwaitTask round-trip E2E; N≥100 mixed distinct-schema D-025 stress; NON-goals recorded: planner-emitted SpawnTask schemas (sealed Decision sum, D-047), config-level defaults, partial-object streaming (#444); D-276) | internal/protocol + internal/tasks + internal/runtime/runctx + internal/runtime/assemble + cmd/harbor + harbortest + web/console | §6.5, §6.2, §6.8, §5.2 | 143, 110a, 118, 54, 73d, 87, 107e | 80% | Pending |
+|147 | Events conformance suite home + fold (the v1.9 audit's deferred NIT 7 paid down as a phase — build `internal/events/conformancetest` mirroring the identity/state/memory precedent EXACTLY (package `conformancetest`, exported `Run(t, factory)` — NOT `RunConformance`) and fold the verified duplicated per-driver scenarios into it: fence drop-late/empty-history + after-close (the D-274-hardened erasure fence's bus-side contract), Bounds/Window history reads, replay cursor semantics (head-cursor nil, cross-identity isolation, cursor-too-old, replay-disabled, empty-filter), subscribe scope validation, close lifecycle — 20 pinned scenarios with a binding no-coverage-loss mapping table; the `Factory` returns a memory-style `Harness` of three MANDATORY constructors (default / replay-disabled / bounded-retention) because the scenarios span bus CONFIGURATIONS — the one genuine divergence (durable-mode retention is unbounded; only best-effort ring mode can return `ErrCursorTooOld`) is parameterized as configuration, never a `Supports*` flag (§4.4), and capability presence (`Replayer`/`HistoryReplayer`/`Fencer`) is asserted fail-loud, never skipped; identity-scoping scenarios are unconditional suite members (§6 rule 10); PURE test refactor — zero production change, both drivers invoke the suite from their own `_test.go` in the same PR (§13 consumer by construction); driver-specific tests stay put (durable recovery/restart D-255, OpenWith shared-store, persist-failure, cancellation-bounds, per-driver D-025 reuse tests); the drop-policy/redaction/reaper/admin-audit near-duplicate pairs are the NAMED second tranche, deferred deliberately; D-277) | internal/events | §6.13, §6.9 | 05, 06, 57, 125, 130 | n/a | Pending |
+|148 | MCP southbound per-identity OAuth bearer + `_meta` provenance (a non-secret `oauth_provider` name binding a declared `tools.oauth_providers[]` entry — the D-095 registry — on `config.MCPServerConfig` + the agentcfg/wire MCP connection descriptors; every identity-stamped per-call MCP RPC fetches `prov.Token(ctx, source)` and injects `Authorization: Bearer` on THAT request only via a context-aware RoundTripper (token rides the per-call ctx, D-025 — the connect-frozen static header map stays for connect-time auth; static `Authorization` + binding on one connection is rejected at validation); a bound provider whose `Token()` fails NEVER falls back to an unauthenticated call, and `consent_required` parks on the unified pause primitive via the existing typed `*auth.ErrAuthRequired` (§7 rule 4); `buildIdentityMeta` additionally stamps `agent_id` (provenance via a new `tools.WithInvokingAgent` ctx seam — NEVER an isolation principal, §6/D-059) + operator-declared non-secret `meta_annotations` merged verbatim (reserved keys `tenant`/`user`/`session`/`agent_id`/`traceparent`/`tracestate` + the `io.modelcontextprotocol/` prefix rejected at validation); wire change runs the full D-223 TS lockstep + D-209 docs regen; the injection seam is the ONE mechanism 85b/92l reuse when they land; D-278) | tools/mcp + tools/auth + config + agentcfg + protocol | §6.4, §3.3, §6.16 | 142, 92f, 28, 30, 64a, 50, 118 | 80% | Pending |
+|149 | HTTP-manifest boot loader wiring (the `tools.http_manifests[]` knob goes live: `assembleCatalogBand` loads each declared UTCP-style manifest via the shipped Phase 27 `LoadManifest`/`RegisterManifest` pair and registers its tools by name — after built-ins, BEFORE the catalog Builder applies `tools.entries[]`, so the EXISTING by-name `entries[].oauth` binding wraps manifest tools with zero new OAuth machinery, closing the "no config-declarable tool can exercise catalog OAuth wrapping end-to-end" gap and giving adopters a black-box vehicle for D-271 token exchange; `config.Validate` flips from REJECTING a populated list (the SDK-friction-audit dead-knob guard) to VALIDATING it, with `config.Load` resolving relative entries against the config directory under the §7 rule 5 Clean+prefix posture; boot fails loud naming file + config key on missing/unparseable/`ErrManifestInvalid` manifests and on tool-name collisions — never a silent skip; one wiring home (`Assemble`) serves binary + devstack per D-196/D-197; NO manifest-level `oauth` field (the by-name path is THE binding home, §13) and NO change to `WrapWithOAuth` pre-check semantics (southbound injection is Phase 148's, for MCP); D-279) | internal/runtime/assemble + internal/config + internal/tools/drivers/http + examples | §6.4, §3.4 | 26, 27, 64a, 110d, 142 | 80% | Pending |
+|150 | Run-completion hook: transcript egress through the tool catalog (the runtime's first run-lifecycle hook — memory/audit/analytics sinks need the full conversation at completion for runs no client observes (background + disconnected runs have no observer to pull it), and NO generic run-completion signal exists today (a plain foreground `Stack.RunOnce` completing emits nothing; only `task.completed`/`task.failed` fire from the tasks engine, so a bus subscriber cannot cover all run types); fix = `RunSpec.CompletionHook` fired EXACTLY ONCE at `RunLoop.Run`'s single terminal boundary via a deferred fire over the named returns — every terminal outcome (goal / no_path / constraints_conflict incl. REJECT + pause-timeout / cancelled incl. cancel-while-paused / error) with the outcome IN the payload, never mid-run, never on pause — the one seam ALL run types terminate through (`runonce.go:305`, `cmd_dev_runloop.go:972`); egress = a NAMED CATALOG TOOL dispatched through the existing `spec.ToolExecutor.ExecuteDecision` path (provenance, identity, per-tool policy retries, and args-free `tool.*` audit events come FREE; a bespoke HTTP egress client is the REJECTED §13 parallel implementation), under `context.WithTimeout(context.WithoutCancel(runCtx), timeout)` so the cancelled-run case fires with identity values preserved (the `internal/tools/auth` precedent); a hook failure NEVER alters the settled run outcome — `run.hook_failed` on the bus + Warn, success emits `run.hook_dispatched` (SafePayloads: metadata only, never transcript content); payload = typed golden-pinned `RunCompletionPayload` (`format_version: 1`) assembling the ordered conversation from LIVE run state (initial goal, steering USER_MESSAGE/REDIRECT entries accumulated as per-run stack-local state with step indices — today they are consumed per-step and durably lost, assistant preambles + final answer, D-274 counts; the dispatch does NOT touch `OnToolDispatched`/`ToolCallsSeen`/trajectory); config = yaml `runtime.hooks.run_completion.{tool,timeout}` (the reserved `RuntimeConfig` slot's first body) paired with a new versioned agentcfg `hooks` section riding the EXISTING `set_revision`/`get`/`diff`/`rollback` surface (next-run projection per D-234; `projection.ActiveRunCompletionHook` twinned cmd/devstack per §17.6; wire impact types-only → `AgentConfigHooks` + diff arm + D-223 TS mirror/manifest + protocol-docs regen, NO new verb); §13 consumer E2E: a run with a hook targeting a real fixture tool receives the full ordered transcript incl. a steering-injected mid-run user message, identity asserted AT the receiving tool, hook-error + cancelled-run failure legs, N≥10 concurrent no-transcript-bleed `-race`; 148's per-identity MCP bearer applies automatically via ctx identity (same-wave consumer); D-280) | internal/runtime/steering + internal/agentcfg + internal/runtime/agentcfg/projection + internal/config + internal/protocol/types + cmd/harbor | §6.17, §6.3, §6.4, §6.13, §6.16 | 53, 83i, 92a, 132, 148, 149 (soft) | 80% | Pending |
+|151 | Runtime loading-mode control on tool exposure (extends the ONE exposure section — `agentcfg.ToolExposure` gains `server_loading_modes` (per-`ToolSourceID` default, tool-form descriptors only via the additive `Tool.Form` classification) + `tool_loading_modes` (per-name, exact) riding the existing `agent_config.set_tool_exposure` verb, no new verb; ONE pinned precedence order — exposure per-tool > exposure per-server > boot `tools.entries[].loading_mode` > driver default (the mcp.go `LoadingAlways` tool hardcode becomes the overridable default; resources/prompts stay driver-deferred) — closing the two-knobs-undefined-precedence §13 smell; applied NEXT-turn at the shared `projection.ActivePlannerCatalogView` seam via a new `tools.LoadingOverrideView` (List filters on the EFFECTIVE mode, Resolve never filters — the D-167 two-turn `tool_search` discovery cycle is untouched; disable stays strictly stronger: hidden from List AND Resolve), in-flight runs keep their snapshot per D-025/D-234; admin tier only — loading is not capability-narrowing (`VisibleNames` spans both modes; the app-call gate ignores it) and the D-256/D-258 narrow-only tiers gain no map fields; unknown value → loud 400 `invalid_request`, no revision, no event; `DiffToolExposure` gains structured loading arms (audit = `agent.config.revised` + diff, no new event); `tools.describe` gains optional `agent_id` reporting the projected EFFECTIVE `loading_mode` (absent = boot-effective, byte-compatible); additive wire changes with full D-223 lockstep + D-209 docs regen same-PR; integration test on the real MCP stdio fixture (flip → prompt-list excludes / `tool_search` surfaces / Resolve returns; flip-back; invalid-mode failure; cross-agent + cross-tenant isolation) + N≥100 flip-under-load D-025 stress; lands after 148 merges (same files — coordination, not semantic); D-281) | agentcfg + internal/tools + internal/runtime/agentcfg + internal/protocol | §6.4, §6.16 | 92a, 92d, 107c, 110a, 118 | 85% | Pending |
 
 V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j + 85m (MCP client/host compliance — the prioritised first post-V1 work; 85k is the separate Harbor agent-builder skills phase). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Per the MCP 2026-07-28 RC re-plan (2026-05-28) the 85-band re-shapes: 85a / 85b / 85f are ready now; 85d / 85m revisit after SDK-RC (≈ Aug 2026); 85g / 85j revisit after RC-final (2026-07-28); 85c / 85e / 85h / 85i are cut. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100. The next release tag is V1.1.x — both the hygiene + positioning + UX band (101–104 + 108) and the Playground-depth band (105 + 106 + 107 + 107a + 107c + 107d) roll up under it; the previously-sketched V1.2 / V1.3 splits collapse. Phases 105–107c ship with this release: Console first-attach UX (105), Playground real assistant response (106), the streaming completion pipeline (107), reasoning trace projection (107a), and native tool-calling + deferred tools/skills + search meta-tools (107c) — the four built-in `*_search`/`*_get` meta-tools plus the optional `declarative_action` escape-hatch tool preserving brief 07's prompt-engineered path for weaker models. The 107b streaming answer extractor was deliberately superseded by 107c (one cutover instead of stop-gap-then-replace); the file at `docs/plans/phase-107b-streaming-answer-extractor.md` is kept as historical context. Phase 107d (shipped) is the native-tool-calling follow-up that closes 107c's documented serialization carve-out: it wires the already-shipped `internal/runtime/parallel.Executor` (Phase 47 / D-056) into the dev `ToolExecutor`, flips the React planner to native `CallParallel` emission for N>1 tool-calls, and pins the `JoinKind`-collapses-to-`JoinAll`-on-native semantic (D-169). Phase 107e (pending) closes the last `ErrDecisionShapeUnsupported` carve-out the dev `ToolExecutor` carries: it wires `planner.SpawnTask` + `planner.AwaitTask` dispatch through the already-shipped `tasks.TaskRegistry` (Phase 47 / D-056) and teaches the per-task RunLoop driver to drive `KindBackground` tasks (closing the D-097 dead-task gap for the background kind), bounded by a new `planner.absolute_max_spawn_depth` recursion cap; on the synchronous V1.1.x runloop a retain-turn spawn blocks in-decision and a non-retain-turn spawn is joined by an explicit `AwaitTask` (eager push wake-on-resolution is a documented steering-runloop follow-up). SpawnTask + AwaitTask dispatch land together per §13 (D-170). Phase 108 starts a 14-round page-by-page visual-polish series (one phase per Console page, anchored to `docs/design/console/page-*.md` + `docs/design/console/CONVENTIONS.md`) and is the largest piece still pending under V1.1.x. Background context for the native-tool-calling cutover: research brief 15. **Immediately after Phase 108, the three-phase "MCP Apps host" wave 109a–c lands (D-172):** 109a (MCP Apps runtime + Protocol surface — `_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy), 109b (Console sandboxed-iframe host + the official `ext-apps` AppBridge in manual-handler mode + inline DisplayMode), 109c (fullscreen-tab + pip-split DisplayMode layout). This wave **deprecates and supersedes Phase 85g**, pulling MCP Apps forward from the post-V1 85-band: Apps is a stable independent extension (`io.modelcontextprotocol/ui`), not gated on the July RC, and ships an official host bridge that removes 85g's hand-rolled-bridge risk. The architectural invariant is D-173 — the AppBridge runs in manual-handler mode and every app→host call is Protocol-proxied through the Runtime, never a direct MCP connection, so an in-iframe app stays inside the `(tenant, user, session)` isolation boundary and the unified approval/OAuth gates. The 14-round page-polish series continues from the next free integer after the 109 band; the band precedes it in execution order, it does not displace it. **Live Runtime reframe (2026-06-01, D-177):** after 108d shipped the topology-first Live Runtime page, an operator review found it low-value and Playground-overlapping on the dominant planner/RunLoop runtime (no engine graph). Phase 108e supersedes the topology-first composition (D-126) with a single-runtime **capability-adaptive cockpit** — the runtime's advertised `runtime.info` capabilities compose the page (an always-present spine + capability-gated topology / health / cost panels), so it is full on a planner runtime and richer on engine/multi-agent shapes with no rebuild. Plan: `docs/plans/phase-108e-live-runtime-capability-cockpit.md`. **Protocol auth-hardening sequence (114–116, D-219):** a planning + adversarial review of the Protocol surface found a steering-control privilege escalation — `dispatchControl` derived caller scope + tenant from the request *body* instead of the verified context identity, so a caller could assert `scope:"admin"` in the body and the cross-tenant gate could never fire. Phase 114 (shipped) closes it: the control surface now reads authority from `identity.From(ctx)` + the JWT scope claims, fails closed when no verified identity is present, and a non-admin caller can steer only runs it owns (admin for cross-tenant). 114 is the prerequisite hardening for the lesser-privileged-token work: Phase 115 adds production JWKS verification + a `harbor serve` auth path (giving the inert `JWKSURL`/`JWKSFile` config fields a consumer), and Phase 116 introduces the non-admin session-scoped token contract — the consumer that makes 114's derivation load-bearing and the seam where the `session_user` tier becomes safe to grant. Independently, Phase 117 hardens the chat module's encapsulation boundary (D-091) so it renders self-contained — its own theming contract, font-family inheritance, and host/theme parameterization — with no Console look-and-feel leakage, and Phase 118 builds the long-tracked `protocol-ts-gen-check` gate as a field-level lockstep VERIFICATION of the hand-maintained per-page TS client against a committed, Go-generated wire manifest (`cmd/harbor-protocol-ts-lockstep`) — a D-093 deviation (D-223): the "generate" half (per-domain generated TS type modules) is a deferred future phase and the `cmd/harbor-gen-protocol-ts` name stays reserved for it.
 
@@ -2381,6 +2388,337 @@ per §17.8). Status: Shipped (V1.6).
   driver directly for `DeriveSchema`; it now depends on the neutral
   `internal/tools/schema` package instead, same as the driver and
   `RunTyped`.
+
+### Phase 145 — Governance attempt-level cost accounting: the in-band attempt-cost tap
+
+- **Subsystem:** internal/governance (`Wrap` tap install + `CostAccumulator`
+  drain-and-fold), internal/llm (the attempt-cost tap primitive),
+  internal/llm/retry + internal/llm/output (the report sites).
+- **RFC:** §6.15 (governance — PostCall cost accumulation, per-identity
+  ceilings), §6.5 (the LLM-edge retry/downgrade layers whose internal
+  attempts become accounting-visible).
+- **Deps:** 36a (the CostAccumulator being made attempt-accurate, D-044),
+  36 (the retry-with-feedback wrapper — the dominant leak site, D-043),
+  35 (the downgrade chain — the secondary leak site), 33 (bifrost cost
+  reporting), 143 (the first production `Validator` consumer — what took
+  the gap from latent to live, D-272).
+- **What it delivers:** closes the "Known accounting gap" recorded in D-272
+  and at `internal/governance/wrap.go`: governance composes OUTSIDE retry
+  (D-043/D-044, deliberately unchanged), so every intermediate corrective
+  re-ask and downgrade attempt is a real provider call invisible to the
+  `CostAccumulator` — worst case `(MaxRetries+1)×3` uncounted calls per
+  planner turn. Fix: a synchronous in-band **attempt-cost tap** —
+  `governance.Wrap` installs a per-call ctx-carried accumulator after
+  `PreCall` permits; the retry wrapper reports each validator-rejected
+  non-final attempt, the downgrade wrapper reports every errored attempt;
+  `PostCall` drains once and folds tap total + final `resp.Cost` under the
+  existing identity-triple key. The propagate-or-report invariant (each
+  inner outcome is either propagated to the caller or consumed-and-reported,
+  never both, never neither) makes accounting exactly-once and
+  compose-order-independent. Deliberately NOT an `llm.cost.recorded`
+  subscriber — the in-band rationale pinned at the accumulator ("the next
+  PreCall sees the latest total without a bus-delivery race") is settled,
+  and a subscriber accumulator would be a §13 second parallel
+  implementation. PreCall short-circuit semantics, `resp.Cost` semantics,
+  identity keying, and the event taxonomy are all unchanged; attempt spend
+  accumulates even when the outer call ultimately errors (fail-loud, §13).
+  Exactness test drives distinct per-attempt costs through retry ×
+  downgrade across all three terminal shapes; a ceiling test proves
+  intermediate attempts trip the NEXT PreCall; N≥100 shared-chain D-025
+  stress; the stale bifrost "governance subscribes" doc comment is
+  corrected in the same PR. See
+  `docs/plans/phase-145-governance-attempt-accounting.md`.
+- **Decision:** D-275.
+- **Status:** Pending.
+
+### Phase 146 — Per-task structured output: the `answer_payload` per-task producer
+
+- **Subsystem:** internal/protocol (the `start` wire field + edge validation),
+  internal/tasks (`SpawnRequest`/`Task` plumbing + conformance),
+  internal/runtime/runctx (the promoted shared envelope builder),
+  internal/runtime/assemble (RunOnce re-based on it), cmd/harbor +
+  harbortest/devstack (the twin per-task RunLoop drivers), web/console
+  (typed-client parity + manifest regen).
+- **RFC:** §6.5 (run-level structured output — the per-task producer for the
+  same mechanism), §6.2 ("schema mode" as a runtime-level run option),
+  §6.8 (the task answer-envelope contract, extended additively), §5.2 (the
+  `start` task-control method; `tasks.get` surfacing the payload), §5.3
+  (additive field — no version bump).
+- **Deps:** 143 (the compile/steer/validate mechanism + `AnswerPayload`,
+  D-272), 110a (the canonical `planner.AnswerEnvelope`, D-194), 118 (the
+  D-223 TS lockstep gate this wire change must satisfy), 54 (the `start`
+  Protocol control surface), 73d (`tasks.get` + `result_inline`), 87 (the
+  durable TaskService backend the persisted field rides), 107e
+  (SpawnTask/AwaitTask dispatch + `taskOutcomeObservation`, D-170).
+- **What it delivers:** closes the run-level/per-task asymmetry Phase 143
+  deliberately left (the `answer_payload` key is documented "reserved" at
+  `internal/runtime/dispatch/dispatch.go::taskOutcomeObservation` and
+  `internal/tasks/tasks.go::TaskResult`). A new additive `output_schema`
+  field on `types.StartRequest` (per-run granularity — deliberately not
+  agent config: D-234's next-turn projection is per-agent desired state)
+  flows request → task record → the per-task drivers, which compile once
+  at run start (`planner.CompileOutputSchema` — the edge also rejects a
+  bad schema with `CodeInvalidRequest` before any task spawns), set
+  `RunSpec.Base.OutputSchema` so the React driver's existing per-turn
+  steering engages unchanged, and validate the terminal Finish through ONE
+  promoted `runctx` envelope builder shared with `RunOnce` (§13 — the
+  RunLoop deliberately does not validate; every run-edge caller invokes
+  the same implementation). The validated payload lands as `answer_payload`
+  on the task envelope, surfacing via `tasks.get` `result_inline` and the
+  AwaitTask parent observation (whose D-026 `projectForLLM` offload
+  already applies — test-pinned). Schema-invalid after the retry budget →
+  the task fails loud with the new `output_invalid` terminal code, never a
+  schemaless success; token deltas are suppressed on schema-constrained
+  tasks (the D-272 buffered posture, mirrored). Full D-223 lockstep dance
+  and D-209 docs regen. The §13 consumer is the AwaitTask round-trip E2E the
+  v1.9 wave-end audit specified: a parent run awaits a schema-constrained
+  task and receives the validated payload in its observation, with the
+  schema-invalid-after-budget failure mode asserted. Non-goals recorded:
+  planner-emitted `SpawnTask` schemas (sealed Decision sum, D-047),
+  config-level default schemas, partial-object streaming (#444),
+  `TaskDetail` schema exposure (no consumer yet). See
+  `docs/plans/phase-146-per-task-structured-output.md`.
+- **Decision:** D-276.
+- **Status:** Pending.
+
+### Phase 147 — Events conformance suite: the shared multi-driver home + the duplicated-scenario fold
+
+- **Subsystem:** internal/events (the new `internal/events/conformancetest`
+  suite package + both driver packages' `_test.go` files).
+- **RFC:** §6.13 (the typed event bus — the one contract both drivers
+  implement), §6.9 (sessions — the erasure cascade whose bus-side fence
+  contract is among the folded scenarios).
+- **Deps:** 05 (inmem bus + taxonomy), 06 (replay + ring + cursor), 57 (the
+  durable driver), 125 (the `HistoryReplayer` Bounds/Window surface, D-254),
+  130 (session erasure — the cascade the `Fencer` serves, D-262; its
+  fail-loud hardening is D-274 item 2).
+- **What it delivers:** the CLAUDE.md §11 conformance-suite rule applied to
+  the one multi-driver subsystem that never got its home — the v1.9 wave
+  audit's deferred NIT 7. `internal/events/conformancetest` mirrors the
+  identity/state/memory precedent exactly (package `conformancetest`,
+  exported `Run(t, factory)`); the `Factory` returns a memory-style
+  `Harness` of three mandatory constructors (default replay-capable /
+  replay-disabled / bounded-retention) because the folded scenarios span bus
+  configurations — the one genuine driver divergence (only best-effort ring
+  mode can return `ErrCursorTooOld`) is parameterized as configuration,
+  never a `Supports*` flag (§4.4). Folds the verified duplicated per-driver
+  scenario pairs — fence (drop-late + empty-history, after-close),
+  Bounds/Window, replay cursors, subscribe scoping, close lifecycle — into
+  20 pinned scenarios under a binding no-coverage-loss mapping table; six
+  cells are coverage GAINS on the driver that lacked the scenario.
+  Identity-scoping scenarios are unconditional members (§6 rule 10). Pure
+  test refactor: zero production change; both drivers consume the suite in
+  the same PR (§13 consumer by construction). Durable recovery/restart,
+  OpenWith, persist-failure, cancellation-bounds, and every per-driver
+  D-025 reuse test stay driver-specific; the timing-sensitive
+  drop-policy/redaction/reaper/admin-audit pairs are the named second
+  tranche. See `docs/plans/phase-147-events-conformance-suite.md`.
+- **Decision:** D-277.
+- **Status:** Pending.
+
+### Phase 148 — MCP southbound per-identity OAuth bearer + `_meta` provenance enrichment
+
+- **Subsystem:** internal/tools/drivers/mcp (per-call bearer injection +
+  `buildIdentityMeta` enrichment), internal/tools (the agent-provenance ctx
+  seam), internal/tools/auth (interface consumer only — no driver change),
+  internal/config + internal/agentcfg + internal/protocol/types (the
+  connection-surface binding fields), web/console (D-223 TS mirror).
+- **RFC:** §6.4 (the MCP southbound transport; the D-271
+  external-provisioning paragraph this makes wire-real), §3.3 (the unified
+  pause primitive the `consent_required` path parks on), §6.16 (the
+  registration `agent_id` stamped as provenance).
+- **Deps:** 142 (the `tokenexchange` driver + D-271 — the credential carried
+  to the wire), 92f (`add_mcp_connection` — the runtime descriptor + attach
+  surface extended), 28 + the 85-band (the MCP driver), 30 + 64a/D-095
+  (`auth.OAuthProvider` + the named-provider registry), 50 (unified
+  pause/resume), 118 (the D-223 lockstep gate the wire change satisfies).
+- **What it delivers:** the missing consumer between Phase 142's brokered
+  credential and the MCP wire — a second consumer needs per-identity
+  southbound credentials on SHARED MCP servers, and today the MCP call path
+  has no auth beyond connect-frozen static headers (the catalog
+  `WrapWithOAuth` pre-check deliberately discards the token it fetches).
+  Four parts. (1) A NON-SECRET `oauth_provider` name binding a declared
+  `tools.oauth_providers[]` entry lands on `config.MCPServerConfig`, the
+  agentcfg `MCPConnectionDescriptor`, and the wire descriptor + add-request
+  (a name is not secret material — the descriptor's never-carry-secrets
+  invariant holds); unknown name fails loud listing registered providers
+  (§4.4), stdio+binding is rejected, and a static `Authorization` header
+  alongside a binding is rejected (one auth mode per connection). (2) Every
+  identity-stamped per-call RPC (tool calls, resource reads,
+  subscribe/unsubscribe, prompt gets) resolves `prov.Token(ctx, source)` and
+  injects `Authorization: Bearer` on THAT request only via a context-aware
+  RoundTripper — the token rides the per-call ctx (D-025; no mutable
+  transport state); a bound provider whose `Token()` fails NEVER falls back
+  to an unauthenticated call, and `consent_required` parks on the unified
+  primitive via the existing typed `*auth.ErrAuthRequired` (§7 rule 4).
+  (3) `buildIdentityMeta` additionally stamps `agent_id` — PROVENANCE via
+  the new `tools.WithInvokingAgent` ctx seam (produced by the run loop + its
+  devstack twin), never an isolation principal (§6/D-059): servers must not
+  filter by it and Harbor keys nothing by it. (4) Operator-declared
+  non-secret `meta_annotations` merge verbatim into every call's `_meta`;
+  reserved keys (triple + `agent_id` + the D-073 trace carriers + the
+  `io.modelcontextprotocol/` prefix) are rejected at validation. The
+  injection seam is deliberately the ONE mechanism the Pending interactive
+  phases (85b discovery, 92l agent-bound) reuse when they land — a second
+  injection transport is the §13 parallel-implementation violation. Wire
+  change runs the full D-223 lockstep + D-209 docs regen. Isolation gate:
+  N≥100 concurrent calls through one shared Provider with distinct triples,
+  the fixture server asserting per-request bearer↔`_meta`-triple match (no
+  token bleed); the integration test reuses Phase 142's RFC-8693 broker
+  fixture plus a go-sdk streamable-HTTP fixture server (§17.8). See
+  `docs/plans/phase-148-mcp-southbound-oauth.md`.
+- **Decision:** D-278.
+- **Status:** Pending.
+
+### Phase 149 — HTTP-manifest boot loader wiring
+
+- **Subsystem:** internal/runtime/assemble (the `assembleCatalogBand` load+register
+  loop), internal/config (validate flip + loader-side path resolution),
+  internal/tools/drivers/http (the shipped-but-boot-consumer-less
+  `LoadManifest`/`RegisterManifest` pair gains its production caller), examples +
+  docs/CONFIG.md (the operator surface goes from "not wired yet" to working).
+- **RFC:** §6.4 ("HTTP tool definitions: both inline … and out-of-process via
+  UTCP-style manifest. Inline is the dev-loop ergonomic; manifest is the operator
+  deployment shape" — this phase makes the second half true at boot; plus the
+  tool-side OAuth paragraphs the consumer exercises), §3.4 (fail-loudly boot
+  posture).
+- **Deps:** 26 (catalog + `ErrToolDuplicateName`), 27 (HTTP driver + manifest
+  types, D-036), 64a (catalog Builder + `tools.entries[]` + `WrapWithOAuth`,
+  D-090/D-095), 110d (`assemble.Assemble` — the one config→stack home, D-196/
+  D-197), 142 (`tokenexchange` + the §17.8 RFC-8693 broker fixture — the test
+  vehicle, D-271).
+- **What it delivers:** the boot path for `tools.http_manifests[]`. Today the
+  knob is documented, exemplified, and REJECTED at validate time because no
+  production path calls the loader (`internal/config/config.go` documents the
+  guard; the SDK friction audit §1 pinned it as the canonical dead knob).
+  `assembleCatalogBand` now walks the list — after `builtin.RegisterWith`,
+  BEFORE the catalog Builder's `Apply` — loading each manifest and registering
+  its tools by name, so the EXISTING `tools.entries[].oauth` by-name binding
+  wraps manifest tools with zero new OAuth machinery: config in, brokered-
+  credential pre-check + HTTP round-trip out. This closes the "no
+  config-declarable tool can exercise catalog OAuth wrapping black-box
+  end-to-end" gap. `config.Validate` flips reject→validate (structural checks
+  only — the validator stays I/O-free); `config.Load` resolves relative entries
+  against the config file's directory with the `path_safety.go` Clean+prefix
+  posture (§7 rule 5; escapes fail loud naming `tools.http_manifests[i]`);
+  absolute entries (the documented `/etc/harbor/tools/*.yaml` shape) are Cleaned
+  and accepted. Boot failure modes are loud, naming file + config key: missing/
+  unparseable/`ErrManifestInvalid` manifests, and tool-name collisions
+  (`tools.ErrToolDuplicateName` propagates). Both the binary and
+  `harbortest/devstack` inherit the wiring through the ONE `Assemble` home —
+  no second projection. Non-goals fenced in D-279: no `oauth` field on
+  `ManifestTool` (the by-name path is THE binding home — a manifest-level field
+  would be a §13 second implementation), no MCP/A2A manifest loaders, no hot
+  reload (boot-only, restart-required per §10), no change to `WrapWithOAuth`
+  pre-check-and-discard semantics (southbound injection is Phase 148's concern,
+  for MCP). Ships with the E2E integration test (fixture HTTP server +
+  tokenexchange broker fixture, identity + provenance asserted, ≥2 failure
+  modes, `-race`), the D-025 N≥100 concurrent-reuse test on the shared catalog,
+  the examples/CONFIG.md/godoc honesty sweep, and the §18 skills/recipes grep.
+  See `docs/plans/phase-149-http-manifest-boot-loader.md`.
+- **Decision:** D-279.
+- **Status:** Pending.
+
+### Phase 150 — Run-completion hook: transcript egress through the tool catalog
+
+- **Subsystem:** internal/runtime/steering (the `RunSpec.CompletionHook` seam,
+  transcript assembly, `run.hook_*` events), internal/agentcfg + the run-start
+  projection (the versioned `hooks` section), internal/config (the yaml
+  `runtime.hooks` block), internal/protocol/types (the `AgentConfigHooks` wire
+  section), cmd/harbor + harbortest/devstack (run-start resolution wiring).
+- **RFC:** §6.17 (the new "Run-completion hook" subsection — the RFC amendment
+  rides the same PR as this plan), §6.3 (the run-loop seam + steering payload
+  bounds), §6.4 (the tool-catalog egress + audit posture), §6.13 (the bus
+  events), §6.16 (agent-config content; `agent_id` as metadata).
+- **Deps:** 53 (the RunLoop, D-071), 83i (the `ToolExecutor` seam, D-152),
+  92a (the agent-config registry/projection primitive, D-234), 132
+  (`Stack.RunOnce`, D-265), 148 (same-wave — per-identity MCP OAuth binding;
+  the hook is its non-planner consumer), 149 (soft — HTTP tool targets).
+- **What it delivers:** the runtime's first run-lifecycle hook. Motivation:
+  memory/audit/analytics sinks need the full conversation at completion for
+  runs no client observes — background and disconnected runs have no observer
+  to pull it — and no generic run-completion signal exists (a plain foreground
+  `RunOnce` completing emits nothing on the bus, so a subscriber cannot cover
+  all run types; the hook is therefore a RunLoop-level mechanism at the ONE
+  seam every run type terminates through). `RunLoop.Run` fires the hook
+  exactly once at its terminal boundary — all terminal outcomes, outcome in
+  the payload, never mid-run or on pause — and dispatches a typed,
+  golden-pinned `RunCompletionPayload` transcript (initial goal, steering
+  user messages/redirects captured from live run state in order, assistant
+  steps, final answer, run metadata) to an operator-named catalog tool through
+  the existing executor path: provenance, identity, policy retries, and
+  args-free audit events come free; a bespoke HTTP egress client is the
+  rejected §13 alternative. A hook failure never alters the run outcome
+  (`run.hook_failed` + Warn; success emits `run.hook_dispatched`); the
+  cancelled-run case fires under a bounded `WithoutCancel` ctx that preserves
+  identity values. Config pairs yaml `runtime.hooks.run_completion` with a
+  versioned agentcfg `hooks` section on the existing revision surface (no new
+  Protocol verb; types-only D-223 lockstep + protocol-docs regen). See
+  `docs/plans/phase-150-run-completion-hook.md`.
+- **Decision:** D-280.
+- **Status:** Pending.
+
+### Phase 151 — Runtime loading-mode control on tool exposure: the loading-override layer on the ONE exposure section
+
+- **Subsystem:** internal/agentcfg (the `ToolExposure` loading maps + diff arms),
+  internal/tools (`LoadingOverrideView` + the additive `Tool.Form`
+  classification), internal/runtime/agentcfg (edge validation + the run-start
+  projection), internal/tools/protocol + internal/protocol/types (the
+  effective `loading_mode` read surface).
+- **RFC:** §6.4 (tool catalog — `Tool.Loading`, `CatalogFilter.LoadingModes`,
+  the MCP southbound driver), §6.16 (the agent-config control plane the
+  section extends).
+- **Deps:** 92a (the revisioned desired-state registry, D-234/D-235), 92d
+  (the ToolExposure section + `set_tool_exposure` + `ExclusionView` + the
+  run-start projection — extended), 107c (the deferred-loading engine +
+  `tool_search` meta-tools, D-167), 110a (`tools.NewPlannerView` — the view
+  seam), 118 (the D-223 TS lockstep gate the wire changes must satisfy).
+  Coordination (not semantic): lands after 148 merges — same files
+  (`mcp.go`, `agentconfig.go` wire types, `agentconfig.ts`).
+- **What it delivers:** closes the verified v1.9 gap pair — the MCP driver
+  pins injected TOOLS `LoadingAlways` (`mcp.go:539`; its resources/prompts
+  already register deferred) and the runtime exposure surface has no loading
+  field — by extending `agentcfg.ToolExposure` with `server_loading_modes`
+  (per-`ToolSourceID`, applying to tool-form descriptors only via the new
+  additive `Tool.Form` classification — a server-level `always` must not
+  blanket-surface wrapped resources/prompts) and `tool_loading_modes`
+  (per-name, exact, unconditional), values `always|deferred`, riding the
+  existing `agent_config.set_tool_exposure` verb. ONE pinned precedence
+  order — exposure per-tool > exposure per-server > boot
+  `tools.entries[].loading_mode` > driver default — kills the
+  two-knobs-undefined-precedence §13 smell (the bottom two layers are
+  already materialized into `Tool.Loading` at boot by the catalog Builder).
+  Application is NEXT-turn at the one shared projection seam
+  (`projection.ActivePlannerCatalogView`, called by both run-loop drivers
+  per D-094): a new `tools.LoadingOverrideView` filters `List()` on the
+  EFFECTIVE mode while `Resolve()` never filters on loading — so an
+  overridden-to-deferred tool drops out of the prompt-time catalog but
+  stays `tool_search`-surfaceable and callable through the D-167 two-turn
+  discovery cycle; `ExclusionView` composes outside unchanged (disable
+  stays strictly stronger — hidden from List AND Resolve). Loading is not
+  capability-narrowing (`VisibleNames` spans both modes; the D-234 app→host
+  gate ignores it), so overrides live in the ADMIN tier only — the
+  D-256/D-258 narrow-only user/session tiers gain no map fields. Fail-loud
+  edges: an unknown mode value → 400 `invalid_request` before any registry
+  write (no revision, no event); normalization keeps content hashes stable;
+  `DiffToolExposure` gains structured loading arms (audit =
+  `agent.config.revised` + the diff; no new event type). Read surface:
+  `tools.describe` gains optional `agent_id` and reports the projected
+  effective `loading_mode` via an injected resolver on the
+  `CatalogProjector` (absent `agent_id` = boot-effective, byte-compatible).
+  All wire changes are additive (no ProtocolVersion bump) with the full
+  D-223 lockstep (manifest regen + TS mirror + gates) and D-209 docs regen
+  in the same PR; `docs/skills/use-the-harbor-protocol` updated per §18.
+  Consumer + proof: `test/integration/agentcfg_loading_exposure_test.go`
+  against the real MCP stdio fixture (`cmd/harbor-mcptest-stdio`, §17.8) —
+  flip to deferred → next run's prompt-visible catalog excludes it while
+  `tool_search` still surfaces it; flip back → visible; invalid-mode
+  failure; identity propagation + cross-agent/cross-tenant isolation (§6
+  rule 10); plus an N≥100 concurrent-runs-during-admin-flips D-025 stress
+  (no torn per-run snapshots). RFC §6.4, §6.16. D-281. See
+  `docs/plans/phase-151-tool-loading-exposure.md`.
+- **Decision:** D-281.
+- **Status:** Pending.
 
 ---
 
