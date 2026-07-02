@@ -12,9 +12,12 @@
 #   3. sdk/drivers/prod parity gate: the public aggregator's ONLY
 #      Harbor import is the internal aggregator (parity by init()
 #      transitivity), and it exports no identifiers.
-#   4. No-behavior guard (advisory): the facade declares no func
-#      bodies outside the documented generic forward (inproc's
-#      RegisterFunc, which Go cannot express as a var forward).
+#   4. No-behavior guard: the facade declares no func bodies outside
+#      the enumerated two-func generic-forward allow-list
+#      (sdk/tools/inproc.RegisterFunc, sdk/assemble.RunTyped — D-273
+#      amending D-205 item 1; Go cannot express a generic function as
+#      a var forward). A third func anywhere under sdk/ fails this
+#      gate.
 #   5. The facade-integrity test slice passes under -race.
 
 set -euo pipefail
@@ -81,17 +84,38 @@ else
     ok 'phase 112a: the public aggregator exports no identifiers'
 fi
 
-# --- 4. No-behavior guard (advisory) -----------------------------------------
+# --- 4. No-behavior guard: the enumerated two-func allow-list ---------------
 
 # Scans the SHIPPED facade surface only: production .go files. `_test.go`
 # files are exempt — runnable godoc `Example_*` functions legitimately
-# carry func bodies in test files (the first land under sdk/ in phase 134)
+# carry func bodies in test files (the first landed under sdk/ in phase 134)
 # and are not part of the alias-only forwarding surface (CLAUDE.md §5).
-func_count=$(grep -rE '^func ' sdk/ --include='*.go' --exclude='*_test.go' | grep -cv 'sdk/tools/inproc/inproc.go') || func_count=0
-if [ "${func_count}" -eq 0 ]; then
-    ok 'phase 112a: no func bodies in the facade outside the documented generic forward'
+#
+# D-273 amends D-205 item 1 from "exactly ONE func" to an ENUMERATED
+# allow-list of exactly TWO: sdk/tools/inproc.RegisterFunc (the first
+# generic-forward carve-out) and sdk/assemble.RunTyped (the second,
+# phase 144). Both exist because Go cannot express a generic function
+# as a `var` forward. A func declaration in any THIRD file fails this
+# gate — additions stay decision-gated, not silently accreting.
+allowed_func_files='sdk/tools/inproc/inproc.go
+sdk/assemble/runtyped.go'
+
+func_files=$(grep -lE '^func ' -r sdk/ --include='*.go' --exclude='*_test.go' | sed 's#^\./##' | sort -u) || func_files=""
+unexpected_func_files=$(comm -23 <(echo "${func_files}") <(echo "${allowed_func_files}" | sort -u))
+if [ -z "${unexpected_func_files}" ]; then
+    ok 'phase 112a: no func bodies in the facade outside the enumerated two-func allow-list'
 else
-    fail "phase 112a: found ${func_count} func declarations outside sdk/tools/inproc — the facade must stay forwards-only"
+    fail "phase 112a: found func declarations outside the enumerated allow-list — the facade must stay forwards-only (or the allow-list is stale): ${unexpected_func_files}"
+fi
+for f in ${allowed_func_files}; do
+    if ! echo "${func_files}" | grep -qxF "${f}"; then
+        fail "phase 112a: allow-listed generic forward ${f} has no func declaration — the allow-list is stale"
+    fi
+done
+if [ "$(echo "${func_files}" | grep -c '^')" -eq 2 ]; then
+    ok 'phase 112a: EXACTLY two func-bearing files under sdk/ (the enumerated generic-forward allow-list)'
+else
+    fail "phase 112a: expected exactly 2 func-bearing files under sdk/, found $(echo "${func_files}" | grep -c '^'): ${func_files}"
 fi
 
 # --- 5. The integrity test slice passes under -race --------------------------

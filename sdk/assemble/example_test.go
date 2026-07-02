@@ -34,6 +34,7 @@ import (
 	"github.com/hurtener/Harbor/sdk/assemble"
 	"github.com/hurtener/Harbor/sdk/config"
 	"github.com/hurtener/Harbor/sdk/identity"
+	"github.com/hurtener/Harbor/sdk/planner"
 )
 
 // mockRunnableConfig builds the canonical baseline configuration and
@@ -109,4 +110,55 @@ func Example_streaming() {
 
 	fmt.Println(streamed.String() == env.Answer)
 	// Output: true
+}
+
+// sentimentReport is the RunTyped target type for Example_runTyped — a
+// plain Go struct, no hand-authored JSON Schema required.
+type sentimentReport struct {
+	Sentiment  string  `json:"sentiment"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+
+// fixedFinishPlanner is a deterministic planner.Planner concrete used
+// ONLY to keep this example offline and reproducible: it returns a
+// fixed terminal Finish payload with no LLM call at all, so
+// Example_runTyped needs no network and no scripted-provider ceremony.
+// A production RunTyped call rides the SAME schema-derivation +
+// validation path against a real generation-steering planner — see
+// docs/recipes/embed-harbor-headless.md and examples/embed-runonce/.
+type fixedFinishPlanner struct{ payload any }
+
+func (p fixedFinishPlanner) Next(_ context.Context, _ planner.RunContext) (planner.Decision, error) {
+	return planner.Finish{Reason: planner.FinishGoal, Payload: p.payload}, nil
+}
+
+// Example_runTyped shows the generic typed embed binding: RunTyped
+// derives a JSON Schema from a Go type (the same reflection-based
+// derivation sdk/tools/inproc.RegisterFunc uses for tool registration),
+// drives a schema-constrained run, and returns the validated answer
+// already unmarshaled into that type — replacing the WithOutputSchema
+// + json.Unmarshal two-liner with one generic call.
+func Example_runTyped() {
+	ctx := context.Background()
+
+	cfg := mockRunnableConfig()
+	stack, err := assemble.Assemble(ctx, cfg, assemble.Options{
+		PlannerOverride: fixedFinishPlanner{
+			payload: map[string]any{"sentiment": "positive", "confidence": 0.9},
+		},
+	})
+	if err != nil {
+		log.Fatalf("assemble: %v", err)
+	}
+	defer func() { _ = stack.Close(ctx) }()
+
+	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
+	report, env, err := assemble.RunTyped[sentimentReport](ctx, stack, "Classify the sentiment.", id)
+	if err != nil {
+		fmt.Println("run:", err)
+		return
+	}
+
+	fmt.Println(report.Sentiment, env.FinishReason)
+	// Output: positive goal
 }
