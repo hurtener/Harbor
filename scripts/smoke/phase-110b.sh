@@ -8,7 +8,8 @@
 # two event-closure constructors exist; every package-main / devstack
 # duplicate of the five helpers is deleted (grep-asserted on the
 # definitions); devstack's RunSpec wires Emit + OnChunk and its
-# MarkComplete carries the planner.AnswerEnvelope; the focused test
+# MarkComplete carries the canonical answer envelope via the ONE shared
+# runctx builder (no hand-rolled envelope literal); the focused test
 # slice passes under -race.
 #
 # Conventions (AGENTS.md §4.2): 404/405/501 → SKIP; ≥1 OK once shipped;
@@ -64,13 +65,23 @@ for def in 'devStackProjectMemoryBlocks' 'devStackProjectSkillsContext' \
 done
 
 # 4. Devstack parity: RunSpec wires Emit + OnChunk; MarkComplete
-#    carries the 110a answer envelope instead of TaskResult{}.
+#    carries the 110a answer envelope instead of TaskResult{}. The
+#    envelope construction was later promoted into the ONE shared
+#    builder (runctx.FinishAnswerEnvelope — the per-task structured-
+#    output phase), so the invariant is pinned transitively: devstack
+#    builds its completion envelope through the shared builder, the
+#    shared builder constructs the canonical planner.AnswerEnvelope,
+#    and no hand-rolled envelope literal survives in devstack.
 assert_grep_present 'OnChunk:' "harbortest/devstack/devstack.go" \
     "devstack RunSpec wires OnChunk (streaming parity)"
 assert_grep_present 'Emit:' "harbortest/devstack/devstack.go" \
     "devstack RunSpec wires Emit (planner-telemetry parity)"
-assert_grep_present 'planner\.AnswerEnvelope' "harbortest/devstack/devstack.go" \
-    "devstack MarkComplete carries planner.AnswerEnvelope"
+assert_grep_present 'runctx\.FinishAnswerEnvelope' "harbortest/devstack/devstack.go" \
+    "devstack MarkComplete builds the envelope via the shared runctx builder"
+assert_grep_present 'planner\.AnswerEnvelope' "internal/runtime/runctx/answer_envelope.go" \
+    "the shared builder constructs the canonical planner.AnswerEnvelope"
+assert_grep_absent 'planner\.AnswerEnvelope{' "harbortest/devstack/devstack.go" \
+    "no hand-rolled envelope literal survives in devstack (§13 one-builder rule)"
 assert_grep_absent 'MarkComplete(taskCtx, taskID, tasks.TaskResult{})' "harbortest/devstack/devstack.go" \
     "devstack empty-TaskResult{} completion drift closed"
 

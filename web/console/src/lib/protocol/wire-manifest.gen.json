@@ -5390,6 +5390,11 @@
           "key": "input_artifact_dispositions",
           "type": "object",
           "optional": true
+        },
+        {
+          "key": "output_schema",
+          "type": "any",
+          "optional": true
         }
       ]
     },

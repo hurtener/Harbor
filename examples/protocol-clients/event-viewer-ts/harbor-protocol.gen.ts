@@ -1923,6 +1923,7 @@ export interface StartRequest {
   idempotency_key?: string;
   input_artifact_ids?: string[];
   input_artifact_dispositions?: Record<string, string>;
+  output_schema?: unknown;
 }
 
 export interface StartResponse {

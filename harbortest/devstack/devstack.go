@@ -1735,6 +1735,27 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return
 	}
 
+	// Compile the per-task output schema ONCE at run start (D-094 mirror
+	// of cmd/harbor/cmd_dev_runloop.go). A compile failure fails the run
+	// LOUD with the output_invalid terminal code — the LLM is never
+	// called on a degraded run (§13). Nil for the common schemaless task.
+	var compiledSchema *planner.OutputSchemaValidator
+	if len(task.OutputSchema) > 0 {
+		cs, cErr := planner.CompileOutputSchema(task.OutputSchema)
+		if cErr != nil {
+			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    planner.TaskErrorCodeOutputInvalid,
+				Message: "output-schema compile failed: " + cErr.Error(),
+			}); mErr != nil && d.logger != nil {
+				d.logger.Warn("devstack runloop: MarkFailed(output_invalid) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", mErr.Error()))
+			}
+			return
+		}
+		compiledSchema = cs
+	}
+
 	// Memory + skills are session-scoped (D-149) — see the production
 	// driver for the rationale. The fetch quadruple zeroes RunID.
 	sessionQ := identity.Quadruple{Identity: q.Identity}
@@ -1884,6 +1905,20 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	emit := events.IdentityStampingEmitterContext(d.subCtx, d.bus, q, d.logger)
 	chunkPub := llm.NewChunkPublisherContext(d.subCtx, d.bus, q, string(taskID), d.logger)
 	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
+		// D-272 streaming posture (D-276 mirror of the production driver):
+		// on a schema-constrained task, SUPPRESS assistant-content and
+		// reasoning token DELTAS at this OnChunk → llm.completion.chunk
+		// seam. Step-boundary `done` signals still fire but forward with
+		// an EMPTY delta — never the done chunk's own text — so no token
+		// content leaks on the schema path regardless of driver flush
+		// behaviour; tool-dispatch events are unaffected.
+		if compiledSchema != nil {
+			if !done {
+				return
+			}
+			chunkPub("", done, string(kind))
+			return
+		}
 		chunkPub(delta, done, string(kind))
 	}
 
@@ -1959,6 +1994,10 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			// Phase 111e (D-202) — per-run token budget for the runloop's
 			// compression gate (D-094 mirror of production).
 			Budget: planner.Budget{TokenBudget: d.tokenBudget},
+			// the per-task output schema compiled at run start (D-094
+			// mirror of production) — engages the React driver's existing
+			// per-turn steering with zero planner change. Nil when absent.
+			OutputSchema: compiledSchema,
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,
@@ -1982,8 +2021,13 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	fin, err := d.runLoop.Run(runCtx, spec)
 	if err != nil {
 		code := planner.TaskErrorCodeRunLoopError
-		if errors.Is(err, context.Canceled) {
+		switch {
+		case errors.Is(err, context.Canceled):
 			code = planner.TaskErrorCodeCancelled
+		case compiledSchema != nil && (errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)):
+			// D-276 mirror: a schema-constrained run that exhausted the
+			// correction budget fails LOUD with output_invalid.
+			code = planner.TaskErrorCodeOutputInvalid
 		}
 		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 			Code:    code,
@@ -1996,12 +2040,34 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return
 	}
 	if fin.Reason == planner.FinishGoal {
-		// Phase 83i (D-152) — memory writeback mirror, via the SAME
-		// promoted extractor production calls (Phase 110b — D-195).
+		// Phase 110b (D-195) — answer-envelope parity, now via the ONE
+		// shared builder (runctx.FinishAnswerEnvelope, D-276) production +
+		// RunOnce also call: schemaless → the byte-identical three-key
+		// envelope; schema-constrained → capture + validate the terminal
+		// payload and add the validated `answer_payload`. A schema-invalid
+		// answer fails the task LOUD with output_invalid — never a
+		// MarkComplete of an unvalidated envelope (§13). Built BEFORE the
+		// memory writeback so a schema failure never persists a turn.
+		envelope, envErr := runctx.FinishAnswerEnvelope(fin, traj, compiledSchema)
+		if envErr != nil {
+			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    planner.TaskErrorCodeOutputInvalid,
+				Message: "terminal output failed schema validation: " + envErr.Error(),
+			}); mErr != nil && d.logger != nil {
+				d.logger.Warn("devstack runloop: MarkFailed(output_invalid) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", mErr.Error()))
+			}
+			return
+		}
+
+		// Phase 83i (D-152) — memory writeback mirror. AssistantResponse
+		// is the envelope's Answer (the validated payload string on a
+		// schema run; the extracted answer text otherwise).
 		if d.memory != nil {
 			turn := memory.ConversationTurn{
 				UserMessage:       task.Query,
-				AssistantResponse: runctx.ExtractAssistantAnswer(fin),
+				AssistantResponse: envelope.Answer,
 				Timestamp:         time.Now(),
 			}
 			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil && d.logger != nil {
@@ -2009,18 +2075,6 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 					slog.String("task_id", string(taskID)),
 					slog.String("err", mErr.Error()))
 			}
-		}
-		// Phase 110b (D-195) — answer-envelope parity. The kit
-		// previously marked completion with an EMPTY TaskResult{}, so a
-		// devstack `tasks.get`-shaped read saw no result while
-		// production projected the Phase-106 envelope (the audit's
-		// "empty result" drift). The marshalled shape is the
-		// 110a-exported `planner.AnswerEnvelope` — byte-identical to
-		// production's MarkComplete payload.
-		envelope := planner.AnswerEnvelope{
-			Answer:        runctx.ExtractAssistantAnswer(fin),
-			FinishReason:  string(fin.Reason),
-			ToolCallsSeen: planner.CountToolInvocations(traj),
 		}
 		raw, encErr := json.Marshal(envelope)
 		if encErr != nil {
