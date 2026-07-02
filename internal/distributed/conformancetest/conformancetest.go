@@ -82,6 +82,14 @@ func ctxWith(q identity.Quadruple) context.Context {
 // projects onto (the conformance suite subscribes there to observe
 // delivery), and a cleanup callback. Drivers free to share an
 // EventBus instance across N invocations; cleanup MUST close both.
+//
+// Factories MUST configure the projected EventBus with
+// SubscriberBufferSize >= 100 (the suite's concurrent-publish volume):
+// bounded event buses drop oldest under saturation, so a smaller buffer
+// makes the suite's zero-loss assertion impossible to satisfy and the
+// test re-flakes as permanent message loss. Concurrent_Publish_NoRace
+// enforces this mechanically via a DroppedTotal()==0 check when the
+// EventBus implements events.DroppedCounter.
 type BusFactory func(t *testing.T) (bus distributed.MessageBus, eb events.EventBus, cleanup func())
 
 // RunBus executes the canonical MessageBus correctness suite.
@@ -186,20 +194,22 @@ func RunBus(t *testing.T, factory BusFactory) {
 		defer cleanup()
 
 		// workers concurrent publishers stress the shared bus's internal
-		// state (mutex, dedup map, backing store) under -race; each does a
-		// short run of sequential publishes. The TOTAL (workers*perWorker)
-		// is deliberately held at or below the smallest SubscriberBufferSize
-		// any RunBus caller configures (loopback: 128) so the drop-oldest
-		// EventBus never saturates. A bounded event bus is lossy BY CONTRACT
-		// (§5: bounded channels drop-oldest under backpressure), and the
-		// durable/loopback drivers project each publish onto that bus
-		// synchronously — so a volume that OVERFLOWS the subscriber buffer
-		// drops events permanently, and no amount of waiting recovers them.
-		// (An earlier revision published 512 into a 256/128-deep buffer and
-		// then blamed a "poll interval" for the shortfall; the shortfall was
-		// permanent drop-oldest loss, which flaked this test on loaded CI
-		// runners as a 30s stall. Keeping the volume within the buffer makes
-		// full delivery a deterministic guarantee, not a scheduling gamble.)
+		// state (mutex, dedup map, backing store) under -race; each publishes
+		// perWorker envelopes sequentially (one today — the loop stays for
+		// tunability). The TOTAL (workers*perWorker) is deliberately held at
+		// or below the smallest SubscriberBufferSize any RunBus caller
+		// configures (durable: 256) so the drop-oldest EventBus never
+		// saturates — the BusFactory godoc binds factories to >= 100. A
+		// bounded event bus is lossy BY CONTRACT (§5: bounded channels
+		// drop-oldest under backpressure), and the durable/loopback drivers
+		// project each publish onto that bus synchronously — so a volume that
+		// OVERFLOWS the subscriber buffer drops events permanently, and no
+		// amount of waiting recovers them. (An earlier revision published 512
+		// into a 256-deep buffer and then blamed a "poll interval" for the
+		// shortfall; the shortfall was permanent drop-oldest loss, which
+		// flaked this test on loaded CI runners as a 30s stall. Keeping the
+		// volume within the buffer makes full delivery a deterministic
+		// guarantee, not a scheduling gamble.)
 		const workers = 100
 		const perWorker = 1
 		const target = int64(workers * perWorker)
@@ -247,6 +257,21 @@ func RunBus(t *testing.T, factory BusFactory) {
 			}(w)
 		}
 		wg.Wait()
+
+		// Enforce the BusFactory buffer invariant mechanically: all
+		// publishes (and their synchronous projections) have completed, so
+		// any drop recorded by the EventBus at this point is permanent loss
+		// and full delivery below can never be reached. Failing here — with
+		// the cause named — turns a future misconfigured factory (subscriber
+		// buffer smaller than the suite volume) into an immediate diagnosis
+		// instead of a silent re-flake at the delivery timeout.
+		if dc, ok := eb.(events.DroppedCounter); ok {
+			if dropped := dc.DroppedTotal(); dropped != 0 {
+				t.Fatalf("event bus dropped %d event(s) under backpressure: the factory's EventBus "+
+					"subscriber buffer is smaller than the suite's concurrent-publish volume (%d) — "+
+					"configure SubscriberBufferSize >= %d (see BusFactory godoc)", dropped, target, target)
+			}
+		}
 
 		// Full delivery is now deterministic (total ≤ subscriber buffer, so
 		// the drop-oldest bus cannot saturate): every publish projects
