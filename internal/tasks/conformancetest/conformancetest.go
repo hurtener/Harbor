@@ -47,6 +47,8 @@ type Factory func() (tasks.TaskRegistry, func())
 //
 //   - Spawn_AssignsTaskID
 //   - Spawn_OutputSchema_RoundTrips
+//   - Spawn_OutputSchema_SameKeyDivergentSchemaRejected
+//   - Spawn_OutputSchema_SameKeySameSchemaReused
 //   - Spawn_Idempotent_SameKeyReturnsSameHandle
 //   - Spawn_DifferentSessionsCanReuseKey
 //   - Spawn_EmptyKeyDisablesIdempotency
@@ -151,6 +153,64 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if len(bareTask.OutputSchema) != 0 {
 			t.Fatalf("schemaless task must carry nil OutputSchema, got %s", bareTask.OutputSchema)
+		}
+	})
+
+	t.Run("Spawn_OutputSchema_SameKeyDivergentSchemaRejected", func(t *testing.T) {
+		// The output schema is part of the task's content identity: a
+		// reused idempotency key carrying a DIFFERENT output_schema is
+		// caller misuse and must surface as a loud typed conflict — never
+		// silently adopt the original spawn's schema. Covers both
+		// divergence directions (schema→different-schema and
+		// schema→schemaless).
+		r, cleanup := factory()
+		defer cleanup()
+		ctx := ctxA()
+
+		req := freshSpawnReq(tripleA())
+		req.IdempotencyKey = "schema-divergent-key"
+		req.OutputSchema = json.RawMessage(`{"type":"object","required":["tag"]}`)
+		if _, err := r.Spawn(ctx, req); err != nil {
+			t.Fatalf("Spawn 1: %v", err)
+		}
+
+		// Same key, DIFFERENT schema → typed conflict.
+		req.OutputSchema = json.RawMessage(`{"type":"object","required":["count"]}`)
+		if _, err := r.Spawn(ctx, req); !errors.Is(err, tasks.ErrIdempotencyConflict) {
+			t.Fatalf("same key + different schema: err=%v, want errors.Is ErrIdempotencyConflict", err)
+		}
+
+		// Same key, schema DROPPED entirely → also a conflict.
+		req.OutputSchema = nil
+		if _, err := r.Spawn(ctx, req); !errors.Is(err, tasks.ErrIdempotencyConflict) {
+			t.Fatalf("same key + dropped schema: err=%v, want errors.Is ErrIdempotencyConflict", err)
+		}
+	})
+
+	t.Run("Spawn_OutputSchema_SameKeySameSchemaReused", func(t *testing.T) {
+		// A genuine retry (same key, same body, same schema) is safe: it
+		// returns the existing handle flagged Reused — no spurious
+		// conflict from the content-hash schema fold.
+		r, cleanup := factory()
+		defer cleanup()
+		ctx := ctxA()
+
+		req := freshSpawnReq(tripleA())
+		req.IdempotencyKey = "schema-retry-key"
+		req.OutputSchema = json.RawMessage(`{"type":"object","required":["tag"]}`)
+		h1, err := r.Spawn(ctx, req)
+		if err != nil {
+			t.Fatalf("Spawn 1: %v", err)
+		}
+		h2, err := r.Spawn(ctx, req)
+		if err != nil {
+			t.Fatalf("Spawn 2 (identical retry): %v", err)
+		}
+		if h1.ID != h2.ID {
+			t.Errorf("identical schema retry returned a different ID: %q vs %q", h1.ID, h2.ID)
+		}
+		if !h2.Reused {
+			t.Errorf("identical schema retry did not flag Reused=true")
 		}
 	})
 
