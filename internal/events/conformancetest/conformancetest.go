@@ -33,6 +33,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,6 +278,13 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if out != nil {
 			t.Errorf("Replay(overrun cursor): got %d events, want nil", len(out))
+		}
+		// The wrapped message must carry the (oldest, requested) detail so
+		// a caller falling through to a durable log can interpret the gap
+		// (the ErrCursorTooOld sentinel's documented contract).
+		msg := err.Error()
+		if !strings.Contains(msg, "oldest=") || !strings.Contains(msg, "requested=") {
+			t.Errorf("ErrCursorTooOld message missing (oldest, requested) detail: %q", msg)
 		}
 	})
 
@@ -524,12 +532,16 @@ func mustFencer(t *testing.T, bus events.EventBus) events.Fencer {
 }
 
 // emptyTripleCases enumerates the empty / partial identity filters every
-// identity-mandatory rejection scenario exercises.
+// identity-mandatory rejection scenario exercises: fully empty, each
+// leading-prefix partial, and the single-component user-only /
+// session-only shapes (a session id alone must never satisfy the triple).
 func emptyTripleCases() []events.Filter {
 	return []events.Filter{
 		{},
 		{Tenant: "T"},
 		{Tenant: "T", User: "U"},
+		{User: "U"},
+		{Session: "S"},
 	}
 }
 

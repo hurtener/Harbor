@@ -2518,8 +2518,9 @@ per §17.8). Status: Shipped (V1.6).
   `Capabilities_ReplayerHistoryReplayerFencer_Present` fail-loud capability
   gate) pass against both drivers with ZERO production code change — every
   coverage-GAIN cell passed cleanly, so the named risk of a same-PR
-  production fix never materialized. Coverage moved 93.3%→93.8% (inmem) and
-  88.3%→88.6% (durable) — no regression.
+  production fix never materialized. Coverage moved ~93.5–93.8%→~93.8–94.3%
+  (inmem; run-to-run noisy from timing-dependent branches, no pairing
+  regresses) and 88.3%→88.6% (durable, stable) — no regression.
 
 ### Phase 148 — MCP southbound per-identity OAuth bearer + `_meta` provenance enrichment
 
