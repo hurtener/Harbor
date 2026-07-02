@@ -1,0 +1,34 @@
+# examples/tools/http-weather.yaml — a worked, UTCP-style HTTP
+# manifest for the `tools.http_manifests[]` boot loader.
+#
+# This is the manifest-file counterpart to examples/tools/weather/
+# weather.go's inline Go registration: same tool NAME
+# ("weather.lookup"), same conceptual tool, two registration paths
+# (RFC §6.4 — "both inline and manifest"). Load only ONE of the two at
+# a time; registering the same name twice on one catalog is a
+# duplicate-name boot failure by design (CLAUDE.md §13 — no silent
+# tool-name collision).
+#
+# Point `tools.http_manifests` in harbor.yaml / dev.yaml at this file
+# (absolute path in production, e.g. `/etc/harbor/tools/http-
+# weather.yaml`) to see it load. `${WEATHER_API_KEY}` must be set in
+# the runtime's environment — the loader fails the boot loudly if it
+# is unset (CLAUDE.md §7 rule 2: secrets are env-var references only,
+# never literals in the manifest).
+
+auth:
+  weather_key:
+    kind: api_key
+    header: X-API-Key
+    secret: ${WEATHER_API_KEY}
+
+tools:
+  - name: weather.lookup
+    method: GET
+    url_template: https://api.weather.example/v1/now?city={{ .Args.city | urlquery }}
+    description: Look up current weather conditions by city name.
+    auth_ref: weather_key
+    args_schema: '{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}'
+    out_schema: '{"type":"object","properties":{"temp_c":{"type":"number"},"city":{"type":"string"}}}'
+    side_effect: external
+    tags: [weather, example]

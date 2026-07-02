@@ -79,6 +79,7 @@ import (
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/builtin"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
+	httpdrv "github.com/hurtener/Harbor/internal/tools/drivers/http"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 	"github.com/hurtener/Harbor/internal/tools/drivers/searchcache"
 )
@@ -723,6 +724,25 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		GrantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
 	}, cfg.Tools.BuiltIn); err != nil {
 		return fmt.Errorf("tools/builtin: %w", err)
+	}
+
+	// The HTTP-manifest boot loader: each declared
+	// tools.http_manifests[] file is loaded and its tools registered on
+	// the catalog by name — AFTER built-ins (so a manifest tool can
+	// never silently shadow one) and BEFORE the catalog wiring below
+	// applies tools.entries[] (so an entry naming a manifest tool
+	// resolves cleanly). A missing/unparseable/invalid manifest, or a
+	// tool-name collision against an already-registered tool, fails
+	// the boot loud — naming both the manifest file and the config key
+	// (CLAUDE.md §13: never a silent skip).
+	for i, path := range cfg.Tools.HTTPManifests {
+		manifest, loadErr := httpdrv.LoadManifest(path)
+		if loadErr != nil {
+			return fmt.Errorf("tools.http_manifests[%d] (%s): %w", i, path, loadErr)
+		}
+		if regErr := httpdrv.RegisterManifest(toolCat, manifest); regErr != nil {
+			return fmt.Errorf("tools.http_manifests[%d] (%s): %w", i, path, regErr)
+		}
 	}
 
 	// The shared pauseresume.Coordinator is the unified pause/resume

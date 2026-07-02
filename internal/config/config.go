@@ -770,14 +770,29 @@ type AuditConfig struct{}
 // The block is optional — operators who don't attach external tool
 // sources omit it entirely.
 //
-// `HTTPManifests` lists paths to UTCP-style YAML manifests for
-// the HTTP driver. The boot-path loader is NOT yet wired —
-// no production path calls `LoadManifest` / `RegisterManifest` —
-// so `Validate` REJECTS a non-empty list rather than letting a
-// populated knob silently do nothing (§13; SDK friction audit,
-// docs/notes/sdk-friction-audit.md §1). An empty list is valid and
-// is what the shipped examples carry. HTTP tools are registered
-// programmatically via the driver until the loader lands.
+// `HTTPManifests` lists paths to UTCP-style YAML manifests for the
+// HTTP driver. Each entry is loaded (`http.LoadManifest`) and its
+// tools registered on the runtime catalog (`http.RegisterManifest`)
+// during assembly — AFTER built-in tools and BEFORE `Entries` applies
+// its middleware, so an entry naming a manifest tool resolves
+// cleanly. `Validate` checks the list structurally only (non-empty
+// entries, unique after `filepath.Clean`); existence and parsing are
+// boot's job, not the validator's (the validator stays I/O-free).
+//
+// `Load` resolves a RELATIVE entry against the loaded config file's
+// directory, rejecting one that lexically escapes it (§7 rule 5); an
+// ABSOLUTE entry is `filepath.Clean`ed and accepted as-is (the
+// documented `/etc/harbor/tools/*.yaml` operator deployment shape —
+// the same trust posture as `artifacts.fs_root`). A hand-built
+// `*Config` (no `Load` call, e.g. a headless Go embedder) skips this
+// resolution step entirely; embedders should pass absolute paths.
+//
+// A listed manifest that is missing, unparseable, or fails the
+// driver's own validation (literal secrets, `.Auth` template leaks,
+// unknown fields, missing env refs) fails assembly loudly, naming
+// both the file and this field. A manifest tool whose name collides
+// with an already-registered catalog tool fails assembly the same
+// way. Restart-required: manifests reload only on process restart.
 //
 // `MCPServers` lists the MCP southbound attachments. Each
 // entry boots a `*mcp.Provider` whose discovered tools / resources

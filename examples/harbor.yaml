@@ -545,21 +545,67 @@ planner:
 #   retrieval: semantic
 
 tools:
-  # Phase 27 HTTP tool driver manifests. NOT YET WIRED at boot (see
-  # docs/notes/sdk-friction-audit.md §1): no production path loads
-  # the listed manifests, so `harbor validate` REJECTS a non-empty
-  # list rather than silently accepting a knob that does nothing.
-  # Keep this empty until the boot loader lands; register HTTP tools
-  # programmatically via the Phase 27 driver in the meantime. The
-  # eventual shape (each path a UTCP-style YAML manifest; secrets as
-  # ${ENV_VAR} references — literal values rejected at load time):
+  # Phase 27 HTTP tool driver manifests — loaded at boot by the
+  # HTTP-manifest boot loader (D-279). Each listed path is a
+  # UTCP-style YAML manifest; secrets are ${ENV_VAR} references
+  # (literal values rejected at load time). Assembly loads every
+  # entry via `http.LoadManifest` and registers its tools on the
+  # runtime catalog by name — AFTER built-in tools and BEFORE
+  # `entries[]` below applies its middleware, so an `entries[]` block
+  # naming a manifest tool (approval / OAuth / loading-mode) resolves
+  # cleanly. A relative path resolves against THIS FILE's directory;
+  # an absolute path is Clean-ed and accepted as-is. A manifest that
+  # is missing, unparseable, or fails the driver's own validation
+  # (literal secrets, `.Auth` template leaks, unknown fields, missing
+  # env refs), or a tool name colliding with an already-registered
+  # tool, fails the boot loudly, naming the file and this key.
+  # Restart-required: manifests do not hot-reload.
   #
   #   http_manifests:
-  #     - /etc/harbor/tools/weather.yaml
-  #     - /etc/harbor/tools/github.yaml
+  #     - tools/http-weather.yaml        # relative to this file's dir
+  #     - /etc/harbor/tools/github.yaml  # absolute, accepted as-is
   #
-  # An absent or empty `http_manifests` list is valid.
+  # See examples/tools/http-weather.yaml for a worked manifest — it
+  # pairs with the `entries[].oauth` binding below to demonstrate the
+  # catalog OAuth-wrapping vehicle end to end (D-279). An absent or
+  # empty `http_manifests` list is valid — this is the shipped-example
+  # default so `harbor dev` boots with no external dependency.
   http_manifests: []
+
+  # tools.entries[] — per-tool middleware bindings (approval / OAuth /
+  # loading-mode), applied by name AFTER built-ins and http_manifests
+  # register. Demonstrated here: the http-weather.yaml manifest's
+  # `weather.lookup` tool bound to the `weather-broker` OAuth provider
+  # declared below via `binding_scope: user` — the D-279 catalog-OAuth
+  # vehicle. The pre-check acquires-and-discards a token from the
+  # provider before every invoke (availability gating, D-271 pull-based
+  # token exchange); the manifest's own `auth_ref` static header still
+  # carries the HTTP request credential — the broker token is NOT
+  # injected into the request (southbound injection is transport-
+  # specific and Phase 148's concern for MCP).
+  #
+  # entries:
+  #   - name: weather.lookup
+  #     oauth:
+  #       provider: weather-broker
+  #       binding_scope: user
+  entries: []
+
+  # oauth_token_kek_env / oauth_providers — see examples/dev.yaml (D-095)
+  # for the fully annotated reference, including the interactive
+  # `oauth2` driver. `weather-broker` below (a `tokenexchange` provider,
+  # D-271) is what the `entries[].oauth` binding above names.
+  # oauth_token_kek_env: HARBOR_OAUTH_TOKEN_KEK
+  # oauth_providers:
+  #   - name: weather-broker
+  #     driver: tokenexchange
+  #     client_id_env: HARBOR_BROKER_CLIENT_ID
+  #     client_secret_env: HARBOR_BROKER_CLIENT_SECRET
+  #     token_url: https://broker.example.com/oauth2/token
+  #     extra:
+  #       audience: https://api.weather.example
+  oauth_providers: []
+
   # MCP southbound attachments (Phase 28). Each entry boots a
   # *mcp.Provider whose discovered tools / resources / prompts merge
   # into the runtime catalog. The section is optional — operators

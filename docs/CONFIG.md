@@ -754,11 +754,45 @@ loaded config file's directory.
 ### tools.http_manifests
 
 Paths to UTCP-style YAML manifests for the Phase 27 HTTP driver.
-Default: empty list. **Not yet wired at boot** — no production path
-loads the listed manifests, so validation REJECTS a non-empty list
-(fail-loud per §13; see `docs/notes/sdk-friction-audit.md` §1). Keep
-the list empty until the boot loader lands; register HTTP tools
-programmatically via the Phase 27 driver in the meantime.
+Default: empty list. Loaded at boot by the HTTP-manifest boot loader
+(D-279): assembly calls `http.LoadManifest` on each entry and
+`http.RegisterManifest` to register its tools on the runtime catalog
+by name — AFTER built-in tools and BEFORE `tools.entries[]` applies
+its middleware, so an `entries[]` block naming a manifest tool
+(approval / OAuth / loading-mode) resolves cleanly. Once registered, a
+manifest tool is indistinguishable from one registered inline via
+`RegisterHTTPTool` — same descriptor, same `ToolPolicy` shell, same
+catalog wiring — so `tools.entries[].oauth` (see below) binds an
+OAuth provider to it with zero new machinery.
+
+**Path resolution.** A relative entry resolves against the loaded
+config file's directory (`filepath.Clean(filepath.Join(configDir,
+entry))`); one that lexically escapes the directory (a `../` that
+walks outside it) is rejected at `Load` time with a `fieldError`
+naming `tools.http_manifests[i]` (§7 rule 5). An absolute entry is
+`filepath.Clean`ed and accepted as-is — the same trust posture as
+`artifacts.fs_root`. A hand-built `*Config` constructed without
+`config.Load` (a headless Go embedder) skips this resolution step;
+pass absolute paths in that case.
+
+**Validation vs. boot.** `Validate` checks the list structurally only
+— each entry non-empty after trim, unique after `filepath.Clean` — so
+`harbor validate` accepts a config whose manifest file does not exist
+yet (existence/parsing is boot's job, matching the `tools.mcp_servers`
+precedent of not probing URLs at validate time). A listed manifest
+that is missing, unreadable, unparseable, or fails the driver's own
+validation (`http.ErrManifestInvalid`: literal secrets, `.Auth`
+template leaks, unknown fields, missing env refs) fails `Assemble`
+loudly, naming both the file and `tools.http_manifests[i]`. A manifest
+tool whose name collides with an already-registered catalog tool
+fails the boot the same way (`tools.ErrToolDuplicateName`) — never a
+silent skip.
+
+Restart-required: manifests are boot-only and do not hot-reload. See
+`examples/tools/http-weather.yaml` for a worked manifest and
+`examples/harbor.yaml` / `examples/dev.yaml` for the paired
+`tools.entries[].oauth` binding that exercises catalog OAuth wrapping
+end to end.
 
 ### tools.mcp_servers
 

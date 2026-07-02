@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -92,7 +93,7 @@ func Load(ctx context.Context, path string, opts ...LoadOption) (*Config, error)
 		}
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
-	cfg, err := loadFromBytesNamed(ctx, data, path, opts...)
+	cfg, err := loadFromBytesNamed(ctx, data, path, filepath.Dir(path), opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -103,13 +104,36 @@ func Load(ctx context.Context, path string, opts ...LoadOption) (*Config, error)
 // applies the same env-var overrides and validation pipeline as Load,
 // but does not record a filesystem source — error messages will
 // include "(source: <bytes>)" instead of a path. Options mirror Load.
+//
+// Because there is no source file, `tools.http_manifests` relative
+// entries are NOT resolved against a config directory here (there is
+// none) — they pass through unresolved, exactly like a hand-built
+// `*Config` an embedder constructs in Go.
 func LoadFromBytes(ctx context.Context, data []byte, opts ...LoadOption) (*Config, error) {
-	return loadFromBytesNamed(ctx, data, "<bytes>", opts...)
+	return loadFromBytesNamed(ctx, data, "<bytes>", "", opts...)
+}
+
+// LoadFromBytesAt parses raw YAML bytes the caller already read from
+// path, without re-reading the file. It applies the same env-var
+// overrides, `tools.http_manifests` relative-path resolution (against
+// `filepath.Dir(path)`, §7 rule 5), and validation pipeline as Load —
+// the only difference from Load is that the caller supplies the bytes
+// instead of this function reading them. Error messages record path
+// as the source, exactly as Load's do.
+//
+// Intended for callers that need the raw bytes for their own purposes
+// (e.g. `harbor validate`'s YAML-AST-based line lookup) and would
+// otherwise have to read the file twice to get Load's path-aware
+// behavior.
+func LoadFromBytesAt(ctx context.Context, data []byte, path string, opts ...LoadOption) (*Config, error) {
+	return loadFromBytesNamed(ctx, data, path, filepath.Dir(path), opts...)
 }
 
 // loadFromBytesNamed is the shared implementation. The name is used
-// only for error messages; it has no effect on parsing.
-func loadFromBytesNamed(ctx context.Context, data []byte, source string, opts ...LoadOption) (*Config, error) {
+// only for error messages; it has no effect on parsing. configDir is
+// the directory `tools.http_manifests` relative entries resolve
+// against; empty when there is no real config-file source (LoadFromBytes).
+func loadFromBytesNamed(ctx context.Context, data []byte, source, configDir string, opts ...LoadOption) (*Config, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -131,10 +155,77 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source string, opts ..
 	if err := applyEnvOverrides(cfg); err != nil {
 		return nil, fmt.Errorf("%w: %s: env override: %w", ErrConfigInvalid, source, err)
 	}
+	if err := resolveHTTPManifestPaths(cfg, configDir); err != nil {
+		// Wrapped through cfg.wrapValidationError so the message shape
+		// ("config.<path>: <reason> (source: <name>)") matches every
+		// other semantic-validation error — callers that parse the
+		// field path out of the error string (e.g. `harbor validate`'s
+		// classifyLoaderError) don't need a second code path for this
+		// one check.
+		return nil, fmt.Errorf("%w: %w", ErrConfigInvalid, cfg.wrapValidationError(err))
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfigInvalid, err)
 	}
 	return cfg, nil
+}
+
+// resolveHTTPManifestPaths normalizes each `tools.http_manifests`
+// entry against configDir (CLAUDE.md §7 rule 5). Replicates the
+// `internal/skills/importer/path_safety.go` posture (Clean + Join +
+// canonical-prefix check) rather than importing it — `internal/config`
+// must not grow a dependency on the skills subsystem.
+//
+// An empty configDir (LoadFromBytes / a hand-built *Config) is a
+// no-op: relative entries pass through unresolved, matching every
+// other operator-declared path an embedder sets by hand.
+//
+// An ABSOLUTE entry is `filepath.Clean`ed and accepted unconditionally
+// — the documented `/etc/harbor/tools/*.yaml` deployment shape, the
+// same trust posture as `artifacts.fs_root`. A RELATIVE entry is
+// resolved against configDir; one that lexically escapes it is a loud
+// `fieldError` naming `tools.http_manifests[i]`. An empty-string entry
+// is left untouched so `validateTools` reports the clean "must not be
+// empty" message rather than a confusing path-escape one.
+func resolveHTTPManifestPaths(cfg *Config, configDir string) error {
+	if configDir == "" || len(cfg.Tools.HTTPManifests) == 0 {
+		return nil
+	}
+	canonicalDir, err := filepath.Abs(filepath.Clean(configDir))
+	if err != nil {
+		return fmt.Errorf("tools.http_manifests: resolve config directory %q: %w", configDir, err)
+	}
+	resolved := make([]string, len(cfg.Tools.HTTPManifests))
+	for i, raw := range cfg.Tools.HTTPManifests {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			resolved[i] = raw
+			continue
+		}
+		if filepath.IsAbs(trimmed) {
+			resolved[i] = filepath.Clean(trimmed)
+			continue
+		}
+		joined := filepath.Clean(filepath.Join(canonicalDir, trimmed))
+		if !pathHasPrefixWithinRoot(joined, canonicalDir) {
+			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
+				fmt.Sprintf("%q escapes the config directory %q", trimmed, canonicalDir))
+		}
+		resolved[i] = joined
+	}
+	cfg.Tools.HTTPManifests = resolved
+	return nil
+}
+
+// pathHasPrefixWithinRoot is the canonical prefix check (CLAUDE.md §7
+// rule 5): true when p equals root or lies strictly under it,
+// avoiding the false-positive where root=/a would otherwise match
+// /abc.
+func pathHasPrefixWithinRoot(p, root string) bool {
+	if p == root {
+		return true
+	}
+	return strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
 // WithOverrides applies a flat key->string override map to a

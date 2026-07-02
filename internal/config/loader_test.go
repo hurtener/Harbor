@@ -3,6 +3,7 @@ package config_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -346,5 +347,189 @@ func TestConfig_ConcurrentRead_ReuseContract(t *testing.T) {
 	}
 	if delta := runtime.NumGoroutine() - baseline; delta > 0 {
 		t.Fatalf("goroutine leak: baseline=%d, after=%d", baseline, runtime.NumGoroutine())
+	}
+}
+
+// httpManifestFixtureYAML returns the valid_minimal fixture's bytes
+// with a `tools.http_manifests` block appended, one entry per path
+// given (in order).
+func httpManifestFixtureYAML(t *testing.T, entries ...string) []byte {
+	t.Helper()
+	base, err := os.ReadFile(validMinimalFixture)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var b strings.Builder
+	b.Write(base)
+	b.WriteString("\ntools:\n  http_manifests:\n")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "    - %q\n", e)
+	}
+	return []byte(b.String())
+}
+
+// TestLoad_HTTPManifests_ResolvesRelativeAgainstConfigDir — the
+// HTTP-manifest boot loader (CLAUDE.md §7 rule 5): a relative entry
+// resolves against the loaded config file's directory, not the
+// process CWD.
+func TestLoad_HTTPManifests_ResolvesRelativeAgainstConfigDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	cfgPath := filepath.Join(tmpDir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, httpManifestFixtureYAML(t, "tools/weather.yaml"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(context.Background(), cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := filepath.Join(tmpDir, "tools", "weather.yaml")
+	if got := cfg.Tools.HTTPManifests[0]; got != want {
+		t.Errorf("HTTPManifests[0] = %q, want %q", got, want)
+	}
+}
+
+// TestLoad_HTTPManifests_AbsoluteAcceptedAfterClean — an absolute
+// entry is Clean-ed and accepted unconditionally (the documented
+// `/etc/harbor/tools/*.yaml` operator deployment shape).
+func TestLoad_HTTPManifests_AbsoluteAcceptedAfterClean(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, httpManifestFixtureYAML(t, "/etc/harbor/tools//weather.yaml"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(context.Background(), cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := "/etc/harbor/tools/weather.yaml"
+	if got := cfg.Tools.HTTPManifests[0]; got != want {
+		t.Errorf("HTTPManifests[0] = %q, want %q", got, want)
+	}
+}
+
+// TestLoad_HTTPManifests_PathResolutionTable mirrors
+// `internal/skills/importer/path_safety.go`'s rejection-case shape
+// (lexical Clean+prefix escape checks) against the loader's own
+// (replicated, not imported — CLAUDE.md §7 rule 5 + the "config must
+// not depend on skills" constraint) implementation.
+func TestLoad_HTTPManifests_PathResolutionTable(t *testing.T) {
+	cases := []struct {
+		name       string
+		entry      string
+		wantErr    bool
+		wantSuffix string // relative to tmpDir; only checked when !wantErr
+	}{
+		{
+			name:       "relative under config dir",
+			entry:      "tools/weather.yaml",
+			wantSuffix: filepath.Join("tools", "weather.yaml"),
+		},
+		{
+			name:       "relative with harmless dotdot staying inside root",
+			entry:      filepath.Join("tools", "..", "weather.yaml"),
+			wantSuffix: "weather.yaml",
+		},
+		{
+			name:    "relative escape via leading dotdot",
+			entry:   "../escape.yaml",
+			wantErr: true,
+		},
+		{
+			name:    "relative escape via nested dotdot",
+			entry:   filepath.Join("tools", "..", "..", "escape.yaml"),
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfgPath := filepath.Join(tmpDir, "harbor.yaml")
+			if err := os.WriteFile(cfgPath, httpManifestFixtureYAML(t, tc.entry), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := config.Load(context.Background(), cfgPath)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Load accepted escaping entry %q", tc.entry)
+				}
+				if !strings.Contains(err.Error(), "tools.http_manifests[0]") {
+					t.Errorf("err missing field path: %v", err)
+				}
+				if !errors.Is(err, config.ErrConfigInvalid) {
+					t.Errorf("err = %v, want wrapping ErrConfigInvalid", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load(%q): %v", tc.entry, err)
+			}
+			want := filepath.Join(tmpDir, tc.wantSuffix)
+			if got := cfg.Tools.HTTPManifests[0]; got != want {
+				t.Errorf("resolved = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestLoadFromBytes_HTTPManifests_RelativeEntryPassesThroughUnresolved
+// — LoadFromBytes has no config-file directory, so a relative entry
+// is left as-is (matching a hand-built *Config an embedder constructs
+// in Go); only the structural Validate checks apply.
+func TestLoadFromBytes_HTTPManifests_RelativeEntryPassesThroughUnresolved(t *testing.T) {
+	data := httpManifestFixtureYAML(t, "tools/weather.yaml")
+	cfg, err := config.LoadFromBytes(context.Background(), data)
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if got := cfg.Tools.HTTPManifests[0]; got != "tools/weather.yaml" {
+		t.Errorf("HTTPManifests[0] = %q, want unresolved %q", got, "tools/weather.yaml")
+	}
+}
+
+// TestLoadFromBytesAt_HTTPManifests_ResolvesAgainstGivenPathDir proves
+// LoadFromBytesAt resolves a relative entry against filepath.Dir(path)
+// exactly like Load, without re-reading the file — the seam `harbor
+// validate` uses so it exercises the same §7 rule 5 path-safety check
+// as boot instead of silently skipping it (Phase 149 / D-279; a bare
+// LoadFromBytes has no path and cannot resolve).
+func TestLoadFromBytesAt_HTTPManifests_ResolvesAgainstGivenPathDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	cfgPath := filepath.Join(tmpDir, "harbor.yaml")
+	data := httpManifestFixtureYAML(t, "tools/weather.yaml")
+
+	cfg, err := config.LoadFromBytesAt(context.Background(), data, cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFromBytesAt: %v", err)
+	}
+	want := filepath.Join(tmpDir, "tools", "weather.yaml")
+	if got := cfg.Tools.HTTPManifests[0]; got != want {
+		t.Errorf("HTTPManifests[0] = %q, want %q", got, want)
+	}
+}
+
+// TestLoadFromBytesAt_HTTPManifests_RejectsEscape mirrors the Load
+// escape-rejection test, proving LoadFromBytesAt enforces the same
+// §7 rule 5 boundary rather than silently accepting it because the
+// caller supplied the bytes itself.
+func TestLoadFromBytesAt_HTTPManifests_RejectsEscape(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "harbor.yaml")
+	data := httpManifestFixtureYAML(t, "../escape.yaml")
+
+	_, err := config.LoadFromBytesAt(context.Background(), data, cfgPath)
+	if err == nil {
+		t.Fatal("LoadFromBytesAt accepted an escaping relative entry")
+	}
+	if !strings.Contains(err.Error(), "tools.http_manifests[0]") {
+		t.Errorf("err missing field path: %v", err)
+	}
+	if !errors.Is(err, config.ErrConfigInvalid) {
+		t.Errorf("err = %v, want wrapping ErrConfigInvalid", err)
 	}
 }

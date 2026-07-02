@@ -7449,7 +7449,24 @@ scripted-LLM tests lacked.
 ## D-279 — The HTTP-manifest boot loader is wired (`tools.http_manifests[]` loads at boot; validate flips reject→validate); a config-declared manifest tool is the black-box vehicle for catalog OAuth wrapping — no test tool is invented, no manifest-level `oauth` field is added
 
 **Date:** 2026-07-02
-**Status:** Accepted (planning) — v1.10 band
+**Status:** Shipped — v1.10 band (Phase 149)
+
+**Implementation note.** Shipped as designed: `assembleCatalogBand` walks
+`cfg.Tools.HTTPManifests` after `builtin.RegisterWith` and before the catalog
+Builder's `Apply`, calling `http.LoadManifest` + `http.RegisterManifest` per
+entry; `config.Validate` flips reject→validate (non-empty, unique after
+Clean); `config.Load` resolves relative entries against the config file's
+directory with a Clean+canonical-prefix check replicated (not imported) from
+the `internal/skills/importer/path_safety.go` posture, rejecting an escape
+with a `fieldError` naming `tools.http_manifests[i]`. The integration test
+(`test/integration/phase149_http_manifest_boot_test.go`) proves the full
+chain against real drivers: a fixture `httptest.Server` round-trip through the
+manifest's static `auth_ref` header, a `tools.entries[].oauth` binding to the
+Phase 142 `tokenexchange` driver pre-checking the shipped RFC-8693 broker
+fixture before dispatch, two boot failure modes (missing manifest, unknown
+OAuth provider) failing `Assemble` loudly, and a D-025 N=128 concurrent-reuse
+run through one shared catalog under `-race`. No deviation from the plan.
+
 **Where it lives:** `docs/plans/phase-149-http-manifest-boot-loader.md`, RFC §6.4 ("manifest is the operator deployment shape"), `internal/runtime/assemble/assemble.go` (`assembleCatalogBand` — the load+register loop), `internal/config/validate.go` + `loader.go` (the validate flip + the §7 rule 5 relative-path resolution), `internal/tools/drivers/http/manifest.go` (`LoadManifest`/`RegisterManifest`, shipped in Phase 27 and boot-consumer-less since), `docs/CONFIG.md` (`tools.http_manifests`), `docs/notes/sdk-friction-audit.md` §1 (the dead-knob finding this closes), `docs/glossary.md` ("HTTP-manifest boot loader", "UTCP manifest").
 
 **The question.** How does an adopter exercise catalog OAuth wrapping — `tools.entries[].oauth` → `catalog.Builder.wrap` → `WrapWithOAuth`, including runtime-initiated token exchange via the D-271 `tokenexchange` driver — black-box, end-to-end, from operator config alone? Today NOTHING config-declarable can: built-ins are a closed allowlist, custom tools require Go wiring, MCP tools attach after the Builder applies entries, and the one config surface designed for declarative tools (`tools.http_manifests`) is documented, exemplified, and REJECTED at validate time because its boot loader was never wired (the SDK friction audit's §1 dead knob; the validator fails loud per §13 rather than letting a populated knob silently do nothing).
