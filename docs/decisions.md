@@ -7456,9 +7456,17 @@ scripted-LLM tests lacked.
 Builder's `Apply`, calling `http.LoadManifest` + `http.RegisterManifest` per
 entry; `config.Validate` flips reject→validate (non-empty, unique after
 Clean); `config.Load` resolves relative entries against the config file's
-directory with a Clean+canonical-prefix check replicated (not imported) from
-the `internal/skills/importer/path_safety.go` posture, rejecting an escape
-with a `fieldError` naming `tools.http_manifests[i]`. The integration test
+directory with the FULL `internal/skills/importer/path_safety.go` posture
+replicated (not imported): the lexical Clean+canonical-prefix check always,
+plus the symlink-evaluation containment re-check when the joined path exists
+(a symlink inside the config directory crossing outside it is rejected; a
+non-existent manifest skips the symlink leg — boot is the existence home).
+Escapes fail with a `fieldError` naming `tools.http_manifests[i]`. `harbor
+validate` reaches the same resolution through `config.LoadFromBytesAt`
+(empty-path calls degrade to `LoadFromBytes` pass-through semantics), and
+`config.WithOverrides` documents that post-Load manifest overrides skip
+resolution entirely (no config directory is retained on `*Config`) —
+absolute paths only on that seam. The integration test
 (`test/integration/phase149_http_manifest_boot_test.go`) proves the full
 chain against real drivers: a fixture `httptest.Server` round-trip through the
 manifest's static `auth_ref` header, a `tools.entries[].oauth` binding to the

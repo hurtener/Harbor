@@ -780,12 +780,16 @@ type AuditConfig struct{}
 // boot's job, not the validator's (the validator stays I/O-free).
 //
 // `Load` resolves a RELATIVE entry against the loaded config file's
-// directory, rejecting one that lexically escapes it (§7 rule 5); an
-// ABSOLUTE entry is `filepath.Clean`ed and accepted as-is (the
-// documented `/etc/harbor/tools/*.yaml` operator deployment shape —
-// the same trust posture as `artifacts.fs_root`). A hand-built
-// `*Config` (no `Load` call, e.g. a headless Go embedder) skips this
-// resolution step entirely; embedders should pass absolute paths.
+// directory, rejecting one that escapes it (§7 rule 5) — lexically
+// (Clean+prefix) always, and via a symlink-containment re-check when
+// the joined path exists on disk (a symlink inside the directory
+// crossing outside it is rejected; a not-yet-existing manifest gets
+// the lexical check only). An ABSOLUTE entry is `filepath.Clean`ed
+// and accepted as-is (the documented `/etc/harbor/tools/*.yaml`
+// operator deployment shape — the same trust posture as
+// `artifacts.fs_root`). A hand-built `*Config` (no `Load` call, e.g.
+// a headless Go embedder) skips this resolution step entirely;
+// embedders should pass absolute paths.
 //
 // A listed manifest that is missing, unparseable, or fails the
 // driver's own validation (literal secrets, `.Auth` template leaks,

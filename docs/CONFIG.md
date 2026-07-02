@@ -767,13 +767,19 @@ OAuth provider to it with zero new machinery.
 
 **Path resolution.** A relative entry resolves against the loaded
 config file's directory (`filepath.Clean(filepath.Join(configDir,
-entry))`); one that lexically escapes the directory (a `../` that
-walks outside it) is rejected at `Load` time with a `fieldError`
-naming `tools.http_manifests[i]` (§7 rule 5). An absolute entry is
+entry))`); one that escapes the directory is rejected at `Load` time
+with a `fieldError` naming `tools.http_manifests[i]` (§7 rule 5) —
+lexically (a `../` that walks outside it) always, and via a
+symlink-containment re-check when the joined path exists on disk (a
+symlink inside the directory pointing outside it is rejected; a
+not-yet-existing manifest gets the lexical check only, since boot is
+the existence-enforcement home). An absolute entry is
 `filepath.Clean`ed and accepted as-is — the same trust posture as
 `artifacts.fs_root`. A hand-built `*Config` constructed without
-`config.Load` (a headless Go embedder) skips this resolution step;
-pass absolute paths in that case.
+`config.Load` (a headless Go embedder) skips this resolution step, as
+do entries injected post-Load via `config.WithOverrides` (no config
+directory is retained on `*Config`); pass absolute paths in both
+cases.
 
 **Validation vs. boot.** `Validate` checks the list structurally only
 — each entry non-empty after trim, unique after `filepath.Clean` — so

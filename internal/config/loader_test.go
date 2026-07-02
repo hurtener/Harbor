@@ -489,6 +489,72 @@ func TestLoadFromBytes_HTTPManifests_RelativeEntryPassesThroughUnresolved(t *tes
 	}
 }
 
+// TestLoad_HTTPManifests_RejectsSymlinkEscape — the symlink half of
+// the path_safety.go posture: a symlink INSIDE the config directory
+// pointing OUTSIDE it (cfgdir/evil -> <outside>, entry
+// "evil/target.yaml") passes the lexical Clean+prefix check but is
+// caught by the EvalSymlinks containment re-check when the target
+// exists.
+func TestLoad_HTTPManifests_RejectsSymlinkEscape(t *testing.T) {
+	outsideDir := t.TempDir()
+	target := filepath.Join(outsideDir, "target.yaml")
+	if err := os.WriteFile(target, []byte("# outside\n"), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	cfgDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(cfgDir, "evil")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, httpManifestFixtureYAML(t, "evil/target.yaml"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := config.Load(context.Background(), cfgPath)
+	if err == nil {
+		t.Fatal("Load accepted a symlink-escaping relative entry")
+	}
+	for _, want := range []string{"tools.http_manifests[0]", "symlink"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err missing %q: %v", want, err)
+		}
+	}
+	if !errors.Is(err, config.ErrConfigInvalid) {
+		t.Errorf("err = %v, want wrapping ErrConfigInvalid", err)
+	}
+}
+
+// TestLoad_HTTPManifests_SymlinkInsideDirAccepted — the complement:
+// a symlink that stays INSIDE the config directory is followed and
+// accepted (symlinks inside the root are legitimate; only crossing
+// the boundary is rejected).
+func TestLoad_HTTPManifests_SymlinkInsideDirAccepted(t *testing.T) {
+	cfgDir := t.TempDir()
+	realDir := filepath.Join(cfgDir, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "weather.yaml"), []byte("# inside\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(cfgDir, "alias")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, httpManifestFixtureYAML(t, "alias/weather.yaml"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(context.Background(), cfgPath)
+	if err != nil {
+		t.Fatalf("Load rejected an inside-the-directory symlink: %v", err)
+	}
+	want := filepath.Join(cfgDir, "alias", "weather.yaml")
+	if got := cfg.Tools.HTTPManifests[0]; got != want {
+		t.Errorf("HTTPManifests[0] = %q, want %q", got, want)
+	}
+}
+
 // TestLoadFromBytesAt_HTTPManifests_ResolvesAgainstGivenPathDir proves
 // LoadFromBytesAt resolves a relative entry against filepath.Dir(path)
 // exactly like Load, without re-reading the file — the seam `harbor
@@ -531,5 +597,21 @@ func TestLoadFromBytesAt_HTTPManifests_RejectsEscape(t *testing.T) {
 	}
 	if !errors.Is(err, config.ErrConfigInvalid) {
 		t.Errorf("err = %v, want wrapping ErrConfigInvalid", err)
+	}
+}
+
+// TestLoadFromBytesAt_EmptyPath_BehavesLikeLoadFromBytes — an empty
+// path must NOT derive a config directory (filepath.Dir("") is ".",
+// the process CWD — not the config file's directory): relative
+// entries pass through unresolved, exactly like LoadFromBytes.
+func TestLoadFromBytesAt_EmptyPath_BehavesLikeLoadFromBytes(t *testing.T) {
+	data := httpManifestFixtureYAML(t, "tools/weather.yaml")
+	cfg, err := config.LoadFromBytesAt(context.Background(), data, "  ")
+	if err != nil {
+		t.Fatalf("LoadFromBytesAt(empty path): %v", err)
+	}
+	if got := cfg.Tools.HTTPManifests[0]; got != "tools/weather.yaml" {
+		t.Errorf("HTTPManifests[0] = %q, want unresolved %q (empty path must not resolve against CWD)",
+			got, "tools/weather.yaml")
 	}
 }

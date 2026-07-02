@@ -16,15 +16,18 @@
 #      (resolve+invoke, OAuth-wrapped pre-check, 2 failure modes, D-025
 #      concurrent-reuse).
 #   3. `bin/harbor validate` ACCEPTS a temp config declaring
-#      `tools.http_manifests` pointing at a real temp manifest (SKIP — not
-#      FAIL — if the binary still emits the pre-149 "not loaded at boot yet"
-#      rejection, per the §4.2 coexistence convention).
+#      `tools.http_manifests` pointing at a real temp manifest. No
+#      degradation SKIP: preflight builds bin/harbor fresh from this tree,
+#      so a rejection is always a regression — FAIL, never SKIP.
 #   4. `bin/harbor validate` REJECTS a temp config whose relative manifest
 #      entry escapes the config directory (§7 rule 5), naming
 #      `tools.http_manifests` in the output.
 #   5. Static greps: internal/runtime/assemble/assemble.go references
 #      LoadManifest/RegisterManifest; internal/config/validate.go no longer
-#      contains the "not loaded at boot yet" rejection string.
+#      contains the "not loaded at boot yet" rejection string; ManifestTool
+#      carries no `oauth` yaml field (the by-name `tools.entries[].oauth`
+#      path is THE binding home — a manifest-level field would be a §13
+#      second implementation).
 
 set -euo pipefail
 
@@ -148,10 +151,12 @@ tools:
   http_manifests:
     - tools/weather.yaml
 YAML
+    # No pre-flip degradation SKIP here: preflight always builds
+    # bin/harbor fresh from this tree, so a rejection can only be a
+    # regression (including a resurrected reject-guard under ANY
+    # rewording a pattern-match would miss) — fail loud.
     if "${ROOT}/bin/harbor" validate "${tmp_dir}/valid.yaml" >"${tmp_dir}/validate-ok.log" 2>&1; then
         ok 'phase 149: `harbor validate` accepts a populated tools.http_manifests list (structural checks only)'
-    elif grep -qi 'not loaded at boot yet\|not wired' "${tmp_dir}/validate-ok.log"; then
-        skip 'phase 149: bin/harbor predates the validate flip (still emits the pre-149 rejection) — rebuild to exercise this leg'
     else
         fail 'phase 149: `harbor validate` rejected a valid tools.http_manifests config'
         echo "    --- validate output ---"
@@ -219,11 +224,7 @@ tools:
     - ../outside.yaml
 YAML2
     if "${ROOT}/bin/harbor" validate "${tmp_dir}/escape.yaml" >"${tmp_dir}/validate-escape.log" 2>&1; then
-        if grep -qi 'not loaded at boot yet\|not wired' "${tmp_dir}/validate-escape.log" 2>/dev/null; then
-            skip 'phase 149: bin/harbor predates the validate flip — path-escape leg needs a rebuilt binary'
-        else
-            fail 'phase 149: `harbor validate` accepted a relative tools.http_manifests entry that escapes the config directory'
-        fi
+        fail 'phase 149: `harbor validate` accepted a relative tools.http_manifests entry that escapes the config directory'
     elif grep -q 'tools.http_manifests' "${tmp_dir}/validate-escape.log"; then
         ok 'phase 149: `harbor validate` rejects a path-escaping tools.http_manifests entry, naming the field'
     else
@@ -246,5 +247,11 @@ assert_grep_present 'RegisterManifest' internal/runtime/assemble/assemble.go \
     'phase 149: assemble.go calls http.RegisterManifest'
 assert_grep_absent 'not loaded at boot yet' internal/config/validate.go \
     'phase 149: validate.go no longer carries the pre-wiring rejection string'
+# The §13 fence: no manifest-level OAuth field ever lands on ManifestTool —
+# the by-name tools.entries[].oauth path is THE OAuth binding home. A
+# `yaml:"oauth` tag appearing in the manifest schema would be a second
+# parallel implementation of the same conceptual feature.
+assert_grep_absent 'yaml:"oauth' internal/tools/drivers/http/manifest.go \
+    'phase 149: ManifestTool carries no manifest-level oauth field (by-name entries[].oauth is the binding home)'
 
 smoke_summary

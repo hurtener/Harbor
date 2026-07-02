@@ -125,7 +125,16 @@ func LoadFromBytes(ctx context.Context, data []byte, opts ...LoadOption) (*Confi
 // (e.g. `harbor validate`'s YAML-AST-based line lookup) and would
 // otherwise have to read the file twice to get Load's path-aware
 // behavior.
+//
+// An empty path degrades to LoadFromBytes semantics: no config
+// directory is derived (`filepath.Dir("")` would be "." — the process
+// CWD, which is NOT the config file's directory), so relative
+// `tools.http_manifests` entries pass through unresolved and error
+// messages record "<bytes>" as the source.
 func LoadFromBytesAt(ctx context.Context, data []byte, path string, opts ...LoadOption) (*Config, error) {
+	if strings.TrimSpace(path) == "" {
+		return LoadFromBytes(ctx, data, opts...)
+	}
 	return loadFromBytesNamed(ctx, data, path, filepath.Dir(path), opts...)
 }
 
@@ -173,8 +182,9 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source, configDir stri
 // resolveHTTPManifestPaths normalizes each `tools.http_manifests`
 // entry against configDir (CLAUDE.md §7 rule 5). Replicates the
 // `internal/skills/importer/path_safety.go` posture (Clean + Join +
-// canonical-prefix check) rather than importing it — `internal/config`
-// must not grow a dependency on the skills subsystem.
+// canonical-prefix check, then a symlink-evaluation pass) rather than
+// importing it — `internal/config` must not grow a dependency on the
+// skills subsystem.
 //
 // An empty configDir (LoadFromBytes / a hand-built *Config) is a
 // no-op: relative entries pass through unresolved, matching every
@@ -184,9 +194,15 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source, configDir stri
 // — the documented `/etc/harbor/tools/*.yaml` deployment shape, the
 // same trust posture as `artifacts.fs_root`. A RELATIVE entry is
 // resolved against configDir; one that lexically escapes it is a loud
-// `fieldError` naming `tools.http_manifests[i]`. An empty-string entry
-// is left untouched so `validateTools` reports the clean "must not be
-// empty" message rather than a confusing path-escape one.
+// `fieldError` naming `tools.http_manifests[i]`. Symlinks INSIDE the
+// directory are followed but never crossed to a destination outside
+// it: when the joined path exists, `filepath.EvalSymlinks` re-checks
+// containment against the symlink-resolved directory; when it does
+// not exist (legitimate — the validator is I/O-free and boot is the
+// existence-enforcement home), the lexical check carries alone. An
+// empty-string entry is left untouched so `validateTools` reports the
+// clean "must not be empty" message rather than a confusing
+// path-escape one.
 func resolveHTTPManifestPaths(cfg *Config, configDir string) error {
 	if configDir == "" || len(cfg.Tools.HTTPManifests) == 0 {
 		return nil
@@ -211,6 +227,28 @@ func resolveHTTPManifestPaths(cfg *Config, configDir string) error {
 			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
 				fmt.Sprintf("%q escapes the config directory %q", trimmed, canonicalDir))
 		}
+		// Symlink-evaluation pass (the second half of the
+		// path_safety.go posture). EvalSymlinks errors when any
+		// component does not exist; that's fine — the manifest may
+		// legitimately not exist yet at Load time, and the lexical
+		// check above already carried. When the path DOES resolve,
+		// a symlink inside the config directory pointing outside it
+		// (e.g. cfgdir/evil -> /etc, entry "evil/passwd") is caught
+		// here.
+		if evaluated, evalErr := filepath.EvalSymlinks(joined); evalErr == nil {
+			evaluatedDir, dirErr := filepath.EvalSymlinks(canonicalDir)
+			if dirErr != nil {
+				// The directory must be resolvable if a path under it
+				// just was; surface the error rather than silently
+				// skipping the containment check.
+				return fmt.Errorf("tools.http_manifests: resolve config directory %q: %w", canonicalDir, dirErr)
+			}
+			if !pathHasPrefixWithinRoot(evaluated, evaluatedDir) {
+				return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
+					fmt.Sprintf("%q escapes the config directory %q via symlink (resolves to %q)",
+						trimmed, evaluatedDir, evaluated))
+			}
+		}
 		resolved[i] = joined
 	}
 	cfg.Tools.HTTPManifests = resolved
@@ -233,6 +271,15 @@ func pathHasPrefixWithinRoot(p, root string) bool {
 // matching the YAML field names ("server.bind_addr", "llm.model").
 // This is the seam for CLI flag layering and Console
 // pushed config (post-V1); Harbor ships only the mechanism.
+//
+// Constraint: `tools.http_manifests` entries injected here skip the
+// Load-time relative-path resolution (the config file's directory is
+// not retained on *Config, so there is nothing to resolve against —
+// only the structural re-validation runs). Overrides that set
+// manifest paths must use ABSOLUTE paths; a relative entry passes
+// through unresolved and resolves against the process CWD at boot
+// via the HTTP driver's own Clean+Abs, exactly like a hand-built
+// *Config's would.
 func WithOverrides(c *Config, overrides map[string]string) (*Config, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w: WithOverrides called with nil *Config", ErrConfigInvalid)
