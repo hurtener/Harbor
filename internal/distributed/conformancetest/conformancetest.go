@@ -185,8 +185,24 @@ func RunBus(t *testing.T, factory BusFactory) {
 		bus, eb, cleanup := factory(t)
 		defer cleanup()
 
-		const workers = 128
-		const perWorker = 4
+		// workers concurrent publishers stress the shared bus's internal
+		// state (mutex, dedup map, backing store) under -race; each does a
+		// short run of sequential publishes. The TOTAL (workers*perWorker)
+		// is deliberately held at or below the smallest SubscriberBufferSize
+		// any RunBus caller configures (loopback: 128) so the drop-oldest
+		// EventBus never saturates. A bounded event bus is lossy BY CONTRACT
+		// (§5: bounded channels drop-oldest under backpressure), and the
+		// durable/loopback drivers project each publish onto that bus
+		// synchronously — so a volume that OVERFLOWS the subscriber buffer
+		// drops events permanently, and no amount of waiting recovers them.
+		// (An earlier revision published 512 into a 256/128-deep buffer and
+		// then blamed a "poll interval" for the shortfall; the shortfall was
+		// permanent drop-oldest loss, which flaked this test on loaded CI
+		// runners as a 30s stall. Keeping the volume within the buffer makes
+		// full delivery a deterministic guarantee, not a scheduling gamble.)
+		const workers = 100
+		const perWorker = 1
+		const target = int64(workers * perWorker)
 
 		// Subscribe per-triple so identity isolation is enforced.
 		triple := tripleA()
@@ -199,15 +215,14 @@ func RunBus(t *testing.T, factory BusFactory) {
 		}
 		defer sub.Cancel()
 
-		var (
-			received atomic.Int64
-			doneCh   = make(chan struct{})
-		)
+		var received atomic.Int64
+		reached := make(chan struct{}) // closed by the consumer once target is met
 		go func() {
 			for range sub.Events() {
-				received.Add(1)
+				if received.Add(1) == target {
+					close(reached)
+				}
 			}
-			close(doneCh)
 		}()
 
 		var wg sync.WaitGroup
@@ -233,20 +248,18 @@ func RunBus(t *testing.T, factory BusFactory) {
 		}
 		wg.Wait()
 
-		// Drain: wait until received count stabilises at workers*perWorker.
-		// The window is generous because a poll-based driver (the durable
-		// bus) delivers on its poll interval, which stretches under heavy
-		// `-race` CI load — a tight deadline flakes as "lost messages or
-		// stalled" when the messages are merely still in flight.
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			if received.Load() >= int64(workers*perWorker) {
-				break
-			}
-			runtime.Gosched()
-		}
-		if got, want := received.Load(), int64(workers*perWorker); got < want {
-			t.Errorf("received: %d < %d (lost messages or stalled)", got, want)
+		// Full delivery is now deterministic (total ≤ subscriber buffer, so
+		// the drop-oldest bus cannot saturate): every publish projects
+		// synchronously, so the consumer typically reaches target before
+		// wg.Wait() even returns. Wait on the consumer's completion signal
+		// with a bounded real-time timeout — no busy-spin, no sleep-as-sync
+		// (§11 / §17.4). Reaching the timeout means events were genuinely
+		// lost or delivery stopped, which is a real fault at this volume,
+		// not a margin problem — so it fails loudly with the shortfall.
+		select {
+		case <-reached:
+		case <-time.After(10 * time.Second):
+			t.Errorf("received %d of %d within timeout (lost messages or stalled)", received.Load(), target)
 		}
 	})
 
