@@ -82,6 +82,14 @@ func ctxWith(q identity.Quadruple) context.Context {
 // projects onto (the conformance suite subscribes there to observe
 // delivery), and a cleanup callback. Drivers free to share an
 // EventBus instance across N invocations; cleanup MUST close both.
+//
+// Factories MUST configure the projected EventBus with
+// SubscriberBufferSize >= 100 (the suite's concurrent-publish volume):
+// bounded event buses drop oldest under saturation, so a smaller buffer
+// makes the suite's zero-loss assertion impossible to satisfy and the
+// test re-flakes as permanent message loss. Concurrent_Publish_NoRace
+// enforces this mechanically via a DroppedTotal()==0 check when the
+// EventBus implements events.DroppedCounter.
 type BusFactory func(t *testing.T) (bus distributed.MessageBus, eb events.EventBus, cleanup func())
 
 // RunBus executes the canonical MessageBus correctness suite.
@@ -185,8 +193,26 @@ func RunBus(t *testing.T, factory BusFactory) {
 		bus, eb, cleanup := factory(t)
 		defer cleanup()
 
-		const workers = 128
-		const perWorker = 4
+		// workers concurrent publishers stress the shared bus's internal
+		// state (mutex, dedup map, backing store) under -race; each publishes
+		// perWorker envelopes sequentially (one today — the loop stays for
+		// tunability). The TOTAL (workers*perWorker) is deliberately held at
+		// or below the smallest SubscriberBufferSize any RunBus caller
+		// configures (durable: 256) so the drop-oldest EventBus never
+		// saturates — the BusFactory godoc binds factories to >= 100. A
+		// bounded event bus is lossy BY CONTRACT (§5: bounded channels
+		// drop-oldest under backpressure), and the durable/loopback drivers
+		// project each publish onto that bus synchronously — so a volume that
+		// OVERFLOWS the subscriber buffer drops events permanently, and no
+		// amount of waiting recovers them. (An earlier revision published 512
+		// into a 256-deep buffer and then blamed a "poll interval" for the
+		// shortfall; the shortfall was permanent drop-oldest loss, which
+		// flaked this test on loaded CI runners as a 30s stall. Keeping the
+		// volume within the buffer makes full delivery a deterministic
+		// guarantee, not a scheduling gamble.)
+		const workers = 100
+		const perWorker = 1
+		const target = int64(workers * perWorker)
 
 		// Subscribe per-triple so identity isolation is enforced.
 		triple := tripleA()
@@ -199,15 +225,14 @@ func RunBus(t *testing.T, factory BusFactory) {
 		}
 		defer sub.Cancel()
 
-		var (
-			received atomic.Int64
-			doneCh   = make(chan struct{})
-		)
+		var received atomic.Int64
+		reached := make(chan struct{}) // closed by the consumer once target is met
 		go func() {
 			for range sub.Events() {
-				received.Add(1)
+				if received.Add(1) == target {
+					close(reached)
+				}
 			}
-			close(doneCh)
 		}()
 
 		var wg sync.WaitGroup
@@ -233,20 +258,33 @@ func RunBus(t *testing.T, factory BusFactory) {
 		}
 		wg.Wait()
 
-		// Drain: wait until received count stabilises at workers*perWorker.
-		// The window is generous because a poll-based driver (the durable
-		// bus) delivers on its poll interval, which stretches under heavy
-		// `-race` CI load — a tight deadline flakes as "lost messages or
-		// stalled" when the messages are merely still in flight.
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			if received.Load() >= int64(workers*perWorker) {
-				break
+		// Enforce the BusFactory buffer invariant mechanically: all
+		// publishes (and their synchronous projections) have completed, so
+		// any drop recorded by the EventBus at this point is permanent loss
+		// and full delivery below can never be reached. Failing here — with
+		// the cause named — turns a future misconfigured factory (subscriber
+		// buffer smaller than the suite volume) into an immediate diagnosis
+		// instead of a silent re-flake at the delivery timeout.
+		if dc, ok := eb.(events.DroppedCounter); ok {
+			if dropped := dc.DroppedTotal(); dropped != 0 {
+				t.Fatalf("event bus dropped %d event(s) under backpressure: the factory's EventBus "+
+					"subscriber buffer is smaller than the suite's concurrent-publish volume (%d) — "+
+					"configure SubscriberBufferSize >= %d (see BusFactory godoc)", dropped, target, target)
 			}
-			runtime.Gosched()
 		}
-		if got, want := received.Load(), int64(workers*perWorker); got < want {
-			t.Errorf("received: %d < %d (lost messages or stalled)", got, want)
+
+		// Full delivery is now deterministic (total ≤ subscriber buffer, so
+		// the drop-oldest bus cannot saturate): every publish projects
+		// synchronously, so the consumer typically reaches target before
+		// wg.Wait() even returns. Wait on the consumer's completion signal
+		// with a bounded real-time timeout — no busy-spin, no sleep-as-sync
+		// (§11 / §17.4). Reaching the timeout means events were genuinely
+		// lost or delivery stopped, which is a real fault at this volume,
+		// not a margin problem — so it fails loudly with the shortfall.
+		select {
+		case <-reached:
+		case <-time.After(10 * time.Second):
+			t.Errorf("received %d of %d within timeout (lost messages or stalled)", received.Load(), target)
 		}
 	})
 
