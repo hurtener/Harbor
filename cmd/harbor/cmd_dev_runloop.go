@@ -886,8 +886,15 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// retract already-streamed
 		// tokens, so the validated answer arrives once via the task
 		// envelope. Step-boundary `done` signals still fire (turn
-		// boundaries stay observable); tool-dispatch events are unaffected.
-		if compiledSchema != nil && !done {
+		// boundaries stay observable) but forward with an EMPTY delta —
+		// never the done chunk's own text — so no token content leaks on
+		// the schema path regardless of driver flush behaviour;
+		// tool-dispatch events are unaffected.
+		if compiledSchema != nil {
+			if !done {
+				return
+			}
+			chunkPub("", done, string(kind))
 			return
 		}
 		chunkPub(delta, done, string(kind))

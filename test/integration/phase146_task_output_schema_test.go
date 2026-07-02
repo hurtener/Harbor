@@ -12,10 +12,14 @@
 //   - failure: a schema-invalid-after-budget task fails LOUD with the
 //     output_invalid terminal code; the parent observes the error, never
 //     a schemaless success.
+//   - streaming: a schema-constrained task suppresses token deltas at the
+//     llm.completion.chunk seam (bus-subscriber-verified) while a plain
+//     task on the same stack streams content deltas untouched.
 //   - D-026: a heavy answer_payload riding an AwaitTask observation is
 //     offloaded to an ArtifactRef-shaped stub via projectForLLM.
 //   - D-025: N≥100 concurrent tasks carrying DISTINCT schemas interleaved
-//     with plain tasks against one shared stack — no schema/payload bleed.
+//     with plain tasks against one shared stack — no schema/payload bleed,
+//     no cancellation cross-talk, goroutine baseline restored.
 //
 // Run under -race.
 package integration_test
@@ -24,6 +28,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +39,7 @@ import (
 
 	"github.com/hurtener/Harbor/harbortest/devstack"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -142,7 +148,7 @@ func waitTaskTerminal(t *testing.T, reg tasks.TaskRegistry, ctx context.Context,
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		task, err := reg.Get(ctx, id)
-		if err == nil && (task.Status == tasks.StatusComplete || task.Status == tasks.StatusFailed) {
+		if err == nil && (task.Status == tasks.StatusComplete || task.Status == tasks.StatusFailed || task.Status == tasks.StatusCancelled) {
 			return task
 		}
 		time.Sleep(15 * time.Millisecond)
@@ -262,6 +268,138 @@ func TestE2E_Phase146_AwaitTask_SchemaInvalid_FailsLoud(t *testing.T) {
 	}
 }
 
+// TestE2E_Phase146_StreamingSuppression_SchemaTaskEmitsNoDeltas — the
+// D-272 streaming posture mirrored to the per-task path: a
+// schema-constrained task suppresses assistant-content/reasoning token
+// DELTAS at the driver's OnChunk → llm.completion.chunk seam (only
+// Done:true step-boundary chunks with an EMPTY delta reach the bus),
+// while a plain task on the same stack streams content deltas as today.
+// A real bus subscriber observes both, so inverting the suppression gate
+// fails this test.
+func TestE2E_Phase146_StreamingSuppression_SchemaTaskEmitsNoDeltas(t *testing.T) {
+	t.Parallel()
+	driver := registerPhase146Driver()
+	stack := phase146DevStack(t, driver)
+
+	idCtx, err := identity.With(context.Background(), phase146DevIdentity())
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+
+	// Subscribe BEFORE spawning so no chunk is missed.
+	devID := phase146DevIdentity()
+	sub, err := stack.Bus.Subscribe(context.Background(), events.Filter{
+		Tenant:  devID.TenantID,
+		User:    devID.UserID,
+		Session: devID.SessionID,
+		Types:   []events.EventType{llm.EventTypeCompletionChunk},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	type chunk struct {
+		delta string
+		done  bool
+	}
+	var mu sync.Mutex
+	byTask := map[string][]chunk{}
+	collectDone := make(chan struct{})
+	go func() {
+		defer close(collectDone)
+		for ev := range sub.Events() {
+			p, ok := ev.Payload.(llm.CompletionChunkPayload)
+			if !ok {
+				continue
+			}
+			mu.Lock()
+			byTask[p.TaskID] = append(byTask[p.TaskID], chunk{delta: p.Delta, done: p.Done})
+			mu.Unlock()
+		}
+	}()
+
+	schema := json.RawMessage(`{"type":"object","required":["tag"],"properties":{"tag":{"type":"string"}},"additionalProperties":false}`)
+	schemaH, err := stack.Tasks.Spawn(idCtx, tasks.SpawnRequest{
+		Identity:     identity.Quadruple{Identity: devID},
+		Kind:         tasks.KindForeground,
+		Query:        `stream task <<{"tag":"quiet"}>>`,
+		OutputSchema: schema,
+	})
+	if err != nil {
+		t.Fatalf("Spawn(schema): %v", err)
+	}
+	plainH, err := stack.Tasks.Spawn(idCtx, tasks.SpawnRequest{
+		Identity: identity.Quadruple{Identity: devID},
+		Kind:     tasks.KindForeground,
+		Query:    `plain stream task <<loud text answer>>`,
+	})
+	if err != nil {
+		t.Fatalf("Spawn(plain): %v", err)
+	}
+
+	schemaTask := waitTaskTerminal(t, stack.Tasks, idCtx, schemaH.ID)
+	if schemaTask.Status != tasks.StatusComplete {
+		t.Fatalf("schema task status = %q, want complete; err=%+v", schemaTask.Status, schemaTask.Error)
+	}
+	plainTask := waitTaskTerminal(t, stack.Tasks, idCtx, plainH.ID)
+	if plainTask.Status != tasks.StatusComplete {
+		t.Fatalf("plain task status = %q, want complete; err=%+v", plainTask.Status, plainTask.Error)
+	}
+
+	// Bounded eventually-wait for the trailing done chunks of BOTH tasks
+	// to arrive (publish is async relative to task completion). The done
+	// chunk is emitted after every delta from the same run-loop goroutine,
+	// so once observed, the task's full chunk stream has been recorded.
+	seenDone := func(id tasks.TaskID) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range byTask[string(id)] {
+			if c.done {
+				return true
+			}
+		}
+		return false
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && (!seenDone(schemaH.ID) || !seenDone(plainH.ID)) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	sub.Cancel()
+	<-collectDone
+
+	mu.Lock()
+	defer mu.Unlock()
+	schemaChunks := byTask[string(schemaH.ID)]
+	plainChunks := byTask[string(plainH.ID)]
+
+	// Schema task: EVERY chunk is a Done:true step boundary with an empty
+	// delta — no token content reached the bus.
+	if len(schemaChunks) == 0 {
+		t.Fatal("schema task emitted no chunks at all — the step-boundary done signal must still fire")
+	}
+	for i, c := range schemaChunks {
+		if !c.done {
+			t.Fatalf("schema task leaked a token delta chunk %d (delta=%q done=%v) — suppression gate broken", i, c.delta, c.done)
+		}
+		if c.delta != "" {
+			t.Fatalf("schema task's done chunk %d carries text (%q) — the done forward must use an empty delta", i, c.delta)
+		}
+	}
+
+	// Plain task on the SAME stack: content deltas stream as today.
+	var sawContentDelta bool
+	for _, c := range plainChunks {
+		if !c.done && c.delta != "" {
+			sawContentDelta = true
+			break
+		}
+	}
+	if !sawContentDelta {
+		t.Fatalf("plain task emitted no content deltas (chunks: %+v) — streaming should be unaffected off the schema path", plainChunks)
+	}
+}
+
 // TestE2E_Phase146_AwaitTask_HeavyAnswerPayload_Offloaded — D-026: a
 // large answer_payload riding an AwaitTask observation is offloaded to an
 // ArtifactRef-shaped stub through projectForLLM's EXISTING heavy-output
@@ -318,14 +456,25 @@ func TestE2E_Phase146_AwaitTask_HeavyAnswerPayload_Offloaded(t *testing.T) {
 	if stub["truncated"] != true {
 		t.Fatalf("heavy answer_payload was not offloaded to an ArtifactRef stub: %v", stub)
 	}
+	// The stub must carry the artifact ref the parent can fetch the full
+	// value through — offload without a ref would silently lose data.
+	if ref, _ := stub["artifact_ref"].(string); ref == "" {
+		t.Fatalf("offload stub carries no artifact_ref: %v", stub)
+	}
 }
 
 // TestE2E_Phase146_ConcurrentMixedSchemas_NoBleed — D-025: N≥100
 // concurrent tasks carrying DISTINCT schemas interleaved with plain
 // tasks against one shared stack; each task's result carries ITS OWN
-// payload/answer — no schema/payload bleed across task results.
+// payload/answer — no schema/payload bleed across task results. Every
+// tenth task is cancelled right after its spawn: a cancellation must
+// never cross-talk into a sibling task's outcome. After all tasks are
+// terminal the goroutine count returns to baseline (no per-run leak).
+//
+// NOT t.Parallel(): the goroutine-baseline assertion needs the process
+// to itself while it settles (sibling parallel tests would skew the
+// count).
 func TestE2E_Phase146_ConcurrentMixedSchemas_NoBleed(t *testing.T) {
-	t.Parallel()
 	driver := registerPhase146Driver()
 	stack := phase146DevStack(t, driver)
 
@@ -334,15 +483,19 @@ func TestE2E_Phase146_ConcurrentMixedSchemas_NoBleed(t *testing.T) {
 		t.Fatalf("identity.With: %v", err)
 	}
 
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
 	const n = 120
 	tagSchema := json.RawMessage(`{"type":"object","required":["tag"],"properties":{"tag":{"type":"string"}},"additionalProperties":false}`)
 	numSchema := json.RawMessage(`{"type":"object","required":["count"],"properties":{"count":{"type":"number"}},"additionalProperties":false}`)
 
 	type spawned struct {
-		id       tasks.TaskID
-		schema   bool
-		wantJSON string // the exact answer_payload for schema tasks
-		kind     int    // 0 tag-schema, 1 num-schema, 2 plain
+		id        tasks.TaskID
+		schema    bool
+		wantJSON  string // the exact answer_payload for schema tasks
+		kind      int    // 0 tag-schema, 1 num-schema, 2 plain
+		cancelled bool   // cancellation cross-talk probe
 	}
 	items := make([]spawned, n)
 
@@ -378,6 +531,18 @@ func TestE2E_Phase146_ConcurrentMixedSchemas_NoBleed(t *testing.T) {
 				return
 			}
 			it.id = h.ID
+			// Cancellation cross-talk probe: every tenth task is cancelled
+			// immediately after its spawn. The cancel races the (fast)
+			// scripted run — either terminal outcome is fine for the
+			// cancelled task itself; what MUST hold is that no sibling
+			// task's outcome is affected.
+			if i%10 == 5 {
+				it.cancelled = true
+				if _, cErr := stack.Tasks.Cancel(idCtx, h.ID, "cross-talk probe"); cErr != nil {
+					errs <- fmt.Errorf("cancel %d: %w", i, cErr)
+					return
+				}
+			}
 			items[i] = it
 		}(i)
 	}
@@ -391,6 +556,17 @@ func TestE2E_Phase146_ConcurrentMixedSchemas_NoBleed(t *testing.T) {
 	for i := range items {
 		it := items[i]
 		task := waitTaskTerminal(t, stack.Tasks, idCtx, it.id)
+		if it.cancelled {
+			// The cancel raced the run: cancelled, failed{cancelled}, or
+			// complete (the run won) are all legitimate terminals for THIS
+			// task. If it completed, its payload must still be its own.
+			if task.Status == tasks.StatusFailed && (task.Error == nil || task.Error.Code != planner.TaskErrorCodeCancelled) {
+				t.Fatalf("cancelled task %d failed with a non-cancel code: %+v", i, task.Error)
+			}
+			if task.Status != tasks.StatusComplete {
+				continue
+			}
+		}
 		if task.Status != tasks.StatusComplete {
 			t.Fatalf("task %d (%q) status = %q, want complete; err=%+v", i, it.id, task.Status, task.Error)
 		}
@@ -405,5 +581,17 @@ func TestE2E_Phase146_ConcurrentMixedSchemas_NoBleed(t *testing.T) {
 		} else if len(env.AnswerPayload) != 0 {
 			t.Fatalf("task %d (plain) unexpectedly carries an answer_payload: %s", i, env.AnswerPayload)
 		}
+	}
+
+	// Goroutine baseline restored after all runs are terminal — the
+	// per-run goroutines (run loop, chunk publishers) are joined, not
+	// leaked. Bounded settle loop; tolerance 3 for runtime jitter.
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > baseline+3 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		runtime.GC()
+	}
+	if now := runtime.NumGoroutine(); now > baseline+3 {
+		t.Fatalf("goroutine leak after %d tasks: baseline=%d now=%d", n, baseline, now)
 	}
 }
