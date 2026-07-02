@@ -175,6 +175,11 @@ planner:
   #                           # rejected loudly (the planner sees an error).
 
 tools:
+  # UTCP-style HTTP tool manifests, loaded at boot and registered on
+  # the catalog by name (the HTTP-manifest boot loader, D-279) — see
+  # examples/harbor.yaml for the fully annotated reference and
+  # examples/tools/http-weather.yaml for a worked manifest paired
+  # with the `entries[].oauth` binding below.
   http_manifests: []
   mcp_servers: []
 
@@ -285,6 +290,22 @@ tools:
   #     extra:
   #       audience: https://graph.microsoft.com
   #       cache_ttl_cap: 5m
+
+  # tools.entries[] — per-tool middleware bindings (approval / OAuth /
+  # loading-mode), applied by name AFTER built-ins and http_manifests
+  # register. This is the D-279 catalog-OAuth vehicle: a manifest tool
+  # (e.g. `weather.lookup` from examples/tools/http-weather.yaml, wired
+  # via `http_manifests` above) bound to a `tokenexchange` provider
+  # declared under `oauth_providers` above. The pre-check acquires-
+  # and-discards a broker token before every invoke (availability
+  # gating); the manifest's own `auth_ref` static header still carries
+  # the HTTP request credential.
+  #
+  # entries:
+  #   - name: weather.lookup
+  #     oauth:
+  #       provider: m365-broker
+  #       binding_scope: user
 
 # Phase 65 (D-099) — `harbor dev` hot-reload supervisor. The block is
 # opt-out: every field has a loader-applied default that mirrors the

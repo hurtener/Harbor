@@ -6,6 +6,8 @@ package assemble_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -206,6 +208,45 @@ func TestAssemble_TokenBudget_WithoutLLM_FailsLoud(t *testing.T) {
 	}
 }
 
+// TestAssemble_HTTPManifest_RegistersBeforeEntriesApply — the
+// HTTP-manifest boot loader's ordering guarantee: a manifest tool
+// registers on the catalog (with the "manifest:<name>" provenance
+// stamp) BEFORE the catalog Builder applies tools.entries[], so an
+// entry naming that tool resolves cleanly instead of failing with
+// ErrToolNotRegistered.
+func TestAssemble_HTTPManifest_RegistersBeforeEntriesApply(t *testing.T) {
+	manifestDir := t.TempDir()
+	manifestPath := filepath.Join(manifestDir, "weather.yaml")
+	manifestYAML := "tools:\n  - name: weather.lookup\n    method: GET\n" +
+		"    url_template: https://example.test/weather?city={{ .Args.city | urlquery }}\n" +
+		"    description: test tool\n"
+	if err := os.WriteFile(manifestPath, []byte(manifestYAML), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	cfg := minimalCfg(t)
+	cfg.Tools.HTTPManifests = []string{manifestPath}
+	cfg.Tools.Entries = []config.ToolEntryConfig{
+		{Name: "weather.lookup", Approval: &config.ToolApprovalConfig{Policy: "deny-all"}},
+	}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	defer func() { _ = stack.Close(context.Background()) }()
+
+	desc, ok := stack.Catalog.Resolve("weather.lookup")
+	if !ok {
+		t.Fatal("weather.lookup did not register from the manifest")
+	}
+	if desc.Tool.Source != "manifest:weather.lookup" {
+		t.Errorf("Tool.Source = %q, want manifest:weather.lookup (provenance)", desc.Tool.Source)
+	}
+	if _, ok := stack.Gates["weather.lookup"]; !ok {
+		t.Error("tools.entries[] naming the manifest tool did not wire an approval gate — " +
+			"ordering bug: the manifest load must precede the catalog Builder's Apply")
+	}
+}
+
 // TestAssemble_NilConfig_FailsLoud — no silent default-config fallback.
 func TestAssemble_NilConfig_FailsLoud(t *testing.T) {
 	stack, err := assemble.Assemble(context.Background(), nil, assemble.Options{})
@@ -223,6 +264,18 @@ func TestAssemble_NilConfig_FailsLoud(t *testing.T) {
 // baseline is restored (acceptance: forced mid-assembly failure
 // closes everything already opened).
 func TestAssemble_ForcedFailures_PartialStackClosesClean(t *testing.T) {
+	// Fixtures for the HTTP-manifest boot-loader failure cases below:
+	// a manifest that never exists on disk, and one whose sole tool
+	// collides with a built-in name (the loader runs AFTER built-ins,
+	// so the collision surfaces here, not silently).
+	manifestDir := t.TempDir()
+	missingManifest := filepath.Join(manifestDir, "does-not-exist.yaml")
+	collideManifestPath := filepath.Join(manifestDir, "collide.yaml")
+	collideManifestYAML := "tools:\n  - name: clock.now\n    method: GET\n    url_template: https://example.test/clock\n"
+	if err := os.WriteFile(collideManifestPath, []byte(collideManifestYAML), 0o600); err != nil {
+		t.Fatalf("write collide manifest fixture: %v", err)
+	}
+
 	cases := []struct {
 		name    string
 		mutate  func(cfg *config.Config)
@@ -270,6 +323,21 @@ func TestAssemble_ForcedFailures_PartialStackClosesClean(t *testing.T) {
 			name:    "builtin stage",
 			mutate:  func(cfg *config.Config) { cfg.Tools.BuiltIn = []string{"no_such_builtin"} },
 			wantErr: "tools/builtin:",
+		},
+		{
+			name: "http manifest missing file stage",
+			mutate: func(cfg *config.Config) {
+				cfg.Tools.HTTPManifests = []string{missingManifest}
+			},
+			wantErr: "tools.http_manifests[0]",
+		},
+		{
+			name: "http manifest duplicate tool name vs builtin stage",
+			mutate: func(cfg *config.Config) {
+				cfg.Tools.BuiltIn = []string{"clock.now"}
+				cfg.Tools.HTTPManifests = []string{collideManifestPath}
+			},
+			wantErr: "tools.http_manifests[0]",
 		},
 		{
 			name: "catalog builder stage",

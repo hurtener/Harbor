@@ -252,11 +252,14 @@ func validatePath(ctx context.Context, path string) (findings []validationFindin
 		return nil, err
 	}
 
-	// Run the loader. We use LoadFromBytes (NOT Load) so we
-	// retain the byte stream for AST-based line lookup. The loader's
-	// own error formatting carries the field path; we parse it back
-	// into a category + line.
-	_, loaderErr := config.LoadFromBytes(ctx, data)
+	// Run the loader. We use LoadFromBytesAt (NOT Load) so we retain
+	// the byte stream for AST-based line lookup while still passing
+	// path so `tools.http_manifests` relative entries resolve against
+	// THIS file's directory exactly as they would at boot — a bare
+	// LoadFromBytes has no directory to resolve against and would
+	// silently skip that check. The loader's own error formatting
+	// carries the field path; we parse it back into a category + line.
+	_, loaderErr := config.LoadFromBytesAt(ctx, data, path)
 	if loaderErr == nil {
 		return nil, nil
 	}

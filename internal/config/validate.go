@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -1124,17 +1125,24 @@ func (c *Config) validateTools() error {
 			}
 		}
 	}
-	// SDK friction audit (docs/notes/sdk-friction-audit.md §1): the
-	// manifest loader (`LoadManifest` / `RegisterManifest`)
-	// has no boot-path consumer yet — a populated list would validate
-	// cleanly and then silently register nothing (§13 — no silent
-	// degradation). Fail loud until the boot wiring lands. An empty
-	// list stays valid (the shipped examples carry `http_manifests: []`).
-	if len(c.Tools.HTTPManifests) > 0 {
-		return fieldError("tools.http_manifests",
-			"declared manifests are not loaded at boot yet — the surface is not wired "+
-				"(see docs/notes/sdk-friction-audit.md §1); remove the entries until the "+
-				"boot loader lands, or register HTTP tools programmatically via the HTTP tool driver")
+	// HTTP-manifest boot loader: structural validation only (existence
+	// / parsing is boot's job — the validator stays I/O-free, matching
+	// the `tools.mcp_servers` precedent of not probing URLs at validate
+	// time). Each entry must be non-empty and unique after
+	// `filepath.Clean`; relative-path resolution against the config
+	// file's directory happens at `Load` time, not here (loader.go).
+	seenManifests := make(map[string]struct{}, len(c.Tools.HTTPManifests))
+	for i, m := range c.Tools.HTTPManifests {
+		trimmed := strings.TrimSpace(m)
+		if trimmed == "" {
+			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i), "must not be empty")
+		}
+		cleaned := filepath.Clean(trimmed)
+		if _, dup := seenManifests[cleaned]; dup {
+			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
+				fmt.Sprintf("duplicate manifest path %q (already declared earlier in the list, after normalization)", cleaned))
+		}
+		seenManifests[cleaned] = struct{}{}
 	}
 	// operator-declared granted scopes
 	// pass-through. The validator asserts only that each entry is a

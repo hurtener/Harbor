@@ -84,6 +84,12 @@ yields posture display and **zero enforcement** (`governance.SetFactory`'s only
 caller is a test, `internal/governance/registry_test.go:97`). Both are
 fail-loud violations: clean validation, silent no-op.
 
+**Closed (D-279).** `tools.http_manifests` is wired: `assembleCatalogBand`
+(`internal/runtime/assemble/assemble.go`) now loads every declared manifest and
+registers its tools on the catalog before `tools.entries[]` applies, and
+`config.Validate` flips from rejecting a populated list to validating it
+structurally. `governance.identity_tiers` enforcement remains open.
+
 ## 2. Pattern 1 — the package-main stratum (and the D-094 mirror tax)
 
 The settled finding was "the run loop lives in cmd." The audit inventoried
@@ -137,7 +143,7 @@ fills:
 | **Phase 38/41 skills tools + generator** | `skills/tools.Register` (capability filter, redaction, token budgeter) and `generator.Register` called by nothing; `main.go:76-90` still promises "Phase 60+ bootstrap will call Register"; production registers a **thinner parallel implementation** (`internal/tools/builtin/skill_search.go`) — the §13 two-implementations smell | `skills/tools/tools.go:203`, `cmd_dev.go:655-661` | Pick one canonical surface: either builtin delegates to the rich handlers, or a decisions.md entry formally supersedes Phase 38 and the stale promise is deleted |
 | **Skills.md ingestion** | Importer is exported but test-only; the documented `harbor skill import` verb **does not exist** (`root.go:93-101`; `docs/skills/configure-memory-and-skills/SKILL.md:94,114,138` documents it — §18 drift, live) | `skills/importer/importer.go:189` | Ship the verb calling an exported `ImportAndStore` helper, or excise the fictional verb from the SKILL.md in the same PR |
 | **Phase 39 skills Directory** | `NewDirectory` consumers are tests only; the production path bypasses it with raw `store.Search` | `skills/directory.go:172`, `cmd_dev_runloop.go:545` | Wire it or formally supersede it — "a headless consumer cannot tell which retrieval surface Harbor stands behind" |
-| **HTTP-manifest + A2A tool legs** | `LoadManifest`/`RegisterManifest` and `a2a.New` have zero construction sites; `cfg.Tools.HTTPManifests` is a validated dead knob; `main.go:120`'s a2a blank import is a **no-op** (package has no `init()`) | `tools/drivers/http/manifest.go:119,267`, `config.go:603` | Wire both where MCP attach lands, or delete the dead knobs + decoy import and document headless-only |
+| **HTTP-manifest + A2A tool legs** | ~~`LoadManifest`/`RegisterManifest` and `a2a.New` have zero construction sites; `cfg.Tools.HTTPManifests` is a validated dead knob~~ — **HTTP half closed by D-279** (Phase 149): `assembleCatalogBand` now calls both at boot. `main.go:120`'s a2a blank import remains a **no-op** (package has no `init()`) | `tools/drivers/http/manifest.go:119,267`, `config.go:603` | A2A leg still open: wire `a2a.New` where MCP attach lands, or delete the dead knob + decoy import and document headless-only |
 | **Canonical telemetry Logger + runtime.error chain** | `telemetry.New` (redactor-mandatory, identity-stamped) has zero non-test callers — cmd boots **bare slog** (`cmd_dev.go:258`); `engine.WithRunErrorHandler`'s godoc describes "production wiring" that doesn't exist (`engine/options.go:114-127`) | `telemetry/logger.go:87` | Wire `telemetry.New` + the bus emitter in cmd/devstack; correct the godoc |
 | **OTel tracing (Phase 55)** | `NewTracer` never constructed on any production path; exporters blank-imported for nothing (`main.go:101-104`); metrics got `BridgeBusToMetrics`, traces got no bridge | `telemetry/tracing.go:205,310` | `telemetry.BridgeBusToTracer(ctx, bus, tracer, filter)`, symmetric with metrics |
 
@@ -243,8 +249,8 @@ cannot facade what currently lives in a binary.
   (`validate.go:33-36,124-133`) — Protocol-server ceremony dragged into
   headless config use. *Fix:* a validation profile (`ValidateCore`) or the
   documented one-liner in a recipe.
-- Dead knobs: `tools.http_manifests` (§1), `governance.identity_tiers`
-  enforcement (§3 table).
+- Dead knobs: ~~`tools.http_manifests`~~ (§1 — closed by D-279),
+  `governance.identity_tiers` enforcement (§3 table, still open).
 
 ## 7. The recipes gap (every seam, same finding)
 

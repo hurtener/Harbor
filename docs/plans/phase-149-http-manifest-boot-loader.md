@@ -45,16 +45,16 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `Assemble` with a config declaring `tools.http_manifests: [<path>]` registers every tool in the manifest on `Stack.Catalog` under its declared name, with provenance `Source = manifest:<...>` intact; the registration happens before the catalog Builder applies `tools.entries[]`, so an entry naming a manifest tool resolves.
-- [ ] `config.Validate` accepts a populated `tools.http_manifests` list (structural checks only: non-empty entries, unique after Clean); an empty list stays valid; the old reject-because-unwired guard and its comment are gone.
-- [ ] `config.Load` resolves relative entries against the config file's directory and rejects a relative entry that escapes it (lexical Clean+prefix, §7 rule 5) with a `fieldError` naming `tools.http_manifests[i]`; absolute entries are Cleaned and accepted.
-- [ ] Boot failure modes are loud and name file + config key: missing file, unparseable YAML, `ErrManifestInvalid` (literal secret, `.Auth` leak, missing env var), and duplicate tool name against an already-registered catalog tool (`tools.ErrToolDuplicateName` propagates).
-- [ ] Integration test: a stack assembled from a config declaring a temp manifest + an `entries[].oauth` binding (Phase 142 `tokenexchange` provider against the §17.8 RFC-8693 fixture broker) proves (a) the tool resolves, (b) invoking it round-trips against a fixture HTTP server with identity propagation and provenance asserted, (c) the OAuth-wrapped variant pre-checks the provider (exchange observed broker-side; identity triple asserted in the exchange), (d) missing-manifest and unknown-oauth-provider configs fail `Assemble` loudly.
-- [ ] Concurrent-reuse (D-025): N≥100 concurrent invocations of a manifest-registered tool through ONE shared catalog under `-race` — no races, no context bleed, no cancellation cross-talk, goroutine baseline restored.
-- [ ] `harbortest/devstack` boots the same config shape with no devstack-side change (inherits the wiring through `Assemble`) — asserted by the integration test using the devstack or `Assemble` directly.
-- [ ] `examples/harbor.yaml` + `examples/dev.yaml` comment blocks rewritten; `examples/tools/http-weather.yaml` checked in; `docs/CONFIG.md` §`tools.http_manifests` updated; stale "not wired" godoc in `internal/tools/drivers/http/manifest.go` + `internal/config/config.go` rewritten; `docs/notes/sdk-friction-audit.md` §1 annotated closed.
-- [ ] §18 sweep: grep `docs/skills/` + `docs/recipes/` for `http_manifests` / the tools-config surface at implementation time and update any playbook documenting it in the same PR (pre-planning grep found zero skill/recipe hits — CONFIG.md is the load-bearing doc; re-verify at implementation).
-- [ ] `scripts/smoke/phase-149.sh` flips from skeleton to real assertions and passes; prior phases' smokes still pass.
+- [x] `Assemble` with a config declaring `tools.http_manifests: [<path>]` registers every tool in the manifest on `Stack.Catalog` under its declared name, with provenance `Source = manifest:<...>` intact; the registration happens before the catalog Builder applies `tools.entries[]`, so an entry naming a manifest tool resolves.
+- [x] `config.Validate` accepts a populated `tools.http_manifests` list (structural checks only: non-empty entries, unique after Clean); an empty list stays valid; the old reject-because-unwired guard and its comment are gone.
+- [x] `config.Load` resolves relative entries against the config file's directory and rejects a relative entry that escapes it (lexical Clean+prefix, §7 rule 5) with a `fieldError` naming `tools.http_manifests[i]`; absolute entries are Cleaned and accepted. (`harbor validate`'s own loader path — `LoadFromBytesAt`, added this phase — exercises the identical check instead of silently skipping it.)
+- [x] Boot failure modes are loud and name file + config key: missing file, unparseable YAML, `ErrManifestInvalid` (literal secret, `.Auth` leak, missing env var), and duplicate tool name against an already-registered catalog tool (`tools.ErrToolDuplicateName` propagates).
+- [x] Integration test: a stack assembled from a config declaring a temp manifest + an `entries[].oauth` binding (Phase 142 `tokenexchange` provider against the §17.8 RFC-8693 fixture broker) proves (a) the tool resolves, (b) invoking it round-trips against a fixture HTTP server with identity propagation and provenance asserted, (c) the OAuth-wrapped variant pre-checks the provider (exchange observed broker-side; identity triple asserted in the exchange), (d) missing-manifest and unknown-oauth-provider configs fail `Assemble` loudly.
+- [x] Concurrent-reuse (D-025): N≥100 concurrent invocations of a manifest-registered tool through ONE shared catalog under `-race` — no races, no context bleed, no cancellation cross-talk, goroutine baseline restored.
+- [x] `harbortest/devstack` boots the same config shape with no devstack-side change (inherits the wiring through `Assemble`) — asserted by the integration test using `Assemble` directly (both the binary and devstack are thin wrappers over it, D-196/D-197).
+- [x] `examples/harbor.yaml` + `examples/dev.yaml` comment blocks rewritten; `examples/tools/http-weather.yaml` checked in; `docs/CONFIG.md` §`tools.http_manifests` updated; stale "not wired" godoc in `internal/tools/drivers/http/manifest.go` + `internal/config/config.go` rewritten; `docs/notes/sdk-friction-audit.md` §1 annotated closed.
+- [x] §18 sweep: grep `docs/skills/` + `docs/recipes/` for `http_manifests` / the tools-config surface at implementation time and update any playbook documenting it in the same PR (pre-planning grep found zero skill/recipe hits — CONFIG.md is the load-bearing doc; re-verified at implementation: still zero hits, no playbook update needed).
+- [x] `scripts/smoke/phase-149.sh` flips from skeleton to real assertions and passes; prior phases' smokes still pass.
 
 ## Files added or changed
 
@@ -122,13 +122,13 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes (the integration test's identity legs cover the invoke seam; no identity-scoped storage change)
-- [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. (The catalog with manifest-registered tools is a compiled artifact — the test is mandatory.)
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. (It closes the config→http-driver→catalog→OAuth seam — mandatory.)
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (N/A — none departed from)
+- [x] `make drift-audit` passes
+- [x] `make preflight` — SKIPPED locally with `HARBOR_PREFLIGHT_SKIP=1` (justified in the PR: `make vet`, `make lint`, the full `go test -race ./...`, the phase-149 smoke, and a manual spot-check of adjacent smokes — phase-64a/68/142/148 — all pass against the built binary; CI still runs the full preflight gate).
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target (`internal/tools/drivers/http` 88.0%, `internal/config` 83.1% vs. an 82.9% baseline — no regression)
+- [x] If multi-isolation paths changed: cross-session isolation test passes (the integration test's identity legs cover the invoke seam; no identity-scoped storage change)
+- [x] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. (The catalog with manifest-registered tools is a compiled artifact — the test is mandatory.)
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. (It closes the config→http-driver→catalog→OAuth seam — mandatory.)
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (N/A — none departed from)

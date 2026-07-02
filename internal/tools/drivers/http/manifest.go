@@ -18,12 +18,16 @@ import (
 // HTTP tools as Harbor `Tool`s. `LoadManifest` parses a manifest
 // file and `RegisterManifest` registers its tools onto a catalog.
 //
-// The boot-path wiring is NOT yet built: no production path reads
-// `ToolsConfig.HTTPManifests` and calls these (the config validator
-// rejects a populated list for exactly that reason — see
-// docs/notes/sdk-friction-audit.md §1). Until the loader lands,
-// embedders call `LoadManifest` + `RegisterManifest` (or the inline
-// `RegisterHTTPTool`) from their own assembly code.
+// The runtime's assembly boot path calls both of these for every
+// declared `ToolsConfig.HTTPManifests` entry — after built-in tools
+// register and before the catalog's operator-config wiring (approval
+// / OAuth / loading-mode) applies, so a `tools.entries[]` entry naming
+// a manifest tool resolves cleanly. A registered manifest tool is
+// indistinguishable from one registered inline via `RegisterHTTPTool`:
+// same descriptor shape, same `ToolPolicy` shell, same catalog
+// wiring. Embedders that build a stack without the boot loader (a
+// headless Go consumer wiring its own tools) call `LoadManifest` +
+// `RegisterManifest` directly.
 //
 // Schema (YAML):
 //

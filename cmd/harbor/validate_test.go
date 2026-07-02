@@ -215,6 +215,50 @@ func TestValidate_QuietFlag_SuppressesSuccessLine(t *testing.T) {
 	}
 }
 
+// TestValidate_HTTPManifests_AcceptsRelativeEntryUnderFixtureDir is
+// Phase 149 / D-279's operator-facing proof: a relative
+// tools.http_manifests entry resolves against the FIXTURE's own
+// directory (testdata/validate/), not the process CWD, and validate
+// stays I/O-free — the referenced manifest need not exist on disk.
+// Not golden-pinned: the error path below embeds an absolute,
+// checkout-dependent directory, which a byte-for-byte golden
+// comparison can't tolerate across machines/CI.
+func TestValidate_HTTPManifests_AcceptsRelativeEntryUnderFixtureDir(t *testing.T) {
+	t.Parallel()
+	stdout, _, runErr := runValidateCmd(t, []string{"validate", "testdata/validate/http-manifest-valid.yaml"})
+	if runErr != nil {
+		t.Fatalf("unexpected error validating a relative-but-in-bounds tools.http_manifests entry: %v", runErr)
+	}
+	if !strings.Contains(stdout, "ok") {
+		t.Errorf("stdout = %q, want the success line", stdout)
+	}
+}
+
+// TestValidate_HTTPManifests_RejectsEscapingEntry proves `harbor
+// validate` exercises the SAME §7 rule 5 path-safety boundary as boot
+// (via LoadFromBytesAt, not a bare LoadFromBytes which has no
+// directory to resolve a relative entry against) — a `../` that
+// walks outside testdata/validate/ is rejected, naming the field.
+func TestValidate_HTTPManifests_RejectsEscapingEntry(t *testing.T) {
+	t.Parallel()
+	_, stderr, runErr := runValidateCmd(t, []string{"validate", "testdata/validate/http-manifest-escape.yaml"})
+	if runErr == nil {
+		t.Fatal("expected an error for a path-escaping tools.http_manifests entry")
+	}
+	var cli CLIError
+	if !errors.As(runErr, &cli) {
+		t.Fatalf("expected CLIError, got %T", runErr)
+	}
+	if cli.Code != CodeValidationFailed {
+		t.Errorf("Code = %q, want %q", cli.Code, CodeValidationFailed)
+	}
+	for _, want := range []string{"tools.http_manifests", "escapes"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q:\n%s", want, stderr)
+		}
+	}
+}
+
 // TestParseLineFromGoccyMessage exercises the goccy parser-error
 // line-extraction helper directly so we cover error shapes that the
 // fixtures alone can't produce.

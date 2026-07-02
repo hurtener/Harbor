@@ -770,24 +770,53 @@ func TestValidate_AcceptsEmptyTools(t *testing.T) {
 	}
 }
 
-// TestValidate_RejectsPopulatedHTTPManifests — SDK friction audit
-// (docs/notes/sdk-friction-audit.md §1): the manifest loader has no
-// boot consumer, so a populated list is rejected loudly (§13 — no
-// silent degradation) instead of validating cleanly and doing nothing.
-func TestValidate_RejectsPopulatedHTTPManifests(t *testing.T) {
+// TestValidate_AcceptsPopulatedHTTPManifests — the HTTP-manifest boot
+// loader is wired (the SDK friction audit's §1 dead knob is closed):
+// a populated list validates structurally (non-empty, unique after
+// Clean); existence/parsing is boot's job, not the validator's.
+func TestValidate_AcceptsPopulatedHTTPManifests(t *testing.T) {
 	cfg := mustLoadValid(t)
 	cfg.Tools = config.ToolsConfig{HTTPManifests: []string{
 		"/etc/harbor/tools/weather.yaml",
+		"/etc/harbor/tools/github.yaml",
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected a populated http_manifests list: %v", err)
+	}
+}
+
+// TestValidate_RejectsEmptyStringHTTPManifestEntry — a blank entry is
+// a configuration typo, not a valid path.
+func TestValidate_RejectsEmptyStringHTTPManifestEntry(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Tools = config.ToolsConfig{HTTPManifests: []string{"   "}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted a blank http_manifests entry")
+	}
+	if !strings.Contains(err.Error(), "tools.http_manifests[0]") {
+		t.Errorf("err missing indexed field path: %v", err)
+	}
+}
+
+// TestValidate_RejectsDuplicateHTTPManifestAfterClean — two entries
+// that normalize to the same path are almost certainly a copy-paste
+// mistake, not two independent manifests.
+func TestValidate_RejectsDuplicateHTTPManifestAfterClean(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Tools = config.ToolsConfig{HTTPManifests: []string{
+		"/etc/harbor/tools/weather.yaml",
+		"/etc/harbor/tools//weather.yaml", // Clean-equivalent duplicate
 	}}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("Validate accepted populated http_manifests despite the surface being unwired")
+		t.Fatal("Validate accepted a duplicate (post-Clean) http_manifests entry")
 	}
-	if !strings.Contains(err.Error(), "tools.http_manifests") {
-		t.Errorf("err missing key name: %v", err)
+	if !strings.Contains(err.Error(), "tools.http_manifests[1]") {
+		t.Errorf("err missing indexed field path: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not wired") {
-		t.Errorf("err should explain the surface is not wired: %v", err)
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("err should explain the duplication: %v", err)
 	}
 }
 
