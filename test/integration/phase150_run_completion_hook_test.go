@@ -64,11 +64,10 @@ func (s *p150SinkCapture) get(runID string) (steering.RunCompletionPayload, bool
 	return p, ok
 }
 
-func (s *p150SinkCapture) identityFor(runID string) (identity.Quadruple, bool) {
+func (s *p150SinkCapture) identityFor(runID string) identity.Quadruple {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	q, ok := s.identity[runID]
-	return q, ok
+	return s.identity[runID]
 }
 
 // p150Env is the shared real-driver harness.
@@ -250,7 +249,7 @@ func TestE2E_Phase150_HookReceivesOrderedTranscript(t *testing.T) {
 		t.Fatal("the sink tool did not receive the transcript")
 	}
 	// Identity asserted AT THE RECEIVING TOOL.
-	seen, _ := env.sink.identityFor(q.RunID)
+	seen := env.sink.identityFor(q.RunID)
 	if seen != q {
 		t.Errorf("sink ctx identity = %+v, want %+v", seen, q)
 	}
@@ -342,7 +341,7 @@ func TestE2E_Phase150_CancelledRunFiresWithCancelledOutcome(t *testing.T) {
 		t.Errorf("payload outcome = %q, want cancelled", payload.Outcome)
 	}
 	// Identity still flows through WithoutCancel.
-	seen, _ := env.sink.identityFor(q.RunID)
+	seen := env.sink.identityFor(q.RunID)
 	if seen != q {
 		t.Errorf("sink ctx identity = %+v, want %+v (WithoutCancel must preserve identity)", seen, q)
 	}
@@ -356,8 +355,7 @@ func TestE2E_Phase150_ConcurrentNoBleed(t *testing.T) {
 	var wg sync.WaitGroup
 	var failures atomic.Int64
 	wg.Add(n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		go func() {
 			defer wg.Done()
 			q := p150Quad(1000 + i)
@@ -379,7 +377,7 @@ func TestE2E_Phase150_ConcurrentNoBleed(t *testing.T) {
 	if failures.Load() > 0 {
 		t.Fatalf("%d concurrent runs failed", failures.Load())
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		q := p150Quad(1000 + i)
 		payload, ok := env.sink.get(q.RunID)
 		if !ok {

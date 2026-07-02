@@ -117,4 +117,25 @@ assert_grep_present 'projection.ActiveRunCompletionHook' \
     harbortest/devstack/devstack.go \
     'phase 150: the devstack twin resolves the hook via the shared projection (17.6 twin discipline)'
 
+# The EMBED run type is covered too: RunOnce + the devstack twin apply the
+# SAME shared yaml projection (the silently-uncovered-embed gap the review
+# pinned must never regress), with the RunOption override + its tests.
+assert_grep_present 'projection.RunCompletionHookFromConfig' \
+    internal/runtime/assemble/runonce.go \
+    'phase 150: Stack.RunOnce (the embed run type) resolves the yaml hook via the shared projection'
+assert_grep_present 'projection.RunCompletionHookFromConfig' \
+    harbortest/devstack/devstack.go \
+    'phase 150: the devstack twin applies the shared yaml hook projection'
+assert_grep_present 'func WithCompletionHook' \
+    internal/runtime/assemble/runonce.go \
+    'phase 150: the WithCompletionHook RunOption exists (embed per-call override / explicit-nil disable)'
+
+embed_log="${TMPDIR}/embed-test.log"
+if go test -race -count=1 -timeout 180s -run 'TestRunOnce_CompletionHook' ./internal/runtime/assemble/ >"${embed_log}" 2>&1; then
+    ok 'phase 150: embed RunOnce hook tests pass under -race (yaml fires, option overrides, nil disables, no-hook byte-identical)'
+else
+    fail 'phase 150: embed RunOnce hook tests FAILED under -race (see tail)'
+    tail -40 "${embed_log}" | sed 's/^/    /'
+fi
+
 smoke_summary

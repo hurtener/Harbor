@@ -160,7 +160,8 @@ func trajStepLen(t *planner.Trajectory) int {
 
 // outcomeFor derives the payload's terminal outcome string from the run's
 // settled (fin, err). A non-nil err classifies as "cancelled" when it
-// wraps context.Canceled, else "error"; a nil err projects the planner's
+// wraps context.Canceled, "deadline_exceeded" when it wraps
+// context.DeadlineExceeded, else "error"; a nil err projects the planner's
 // FinishReason. The outcome rides IN the payload — the hook fires for every
 // terminal outcome, so the outcome is never encoded in WHETHER the hook
 // fires (RFC §6.17).
@@ -168,6 +169,9 @@ func outcomeFor(fin planner.Finish, err error) string {
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return "cancelled"
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "deadline_exceeded"
 		}
 		return "error"
 	}
@@ -398,22 +402,34 @@ func buildRunCompletionPayload(q identity.Quadruple, agentID, outcome string, st
 // for post-cancellation work. The dispatch does NOT invoke OnToolDispatched,
 // append a trajectory step, or advance the tool-invocation counters — it is not a
 // planner tool invocation.
+//
+// Because this runs inside Run's deferred fire, a panic escaping it would
+// replace the run's settled result with the panic. The recover below closes
+// that hole: an executor-internal panic is contained, classified, and
+// surfaced through the same run.hook_failed posture as any other dispatch
+// failure — the ONE justified use of recover on this path (protecting a
+// settled result from third-party sink code, not control flow).
 func (rl *RunLoop) fireCompletionHook(runCtx context.Context, spec RunSpec, q identity.Quadruple, fin planner.Finish, runErr error, steering []steeringEntry, initialGoal string, startedAt time.Time) {
 	hook := spec.CompletionHook
 	if hook == nil || hook.Tool == "" {
 		return
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			rl.completionHookFailed(runCtx, q, hook.Tool, outcomeFor(fin, runErr), "panic")
+		}
+	}()
 	outcome := outcomeFor(fin, runErr)
 	completedAt := rl.clock.Now()
 	payload := buildRunCompletionPayload(q, hook.AgentID, outcome, startedAt, completedAt, initialGoal, spec.Base.Trajectory, steering, fin)
 
 	args, err := json.Marshal(payload)
 	if err != nil {
-		rl.completionHookFailed(runCtx, q, hook.Tool, outcome, "encode_failed", err)
+		rl.completionHookFailed(runCtx, q, hook.Tool, outcome, "encode_failed")
 		return
 	}
 	if spec.ToolExecutor == nil {
-		rl.completionHookFailed(runCtx, q, hook.Tool, outcome, "no_executor", errNoHookExecutor)
+		rl.completionHookFailed(runCtx, q, hook.Tool, outcome, "no_executor")
 		return
 	}
 
@@ -431,16 +447,11 @@ func (rl *RunLoop) fireCompletionHook(runCtx context.Context, spec RunSpec, q id
 	dispatchStart := rl.clock.Now()
 	rc := planner.RunContext{Quadruple: q, Goal: initialGoal, Trajectory: spec.Base.Trajectory}
 	if _, _, execErr := spec.ToolExecutor.ExecuteDecision(hookCtx, rc, planner.CallTool{Tool: hook.Tool, Args: args}); execErr != nil {
-		rl.completionHookFailed(runCtx, q, hook.Tool, outcome, classifyHookErr(execErr), execErr)
+		rl.completionHookFailed(runCtx, q, hook.Tool, outcome, classifyHookErr(execErr))
 		return
 	}
 	rl.completionHookDispatched(runCtx, q, hook.Tool, outcome, len(args), len(payload.Conversation), rl.clock.Now().Sub(dispatchStart))
 }
-
-// errNoHookExecutor is the classification anchor for a configured hook on a
-// RunSpec with no ToolExecutor. Fail-loud: it emits run.hook_failed, never a
-// silent no-op.
-var errNoHookExecutor = errors.New("steering: run-completion hook configured but RunSpec.ToolExecutor is nil")
 
 // classifyHookErr maps a hook-dispatch error to a stable, low-cardinality,
 // redaction-safe class for the run.hook_failed event. The raw error message
@@ -488,10 +499,13 @@ func (rl *RunLoop) completionHookDispatched(ctx context.Context, q identity.Quad
 
 // completionHookFailed emits the run.hook_failed observability event
 // (metadata only — identity, tool, outcome, error class; never transcript
-// content or raw caller-quoting error text) AND Warn-logs. A hook failure
-// never alters the run outcome (§13 — fail loud, never silent, never
-// escalated into the run result).
-func (rl *RunLoop) completionHookFailed(ctx context.Context, q identity.Quadruple, tool, outcome, errClass string, cause error) {
+// content or raw caller-quoting error text) AND Warn-logs. The Warn carries
+// the CLASSIFIED error class, never the raw error text — a sink's error
+// message may quote transcript/caller data, and the hook's whole hygiene
+// posture is that such bytes never reach a log line or the bus (§7). A hook
+// failure never alters the run outcome (§13 — fail loud, never silent,
+// never escalated into the run result).
+func (rl *RunLoop) completionHookFailed(ctx context.Context, q identity.Quadruple, tool, outcome, errClass string) {
 	rl.logger.WarnContext(ctx, "steering: run-completion hook dispatch failed — run outcome unchanged",
 		slog.String("tenant_id", q.TenantID),
 		slog.String("user_id", q.UserID),
@@ -499,8 +513,7 @@ func (rl *RunLoop) completionHookFailed(ctx context.Context, q identity.Quadrupl
 		slog.String("run_id", q.RunID),
 		slog.String("tool", tool),
 		slog.String("outcome", outcome),
-		slog.String("error_class", errClass),
-		slog.Any("error", cause))
+		slog.String("error_class", errClass))
 	if rl.bus == nil {
 		return
 	}

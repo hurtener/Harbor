@@ -684,11 +684,13 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrUnknownModel),
-		errors.Is(err, agentcfgprotocol.ErrInvalidLLMParams):
-		// A pinned model with no configured ModelProfile, or an out-of-range
-		// sampling value, is a CLIENT error (a bad request body), not a server
-		// fault — mirror the governance twin's ErrUnknownModel → 400 mapping
-		// and keep the offending value in the message.
+		errors.Is(err, agentcfgprotocol.ErrInvalidLLMParams),
+		errors.Is(err, agentcfgprotocol.ErrInvalidHooks):
+		// A pinned model with no configured ModelProfile, an out-of-range
+		// sampling value, or an invalid hooks section (negative timeout) is a
+		// CLIENT error (a bad request body), not a server fault — mirror the
+		// governance twin's ErrUnknownModel → 400 mapping and keep the
+		// offending value in the message.
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrCoordinatorUnavailable):

@@ -775,6 +775,10 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// session-scoped safe-subset overlay — run-start composition
 				// (D-094 mirror of cmd_dev.go).
 				sessionOverlay: stack.SessionOverlay,
+				// static run-completion hook default — the SAME shared yaml
+				// projection production applies (D-094 mirror of cmd_dev.go);
+				// resolved per run against the agent-config hooks section.
+				runCompletionHook: projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)

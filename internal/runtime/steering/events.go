@@ -98,8 +98,8 @@ type RunHookFailedPayload struct {
 	Outcome string
 	// ErrorClass is a stable, low-cardinality classification of the
 	// dispatch failure ("timeout" / "no_executor" / "encode_failed" /
-	// "unsupported_shape" / "dispatch_failed" / "cancelled"). Never the
-	// raw error message.
+	// "unsupported_shape" / "dispatch_failed" / "cancelled" / "panic").
+	// Never the raw error message.
 	ErrorClass string
 }
 

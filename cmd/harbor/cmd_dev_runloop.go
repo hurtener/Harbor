@@ -81,14 +81,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -308,19 +306,6 @@ type perTaskRunLoopDriver struct {
 	runsWG     sync.WaitGroup
 	started    bool
 	closedOnce sync.Once
-}
-
-// runCompletionHookFromConfig projects the static
-// `runtime.hooks.run_completion` config block onto a
-// steering.CompletionHookSpec, or nil when no static hook is configured (an
-// empty tool). The AgentID is left empty here — the run-start projection
-// stamps the acting agent id. Timeout defaulting happens at fire time.
-func runCompletionHookFromConfig(cfg *config.Config) *steering.CompletionHookSpec {
-	rc := cfg.Runtime.Hooks.RunCompletion
-	if strings.TrimSpace(rc.Tool) == "" {
-		return nil
-	}
-	return &steering.CompletionHookSpec{Tool: rc.Tool, Timeout: rc.Timeout}
 }
 
 // ErrPerTaskRunLoopMisconfigured fires when newPerTaskRunLoopDriver

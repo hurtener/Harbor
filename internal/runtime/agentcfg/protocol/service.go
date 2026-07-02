@@ -78,6 +78,13 @@ var (
 	// Validated at set time so an invalid value never reaches a run (parity
 	// with runs.set_overrides), fail loud (CLAUDE.md §13).
 	ErrInvalidLLMParams = errors.New("agentcfg/protocol: invalid LLM parameters")
+	// ErrInvalidHooks — a set_revision carrying a hooks section supplied an
+	// invalid run-completion hook (a negative timeout_ms). Validated at set
+	// time so an invalid value is rejected loud BEFORE any registry write —
+	// parity with the yaml validator's negative-timeout rejection; the
+	// normalizer's negative→0 coercion is defence-in-depth behind this gate,
+	// never the primary posture (CLAUDE.md §13).
+	ErrInvalidHooks = errors.New("agentcfg/protocol: invalid hooks section")
 )
 
 // validLLMReasoningEffort is the canonical reasoning-effort taxonomy the
@@ -381,6 +388,23 @@ func (s *Service) validateLLMParams(lp *prototypes.AgentConfigLLMParams) error {
 	return nil
 }
 
+// validateHooks validates a run-lifecycle-hook section at set time: a
+// negative run-completion timeout_ms is rejected loud (parity with the yaml
+// validator's `runtime.hooks.run_completion.timeout` negative rejection). A
+// nil section (no hooks edit) is a no-op; a zero timeout inherits the runtime
+// default at run start and an empty tool normalises the section away — both
+// valid.
+func (s *Service) validateHooks(h *prototypes.AgentConfigHooks) error {
+	if h == nil || h.RunCompletion == nil {
+		return nil
+	}
+	if h.RunCompletion.TimeoutMS < 0 {
+		return fmt.Errorf("%w: run_completion.timeout_ms %d must not be negative",
+			ErrInvalidHooks, h.RunCompletion.TimeoutMS)
+	}
+	return nil
+}
+
 // NewService builds the agent-config Service over a Registry. registry is
 // mandatory — a nil fails loud with ErrMisconfigured rather than building
 // a Service that would nil-panic on the first request (CLAUDE.md §5).
@@ -434,6 +458,12 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	// time (parity with set_llm_params / the tenant model-swap) so an invalid
 	// model or out-of-range sampling value can never be persisted.
 	if err := s.validateLLMParams(req.Payload.LLMParams); err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
+	// A full-payload set that pins a hooks section is validated at set time —
+	// a negative run-completion timeout is rejected loud before any registry
+	// write, matching the yaml validator's posture.
+	if err := s.validateHooks(req.Payload.Hooks); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payloadToDomain(req.Payload))

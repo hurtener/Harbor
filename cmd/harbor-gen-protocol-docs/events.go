@@ -173,7 +173,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 
 	// --- Run-completion hook lifecycle.
 	steering.EventTypeRunHookDispatched: {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookDispatchedPayload{})}},
-	steering.EventTypeRunHookFailed:      {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookFailedPayload{})}},
+	steering.EventTypeRunHookFailed:     {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookFailedPayload{})}},
 
 	// --- Sessions.
 	sessions.EventTypeSessionOpened:   {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionOpenedPayload{})}},

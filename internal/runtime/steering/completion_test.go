@@ -55,12 +55,14 @@ func (e *recordingHookExecutor) ExecuteDecision(ctx context.Context, _ planner.R
 	return "ok", "ok", nil
 }
 
-func (e *recordingHookExecutor) callsForTool(tool string) []recordedHookCall {
+// hookCalls returns the recorded dispatches that targeted the fixture hook
+// sink (hookTool), excluding any planner-tool dispatches.
+func (e *recordingHookExecutor) hookCalls() []recordedHookCall {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var out []recordedHookCall
 	for _, c := range e.calls {
-		if c.tool == tool {
+		if c.tool == hookTool {
 			out = append(out, c)
 		}
 	}
@@ -261,7 +263,7 @@ func TestRun_CompletionHook_FiresOnGoal_DispatchesTranscript(t *testing.T) {
 	if fin.Reason != planner.FinishGoal {
 		t.Fatalf("Finish.Reason = %q, want goal", fin.Reason)
 	}
-	calls := exec.callsForTool(hookTool)
+	calls := exec.hookCalls()
 	if len(calls) != 1 {
 		t.Fatalf("hook dispatched %d times, want exactly 1", len(calls))
 	}
@@ -294,7 +296,7 @@ func TestRun_CompletionHook_NilHook_ByteIdentical(t *testing.T) {
 	if _, err := rl.Run(context.Background(), hookRunSpec(runA, p, exec, nil)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if calls := exec.callsForTool(hookTool); len(calls) != 0 {
+	if calls := exec.hookCalls(); len(calls) != 0 {
 		t.Fatalf("nil hook still dispatched %d times, want 0", len(calls))
 	}
 }
@@ -323,7 +325,7 @@ func TestRun_CompletionHook_D274CountersUntouched(t *testing.T) {
 		t.Errorf("trajectory steps = %d, want 1 (hook must not append a step)", got)
 	}
 	// The payload's tool count reflects the trajectory (1), not the hook dispatch.
-	calls := exec.callsForTool(hookTool)
+	calls := exec.hookCalls()
 	if len(calls) != 1 {
 		t.Fatalf("hook calls = %d, want 1", len(calls))
 	}
@@ -385,7 +387,7 @@ func TestRun_CompletionHook_CancelledRun_FiresWithCancelledOutcome(t *testing.T)
 		t.Fatalf("Run err = %v, want a context.Canceled-wrapped error", err)
 	}
 	_ = fin
-	calls := exec.callsForTool(hookTool)
+	calls := exec.hookCalls()
 	if len(calls) != 1 {
 		t.Fatalf("hook dispatched %d times, want 1 (must fire under the detached ctx even for a cancelled run)", len(calls))
 	}
@@ -413,8 +415,7 @@ func TestRun_CompletionHook_ConcurrentNoBleed(t *testing.T) {
 	const n = 24
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		go func() {
 			defer wg.Done()
 			q := identity.Quadruple{
@@ -441,7 +442,7 @@ func TestRun_CompletionHook_ConcurrentNoBleed(t *testing.T) {
 	}
 	wg.Wait()
 
-	calls := exec.callsForTool(hookTool)
+	calls := exec.hookCalls()
 	if len(calls) != n {
 		t.Fatalf("hook calls = %d, want %d", len(calls), n)
 	}
@@ -485,4 +486,33 @@ func (b *fakeBus) countType(t events.EventType) int {
 		}
 	}
 	return n
+}
+
+// panickingExecutor panics inside ExecuteDecision — the third-party-sink
+// failure shape the fire's recover must contain.
+type panickingExecutor struct{}
+
+func (panickingExecutor) ExecuteDecision(context.Context, planner.RunContext, planner.Decision) (any, any, error) {
+	panic("sink exploded")
+}
+
+func TestRun_CompletionHook_ExecutorPanic_NeverReplacesRunResult(t *testing.T) {
+	bus := &fakeBus{}
+	rl, _, _ := newTestRunLoop(t, WithRunLoopBus(bus))
+	p := &scriptedPlanner{defaultDec: planner.Finish{Reason: planner.FinishGoal, Payload: "answer"}}
+
+	fin, err := rl.Run(context.Background(), hookRunSpec(runA, p, panickingExecutor{}, &CompletionHookSpec{Tool: hookTool}))
+	if err != nil {
+		t.Fatalf("Run err = %v, want nil (a panicking hook sink must not fail the run)", err)
+	}
+	if fin.Reason != planner.FinishGoal {
+		t.Errorf("Finish.Reason = %q, want goal (a panicking hook sink must not replace the settled result)", fin.Reason)
+	}
+	if n := bus.countType(EventTypeRunHookFailed); n != 1 {
+		t.Errorf("run.hook_failed count = %d, want 1 (the contained panic surfaces as a classified failure)", n)
+	}
+	failed, ok := bus.published[len(bus.published)-1].Payload.(RunHookFailedPayload)
+	if !ok || failed.ErrorClass != "panic" {
+		t.Errorf("run.hook_failed ErrorClass = %+v, want the 'panic' class", bus.published[len(bus.published)-1].Payload)
+	}
 }

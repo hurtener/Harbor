@@ -100,6 +100,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
@@ -825,7 +826,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// static run-completion hook default (`runtime.hooks.run_completion`);
 		// resolved per run against the agent-config hooks section (agent-config
 		// over yaml over none). Nil when the operator configured no static hook.
-		runCompletionHook: runCompletionHookFromConfig(cfg),
+		runCompletionHook: projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 	})
 	if err != nil {
 		closeAll(ctx)

@@ -2678,7 +2678,17 @@ per §17.8). Status: Shipped (V1.6).
   impact was additive (`AgentConfigHooks` + `AgentConfigHooksDiff` + the
   `AgentConfigDiff` hooks arm), no new verb; D-223 TS lockstep + D-209
   protocol-docs regen ran in the same PR. `TranscriptEntry.At` is a
-  `*time.Time` so untimestamped entries omit it in the golden JSON.
+  `*time.Time` so untimestamped entries omit it in the golden JSON. The
+  adversarial review round added: embed coverage — `Stack.RunOnce` resolves
+  the hook from the stack's static config via the shared
+  `projection.RunCompletionHookFromConfig` (also now applied by the devstack
+  twin) with a `WithCompletionHook` RunOption; a wire-edge set-time
+  `ErrInvalidHooks` rejection of a negative `timeout_ms` (yaml parity); a
+  `recover()` in the fire so a panicking sink can never replace the settled
+  run result; the `deadline_exceeded` error-classification arm; and the
+  documented outcome-fidelity boundary (the hook outcome is the run-loop
+  terminal outcome — the post-run schema backstop and driver task status are
+  not reflected).
 
 ### Phase 151 — Runtime loading-mode control on tool exposure: the loading-override layer on the ONE exposure section
 

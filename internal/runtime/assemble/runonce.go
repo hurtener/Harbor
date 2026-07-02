@@ -33,6 +33,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -62,6 +63,12 @@ type runOnceConfig struct {
 	// no-op). outputSchemaSet disambiguates "not set" from "set to nil".
 	outputSchema    json.RawMessage
 	outputSchemaSet bool
+	// completionHook carries the per-call run-completion hook override set
+	// via WithCompletionHook. completionHookSet disambiguates "not set"
+	// (the config default applies) from "explicitly set to nil" (the hook
+	// is disabled for this run even when the config enables one).
+	completionHook    *steering.CompletionHookSpec
+	completionHookSet bool
 }
 
 // RunOption configures a RunOnce invocation. The functional-option
@@ -149,6 +156,27 @@ func WithOutputSchema(schema json.RawMessage) RunOption {
 	return func(c *runOnceConfig) {
 		c.outputSchema = schema
 		c.outputSchemaSet = true
+	}
+}
+
+// WithCompletionHook overrides the run's run-completion hook — the
+// runtime mechanism that fires exactly once at the run loop's terminal
+// boundary and dispatches the run's transcript to the named catalog tool
+// through the stack's ToolExecutor (see the steering package for the
+// firing contract and payload shape). Without this option a RunOnce run
+// resolves the hook from the stack's static configuration
+// (`runtime.hooks.run_completion`) — the same yaml half the task-driven
+// run-loop drivers apply — so an embed run is covered by the operator's
+// configured hook with no extra ceremony.
+//
+// Passing a non-nil spec pins that hook for this run (overriding the
+// config); passing nil explicitly DISABLES the hook for this run even
+// when the config enables one. Not calling the option at all keeps the
+// config-resolved behaviour.
+func WithCompletionHook(spec *steering.CompletionHookSpec) RunOption {
+	return func(c *runOnceConfig) {
+		c.completionHook = spec
+		c.completionHookSet = true
 	}
 }
 
@@ -286,13 +314,28 @@ func (s *Stack) RunOnce(
 		}
 	}
 
+	// Resolve the run-completion hook: the WithCompletionHook option wins
+	// (a nil-with-set explicitly disables); otherwise the stack's static
+	// `runtime.hooks.run_completion` config applies via the SAME shared
+	// yaml projection the task-driven run-loop drivers use — an embed run
+	// is covered by the operator's configured hook uniformly (RFC §6.17's
+	// "one seam covers embed, foreground, and background runs"). The
+	// assemble Stack carries no agent-config registry, so the yaml half is
+	// the whole resolution here; a caller who wants a per-agent hook passes
+	// WithCompletionHook explicitly.
+	completionHook := cfg.completionHook
+	if !cfg.completionHookSet {
+		completionHook = projection.RunCompletionHookFromConfig(s.Cfg.Runtime.Hooks.RunCompletion)
+	}
+
 	spec := steering.RunSpec{
-		Planner:      s.Planner,
-		Base:         base,
-		TaskID:       tasks.TaskID(runID),
-		ToolExecutor: s.Executor,
-		MaxSteps:     s.Cfg.Planner.MaxSteps,
-		Compression:  s.Compression,
+		Planner:        s.Planner,
+		Base:           base,
+		TaskID:         tasks.TaskID(runID),
+		ToolExecutor:   s.Executor,
+		MaxSteps:       s.Cfg.Planner.MaxSteps,
+		Compression:    s.Compression,
+		CompletionHook: completionHook,
 	}
 	if cfg.stream != nil {
 		// One StreamToolDispatched event PER dispatched tool: a

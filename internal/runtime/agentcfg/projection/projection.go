@@ -20,6 +20,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -178,6 +179,22 @@ func ActiveLLMOverrides(ctx context.Context, reg agentcfg.Registry, agentID stri
 		return nil, nil
 	}
 	return out, nil
+}
+
+// RunCompletionHookFromConfig projects the static
+// `runtime.hooks.run_completion` yaml block onto a
+// steering.CompletionHookSpec, or nil when no static hook is configured (an
+// empty / whitespace-only tool). It is the ONE yaml half of the hook
+// resolution, shared by every run-loop driver (the production dev binary,
+// the devstack twin, and the embed RunOnce path) so the yaml projection
+// cannot drift between binaries. AgentID is left empty — the run-start
+// resolution stamps the acting agent id; timeout defaulting happens at fire
+// time.
+func RunCompletionHookFromConfig(rc config.RunCompletionHookConfig) *steering.CompletionHookSpec {
+	if strings.TrimSpace(rc.Tool) == "" {
+		return nil
+	}
+	return &steering.CompletionHookSpec{Tool: rc.Tool, Timeout: rc.Timeout}
 }
 
 // ActiveRunCompletionHook resolves the run-completion hook for a run at run
