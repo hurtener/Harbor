@@ -469,18 +469,19 @@ func (e *toolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) int
 // The answer envelope on Result.Value is JSON — the per-task driver's
 // [planner.AnswerEnvelope] `{answer, finish_reason, tool_calls_seen}`
 // shape (exported for run-loop drivers). The additive `answer_payload`
-// key is reserved on this projection: the run-level embed runner
-// (Stack.RunOnce with WithOutputSchema) sets it, but per-task Protocol
-// runs do not yet produce it — the per-task run loop has no output-schema
-// plumbing, so a task envelope carries only the three base keys. It is
+// key rides this projection whenever the awaited task carried an output
+// schema: a `start` request with `output_schema` set produces a
+// validated `answer_payload` on the task envelope, and this generic
+// parse surfaces it to the awaiting parent with no shape change. It is
 // embedded parsed-generic (not as the typed struct) so the planner sees
 // structured data rather than a JSON-string AND so non-envelope
 // Result.Values (a TaskResult is not guaranteed to be an envelope)
 // round-trip without field loss. A failed / cancelled task carries its
-// error code + message instead. Should a future per-task run set
-// `answer_payload`, a large value rides the SAME heavy-output offload the
-// rest of this projection path already applies (see `projectForLLM`
-// below) — no second content-size mechanism.
+// error code + message instead (a schema-invalid answer fails the task
+// with the `output_invalid` code, which the parent observes here). A
+// large `answer_payload` rides the SAME heavy-output offload the rest of
+// this projection path already applies (see `projectForLLM` below) — no
+// second content-size mechanism.
 func taskOutcomeObservation(task *tasks.Task) any {
 	out := map[string]any{
 		"task_id": string(task.ID),

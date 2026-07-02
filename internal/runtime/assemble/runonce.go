@@ -319,35 +319,21 @@ func (s *Stack) RunOnce(
 		return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce: %w", err)
 	}
 
-	answer := runctx.ExtractAssistantAnswer(fin)
-
-	// Runtime-edge final validation (planner-agnostic, no capability
-	// ceremony): validate the terminal Finish payload against the run's
-	// output schema for EVERY planner driver — but ONLY on a goal-
-	// satisfying Finish. A non-goal terminal (FinishCancelled from a
-	// steering CANCEL, FinishNoPath, a deadline/constraints terminal) was
-	// never asked to produce a schema-shaped answer in the first place;
-	// running edge validation on it would report a cancellation or a
-	// no-path outcome as a schema failure (ErrOutputInvalid), which is
-	// simply wrong — those finishes return the envelope exactly as a
-	// plain (no-schema) run would: empty AnswerPayload, FinishReason
-	// verbatim. The validated raw JSON is captured HERE, at the
-	// validation site, so AnswerPayload carries the exact bytes — never a
-	// lossy string round-trip through the ExtractAssistantAnswer collapse
-	// (map key-order nondeterminism).
-	var answerPayload json.RawMessage
-	if base.OutputSchema != nil && fin.Reason == planner.FinishGoal {
-		raw, capErr := capturePayloadJSON(fin.Payload)
-		if capErr != nil {
-			return planner.AnswerEnvelope{}, fmt.Errorf("%w: %w", planner.ErrOutputInvalid, capErr)
-		}
-		if vErr := base.OutputSchema.Validate(raw); vErr != nil {
-			return planner.AnswerEnvelope{}, fmt.Errorf("%w: %w", planner.ErrOutputInvalid, vErr)
-		}
-		answerPayload = raw
-		// Answer carries the payload's string rendering for backward
-		// compatibility (the string key is untouched on plain runs).
-		answer = string(raw)
+	// Runtime-edge final validation + envelope construction via the ONE
+	// shared builder (runctx.FinishAnswerEnvelope) both per-task drivers
+	// also call — the validation is planner-agnostic (no capability
+	// ceremony), applies ONLY on a goal-satisfying Finish, and captures
+	// the validated bytes at the validation site so AnswerPayload carries
+	// the exact bytes (never a lossy round-trip through the
+	// ExtractAssistantAnswer collapse). A non-goal terminal
+	// (FinishCancelled from a steering CANCEL, FinishNoPath, a
+	// deadline/constraints terminal) is returned exactly as a plain
+	// (no-schema) run would — empty AnswerPayload, FinishReason verbatim,
+	// never ErrOutputInvalid. A schema-invalid goal Finish surfaces a
+	// loud, typed planner.ErrOutputInvalid (wrapped by the builder).
+	env, err := runctx.FinishAnswerEnvelope(fin, base.Trajectory, base.OutputSchema)
+	if err != nil {
+		return planner.AnswerEnvelope{}, err
 	}
 
 	// Best-effort memory writeback on a goal-satisfying finish (mirrors
@@ -356,7 +342,7 @@ func (s *Stack) RunOnce(
 		sessionQ := identity.Quadruple{Identity: id}
 		if wErr := s.Memory.AddTurn(runCtx, sessionQ, memory.ConversationTurn{
 			UserMessage:       goal,
-			AssistantResponse: answer,
+			AssistantResponse: env.Answer,
 			Timestamp:         time.Now(),
 		}); wErr != nil {
 			logger.Warn("assemble: RunOnce memory writeback failed; answer still returned",
@@ -364,57 +350,7 @@ func (s *Stack) RunOnce(
 		}
 	}
 
-	return planner.AnswerEnvelope{
-		Answer:        answer,
-		FinishReason:  string(fin.Reason),
-		ToolCallsSeen: planner.CountToolInvocations(base.Trajectory),
-		AnswerPayload: answerPayload,
-	}, nil
-}
-
-// capturePayloadJSON renders a terminal Finish payload to the raw JSON
-// bytes the output-schema validator checks and the envelope's
-// AnswerPayload carries. The ReAct native content path carries the
-// model's JSON text as a string; other planners (deterministic flow
-// output, external concretes) may carry a Go value or pre-marshalled
-// json.RawMessage. Each shape is captured to its exact bytes ONCE here —
-// never a string→map→string round-trip whose map key order is
-// nondeterministic. A nil payload is a loud error (a schema-constrained
-// run must produce a payload).
-//
-// A string payload is treated as raw JSON TEXT, never as a plain Go
-// string to be re-quoted — this is the react terminal-answer reality
-// (see [planner.Finish]'s Payload field doc): the model's `resp.Content`
-// IS the answer's JSON encoding. A string that is not valid JSON (a
-// planner concrete returning Payload: "done" instead of a structured
-// value or a quoted JSON string `"\"done\""`) fails loud HERE with a
-// hint, rather than surfacing a cryptic "decode terminal output as
-// JSON" error two calls downstream inside the schema validator.
-func capturePayloadJSON(payload any) (json.RawMessage, error) {
-	switch p := payload.(type) {
-	case nil:
-		return nil, fmt.Errorf("terminal finish carried no payload for a schema-constrained run")
-	case json.RawMessage:
-		return p, nil
-	case []byte:
-		return json.RawMessage(p), nil
-	case string:
-		// The ReAct native terminal path: Content is the model's JSON
-		// text. Use its bytes verbatim; validation catches non-JSON.
-		if !json.Valid([]byte(p)) {
-			return nil, fmt.Errorf(
-				"terminal finish payload is a Go string that is not valid JSON text (%q): string payloads must contain JSON text; a plain Go string like \"done\" is not valid JSON — quote it (e.g. `\"done\"`) or return a structured payload",
-				p,
-			)
-		}
-		return json.RawMessage(p), nil
-	default:
-		b, err := json.Marshal(p)
-		if err != nil {
-			return nil, fmt.Errorf("marshal terminal payload: %w", err)
-		}
-		return b, nil
-	}
+	return env, nil
 }
 
 // boundLogger returns the stack's canonical structured logger, falling

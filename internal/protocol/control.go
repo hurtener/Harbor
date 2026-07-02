@@ -250,6 +250,12 @@ func (s *ControlSurface) emitAdminScopeUsed(ctx context.Context, caller identity
 	})
 }
 
+// maxOutputSchemaBytes caps the `start` request's `output_schema`
+// document size. A JSON Schema large enough to matter is pathological;
+// the cap keeps a hostile caller from forcing an expensive compile on
+// every start. 64 KiB is generous for any realistic answer schema.
+const maxOutputSchemaBytes = 64 * 1024
+
 // dispatchStart handles the `start` method: it spawns a foreground task
 // via the tasks.TaskRegistry. A `start` request carries the
 // identity triple (RunID is ignored — Spawn assigns the TaskID) and no
@@ -319,6 +325,26 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		}
 	}
 
+	// Output-schema edge validation (reject-early). A present-but-empty,
+	// non-compiling, or over-cap output_schema is rejected with
+	// CodeInvalidRequest BEFORE Spawn runs — no task is created that the
+	// edge could have rejected. The schema is compiled via the ONE
+	// compile implementation (planner.CompileOutputSchema) the driver run
+	// start also uses (§13). The size cap keeps a hostile caller from
+	// forcing a large compile on every start; the run-start compile
+	// re-checks the persisted bytes.
+	if sr.OutputSchema != nil {
+		if len(sr.OutputSchema) > maxOutputSchemaBytes {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: output_schema exceeds the %d-byte cap (%d bytes)",
+				string(method), maxOutputSchemaBytes, len(sr.OutputSchema))
+		}
+		if _, cErr := planner.CompileOutputSchema(sr.OutputSchema); cErr != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: output_schema is not a valid JSON Schema: %v", string(method), cErr)
+		}
+	}
+
 	handle, err := s.tasks.Spawn(ctx, tasks.SpawnRequest{
 		Identity:                  identity.Quadruple{Identity: id},
 		Kind:                      tasks.KindForeground,
@@ -328,6 +354,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		IdempotencyKey:            sr.IdempotencyKey,
 		InputArtifactIDs:          sr.InputArtifactIDs,
 		InputArtifactDispositions: sr.InputArtifactDispositions,
+		OutputSchema:              sr.OutputSchema,
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)

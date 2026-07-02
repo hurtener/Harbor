@@ -642,6 +642,19 @@ export class ControlNamespace {
 			 * an omitted key defers to the lower layers.
 			 */
 			inputArtifactDispositions?: Record<string, string>;
+			/**
+			 * D-276 — opt the task-shaped run into per-task structured
+			 * output. A JSON-Schema document (object or raw JSON string)
+			 * the completed task's answer is validated against; the
+			 * validated result lands as `answer_payload` on the task
+			 * envelope (readable via `tasks.get`'s `result_inline`). An
+			 * empty / non-compiling / over-cap (64 KiB) schema is rejected
+			 * at the Protocol edge with CodeInvalidRequest before any task
+			 * spawns. A schema-constrained task suppresses assistant token
+			 * deltas — the answer arrives once, on completion. Omitted (the
+			 * default) keeps the wire shape schemaless.
+			 */
+			outputSchema?: unknown;
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
@@ -669,6 +682,13 @@ export class ControlNamespace {
 			Object.keys(opts.inputArtifactDispositions).length > 0
 		) {
 			body.input_artifact_dispositions = opts.inputArtifactDispositions;
+		}
+		// D-276 — per-task structured output. The runtime validates the
+		// task's terminal answer against this JSON Schema and surfaces the
+		// validated `answer_payload`. Elided when unset (server-side
+		// omitempty keeps a schemaless task byte-identical).
+		if (opts.outputSchema !== undefined) {
+			body.output_schema = opts.outputSchema;
 		}
 		return this.#t.request<R>('/v1/control/start', body);
 	}

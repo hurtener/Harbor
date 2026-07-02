@@ -41,8 +41,9 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 			// shape, never the envelope. A non-envelope answer (no
 			// schema on this run, or a Native/Prompted profile) is
 			// untouched — Payload stays the plain string exactly as
-			// before (capturePayloadJSON's `string` case and
-			// runctx.ExtractAssistantAnswer both depend on that shape).
+			// before (the runctx envelope builder's payload-capture
+			// `string` case and runctx.ExtractAssistantAnswer both
+			// depend on that shape).
 			var payload any = resp.Content
 			if rc.OutputSchema != nil {
 				if args, ok := output.ParseRespondWith(resp.Content); ok {

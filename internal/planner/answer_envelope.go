@@ -78,6 +78,16 @@ const (
 	// is the external-caller surface and requires a reason); Failed
 	// with this code is the closest terminal match —
 	TaskErrorCodeCancelled = "cancelled"
+	// TaskErrorCodeOutputInvalid marks a schema-constrained run whose
+	// terminal answer failed output-schema validation after the
+	// correction budget was spent — the task-shaped mirror of
+	// [ErrOutputInvalid]. A run-loop driver stamps it on BOTH failure
+	// shapes: a RunLoop.Run error whose chain carries the schema-retry /
+	// downgrade exhaustion, and an edge-validation ErrOutputInvalid on a
+	// returned goal Finish. A run carrying an output schema NEVER reaches
+	// MarkComplete with an unvalidated envelope — it fails with this code
+	// instead (CLAUDE.md §13: no silent fallback to unvalidated text).
+	TaskErrorCodeOutputInvalid = "output_invalid"
 )
 
 // TaskErrorCodeForFinish maps a non-goal terminal [FinishReason]

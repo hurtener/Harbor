@@ -112,6 +112,18 @@ Response is the flat `StartResponse`:
 
 `reused` is `true` only when you supplied an `idempotency_key` that matched an existing task; `protocol_version` lets you detect a version skew.
 
+To make a task return a **schema-conforming answer**, add the optional `output_schema` field — a JSON-Schema document the runtime validates the task's terminal answer against. On success the completed task's envelope carries a validated `answer_payload` alongside the plain `answer` string, readable via `tasks.get`'s `result_inline` (and via a parent run's AwaitTask observation). An empty, non-compiling, or over-cap (64 KiB) schema is rejected at the edge with a `400 {"code": "invalid_request"}` envelope before any task spawns; a schema-invalid answer after the runtime's correction budget fails the task loud with the `output_invalid` error code — never a schemaless success. A schema-constrained task suppresses assistant token deltas on the event stream (a validate-and-retry loop cannot retract streamed tokens), so the answer arrives once, on completion. Omit the field for the default schemaless behaviour.
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {}, "query": "Classify the sentiment of: shipping delayed again.",
+       "output_schema": {"type": "object", "required": ["sentiment"],
+                         "properties": {"sentiment": {"type": "string"}},
+                         "additionalProperties": false}}'
+```
+
 For multimodal input, upload artifacts FIRST (`artifacts.put`, see §6) and pass the returned IDs in `input_artifact_ids` (D-166). The per-MIME dispatch — image inline vs PDF/audio as ArtifactStub — happens inside the planner; your client just passes refs. To override how an attachment is handed to the model, add the optional `input_artifact_dispositions` map (Phase 84b — D-189), keyed by artifact id with values `ref` | `inline` | `provider_native` | `tool:<name>` (e.g. `{"art_x": "tool:pdf.extract"}` forces the named catalog tool). Your hint is the top precedence layer (hint > the agent's `multimodal.disposition` config map > the runtime default: image inline, everything else ref); an omitted map keeps today's behaviour. `tasks.get` reflects the hint on `input_artifacts[].disposition`, and the resolution (including degradations — e.g. an unknown `tool:<name>`) is observable as `task.input_disposition.resolved` events. A `provider_native` hint is honoured end-to-end (Phase 84c — D-190): the LLM driver uploads the attachment to the provider's file surface and the upload is observable as `llm.provider_file.uploaded` events (artifact ref, provider, modality, `file_id`).
 
 ## 4. The events stream — SSE `events.subscribe`
