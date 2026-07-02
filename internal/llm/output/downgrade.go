@@ -90,6 +90,16 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 			return resp, nil
 		}
 
+		// This attempt ERRORED and is CONSUMED: every errored branch below
+		// discards `resp` (the non-schema-error return, the loop-continuation
+		// downgrade, and the exhaustion return all drop it), so its response
+		// never propagates to the caller. Report its cost into the tap here,
+		// once, so every consumed attempt reaches cost accounting exactly
+		// once (the propagate-or-report invariant). Most drivers price a
+		// failed generation at zero, so this is invariant-completeness — it
+		// also correctly accounts any driver that DOES price failed calls.
+		llm.ReportAttemptCost(ctx, resp.Cost)
+
 		attempts = append(attempts, attemptRecord{Mode: mode, Err: err})
 		lastErr = err
 

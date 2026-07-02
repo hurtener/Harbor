@@ -10,9 +10,14 @@ import (
 )
 
 // emitCostRecorded publishes the `llm.cost.recorded` event after a
-// successful Complete. the governance accumulator subscribes
-// against this emit site to drive per-identity cost ceilings (per the
-// V1 scoping: latent governance, opt-in via config).
+// successful Complete. This is an OBSERVABILITY emit only: the governance
+// accumulator does NOT subscribe against it — cost accounting is in-band
+// synchronous (the accumulator folds each call's cost, and every
+// intermediate retry / downgrade attempt via the per-call attempt-cost
+// tap, in its PostCall), so the next ceiling check sees the latest total
+// without a bus-delivery race. The event drives dashboards and replay
+// tooling; it is not the accounting path (per the V1 scoping: latent
+// governance, opt-in via config).
 //
 // Best-effort — never blocks the request path on the bus. A nil bus
 // (e.g. tests that construct the Driver directly) is a no-op. Cost

@@ -114,9 +114,20 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		lastValErr = valErr
 
 		// If we've already burned the last retry, surface the chain.
+		// The FINAL attempt is NOT reported into the attempt-cost tap:
+		// the exhaustion path below RETURNS this `lastResp` alongside
+		// `ErrRetryExhausted`, so its cost propagates to the governed-call
+		// boundary and is accounted there (governance accumulates cost
+		// regardless of the returned error). Reporting it here would
+		// double-count it (the propagate-or-report invariant).
 		if attempt == maxRetries {
 			break
 		}
+
+		// This attempt is CONSUMED: its rejected response is folded into a
+		// corrective turn and never propagates to the caller. Report its
+		// cost into the tap so it reaches cost accounting exactly once.
+		llm.ReportAttemptCost(ctx, resp.Cost)
 
 		nextAttempt := attempt + 1
 		emitRetryWithFeedback(ctx, c.deps.Bus, id, req.Model, nextAttempt, maxRetries, valErr)

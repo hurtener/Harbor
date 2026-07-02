@@ -61,24 +61,34 @@ type wrappedClient struct {
 // itself is unchanged; governance returns the inner's error verbatim
 // when its PreCall permits.
 //
-// Known accounting gap: `inner` here is the retry-with-feedback wrapper
-// (when seated), which may itself drive several underlying provider
-// calls before returning ONE `(resp, callErr)` to this method — one
-// initial completion plus up to `ModelProfile.MaxRetries` corrective
+// Attempt-cost accounting: `inner` here is the retry-with-feedback
+// wrapper (when seated), which may itself drive several underlying
+// provider calls before returning ONE `(resp, callErr)` to this method —
+// one initial completion plus up to `ModelProfile.MaxRetries` corrective
 // re-asks, each of which may additionally walk the structured-output
-// downgrade chain's own internal attempts. `PostCall` (and therefore
-// `CostAccumulator`) only ever observes the single call boundary here,
-// so token/cost usage from every intermediate retry or downgrade
-// attempt that did NOT become the final response is invisible to
-// governance's accounting. This is a consequence of the deliberate
-// compose order (governance sits outside retry, which sits outside the
-// downgrade chain) documented at the registry hooks; it is not fixed by
-// this wrapper and should be weighed as cost-ceiling slack, not treated
-// as exact accounting, on any run that engages a Validator.
+// downgrade chain's own internal attempts. To make every one of those
+// provider attempts visible to accounting, this method installs a fresh
+// per-call attempt-cost tap into `ctx` AFTER PreCall permits and passes
+// the tap-carrying ctx to both the inner chain and PostCall. The retry
+// and downgrade wrappers report each attempt they CONSUME (loop onward /
+// discard) into that tap; the wrapper that becomes the final response
+// propagates it, so PostCall accounts it via `resp.Cost`. `PostCall`
+// drains the tap exactly once and folds intermediate-attempt spend with
+// the final response's cost under the identity key — one exactly-once
+// accounting fold per governed call, no compose-order change and no
+// event-subscriber path (the in-band posture from the accumulator's
+// pinned rationale, extended one level deeper). The tap is a side
+// channel: `resp.Cost` still reports the final call's cost to every other
+// consumer.
 func (w *wrappedClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
 	if err := w.sub.PreCall(ctx, req); err != nil {
 		return llm.CompleteResponse{}, err
 	}
+	// Install the per-call attempt-cost tap AFTER PreCall permits (a
+	// short-circuited call drives no attempts, so it needs no tap). The
+	// tap rides ctx per the concurrent-reuse contract — no mutable
+	// per-call state on this shared wrapper.
+	ctx, _ = llm.ContextWithAttemptCostTap(ctx)
 	resp, callErr := w.inner.Complete(ctx, req)
 	if postErr := w.sub.PostCall(ctx, req, resp, callErr); postErr != nil {
 		// PostCall errors are observability signals — log + continue.

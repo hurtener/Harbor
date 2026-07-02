@@ -472,9 +472,10 @@ const (
 // Cost is the provider-reported cost breakdown. Values are USD.
 // Fields are zero when the provider doesn't report a category.
 //
-// Governance subscribes to `llm.cost.recorded` events to
-// drive per-identity accumulators; the payload re-stamps
-// these fields.
+// The `llm.cost.recorded` event re-stamps these fields for observability;
+// governance accounting is in-band (it folds each call's Cost — and every
+// intermediate retry / downgrade attempt via the per-call attempt-cost
+// tap — synchronously), not a subscriber of that event.
 type Cost struct {
 	InputTokensCost     float64
 	OutputTokensCost    float64

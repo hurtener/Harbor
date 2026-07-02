@@ -166,6 +166,51 @@ func Run(t *testing.T, mk Factory) {
 		}
 	})
 
+	t.Run("CostAccumulator_AttemptTapFold", func(t *testing.T) {
+		t.Parallel()
+		h := mk()
+		defer h.Cleanup()
+		ctx := withIdentity(t)
+		q := identity.MustQuadrupleFrom(ctx)
+		acc, err := governance.NewCostAccumulator(h.State, h.Bus, governance.Config{})
+		if err != nil {
+			t.Fatalf("NewCostAccumulator: %v", err)
+		}
+		defer acc.Close(context.Background())
+
+		// Install a per-call attempt-cost tap, report two consumed
+		// intermediate attempts, then PostCall with a final response cost.
+		// The fold (tap + final) must persist identically on every driver.
+		tctx, _ := llm.ContextWithAttemptCostTap(ctx)
+		llm.ReportAttemptCost(tctx, llm.Cost{TotalCost: 0.01})
+		llm.ReportAttemptCost(tctx, llm.Cost{TotalCost: 0.1})
+		if err := acc.PostCall(tctx, llm.CompleteRequest{Model: "m"},
+			llm.CompleteResponse{Cost: llm.Cost{TotalCost: 1.0}, Content: "x"}, nil); err != nil {
+			t.Fatalf("PostCall: %v", err)
+		}
+
+		// The folded 1.11 must be readable back from a fresh accumulator
+		// over the SAME store (persisted through the driver).
+		if err := acc.Close(context.Background()); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		acc2, err := governance.NewCostAccumulator(h.State, h.Bus, governance.Config{})
+		if err != nil {
+			t.Fatalf("acc2: %v", err)
+		}
+		defer acc2.Close(context.Background())
+		total, byModel, err := acc2.Snapshot(ctx, q)
+		if err != nil {
+			t.Fatalf("Snapshot: %v", err)
+		}
+		if !floatNear(total, 1.11) {
+			t.Errorf("folded total = %v want 1.11 (0.01 + 0.1 + 1.0)", total)
+		}
+		if !floatNear(byModel["m"], 1.11) {
+			t.Errorf("folded byModel[m] = %v want 1.11", byModel["m"])
+		}
+	})
+
 	t.Run("RateLimiter_PermitWithoutConfig", func(t *testing.T) {
 		t.Parallel()
 		h := mk()
@@ -360,6 +405,17 @@ func Run(t *testing.T, mk Factory) {
 			t.Fatalf("underflow PreCall: got %v, want ErrRateLimited", err)
 		}
 	})
+}
+
+// floatNear compares two USD floats with a tolerance that absorbs binary
+// float64 rounding of decimal cents.
+func floatNear(a, b float64) bool {
+	const eps = 1e-9
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < eps
 }
 
 // withIdentity attaches the canonical conformance identity + run to a
