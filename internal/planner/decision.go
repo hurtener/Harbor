@@ -198,6 +198,19 @@ func (RequestPause) isDecision() {}
 // `Reason` MUST be one of the canonical values (see
 // IsValidFinishReason). The Runtime rejects an invalid reason with
 // ErrInvalidDecision.
+//
+// Payload's contract on a run-level output-schema run (WithOutputSchema
+// / RunOnce's runtime-edge validation, see
+// internal/runtime/assemble.capturePayloadJSON): a `string` payload is
+// treated as raw JSON TEXT, never as a plain Go string to be quoted for
+// the caller — this is the react terminal-answer reality, where
+// `resp.Content` IS the model's JSON encoding of the answer. A plain Go
+// string like `"done"` is NOT valid JSON and fails loud with a hint
+// naming the fix (quote it, or return a structured payload instead).
+// Structured payloads (a map, a struct, any non-string/[]byte/
+// json.RawMessage Go value) are marshaled via encoding/json. A
+// json.RawMessage or []byte payload is captured verbatim, bytes
+// unchanged.
 type Finish struct {
 	Reason   FinishReason
 	Payload  any

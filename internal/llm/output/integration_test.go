@@ -3,6 +3,7 @@ package output_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -15,6 +16,18 @@ import (
 	_ "github.com/hurtener/Harbor/internal/llm/output"
 	_ "github.com/hurtener/Harbor/internal/llm/retry"
 )
+
+// integrationDriverNameSeq + uniqueIntegrationDriverName keep this
+// file's llm.Register call idempotent across `go test -count=N`: the
+// driver registry is process-wide write-once (llm.Register panics on a
+// duplicate name), and count>1 re-runs every test within the SAME
+// process, so a fixed literal name collides with itself on the second
+// iteration (review finding: the -count=2 gate must be green).
+var integrationDriverNameSeq atomic.Int64
+
+func uniqueIntegrationDriverName(base string) string {
+	return fmt.Sprintf("%s-%d", base, integrationDriverNameSeq.Add(1))
+}
 
 // TestE2E_OutputChain_ComposesWithCorrectionsAndSafety wires the full
 // chain — `retry(downgrade(corrections(safety(mock))))` — and asserts
@@ -39,8 +52,9 @@ func TestE2E_OutputChain_ComposesWithCorrectionsAndSafety(t *testing.T) {
 	// Register a unique driver name for this test that exercises the
 	// downgrade + retry path. The registry is write-once so each test
 	// instance picks a unique name to avoid colliding with other
-	// test files.
-	const driverName = "stage-d-staged-driver"
+	// test files — uniqueIntegrationDriverName additionally keeps a
+	// single test instance idempotent across `go test -count=N`.
+	driverName := uniqueIntegrationDriverName("stage-d-staged-driver")
 	var callCount atomic.Int64
 	llm.Register(driverName, func(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		return &stagedDriver{counter: &callCount}, nil

@@ -60,6 +60,21 @@ type wrappedClient struct {
 // Complete runs PreCall → inner → PostCall. The Complete signature
 // itself is unchanged; governance returns the inner's error verbatim
 // when its PreCall permits.
+//
+// Known accounting gap: `inner` here is the retry-with-feedback wrapper
+// (when seated), which may itself drive several underlying provider
+// calls before returning ONE `(resp, callErr)` to this method — one
+// initial completion plus up to `ModelProfile.MaxRetries` corrective
+// re-asks, each of which may additionally walk the structured-output
+// downgrade chain's own internal attempts. `PostCall` (and therefore
+// `CostAccumulator`) only ever observes the single call boundary here,
+// so token/cost usage from every intermediate retry or downgrade
+// attempt that did NOT become the final response is invisible to
+// governance's accounting. This is a consequence of the deliberate
+// compose order (governance sits outside retry, which sits outside the
+// downgrade chain) documented at the registry hooks; it is not fixed by
+// this wrapper and should be weighed as cost-ceiling slack, not treated
+// as exact accounting, on any run that engages a Validator.
 func (w *wrappedClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
 	if err := w.sub.PreCall(ctx, req); err != nil {
 		return llm.CompleteResponse{}, err

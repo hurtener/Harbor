@@ -38,7 +38,10 @@ func TestConcurrent_D025_LLMClient(t *testing.T) {
 	// a custom driver and register a one-shot factory. The
 	// production "mock" driver registered via init() doesn't have
 	// this hook by design (operators do not configure SeenIdentity).
-	const factoryName = "mock-concurrent-test"
+	// uniqueDriverName keeps registration idempotent across
+	// `go test -count=N` (the registry persists across iterations
+	// within one process; a fixed name collides with itself).
+	factoryName := uniqueDriverName("mock-concurrent-test")
 	seen := make(chan identity.Quadruple, 128*2)
 	llm.Register(factoryName, func(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		return mock.New(mock.Options{SeenIdentity: seen}), nil
@@ -143,7 +146,7 @@ func TestConcurrent_PerCallCancellationIsIsolated(t *testing.T) {
 	deps, cleanup := makeDeps(t)
 	defer cleanup()
 
-	const factoryName = "mock-cancel-test"
+	factoryName := uniqueDriverName("mock-cancel-test")
 	llm.Register(factoryName, func(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		return mock.New(mock.Options{
 			StreamChunks:   8,

@@ -3,6 +3,7 @@ package react_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -119,6 +120,68 @@ func TestReact_OutputSchema_ValidatorIsToolCallAware(t *testing.T) {
 	// Plain non-JSON text fails loud.
 	if err := v(llm.CompleteResponse{Content: `just some prose`}); err == nil {
 		t.Error("Validator on non-JSON terminal content = nil, want error")
+	}
+}
+
+// TestReact_OutputSchema_UnwrapsRespondWithEnvelope — S1 seam closure.
+// On a schema-constrained run whose LLM response is shaped as the
+// OutputModeTools `{"name":"respond_with","arguments":{...}}` envelope
+// (what the downgrade layer's write half asks the model to emit — see
+// internal/llm/output.ParseRespondWith's read-half godoc), the terminal
+// Finish.Payload carries the UNWRAPPED `arguments` payload, not the
+// envelope — this is exactly what RunOnce.capturePayloadJSON preserves
+// verbatim (via its json.RawMessage case) into the envelope's
+// AnswerPayload, so a Tools-mode profile's answer_payload holds the
+// caller's schema-shaped value instead of the envelope wrapper.
+func TestReact_OutputSchema_UnwrapsRespondWithEnvelope(t *testing.T) {
+	t.Parallel()
+	envelope := `{"name":"respond_with","arguments":{"sentiment":"positive"}}`
+	client := &captureReqClient{resp: llm.CompleteResponse{Content: envelope}}
+	p := react.New(client)
+
+	q := fixedQuadruple(t, "run-schema-tools-unwrap")
+	rc := rcWith(q, "classify the sentiment", nil)
+	rc.OutputSchema = compileTestSchema(t)
+
+	dec, err := p.Next(ctxWith(t, q), rc)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	fin, ok := dec.(planner.Finish)
+	if !ok {
+		t.Fatalf("expected terminal Finish, got %T", dec)
+	}
+	if fin.Reason != planner.FinishGoal {
+		t.Fatalf("FinishReason = %q, want %q", fin.Reason, planner.FinishGoal)
+	}
+	raw, ok := fin.Payload.(json.RawMessage)
+	if !ok {
+		t.Fatalf("Finish.Payload = %T (%v), want json.RawMessage (the unwrapped arguments)", fin.Payload, fin.Payload)
+	}
+	var got struct {
+		Sentiment string `json:"sentiment"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unwrapped Payload not valid JSON: %v (%s)", err, raw)
+	}
+	if got.Sentiment != "positive" {
+		t.Errorf("unwrapped Payload sentiment = %q, want positive", got.Sentiment)
+	}
+	// The envelope wrapper itself must NOT be present anywhere in the
+	// captured payload — proof this is the unwrapped arguments, not the
+	// `{"name":"respond_with",...}` shell.
+	if strings.Contains(string(raw), "respond_with") {
+		t.Errorf("Payload still carries the respond_with envelope: %s", raw)
+	}
+
+	// The installed Validator ALSO unwraps before validating: a
+	// conforming envelope on the terminal turn passes.
+	v := client.lastReq.Load().Validator
+	if v == nil {
+		t.Fatal("Validator is nil, want the schema Validator engaged")
+	}
+	if err := v(llm.CompleteResponse{Content: envelope}); err != nil {
+		t.Errorf("Validator on a conforming respond_with envelope = %v, want nil (unwrap-before-validate)", err)
 	}
 }
 

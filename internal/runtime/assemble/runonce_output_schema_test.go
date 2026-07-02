@@ -61,12 +61,49 @@ func (schemaBadDriver) Complete(_ context.Context, _ llm.CompleteRequest) (llm.C
 
 func (schemaBadDriver) Close(_ context.Context) error { return nil }
 
+// schemaToolsEnvelopeDriver always answers a schema-constrained terminal
+// turn with the OutputModeTools `{"name":"respond_with","arguments":...}`
+// envelope shape — proving the react projector's S1 unwrap (not this
+// package's assembled downgrade chain) is what makes AnswerPayload carry
+// the caller's schema shape instead of the envelope.
+type schemaToolsEnvelopeDriver struct{}
+
+func (schemaToolsEnvelopeDriver) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	content := lastUserText(req)
+	if req.ResponseFormat != nil && req.ResponseFormat.Kind == llm.FormatJSONSchema {
+		content = fmt.Sprintf(`{"name":"respond_with","arguments":{"schema_title":%q}}`, schemaTitle(req.ResponseFormat.JSONSchema))
+	}
+	return llm.CompleteResponse{Content: content}, nil
+}
+
+func (schemaToolsEnvelopeDriver) Close(_ context.Context) error { return nil }
+
+// schemaAlwaysSchemaErrorDriver always fails with a classified
+// schema-class error (llm.ErrInvalidJSONSchema) on every attempt,
+// regardless of the downgrade chain's current OutputMode/ResponseFormat
+// shaping — used to drive the downgrade chain itself to exhaustion
+// (llm.ErrDowngradeExhausted), as opposed to schemaBadDriver (which
+// drives the RETRY loop to exhaustion via a Validator rejection).
+type schemaAlwaysSchemaErrorDriver struct{}
+
+func (schemaAlwaysSchemaErrorDriver) Complete(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return llm.CompleteResponse{}, fmt.Errorf("provider rejected request: %w", llm.ErrInvalidJSONSchema)
+}
+
+func (schemaAlwaysSchemaErrorDriver) Close(_ context.Context) error { return nil }
+
 func init() {
 	llm.Register("schema-echo-143", func(_ llm.ConfigSnapshot, _ llm.Deps) (llm.Driver, error) {
 		return schemaEchoDriver{}, nil
 	})
 	llm.Register("schema-bad-143", func(_ llm.ConfigSnapshot, _ llm.Deps) (llm.Driver, error) {
 		return schemaBadDriver{}, nil
+	})
+	llm.Register("schema-tools-envelope-143", func(_ llm.ConfigSnapshot, _ llm.Deps) (llm.Driver, error) {
+		return schemaToolsEnvelopeDriver{}, nil
+	})
+	llm.Register("schema-always-schema-error-143", func(_ llm.ConfigSnapshot, _ llm.Deps) (llm.Driver, error) {
+		return schemaAlwaysSchemaErrorDriver{}, nil
 	})
 }
 
@@ -170,6 +207,41 @@ func TestRunOnce_WithOutputSchema_HappyPath_ValidatedPayload(t *testing.T) {
 	}
 }
 
+// TestRunOnce_WithOutputSchema_ToolsEnvelopeUnwrapped_LandsInAnswerPayload
+// — S1 end-to-end: a driver that answers a schema-constrained terminal
+// turn with the OutputModeTools respond_with envelope shape ends up with
+// the UNWRAPPED arguments in AnswerPayload, never the envelope wrapper.
+// Before the fix, the react Validator would validate the raw envelope
+// against the caller's schema (guaranteed failure), and even had it
+// passed, capturePayloadJSON would have captured the envelope bytes
+// verbatim onto AnswerPayload instead of the caller's schema shape.
+func TestRunOnce_WithOutputSchema_ToolsEnvelopeUnwrapped_LandsInAnswerPayload(t *testing.T) {
+	ctx := context.Background()
+	stack := schemaStack(t, "schema-tools-envelope-143")
+	defer func() { _ = stack.Close(ctx) }()
+
+	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
+	env, err := stack.RunOnce(ctx, "classify", id, assemble.WithOutputSchema(titledSchema("tools-envelope-schema")))
+	if err != nil {
+		t.Fatalf("RunOnce(WithOutputSchema): %v", err)
+	}
+	if len(env.AnswerPayload) == 0 {
+		t.Fatal("AnswerPayload is empty on a schema-constrained run")
+	}
+	if strings.Contains(string(env.AnswerPayload), "respond_with") {
+		t.Fatalf("AnswerPayload still carries the respond_with envelope: %s", env.AnswerPayload)
+	}
+	var payload struct {
+		SchemaTitle string `json:"schema_title"`
+	}
+	if err := json.Unmarshal(env.AnswerPayload, &payload); err != nil {
+		t.Fatalf("AnswerPayload is not valid JSON: %v (%s)", err, env.AnswerPayload)
+	}
+	if payload.SchemaTitle != "tools-envelope-schema" {
+		t.Errorf("payload schema_title = %q, want tools-envelope-schema", payload.SchemaTitle)
+	}
+}
+
 // TestRunOnce_WithOutputSchema_InvalidOutput_ErrOutputInvalid — a run
 // whose model never conforms exhausts the correction budget and returns
 // the typed planner.ErrOutputInvalid (never a silent text fallback), and
@@ -193,6 +265,117 @@ func TestRunOnce_WithOutputSchema_InvalidOutput_ErrOutputInvalid(t *testing.T) {
 	// No silent text fallback: the envelope is the zero value.
 	if env.Answer != "" || env.AnswerPayload != nil {
 		t.Errorf("expected zero envelope on failure, got %+v", env)
+	}
+}
+
+// TestRunOnce_WithOutputSchema_DowngradeExhausted_ErrOutputInvalid — N3:
+// a provider that rejects every OutputMode/downgrade attempt surfaces
+// llm.ErrDowngradeExhausted from the LLM edge (a DIFFERENT producer site
+// than the retry-with-feedback loop's llm.ErrRetryExhausted exercised
+// above), and RunOnce maps it to the SAME typed planner.ErrOutputInvalid
+// — a provider that can't produce schema-shaped output IS a can't-
+// produce-schema-output outcome regardless of which chain ran out.
+func TestRunOnce_WithOutputSchema_DowngradeExhausted_ErrOutputInvalid(t *testing.T) {
+	ctx := context.Background()
+	stack := schemaStack(t, "schema-always-schema-error-143")
+	defer func() { _ = stack.Close(ctx) }()
+
+	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
+	env, err := stack.RunOnce(ctx, "classify", id, assemble.WithOutputSchema(titledSchema("downgrade-schema")))
+	if err == nil {
+		t.Fatalf("RunOnce = nil error, want ErrOutputInvalid; env=%+v", env)
+	}
+	if !errors.Is(err, planner.ErrOutputInvalid) {
+		t.Errorf("error = %v, want errors.Is ErrOutputInvalid", err)
+	}
+	if !errors.Is(err, llm.ErrDowngradeExhausted) {
+		t.Errorf("error = %v, want the llm.ErrDowngradeExhausted chain", err)
+	}
+	if errors.Is(err, llm.ErrRetryExhausted) {
+		t.Errorf("error = %v, want NO llm.ErrRetryExhausted (the downgrade chain exhausted before the retry loop ever saw a response)", err)
+	}
+	if env.Answer != "" || env.AnswerPayload != nil {
+		t.Errorf("expected zero envelope on failure, got %+v", env)
+	}
+}
+
+// fixedFinishPlanner is a scripted planner that returns a fixed terminal
+// Finish decision on the very first Next call — no generation steering,
+// no LLM call at all. Used by
+// TestRunOnce_WithOutputSchema_NonGoalFinish_NoOutputInvalid to drive a
+// non-goal terminal (Cancelled / NoPath) deterministically.
+type fixedFinishPlanner struct {
+	fin planner.Finish
+}
+
+func (p fixedFinishPlanner) Next(_ context.Context, _ planner.RunContext) (planner.Decision, error) {
+	return p.fin, nil
+}
+
+// TestRunOnce_WithOutputSchema_NonGoalFinish_NoOutputInvalid — M1
+// regression. A schema-constrained run whose terminal Finish is NOT
+// FinishGoal (a steering CANCEL surfaced as Finish{Cancelled}, or a
+// planner NoPath finish) must never engage the runtime-edge output-
+// schema validation: that finish was never asked to produce a schema-
+// shaped answer, so validating (or failing to capture) its payload as
+// if it were a schema-constrained answer mislabels a cancellation /
+// no-path outcome as a schema failure. The envelope must match plain
+// (no-schema) run behaviour exactly: FinishReason verbatim, empty
+// AnswerPayload, Answer via the ordinary ExtractAssistantAnswer
+// collapse, and — the headline assertion — errors.Is(err,
+// planner.ErrOutputInvalid) is FALSE.
+func TestRunOnce_WithOutputSchema_NonGoalFinish_NoOutputInvalid(t *testing.T) {
+	ctx := context.Background()
+	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
+
+	cases := []struct {
+		name string
+		fin  planner.Finish
+	}{
+		{
+			name: "cancelled",
+			fin: planner.Finish{
+				Reason:   planner.FinishCancelled,
+				Metadata: map[string]any{"steering": "cancelled"},
+			},
+		},
+		{
+			name: "no_path",
+			fin: planner.Finish{
+				Reason:   planner.FinishNoPath,
+				Metadata: map[string]any{"followup": true},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := minimalCfg(t)
+			cfg.LLM.Model = "mock/echo"
+			cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+				"mock/echo": {ContextWindowTokens: 100000, TokenEstimator: "chars_div_4"},
+			}
+			stack, err := assemble.Assemble(ctx, cfg, assemble.Options{
+				PlannerOverride: fixedFinishPlanner{fin: tc.fin},
+			})
+			if err != nil {
+				t.Fatalf("Assemble: %v", err)
+			}
+			defer func() { _ = stack.Close(ctx) }()
+
+			env, err := stack.RunOnce(ctx, "goal", id, assemble.WithOutputSchema(titledSchema("non-goal-schema")))
+			if err != nil {
+				t.Fatalf("RunOnce = %v, want nil error (a non-goal finish is not a schema failure)", err)
+			}
+			if errors.Is(err, planner.ErrOutputInvalid) {
+				t.Errorf("errors.Is(err, ErrOutputInvalid) = true, want false for a %s finish", tc.name)
+			}
+			if env.FinishReason != string(tc.fin.Reason) {
+				t.Errorf("FinishReason = %q, want %q", env.FinishReason, tc.fin.Reason)
+			}
+			if env.AnswerPayload != nil {
+				t.Errorf("AnswerPayload = %s, want nil (untouched) on a non-goal finish", env.AnswerPayload)
+			}
+		})
 	}
 }
 
@@ -250,6 +433,15 @@ func TestRunOnce_WithOutputSchema_StreamSuppressesTokens(t *testing.T) {
 // against ONE shared Stack, interleaving schema-constrained runs (each
 // with a DISTINCT schema) and plain runs. Asserts no schema/payload
 // bleed, no cross-cancellation, goroutine baseline restored, under -race.
+//
+// S4b: a subset of runs (both schema-constrained AND plain) additionally
+// attach a WithStream sink, each capturing into its OWN per-goroutine
+// counters (never a shared map — that would be exactly the kind of
+// cross-run bleed this test is designed to catch). Asserts: a streamed
+// schema run's sink sees ZERO token events but at least one step event;
+// a streamed plain run's sink sees at least one token event carrying its
+// OWN goal text (proving no foreign run's tokens landed in this run's
+// sink).
 func TestRunOnce_WithOutputSchema_ConcurrentMixedTraffic_NoBleed(t *testing.T) {
 	baseline := goruntime.NumGoroutine()
 	ctx := context.Background()
@@ -257,11 +449,15 @@ func TestRunOnce_WithOutputSchema_ConcurrentMixedTraffic_NoBleed(t *testing.T) {
 
 	const n = 120
 	type result struct {
-		idx       int
-		schema    bool
-		env       planner.AnswerEnvelope
-		err       error
-		cancelled bool
+		idx        int
+		schema     bool
+		env        planner.AnswerEnvelope
+		err        error
+		cancelled  bool
+		streamed   bool
+		tokenCount int
+		stepCount  int
+		tokenTexts []string
 	}
 	results := make([]result, n)
 	var wg sync.WaitGroup
@@ -285,16 +481,46 @@ func TestRunOnce_WithOutputSchema_ConcurrentMixedTraffic_NoBleed(t *testing.T) {
 			// Even runs are schema-constrained (distinct title per run);
 			// odd runs are plain (goal echo). Interleaved on one Stack.
 			schemaRun := i%2 == 0
+			// A third of all runs (both schema and plain) additionally
+			// stream — each goroutine owns its own sink + counters.
+			withStream := i%3 == 0
+
+			var (
+				streamMu   sync.Mutex
+				tokenCount int
+				stepCount  int
+				tokenTexts []string
+			)
+			var opts []assemble.RunOption
+			if withStream {
+				sink := func(e assemble.StreamEvent) {
+					streamMu.Lock()
+					defer streamMu.Unlock()
+					switch e.Kind {
+					case assemble.StreamToken:
+						tokenCount++
+						tokenTexts = append(tokenTexts, e.Text)
+					case assemble.StreamStep:
+						stepCount++
+					}
+				}
+				opts = append(opts, assemble.WithStream(sink))
+			}
+
 			var env planner.AnswerEnvelope
 			var err error
 			if schemaRun {
 				title := fmt.Sprintf("schema#%d#", i)
-				env, err = stack.RunOnce(runCtx, "classify", id, assemble.WithOutputSchema(titledSchema(title)))
+				runOpts := append([]assemble.RunOption{assemble.WithOutputSchema(titledSchema(title))}, opts...)
+				env, err = stack.RunOnce(runCtx, "classify", id, runOpts...)
 			} else {
 				goal := fmt.Sprintf("goal#%d#", i)
-				env, err = stack.RunOnce(runCtx, goal, id)
+				env, err = stack.RunOnce(runCtx, goal, id, opts...)
 			}
-			results[i] = result{idx: i, schema: schemaRun, env: env, err: err, cancelled: cancelled}
+			results[i] = result{
+				idx: i, schema: schemaRun, env: env, err: err, cancelled: cancelled,
+				streamed: withStream, tokenCount: tokenCount, stepCount: stepCount, tokenTexts: tokenTexts,
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -322,6 +548,14 @@ func TestRunOnce_WithOutputSchema_ConcurrentMixedTraffic_NoBleed(t *testing.T) {
 					t.Errorf("run %d: payload carries run %d's schema %q — CROSS-RUN SCHEMA BLEED", r.idx, j, foreign)
 				}
 			}
+			if r.streamed {
+				if r.tokenCount != 0 {
+					t.Errorf("run %d (schema, streamed): observed %d token events, want 0 (suppressed)", r.idx, r.tokenCount)
+				}
+				if r.stepCount == 0 {
+					t.Errorf("run %d (schema, streamed): observed 0 step events, want >= 1", r.idx)
+				}
+			}
 		} else {
 			// Plain run: no schema, no payload; answer echoes its own goal.
 			if r.env.AnswerPayload != nil {
@@ -330,6 +564,28 @@ func TestRunOnce_WithOutputSchema_ConcurrentMixedTraffic_NoBleed(t *testing.T) {
 			own := fmt.Sprintf("goal#%d#", r.idx)
 			if !strings.Contains(r.env.Answer, own) {
 				t.Errorf("run %d: plain answer %q does not carry its own goal %q — context bleed", r.idx, r.env.Answer, own)
+			}
+			if r.streamed {
+				if r.tokenCount == 0 {
+					t.Errorf("run %d (plain, streamed): observed 0 token events, want >= 1", r.idx)
+				}
+				// No cross-run sink bleed: every token text this run's OWN
+				// sink observed must carry this run's own goal, never a
+				// foreign run's.
+				for _, tt := range r.tokenTexts {
+					if !strings.Contains(tt, own) {
+						t.Errorf("run %d: sink observed token %q not carrying its own goal %q — cross-run sink bleed", r.idx, tt, own)
+					}
+					for j := 1; j < n; j += 2 {
+						if j == r.idx {
+							continue
+						}
+						foreign := fmt.Sprintf("goal#%d#", j)
+						if strings.Contains(tt, foreign) {
+							t.Errorf("run %d: sink observed run %d's goal %q — CROSS-RUN SINK BLEED", r.idx, j, foreign)
+						}
+					}
+				}
 			}
 		}
 	}

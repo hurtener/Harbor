@@ -206,10 +206,13 @@ Under the hood the run rides the profile's existing structured-output
 strategy (the `OutputMode` selection + downgrade chain) and the
 validate-and-retry loop bounded by `ModelProfile.MaxRetries` — no new
 knob. **Streaming caveat:** `WithOutputSchema` composes with
-`WithStream`, but assistant-content `token` chunks are SUPPRESSED for a
-schema-constrained run — a validate-and-retry loop cannot retract tokens
-it already streamed, so the validated answer arrives once, in the
-envelope. `step` and `tool_dispatched` events still stream (D-272).
+`WithStream`, but ALL token chunks — content AND reasoning — are
+SUPPRESSED for a schema-constrained run — a validate-and-retry loop
+cannot retract tokens it already streamed, so the validated answer
+arrives once, in the envelope. `step` and `tool_dispatched` events still
+stream (D-272); expect MORE `step` events per turn than a plain run when
+a corrective retry / downgrade attempt fires (each attempt is its own
+LLM call and its own step boundary).
 
 ### 4b. Drive the run loop yourself
 

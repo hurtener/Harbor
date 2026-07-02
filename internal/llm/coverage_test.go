@@ -33,7 +33,12 @@ func TestRegister_RejectsNilFactory(t *testing.T) {
 }
 
 func TestRegister_RejectsDuplicate(t *testing.T) {
-	const dupName = "dup-driver-coverage"
+	// uniqueDriverName keeps the FIRST (unguarded) registration below
+	// idempotent across `go test -count=N` — a fixed literal name would
+	// collide with itself on the second iteration (the registry persists
+	// across iterations within one process) before this test ever
+	// reaches its own intentional duplicate-registration assertion.
+	dupName := uniqueDriverName("dup-driver-coverage")
 	llm.Register(dupName, func(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		return mock.New(mock.Options{}), nil
 	})

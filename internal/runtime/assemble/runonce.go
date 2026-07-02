@@ -98,16 +98,50 @@ func WithInputArtifacts(ids ...string) RunOption {
 //     new shaping toggle.
 //   - The terminal Finish payload is validated against the schema at the
 //     RunOnce edge for EVERY planner (React, deterministic, external
-//     concretes). A schema-invalid answer after the correction budget is
-//     a loud, typed planner.ErrOutputInvalid — NEVER a silent fallback
-//     to unvalidated text.
+//     concretes) — but ONLY on a goal-satisfying Finish. A non-goal
+//     terminal (a steering CANCEL surfaced as Finish{Cancelled}, a
+//     planner NoPath finish, a deadline/constraints terminal) was never
+//     asked to produce a schema-shaped answer, so it returns the
+//     envelope exactly as a plain (no-schema) run would — empty
+//     AnswerPayload, FinishReason verbatim, never ErrOutputInvalid. A
+//     schema-invalid answer on a goal finish after the correction budget
+//     is a loud, typed planner.ErrOutputInvalid — NEVER a silent
+//     fallback to unvalidated text. ErrOutputInvalid also wraps a
+//     provider that rejected every OutputMode/downgrade attempt
+//     (llm.ErrDowngradeExhausted), alongside a react retry-loop
+//     exhaustion (llm.ErrRetryExhausted) — two producer sites, ONE
+//     terminal error shape.
+//
+// Per-OutputMode interaction (the profile's existing OutputMode strategy
+// decides which of these a schema-constrained run rides — no new
+// toggle):
+//   - `native` — schema and native tool-calling compose cleanly: a
+//     tool-call turn carries no content (so the Validator's tool-call-
+//     aware pass-through applies), and the content-bearing terminal turn
+//     carries the provider-enforced schema. The recommended profile for
+//     tool-heavy schema runs.
+//   - `prompted` — the JSON-only instruction + FormatJSONObject ride
+//     EVERY turn (not just the terminal one), which can bias the model
+//     against dispatching tools mid-run in favour of emitting JSON
+//     immediately. Prefer `native` when the run is expected to call
+//     tools before its terminal answer.
+//   - `tools` — the downgrade layer's write half asks the model for a
+//     `{"name":"respond_with","arguments":{...}}` envelope; the react
+//     terminal-answer path transparently unwraps it (both before
+//     Validator checks and before the Finish payload is captured) so the
+//     caller's schema-shaped `arguments` reach AnswerPayload, never the
+//     envelope wrapper. See internal/llm/output.ParseRespondWith.
 //
 // Streaming posture (composes with WithStream): tool_dispatched and step
-// events stream exactly as today, but assistant-content token chunks are
-// SUPPRESSED for a schema-constrained run — a validate-and-retry loop
-// cannot retract tokens already streamed, so the validated answer
-// arrives once, in the envelope. This is a documented behaviour choice,
-// deliberately more conservative than raw-JSON delta streaming.
+// events stream exactly as today, but ALL token chunks — content AND
+// reasoning — are SUPPRESSED for a schema-constrained run: a validate-
+// and-retry loop cannot retract tokens already streamed, so the
+// validated answer arrives once, in the envelope. This is a documented
+// behaviour choice, deliberately more conservative than raw-JSON delta
+// streaming. Each corrective retry/downgrade attempt the schema
+// constraint engages emits its own `step` event (one per LLM attempt),
+// so a schema-constrained run streams MORE step events per planner turn
+// than a plain run when a correction fires.
 //
 // Zero default-path change: without the option, RunOnce behaviour and
 // the envelope bytes are byte-identical to before.
@@ -272,11 +306,14 @@ func (s *Stack) RunOnce(
 	if err != nil {
 		// A schema-constrained run whose generation-steering retry loop
 		// exhausted its budget surfaces as ErrRetryExhausted from the LLM
-		// edge. Map it to the typed, planner-agnostic ErrOutputInvalid so
-		// the caller sees ONE terminal error shape regardless of where the
-		// budget ran out (react retry loop vs. the runtime-edge check
-		// below) — never a silent fallback to unvalidated text (§13).
-		if base.OutputSchema != nil && errors.Is(err, llm.ErrRetryExhausted) {
+		// edge; a provider that rejects every OutputMode/downgrade attempt
+		// surfaces ErrDowngradeExhausted. Map BOTH to the typed,
+		// planner-agnostic ErrOutputInvalid so the caller sees ONE of two
+		// terminal error shapes regardless of where the budget ran out
+		// (react retry loop, the downgrade chain, or the runtime-edge
+		// check below) — never a silent fallback to unvalidated text
+		// (§13).
+		if base.OutputSchema != nil && (errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)) {
 			return planner.AnswerEnvelope{}, fmt.Errorf("%w: schema-constrained run exhausted the correction budget: %w", planner.ErrOutputInvalid, err)
 		}
 		return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce: %w", err)
@@ -286,12 +323,20 @@ func (s *Stack) RunOnce(
 
 	// Runtime-edge final validation (planner-agnostic, no capability
 	// ceremony): validate the terminal Finish payload against the run's
-	// output schema for EVERY planner driver. The validated raw JSON is
-	// captured HERE, at the validation site, so AnswerPayload carries the
-	// exact bytes — never a lossy string round-trip through the
-	// ExtractAssistantAnswer collapse (map key-order nondeterminism).
+	// output schema for EVERY planner driver — but ONLY on a goal-
+	// satisfying Finish. A non-goal terminal (FinishCancelled from a
+	// steering CANCEL, FinishNoPath, a deadline/constraints terminal) was
+	// never asked to produce a schema-shaped answer in the first place;
+	// running edge validation on it would report a cancellation or a
+	// no-path outcome as a schema failure (ErrOutputInvalid), which is
+	// simply wrong — those finishes return the envelope exactly as a
+	// plain (no-schema) run would: empty AnswerPayload, FinishReason
+	// verbatim. The validated raw JSON is captured HERE, at the
+	// validation site, so AnswerPayload carries the exact bytes — never a
+	// lossy string round-trip through the ExtractAssistantAnswer collapse
+	// (map key-order nondeterminism).
 	var answerPayload json.RawMessage
-	if base.OutputSchema != nil {
+	if base.OutputSchema != nil && fin.Reason == planner.FinishGoal {
 		raw, capErr := capturePayloadJSON(fin.Payload)
 		if capErr != nil {
 			return planner.AnswerEnvelope{}, fmt.Errorf("%w: %w", planner.ErrOutputInvalid, capErr)
@@ -336,6 +381,15 @@ func (s *Stack) RunOnce(
 // never a string→map→string round-trip whose map key order is
 // nondeterministic. A nil payload is a loud error (a schema-constrained
 // run must produce a payload).
+//
+// A string payload is treated as raw JSON TEXT, never as a plain Go
+// string to be re-quoted — this is the react terminal-answer reality
+// (see [planner.Finish]'s Payload field doc): the model's `resp.Content`
+// IS the answer's JSON encoding. A string that is not valid JSON (a
+// planner concrete returning Payload: "done" instead of a structured
+// value or a quoted JSON string `"\"done\""`) fails loud HERE with a
+// hint, rather than surfacing a cryptic "decode terminal output as
+// JSON" error two calls downstream inside the schema validator.
 func capturePayloadJSON(payload any) (json.RawMessage, error) {
 	switch p := payload.(type) {
 	case nil:
@@ -347,6 +401,12 @@ func capturePayloadJSON(payload any) (json.RawMessage, error) {
 	case string:
 		// The ReAct native terminal path: Content is the model's JSON
 		// text. Use its bytes verbatim; validation catches non-JSON.
+		if !json.Valid([]byte(p)) {
+			return nil, fmt.Errorf(
+				"terminal finish payload is a Go string that is not valid JSON text (%q): string payloads must contain JSON text; a plain Go string like \"done\" is not valid JSON — quote it (e.g. `\"done\"`) or return a structured payload",
+				p,
+			)
+		}
 		return json.RawMessage(p), nil
 	default:
 		b, err := json.Marshal(p)
