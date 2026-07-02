@@ -499,6 +499,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		appliedGates    = stack.Gates
 		mcpRegistry     = stack.MCPRegistry
 		mcpToolContext  = stack.MCPToolContext
+		oauthProviders  = stack.OAuthProviders
 		sessionRegistry = stack.Sessions
 		agentRegistry   = stack.Agents
 		steeringReg     = stack.Steering
@@ -735,7 +736,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	if toolCat != nil && mcpRegistry != nil {
 		mcpAttacher := newDevMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.logger,
-			identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession})
+			identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}, oauthProviders)
 		closers = append(closers, mcpAttacher.Close)
 		agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(mcpAttacher))
 	}

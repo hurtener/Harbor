@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // Sentinel errors. Callers compare with errors.Is.
@@ -151,6 +152,30 @@ type Config struct {
 	// a programmatic embedder may set it directly. Read once at construction;
 	// immutable thereafter.
 	HostDisplayModes []string
+
+	// OAuthProvider, when non-nil, binds this connection to a per-identity
+	// OAuth credential source: every identity-stamped per-call RPC resolves a
+	// fresh bearer via Token(ctx, source) and injects Authorization on THAT
+	// request only. Nil leaves the connection on its static Headers (the
+	// unbound default). Resolved once at construction from the operator's
+	// non-secret provider NAME (config `oauth_provider`) against the declared
+	// provider registry — the name selects an acquisition strategy; the
+	// secret stays on the provider. Immutable after construction: no per-call
+	// transport state mutates (the token rides the call's ctx). A connect-time
+	// request (initialize / discovery) predates any per-call identity and so
+	// carries only the static Headers — a documented limitation.
+	OAuthProvider auth.OAuthProvider
+
+	// MetaAnnotations is a static, non-secret set of operator-declared
+	// key/values merged verbatim into the `_meta` map on every
+	// identity-stamped per-call RPC, so a deployment can carry its own
+	// attribution vocabulary to a shared server. Reserved keys (the triple
+	// keys, `agent_id`, `traceparent`, `tracestate`, and any
+	// `io.modelcontextprotocol/`-prefixed key) are rejected at config /
+	// attach validation and can never shadow the triple or agent provenance
+	// (those are stamped last). Read once at construction; immutable
+	// thereafter.
+	MetaAnnotations map[string]string
 }
 
 // pushIdentity returns the identity to stamp on a server-pushed
@@ -618,7 +643,14 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
 	}
-	meta, err := buildIdentityMeta(ctx)
+	meta, err := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	// Fail-closed per-identity bearer: on a bound connection, resolve the
+	// token and thread it onto the call's ctx BEFORE dispatch. A Token()
+	// failure aborts here — no wire request is issued.
+	ctx, err = p.resolveBearerCtx(ctx)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
@@ -781,7 +813,11 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 					return tools.ToolResult{}, err
 				}
 				params := &mcpsdk.ReadResourceParams{URI: uri}
-				meta, mErr := buildIdentityMeta(ctx)
+				meta, mErr := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+				if mErr != nil {
+					return tools.ToolResult{}, mErr
+				}
+				ctx, mErr = p.resolveBearerCtx(ctx)
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
@@ -829,7 +865,11 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 					}
 				}
 				params := &mcpsdk.GetPromptParams{Name: name, Arguments: argMap}
-				meta, mErr := buildIdentityMeta(ctx)
+				meta, mErr := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+				if mErr != nil {
+					return tools.ToolResult{}, mErr
+				}
+				ctx, mErr = p.resolveBearerCtx(ctx)
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
@@ -867,7 +907,11 @@ func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte
 	if sErr != nil {
 		return nil, "", sErr
 	}
-	meta, mErr := buildIdentityMeta(ctx)
+	meta, mErr := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+	if mErr != nil {
+		return nil, "", mErr
+	}
+	ctx, mErr = p.resolveBearerCtx(ctx)
 	if mErr != nil {
 		return nil, "", mErr
 	}
@@ -937,7 +981,11 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 		return err
 	}
 	params := &mcpsdk.SubscribeParams{URI: uri}
-	meta, mErr := buildIdentityMeta(ctx)
+	meta, mErr := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+	if mErr != nil {
+		return mErr
+	}
+	ctx, mErr = p.resolveBearerCtx(ctx)
 	if mErr != nil {
 		return mErr
 	}
@@ -1023,13 +1071,25 @@ func (p *Provider) Close(ctx context.Context) error {
 // (tenant, user, session) triple under `tenant` / `user` /
 // `session` keys so MCP servers see Harbor's isolation triple.
 //
+// Provenance enrichment: when the ctx carries an acting-agent
+// registration id (the run loop's provenance seam), it is stamped under
+// `agent_id` — PROVENANCE ONLY, never an isolation principal (a server
+// MUST NOT key isolation on it). Operator-declared `annotations` are
+// merged verbatim for the deployment's own attribution vocabulary.
+// Reserved keys (the triple, `agent_id`, `traceparent`, `tracestate`,
+// and any `io.modelcontextprotocol/`-prefixed key) are rejected at
+// validation; this merge re-enforces the invariant by stamping the
+// triple + agent LAST and skipping any reserved/spec-prefixed annotation
+// key, so an annotation can never shadow identity even if one slipped
+// past validation ("impossible by construction" defence-in-depth).
+//
 // AGENTS.md §6 rule 9 / forbidden practice §13: identity is
 // mandatory. Missing identity returns `ErrIdentityMissing` and the
 // caller MUST abort the dispatch — never proceed with an empty Meta.
 // Callers are the per-invocation closures (callTool / read-resource
 // / call-prompt); the server-pushed onResourceUpdated path uses
 // `Config.DefaultIdentity` and bypasses this helper.
-func buildIdentityMeta(ctx context.Context) (mcpsdk.Meta, error) {
+func buildIdentityMeta(ctx context.Context, annotations map[string]string) (mcpsdk.Meta, error) {
 	id, ok := identity.From(ctx)
 	if !ok {
 		return nil, ErrIdentityMissing
@@ -1037,11 +1097,72 @@ func buildIdentityMeta(ctx context.Context) (mcpsdk.Meta, error) {
 	if id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
 		return nil, ErrIdentityMissing
 	}
-	return mcpsdk.Meta{
-		"tenant":  id.TenantID,
-		"user":    id.UserID,
-		"session": id.SessionID,
-	}, nil
+	meta := make(mcpsdk.Meta, len(annotations)+4)
+	// Operator annotations first, so the triple + agent stamps below win
+	// unconditionally (a reserved-key annotation can never shadow identity).
+	for k, v := range annotations {
+		if isReservedMetaKey(k) {
+			continue
+		}
+		meta[k] = v
+	}
+	meta["tenant"] = id.TenantID
+	meta["user"] = id.UserID
+	meta["session"] = id.SessionID
+	if agentID, present := tools.InvokingAgentFrom(ctx); present {
+		meta["agent_id"] = agentID
+	}
+	return meta, nil
+}
+
+// reservedMetaKeys is the closed set of `_meta` keys Harbor owns: the
+// isolation triple, the agent-provenance stamp, and the W3C trace-context
+// carrier keys (the `_meta` trace-context idiom). Operator annotations may not use
+// them.
+var reservedMetaKeys = map[string]struct{}{
+	"tenant":      {},
+	"user":        {},
+	"session":     {},
+	"agent_id":    {},
+	"traceparent": {},
+	"tracestate":  {},
+}
+
+// mcpSpecMetaPrefix is the spec-reserved `_meta` namespace prefix; operator
+// annotations may not use it (the MCP spec owns keys under it).
+const mcpSpecMetaPrefix = "io.modelcontextprotocol/"
+
+// isReservedMetaKey reports whether k is a Harbor-reserved or spec-reserved
+// `_meta` key that an operator annotation must not carry.
+func isReservedMetaKey(k string) bool {
+	if _, ok := reservedMetaKeys[k]; ok {
+		return true
+	}
+	return len(k) >= len(mcpSpecMetaPrefix) && k[:len(mcpSpecMetaPrefix)] == mcpSpecMetaPrefix
+}
+
+// resolveBearerCtx threads a fresh per-identity bearer onto the call's ctx
+// when this connection binds an OAuth provider, so the context-aware
+// bearerInjectingTransport sets Authorization on the outbound request. It is
+// FAIL-CLOSED: a Token() error (including a typed *auth.ErrAuthRequired the
+// runtime catches to park the run on the unified pause/resume primitive)
+// aborts the RPC by returning the error BEFORE any wire request — never a
+// fallback to an unauthenticated call (CLAUDE.md §13). An unbound connection
+// (no provider) returns the ctx unchanged.
+//
+// No Provider or transport field mutates: the bearer rides the returned ctx
+// (per-call state lives on the ctx, never on the compiled artifact — the
+// concurrent-reuse contract).
+func (p *Provider) resolveBearerCtx(ctx context.Context) (context.Context, error) {
+	if p.cfg.OAuthProvider == nil {
+		return ctx, nil
+	}
+	tok, err := p.cfg.OAuthProvider.Token(ctx, p.source)
+	if err != nil {
+		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
+		return nil, err
+	}
+	return withBearer(ctx, tok.AccessToken), nil
 }
 
 // chooseString returns first when non-empty, else second.

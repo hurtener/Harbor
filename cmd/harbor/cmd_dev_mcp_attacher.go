@@ -14,6 +14,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -43,6 +44,10 @@ type devMCPConnectionAttacher struct {
 	bus             events.EventBus
 	logger          *slog.Logger
 	defaultIdentity identity.Identity
+	// oauthProviders is the declared OAuth-provider registry a runtime-added
+	// connection's `oauth_provider` binding resolves against (mcpdrv.Attach
+	// does the resolution + fail-loud). Set once at construction.
+	oauthProviders map[string]toolauth.OAuthProvider
 
 	mu      sync.Mutex
 	closers []func(context.Context) error
@@ -50,13 +55,15 @@ type devMCPConnectionAttacher struct {
 
 // newDevMCPConnectionAttacher builds the production attacher. catalog,
 // registry, and bus are mandatory (mcpdrv.Attach validates them too).
-func newDevMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity) *devMCPConnectionAttacher {
+// oauthProviders may be nil when no provider is declared.
+func newDevMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider) *devMCPConnectionAttacher {
 	return &devMCPConnectionAttacher{
 		catalog:         catalog,
 		registry:        registry,
 		bus:             bus,
 		logger:          logger,
 		defaultIdentity: defaultIdentity,
+		oauthProviders:  oauthProviders,
 	}
 }
 
@@ -70,11 +77,13 @@ func newDevMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Reg
 // pause/resume primitive.
 func (a *devMCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol.AttachRequest) error {
 	ms := config.MCPServerConfig{
-		Name:          req.Name,
-		TransportMode: transportModeForAdd(req.Transport),
-		URL:           req.URL,
-		Command:       append([]string(nil), req.Command...),
-		Headers:       req.Headers, // SECRET — used for the live transport, never persisted
+		Name:            req.Name,
+		TransportMode:   transportModeForAdd(req.Transport),
+		URL:             req.URL,
+		Command:         append([]string(nil), req.Command...),
+		Headers:         req.Headers, // SECRET — used for the live transport, never persisted
+		OAuthProvider:   req.OAuthProvider,
+		MetaAnnotations: req.MetaAnnotations,
 	}
 
 	// Serialise adds: the per-add closer slice is merged into the master
@@ -92,6 +101,7 @@ func (a *devMCPConnectionAttacher) Attach(ctx context.Context, req agentcfgproto
 		Logger:          a.logger,
 		DefaultIdentity: a.defaultIdentity,
 		Closers:         &local,
+		OAuthProviders:  a.oauthProviders,
 	})
 	// Merge whatever closers Attach appended (a successful Connect appends the
 	// provider's Close even if a later step failed — drain it on teardown).

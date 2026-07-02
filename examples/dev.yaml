@@ -183,6 +183,37 @@ tools:
   http_manifests: []
   mcp_servers: []
 
+  # Southbound per-identity OAuth binding (D-278). An http(s) MCP server
+  # can BIND a declared `oauth_providers[]` entry by its non-secret NAME:
+  # every identity-stamped per-call RPC to that server then resolves a
+  # fresh bearer for the CALLING identity and injects
+  # `Authorization: Bearer <tok>` on THAT request only (the connect-time
+  # `headers` stay for the initialize/discovery handshake — a user-scoped
+  # bearer cannot exist before a per-call identity does). A bound provider
+  # whose token fetch fails aborts the call loud — never an unauthenticated
+  # fallback. `oauth_provider` is a NAME, not a secret; the secret stays
+  # env-indirected on the provider entry above. Rejected at validation:
+  # an unknown provider name, a binding on a `stdio` transport (no HTTP
+  # request to inject into), and a static `Authorization` header alongside
+  # the binding (one auth mode per connection).
+  #
+  # `meta_annotations` is a static, NON-SECRET operator map merged verbatim
+  # into the MCP `_meta` on every identity-stamped call — the deployment's
+  # own attribution vocabulary, passed to the server as-is alongside the
+  # `(tenant, user, session)` triple and the provenance `agent_id`. Reserved
+  # keys (`tenant`/`user`/`session`/`agent_id`/`traceparent`/`tracestate`
+  # and any `io.modelcontextprotocol/`-prefixed key) and empty keys are
+  # rejected at validation.
+  #
+  #   mcp_servers:
+  #     - name: enterprise-graph
+  #       transport_mode: http           # streamable-http / sse — never stdio
+  #       url: https://mcp.example.com/graph
+  #       oauth_provider: m365-broker    # names an oauth_providers[] entry
+  #       meta_annotations:
+  #         deployment: prod-eu
+  #         fleet: harbor-west
+
   # Phase 83n / D-153 + Phase 107c / D-167 — opt in to the small set
   # of built-in tools shipped in the Harbor binary. Empty list (the
   # default) registers nothing. Available names mirror

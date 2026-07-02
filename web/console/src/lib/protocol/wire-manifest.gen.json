@@ -446,6 +446,16 @@
           "key": "url",
           "type": "string",
           "optional": true
+        },
+        {
+          "key": "oauth_provider",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "meta_annotations",
+          "type": "object",
+          "optional": true
         }
       ]
     },

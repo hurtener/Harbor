@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // AttachDeps bundles the collaborators Attach wires the server into.
@@ -67,6 +69,15 @@ type AttachDeps struct {
 	// capturer leaves tool-context delivery unwired (the host read returns
 	// not-found). Optional.
 	ToolContext ToolContextCapturer
+	// OAuthProviders is the declared OAuth-provider registry (keyed by the
+	// non-secret provider NAME) Attach resolves a connection's
+	// `oauth_provider` binding against. Populated by the runtime assembler
+	// from its constructed provider map (and the devstack twin). A binding
+	// naming a provider absent from this map fails the attach loud, listing
+	// the registered names (§4.4 factory-error convention). Nil / empty is
+	// valid when no connection binds a provider. The driver depends ONLY on
+	// the `auth.OAuthProvider` interface — no concrete driver import (§13).
+	OAuthProviders map[string]auth.OAuthProvider
 }
 
 // Attach wires one configured MCP server (config.MCPServerConfig) into
@@ -97,6 +108,17 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if policyErr != nil {
 		return fmt.Errorf("mcp server %q: %w", ms.Name, policyErr)
 	}
+	// Resolve the non-secret `oauth_provider` binding (per-identity southbound
+	// bearer) against the declared registry, and re-enforce the binding rules
+	// at attach time — the primary gate for a runtime-added connection, which
+	// never passes through `harbor validate` (config-time validation is the
+	// boot gate). An unknown name / stdio binding / static-Authorization
+	// conflict / reserved annotation key fails the attach loud (§13), never a
+	// silent unauthenticated attach.
+	oauthProvider, bindErr := resolveOAuthBinding(ms, mode, deps.OAuthProviders)
+	if bindErr != nil {
+		return fmt.Errorf("mcp server %q: %w", ms.Name, bindErr)
+	}
 	provider, err := New(Config{
 		Name:             ms.Name,
 		TransportMode:    mode,
@@ -111,6 +133,8 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		DefaultIdentity:  deps.DefaultIdentity,
 		HostDisplayModes: append([]string(nil), deps.HostDisplayModes...),
 		ToolContext:      deps.ToolContext,
+		OAuthProvider:    oauthProvider,
+		MetaAnnotations:  cloneHeaderMap(ms.MetaAnnotations),
 	})
 	if err != nil {
 		return fmt.Errorf("mcp.New: %w", err)
@@ -239,6 +263,62 @@ func toolPolicyFromProjected(p config.ProjectedToolPolicy) tools.ToolPolicy {
 		BackoffMax:  p.BackoffMax,
 		RetryOn:     retryOn,
 	}
+}
+
+// ErrOAuthBinding — a connection's `oauth_provider` binding is invalid: it
+// names an unregistered provider, sits on a stdio transport, or conflicts
+// with a static `Authorization` header. Callers compare with errors.Is.
+var ErrOAuthBinding = errors.New("mcp: invalid oauth_provider binding")
+
+// resolveOAuthBinding resolves a connection's non-secret `oauth_provider`
+// name against the declared registry and re-enforces the binding rules
+// (mirroring config-time validation for the runtime-add path). Returns the
+// resolved provider (nil when the connection binds none) or a loud error.
+func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, providers map[string]auth.OAuthProvider) (auth.OAuthProvider, error) {
+	// Reserved / spec-prefixed annotation keys are re-checked here so a
+	// runtime-added connection cannot smuggle an identity-shadowing key.
+	for k := range ms.MetaAnnotations {
+		if strings.TrimSpace(k) == "" {
+			return nil, fmt.Errorf("%w: meta_annotations key must not be empty", ErrOAuthBinding)
+		}
+		if isReservedMetaKey(k) {
+			return nil, fmt.Errorf("%w: meta_annotations key %q is reserved (triple/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", ErrOAuthBinding, k)
+		}
+	}
+	if ms.OAuthProvider == "" {
+		return nil, nil
+	}
+	if mode == TransportStdio {
+		return nil, fmt.Errorf("%w: oauth_provider set on a stdio transport (no HTTP request to inject Authorization into)", ErrOAuthBinding)
+	}
+	for k := range ms.Headers {
+		if strings.EqualFold(k, "authorization") {
+			return nil, fmt.Errorf("%w: static Authorization header conflicts with oauth_provider (one auth mode per connection)", ErrOAuthBinding)
+		}
+	}
+	prov, ok := providers[ms.OAuthProvider]
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown provider %q (registered: %s)", ErrOAuthBinding, ms.OAuthProvider, registeredProviderNames(providers))
+	}
+	return prov, nil
+}
+
+// registeredProviderNames renders a deterministic, comma-separated list of
+// the registered OAuth provider names for a fail-loud error message.
+func registeredProviderNames(providers map[string]auth.OAuthProvider) string {
+	if len(providers) == 0 {
+		return "(none)"
+	}
+	names := make([]string, 0, len(providers))
+	for n := range providers {
+		names = append(names, n)
+	}
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j-1] > names[j]; j-- {
+			names[j-1], names[j] = names[j], names[j-1]
+		}
+	}
+	return strings.Join(names, ",")
 }
 
 // cloneHeaderMap returns a defensive copy of m so the Provider's

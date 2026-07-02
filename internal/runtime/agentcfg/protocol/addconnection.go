@@ -81,6 +81,13 @@ type AttachRequest struct {
 	// Headers are operator-supplied auth headers used ONLY for the live
 	// attach. SECRET — never persisted (CLAUDE.md §7).
 	Headers map[string]string
+	// OAuthProvider is the non-secret provider NAME to bind for per-identity
+	// southbound bearer injection (empty leaves the connection on its static
+	// Headers). The attacher resolves it against the declared registry.
+	OAuthProvider string
+	// MetaAnnotations is the non-secret operator `_meta` annotation set the
+	// attacher carries onto the live connection's per-call `_meta`.
+	MetaAnnotations map[string]string
 }
 
 // ConnectionState is the explicit attach lifecycle state surfaced on the
@@ -170,12 +177,14 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 	// Drive the real attach. The headers flow to the transport ONLY — they
 	// are NOT carried into the revision / diff / events below.
 	attachErr := s.attacher.Attach(ctx, AttachRequest{
-		Identity:  id,
-		Name:      desc.Name,
-		Transport: desc.Transport,
-		Command:   append([]string(nil), desc.Command...),
-		URL:       desc.URL,
-		Headers:   req.Headers,
+		Identity:        id,
+		Name:            desc.Name,
+		Transport:       desc.Transport,
+		Command:         append([]string(nil), desc.Command...),
+		URL:             desc.URL,
+		Headers:         req.Headers,
+		OAuthProvider:   desc.OAuthProvider,
+		MetaAnnotations: cloneAnnotations(desc.MetaAnnotations),
 	})
 
 	switch {
@@ -245,6 +254,12 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 	if name == "" {
 		return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: name is empty", ErrInvalidConnection)
 	}
+	// Reserved / spec-prefixed / empty `_meta` annotation keys are rejected
+	// for every transport (the runtime stamps the triple + agent_id + trace
+	// context; an operator annotation must not shadow them).
+	if err := validateConnectionAnnotations(c.MetaAnnotations); err != nil {
+		return agentcfg.MCPConnectionDescriptor{}, err
+	}
 	transport := agentcfg.MCPTransport(strings.TrimSpace(c.Transport))
 	switch transport {
 	case agentcfg.MCPTransportStdio:
@@ -254,10 +269,14 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 		if c.URL != "" {
 			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: stdio transport must not carry a url", ErrInvalidConnection)
 		}
+		if strings.TrimSpace(c.OAuthProvider) != "" {
+			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: stdio transport must not bind an oauth_provider (no HTTP request to inject Authorization into)", ErrInvalidConnection)
+		}
 		return agentcfg.MCPConnectionDescriptor{
-			Name:      name,
-			Transport: transport,
-			Command:   append([]string(nil), c.Command...),
+			Name:            name,
+			Transport:       transport,
+			Command:         append([]string(nil), c.Command...),
+			MetaAnnotations: cloneAnnotations(c.MetaAnnotations),
 		}, nil
 	case agentcfg.MCPTransportHTTP:
 		if strings.TrimSpace(c.URL) == "" {
@@ -267,9 +286,11 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)
 		}
 		return agentcfg.MCPConnectionDescriptor{
-			Name:      name,
-			Transport: transport,
-			URL:       strings.TrimSpace(c.URL),
+			Name:            name,
+			Transport:       transport,
+			URL:             strings.TrimSpace(c.URL),
+			OAuthProvider:   strings.TrimSpace(c.OAuthProvider),
+			MetaAnnotations: cloneAnnotations(c.MetaAnnotations),
 		}, nil
 	default:
 		return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: unknown transport %q (want stdio|http)", ErrInvalidConnection, c.Transport)
@@ -377,11 +398,53 @@ func lifecycleEventType(state ConnectionState) events.EventType {
 // descriptorToWire projects a domain descriptor onto the wire shape.
 func descriptorToWire(d agentcfg.MCPConnectionDescriptor) prototypes.AgentConfigMCPConnectionDescriptor {
 	return prototypes.AgentConfigMCPConnectionDescriptor{
-		Name:      d.Name,
-		Transport: string(d.Transport),
-		Command:   append([]string(nil), d.Command...),
-		URL:       d.URL,
+		Name:            d.Name,
+		Transport:       string(d.Transport),
+		Command:         append([]string(nil), d.Command...),
+		URL:             d.URL,
+		OAuthProvider:   d.OAuthProvider,
+		MetaAnnotations: cloneAnnotations(d.MetaAnnotations),
 	}
+}
+
+// reservedConnectionMetaKeys is the closed set of `_meta` keys the runtime
+// stamps; an operator's connection annotations must not use them.
+var reservedConnectionMetaKeys = map[string]struct{}{
+	"tenant":      {},
+	"user":        {},
+	"session":     {},
+	"agent_id":    {},
+	"traceparent": {},
+	"tracestate":  {},
+}
+
+// mcpSpecConnectionMetaPrefix is the spec-reserved `_meta` namespace prefix.
+const mcpSpecConnectionMetaPrefix = "io.modelcontextprotocol/"
+
+// validateConnectionAnnotations rejects empty / reserved / spec-prefixed
+// annotation keys — the attach-time mirror of the config-time rule.
+func validateConnectionAnnotations(m map[string]string) error {
+	for k := range m {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("%w: meta_annotations key must not be empty", ErrInvalidConnection)
+		}
+		if _, reserved := reservedConnectionMetaKeys[k]; reserved || strings.HasPrefix(k, mcpSpecConnectionMetaPrefix) {
+			return fmt.Errorf("%w: meta_annotations key %q is reserved (triple/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", ErrInvalidConnection, k)
+		}
+	}
+	return nil
+}
+
+// cloneAnnotations returns a defensive copy of m (nil for empty).
+func cloneAnnotations(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // safeReason returns a bounded, SECRET-SCRUBBED, operator-facing failure

@@ -581,10 +581,12 @@ func connectionsToWire(in []agentcfg.MCPConnectionDescriptor) []prototypes.Agent
 	out := make([]prototypes.AgentConfigMCPConnectionDescriptor, 0, len(in))
 	for _, d := range in {
 		out = append(out, prototypes.AgentConfigMCPConnectionDescriptor{
-			Name:      d.Name,
-			Transport: string(d.Transport),
-			Command:   append([]string(nil), d.Command...),
-			URL:       d.URL,
+			Name:            d.Name,
+			Transport:       string(d.Transport),
+			Command:         append([]string(nil), d.Command...),
+			URL:             d.URL,
+			OAuthProvider:   d.OAuthProvider,
+			MetaAnnotations: cloneAnnotations(d.MetaAnnotations),
 		})
 	}
 	return out
@@ -599,10 +601,12 @@ func connectionsToDomain(in []prototypes.AgentConfigMCPConnectionDescriptor) []a
 	out := make([]agentcfg.MCPConnectionDescriptor, 0, len(in))
 	for _, d := range in {
 		out = append(out, agentcfg.MCPConnectionDescriptor{
-			Name:      d.Name,
-			Transport: agentcfg.MCPTransport(d.Transport),
-			Command:   append([]string(nil), d.Command...),
-			URL:       d.URL,
+			Name:            d.Name,
+			Transport:       agentcfg.MCPTransport(d.Transport),
+			Command:         append([]string(nil), d.Command...),
+			URL:             d.URL,
+			OAuthProvider:   d.OAuthProvider,
+			MetaAnnotations: cloneAnnotations(d.MetaAnnotations),
 		})
 	}
 	return out
