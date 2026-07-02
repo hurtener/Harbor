@@ -446,8 +446,36 @@ type GovernanceRateLimitConfig struct {
 // passes them through unchanged.
 
 // RuntimeConfig is owned by runtime/* phases (engine, streaming,
-// cancellation, backpressure).
-type RuntimeConfig struct{}
+// cancellation, backpressure). Its first populated body is the run
+// lifecycle-hook block.
+type RuntimeConfig struct {
+	// Hooks configures the runtime's run-lifecycle hooks. The only hook
+	// point today is the run-completion hook (`runtime.hooks.run_completion`).
+	Hooks RuntimeHooksConfig `yaml:"hooks,omitempty"`
+}
+
+// RuntimeHooksConfig is the runtime's run-lifecycle hook block.
+type RuntimeHooksConfig struct {
+	// RunCompletion configures the run-completion hook: at the run loop's
+	// terminal boundary the runtime dispatches the run's transcript to the
+	// named catalog tool. Empty `Tool` disables the static hook (the
+	// versioned agent-config `hooks` section can still enable it per agent).
+	RunCompletion RunCompletionHookConfig `yaml:"run_completion,omitempty"`
+}
+
+// RunCompletionHookConfig is the static run-completion hook configuration.
+// The durable, versioned equivalent is the agent-config `hooks` section
+// (agentcfg.HooksSection); resolution at run start is agent-config over this
+// yaml over no hook.
+type RunCompletionHookConfig struct {
+	// Tool is the catalog tool name the transcript is dispatched to. Empty
+	// disables the static hook. The tool need not be exposed to the planner —
+	// the executor resolves it against the full catalog.
+	Tool string `yaml:"tool,omitempty"`
+	// Timeout bounds the detached hook dispatch. Non-positive falls back to
+	// the runtime default (10s) at run start.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+}
 
 // MemoryConfig is owned by the memory subsystem phases.
 //

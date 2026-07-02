@@ -428,6 +428,7 @@ func (r *registry) Diff(ctx context.Context, id identity.Quadruple, agentID, fro
 		PromptLayers:   agentcfg.DiffPromptLayers(from.Payload, to.Payload),
 		Connections:    agentcfg.DiffConnections(from.Payload, to.Payload),
 		LLMParams:      agentcfg.DiffLLMParams(from.Payload, to.Payload),
+		Hooks:          agentcfg.DiffHooks(from.Payload, to.Payload),
 	}, nil
 }
 

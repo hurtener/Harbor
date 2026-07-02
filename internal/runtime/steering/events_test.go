@@ -46,6 +46,32 @@ func TestControlLifecyclePayload_IsSafePayload(t *testing.T) {
 	var _ events.SafePayload = ControlLifecyclePayload{}
 }
 
+func TestRunHookEventTypes_Registered(t *testing.T) {
+	// The run-completion hook adds run.hook_dispatched + run.hook_failed —
+	// the run-lifecycle egress observability events (D-280). They must be in
+	// the canonical registry so a Publish never trips ErrUnknownEventType.
+	for _, et := range []events.EventType{EventTypeRunHookDispatched, EventTypeRunHookFailed} {
+		if !events.IsValidEventType(et) {
+			t.Errorf("event type %q is not registered in the events registry", et)
+		}
+	}
+	if EventTypeRunHookDispatched != "run.hook_dispatched" {
+		t.Errorf("EventTypeRunHookDispatched = %q, want %q", EventTypeRunHookDispatched, "run.hook_dispatched")
+	}
+	if EventTypeRunHookFailed != "run.hook_failed" {
+		t.Errorf("EventTypeRunHookFailed = %q, want %q", EventTypeRunHookFailed, "run.hook_failed")
+	}
+}
+
+func TestRunHookPayloads_AreSafePayload(t *testing.T) {
+	// Metadata-only payloads — the bus skips the redactor and subscribers
+	// keep typed access. Never transcript content or raw error text.
+	var _ events.EventPayload = RunHookDispatchedPayload{}
+	var _ events.SafePayload = RunHookDispatchedPayload{}
+	var _ events.EventPayload = RunHookFailedPayload{}
+	var _ events.SafePayload = RunHookFailedPayload{}
+}
+
 func TestClassifyRejection(t *testing.T) {
 	cases := []struct {
 		err  error

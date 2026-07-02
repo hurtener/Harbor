@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:f90fb905088dab914f43da5839b6300c1af2fee05d3b3aea3dd1f5e0d97b6c10";
+export const WIRE_SURFACE_DIGEST = "sha256:b8c080188f27e63ee82a443c56fe6cea0d51ccf066fd19625b137c761a4cf831";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -224,6 +224,8 @@ export type HarborEventType =
   | "planner.max_steps_exceeded"
   | "planner.repair_exhausted"
   | "planner.repair_guidance_injected"
+  | "run.hook_dispatched"
+  | "run.hook_failed"
   | "runs.overrides_set"
   | "runtime.error"
   | "runtime.run_cancelled"
@@ -336,6 +338,7 @@ export interface AgentConfigDiff {
   prompt_layers: AgentConfigPromptLayersDiff;
   connections: AgentConfigConnectionsDiff;
   llm_params: AgentConfigLLMParamsDiff;
+  hooks: AgentConfigHooksDiff;
 }
 
 export interface AgentConfigDiffRequest {
@@ -359,6 +362,19 @@ export interface AgentConfigGetResponse {
   revision?: AgentConfigRevisionView;
   set: boolean;
   protocol_version: string;
+}
+
+export interface AgentConfigHooks {
+  run_completion?: AgentConfigRunCompletionHook;
+}
+
+export interface AgentConfigHooksDiff {
+  run_completion_tool_changed: boolean;
+  run_completion_tool_from?: string;
+  run_completion_tool_to?: string;
+  run_completion_timeout_changed: boolean;
+  run_completion_timeout_from?: string;
+  run_completion_timeout_to?: string;
 }
 
 export interface AgentConfigLLMParams {
@@ -409,6 +425,7 @@ export interface AgentConfigPayload {
   tool_exposure?: AgentConfigToolExposure;
   connections?: AgentConfigConnections;
   llm_params?: AgentConfigLLMParams;
+  hooks?: AgentConfigHooks;
 }
 
 export interface AgentConfigPromptLayers {
@@ -444,6 +461,11 @@ export interface AgentConfigRollbackRequest {
 export interface AgentConfigRollbackResponse {
   revision: AgentConfigRevisionView;
   protocol_version: string;
+}
+
+export interface AgentConfigRunCompletionHook {
+  tool: string;
+  timeout_ms?: number;
 }
 
 export interface AgentConfigSessionOverlay {

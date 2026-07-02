@@ -101,6 +101,18 @@ artifacts:
   driver: inmem
   heavy_output_threshold_bytes: 32768
 
+# Runtime run-lifecycle hooks. The run-completion hook dispatches the run's
+# transcript to a named catalog tool at the terminal boundary — for memory /
+# audit / analytics sinks that need the conversation for runs no client
+# observes. Empty `tool` disables the static hook; the per-agent agent-config
+# `hooks` section can enable it. A hook failure never alters the run outcome
+# (`run.hook_failed` + Warn). See docs/CONFIG.md → Runtime.
+# runtime:
+#   hooks:
+#     run_completion:
+#       tool: run_transcript_sink
+#       timeout: 10s
+
 tasks:
   # inprocess (default) or durable. durable persists task/group/patch
   # records through the StateStore so they survive a restart; pair it

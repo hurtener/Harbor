@@ -595,6 +595,23 @@ func TestValidate_TableDriven(t *testing.T) {
 			},
 			"pauseresume.sweep_interval",
 		},
+		// Run-completion hook (D-280).
+		{
+			"run-completion hook negative timeout",
+			func(c *config.Config) {
+				c.Runtime.Hooks.RunCompletion.Tool = "sink"
+				c.Runtime.Hooks.RunCompletion.Timeout = -1 * time.Second
+			},
+			"runtime.hooks.run_completion.timeout",
+		},
+		{
+			"run-completion hook timeout without tool",
+			func(c *config.Config) {
+				c.Runtime.Hooks.RunCompletion.Timeout = 10 * time.Second
+				c.Runtime.Hooks.RunCompletion.Tool = ""
+			},
+			"runtime.hooks.run_completion.tool",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -608,6 +625,27 @@ func TestValidate_TableDriven(t *testing.T) {
 				t.Errorf("err=%q missing path %q", err.Error(), tc.wantPath)
 			}
 		})
+	}
+}
+
+// TestValidate_RunCompletionHook_Accepted proves valid run-completion hook
+// configs pass: no hook (default), a hook with tool + timeout, and a hook
+// with a tool but no timeout (defaulted at run start, not an error).
+func TestValidate_RunCompletionHook_Accepted(t *testing.T) {
+	cases := []func(*config.Config){
+		func(c *config.Config) {}, // no hook — the default
+		func(c *config.Config) {
+			c.Runtime.Hooks.RunCompletion.Tool = "sink"
+			c.Runtime.Hooks.RunCompletion.Timeout = 10 * time.Second
+		},
+		func(c *config.Config) { c.Runtime.Hooks.RunCompletion.Tool = "sink" }, // no timeout — defaulted
+	}
+	for i, mutate := range cases {
+		cfg := mustLoadValid(t)
+		mutate(cfg)
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("case %d: Validate rejected a valid run-completion hook config: %v", i, err)
+		}
 	}
 }
 

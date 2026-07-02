@@ -222,6 +222,29 @@ type ConnectionsSection struct {
 	Servers []MCPConnectionDescriptor `json:"servers,omitempty"`
 }
 
+// RunCompletionHook is the durable, versioned run-completion hook
+// configuration in a config revision: the catalog tool the run transcript is
+// dispatched to at the run loop's terminal boundary, plus an optional
+// dispatch timeout. It mirrors the static `runtime.hooks.run_completion`
+// yaml; resolution at run start is agent-config over yaml over no hook.
+type RunCompletionHook struct {
+	// Tool is the catalog tool name the transcript is dispatched to. An
+	// empty tool normalises the whole hooks section away (a hook with no
+	// target is not a hook).
+	Tool string `json:"tool"`
+	// TimeoutMS is the dispatch timeout in milliseconds. Zero falls through
+	// to the runtime default at run start. Negative is rejected at set time.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
+}
+
+// HooksSection is the run-lifecycle-hook section of the config envelope.
+// Declared as its own section so a set REPLACES only this section,
+// preserving the sibling sections (the section-merge invariant).
+type HooksSection struct {
+	// RunCompletion, when non-nil, pins the agent's run-completion hook.
+	RunCompletion *RunCompletionHook `json:"run_completion,omitempty"`
+}
+
 // ConfigPayload is the forward-compatible config envelope. Every section
 // is an optional pointer so later consumers extend the envelope without a
 // schema break; only Skills is wired in the first wave.
@@ -231,6 +254,7 @@ type ConfigPayload struct {
 	Skills       *SkillsSelection    `json:"skills,omitempty"`
 	Connections  *ConnectionsSection `json:"connections,omitempty"`
 	LLMParams    *LLMParams          `json:"llm_params,omitempty"`
+	Hooks        *HooksSection       `json:"hooks,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -288,6 +312,9 @@ type Diff struct {
 	// LLMParams is the per-field delta of the per-agent LLM-parameter
 	// section (model / temperature / max-tokens / reasoning-effort).
 	LLMParams LLMParamsDiff
+	// Hooks is the per-field delta of the run-lifecycle-hook section
+	// (the run-completion hook's tool + timeout).
+	Hooks HooksDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -367,6 +394,23 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		}
 		if lp.Model != nil || lp.Temperature != nil || lp.MaxTokens != nil || lp.ReasoningEffort != nil {
 			out.LLMParams = lp
+		}
+	}
+	if p.Hooks != nil {
+		// A run-completion hook with an empty (whitespace-only) tool is not a
+		// hook; normalise it away so a semantically-empty section produces one
+		// canonical form (equal states hash equal, no spurious revision, no
+		// phantom diff). A negative TimeoutMS normalises to 0 (defaulted at run
+		// start) — set-time validation is where a negative is rejected.
+		if p.Hooks.RunCompletion != nil {
+			tool := strings.TrimSpace(p.Hooks.RunCompletion.Tool)
+			if tool != "" {
+				timeout := p.Hooks.RunCompletion.TimeoutMS
+				if timeout < 0 {
+					timeout = 0
+				}
+				out.Hooks = &HooksSection{RunCompletion: &RunCompletionHook{Tool: tool, TimeoutMS: timeout}}
+			}
 		}
 	}
 	return out
@@ -539,6 +583,18 @@ func (p ConfigPayload) DisabledTools() []string {
 	return p.ToolExposure.DisabledTools
 }
 
+// RunCompletionHookView returns the agent's run-completion hook from a
+// payload and whether it is set. A nil hooks section or a nil RunCompletion
+// returns (nil, false). The returned pointer is the payload's own
+// (read-only) section — callers that mutate must copy first. A convenience
+// for the run-completion-hook run-start projection.
+func (p ConfigPayload) RunCompletionHookView() (*RunCompletionHook, bool) {
+	if p.Hooks == nil || p.Hooks.RunCompletion == nil {
+		return nil, false
+	}
+	return p.Hooks.RunCompletion, true
+}
+
 // ConnectionDescriptors returns the agent's runtime-added MCP connection
 // descriptors from a payload, or nil when the payload pins no connections
 // section. A convenience for the add-connection consumer + the diff.
@@ -693,6 +749,56 @@ func llmParamStrings(lp *LLMParams) (model, temperature, maxTokens, reasoningEff
 		reasoningEffort = *lp.ReasoningEffort
 	}
 	return model, temperature, maxTokens, reasoningEffort
+}
+
+// HooksDiff is the per-field delta of the run-lifecycle-hook section across
+// two revisions. Reports whether the run-completion hook's tool / timeout
+// changed plus their from / to display values (an unset hook renders "").
+type HooksDiff struct {
+	// RunCompletionToolChanged reports whether the hook's target tool differs.
+	RunCompletionToolChanged bool
+	RunCompletionToolFrom    string
+	RunCompletionToolTo      string
+	// RunCompletionTimeoutChanged reports whether the hook's timeout differs.
+	RunCompletionTimeoutChanged bool
+	RunCompletionTimeoutFrom    string
+	RunCompletionTimeoutTo      string
+}
+
+// Changed reports whether the run-lifecycle-hook section differs between the
+// two revisions.
+func (d HooksDiff) Changed() bool {
+	return d.RunCompletionToolChanged || d.RunCompletionTimeoutChanged
+}
+
+// DiffHooks computes the per-field delta of two run-lifecycle-hook states.
+// Exported so the diff is one canonical implementation shared by the driver
+// and tests. An unset hook is compared as the empty tool + empty timeout.
+func DiffHooks(from, to ConfigPayload) HooksDiff {
+	ft, ftimeout := runCompletionHookStrings(from)
+	tt, ttimeout := runCompletionHookStrings(to)
+	return HooksDiff{
+		RunCompletionToolChanged:    ft != tt,
+		RunCompletionToolFrom:       ft,
+		RunCompletionToolTo:         tt,
+		RunCompletionTimeoutChanged: ftimeout != ttimeout,
+		RunCompletionTimeoutFrom:    ftimeout,
+		RunCompletionTimeoutTo:      ttimeout,
+	}
+}
+
+// runCompletionHookStrings renders a payload's run-completion hook to its
+// canonical display strings (tool, timeout-ms); an unset hook renders ("", "").
+func runCompletionHookStrings(p ConfigPayload) (tool, timeout string) {
+	rc, ok := p.RunCompletionHookView()
+	if !ok {
+		return "", ""
+	}
+	tool = rc.Tool
+	if rc.TimeoutMS != 0 {
+		timeout = strconv.Itoa(rc.TimeoutMS)
+	}
+	return tool, timeout
 }
 
 // ToolExposureDiff is the structured set-diff of the MCP-exposure /

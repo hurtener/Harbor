@@ -436,3 +436,77 @@ func TestStateStore_NewRevisionAfterRollbackChainsFromActive(t *testing.T) {
 		t.Fatalf("rev3 parent=%q want %q (active after rollback)", rev3.ParentRevisionID, rev1.RevisionID)
 	}
 }
+
+// TestStateStore_Hooks_RoundTrip_SectionMerge_Diff_Rollback exercises the
+// run-completion-hook section end-to-end through the driver: a set_revision
+// carrying the hooks section alongside a sibling section round-trips both
+// (section preservation); a second revision changing only the hook produces a
+// distinct revision whose Diff reports the hooks arm; a rollback repoints the
+// active pointer back to the first hook (D-280).
+func TestStateStore_Hooks_RoundTrip_SectionMerge_Diff_Rollback(t *testing.T) {
+	ctx := context.Background()
+	r := newRegistry(t)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	const agent = "hook-agent"
+
+	// Revision 1: skills + hooks together — both must round-trip.
+	rev1, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		Skills: &agentcfg.SkillsSelection{Names: []string{"s1"}},
+		Hooks:  &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "sink-a", TimeoutMS: 5000}},
+	})
+	if err != nil {
+		t.Fatalf("set rev1: %v", err)
+	}
+	active, ok, err := r.Active(ctx, id, agent, agentcfg.ConfigScopeAgent)
+	if err != nil || !ok {
+		t.Fatalf("active after rev1: ok=%v err=%v", ok, err)
+	}
+	rc, set := active.Payload.RunCompletionHookView()
+	if !set || rc.Tool != "sink-a" || rc.TimeoutMS != 5000 {
+		t.Fatalf("hooks section did not round-trip: %+v (set=%v)", rc, set)
+	}
+	if names := active.Payload.SkillNames(); len(names) != 1 || names[0] != "s1" {
+		t.Fatalf("sibling skills section not preserved alongside hooks: %v", names)
+	}
+
+	// Revision 2: change only the hook tool.
+	rev2, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		Skills: &agentcfg.SkillsSelection{Names: []string{"s1"}},
+		Hooks:  &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "sink-b", TimeoutMS: 5000}},
+	})
+	if err != nil {
+		t.Fatalf("set rev2: %v", err)
+	}
+	if rev2.RevisionID == rev1.RevisionID {
+		t.Fatal("a hook-only change did not produce a distinct revision")
+	}
+
+	// Diff surfaces the hooks arm (tool changed, timeout unchanged).
+	d, err := r.Diff(ctx, id, agent, rev1.RevisionID, rev2.RevisionID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if !d.Hooks.Changed() || !d.Hooks.RunCompletionToolChanged ||
+		d.Hooks.RunCompletionToolFrom != "sink-a" || d.Hooks.RunCompletionToolTo != "sink-b" {
+		t.Errorf("hooks diff arm = %+v, want tool sink-a→sink-b", d.Hooks)
+	}
+	if d.Hooks.RunCompletionTimeoutChanged {
+		t.Errorf("timeout should be unchanged in the diff: %+v", d.Hooks)
+	}
+	if d.Skills.Changed() {
+		t.Errorf("skills should be unchanged (a hook-only edit): %+v", d.Skills)
+	}
+
+	// Rollback to rev1 → active hook is sink-a again.
+	if _, err := r.Rollback(ctx, id, agent, rev1.RevisionID, agentcfg.ConfigScopeAgent); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	active2, _, err := r.Active(ctx, id, agent, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		t.Fatalf("active after rollback: %v", err)
+	}
+	rc2, _ := active2.Payload.RunCompletionHookView()
+	if rc2 == nil || rc2.Tool != "sink-a" {
+		t.Fatalf("rollback did not restore the sink-a hook: %+v", rc2)
+	}
+}
