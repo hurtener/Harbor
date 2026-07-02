@@ -1563,7 +1563,7 @@ per §17.8). Status: Shipped (V1.6).
   (`agent_id` in the session slot, never an isolation filter); the §17.6 seam
   is the shared `ApplyPromptLayers` (no signature change, so both twins reach
   the new behaviour through the one function).
-- **Status:** Pending (V1.6).
+- **Status:** Shipped (V1.6).
 
 #### Phase 126c — USER-scope tool-policy run-start projection
 
@@ -1583,7 +1583,7 @@ per §17.8). Status: Shipped (V1.6).
   never an isolation `WHERE` filter (isolation stays the run's
   `(tenant, user)`).
 - **Coverage:** `internal/runtime/agentcfg/projection` ≥ 85% (maintained).
-- **Status:** Pending (V1.6)
+- **Status:** Shipped (V1.6)
 
 ### Phase 127 — Protocol wire-manifest consumability (runtime.info digest) — STRETCH
 

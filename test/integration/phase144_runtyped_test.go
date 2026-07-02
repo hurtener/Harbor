@@ -20,6 +20,9 @@
 // (registered through the SAME registry path bifrost uses, exactly as
 // phase143_output_schema_test.go does), so the whole
 // correction/retry chain is exercised for real.
+//
+// Recipe: docs/recipes/embed-harbor-headless.md — this suite exercises
+// the RunTyped[T] typed-output snippet that recipe documents.
 package integration_test
 
 import (

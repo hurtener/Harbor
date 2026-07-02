@@ -16,6 +16,9 @@
 // Run under -race. No mocks at the seam except the scripted LLM DRIVER
 // (registered through the SAME registry path bifrost uses, so the whole
 // correction/retry chain is exercised for real).
+//
+// Recipe: docs/recipes/embed-harbor-headless.md — this suite exercises
+// the WithOutputSchema structured-output snippet that recipe documents.
 package integration_test
 
 import (

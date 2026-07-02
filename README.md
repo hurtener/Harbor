@@ -74,9 +74,13 @@ defer stack.Close(ctx)
 One call composes the dependency-ordered stack — stores, event bus, LLM
 client, memory, skills, tasks, tool catalog, sessions, pause coordinator,
 planner, run loop — with reverse-order closers and partial-failure cleanup.
-Register your own tools via `assemble.Options.PreRegisterTools`, drive a goal
-through `stack.RunLoop`, read the answer from the planner's finish envelope.
-The complete worked path is the
+Register your own tools via `assemble.Options.PreRegisterTools`, then turn a
+goal plus the `(tenant, user, session)` identity into an answer envelope in
+one blocking call with `stack.RunOnce` (add `WithStream` for live token / tool
+/ step events on the same call). Want a typed answer instead of a string? Pass
+`WithOutputSchema` for a schema-validated `answer_payload`, or
+`assemble.RunTyped[T](ctx, stack, goal, id)` to get the answer unmarshaled
+straight into your Go type. The complete worked path is the
 [Embed Harbor headless](docs/recipes/embed-harbor-headless.md) recipe; every
 snippet in it is executed by an integration test, so it cannot drift from
 the real API.
@@ -176,7 +180,11 @@ re-streaming the whole history.
 (StateStore, ArtifactStore, MemoryStore, …): in-memory for dev, SQLite
 (CGo-free) for single-node, Postgres for scale. **Tools** are transport-agnostic
 — an in-process Go function, an HTTP endpoint, an MCP server, or an A2A agent
-all register into the same catalog.
+all register into the same catalog. A tool that needs a downstream OAuth
+credential binds to a provider; alongside the interactive authorization-code
+flow, the `tokenexchange` provider pulls that credential from an external
+broker via an RFC-8693 exchange keyed on the verified identity triple — one
+central grant serves a whole fleet, and brokered tokens are never persisted.
 
 ## Using Harbor
 
@@ -246,16 +254,33 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.9.0.** The typed-output-and-brokered-credentials line. The embed
+path now answers in your types: `Stack.RunOnce` takes an opt-in
+`WithOutputSchema` and returns a schema-validated object on a new
+`answer_payload` envelope key instead of a bare string, or skip hand-authoring
+the schema entirely with `assemble.RunTyped[T](ctx, stack, goal, id)`, which
+derives it from a Go type and hands back the validated answer already
+unmarshaled into `T` — a schema-invalid answer after the retry budget is a
+loud `planner.ErrOutputInvalid`, never silent unvalidated text. **Tool
+credentials** can now be held in one place for a fleet: the new
+`tokenexchange` OAuth driver pulls a downstream tool credential from an
+external broker (an orchestrator, a token vault, an STS) via an RFC-8693
+exchange keyed on the verified identity triple at token-miss time, TTL-caching
+it in memory only and never persisting it — one central grant serves N
+runtimes instead of N consents. Two integrity fixes land with it: embedders
+should note that `AnswerEnvelope.ToolCallsSeen` now counts *true* tool
+invocations (a parallel call of N branches counts N, a task spawn counts 0) —
+same JSON shape, new meaning — and session erasure now fails loud when the
+event-bus fence fails, deleting nothing rather than reporting success with the
+late-event window still open. Purely additive public API plus one canonical
+event; the Harbor Protocol holds at `0.1.0`.
+
 **Harbor v1.8.0.** The adopter-path line — all three ways into Harbor now
 work end to end. **Embed** it as a library: `assemble.Assemble` composes a
 headless runtime and `Stack.RunOnce` turns a goal plus the
 `(tenant, user, session)` identity into an answer envelope in one blocking
 call, with `WithStream` delivering token / tool / step events as they happen
-on the same method and `WithOutputSchema` returning a schema-validated typed
-answer (`answer_payload`) instead of a bare string — or skip hand-authoring
-the schema entirely with `assemble.RunTyped[T](ctx, stack, goal, id)`, which
-derives it from a Go type and hands back the validated answer already
-unmarshaled into `T`. **Scaffold** from the CLI: `harbor init` / `scaffold`
+on the same method. **Scaffold** from the CLI: `harbor init` / `scaffold`
 generate an agent whose golden test actually registers and dispatches a tool
 through the executor, and `harbor dev` is honest about `.go` edits — it warns
 and guides a rebuild rather than reporting a hot-reload that never recompiled.

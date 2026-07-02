@@ -296,6 +296,13 @@ type TaskSummary struct {
 // SpawnTask / AwaitTask steps count zero — it is NOT the trajectory
 // step count.
 //
+// The additive `answer_payload` key (the validated structured-output
+// object) is reserved and OPTIONAL on this shape: the run-level embed
+// runner (Stack.RunOnce with WithOutputSchema) sets it, but per-task
+// Protocol runs do not yet produce it — the per-task run loop has no
+// output-schema plumbing, so a task envelope carries only the three
+// base keys above. Consumers must treat its absence as normal.
+//
 // Consumers (Console Playground, CLI, third-party UIs) MAY rely on
 // this shape. Future planners that return richer answers (markdown
 // structure, multimodal) will EXTEND the shape with new keys, never

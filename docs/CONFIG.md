@@ -815,10 +815,36 @@ Validation: an entry must set at least one of `approval`, `oauth`, or
 
 ### tools.oauth_providers
 
-Operator-configured OAuth providers (D-095). V1 ships the `oauth2`
-driver (generic OAuth2/PKCE Authorization Code flow). Each entry
-needs `name`, `driver`, `client_id_env`, `client_secret_env`. See
-`ToolOAuthProviderConfig` godoc.
+Operator-configured OAuth providers (D-095). Each entry needs `name`,
+`driver`, `client_id_env`, `client_secret_env`. See
+`ToolOAuthProviderConfig` godoc. Two drivers ship:
+
+- `oauth2` — the generic OAuth2/PKCE Authorization Code flow. Needs
+  `auth_url`, `token_url`, and `redirect_url`.
+- `tokenexchange` (D-271) — pull-based external-credential provisioning.
+  Instead of the interactive authorization-code flow, at token-miss time
+  the runtime obtains a downstream tool credential from an external
+  credential broker (a fleet orchestrator, an enterprise token vault, an
+  STS) via an RFC-8693 token exchange keyed on the **verified** ctx
+  identity triple, so one central grant serves N runtimes without N
+  consents. Fields:
+  - `token_url` — the broker's token-exchange endpoint. **Mandatory.**
+  - `auth_url` / `redirect_url` — interactive-flow fields; **not used**
+    by this driver (waived, not required).
+  - `client_id_env` / `client_secret_env` — name the env vars holding the
+    runtime's OWN credential for authenticating to the broker.
+  - `extra.audience` — the RFC-8693 audience. Optional; defaults to the
+    provider name.
+  - `extra.cache_ttl_cap` — max in-memory cache lifetime (a Go duration,
+    default `5m`; values below `30s` are rejected at boot).
+
+  Brokered tokens are TTL-cached **in memory only and never persisted**
+  (`TokenStore.Put` is never called — the broker stays the single source
+  of truth); a cached token is served until the EARLIER of the
+  broker-advertised expiry and the cap. Broker failure fails the run
+  loudly (`ErrExchangeFailed`, no silent interactive fallback); a
+  `consent_required` refusal parks on the unified pause primitive. See
+  `examples/dev.yaml` for a fully-commented block.
 
 ### tools.oauth_token_kek_env
 
