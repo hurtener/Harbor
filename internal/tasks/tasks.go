@@ -187,6 +187,26 @@ type Task struct {
 	// Values are validated at the Protocol edge before they reach
 	// the registry. Nil is the common case.
 	InputArtifactDispositions map[string]string
+	// OutputSchema is the OPTIONAL per-request JSON-Schema document
+	// (raw bytes) the task's terminal answer is validated against. When
+	// set, the run-loop driver compiles it once at run start, the
+	// generation-steering planner constrains + retries against it, and
+	// the validated answer lands as `answer_payload` on the task's
+	// answer envelope. A schema-invalid answer after the correction
+	// budget fails the task with the `output_invalid` terminal code.
+	// Validated + compiled at the Protocol edge before the spawn; nil is
+	// the common case (a schemaless run). Persisted verbatim via the
+	// whole-record marshal (no migration).
+	//
+	// The `omitempty` tag is load-bearing (unlike the sibling
+	// InputArtifactIDs slice, which round-trips nil→null→nil cleanly):
+	// a nil json.RawMessage marshals to the JSON literal `null` and
+	// UNMARSHALS BACK to the 4-byte RawMessage("null"), NOT nil — so
+	// without omitempty a durable-backed schemaless task would hydrate
+	// with a non-empty OutputSchema, tripping the driver's `len() > 0`
+	// run-start guard and the idempotency-equality byte compare. omitempty
+	// elides the empty slice so nil round-trips as nil.
+	OutputSchema json.RawMessage `json:",omitempty"`
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -223,6 +243,18 @@ type SpawnRequest struct {
 	// disposition resolution (top precedence layer). Nil is the
 	// default — the agent policy map / runtime default decide.
 	InputArtifactDispositions map[string]string
+	// OutputSchema is the OPTIONAL per-request JSON-Schema document
+	// (raw bytes) the task's terminal answer is validated against —
+	// carried from the `start` request's `output_schema` field. The
+	// run-loop driver compiles it once at run start and sets
+	// `RunContext.OutputSchema`; the validated answer lands as
+	// `answer_payload` on the answer envelope. A schema-invalid answer
+	// after the correction budget fails the task with the
+	// `output_invalid` terminal code (planner.TaskErrorCodeOutputInvalid).
+	// Persisted onto `Task.OutputSchema`; folded into the task's content
+	// identity so a reused idempotency key with a different schema is a
+	// loud conflict. Nil is the common case.
+	OutputSchema json.RawMessage
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape
@@ -297,11 +329,13 @@ type TaskSummary struct {
 // step count.
 //
 // The additive `answer_payload` key (the validated structured-output
-// object) is reserved and OPTIONAL on this shape: the run-level embed
-// runner (Stack.RunOnce with WithOutputSchema) sets it, but per-task
-// Protocol runs do not yet produce it — the per-task run loop has no
-// output-schema plumbing, so a task envelope carries only the three
-// base keys above. Consumers must treat its absence as normal.
+// object) is OPTIONAL on this shape and is set whenever the run carried
+// an output schema: the run-level embed runner (Stack.RunOnce with
+// WithOutputSchema) AND per-task Protocol runs (a `start` request with
+// `output_schema` set) both produce it — the per-task run loop compiles
+// the schema at run start and validates the terminal answer through the
+// same shared envelope builder. A schemaless task carries only the three
+// base keys above; consumers must treat the payload's absence as normal.
 //
 // Consumers (Console Playground, CLI, third-party UIs) MAY rely on
 // this shape. Future planners that return richer answers (markdown

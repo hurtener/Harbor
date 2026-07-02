@@ -2652,6 +2652,7 @@ Declared in `internal/protocol/types`.
 | `idempotency_key` | `string` | optional (`omitempty`) |
 | `input_artifact_ids` | `[]string` | optional (`omitempty`) |
 | `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
+| `output_schema` | `json.RawMessage` | optional (`omitempty`) |
 
 ## StartResponse
 

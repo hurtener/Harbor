@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 // IdentityScope is the flat wire identity a Protocol task-control request
 // carries. It is the wire projection of the runtime's identity quadruple
 // `(tenant, user, session, run)` plus the caller's steering scope claim —
@@ -129,6 +131,36 @@ type StartRequest struct {
 	// rejected with CodeInvalidRequest. Omitted (the backward-
 	// compatible default) defers entirely to the lower layers.
 	InputArtifactDispositions map[string]string `json:"input_artifact_dispositions,omitempty"`
+	// OutputSchema opts the task-shaped run into per-task structured
+	// output: a JSON-Schema document (raw bytes) the completed task's
+	// answer is validated against. When set, the completed task's
+	// envelope carries the validated `answer_payload` (readable via
+	// `tasks.get`'s `result_inline` and via a parent run's AwaitTask
+	// observation); a schema-invalid answer after the correction budget
+	// fails the task LOUD with the `output_invalid` terminal code, never
+	// a schemaless success. Absent (the backward-compatible default) →
+	// byte-identical wire shape and spawn behaviour.
+	//
+	// The schema is validated at the Protocol edge BEFORE the task
+	// spawns: an empty, non-compiling, or over-cap (64 KiB) schema is
+	// rejected with CodeInvalidRequest and no task is created. It is
+	// compiled once more at driver run start (the compile the run
+	// consumes) via the same single implementation.
+	//
+	// Streaming posture (mirrors the run-level structured-output
+	// mechanism): a schema-constrained task SUPPRESSES assistant-content
+	// and reasoning token deltas on the per-task streaming path
+	// (`llm.completion.chunk`) — a validate-and-retry loop cannot retract
+	// already-streamed tokens, so the validated answer arrives once, in
+	// the envelope. Step boundaries and tool-dispatch events stream as
+	// today. A documented behaviour choice, not a surprise.
+	//
+	// Idempotency: `start` dedupes on `(session, idempotency_key)` and
+	// folds `output_schema` into the task's content identity — a genuine
+	// retry (same body, same schema) returns the existing handle; a
+	// REUSED key with a DIFFERENT schema is caller misuse and is rejected
+	// loud as an idempotency conflict.
+	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
 }
 
 // StartResponse is the wire response for the `start` Protocol method.

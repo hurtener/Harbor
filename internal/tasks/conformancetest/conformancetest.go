@@ -25,6 +25,7 @@ package conformancetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
@@ -45,6 +46,7 @@ type Factory func() (tasks.TaskRegistry, func())
 // subtests (per-task surface):
 //
 //   - Spawn_AssignsTaskID
+//   - Spawn_OutputSchema_RoundTrips
 //   - Spawn_Idempotent_SameKeyReturnsSameHandle
 //   - Spawn_DifferentSessionsCanReuseKey
 //   - Spawn_EmptyKeyDisablesIdempotency
@@ -111,6 +113,44 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if h.Reused {
 			t.Errorf("Spawn returned Reused=true on first call")
+		}
+	})
+
+	t.Run("Spawn_OutputSchema_RoundTrips", func(t *testing.T) {
+		// The per-request output schema is persisted on the task
+		// record and read back byte-identical across every driver; a
+		// schemaless spawn round-trips as a nil OutputSchema (no `null`
+		// artifact from the json.RawMessage marshal).
+		r, cleanup := factory()
+		defer cleanup()
+		ctx := ctxA()
+
+		schema := json.RawMessage(`{"type":"object","required":["answer"]}`)
+		req := freshSpawnReq(tripleA())
+		req.OutputSchema = schema
+		h, err := r.Spawn(ctx, req)
+		if err != nil {
+			t.Fatalf("Spawn(with schema): %v", err)
+		}
+		got, err := r.Get(ctx, h.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if string(got.OutputSchema) != string(schema) {
+			t.Fatalf("OutputSchema round-trip mismatch:\n got %s\nwant %s", got.OutputSchema, schema)
+		}
+
+		// Schemaless spawn round-trips as nil (the omitempty contract).
+		bare, err := r.Spawn(ctx, freshSpawnReq(tripleA()))
+		if err != nil {
+			t.Fatalf("Spawn(schemaless): %v", err)
+		}
+		bareTask, err := r.Get(ctx, bare.ID)
+		if err != nil {
+			t.Fatalf("Get(schemaless): %v", err)
+		}
+		if len(bareTask.OutputSchema) != 0 {
+			t.Fatalf("schemaless task must carry nil OutputSchema, got %s", bareTask.OutputSchema)
 		}
 	})
 

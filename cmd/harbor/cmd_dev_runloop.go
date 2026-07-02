@@ -659,6 +659,33 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return
 	}
 
+	// Compile the per-task output schema ONCE at run start (the compile
+	// the run consumes). A compile failure fails the run LOUD with the
+	// output_invalid terminal code — the LLM is never called on a
+	// degraded run (CLAUDE.md §13; the schema already passed the Protocol
+	// edge, so a failure here means corruption or version skew, never a
+	// silent skip). Nil for the common schemaless task.
+	var compiledSchema *planner.OutputSchemaValidator
+	if len(task.OutputSchema) > 0 {
+		cs, cErr := planner.CompileOutputSchema(task.OutputSchema)
+		if cErr != nil {
+			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: output-schema compile failed; failing run",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", cErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    planner.TaskErrorCodeOutputInvalid,
+				Message: "output-schema compile failed: " + cErr.Error(),
+			}); fErr != nil {
+				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(output_invalid) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		compiledSchema = cs
+	}
+
 	// Step 2: fetch identity-scoped memory + the skills-directory
 	// view. Each is OPTIONAL — a stack without the subsystem
 	// configured leaves the corresponding field nil and the planner
@@ -852,6 +879,17 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// The driver-lifetime d.subCtx bounds every publish.
 	chunkPub := llm.NewChunkPublisherContext(d.subCtx, d.bus, q, string(taskID), d.logger)
 	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
+		// The run-level structured-output streaming posture, carried to
+		// the per-task path: on a schema-constrained task, SUPPRESS
+		// assistant-content and reasoning token DELTAS at this OnChunk →
+		// llm.completion.chunk seam — a validate-and-retry loop cannot
+		// retract already-streamed
+		// tokens, so the validated answer arrives once via the task
+		// envelope. Step-boundary `done` signals still fire (turn
+		// boundaries stay observable); tool-dispatch events are unaffected.
+		if compiledSchema != nil && !done {
+			return
+		}
 		chunkPub(delta, done, string(kind))
 	}
 
@@ -955,6 +993,11 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			// the per-run token budget the runloop's
 			// compression gate reads. Zero = compression off.
 			Budget: planner.Budget{TokenBudget: d.tokenBudget},
+			// the per-task output schema compiled at run start; setting it
+			// engages the React driver's existing per-turn steering
+			// (ResponseFormat + tool-call-aware Validator + retry) with
+			// zero planner change. Nil for a schemaless task.
+			OutputSchema: compiledSchema,
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,   // dispatch CallTool decisions
@@ -977,11 +1020,23 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// terminal match for a ctx-cancelled run that did not reach a
 		// goal.
 		code := planner.TaskErrorCodeRunLoopError
-		if errors.Is(err, context.Canceled) {
+		switch {
+		case errors.Is(err, context.Canceled):
 			code = planner.TaskErrorCodeCancelled
 			d.logger.Debug("perTaskRunLoopDriver: run cancelled",
 				slog.String("task_id", string(taskID)))
-		} else {
+		case compiledSchema != nil && (errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)):
+			// A schema-constrained run whose generation-steering retry loop
+			// or provider-downgrade chain exhausted its budget fails LOUD
+			// with the output_invalid terminal code — never a schemaless
+			// success (§13). This is the RunLoop.Run failure shape of the
+			// two output-invalid failure modes.
+			code = planner.TaskErrorCodeOutputInvalid
+			d.logger.Warn("perTaskRunLoopDriver: schema-constrained run exhausted the correction budget",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", err.Error()))
+		default:
 			d.logger.Warn("perTaskRunLoopDriver: RunLoop.Run failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -1009,6 +1064,40 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// is a non-success terminal (the run finished but did not satisfy
 	// the goal) and maps to Failed with the reason as the error code.
 	if fin.Reason == planner.FinishGoal {
+		// populate the answer envelope so Protocol
+		// consumers (Console Playground, CLI, third-party UIs) read the
+		// actual assistant response via tasks.get → result_inline.
+		// Pre-106, this was tasks.TaskResult{} — the projector had
+		// nothing to project and the Playground hardcoded a placeholder.
+		// The envelope is built through the ONE shared builder
+		// (runctx.FinishAnswerEnvelope) that RunOnce + the devstack twin
+		// also call: for a schemaless task it is the byte-identical
+		// three-key envelope; for a schema-constrained task it captures +
+		// validates the terminal payload and adds the validated
+		// `answer_payload`. A schema-invalid answer on this goal Finish
+		// fails the task LOUD with output_invalid — never a MarkComplete
+		// of an unvalidated envelope (§13, the edge-validation failure
+		// shape of the two output-invalid modes). Built BEFORE the memory
+		// writeback so a schema failure never persists a turn for an
+		// answer that never validated.
+		envelope, envErr := runctx.FinishAnswerEnvelope(fin, traj, compiledSchema)
+		if envErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: terminal output-schema validation failed; failing run",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", envErr.Error()))
+			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    planner.TaskErrorCodeOutputInvalid,
+				Message: "terminal output failed schema validation: " + envErr.Error(),
+			}); mErr != nil {
+				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(output_invalid) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("run_id", q.RunID),
+					slog.String("err", mErr.Error()))
+			}
+			return
+		}
+
 		// Memory writeback. The 83d/83f read path
 		// is wired (run loop hands MemoryBlocks to the planner); the
 		// write path was the missing half. Without a writeback the
@@ -1016,11 +1105,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// multi-turn sessions cannot carry context. Best-effort: a
 		// memory.AddTurn error is logged Warn but does NOT downgrade
 		// the run's terminal status — the planner reached FinishGoal,
-		// the operator should see Complete.
+		// the operator should see Complete. AssistantResponse is the
+		// envelope's Answer (the validated payload string on a schema
+		// run; the extracted answer text otherwise).
 		if d.memory != nil {
 			turn := memory.ConversationTurn{
 				UserMessage:       task.Query,
-				AssistantResponse: runctx.ExtractAssistantAnswer(fin),
+				AssistantResponse: envelope.Answer,
 				Timestamp:         time.Now(),
 			}
 			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil {
@@ -1031,20 +1122,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 		}
 
-		// populate the answer envelope so Protocol
-		// consumers (Console Playground, CLI, third-party UIs) read the
-		// actual assistant response via tasks.get → result_inline.
-		// Pre-106, this was tasks.TaskResult{} — the projector had
-		// nothing to project and the Playground hardcoded a placeholder.
-		// the shape is the exported
-		// `planner.AnswerEnvelope` (byte-compatible with the
-		// map literal — pinned by the planner-side golden test).
-		payload := planner.AnswerEnvelope{
-			Answer:        runctx.ExtractAssistantAnswer(fin),
-			FinishReason:  string(fin.Reason),
-			ToolCallsSeen: planner.CountToolInvocations(traj),
-		}
-		raw, err := json.Marshal(payload)
+		raw, err := json.Marshal(envelope)
 		if err != nil {
 			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: marshal TaskResult.Value failed",
 				slog.String("task_id", string(taskID)),

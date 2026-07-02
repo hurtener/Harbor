@@ -71,6 +71,57 @@ func TestStartRequest_JSONOmitsEmptyArtifactIDs(t *testing.T) {
 	}
 }
 
+// TestStartRequest_JSONRoundTrip_OutputSchema pins the additive
+// per-task structured-output field (D-276): a set output_schema
+// round-trips byte-for-byte.
+func TestStartRequest_JSONRoundTrip_OutputSchema(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","required":["answer"]}`)
+	in := types.StartRequest{
+		Identity: types.IdentityScope{
+			Tenant:  "tenant-a",
+			User:    "user-1",
+			Session: "session-x",
+		},
+		Query:        "classify",
+		OutputSchema: schema,
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !containsAny(string(b), []string{`"output_schema"`}) {
+		t.Fatalf("a set OutputSchema must appear on the wire; got: %s", b)
+	}
+	var out types.StartRequest
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if string(out.OutputSchema) != string(schema) {
+		t.Fatalf("OutputSchema round-trip mismatch:\n got %s\nwant %s", out.OutputSchema, schema)
+	}
+}
+
+// TestStartRequest_JSONOmitsEmptyOutputSchema pins the zero-default-path
+// contract (D-276): an absent output_schema elides entirely (omitempty),
+// so a schemaless start ships the byte-identical v1.9 wire body.
+func TestStartRequest_JSONOmitsEmptyOutputSchema(t *testing.T) {
+	in := types.StartRequest{
+		Identity: types.IdentityScope{
+			Tenant:  "tenant-a",
+			User:    "user-1",
+			Session: "session-x",
+		},
+		Query: "hello",
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if containsAny(string(b), []string{`"output_schema"`}) {
+		t.Fatalf("schemaless StartRequest must elide output_schema; got: %s", b)
+	}
+}
+
 func containsAny(haystack string, needles []string) bool {
 	for _, n := range needles {
 		for i := 0; i+len(n) <= len(haystack); i++ {

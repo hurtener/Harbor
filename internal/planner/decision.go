@@ -199,9 +199,9 @@ func (RequestPause) isDecision() {}
 // IsValidFinishReason). The Runtime rejects an invalid reason with
 // ErrInvalidDecision.
 //
-// Payload's contract on a run-level output-schema run (WithOutputSchema
-// / RunOnce's runtime-edge validation, see
-// internal/runtime/assemble.capturePayloadJSON): a `string` payload is
+// Payload's contract on an output-schema run (WithOutputSchema / the
+// per-task output_schema field, validated at the shared
+// internal/runtime/runctx envelope builder): a `string` payload is
 // treated as raw JSON TEXT, never as a plain Go string to be quoted for
 // the caller — this is the react terminal-answer reality, where
 // `resp.Content` IS the model's JSON encoding of the answer. A plain Go

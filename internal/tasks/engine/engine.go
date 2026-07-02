@@ -35,6 +35,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -212,6 +213,13 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 			inputArtifactDispositions[k] = v
 		}
 	}
+	// Defensive copy of the output-schema bytes — the stored task must
+	// not alias the caller's SpawnRequest slice. Nil stays nil so the
+	// whole-record marshal elides nothing for schemaless spawns.
+	var outputSchema []byte
+	if len(req.OutputSchema) > 0 {
+		outputSchema = append([]byte(nil), req.OutputSchema...)
+	}
 	t := &tasks.Task{
 		ID:                id,
 		Identity:          req.Identity,
@@ -229,6 +237,8 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		InputArtifactIDs:  inputArtifactIDs,
 		// per-attachment disposition hints.
 		InputArtifactDispositions: inputArtifactDispositions,
+		// per-request output schema (raw JSON-Schema bytes).
+		OutputSchema: outputSchema,
 	}
 	// Validate the requested group BEFORE persisting anything. A
 	// missing / cross-session / sealed group must fail the spawn
@@ -972,6 +982,13 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if !stringMapEqual(existing.InputArtifactDispositions, req.InputArtifactDispositions) {
 		return false
 	}
+	// the output schema is part of the task's content identity: a reused
+	// idempotency key carrying a DIFFERENT output_schema is caller misuse
+	// and must surface as a loud conflict, not silently adopt the original
+	// schema. Same key, same body, same schema → a safe genuine retry.
+	if !bytes.Equal(existing.OutputSchema, req.OutputSchema) {
+		return false
+	}
 	return true
 }
 
@@ -1035,6 +1052,12 @@ func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
 			h.Write([]byte{0x1E})
 			h.Write([]byte(req.InputArtifactDispositions[k]))
 		}
+	}
+	// fold the output schema in so "same key, different output_schema"
+	// surfaces as ErrIdempotencyConflict.
+	if len(req.OutputSchema) > 0 {
+		h.Write([]byte{0x1F})
+		h.Write(req.OutputSchema)
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
