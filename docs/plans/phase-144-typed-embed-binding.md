@@ -43,14 +43,14 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `internal/tools/schema` exists as the neutral derivation home; `internal/tools/drivers/inproc` is re-based on it with byte-identical derived schemas (a golden test pins a representative corpus before/after); no package outside the driver's sanctioned importers gains a concrete-driver import (§13 grep-asserted in the smoke).
-- [ ] `assemble.RunTyped[T any](ctx, stack, goal, id, opts...) (T, planner.AnswerEnvelope, error)` derives the schema from `T`, appends `WithOutputSchema` to the caller's opts (a caller-supplied `WithOutputSchema` alongside `RunTyped` is a loud conflict error, not a silent override), executes `RunOnce`, and unmarshals `answer_payload` into `T`.
-- [ ] Unsupported `T` → the derivation's typed error before any run starts (asserted for interface/channel/cyclic fixtures). Validated-but-unmarshalable payload → loud typed error, never zero-value-with-nil.
-- [ ] `sdk/assemble.RunTyped` ships as a thin generic forward; the sdk no-behavior smoke's func allow-list is updated to exactly {`sdk/tools/inproc.RegisterFunc`, `sdk/assemble.RunTyped`} and FAILS on any third func; D-273 (amending D-205 item 1) flips to shipped wording in the same PR.
-- [ ] D-025 concurrent-reuse: N≥100 concurrent `RunTyped` invocations against ONE shared Stack under `-race`, mixing ≥3 distinct `T` types, asserting no schema/payload bleed across runs and goroutine baseline restored (this also gates the memoization choice, if taken).
-- [ ] §13 primitive-with-consumer: the scaffold's embed template and/or `examples/embed-runonce` gains a `RunTyped` variant compiled+run by the existing external-module compile gate; a new `sdk/assemble` `Example_runTyped` renders on pkg.go.dev (offline, deterministic, mirroring the Phase 134 pattern).
-- [ ] §18 sweep: `docs/recipes/embed-harbor-headless.md` gains the typed step; `docs/skills/` playbooks demonstrating `RunOnce` updated in the same PR.
-- [ ] `scripts/smoke/phase-144.sh` flips from skeleton to real assertions (unit-test leg + the two-func facade allow-list grep + the §13 concrete-driver-import grep).
+- [x] `internal/tools/schema` exists as the neutral derivation home; `internal/tools/drivers/inproc` is re-based on it with byte-identical derived schemas (a golden test pins a representative corpus before/after); no package outside the driver's sanctioned importers gains a concrete-driver import (§13 grep-asserted in the smoke). (The promotion surfaced a PRE-EXISTING §13 violation — `internal/runtime/flow` imported the concrete inproc driver directly for `DeriveSchema` — fixed in this same PR per §17.6.)
+- [x] `assemble.RunTyped[T any](ctx, stack, goal, id, opts...) (T, planner.AnswerEnvelope, error)` derives the schema from `T`, appends `WithOutputSchema` to the caller's opts (a caller-supplied `WithOutputSchema` alongside `RunTyped` is a loud conflict error, not a silent override), executes `RunOnce`, and unmarshals `answer_payload` into `T`.
+- [x] Unsupported `T` → the derivation's typed error before any run starts (asserted for interface/channel/cyclic fixtures). Validated-but-unmarshalable payload → loud typed error, never zero-value-with-nil.
+- [x] `sdk/assemble.RunTyped` ships as a thin generic forward; the sdk no-behavior smoke's func allow-list is updated to exactly {`sdk/tools/inproc.RegisterFunc`, `sdk/assemble.RunTyped`} and FAILS on any third func; D-273 (amending D-205 item 1) flips to shipped wording in the same PR.
+- [x] D-025 concurrent-reuse: N≥100 concurrent `RunTyped` invocations against ONE shared Stack under `-race`, mixing ≥3 distinct `T` types, asserting no schema/payload bleed across runs and goroutine baseline restored (this also gates the memoization choice, if taken). (Per-call derivation shipped — no reflect.Type-keyed cache; the plan's documented default absent a benchmark.)
+- [x] §13 primitive-with-consumer: `examples/embed-runonce` gains a `RunTyped` variant compiled+run by the existing external-module compile gate (`scripts/smoke/phase-112b.sh` leg 6); a new `sdk/assemble` `Example_runTyped` renders on pkg.go.dev (offline, deterministic, mirroring the Phase 134 pattern). (The scaffold's `minimal-react` template has no RunOnce/typed-output surface at all — it is a tool-registration template, not an embed-runner template — so the checked-in example is the sanctioned consumer site; documented in the PR.)
+- [x] §18 sweep: `docs/recipes/embed-harbor-headless.md` gains the typed step; no `docs/skills/` playbook demonstrates `RunOnce`/`assemble.*` (grepped at implementation time — exempt per §18).
+- [x] `scripts/smoke/phase-144.sh` flips from skeleton to real assertions (unit-test leg + the two-func facade allow-list grep + the §13 concrete-driver-import grep).
 
 ## Files added or changed
 
@@ -107,13 +107,13 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. (The shared derivation package + the shared-Stack call are reusable surfaces — the mixed-`T` test is mandatory.)
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. (It consumes 143 + 26 + 112a — the integration test is mandatory.)
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [ ] `make preflight` passes (CI runs the full gate; skipped locally per PR note — no GHA access in the worktree)
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes (N/A — no identity-scoped storage change; the E2E's identity-propagation leg covers the seam this phase touches)
+- [x] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. (The shared derivation package + the shared-Stack call are reusable surfaces — the mixed-`T` test is mandatory.)
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. (It consumes 143 + 26 + 112a — the integration test is mandatory.)
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (N/A — no brief finding departed from; the pre-existing §13 flow-engine violation fixed in this PR is documented in D-273's implementation note, not a brief departure)

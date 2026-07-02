@@ -7,8 +7,8 @@ import (
 
 // ClockNowArgs is the input shape for `clock.now`. The tool takes no
 // arguments — the empty struct keeps the schema deriver
-// (`inproc.DeriveSchema`) happy without forcing the planner to
-// fabricate a payload.
+// (`internal/tools/schema.Derive`) happy without forcing the planner
+// to fabricate a payload.
 type ClockNowArgs struct{}
 
 // ClockNowOut is the result shape for `clock.now`. Both

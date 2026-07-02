@@ -1,30 +1,25 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
+# PREFLIGHT_REQUIRES: unit-tests
 #
-# Phase 144 smoke — typed embed binding (RunTyped + shared schema derivation).
+# Phase 144 smoke — typed embed binding: RunTyped[T] + the shared
+# schema-derivation home (D-273). docs/plans/phase-144-typed-embed-binding.md
 #
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# Assertions:
+#   1. go test -race for internal/tools/schema (the promoted deriver +
+#      golden corpus).
+#   2. go test -race for the RunTyped tests in internal/runtime/assemble
+#      (happy path, unsupported-T rejection, WithOutputSchema conflict,
+#      unmarshal-mismatch, the mandatory mixed-type D-025 concurrent-
+#      reuse stress).
+#   3. go test -race for the phase 144 E2E (test/integration/).
+#   4. The dependency-direction grep: internal/tools/schema does NOT
+#      import a concrete tool driver (driver -> schema, never the
+#      reverse), and internal/runtime/flow no longer imports the inproc
+#      driver directly (the pre-existing §13 seam violation this phase
+#      closes) — it consumes the neutral schema package instead.
+#   5. The exact two-func facade allow-list (D-273 amending D-205 item
+#      1): sdk/tools/inproc.RegisterFunc + sdk/assemble.RunTyped are the
+#      ONLY func-bearing production files under sdk/.
 
 set -euo pipefail
 
@@ -34,17 +29,95 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase NN assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+TMPDIR="$(mktemp -d -t harbor-phase144-XXXXXX)"
+trap 'rm -rf "${TMPDIR}"' EXIT
 
-skip "phase 144: smoke skeleton — replace with real assertions when the phase implements its surface"
+# --- 1. internal/tools/schema — the promoted deriver ------------------------
+
+schema_test_log="${TMPDIR}/schema-test.log"
+if go test -race -count=1 ./internal/tools/schema/... >"${schema_test_log}" 2>&1; then
+    ok 'phase 144: internal/tools/schema tests pass under -race (golden corpus + unsupported-shape table)'
+else
+    fail 'phase 144: internal/tools/schema tests FAILED under -race (see tail)'
+    tail -40 "${schema_test_log}" | sed 's/^/    /'
+fi
+
+# --- 2. RunTyped unit tests + the mandatory D-025 concurrent-reuse stress ---
+
+assert_grep_present 'TestRunTyped_ConcurrentReuse_MixedTypes_NoBleedNoLeak' \
+    internal/runtime/assemble/runtyped_test.go \
+    'phase 144: N>=100 mixed-type concurrent-reuse RunTyped -race test exists'
+
+runtyped_log="${TMPDIR}/runtyped-test.log"
+if go test -race -count=1 -run 'TestRunTyped' ./internal/runtime/assemble/... >"${runtyped_log}" 2>&1; then
+    ok 'phase 144: RunTyped unit tests pass under -race'
+else
+    fail 'phase 144: RunTyped unit tests FAILED under -race (see tail)'
+    tail -40 "${runtyped_log}" | sed 's/^/    /'
+fi
+
+# --- 3. The §17 integration E2E ----------------------------------------------
+
+assert_file test/integration/phase144_runtyped_test.go 'phase 144: the RunTyped E2E test exists'
+
+e2e_log="${TMPDIR}/e2e-test.log"
+if go test -race -count=1 -run 'Phase144' ./test/integration/... >"${e2e_log}" 2>&1; then
+    ok 'phase 144: RunTyped E2E (happy path, corrective-retry + identity propagation, exhaustion) passes under -race'
+else
+    fail 'phase 144: RunTyped E2E FAILED under -race (see tail)'
+    tail -40 "${e2e_log}" | sed 's/^/    /'
+fi
+
+# --- 4. Dependency-direction grep: schema never imports a concrete driver ---
+
+assert_grep_absent '"github.com/hurtener/Harbor/internal/tools/drivers' \
+    internal/tools/schema/schema.go \
+    'phase 144: internal/tools/schema imports no concrete tool driver (driver -> schema, never the reverse)'
+assert_grep_present 'internal/tools/schema' \
+    internal/tools/drivers/inproc/inproc.go \
+    'phase 144: the inproc driver re-bases on the shared schema package'
+
+# The pre-existing §13 seam violation this phase closes: the flow engine
+# used to import the CONCRETE inproc driver just to reach DeriveSchema.
+# It now depends on the neutral schema package instead.
+assert_grep_absent '"github.com/hurtener/Harbor/internal/tools/drivers/inproc"' \
+    internal/runtime/flow/flow.go \
+    'phase 144: internal/runtime/flow no longer imports the concrete inproc driver (the §13 fix)'
+assert_grep_present 'internal/tools/schema' \
+    internal/runtime/flow/flow.go \
+    'phase 144: internal/runtime/flow derives schemas via the shared schema package'
+
+# --- 5. The exact two-func facade allow-list (D-273 amending D-205) --------
+#
+# FUNC-level, not file-level: exactly two func-bearing files under
+# sdk/, AND each allow-listed file declares EXACTLY ONE func body
+# (methods count too) that IS the enumerated generic forward by name.
+# A second func appended inside an allow-listed file fails here.
+
+allowed_func_files='sdk/tools/inproc/inproc.go
+sdk/assemble/runtyped.go'
+func_files=$(grep -lE '^func ' -r sdk/ --include='*.go' --exclude='*_test.go' | sed 's#^\./##' | sort -u) || func_files=""
+unexpected_func_files=$(comm -23 <(echo "${func_files}") <(echo "${allowed_func_files}" | sort -u))
+if [ -z "${unexpected_func_files}" ] && [ "$(echo "${func_files}" | grep -c '^')" -eq 2 ]; then
+    ok 'phase 144: EXACTLY the two-func facade allow-list under sdk/ (sdk/tools/inproc.RegisterFunc, sdk/assemble.RunTyped)'
+else
+    fail "phase 144: the sdk/ facade func allow-list drifted — found: ${func_files}"
+fi
+
+phase144_single_func_ok=1
+for spec in 'sdk/tools/inproc/inproc.go|^func RegisterFunc\[|RegisterFunc' 'sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped'; do
+    f="${spec%%|*}"
+    rest="${spec#*|}"
+    want_re="${rest%%|*}"
+    want_name="${rest#*|}"
+    count=$(grep -cE '^func ' "$f") || count=0
+    if [ "${count}" -ne 1 ] || ! grep -qE "${want_re}" "$f"; then
+        fail "phase 144: ${f} must declare EXACTLY ONE func and it must be the enumerated forward ${want_name} (found ${count} func bodies)"
+        phase144_single_func_ok=0
+    fi
+done
+if [ "${phase144_single_func_ok}" -eq 1 ]; then
+    ok 'phase 144: each allow-listed file declares exactly ONE func — the enumerated generic forward (func-level gate)'
+fi
 
 smoke_summary

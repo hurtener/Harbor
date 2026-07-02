@@ -108,5 +108,28 @@ func run() error {
 		return fmt.Errorf("decode typed answer: %w", err)
 	}
 	fmt.Printf("typed answer:  sentiment=%s confidence=%.2f\n", out.Sentiment, out.Confidence)
+
+	// 5. RunTyped — the generic sugar over step 4: derive the schema
+	// FROM a Go type instead of hand-authoring the JSON Schema
+	// document, and get the validated answer back already unmarshaled.
+	// One call replaces WithOutputSchema + json.Unmarshal.
+	sentiment, sentimentEnv, err := assemble.RunTyped[SentimentReport](ctx, stack,
+		"Classify the sentiment of the last deployment note.",
+		identity.Identity{TenantID: "acme", UserID: "u-42", SessionID: "s-1"})
+	if err != nil {
+		return fmt.Errorf("typed run (RunTyped): %w", err)
+	}
+	fmt.Printf("RunTyped answer: sentiment=%s confidence=%.2f finish_reason=%s\n",
+		sentiment.Sentiment, sentiment.Confidence, sentimentEnv.FinishReason)
 	return nil
+}
+
+// SentimentReport is the RunTyped target type for step 5 — the same
+// shape the hand-authored schema in step 4 describes. RunTyped derives
+// its JSON Schema from this Go type via reflection (the shared
+// derivation sdk/tools/inproc.RegisterFunc also uses), runs a schema-
+// constrained RunOnce, and unmarshals the validated answer into it.
+type SentimentReport struct {
+	Sentiment  string  `json:"sentiment"`
+	Confidence float64 `json:"confidence,omitempty"`
 }
