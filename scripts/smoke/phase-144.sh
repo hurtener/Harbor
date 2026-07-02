@@ -88,6 +88,11 @@ assert_grep_present 'internal/tools/schema' \
     'phase 144: internal/runtime/flow derives schemas via the shared schema package'
 
 # --- 5. The exact two-func facade allow-list (D-273 amending D-205) --------
+#
+# FUNC-level, not file-level: exactly two func-bearing files under
+# sdk/, AND each allow-listed file declares EXACTLY ONE func body
+# (methods count too) that IS the enumerated generic forward by name.
+# A second func appended inside an allow-listed file fails here.
 
 allowed_func_files='sdk/tools/inproc/inproc.go
 sdk/assemble/runtyped.go'
@@ -97,6 +102,22 @@ if [ -z "${unexpected_func_files}" ] && [ "$(echo "${func_files}" | grep -c '^')
     ok 'phase 144: EXACTLY the two-func facade allow-list under sdk/ (sdk/tools/inproc.RegisterFunc, sdk/assemble.RunTyped)'
 else
     fail "phase 144: the sdk/ facade func allow-list drifted — found: ${func_files}"
+fi
+
+phase144_single_func_ok=1
+for spec in 'sdk/tools/inproc/inproc.go|^func RegisterFunc\[|RegisterFunc' 'sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped'; do
+    f="${spec%%|*}"
+    rest="${spec#*|}"
+    want_re="${rest%%|*}"
+    want_name="${rest#*|}"
+    count=$(grep -cE '^func ' "$f") || count=0
+    if [ "${count}" -ne 1 ] || ! grep -qE "${want_re}" "$f"; then
+        fail "phase 144: ${f} must declare EXACTLY ONE func and it must be the enumerated forward ${want_name} (found ${count} func bodies)"
+        phase144_single_func_ok=0
+    fi
+done
+if [ "${phase144_single_func_ok}" -eq 1 ]; then
+    ok 'phase 144: each allow-listed file declares exactly ONE func — the enumerated generic forward (func-level gate)'
 fi
 
 smoke_summary

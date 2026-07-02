@@ -16,8 +16,9 @@
 #      the enumerated two-func generic-forward allow-list
 #      (sdk/tools/inproc.RegisterFunc, sdk/assemble.RunTyped — D-273
 #      amending D-205 item 1; Go cannot express a generic function as
-#      a var forward). A third func anywhere under sdk/ fails this
-#      gate.
+#      a var forward). FUNC-level: a third func anywhere under sdk/
+#      fails, including a second func/method appended inside an
+#      allow-listed file.
 #   5. The facade-integrity test slice passes under -race.
 
 set -euo pipefail
@@ -95,8 +96,10 @@ fi
 # allow-list of exactly TWO: sdk/tools/inproc.RegisterFunc (the first
 # generic-forward carve-out) and sdk/assemble.RunTyped (the second,
 # phase 144). Both exist because Go cannot express a generic function
-# as a `var` forward. A func declaration in any THIRD file fails this
-# gate — additions stay decision-gated, not silently accreting.
+# as a `var` forward. The gate is FUNC-level, not file-level: a func
+# declaration in any THIRD file fails, AND a SECOND func (or method)
+# inside an allow-listed file fails — behavior cannot silently accrete
+# inside an already-allow-listed file. Additions stay decision-gated.
 allowed_func_files='sdk/tools/inproc/inproc.go
 sdk/assemble/runtyped.go'
 
@@ -107,16 +110,32 @@ if [ -z "${unexpected_func_files}" ]; then
 else
     fail "phase 112a: found func declarations outside the enumerated allow-list — the facade must stay forwards-only (or the allow-list is stale): ${unexpected_func_files}"
 fi
-for f in ${allowed_func_files}; do
-    if ! echo "${func_files}" | grep -qxF "${f}"; then
-        fail "phase 112a: allow-listed generic forward ${f} has no func declaration — the allow-list is stale"
-    fi
-done
 if [ "$(echo "${func_files}" | grep -c '^')" -eq 2 ]; then
     ok 'phase 112a: EXACTLY two func-bearing files under sdk/ (the enumerated generic-forward allow-list)'
 else
     fail "phase 112a: expected exactly 2 func-bearing files under sdk/, found $(echo "${func_files}" | grep -c '^'): ${func_files}"
 fi
+
+# Func-level check: each allow-listed file declares EXACTLY ONE func
+# (methods start with `^func ` too, so they are counted) and that one
+# declaration IS the enumerated generic forward by name. A sneaky
+# helper appended to an allow-listed file fails here.
+assert_single_enumerated_func() {
+    local f="$1" want_re="$2" want_name="$3"
+    local count
+    count=$(grep -cE '^func ' "$f") || count=0
+    if [ "${count}" -ne 1 ]; then
+        fail "phase 112a: ${f} declares ${count} func bodies, want EXACTLY 1 (the enumerated forward ${want_name}) — behavior must not accrete inside an allow-listed file"
+        return
+    fi
+    if grep -qE "${want_re}" "$f"; then
+        ok "phase 112a: ${f} declares exactly ONE func and it is the enumerated forward ${want_name}"
+    else
+        fail "phase 112a: ${f}'s single func is NOT the enumerated forward ${want_name}"
+    fi
+}
+assert_single_enumerated_func sdk/tools/inproc/inproc.go '^func RegisterFunc\[' 'RegisterFunc'
+assert_single_enumerated_func sdk/assemble/runtyped.go '^func RunTyped\[' 'RunTyped'
 
 # --- 5. The integrity test slice passes under -race --------------------------
 

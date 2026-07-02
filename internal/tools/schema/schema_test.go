@@ -11,11 +11,19 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/schema"
 )
 
-// goldenCorpus is the representative struct the promotion's golden
-// test pins BYTE-IDENTICAL against the pre-promotion inproc deriver's
-// documented behaviour (CLAUDE.md §17.8-adjacent: this corpus
-// encodes the ACTUAL pre-move algorithm, field by field, not a
-// reviewer's guess at it) — Phase 144 acceptance criterion 1.
+// goldenCorpus is the representative struct behind the promotion's
+// drift-pin (Phase 144 acceptance criterion 1). Honest scope note: the
+// `want` literals below were authored AT promotion time (from the
+// just-moved code), not captured from a pre-move run — so strictly
+// this is a FORWARD drift-pin: any later change to the derivation
+// algorithm must update this test deliberately. Byte-identity with the
+// pre-promotion inproc deriver rests on two independently verifiable
+// facts instead: (a) the move was verbatim (the derivation functions
+// were cut/pasted with only the package name and the schemaMap→Map
+// alias rename), and (b) the pre-existing consumer tests —
+// internal/tools/drivers/inproc's schema-shape assertions and
+// internal/runtime/flow's WithSchemasFrom tests — were NOT touched by
+// the promotion and stayed green against the re-based implementation.
 type goldenCorpus struct {
 	Name       string            `json:"name"`
 	Age        int               `json:"age,omitempty"`
