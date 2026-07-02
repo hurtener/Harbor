@@ -56,6 +56,33 @@ func TestValidate_MCPSouthboundOAuth_Table(t *testing.T) {
 			"stdio",
 		},
 		{
+			// A command-only connection with an omitted transport
+			// auto-selects stdio at connect — the binding would silently
+			// never inject. Must be rejected exactly like explicit stdio.
+			"binding on auto transport resolving to stdio (command-only, no url) rejected",
+			func(c *config.Config) {
+				withOAuthProvider(c)
+				c.Tools.MCPServers = []config.MCPServerConfig{{
+					Name: "local", Command: []string{"/bin/echo"},
+					OAuthProvider: "m365-broker",
+				}}
+			},
+			"tools.mcp_servers[0].oauth_provider",
+			"stdio",
+		},
+		{
+			"binding on explicit auto transport without url rejected",
+			func(c *config.Config) {
+				withOAuthProvider(c)
+				c.Tools.MCPServers = []config.MCPServerConfig{{
+					Name: "local", TransportMode: "auto", Command: []string{"/bin/echo"},
+					OAuthProvider: "m365-broker",
+				}}
+			},
+			"tools.mcp_servers[0].oauth_provider",
+			"stdio",
+		},
+		{
 			"static Authorization header conflicts with binding",
 			func(c *config.Config) {
 				withOAuthProvider(c)
@@ -117,6 +144,34 @@ func TestValidate_MCPSouthboundOAuth_Table(t *testing.T) {
 				t.Errorf("err=%q missing text %q", err.Error(), tc.wantText)
 			}
 		})
+	}
+}
+
+// TestIsReservedMCPMetaKey_GoldenSet pins the ONE shared reserved-key
+// authority every `_meta`-annotation surface consults (config validation,
+// the runtime add-connection gate, and the MCP driver's merge-time
+// re-check all call config.IsReservedMCPMetaKey). Changing the reserved
+// set is a wire-behavior change — this golden test forces the change to be
+// deliberate.
+func TestIsReservedMCPMetaKey_GoldenSet(t *testing.T) {
+	reserved := []string{
+		"tenant", "user", "session", "agent_id", "traceparent", "tracestate",
+		"io.modelcontextprotocol/ui", "io.modelcontextprotocol/", "io.modelcontextprotocol/anything",
+	}
+	for _, k := range reserved {
+		if !config.IsReservedMCPMetaKey(k) {
+			t.Errorf("IsReservedMCPMetaKey(%q) = false, want true", k)
+		}
+	}
+	allowed := []string{
+		"deployment", "fleet", "team", "Tenant", "AGENT_ID", "agent",
+		"io.modelcontextprotocol", // no trailing slash — not the spec namespace
+		"traceparent2",
+	}
+	for _, k := range allowed {
+		if config.IsReservedMCPMetaKey(k) {
+			t.Errorf("IsReservedMCPMetaKey(%q) = true, want false", k)
+		}
 	}
 }
 

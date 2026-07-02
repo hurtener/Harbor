@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -407,28 +408,17 @@ func descriptorToWire(d agentcfg.MCPConnectionDescriptor) prototypes.AgentConfig
 	}
 }
 
-// reservedConnectionMetaKeys is the closed set of `_meta` keys the runtime
-// stamps; an operator's connection annotations must not use them.
-var reservedConnectionMetaKeys = map[string]struct{}{
-	"tenant":      {},
-	"user":        {},
-	"session":     {},
-	"agent_id":    {},
-	"traceparent": {},
-	"tracestate":  {},
-}
-
-// mcpSpecConnectionMetaPrefix is the spec-reserved `_meta` namespace prefix.
-const mcpSpecConnectionMetaPrefix = "io.modelcontextprotocol/"
-
 // validateConnectionAnnotations rejects empty / reserved / spec-prefixed
-// annotation keys — the attach-time mirror of the config-time rule.
+// annotation keys — the attach-time mirror of the config-time rule. The
+// reserved set is the single shared authority (config.IsReservedMCPMetaKey)
+// so the runtime-add gate can never drift from config validation or the MCP
+// driver's merge-time re-check.
 func validateConnectionAnnotations(m map[string]string) error {
 	for k := range m {
 		if strings.TrimSpace(k) == "" {
 			return fmt.Errorf("%w: meta_annotations key must not be empty", ErrInvalidConnection)
 		}
-		if _, reserved := reservedConnectionMetaKeys[k]; reserved || strings.HasPrefix(k, mcpSpecConnectionMetaPrefix) {
+		if config.IsReservedMCPMetaKey(k) {
 			return fmt.Errorf("%w: meta_annotations key %q is reserved (triple/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", ErrInvalidConnection, k)
 		}
 	}

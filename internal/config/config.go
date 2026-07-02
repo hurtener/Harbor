@@ -1142,8 +1142,10 @@ type MCPServerConfig struct {
 	// NON-SECRET provider NAME — it selects a config-declared acquisition
 	// strategy; the secret stays env-indirected on the provider entry.
 	// Optional; empty leaves the connection on its static `headers`.
-	// Validation rejects an unknown name, a binding on a stdio transport
-	// (no HTTP request to inject into), and a static `Authorization` header
+	// Validation rejects an unknown name, a binding on any connection
+	// without an http(s) `url` — explicit stdio AND an omitted/auto
+	// transport with only a `command`, which would auto-select stdio and
+	// silently never inject — and a static `Authorization` header
 	// alongside a binding (one auth mode per connection). Restart-required.
 	OAuthProvider string `yaml:"oauth_provider,omitempty"`
 	// MetaAnnotations is a static, NON-SECRET set of operator-declared

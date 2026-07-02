@@ -12,6 +12,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -1115,30 +1116,14 @@ func buildIdentityMeta(ctx context.Context, annotations map[string]string) (mcps
 	return meta, nil
 }
 
-// reservedMetaKeys is the closed set of `_meta` keys Harbor owns: the
-// isolation triple, the agent-provenance stamp, and the W3C trace-context
-// carrier keys (the `_meta` trace-context idiom). Operator annotations may not use
-// them.
-var reservedMetaKeys = map[string]struct{}{
-	"tenant":      {},
-	"user":        {},
-	"session":     {},
-	"agent_id":    {},
-	"traceparent": {},
-	"tracestate":  {},
-}
-
-// mcpSpecMetaPrefix is the spec-reserved `_meta` namespace prefix; operator
-// annotations may not use it (the MCP spec owns keys under it).
-const mcpSpecMetaPrefix = "io.modelcontextprotocol/"
-
 // isReservedMetaKey reports whether k is a Harbor-reserved or spec-reserved
-// `_meta` key that an operator annotation must not carry.
+// `_meta` key that an operator annotation must not carry. It delegates to
+// the single shared authority (config.IsReservedMCPMetaKey — the isolation
+// triple, `agent_id`, the trace-context carrier keys, and the
+// `io.modelcontextprotocol/` spec namespace) so the driver's merge-time
+// re-check can never drift from config / attach validation.
 func isReservedMetaKey(k string) bool {
-	if _, ok := reservedMetaKeys[k]; ok {
-		return true
-	}
-	return len(k) >= len(mcpSpecMetaPrefix) && k[:len(mcpSpecMetaPrefix)] == mcpSpecMetaPrefix
+	return config.IsReservedMCPMetaKey(k)
 }
 
 // resolveBearerCtx threads a fresh per-identity bearer onto the call's ctx

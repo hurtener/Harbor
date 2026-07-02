@@ -266,13 +266,13 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 		}
 	})
 	t.Run("resolves", func(t *testing.T) {
-		got, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", OAuthProvider: "m365"}, TransportStreamableHTTP, providers)
+		got, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", URL: "https://mcp.example.test", OAuthProvider: "m365"}, TransportStreamableHTTP, providers)
 		if err != nil || got == nil {
 			t.Fatalf("resolves: got (%v, %v)", got, err)
 		}
 	})
 	t.Run("unknown provider lists registered", func(t *testing.T) {
-		_, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", OAuthProvider: "nope"}, TransportStreamableHTTP, providers)
+		_, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", URL: "https://mcp.example.test", OAuthProvider: "nope"}, TransportStreamableHTTP, providers)
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding, got %v", err)
 		}
@@ -286,9 +286,20 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 			t.Fatalf("want ErrOAuthBinding for stdio, got %v", err)
 		}
 	})
+	t.Run("auto transport without url (command-only, resolves to stdio) rejected", func(t *testing.T) {
+		// The silent-degradation trap: an auto/omitted transport with only a
+		// command auto-selects stdio at connect — the bearer would never
+		// reach any wire. Must fail exactly like explicit stdio.
+		_, err := resolveOAuthBinding(config.MCPServerConfig{
+			Name: "x", Command: []string{"/bin/echo"}, OAuthProvider: "m365",
+		}, TransportAuto, providers)
+		if err == nil || !errors.Is(err, ErrOAuthBinding) {
+			t.Fatalf("want ErrOAuthBinding for auto+command-only binding, got %v", err)
+		}
+	})
 	t.Run("static authorization conflict rejected", func(t *testing.T) {
 		_, err := resolveOAuthBinding(config.MCPServerConfig{
-			Name: "x", OAuthProvider: "m365",
+			Name: "x", URL: "https://mcp.example.test", OAuthProvider: "m365",
 			Headers: map[string]string{"AUTHORIZATION": "Bearer static"},
 		}, TransportStreamableHTTP, providers)
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
@@ -319,6 +330,31 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 			t.Fatalf("want ErrOAuthBinding for empty annotation key, got %v", err)
 		}
 	})
+}
+
+// TestAttach_AutoCommandBindingFailsLoud drives the FULL Attach entry with a
+// command-only, omitted-transport config binding an oauth_provider — the
+// exact shape that would auto-select stdio at connect and silently skip
+// bearer injection. Attach must fail loud BEFORE any connection attempt.
+func TestAttach_AutoCommandBindingFailsLoud(t *testing.T) {
+	prov := &stubOAuthProvider{token: "t"}
+	var closers []func(context.Context) error
+	err := Attach(context.Background(), config.MCPServerConfig{
+		Name:          "local",
+		Command:       []string{"/bin/echo"},
+		OAuthProvider: "m365",
+	}, AttachDeps{
+		Catalog:        tools.NewCatalog(),
+		Registry:       NewRegistry(),
+		Closers:        &closers,
+		OAuthProviders: map[string]auth.OAuthProvider{"m365": prov},
+	})
+	if err == nil {
+		t.Fatal("Attach accepted an oauth_provider binding on an auto+command-only (stdio-resolving) connection")
+	}
+	if !errors.Is(err, ErrOAuthBinding) {
+		t.Fatalf("want ErrOAuthBinding, got %v", err)
+	}
 }
 
 func contains(s, sub string) bool {

@@ -1357,9 +1357,15 @@ func (c *Config) validateTools() error {
 					fmt.Sprintf("references unknown OAuth provider %q (declared providers: %s; declare via tools.oauth_providers[])",
 						s.OAuthProvider, sortedKeysFromSet(oauthProviderNames)))
 			}
-			if mode == "stdio" {
+			// The binding needs an HTTP request to inject into. An explicit
+			// stdio transport is rejected, and so is ANY connection without
+			// a url — an omitted/auto transport with only a command
+			// auto-selects stdio at connect, which would silently skip
+			// injection while the operator believes per-identity auth is on
+			// (§13 silent degradation).
+			if mode == "stdio" || s.URL == "" {
 				return fieldError(prefix+".oauth_provider",
-					"must not be set on a stdio transport (a stdio connection carries no HTTP request to inject Authorization into; the binding is a misconfiguration)")
+					"must not be set on a connection without an http(s) url (a stdio connection — explicit or auto-selected from a command-only config — carries no HTTP request to inject Authorization into; the binding is a misconfiguration)")
 			}
 			for k := range s.Headers {
 				if strings.EqualFold(k, "authorization") {
@@ -1373,7 +1379,7 @@ func (c *Config) validateTools() error {
 			if strings.TrimSpace(k) == "" {
 				return fieldError(field, "annotation key must not be empty")
 			}
-			if isReservedMetaAnnotationKey(k) {
+			if IsReservedMCPMetaKey(k) {
 				return fieldError(field,
 					fmt.Sprintf("key %q is reserved (tenant/user/session/agent_id/traceparent/tracestate and any io.modelcontextprotocol/-prefixed key are stamped by the runtime; choose a non-reserved key)", k))
 			}
@@ -1940,9 +1946,17 @@ var reservedMCPMetaAnnotationKeys = map[string]struct{}{
 // operator annotations may not use it.
 const mcpSpecMetaAnnotationPrefix = "io.modelcontextprotocol/"
 
-// isReservedMetaAnnotationKey reports whether k is a runtime-reserved or
-// spec-reserved MCP `_meta` key an operator annotation must not carry.
-func isReservedMetaAnnotationKey(k string) bool {
+// IsReservedMCPMetaKey reports whether k is a runtime-reserved or
+// spec-reserved MCP `_meta` key an operator annotation must not carry: the
+// isolation triple keys (`tenant`/`user`/`session`), the agent-provenance
+// stamp (`agent_id`), the W3C trace-context carrier keys
+// (`traceparent`/`tracestate`), and any `io.modelcontextprotocol/`-prefixed
+// key (the spec-reserved namespace). This is the SINGLE authority every
+// surface that validates or merges MCP `_meta` annotations consults — config
+// validation, the runtime add-connection validation, and the MCP driver's
+// merge-time re-check all call it, so the reserved set cannot drift between
+// them.
+func IsReservedMCPMetaKey(k string) bool {
 	if _, ok := reservedMCPMetaAnnotationKeys[k]; ok {
 		return true
 	}

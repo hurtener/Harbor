@@ -1254,7 +1254,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			// when the catalog band is present.
 			if stack.Catalog != nil && stack.MCPRegistry != nil {
 				attacher := NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, nil,
-					resolveDevIdentity(opts))
+					resolveDevIdentity(opts), stack.OAuthProviders)
 				stack.closeFns = append(stack.closeFns, attacher.Close)
 				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(attacher))
 			}
