@@ -80,6 +80,14 @@ type StreamEvent struct {
 // WithStream composes with any bus-backed streaming the stack already
 // wires: the sink is additive, so a Console attached to the same run's
 // event bus and an embed sink both observe the run's chunks.
+//
+// Composing with WithOutputSchema: on a schema-constrained run the
+// assistant-content token deltas are SUPPRESSED at the sink — step and
+// tool_dispatched events still stream, but the validated terminal answer
+// arrives once, in the envelope's AnswerPayload, not as a token stream.
+// A validate-and-retry loop cannot retract tokens it already emitted, so
+// buffered-whole delivery is the correct pairing. Every
+// delivered StreamEvent still precedes the final envelope.
 func WithStream(sink func(StreamEvent)) RunOption {
 	return func(c *runOnceConfig) { c.stream = sink }
 }

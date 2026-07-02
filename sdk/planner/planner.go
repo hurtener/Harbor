@@ -310,6 +310,11 @@ var (
 	ErrNilTrajectory = internal.ErrNilTrajectory
 	// ErrEmptySummary — the summariser violated its contract.
 	ErrEmptySummary = internal.ErrEmptySummary
+	// ErrOutputInvalid — a run-level structured-output run's terminal
+	// answer failed schema validation after the correction budget
+	// (assemble.WithOutputSchema). Never a silent fallback to
+	// unvalidated text; the runner returns this typed error instead.
+	ErrOutputInvalid = internal.ErrOutputInvalid
 )
 
 // Resolve resolves the configured planner concrete via the driver

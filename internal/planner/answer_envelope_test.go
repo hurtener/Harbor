@@ -38,10 +38,45 @@ func TestAnswerEnvelope_GoldenJSON_Phase106ByteCompat(t *testing.T) {
 	}
 
 	// The golden literal, pinned explicitly so a change to BOTH sides
-	// still fails loud.
+	// still fails loud. The additive answer_payload key is `omitempty`,
+	// so a plain (no-payload) envelope is byte-identical to before —
+	// zero default-path change (D-272).
 	const golden = `{"answer":"the assistant answer","finish_reason":"goal","tool_calls_seen":3}`
 	if string(got) != golden {
 		t.Errorf("AnswerEnvelope encoding = %s, want golden %s", got, golden)
+	}
+}
+
+// TestAnswerEnvelope_GoldenJSON_WithPayload pins the encoding of a
+// structured-output envelope: the additive answer_payload key carries
+// the validated raw JSON and appears LAST (struct field order), while
+// the three pre-existing keys are unchanged. A plain run omits the key
+// entirely (the byte-compat test above); this fixture pins the shape
+// when a schema constrained the run (D-272).
+func TestAnswerEnvelope_GoldenJSON_WithPayload(t *testing.T) {
+	t.Parallel()
+	env := AnswerEnvelope{
+		Answer:        `{"sentiment":"positive","score":0.9}`,
+		FinishReason:  string(FinishGoal),
+		ToolCallsSeen: 0,
+		AnswerPayload: json.RawMessage(`{"sentiment":"positive","score":0.9}`),
+	}
+	got, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal AnswerEnvelope: %v", err)
+	}
+	const golden = `{"answer":"{\"sentiment\":\"positive\",\"score\":0.9}","finish_reason":"goal","tool_calls_seen":0,"answer_payload":{"sentiment":"positive","score":0.9}}`
+	if string(got) != golden {
+		t.Errorf("with-payload AnswerEnvelope encoding = %s, want golden %s", got, golden)
+	}
+
+	// Round-trip: the payload decodes back as raw JSON bytes.
+	var back AnswerEnvelope
+	if err := json.Unmarshal(got, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(back.AnswerPayload) != `{"sentiment":"positive","score":0.9}` {
+		t.Errorf("round-trip AnswerPayload = %s, want the raw JSON", back.AnswerPayload)
 	}
 }
 

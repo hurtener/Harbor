@@ -12,6 +12,7 @@ package runctx_test
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -288,5 +289,47 @@ func TestNewRunContext_StreamingSurface(t *testing.T) {
 	}
 	if withBus.Trajectory == noBus.Trajectory {
 		t.Error("Trajectory must be a fresh pointer per call")
+	}
+}
+
+// TestNewRunContext_OutputSchema_CompiledOnceAndThreaded — a non-empty
+// Sources.OutputSchema is compiled ONCE and threaded onto
+// RunContext.OutputSchema; the compiled validator enforces the schema.
+// An empty schema leaves the field nil (plain run); an invalid schema
+// fails the run loudly (no silent degradation, CLAUDE.md §13).
+func TestNewRunContext_OutputSchema_CompiledOnceAndThreaded(t *testing.T) {
+	q := parityQuad()
+	const schema = `{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}`
+
+	rc, err := runctx.NewRunContext(context.Background(), runctx.Sources{
+		OutputSchema: json.RawMessage(schema),
+	}, q, "goal")
+	if err != nil {
+		t.Fatalf("NewRunContext(schema): %v", err)
+	}
+	if rc.OutputSchema == nil {
+		t.Fatal("RunContext.OutputSchema is nil, want the compiled validator")
+	}
+	if err := rc.OutputSchema.Validate(json.RawMessage(`{"ok":true}`)); err != nil {
+		t.Errorf("Validate(conforming) = %v, want nil", err)
+	}
+	if err := rc.OutputSchema.Validate(json.RawMessage(`{"ok":"yes"}`)); err == nil {
+		t.Error("Validate(non-conforming) = nil, want error")
+	}
+
+	// Empty schema → nil field (plain run).
+	plain, err := runctx.NewRunContext(context.Background(), runctx.Sources{}, q, "goal")
+	if err != nil {
+		t.Fatalf("NewRunContext(no schema): %v", err)
+	}
+	if plain.OutputSchema != nil {
+		t.Error("RunContext.OutputSchema must be nil on a plain run")
+	}
+
+	// Invalid schema → loud error.
+	if _, err := runctx.NewRunContext(context.Background(), runctx.Sources{
+		OutputSchema: json.RawMessage(`{not json`),
+	}, q, "goal"); err == nil {
+		t.Error("NewRunContext(invalid schema) = nil error, want a loud compile error")
 	}
 }

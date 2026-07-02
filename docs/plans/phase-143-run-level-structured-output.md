@@ -47,17 +47,17 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `assemble.WithOutputSchema(schema json.RawMessage) RunOption` exists; a nil/empty schema is a loud config error at call time, not a silent no-op. Without the option, `RunOnce` behavior and the envelope bytes are unchanged (golden test unchanged and green).
-- [ ] The schema threads `RunOnce` → `runctx.Sources`/`Option` → `planner.RunContext` (a read-only per-run field, per D-025: state on the run, never on the Stack) → the React driver's terminal completion, which sets `ResponseFormat{Kind: FormatJSONSchema, JSONSchema: schema}` shaped by the profile's EXISTING `OutputMode` strategy + downgrade chain, and a compiled-schema `Validator` engaging the retry-with-feedback wrapper bounded by `ModelProfile.MaxRetries`.
-- [ ] Runtime-edge final validation: the terminal `Finish` payload is validated against the schema at the RunOnce edge regardless of planner driver. Deterministic-planner runs with conforming payloads pass; non-conforming output → typed `planner.ErrOutputInvalid` (wrapping the schema error, and `llm.ErrRetryExhausted` when the React loop retried). No silent-text fallback path exists (asserted by test).
-- [ ] `planner.AnswerEnvelope` gains `AnswerPayload json.RawMessage` with tag `json:"answer_payload,omitempty"`; the golden encoding test is extended with a with-payload fixture AND re-pins the without-payload bytes unchanged. `Answer` carries the payload's string rendering for backward compatibility.
-- [ ] `WithStream` + `WithOutputSchema` compose: `tool_dispatched` + `step` events stream as today; assistant-content `token` chunks are suppressed for the schema-constrained run; every delivered `StreamEvent` still precedes the final envelope (the D-266 ordering guarantee re-asserted under the new option). The suppression posture is stated in the `WithOutputSchema` AND `WithStream` godoc.
-- [ ] Identity handling unchanged: the option carries no identity; `RunOnce`'s per-call `identity.Identity` argument and fail-loud validation are untouched (asserted by the existing tests staying green).
-- [ ] The D-025 concurrent-reuse test extends to mixed traffic: N≥100 concurrent `RunOnce` calls against ONE shared Stack, interleaving schema-constrained and plain runs with DISTINCT schemas, asserting no schema/payload bleed across runs, no cancellation cross-talk, goroutine baseline restored, under `-race`.
-- [ ] §13 primitive-with-consumer: an end-to-end test (scripted-LLM devstack harness) drives a schema-constrained run through the real RunLoop — happy path (validated payload in the envelope), corrective-retry path (first response schema-invalid → `llm.retry_with_feedback` observed → second response valid), and exhaustion path (`ErrOutputInvalid`).
-- [ ] `sdk/assemble` re-exports `WithOutputSchema`; `sdk/planner` re-exports `ErrOutputInvalid` (alias/forward only — no behavior in `sdk/`, D-204).
-- [ ] `examples/embed-runonce/` gains a typed-output variant (or a sibling example) exercising the option offline; §18 sweep: `docs/recipes/embed-harbor-headless.md` gains the option + the streaming-posture caveat in the same PR, plus any `docs/skills/` playbook that demonstrates `RunOnce` (grep `docs/skills/` for the surface at implementation time).
-- [ ] `scripts/smoke/phase-143.sh` flips from skeleton to real assertions (unit-test leg + a static grep pinning that no non-test code path returns unvalidated text when a schema is set).
+- [x] `assemble.WithOutputSchema(schema json.RawMessage) RunOption` exists; a nil/empty schema is a loud config error at call time, not a silent no-op. Without the option, `RunOnce` behavior and the envelope bytes are unchanged (golden test unchanged and green).
+- [x] The schema threads `RunOnce` → `runctx.Sources`/`Option` → `planner.RunContext` (a read-only per-run field, per D-025: state on the run, never on the Stack) → the React driver's terminal completion, which sets `ResponseFormat{Kind: FormatJSONSchema, JSONSchema: schema}` shaped by the profile's EXISTING `OutputMode` strategy + downgrade chain, and a compiled-schema `Validator` engaging the retry-with-feedback wrapper bounded by `ModelProfile.MaxRetries`.
+- [x] Runtime-edge final validation: the terminal `Finish` payload is validated against the schema at the RunOnce edge regardless of planner driver. Deterministic-planner runs with conforming payloads pass; non-conforming output → typed `planner.ErrOutputInvalid` (wrapping the schema error, and `llm.ErrRetryExhausted` when the React loop retried). No silent-text fallback path exists (asserted by test).
+- [x] `planner.AnswerEnvelope` gains `AnswerPayload json.RawMessage` with tag `json:"answer_payload,omitempty"`; the golden encoding test is extended with a with-payload fixture AND re-pins the without-payload bytes unchanged. `Answer` carries the payload's string rendering for backward compatibility.
+- [x] `WithStream` + `WithOutputSchema` compose: `tool_dispatched` + `step` events stream as today; assistant-content `token` chunks are suppressed for the schema-constrained run; every delivered `StreamEvent` still precedes the final envelope (the D-266 ordering guarantee re-asserted under the new option). The suppression posture is stated in the `WithOutputSchema` AND `WithStream` godoc.
+- [x] Identity handling unchanged: the option carries no identity; `RunOnce`'s per-call `identity.Identity` argument and fail-loud validation are untouched (asserted by the existing tests staying green).
+- [x] The D-025 concurrent-reuse test extends to mixed traffic: N≥100 concurrent `RunOnce` calls against ONE shared Stack, interleaving schema-constrained and plain runs with DISTINCT schemas, asserting no schema/payload bleed across runs, no cancellation cross-talk, goroutine baseline restored, under `-race`.
+- [x] §13 primitive-with-consumer: an end-to-end test (scripted-LLM devstack harness) drives a schema-constrained run through the real RunLoop — happy path (validated payload in the envelope), corrective-retry path (first response schema-invalid → `llm.retry_with_feedback` observed → second response valid), and exhaustion path (`ErrOutputInvalid`).
+- [x] `sdk/assemble` re-exports `WithOutputSchema`; `sdk/planner` re-exports `ErrOutputInvalid` (alias/forward only — no behavior in `sdk/`, D-204).
+- [x] `examples/embed-runonce/` gains a typed-output variant (or a sibling example) exercising the option offline; §18 sweep: `docs/recipes/embed-harbor-headless.md` gains the option + the streaming-posture caveat in the same PR, plus any `docs/skills/` playbook that demonstrates `RunOnce` (grep `docs/skills/` for the surface at implementation time).
+- [x] `scripts/smoke/phase-143.sh` flips from skeleton to real assertions (unit-test leg + a static grep pinning that no non-test code path returns unvalidated text when a schema is set).
 
 ## Files added or changed
 
@@ -120,13 +120,13 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. (This phase extends the shared-Stack surface — the mixed-traffic test is mandatory.)
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. (It consumes 35 + 36 + 132 — the integration test is mandatory.)
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [ ] `make preflight` passes (CI runs the full gate; skipped locally per PR note)
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. (This phase extends the shared-Stack surface — the mixed-traffic test is mandatory.)
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. (It consumes 35 + 36 + 132 — the integration test is mandatory.)
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed

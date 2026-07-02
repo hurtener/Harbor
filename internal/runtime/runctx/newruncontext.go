@@ -23,6 +23,7 @@ package runctx
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -95,6 +96,14 @@ type Sources struct {
 	// budget) projected onto RunContext.Budget. The zero value disables
 	// compression and applies the runtime defaults.
 	Budget planner.Budget
+
+	// OutputSchema is the optional, opt-in run-level output schema (raw
+	// JSON-Schema bytes). When non-empty NewRunContext compiles it ONCE
+	// and threads the compiled validator onto RunContext.OutputSchema, so
+	// the terminal answer is validated against it (fail-loud). A compile
+	// failure fails the run loudly rather than silently degrading to an
+	// unconstrained run (CLAUDE.md §13). Empty means "no schema".
+	OutputSchema json.RawMessage
 }
 
 // runContextConfig holds the per-call knobs the functional options set.
@@ -168,6 +177,20 @@ func NewRunContext(
 	var cfg runContextConfig
 	for _, o := range opts {
 		o(&cfg)
+	}
+
+	// Run-level output schema — compiled ONCE here (the runtime edge) so
+	// the same compiled validator serves both the planner's per-turn
+	// generation steering and the runtime-edge final validation. A
+	// compile failure fails the run loudly (no silent degradation to an
+	// unconstrained run, CLAUDE.md §13).
+	var outputSchema *planner.OutputSchemaValidator
+	if len(src.OutputSchema) > 0 {
+		compiled, err := planner.CompileOutputSchema(src.OutputSchema)
+		if err != nil {
+			return planner.RunContext{}, fmt.Errorf("runctx: output schema: %w", err)
+		}
+		outputSchema = compiled
 	}
 
 	// Identity-attached projection ctx: the skills Directory (and the
@@ -262,5 +285,6 @@ func NewRunContext(
 		OnChunk:        onChunk,
 		InputArtifacts: inputArtifacts,
 		Budget:         src.Budget,
+		OutputSchema:   outputSchema,
 	}, nil
 }
