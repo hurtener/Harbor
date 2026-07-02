@@ -45,6 +45,11 @@ var (
 	// driver fails closed rather than dispatching to a remote server
 	// with an empty `_meta` block. Mirrors the HTTP and A2A drivers.
 	ErrIdentityMissing = errors.New("mcp: identity missing from ctx")
+	// ErrEmptyBearer — a bound OAuth provider returned a nil error AND
+	// an empty access token. Defence-in-depth on the fail-closed
+	// surface: the call aborts rather than proceeding unauthenticated
+	// on a connection the operator declared per-identity-authorized.
+	ErrEmptyBearer = errors.New("mcp: oauth provider returned an empty bearer token")
 )
 
 // resourceTypeSeparator — used in the synthetic tool names for
@@ -1146,6 +1151,13 @@ func (p *Provider) resolveBearerCtx(ctx context.Context) (context.Context, error
 	if err != nil {
 		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
 		return nil, err
+	}
+	if tok.AccessToken == "" {
+		// Defence-in-depth: a ("", nil) return from a bound provider must
+		// never let the RPC proceed unauthenticated (unreachable via the
+		// shipped drivers, which reject empty tokens — but this is the
+		// fail-closed surface, so it fails loud here too).
+		return nil, fmt.Errorf("%w (connection %q, source %q)", ErrEmptyBearer, p.cfg.Name, p.source)
 	}
 	return withBearer(ctx, tok.AccessToken), nil
 }

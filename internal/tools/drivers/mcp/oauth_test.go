@@ -242,6 +242,24 @@ func TestResolveBearerCtx_FailClosedOnTokenError(t *testing.T) {
 	}
 }
 
+// TestResolveBearerCtx_FailClosedOnEmptyToken — defence-in-depth: a bound
+// provider returning ("", nil) must abort the RPC (ErrEmptyBearer) rather
+// than proceed unauthenticated on a per-identity-authorized connection.
+func TestResolveBearerCtx_FailClosedOnEmptyToken(t *testing.T) {
+	p := &Provider{cfg: Config{Name: "graph", OAuthProvider: &stubOAuthProvider{token: ""}}, source: "graph"}
+	ctx := testIdentityCtx(t, identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
+	_, err := p.resolveBearerCtx(ctx)
+	if err == nil {
+		t.Fatal("want error on empty bearer, got nil (an unauthenticated call would leak)")
+	}
+	if !errors.Is(err, ErrEmptyBearer) {
+		t.Fatalf("want ErrEmptyBearer, got %v", err)
+	}
+	if !contains(err.Error(), "graph") {
+		t.Fatalf("error must name the connection/source, got %q", err.Error())
+	}
+}
+
 func TestResolveBearerCtx_StashesBearer(t *testing.T) {
 	p := &Provider{cfg: Config{OAuthProvider: &stubOAuthProvider{token: "brokered-xyz"}}, source: "m365"}
 	ctx := testIdentityCtx(t, identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})

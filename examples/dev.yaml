@@ -204,7 +204,7 @@ tools:
   #
   #   mcp_servers:
   #     - name: enterprise-graph
-  #       transport_mode: http           # streamable-http / sse — never stdio
+  #       transport_mode: streamable_http  # or sse / auto — never stdio
   #       url: https://mcp.example.com/graph
   #       oauth_provider: m365-broker    # names an oauth_providers[] entry
   #       meta_annotations:
