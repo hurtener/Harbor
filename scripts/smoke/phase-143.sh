@@ -1,30 +1,15 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
+# PREFLIGHT_REQUIRES: unit-tests
 #
-# Phase 143 smoke — run-level structured output (WithOutputSchema + answer_payload).
+# Phase 143 smoke — run-level structured output (WithOutputSchema +
+# answer_payload, D-272).
 #
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# There is no new HTTP / Protocol surface: the option threads through
+# RunOnce and the additive answer_payload rides the existing envelope as
+# opaque JSON. Correctness is verified by the race-enabled Go test suite
+# (the option validation + runtime-edge validation + stream suppression +
+# the D-025 mixed-traffic stress + the §13 consumer E2E). A static grep
+# pins that answer_payload appears in exactly one wire-shape definition.
 
 set -euo pipefail
 
@@ -34,17 +19,42 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase NN assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+# 1. The assemble runner + envelope + planner schema surface under -race.
+if go test -race -count=1 -timeout 120s \
+	./internal/runtime/assemble/... \
+	./internal/runtime/runctx/... \
+	./internal/planner/ >/dev/null 2>&1; then
+	ok 'phase 143: assemble + runctx + planner output-schema tests pass under -race'
+else
+	fail 'phase 143: output-schema unit tests failed (run `go test -race ./internal/runtime/assemble/... ./internal/planner/`)'
+fi
 
-skip "phase 143: smoke skeleton — replace with real assertions when the phase implements its surface"
+# 2. The §13 primitive-with-consumer E2E (happy / corrective-retry /
+#    exhaustion / planner-agnostic deterministic leg) under -race.
+if go test -race -count=1 -timeout 120s -run '^TestE2E_Phase143_' ./test/integration/... >/dev/null 2>&1; then
+	ok 'phase 143: structured-output consumer E2E passes (TestE2E_Phase143_*)'
+else
+	fail 'phase 143: consumer E2E failed (run `go test -race -run TestE2E_Phase143_ ./test/integration/...`)'
+fi
+
+# 3. Static: answer_payload is defined in EXACTLY ONE wire-shape (the
+#    AnswerEnvelope). A second `json:"answer_payload..."` tag would mean a
+#    duplicate wire definition (§13: single source for a wire shape).
+payload_tag_count="$(grep -rn 'json:"answer_payload' internal/ | grep -c 'AnswerPayload' || true)"
+if [ "${payload_tag_count}" = "1" ]; then
+	ok 'phase 143: answer_payload wire tag defined in exactly one place (AnswerEnvelope)'
+else
+	fail "phase 143: answer_payload wire tag appears ${payload_tag_count} times, want exactly 1 (single wire-shape source)"
+fi
+
+# 4. Static: a schema-invalid answer maps to the typed ErrOutputInvalid at
+#    the runtime edge (no silent text fallback, §13). Assert the sentinel
+#    exists and the runner references it.
+if grep -q 'ErrOutputInvalid' internal/planner/output_schema.go &&
+	grep -q 'planner.ErrOutputInvalid' internal/runtime/assemble/runonce.go; then
+	ok 'phase 143: schema-invalid answer maps to the typed ErrOutputInvalid (no silent text fallback)'
+else
+	fail 'phase 143: ErrOutputInvalid wiring missing from the runtime edge'
+fi
 
 smoke_summary

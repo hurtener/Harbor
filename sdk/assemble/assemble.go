@@ -41,6 +41,16 @@ var WithRunID = internal.WithRunID
 // the run's first-turn multimodal inputs.
 var WithInputArtifacts = internal.WithInputArtifacts
 
+// WithOutputSchema opts a RunOnce call into run-level structured output:
+// the terminal answer is validated against the supplied JSON Schema and
+// delivered as the envelope's additive AnswerPayload key (raw validated
+// JSON). A nil/empty schema is a loud config error. On a schema-invalid
+// answer after the correction budget the runner returns
+// planner.ErrOutputInvalid — never a silent fallback to unvalidated
+// text. Composing with WithStream: assistant-content token deltas are
+// suppressed; the validated answer arrives once, in the envelope.
+var WithOutputSchema = internal.WithOutputSchema
+
 // StreamEvent is one observation a WithStream sink receives while
 // RunOnce drives a run — a token delta, a planner-step boundary, or a
 // tool dispatch. Minimal by design: progress signals only, never raw

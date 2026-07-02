@@ -251,7 +251,8 @@ work end to end. **Embed** it as a library: `assemble.Assemble` composes a
 headless runtime and `Stack.RunOnce` turns a goal plus the
 `(tenant, user, session)` identity into an answer envelope in one blocking
 call, with `WithStream` delivering token / tool / step events as they happen
-on the same method. **Scaffold** from the CLI: `harbor init` / `scaffold`
+on the same method and `WithOutputSchema` returning a schema-validated typed
+answer (`answer_payload`) instead of a bare string. **Scaffold** from the CLI: `harbor init` / `scaffold`
 generate an agent whose golden test actually registers and dispatches a tool
 through the executor, and `harbor dev` is honest about `.go` edits — it warns
 and guides a rebuild rather than reporting a hot-reload that never recompiled.
