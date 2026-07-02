@@ -7,6 +7,7 @@
 /harbor-*
 # Stray root builds of example clients (examples/protocol-clients/*).
 /event-viewer
+/embed-runonce
 /dist/
 /build/
 *.exe

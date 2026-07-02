@@ -24,6 +24,108 @@ issue [#396](https://github.com/hurtener/Harbor/issues/396); and the generated
 per-domain Protocol wire-type modules + the shared chat-module extraction — the
 D-093 / D-091 follow-ons.)
 
+## [1.9.0] — 2026-07-02
+
+The typed-output-and-brokered-credentials release: the embed path now answers
+in your types, and a fleet can hold tool credentials in one place instead of
+N runtimes each acquiring their own. `Stack.RunOnce` gains an opt-in run-level
+JSON Schema whose validated answer lands on a new envelope key, `RunTyped[T]`
+derives that schema from a Go type and hands back the unmarshaled struct, and
+the new `tokenexchange` OAuth driver pulls downstream tool credentials from an
+external broker at token-miss time — never persisting them. Two pre-wave
+integrity fixes land with it, one of which changes the *meaning* (not the
+shape) of an SDK-visible envelope field — see Changed. Additive public API +one
+new canonical event; the Harbor Protocol holds at `0.1.0` (no method, error, or
+wire-type change this release).
+
+### Added
+
+- **`WithOutputSchema` — run-level structured output.** *(embed)* One run
+  option asks `Stack.RunOnce` for a schema-conforming final answer: the
+  terminal payload is validated at the run edge for every planner (no
+  capability ceremony), delivered as the additive `answer_payload` envelope
+  key (`AnswerEnvelope.AnswerPayload`; the pinned three-key byte shape is
+  untouched and `Answer` keeps the string rendering), and a schema-invalid
+  answer after the profile's bounded retry budget is a typed
+  `planner.ErrOutputInvalid` — never silent unvalidated text. The React driver
+  additionally constrains the terminal completion through the existing
+  `OutputMode` strategy and the `Validator`-keyed retry-with-feedback loop —
+  no new knob. `WithStream` composes: `step` / `tool_dispatched` events stream
+  as today; token chunks are suppressed on a schema-constrained run (a
+  validate-and-retry loop cannot retract streamed tokens), and the validated
+  answer arrives once, in the envelope. Partial-object streaming is the named
+  follow-up. (D-272.)
+- **`RunTyped[T]` — the typed embed binding.** *(embed)* A generic free
+  function, `assemble.RunTyped[T](ctx, stack, goal, id, opts...)`, that
+  derives the output schema from `T` (via the same reflection deriver
+  `RegisterFunc` uses, promoted to a shared neutral package), runs
+  schema-constrained, and returns the validated answer already unmarshaled
+  into `T`. All failure modes loud: an unsupported `T` fails at call time
+  before any LLM spend; a caller-supplied `WithOutputSchema` alongside it is
+  `ErrRunTypedSchemaConflict`; a validated-but-unmarshalable payload is
+  `ErrRunTypedUnmarshal`. Deliberately a free function over the shared
+  immutable `Stack` — no stateful binding object; the `sdk/assemble` forward
+  is the facade's second (and gate-enumerated) generic-func carve-out. (D-273.)
+- **`tokenexchange` — pull-based external tool credentials.** *(tools)* A new
+  non-interactive driver on the OAuth flow-strategy registry
+  (`tools.oauth_providers[].driver: tokenexchange`): at token-miss time the
+  runtime performs an RFC-8693-shaped exchange against an operator-configured
+  credential broker (a fleet orchestrator, a token vault, an STS), presenting
+  its own env-indirected broker credential plus the **verified** ctx identity
+  triple — so one central grant serves N runtimes instead of N consents and N
+  sealed copies. Brokered tokens are TTL-cached in memory only, single-flighted,
+  and never persisted (`TokenStore.Put` is never called — the broker stays the
+  single source of truth). Broker failure fails the run loudly (typed
+  `ErrExchangeFailed`, no silent interactive fallback); a `consent_required`
+  refusal parks on the unified pause primitive via the existing typed
+  `ErrAuthRequired`; interactive-flow methods return the typed
+  `ErrNonInteractive`. Every actual exchange emits the new canonical
+  `tool.credential_exchanged` audit event (zero token bytes). Push-style
+  credential injection over the Protocol is rejected as credential
+  passthrough — recorded so it is not re-litigated. (D-271.)
+
+### Changed
+
+- **`AnswerEnvelope.ToolCallsSeen` now counts true tool invocations —
+  embedders take note.** *(embed)* The field previously reported the
+  trajectory step count: a parallel tool call (N branches) counted 1, and a
+  task spawn/await counted 1 despite dispatching no tool. It now sums real
+  dispatches per decision (`CallTool` = 1, `CallParallel` = N, spawn/await = 0)
+  via the shared `planner.CountToolInvocations`. The JSON key, type, and
+  envelope byte shape are unchanged — only the value's meaning — but the field
+  is SDK-visible, so embedders who assumed step-count semantics should re-check
+  consumers. The same rule now drives the Console task `tool_count` and
+  `WithStream`, which emits one `tool_dispatched` event per dispatched tool
+  (N events for a parallel call, none for spawn/await); the two counters
+  deliberately diverge on failures (`ToolCallsSeen` counts attempted
+  invocations, `tool_count` successful dispatches). (D-274.)
+
+### Fixed
+
+- **Session erasure fails loud when the event-bus fence fails.** *(protocol)*
+  `sessions.delete`'s cascade eraser documented "a Fence error fails the
+  erasure loud" but actually logged and reported unqualified success with the
+  late-event window still open. A fence error now fails `Erase` before the
+  first destructive step runs — nothing is deleted, and a retry after the
+  fault clears converges to a full erasure. A bus that doesn't implement
+  fencing at all remains the documented warn-and-proceed capability downgrade.
+  Both branches gained their first tests. (D-274.)
+
+### Internal
+
+- The Go-type→JSON-Schema deriver moved from the in-process tool driver to the
+  neutral `internal/tools/schema` package (golden-pinned byte-identical), also
+  fixing a pre-existing seam violation where the flow engine imported the
+  concrete driver directly.
+- One additive canonical event (`tool.credential_exchanged`) — the generated
+  Protocol reference regenerated; no method, error, or wire-type change, so
+  `ProtocolVersion` holds at `0.1.0`.
+- Wave-end checkpoint: composing E2E (`test/integration/wave_v19_test.go`)
+  across the wave's surface — schema-constrained runs dispatching real tools
+  through the OAuth-wrapped catalog, park/resume under an output schema,
+  per-branch invocation counting on the envelope, and N-way mixed typed/plain
+  concurrency against one shared Stack.
+
 ## [1.8.0] — 2026-06-27
 
 The adopter-path release: make all three advertised ways into Harbor — embed,
