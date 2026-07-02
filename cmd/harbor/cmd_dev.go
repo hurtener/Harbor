@@ -925,7 +925,15 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// set. The bus + redactor are wired so the two admin methods'
 	// `audit.admin_scope_used` events reach the bus (CLAUDE.md §13 —
 	// the admin path is never a silent no-op).
-	toolsProjector, err := toolsprotocol.NewCatalogProjector(toolCat)
+	// The optional loading-mode resolver projects tools.describe's effective
+	// loading_mode through the agent-config tool-exposure overrides — wired
+	// beside the annotator, the projector's other optional backend.
+	var toolsProjectorOpts []toolsprotocol.CatalogProjectorOption
+	if agentConfigRegistry != nil {
+		toolsProjectorOpts = append(toolsProjectorOpts,
+			toolsprotocol.WithLoadingResolver(projection.LoadingResolverAdapter{Registry: agentConfigRegistry}))
+	}
+	toolsProjector, err := toolsprotocol.NewCatalogProjector(toolCat, toolsProjectorOpts...)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("tools/protocol projector: %w", err)

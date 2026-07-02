@@ -160,3 +160,103 @@ func (v ExclusionView) List() []Tool {
 	}
 	return out
 }
+
+// LoadingOverrideView wraps a [PlannerCatalogView], rewriting each tool's
+// LoadingMode from a per-run resolved effective-mode map and re-applying the
+// prompt-time loading predicate against that EFFECTIVE mode — the run-start
+// projection of the agent-config loading-mode override. Sibling of
+// [ExclusionView]: the two compose independently — LoadingOverrideView
+// changes prompt PRESENCE only, ExclusionView removes CAPABILITY.
+//
+// List() keeps only tools whose effective mode is in the constructor's
+// visibleModes set (defaulting to [LoadingAlways], mirroring
+// [CatalogFilter]'s default), and rewrites Tool.Loading on every returned
+// tool. Resolve() NEVER filters on loading — matching [PlannerView.Resolve]
+// — so a tool overridden to LoadingDeferred stays reachable through the
+// two-turn tool_search discovery cycle; it still rewrites the returned
+// Tool's Loading to the effective mode.
+//
+// Concurrent reuse: LoadingOverrideView is a value type with read-only
+// fields (the wrapped view + two immutable lookup maps built at
+// construction). Each run constructs its own via [NewLoadingOverrideView];
+// DO NOT cache across runs — the effective map derives from the run's
+// resolved active config revision (the concurrent-reuse contract).
+type LoadingOverrideView struct {
+	inner     PlannerCatalogView
+	effective map[string]LoadingMode
+	visible   map[LoadingMode]struct{}
+}
+
+// compile-time assertion: LoadingOverrideView satisfies PlannerCatalogView.
+var _ PlannerCatalogView = LoadingOverrideView{}
+
+// NewLoadingOverrideView wraps inner, rewriting each resolved Tool's Loading
+// via effective (keyed by the tool's full catalog Name). A name absent from
+// effective keeps the Loading value inner reports (the boot-effective mode)
+// — callers pass an effective map containing ONLY the names an override
+// actually changes, not every catalog entry. List() filters to visibleModes
+// (an empty slice defaults to [LoadingAlways], mirroring CatalogFilter's
+// default prompt-time view). Both effective and visibleModes are copied so
+// the caller's backing storage cannot mutate the view after construction.
+//
+// inner is expected to expose BOTH loading modes (its own CatalogFilter
+// should carry LoadingModes: [LoadingAlways, LoadingDeferred]) — this view
+// performs the loading-based filtering itself, against the EFFECTIVE mode,
+// not inner's boot-effective one.
+func NewLoadingOverrideView(inner PlannerCatalogView, effective map[string]LoadingMode, visibleModes []LoadingMode) LoadingOverrideView {
+	eff := make(map[string]LoadingMode, len(effective))
+	for k, v := range effective {
+		eff[k] = v
+	}
+	if len(visibleModes) == 0 {
+		visibleModes = []LoadingMode{LoadingAlways}
+	}
+	vis := make(map[LoadingMode]struct{}, len(visibleModes))
+	for _, m := range visibleModes {
+		vis[m] = struct{}{}
+	}
+	return LoadingOverrideView{inner: inner, effective: eff, visible: vis}
+}
+
+// rewrite returns t with Loading set to its effective mode: the override
+// named by t.Name in the view's effective map, or t.Loading unchanged
+// (defaulted to LoadingAlways when empty, matching CatalogFilter.matches'
+// convention) when no override applies.
+func (v LoadingOverrideView) rewrite(t Tool) Tool {
+	if mode, ok := v.effective[t.Name]; ok {
+		t.Loading = mode
+		return t
+	}
+	if t.Loading == "" {
+		t.Loading = LoadingAlways
+	}
+	return t
+}
+
+// Resolve implements PlannerCatalogView. Never filters on loading (matching
+// PlannerView.Resolve) — the two-turn tool_search discovery cycle depends on
+// a deferred-overridden tool staying resolvable by name. Rewrites the
+// returned Tool's Loading to its effective mode.
+func (v LoadingOverrideView) Resolve(name string) (Tool, bool) {
+	t, ok := v.inner.Resolve(name)
+	if !ok {
+		return Tool{}, false
+	}
+	return v.rewrite(t), true
+}
+
+// List implements PlannerCatalogView. Returns inner's tools rewritten to
+// their effective mode, filtered to the constructor's visibleModes set; the
+// slice is always freshly allocated.
+func (v LoadingOverrideView) List() []Tool {
+	in := v.inner.List()
+	out := make([]Tool, 0, len(in))
+	for _, t := range in {
+		rt := v.rewrite(t)
+		if _, ok := v.visible[rt.Loading]; !ok {
+			continue
+		}
+		out = append(out, rt)
+	}
+	return out
+}

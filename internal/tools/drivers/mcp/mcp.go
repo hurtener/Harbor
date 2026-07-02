@@ -558,6 +558,13 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	if override, ok := p.cfg.ToolPolicies[t.Name]; ok {
 		policy = override
 	}
+	// Loading defaults every injected tool-form descriptor to LoadingAlways —
+	// the driver DEFAULT, not a dead end: the boot config's
+	// `tools.entries[].loading_mode` and, at runtime, the agent-config
+	// tool-exposure loading-mode overrides both sit ABOVE this default in
+	// the pinned precedence order (see agentcfg.ToolExposure godoc). Form
+	// stays zero-valued (ToolFormTool) — only the resource/prompt wrappers
+	// below stamp a non-default Form.
 	tool := tools.Tool{
 		Name:        fmt.Sprintf("%s_%s", string(p.source), t.Name),
 		Description: t.Description,
@@ -808,6 +815,7 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 		Policy:      p.cfg.DefaultPolicy,
 		SideEffects: tools.SideEffectRead,
 		Loading:     tools.LoadingDeferred,
+		Form:        tools.ToolFormResource,
 	}
 	uri := r.URI
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
@@ -854,6 +862,7 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 		Policy:      p.cfg.DefaultPolicy,
 		SideEffects: tools.SideEffectRead,
 		Loading:     tools.LoadingDeferred,
+		Form:        tools.ToolFormPrompt,
 	}
 	name := pr.Name
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {

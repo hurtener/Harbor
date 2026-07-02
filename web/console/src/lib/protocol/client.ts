@@ -227,9 +227,12 @@ export class ToolsNamespace {
 	get<R = unknown>(id: string): Promise<R> {
 		return this.#t.request<R>('/v1/tools/get', { id });
 	}
-	/** `tools.describe` — full manifest projection. */
-	describe<R = unknown>(id: string): Promise<R> {
-		return this.#t.request<R>('/v1/tools/describe', { id });
+	/** `tools.describe` — full manifest projection. `agentId`, when set,
+	 * projects the EFFECTIVE loading_mode through that agent's active
+	 * tool-exposure config (D-281); omitted reports the boot-effective
+	 * mode. */
+	describe<R = unknown>(id: string, agentId?: string): Promise<R> {
+		return this.#t.request<R>('/v1/tools/describe', agentId ? { id, agent_id: agentId } : { id });
 	}
 	/** `tools.metrics` — per-tool error-rate gauges + status pill. */
 	metrics<R = unknown>(id: string, window = '1h'): Promise<R> {

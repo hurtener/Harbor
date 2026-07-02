@@ -309,6 +309,7 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigSkillsSelection":          "types",
 	"AgentConfigToolExposure":             "types",
 	"AgentConfigToolExposureDiff":         "types",
+	"AgentConfigLoadingModeChange":        "types",
 	"AgentConfigPromptLayers":             "types",
 	"AgentConfigPromptLayersDiff":         "types",
 	"AgentConfigLLMParams":                "types",

@@ -30,17 +30,30 @@ type AgentConfigSkillsSelection struct {
 }
 
 // AgentConfigToolExposure is the wire projection of an agent's MCP-exposure
-// / per-tool policy in a config revision (exclusion-based): the set of
-// paused MCP servers and the set of individually-disabled tools. Pausing a
-// server excludes its tools from the next run's projection (the live
-// transport stays warm); disabling a tool excludes that one tool. Tools are
-// keyed `<source>_<tool>`; a server's tools share the source id.
+// / per-tool policy in a config revision: the exclusion-based pause/disable
+// sets (paused MCP servers, individually-disabled tools) plus the runtime
+// loading-mode override maps. Pausing a server excludes its tools
+// from the next run's projection (the live transport stays warm); disabling
+// a tool excludes that one tool. Tools are keyed `<source>_<tool>`; a
+// server's tools share the source id.
+//
+// ServerLoadingModes / ToolLoadingModes values are the closed set
+// "always" | "deferred" — `agent_config.set_tool_exposure` rejects any
+// other value with `invalid_request` (400) BEFORE recording a revision.
+// Precedence: ToolLoadingModes[name] > ServerLoadingModes[source]
+// (TOOL-form descriptors only) > the boot config > the driver default.
 type AgentConfigToolExposure struct {
 	// PausedServers names the MCP source ids excluded from the next run's
 	// projection (resume is a flag flip, not a re-dial).
 	PausedServers []string `json:"paused_servers,omitempty"`
 	// DisabledTools names the individually-disabled tools (`<source>_<tool>`).
 	DisabledTools []string `json:"disabled_tools,omitempty"`
+	// ServerLoadingModes overrides the loading mode for a server's TOOL-form
+	// descriptors, keyed by MCP source id.
+	ServerLoadingModes map[string]string `json:"server_loading_modes,omitempty"`
+	// ToolLoadingModes overrides the loading mode for one exact catalog
+	// name, unconditionally.
+	ToolLoadingModes map[string]string `json:"tool_loading_modes,omitempty"`
 }
 
 // AgentConfigPromptLayers is the wire projection of an agent's layered
@@ -206,6 +219,21 @@ type AgentConfigToolExposureDiff struct {
 	// re-enabled across the two revisions.
 	DisabledAdded   []string `json:"disabled_added,omitempty"`
 	DisabledEnabled []string `json:"disabled_enabled,omitempty"`
+	// ServerLoadingChanges / ToolLoadingChanges are the structured deltas of
+	// the per-server / per-tool loading-mode override maps.
+	ServerLoadingChanges []AgentConfigLoadingModeChange `json:"server_loading_changes,omitempty"`
+	ToolLoadingChanges   []AgentConfigLoadingModeChange `json:"tool_loading_changes,omitempty"`
+}
+
+// AgentConfigLoadingModeChange is the wire projection of one loading-mode
+// override delta entry: the override at Key (a catalog name for a
+// ToolLoadingChanges entry, an MCP source id for a ServerLoadingChanges
+// entry) changed from From to To. An empty From/To means the override was
+// absent (unset) on that side of the compare. Mirrors `agentcfg.LoadingModeChange`.
+type AgentConfigLoadingModeChange struct {
+	Key  string `json:"key"`
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
 }
 
 // AgentConfigPromptLayersDiff is the wire projection of the base + user

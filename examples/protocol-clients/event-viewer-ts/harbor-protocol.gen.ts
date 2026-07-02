@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:b8c080188f27e63ee82a443c56fe6cea0d51ccf066fd19625b137c761a4cf831";
+export const WIRE_SURFACE_DIGEST = "sha256:b463f4f85e2a94e1eb24fc9a37f19ca3031f95d894077a9ff954a33b5891722f";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -410,6 +410,12 @@ export interface AgentConfigListRevisionsResponse {
   protocol_version: string;
 }
 
+export interface AgentConfigLoadingModeChange {
+  key: string;
+  from?: string;
+  to?: string;
+}
+
 export interface AgentConfigMCPConnectionDescriptor {
   name: string;
   transport: string;
@@ -643,6 +649,8 @@ export interface AgentConfigSkillsUpsertResponse {
 export interface AgentConfigToolExposure {
   paused_servers?: string[];
   disabled_tools?: string[];
+  server_loading_modes?: Record<string, string>;
+  tool_loading_modes?: Record<string, string>;
 }
 
 export interface AgentConfigToolExposureDiff {
@@ -650,6 +658,8 @@ export interface AgentConfigToolExposureDiff {
   paused_resumed?: string[];
   disabled_added?: string[];
   disabled_enabled?: string[];
+  server_loading_changes?: AgentConfigLoadingModeChange[];
+  tool_loading_changes?: AgentConfigLoadingModeChange[];
 }
 
 export interface AgentConfigUserDiffRequest {
@@ -2207,6 +2217,7 @@ export interface ToolContextResponse {
 export interface ToolDescribeRequest {
   identity: IdentityScope;
   id: string;
+  agent_id?: string;
 }
 
 export interface ToolFilter {

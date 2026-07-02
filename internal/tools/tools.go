@@ -89,6 +89,28 @@ const (
 // for HTTP / MCP / A2A providers.
 type ToolSourceID string
 
+// ToolForm classifies a Tool's descriptor shape — a callable TOOL versus a
+// driver-wrapped resource/prompt. Additive; classification only — NEVER a
+// dispatch or isolation input. It exists so cross-cutting policy (the
+// agent-config per-server loading-mode override) can distinguish callable
+// tools from wrapped MCP resources/prompts without sniffing a driver's
+// internal name conventions across the §4.4 seam.
+type ToolForm string
+
+// The ToolForm values. ToolFormTool is the zero value — every driver that
+// never stamps Form (in-process, HTTP, A2A, and the MCP driver's own
+// tool-form descriptors) classifies as a callable tool by default.
+const (
+	// ToolFormTool is a callable tool descriptor (the zero value / default).
+	ToolFormTool ToolForm = ""
+	// ToolFormResource is a driver-wrapped resource (e.g. the MCP driver's
+	// one-shot `read_resource`-style descriptor).
+	ToolFormResource ToolForm = "resource"
+	// ToolFormPrompt is a driver-wrapped prompt (e.g. the MCP driver's
+	// one-shot `get_prompt`-style descriptor).
+	ToolFormPrompt ToolForm = "prompt"
+)
+
 // ToolExample is a usage example surfaced to the planner. The
 // `Args` map is JSON-marshalled into the prompt.
 type ToolExample struct {
@@ -157,6 +179,12 @@ type Tool struct {
 	// means the tool advertises no MIME affinity (the LLM still picks
 	// it from the catalog by description).
 	HandlesMIME []string
+	// Form classifies the descriptor shape (tool / resource / prompt).
+	// Additive, classification-only (never a dispatch or isolation input);
+	// zero value is ToolFormTool. Stamped by the MCP driver at build time
+	// for its resource/prompt wrappers; every other driver leaves it
+	// zero-valued. See ToolForm.
+	Form ToolForm
 }
 
 // MatchesMIME reports whether the tool's HandlesMIME declaration

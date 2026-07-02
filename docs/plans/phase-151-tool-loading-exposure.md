@@ -51,19 +51,19 @@ None. (Note, for the record: brief 15 §10 sketched this engine as a "Phase 110-
 
 ## Acceptance criteria
 
-- [ ] `agentcfg.ToolExposure` carries `ServerLoadingModes` / `ToolLoadingModes` (`map[string]string`, json `server_loading_modes` / `tool_loading_modes`); normalization sorts/dedups deterministically (empty keys and empty maps normalize away — no phantom diff), values are validated to `always|deferred`, and a content-hash stability test proves an idempotent re-set produces a zero diff and the same hash.
-- [ ] `agent_config.set_tool_exposure` with an unknown loading value (either map) fails loud with `CodeInvalidRequest` (HTTP 400) BEFORE any registry write: the revision chain is unchanged and no event fires (asserted).
-- [ ] `projection.ActivePlannerCatalogView` applies the effective mode via `tools.LoadingOverrideView`: with an `always→deferred` per-tool override, the next run's prompt-time `List()` excludes the tool while `Resolve()` still returns it (discovery-callable) and `tool_search` still surfaces it; with a `deferred→always` override the tool appears in the prompt-time `List()`. Removing the override restores boot-effective behavior. In-flight runs keep their snapshot (D-025/D-234 — asserted by starting a run before the flip).
-- [ ] Paused/disabled remains strictly stronger than deferred: an excluded tool is absent from BOTH `List` and `Resolve` (the `ExclusionView` contract), pinned side-by-side with the deferred case in one test.
-- [ ] Per-server overrides apply only to `Form == tool` descriptors: an MCP fixture's resources/prompts keep `LoadingDeferred` under a server-level `always`; `tools.Tool.Form` is stamped by the MCP driver (`resource` / `prompt` at mcp.go:772/:814 build sites; tools stay zero-value).
-- [ ] The precedence table test pins all four layers: exposure per-tool > exposure per-server > `tools.entries[].loading_mode` (boot) > driver default — including the interaction rows (boot-deferred tool + server-level `always`; boot-always tool + per-tool `deferred`; per-tool beats per-server).
-- [ ] `tools.describe` with `agent_id` reports the projected effective `loading_mode`; without `agent_id` it reports the boot-effective mode byte-compatibly with today (both asserted).
-- [ ] D-223 lockstep green in the same PR: `make protocol-ts-gen` regenerates `wire-manifest.gen.json`; the hand-mirrored TS interfaces gain the fields; `make protocol-ts-gen-check` + `npm run lint` pass. D-209: `make protocol-docs-gen` regenerated pages committed.
-- [ ] `agentcfg.DiffToolExposure` renders loading changes as structured `LoadingModeChange` entries (server + tool arms); the `agent_config.diff` wire projection carries them.
-- [ ] Integration test (`test/integration/`, `-race`, real drivers incl. the real MCP stdio fixture `cmd/harbor-mcptest-stdio`): the full flip/flip-back scenario, identity propagation, the invalid-mode failure mode, and cross-agent + cross-session isolation (a second `agent_id` and a second tenant's identical-named agent see no change — §6 rule 10).
-- [ ] Concurrency: N≥100 concurrent runs share one catalog + registry while an admin flips loading overrides; every run's view is internally consistent (no torn snapshot: a run never sees the tool in `List()` under one mode and reports another via `Resolve().Loading`), no goroutine leak, `-race` clean.
-- [ ] `scripts/smoke/phase-151.sh` flips from skeleton to real assertions (static greps + the live flip below) with FAIL = 0 and OK ≥ 6; prior 92-band smokes still pass.
-- [ ] §18 sweep: `docs/skills/use-the-harbor-protocol/SKILL.md`'s agent-config paragraph gains the loading-override sentence in the same PR; `docs/site` generated protocol pages regenerated.
+- [x] `agentcfg.ToolExposure` carries `ServerLoadingModes` / `ToolLoadingModes` (`map[string]string`, json `server_loading_modes` / `tool_loading_modes`); normalization sorts/dedups deterministically (empty keys and empty maps normalize away — no phantom diff), values are validated to `always|deferred`, and a content-hash stability test proves an idempotent re-set produces a zero diff and the same hash.
+- [x] `agent_config.set_tool_exposure` with an unknown loading value (either map) fails loud with `CodeInvalidRequest` (HTTP 400) BEFORE any registry write: the revision chain is unchanged and no event fires (asserted).
+- [x] `projection.ActivePlannerCatalogView` applies the effective mode via `tools.LoadingOverrideView`: with an `always→deferred` per-tool override, the next run's prompt-time `List()` excludes the tool while `Resolve()` still returns it (discovery-callable) and `tool_search` still surfaces it; with a `deferred→always` override the tool appears in the prompt-time `List()`. Removing the override restores boot-effective behavior. In-flight runs keep their snapshot (D-025/D-234 — asserted by starting a run before the flip).
+- [x] Paused/disabled remains strictly stronger than deferred: an excluded tool is absent from BOTH `List` and `Resolve` (the `ExclusionView` contract), pinned side-by-side with the deferred case in one test.
+- [x] Per-server overrides apply only to `Form == tool` descriptors: an MCP fixture's resources/prompts keep `LoadingDeferred` under a server-level `always`; `tools.Tool.Form` is stamped by the MCP driver (`resource` / `prompt` at mcp.go:772/:814 build sites; tools stay zero-value).
+- [x] The precedence table test pins all four layers: exposure per-tool > exposure per-server > `tools.entries[].loading_mode` (boot) > driver default — including the interaction rows (boot-deferred tool + server-level `always`; boot-always tool + per-tool `deferred`; per-tool beats per-server).
+- [x] `tools.describe` with `agent_id` reports the projected effective `loading_mode`; without `agent_id` it reports the boot-effective mode byte-compatibly with today (both asserted).
+- [x] D-223 lockstep green in the same PR: `make protocol-ts-gen` regenerates `wire-manifest.gen.json`; the hand-mirrored TS interfaces gain the fields; `make protocol-ts-gen-check` + `npm run lint` pass. D-209: `make protocol-docs-gen` regenerated pages committed.
+- [x] `agentcfg.DiffToolExposure` renders loading changes as structured `LoadingModeChange` entries (server + tool arms); the `agent_config.diff` wire projection carries them.
+- [x] Integration test (`test/integration/`, `-race`, real drivers incl. the real MCP stdio fixture `cmd/harbor-mcptest-stdio`): the full flip/flip-back scenario, identity propagation, the invalid-mode failure mode, and cross-agent + cross-session isolation (a second `agent_id` and a second tenant's identical-named agent see no change — §6 rule 10).
+- [x] Concurrency: N≥100 concurrent runs share one catalog + registry while an admin flips loading overrides; every run's view is internally consistent (no torn snapshot: a run never sees the tool in `List()` under one mode and reports another via `Resolve().Loading`), no goroutine leak, `-race` clean.
+- [x] `scripts/smoke/phase-151.sh` flips from skeleton to real assertions (static greps + the live flip below) with FAIL = 0 and OK ≥ 6; prior 92-band smokes still pass.
+- [x] §18 sweep: `docs/skills/use-the-harbor-protocol/SKILL.md`'s agent-config paragraph gains the loading-override sentence in the same PR; `docs/site` generated protocol pages regenerated.
 
 ## Files added or changed
 
@@ -139,13 +139,13 @@ None. (Note, for the record: brief 15 §10 sketched this engine as a "Phase 110-
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes (the exposure registry is identity-scoped — the cross-agent/cross-tenant integration assertions are mandatory)
-- [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. (`LoadingOverrideView` + the extended projection are per-run value types over shared artifacts — the N≥100 flip-under-load test is mandatory.)
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. (It consumes 92a/92d/107c/110a — `test/integration/agentcfg_loading_exposure_test.go` is mandatory.)
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (N/A — none departed from)
+- [x] `make drift-audit` passes
+- [ ] `make preflight` passes — deferred to CI per the dispatch contract (local run skipped; `HARBOR_PREFLIGHT_SKIP=1` on the commit, justified in the PR body). `go vet`, `go test -race ./...`, the static smoke legs, and the D-223/D-209 gates were all run and are green locally.
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes (the exposure registry is identity-scoped — the cross-agent/cross-tenant integration assertions are mandatory)
+- [x] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. (`LoadingOverrideView` + the extended projection are per-run value types over shared artifacts — the N≥100 flip-under-load test is mandatory.)
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. (It consumes 92a/92d/107c/110a — `test/integration/agentcfg_loading_exposure_test.go` is mandatory.)
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (N/A — none departed from)

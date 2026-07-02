@@ -26,14 +26,19 @@ export interface AgentConfigSkillsSelection {
 	names: string[];
 }
 
-/** An agent's MCP-exposure / per-tool policy in a config revision
- * (exclusion-based): the paused MCP servers + individually-disabled tools.
- * Pausing a server excludes its tools from the next run (the live transport
- * stays warm); tools are keyed `<source>_<tool>`. Mirrors
- * `types.AgentConfigToolExposure`. */
+/** An agent's MCP-exposure / per-tool policy in a config revision: the
+ * exclusion-based paused MCP servers + individually-disabled tools, plus the
+ * runtime loading-mode override maps (D-281). Pausing a server excludes its
+ * tools from the next run (the live transport stays warm); tools are keyed
+ * `<source>_<tool>`. server_loading_modes / tool_loading_modes values are
+ * "always" | "deferred"; precedence: tool_loading_modes[name] >
+ * server_loading_modes[source] (TOOL-form descriptors only) > the boot
+ * config > the driver default. Mirrors `types.AgentConfigToolExposure`. */
 export interface AgentConfigToolExposure {
 	paused_servers?: string[];
 	disabled_tools?: string[];
+	server_loading_modes?: Record<string, string>;
+	tool_loading_modes?: Record<string, string>;
 }
 
 /** An agent's layered system prompt in a config revision: an operator-owned
@@ -128,6 +133,14 @@ export interface AgentConfigSkillsDiff {
 	removed?: string[];
 }
 
+/** One loading-mode override delta entry: the override at `key` changed from
+ * `from` to `to` (empty = unset). Mirrors `types.AgentConfigLoadingModeChange`. */
+export interface AgentConfigLoadingModeChange {
+	key: string;
+	from?: string;
+	to?: string;
+}
+
 /** The structured MCP-exposure / per-tool policy set-diff across two
  * revisions. Mirrors `types.AgentConfigToolExposureDiff`. */
 export interface AgentConfigToolExposureDiff {
@@ -135,6 +148,8 @@ export interface AgentConfigToolExposureDiff {
 	paused_resumed?: string[];
 	disabled_added?: string[];
 	disabled_enabled?: string[];
+	server_loading_changes?: AgentConfigLoadingModeChange[];
+	tool_loading_changes?: AgentConfigLoadingModeChange[];
 }
 
 /** The base + user prompt-layer text delta across two revisions. Mirrors

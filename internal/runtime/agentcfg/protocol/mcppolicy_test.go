@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 )
@@ -179,6 +181,151 @@ func TestSetToolExposure_DiffShowsExposureDelta(t *testing.T) {
 	if len(te.DisabledAdded) != 1 || te.DisabledAdded[0] != "srvC_y" {
 		t.Fatalf("disabled_added = %v, want [srvC_y]", te.DisabledAdded)
 	}
+}
+
+// TestSetToolExposure_LoadingModes_RoundTrip proves the loading-mode
+// override maps (D-281) round-trip through set_tool_exposure into the
+// recorded revision.
+func TestSetToolExposure_LoadingModes_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := svc(t, false)
+	resp, err := s.SetToolExposure(ctx, prototypes.AgentConfigSetToolExposureRequest{
+		Identity: scope(), AgentID: testAgentID,
+		ToolExposure: prototypes.AgentConfigToolExposure{
+			ServerLoadingModes: map[string]string{"srvA": "always"},
+			ToolLoadingModes:   map[string]string{"srvA_x": "deferred"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("set tool exposure: %v", err)
+	}
+	pl := resp.Revision.Payload
+	if pl.ToolExposure == nil {
+		t.Fatal("tool exposure section missing")
+	}
+	if pl.ToolExposure.ServerLoadingModes["srvA"] != "always" {
+		t.Errorf("server_loading_modes = %+v", pl.ToolExposure.ServerLoadingModes)
+	}
+	if pl.ToolExposure.ToolLoadingModes["srvA_x"] != "deferred" {
+		t.Errorf("tool_loading_modes = %+v", pl.ToolExposure.ToolLoadingModes)
+	}
+}
+
+// TestSetToolExposure_InvalidLoadingMode_FailsLoud_NoRevision proves an
+// unknown loading value fails loud with a client error BEFORE any registry
+// write: the revision chain is unchanged and no event fires (D-281).
+func TestSetToolExposure_InvalidLoadingMode_FailsLoud_NoRevision(t *testing.T) {
+	cases := []struct {
+		name         string
+		server, tool map[string]string
+	}{
+		{name: "bad server value", server: map[string]string{"srvA": "sometimes"}},
+		{name: "bad tool value", tool: map[string]string{"srvA_x": "eager"}},
+		{name: "empty server key", server: map[string]string{"": "always"}},
+		{name: "empty tool key", tool: map[string]string{"": "deferred"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, bus, reg := busSvc(t)
+			sub, err := bus.Subscribe(ctx, events.Filter{Tenant: "t", User: "u", Session: "s"})
+			if err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			defer sub.Cancel()
+
+			before, beforeOK, err := reg.Active(ctx, quadFor(t), testAgentID, agentcfg.ConfigScopeAgent)
+			if err != nil {
+				t.Fatalf("active (before): %v", err)
+			}
+
+			_, err = s.SetToolExposure(ctx, prototypes.AgentConfigSetToolExposureRequest{
+				Identity: scope(), AgentID: testAgentID,
+				ToolExposure: prototypes.AgentConfigToolExposure{ServerLoadingModes: tc.server, ToolLoadingModes: tc.tool},
+			})
+			if !errors.Is(err, agentcfgprotocol.ErrInvalidToolExposureLoading) {
+				t.Fatalf("err = %v, want ErrInvalidToolExposureLoading", err)
+			}
+
+			after, afterOK, err := reg.Active(ctx, quadFor(t), testAgentID, agentcfg.ConfigScopeAgent)
+			if err != nil {
+				t.Fatalf("active (after): %v", err)
+			}
+			if beforeOK != afterOK || (beforeOK && before.RevisionID != after.RevisionID) {
+				t.Fatalf("a revision was recorded on an invalid loading value: before=%v/%v after=%v/%v",
+					beforeOK, before.RevisionID, afterOK, after.RevisionID)
+			}
+
+			select {
+			case ev := <-sub.Events():
+				t.Fatalf("no event should fire on a rejected set: got %+v", ev)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// TestSetRevision_InvalidLoadingMode_FailsLoud proves the full-payload
+// set_revision path validates the loading-mode maps too (parity with
+// set_tool_exposure / set_llm_params).
+func TestSetRevision_InvalidLoadingMode_FailsLoud(t *testing.T) {
+	ctx := context.Background()
+	s := svc(t, false)
+	_, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{ToolExposure: &prototypes.AgentConfigToolExposure{
+			ToolLoadingModes: map[string]string{"srvA_x": "sometimes"},
+		}},
+	})
+	if !errors.Is(err, agentcfgprotocol.ErrInvalidToolExposureLoading) {
+		t.Fatalf("err = %v, want ErrInvalidToolExposureLoading", err)
+	}
+}
+
+// TestSetToolExposure_DiffShowsLoadingModeDelta proves agent_config.diff
+// carries the structured loading-mode change arms.
+func TestSetToolExposure_DiffShowsLoadingModeDelta(t *testing.T) {
+	ctx := context.Background()
+	s := svc(t, false)
+	r1, err := s.SetToolExposure(ctx, prototypes.AgentConfigSetToolExposureRequest{
+		Identity: scope(), AgentID: testAgentID,
+		ToolExposure: prototypes.AgentConfigToolExposure{ServerLoadingModes: map[string]string{"srvA": "always"}},
+	})
+	if err != nil {
+		t.Fatalf("r1: %v", err)
+	}
+	r2, err := s.SetToolExposure(ctx, prototypes.AgentConfigSetToolExposureRequest{
+		Identity: scope(), AgentID: testAgentID,
+		ToolExposure: prototypes.AgentConfigToolExposure{
+			ServerLoadingModes: map[string]string{"srvA": "deferred"},
+			ToolLoadingModes:   map[string]string{"srvB_y": "always"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("r2: %v", err)
+	}
+	diff, err := s.Diff(ctx, prototypes.AgentConfigDiffRequest{
+		Identity: scope(), AgentID: testAgentID,
+		FromRevision: r1.Revision.RevisionID, ToRevision: r2.Revision.RevisionID,
+	})
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	te := diff.Diff.ToolExposure
+	if len(te.ServerLoadingChanges) != 1 || te.ServerLoadingChanges[0].Key != "srvA" ||
+		te.ServerLoadingChanges[0].From != "always" || te.ServerLoadingChanges[0].To != "deferred" {
+		t.Fatalf("server_loading_changes = %+v", te.ServerLoadingChanges)
+	}
+	if len(te.ToolLoadingChanges) != 1 || te.ToolLoadingChanges[0].Key != "srvB_y" || te.ToolLoadingChanges[0].To != "always" {
+		t.Fatalf("tool_loading_changes = %+v", te.ToolLoadingChanges)
+	}
+}
+
+// quadFor returns the fixed test identity quadruple `scope()` maps to, for
+// direct registry reads in the "no revision recorded" assertions.
+func quadFor(t *testing.T) identity.Quadruple {
+	t.Helper()
+	return identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
 }
 
 // TestSetToolExposure_IdentityScopedIsolation proves a tool-exposure

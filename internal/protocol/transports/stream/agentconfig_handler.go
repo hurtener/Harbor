@@ -693,6 +693,11 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// offending value in the message.
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrInvalidToolExposureLoading):
+		// An unknown loading-mode override value is a CLIENT error —
+		// rejected BEFORE any registry write (no revision, no event).
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrCoordinatorUnavailable):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			m + ": " + err.Error()

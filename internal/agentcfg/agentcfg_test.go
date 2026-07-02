@@ -167,3 +167,111 @@ func TestDiffConnections(t *testing.T) {
 		t.Errorf("removed = %+v, want [drop]", d.Removed)
 	}
 }
+
+// TestNormalizePayload_LoadingModes_DropsEmptyKeys proves an empty-key entry
+// in either loading-mode map is dropped by normalization (D-281) — a
+// phantom key never perturbs the content hash.
+func TestNormalizePayload_LoadingModes_DropsEmptyKeys(t *testing.T) {
+	got := agentcfg.NormalizePayload(agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{
+		ServerLoadingModes: map[string]string{"": "always", "srvA": "deferred"},
+		ToolLoadingModes:   map[string]string{"": "deferred"},
+	}})
+	if len(got.ToolExposure.ServerLoadingModes) != 1 || got.ToolExposure.ServerLoadingModes["srvA"] != "deferred" {
+		t.Fatalf("server_loading_modes = %+v, want only srvA", got.ToolExposure.ServerLoadingModes)
+	}
+	if got.ToolExposure.ToolLoadingModes != nil {
+		t.Fatalf("tool_loading_modes should normalize to nil (only empty key), got %+v", got.ToolExposure.ToolLoadingModes)
+	}
+}
+
+// TestContentHash_LoadingModes_IdempotentReSet proves an idempotent re-set of
+// byte-identical loading-mode override content produces the SAME content
+// hash (map-key ordering is stable via Go's canonical JSON encoding).
+func TestContentHash_LoadingModes_IdempotentReSet(t *testing.T) {
+	p := agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{
+		ServerLoadingModes: map[string]string{"srvA": "deferred", "srvB": "always"},
+		ToolLoadingModes:   map[string]string{"srvA_toolX": "always"},
+	}}
+	a, err := agentcfg.ContentHash(p)
+	if err != nil {
+		t.Fatalf("hash a: %v", err)
+	}
+	b, err := agentcfg.ContentHash(p)
+	if err != nil {
+		t.Fatalf("hash b: %v", err)
+	}
+	if a != b {
+		t.Fatalf("idempotent re-set must hash identically: %q != %q", a, b)
+	}
+	// A differing value must hash differently.
+	p2 := agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{
+		ServerLoadingModes: map[string]string{"srvA": "always", "srvB": "always"},
+		ToolLoadingModes:   map[string]string{"srvA_toolX": "always"},
+	}}
+	c, err := agentcfg.ContentHash(p2)
+	if err != nil {
+		t.Fatalf("hash c: %v", err)
+	}
+	if a == c {
+		t.Fatalf("differing loading-mode content must hash differently")
+	}
+}
+
+// TestDiffToolExposure_LoadingModeChanges proves the structured diff reports
+// per-key loading-mode deltas for both the server and tool arms, including a
+// set->unset transition and an unchanged key producing no entry.
+func TestDiffToolExposure_LoadingModeChanges(t *testing.T) {
+	from := agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{
+		ServerLoadingModes: map[string]string{"srvA": "always", "srvB": "deferred"},
+		ToolLoadingModes:   map[string]string{"srvA_toolX": "always"},
+	}}
+	to := agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{
+		ServerLoadingModes: map[string]string{"srvA": "deferred"}, // srvA changed, srvB removed
+		ToolLoadingModes:   map[string]string{"srvA_toolX": "always", "srvA_toolY": "deferred"},
+	}}
+	d := agentcfg.DiffToolExposure(from, to)
+	if !d.Changed() {
+		t.Fatal("expected a change")
+	}
+	wantServer := map[string]agentcfg.LoadingModeChange{
+		"srvA": {Key: "srvA", From: "always", To: "deferred"},
+		"srvB": {Key: "srvB", From: "deferred", To: ""},
+	}
+	if len(d.ServerLoadingChanges) != len(wantServer) {
+		t.Fatalf("server_loading_changes = %+v, want %d entries", d.ServerLoadingChanges, len(wantServer))
+	}
+	for _, c := range d.ServerLoadingChanges {
+		if !reflect.DeepEqual(c, wantServer[c.Key]) {
+			t.Errorf("server change %q = %+v, want %+v", c.Key, c, wantServer[c.Key])
+		}
+	}
+	if len(d.ToolLoadingChanges) != 1 || d.ToolLoadingChanges[0].Key != "srvA_toolY" {
+		t.Fatalf("tool_loading_changes = %+v, want one entry for srvA_toolY", d.ToolLoadingChanges)
+	}
+	// An unchanged key (srvA_toolX unchanged) must NOT appear in the diff.
+	for _, c := range d.ToolLoadingChanges {
+		if c.Key == "srvA_toolX" {
+			t.Fatalf("unchanged key srvA_toolX should not appear in the diff")
+		}
+	}
+}
+
+// TestConfigPayload_LoadingModeAccessors proves the ConfigPayload accessors
+// return nil for an absent tool-exposure section and the stored maps
+// otherwise.
+func TestConfigPayload_LoadingModeAccessors(t *testing.T) {
+	var empty agentcfg.ConfigPayload
+	if empty.ServerLoadingModes() != nil || empty.ToolLoadingModes() != nil {
+		t.Fatal("absent tool-exposure section must report nil loading maps")
+	}
+	p := agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{
+		ServerLoadingModes: map[string]string{"srvA": "always"},
+		ToolLoadingModes:   map[string]string{"srvA_x": "deferred"},
+	}}
+	if p.ServerLoadingModes()["srvA"] != "always" {
+		t.Fatalf("ServerLoadingModes() = %+v", p.ServerLoadingModes())
+	}
+	if p.ToolLoadingModes()["srvA_x"] != "deferred" {
+		t.Fatalf("ToolLoadingModes() = %+v", p.ToolLoadingModes())
+	}
+}

@@ -257,6 +257,97 @@ func TestDescribe_HappyPath_ManifestShape(t *testing.T) {
 	}
 }
 
+// fakeLoadingResolver is a test double for toolsprotocol.LoadingResolver
+// (D-281) that always reports a fixed mode, recording the last call's
+// arguments for assertion.
+type fakeLoadingResolver struct {
+	mode      tools.LoadingMode
+	err       error
+	lastAgent string
+	lastBoot  tools.LoadingMode
+	calls     int
+}
+
+func (f *fakeLoadingResolver) EffectiveLoading(_ context.Context, _ identity.Identity, agentID string, _ tools.Tool, boot tools.LoadingMode) (tools.LoadingMode, error) {
+	f.calls++
+	f.lastAgent = agentID
+	f.lastBoot = boot
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.mode, nil
+}
+
+// TestDescribe_NoAgentID_ByteCompatibleWithBootEffective is the golden
+// byte-compat assertion (D-281): a describe request with NO agent_id must
+// report the boot-effective mode even when a LoadingResolver IS wired — the
+// resolver is consulted only when the caller names an agent_id.
+func TestDescribe_NoAgentID_ByteCompatibleWithBootEffective(t *testing.T) {
+	resolver := &fakeLoadingResolver{mode: tools.LoadingDeferred}
+	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t), toolsprotocol.WithLoadingResolver(resolver))
+	if err != nil {
+		t.Fatalf("NewCatalogProjector: %v", err)
+	}
+	svc, err := toolsprotocol.NewService(proj)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	m, err := svc.Describe(context.Background(), prototypes.ToolDescribeRequest{Identity: validID(), ID: "gamma_mcp"})
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if m.LoadingMode != string(tools.LoadingAlways) {
+		t.Fatalf("absent agent_id must report the boot-effective mode (always), got %q", m.LoadingMode)
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("the resolver must not be consulted when agent_id is absent, got %d calls", resolver.calls)
+	}
+}
+
+// TestDescribe_WithAgentID_ReportsEffectiveMode proves a describe request
+// naming an agent_id is projected through the wired LoadingResolver
+// (D-281).
+func TestDescribe_WithAgentID_ReportsEffectiveMode(t *testing.T) {
+	resolver := &fakeLoadingResolver{mode: tools.LoadingDeferred}
+	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t), toolsprotocol.WithLoadingResolver(resolver))
+	if err != nil {
+		t.Fatalf("NewCatalogProjector: %v", err)
+	}
+	svc, err := toolsprotocol.NewService(proj)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	m, err := svc.Describe(context.Background(), prototypes.ToolDescribeRequest{Identity: validID(), ID: "gamma_mcp", AgentID: "agent-x"})
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if m.LoadingMode != string(tools.LoadingDeferred) {
+		t.Fatalf("LoadingMode = %q, want the resolver's effective mode (deferred)", m.LoadingMode)
+	}
+	if resolver.calls != 1 || resolver.lastAgent != "agent-x" || resolver.lastBoot != tools.LoadingAlways {
+		t.Fatalf("resolver called with unexpected args: calls=%d agent=%q boot=%q", resolver.calls, resolver.lastAgent, resolver.lastBoot)
+	}
+}
+
+// TestDescribe_ResolverError_FailsLoud proves a LoadingResolver error
+// propagates rather than silently falling back to the boot mode
+// (CLAUDE.md §13 — no silent degradation).
+func TestDescribe_ResolverError_FailsLoud(t *testing.T) {
+	resolver := &fakeLoadingResolver{err: errors.New("registry unavailable")}
+	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t), toolsprotocol.WithLoadingResolver(resolver))
+	if err != nil {
+		t.Fatalf("NewCatalogProjector: %v", err)
+	}
+	svc, err := toolsprotocol.NewService(proj)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	_, err = svc.Describe(context.Background(), prototypes.ToolDescribeRequest{Identity: validID(), ID: "gamma_mcp", AgentID: "agent-x"})
+	if err == nil {
+		t.Fatal("a resolver error must propagate, not silently fall back")
+	}
+}
+
 func TestMetrics_DefaultWindow_HealthyStatus(t *testing.T) {
 	svc := newService(t)
 	m, err := svc.Metrics(context.Background(), prototypes.ToolMetricsRequest{Identity: validID(), ID: "alpha_search"})
