@@ -1042,11 +1042,10 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// catalog the runtime dispatches against so the wave-end E2E
 		// exercises the real route.
 		if stack.Catalog != nil {
-			// The optional loading-mode resolver (D-281) projects
-			// tools.describe's effective loading_mode through the
-			// agent-config tool-exposure overrides — mirrors the production
-			// cmd/harbor wiring (CLAUDE.md §17.6) so the wave-end E2E
-			// exercises the real seam.
+			// The optional loading-mode resolver projects tools.describe's
+			// effective loading_mode through the agent-config tool-exposure
+			// overrides — mirrors the production cmd/harbor wiring
+			// (CLAUDE.md §17.6) so the wave-end E2E exercises the real seam.
 			var toolsProjectorOpts []toolsprotocol.CatalogProjectorOption
 			if stack.AgentConfig != nil {
 				toolsProjectorOpts = append(toolsProjectorOpts,
