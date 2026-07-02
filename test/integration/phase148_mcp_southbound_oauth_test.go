@@ -30,16 +30,21 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/hurtener/Harbor/harbortest/devstack"
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	patternsAudit "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
 	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -147,11 +152,11 @@ type p148Env struct {
 	echo   tools.ToolDescriptor
 }
 
-func newP148Env(t *testing.T) *p148Env {
+// newP148ProviderAndBus builds the real tokenexchange provider against the
+// RFC-8693 broker fixture plus the shared inmem bus — the seam both the
+// direct-driver env and the devstack-attacher twin test construct from.
+func newP148ProviderAndBus(t *testing.T, broker *p142Broker) (auth.OAuthProvider, events.EventBus) {
 	t.Helper()
-	broker := newP142Broker(t)
-	hs, rec := p148MCPServer(t)
-
 	red := patternsAudit.New()
 	bus, err := eventsInmem.New(config.EventsConfig{
 		Driver:                   "inmem",
@@ -204,6 +209,14 @@ func newP148Env(t *testing.T) *p148Env {
 		t.Fatalf("tokenexchange.New: %v", err)
 	}
 	t.Cleanup(func() { _ = prov.Close(context.Background()) })
+	return prov, bus
+}
+
+func newP148Env(t *testing.T) *p148Env {
+	t.Helper()
+	broker := newP142Broker(t)
+	hs, rec := p148MCPServer(t)
+	prov, bus := newP148ProviderAndBus(t, broker)
 
 	p, err := mcpdrv.New(mcpdrv.Config{
 		Name:            "graph",
@@ -333,6 +346,76 @@ func TestE2E_Phase148_BrokerRefusal_FailsLoud_NoWireCall(t *testing.T) {
 	}
 	if calls := env.rec.snapshot(); len(calls) != 0 {
 		t.Fatalf("broker refused but the server saw %d tools/call — a fallback UNAUTHENTICATED call leaked", len(calls))
+	}
+}
+
+// TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection proves the
+// devstack twin of cmd/harbor's runtime-add attacher threads the
+// `oauth_provider` binding + `meta_annotations` from the AttachRequest all
+// the way to the wire (§17.6 twin discipline): a runtime-added connection
+// injects the per-identity bearer exactly like a boot-time one. Also covers
+// the twin's fail-loud leg: an unknown provider name fails the attach,
+// naming the registered providers — never a silent unauthenticated attach.
+func TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection(t *testing.T) {
+	t.Parallel()
+	broker := newP142Broker(t)
+	hs, rec := p148MCPServer(t)
+	prov, bus := newP148ProviderAndBus(t, broker)
+
+	cat := tools.NewCatalog()
+	mcpReg := mcpdrv.NewRegistry()
+	sysID := identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}
+	attacher := devstack.NewMCPConnectionAttacher(cat, mcpReg, bus, nil, sysID,
+		map[string]auth.OAuthProvider{p142Provider: prov})
+	t.Cleanup(func() { _ = attacher.Close(context.Background()) })
+
+	// Fail-loud leg first: an unknown provider name must abort the attach,
+	// naming the registered providers.
+	err := attacher.Attach(context.Background(), agentcfgprotocol.AttachRequest{
+		Identity:      sysID,
+		Name:          "badbind",
+		Transport:     agentcfg.MCPTransportHTTP,
+		URL:           hs.URL,
+		OAuthProvider: "not-declared",
+	})
+	if err == nil {
+		t.Fatal("attach with unknown oauth_provider succeeded — a silent unauthenticated attach")
+	}
+	if !strings.Contains(err.Error(), p142Provider) {
+		t.Fatalf("attach error must list registered providers, got %q", err.Error())
+	}
+
+	// Happy path: the runtime add carries the binding + annotations.
+	err = attacher.Attach(context.Background(), agentcfgprotocol.AttachRequest{
+		Identity:        sysID,
+		Name:            "added",
+		Transport:       agentcfg.MCPTransportHTTP,
+		URL:             hs.URL,
+		OAuthProvider:   p142Provider,
+		MetaAnnotations: map[string]string{"deployment": "prod"},
+	})
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	echo, ok := cat.Resolve("added_echo")
+	if !ok {
+		t.Fatal("added_echo not registered after runtime add")
+	}
+
+	id := identity.Identity{TenantID: "tenant-add", UserID: "erin", SessionID: "s1"}
+	if _, err := echo.Invoke(p148Ctx(t, id, "agent-add"), json.RawMessage(`{"text":"hi"}`)); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	calls := rec.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("server saw %d tools/call, want 1", len(calls))
+	}
+	c := calls[0]
+	if c.authz != "Bearer brokered-tenant-add-erin" {
+		t.Fatalf("runtime-added connection did not inject the per-identity bearer: Authorization = %q", c.authz)
+	}
+	if c.meta["deployment"] != "prod" || c.meta["agent_id"] != "agent-add" {
+		t.Fatalf("runtime-added connection dropped annotations/provenance: %+v", c.meta)
 	}
 }
 

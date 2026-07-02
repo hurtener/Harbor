@@ -83,8 +83,8 @@ func bearerFrom(ctx context.Context) string {
 // ctx carries a per-call bearer (see withBearer). It holds NO mutable state —
 // the token rides req.Context(), so one shared transport serves N concurrent
 // identities with no token bleed (the concurrent-reuse contract). A request
-// whose ctx carries no
-// bearer passes through untouched (the unbound-call and connect-time paths).
+// whose ctx carries no bearer passes through untouched (the unbound-call and
+// connect-time paths).
 type bearerInjectingTransport struct {
 	base http.RoundTripper
 }

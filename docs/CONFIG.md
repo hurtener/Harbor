@@ -817,9 +817,11 @@ initialize/discovery handshake). A bound provider whose token fetch fails
 aborts the call loud — never an unauthenticated fallback; a
 `consent_required` refusal parks the run on the unified pause/resume
 primitive. Validation rejects an unknown provider name (the error lists the
-declared names), a binding on a `stdio` transport (no HTTP request to inject
-into), and a static `Authorization` header alongside the binding (one auth
-mode per connection).
+declared names), a binding on any connection without an http(s) `url` —
+explicit `stdio` AND an omitted/`auto` transport with only a `command`,
+which would auto-select stdio at connect and silently never inject — and a
+static `Authorization` header alongside the binding (one auth mode per
+connection).
 
 `meta_annotations` is a static, NON-SECRET `map[string]string` merged
 verbatim into the MCP `_meta` on every identity-stamped call — the

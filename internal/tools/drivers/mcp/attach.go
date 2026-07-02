@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/config"
@@ -288,8 +289,13 @@ func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, provi
 	if ms.OAuthProvider == "" {
 		return nil, nil
 	}
-	if mode == TransportStdio {
-		return nil, fmt.Errorf("%w: oauth_provider set on a stdio transport (no HTTP request to inject Authorization into)", ErrOAuthBinding)
+	// The binding needs an HTTP request to inject into. An explicit stdio
+	// transport is rejected, and so is ANY connection without a URL — an
+	// auto transport with only a command auto-selects stdio at connect,
+	// which would silently skip injection while the operator believes
+	// per-identity auth is on (silent degradation, forbidden).
+	if mode == TransportStdio || ms.URL == "" {
+		return nil, fmt.Errorf("%w: oauth_provider set on a connection without an http(s) url (stdio — explicit or auto-selected from a command-only config — carries no HTTP request to inject Authorization into)", ErrOAuthBinding)
 	}
 	for k := range ms.Headers {
 		if strings.EqualFold(k, "authorization") {
@@ -313,11 +319,7 @@ func registeredProviderNames(providers map[string]auth.OAuthProvider) string {
 	for n := range providers {
 		names = append(names, n)
 	}
-	for i := 1; i < len(names); i++ {
-		for j := i; j > 0 && names[j-1] > names[j]; j-- {
-			names[j-1], names[j] = names[j], names[j-1]
-		}
-	}
+	sort.Strings(names)
 	return strings.Join(names, ",")
 }
 

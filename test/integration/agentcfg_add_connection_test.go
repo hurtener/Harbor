@@ -81,7 +81,7 @@ func newAddcHarness(t *testing.T, stdioAllowlist []string) *addcHarness {
 	// cmd/harbor's devMCPConnectionAttacher) — drives the real MCP attach
 	// against the live catalog + registry + bus.
 	attacher := devstack.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
-		identity.Identity{TenantID: addcTenant, UserID: addcUser, SessionID: addcSession})
+		identity.Identity{TenantID: addcTenant, UserID: addcUser, SessionID: addcSession}, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithConnectionAttacher(attacher),
