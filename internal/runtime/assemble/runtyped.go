@@ -115,6 +115,15 @@ func RunTyped[T any](
 	// package's own private type, so RunTyped (same package as
 	// RunOnce) can probe the caller's opts directly without a second
 	// config-parsing path.
+	//
+	// INVARIANT this probe relies on: every RunOption is a PURE SETTER
+	// on runOnceConfig — no side effects beyond mutating the config
+	// value it receives. The caller's opts are applied TWICE (once here
+	// against a throwaway probe, once inside RunOnce against the real
+	// config); a future RunOption that performs work when applied (I/O,
+	// registration, counter increments) would fire that work twice,
+	// silently. If such an option is ever needed, keep the option func
+	// itself a setter and defer its effect to RunOnce's execution path.
 	var probe runOnceConfig
 	for _, o := range opts {
 		o(&probe)
