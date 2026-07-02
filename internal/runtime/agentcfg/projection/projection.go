@@ -16,10 +16,13 @@ import (
 	"sort"
 	"strings"
 
+	"time"
+
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -175,6 +178,57 @@ func ActiveLLMOverrides(ctx context.Context, reg agentcfg.Registry, agentID stri
 		return nil, nil
 	}
 	return out, nil
+}
+
+// ActiveRunCompletionHook resolves the run-completion hook for a run at run
+// start with next-run projection semantics. Resolution precedence is
+// pinned here (and by a table test — CLAUDE.md §17.6): the agent-config
+// `hooks` section (when it sets a non-empty run-completion tool) over the
+// static yaml default over no hook. The two run-loop drivers (the production
+// dev driver and the harbortest devstack twin) call this ONE helper, so the
+// precedence cannot drift between binaries.
+//
+// yamlDefault is the operator's static `runtime.hooks.run_completion`
+// projection (nil when unset). The returned spec's AgentID is stamped from
+// agentID (registration metadata, never an isolation key — §6). A nil
+// registry, an empty agentID, an agent with no active revision, or an active
+// revision with no hooks section falls through to yamlDefault. A registry
+// read error is returned so the caller fails the run loudly (CLAUDE.md §13):
+// no silent fall-through to yaml on a read failure.
+//
+// The active revision is read ONCE per run; the returned spec is fresh, so
+// concurrent / in-flight runs keep their own snapshot (the concurrent-reuse
+// contract). Only the identity triple is used (the registry is
+// identity-scoped, never keyed by run).
+func ActiveRunCompletionHook(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, yamlDefault *steering.CompletionHookSpec) (*steering.CompletionHookSpec, bool, error) {
+	if reg != nil && agentID != "" {
+		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+		if err != nil {
+			return nil, false, err
+		}
+		if ok {
+			if rc, set := rev.Payload.RunCompletionHookView(); set && rc.Tool != "" {
+				spec := &steering.CompletionHookSpec{
+					Tool:    rc.Tool,
+					Timeout: time.Duration(rc.TimeoutMS) * time.Millisecond,
+					AgentID: agentID,
+				}
+				return spec, true, nil
+			}
+		}
+	}
+	// Fall through to the static yaml default (when set).
+	if yamlDefault != nil && yamlDefault.Tool != "" {
+		// Copy so the caller cannot mutate the shared boot-time default, and
+		// stamp the acting agent id (the boot default knows no agent).
+		spec := &steering.CompletionHookSpec{
+			Tool:    yamlDefault.Tool,
+			Timeout: yamlDefault.Timeout,
+			AgentID: agentID,
+		}
+		return spec, true, nil
+	}
+	return nil, false, nil
 }
 
 // ActivePlannerCatalogView builds the run's planner-facing catalog view at

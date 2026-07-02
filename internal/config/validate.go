@@ -80,6 +80,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		validators = append(validators, c.validateIdentity)
 	}
 	validators = append(validators,
+		c.validateRuntime,
 		c.validateTelemetry,
 		c.validateState,
 		c.validateLLM,
@@ -112,6 +113,23 @@ func (c *Config) wrapValidationError(err error) error {
 		src = "<unknown>"
 	}
 	return fmt.Errorf("%w (source: %s)", err, src)
+}
+
+// validateRuntime validates the `runtime.*` block. Today that is only the
+// run-completion hook: a non-positive timeout is defaulted at run start (not
+// an error), but a negative timeout is a mistake and rejected loud; a set
+// `run_completion.timeout` with an empty `run_completion.tool` is a
+// misconfiguration (a timeout for a hook that will never fire).
+func (c *Config) validateRuntime() error {
+	rc := c.Runtime.Hooks.RunCompletion
+	if rc.Timeout < 0 {
+		return fieldError("runtime.hooks.run_completion.timeout", "must not be negative")
+	}
+	if rc.Timeout != 0 && strings.TrimSpace(rc.Tool) == "" {
+		return fieldError("runtime.hooks.run_completion.tool",
+			"must be set when runtime.hooks.run_completion.timeout is configured")
+	}
+	return nil
 }
 
 func (c *Config) validateServer() error {

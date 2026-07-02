@@ -81,12 +81,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -215,6 +217,12 @@ type perTaskRunLoopDriverOpts struct {
 	// OPTIONAL — nil means "no session overlay" (the run uses the admin agent
 	// config only). The SAME store the session-safe Protocol verbs write into.
 	sessionOverlay sessionoverlay.Store
+
+	// runCompletionHook is the static `runtime.hooks.run_completion`
+	// projection (nil when unset). At run start the driver resolves the
+	// effective hook via the shared projection (agent-config over this yaml
+	// over none) and pins it into the RunSpec, so an edit lands next-run.
+	runCompletionHook *steering.CompletionHookSpec
 }
 
 // tenantOverrideResolver is the narrow read seam the run loop uses to
@@ -278,6 +286,11 @@ type perTaskRunLoopDriver struct {
 	// over the admin agent config (nil = none).
 	sessionOverlay sessionoverlay.Store
 
+	// runCompletionHook is the static run-completion hook default (from
+	// `runtime.hooks.run_completion`); nil when unset. The driver resolves
+	// the effective hook per run via the shared projection.
+	runCompletionHook *steering.CompletionHookSpec
+
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
 	// completion for tasks.get enrichment. Reads are safe under RLock;
@@ -295,6 +308,19 @@ type perTaskRunLoopDriver struct {
 	runsWG     sync.WaitGroup
 	started    bool
 	closedOnce sync.Once
+}
+
+// runCompletionHookFromConfig projects the static
+// `runtime.hooks.run_completion` config block onto a
+// steering.CompletionHookSpec, or nil when no static hook is configured (an
+// empty tool). The AgentID is left empty here — the run-start projection
+// stamps the acting agent id. Timeout defaulting happens at fire time.
+func runCompletionHookFromConfig(cfg *config.Config) *steering.CompletionHookSpec {
+	rc := cfg.Runtime.Hooks.RunCompletion
+	if strings.TrimSpace(rc.Tool) == "" {
+		return nil
+	}
+	return &steering.CompletionHookSpec{Tool: rc.Tool, Timeout: rc.Timeout}
 }
 
 // ErrPerTaskRunLoopMisconfigured fires when newPerTaskRunLoopDriver
@@ -347,6 +373,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		agentConfig:       opts.agentConfig,
 		agentConfigID:     opts.agentConfigID,
 		sessionOverlay:    opts.sessionOverlay,
+		runCompletionHook: opts.runCompletionHook,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 		tokenBudget:       opts.tokenBudget,
 		compression:       opts.compression,
@@ -599,6 +626,16 @@ func (d *perTaskRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q 
 // the immutable per-run snapshot is undisturbed for in-flight runs.
 func (d *perTaskRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
 	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, ov)
+}
+
+// projectRunCompletionHook resolves the effective run-completion hook for
+// this run at run start via the SAME shared projection the devstack twin
+// uses (CLAUDE.md §17.6): agent-config `hooks` section over the static
+// `runtime.hooks.run_completion` yaml over none. Next-turn-only; an edit is
+// invisible to an in-flight run.
+func (d *perTaskRunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
+	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, d.agentConfigID, q, d.runCompletionHook)
+	return hook, err
 }
 
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
@@ -935,6 +972,27 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return
 	}
 
+	// Resolve the effective run-completion hook once at run start (agent-config
+	// over yaml over none) via the shared projection. A read error fails the run
+	// loudly rather than silently dropping the operator's configured hook.
+	completionHook, chErr := d.projectRunCompletionHook(taskCtx, q)
+	if chErr != nil {
+		d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: run-completion-hook projection failed; failing run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", chErr.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "run-completion-hook projection failed: " + chErr.Error(),
+		}); mErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after run-completion-hook-projection error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -960,7 +1018,8 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		ToolExecutor:     d.executor,   // dispatch CallTool decisions
 		OnToolDispatched: dispatchHook, // item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         d.maxStepsRunLoop,
-		Compression:      d.compression, // trajectory compression runner
+		Compression:      d.compression,  // trajectory compression runner
+		CompletionHook:   completionHook, // run-completion transcript egress (nil = no hook)
 	}
 	// save the trajectory ref before Run so the Enricher
 	// can read it post-completion (including concurrently — the map is

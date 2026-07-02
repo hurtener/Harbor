@@ -1482,6 +1482,11 @@ type DevStackRunLoopDriver struct {
 	// composed over the admin agent config at run start. Nil = none.
 	sessionOverlay sessionoverlay.Store
 
+	// static run-completion hook default (the twin of the production
+	// driver's `runtime.hooks.run_completion`); nil when unset. Resolved
+	// per run against the agent-config hooks section (D-094 mirror).
+	runCompletionHook *steering.CompletionHookSpec
+
 	// Phase 107a parity (D-195 dated-note follow-up) — per-task
 	// trajectory map for the Enricher seam, the D-094 mirror of the
 	// production driver. Trajectories are stored before RunLoop.Run
@@ -1549,6 +1554,9 @@ type devStackRunLoopDriverOpts struct {
 
 	// session-scoped safe-subset overlay store (D-094 mirror of production).
 	sessionOverlay sessionoverlay.Store
+
+	// static run-completion hook default (D-094 mirror); nil when unset.
+	runCompletionHook *steering.CompletionHookSpec
 }
 
 // devStackTenantOverrideResolver mirrors cmd/harbor's
@@ -1595,6 +1603,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		agentConfig:       opts.agentConfig,
 		agentConfigID:     opts.agentConfigID,
 		sessionOverlay:    opts.sessionOverlay,
+		runCompletionHook: opts.runCompletionHook,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
@@ -1620,6 +1629,15 @@ func (d *DevStackRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q
 // uses (D-094 mirror, CLAUDE.md §17.6).
 func (d *DevStackRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
 	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, ov)
+}
+
+// projectRunCompletionHook resolves the effective run-completion hook for
+// this run at run start via the SAME shared projection the production driver
+// uses (D-094 mirror, CLAUDE.md §17.6): agent-config `hooks` section over the
+// static yaml default over none. Next-turn-only.
+func (d *DevStackRunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
+	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, d.agentConfigID, q, d.runCompletionHook)
+	return hook, err
 }
 
 func (d *DevStackRunLoopDriver) start(ctx context.Context) error {
@@ -1939,6 +1957,22 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return
 	}
 
+	// Resolve the effective run-completion hook once at run start via the SAME
+	// shared projection production uses (agent-config over yaml over none). A
+	// read error fails the run loudly.
+	completionHook, chErr := d.projectRunCompletionHook(taskCtx, q)
+	if chErr != nil {
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "run-completion-hook projection failed: " + chErr.Error(),
+		}); mErr != nil && d.logger != nil {
+			d.logger.Warn("devstack runloop: MarkFailed after run-completion-hook-projection error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -1964,7 +1998,8 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		ToolExecutor:     d.executor,
 		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         d.maxStepsRunLoop,
-		Compression:      d.compression, // Phase 111e (D-202) — trajectory compression runner
+		Compression:      d.compression,  // Phase 111e (D-202) — trajectory compression runner
+		CompletionHook:   completionHook, // run-completion transcript egress (D-094 mirror; nil = none)
 	}
 	// Phase 107a parity (D-195 dated-note follow-up — D-094 mirror of
 	// cmd/harbor/cmd_dev_runloop.go): save the trajectory ref before

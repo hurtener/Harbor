@@ -569,6 +569,16 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			ReasoningEffort: copyStringPtr(p.LLMParams.ReasoningEffort),
 		}
 	}
+	if p.Hooks != nil {
+		wh := &prototypes.AgentConfigHooks{}
+		if p.Hooks.RunCompletion != nil {
+			wh.RunCompletion = &prototypes.AgentConfigRunCompletionHook{
+				Tool:      p.Hooks.RunCompletion.Tool,
+				TimeoutMS: p.Hooks.RunCompletion.TimeoutMS,
+			}
+		}
+		out.Hooks = wh
+	}
 	return out
 }
 
@@ -643,6 +653,16 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 			ReasoningEffort: copyStringPtr(p.LLMParams.ReasoningEffort),
 		}
 	}
+	if p.Hooks != nil {
+		dh := &agentcfg.HooksSection{}
+		if p.Hooks.RunCompletion != nil {
+			dh.RunCompletion = &agentcfg.RunCompletionHook{
+				Tool:      p.Hooks.RunCompletion.Tool,
+				TimeoutMS: p.Hooks.RunCompletion.TimeoutMS,
+			}
+		}
+		out.Hooks = dh
+	}
 	return out
 }
 
@@ -689,6 +709,15 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			ReasoningEffortChanged: d.LLMParams.ReasoningEffortChanged,
 			ReasoningEffortFrom:    d.LLMParams.ReasoningEffortFrom,
 			ReasoningEffortTo:      d.LLMParams.ReasoningEffortTo,
+		},
+		Hooks: prototypes.AgentConfigHooksDiff{
+			RunCompletionToolChanged: d.Hooks.RunCompletionToolChanged,
+			RunCompletionToolFrom:    d.Hooks.RunCompletionToolFrom,
+			RunCompletionToolTo:      d.Hooks.RunCompletionToolTo,
+
+			RunCompletionTimeoutChanged: d.Hooks.RunCompletionTimeoutChanged,
+			RunCompletionTimeoutFrom:    d.Hooks.RunCompletionTimeoutFrom,
+			RunCompletionTimeoutTo:      d.Hooks.RunCompletionTimeoutTo,
 		},
 	}
 }

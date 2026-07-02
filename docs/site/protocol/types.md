@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 299 canonical Harbor Protocol wire types, generated from the single-source
+The 302 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -111,6 +111,7 @@ Declared in `internal/protocol/types`.
 | `prompt_layers` | `types.AgentConfigPromptLayersDiff` — see [`AgentConfigPromptLayersDiff`](./types.md#agentconfigpromptlayersdiff) |  |
 | `connections` | `types.AgentConfigConnectionsDiff` — see [`AgentConfigConnectionsDiff`](./types.md#agentconfigconnectionsdiff) |  |
 | `llm_params` | `types.AgentConfigLLMParamsDiff` — see [`AgentConfigLLMParamsDiff`](./types.md#agentconfigllmparamsdiff) |  |
+| `hooks` | `types.AgentConfigHooksDiff` — see [`AgentConfigHooksDiff`](./types.md#agentconfighooksdiff) |  |
 
 ## AgentConfigDiffRequest
 
@@ -150,6 +151,27 @@ Declared in `internal/protocol/types`.
 | `revision` | `*types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) | optional (`omitempty`) |
 | `set` | `bool` |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigHooks
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `run_completion` | `*types.AgentConfigRunCompletionHook` — see [`AgentConfigRunCompletionHook`](./types.md#agentconfigruncompletionhook) | optional (`omitempty`) |
+
+## AgentConfigHooksDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `run_completion_tool_changed` | `bool` |  |
+| `run_completion_tool_from` | `string` | optional (`omitempty`) |
+| `run_completion_tool_to` | `string` | optional (`omitempty`) |
+| `run_completion_timeout_changed` | `bool` |  |
+| `run_completion_timeout_from` | `string` | optional (`omitempty`) |
+| `run_completion_timeout_to` | `string` | optional (`omitempty`) |
 
 ## AgentConfigLLMParams
 
@@ -224,6 +246,7 @@ Declared in `internal/protocol/types`.
 | `tool_exposure` | `*types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) | optional (`omitempty`) |
 | `connections` | `*types.AgentConfigConnections` — see [`AgentConfigConnections`](./types.md#agentconfigconnections) | optional (`omitempty`) |
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
+| `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 
 ## AgentConfigPromptLayers
 
@@ -279,6 +302,15 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigRunCompletionHook
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `tool` | `string` |  |
+| `timeout_ms` | `int` | optional (`omitempty`) |
 
 ## AgentConfigSessionOverlay
 

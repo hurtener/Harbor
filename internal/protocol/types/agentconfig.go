@@ -115,6 +115,28 @@ type AgentConfigConnections struct {
 	Servers []AgentConfigMCPConnectionDescriptor `json:"servers,omitempty"`
 }
 
+// AgentConfigRunCompletionHook is the wire projection of an agent's durable
+// run-completion hook in a config revision: the catalog tool the run
+// transcript is dispatched to at the run loop's terminal boundary, plus an
+// optional dispatch timeout (milliseconds). Mirrors the static
+// `runtime.hooks.run_completion` yaml; resolution at run start is
+// agent-config over yaml over no hook.
+type AgentConfigRunCompletionHook struct {
+	// Tool is the catalog tool name the transcript is dispatched to.
+	Tool string `json:"tool"`
+	// TimeoutMS is the dispatch timeout in milliseconds. Zero inherits the
+	// runtime default at run start.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
+}
+
+// AgentConfigHooks is the wire projection of the run-lifecycle-hook section
+// of the config envelope. Declared as its own section so a set REPLACES only
+// this section, preserving the sibling sections.
+type AgentConfigHooks struct {
+	// RunCompletion, when non-nil, pins the agent's run-completion hook.
+	RunCompletion *AgentConfigRunCompletionHook `json:"run_completion,omitempty"`
+}
+
 // AgentConfigPayload is the wire projection of an agent-config envelope.
 // Every section is optional so later consumers extend it without a schema
 // break.
@@ -135,6 +157,9 @@ type AgentConfigPayload struct {
 	// section (model / temperature / max-tokens / reasoning-effort) for the
 	// revision.
 	LLMParams *AgentConfigLLMParams `json:"llm_params,omitempty"`
+	// Hooks, when non-nil, pins the agent's run-lifecycle-hook section (the
+	// run-completion hook) for the revision.
+	Hooks *AgentConfigHooks `json:"hooks,omitempty"`
 }
 
 // AgentConfigRevisionView is the wire projection of one immutable config
@@ -231,9 +256,24 @@ type AgentConfigLLMParamsDiff struct {
 	ReasoningEffortTo      string `json:"reasoning_effort_to,omitempty"`
 }
 
+// AgentConfigHooksDiff is the wire projection of the run-lifecycle-hook
+// per-field delta across two revisions. Each dimension reports whether it
+// changed plus its from / to display values (an unset hook is the empty
+// string).
+type AgentConfigHooksDiff struct {
+	RunCompletionToolChanged bool   `json:"run_completion_tool_changed"`
+	RunCompletionToolFrom    string `json:"run_completion_tool_from,omitempty"`
+	RunCompletionToolTo      string `json:"run_completion_tool_to,omitempty"`
+
+	RunCompletionTimeoutChanged bool   `json:"run_completion_timeout_changed"`
+	RunCompletionTimeoutFrom    string `json:"run_completion_timeout_from,omitempty"`
+	RunCompletionTimeoutTo      string `json:"run_completion_timeout_to,omitempty"`
+}
+
 // AgentConfigDiff is the wire projection of a server-side revision
 // compare — the structured skills + tool-exposure + connection set-diffs,
-// the prompt-layer text delta, and the per-agent LLM-parameter delta.
+// the prompt-layer text delta, the per-agent LLM-parameter delta, and the
+// run-lifecycle-hook delta.
 type AgentConfigDiff struct {
 	FromRevisionID string                      `json:"from_revision_id"`
 	ToRevisionID   string                      `json:"to_revision_id"`
@@ -242,6 +282,7 @@ type AgentConfigDiff struct {
 	PromptLayers   AgentConfigPromptLayersDiff `json:"prompt_layers"`
 	Connections    AgentConfigConnectionsDiff  `json:"connections"`
 	LLMParams      AgentConfigLLMParamsDiff    `json:"llm_params"`
+	Hooks          AgentConfigHooksDiff        `json:"hooks"`
 }
 
 // AgentConfigGetRequest is the `agent_config.get` request — read the

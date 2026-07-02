@@ -161,6 +161,25 @@ llm:
   #   concurrency: 3
   #   buffer_size: 10
 
+# Runtime run-lifecycle hooks.
+#
+# The run-completion hook fires exactly once at the run loop's terminal
+# boundary (every terminal outcome — goal, no-path, constraints-conflict,
+# cancelled, error — never mid-run or on pause) and dispatches the run's
+# transcript to a named catalog tool through the normal tool-execution path.
+# It is meant for memory / audit / analytics sinks that need the full
+# conversation for runs no client observes (background / disconnected runs).
+# A hook failure NEVER alters the run outcome (it emits `run.hook_failed` +
+# a Warn log). The target tool need not be exposed to the planner — the
+# executor resolves it against the full catalog. Leave `tool` empty to
+# disable; the per-agent, versioned agent-config `hooks` section can still
+# enable it. Resolution at run start: agent-config over this yaml over none.
+# runtime:
+#   hooks:
+#     run_completion:
+#       tool: run_transcript_sink   # catalog tool name; empty disables
+#       timeout: 10s                # detached-dispatch bound (default 10s)
+
 governance:
   repair_attempts: 3
 

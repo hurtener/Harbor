@@ -383,10 +383,29 @@ RemoteTransport driver. Default: `loopback`. Validation:
 
 ---
 
-## Runtime (reserved)
+## Runtime
 
-Reserved block — populated as runtime/* phases land. No leaf
-fields today.
+Runtime run-lifecycle configuration. The first populated body is the
+run-completion hook.
+
+### runtime.hooks.run_completion.tool
+
+The catalog tool the run's transcript is dispatched to at the run loop's
+terminal boundary (the run-completion hook). Empty (the default) disables
+the static hook — the per-agent, versioned agent-config `hooks` section can
+still enable it. The tool need not be exposed to the planner: the executor
+resolves it against the full catalog. Resolution at run start is
+agent-config over this yaml over no hook. A hook failure never alters the
+run outcome (it emits `run.hook_failed` + a Warn log).
+
+### runtime.hooks.run_completion.timeout
+
+Bounds the detached hook dispatch (Go duration, e.g. `10s`). The dispatch
+runs under a context detached from the run's cancellation but bounded by
+this timeout, so a wedged sink cannot leak the hook goroutine. Non-positive
+(the default) falls back to the 10s runtime default. Setting a timeout
+without `runtime.hooks.run_completion.tool` is rejected (a timeout for a
+hook that will never fire). A negative value is rejected.
 
 ---
 

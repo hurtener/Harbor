@@ -82,6 +82,22 @@ export interface AgentConfigConnections {
 	servers?: AgentConfigMCPConnectionDescriptor[];
 }
 
+/** An agent's durable run-completion hook — the catalog tool the run
+ * transcript is dispatched to at the run loop's terminal boundary, plus an
+ * optional dispatch timeout (milliseconds). Mirrors
+ * `types.AgentConfigRunCompletionHook`. */
+export interface AgentConfigRunCompletionHook {
+	tool: string;
+	/** Dispatch timeout in milliseconds; 0 inherits the runtime default. */
+	timeout_ms?: number;
+}
+
+/** The run-lifecycle-hook section of the config envelope. Mirrors
+ * `types.AgentConfigHooks`. */
+export interface AgentConfigHooks {
+	run_completion?: AgentConfigRunCompletionHook;
+}
+
 /** An agent-config envelope — every section optional and forward-compatible.
  * Mirrors `types.AgentConfigPayload`. */
 export interface AgentConfigPayload {
@@ -90,6 +106,7 @@ export interface AgentConfigPayload {
 	tool_exposure?: AgentConfigToolExposure;
 	connections?: AgentConfigConnections;
 	llm_params?: AgentConfigLLMParams;
+	hooks?: AgentConfigHooks;
 }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
@@ -155,6 +172,17 @@ export interface AgentConfigLLMParamsDiff {
 	reasoning_effort_to?: string;
 }
 
+/** The run-lifecycle-hook per-field delta across two revisions. Mirrors
+ * `types.AgentConfigHooksDiff`. */
+export interface AgentConfigHooksDiff {
+	run_completion_tool_changed: boolean;
+	run_completion_tool_from?: string;
+	run_completion_tool_to?: string;
+	run_completion_timeout_changed: boolean;
+	run_completion_timeout_from?: string;
+	run_completion_timeout_to?: string;
+}
+
 /** A server-side revision compare. Mirrors `types.AgentConfigDiff`. */
 export interface AgentConfigDiff {
 	from_revision_id: string;
@@ -164,6 +192,7 @@ export interface AgentConfigDiff {
 	prompt_layers: AgentConfigPromptLayersDiff;
 	connections: AgentConfigConnectionsDiff;
 	llm_params: AgentConfigLLMParamsDiff;
+	hooks: AgentConfigHooksDiff;
 }
 
 /** `agent_config.get` request. */

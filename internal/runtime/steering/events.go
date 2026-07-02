@@ -39,12 +39,68 @@ const (
 	// reprioritised, etc.). Payload is ControlLifecyclePayload — the
 	// Err field is non-empty when the side effect failed.
 	EventTypeControlApplied events.EventType = "control.applied"
+
+	// EventTypeRunHookDispatched — emitted by the RunLoop when the
+	// run-completion hook successfully dispatched the run transcript to
+	// the configured catalog tool at the run's terminal boundary. Payload
+	// is RunHookDispatchedPayload (metadata only — never transcript
+	// content). A healthy hook is otherwise invisible as a hook (the
+	// generic tool.* events do not say "this was the completion hook"), so
+	// the symmetry with run.hook_failed earns the slot.
+	EventTypeRunHookDispatched events.EventType = "run.hook_dispatched"
+
+	// EventTypeRunHookFailed — emitted by the RunLoop when the
+	// run-completion hook dispatch failed (unknown tool, transport error,
+	// timeout, missing executor). The hook failure NEVER alters the run
+	// outcome — this event plus a Warn log are the whole failure posture.
+	// Payload is RunHookFailedPayload (metadata only — identity, tool,
+	// outcome, error class; never transcript content or raw error text).
+	EventTypeRunHookFailed events.EventType = "run.hook_failed"
 )
 
 func init() {
 	events.RegisterEventType(EventTypeControlRejected)
 	events.RegisterEventType(EventTypeControlReceived)
 	events.RegisterEventType(EventTypeControlApplied)
+	events.RegisterEventType(EventTypeRunHookDispatched)
+	events.RegisterEventType(EventTypeRunHookFailed)
+}
+
+// RunHookDispatchedPayload is the typed payload for a run.hook_dispatched
+// event. SafePayload by construction: every field is the RunLoop's own
+// bookkeeping — the tool name, the low-cardinality outcome classification,
+// and bounded integer sizes/timings. The transcript CONTENT is never
+// carried (it travels only as tool args to the target's transport).
+type RunHookDispatchedPayload struct {
+	events.SafeSealed
+	// Tool is the catalog tool the transcript was dispatched to.
+	Tool string
+	// Outcome is the run's terminal outcome carried in the payload.
+	Outcome string
+	// DurationMS is the hook dispatch's wall-clock duration in ms.
+	DurationMS int64
+	// TranscriptBytes is the size of the JSON-encoded RunCompletionPayload
+	// dispatched as tool args.
+	TranscriptBytes int
+	// EntryCount is the number of ordered transcript entries.
+	EntryCount int
+}
+
+// RunHookFailedPayload is the typed payload for a run.hook_failed event.
+// SafePayload by construction: the tool name, the low-cardinality outcome,
+// and a stable sentinel-derived error class — never the transcript content
+// or the raw error message (which may quote caller data — §7).
+type RunHookFailedPayload struct {
+	events.SafeSealed
+	// Tool is the catalog tool the dispatch targeted.
+	Tool string
+	// Outcome is the run's terminal outcome carried in the payload.
+	Outcome string
+	// ErrorClass is a stable, low-cardinality classification of the
+	// dispatch failure ("timeout" / "no_executor" / "encode_failed" /
+	// "unsupported_shape" / "dispatch_failed" / "cancelled"). Never the
+	// raw error message.
+	ErrorClass string
 }
 
 // ControlLifecyclePayload is the typed payload for control.received and

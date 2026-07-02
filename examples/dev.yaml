@@ -95,6 +95,17 @@ llm:
       json_schema_mode: native
       reasoning_effort: low
 
+# Runtime run-lifecycle hooks. The run-completion hook dispatches the run's
+# transcript to a named catalog tool at the terminal boundary (for memory /
+# audit / analytics sinks). Empty `tool` disables it; the agent-config
+# `hooks` section can enable it per agent. A hook failure never alters the
+# run outcome. See docs/CONFIG.md → Runtime.
+# runtime:
+#   hooks:
+#     run_completion:
+#       tool: run_transcript_sink
+#       timeout: 10s
+
 governance:
   repair_attempts: 3
 

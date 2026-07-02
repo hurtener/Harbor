@@ -389,6 +389,18 @@ type RunSpec struct {
 	// planner's repair / re-plan flow records the failure on the
 	// trajectory and the counter stays put.
 	OnToolDispatched func(ctx context.Context, count int) error
+
+	// CompletionHook, when set, is the operator-configured run-completion
+	// hook: at Run's terminal boundary the runloop fires it exactly once —
+	// for EVERY terminal outcome, never mid-run and never on pause —
+	// dispatching the run's RunCompletionPayload transcript to the named
+	// catalog tool through ToolExecutor. The outcome rides in the payload.
+	// The hook runs AFTER the run's (fin, err) are settled and can NEVER
+	// alter them: a dispatch failure emits run.hook_failed + a Warn log and
+	// nothing else. A nil CompletionHook is byte-identical to the pre-hook
+	// behaviour. See completion.go for the payload contract + the detached
+	// cancellation bridge.
+	CompletionHook *CompletionHookSpec
 }
 
 // Run drives the planner to a terminal planner.Finish decision. It Opens
@@ -408,7 +420,12 @@ type RunSpec struct {
 //     step's Next call or a control event's side effect.
 //
 // On success Run returns the terminal planner.Finish the planner emitted.
-func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error) {
+//
+// Named returns (fin, err) are load-bearing: the deferred run-completion
+// hook fire reads them AFTER they are settled at any terminal exit, so the
+// hook covers every terminal outcome (goal, no-path, constraints-conflict,
+// cancelled, error) uniformly without a fire at each return site.
+func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, err error) {
 	if spec.Planner == nil {
 		return planner.Finish{}, ErrNoPlanner
 	}
@@ -440,6 +457,25 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 	// (called from applyEvent) and Coordinator.Request (called below)
 	// see the run's triple + run on their identity.From(ctx) pathway.
 	runCtx := ctxWithIdentity(ctx, q)
+
+	// Per-run run-completion-hook state — all stack-local (the
+	// concurrent-reuse contract: per-run state on the run goroutine, never on
+	// the compiled artifact): the ordered steering-entry
+	// accumulator, the run's start instant, and the initial goal captured
+	// BEFORE the loop mutates spec.Base. The deferred fire below reads the
+	// settled (fin, err) named returns at every terminal exit — the single
+	// seam covering all terminal outcomes. Registered AFTER runCtx/identity
+	// are established so a hook never fires for a pre-run misconfiguration
+	// (nil planner, incomplete identity, inbox-open failure) — those are
+	// not terminal outcomes of an actual run.
+	var steeringEntries []steeringEntry
+	initialGoal := spec.Base.Goal
+	runStartedAt := rl.clock.Now()
+	if spec.CompletionHook != nil && spec.CompletionHook.Tool != "" {
+		defer func() {
+			rl.fireCompletionHook(runCtx, spec, q, fin, err, steeringEntries, initialGoal, runStartedAt)
+		}()
+	}
 
 	// outstandingToken is the run's current pause Token, "" when the run
 	// is not paused. It is per-run loop state — it lives on this
@@ -510,6 +546,21 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 				Err:       applyErr,
 			})
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlApplied, classifyApplyErr(applyErr))
+			// Capture an applied steering USER_MESSAGE / REDIRECT for the
+			// run-completion transcript (only when a hook is configured —
+			// otherwise this is dead work). The steering text is not durably
+			// recorded anywhere else: apply.go consumes it per step and the
+			// applied-control history drops payloads. The captured trajectory
+			// index is the position the entry PRECEDES (drain happens before
+			// the step's Planner.Next appends), so the transcript assembler
+			// interleaves it just ahead of that step. Captured exactly once
+			// per drained event (drained events apply exactly once, even on
+			// the paused-accumulation path). Stack-local — concurrent-reuse clean.
+			if applyErr == nil && spec.CompletionHook != nil && spec.CompletionHook.Tool != "" {
+				if se, ok := captureSteeringEntry(ev, trajStepLen(spec.Base.Trajectory)); ok {
+					steeringEntries = append(steeringEntries, se)
+				}
+			}
 			if applyErr != nil {
 				// Race carve-out: a legitimate
 				// RESUME / APPROVE / REJECT control can lose the race
