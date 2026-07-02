@@ -252,7 +252,10 @@ headless runtime and `Stack.RunOnce` turns a goal plus the
 `(tenant, user, session)` identity into an answer envelope in one blocking
 call, with `WithStream` delivering token / tool / step events as they happen
 on the same method and `WithOutputSchema` returning a schema-validated typed
-answer (`answer_payload`) instead of a bare string. **Scaffold** from the CLI: `harbor init` / `scaffold`
+answer (`answer_payload`) instead of a bare string — or skip hand-authoring
+the schema entirely with `assemble.RunTyped[T](ctx, stack, goal, id)`, which
+derives it from a Go type and hands back the validated answer already
+unmarshaled into `T`. **Scaffold** from the CLI: `harbor init` / `scaffold`
 generate an agent whose golden test actually registers and dispatches a tool
 through the executor, and `harbor dev` is honest about `.go` edits — it warns
 and guides a rebuild rather than reporting a hot-reload that never recompiled.

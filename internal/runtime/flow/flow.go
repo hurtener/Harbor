@@ -39,7 +39,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/engine"
 	"github.com/hurtener/Harbor/internal/runtime/messages"
 	"github.com/hurtener/Harbor/internal/tools"
-	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
+	"github.com/hurtener/Harbor/internal/tools/schema"
 )
 
 // NodeID is the in-flow identifier for a node.
@@ -474,15 +474,18 @@ var (
 )
 
 // WithSchemasFrom annotates a Definition with reflection-derived
-// InSchema / OutSchema from the given Go input/output types.
+// InSchema / OutSchema from the given Go input/output types. The
+// derivation is the shared internal/tools/schema deriver (§13) — the
+// same implementation the in-process tool driver (RegisterFunc) and
+// the typed embed binding (RunTyped) consume.
 func WithSchemasFrom[I any, O any](def Definition) (Definition, error) {
 	var zeroIn I
 	var zeroOut O
-	inSchema, err := inproc.DeriveSchema(reflect.TypeOf(zeroIn))
+	inSchema, err := schema.Derive(reflect.TypeOf(zeroIn))
 	if err != nil {
 		return def, fmt.Errorf("flow: derive input schema: %w", err)
 	}
-	outSchema, err := inproc.DeriveSchema(reflect.TypeOf(zeroOut))
+	outSchema, err := schema.Derive(reflect.TypeOf(zeroOut))
 	if err != nil {
 		return def, fmt.Errorf("flow: derive output schema: %w", err)
 	}

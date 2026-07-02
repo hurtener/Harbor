@@ -485,6 +485,12 @@ assert_grep_present 'RunOnce' \
 assert_grep_absent 'hurtener/Harbor/internal' \
     "${ROOT}/examples/embed-runonce/main.go" \
     'phase 132: embed-runonce example emits no internal/ import'
+# phase 144 (D-273): the typed embed binding rides the SAME checked-in
+# example + compile gate — no separate example, no separate gate. See
+# the plan's §13 consumer discussion.
+assert_grep_present 'assemble.RunTyped' \
+    "${ROOT}/examples/embed-runonce/main.go" \
+    'phase 144: embed-runonce example calls assemble.RunTyped'
 
 runonce_build_log="${TMPDIR}/runonce-build.log"
 if elapsed=$(run_bounded "${runonce_build_log}" "${ROOT}" sh -c 'go build -o /dev/null ./examples/embed-runonce/'); then
@@ -510,6 +516,20 @@ if elapsed=$(run_bounded "${runonce_test_log}" "${ROOT}" sh -c 'go test -race -r
 else
     fail 'phase 132: RunOnce + NewRunContext tests FAILED under -race (see tail)'
     tail -40 "${runonce_test_log}" | sed 's/^/    /'
+fi
+
+# 6c — the mandatory RunTyped mixed-type concurrent-reuse stress
+# (phase 144, D-273/D-025) exists and passes under -race.
+assert_grep_present 'TestRunTyped_ConcurrentReuse_MixedTypes_NoBleedNoLeak' \
+    "${ROOT}/internal/runtime/assemble/runtyped_test.go" \
+    'phase 144: N>=100 mixed-type concurrent-reuse RunTyped -race test exists'
+
+runtyped_test_log="${TMPDIR}/runtyped-test.log"
+if elapsed=$(run_bounded "${runtyped_test_log}" "${ROOT}" sh -c 'go test -race -run "TestRunTyped" ./internal/runtime/assemble/'); then
+    ok "phase 144: RunTyped tests pass under -race (${elapsed}s)"
+else
+    fail 'phase 144: RunTyped tests FAILED under -race (see tail)'
+    tail -40 "${runtyped_test_log}" | sed 's/^/    /'
 fi
 
 # --- 7. The WithStream streaming sink — RunOnce (phase 132-stream, D-266) -----

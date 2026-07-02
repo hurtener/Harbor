@@ -32,6 +32,8 @@ references real exported symbols (Phase 110d, D-197).
 | The run loop | `Stack.RunLoop.Run(ctx, steering.RunSpec{...})` | 53 / 83i |
 | The answer | `planner.AnswerEnvelope` | 110a (D-194) |
 | The tool-invocation count | `planner.CountToolInvocations(traj)` | D-274 |
+| Typed output (hand-authored schema) | `assemble.WithOutputSchema(schema)` | 143 (D-272) |
+| Typed output (schema derived from a Go type) | `assemble.RunTyped[T](ctx, stack, goal, id, opts...)` | 144 (D-273) |
 
 ## 1. Imports
 
@@ -213,6 +215,58 @@ arrives once, in the envelope. `step` and `tool_dispatched` events still
 stream (D-272); expect MORE `step` events per turn than a plain run when
 a corrective retry / downgrade attempt fires (each attempt is its own
 LLM call and its own step boundary).
+
+**Typed output — `assemble.RunTyped[T]`.** The generic sugar over the
+two lines above: derive the schema FROM a Go type instead of hand-
+authoring the JSON-Schema document, and get the validated answer back
+already unmarshaled into that type.
+
+```go
+type SentimentReport struct {
+    Sentiment  string  `json:"sentiment"`
+    Confidence float64 `json:"confidence,omitempty"`
+}
+
+report, env, err := assemble.RunTyped[SentimentReport](ctx, stack,
+    "Classify the sentiment.",
+    identity.Identity{TenantID: "acme", UserID: "u-42", SessionID: "s-1"})
+if err != nil {
+    return fmt.Errorf("typed run: %w", err) // errors.Is(err, planner.ErrOutputInvalid) on schema failure
+}
+fmt.Println(report.Sentiment, env.FinishReason)
+```
+
+`RunTyped` derives the JSON Schema from `SentimentReport` via the SAME
+reflection-based deriver `sdk/tools/inproc.RegisterFunc` uses for tool
+registration (`internal/tools/schema`, promoted out of the tool driver
+in Phase 144 — one implementation, two consumers), appends it as
+`WithOutputSchema`, drives `RunOnce`, and unmarshals the validated
+`AnswerPayload` into `T`. Three binding failure modes, all loud:
+
+- An unsupported `T` (a non-empty interface, a channel or function
+  field, a cyclic structure) fails at CALL TIME, before any run starts
+  or any LLM spend — the error names the offending Go field. The
+  derivation internals stay private to the facade (D-273's
+  non-goals — `internal/tools/schema` is not re-exported), so an
+  `sdk/`-only caller inspects the error text rather than comparing
+  against an internal sentinel.
+- A caller-supplied `WithOutputSchema` alongside `RunTyped` is a loud
+  conflict (`assemble.ErrRunTypedSchemaConflict`), never a silent
+  override — `RunTyped` owns the schema for the call it drives. Drop
+  the explicit option, or call `RunOnce` + `WithOutputSchema` directly
+  when a hand-authored schema is required.
+- A schema-valid payload that still fails to unmarshal into `T` (a
+  narrower Go numeric type than the derived schema's unconstrained
+  `"integer"`/`"number"`, for instance) is
+  `assemble.ErrRunTypedUnmarshal` — `RunTyped` never returns a zero
+  value alongside a nil error.
+
+`RunTyped` is a free function over the shared immutable `Stack` — it
+is deliberately NOT a stateful binding object, and deliberately NOT
+named `Agent` (that noun is taken twice in Harbor's vocabulary:
+`harbortest.Agent` and the Agent Registry's registration entities,
+D-059/D-273). Identity stays a per-call argument, exactly like
+`RunOnce`.
 
 ### 4b. Drive the run loop yourself
 
