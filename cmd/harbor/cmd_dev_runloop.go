@@ -969,7 +969,12 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	d.trajectories[taskID] = traj
 	d.trajMu.Unlock()
 
-	fin, err := d.runLoop.Run(d.subCtx, spec)
+	// Stamp the acting agent's registration id as southbound provenance for
+	// this run: tool transports (the MCP driver) carry it into `_meta.agent_id`
+	// for a shared server's attribution. Provenance only — never an isolation
+	// principal (§6); an empty agentConfigID (bare-embed run) is a no-op.
+	runCtx := tools.WithInvokingAgent(d.subCtx, d.agentConfigID)
+	fin, err := d.runLoop.Run(runCtx, spec)
 	if err != nil {
 		// Cancellation-shaped errors map to MarkFailed{code=cancelled}.
 		// The FSM has no auto-cancelled status (Cancel is the external-

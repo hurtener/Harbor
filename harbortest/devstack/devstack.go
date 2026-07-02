@@ -1254,7 +1254,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			// when the catalog band is present.
 			if stack.Catalog != nil && stack.MCPRegistry != nil {
 				attacher := NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, nil,
-					resolveDevIdentity(opts))
+					resolveDevIdentity(opts), stack.OAuthProviders)
 				stack.closeFns = append(stack.closeFns, attacher.Close)
 				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(attacher))
 			}
@@ -1974,7 +1974,12 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	d.trajectories[taskID] = traj
 	d.trajMu.Unlock()
 
-	fin, err := d.runLoop.Run(d.subCtx, spec)
+	// Twin of cmd/harbor/cmd_dev_runloop.go: stamp the acting agent's
+	// registration id as southbound provenance (D-094 mirror). Provenance
+	// only — never an isolation principal (§6); empty agentConfigID is a
+	// no-op.
+	runCtx := tools.WithInvokingAgent(d.subCtx, d.agentConfigID)
+	fin, err := d.runLoop.Run(runCtx, spec)
 	if err != nil {
 		code := planner.TaskErrorCodeRunLoopError
 		if errors.Is(err, context.Canceled) {

@@ -210,6 +210,8 @@ Declared in `internal/protocol/types`.
 | `transport` | `string` |  |
 | `command` | `[]string` | optional (`omitempty`) |
 | `url` | `string` | optional (`omitempty`) |
+| `oauth_provider` | `string` | optional (`omitempty`) |
+| `meta_annotations` | `map[string]string` | optional (`omitempty`) |
 
 ## AgentConfigPayload
 

@@ -901,6 +901,10 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			Closers:          &stack.closers,
 			HostDisplayModes: hostDisplayModes,
 			ToolContext:      toolCtxStore,
+			// per-identity southbound OAuth binding resolution
+			// (`oauth_provider` names a declared provider; fail loud on an
+			// unknown name).
+			OAuthProviders: providers,
 		}); err != nil {
 			return fmt.Errorf("mcp[%s]: %w", ms.Name, err)
 		}

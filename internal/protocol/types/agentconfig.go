@@ -79,10 +79,13 @@ type AgentConfigLLMParams struct {
 
 // AgentConfigMCPConnectionDescriptor is the wire projection of one
 // runtime-added MCP server connection — the NON-SECRET descriptor only
-// (name, transport, stdio argv command or http URL). Secret auth material
-// (bearer headers, OAuth tokens, credentials) is NEVER part of this
-// descriptor: it flows through the live attach + the tool-side OAuth /
-// pause-resume path and is never persisted in a revision, diff, or event.
+// (name, transport, stdio argv command or http URL, the non-secret OAuth
+// provider NAME, and the non-secret operator `_meta` annotations). Secret
+// auth material (bearer headers, OAuth tokens, credentials, the minted
+// downstream token) is NEVER part of this descriptor: it flows through the
+// live attach + the tool-side OAuth / pause-resume path and is never
+// persisted in a revision, diff, or event. The oauth_provider field is a
+// NAME, not a secret — it selects a config-declared acquisition strategy.
 type AgentConfigMCPConnectionDescriptor struct {
 	// Name is the unique MCP source id. Required.
 	Name string `json:"name"`
@@ -93,6 +96,14 @@ type AgentConfigMCPConnectionDescriptor struct {
 	Command []string `json:"command,omitempty"`
 	// URL is the http(s) endpoint. Set for the http transport.
 	URL string `json:"url,omitempty"`
+	// OAuthProvider names a declared OAuth provider to bind for per-identity
+	// southbound bearer injection. NON-SECRET (a provider name). Set only for
+	// the http transport; empty leaves the connection on its static headers.
+	OAuthProvider string `json:"oauth_provider,omitempty"`
+	// MetaAnnotations is a static, NON-SECRET set of operator key/values
+	// merged verbatim into the MCP `_meta` on every identity-stamped call.
+	// Reserved / spec-prefixed keys are rejected at attach.
+	MetaAnnotations map[string]string `json:"meta_annotations,omitempty"`
 }
 
 // AgentConfigConnections is the wire projection of the runtime-added

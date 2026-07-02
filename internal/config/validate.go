@@ -1347,6 +1347,53 @@ func (c *Config) validateTools() error {
 			"must not be empty when tools.oauth_providers[] is set (names env var holding the 32-byte hex KEK for AES-256-GCM token encryption at rest; §7 rule 2)")
 	}
 
+	// MCP southbound OAuth binding + `_meta` annotations. Validated in a
+	// second pass over the MCP servers because it cross-references the
+	// `tools.oauth_providers[]` names built above. Each binding names a
+	// declared provider (per-identity bearer injection), lives on an HTTP
+	// transport, does NOT double up with a static `Authorization` header, and
+	// carries no reserved / spec-prefixed / empty annotation key.
+	for i, s := range c.Tools.MCPServers {
+		prefix := fmt.Sprintf("tools.mcp_servers[%d]", i)
+		mode := s.TransportMode
+		if mode == "" {
+			mode = "auto"
+		}
+		if s.OAuthProvider != "" {
+			if _, ok := oauthProviderNames[s.OAuthProvider]; !ok {
+				return fieldError(prefix+".oauth_provider",
+					fmt.Sprintf("references unknown OAuth provider %q (declared providers: %s; declare via tools.oauth_providers[])",
+						s.OAuthProvider, sortedKeysFromSet(oauthProviderNames)))
+			}
+			// The binding needs an HTTP request to inject into. An explicit
+			// stdio transport is rejected, and so is ANY connection without
+			// a url — an omitted/auto transport with only a command
+			// auto-selects stdio at connect, which would silently skip
+			// injection while the operator believes per-identity auth is on
+			// (§13 silent degradation).
+			if mode == "stdio" || s.URL == "" {
+				return fieldError(prefix+".oauth_provider",
+					"must not be set on a connection without an http(s) url (a stdio connection — explicit or auto-selected from a command-only config — carries no HTTP request to inject Authorization into; the binding is a misconfiguration)")
+			}
+			for k := range s.Headers {
+				if strings.EqualFold(k, "authorization") {
+					return fieldError(prefix+".headers",
+						"must not carry a static \"Authorization\" header alongside oauth_provider (one auth mode per connection — the bearer is injected per-identity)")
+				}
+			}
+		}
+		for k := range s.MetaAnnotations {
+			field := prefix + ".meta_annotations"
+			if strings.TrimSpace(k) == "" {
+				return fieldError(field, "annotation key must not be empty")
+			}
+			if IsReservedMCPMetaKey(k) {
+				return fieldError(field,
+					fmt.Sprintf("key %q is reserved (tenant/user/session/agent_id/traceparent/tracestate and any io.modelcontextprotocol/-prefixed key are stamped by the runtime; choose a non-reserved key)", k))
+			}
+		}
+	}
+
 	// catalog wiring entries. Empty list is valid;
 	// duplicate names are rejected; an entry whose Approval AND OAuth
 	// are both nil is a configuration typo (nothing to wire) and is
@@ -1888,6 +1935,40 @@ func sortedKeysFromSet(m map[string]struct{}) string {
 		return "(none)"
 	}
 	return sortedKeys(m)
+}
+
+// reservedMCPMetaAnnotationKeys is the closed set of `_meta` keys the runtime
+// owns: the isolation triple, the agent-provenance stamp, and the W3C
+// trace-context carrier keys (the `_meta` idiom). An operator's
+// `meta_annotations` may not use them.
+var reservedMCPMetaAnnotationKeys = map[string]struct{}{
+	"tenant":      {},
+	"user":        {},
+	"session":     {},
+	"agent_id":    {},
+	"traceparent": {},
+	"tracestate":  {},
+}
+
+// mcpSpecMetaAnnotationPrefix is the spec-reserved `_meta` namespace prefix;
+// operator annotations may not use it.
+const mcpSpecMetaAnnotationPrefix = "io.modelcontextprotocol/"
+
+// IsReservedMCPMetaKey reports whether k is a runtime-reserved or
+// spec-reserved MCP `_meta` key an operator annotation must not carry: the
+// isolation triple keys (`tenant`/`user`/`session`), the agent-provenance
+// stamp (`agent_id`), the W3C trace-context carrier keys
+// (`traceparent`/`tracestate`), and any `io.modelcontextprotocol/`-prefixed
+// key (the spec-reserved namespace). This is the SINGLE authority every
+// surface that validates or merges MCP `_meta` annotations consults — config
+// validation, the runtime add-connection validation, and the MCP driver's
+// merge-time re-check all call it, so the reserved set cannot drift between
+// them.
+func IsReservedMCPMetaKey(k string) bool {
+	if _, ok := reservedMCPMetaAnnotationKeys[k]; ok {
+		return true
+	}
+	return strings.HasPrefix(k, mcpSpecMetaAnnotationPrefix)
 }
 
 // sortedKeys returns a deterministic comma-separated list of map

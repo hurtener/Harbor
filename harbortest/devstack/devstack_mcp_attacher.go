@@ -13,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -38,6 +39,11 @@ type MCPConnectionAttacher struct {
 	bus             events.EventBus
 	logger          *slog.Logger
 	defaultIdentity identity.Identity
+	// oauthProviders is the declared OAuth-provider registry a runtime-added
+	// connection's `oauth_provider` binding resolves against (mcpdrv.Attach
+	// does the resolution + fail-loud). Twin of cmd/harbor's attacher. Set
+	// once at construction; nil is valid when no provider is declared.
+	oauthProviders map[string]toolauth.OAuthProvider
 
 	mu      sync.Mutex
 	closers []func(context.Context) error
@@ -45,14 +51,17 @@ type MCPConnectionAttacher struct {
 
 // NewMCPConnectionAttacher builds the test-kit attacher. catalog, registry,
 // and bus are mandatory (mcpdrv.Attach validates them too). A nil logger
-// silences the per-server attach log line.
-func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity) *MCPConnectionAttacher {
+// silences the per-server attach log line. oauthProviders may be nil when no
+// OAuth provider is declared; a runtime add that binds an `oauth_provider`
+// name resolves against it (unknown name → loud attach failure).
+func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider) *MCPConnectionAttacher {
 	return &MCPConnectionAttacher{
 		catalog:         catalog,
 		registry:        registry,
 		bus:             bus,
 		logger:          logger,
 		defaultIdentity: defaultIdentity,
+		oauthProviders:  oauthProviders,
 	}
 }
 
@@ -63,11 +72,13 @@ func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Regist
 // on the unified pause/resume primitive.
 func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol.AttachRequest) error {
 	ms := config.MCPServerConfig{
-		Name:          req.Name,
-		TransportMode: transportModeForAdd(req.Transport),
-		URL:           req.URL,
-		Command:       append([]string(nil), req.Command...),
-		Headers:       req.Headers, // SECRET — used for the live transport, never persisted
+		Name:            req.Name,
+		TransportMode:   transportModeForAdd(req.Transport),
+		URL:             req.URL,
+		Command:         append([]string(nil), req.Command...),
+		Headers:         req.Headers, // SECRET — used for the live transport, never persisted
+		OAuthProvider:   req.OAuthProvider,
+		MetaAnnotations: req.MetaAnnotations,
 	}
 
 	a.mu.Lock()
@@ -81,6 +92,7 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		Logger:          a.logger,
 		DefaultIdentity: a.defaultIdentity,
 		Closers:         &local,
+		OAuthProviders:  a.oauthProviders,
 	})
 	a.closers = append(a.closers, local...)
 	if err != nil {

@@ -59,8 +59,9 @@ export interface AgentConfigLLMParams {
 }
 
 /** One runtime-added MCP server connection — the NON-SECRET descriptor only
- * (name, transport, stdio argv command or http URL). Secret auth material is
- * NEVER part of this descriptor. Mirrors
+ * (name, transport, stdio argv command or http URL, the non-secret OAuth
+ * provider NAME, and non-secret operator `_meta` annotations). Secret auth
+ * material is NEVER part of this descriptor. Mirrors
  * `types.AgentConfigMCPConnectionDescriptor`. */
 export interface AgentConfigMCPConnectionDescriptor {
 	name: string;
@@ -68,6 +69,11 @@ export interface AgentConfigMCPConnectionDescriptor {
 	transport: string;
 	command?: string[];
 	url?: string;
+	/** Non-secret OAuth provider NAME bound for per-identity southbound bearer
+	 * injection (http transport only; empty leaves the static headers). */
+	oauth_provider?: string;
+	/** Non-secret operator key/values merged verbatim into the MCP `_meta`. */
+	meta_annotations?: Record<string, string>;
 }
 
 /** The runtime-added MCP-connection section of the config envelope. Mirrors
