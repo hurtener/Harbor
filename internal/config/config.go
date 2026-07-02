@@ -1135,6 +1135,25 @@ type MCPServerConfig struct {
 	// (or the package default). Optional; empty preserves today's
 	// behaviour. Restart-required.
 	ToolPolicies map[string]ToolPolicyConfig `yaml:"tool_policies,omitempty"`
+	// OAuthProvider names a declared `tools.oauth_providers[]` entry to
+	// bind for per-identity southbound OAuth: every identity-stamped
+	// per-call RPC to this server resolves a fresh bearer for the calling
+	// identity and injects `Authorization: Bearer <tok>`. The value is a
+	// NON-SECRET provider NAME — it selects a config-declared acquisition
+	// strategy; the secret stays env-indirected on the provider entry.
+	// Optional; empty leaves the connection on its static `headers`.
+	// Validation rejects an unknown name, a binding on a stdio transport
+	// (no HTTP request to inject into), and a static `Authorization` header
+	// alongside a binding (one auth mode per connection). Restart-required.
+	OAuthProvider string `yaml:"oauth_provider,omitempty"`
+	// MetaAnnotations is a static, NON-SECRET set of operator-declared
+	// key/values merged verbatim into the MCP `_meta` map on every
+	// identity-stamped per-call RPC — the deployment's own attribution
+	// vocabulary, passed to the server as-is. Reserved keys (`tenant`,
+	// `user`, `session`, `agent_id`, `traceparent`, `tracestate`, and any
+	// `io.modelcontextprotocol/`-prefixed key) and empty keys are rejected
+	// at validation. Optional. Restart-required.
+	MetaAnnotations map[string]string `yaml:"meta_annotations,omitempty"`
 }
 
 // ToolPolicyConfig is the operator-facing YAML projection of

@@ -399,6 +399,8 @@ export interface AgentConfigMCPConnectionDescriptor {
   transport: string;
   command?: string[];
   url?: string;
+  oauth_provider?: string;
+  meta_annotations?: Record<string, string>;
 }
 
 export interface AgentConfigPayload {

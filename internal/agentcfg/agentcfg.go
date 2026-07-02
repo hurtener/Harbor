@@ -178,10 +178,13 @@ const (
 // server connection, recorded in a config revision so the connection is
 // part of the agent's versioned desired state (diff / rollback). It
 // carries ONLY the non-secret descriptor — the server name, the transport,
-// and the stdio argv command or the http URL. Secret auth material (bearer
-// headers, OAuth tokens, credentials) is NEVER part of this descriptor: it
-// flows through the live attach + the tool-side OAuth / pause-resume path
-// and is never persisted in a revision, a diff, or an event (CLAUDE.md §7).
+// the stdio argv command or the http URL, the non-secret OAuth provider NAME,
+// and the non-secret operator `_meta` annotations. Secret auth material
+// (bearer headers, OAuth tokens, credentials, the minted downstream token) is
+// NEVER part of this descriptor: it flows through the live attach + the
+// tool-side OAuth / pause-resume path and is never persisted in a revision, a
+// diff, or an event (CLAUDE.md §7). The `oauth_provider` field is a NAME, not
+// a secret — it selects a config-declared acquisition strategy.
 type MCPConnectionDescriptor struct {
 	// Name is the unique MCP source id (the tool-name prefix the planner
 	// sees). Required.
@@ -194,6 +197,17 @@ type MCPConnectionDescriptor struct {
 	// URL is the http(s) endpoint. Set for the http transport; empty for
 	// stdio.
 	URL string `json:"url,omitempty"`
+	// OAuthProvider names a declared OAuth provider to bind for per-identity
+	// southbound bearer injection on this connection's calls. NON-SECRET — a
+	// provider NAME selecting a config-declared acquisition strategy; the
+	// secret stays on the provider. Empty leaves the connection on its static
+	// (attach-time) headers. Set only for the http transport.
+	OAuthProvider string `json:"oauth_provider,omitempty"`
+	// MetaAnnotations is a static, NON-SECRET set of operator-declared
+	// key/values merged verbatim into the MCP `_meta` on every
+	// identity-stamped per-call RPC (the deployment's attribution
+	// vocabulary). Reserved / spec-prefixed keys are rejected at attach.
+	MetaAnnotations map[string]string `json:"meta_annotations,omitempty"`
 }
 
 // ConnectionsSection is the runtime-added MCP-connection section of the
@@ -365,6 +379,19 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 // order is significant and is preserved verbatim (never sorted). A nil
 // input returns nil; an empty result returns nil so an all-empty section
 // drops out of the canonical form.
+// cloneStringMap returns a defensive copy of m (nil for an empty map) so a
+// descriptor's annotations cannot be mutated through a retained reference.
+func cloneStringMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 func normalizeConnections(in []MCPConnectionDescriptor) []MCPConnectionDescriptor {
 	if len(in) == 0 {
 		return nil
@@ -379,10 +406,12 @@ func normalizeConnections(in []MCPConnectionDescriptor) []MCPConnectionDescripto
 			names = append(names, d.Name)
 		}
 		byName[d.Name] = MCPConnectionDescriptor{
-			Name:      d.Name,
-			Transport: d.Transport,
-			Command:   append([]string(nil), d.Command...),
-			URL:       d.URL,
+			Name:            d.Name,
+			Transport:       d.Transport,
+			Command:         append([]string(nil), d.Command...),
+			URL:             d.URL,
+			OAuthProvider:   d.OAuthProvider,
+			MetaAnnotations: cloneStringMap(d.MetaAnnotations),
 		}
 	}
 	if len(names) == 0 {

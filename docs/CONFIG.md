@@ -766,6 +766,29 @@ MCP southbound attachments (Phase 28). Each entry needs `name`,
 `transport_mode`, and either `url` (HTTP transports) or `command`
 (stdio). See `MCPServerConfig` godoc for the full surface.
 
+#### tools.mcp_servers[].oauth_provider (and .meta_annotations)
+
+Southbound per-identity OAuth binding (D-278). `oauth_provider` names a
+declared `tools.oauth_providers[]` entry (a NON-SECRET provider name); a
+bound http(s) connection resolves a fresh bearer for the calling identity
+on every identity-stamped per-call RPC and injects `Authorization: Bearer
+<tok>` on that request only (the connect-time `headers` stay for the
+initialize/discovery handshake). A bound provider whose token fetch fails
+aborts the call loud — never an unauthenticated fallback; a
+`consent_required` refusal parks the run on the unified pause/resume
+primitive. Validation rejects an unknown provider name (the error lists the
+declared names), a binding on a `stdio` transport (no HTTP request to inject
+into), and a static `Authorization` header alongside the binding (one auth
+mode per connection).
+
+`meta_annotations` is a static, NON-SECRET `map[string]string` merged
+verbatim into the MCP `_meta` on every identity-stamped call — the
+deployment's own attribution vocabulary, passed to the server alongside the
+`(tenant, user, session)` triple and the provenance `agent_id`. Reserved
+keys (`tenant` / `user` / `session` / `agent_id` / `traceparent` /
+`tracestate` and any `io.modelcontextprotocol/`-prefixed key) and empty keys
+are rejected at validation. See `examples/dev.yaml` for a worked stanza.
+
 #### tools.mcp_servers[].policy (and .tool_policies)
 
 Optional retry/timeout policy for the tools a server registers (Phase
