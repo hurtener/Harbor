@@ -3,7 +3,9 @@ package llm_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +19,21 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	_ "github.com/hurtener/Harbor/internal/llm/mock"
 )
+
+// uniqueDriverName appends a process-wide monotonic suffix to base so a
+// test's llm.Register call is idempotent across `go test -count=N`: the
+// registry is write-once-at-init (llm.Register panics on a duplicate
+// name), and a fixed test-chosen name collides with itself when the
+// SAME test binary process re-runs every test N times (count>1 does not
+// restart the process — package-level registry state persists across
+// iterations). Every test that registers a driver under a fixed literal
+// name must route it through this helper instead (review finding: the
+// -count=2 gate must be green).
+var driverNameSeq atomic.Int64
+
+func uniqueDriverName(base string) string {
+	return fmt.Sprintf("%s-%d", base, driverNameSeq.Add(1))
+}
 
 // makeDeps returns a fully-wired llm.Deps backed by real in-memory
 // drivers + a real patterns redactor. The bus is closed via the

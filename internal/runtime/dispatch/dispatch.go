@@ -468,12 +468,16 @@ func (e *toolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) int
 // planner-readable observation for AwaitTask / retain-turn SpawnTask.
 // The answer envelope on Result.Value is JSON — the per-task driver's
 // [planner.AnswerEnvelope] `{answer, finish_reason, tool_calls_seen}`
-// shape (exported for run-loop drivers). It is embedded
-// parsed-generic (not as the typed struct) so the planner sees
-// structured data rather than a JSON-string AND so non-envelope
-// Result.Values (a TaskResult is not guaranteed to be an envelope)
-// round-trip without field loss. A failed / cancelled task carries its
-// error code + message instead.
+// shape (exported for run-loop drivers), which MAY additionally carry
+// the additive `answer_payload` key on a run-level structured-output
+// task (WithOutputSchema). It is embedded parsed-generic (not as the
+// typed struct) so the planner sees structured data rather than a
+// JSON-string AND so non-envelope Result.Values (a TaskResult is not
+// guaranteed to be an envelope) round-trip without field loss. A
+// failed / cancelled task carries its error code + message instead. A
+// large `answer_payload` rides the SAME heavy-output offload the rest
+// of this projection path already applies (see `projectForLLM` below)
+// — no second content-size mechanism.
 func taskOutcomeObservation(task *tasks.Task) any {
 	out := map[string]any{
 		"task_id": string(task.ID),

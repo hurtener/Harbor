@@ -166,6 +166,14 @@ func TestE2E_Phase143_HappyPath_ValidatedPayload(t *testing.T) {
 	if len(env.AnswerPayload) == 0 {
 		t.Fatal("expected a validated AnswerPayload")
 	}
+	// Byte-pin: AnswerPayload carries the scripted content's EXACT bytes
+	// — never a lossy string round-trip through a decode/re-encode (map
+	// key-order nondeterminism is exactly what capturePayloadJSON's
+	// direct-bytes capture is engineered to avoid).
+	const wantBytes = `{"sentiment":"positive","confidence":0.9}`
+	if string(env.AnswerPayload) != wantBytes {
+		t.Errorf("AnswerPayload = %s, want the exact scripted bytes %s", env.AnswerPayload, wantBytes)
+	}
 	var got struct {
 		Sentiment  string  `json:"sentiment"`
 		Confidence float64 `json:"confidence"`
