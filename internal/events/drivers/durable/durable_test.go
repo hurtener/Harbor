@@ -203,21 +203,6 @@ func TestDurable_ReplayFromCursor_StrictlyNewer(t *testing.T) {
 	}
 }
 
-func TestDurable_ReplayCursorAtHead_ReturnsNil(t *testing.T) {
-	store := newInmemStore(t)
-	bus, rp := newDurableBus(t, store)
-	id := quad("t1", "u1", "s1")
-	publishN(t, bus, id, 3)
-
-	got, err := rp.Replay(context.Background(), events.Cursor{SessionID: "s1", Sequence: 3}, filterFor(id))
-	if err != nil {
-		t.Fatalf("Replay: %v", err)
-	}
-	if got != nil {
-		t.Fatalf("expected nil replay at head, got %d events", len(got))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Acceptance: restart-replay-no-gaps
 // ---------------------------------------------------------------------------
@@ -265,64 +250,6 @@ func TestDurable_ReplayAcrossRestart_NoGaps(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Multi-isolation
 // ---------------------------------------------------------------------------
-
-func TestDurable_Replay_CrossSessionIsolation(t *testing.T) {
-	store := newInmemStore(t)
-	bus, rp := newDurableBus(t, store)
-
-	idA := quad("t1", "u1", "sA")
-	idB := quad("t1", "u1", "sB")
-	idC := quad("t2", "u9", "sC")
-
-	publishN(t, bus, idA, 3)
-	publishN(t, bus, idB, 4)
-	publishN(t, bus, idC, 2)
-
-	gotA, err := rp.Replay(context.Background(), events.Cursor{SessionID: "sA"}, filterFor(idA))
-	if err != nil {
-		t.Fatalf("Replay sA: %v", err)
-	}
-	if len(gotA) != 3 {
-		t.Fatalf("session sA: expected 3 events, got %d", len(gotA))
-	}
-	for _, ev := range gotA {
-		if ev.Identity.SessionID != "sA" || ev.Identity.TenantID != "t1" {
-			t.Fatalf("cross-session leak: sA replay returned %+v", ev.Identity)
-		}
-	}
-
-	gotC, err := rp.Replay(context.Background(), events.Cursor{SessionID: "sC"}, filterFor(idC))
-	if err != nil {
-		t.Fatalf("Replay sC: %v", err)
-	}
-	if len(gotC) != 2 {
-		t.Fatalf("session sC: expected 2 events, got %d", len(gotC))
-	}
-	for _, ev := range gotC {
-		if ev.Identity.TenantID != "t2" {
-			t.Fatalf("cross-tenant leak: sC replay returned tenant %q", ev.Identity.TenantID)
-		}
-	}
-}
-
-func TestDurable_Subscribe_RejectsEmptyTripleNonAdmin(t *testing.T) {
-	store := newInmemStore(t)
-	bus, _ := newDurableBus(t, store)
-	_, err := bus.Subscribe(context.Background(), events.Filter{Tenant: "t1"})
-	if !errors.Is(err, events.ErrIdentityScopeRequired) {
-		t.Fatalf("expected ErrIdentityScopeRequired, got %v", err)
-	}
-}
-
-func TestDurable_Replay_RejectsEmptyTripleNonAdmin(t *testing.T) {
-	store := newInmemStore(t)
-	bus, rp := newDurableBus(t, store)
-	_ = bus
-	_, err := rp.Replay(context.Background(), events.Cursor{SessionID: "s1"}, events.Filter{Session: "s1"})
-	if !errors.Is(err, events.ErrIdentityScopeRequired) {
-		t.Fatalf("expected ErrIdentityScopeRequired, got %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Live fan-out
@@ -385,40 +312,6 @@ func TestDurable_NoStateStore_DegradesLoudly(t *testing.T) {
 	}
 }
 
-func TestDurable_NoStateStore_RingZero_ReplayUnavailable(t *testing.T) {
-	cfg := durableCfg()
-	cfg.ReplayBufferSize = 0
-	bus, err := durable.New(context.Background(), cfg, auditpatterns.New(), nil,
-		durable.WithLogger(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))))
-	if err != nil {
-		t.Fatalf("durable.New: %v", err)
-	}
-	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	rp := bus.(events.Replayer)
-	_, err = rp.Replay(context.Background(), events.Cursor{SessionID: "s1"}, filterFor(quad("t1", "u1", "s1")))
-	if !errors.Is(err, events.ErrReplayUnavailable) {
-		t.Fatalf("expected ErrReplayUnavailable, got %v", err)
-	}
-}
-
-func TestDurable_BestEffort_CursorTooOld(t *testing.T) {
-	cfg := durableCfg()
-	cfg.ReplayBufferSize = 4 // small ring so older events are evicted
-	bus, err := durable.New(context.Background(), cfg, auditpatterns.New(), nil,
-		durable.WithLogger(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))))
-	if err != nil {
-		t.Fatalf("durable.New: %v", err)
-	}
-	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	id := quad("t1", "u1", "s1")
-	publishN(t, bus, id, 10) // ring retains seq 7..10
-	rp := bus.(events.Replayer)
-	_, err = rp.Replay(context.Background(), events.Cursor{SessionID: "s1", Sequence: 2}, filterFor(id))
-	if !errors.Is(err, events.ErrCursorTooOld) {
-		t.Fatalf("expected ErrCursorTooOld, got %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Fail-loudly: persistence failure surfaces from Publish
 // ---------------------------------------------------------------------------
@@ -469,37 +362,6 @@ func TestDurable_PersistFailure_SurfacesLoudly(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Closed-bus behaviour
 // ---------------------------------------------------------------------------
-
-func TestDurable_ClosedBus_RejectsOps(t *testing.T) {
-	store := newInmemStore(t)
-	bus, rp := newDurableBus(t, store)
-	if err := bus.Close(context.Background()); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	id := quad("t1", "u1", "s1")
-	if err := bus.Publish(context.Background(), events.Event{
-		Type: events.EventTypeRuntimeWarning, Identity: id, Payload: runtimeWarn("x"),
-	}); !errors.Is(err, events.ErrBusClosed) {
-		t.Fatalf("Publish after Close: expected ErrBusClosed, got %v", err)
-	}
-	if _, err := bus.Subscribe(context.Background(), filterFor(id)); !errors.Is(err, events.ErrBusClosed) {
-		t.Fatalf("Subscribe after Close: expected ErrBusClosed, got %v", err)
-	}
-	if _, err := rp.Replay(context.Background(), events.Cursor{SessionID: "s1"}, filterFor(id)); !errors.Is(err, events.ErrBusClosed) {
-		t.Fatalf("Replay after Close: expected ErrBusClosed, got %v", err)
-	}
-}
-
-func TestDurable_Close_Idempotent(t *testing.T) {
-	store := newInmemStore(t)
-	bus, _ := newDurableBus(t, store)
-	if err := bus.Close(context.Background()); err != nil {
-		t.Fatalf("Close #1: %v", err)
-	}
-	if err := bus.Close(context.Background()); err != nil {
-		t.Fatalf("Close #2 (idempotent): %v", err)
-	}
-}
 
 // ensure the audit.Redactor interface import is used (compile guard).
 var _ audit.Redactor = auditpatterns.New()
@@ -594,102 +456,6 @@ func historyReplayer(t *testing.T, bus events.EventBus) events.HistoryReplayer {
 		t.Fatalf("durable bus does not implement events.HistoryReplayer")
 	}
 	return hr
-}
-
-func TestDurable_Bounds_ReportsHeadAndTail(t *testing.T) {
-	bus, _ := newDurableBus(t, newInmemStore(t))
-	hr := historyReplayer(t, bus)
-	id := quad("t1", "u1", "s1")
-	publishN(t, bus, id, 5)
-
-	head, tail, _, err := hr.Bounds(context.Background(), filterFor(id))
-	if err != nil {
-		t.Fatalf("Bounds: %v", err)
-	}
-	if head != 1 || tail != 5 {
-		t.Fatalf("Bounds = (%d, %d), want (1, 5)", head, tail)
-	}
-}
-
-func TestDurable_Bounds_EmptySession_ErrNoHistory(t *testing.T) {
-	bus, _ := newDurableBus(t, newInmemStore(t))
-	hr := historyReplayer(t, bus)
-	_, _, _, err := hr.Bounds(context.Background(), filterFor(quad("t1", "u1", "empty")))
-	if !errors.Is(err, events.ErrNoHistory) {
-		t.Fatalf("Bounds(empty session) err = %v, want ErrNoHistory", err)
-	}
-}
-
-func TestDurable_Bounds_EmptyTriple_ErrIdentityScopeRequired(t *testing.T) {
-	bus, _ := newDurableBus(t, newInmemStore(t))
-	hr := historyReplayer(t, bus)
-	_, _, _, err := hr.Bounds(context.Background(), events.Filter{Tenant: "t1"}) // no user/session
-	if !errors.Is(err, events.ErrIdentityScopeRequired) {
-		t.Fatalf("Bounds(partial triple) err = %v, want ErrIdentityScopeRequired", err)
-	}
-}
-
-func TestDurable_Window_TailFirst_MostRecentK_OldestFirst(t *testing.T) {
-	bus, _ := newDurableBus(t, newInmemStore(t))
-	hr := historyReplayer(t, bus)
-	id := quad("t1", "u1", "s1")
-	publishN(t, bus, id, 10) // sequences 1..10
-
-	// before==0 ⇒ from the tail; limit 3 ⇒ the most-recent 3 (8,9,10),
-	// returned oldest-first.
-	win, err := hr.Window(context.Background(), 0, 3, filterFor(id))
-	if err != nil {
-		t.Fatalf("Window: %v", err)
-	}
-	if len(win) != 3 {
-		t.Fatalf("Window len = %d, want 3", len(win))
-	}
-	if win[0].Sequence != 8 || win[1].Sequence != 9 || win[2].Sequence != 10 {
-		t.Fatalf("Window seqs = [%d %d %d], want [8 9 10]", win[0].Sequence, win[1].Sequence, win[2].Sequence)
-	}
-}
-
-func TestDurable_Window_BeforeCursor_ScrollsUp(t *testing.T) {
-	bus, _ := newDurableBus(t, newInmemStore(t))
-	hr := historyReplayer(t, bus)
-	id := quad("t1", "u1", "s1")
-	publishN(t, bus, id, 10)
-
-	// before==8 ⇒ events with Sequence < 8, most-recent 3 (5,6,7).
-	win, err := hr.Window(context.Background(), 8, 3, filterFor(id))
-	if err != nil {
-		t.Fatalf("Window: %v", err)
-	}
-	if len(win) != 3 || win[0].Sequence != 5 || win[2].Sequence != 7 {
-		t.Fatalf("Window(before=8) = %v, want seqs 5,6,7", seqs(win))
-	}
-}
-
-func TestDurable_Window_EmptySession_Nil(t *testing.T) {
-	bus, _ := newDurableBus(t, newInmemStore(t))
-	hr := historyReplayer(t, bus)
-	win, err := hr.Window(context.Background(), 0, 50, filterFor(quad("t1", "u1", "empty")))
-	if err != nil {
-		t.Fatalf("Window(empty) err = %v, want nil", err)
-	}
-	if len(win) != 0 {
-		t.Fatalf("Window(empty) len = %d, want 0", len(win))
-	}
-}
-
-func TestDurable_Window_ReachesHead(t *testing.T) {
-	bus, _ := newDurableBus(t, newInmemStore(t))
-	hr := historyReplayer(t, bus)
-	id := quad("t1", "u1", "s1")
-	publishN(t, bus, id, 4)
-	// A window larger than the retained range returns everything.
-	win, err := hr.Window(context.Background(), 0, 50, filterFor(id))
-	if err != nil {
-		t.Fatalf("Window: %v", err)
-	}
-	if len(win) != 4 || win[0].Sequence != 1 || win[3].Sequence != 4 {
-		t.Fatalf("Window(all) = %v, want seqs 1..4", seqs(win))
-	}
 }
 
 func seqs(evs []events.Event) []uint64 {

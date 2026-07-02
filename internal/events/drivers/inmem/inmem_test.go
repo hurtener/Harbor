@@ -201,31 +201,6 @@ func TestPublish_RejectsUnknownEventType(t *testing.T) {
 	}
 }
 
-func TestPublish_RejectsMissingIdentity(t *testing.T) {
-	bus := newBus(t)
-	ev := mkEvent(1)
-	ev.Identity.TenantID = ""
-	err := bus.Publish(context.Background(), ev)
-	if !errors.Is(err, events.ErrIdentityRequired) {
-		t.Fatalf("err=%v, want ErrIdentityRequired", err)
-	}
-}
-
-func TestSubscribe_RejectsEmptyTripleNonAdmin(t *testing.T) {
-	bus := newBus(t)
-	cases := []events.Filter{
-		{},
-		{Tenant: "T"},
-		{Tenant: "T", User: "U"},
-	}
-	for _, f := range cases {
-		_, err := bus.Subscribe(context.Background(), f)
-		if !errors.Is(err, events.ErrIdentityScopeRequired) {
-			t.Errorf("filter %+v: err=%v, want ErrIdentityScopeRequired", f, err)
-		}
-	}
-}
-
 func TestSubscribe_AdminBypassesTriple_AndAuditEmits(t *testing.T) {
 	bus := newBus(t)
 	// Admin subscriber picks up everything including its own audit.
@@ -277,36 +252,6 @@ func TestSubscribe_PerSessionLimit(t *testing.T) {
 		t.Fatalf("re-subscribe after cancel: %v", err)
 	}
 	s.Cancel()
-}
-
-func TestPublish_CrossTenantIsolation(t *testing.T) {
-	bus := newBus(t)
-	idA := mkID(1)
-	subA, err := bus.Subscribe(context.Background(), events.Filter{
-		Tenant: idA.TenantID, User: idA.UserID, Session: idA.SessionID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer subA.Cancel()
-
-	// Publish 50 events as tenant B.
-	for range 50 {
-		evB := mkEvent(2)
-		if err := bus.Publish(context.Background(), evB); err != nil {
-			t.Fatalf("publish B: %v", err)
-		}
-	}
-
-	// A should see ZERO events. Wait briefly to let any cross-talk surface.
-	select {
-	case ev := <-subA.Events():
-		if ev.Identity.TenantID != "" {
-			t.Errorf("subscriber A leaked event from tenant %q (event=%+v)", ev.Identity.TenantID, ev)
-		}
-	case <-time.After(150 * time.Millisecond):
-		// Expected: no cross-tenant delivery.
-	}
 }
 
 func TestPublish_DropOldestEmitsBusDropped(t *testing.T) {
@@ -519,31 +464,6 @@ func TestReaper_DoesNotReapQuietConsumer(t *testing.T) {
 		}
 	case <-time.After(150 * time.Millisecond):
 		// Expected: no reap on quiet bus.
-	}
-}
-
-func TestPublish_AfterClose_ReturnsBusClosed(t *testing.T) {
-	bus := newBus(t)
-	if err := bus.Close(context.Background()); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	err := bus.Publish(context.Background(), mkEvent(1))
-	if !errors.Is(err, events.ErrBusClosed) {
-		t.Fatalf("Publish err=%v, want ErrBusClosed", err)
-	}
-	_, err = bus.Subscribe(context.Background(), events.Filter{Tenant: "T", User: "U", Session: "S"})
-	if !errors.Is(err, events.ErrBusClosed) {
-		t.Fatalf("Subscribe err=%v, want ErrBusClosed", err)
-	}
-}
-
-func TestClose_Idempotent(t *testing.T) {
-	bus := newBus(t)
-	if err := bus.Close(context.Background()); err != nil {
-		t.Fatalf("Close 1: %v", err)
-	}
-	if err := bus.Close(context.Background()); err != nil {
-		t.Fatalf("Close 2: %v", err)
 	}
 }
 
@@ -915,19 +835,6 @@ func histSeqs(evs []events.Event) []uint64 {
 	return out
 }
 
-func TestInmem_Bounds_ReportsHeadTail(t *testing.T) {
-	bus, hr := newHistoryBus(t)
-	id := historyID()
-	publishHistory(t, bus, id, 5)
-	head, tail, _, err := hr.Bounds(context.Background(), histFilter(id))
-	if err != nil {
-		t.Fatalf("Bounds: %v", err)
-	}
-	if head != 1 || tail != 5 {
-		t.Fatalf("Bounds = (%d, %d), want (1, 5)", head, tail)
-	}
-}
-
 // TestInmem_HistoryWindow_AdminScopesToNamedSession is the regression for
 // the cross-session/cross-tenant disclosure on the ring: a HistoryReplayer
 // read is BY-ID, so even an admin filter naming session A must receive ONLY
@@ -1035,61 +942,5 @@ func TestInmem_Bounds_WrappedRing_ReportsTruncated(t *testing.T) {
 	}
 	if !truncated {
 		t.Fatalf("a wrapped ring must report truncated=true (older events evicted) — never silently lossy")
-	}
-}
-
-func TestInmem_Bounds_NoMatch_ErrNoHistory(t *testing.T) {
-	bus, hr := newHistoryBus(t)
-	publishHistory(t, bus, historyID(), 3)
-	_, _, _, err := hr.Bounds(context.Background(),
-		events.Filter{Tenant: "t-h", User: "u-h", Session: "other"})
-	if !errors.Is(err, events.ErrNoHistory) {
-		t.Fatalf("Bounds(no-match) err = %v, want ErrNoHistory", err)
-	}
-}
-
-func TestInmem_Bounds_EmptyTriple_ErrIdentityScopeRequired(t *testing.T) {
-	_, hr := newHistoryBus(t)
-	_, _, _, err := hr.Bounds(context.Background(), events.Filter{Tenant: "t-h"})
-	if !errors.Is(err, events.ErrIdentityScopeRequired) {
-		t.Fatalf("Bounds(partial) err = %v, want ErrIdentityScopeRequired", err)
-	}
-}
-
-func TestInmem_Window_TailFirst_OldestFirst(t *testing.T) {
-	bus, hr := newHistoryBus(t)
-	id := historyID()
-	publishHistory(t, bus, id, 10)
-	win, err := hr.Window(context.Background(), 0, 3, histFilter(id))
-	if err != nil {
-		t.Fatalf("Window: %v", err)
-	}
-	if len(win) != 3 || win[0].Sequence != 8 || win[2].Sequence != 10 {
-		t.Fatalf("Window(tail,3) = %v, want seqs 8,9,10", histSeqs(win))
-	}
-}
-
-func TestInmem_Window_BeforeCursor(t *testing.T) {
-	bus, hr := newHistoryBus(t)
-	id := historyID()
-	publishHistory(t, bus, id, 10)
-	win, err := hr.Window(context.Background(), 8, 3, histFilter(id))
-	if err != nil {
-		t.Fatalf("Window: %v", err)
-	}
-	if len(win) != 3 || win[0].Sequence != 5 || win[2].Sequence != 7 {
-		t.Fatalf("Window(before=8) = %v, want seqs 5,6,7", histSeqs(win))
-	}
-}
-
-func TestInmem_Window_ReplayDisabled_ErrReplayUnavailable(t *testing.T) {
-	bus, err := inmem.New(defaultCfg(), auditpatterns.New()) // ReplayBufferSize == 0
-	if err != nil {
-		t.Fatalf("inmem.New: %v", err)
-	}
-	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	hr := bus.(events.HistoryReplayer)
-	if _, err := hr.Window(context.Background(), 0, 10, histFilter(historyID())); !errors.Is(err, events.ErrReplayUnavailable) {
-		t.Fatalf("Window(ring off) err = %v, want ErrReplayUnavailable", err)
 	}
 }

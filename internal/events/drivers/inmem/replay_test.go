@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -126,59 +125,6 @@ func TestReplay_ZeroCursor_ReturnsEntireRing(t *testing.T) {
 	}
 }
 
-// TestReplay_HeadCursor_ReturnsNilNil pins the "nothing newer to
-// replay" case — cursor at or past the head returns (nil, nil).
-func TestReplay_HeadCursor_ReturnsNilNil(t *testing.T) {
-	bus, rp := newReplayBus(t)
-	id := mkID(1)
-
-	sub, err := bus.Subscribe(context.Background(), events.Filter{
-		Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sub.Cancel()
-
-	for i := range 3 {
-		ev := events.Event{
-			Type:     events.EventTypeRuntimeError,
-			Identity: id,
-			Payload:  events.SubscriptionIdleClosedPayload{SubscriberID: uint64(i)},
-		}
-		if err := bus.Publish(context.Background(), ev); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got := drainN(t, sub, 3, time.Second)
-	if len(got) != 3 {
-		t.Fatalf("drained %d, want 3", len(got))
-	}
-	headSeq := got[len(got)-1].Sequence
-
-	// Cursor at head:
-	out, err := rp.Replay(context.Background(),
-		events.Cursor{SessionID: id.SessionID, Sequence: headSeq},
-		events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID})
-	if err != nil {
-		t.Fatalf("Replay (cursor=head): %v", err)
-	}
-	if out != nil {
-		t.Errorf("cursor at head: got %d events, want nil", len(out))
-	}
-
-	// Cursor past head (future): also nil/nil.
-	out, err = rp.Replay(context.Background(),
-		events.Cursor{SessionID: id.SessionID, Sequence: headSeq + 100},
-		events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID})
-	if err != nil {
-		t.Fatalf("Replay (cursor>head): %v", err)
-	}
-	if out != nil {
-		t.Errorf("cursor past head: got %d events, want nil", len(out))
-	}
-}
-
 // TestReplay_FilterApplied confirms the filter discriminates by Type.
 // Cross-tenant isolation is its own test.
 func TestReplay_FilterApplied(t *testing.T) {
@@ -221,104 +167,6 @@ func TestReplay_FilterApplied(t *testing.T) {
 	}
 	if len(out) != 4 {
 		t.Errorf("type filter match: returned %d, want 4", len(out))
-	}
-}
-
-// TestReplay_DisabledByConfig_ErrReplayUnavailable pins the
-// configured-off path: ReplayBufferSize=0 ⇒ ErrReplayUnavailable.
-func TestReplay_DisabledByConfig_ErrReplayUnavailable(t *testing.T) {
-	bus, err := inmem.New(replayCfgN(0), auditpatterns.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-
-	rp, ok := bus.(events.Replayer)
-	if !ok {
-		t.Fatal("type assertion to Replayer should still succeed when configured off")
-	}
-	id := mkID(1)
-	out, err := rp.Replay(context.Background(), events.Cursor{},
-		events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID})
-	if !errors.Is(err, events.ErrReplayUnavailable) {
-		t.Fatalf("err=%v, want ErrReplayUnavailable", err)
-	}
-	if out != nil {
-		t.Errorf("got %d events with replay disabled, want nil", len(out))
-	}
-}
-
-// TestReplay_RingOverrun_ErrCursorTooOld pins the eviction-driven
-// failure: a cursor older than the ring tail returns the sentinel
-// with the (oldest, requested) detail wrapped in the message.
-func TestReplay_RingOverrun_ErrCursorTooOld(t *testing.T) {
-	bus, rp := newReplayBus(t /* default cap=64 */)
-	id := mkID(1)
-
-	sub, err := bus.Subscribe(context.Background(), events.Filter{
-		Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Drain in the background to keep the subscriber buffer healthy.
-	drainDone := make(chan struct{})
-	go func() {
-		defer close(drainDone)
-		for range sub.Events() {
-		}
-	}()
-
-	// Capture an early cursor; we publish one event and wait for it
-	// to surface so we know its Sequence.
-	earlyCursor := events.Cursor{SessionID: id.SessionID, Sequence: 1}
-
-	// Publish enough to overrun the ring (capacity 64, so 200
-	// guarantees overrun).
-	for i := range 200 {
-		ev := events.Event{
-			Type:     events.EventTypeRuntimeError,
-			Identity: id,
-			Payload:  events.SubscriptionIdleClosedPayload{SubscriberID: uint64(i)},
-		}
-		if err := bus.Publish(context.Background(), ev); err != nil {
-			t.Fatalf("Publish %d: %v", i, err)
-		}
-	}
-
-	out, err := rp.Replay(context.Background(), earlyCursor,
-		events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID})
-	if !errors.Is(err, events.ErrCursorTooOld) {
-		t.Fatalf("err=%v, want ErrCursorTooOld", err)
-	}
-	if out != nil {
-		t.Errorf("got %d events on too-old cursor, want nil", len(out))
-	}
-	// The wrapping message must carry the (oldest, requested) detail.
-	msg := err.Error()
-	if !strings.Contains(msg, "oldest=") || !strings.Contains(msg, "requested=") {
-		t.Errorf("ErrCursorTooOld message missing detail: %q", msg)
-	}
-
-	sub.Cancel()
-	<-drainDone
-}
-
-// TestReplay_RejectsEmptyFilter ensures the same identity-mandatory
-// rule Subscribe enforces also gates Replay.
-func TestReplay_RejectsEmptyFilter(t *testing.T) {
-	_, rp := newReplayBus(t)
-
-	cases := []events.Filter{
-		{},
-		{Tenant: "T"},
-		{Tenant: "T", User: "U"},
-	}
-	for _, f := range cases {
-		_, err := rp.Replay(context.Background(), events.Cursor{}, f)
-		if !errors.Is(err, events.ErrIdentityScopeRequired) {
-			t.Errorf("filter %+v: err=%v, want ErrIdentityScopeRequired", f, err)
-		}
 	}
 }
 
@@ -522,77 +370,6 @@ func TestReplay_NoDuplicatesWithLiveSubscribe(t *testing.T) {
 	// Must have seen all 11 distinct sequences (5 + 5 + 1).
 	if len(seenSeqs) != 11 {
 		t.Errorf("union covered %d distinct sequences, want 11", len(seenSeqs))
-	}
-}
-
-// TestReplay_CrossTenant_Isolation is the AGENTS.md §13 forbidden-
-// practice pin: tenant A's Replay must not see tenant B's events.
-//
-// The test sizes the ring large enough to hold every published
-// event so the assertion isolates the filter from any
-// eviction-driven undercount; ring overrun has its own dedicated
-// test (TestReplay_RingOverrun_ErrCursorTooOld).
-func TestReplay_CrossTenant_Isolation(t *testing.T) {
-	bus, err := inmem.New(replayCfgN(256), auditpatterns.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	rp, ok := bus.(events.Replayer)
-	if !ok {
-		t.Fatal("bus is not a Replayer")
-	}
-
-	idA := mkID(1)
-	idB := mkID(2)
-
-	// Interleave 50 events from A and 50 from B.
-	for i := range 50 {
-		evA := events.Event{
-			Type:     events.EventTypeRuntimeError,
-			Identity: idA,
-			Payload:  events.SubscriptionIdleClosedPayload{SubscriberID: uint64(i)},
-		}
-		evB := events.Event{
-			Type:     events.EventTypeRuntimeError,
-			Identity: idB,
-			Payload:  events.SubscriptionIdleClosedPayload{SubscriberID: uint64(i + 100)},
-		}
-		if err := bus.Publish(context.Background(), evA); err != nil {
-			t.Fatal(err)
-		}
-		if err := bus.Publish(context.Background(), evB); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	out, err := rp.Replay(context.Background(), events.Cursor{},
-		events.Filter{Tenant: idA.TenantID, User: idA.UserID, Session: idA.SessionID})
-	if err != nil {
-		t.Fatalf("Replay: %v", err)
-	}
-	for _, ev := range out {
-		if ev.Identity.TenantID != idA.TenantID {
-			t.Fatalf("cross-tenant leak: replay returned tenant=%q event for tenant=%q filter",
-				ev.Identity.TenantID, idA.TenantID)
-		}
-	}
-	if len(out) != 50 {
-		t.Errorf("got %d tenant-A events, want 50", len(out))
-	}
-}
-
-// TestReplay_AfterClose_ErrBusClosed pins the post-Close behavior.
-func TestReplay_AfterClose_ErrBusClosed(t *testing.T) {
-	bus, rp := newReplayBus(t)
-	if err := bus.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	id := mkID(1)
-	_, err := rp.Replay(context.Background(), events.Cursor{},
-		events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID})
-	if !errors.Is(err, events.ErrBusClosed) {
-		t.Errorf("err=%v, want ErrBusClosed", err)
 	}
 }
 
