@@ -96,8 +96,11 @@ type Projector interface {
 	// GetTool returns the catalog row for toolID, or ErrToolNotFound.
 	GetTool(ctx context.Context, id identity.Identity, toolID string) (prototypes.Tool, error)
 	// DescribeTool returns the full manifest for toolID, or
-	// ErrToolNotFound.
-	DescribeTool(ctx context.Context, id identity.Identity, toolID string) (prototypes.ToolManifest, error)
+	// ErrToolNotFound. agentID, when non-empty, projects the EFFECTIVE
+	// loading_mode through the agent's active tool-exposure config; empty
+	// reports the boot-effective mode, byte-compatible with the surface
+	// before this projection existed.
+	DescribeTool(ctx context.Context, id identity.Identity, toolID string, agentID string) (prototypes.ToolManifest, error)
 	// ToolMetrics returns per-tool error-rate gauges for toolID over the
 	// resolved window, or ErrToolNotFound.
 	ToolMetrics(ctx context.Context, id identity.Identity, toolID string, window prototypes.ToolMetricsWindow) (prototypes.ToolMetrics, error)
@@ -306,7 +309,7 @@ func (s *Service) Describe(ctx context.Context, req prototypes.ToolDescribeReque
 	if strings.TrimSpace(req.ID) == "" {
 		return prototypes.ToolManifest{}, fmt.Errorf("%w: tool id is empty", ErrInvalidRequest)
 	}
-	m, err := s.projector.DescribeTool(ctx, id, req.ID)
+	m, err := s.projector.DescribeTool(ctx, id, req.ID, req.AgentID)
 	if err != nil {
 		return prototypes.ToolManifest{}, mapProjectorErr(err)
 	}

@@ -75,7 +75,10 @@ export interface ToolListResponse {
   aggregates: ToolAggregates;
 }
 
-/** The full descriptor projection `tools.describe` returns. */
+/** The full descriptor projection `tools.describe` returns. When the request
+ * names an `agent_id`, `loading_mode` reports the EFFECTIVE mode projected
+ * through that agent's active tool-exposure config (D-281); absent
+ * `agent_id` reports the boot-effective mode. */
 export interface ToolManifest {
   tool: Tool;
   side_effect: string;

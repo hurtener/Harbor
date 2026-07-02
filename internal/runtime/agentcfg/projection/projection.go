@@ -268,10 +268,11 @@ func ActiveRunCompletionHook(ctx context.Context, reg agentcfg.Registry, agentID
 // contract). Only the identity triple is used (the registry is
 // identity-scoped, never keyed by run).
 func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
-	base := tools.NewPlannerView(cat, filter)
-
-	// Admin exposure (the baseline).
+	// Admin exposure (the baseline). The loading-mode override maps are
+	// ADMIN-tier only — the durable per-user and ephemeral session tiers
+	// below stay narrow-only disable sets with no loading field.
 	var adminPaused, adminDisabled []string
+	var adminToolExposure *agentcfg.ToolExposure
 	if reg != nil && agentID != "" {
 		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
 		if err != nil {
@@ -280,7 +281,25 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 		if ok && rev.Payload.ToolExposure != nil {
 			adminPaused = rev.Payload.PausedServers()
 			adminDisabled = rev.Payload.DisabledTools()
+			adminToolExposure = rev.Payload.ToolExposure
 		}
+	}
+
+	// Loading-mode override projection: when the admin tier carries no
+	// override maps, the plain PlannerView is the backward-compatible "no
+	// override" path. Otherwise, the inner view is rebuilt over a
+	// BROADENED filter (both loading modes) so LoadingOverrideView — not
+	// filter.LoadingModes — decides prompt-time visibility against the
+	// EFFECTIVE mode. The effective map is resolved ONCE per run from a
+	// single catalog listing, so concurrent / in-flight runs never share
+	// mutable state (the concurrent-reuse contract).
+	var base tools.PlannerCatalogView = tools.NewPlannerView(cat, filter)
+	if adminToolExposure != nil && (len(adminToolExposure.ServerLoadingModes) > 0 || len(adminToolExposure.ToolLoadingModes) > 0) {
+		broadFilter := filter
+		broadFilter.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
+		broad := tools.NewPlannerView(cat, broadFilter)
+		effective := buildEffectiveLoading(broad.List(), adminToolExposure)
+		base = tools.NewLoadingOverrideView(broad, effective, filter.LoadingModes)
 	}
 
 	// Durable user-scope exposure: the per-user narrow-only disable set that
@@ -325,6 +344,92 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 		return base, nil
 	}
 	return tools.NewExclusionView(base, paused, disabled), nil
+}
+
+// resolveEffectiveLoading applies the top two layers of the loading-mode
+// precedence order (tool_loading_modes[name] > server_loading_modes
+// [source], the latter restricted to TOOL-form descriptors) to one catalog
+// tool. Returns (mode, true) when an override applies; (_, false) when
+// neither map names this tool — the caller keeps the boot-effective mode
+// (the bottom two precedence layers, already baked into t.Loading at boot).
+// This is the ONE canonical implementation shared by the run-start
+// projection and the tools.describe effective-mode read surface, so the
+// two seams cannot drift (CLAUDE.md §17.6).
+func resolveEffectiveLoading(te *agentcfg.ToolExposure, t tools.Tool) (tools.LoadingMode, bool) {
+	if te == nil {
+		return "", false
+	}
+	if mode, ok := te.ToolLoadingModes[t.Name]; ok {
+		return tools.LoadingMode(mode), true
+	}
+	if t.Form == tools.ToolFormTool && t.Source != "" {
+		if mode, ok := te.ServerLoadingModes[string(t.Source)]; ok {
+			return tools.LoadingMode(mode), true
+		}
+	}
+	return "", false
+}
+
+// buildEffectiveLoading resolves the loading-mode override for every tool in
+// list, returning a map keyed by catalog Name containing ONLY the entries an
+// override actually changes (a tool with no applicable override is omitted
+// — [tools.LoadingOverrideView] falls back to the tool's own boot-effective
+// Loading for an absent key). A nil ToolExposure section returns nil.
+func buildEffectiveLoading(list []tools.Tool, te *agentcfg.ToolExposure) map[string]tools.LoadingMode {
+	if te == nil {
+		return nil
+	}
+	out := make(map[string]tools.LoadingMode, len(list))
+	for _, t := range list {
+		if mode, ok := resolveEffectiveLoading(te, t); ok {
+			out[t.Name] = mode
+		}
+	}
+	return out
+}
+
+// EffectiveLoadingMode resolves tool t's projected EFFECTIVE LoadingMode
+// under agentID's ADMIN-tier active config revision — the SAME precedence
+// [ActivePlannerCatalogView] applies at run start, exposed for the
+// `tools.describe` read surface's optional `agent_id` path. boot is the
+// boot-effective mode (already reflecting the driver default + any boot
+// `tools.entries[].loading_mode`); a nil registry, an empty agentID, or an
+// agent with no active revision / no tool-exposure section returns boot
+// unchanged — the backward-compatible path byte-identical to `tools.describe`
+// behaviour before this projection existed. A registry read error is
+// returned so the caller fails the request loudly (CLAUDE.md §13).
+func EffectiveLoadingMode(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, t tools.Tool, boot tools.LoadingMode) (tools.LoadingMode, error) {
+	if reg == nil || agentID == "" {
+		return boot, nil
+	}
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return "", err
+	}
+	if !ok || rev.Payload.ToolExposure == nil {
+		return boot, nil
+	}
+	if mode, ok := resolveEffectiveLoading(rev.Payload.ToolExposure, t); ok {
+		return mode, nil
+	}
+	return boot, nil
+}
+
+// LoadingResolverAdapter adapts a Registry into the `internal/tools/protocol`
+// package's narrow LoadingResolver seam (the `tools.describe` optional
+// `agent_id` path) via [EffectiveLoadingMode], so the SAME projection
+// precedence backs both the run-start prompt-time projection and the read
+// surface — one shared helper, no binary-local reimplementation (CLAUDE.md
+// §17.6). Satisfies `tools/protocol.LoadingResolver` structurally; this
+// package does not import `tools/protocol` to avoid a needless dependency
+// (Go interfaces are satisfied structurally).
+type LoadingResolverAdapter struct {
+	Registry agentcfg.Registry
+}
+
+// EffectiveLoading implements the `tools/protocol.LoadingResolver` seam.
+func (a LoadingResolverAdapter) EffectiveLoading(ctx context.Context, id identity.Identity, agentID string, t tools.Tool, boot tools.LoadingMode) (tools.LoadingMode, error) {
+	return EffectiveLoadingMode(ctx, a.Registry, agentID, identity.Quadruple{Identity: id}, t, boot)
 }
 
 // ActivePromptLayers resolves the agent's active-config layered system

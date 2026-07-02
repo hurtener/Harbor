@@ -126,15 +126,47 @@ type PromptLayers struct {
 }
 
 // ToolExposure is the forward-compatible tool/MCP-exposure section of the
-// config envelope. Reserved for the MCP pause / per-tool policy consumer;
-// declared now so the envelope evolves without a schema break. Not wired
-// in the first wave.
+// config envelope: the exclusion-based pause/disable sets (PausedServers /
+// DisabledTools) plus the runtime loading-mode override maps
+// (ServerLoadingModes / ToolLoadingModes).
+//
+// # Loading-mode precedence (pinned)
+//
+// Per descriptor, the effective LoadingMode resolves in this order:
+//
+//  1. ToolLoadingModes[name] — exact, unconditional (works on tool /
+//     resource / prompt forms alike).
+//  2. ServerLoadingModes[source] — the server-wide default, applied ONLY to
+//     TOOL-form descriptors (tools.Tool.Form == tools.ToolFormTool); a
+//     server-level override never blanket-flips that server's wrapped
+//     resource/prompt descriptors.
+//  3. The boot `tools.entries[].loading_mode` (already materialized into
+//     the catalog's Tool.Loading at boot).
+//  4. The driver/registration default.
+//
+// Layers 3-4 are already baked into the catalog's boot-effective
+// tools.Tool.Loading, so a projection consumer applies exactly the top two
+// layers over that boot-effective value (see
+// internal/runtime/agentcfg/projection). Values are the closed set
+// "always" | "deferred" — validated at the `agent_config.set_tool_exposure`
+// wire edge BEFORE any registry write (CLAUDE.md §13: no invalid value is
+// ever persisted). Loading is NOT capability-narrowing (a deferred tool
+// stays reachable via `tool_search`), so it lives in the ADMIN tier only —
+// the narrow-only user/session tiers gain no loading field.
 type ToolExposure struct {
 	// PausedServers names MCP servers excluded from the next run's
 	// projection (resume is a flag flip, not a re-dial).
 	PausedServers []string `json:"paused_servers,omitempty"`
 	// DisabledTools names tools the per-tool policy excludes.
 	DisabledTools []string `json:"disabled_tools,omitempty"`
+	// ServerLoadingModes overrides the default LoadingMode ("always" |
+	// "deferred") for a server's TOOL-form descriptors, keyed by the
+	// catalog's ToolSourceID. See the precedence order above.
+	ServerLoadingModes map[string]string `json:"server_loading_modes,omitempty"`
+	// ToolLoadingModes overrides the effective LoadingMode for one exact
+	// catalog name ("always" | "deferred"), unconditionally. See the
+	// precedence order above.
+	ToolLoadingModes map[string]string `json:"tool_loading_modes,omitempty"`
 }
 
 // LLMParams pins an agent's sampling defaults as a versioned config
@@ -371,8 +403,10 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 	}
 	if p.ToolExposure != nil {
 		out.ToolExposure = &ToolExposure{
-			PausedServers: sortDedup(p.ToolExposure.PausedServers),
-			DisabledTools: sortDedup(p.ToolExposure.DisabledTools),
+			PausedServers:      sortDedup(p.ToolExposure.PausedServers),
+			DisabledTools:      sortDedup(p.ToolExposure.DisabledTools),
+			ServerLoadingModes: normalizeLoadingModes(p.ToolExposure.ServerLoadingModes),
+			ToolLoadingModes:   normalizeLoadingModes(p.ToolExposure.ToolLoadingModes),
 		}
 	}
 	if p.Connections != nil {
@@ -432,6 +466,31 @@ func cloneStringMap(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
 	for k, v := range m {
 		out[k] = v
+	}
+	return out
+}
+
+// normalizeLoadingModes returns a defensive copy of m with empty-key entries
+// dropped (an empty catalog name / source id is never a meaningful override
+// key) so an all-empty or all-dropped map normalizes to nil — a phantom
+// override never perturbs the content hash. Values are passed through
+// unvalidated here (the `agent_config.set_tool_exposure` wire edge is the
+// fail-loud validation gate, CLAUDE.md §13); Go's canonical JSON encoding
+// already sorts map keys, so no explicit key-sort is needed for hash
+// stability.
+func normalizeLoadingModes(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -581,6 +640,25 @@ func (p ConfigPayload) DisabledTools() []string {
 		return nil
 	}
 	return p.ToolExposure.DisabledTools
+}
+
+// ServerLoadingModes returns the agent's per-server loading-mode override map
+// from a payload, or nil when the payload pins no tool-exposure section. A
+// convenience for the tool-exposure consumer + the run-start projection.
+func (p ConfigPayload) ServerLoadingModes() map[string]string {
+	if p.ToolExposure == nil {
+		return nil
+	}
+	return p.ToolExposure.ServerLoadingModes
+}
+
+// ToolLoadingModes returns the agent's per-tool loading-mode override map
+// from a payload, or nil when the payload pins no tool-exposure section.
+func (p ConfigPayload) ToolLoadingModes() map[string]string {
+	if p.ToolExposure == nil {
+		return nil
+	}
+	return p.ToolExposure.ToolLoadingModes
 }
 
 // RunCompletionHookView returns the agent's run-completion hook from a
@@ -801,6 +879,18 @@ func runCompletionHookStrings(p ConfigPayload) (tool, timeout string) {
 	return tool, timeout
 }
 
+// LoadingModeChange is one entry in a loading-mode override diff: the
+// override at Key (a catalog name for a ToolLoadingChanges entry, a
+// ToolSourceID for a ServerLoadingChanges entry) changed from From to To.
+// An empty From/To means the override was absent (unset) on that side of
+// the compare — a set→unset or unset→set transition still registers as a
+// change.
+type LoadingModeChange struct {
+	Key  string
+	From string
+	To   string
+}
+
 // ToolExposureDiff is the structured set-diff of the MCP-exposure /
 // per-tool policy across two revisions. Deterministic: every slice is
 // sorted.
@@ -813,13 +903,18 @@ type ToolExposureDiff struct {
 	// re-enabled.
 	DisabledAdded   []string
 	DisabledEnabled []string
+	// ServerLoadingChanges / ToolLoadingChanges are the structured deltas of
+	// the per-server / per-tool loading-mode override maps. Sorted by Key.
+	ServerLoadingChanges []LoadingModeChange
+	ToolLoadingChanges   []LoadingModeChange
 }
 
 // Changed reports whether the tool exposure differs between the two
 // revisions.
 func (d ToolExposureDiff) Changed() bool {
 	return len(d.PausedAdded) > 0 || len(d.PausedResumed) > 0 ||
-		len(d.DisabledAdded) > 0 || len(d.DisabledEnabled) > 0
+		len(d.DisabledAdded) > 0 || len(d.DisabledEnabled) > 0 ||
+		len(d.ServerLoadingChanges) > 0 || len(d.ToolLoadingChanges) > 0
 }
 
 // DiffToolExposure computes the structured set-diff of two tool-exposure
@@ -829,11 +924,36 @@ func DiffToolExposure(from, to ConfigPayload) ToolExposureDiff {
 	pAdded, pResumed := setDiff(from.PausedServers(), to.PausedServers())
 	dAdded, dEnabled := setDiff(from.DisabledTools(), to.DisabledTools())
 	return ToolExposureDiff{
-		PausedAdded:     pAdded,
-		PausedResumed:   pResumed,
-		DisabledAdded:   dAdded,
-		DisabledEnabled: dEnabled,
+		PausedAdded:          pAdded,
+		PausedResumed:        pResumed,
+		DisabledAdded:        dAdded,
+		DisabledEnabled:      dEnabled,
+		ServerLoadingChanges: diffLoadingModes(from.ServerLoadingModes(), to.ServerLoadingModes()),
+		ToolLoadingChanges:   diffLoadingModes(from.ToolLoadingModes(), to.ToolLoadingModes()),
 	}
+}
+
+// diffLoadingModes computes the structured per-key delta of two loading-mode
+// override maps: every key present in either map whose value differs (an
+// absent key compares as "") registers as one LoadingModeChange. Sorted by
+// Key for a deterministic result.
+func diffLoadingModes(from, to map[string]string) []LoadingModeChange {
+	keys := make(map[string]struct{}, len(from)+len(to))
+	for k := range from {
+		keys[k] = struct{}{}
+	}
+	for k := range to {
+		keys[k] = struct{}{}
+	}
+	var out []LoadingModeChange
+	for k := range keys {
+		f, t := from[k], to[k]
+		if f != t {
+			out = append(out, LoadingModeChange{Key: k, From: f, To: t})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
 }
 
 // setDiff returns (in to but not from, in from but not to), each sorted.

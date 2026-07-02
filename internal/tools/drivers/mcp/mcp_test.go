@@ -212,6 +212,45 @@ func TestProvider_Discover_ListsResourcesAndPrompts(t *testing.T) {
 	}
 }
 
+// TestProvider_Discover_StampsForm proves the additive Tool.Form
+// classification (D-281): resource/prompt-wrapped descriptors are stamped
+// ToolFormResource / ToolFormPrompt; a plain tool-form descriptor stays
+// zero-valued (ToolFormTool) — the field cross-cutting policy (the
+// agent-config per-server loading-mode override) needs to scope a
+// server-level override to callable tools only.
+func TestProvider_Discover_StampsForm(t *testing.T) {
+	p, _, _, cleanup := newTestProvider(t)
+	defer cleanup()
+
+	ctx := mustIdentity(t)
+	descs, err := p.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	res := findByName(descs, "mock__resource.mem://hello")
+	if res == nil {
+		t.Fatalf("missing resource descriptor")
+	}
+	if res.Tool.Form != tools.ToolFormResource {
+		t.Errorf("resource descriptor Form = %q, want %q", res.Tool.Form, tools.ToolFormResource)
+	}
+	pr := findByName(descs, "mock__prompt.greet")
+	if pr == nil {
+		t.Fatalf("missing prompt descriptor")
+	}
+	if pr.Tool.Form != tools.ToolFormPrompt {
+		t.Errorf("prompt descriptor Form = %q, want %q", pr.Tool.Form, tools.ToolFormPrompt)
+	}
+	// A plain callable tool descriptor stays zero-valued.
+	for _, d := range descs {
+		if d.Tool.Form == "" {
+			if d.Tool.Loading != tools.LoadingAlways {
+				t.Errorf("tool-form descriptor %q should default LoadingAlways, got %q", d.Tool.Name, d.Tool.Loading)
+			}
+		}
+	}
+}
+
 func TestProvider_Invoke_Resource_ReadsContents(t *testing.T) {
 	p, _, _, cleanup := newTestProvider(t)
 	defer cleanup()

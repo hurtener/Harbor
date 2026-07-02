@@ -25,6 +25,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"AgentConfigSkillsSelection":                  reflect.TypeOf(types.AgentConfigSkillsSelection{}),
 	"AgentConfigToolExposure":                     reflect.TypeOf(types.AgentConfigToolExposure{}),
 	"AgentConfigToolExposureDiff":                 reflect.TypeOf(types.AgentConfigToolExposureDiff{}),
+	"AgentConfigLoadingModeChange":                reflect.TypeOf(types.AgentConfigLoadingModeChange{}),
 	"AgentConfigPromptLayers":                     reflect.TypeOf(types.AgentConfigPromptLayers{}),
 	"AgentConfigPromptLayersDiff":                 reflect.TypeOf(types.AgentConfigPromptLayersDiff{}),
 	"AgentConfigLLMParams":                        reflect.TypeOf(types.AgentConfigLLMParams{}),

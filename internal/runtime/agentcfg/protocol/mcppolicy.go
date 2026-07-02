@@ -37,6 +37,12 @@ func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfi
 	if err != nil {
 		return prototypes.AgentConfigSetToolExposureResponse{}, err
 	}
+	// Validate the loading-mode override maps at set time so an unknown
+	// value can NEVER be persisted — checked BEFORE the active-revision
+	// read / any registry write: no revision, no event.
+	if err := validateToolExposureLoading(&req.ToolExposure); err != nil {
+		return prototypes.AgentConfigSetToolExposureResponse{}, err
+	}
 	q := identity.Quadruple{Identity: id}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
 
@@ -50,8 +56,10 @@ func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfi
 	var prior agentcfg.ConfigPayload
 	payload := agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{
-			PausedServers: append([]string(nil), req.ToolExposure.PausedServers...),
-			DisabledTools: append([]string(nil), req.ToolExposure.DisabledTools...),
+			PausedServers:      append([]string(nil), req.ToolExposure.PausedServers...),
+			DisabledTools:      append([]string(nil), req.ToolExposure.DisabledTools...),
+			ServerLoadingModes: cloneAnnotations(req.ToolExposure.ServerLoadingModes),
+			ToolLoadingModes:   cloneAnnotations(req.ToolExposure.ToolLoadingModes),
 		},
 	}
 	if hasActive {

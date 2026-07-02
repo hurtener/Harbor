@@ -268,6 +268,11 @@ type ToolDescribeRequest struct {
 	Identity IdentityScope `json:"identity"`
 	// ID is the catalog key of the tool to describe.
 	ID string `json:"id"`
+	// AgentID, when set, projects the reported loading_mode through the
+	// named agent's active tool-exposure config (the EFFECTIVE mode).
+	// Optional — absent reports the boot-effective mode, byte-compatible
+	// with the surface before this projection existed.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 // ToolManifest is the full descriptor projection `tools.describe`

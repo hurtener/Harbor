@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 )
 
@@ -184,4 +185,166 @@ func TestPlannerView_CopiesGrantedScopes(t *testing.T) {
 	if !names["scoped_tool"] {
 		t.Errorf("caller mutation leaked into the view: List = %v", names)
 	}
+}
+
+// loadingOverrideTestCatalog registers a mix of forms/sources/boot-loading
+// modes for the LoadingOverrideView tests: two TOOL-form MCP descriptors on
+// srvA (one boot-always, one boot-deferred), one RESOURCE-form MCP
+// descriptor on srvA (boot-deferred, per the driver default), and one
+// in-process tool (Source empty, Form zero-value, boot-always).
+func loadingOverrideTestCatalog(t *testing.T) ToolCatalog {
+	t.Helper()
+	cat := NewCatalog()
+	reg := func(tool Tool) {
+		t.Helper()
+		if err := cat.Register(ToolDescriptor{
+			Tool: tool,
+			Invoke: func(_ context.Context, _ json.RawMessage) (ToolResult, error) {
+				return ToolResult{Value: "ok"}, nil
+			},
+		}); err != nil {
+			t.Fatalf("register %q: %v", tool.Name, err)
+		}
+	}
+	reg(Tool{Name: "srvA_alpha", Source: "srvA", Transport: TransportMCP, Loading: LoadingAlways})
+	reg(Tool{Name: "srvA_beta", Source: "srvA", Transport: TransportMCP, Loading: LoadingDeferred})
+	reg(Tool{Name: "srvA_res", Source: "srvA", Transport: TransportMCP, Loading: LoadingDeferred, Form: ToolFormResource})
+	reg(Tool{Name: "local_tool", Loading: LoadingAlways})
+	return cat
+}
+
+func loadingOverrideBothModesView(t *testing.T, cat ToolCatalog) PlannerView {
+	t.Helper()
+	return NewPlannerView(cat, CatalogFilter{
+		TenantID: "t", UserID: "u", SessionID: "s",
+		LoadingModes: []LoadingMode{LoadingAlways, LoadingDeferred},
+	})
+}
+
+// TestLoadingOverrideView_RewritesAndFiltersList proves List() filters on the
+// EFFECTIVE mode (not the boot mode) and rewrites Tool.Loading on every
+// returned entry.
+func TestLoadingOverrideView_RewritesAndFiltersList(t *testing.T) {
+	t.Parallel()
+	cat := loadingOverrideTestCatalog(t)
+	inner := loadingOverrideBothModesView(t, cat)
+	effective := map[string]LoadingMode{
+		"srvA_alpha": LoadingDeferred, // boot-always -> effective deferred: must vanish from List()
+		"srvA_beta":  LoadingAlways,   // boot-deferred -> effective always: must appear in List()
+	}
+	v := NewLoadingOverrideView(inner, effective, nil) // nil visibleModes -> default [Always]
+	names := map[string]LoadingMode{}
+	for _, tool := range v.List() {
+		names[tool.Name] = tool.Loading
+	}
+	if _, present := names["srvA_alpha"]; present {
+		t.Errorf("srvA_alpha overridden to deferred must be absent from List(), got %v", names)
+	}
+	if mode, present := names["srvA_beta"]; !present || mode != LoadingAlways {
+		t.Errorf("srvA_beta overridden to always must appear in List() with Loading=always, got present=%v mode=%v", present, mode)
+	}
+	if mode, present := names["local_tool"]; !present || mode != LoadingAlways {
+		t.Errorf("local_tool has no override and boots always; want present with Loading=always, got present=%v mode=%v", present, mode)
+	}
+	if _, present := names["srvA_res"]; present {
+		t.Errorf("srvA_res has no override and boots deferred; must stay absent from the default Always-only List()")
+	}
+}
+
+// TestLoadingOverrideView_ResolveNeverFiltersButRewrites proves Resolve()
+// returns a deferred-effective tool (the D-167 two-turn discovery cycle
+// depends on this) while still rewriting Loading to the effective mode.
+func TestLoadingOverrideView_ResolveNeverFiltersButRewrites(t *testing.T) {
+	t.Parallel()
+	cat := loadingOverrideTestCatalog(t)
+	inner := loadingOverrideBothModesView(t, cat)
+	effective := map[string]LoadingMode{"srvA_alpha": LoadingDeferred}
+	v := NewLoadingOverrideView(inner, effective, nil)
+
+	tool, ok := v.Resolve("srvA_alpha")
+	if !ok {
+		t.Fatal("Resolve must never filter on loading — srvA_alpha should resolve despite the deferred override")
+	}
+	if tool.Loading != LoadingDeferred {
+		t.Errorf("Resolve must rewrite Loading to the effective mode, got %v", tool.Loading)
+	}
+
+	// A tool absent from `effective` resolves with its boot-effective mode
+	// unchanged.
+	tool2, ok := v.Resolve("srvA_res")
+	if !ok || tool2.Loading != LoadingDeferred {
+		t.Errorf("Resolve(srvA_res) = (%+v, %v), want boot-effective deferred, found", tool2, ok)
+	}
+
+	if _, ok := v.Resolve("missing"); ok {
+		t.Error("Resolve(missing) = ok, want found=false")
+	}
+}
+
+// TestLoadingOverrideView_DefaultVisibleModes proves an empty visibleModes
+// slice defaults to [LoadingAlways], mirroring CatalogFilter's default.
+func TestLoadingOverrideView_DefaultVisibleModes(t *testing.T) {
+	t.Parallel()
+	cat := loadingOverrideTestCatalog(t)
+	inner := loadingOverrideBothModesView(t, cat)
+	v := NewLoadingOverrideView(inner, nil, nil)
+	names := exclusionViewNames(v)
+	if names["srvA_beta"] || names["srvA_res"] {
+		t.Errorf("default visible modes must exclude boot-deferred tools, got %v", names)
+	}
+	if !names["srvA_alpha"] || !names["local_tool"] {
+		t.Errorf("default visible modes must include boot-always tools, got %v", names)
+	}
+}
+
+// TestLoadingOverrideView_CopiesMaps proves the constructor copies both the
+// effective map and visibleModes so a caller mutation after construction
+// cannot change the view's behaviour (D-025 immutability, matching the
+// PlannerView GrantedScopes precedent).
+func TestLoadingOverrideView_CopiesMaps(t *testing.T) {
+	t.Parallel()
+	cat := loadingOverrideTestCatalog(t)
+	inner := loadingOverrideBothModesView(t, cat)
+	effective := map[string]LoadingMode{"srvA_beta": LoadingAlways}
+	visible := []LoadingMode{LoadingAlways}
+	v := NewLoadingOverrideView(inner, effective, visible)
+	effective["srvA_beta"] = LoadingDeferred
+	visible[0] = LoadingDeferred
+
+	names := exclusionViewNames(v)
+	if !names["srvA_beta"] {
+		t.Errorf("caller mutation of the effective map leaked into the view: %v", names)
+	}
+}
+
+// TestLoadingOverrideView_ConcurrentReuse runs N=100 concurrent List/Resolve
+// invocations against ONE shared LoadingOverrideView instance, asserting no
+// data race (the -race gate) and no torn/inconsistent read — the D-025
+// concurrent-reuse contract for this per-run value-type view.
+func TestLoadingOverrideView_ConcurrentReuse(t *testing.T) {
+	cat := loadingOverrideTestCatalog(t)
+	inner := loadingOverrideBothModesView(t, cat)
+	effective := map[string]LoadingMode{"srvA_alpha": LoadingDeferred, "srvA_beta": LoadingAlways}
+	v := NewLoadingOverrideView(inner, effective, nil)
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			names := exclusionViewNames(v)
+			if names["srvA_alpha"] {
+				t.Errorf("srvA_alpha must stay deferred-excluded under concurrent reads")
+			}
+			if !names["srvA_beta"] {
+				t.Errorf("srvA_beta must stay always-included under concurrent reads")
+			}
+			tool, ok := v.Resolve("srvA_alpha")
+			if !ok || tool.Loading != LoadingDeferred {
+				t.Errorf("Resolve(srvA_alpha) = (%+v, %v), want deferred, found", tool, ok)
+			}
+		}()
+	}
+	wg.Wait()
 }

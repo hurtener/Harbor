@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 302 canonical Harbor Protocol wire types, generated from the single-source
+The 303 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -221,6 +221,16 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `revisions` | `[]types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigLoadingModeChange
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `key` | `string` |  |
+| `from` | `string` | optional (`omitempty`) |
+| `to` | `string` | optional (`omitempty`) |
 
 ## AgentConfigMCPConnectionDescriptor
 
@@ -608,6 +618,8 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `paused_servers` | `[]string` | optional (`omitempty`) |
 | `disabled_tools` | `[]string` | optional (`omitempty`) |
+| `server_loading_modes` | `map[string]string` | optional (`omitempty`) |
+| `tool_loading_modes` | `map[string]string` | optional (`omitempty`) |
 
 ## AgentConfigToolExposureDiff
 
@@ -619,6 +631,8 @@ Declared in `internal/protocol/types`.
 | `paused_resumed` | `[]string` | optional (`omitempty`) |
 | `disabled_added` | `[]string` | optional (`omitempty`) |
 | `disabled_enabled` | `[]string` | optional (`omitempty`) |
+| `server_loading_changes` | `[]types.AgentConfigLoadingModeChange` — see [`AgentConfigLoadingModeChange`](./types.md#agentconfigloadingmodechange) | optional (`omitempty`) |
+| `tool_loading_changes` | `[]types.AgentConfigLoadingModeChange` — see [`AgentConfigLoadingModeChange`](./types.md#agentconfigloadingmodechange) | optional (`omitempty`) |
 
 ## AgentConfigUserDiffRequest
 
@@ -3084,6 +3098,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `id` | `string` |  |
+| `agent_id` | `string` | optional (`omitempty`) |
 
 ## ToolFilter
 

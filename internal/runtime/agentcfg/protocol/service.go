@@ -42,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,6 +86,13 @@ var (
 	// normalizer's negative→0 coercion is defence-in-depth behind this gate,
 	// never the primary posture (CLAUDE.md §13).
 	ErrInvalidHooks = errors.New("agentcfg/protocol: invalid hooks section")
+	// ErrInvalidToolExposureLoading — a set_tool_exposure (or a set_revision
+	// carrying a ToolExposure section) supplied a server_loading_modes /
+	// tool_loading_modes entry with an empty key or a value outside
+	// "always"|"deferred". Validated at set time BEFORE any registry write
+	// so an invalid override can never be persisted — no revision, no
+	// event — fail loud, never a silent drop (CLAUDE.md §13).
+	ErrInvalidToolExposureLoading = errors.New("agentcfg/protocol: invalid tool-loading-mode override")
 )
 
 // validLLMReasoningEffort is the canonical reasoning-effort taxonomy the
@@ -92,6 +100,39 @@ var (
 // (off | low | medium | high).
 var validLLMReasoningEffort = map[string]struct{}{
 	"off": {}, "low": {}, "medium": {}, "high": {},
+}
+
+// validLoadingModes is the closed value set a loading-mode override may
+// take — mirrors tools.LoadingAlways / tools.LoadingDeferred without an
+// internal/tools import (the wire-edge validation stays package-local).
+var validLoadingModes = map[string]struct{}{"always": {}, "deferred": {}}
+
+// validateToolExposureLoading validates a tool-exposure section's
+// loading-mode override maps at set time: every key must be non-empty and
+// every value must be "always" or "deferred". A nil section is a no-op.
+func validateToolExposureLoading(te *prototypes.AgentConfigToolExposure) error {
+	if te == nil {
+		return nil
+	}
+	if err := validateLoadingModeMap("server_loading_modes", te.ServerLoadingModes); err != nil {
+		return err
+	}
+	return validateLoadingModeMap("tool_loading_modes", te.ToolLoadingModes)
+}
+
+// validateLoadingModeMap rejects an empty key or a value outside
+// "always"|"deferred" in m, naming field in the error for an actionable
+// message.
+func validateLoadingModeMap(field string, m map[string]string) error {
+	for k, v := range m {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("%w: %s has an empty key", ErrInvalidToolExposureLoading, field)
+		}
+		if _, ok := validLoadingModes[v]; !ok {
+			return fmt.Errorf("%w: %s[%q] = %q (want always|deferred)", ErrInvalidToolExposureLoading, field, k, v)
+		}
+	}
+	return nil
 }
 
 // Clock is the time source the Service stamps response timestamps from.
@@ -466,6 +507,12 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err := s.validateHooks(req.Payload.Hooks); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
+	// A full-payload set that pins loading-mode overrides is validated at
+	// set time (parity with set_tool_exposure) so an unknown value can never
+	// be persisted.
+	if err := validateToolExposureLoading(req.Payload.ToolExposure); err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
 	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payloadToDomain(req.Payload))
 	if err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
@@ -582,8 +629,10 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 	}
 	if p.ToolExposure != nil {
 		out.ToolExposure = &prototypes.AgentConfigToolExposure{
-			PausedServers: append([]string(nil), p.ToolExposure.PausedServers...),
-			DisabledTools: append([]string(nil), p.ToolExposure.DisabledTools...),
+			PausedServers:      append([]string(nil), p.ToolExposure.PausedServers...),
+			DisabledTools:      append([]string(nil), p.ToolExposure.DisabledTools...),
+			ServerLoadingModes: cloneAnnotations(p.ToolExposure.ServerLoadingModes),
+			ToolLoadingModes:   cloneAnnotations(p.ToolExposure.ToolLoadingModes),
 		}
 	}
 	if p.Connections != nil {
@@ -608,6 +657,19 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			}
 		}
 		out.Hooks = wh
+	}
+	return out
+}
+
+// loadingChangesToWire projects domain LoadingModeChange entries onto the
+// wire shape (a defensive copy; no shared backing slice).
+func loadingChangesToWire(in []agentcfg.LoadingModeChange) []prototypes.AgentConfigLoadingModeChange {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]prototypes.AgentConfigLoadingModeChange, 0, len(in))
+	for _, c := range in {
+		out = append(out, prototypes.AgentConfigLoadingModeChange{Key: c.Key, From: c.From, To: c.To})
 	}
 	return out
 }
@@ -666,8 +728,10 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 	}
 	if p.ToolExposure != nil {
 		out.ToolExposure = &agentcfg.ToolExposure{
-			PausedServers: append([]string(nil), p.ToolExposure.PausedServers...),
-			DisabledTools: append([]string(nil), p.ToolExposure.DisabledTools...),
+			PausedServers:      append([]string(nil), p.ToolExposure.PausedServers...),
+			DisabledTools:      append([]string(nil), p.ToolExposure.DisabledTools...),
+			ServerLoadingModes: cloneAnnotations(p.ToolExposure.ServerLoadingModes),
+			ToolLoadingModes:   cloneAnnotations(p.ToolExposure.ToolLoadingModes),
 		}
 	}
 	if p.Connections != nil {
@@ -706,10 +770,12 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			Removed: append([]string(nil), d.Skills.Removed...),
 		},
 		ToolExposure: prototypes.AgentConfigToolExposureDiff{
-			PausedAdded:     append([]string(nil), d.ToolExposure.PausedAdded...),
-			PausedResumed:   append([]string(nil), d.ToolExposure.PausedResumed...),
-			DisabledAdded:   append([]string(nil), d.ToolExposure.DisabledAdded...),
-			DisabledEnabled: append([]string(nil), d.ToolExposure.DisabledEnabled...),
+			PausedAdded:          append([]string(nil), d.ToolExposure.PausedAdded...),
+			PausedResumed:        append([]string(nil), d.ToolExposure.PausedResumed...),
+			DisabledAdded:        append([]string(nil), d.ToolExposure.DisabledAdded...),
+			DisabledEnabled:      append([]string(nil), d.ToolExposure.DisabledEnabled...),
+			ServerLoadingChanges: loadingChangesToWire(d.ToolExposure.ServerLoadingChanges),
+			ToolLoadingChanges:   loadingChangesToWire(d.ToolExposure.ToolLoadingChanges),
 		},
 		PromptLayers: prototypes.AgentConfigPromptLayersDiff{
 			BaseChanged: d.PromptLayers.BaseChanged,
