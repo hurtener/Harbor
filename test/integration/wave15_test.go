@@ -357,7 +357,8 @@ func TestE2E_Wave15_PromptBand_ComposesAllFiveSurfaces(t *testing.T) {
 // D-025 proof beyond the per-package concurrent-reuse tests. Also
 // asserts goroutine baseline restoration after all runs return.
 func TestE2E_Wave15_SharedPlanner_NoCrossRunBleed(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel: this test samples the process-global runtime.NumGoroutine()
+	// as a leak baseline, which parallel siblings' goroutines would perturb.
 	const N = 16
 	cat := registerWave15Catalog(t)
 

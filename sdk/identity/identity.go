@@ -1,7 +1,7 @@
 // Package identity is the public SDK facade over Harbor's
 // internal/identity package — the load-bearing (tenant, user,
 // session) isolation triple plus the per-run Quadruple (RFC §3.6,
-// §4; D-204). Alias-based re-exports only: no behavior lives here.
+// §4). Alias-based re-exports only: no behavior lives here.
 // What this package omits from the internal surface is deliberately
 // private (the curation contract).
 package identity

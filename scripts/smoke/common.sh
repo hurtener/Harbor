@@ -130,6 +130,33 @@ skip_if_404() {
     return 0
 }
 
+# skip_all_if_server_down [description]
+# Probe /healthz; if the dev server is unreachable (connection refused →
+# curl code 000, or curl absent), SKIP the entire script and exit 0 cleanly.
+# This lets a STANDALONE battery run (`for f in scripts/smoke/phase-*.sh`)
+# degrade gracefully instead of hard-crashing rc=7 on the first raw
+# `curl -sS` under `set -e`, and keeps a live-server healthz assertion from
+# reporting FAIL on `got 000` when no server is up. Preflight ALWAYS boots the
+# server before invoking a smoke, so this is a no-op there (behavior unchanged).
+# Scripts with a live-server dependency call this right after sourcing common.sh.
+skip_all_if_server_down() {
+    local desc="${1:-dev server}"
+    if ! command -v curl >/dev/null 2>&1; then
+        skip "${desc}: curl not available — skipping standalone run"
+        smoke_summary || true
+        exit 0
+    fi
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$(api_url /healthz)" || true)
+    case "${code}" in
+        000|'')
+            skip "${desc}: dev server unreachable at $(api_url /healthz) — skipping standalone run"
+            smoke_summary || true
+            exit 0
+            ;;
+    esac
+}
+
 # assert_json_path <jq_path> <expected_value> <url> <description>
 # GET url, parse with jq, assert path equals value.
 assert_json_path() {

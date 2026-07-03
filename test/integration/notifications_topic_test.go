@@ -309,8 +309,8 @@ func TestE2E_NotificationsTopic_MissingIdentityFailsLoudly(t *testing.T) {
 //   - Baseline goroutine count is restored after teardown (no leaks
 //     from the long-lived Subscriber's bus subscription).
 func TestE2E_NotificationsTopic_ConcurrencyStress(t *testing.T) {
-	t.Parallel()
-
+	// NOT t.Parallel: this test samples the process-global runtime.NumGoroutine()
+	// as a leak baseline, which parallel siblings' goroutines would perturb.
 	baseline := stableGoroutines(t)
 
 	bus := openNotificationsBus(t)

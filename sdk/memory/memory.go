@@ -1,7 +1,7 @@
 // Package memory is the public SDK facade over Harbor's
 // internal/memory package — the session-scoped memory store, its
-// strategies, and the LLM-context patch vocabulary (RFC §3.6, §6.6;
-// D-204). Alias-based re-exports only: no behavior lives here. Driver
+// strategies, and the LLM-context patch vocabulary (RFC §3.6,
+// §6.6). Alias-based re-exports only: no behavior lives here. Driver
 // factories, event emission helpers, and Protocol wire projections
 // are deliberately private.
 package memory

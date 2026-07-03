@@ -1,6 +1,6 @@
 // Package react is the public SDK facade over Harbor's
 // internal/planner/react package — the reference LLM-driven ReAct
-// planner concrete (RFC §3.6, §6.2; D-204). Importing this package
+// planner concrete (RFC §3.6, §6.2). Importing this package
 // (including blank-importing it) seats the "react" driver
 // registration, so `planner.driver: react` resolves through the
 // registry; sdk/drivers/prod seats it too. Alias-based re-exports

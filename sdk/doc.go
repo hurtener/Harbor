@@ -1,6 +1,6 @@
-// Package sdk is the root of Harbor's public SDK facade (RFC §3.6,
-// D-204/D-205) — the curated, alias-based re-export tree that makes
-// the runtime importable by external Go modules.
+// Package sdk is the root of Harbor's public SDK facade (RFC §3.6) —
+// the curated, alias-based re-export tree that makes the runtime
+// importable by external Go modules.
 //
 // Go's internal/ visibility rule makes every runtime package
 // import-forbidden outside this module. Each sdk/<area> package

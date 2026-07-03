@@ -16,8 +16,8 @@
 // taxonomy (`tool.failed`, `task.completed`, `governance.budget_exceeded`
 // all use per-class topics) and with the `events.subscribe` topic-filter
 // shape. The alternative — a single `notification.emit` with
-// a payload class field — was rejected per `docs/plans/wave-13-decomposition.md`
-// §12 ("Wire-shape decision left to me").
+// a payload class field — was rejected by the notifications wire-shape
+// decision in favour of per-class topics.
 //
 // Architecture:
 //
@@ -67,8 +67,8 @@
 // `notification.task_failed` arrives at a separately-scoped subscriber
 // via the bus. The UI consumers (73a Overview alert ribbon, 73m Settings
 // notification-routing matrix) land in and cannot substitute for
-// the test consumer per `docs/plans/wave-13-decomposition.md`
-// §12 item 5. See also docs/decisions.md.
+// the test consumer per the notifications decomposition decision.
+// See also docs/decisions.md.
 package notifications
 
 import "github.com/hurtener/Harbor/internal/events"
@@ -77,8 +77,8 @@ import "github.com/hurtener/Harbor/internal/events"
 // canonical events.EventType registry from this package's init() so a
 // Publish never trips events.ErrUnknownEventType.
 //
-// Per-class topic naming locked per docs/plans/wave-13-decomposition.md
-// §12.
+// Per-class topic naming is locked by the notifications wire-shape
+// decision.
 const (
 	// EventTypeNotificationTaskFailed — synthesised from task.failed.
 	// Severity Error. The deep-link points at the failed

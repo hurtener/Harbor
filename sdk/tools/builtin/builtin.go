@@ -1,8 +1,8 @@
 // Package builtin is the public SDK facade over Harbor's
 // internal/tools/builtin package — the runtime's built-in tool set
 // (clock, text, artifact_fetch, tool/skill discovery, declarative
-// actions) registered by name onto a catalog (RFC §3.6, §6.10;
-// D-204). Alias-based re-exports only: no behavior lives here. The
+// actions) registered by name onto a catalog (RFC §3.6, §6.10).
+// Alias-based re-exports only: no behavior lives here. The
 // per-tool args/output structs and handler internals are deliberately
 // private.
 package builtin

@@ -2,9 +2,9 @@
 // internal/skills/tools package — the planner-facing skill retrieval
 // handlers (`skill_search` / `skill_get` / `skill_list`) with the
 // capability filter, tool-name redaction, and token budgeter built in
-// (RFC §3.6, §6.7; D-204/D-206). Alias-based re-exports only: no
-// behavior lives here. Added in Phase 112b: D-201 settled these as
-// the ONE skills retrieval surface (the built-ins delegate here), and
+// (RFC §3.6, §6.7). Alias-based re-exports only: no
+// behavior lives here. These are the ONE skills retrieval surface
+// (the built-ins delegate here), and
 // the use-memory-and-skills-from-go recipe documents them for
 // headless consumers. The redactor and budgeter internals are
 // deliberately private.

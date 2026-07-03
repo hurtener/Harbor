@@ -17,7 +17,7 @@ const DefaultQueueSize = 64
 // failure. The engine's default (when no handler is configured) is a
 // no-op AFTER the engine's slog.Logger has logged the failure — the
 // handler is the seam production wiring uses to route the structured
-// RunError to the *telemetry.Logger.Error so the wave-2
+// RunError to the *telemetry.Logger.Error so the eventbus
 // BusEmitter adapter publishes a runtime.error event.
 //
 // Decoupled by design: the engine package does not import
@@ -116,7 +116,7 @@ func WithErrorEmissionToEgress(enabled bool) Option {
 
 // WithRunErrorHandler installs the callback the engine fires on
 // terminal node failure. The production handler
-// is a callback that invokes telemetry.Logger.Error so the wave-2
+// is a callback that invokes telemetry.Logger.Error so the eventbus
 // BusEmitter adapter publishes a runtime.error event:
 // `assemble.Assemble` builds it as `Stack.RunErrorHandler`. The
 // composition site is the EMBEDDER's flow composition —

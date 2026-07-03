@@ -1,7 +1,7 @@
 // Package steering is the public SDK facade over Harbor's
 // internal/runtime/steering package — the run loop that drives a
 // planner, the per-run control inbox/registry, and the steering
-// taxonomy (RFC §3.6, §6.3; D-204). Alias-based re-exports only: no
+// taxonomy (RFC §3.6, §6.3). Alias-based re-exports only: no
 // behavior lives here. RunLoop construction stays internal (the
 // assembled Stack carries the production RunLoop); control-history
 // internals and event payload structs are deliberately private.

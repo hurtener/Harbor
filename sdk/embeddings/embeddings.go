@@ -1,6 +1,6 @@
 // Package embeddings is the public SDK facade over Harbor's
 // internal/embeddings package — the embedding client that turns text
-// into vectors (RFC §3.6, §6.5; D-204). Alias-based re-exports only:
+// into vectors (RFC §3.6, §6.5). Alias-based re-exports only:
 // no behavior lives here.
 //
 // The Embedder is a standalone, à-la-carte-usable primitive: open it

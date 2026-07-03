@@ -1,6 +1,6 @@
 // Package config is the public SDK facade over Harbor's
 // internal/config package — the operator configuration schema,
-// loader, defaults, and validation surface (RFC §3.6, §10; D-204).
+// loader, defaults, and validation surface (RFC §3.6, §10).
 // Alias-based re-exports only: no behavior lives here. What this
 // package omits from the internal surface (deprecation plumbing,
 // policy projection internals) is deliberately private.

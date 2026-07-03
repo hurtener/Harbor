@@ -1,6 +1,6 @@
 // Package events is the public SDK facade over Harbor's
 // internal/events package — the typed event bus every subsystem
-// publishes to and subscribes from (RFC §3.6, §6.13; D-204).
+// publishes to and subscribes from (RFC §3.6, §6.13).
 // Alias-based re-exports only: no behavior lives here. Driver
 // registration seams, Protocol wire conversion, the aggregator, and
 // per-subsystem payload structs are deliberately private.

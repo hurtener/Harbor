@@ -892,7 +892,11 @@ Go wiring code. See `ToolEntryConfig` godoc. Each entry carries:
 - `loading_mode` — when the tool appears in the planner's prompt-time
   catalog. `""` (default) or `always` means every turn; `deferred`
   hides the tool by default and lets the LLM discover it via
-  meta-tools.
+  meta-tools. This boot value is the base the runtime loading-mode
+  overrides layer on top of (D-281): the effective mode resolves
+  per-tool `agent_config.set_tool_exposure` override > per-server
+  override > this boot `loading_mode` > driver default, applied
+  next-turn.
 
 Validation: an entry must set at least one of `approval`, `oauth`, or
 `loading_mode` (an entry with no fields is a configuration typo).

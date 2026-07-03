@@ -1,7 +1,7 @@
 // Package llm is the public SDK facade over Harbor's internal/llm
 // package — the provider-corrected LLM client, the chat message
-// vocabulary, and the artifact-stub content contract (RFC §3.6, §6.5;
-// D-204). Alias-based re-exports only: no behavior lives here. Driver
+// vocabulary, and the artifact-stub content contract (RFC §3.6,
+// §6.5). Alias-based re-exports only: no behavior lives here. Driver
 // factories, wrapper-hook registration, posture surfaces, chunk
 // publishing, and event payload structs are deliberately private.
 package llm
@@ -53,7 +53,7 @@ type (
 	Usage = internal.Usage
 	// Cost is the computed cost block of a response.
 	Cost = internal.Cost
-	// ArtifactStub replaces raw heavy content at the LLM edge (D-026).
+	// ArtifactStub replaces raw heavy content at the LLM edge.
 	ArtifactStub = internal.ArtifactStub
 	// StubFetch resolves an ArtifactStub back to bytes on demand.
 	StubFetch = internal.StubFetch
@@ -118,7 +118,7 @@ var (
 	ErrIdentityMissing = internal.ErrIdentityMissing
 	// ErrInvalidContent — the message content is malformed.
 	ErrInvalidContent = internal.ErrInvalidContent
-	// ErrContextLeak — raw heavy content reached the LLM edge (D-026).
+	// ErrContextLeak — raw heavy content reached the LLM edge.
 	ErrContextLeak = internal.ErrContextLeak
 	// ErrContextWindowExceeded — the estimate breaches the window reserve.
 	ErrContextWindowExceeded = internal.ErrContextWindowExceeded

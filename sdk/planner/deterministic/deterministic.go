@@ -1,8 +1,8 @@
 // Package deterministic is the public SDK facade over Harbor's
 // internal/planner/deterministic package — the decision-tree planner
 // concrete that drives the same Runtime as the LLM-driven ReAct
-// planner through the identical Planner seam (RFC §3.6, §6.2;
-// D-204). The concrete is constructor-configured (an ordered
+// planner through the identical Planner seam (RFC §3.6, §6.2).
+// The concrete is constructor-configured (an ordered
 // DecisionTreeStep slice), not registry-resolved. Alias-based
 // re-exports only: no behavior lives here.
 package deterministic

@@ -42,6 +42,10 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# Standalone battery runs (no dev server) degrade to SKIP instead of a
+# healthz-000 FAIL; preflight always has the server up (no-op there).
+skip_all_if_server_down "phase 64"
+
 # ----------------------------------------------------------------------
 # Assertion 1 — /healthz returns 200.
 # ----------------------------------------------------------------------
