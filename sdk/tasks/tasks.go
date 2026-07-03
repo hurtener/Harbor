@@ -1,7 +1,7 @@
 // Package tasks is the public SDK facade over Harbor's
 // internal/tasks package — the unified foreground/background
 // TaskRegistry, the spawn vocabulary, and the task-group join
-// surface (RFC §3.6, §6.3; D-204). Alias-based re-exports only: no
+// surface (RFC §3.6, §6.3). Alias-based re-exports only: no
 // behavior lives here. Event payload structs, the patch mechanism,
 // and Protocol wire projections are deliberately private.
 package tasks

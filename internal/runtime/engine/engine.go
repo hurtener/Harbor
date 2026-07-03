@@ -792,7 +792,7 @@ func (e *engine) logWorkerError(env messages.Envelope, err error) {
 	}
 	// if a RunErrorHandler is wired and we have a typed
 	// RunError, fire it. The handler is the seam telemetry.Logger
-	// connects through to the wave-2 eventbus adapter.
+	// connects through to the eventbus BusEmitter adapter.
 	if e.cfg.runErrorHandler != nil {
 		if re, ok := asRunError(err); ok {
 			func() {

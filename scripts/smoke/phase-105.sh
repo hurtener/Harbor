@@ -15,6 +15,10 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# Standalone battery runs (no dev server) degrade to SKIP instead of a raw
+# `curl -sS` rc=7 crash under `set -e`; preflight always has the server up.
+skip_all_if_server_down "phase 105"
+
 # ----------------------------------------------------------------------------
 # Live-server assertions (require a booted harbor dev instance)
 # ----------------------------------------------------------------------------

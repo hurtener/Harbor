@@ -1,7 +1,7 @@
 // Package tools is the public SDK facade over Harbor's
 // internal/tools package — the transport-agnostic tool catalog, the
 // descriptor/policy vocabulary, and the planner-facing catalog view
-// (RFC §3.6, §6.10; D-204). Alias-based re-exports only: no behavior
+// (RFC §3.6, §6.10). Alias-based re-exports only: no behavior
 // lives here. The policy execution shell, invoke hooks, error
 // classification, search-cache seam, and event payload structs are
 // deliberately private.
@@ -47,7 +47,7 @@ type (
 	// PlannerView is the identity-filtered, planner-facing catalog view.
 	PlannerView = internal.PlannerView
 	// ErrorClass classifies a tool failure for the policy shell
-	// (retry-vs-stop decisions). Re-exported in Phase 112b (D-206):
+	// (retry-vs-stop decisions). Re-exported here because
 	// harbortest.SimulateFailure takes one, so external test authors
 	// must be able to name the class values.
 	ErrorClass = internal.ErrorClass

@@ -2,7 +2,7 @@
 // internal/planner package — the swappable Planner interface, the
 // Decision sum, the RunContext view, the Trajectory record, and the
 // driver registry external planner concretes register on (RFC §3.6,
-// §6.2; D-204). Alias-based re-exports only: no behavior lives here.
+// §6.2). Alias-based re-exports only: no behavior lives here.
 // Event payload structs, prompt-materialisation helpers, and repair
 // internals are deliberately private.
 package planner
@@ -121,7 +121,7 @@ type (
 	AnswerEnvelope = internal.AnswerEnvelope
 )
 
-// Attachment disposition policy (Phase 84b — D-189) — aliases of the
+// Attachment disposition policy — aliases of the
 // internal types. The policy core is the headless seam: construct a
 // DispositionPolicy and/or set InputArtifactView.Disposition directly;
 // the Protocol hint and harbor.yaml are thin carriers over it.
@@ -318,7 +318,7 @@ var (
 )
 
 // Resolve resolves the configured planner concrete via the driver
-// registry (D-103).
+// registry.
 var Resolve = internal.Resolve
 
 // Register registers a planner concrete by name (the seam external
@@ -354,12 +354,12 @@ var TaskErrorCodeForFinish = internal.TaskErrorCodeForFinish
 
 // CountToolInvocations counts the actual tool invocations recorded
 // across a Trajectory's steps — the shared semantics behind
-// AnswerEnvelope.ToolCallsSeen (D-274). See internal.CountToolInvocations
+// AnswerEnvelope.ToolCallsSeen. See internal.CountToolInvocations
 // for the counting rule.
 var CountToolInvocations = internal.CountToolInvocations
 
 // DecisionInvocationCount returns the number of tool invocations a
-// single decision represents (D-274).
+// single decision represents.
 var DecisionInvocationCount = internal.DecisionInvocationCount
 
 // ResolveWakeMode resolves a planner's effective WakeMode (WakePush

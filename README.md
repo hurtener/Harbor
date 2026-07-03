@@ -254,6 +254,29 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.10.0.** v1.9's typed answers and brokered credentials reach the
+Protocol and the MCP wire. Any task can now return a **schema-validated
+answer**: pass `output_schema` on the `start` request and the completed
+task's envelope carries a validated `answer_payload` — readable via
+`tasks.get` and a parent run's AwaitTask observation; schema-invalid after
+the correction budget fails the task loud with `output_invalid`, never a
+schemaless success. A shared MCP server gets **per-identity credentials and
+provenance**: bind an `oauth_provider` to a connection and every call
+carries that caller's bearer (fail-closed — a token failure aborts the
+call, never an unauthenticated fallback) plus `_meta` attribution
+(`agent_id` and operator annotations). Config-declared HTTP tools are live:
+`tools.http_manifests` loads UTCP-style manifests at boot, and the existing
+by-name OAuth / approval / loading bindings apply to them unchanged. The
+new **run-completion hook** (RFC §6.17) delivers every run's full
+transcript — mid-run steering messages included — to a named catalog tool
+at the terminal boundary, covering the background and disconnected runs no
+client observes; a hook failure never alters the run outcome. Tool
+**loading modes** become runtime-controllable per agent with one pinned
+precedence order, applied next-turn. And governance stops undercounting:
+every retry and downgrade attempt now reaches the cost ceilings — recorded
+spend rises accordingly, by design. Additive wire types plus two canonical
+events; the Harbor Protocol holds at `0.1.0`.
+
 **Harbor v1.9.0.** The typed-output-and-brokered-credentials line. The embed
 path now answers in your types: `Stack.RunOnce` takes an opt-in
 `WithOutputSchema` and returns a schema-validated object on a new

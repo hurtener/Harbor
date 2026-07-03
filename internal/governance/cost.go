@@ -178,21 +178,28 @@ func (a *CostAccumulator) PreCall(ctx context.Context, req llm.CompleteRequest) 
 // already happened); the operator sees the breach via the cost-recorded
 // observability stream that bifrost already publishes.
 func (a *CostAccumulator) PostCall(ctx context.Context, req llm.CompleteRequest, resp llm.CompleteResponse, _ error) error {
+	// Peek (do not drain yet) the attempt-cost tap BEFORE any early return so
+	// that neither the closed-subsystem nor the missing-identity short-circuit
+	// below can silently swallow reported intermediate-attempt spend. Peeking
+	// is side-effect-free; the actual drain still happens only after keyState
+	// resolution succeeds, so every failure path strands the tap loudly with
+	// the at-risk amount named rather than discarding it in silence.
+	tapPending, tapAttempts := llm.PeekAttemptCost(ctx)
 	if a.closed.Load() {
+		if tapPending != 0 {
+			return fmt.Errorf("%w (attempt cost %.6f USD at risk: accumulator closed before drain)", ErrClosed, tapPending)
+		}
 		return ErrClosed
 	}
 	// Identity check first — AGENTS.md §6 rule 9: identity is
 	// mandatory; missing triple fails closed. Mirrors PreCall.
 	quad, err := quadrupleFromCtx(ctx)
 	if err != nil {
+		if tapPending != 0 {
+			return fmt.Errorf("%w (attempt cost %.6f USD at risk: identity resolution failed before drain)", err, tapPending)
+		}
 		return err
 	}
-	// Peek (do not drain yet) the attempt-cost tap so the zero-work early
-	// return below never swallows reported intermediate-attempt spend. The
-	// actual drain happens only after keyState resolution succeeds, so a
-	// keyState failure strands the tap loudly rather than silently
-	// discarding a drained value.
-	tapPending, tapAttempts := llm.PeekAttemptCost(ctx)
 	if resp.Cost.TotalCost == 0 && len(resp.Content) == 0 && resp.Usage.TotalTokens == 0 &&
 		tapPending == 0 && tapAttempts == 0 {
 		// No accounting work to do — likely a failed call that the

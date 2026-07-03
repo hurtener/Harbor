@@ -121,6 +121,14 @@ func (t *AttemptCostTap) peek() (float64, int) {
 // number of reported attempts, exactly once. The first call marks the tap
 // drained; every subsequent call returns (0, 0) so no accounting fold can
 // double-count a call's attempt spend.
+//
+// Failure direction (for wrapper authors): a report that races an
+// already-completed Drain is LOST — its spend lands in the tap's atomics
+// after the one-shot Drain has read them, so it is never folded into
+// accounting. The pinned direction is therefore an UNDER-count, never a
+// double-count: Drain is the boundary that closes the propagate-or-report
+// window, so any consuming site MUST Report before the governed call's
+// PostCall drains, not after.
 func (t *AttemptCostTap) Drain() (totalUSD float64, attempts int) {
 	if !t.drained.CompareAndSwap(false, true) {
 		return 0, 0

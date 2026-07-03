@@ -1,7 +1,7 @@
 // Package skills is the public SDK facade over Harbor's
 // internal/skills package — the token-savvy skill store and the
 // Directory view that projects ranked skills into planner context
-// (RFC §3.6, §6.7; D-204). Alias-based re-exports only: no behavior
+// (RFC §3.6, §6.7). Alias-based re-exports only: no behavior
 // lives here. The importer, generator, capability filter, event
 // emission helpers, and wire projections are deliberately private.
 package skills

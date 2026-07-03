@@ -154,6 +154,69 @@ func TestCostAccumulator_PostCall_PersistFailNamesFoldedTotal(t *testing.T) {
 	}
 }
 
+// TestCostAccumulator_PostCall_ClosedStrandsTapLoud asserts the closed-
+// subsystem early return no longer silently swallows a pending attempt-cost
+// tap: a nonzero tap on a closed accumulator surfaces a loud ErrClosed that
+// names the at-risk attempt total (the peek is hoisted above every early
+// return so the strand is announced, never dropped in silence).
+func TestCostAccumulator_PostCall_ClosedStrandsTapLoud(t *testing.T) {
+	t.Parallel()
+	bus, st, cleanup := busAndState(t)
+	defer cleanup()
+	acc, err := governance.NewCostAccumulator(st, bus, governance.Config{})
+	if err != nil {
+		t.Fatalf("NewCostAccumulator: %v", err)
+	}
+	_ = acc.Close(context.Background())
+
+	ctx := ctxWith(t, "T", "U", "S", "R")
+	ctx, _ = llm.ContextWithAttemptCostTap(ctx)
+	llm.ReportAttemptCost(ctx, llm.Cost{TotalCost: 0.07})
+
+	err = acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+		llm.CompleteResponse{Cost: llm.Cost{TotalCost: 1.0}, Content: "x"}, nil)
+	if err == nil {
+		t.Fatal("PostCall on a closed accumulator returned nil; want a loud stranded-tap error")
+	}
+	if !errors.Is(err, governance.ErrClosed) {
+		t.Fatalf("err = %v, want wrapped ErrClosed", err)
+	}
+	if !strings.Contains(err.Error(), "0.07") || !strings.Contains(err.Error(), "at risk") {
+		t.Fatalf("closed-subsystem PostCall must name the at-risk attempt total (0.07): %v", err)
+	}
+}
+
+// TestCostAccumulator_PostCall_MissingIdentityStrandsTapLoud asserts the
+// missing-identity early return names the at-risk attempt total rather than
+// dropping the tap. Identity is mandatory (AGENTS.md §6 rule 9), so the
+// call still fails closed with ErrIdentityRequired — but loudly, with the
+// stranded attempt spend surfaced.
+func TestCostAccumulator_PostCall_MissingIdentityStrandsTapLoud(t *testing.T) {
+	t.Parallel()
+	bus, st, cleanup := busAndState(t)
+	defer cleanup()
+	acc, err := governance.NewCostAccumulator(st, bus, governance.Config{})
+	if err != nil {
+		t.Fatalf("NewCostAccumulator: %v", err)
+	}
+	defer acc.Close(context.Background())
+
+	ctx, _ := llm.ContextWithAttemptCostTap(context.Background()) // no identity in ctx
+	llm.ReportAttemptCost(ctx, llm.Cost{TotalCost: 0.09})
+
+	err = acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+		llm.CompleteResponse{Cost: llm.Cost{TotalCost: 1.0}, Content: "x"}, nil)
+	if err == nil {
+		t.Fatal("PostCall without identity returned nil; want a loud stranded-tap error")
+	}
+	if !errors.Is(err, governance.ErrIdentityRequired) {
+		t.Fatalf("err = %v, want wrapped ErrIdentityRequired", err)
+	}
+	if !strings.Contains(err.Error(), "0.09") || !strings.Contains(err.Error(), "at risk") {
+		t.Fatalf("missing-identity PostCall must name the at-risk attempt total (0.09): %v", err)
+	}
+}
+
 // saveFailingStore embeds a real StateStore but forces Save to fail,
 // exercising the PostCall persist error path after a successful keyState
 // load + fold.

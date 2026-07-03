@@ -1,9 +1,9 @@
 // Package importer is the public SDK facade over Harbor's
 // internal/skills/importer package — the Skills.md ingest path
-// (RFC §3.6, §6.7; D-204/D-206). Alias-based re-exports only: no
-// behavior lives here. Added in Phase 112b: the
+// (RFC §3.6, §6.7). Alias-based re-exports only: no
+// behavior lives here. The
 // use-memory-and-skills-from-go recipe documents ImportAndStore as the
-// one ingest surface the `harbor skill import` verb wraps (D-201), so
+// one ingest surface the `harbor skill import` verb wraps, so
 // the conversion flushed the names out. The streaming Importer
 // interface, the parser, and the export path are deliberately private
 // — ImportAndStore is the supported one-call shape.
@@ -46,7 +46,7 @@ var (
 
 // ImportAndStore parses one Skills.md file, uploads its attachments,
 // and persists the skill under the supplied identity — the same
-// one-call path `harbor skill import` drives (D-201).
+// one-call path `harbor skill import` drives.
 var ImportAndStore = internal.ImportAndStore
 
 // WithOverwrite opts ImportAndStore into replacing an existing

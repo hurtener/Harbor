@@ -24,6 +24,140 @@ issue [#396](https://github.com/hurtener/Harbor/issues/396); and the generated
 per-domain Protocol wire-type modules + the shared chat-module extraction — the
 D-093 / D-091 follow-ons.)
 
+## [1.10.0] — 2026-07-02
+
+The reach-the-wire release: the typed answers and brokered credentials v1.9
+shipped for the embed path now reach the Protocol and the MCP wire, and the
+runtime grows its first run-lifecycle egress. Any task can return a
+schema-validated answer, a shared MCP server receives a per-identity bearer
+plus call provenance on every request, the `tools.http_manifests` knob goes
+from documented-but-rejected to live at boot, an operator-named catalog tool
+receives every run's full transcript at completion, and tool loading modes
+become runtime-controllable per agent. Governance also stops undercounting:
+every retry and downgrade attempt now reaches the cost ceilings — see Fixed.
+Additive wire types + two new canonical events; the Harbor Protocol holds at
+`0.1.0` (no method, error, or version change this release).
+
+### Added
+
+- **`output_schema` on `start` — per-task structured output.** *(protocol)*
+  The run-level mechanism v1.9 shipped for `Stack.RunOnce` gains its Protocol
+  producer: one additive field on the `start` request asks any task for a
+  schema-conforming final answer. The schema is compile-rejected at the edge
+  (`400 invalid_request`, before any task spawns), compiled once at run
+  start, steers the React driver through the existing per-turn mechanism
+  with zero planner change, and the terminal answer is validated through the
+  ONE shared envelope builder `RunOnce` also uses — the validated object
+  lands as the task envelope's `answer_payload`, readable via `tasks.get`'s
+  `result_inline` and a parent run's AwaitTask observation (the heavy-output
+  offload applies unchanged). A schema-invalid answer after the correction
+  budget fails the task loud with the new `output_invalid` terminal code —
+  never a schemaless success — and schema-constrained tasks suppress
+  assistant token deltas (the validated answer arrives once, on completion).
+  A reused idempotency key carrying a different schema is a loud
+  `ErrIdempotencyConflict`. Per-run granularity by design — deliberately not
+  agent config. (D-276.)
+- **MCP southbound per-identity OAuth bearer + `_meta` provenance.**
+  *(tools)* A non-secret `oauth_provider` name on an MCP connection (yaml,
+  agent-config descriptor, and wire) binds a declared
+  `tools.oauth_providers[]` entry — the v1.9 `tokenexchange` broker
+  credential included — and every identity-stamped per-call RPC injects a
+  fresh per-identity `Authorization: Bearer` via a context-aware
+  RoundTripper: the token rides the per-call ctx, so one shared transport
+  serves N concurrent identities with no bleed. Fail-closed is the
+  load-bearing invariant — a bound provider whose token fetch fails aborts
+  the call with NO wire request, never an unauthenticated fallback; a
+  `consent_required` refusal parks on the unified pause primitive. `_meta`
+  gains provenance: the registration `agent_id` (attribution metadata, never
+  an isolation principal) plus operator-declared non-secret
+  `meta_annotations`, with reserved keys rejected at validation. A static
+  `Authorization` header alongside a binding, or a binding on a connection
+  that would select stdio, is rejected at validation. (D-278.)
+- **`tools.http_manifests` goes live — the HTTP-manifest boot loader.**
+  *(tools)* The documented-but-dead knob is wired: assembly loads each
+  UTCP-style manifest at boot and registers its tools by name — after
+  built-ins, before `tools.entries[]` middleware — so the existing by-name
+  `oauth` / `approval` / `loading_mode` bindings apply to manifest tools
+  with zero new machinery. This is the first config-only, black-box path
+  through catalog OAuth wrapping (token exchange included): config in,
+  brokered-credential pre-check + HTTP round-trip out. `harbor validate`
+  flips from rejecting a populated list to validating it; relative entries
+  resolve against the config file's directory under the path-safety posture;
+  a missing, unparseable, or invalid manifest — or a tool-name collision —
+  fails boot naming the file and the config key, never a silent skip.
+  Boot-only (restart-required). (D-279.)
+- **The run-completion hook — transcript egress through the tool catalog.**
+  *(runtime)* The runtime's first run-lifecycle hook (new RFC §6.17):
+  `RunLoop.Run` fires it exactly once at its terminal boundary — every
+  terminal outcome, carried in the payload; never mid-run, never on pause —
+  dispatching a typed, versioned `RunCompletionPayload` transcript (initial
+  goal, mid-run steering messages in arrival order, assistant steps, final
+  answer, identity + the true tool-invocation count) to an operator-named
+  catalog tool through the existing executor path, so provenance, identity,
+  per-tool policy retries, and args-free audit events come free (a bespoke
+  webhook subsystem is the rejected parallel implementation). A hook failure
+  never alters the settled run outcome — `run.hook_failed` + a Warn; success
+  emits `run.hook_dispatched` (both metadata-only, never transcript
+  content). Cancelled runs fire under a bounded detached ctx with identity
+  values preserved. Config pairs yaml
+  `runtime.hooks.run_completion.{tool,timeout}` with a versioned
+  agent-config `hooks` section on the existing revision surface (no new
+  verb); embedders get a per-call `WithCompletionHook` RunOption. One seam
+  covers embed, foreground, and background runs uniformly — including the
+  runs no client observes. (D-280.)
+- **Runtime loading-mode control on tool exposure.** *(protocol)*
+  `agent_config.set_tool_exposure` gains `server_loading_modes` (per MCP
+  source id, tool-form descriptors only via the new additive `Tool.Form`
+  classification) and `tool_loading_modes` (exact per-tool name), valued
+  `always` / `deferred`, with ONE pinned precedence order — per-tool >
+  per-server > boot `tools.entries[].loading_mode` > driver default.
+  Applied next-turn at the shared run-start projection via a new
+  `LoadingOverrideView`: a deferred tool drops out of the prompt-time
+  catalog but stays `tool_search`-discoverable and callable (disable stays
+  strictly stronger — hidden from prompt AND dispatch); in-flight runs keep
+  their snapshot. Admin tier only — loading is not capability-narrowing. An
+  unknown mode value fails `400 invalid_request` before any revision is
+  recorded; `agent_config.diff` renders structured loading arms.
+  `tools.describe` gains an optional `agent_id` reporting the projected
+  effective `loading_mode`. (D-281.)
+
+### Fixed
+
+- **Governance now accounts every LLM attempt — the in-band attempt-cost
+  tap.** *(governance)* Governance composes outside the retry wrapper
+  (deliberate: the ceiling check must run before any spend), so every
+  intermediate corrective re-ask and downgrade attempt was a real provider
+  call invisible to the `CostAccumulator` — worst case `(MaxRetries+1)×3`
+  uncounted calls per planner turn, live since v1.9's validator loop went
+  production-real (the gap D-272 recorded). `governance.Wrap` now installs a
+  per-call attempt-cost tap after `PreCall` permits; the retry and downgrade
+  wrappers synchronously report each attempt they consume; `PostCall` drains
+  the tap once and folds it with the final response's cost under the
+  existing identity key — exactly-once by the propagate-or-report invariant,
+  with the compose order, `PreCall` short-circuit semantics, and `resp.Cost`
+  meaning all unchanged. Operators take note: recorded spend now includes
+  retry/downgrade attempts, so per-identity totals rise and ceilings trip
+  sooner — by design; attempt spend accumulates even when the outer call
+  ultimately errors. (D-275.)
+
+### Internal
+
+- The events subsystem gained its conformance-suite home
+  (`internal/events/conformancetest` — 20 pinned scenarios plus a fail-loud
+  capability gate, spanning fence semantics, Bounds/Window history, replay
+  cursors, subscribe scoping, and close lifecycle), and both bus drivers
+  consume it from their own tests, folding the hand-copied per-driver twins;
+  six scenario cells are coverage gains on the driver that lacked them. Zero
+  production change. (D-277.)
+- The distributed durable-bus conformance flood test is bounded to the
+  subscriber buffer, deflaking `Concurrent_Publish_NoRace`.
+- Two additive canonical events (`run.hook_dispatched` / `run.hook_failed`);
+  the generated Protocol reference and the TS wire manifest regenerated for
+  every wire change (`start.output_schema`, the MCP descriptor's
+  `oauth_provider` / `meta_annotations`, `AgentConfigHooks` + its diff arm,
+  the exposure loading maps, `tools.describe.agent_id`) — all additive, so
+  `ProtocolVersion` holds at `0.1.0`.
+
 ## [1.9.0] — 2026-07-02
 
 The typed-output-and-brokered-credentials release: the embed path now answers
@@ -1112,4 +1246,5 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
+[1.10.0]: https://github.com/hurtener/Harbor/releases/tag/v1.10.0
 [1.0.0]: https://github.com/hurtener/Harbor/releases/tag/v1.0.0

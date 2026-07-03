@@ -33,6 +33,10 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# Standalone battery runs (no dev server) degrade to SKIP instead of a
+# healthz-000 FAIL; preflight always has the server up (no-op there).
+skip_all_if_server_down "phase 73k"
+
 BASE="${HARBOR_BASE_URL:-http://127.0.0.1:18080}"
 TOKEN_OPERATOR="${HARBOR_DEV_TOKEN:-}"
 TOKEN_ADMIN="${HARBOR_DEV_ADMIN_TOKEN:-${HARBOR_DEV_TOKEN:-}}"

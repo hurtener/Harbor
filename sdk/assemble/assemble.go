@@ -1,7 +1,7 @@
 // Package assemble is the public SDK facade over Harbor's
 // internal/runtime/assemble package — the ONE composition fan-out
 // that turns a validated config into a running headless stack
-// (RFC §3.6, §6.4; D-204/D-197). Alias-based re-exports only: no
+// (RFC §3.6, §6.4). Alias-based re-exports only: no
 // behavior lives here. Blank-import sdk/drivers/prod alongside this
 // package so every Open the assembly performs resolves the
 // production driver set; see docs/recipes/embed-harbor-headless.md

@@ -94,7 +94,7 @@ state:
 
 ### `tools`
 
-Two sources: `built_in` (tools shipped in the harbor binary; opt-in by name) and `mcp_servers` (MCP southbound subprocesses Harbor spawns at boot).
+Three sources: `built_in` (tools shipped in the harbor binary; opt-in by name), `mcp_servers` (MCP southbound subprocesses Harbor spawns at boot), and `http_manifests` (UTCP-style YAML manifests describing HTTP endpoints as tools, loaded at boot — see `docs/CONFIG.md` › `tools.http_manifests`; `tools.entries[]` OAuth/approval/loading bindings apply to manifest tools by name like any other).
 
 ```yaml
 tools:
@@ -113,6 +113,8 @@ tools:
 ```
 
 The planner discovers every MCP server's tools at boot — there's no per-server enable flag; listing the server registers its tools. Built-in tools live in the harbor binary — list `clock.now` to enable, omit to disable. MCP servers are external processes; see [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md) for the skill-vs-tool axis.
+
+`runtime.hooks.run_completion.{tool, timeout}` names a catalog tool that receives every run's transcript at completion — see `docs/CONFIG.md` › Runtime.
 
 ### `skills`
 

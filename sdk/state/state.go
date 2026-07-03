@@ -1,6 +1,6 @@
 // Package state is the public SDK facade over Harbor's
 // internal/state package — the identity-scoped StateStore (RFC §3.6,
-// §9; D-204). Alias-based re-exports only: no behavior lives here.
+// §9). Alias-based re-exports only: no behavior lives here.
 // Driver factories and validation internals are deliberately private.
 package state
 
@@ -17,7 +17,7 @@ type (
 	// EventID identifies one appended state event.
 	EventID = internal.EventID
 	// ListScope is the explicit scope claim StateStore.ListKind
-	// requires (the cross-identity maintenance scan — D-207).
+	// requires (the cross-identity maintenance scan).
 	ListScope = internal.ListScope
 )
 
@@ -40,7 +40,7 @@ var (
 	// ErrUnknownDriver — the named state driver is not registered.
 	ErrUnknownDriver = internal.ErrUnknownDriver
 	// ErrMaintenanceScopeRequired — ListKind called without the
-	// explicit maintenance scope claim (D-207).
+	// explicit maintenance scope claim.
 	ErrMaintenanceScopeRequired = internal.ErrMaintenanceScopeRequired
 )
 

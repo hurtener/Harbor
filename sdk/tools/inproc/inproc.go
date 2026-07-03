@@ -1,7 +1,7 @@
 // Package inproc is the public SDK facade over Harbor's
 // internal/tools/drivers/inproc package — the in-process tool driver
 // that registers plain Go functions as Tools with reflection-derived
-// schemas (RFC §3.6, §6.10; D-204). RegisterFunc is generic, so it is
+// schemas (RFC §3.6, §6.10). RegisterFunc is generic, so it is
 // forwarded as a wrapper (Go has no generic function values); the
 // wrapper adds no behavior. Schema-derivation internals are
 // deliberately private.
@@ -26,7 +26,7 @@ var (
 // Input and output schemas are derived from the type parameters I and
 // O via reflection; opts configure the descriptor (policy, scopes,
 // description, examples — see the sdk/tools DescriptorOption set).
-// `fn` must be safe for concurrent invocation (D-025). Thin generic
+// `fn` must be safe for concurrent invocation. Thin generic
 // forward over the internal driver; no behavior is added.
 func RegisterFunc[I any, O any](
 	cat tools.ToolCatalog,

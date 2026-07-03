@@ -86,6 +86,49 @@ func (failingPutTextStore) PutText(context.Context, artifacts.ArtifactScope, str
 	return artifacts.ArtifactRef{}, errors.New("forced PutText failure")
 }
 
+// TestExecutor_CallTool_DisabledInProjection_HookTargetStillDispatches pins
+// the documented full-catalog hook semantics (RFC §6.4 / D-281 amendment):
+// the run-completion hook resolves its target through this executor, which
+// resolves against the FULL catalog — NOT a planner-projected view. So a tool
+// that a planner ExclusionView would DISABLE (hidden from List AND Resolve)
+// still dispatches when named as a hook target. This is the property that must
+// not silently flip (e.g. by wiring the hook to a filtered executor); the
+// run-loop pre-dispatch membership check that would gate remembered names is a
+// named follow-up, deliberately not enforced here.
+func TestExecutor_CallTool_DisabledInProjection_HookTargetStillDispatches(t *testing.T) {
+	t.Parallel()
+	cat := tools.NewCatalog()
+	registerEcho(t, cat, "run_transcript_sink")
+	store := newTestArtifactStore(t)
+	exec := NewToolExecutor(cat, store, nil)
+
+	q := dispatchTestQuad("r-hook")
+
+	// A planner projection that DISABLES the hook target: it is absent from the
+	// planner-facing view's List AND Resolve.
+	view := tools.NewExclusionView(
+		tools.NewPlannerView(cat, tools.CatalogFilter{
+			TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID,
+		}),
+		nil, []string{"run_transcript_sink"},
+	)
+	if _, ok := view.Resolve("run_transcript_sink"); ok {
+		t.Fatal("precondition: the tool must be disabled (absent from the projected Resolve)")
+	}
+
+	// The executor edge (the hook's dispatch path) resolves against the full
+	// catalog, so the disabled tool still dispatches.
+	raw, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q},
+		planner.CallTool{Tool: "run_transcript_sink", Args: json.RawMessage(`{"format_version":1}`)})
+	if err != nil {
+		t.Fatalf("a disabled tool named as a hook target must still dispatch through the full-catalog executor: %v", err)
+	}
+	m, ok := raw.(map[string]any)
+	if !ok || m["echo"] != "run_transcript_sink" {
+		t.Fatalf("raw observation = %#v, want the hook tool's echo map", raw)
+	}
+}
+
 // TestExecutor_CallTool_LightResult_PassesThrough — a result whose JSON
 // encoding is under the heavy threshold reaches the planner verbatim:
 // llmObservation == raw, no artifact stored.

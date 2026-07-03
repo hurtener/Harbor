@@ -1,9 +1,10 @@
 // Package audit is the public SDK facade over Harbor's internal/audit
 // package — the mandatory redaction seam every payload passes through
-// before leaving the process (RFC §3.6; D-204/D-206). Alias-based
-// re-exports only: no behavior lives here. Added in Phase 112b: the
+// before leaving the process (RFC §3.6). Alias-based
+// re-exports only: no behavior lives here. The
 // external consumers flushed the gap out — sdk/events.Open and
-// harbortest.Deps both take an audit.Redactor, which 112a's inventory
+// harbortest.Deps both take an audit.Redactor, which the initial
+// inventory
 // left unnameable and unconstructible outside the module. Driver
 // registration (Register) and the rule vocabulary internals are
 // deliberately private.

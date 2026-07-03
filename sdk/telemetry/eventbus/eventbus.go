@@ -1,8 +1,8 @@
 // Package eventbus is the public SDK facade over Harbor's
 // internal/telemetry/eventbus package — the production BusEmitter
 // adapter that pairs Logger.Error calls with runtime.error events on
-// the canonical bus (RFC §3.6, §6.14; D-204/D-206). Alias-based
-// re-exports only: no behavior lives here. Added in Phase 112b
+// the canonical bus (RFC §3.6, §6.14). Alias-based
+// re-exports only: no behavior lives here. Ships
 // alongside sdk/telemetry (the manual-composition recipe path needs
 // the adapter to wire telemetry.WithBusEmitter).
 package eventbus

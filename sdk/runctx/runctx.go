@@ -1,7 +1,7 @@
 // Package runctx is the public SDK facade over Harbor's
 // internal/runtime/runctx package — the RunContext-population
 // projections a run-loop driver applies between "task spawned" and
-// "planner.Next" (RFC §3.6, §6.2; D-204/D-195). Alias-based
+// "planner.Next" (RFC §3.6, §6.2). Alias-based
 // re-exports only: no behavior lives here.
 package runctx
 
@@ -13,7 +13,7 @@ import (
 // fully-formed planner.RunContext, composing the same memory / skills /
 // artifact / streaming projection helpers the run-loop drivers use. The
 // shared factory a one-call runner or a headless RunSpec builder
-// composes (D-265).
+// composes.
 var NewRunContext = internal.NewRunContext
 
 // Sources carries the stack-derived subsystem handles NewRunContext
@@ -49,18 +49,18 @@ var ProjectMemoryBlocks = internal.ProjectMemoryBlocks
 var ProjectSkillsContext = internal.ProjectSkillsContext
 
 // ProjectSkillsDirectory projects the skills Directory view into the
-// planner's skills-context entries (the canonical producer, D-201).
+// planner's skills-context entries (the canonical producer).
 var ProjectSkillsDirectory = internal.ProjectSkillsDirectory
 
 // ResolveInputArtifacts resolves the run's input artifact refs into
 // planner-visible InputArtifactViews, resolving each attachment's
 // disposition (caller hint > agent policy > runtime default) via the
-// planner-homed pure resolver (Phase 84b — D-189).
+// planner-homed pure resolver.
 var ResolveInputArtifacts = internal.ResolveInputArtifacts
 
 // InputArtifactOptions carries the disposition inputs (hints / policy
 // / catalog / emit) to ResolveInputArtifacts. The zero value
-// reproduces the pre-84b behaviour exactly.
+// reproduces the prior default behaviour exactly.
 type InputArtifactOptions = internal.InputArtifactOptions
 
 // DispositionHints converts a task's string-typed per-attachment hint
@@ -72,5 +72,5 @@ var DispositionHints = internal.DispositionHints
 type InputDispositionResolvedPayload = internal.InputDispositionResolvedPayload
 
 // EventTypeInputDispositionResolved is published once per input
-// artifact when the disposition is resolved (Phase 84b — D-189).
+// artifact when the disposition is resolved.
 const EventTypeInputDispositionResolved = internal.EventTypeInputDispositionResolved

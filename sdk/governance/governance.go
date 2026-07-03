@@ -1,9 +1,9 @@
 // Package governance is the public SDK facade over Harbor's
 // internal/governance package — per-identity cost ceilings, rate
 // limits, and MaxTokens caps composed as an LLM-client wrapper
-// (RFC §3.6, §6.15; D-204/D-206). Alias-based re-exports only: no
-// behavior lives here. Added in Phase 112b: the headless-embedding
-// recipe's multi-stack governance path (D-198) is consumer-facing and
+// (RFC §3.6, §6.15). Alias-based re-exports only: no
+// behavior lives here. The headless-embedding recipe's multi-stack
+// governance path is consumer-facing and
 // flushed the names out. The process-global SetFactory hook, the
 // per-policy enforcer constructors, and the event payload structs are
 // deliberately private — embedders compose per stack via
@@ -61,5 +61,5 @@ var NewSubsystemFromConfig = internal.NewSubsystemFromConfig
 var ConfigFromOperator = internal.ConfigFromOperator
 
 // Wrap composes governance around an LLM client; governance stays the
-// outermost wrapper (D-043).
+// outermost wrapper.
 var Wrap = internal.Wrap

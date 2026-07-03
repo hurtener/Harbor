@@ -2,8 +2,8 @@
 // internal/telemetry package — the redactor-mandatory structured
 // Logger, the bus→metrics bridge, and the bus→tracer bridge that
 // derive Harbor's three signals from the one canonical event stream
-// (RFC §3.6, §6.14; D-204/D-206). Alias-based re-exports only: no
-// behavior lives here. Added in Phase 112b: the
+// (RFC §3.6, §6.14). Alias-based re-exports only: no
+// behavior lives here. The
 // observe-an-embedded-runtime recipe's manual-composition path is
 // consumer-facing and flushed the names out. Exporter driver
 // registration, the slog handler internals, and the cardinality lint

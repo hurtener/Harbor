@@ -1,6 +1,6 @@
-// runtyped.go — the facade's SECOND documented generic-func carve-out
-// (D-273, amending D-205 item 1): Go has no generic function values,
-// so RunTyped cannot be expressed as a `var = internal.RunTyped`
+// runtyped.go — the facade's SECOND documented generic-func carve-out:
+// Go has no generic function values, so RunTyped cannot be expressed
+// as a `var = internal.RunTyped`
 // forward the way every other re-export in this tree is. The wrapper
 // body is exactly one return statement and adds no behavior — the
 // IDENTICAL rationale and shape as the facade's first carve-out,
@@ -44,7 +44,7 @@ var (
 // a nil error.
 //
 // Thin generic forward over the internal runner; no behavior is added
-// here (CLAUDE.md §13, D-273).
+// here (CLAUDE.md §13).
 func RunTyped[T any](
 	ctx context.Context,
 	s *Stack,

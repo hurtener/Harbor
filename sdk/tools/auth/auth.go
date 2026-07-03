@@ -1,11 +1,10 @@
 // Package auth is the public SDK facade over Harbor's
 // internal/tools/auth package — the tool-side OAuth completion leg: a
 // plain http.Handler that exchanges the provider redirect and resumes
-// the parked pause (RFC §3.6, §6.3; D-204/D-206; Phase 111b/D-199).
-// Alias-based re-exports only: no behavior lives here. Added in Phase
-// 112b: the steer-and-resume-a-run recipe's headless path mounts the
-// callback handler over `assemble.Stack.OAuthProviders`, which 112a's
-// inventory left unreachable. Provider construction (BuildProviders),
+// the parked pause (RFC §3.6, §6.3). Alias-based re-exports only: no
+// behavior lives here. The steer-and-resume-a-run recipe's headless
+// path mounts the callback handler over
+// `assemble.Stack.OAuthProviders`. Provider construction (BuildProviders),
 // the token store, and the sealer are deliberately private — the
 // assembly builds providers from harbor.yaml.
 package auth

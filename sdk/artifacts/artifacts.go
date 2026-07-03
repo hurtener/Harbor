@@ -1,7 +1,7 @@
 // Package artifacts is the public SDK facade over Harbor's
 // internal/artifacts package — the content-addressed, identity-scoped
 // artifact store and the by-reference heavy-content contract
-// (RFC §3.6, §6.10; D-204). Alias-based re-exports only: no behavior
+// (RFC §3.6, §6.10). Alias-based re-exports only: no behavior
 // lives here. Driver factories and the conformance kit are
 // deliberately private.
 package artifacts
