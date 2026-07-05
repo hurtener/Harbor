@@ -462,6 +462,79 @@ func TestCascadeEraser_ConcurrentSameSession_OneWins_NeverDoubleEvent(t *testing
 	}
 }
 
+// TestCascadeEraser_StaleLedger_SessionIDReuse_CountsOnlyNewLifecycle is
+// the adversarial-review repro for stale-ledger count inflation across
+// session-id reuse: lifecycle 1 completes its destructive steps but
+// fails at the final emit (ErrErasureRecordFailed, never converged — 5
+// artifacts checkpointed in the ledger); the SAME session id is then
+// reopened as a brand-new lifecycle with 2 artifacts and erased cleanly.
+// Without the lifecycle stamp the leftover ledger would accumulate and
+// report ArtifactsDeleted=7; with it, the stale checkpoint is discarded
+// and the clean erasure reports exactly lifecycle 2's own count.
+func TestCascadeEraser_StaleLedger_SessionIDReuse_CountsOnlyNewLifecycle(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-reuse2", "u-reuse2", "s-reuse2")
+	ictx := ctxFor(id)
+
+	// --- lifecycle 1: 5 artifacts, destructive steps succeed, emit fails ---
+	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
+		t.Fatalf("Open lifecycle 1: %v", err)
+	}
+	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
+	for i := range 5 {
+		if _, err := f.arts.PutBytes(ctx, scope, []byte(fmt.Sprintf("l1-blob-%d", i)), artifacts.PutOpts{Namespace: "test"}); err != nil {
+			t.Fatalf("PutBytes l1 %d: %v", i, err)
+		}
+	}
+	realFencer, ok := f.bus.(events.Fencer)
+	if !ok {
+		t.Fatalf("fixture bus must implement events.Fencer")
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	flaky := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
+	failEraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Bus: flaky,
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+	if _, ferr := failEraser.Erase(ctx, id); !errors.Is(ferr, sessions.ErrErasureRecordFailed) {
+		t.Fatalf("lifecycle 1 erase err=%v, want ErrErasureRecordFailed", ferr)
+	}
+
+	// --- lifecycle 2: reopen the SAME id, 2 artifacts, clean erase ---
+	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
+		t.Fatalf("Open lifecycle 2 (reused id): %v", err)
+	}
+	for i := range 2 {
+		if _, err := f.arts.PutBytes(ctx, scope, []byte(fmt.Sprintf("l2-blob-%d", i)), artifacts.PutOpts{Namespace: "test"}); err != nil {
+			t.Fatalf("PutBytes l2 %d: %v", i, err)
+		}
+	}
+	resp, rerr := f.eraser.Erase(ctx, id)
+	if rerr != nil {
+		t.Fatalf("lifecycle 2 erase: %v", rerr)
+	}
+	if resp.ArtifactsDeleted != 2 {
+		t.Errorf("ArtifactsDeleted = %d, want 2 (lifecycle 2 only — the stale lifecycle-1 ledger must be discarded, not accumulated into 7)", resp.ArtifactsDeleted)
+	}
+	if !resp.Deleted || !resp.MemoryPurged {
+		t.Errorf("lifecycle 2 response = %+v, want Deleted && MemoryPurged", resp)
+	}
+	// Exactly one durable record — lifecycle 2's (lifecycle 1's was
+	// forfeited when its convergence was abandoned by the reopen).
+	if count, _ := countSessionErasedEvents(t, f.bus, id.TenantID, id.UserID, id.SessionID); count != 1 {
+		t.Errorf("session.erased count = %d, want exactly 1 (lifecycle 2's record)", count)
+	}
+	// The stale ledger slot is gone (overwritten by lifecycle 2's
+	// checkpoints, then deleted on its clean completion).
+	if _, lerr := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); !errors.Is(lerr, state.ErrNotFound) {
+		t.Errorf("ledger checkpoint survived the clean lifecycle-2 erasure: err=%v", lerr)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Ledger-checkpoint fault injection: the StateStore seam the erasure
 // ledger itself is persisted through.
@@ -759,5 +832,135 @@ func TestCascadeEraser_LedgerCleanupFailure_SucceedsWithWarn(t *testing.T) {
 	// The stray ledger record remains (the only residual effect).
 	if _, lerr := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); lerr != nil {
 		t.Errorf("expected the stray ledger record to remain after a cleanup failure, Load err=%v", lerr)
+	}
+}
+
+// TestCascadeEraser_ReinvokeAfterCleanupFailure_ExactlyOneEmit pins the
+// idempotent re-emit guard: after a successful publish whose LEDGER
+// CLEANUP failed (the benign-retry double-emit window), a re-invoke for
+// the same session converges via the ledger, recognizes the existing
+// session.erased record for this session+lifecycle in the observability
+// history, SKIPS the publish, still removes the ledger, and returns
+// success with the checkpointed counts — exactly ONE durable record
+// across both calls, never two.
+func TestCascadeEraser_ReinvokeAfterCleanupFailure_ExactlyOneEmit(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-oneemit", "u-oneemit", "s-oneemit")
+	ictx := ctxFor(id)
+	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
+	if _, err := f.arts.PutBytes(ctx, scope, []byte("blob"), artifacts.PutOpts{Namespace: "test"}); err != nil {
+		t.Fatalf("PutBytes: %v", err)
+	}
+
+	var fail atomic.Bool
+	fail.Store(true)
+	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+
+	// First call: full success (publish landed), ledger cleanup failed.
+	first, err := eraser.Erase(ctx, id)
+	if err != nil {
+		t.Fatalf("first Erase: %v", err)
+	}
+	if !first.Deleted || first.ArtifactsDeleted != 1 {
+		t.Fatalf("first response = %+v, want Deleted+ArtifactsDeleted=1", first)
+	}
+
+	// Heal the cleanup fault and re-invoke: the converging path must NOT
+	// re-publish (the record already exists for this session+lifecycle).
+	fail.Store(false)
+	second, err := eraser.Erase(ctx, id)
+	if err != nil {
+		t.Fatalf("re-invoke after cleanup failure: %v", err)
+	}
+	if !second.Deleted || second.ArtifactsDeleted != first.ArtifactsDeleted ||
+		second.StateRecordsDeleted != first.StateRecordsDeleted || !second.MemoryPurged {
+		t.Errorf("re-invoke response = %+v, want convergence to the first call's telemetry %+v", second, first)
+	}
+
+	// EXACTLY one durable record across both calls.
+	if count, _ := countSessionErasedEvents(t, f.bus, id.TenantID, id.UserID, id.SessionID); count != 1 {
+		t.Errorf("session.erased count = %d, want exactly 1 (the re-invoke must not double-emit)", count)
+	}
+	// The ledger is now cleaned up.
+	if _, lerr := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); !errors.Is(lerr, state.ErrNotFound) {
+		t.Errorf("ledger checkpoint survived the converged re-invoke: err=%v", lerr)
+	}
+}
+
+// windowErrBus wraps a real Fencer+HistoryReplayer bus but forces the
+// HistoryReplayer.Window scan to fail — the seam for the re-emit
+// guard's cannot-verify branch: a scan failure must degrade in the SAFE
+// direction (emit anyway; a duplicate record beats a lost one), never
+// block the erasure.
+type windowErrBus struct {
+	events.EventBus
+	fencer events.Fencer
+	hr     events.HistoryReplayer
+}
+
+func (b *windowErrBus) Fence(ctx context.Context, id identity.Identity) error {
+	return b.fencer.Fence(ctx, id)
+}
+
+func (b *windowErrBus) Unfence(ctx context.Context, id identity.Identity) error {
+	return b.fencer.Unfence(ctx, id)
+}
+
+func (b *windowErrBus) Bounds(ctx context.Context, f events.Filter) (uint64, uint64, bool, error) {
+	return b.hr.Bounds(ctx, f)
+}
+
+func (b *windowErrBus) Window(context.Context, uint64, int, events.Filter) ([]events.Event, error) {
+	return nil, errors.New("window error bus: forced scan failure")
+}
+
+// TestCascadeEraser_ReemitGuardScanFailure_EmitsAnyway pins the re-emit
+// guard's safe degradation: when the observability-history scan errors,
+// the guard reports "not emitted" and completeErasure publishes — the
+// erasure still succeeds with exactly one durable record.
+func TestCascadeEraser_ReemitGuardScanFailure_EmitsAnyway(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-scanfail", "u-scanfail", "s-scanfail")
+	ictx := ctxFor(id)
+	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	fencer, ok := f.bus.(events.Fencer)
+	if !ok {
+		t.Fatalf("fixture bus must implement events.Fencer")
+	}
+	hr, ok := f.bus.(events.HistoryReplayer)
+	if !ok {
+		t.Fatalf("fixture bus must implement events.HistoryReplayer")
+	}
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts,
+		Bus: &windowErrBus{EventBus: f.bus, fencer: fencer, hr: hr},
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+
+	resp, err := eraser.Erase(ctx, id)
+	if err != nil {
+		t.Fatalf("Erase with a failing re-emit-guard scan should still succeed: %v", err)
+	}
+	if !resp.Deleted {
+		t.Errorf("response = %+v, want Deleted", resp)
+	}
+	if count, _ := countSessionErasedEvents(t, f.bus, id.TenantID, id.UserID, id.SessionID); count != 1 {
+		t.Errorf("session.erased count = %d, want exactly 1", count)
 	}
 }

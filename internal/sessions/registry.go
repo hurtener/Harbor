@@ -406,11 +406,11 @@ func (r *Registry) Close(ctx context.Context, id string, reason string) error {
 // reports a RUNNING task (no store touched), ErrIdentityMismatch when
 // the stored identity disagrees with the caller's.
 func (r *Registry) Erase(ctx context.Context, id string) error {
-	ident, err := r.preflightErase(ctx, id)
+	sess, err := r.preflightErase(ctx, id)
 	if err != nil {
 		return err
 	}
-	return r.clearErased(ctx, ident)
+	return r.clearErased(ctx, sess.Identity)
 }
 
 // preflightErase runs the fail-loud preconditions for an erasure without
@@ -418,24 +418,28 @@ func (r *Registry) Erase(ctx context.Context, id string) error {
 // equal id), loads+verifies the session record under that identity, and
 // probes the RunningProbe seam. A refusal (ErrSessionNotFound /
 // ErrSessionRunning / ErrIdentityMismatch) touches no store. On success
-// it returns the verified identity the cascade scopes its deletions to.
-func (r *Registry) preflightErase(ctx context.Context, id string) (identity.Identity, error) {
+// it returns the verified stored session: the cascade scopes its
+// deletions to its Identity, and its OpenedAt is the lifecycle stamp the
+// erasure ledger uses to tell a stale checkpoint left by an ABANDONED
+// prior lifecycle of a reused session id apart from a mid-cascade retry
+// of the current one (see CascadeEraser).
+func (r *Registry) preflightErase(ctx context.Context, id string) (*Session, error) {
 	if r.closed.Load() {
-		return identity.Identity{}, ErrRegistryClosed
+		return nil, ErrRegistryClosed
 	}
 	ident, ok := identity.From(ctx)
 	if !ok {
-		return identity.Identity{}, fmt.Errorf("sessions: Erase requires identity in ctx: %w", identity.ErrIdentityMissing)
+		return nil, fmt.Errorf("sessions: Erase requires identity in ctx: %w", identity.ErrIdentityMissing)
 	}
 	if ident.SessionID != id {
-		return identity.Identity{}, fmt.Errorf("sessions: Erase id=%q does not match ctx SessionID=%q", id, ident.SessionID)
+		return nil, fmt.Errorf("sessions: Erase id=%q does not match ctx SessionID=%q", id, ident.SessionID)
 	}
 	stored, err := r.loadSession(ctx, ident)
 	if err != nil {
-		return identity.Identity{}, err
+		return nil, err
 	}
 	if !sameIdentity(stored.Identity, ident) {
-		return identity.Identity{}, fmt.Errorf("%w: stored=(%s,%s,%s) ctx=(%s,%s,%s)",
+		return nil, fmt.Errorf("%w: stored=(%s,%s,%s) ctx=(%s,%s,%s)",
 			ErrIdentityMismatch,
 			stored.Identity.TenantID, stored.Identity.UserID, stored.Identity.SessionID,
 			ident.TenantID, ident.UserID, ident.SessionID)
@@ -443,13 +447,13 @@ func (r *Registry) preflightErase(ctx context.Context, id string) (identity.Iden
 	if r.gcPolicy.RunningProbe != nil {
 		running, perr := r.gcPolicy.RunningProbe(ctx, identity.Quadruple{Identity: ident})
 		if perr != nil {
-			return identity.Identity{}, fmt.Errorf("sessions: Erase probe: %w", perr)
+			return nil, fmt.Errorf("sessions: Erase probe: %w", perr)
 		}
 		if running {
-			return identity.Identity{}, fmt.Errorf("%w: SessionID=%q", ErrSessionRunning, id)
+			return nil, fmt.Errorf("%w: SessionID=%q", ErrSessionRunning, id)
 		}
 	}
-	return ident, nil
+	return stored, nil
 }
 
 // clearErased removes the session's in-memory catalogs (openSessions +

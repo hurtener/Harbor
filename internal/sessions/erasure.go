@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -27,10 +28,14 @@ import (
 // `state.history` non-empty. Instead both ride the actor's
 // (tenant, user) with this reserved observability session — the
 // compliance sink — so the erased triple stays genuinely empty
-// post-erasure (RFC §6.13 / §7). The angle-bracket shape can never
-// collide with a real conversation id (it is not a legal JWT claim or
-// session-header value), mirroring the session-discovery catalog's
-// sentinel.
+// post-erasure (RFC §6.13 / §7). The angle-bracket shape does not occur
+// in session ids Harbor's own surfaces mint, and upstream token /
+// session-header validation is assumed to reject it in caller-supplied
+// ids — identity.Validate itself does not enforce a charset, so a
+// hostile session id equal to this sentinel would alias the compliance
+// sink. That is the same standing assumption the session-discovery
+// catalog's sentinel already rests on; an identity-layer charset guard
+// is a possible cross-cutting follow-up, deliberately not added here.
 const erasureAuditSession = "<erasure-audit>"
 
 // erasureLedgerKindPrefix namespaces the durable erasure-ledger
@@ -94,7 +99,19 @@ const erasureLedgerKindPrefix = "session.erasure.pending."
 //     the top of Erase). This is what makes counts cumulative across
 //     converging attempts (#410): a step whose data is already gone on a
 //     retry contributes 0 locally, but the ledger already holds the
-//     earlier attempt's non-zero contribution.
+//     earlier attempt's non-zero contribution. The ledger carries the
+//     session lifecycle's OpenedAt stamp so accumulation NEVER crosses a
+//     session-id reuse boundary: when the target session still exists (a
+//     fresh attempt, not a converging retry) and a leftover ledger's
+//     stamp mismatches the live session's OpenedAt, the leftover belongs
+//     to an ABANDONED prior lifecycle of the reused id — it is discarded
+//     (with a loud Warn) and the cascade starts from zero, so a reused
+//     session id's counts reflect only its own lifecycle. Discarding
+//     necessarily forfeits the abandoned lifecycle's never-emitted
+//     record-of-fact: the caller was told loudly (ErrErasureRecordFailed)
+//     to re-invoke and instead reopened the id — inflating the NEW
+//     lifecycle's compliance counts to preserve a stale checkpoint would
+//     be the worse corruption.
 //  3. Because the ledger holds the complete, accurate counts BEFORE
 //     StateStore.DeleteScope ever runs (steps 1-2 checkpoint before step
 //     3), the compliance record is durably persisted strictly before the
@@ -113,12 +130,34 @@ const erasureLedgerKindPrefix = "session.erasure.pending."
 //     fail Erase loud with the wrapped sentinel ErrErasureRecordFailed
 //     (no `Error`-log-and-continue) — the same loud path, because both
 //     mean the durable record-of-fact did not land.
-//  6. Concurrent Erase calls for the SAME session are serialized by a
-//     striped in-process lock (lockSession) so exactly one goroutine ever
-//     runs the cascade for a given session at a time: the loser blocks
-//     until the winner's cascade (through ledger cleanup) is fully done,
-//     then sees the genuine ErrSessionNotFound with no ledger — "one
-//     wins, one gets the not-found path, never a double event."
+//  6. The final emit is IDEMPOTENT per (session, lifecycle): before
+//     publishing, completeErasure checks the observability scope's
+//     retained history (when the bus supports events.HistoryReplayer)
+//     for a `session.erased` record already carrying this session id +
+//     lifecycle stamp, and on a hit skips the publish — converging
+//     silently to success and still clearing the ledger. This closes the
+//     duplicate-emit window when the publish succeeded but the ledger
+//     cleanup failed and the caller re-invoked. The check is
+//     capability-gated and bounded (see recordAlreadyEmitted): when it
+//     cannot verify, it emits — a duplicate compliance record is the
+//     acceptable failure direction, a lost one never is.
+//  7. Concurrent Erase calls for the SAME session are serialized by a
+//     striped IN-PROCESS lock (lockSession) so exactly one goroutine in
+//     this process ever runs the cascade for a given session at a time:
+//     the loser blocks until the winner's cascade (through ledger
+//     cleanup) is fully done, then sees the genuine ErrSessionNotFound
+//     with no ledger — "one wins, one gets the not-found path, never a
+//     double event." HONESTY NOTE — the lock is per-process only: two
+//     runtime REPLICAS racing sessions.delete for the same session are
+//     NOT serialized (their ledger checkpoints are last-writer-wins
+//     StateStore saves, and both may run destructive steps — each of
+//     which is idempotent, so the data outcome converges). The
+//     cross-replica residuals are count skew on the racing attempts and
+//     a possible duplicate emit where the item-6 history check races the
+//     other replica's publish; never a lost record, never resurrected
+//     data. Cross-replica serialization would need a StateStore CAS/lease
+//     primitive — the same recorded limitation as the agent-config
+//     registry's per-process owner locks.
 //
 // Documented residual gap (accepted, not silently dropped): there is no
 // ACID transaction spanning a destructive store (artifacts/memory/state)
@@ -256,7 +295,10 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 //     here means the destructive steps already fully completed on a
 //     prior attempt and only the final record-of-fact remains: Erase
 //     converges via completeErasure without touching artifacts / memory
-//     / state again.
+//     / state again. When the session EXISTS, the ledger's lifecycle
+//     stamp (the session's OpenedAt) is verified: a leftover ledger from
+//     an abandoned prior lifecycle of a reused session id is discarded
+//     with a loud Warn so counts never inflate across a reuse boundary.
 //  2. fence: mark the triple erased on the event bus, BEFORE any
 //     destructive step. A present-but-failing Fence capability fails the
 //     WHOLE erasure loud here — nothing has been touched yet, so this is
@@ -275,8 +317,10 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 //     effect ("record before the irreversible clear" ordering).
 //  6. complete: clear the registry's in-memory catalogs, build the
 //     redacted content-free `session.erased` payload from the ledger's
-//     cumulative counts, publish it, and — only once published — remove
-//     the ledger checkpoint (completeErasure).
+//     cumulative counts, publish it (skipping idempotently when a record
+//     for this session+lifecycle already exists — recordAlreadyEmitted),
+//     and — only once the record durably exists — remove the ledger
+//     checkpoint (completeErasure).
 //
 // Returns ErrSessionRunning (refused — 409), ErrSessionNotFound (absent
 // under the caller's identity AND no pending ledger — 404),
@@ -310,12 +354,32 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	// 1. Refuse-if-running pre-flight (load+verify + probe). Touches
 	//    nothing on refusal — unless a pending ledger says the
 	//    destructive work already finished (converging retry).
-	if _, perr := e.registry.preflightErase(ctx, id.SessionID); perr != nil {
+	sess, perr := e.registry.preflightErase(ctx, id.SessionID)
+	if perr != nil {
 		if errors.Is(perr, ErrSessionNotFound) && hasLedger {
 			return e.completeErasure(ctx, id, ledger)
 		}
 		return zero, perr
 	}
+
+	// The session EXISTS, so this is a fresh attempt or a mid-cascade
+	// retry of the CURRENT lifecycle — never a converging retry. Stamp /
+	// verify the ledger's lifecycle discriminator: a leftover ledger
+	// whose stamp mismatches the live session's OpenedAt belongs to an
+	// ABANDONED prior lifecycle of a reused session id and MUST be
+	// discarded, or its stale counts would inflate this lifecycle's
+	// compliance totals (the count-inflation bug on session-id reuse).
+	stamp := sess.OpenedAt.UnixNano()
+	if hasLedger && ledger.SessionOpenedAt != stamp {
+		e.logger.WarnContext(ctx, "sessions: discarding stale erasure-ledger checkpoint from an abandoned prior lifecycle of a reused session id — its never-emitted record-of-fact is forfeited; this lifecycle's counts start from zero",
+			slog.String("session_id", id.SessionID),
+			slog.String("tenant_id", id.TenantID),
+			slog.String("user_id", id.UserID),
+			slog.Int64("stale_lifecycle", ledger.SessionOpenedAt),
+			slog.Int64("current_lifecycle", stamp))
+		ledger = erasureLedgerRecord{}
+	}
+	ledger.SessionOpenedAt = stamp
 
 	// 2. Fence the session on the event bus BEFORE the sweep. The
 	//     running-task probe cannot see a task that the asynchronous
@@ -384,11 +448,13 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 // registry's in-memory catalogs — idempotent, safe whether or not a
 // prior attempt already ran it — builds the redacted, content-free
 // `session.erased` payload from the durably checkpointed ledger counts,
-// publishes it, and — only once the publish has durably succeeded —
-// removes the ledger checkpoint. Reached either fresh (from Erase's
-// step 6, right after DeleteScope) or via a converging retry (Erase's
-// pre-flight found the session already gone but a ledger checkpoint
-// still pending).
+// publishes it UNLESS a record for this session+lifecycle already
+// exists in the observability scope's retained history (the idempotent
+// re-emit guard, recordAlreadyEmitted), and — only once the record
+// durably exists — removes the ledger checkpoint. Reached either fresh
+// (from Erase's step 6, right after DeleteScope) or via a converging
+// retry (Erase's pre-flight found the session already gone but a ledger
+// checkpoint still pending).
 func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
 	if err := e.registry.clearErased(ctx, id); err != nil {
@@ -402,8 +468,10 @@ func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identit
 		ArtifactsDeleted:    ledger.ArtifactsDeleted,
 		MemoryPurged:        ledger.MemoryPurged,
 	}
-	if err := e.emitErased(ctx, id, resp); err != nil {
-		return zero, err
+	if !e.recordAlreadyEmitted(ctx, id, ledger.SessionOpenedAt) {
+		if err := e.emitErased(ctx, id, resp, ledger.SessionOpenedAt); err != nil {
+			return zero, err
+		}
 	}
 	// The record-of-fact is durably published at this point — the
 	// invariant this cascade defends is already satisfied. A failure
@@ -435,6 +503,16 @@ func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identit
 // Distinct sessions that happen to hash to the same shard serialize
 // occasionally too — benign over-locking (erasure is rare), never a
 // correctness loss.
+//
+// The lock is PER-PROCESS. Two runtime replicas racing sessions.delete
+// for the same session are not serialized by it: their ledger
+// checkpoints are last-writer-wins StateStore saves and both replicas
+// may run the (idempotent) destructive steps, so the data outcome still
+// converges but the racing attempts can skew counts and the
+// recordAlreadyEmitted history check can race the other replica's
+// publish into a duplicate emit — never a lost record. Cross-replica
+// serialization would need a StateStore CAS/lease primitive; the
+// CascadeEraser type doc records this limitation.
 func (e *CascadeEraser) lockSession(id identity.Identity) func() {
 	key := id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID
 	m := &e.eraseLocks[eraseLockShard(key)]
@@ -540,6 +618,13 @@ type erasureLedgerRecord struct {
 	ArtifactsDeleted    int  `json:"artifacts_deleted"`
 	MemoryPurged        bool `json:"memory_purged"`
 	StateRecordsDeleted int  `json:"state_records_deleted"`
+	// SessionOpenedAt is the erased session lifecycle's OpenedAt stamp
+	// (unix nanoseconds) — the lifecycle discriminator. A leftover ledger
+	// whose stamp mismatches the LIVE session's OpenedAt belongs to an
+	// abandoned prior lifecycle of a reused session id and is discarded
+	// rather than accumulated (see Erase), and the same stamp keys the
+	// idempotent re-emit guard (recordAlreadyEmitted).
+	SessionOpenedAt int64 `json:"session_opened_at"`
 }
 
 // ledgerScope returns the StateStore identity the erasure ledger for id's
@@ -611,11 +696,88 @@ func (e *CascadeEraser) deleteLedger(ctx context.Context, id identity.Identity) 
 	return e.state.Delete(ctx, ledgerScope(id), ledgerKind(id.SessionID))
 }
 
+// erasureDedupeScanLimit bounds the recordAlreadyEmitted history scan:
+// the record for THIS session+lifecycle, if it exists at all, was
+// published by a recent attempt of this same erasure, so it sits among
+// the actor's most recent observability-scope events. The bound keeps
+// the guard O(recent-window) instead of O(full-history); a record older
+// than the window is simply not found, and the guard then re-emits — a
+// duplicate compliance record is the acceptable failure direction, a
+// lost one never is.
+const erasureDedupeScanLimit = 512
+
+// recordAlreadyEmitted reports whether a `session.erased` record for
+// this exact session id + lifecycle stamp already exists in the actor's
+// observability-scope retained history — the idempotent re-emit guard
+// completeErasure consults before publishing. It closes the
+// duplicate-emit window when a prior attempt's publish succeeded but its
+// ledger cleanup failed and the caller re-invoked, and narrows the
+// cross-replica duplicate window (see lockSession).
+//
+// Best-effort by design, in the SAFE direction only: a bus without the
+// events.HistoryReplayer capability, a scan error, or a record beyond
+// the bounded window all report false — completeErasure then publishes,
+// risking at worst a duplicate record, never a lost one. The lifecycle
+// stamp is matched via the event's Extra metadata (exact string
+// compare), and the session id via the payload — handling both the
+// typed in-process payload and the durable log's generic RedactedMap
+// rehydration.
+func (e *CascadeEraser) recordAlreadyEmitted(ctx context.Context, id identity.Identity, stamp int64) bool {
+	hr, ok := e.bus.(events.HistoryReplayer)
+	if !ok {
+		return false
+	}
+	filter := events.Filter{
+		Tenant:  id.TenantID,
+		User:    id.UserID,
+		Session: erasureAuditSession,
+		Types:   []events.EventType{EventTypeSessionErased},
+	}
+	evs, err := hr.Window(ctx, 0, erasureDedupeScanLimit, filter)
+	if err != nil {
+		e.logger.WarnContext(ctx, "sessions: erasure re-emit guard could not scan the observability history — emitting (a duplicate record beats a lost one)",
+			slog.String("session_id", id.SessionID),
+			slog.String("error", err.Error()))
+		return false
+	}
+	want := strconv.FormatInt(stamp, 10)
+	for _, ev := range evs {
+		if ev.Extra[erasureLifecycleExtraKey] != want {
+			continue
+		}
+		switch p := ev.Payload.(type) {
+		case SessionErasedPayload:
+			if p.SessionID == id.SessionID {
+				return true
+			}
+		case events.RedactedMap:
+			if s, ok := p.Data["SessionID"].(string); ok && s == id.SessionID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// erasureLifecycleExtraKey is the Event.Extra metadata key carrying the
+// erased session lifecycle's OpenedAt stamp (unix nanoseconds, decimal
+// string) on the `session.erased` record. It exists solely so the
+// idempotent re-emit guard (recordAlreadyEmitted) can distinguish "this
+// lifecycle's record already exists" from "an OLDER lifecycle of the
+// same reused session id was erased before" — matching on session id
+// alone would wrongly suppress the newer lifecycle's record. A bounded,
+// low-cardinality label per the Extra slot's contract; the string form
+// round-trips exactly through the durable log's generic JSON
+// rehydration (an int64 payload field would decode as float64).
+const erasureLifecycleExtraKey = "erased_session_opened_at"
+
 // emitErased builds, redacts, and publishes the redacted, content-free
 // `session.erased` audit event under the actor's observability scope.
 // The erased session id rides as a payload field; the event Identity is
 // the actor's (tenant, user) with the reserved erasureAuditSession slot,
 // so the emit never re-persists durable state under the erased triple.
+// The lifecycle stamp rides as Extra metadata (erasureLifecycleExtraKey)
+// so a re-invoke can recognize the record idempotently.
 //
 // This is now part of Erase's SUCCESS CRITERIA, not best-effort
 // observability. The SafePayload is run through the audit.Redactor when
@@ -627,7 +789,7 @@ func (e *CascadeEraser) deleteLedger(ctx context.Context, id identity.Identity) 
 // (already durably persisted before this call ever runs, across
 // whichever attempt got the destructive steps done) survives so a
 // re-invoke converges without re-running any destructive step.
-func (e *CascadeEraser) emitErased(ctx context.Context, actor identity.Identity, resp prototypes.SessionsDeleteResponse) error {
+func (e *CascadeEraser) emitErased(ctx context.Context, actor identity.Identity, resp prototypes.SessionsDeleteResponse, stamp int64) error {
 	now := e.clock.Now()
 	payload := SessionErasedPayload{
 		SessionID:           resp.SessionID,
@@ -658,6 +820,7 @@ func (e *CascadeEraser) emitErased(ctx context.Context, actor identity.Identity,
 		Identity:   observability,
 		OccurredAt: now,
 		Payload:    payload,
+		Extra:      map[string]string{erasureLifecycleExtraKey: strconv.FormatInt(stamp, 10)},
 	}
 	if err := e.bus.Publish(ctx, ev); err != nil {
 		e.logger.ErrorContext(ctx, "sessions: session.erased emit failed — erasure fails loud; a re-invoke converges",

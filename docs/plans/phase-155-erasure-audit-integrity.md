@@ -46,7 +46,8 @@ Two named follow-ups from the v1.7 band-end review harden the `sessions.delete` 
 
 ## Files added or changed
 
-- `internal/sessions/erasure.go` — ordering + cumulative counts + the durable ledger checkpoint + the striped per-session erase lock.
+- `internal/sessions/erasure.go` — ordering + cumulative counts + the durable ledger checkpoint (lifecycle-stamped so a stale checkpoint from an abandoned prior lifecycle of a reused session id is discarded, never accumulated) + the idempotent per-(session, lifecycle) re-emit guard + the striped per-session erase lock (per-process; the cross-replica limitation is documented in the godoc and D-286).
+- `internal/sessions/registry.go` — `preflightErase` returns the verified stored `*Session` (its `OpenedAt` is the ledger's lifecycle stamp) instead of just the identity; behavior unchanged.
 - `internal/sessions/erasure_audit_test.go` — new file (rather than appending to `erasure_test.go`, to keep the fault-injection suite's fixtures/helpers self-contained) with the fault-injection tests.
 - `internal/sessions/events.go`, `internal/protocol/types/sessions.go` — field doc comments only (no shape change; no D-223 manifest impact — verified by `make protocol-ts-gen-check`; no `docs/site/protocol` diff — verified by `make protocol-docs-gen-check` — the generated Notes column does not surface Go field-doc prose).
 - `internal/sessions/protocol/protocol.go`, `internal/protocol/transports/stream/sessions_handler.go` — deviation beyond the plan's file list (§4.3): mirrors `ErrErasureRecordFailed` through the Service-layer error-mapping switch and the wire handler's HTTP-status classifier, matching the existing pattern for every other `sessions.Err*` sentinel on this surface, so the new sentinel doesn't fall through to the generic default case unclassified. Matching tests added to `internal/sessions/protocol/delete_test.go` and `internal/protocol/transports/stream/sessions_handler_delete_test.go`.
@@ -90,7 +91,7 @@ Two named follow-ups from the v1.7 band-end review harden the `sessions.delete` 
 - [x] `make preflight` passes
 - [x] `make check-mirror` passes
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [x] Coverage on touched packages ≥ stated target — `internal/sessions` moved from a 79.2% baseline to 81.5% (every function this phase touched/added in `erasure.go` sits at 88-100% coverage); the residual gap to the 85% package target is pre-existing debt in untouched `registry.go` / `catalog.go` / `gc.go` functions, not code this phase added. Recorded honestly rather than gold-plating unrelated code.
+- [x] Coverage on touched packages ≥ stated target — `internal/sessions` moved from a 79.2% baseline to 82.0%. Per-function on `erasure.go`: every function this phase touched/added sits at 88-100% EXCEPT `saveLedger` at 75.0%, whose single uncovered branch is the `json.Marshal` error return on a plain int/bool struct — unreachable by construction, kept as defence-in-depth rather than deleted or contorted into a test. The residual gap to the 85% package target is pre-existing debt in untouched `registry.go` / `catalog.go` / `gc.go` functions, not code this phase added. Recorded honestly rather than gold-plating unrelated code.
 - [x] If multi-isolation paths changed: cross-session isolation test passes (the pre-existing N=120 distinct-sessions concurrent test + the new same-session race test both pass under `-race`).
 - [x] Concurrent-reuse: N/A — no new reusable artifact; the concurrent-delete race test above runs under `-race`.
 - [x] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race` (in-package per the Test-plan deviation note above).
