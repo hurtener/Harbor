@@ -78,3 +78,96 @@ func TestSetRevision_Hooks_ValidAccepted(t *testing.T) {
 		t.Fatalf("set (zero timeout): %v", err)
 	}
 }
+
+// TestSetToolExposure_PreservesPinnedHook is the D-283 headline regression at
+// the Protocol service layer: set_revision pins a Hooks.RunCompletion section,
+// then set_tool_exposure flips a loading-mode override (a section-scoped edit
+// that owns ONLY ToolExposure) — a subsequent get must still show the hook
+// intact. Before this phase, SetToolExposure rebuilt the envelope without
+// carrying Hooks forward, silently erasing the pinned hook (CLAUDE.md §13).
+func TestSetToolExposure_PreservesPinnedHook(t *testing.T) {
+	ctx := context.Background()
+	s, err := agentcfgprotocol.NewService(newRegistry(t))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{
+			Hooks: &prototypes.AgentConfigHooks{
+				RunCompletion: &prototypes.AgentConfigRunCompletionHook{Tool: "run-transcript-sink", TimeoutMS: 4000},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed hooks: %v", err)
+	}
+	if _, err := s.SetToolExposure(ctx, prototypes.AgentConfigSetToolExposureRequest{
+		Identity: scope(), AgentID: testAgentID,
+		ToolExposure: prototypes.AgentConfigToolExposure{
+			ToolLoadingModes: map[string]string{"some_tool": "deferred"},
+		},
+	}); err != nil {
+		t.Fatalf("set_tool_exposure: %v", err)
+	}
+	got, err := s.Get(ctx, prototypes.AgentConfigGetRequest{Identity: scope(), AgentID: testAgentID})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Revision == nil || got.Revision.Payload.Hooks == nil || got.Revision.Payload.Hooks.RunCompletion == nil {
+		t.Fatalf("hooks section dropped by set_tool_exposure: %+v", got.Revision)
+	}
+	if hook := got.Revision.Payload.Hooks.RunCompletion; hook.Tool != "run-transcript-sink" || hook.TimeoutMS != 4000 {
+		t.Fatalf("hooks section altered by set_tool_exposure: %+v", hook)
+	}
+	// The owned section did apply — confirms the setter actually ran, not a
+	// no-op that trivially preserved everything.
+	if got.Revision.Payload.ToolExposure == nil || got.Revision.Payload.ToolExposure.ToolLoadingModes["some_tool"] != "deferred" {
+		t.Fatalf("tool-exposure edit did not apply: %+v", got.Revision.Payload.ToolExposure)
+	}
+}
+
+// TestAddMCPConnection_PreservesPinnedHook is the D-283 headline regression
+// for add_mcp_connection: set_revision pins a Hooks.RunCompletion section,
+// then add_mcp_connection attaches a NEW server (a section-scoped edit that
+// owns ONLY Connections) — a subsequent get must still show the hook intact.
+func TestAddMCPConnection_PreservesPinnedHook(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	attacher := &fakeAttacher{result: nil} // nil = online
+	s, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithConnectionAttacher(attacher))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{
+			Hooks: &prototypes.AgentConfigHooks{
+				RunCompletion: &prototypes.AgentConfigRunCompletionHook{Tool: "run-transcript-sink", TimeoutMS: 4000},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed hooks: %v", err)
+	}
+	if _, err := s.AddMCPConnection(ctx, prototypes.AgentConfigAddMCPConnectionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Connection: prototypes.AgentConfigMCPConnectionDescriptor{
+			Name: "new-server", Transport: "http", URL: "https://example.invalid/new-server",
+		},
+	}); err != nil {
+		t.Fatalf("add_mcp_connection: %v", err)
+	}
+	got, err := s.Get(ctx, prototypes.AgentConfigGetRequest{Identity: scope(), AgentID: testAgentID})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Revision == nil || got.Revision.Payload.Hooks == nil || got.Revision.Payload.Hooks.RunCompletion == nil {
+		t.Fatalf("hooks section dropped by add_mcp_connection: %+v", got.Revision)
+	}
+	if hook := got.Revision.Payload.Hooks.RunCompletion; hook.Tool != "run-transcript-sink" || hook.TimeoutMS != 4000 {
+		t.Fatalf("hooks section altered by add_mcp_connection: %+v", hook)
+	}
+	if got.Revision.Payload.Connections == nil || len(got.Revision.Payload.Connections.Servers) != 1 ||
+		got.Revision.Payload.Connections.Servers[0].Name != "new-server" {
+		t.Fatalf("connection add did not apply: %+v", got.Revision.Payload.Connections)
+	}
+}

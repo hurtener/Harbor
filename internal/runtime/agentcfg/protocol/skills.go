@@ -159,11 +159,12 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		names = append(names, n)
 	}
 	// Compose the new revision so it REPLACES only the skills section and
-	// PRESERVES the tool-exposure + prompt sections of the active revision —
-	// a skills edit must never silently clear an agent's MCP pause state or
-	// prompt layers (the symmetric invariant set_tool_exposure honours for
-	// skills). NormalizePayload sorts + de-dups the membership, so the order
-	// here is not significant for the content hash.
+	// PRESERVES the tool-exposure + prompt + connections + llm-params + hooks
+	// sections of the active revision — a skills edit must never silently
+	// clear an agent's MCP pause state, prompt layers, or a pinned
+	// run-completion hook (the symmetric invariant set_tool_exposure honours
+	// for skills). NormalizePayload sorts + de-dups the membership, so the
+	// order here is not significant for the content hash.
 	payload := agentcfg.ConfigPayload{
 		Skills: &agentcfg.SkillsSelection{Names: names},
 	}
@@ -172,6 +173,7 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.PromptLayers = active.Payload.PromptLayers
 		payload.Connections = active.Payload.Connections
 		payload.LLMParams = active.Payload.LLMParams
+		payload.Hooks = active.Payload.Hooks
 	}
 	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload)
 }

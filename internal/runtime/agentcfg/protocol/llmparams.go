@@ -15,8 +15,8 @@ import (
 // registry emits the generic `agent.config.revised` event.
 //
 // Desired-state replace semantics: a set REPLACES ONLY the LLM-params section
-// of the envelope; the prompt-layer + skills + tool-exposure + connection
-// sections of the active revision are preserved (the bidirectional
+// of the envelope; the prompt-layer + skills + tool-exposure + connection +
+// hooks sections of the active revision are preserved (the bidirectional
 // section-merge invariant every convenience verb honours).
 //
 // Resolution: the per-agent params override the tenant-wide baseline at run
@@ -32,7 +32,8 @@ import (
 // as a desired-state replace of the LLM-params section. A set Model is
 // validated against the configured ModelProfiles (an unknown model is
 // rejected with ErrUnknownModel). The prompt-layer + skills + tool-exposure +
-// connection sections of the active revision are carried forward unchanged.
+// connection + hooks sections of the active revision are carried forward
+// unchanged.
 func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSetLLMParamsRequest) (prototypes.AgentConfigSetLLMParamsResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetLLMParamsResponse{}, err
@@ -50,8 +51,8 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 	defer s.lockAgent(id.TenantID, req.AgentID)()
 
 	// Read the active revision so the new revision PRESERVES the prompt-layer
-	// + skills + tool-exposure + connection sections (an LLM-params edit
-	// replaces only its own section).
+	// + skills + tool-exposure + connection + hooks sections (an LLM-params
+	// edit replaces only its own section).
 	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigSetLLMParamsResponse{}, err
@@ -69,6 +70,7 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 		payload.Skills = active.Payload.Skills
 		payload.ToolExposure = active.Payload.ToolExposure
 		payload.Connections = active.Payload.Connections
+		payload.Hooks = active.Payload.Hooks
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)

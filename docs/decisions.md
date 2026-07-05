@@ -7575,7 +7575,7 @@ run through one shared catalog under `-race`. No deviation from the plan.
 
 **Date:** 2026-07-04
 
-**Status:** Accepted (Phase 152, V1.11)
+**Status:** Shipped (Phase 152, V1.11)
 
 **Where it lives:** `docs/plans/phase-152-agentcfg-hooks-carry-forward.md`, `internal/runtime/agentcfg/protocol/` (the five section-scoped setters + `rebuild_completeness_test.go`).
 
