@@ -36,6 +36,13 @@
 // loud instead of silently ignoring a mis-served field. The
 // `format_version` lets the shape evolve; the runtime accepts version 1.
 //
+// The endpoint MUST be https — the request carries the runtime's service
+// bearer token; plaintext http is accepted only for a loopback host
+// (127.0.0.0/8 / ::1 / localhost — the fixture / dev case). The fetch is
+// terminal: redirects are refused, never followed (a credential endpoint
+// that redirects is a fault, and following one could replay the bearer
+// to a host the operator never configured).
+//
 // # Memory-only, TTL-capped, single-flight
 //
 // The fetched credential is held in memory only — never persisted (a
@@ -64,6 +71,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -105,13 +113,26 @@ func New(cfg credsource.Config) (credsource.Source, error) {
 	if cfg.Bus == nil || cfg.Redactor == nil {
 		return nil, fmt.Errorf("credsource/remote: provider %q: Bus and Redactor are mandatory (fetch events)", cfg.ProviderName)
 	}
-	httpClient := cfg.HTTPClient
 	timeout := cfg.Remote.Timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	if httpClient == nil {
+	// The credential fetch is TERMINAL: a credential endpoint that
+	// redirects is a fault, not a hop to follow — following one could
+	// replay the runtime's service bearer token to a host the operator
+	// never configured. CheckRedirect refuses every redirect with the
+	// typed sentinel (a caller-supplied client is shallow-copied so the
+	// caller's instance is never mutated).
+	var httpClient *http.Client
+	if cfg.HTTPClient != nil {
+		clone := *cfg.HTTPClient
+		httpClient = &clone
+	} else {
 		httpClient = &http.Client{Timeout: timeout}
+	}
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return fmt.Errorf("%w: credential endpoint attempted a redirect (a credential endpoint that redirects is a fault, not a hop to follow)",
+			credsource.ErrCredentialSourceUnavailable)
 	}
 	clock := cfg.Clock
 	if clock == nil {
@@ -187,10 +208,33 @@ func (s *source) ValidateAtBoot(context.Context) error {
 	if u.Host == "" {
 		return fmt.Errorf("credsource/remote: provider %q: remote.url %q has no host", s.providerName, s.endpoint)
 	}
+	// TLS is mandatory for non-loopback hosts: the fetch sends the
+	// runtime's service bearer token, and a plaintext bearer must never
+	// leave the box. Loopback (127.0.0.0/8 / ::1 / localhost) is the one
+	// carve-out — the local fixture / dev case. Mirrors the config
+	// validator's gate (§4.4 duplication: config must not import driver
+	// packages), so a direct-construction caller that skipped
+	// `harbor validate` still fails loud here.
+	if u.Scheme == "http" && !isLoopbackHostname(u.Hostname()) {
+		return fmt.Errorf("credsource/remote: provider %q: remote.url %q must be https for non-loopback hosts (the fetch sends the runtime's service bearer token; plaintext http is allowed only for 127.0.0.1 / ::1 / localhost)",
+			s.providerName, s.endpoint)
+	}
 	if strings.TrimSpace(s.authTokenEnv) == "" {
 		return fmt.Errorf("credsource/remote: provider %q: remote.auth_token_env must name the env var holding the runtime service token", s.providerName)
 	}
 	return nil
+}
+
+// isLoopbackHostname reports whether a URL hostname is loopback for the
+// TLS carve-out: a numeric loopback IP (127.0.0.0/8 or ::1) or the
+// literal "localhost". Mirrors internal/config's validator-side check
+// (duplicated by design — §4.4: config never imports driver packages).
+func isLoopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Resolve returns the current client credential, fetching lazily and
@@ -367,7 +411,11 @@ func (s *source) fetch(ctx context.Context) (credsource.ClientCredential, int, e
 	}, cr.FormatVersion, nil
 }
 
-// emitFetched publishes the success event (zero credential bytes).
+// emitFetched publishes the success event (zero credential bytes). The
+// event is attributed to the identity of whichever collapsed caller's
+// ctx initiated the single-flight fetch — not to every waiter; the
+// credential is runtime-level, so one fetch (and one audit record)
+// serves the whole burst.
 func (s *source) emitFetched(ctx context.Context, cred credsource.ClientCredential, formatVersion int) error {
 	payload := credsource.ProviderCredentialFetchedPayload{
 		Provider:      s.providerName,
@@ -380,8 +428,11 @@ func (s *source) emitFetched(ctx context.Context, cred credsource.ClientCredenti
 
 // emitFailed publishes the failure event. It is best-effort — the run
 // already fails loud via the returned sentinel — but an emit error is
-// logged nowhere here; the fetch error is what propagates. The ctx used
-// is the caller's (identity-bearing) even when the fetch ctx timed out.
+// logged nowhere here; the fetch error is what propagates. Like
+// emitFetched, the event is attributed to the identity of the caller
+// whose ctx initiated the single-flight fetch, not to every collapsed
+// waiter. The ctx used is that caller's (identity-bearing) even when
+// the fetch ctx timed out.
 func (s *source) emitFailed(fetchCtx, callerCtx context.Context, cause error) {
 	payload := credsource.ProviderCredentialFetchFailedPayload{
 		Provider: s.providerName,

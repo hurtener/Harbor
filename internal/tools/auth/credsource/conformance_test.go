@@ -516,6 +516,155 @@ func TestRemote_ValidateAtBoot_ShapeOnly_NoFetch(t *testing.T) {
 	}
 }
 
+// TestRemote_HTTPRequiresLoopback pins the TLS rule at ValidateAtBoot:
+// plaintext http is rejected for non-loopback hosts (the fetch carries
+// the runtime's service bearer token) and accepted for the loopback
+// carve-out (the fixture / dev case).
+func TestRemote_HTTPRequiresLoopback(t *testing.T) {
+	red := mkRedactor()
+	build := func(t *testing.T, rawURL string) credsource.Source {
+		t.Helper()
+		src, err := credsource.Resolve(credsource.SourceRemote, credsource.Config{
+			ProviderName: "p",
+			Remote:       &credsource.RemoteConfig{URL: rawURL, AuthTokenEnv: cAuthTokenEnv},
+			Bus:          mkBus(t, red),
+			Redactor:     red,
+		})
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		return src
+	}
+
+	// Non-loopback http → loud rejection naming the rule.
+	err := build(t, "http://coordinator.example.com/broker-credential").ValidateAtBoot(context.Background())
+	if err == nil {
+		t.Fatal("ValidateAtBoot(non-loopback http) returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "must be https for non-loopback hosts") {
+		t.Fatalf("error must name the TLS rule: %v", err)
+	}
+
+	// Loopback http → accepted (fixture / dev carve-out).
+	for _, u := range []string{
+		"http://127.0.0.1:9099/cred",
+		"http://localhost:9099/cred",
+		"http://[::1]:9099/cred",
+	} {
+		if err := build(t, u).ValidateAtBoot(context.Background()); err != nil {
+			t.Fatalf("ValidateAtBoot(%s): %v (loopback http must be accepted)", u, err)
+		}
+	}
+}
+
+// TestRemote_Redirect_RefusedLoud pins that the credential fetch is
+// terminal: a 302 from the endpoint is refused (never followed — a
+// followed redirect could replay the service bearer to an unconfigured
+// host), fails with the typed sentinel, and emits the failure event.
+func TestRemote_Redirect_RefusedLoud(t *testing.T) {
+	srv := credsourcetest.New(t, cDummyServiceToken, cDummyClientID, cDummyClientSecret)
+	t.Setenv(cAuthTokenEnv, cDummyServiceToken)
+	red := mkRedactor()
+	bus := mkBus(t, red)
+	ch := subscribe(t, bus, mkID())
+	src, err := credsource.Resolve(credsource.SourceRemote, credsource.Config{
+		ProviderName: "fixture-provider",
+		Remote:       &credsource.RemoteConfig{URL: srv.URL(), AuthTokenEnv: cAuthTokenEnv},
+		Bus:          bus,
+		Redactor:     red,
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	srv.SetPosture(credsourcetest.PostureRedirect)
+
+	_, err = src.Resolve(mkCtx(t))
+	if !errors.Is(err, credsource.ErrCredentialSourceUnavailable) {
+		t.Fatalf("want ErrCredentialSourceUnavailable, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("error must name the refused redirect: %v", err)
+	}
+	// Exactly one request reached the endpoint — the redirect was NOT
+	// followed (following it would loop back and register a second hit).
+	if h := srv.Hits(); h != 1 {
+		t.Fatalf("endpoint hits = %d, want 1 (redirect must not be followed)", h)
+	}
+	ev := waitEvent(t, ch, credsource.EventTypeProviderCredentialFetchFailed)
+	if p, ok := ev.Payload.(credsource.ProviderCredentialFetchFailedPayload); !ok || p.Provider != "fixture-provider" {
+		t.Fatalf("failure event payload = %#v", ev.Payload)
+	}
+}
+
+// TestRemote_SingleFlight_CancelOneWaiter_OthersResolve pins the
+// positive path of the cancellation detach: N callers collapse onto one
+// slow fetch, ONE caller's ctx is cancelled mid-flight, and every other
+// caller still resolves (the flight runs on a context.WithoutCancel
+// detach, so a cancelled initiator/waiter never poisons the shared
+// round-trip). The doomed caller is launched FIRST so it plausibly
+// initiates the flight — the strongest variant of the guarantee.
+func TestRemote_SingleFlight_CancelOneWaiter_OthersResolve(t *testing.T) {
+	slow := credsourcetest.NewSlow(t, cDummyServiceToken, cDummyClientID, cDummyClientSecret, 150*time.Millisecond)
+	src := mkRemoteSource(t, slow, nil)
+	baseCtx := mkCtx(t)
+
+	const n = 32
+	cancelCtx, cancel := context.WithCancel(baseCtx)
+
+	var wg sync.WaitGroup
+	results := make(chan error, n)
+	cancelled := make(chan error, 1)
+	started := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(started)
+		_, err := src.Resolve(cancelCtx)
+		cancelled <- err
+	}()
+	<-started
+
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cred, err := src.Resolve(baseCtx)
+			if err != nil {
+				results <- err
+				return
+			}
+			if cred.ClientID != cDummyClientID {
+				results <- errors.New("credential mismatch")
+				return
+			}
+			results <- nil
+		}()
+	}
+
+	// Cancel the doomed caller while the slow fetch is still in flight.
+	cancel()
+	wg.Wait()
+	close(results)
+
+	// The cancelled caller observed its own cancellation...
+	if err := <-cancelled; err == nil {
+		t.Fatal("cancelled waiter resolved nil error, want ctx cancellation")
+	}
+	// ...and every other caller still resolved.
+	for err := range results {
+		if err != nil {
+			t.Fatalf("surviving caller failed: %v (a cancelled waiter must not poison the flight)", err)
+		}
+	}
+	// The detach held: the endpoint saw exactly one fetch — the doomed
+	// caller's cancellation neither aborted the round-trip nor forced a
+	// second one for the survivors.
+	if h := slow.Hits(); h != 1 {
+		t.Fatalf("endpoint hits = %d, want 1 (single flight, detach preserved)", h)
+	}
+}
+
 func TestRemote_ValidateAtBoot_RejectsBadShape(t *testing.T) {
 	red := mkRedactor()
 	cases := []struct {
@@ -525,6 +674,7 @@ func TestRemote_ValidateAtBoot_RejectsBadShape(t *testing.T) {
 		{"empty url", credsource.RemoteConfig{URL: "", AuthTokenEnv: cAuthTokenEnv}},
 		{"bad scheme", credsource.RemoteConfig{URL: "ftp://x/y", AuthTokenEnv: cAuthTokenEnv}},
 		{"no host", credsource.RemoteConfig{URL: "https://", AuthTokenEnv: cAuthTokenEnv}},
+		{"non-loopback http", credsource.RemoteConfig{URL: "http://coord.example.com/c", AuthTokenEnv: cAuthTokenEnv}},
 		{"empty auth token env", credsource.RemoteConfig{URL: "https://coord.example.com/c", AuthTokenEnv: ""}},
 	}
 	for _, tc := range cases {
@@ -584,5 +734,45 @@ func TestRegisteredSourcesMatchConfigAllowlist(t *testing.T) {
 	cfg.Tools.OAuthProviders[0].CredentialSource = "no-such-source-xyz"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("validate credential_source=no-such-source-xyz returned nil, want error")
+	}
+}
+
+// TestConfigValidate_RemoteURL_HTTPRequiresLoopback pins the config-
+// validator leg of the TLS rule: a non-loopback http remote.url fails
+// `harbor validate` loud naming the field; a loopback http one passes
+// (the fixture / dev carve-out). Twin of the driver-side
+// TestRemote_HTTPRequiresLoopback.
+func TestConfigValidate_RemoteURL_HTTPRequiresLoopback(t *testing.T) {
+	remoteCfg := func(rawURL string) *config.Config {
+		cfg := minimalToolsConfig()
+		cfg.Tools.OAuthProviders[0].Driver = "tokenexchange"
+		cfg.Tools.OAuthProviders[0].CredentialSource = "remote"
+		cfg.Tools.OAuthProviders[0].ClientIDEnv = ""
+		cfg.Tools.OAuthProviders[0].ClientSecretEnv = ""
+		cfg.Tools.OAuthProviders[0].TokenURL = "https://broker.example.com/token"
+		cfg.Tools.OAuthProviders[0].Remote = &config.ToolOAuthRemoteConfig{
+			URL: rawURL, AuthTokenEnv: "HARBOR_SVC_TOKEN",
+		}
+		return cfg
+	}
+
+	// Non-loopback http → rejected, naming the field + the rule.
+	err := remoteCfg("http://coordinator.example.com/broker-credential").Validate()
+	if err == nil {
+		t.Fatal("Validate(non-loopback http remote.url) returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "remote.url") || !strings.Contains(err.Error(), "must be https for non-loopback hosts") {
+		t.Fatalf("error must name the field and the TLS rule: %v", err)
+	}
+
+	// Loopback http → accepted.
+	for _, u := range []string{
+		"http://127.0.0.1:9099/cred",
+		"http://localhost:9099/cred",
+		"http://[::1]:9099/cred",
+	} {
+		if err := remoteCfg(u).Validate(); err != nil {
+			t.Fatalf("Validate(%s): %v (loopback http must pass)", u, err)
+		}
 	}
 }

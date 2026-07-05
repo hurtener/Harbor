@@ -1102,7 +1102,11 @@ type ToolOAuthProviderConfig struct {
 // resolution is late).
 type ToolOAuthRemoteConfig struct {
 	// URL is the coordinator credential endpoint. Required; validated
-	// well-formed http(s) at boot.
+	// well-formed at boot. MUST be https — the fetch sends the runtime's
+	// service bearer token, so TLS is mandatory; plaintext http is
+	// accepted only for a loopback host (127.0.0.1 / ::1 / localhost —
+	// the local fixture / dev case). Redirects from the endpoint are
+	// refused, never followed.
 	URL string `yaml:"url"`
 	// AuthTokenEnv names the env var holding the runtime's own service
 	// token, sent as a Bearer credential. Required; validated non-empty

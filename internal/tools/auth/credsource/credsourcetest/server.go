@@ -47,6 +47,10 @@ const (
 	// PostureBadVersion returns 200 with an unsupported format_version
 	// (the strict-parse contract-version leg).
 	PostureBadVersion Posture = "bad-version"
+	// PostureRedirect returns 302 pointing back at the endpoint — the
+	// remote source must refuse to follow it (a credential endpoint that
+	// redirects is a fault, not a hop to follow).
+	PostureRedirect Posture = "redirect"
 )
 
 // FixtureServer is the reference coordinator credential endpoint.
@@ -161,6 +165,13 @@ func (f *FixtureServer) handle(w http.ResponseWriter, r *http.Request) {
 	switch posture {
 	case PostureDown:
 		http.Error(w, "coordinator down", http.StatusServiceUnavailable)
+		return
+	case PostureRedirect:
+		// Redirect back to the same (fixed) endpoint path. A client that
+		// followed it would loop; the remote source's CheckRedirect
+		// refuses hop 1. The target is a literal, never request-derived
+		// (gosec G710).
+		http.Redirect(w, r, "/broker-credential", http.StatusFound)
 		return
 	case PostureUnauthorized:
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

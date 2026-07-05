@@ -94,7 +94,9 @@ A `tools.oauth_providers[]` entry's client credential is resolved from the proce
 
 ## Glossary additions
 
-- Credential source (added to `docs/glossary.md` in this PR).
+- Credential source — the term landed in `docs/glossary.md` with the
+  plans PR (#458), ahead of this implementation PR; no glossary change
+  rides the implementation.
 
 ## Pre-merge checklist
 
@@ -106,5 +108,5 @@ A `tools.oauth_providers[]` entry's client credential is resolved from the proce
 - [x] If multi-isolation paths changed: cross-session isolation test passes
 - [x] Concurrent-reuse: the remote source + wrapped provider are compiled artifacts — the N≥100 single-flight stress above under `-race`.
 - [x] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
-- [x] If new vocabulary: glossary updated
+- [x] If new vocabulary: glossary updated (landed with the plans PR #458, not this PR)
 - [x] If a brief finding was departed from: justified above + decisions.md entry filed

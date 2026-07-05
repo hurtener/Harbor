@@ -952,7 +952,12 @@ Each provider's OWN client credential resolves through the
   validation error (one source per entry — §13). Requires a `remote:`
   block:
   - `url` — the coordinator credential endpoint. **Required**, validated
-    well-formed http(s) at boot.
+    well-formed at boot. **Must be `https`** — the fetch sends the
+    runtime's service bearer token, so TLS is mandatory; the one
+    carve-out is a loopback host (`127.0.0.1` / `::1` / `localhost`, the
+    local fixture / dev case), where plaintext `http` is accepted.
+    Redirects from the endpoint are refused (never followed) — a
+    credential endpoint that redirects is treated as a fault.
   - `auth_token_env` — names the env var holding the runtime's own service
     token, sent as `Authorization: Bearer`. **Required**; read lazily at
     fetch time so a rotated token is picked up without restart.

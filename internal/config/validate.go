@@ -1388,9 +1388,18 @@ func (c *Config) validateTools() error {
 			if p.Remote.URL == "" {
 				return fieldError(prefix+".remote.url", "must not be empty (the coordinator credential endpoint)")
 			}
-			if u, err := url.Parse(p.Remote.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			u, err := url.Parse(p.Remote.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 				return fieldError(prefix+".remote.url",
 					fmt.Sprintf("must be a well-formed http(s) URL with a host, got %q", p.Remote.URL))
+			}
+			// The fetch carries the runtime's service bearer token, so TLS
+			// is mandatory (§7). The single carve-out is a loopback host
+			// (127.0.0.0/8 / ::1 / localhost) for the local fixture / dev
+			// case — a plaintext bearer never leaves the box there.
+			if u.Scheme == "http" && !isLoopbackHostname(u.Hostname()) {
+				return fieldError(prefix+".remote.url",
+					fmt.Sprintf("must be https for non-loopback hosts (the fetch sends the runtime's service bearer token; plaintext http is allowed only for 127.0.0.1 / ::1 / localhost), got %q", p.Remote.URL))
 			}
 			if p.Remote.AuthTokenEnv == "" {
 				return fieldError(prefix+".remote.auth_token_env",
@@ -2185,6 +2194,23 @@ func collectLiveReload(v reflect.Value, prefix []string, out *[]string) {
 // closed (CLAUDE.md §7: a profiler is never exposed off-box). Loopback
 // is the numeric 127.0.0.0/8 or ::1 (matching the runtime's isLoopback
 // check); a hostname like "localhost" is intentionally rejected.
+// isLoopbackHostname reports whether a URL hostname is loopback for the
+// purposes of the credential-source TLS carve-out: a numeric loopback IP
+// (127.0.0.0/8 or ::1) or the literal "localhost". Unlike
+// ValidateLoopbackAddr (the pprof gate, which deliberately rejects
+// hostnames), "localhost" is accepted here — the carve-out exists for
+// the local fixture / dev case where the name is conventional. The
+// `remote` credential-source driver mirrors this check at ValidateAtBoot
+// (same duplication rationale as the driver allowlists — §4.4: config
+// must not import driver packages).
+func isLoopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func ValidateLoopbackAddr(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

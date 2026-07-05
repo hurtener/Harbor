@@ -352,6 +352,10 @@ tools:
   #   # The coordinator serves a single authenticated GET
   #   # (Authorization: Bearer <auth_token_env>) → strict JSON
   #   # {"format_version":1,"client_id":...,"client_secret":...,"expires_in":N}.
+  #   # `remote.url` MUST be https (the fetch carries the runtime's
+  #   # service bearer token); plaintext http is accepted only for a
+  #   # loopback host (127.0.0.1 / ::1 / localhost — the fixture/dev
+  #   # case). Redirects from the endpoint are refused, never followed.
   #   - name: m365-broker-remote
   #     driver: tokenexchange
   #     credential_source: remote
