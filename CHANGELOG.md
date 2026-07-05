@@ -17,12 +17,138 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-(Next up: completing the runtime add-connection OAuth-resume attach + connection
-run-start reconciliation — issue [#375](https://github.com/hurtener/Harbor/issues/375);
-identity-scoped `StateStore` enumeration to bound the user-scope revision scan —
-issue [#396](https://github.com/hurtener/Harbor/issues/396); and the generated
+(Next up: the run-start connection reconcile landed DETACH-ONLY in v1.11
+(D-287) — only the attach / OAuth-resume leg of issue
+[#375](https://github.com/hurtener/Harbor/issues/375) remains parked with the
+92k–92q MCP-OAuth band; identity-scoped `StateStore` enumeration to bound the
+user-scope revision scan — issue
+[#396](https://github.com/hurtener/Harbor/issues/396); and the generated
 per-domain Protocol wire-type modules + the shared chat-module extraction — the
 D-093 / D-091 follow-ons.)
+
+## [1.11.0] — 2026-07-05
+
+The fleet-and-lifecycle release: the control plane a coordinator drives over
+many runtimes grows the surfaces it was missing — an admin observer can now
+enumerate tasks and agents across every session on a runtime, a broker
+credential minted after boot reaches a running runtime without a reboot, a
+runtime-added MCP connection can actually be removed (not just paused), and the
+right-to-erasure audit record becomes part of erasure's success criteria
+instead of a best-effort afterthought. A latent silent-degradation bug in the
+agent-config revision model — any section edit erased a pinned run-completion
+hook — is closed and made mechanically impossible to reintroduce. One new
+Protocol method, three new canonical events, one new config surface; all
+additive — the Harbor Protocol holds at `0.1.0` (no error-code or version
+change), and existing configs stay byte-compatible.
+
+### Added
+
+- **Admin-widened fleet enumeration for `tasks.list` + `agents.list`.**
+  *(protocol)* Both list methods projected only the caller's own
+  `(tenant, user, session)` triple, so a coordinator's synthetic observer
+  session saw nothing. An additive `filter.tenant_ids` selector widens the
+  read to every task / agent across all sessions of the named tenants —
+  riding the SAME verified `auth.ScopeAdmin` claim as `sessions.list` (no new
+  "fleet" scope vocabulary). A `tenant_ids` request without the claim fails
+  LOUD with `403 scope_mismatch`, never a silent narrow; every widened row
+  carries full per-`identity` attribution and every widened call emits
+  `audit.admin_scope_used`. The widening rides a SEPARATE explicit
+  tenant-scoped enumeration seam on each registry (`ListTenant`, with
+  conformance parity across the inprocess and durable drivers) — never an
+  optional/blank session on the identity-scoped read, so no
+  identity-downgrading knob (§13). Cross-runtime federation stays
+  coordinator-side, the same division as sessions/events. This lands the
+  "future cross-runtime aggregating projector" the tasks projector godoc
+  reserved, behind the unchanged `Projector` interface. (D-284.)
+- **OAuth provider credential source — `env` or coordinator-served pull.**
+  *(tools)* A `tools.oauth_providers[]` client credential was resolved once at
+  boot from the process env, so a broker credential a coordinator mints AFTER
+  a runtime booted could never reach it — forcing a one-reboot provisioning
+  step. A §4.4 `credential_source` seam on the provider entry closes it:
+  `env` (today's boot-time, fail-loud resolution — the DEFAULT, existing
+  configs byte-compatible) or `remote` (the runtime PULLS
+  `client_id`/`client_secret` from a coordinator endpoint at first need,
+  authenticated by its own service token, memory-only TTL cache, single-flight,
+  strict `format_version`-ed parse). Fail-loud everywhere: boot validates the
+  declared source's shape; a fetch failure fails the tool call with a typed
+  sentinel plus a SafePayload audit event — NEVER a fallback to env, to an
+  unauthenticated call, or to the interactive flow. The `remote` endpoint must
+  be https (loopback the one carve-out) and redirects are refused. Declaring
+  both sources on one entry is a validation error; `remote` is valid only for
+  the non-interactive `tokenexchange` driver. Push over the Protocol stays
+  rejected (the credential-passthrough shape D-271 forbids). Defense-in-depth:
+  with `remote`, the broker secret never enters the runtime's environment at
+  all. Two new canonical events (`tool.provider_credential_fetched` /
+  `tool.provider_credential_fetch_failed`); no Protocol wire-type change.
+  (D-285.)
+- **`agent_config.remove_mcp_connection` + detach-on-reconcile.** *(protocol)*
+  Pause could disable a runtime-added MCP connection but never remove it (the
+  descriptor persists forever; resume resurrects the server) — so a
+  coordinator's delete flow had no path. A new admin revision verb drops the
+  named descriptor AND prunes that server's tool-exposure residue atomically
+  (sibling-safe: an entry a remaining server's `<name>_` prefix also claims is
+  never pruned); unknown-name and boot-declared-yaml-name each fail loud with
+  distinct typed errors. Run-start reconciliation gains the detach leg:
+  the declared-vs-attached diff deregisters an undeclared server from the
+  catalog + MCP registry and closes its transport at a run-start reconcile
+  boundary — never mid-run; a rollback past an add detaches through the SAME
+  path (one mechanism, §13). Honest in-flight semantics: exposure correctness
+  is next-turn per session; teardown is process-global, so a different
+  session's in-flight run that next calls the detached server fails LOUDLY
+  (typed catalog-not-found / closed-transport) — never a hang or silent
+  success. Agent-bound sealed tokens are NOT deleted on remove (re-add reuses
+  completed consent; revocation is provider-side). New canonical
+  `mcp.connection.removed` event. This supersedes D-240 decision 5's
+  detach-on-rollback deferral via that entry's own recorded revisit clause;
+  the 92k–92q MCP-OAuth band stays parked, so the run-start reconcile
+  mechanism ships DETACH-ONLY (the attach leg remains deferred with the
+  parked band). (D-287; supersedes D-240 §5.)
+
+### Fixed
+
+- **Agent-config section setters no longer erase a pinned run-completion
+  hook.** *(runtime)* Each of the five section-scoped setters
+  (`set_tool_exposure`, `add_mcp_connection`, `set_skills`,
+  `set_prompt_layers`, `set_llm_params`) rebuilds the `ConfigPayload` by hand,
+  enumerating the sibling sections known when it was written — so when the
+  `Hooks` section landed (v1.10, D-280), none of them carried it forward, and
+  any tool-exposure / connection / skills / prompt-layer / LLM-params edit
+  silently erased a pinned hook (deterministic, same-surface, no error — the
+  §13 silent-degradation shape a coordinator pinning an auto-save hook trips on
+  its golden path). All five now carry `Hooks` forward, and a
+  reflection-backed rebuild-completeness guard makes the invariant mechanical:
+  a seed constructor populates every payload section, reflection-asserts full
+  field coverage, then asserts each setter preserves every non-target section
+  byte-identically — adding a future section without extending every setter
+  fails `go test`, naming the field. The omission class is closed, not just
+  this instance. No wire change. (D-283.)
+- **Session-erasure audit record is now part of erasure's success criteria
+  (closes #409, #410).** *(runtime)* `session.erased` (the right-to-erasure
+  record-of-fact, D-262) was emitted best-effort AFTER the irreversible clear:
+  one bus/redactor failure lost the only audit record while the call reported
+  success, and a re-invoke returned `not_found` — no second chance. Separately,
+  a retried mid-cascade erasure re-ran idempotent deletes that found fewer
+  records, under-reporting deletion counts. Now the ordering invariant is
+  binding — a durable compliance checkpoint (an erasure ledger) is persisted
+  BEFORE the irreversible clear, and the final record-of-fact is part of the
+  success gate: a record/emit failure fails `sessions.delete` LOUD with the
+  new typed sentinel (`ErrErasureRecordFailed` → HTTP 500) with the session
+  still re-invokable, and a re-invoke converges (skips every destructive step,
+  re-attempts only the record). Deletion counts accumulate across converging
+  attempts, so the response and event report true totals — the #410
+  "document the undercount" alternative was rejected (compliance counts must be
+  accurate, not documented-as-inaccurate). No wire-shape change; field docs
+  state the cumulative semantics. (D-286.)
+
+### Internal
+
+- Three additive canonical events (`mcp.connection.removed`,
+  `tool.provider_credential_fetched`, `tool.provider_credential_fetch_failed`);
+  one additive Protocol method (`agent_config.remove_mcp_connection`) with its
+  request/response wire types; the additive `filter.tenant_ids` selector on
+  `tasks.list` / `agents.list`. The generated Protocol reference and the TS
+  wire manifest were regenerated for every wire change — all additive, so
+  `ProtocolVersion` holds at `0.1.0` and no error code was added.
 
 ## [1.10.0] — 2026-07-02
 

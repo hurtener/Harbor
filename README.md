@@ -258,6 +258,29 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.11.0.** The fleet-and-lifecycle line — the coordinator control
+plane grows the surfaces it was missing. An admin observer can enumerate
+**tasks and agents across every session** on a runtime: pass
+`filter.tenant_ids` on `tasks.list` / `agents.list` under the same verified
+`admin` scope claim (a request without it fails loud with `scope_mismatch`,
+never a silent narrow), and every widened call is audited. A broker's own
+**client credential can be pulled after boot**: set `credential_source: remote`
+and the runtime fetches it from a coordinator endpoint at first need — so a
+credential minted after the runtime started reaches it with zero touch and the
+secret never enters its environment. A runtime-added **MCP connection can now
+be removed**, not just paused: `agent_config.remove_mcp_connection` drops the
+descriptor as a revision and run-start reconciliation detaches it (rollback
+past an add detaches the same way). **Session erasure** now treats its audit
+record as part of success — the record-of-fact is durably checkpointed before
+the irreversible clear, a record/emit failure fails the delete loud and stays
+re-invokable, and deletion counts are cumulative across retries — closing the
+paired erasure-integrity issues #409 and #410. And a silent-degradation bug is
+closed: agent-config section edits no longer erase a pinned run-completion hook,
+with a reflection-backed guard making the omission class impossible to
+reintroduce. One new Protocol method,
+three canonical events, one config surface — all additive; the Harbor Protocol
+holds at `0.1.0`.
+
 **Harbor v1.10.0.** v1.9's typed answers and brokered credentials reach the
 Protocol and the MCP wire. Any task can now return a **schema-validated
 answer**: pass `output_schema` on the `start` request and the completed

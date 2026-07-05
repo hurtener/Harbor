@@ -5815,7 +5815,7 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 
 **Date:** 2026-06-22
 
-**Status:** Accepted (planning — implementation parked)
+**Status:** Accepted (planning — implementation parked). **Decision 5 (detach-on-rollback deferral) superseded by D-287 (Phase 156); decisions 1–4/6 unchanged, still parked.**
 
 **Context.** The wave-2 §17.5 checkpoint audit filed issue #375: `agent_config.add_mcp_connection`'s `auth_required` branch parks on the unified pause/resume primitive but registers NO resumable continuation (resume is a dead-end — the server never comes online), and the persisted `Connection` descriptors are written but never consumed by a read-path (on restart only config-declared servers re-attach; a rollback past an add does not detach). D-237 §2 / the `addconnection.go` + `methods.go` godoc / the 92f plan claimed "a resume completes the attach"; the checkpoint PR downgraded that to the parked-only as-built behavior pending #375.
 

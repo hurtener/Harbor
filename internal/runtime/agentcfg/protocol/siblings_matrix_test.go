@@ -45,6 +45,13 @@ func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
 		ownsExpo   bool
 		ownsSkills bool
 		ownsLLM    bool
+		// ownsConn excludes the Connections section from the survival
+		// assertions — set for the connection verbs (add / remove) that OWN it.
+		ownsConn bool
+		// svcOpts, when non-nil, supplies verb-specific Service options
+		// (e.g. the ConnectionAttacher the add verb needs); the skills store
+		// is always wired alongside so the shared seed's skills survive.
+		svcOpts func(t *testing.T) []agentcfgprotocol.Option
 	}{
 		{
 			name:       "set_prompt_layers",
@@ -83,6 +90,40 @@ func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
 			},
 		},
 		{
+			name:     "add_mcp_connection",
+			ownsConn: true,
+			// nil attach result = online; fakeAttacher is defined in
+			// addconnection_test.go (same package). The add verb records a
+			// revision that must carry Hooks (+ every other sibling) forward.
+			svcOpts: func(_ *testing.T) []agentcfgprotocol.Option {
+				return []agentcfgprotocol.Option{agentcfgprotocol.WithConnectionAttacher(&fakeAttacher{result: nil})}
+			},
+			run: func(t *testing.T, s *agentcfgprotocol.Service, ctx context.Context) {
+				if _, err := s.AddMCPConnection(ctx, prototypes.AgentConfigAddMCPConnectionRequest{
+					Identity: scope(), AgentID: testAgentID,
+					Connection: prototypes.AgentConfigMCPConnectionDescriptor{
+						Name: "edited-conn", Transport: "http", URL: "https://example.invalid/edited",
+					},
+				}); err != nil {
+					t.Fatalf("add_mcp_connection: %v", err)
+				}
+			},
+		},
+		{
+			name:     "remove_mcp_connection",
+			ownsConn: true,
+			// Removes the seed's connection ("seed-conn"); its tool-exposure
+			// residue prune targets only "seed-conn"-owned keys (none in the
+			// seed), so ToolExposure — and every other sibling — survives.
+			run: func(t *testing.T, s *agentcfgprotocol.Service, ctx context.Context) {
+				if _, err := s.RemoveMCPConnection(ctx, prototypes.AgentConfigRemoveMCPConnectionRequest{
+					Identity: scope(), AgentID: testAgentID, Name: "seed-conn",
+				}); err != nil {
+					t.Fatalf("remove_mcp_connection: %v", err)
+				}
+			},
+		},
+		{
 			name:       "skills.upsert",
 			ownsSkills: true,
 			run: func(t *testing.T, s *agentcfgprotocol.Service, ctx context.Context) {
@@ -101,7 +142,19 @@ func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := svc(t, true) // withSkills — the skills verb needs a SkillStore
+			// The skills verb needs a SkillStore; a connection verb additionally
+			// needs its ConnectionAttacher. Build the service with both when the
+			// case supplies verb-specific options, else the shared withSkills svc.
+			var s *agentcfgprotocol.Service
+			if tc.svcOpts != nil {
+				opts := append([]agentcfgprotocol.Option{agentcfgprotocol.WithSkillStore(newSkills(t))}, tc.svcOpts(t)...)
+				var err error
+				if s, err = agentcfgprotocol.NewService(newRegistry(t), opts...); err != nil {
+					t.Fatalf("NewService: %v", err)
+				}
+			} else {
+				s = svc(t, true) // withSkills — the skills verb needs a SkillStore
+			}
 			ctx := context.Background()
 			if _, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
 				Identity: scope(), AgentID: testAgentID, Payload: seed(),
@@ -136,10 +189,12 @@ func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
 					t.Errorf("%s wiped the llm-params sibling: %+v", tc.name, p.LLMParams)
 				}
 			}
-			// Connections is owned by NO verb here — it must ALWAYS survive
-			// (the previously-unguarded sibling that regressions could drop).
-			if p.Connections == nil || len(p.Connections.Servers) != 1 || p.Connections.Servers[0].Name != "seed-conn" {
-				t.Errorf("%s wiped the connections sibling: %+v", tc.name, p.Connections)
+			// Connections survives byte-identical for every verb that does NOT
+			// own it (the add / remove connection verbs own it and are excluded).
+			if !tc.ownsConn {
+				if p.Connections == nil || len(p.Connections.Servers) != 1 || p.Connections.Servers[0].Name != "seed-conn" {
+					t.Errorf("%s wiped the connections sibling: %+v", tc.name, p.Connections)
+				}
 			}
 			// Hooks is likewise owned by NO verb here — it must ALWAYS survive
 			// (the D-283 regression: none of the five setters carried Hooks
