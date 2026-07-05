@@ -22,6 +22,7 @@ import (
 	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 	"github.com/hurtener/Harbor/internal/tools/auth/drivers/oauth2"
 )
 
@@ -143,17 +144,16 @@ func newFakeAuthServer(t *testing.T) *httptest.Server {
 }
 
 // validProviderConfig builds a structurally-valid ProviderConfig
-// pointing at srv. ClientID / ClientSecret are dummy fixtures per §7
-// rule 2.
+// pointing at srv. The client credential is supplied through the source
+// seam via credsource.Static (dummy fixtures per §7 rule 2).
 func validProviderConfig(srv *httptest.Server) auth.ProviderConfig {
 	return auth.ProviderConfig{
-		Name:         "test-provider",
-		ClientID:     tDummyClientID,
-		ClientSecret: tDummyClientSc,
-		Scopes:       []string{"repo", "read:user"},
-		AuthURL:      srv.URL + "/authorize",
-		TokenURL:     srv.URL + "/token",
-		RedirectURL:  "http://localhost/callback",
+		Name:             "test-provider",
+		CredentialSource: credsource.Static(tDummyClientID, tDummyClientSc),
+		Scopes:           []string{"repo", "read:user"},
+		AuthURL:          srv.URL + "/authorize",
+		TokenURL:         srv.URL + "/token",
+		RedirectURL:      "http://localhost/callback",
 	}
 }
 
@@ -174,7 +174,7 @@ func TestNew_FailsLoud_EmptyClientID(t *testing.T) {
 	t.Parallel()
 	srv := newFakeAuthServer(t)
 	cfg := validProviderConfig(srv)
-	cfg.ClientID = ""
+	cfg.CredentialSource = credsource.Static("", tDummyClientSc)
 	_, err := oauth2.New(cfg, mkDeps(t))
 	if err == nil {
 		t.Fatal("New with empty ClientID did not error")
@@ -188,7 +188,7 @@ func TestNew_FailsLoud_EmptyClientSecret(t *testing.T) {
 	t.Parallel()
 	srv := newFakeAuthServer(t)
 	cfg := validProviderConfig(srv)
-	cfg.ClientSecret = ""
+	cfg.CredentialSource = credsource.Static(tDummyClientID, "")
 	_, err := oauth2.New(cfg, mkDeps(t))
 	if err == nil {
 		t.Fatal("New with empty ClientSecret did not error")

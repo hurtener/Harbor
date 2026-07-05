@@ -40,14 +40,20 @@
 // CLAUDE.md §13 amendment — operator-facing seams demand explicit
 // configuration. The driver fails closed on:
 //
-//   - Empty `cfg.ClientID` (the env var named by `ClientIDEnv` was
-//     unset or empty).
-//   - Empty `cfg.ClientSecret` (the env var named by
-//     `ClientSecretEnv` was unset or empty).
+//   - A nil `cfg.CredentialSource` (BuildProviders always threads one).
+//   - A resolved credential with an empty `client_id` (the env var
+//     named by `ClientIDEnv` was unset or empty).
+//   - A resolved credential with an empty `client_secret`.
 //   - Missing `cfg.TokenURL` AND `cfg.AuthURL` (no server endpoints
 //     configured; OAuth2/PKCE requires both).
 //   - Missing `cfg.RedirectURL`.
 //   - Missing deps (Store / Bus / Redactor / Coordinator).
+//
+// The client credential resolves through the §4.4 credential-source
+// seam. The generic `oauth2` driver supports the `env` source only —
+// the interactive flow bakes the credential at construction, so it
+// resolves EAGERLY here; the config validator restricts `remote` to the
+// non-interactive `tokenexchange` driver.
 //
 // Every failure mode surfaces a wrapped error naming the offending
 // config field; the dev stack propagates the error up so the boot
@@ -64,6 +70,11 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
+// ErrMissingCredentialSource — cfg.CredentialSource was nil at
+// construction. BuildProviders always threads one; a nil source is a
+// direct-construction bug.
+var ErrMissingCredentialSource = errors.New("auth/oauth2: CredentialSource is nil (BuildProviders threads the source; direct callers pass credsource.Static)")
+
 // DriverName is the canonical name the driver registers under. The
 // `internal/config` validator's `allowedOAuthDrivers` allowlist mirrors
 // this constant.
@@ -73,14 +84,13 @@ const DriverName = "oauth2"
 // upstream-server failures continue to use the parent package's
 // sentinels (`auth.ErrAuthRequired`, `auth.ErrExchangeFailed`, etc.).
 var (
-	// ErrMissingClientID — `cfg.ClientID` was empty at construction.
-	// The dev stack resolves `os.Getenv(ClientIDEnv)` before calling
-	// the factory; an empty value means the env var was unset or
-	// empty. Fail-loud per §13 amendment.
-	ErrMissingClientID = errors.New("auth/oauth2: ClientID is empty (the env var named by client_id_env was unset or empty)")
-	// ErrMissingClientSecret — `cfg.ClientSecret` was empty at
-	// construction. Same fail-loud rationale as `ErrMissingClientID`.
-	ErrMissingClientSecret = errors.New("auth/oauth2: ClientSecret is empty (the env var named by client_secret_env was unset or empty)")
+	// ErrMissingClientID — the credential resolved through the source
+	// seam carried an empty client_id (the env var named by
+	// client_id_env was unset or empty). Fail-loud per §13 amendment.
+	ErrMissingClientID = errors.New("auth/oauth2: resolved client_id is empty (the env var named by client_id_env was unset or empty)")
+	// ErrMissingClientSecret — the resolved credential carried an empty
+	// client_secret. Same fail-loud rationale as `ErrMissingClientID`.
+	ErrMissingClientSecret = errors.New("auth/oauth2: resolved client_secret is empty (the env var named by client_secret_env was unset or empty)")
 	// ErrMissingEndpoints — both `cfg.AuthURL` and `cfg.TokenURL` are
 	// empty. OAuth2/PKCE requires the authorization-server endpoints;
 	// driver-specific drivers may infer them, but the generic
@@ -111,10 +121,26 @@ func init() {
 // Per §4.4 the dev stack never calls this directly — `auth.Resolve`
 // dispatches by driver name.
 func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, error) {
-	if cfg.ClientID == "" {
+	if cfg.CredentialSource == nil {
+		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingCredentialSource, cfg.Name)
+	}
+	// The interactive Authorization-Code flow bakes the client credential
+	// into the underlying auth.Provider at construction (the flow itself
+	// is unchanged), so the oauth2 driver resolves its
+	// credential through the seam EAGERLY here. With the default `env`
+	// source this is byte-identical to the historical boot resolution;
+	// the config validator restricts `remote` to the non-interactive
+	// `tokenexchange` driver (which resolves lazily under an
+	// identity-bearing ctx), so this eager resolve is env/static only —
+	// no network call, no identity needed.
+	cred, err := cfg.CredentialSource.Resolve(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("auth/oauth2: resolve client credential (provider name=%q): %w", cfg.Name, err)
+	}
+	if cred.ClientID == "" {
 		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingClientID, cfg.Name)
 	}
-	if cfg.ClientSecret == "" {
+	if cred.ClientSecret == "" {
 		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingClientSecret, cfg.Name)
 	}
 	if cfg.AuthURL == "" || cfg.TokenURL == "" {
@@ -139,8 +165,8 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		Source:       source,
 		SourceName:   cfg.Name,
 		BindingScope: auth.ScopeUser,
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
+		ClientID:     cred.ClientID,
+		ClientSecret: cred.ClientSecret,
 		AuthorizeURL: cfg.AuthURL,
 		TokenURL:     cfg.TokenURL,
 		RedirectURI:  cfg.RedirectURL,

@@ -7607,7 +7607,7 @@ run through one shared catalog under `-race`. No deviation from the plan.
 
 **Date:** 2026-07-04
 
-**Status:** Accepted (Phase 154, V1.11)
+**Status:** Shipped (Phase 154, V1.11)
 
 **Where it lives:** `docs/plans/phase-154-broker-credential-source.md`, `internal/tools/auth/credsource/` (seam + drivers), `internal/tools/auth/build_providers.go`, RFC §6.4 (the D-271 paragraph's additive credential-source sentence).
 
@@ -7618,6 +7618,8 @@ run through one shared catalog under `-race`. No deviation from the plan.
 **Rejected: hot-reload / an admin verb that installs a provider.** Two independent reasons: a verb carrying the secret is a secret riding the Protocol — the credential-passthrough shape D-271 already rejected (recorded so it is not re-litigated); and a secretless "re-read the env" reload is incoherent (the env cannot change post-exec). The provider LIST stays boot-declared; only credential resolution is late.
 
 **Why this is the D-271 posture, one level up.** The broker client credential is itself an externally-owned credential: pulled per-need from the authority that owns it, cached in memory only, never persisted (a sealed per-runtime copy would recreate the shadow-store revocation hole D-061/D-271 name). Defense-in-depth win recorded: with `remote`, the broker secret never enters the runtime's environment at all.
+
+**Shipped notes (§4.3 deviations).** (1) The two canonical fetch events (`tool.provider_credential_fetched` / `tool.provider_credential_fetch_failed`) and the `ErrCredentialSourceUnavailable` sentinel live in the `internal/tools/auth/credsource` package, NOT `internal/tools/auth/events.go` as the plan's file list sketched: `internal/tools/auth` (`BuildProviders`) imports `credsource` to build the source, so homing the sentinel/events in `auth` and emitting them from the remote driver (which lives under `credsource`) would cycle the import graph. Keeping them in `credsource` keeps the seam a leaf. (2) `remote` is validated as supported ONLY for the `tokenexchange` driver. The interactive `oauth2` flow bakes the client credential into the underlying `auth.Provider` at construction (this decision's own non-goal: the interactive flow is unchanged), so a late/lazy remote pull cannot attach to an identity-bearing ctx for the mandatory SafePayload fetch event, and a boot-time eager remote fetch has no run identity to attribute it to. `oauth2` still consumes the seam (via the `env` source, resolved eagerly at construction; direct constructors use `credsource.Static`) — criterion 6's "consume through the source seam, zero behavior change on env" holds. The zero-touch benefit accrues to the non-interactive `tokenexchange` driver, which resolves lazily under a verified identity. (3) The two new canonical event-type NAMES touch the D-223 wire manifest's event catalog (regenerated via `make protocol-ts-gen` + `make protocol-ts-types-gen`) and the D-209 generated Protocol docs (`make protocol-docs-gen`); no Protocol method or request/response wire type changed.
 
 **Cross-references.** D-271 (the pull model + push rejection this mirrors), D-278 (per-identity southbound binding — unchanged), D-090/D-095 (WrapWithOAuth + the flow-strategy registry — untouched; the provider instance is still boot-constructed, so no catalog re-wrap), D-196 (blank-import home for the two source drivers), CLAUDE.md §4.4, §7 rules 2/3, §10, §13, §17.8 (fixture-server gate).
 

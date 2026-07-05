@@ -100,6 +100,7 @@ import (
 	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 	"github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
 	"github.com/hurtener/Harbor/internal/tools/schema"
 )
@@ -333,12 +334,11 @@ func newWaveV19Env(t *testing.T) *waveV19Env {
 	store := &waveV19SpyStore{t: t, inner: innerStore}
 
 	prov, err := tokenexchange.New(auth.ProviderConfig{
-		Name:         waveV19Provider,
-		ClientID:     waveV19BrokerClient,
-		ClientSecret: waveV19BrokerSecret,
-		Scopes:       []string{"Report.Send"},
-		TokenURL:     broker.tokenURL(),
-		Extra:        map[string]string{"audience": waveV19Audience},
+		Name:             waveV19Provider,
+		CredentialSource: credsource.Static(waveV19BrokerClient, waveV19BrokerSecret),
+		Scopes:           []string{"Report.Send"},
+		TokenURL:         broker.tokenURL(),
+		Extra:            map[string]string{"audience": waveV19Audience},
 	}, auth.FactoryDeps{
 		Store: store, Bus: provBus, Redactor: red, Coordinator: coord,
 		// DisableKeepAlives so the broker's httptest connections don't

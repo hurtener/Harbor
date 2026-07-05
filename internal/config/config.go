@@ -1053,15 +1053,73 @@ type CustomToolConfig struct {
 //
 // Restart-required.
 type ToolOAuthProviderConfig struct {
-	Name            string            `yaml:"name"`
-	Driver          string            `yaml:"driver"`
-	ClientIDEnv     string            `yaml:"client_id_env"`
-	ClientSecretEnv string            `yaml:"client_secret_env"`
-	Scopes          []string          `yaml:"scopes,omitempty"`
-	AuthURL         string            `yaml:"auth_url,omitempty"`
-	TokenURL        string            `yaml:"token_url,omitempty"`
-	RedirectURL     string            `yaml:"redirect_url,omitempty"`
-	Extra           map[string]string `yaml:"extra,omitempty"`
+	Name   string `yaml:"name"`
+	Driver string `yaml:"driver"`
+	// CredentialSource selects the §4.4 seam through which this
+	// provider's OWN client credential resolves:
+	//   - "" / "env" — resolved from ClientIDEnv / ClientSecretEnv once
+	//     at boot (the default; existing configs are byte-compatible).
+	//   - "remote" — pulled from a coordinator endpoint (the Remote
+	//     block) at first need. Valid only for the "tokenexchange"
+	//     driver. Declaring "remote" alongside ClientIDEnv /
+	//     ClientSecretEnv is a validation error (one source, no dual
+	//     path).
+	CredentialSource string `yaml:"credential_source,omitempty"`
+	ClientIDEnv      string `yaml:"client_id_env,omitempty"`
+	ClientSecretEnv  string `yaml:"client_secret_env,omitempty"`
+	// Remote carries the coordinator-served credential-fetch parameters;
+	// required when CredentialSource == "remote", rejected otherwise.
+	Remote      *ToolOAuthRemoteConfig `yaml:"remote,omitempty"`
+	Scopes      []string               `yaml:"scopes,omitempty"`
+	AuthURL     string                 `yaml:"auth_url,omitempty"`
+	TokenURL    string                 `yaml:"token_url,omitempty"`
+	RedirectURL string                 `yaml:"redirect_url,omitempty"`
+	Extra       map[string]string      `yaml:"extra,omitempty"`
+}
+
+// ToolOAuthRemoteConfig declares the coordinator-served credential
+// source. At first credential need the runtime performs a single
+// authenticated GET against URL (Authorization: Bearer, token read from
+// AuthTokenEnv), strict-parses the JSON response
+// (`format_version`, `client_id`, `client_secret`, optional
+// `expires_in`), and holds the credential in memory only — TTL-capped,
+// single-flighted, refetched on expiry. Nothing is persisted.
+//
+// Layout in YAML:
+//
+//	oauth_providers:
+//	  - name: m365-broker
+//	    driver: tokenexchange
+//	    credential_source: remote
+//	    token_url: https://broker.example.com/oauth2/token
+//	    remote:
+//	      url: https://coordinator.example.com/runtimes/self/broker-credential
+//	      auth_token_env: HARBOR_COORDINATOR_TOKEN
+//	      cache_ttl: 5m       # optional; caps the in-memory serve horizon
+//	      timeout: 10s        # optional; bounds a single fetch
+//
+// Restart-required (the provider LIST is boot-declared; only credential
+// resolution is late).
+type ToolOAuthRemoteConfig struct {
+	// URL is the coordinator credential endpoint. Required; validated
+	// well-formed at boot. MUST be https — the fetch sends the runtime's
+	// service bearer token, so TLS is mandatory; plaintext http is
+	// accepted only for a loopback host (127.0.0.1 / ::1 / localhost —
+	// the local fixture / dev case). Redirects from the endpoint are
+	// refused, never followed.
+	URL string `yaml:"url"`
+	// AuthTokenEnv names the env var holding the runtime's own service
+	// token, sent as a Bearer credential. Required; validated non-empty
+	// at boot (read lazily at fetch time so a rotated token is picked up
+	// without restart).
+	AuthTokenEnv string `yaml:"auth_token_env"`
+	// CacheTTL caps the in-memory serve horizon. Optional; zero = the
+	// driver default (5m). The effective horizon is min(response
+	// expires_in, CacheTTL).
+	CacheTTL time.Duration `yaml:"cache_ttl,omitempty"`
+	// Timeout bounds a single fetch. Optional; zero = the driver default
+	// (30s).
+	Timeout time.Duration `yaml:"timeout,omitempty"`
 }
 
 // ToolEntryConfig is one per-tool catalog wiring declaration.

@@ -934,6 +934,70 @@ Operator-configured OAuth providers (D-095). Each entry needs `name`,
   `consent_required` refusal parks on the unified pause primitive. See
   `examples/dev.yaml` for a fully-commented block.
 
+Each provider's OWN client credential resolves through the
+`credential_source` seam (D-285):
+
+- `env` (the **default**; omit the field) — `client_id` / `client_secret`
+  are read from `client_id_env` / `client_secret_env` **once at boot**,
+  fail-loud when either env var is unset. Existing configs are
+  byte-compatible.
+- `remote` — the runtime **pulls** `client_id` / `client_secret` from a
+  coordinator-served endpoint at **first need** (not at boot), so a
+  credential a coordinator mints AFTER the runtime booted reaches it with
+  zero touch. The pulled credential is held **in memory only**, TTL-capped,
+  single-flighted, and refetched on expiry — nothing is persisted. With
+  `remote` the broker secret **never enters the runtime's environment**
+  (defense-in-depth). Valid **only for the `tokenexchange` driver**;
+  declaring `remote` alongside `client_id_env` / `client_secret_env` is a
+  validation error (one source per entry — §13). Requires a `remote:`
+  block:
+  - `url` — the coordinator credential endpoint. **Required**, validated
+    well-formed at boot. **Must be `https`** — the fetch sends the
+    runtime's service bearer token, so TLS is mandatory; the one
+    carve-out is a loopback host (`127.0.0.1` / `::1` / `localhost`, the
+    local fixture / dev case), where plaintext `http` is accepted.
+    Redirects from the endpoint are refused (never followed) — a
+    credential endpoint that redirects is treated as a fault.
+  - `auth_token_env` — names the env var holding the runtime's own service
+    token, sent as `Authorization: Bearer`. **Required**; read lazily at
+    fetch time so a rotated token is picked up without restart.
+  - `cache_ttl` — optional; caps the in-memory serve horizon (a Go
+    duration; default 5m). The effective horizon is `min(response
+    expires_in, cache_ttl)`.
+  - `timeout` — optional; bounds a single fetch (default 30s).
+
+  **The fetch contract** (Harbor-defined, versioned) — a single
+  authenticated GET:
+
+  ```http
+  GET <url>
+  Authorization: Bearer <token from auth_token_env>
+  Accept: application/json
+  ```
+
+  The coordinator responds with a strict JSON object:
+
+  ```json
+  {
+    "format_version": 1,
+    "client_id":      "...",
+    "client_secret":  "...",
+    "expires_in":     3600
+  }
+  ```
+
+  `format_version` (required) is the contract version — the runtime
+  accepts version `1`; unknown top-level fields are rejected (strict
+  parse). `expires_in` (optional, seconds) drives the cache TTL. A fetch
+  that is unreachable, non-200, or malformed fails the tool call loud with
+  a typed sentinel and emits a `tool.provider_credential_fetch_failed`
+  audit event — **never** a fallback to env, to an unauthenticated call,
+  or to the interactive flow. A successful fetch emits
+  `tool.provider_credential_fetched` (both events carry zero secret bytes).
+  A push of the credential over the Protocol stays rejected as credential
+  passthrough (D-271). See `examples/dev.yaml` for a fully-commented
+  `remote` block.
+
 ### tools.oauth_token_kek_env
 
 Env-var name holding the 32-byte hex-encoded key-encryption key

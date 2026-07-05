@@ -185,6 +185,10 @@ credential binds to a provider; alongside the interactive authorization-code
 flow, the `tokenexchange` provider pulls that credential from an external
 broker via an RFC-8693 exchange keyed on the verified identity triple — one
 central grant serves a whole fleet, and brokered tokens are never persisted.
+The provider's own client credential resolves from the process env by
+default, or — with `credential_source: remote` — is pulled from a
+coordinator endpoint at first need, so a credential minted after boot
+reaches a running runtime with zero touch and never enters its environment.
 
 ## Using Harbor
 

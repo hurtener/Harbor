@@ -334,6 +334,40 @@ tools:
   #     extra:
   #       audience: https://graph.microsoft.com
   #       cache_ttl_cap: 5m
+  #
+  #   # credential_source (D-285) — WHERE a provider's OWN client
+  #   # credential (client_id / client_secret) comes from:
+  #   #   - env (the DEFAULT; omit the field): resolved from
+  #   #     client_id_env / client_secret_env ONCE at boot, fail-loud when
+  #   #     unset. Existing configs are byte-compatible.
+  #   #   - remote: the runtime PULLS the credential from a coordinator
+  #   #     endpoint at first need — memory-only TTL cache, single-flight,
+  #   #     fail-loud. A coordinator that mints the runtime's credential
+  #   #     AFTER boot reaches it with zero touch, and the broker secret
+  #   #     NEVER enters the runtime's environment (defense-in-depth).
+  #   #     Valid only for the `tokenexchange` driver; declaring `remote`
+  #   #     alongside client_id_env / client_secret_env is a validation
+  #   #     error (one source per entry).
+  #   #
+  #   # The coordinator serves a single authenticated GET
+  #   # (Authorization: Bearer <auth_token_env>) → strict JSON
+  #   # {"format_version":1,"client_id":...,"client_secret":...,"expires_in":N}.
+  #   # `remote.url` MUST be https (the fetch carries the runtime's
+  #   # service bearer token); plaintext http is accepted only for a
+  #   # loopback host (127.0.0.1 / ::1 / localhost — the fixture/dev
+  #   # case). Redirects from the endpoint are refused, never followed.
+  #   - name: m365-broker-remote
+  #     driver: tokenexchange
+  #     credential_source: remote
+  #     scopes: ["Mail.Read", "Calendars.Read"]
+  #     token_url: https://broker.example.com/oauth2/token
+  #     remote:
+  #       url: https://coordinator.example.com/runtimes/self/broker-credential
+  #       auth_token_env: HARBOR_COORDINATOR_TOKEN  # runtime's own service token
+  #       cache_ttl: 5m    # optional; caps the in-memory serve horizon
+  #       timeout: 10s     # optional; bounds a single fetch
+  #     extra:
+  #       audience: https://graph.microsoft.com
 
   # tools.entries[] — per-tool middleware bindings (approval / OAuth /
   # loading-mode), applied by name AFTER built-ins and http_manifests

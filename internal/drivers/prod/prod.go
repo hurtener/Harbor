@@ -163,6 +163,18 @@ import (
 	// obtains downstream tool credentials from an external credential
 	// broker instead of Harbor's interactive authorization-code flow.
 	_ "github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
+	// Tools OAuth provider credential sources. A provider's OWN
+	// client credential resolves through the §4.4 credential-source seam:
+	// the `env` source (boot-time process-env resolution, the default)
+	// and the `remote` source (an authenticated pull from a coordinator
+	// endpoint at first need). Each self-registers under its name via
+	// init() so `tools.oauth_providers[].credential_source` resolves at
+	// boot. New sources add a driver under
+	// `internal/tools/auth/credsource/drivers/<name>/` + a blank import
+	// here, per the §4.4 seam pattern.
+	_ "github.com/hurtener/Harbor/internal/tools/auth/credsource/drivers/env"
+	_ "github.com/hurtener/Harbor/internal/tools/auth/credsource/drivers/remote"
+
 	// Planner driver (closes issue #126). The `react` driver
 	// self-registers under that name via init() so
 	// `planner.driver: react` resolves at boot. New planner concretes

@@ -46,6 +46,7 @@ import (
 	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 	"github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
 	"github.com/hurtener/Harbor/internal/tools/catalog"
 )
@@ -200,12 +201,11 @@ func newP142Env(t *testing.T) *p142Env {
 	store := &p142SpyStore{t: t, inner: innerStore}
 
 	prov, err := tokenexchange.New(auth.ProviderConfig{
-		Name:         p142Provider,
-		ClientID:     p142BrokerClient,
-		ClientSecret: p142BrokerSecret,
-		Scopes:       []string{"Mail.Read"},
-		TokenURL:     broker.tokenURL(),
-		Extra:        map[string]string{"audience": p142Audience},
+		Name:             p142Provider,
+		CredentialSource: credsource.Static(p142BrokerClient, p142BrokerSecret),
+		Scopes:           []string{"Mail.Read"},
+		TokenURL:         broker.tokenURL(),
+		Extra:            map[string]string{"audience": p142Audience},
 	}, auth.FactoryDeps{
 		Store: store, Bus: bus, Redactor: red, Coordinator: coord,
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},

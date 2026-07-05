@@ -267,6 +267,8 @@ export type HarborEventType =
   | "tool.invalid_args"
   | "tool.invoked"
   | "tool.policy_exhausted"
+  | "tool.provider_credential_fetch_failed"
+  | "tool.provider_credential_fetched"
   | "tool.rejected"
   | "topology.changed"
   | "trajectory.compressed"

@@ -24,6 +24,7 @@ import (
 	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 	"github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
 )
 
@@ -297,12 +298,11 @@ func mkProviderClock(t *testing.T, broker *fakeBroker, clock func() time.Time) (
 		deps.Clock = clock
 	}
 	cfg := auth.ProviderConfig{
-		Name:         tProviderName,
-		ClientID:     tDummyBrokerClient,
-		ClientSecret: tDummyBrokerSecret,
-		Scopes:       []string{"Mail.Read", "Calendars.Read"},
-		TokenURL:     broker.tokenURL(),
-		Extra:        map[string]string{"audience": "https://graph.microsoft.com"},
+		Name:             tProviderName,
+		CredentialSource: credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),
+		Scopes:           []string{"Mail.Read", "Calendars.Read"},
+		TokenURL:         broker.tokenURL(),
+		Extra:            map[string]string{"audience": "https://graph.microsoft.com"},
 	}
 	prov, err := tokenexchange.New(cfg, deps)
 	if err != nil {
@@ -358,8 +358,9 @@ func TestNew_FailsLoud_MissingConfig(t *testing.T) {
 	broker := newFakeBroker(t)
 	base := func() auth.ProviderConfig {
 		return auth.ProviderConfig{
-			Name: tProviderName, ClientID: tDummyBrokerClient,
-			ClientSecret: tDummyBrokerSecret, TokenURL: broker.tokenURL(),
+			Name:             tProviderName,
+			CredentialSource: credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),
+			TokenURL:         broker.tokenURL(),
 		}
 	}
 	deps, _, _ := mkDeps(t)
@@ -369,8 +370,11 @@ func TestNew_FailsLoud_MissingConfig(t *testing.T) {
 		mutate func(*auth.ProviderConfig)
 		want   error
 	}{
-		{"missing client id", func(c *auth.ProviderConfig) { c.ClientID = "" }, tokenexchange.ErrMissingClientID},
-		{"missing client secret", func(c *auth.ProviderConfig) { c.ClientSecret = "" }, tokenexchange.ErrMissingClientSecret},
+		// The credential resolves through the source seam, so an empty
+		// client credential now surfaces at exchange time, not
+		// construction (see TestToken_FailsLoud_EmptyResolvedCredential).
+		// Construction fails loud on a NIL source.
+		{"nil credential source", func(c *auth.ProviderConfig) { c.CredentialSource = nil }, tokenexchange.ErrMissingCredentialSource},
 		{"missing token url", func(c *auth.ProviderConfig) { c.TokenURL = "" }, tokenexchange.ErrMissingTokenURL},
 		{"bad cache ttl cap", func(c *auth.ProviderConfig) { c.Extra = map[string]string{"cache_ttl_cap": "not-a-duration"} }, tokenexchange.ErrBadCacheTTLCap},
 		// A cap below the re-exchange floor is rejected loudly, never
@@ -389,12 +393,52 @@ func TestNew_FailsLoud_MissingConfig(t *testing.T) {
 	}
 }
 
+// TestToken_FailsLoud_EmptyResolvedCredential — the credential resolves
+// through the source seam, so an empty client_id / client_secret now
+// fails the EXCHANGE loud (wrapped ErrExchangeFailed + the typed
+// ErrMissingClientID / ErrMissingClientSecret), never silently.
+func TestToken_FailsLoud_EmptyResolvedCredential(t *testing.T) {
+	t.Parallel()
+	broker := newFakeBroker(t)
+	deps, _, _ := mkDeps(t)
+	cases := []struct {
+		name string
+		src  credsource.Source
+		want error
+	}{
+		{"empty client id", credsource.Static("", tDummyBrokerSecret), tokenexchange.ErrMissingClientID},
+		{"empty client secret", credsource.Static(tDummyBrokerClient, ""), tokenexchange.ErrMissingClientSecret},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := auth.ProviderConfig{
+				Name:             tProviderName,
+				CredentialSource: tc.src,
+				TokenURL:         broker.tokenURL(),
+			}
+			prov, err := tokenexchange.New(cfg, deps)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { _ = prov.Close(context.Background()) })
+			_, err = prov.Token(mkCtx(t, aliceID()), "any")
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Token: want %v, got %v", tc.want, err)
+			}
+			if !errors.Is(err, auth.ErrExchangeFailed) {
+				t.Fatalf("Token: want wrapped ErrExchangeFailed, got %v", err)
+			}
+		})
+	}
+}
+
 func TestNew_FailsLoud_MissingDeps(t *testing.T) {
 	t.Parallel()
 	broker := newFakeBroker(t)
 	cfg := auth.ProviderConfig{
-		Name: tProviderName, ClientID: tDummyBrokerClient,
-		ClientSecret: tDummyBrokerSecret, TokenURL: broker.tokenURL(),
+		Name:             tProviderName,
+		CredentialSource: credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),
+		TokenURL:         broker.tokenURL(),
 	}
 	_, err := tokenexchange.New(cfg, auth.FactoryDeps{}) // all deps nil
 	if !errors.Is(err, tokenexchange.ErrMissingDeps) {
@@ -745,8 +789,9 @@ func TestNew_ValidCacheTTLCapParses(t *testing.T) {
 	deps, _, _ := mkDeps(t)
 	deps.Clock = clock.Now
 	cfg := auth.ProviderConfig{
-		Name: tProviderName, ClientID: tDummyBrokerClient, ClientSecret: tDummyBrokerSecret,
-		Scopes: []string{"Mail.Read"}, TokenURL: broker.tokenURL(),
+		Name:             tProviderName,
+		CredentialSource: credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),
+		Scopes:           []string{"Mail.Read"}, TokenURL: broker.tokenURL(),
 		Extra: map[string]string{"cache_ttl_cap": "45s"},
 	}
 	prov, err := tokenexchange.New(cfg, deps)

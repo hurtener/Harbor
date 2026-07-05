@@ -1340,13 +1340,77 @@ func (c *Config) validateTools() error {
 				fmt.Sprintf("must be one of %s, got %q",
 					sortedKeys(allowedOAuthDrivers), p.Driver))
 		}
-		if p.ClientIDEnv == "" {
-			return fieldError(prefix+".client_id_env",
-				"must not be empty (env var name holding the client_id; §7 rule 2 — never hardcoded)")
+		// Credential source: `env` (default) resolves the client
+		// credential from ClientIDEnv / ClientSecretEnv at boot; `remote`
+		// pulls it from a coordinator endpoint at first need. Exactly the
+		// declared source's fields are required; declaring both is a
+		// validation error (one source, no dual path — §13).
+		source := p.CredentialSource
+		if source == "" {
+			source = "env"
 		}
-		if p.ClientSecretEnv == "" {
-			return fieldError(prefix+".client_secret_env",
-				"must not be empty (env var name holding the client_secret; §7 rule 2 — never hardcoded)")
+		if _, ok := allowedCredentialSources[source]; !ok {
+			return fieldError(prefix+".credential_source",
+				fmt.Sprintf("must be one of %s, got %q", sortedKeys(allowedCredentialSources), p.CredentialSource))
+		}
+		switch source {
+		case "env":
+			if p.ClientIDEnv == "" {
+				return fieldError(prefix+".client_id_env",
+					"must not be empty (env var name holding the client_id; §7 rule 2 — never hardcoded)")
+			}
+			if p.ClientSecretEnv == "" {
+				return fieldError(prefix+".client_secret_env",
+					"must not be empty (env var name holding the client_secret; §7 rule 2 — never hardcoded)")
+			}
+			if p.Remote != nil {
+				return fieldError(prefix+".remote",
+					"must not be set when credential_source is \"env\" (the remote block declares the coordinator pull; one source per entry — §13)")
+			}
+		case "remote":
+			// The interactive `oauth2` driver bakes its credential into the
+			// underlying provider at construction, so a lazy remote pull
+			// cannot attach to an identity-bearing ctx for its audit event.
+			// `remote` is restricted to the non-interactive `tokenexchange`
+			// driver, which resolves lazily under a verified identity.
+			if p.Driver != "tokenexchange" {
+				return fieldError(prefix+".credential_source",
+					fmt.Sprintf("\"remote\" is supported only by the \"tokenexchange\" driver (got driver %q); the interactive oauth2 flow resolves its credential at construction", p.Driver))
+			}
+			if p.ClientIDEnv != "" || p.ClientSecretEnv != "" {
+				return fieldError(prefix+".credential_source",
+					"must not set client_id_env / client_secret_env alongside \"remote\" (the credential is pulled from the coordinator, not the env; one source per entry — §13)")
+			}
+			if p.Remote == nil {
+				return fieldError(prefix+".remote",
+					"must be set when credential_source is \"remote\" (declares the coordinator url + auth_token_env)")
+			}
+			if p.Remote.URL == "" {
+				return fieldError(prefix+".remote.url", "must not be empty (the coordinator credential endpoint)")
+			}
+			u, err := url.Parse(p.Remote.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fieldError(prefix+".remote.url",
+					fmt.Sprintf("must be a well-formed http(s) URL with a host, got %q", p.Remote.URL))
+			}
+			// The fetch carries the runtime's service bearer token, so TLS
+			// is mandatory (§7). The single carve-out is a loopback host
+			// (127.0.0.0/8 / ::1 / localhost) for the local fixture / dev
+			// case — a plaintext bearer never leaves the box there.
+			if u.Scheme == "http" && !isLoopbackHostname(u.Hostname()) {
+				return fieldError(prefix+".remote.url",
+					fmt.Sprintf("must be https for non-loopback hosts (the fetch sends the runtime's service bearer token; plaintext http is allowed only for 127.0.0.1 / ::1 / localhost), got %q", p.Remote.URL))
+			}
+			if p.Remote.AuthTokenEnv == "" {
+				return fieldError(prefix+".remote.auth_token_env",
+					"must not be empty (env var name holding the runtime service token for the coordinator fetch; §7 rule 2 — never hardcoded)")
+			}
+			if p.Remote.CacheTTL < 0 {
+				return fieldError(prefix+".remote.cache_ttl", "must be >= 0")
+			}
+			if p.Remote.Timeout < 0 {
+				return fieldError(prefix+".remote.timeout", "must be >= 0")
+			}
 		}
 		// Per-driver endpoint requirements. The `tokenexchange` driver
 		// (pull-based external-credential provisioning) talks to a
@@ -1595,6 +1659,20 @@ var allowedOAuthBindingScopes = map[string]struct{}{
 var allowedOAuthDrivers = map[string]struct{}{
 	"oauth2":        {},
 	"tokenexchange": {},
+}
+
+// allowedCredentialSources mirrors the `internal/tools/auth/credsource`
+// source registry. V1.11 ships `env` (boot-time process-env
+// resolution, the default) and `remote` (coordinator-served pull). New
+// sources under `internal/tools/auth/credsource/drivers/<name>/` add a
+// row here in the same PR. Same duplication rationale as
+// `allowedOAuthDrivers` — the `internal/config` package MUST NOT import a
+// concrete driver package (§4.4). The credsource-package test
+// `TestRegisteredSourcesMatchConfigAllowlist` asserts no drift between
+// the two surfaces.
+var allowedCredentialSources = map[string]struct{}{
+	"env":    {},
+	"remote": {},
 }
 
 // allowedPlannerDrivers mirrors the `internal/planner` driver registry
@@ -2126,4 +2204,21 @@ func ValidateLoopbackAddr(addr string) error {
 		return fmt.Errorf("must be a loopback address (127.0.0.0/8 or ::1), got host %q — the pprof debug listener is never exposed off-box", host)
 	}
 	return nil
+}
+
+// isLoopbackHostname reports whether a URL hostname is loopback for the
+// purposes of the credential-source TLS carve-out: a numeric loopback IP
+// (127.0.0.0/8 or ::1) or the literal "localhost". Unlike
+// ValidateLoopbackAddr (the pprof gate, which deliberately rejects
+// hostnames), "localhost" is accepted here — the carve-out exists for
+// the local fixture / dev case where the name is conventional. The
+// `remote` credential-source driver mirrors this check at ValidateAtBoot
+// (same duplication rationale as the driver allowlists — §4.4: config
+// must not import driver packages).
+func isLoopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
