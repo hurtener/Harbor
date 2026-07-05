@@ -9,7 +9,9 @@
 // an INTERLEAVED section-scoped edit fires through the real wire handler,
 // and the SAME run-start projection helper the production run loop calls
 // (projection.ActiveRunCompletionHook, CLAUDE.md §17.4 — no test-local copy)
-// must still resolve the pinned hook.
+// must still resolve the pinned hook. The §17.3 failure mode is covered too:
+// a REJECTED sibling edit (an invalid loading mode → 400 invalid_request)
+// records no revision and never corrupts the pinned hook.
 package integration_test
 
 import (
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 )
@@ -73,5 +76,36 @@ func TestE2E_AgentConfig_HooksSurviveInterleavedSectionEdit(t *testing.T) {
 		len(get.Revision.Payload.ToolExposure.PausedServers) != 1 ||
 		get.Revision.Payload.ToolExposure.PausedServers[0] != "interleaved-srv" {
 		t.Fatalf("interleaved tool-exposure edit did not apply: %+v", get.Revision)
+	}
+	goodRevisionID := get.Revision.RevisionID
+
+	// --- Failure mode (§17.3): a REJECTED sibling edit never corrupts the
+	// hook. An invalid loading-mode value fails loud at the wire edge (400
+	// invalid_request), records NO revision, and the pinned hook still
+	// resolves through the same projection helper afterwards.
+	badRec := h.call(t, "/v1/agent_config/set_tool_exposure", prototypes.AgentConfigSetToolExposureRequest{
+		AgentID: acAgent,
+		ToolExposure: prototypes.AgentConfigToolExposure{
+			ToolLoadingModes: map[string]string{"some_tool": "sometimes"}, // not always|deferred
+		},
+	}, adminScopes())
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid loading mode status=%d body=%s, want 400", badRec.Code, badRec.Body.String())
+	}
+	if c := errCode(t, badRec); c != protoerrors.CodeInvalidRequest {
+		t.Fatalf("invalid loading mode error code = %q, want %q", c, protoerrors.CodeInvalidRequest)
+	}
+	// No revision was recorded by the rejected edit…
+	getAfter := decode[prototypes.AgentConfigGetResponse](t, h.call(t, "/v1/agent_config/get", prototypes.AgentConfigGetRequest{AgentID: acAgent}, adminScopes()))
+	if getAfter.Revision == nil || getAfter.Revision.RevisionID != goodRevisionID {
+		t.Fatalf("a rejected sibling edit recorded a revision: before=%s after=%+v", goodRevisionID, getAfter.Revision)
+	}
+	// …and the hook still resolves, unchanged.
+	spec, ok, err = projection.ActiveRunCompletionHook(ctx, h.registry, acAgent, id, nil)
+	if err != nil {
+		t.Fatalf("projection.ActiveRunCompletionHook after rejected edit: %v", err)
+	}
+	if !ok || spec == nil || spec.Tool != "run-transcript-sink" || spec.Timeout != 6*time.Second {
+		t.Fatalf("hook corrupted by a REJECTED sibling edit: ok=%v spec=%+v", ok, spec)
 	}
 }

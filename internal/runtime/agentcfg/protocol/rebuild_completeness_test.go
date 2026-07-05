@@ -139,108 +139,114 @@ func rcActive(t *testing.T, ctx context.Context, reg agentcfg.Registry) agentcfg
 	return rev.Payload
 }
 
-// TestRebuildCompleteness_SetToolExposure_PreservesEverySibling.
-func TestRebuildCompleteness_SetToolExposure_PreservesEverySibling(t *testing.T) {
-	ctx := context.Background()
-	reg := newRegistry(t)
-	s, err := agentcfgprotocol.NewService(reg)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	seed := rcSeed(t)
-	rcSeedActive(t, ctx, reg, seed)
-
-	if _, err := s.SetToolExposure(ctx, prototypes.AgentConfigSetToolExposureRequest{
-		Identity: scope(), AgentID: rcAgent,
-		ToolExposure: prototypes.AgentConfigToolExposure{PausedServers: []string{"edited-srv"}},
-	}); err != nil {
-		t.Fatalf("set_tool_exposure: %v", err)
-	}
-	rcAssertSiblingsSurvive(t, "set_tool_exposure", "ToolExposure", seed, rcActive(t, ctx, reg))
-}
-
-// TestRebuildCompleteness_AddMCPConnection_PreservesEverySibling.
-func TestRebuildCompleteness_AddMCPConnection_PreservesEverySibling(t *testing.T) {
-	ctx := context.Background()
-	reg := newRegistry(t)
-	attacher := &fakeAttacher{result: nil} // nil = online, defined in addconnection_test.go
-	s, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithConnectionAttacher(attacher))
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	seed := rcSeed(t)
-	rcSeedActive(t, ctx, reg, seed)
-
-	if _, err := s.AddMCPConnection(ctx, prototypes.AgentConfigAddMCPConnectionRequest{
-		Identity: scope(), AgentID: rcAgent,
-		Connection: prototypes.AgentConfigMCPConnectionDescriptor{
-			Name: "edited-conn", Transport: "http", URL: "https://example.invalid/edited",
+// TestRebuildCompleteness_EverySetter_PreservesEverySibling drives every
+// section-scoped setter against the fully-populated active revision and
+// asserts every non-owned section survives byte-identically. A future
+// section-scoped setter (e.g. a connection-removal verb) joins the guard as
+// ONE table row — name + the section it owns + setter-specific Service
+// options + the invoke closure — nothing else changes.
+func TestRebuildCompleteness_EverySetter_PreservesEverySibling(t *testing.T) {
+	cases := []struct {
+		name string
+		// owned is the ONE ConfigPayload field name the setter replaces
+		// (excluded from the survival assertions).
+		owned string
+		// opts builds the setter-specific Service options (nil = none).
+		opts func(t *testing.T) []agentcfgprotocol.Option
+		// invoke performs the setter's edit against the seeded rcAgent.
+		invoke func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service)
+	}{
+		{
+			name:  "set_tool_exposure",
+			owned: "ToolExposure",
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				if _, err := s.SetToolExposure(ctx, prototypes.AgentConfigSetToolExposureRequest{
+					Identity: scope(), AgentID: rcAgent,
+					ToolExposure: prototypes.AgentConfigToolExposure{PausedServers: []string{"edited-srv"}},
+				}); err != nil {
+					t.Fatalf("set_tool_exposure: %v", err)
+				}
+			},
 		},
-	}); err != nil {
-		t.Fatalf("add_mcp_connection: %v", err)
-	}
-	rcAssertSiblingsSurvive(t, "add_mcp_connection", "Connections", seed, rcActive(t, ctx, reg))
-}
-
-// TestRebuildCompleteness_SkillsUpsert_PreservesEverySibling.
-func TestRebuildCompleteness_SkillsUpsert_PreservesEverySibling(t *testing.T) {
-	ctx := context.Background()
-	reg := newRegistry(t)
-	s, err := agentcfgprotocol.NewService(reg, agentcfgprotocol.WithSkillStore(newSkills(t)))
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	seed := rcSeed(t)
-	rcSeedActive(t, ctx, reg, seed)
-
-	if _, err := s.SkillsUpsert(ctx, prototypes.AgentConfigSkillsUpsertRequest{
-		Identity: scope(), AgentID: rcAgent,
-		Skill: prototypes.AgentConfigSkillInput{
-			Name: "edited-skill", Trigger: "t", Steps: []string{"do the thing"},
-			Origin: "generated", Scope: "project",
+		{
+			name:  "add_mcp_connection",
+			owned: "Connections",
+			opts: func(_ *testing.T) []agentcfgprotocol.Option {
+				// nil result = online; fakeAttacher is defined in addconnection_test.go.
+				return []agentcfgprotocol.Option{agentcfgprotocol.WithConnectionAttacher(&fakeAttacher{result: nil})}
+			},
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				if _, err := s.AddMCPConnection(ctx, prototypes.AgentConfigAddMCPConnectionRequest{
+					Identity: scope(), AgentID: rcAgent,
+					Connection: prototypes.AgentConfigMCPConnectionDescriptor{
+						Name: "edited-conn", Transport: "http", URL: "https://example.invalid/edited",
+					},
+				}); err != nil {
+					t.Fatalf("add_mcp_connection: %v", err)
+				}
+			},
 		},
-	}); err != nil {
-		t.Fatalf("skills.upsert: %v", err)
+		{
+			name:  "skills.upsert",
+			owned: "Skills",
+			opts: func(t *testing.T) []agentcfgprotocol.Option {
+				return []agentcfgprotocol.Option{agentcfgprotocol.WithSkillStore(newSkills(t))}
+			},
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				if _, err := s.SkillsUpsert(ctx, prototypes.AgentConfigSkillsUpsertRequest{
+					Identity: scope(), AgentID: rcAgent,
+					Skill: prototypes.AgentConfigSkillInput{
+						Name: "edited-skill", Trigger: "t", Steps: []string{"do the thing"},
+						Origin: "generated", Scope: "project",
+					},
+				}); err != nil {
+					t.Fatalf("skills.upsert: %v", err)
+				}
+			},
+		},
+		{
+			name:  "set_prompt_layers",
+			owned: "PromptLayers",
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				if _, err := s.SetPromptLayers(ctx, prototypes.AgentConfigSetPromptLayersRequest{
+					Identity: scope(), AgentID: rcAgent,
+					PromptLayers: prototypes.AgentConfigPromptLayers{Base: strPtr("edited-base")},
+				}); err != nil {
+					t.Fatalf("set_prompt_layers: %v", err)
+				}
+			},
+		},
+		{
+			name:  "set_llm_params",
+			owned: "LLMParams",
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				if _, err := s.SetLLMParams(ctx, prototypes.AgentConfigSetLLMParamsRequest{
+					Identity: scope(), AgentID: rcAgent,
+					LLMParams: prototypes.AgentConfigLLMParams{Temperature: f64(0.9)},
+				}); err != nil {
+					t.Fatalf("set_llm_params: %v", err)
+				}
+			},
+		},
 	}
-	rcAssertSiblingsSurvive(t, "skills.upsert", "Skills", seed, rcActive(t, ctx, reg))
-}
 
-// TestRebuildCompleteness_SetPromptLayers_PreservesEverySibling.
-func TestRebuildCompleteness_SetPromptLayers_PreservesEverySibling(t *testing.T) {
-	ctx := context.Background()
-	reg := newRegistry(t)
-	s, err := agentcfgprotocol.NewService(reg)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	seed := rcSeed(t)
-	rcSeedActive(t, ctx, reg, seed)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			reg := newRegistry(t)
+			var opts []agentcfgprotocol.Option
+			if tc.opts != nil {
+				opts = tc.opts(t)
+			}
+			s, err := agentcfgprotocol.NewService(reg, opts...)
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+			seed := rcSeed(t)
+			rcSeedActive(t, ctx, reg, seed)
 
-	if _, err := s.SetPromptLayers(ctx, prototypes.AgentConfigSetPromptLayersRequest{
-		Identity: scope(), AgentID: rcAgent,
-		PromptLayers: prototypes.AgentConfigPromptLayers{Base: strPtr("edited-base")},
-	}); err != nil {
-		t.Fatalf("set_prompt_layers: %v", err)
+			tc.invoke(t, ctx, s)
+			rcAssertSiblingsSurvive(t, tc.name, tc.owned, seed, rcActive(t, ctx, reg))
+		})
 	}
-	rcAssertSiblingsSurvive(t, "set_prompt_layers", "PromptLayers", seed, rcActive(t, ctx, reg))
-}
-
-// TestRebuildCompleteness_SetLLMParams_PreservesEverySibling.
-func TestRebuildCompleteness_SetLLMParams_PreservesEverySibling(t *testing.T) {
-	ctx := context.Background()
-	reg := newRegistry(t)
-	s, err := agentcfgprotocol.NewService(reg)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	seed := rcSeed(t)
-	rcSeedActive(t, ctx, reg, seed)
-
-	if _, err := s.SetLLMParams(ctx, prototypes.AgentConfigSetLLMParamsRequest{
-		Identity: scope(), AgentID: rcAgent,
-		LLMParams: prototypes.AgentConfigLLMParams{Temperature: f64(0.9)},
-	}); err != nil {
-		t.Fatalf("set_llm_params: %v", err)
-	}
-	rcAssertSiblingsSurvive(t, "set_llm_params", "LLMParams", seed, rcActive(t, ctx, reg))
 }
