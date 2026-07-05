@@ -40,10 +40,13 @@ type TasksAdminActionPayload struct {
 }
 
 // emitAdminAudit publishes an `audit.admin_scope_used` event recording
-// a successful cross-tenant `tasks.list` fan-in. The bus + redactor are
-// optional (WithBus / WithRedactor); when either is unsupplied the
-// fan-in is logged at Info instead of published — the admin action is
-// NEVER fully silent (CLAUDE.md §13 "silent degradation" rule).
+// a successful admin-scope `tasks.list` read — either a cross-tenant
+// Identities fan-in or an admin-widened fleet enumeration
+// (Filter.TenantIDs); the shared "admin-scope query" label covers both
+// cases accurately. The bus + redactor are optional (WithBus /
+// WithRedactor); when either is unsupplied the query is logged at Info
+// instead of published — the admin action is NEVER fully silent
+// (CLAUDE.md §13 "silent degradation" rule).
 func (s *Service) emitAdminAudit(ctx context.Context, actor identity.Identity, method string, tenantCount int) {
 	logAttrs := []any{
 		slog.String("method", method),
@@ -54,7 +57,7 @@ func (s *Service) emitAdminAudit(ctx context.Context, actor identity.Identity, m
 	}
 
 	if s.bus == nil {
-		s.logger.InfoContext(ctx, "tasks/protocol: cross-tenant fan-in (bus not wired — audit logged only)", logAttrs...)
+		s.logger.InfoContext(ctx, "tasks/protocol: admin-scope query (bus not wired — audit logged only)", logAttrs...)
 		return
 	}
 
@@ -87,5 +90,5 @@ func (s *Service) emitAdminAudit(ctx context.Context, actor identity.Identity, m
 			append(logAttrs, slog.String("error", err.Error()))...)
 		return
 	}
-	s.logger.InfoContext(ctx, "tasks/protocol: cross-tenant fan-in audited", logAttrs...)
+	s.logger.InfoContext(ctx, "tasks/protocol: admin-scope query audited", logAttrs...)
 }

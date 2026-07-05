@@ -441,6 +441,77 @@ func (e *Engine) List(ctx context.Context, sessionID identity.Identity, f tasks.
 	return out, nil
 }
 
+// ListTenant implements tasks.TaskRegistry — the admin-widened fleet
+// read. It scans the engine's in-memory task map and returns FULL Task
+// copies for every task whose tenant matches `tenantID`, across ALL
+// (user, session) scopes, honouring the optional `f` facets.
+//
+// The scan is COMPLETE without a StateStore scan: the engine's in-memory
+// `tasks` map holds every live task in this process (both drivers hydrate
+// their backend into it on open), so a tenant filter over the map yields
+// the whole per-runtime fleet view. Cross-RUNTIME federation is the
+// coordinator's job over per-runtime reads (the same division as sessions
+// / events) — Harbor ships the per-runtime widened read.
+//
+// Unlike List, ListTenant takes an EXPLICIT tenant argument rather than
+// reading a mandatory triple from ctx: it is the admin-gated fleet read
+// and the Protocol service is its only production caller (it gates on the
+// verified `auth.ScopeAdmin` claim before invoking). An empty `tenantID`
+// fails loud with tasks.ErrInvalidRequest — a fleet read never dumps the
+// whole store.
+func (e *Engine) ListTenant(_ context.Context, tenantID string, f tasks.TaskFilter) ([]*tasks.Task, error) {
+	if e.closed.Load() {
+		return nil, tasks.ErrRegistryClosed
+	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("%w: ListTenant requires a non-empty tenant id", tasks.ErrInvalidRequest)
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]*tasks.Task, 0, 8)
+	for _, t := range e.tasks {
+		if t.Identity.TenantID != tenantID {
+			continue
+		}
+		if f.Status != nil && t.Status != *f.Status {
+			continue
+		}
+		if f.Kind != nil && t.Kind != *f.Kind {
+			continue
+		}
+		if f.ParentID != nil {
+			if t.ParentTaskID == nil || *t.ParentTaskID != *f.ParentID {
+				continue
+			}
+		}
+		out = append(out, copyTask(t))
+	}
+	return out, nil
+}
+
+// copyTask returns a deep copy of t so a caller cannot mutate the
+// engine's live record (mirrors Get's copy discipline). The pointer
+// fields (Result / Error / ParentTaskID) are cloned; the immutable-slice
+// fields alias the stored slices (the registry never mutates them
+// in-place after Spawn).
+func copyTask(t *tasks.Task) *tasks.Task {
+	cp := *t
+	if t.Result != nil {
+		r := *t.Result
+		cp.Result = &r
+	}
+	if t.Error != nil {
+		errCopy := *t.Error
+		cp.Error = &errCopy
+	}
+	if t.ParentTaskID != nil {
+		p := *t.ParentTaskID
+		cp.ParentTaskID = &p
+	}
+	return &cp
+}
+
 // Cancel implements tasks.TaskRegistry. Walks the children index per
 // the target task's PropagateOnCancel:
 //

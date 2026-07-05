@@ -73,6 +73,10 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - List_FiltersByStatus
 //   - List_FiltersByKind
 //   - List_FiltersByParent
+//   - ListTenant_EnumeratesAcrossSessions
+//   - ListTenant_FiltersByStatus
+//   - ListTenant_EmptyTenant_Rejected
+//   - ListTenant_ClosedRegistry
 //   - Concurrent_SpawnGetCancel_NoRace
 //   - Close_Idempotent
 //   - GoroutineLeak_AfterClose
@@ -1087,6 +1091,105 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if delta := runtime.NumGoroutine() - baseline; delta > 0 {
 			t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, runtime.NumGoroutine())
+		}
+	})
+
+	// ListTenant_EnumeratesAcrossSessions — the admin-widened FLEET read
+	// returns every task across ALL (user, session) scopes of one tenant,
+	// and NEVER a task from another tenant. Parity across inprocess +
+	// durable (both wrap the same engine; the conformance suite runs both).
+	t.Run("ListTenant_EnumeratesAcrossSessions", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+
+		// Tenant A: 2 users × 2 sessions, one task each = 4 tasks.
+		aIDs := []identity.Identity{
+			{TenantID: "tenant-A", UserID: "u1", SessionID: "s1"},
+			{TenantID: "tenant-A", UserID: "u1", SessionID: "s2"},
+			{TenantID: "tenant-A", UserID: "u2", SessionID: "s3"},
+			{TenantID: "tenant-A", UserID: "u2", SessionID: "s4"},
+		}
+		wantA := map[tasks.TaskID]struct{}{}
+		for _, id := range aIDs {
+			h, err := r.Spawn(mustWithIdentity(id), freshSpawnReq(identity.Quadruple{Identity: id}))
+			if err != nil {
+				t.Fatalf("Spawn(%v): %v", id, err)
+			}
+			wantA[h.ID] = struct{}{}
+		}
+		// Tenant B: one task that must NEVER appear in tenant-A's fleet read.
+		bID := identity.Identity{TenantID: "tenant-B", UserID: "u9", SessionID: "s9"}
+		bh, err := r.Spawn(mustWithIdentity(bID), freshSpawnReq(identity.Quadruple{Identity: bID}))
+		if err != nil {
+			t.Fatalf("Spawn(tenant-B): %v", err)
+		}
+
+		got, err := r.ListTenant(context.Background(), "tenant-A", tasks.TaskFilter{})
+		if err != nil {
+			t.Fatalf("ListTenant(tenant-A): %v", err)
+		}
+		if len(got) != len(wantA) {
+			t.Fatalf("ListTenant(tenant-A) count=%d, want %d", len(got), len(wantA))
+		}
+		for _, task := range got {
+			if task.Identity.TenantID != "tenant-A" {
+				t.Errorf("fleet read leaked tenant %q (task %q)", task.Identity.TenantID, task.ID)
+			}
+			if _, ok := wantA[task.ID]; !ok {
+				t.Errorf("unexpected task %q in tenant-A fleet read", task.ID)
+			}
+			if task.ID == bh.ID {
+				t.Errorf("tenant-B task %q leaked into tenant-A fleet read", bh.ID)
+			}
+		}
+	})
+
+	// ListTenant_FiltersByStatus — the optional facet narrows the fleet
+	// read the same way List does.
+	t.Run("ListTenant_FiltersByStatus", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+		id := identity.Identity{TenantID: "tenant-F", UserID: "u1", SessionID: "s1"}
+		ctx := mustWithIdentity(id)
+		running, err := r.Spawn(ctx, freshSpawnReq(identity.Quadruple{Identity: id}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.MarkRunning(ctx, running.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Spawn(ctx, freshSpawnReq(identity.Quadruple{Identity: id})); err != nil {
+			t.Fatal(err) // stays Pending
+		}
+		want := tasks.StatusRunning
+		got, err := r.ListTenant(context.Background(), "tenant-F", tasks.TaskFilter{Status: &want})
+		if err != nil {
+			t.Fatalf("ListTenant(status): %v", err)
+		}
+		if len(got) != 1 || got[0].ID != running.ID {
+			t.Errorf("ListTenant status facet = %+v, want exactly the running task %q", got, running.ID)
+		}
+	})
+
+	// ListTenant_EmptyTenant_Rejected — a fleet read with no named tenant
+	// fails loud rather than dumping the whole store.
+	t.Run("ListTenant_EmptyTenant_Rejected", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+		if _, err := r.ListTenant(context.Background(), "", tasks.TaskFilter{}); !errors.Is(err, tasks.ErrInvalidRequest) {
+			t.Errorf("ListTenant(\"\") err=%v, want ErrInvalidRequest", err)
+		}
+	})
+
+	// ListTenant_ClosedRegistry — after Close the fleet read fails loud.
+	t.Run("ListTenant_ClosedRegistry", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+		if err := r.Close(context.Background()); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, err := r.ListTenant(context.Background(), "tenant-A", tasks.TaskFilter{}); !errors.Is(err, tasks.ErrRegistryClosed) {
+			t.Errorf("ListTenant after Close err=%v, want ErrRegistryClosed", err)
 		}
 	})
 

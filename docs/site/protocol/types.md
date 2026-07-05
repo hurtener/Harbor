@@ -33,6 +33,7 @@ Declared in `internal/protocol/types`.
 | `mcp_count` | `int` |  |
 | `registered_at` | `string` |  |
 | `updated_at` | `string` |  |
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 
 ## AgentAggregates
 
@@ -780,6 +781,7 @@ Declared in `internal/protocol/types`.
 | `status` | `[]types.AgentStatus` | optional (`omitempty`) |
 | `planner_type` | `[]string` | optional (`omitempty`) |
 | `search` | `string` | optional (`omitempty`) |
+| `tenant_ids` | `[]string` | optional (`omitempty`) |
 
 ## AgentGetRequest
 
@@ -2833,6 +2835,7 @@ Declared in `internal/protocol/types`.
 | `kinds` | `[]types.TaskKind` | optional (`omitempty`) |
 | `parent_task_id` | `string` | optional (`omitempty`) |
 | `identities` | `[]types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) | optional (`omitempty`) |
+| `tenant_ids` | `[]string` | optional (`omitempty`) |
 | `since` | `time.Time` | optional (`omitempty`) |
 | `until` | `time.Time` | optional (`omitempty`) |
 | `error_classes` | `[]string` | optional (`omitempty`) |

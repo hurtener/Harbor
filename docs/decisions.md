@@ -7591,7 +7591,7 @@ run through one shared catalog under `-race`. No deviation from the plan.
 
 **Date:** 2026-07-04
 
-**Status:** Accepted (Phase 153, V1.11)
+**Status:** Shipped (Phase 153, V1.11)
 
 **Where it lives:** `docs/plans/phase-153-fleet-scoped-tasks-agents.md`, `internal/tasks/protocol/`, `internal/runtime/registry/protocol/`.
 

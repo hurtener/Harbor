@@ -42,8 +42,22 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 		return prototypes.TaskListResponse{}, err
 	}
 
-	// Cross-tenant gating. A query naming more than one distinct
-	// tenant is a fan-in — it requires the verified admin scope claim.
+	// Fleet widening. A non-empty Filter.TenantIDs is the admin-widened
+	// FLEET-enumeration selector: enumerate every task across all sessions
+	// of the named tenants. Widening requires the verified admin claim — a
+	// widened request without it fails LOUD with ErrScopeMismatch, never a
+	// silent narrowing to own scope (CLAUDE.md §6 rule 5 / §13).
+	widenTenants := dedupeNonEmpty(req.Filter.TenantIDs)
+	widened := len(widenTenants) > 0
+	if widened && !adminScoped {
+		return prototypes.TaskListResponse{}, fmt.Errorf(
+			"%w: tasks.list named %d tenant(s) for fleet enumeration", ErrScopeMismatch, len(widenTenants))
+	}
+
+	// Cross-tenant gating on the Identities facet (a query naming more than
+	// one distinct tenant is a fan-in) — the pre-existing gate, preserved
+	// byte-compatibly. Identities is a post-projection row facet; TenantIDs
+	// selects the enumeration scope (above).
 	tenants := distinctTenants(id, req.Filter.Identities)
 	crossTenant := len(tenants) > 1
 	if crossTenant && !adminScoped {
@@ -51,7 +65,14 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 			"%w: tasks.list named %d tenants", ErrScopeMismatch, len(tenants))
 	}
 
-	all, err := s.projector.ListTasks(ctx, id)
+	var all []prototypes.TaskRow
+	if widened {
+		// adminScoped is guaranteed true here. Route to the aggregating
+		// projector's widened read over the named tenants.
+		all, err = s.projector.ListTenantTasks(ctx, widenTenants)
+	} else {
+		all, err = s.projector.ListTasks(ctx, id)
+	}
 	if err != nil {
 		return prototypes.TaskListResponse{}, fmt.Errorf("tasks/protocol: list: %w", err)
 	}
@@ -95,7 +116,13 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 		}
 	}
 
-	if crossTenant {
+	// Audit every widened / cross-tenant admin read. A fleet widening
+	// (Filter.TenantIDs) is tagged with the named-tenant count; the
+	// Identities fan-in is tagged with its distinct-tenant count.
+	switch {
+	case widened:
+		s.emitAdminAudit(ctx, id, "tasks.list", len(widenTenants))
+	case crossTenant:
 		s.emitAdminAudit(ctx, id, "tasks.list", len(tenants))
 	}
 
@@ -106,12 +133,15 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 	}
 
 	// the opt-in status-counter-strip aggregate. It
-	// is computed over the FULL identity-scoped task set `all` — NOT the
-	// filtered view — so the Live Runtime header strip reports session-
-	// wide present-tense posture rather than narrowing with the page's
-	// facet filter. The aggregate stays within the call's identity
-	// scope: `all` is the Projector's identity-scoped projection, so the
-	// counter never crosses the isolation boundary (CLAUDE.md §6 rule 2).
+	// is computed over the FULL projected task set `all` — NOT the
+	// filtered view — so the Live Runtime header strip reports
+	// present-tense posture rather than narrowing with the page's facet
+	// filter. The aggregate never exceeds the call's AUTHORISED scope:
+	// on the narrow branch `all` is the Projector's identity-scoped
+	// projection, so the counter stays within the caller's own triple
+	// (CLAUDE.md §6 rule 2); on the admin-widened branch `all` spans
+	// exactly the NAMED tenants the admin-scope gate above authorised
+	// (and audited) — never more.
 	if req.IncludeStatusCounterStrip {
 		strip := computeStatusCounterStrip(all)
 		resp.StatusCounterStrip = &strip
@@ -165,6 +195,29 @@ func validateFilter(f prototypes.TaskFilter) error {
 		return fmt.Errorf("%w: filter `since` is after `until`", ErrInvalidRequest)
 	}
 	return nil
+}
+
+// dedupeNonEmpty returns the input slice with empty strings dropped and
+// duplicates collapsed, preserving first-seen order. It normalises the
+// admin-widened Filter.TenantIDs selector so the gate + audit count the
+// distinct named tenants.
+func dedupeNonEmpty(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 // distinctTenants returns the set of distinct tenant IDs a request

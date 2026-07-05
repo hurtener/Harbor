@@ -99,6 +99,16 @@ type Projector interface {
 	// when the task is not visible to id (cross-tenant lookups return
 	// ErrTaskNotFound — existence is never revealed).
 	GetTask(ctx context.Context, id identity.Identity, taskID string) (prototypes.TaskDetail, error)
+
+	// ListTenantTasks returns task rows across ALL sessions of the named
+	// tenants — the admin-widened FLEET read. It is invoked by Service.List
+	// ONLY after the admin-scope gate passes; the implementation reads the
+	// registry's explicit tenant-scoped enumeration seam. Every returned
+	// row carries full per-(tenant, user, session) identity attribution so
+	// a coordinator can attribute each row to its owning source. This is
+	// the "future cross-runtime aggregating projector" the RegistryProjector
+	// godoc reserved, landed behind the unchanged Projector interface.
+	ListTenantTasks(ctx context.Context, tenantIDs []string) ([]prototypes.TaskRow, error)
 }
 
 // Service implements the two `tasks.*` read methods. It is a concurrency-safe

@@ -26,6 +26,7 @@
  */
 
 import type { ProtocolClient } from './client.js';
+import type { IdentityScope } from './memory-types.js';
 
 /** Wire enum — an agent's lifecycle status pill. */
 export type AgentStatus =
@@ -64,6 +65,15 @@ export interface Agent {
   mcp_count: number;
   registered_at: string;
   updated_at: string;
+  /**
+   * Phase 153 (D-284) — per-row identity attribution: the agent's own
+   * registration (tenant, user, session) scope. For a non-widened listing
+   * this is the caller's own scope; for an admin-widened (fleet) listing it
+   * is the agent's own scope, so a coordinator can attribute each row.
+   * `id` (agent_id) is a registration identity, NOT an isolation principal
+   * (D-059).
+   */
+  identity: IdentityScope;
 }
 
 /** Server-enforced facet filter on `agents.list`. */
@@ -71,6 +81,16 @@ export interface AgentFilter {
   status?: AgentStatus[];
   planner_type?: string[];
   search?: string;
+  /**
+   * Phase 153 (D-284) — the admin-widened FLEET-enumeration selector. When
+   * non-empty, `agents.list` enumerates every agent across ALL sessions of
+   * the named tenants (a coordinator's fleet Agents catalog), not just the
+   * caller's own triple. Widening requires the verified `auth.ScopeAdmin`
+   * claim; a non-empty value without it fails closed with the scope-mismatch
+   * error — never a silent narrowing. Empty is byte-compatible with the
+   * identity-scoped read.
+   */
+  tenant_ids?: string[];
 }
 
 /** The `agents.list` request body. */

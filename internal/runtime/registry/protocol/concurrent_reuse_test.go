@@ -72,7 +72,7 @@ func TestService_ConcurrentReuse_N100(t *testing.T) {
 			defer wg.Done()
 
 			// List — must see exactly this tenant's one agent.
-			listResp, lerr := svc.List(fx.ctx, prototypes.AgentListRequest{Identity: fx.scope})
+			listResp, lerr := svc.List(fx.ctx, prototypes.AgentListRequest{Identity: fx.scope}, false)
 			if lerr != nil {
 				errCh <- lerr
 				return

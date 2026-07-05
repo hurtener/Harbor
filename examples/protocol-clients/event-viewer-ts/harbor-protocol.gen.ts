@@ -290,6 +290,7 @@ export interface Agent {
   mcp_count: number;
   registered_at: string;
   updated_at: string;
+  identity: IdentityScope;
 }
 
 export interface AgentAggregates {
@@ -749,6 +750,7 @@ export interface AgentFilter {
   status?: string[];
   planner_type?: string[];
   search?: string;
+  tenant_ids?: string[];
 }
 
 export interface AgentGetRequest {
@@ -2046,6 +2048,7 @@ export interface TaskFilter {
   kinds?: string[];
   parent_task_id?: string;
   identities?: IdentityScope[];
+  tenant_ids?: string[];
   since?: string;
   until?: string;
   error_classes?: string[];
