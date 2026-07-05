@@ -133,12 +133,15 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 	}
 
 	// the opt-in status-counter-strip aggregate. It
-	// is computed over the FULL identity-scoped task set `all` — NOT the
-	// filtered view — so the Live Runtime header strip reports session-
-	// wide present-tense posture rather than narrowing with the page's
-	// facet filter. The aggregate stays within the call's identity
-	// scope: `all` is the Projector's identity-scoped projection, so the
-	// counter never crosses the isolation boundary (CLAUDE.md §6 rule 2).
+	// is computed over the FULL projected task set `all` — NOT the
+	// filtered view — so the Live Runtime header strip reports
+	// present-tense posture rather than narrowing with the page's facet
+	// filter. The aggregate never exceeds the call's AUTHORISED scope:
+	// on the narrow branch `all` is the Projector's identity-scoped
+	// projection, so the counter stays within the caller's own triple
+	// (CLAUDE.md §6 rule 2); on the admin-widened branch `all` spans
+	// exactly the NAMED tenants the admin-scope gate above authorised
+	// (and audited) — never more.
 	if req.IncludeStatusCounterStrip {
 		strip := computeStatusCounterStrip(all)
 		resp.StatusCounterStrip = &strip

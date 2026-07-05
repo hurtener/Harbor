@@ -79,6 +79,12 @@ fleet_probes() {
     #     A bearer-less request carries identity via X-Harbor headers but
     #     no admin scope: the runtime must fail closed (401 identity-edge
     #     or 403 scope_mismatch), NEVER 200 (never a silent narrowing).
+    #     In the preflight dev harness this always lands on the 401
+    #     identity-edge branch — the dev server mints only one (admin)
+    #     token from an in-process ephemeral key, so no valid NON-admin
+    #     bearer can be produced here. The 403 scope_mismatch gate itself
+    #     is exercised by the unit + integration tests (widened-without-
+    #     claim → ErrScopeMismatch); this smoke asserts fail-closed only.
     local widen_body='{"identity":{"tenant":"dev","user":"dev","session":"dev"},"filter":{"tenant_ids":["tenant-foreign"]}}'
     code=$(curl -s -o "${tmp}" -w '%{http_code}' --max-time 10 \
         -X POST "${list_url}" \

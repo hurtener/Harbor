@@ -102,7 +102,7 @@
 - [x] `make preflight` passes
 - [x] `make check-mirror` passes
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [x] Coverage on touched packages ≥ stated target
+- [x] Coverage on touched packages ≥ stated target — `internal/tasks/protocol` 86.7% (target 85 ✅); `internal/tasks/engine` 84.5% cumulative (target 80 ✅); `internal/runtime/registry/protocol` 76.8%, up from the 70.4% merge-base baseline; below the 85% target — §14 improves-toward carve-out; all new functions covered (List gate 97.7%, `projectRecord` 100%, `ListTenantAgents` 80%, `emitAdminAudit` 85.7%). The residual gap is pre-existing fleet-control-verb/error paths outside this phase's scope.
 - [x] If multi-isolation paths changed: cross-session isolation test passes
 - [x] Concurrent-reuse: the new aggregating projectors are compiled artifacts — N≥100 concurrent widened+narrow reads against single shared instances under `-race`. — `TestListTenantTasks_ConcurrentReuse_D025` (128) + `TestListTenantAgents_ConcurrentReuse_D025` (128).
 - [x] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
