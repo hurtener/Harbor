@@ -39,14 +39,14 @@ D-240 decision 5 deliberately deferred connection removal ("pausing is the revok
 
 ## Acceptance criteria
 
-- [ ] The verb: request/response wire types, method name in `methods.go`, service handler with identity/lock/validation symmetrical to `add_mcp_connection`; unknown name → loud typed error, no revision, no event; boot-declared name → distinct loud typed error.
-- [ ] The removing revision drops the descriptor, prunes the server's tool-exposure residue, and carries all sibling sections forward — the Phase 152 rebuild-completeness guard extended to cover this setter proves it mechanically.
-- [ ] Reconcile detach leg: after remove (or rollback past an add), the next run's projected catalog contains none of the server's tools, the MCP registry no longer lists it, and the transport is closed (goroutine baseline asserted); an in-flight run's snapshot is unaffected (proven by a concurrent-run test).
-- [ ] A paused-then-removed server does not resurrect on `pause`→`resume` of exposure state (remove wins; asserted).
-- [ ] Re-add after remove works end-to-end and reuses the persisted agent-bound token (no second consent) against the OAuth fixture flow.
-- [ ] `mcp.connection.removed` canonical event registered + emitted; D-209 docs regen; full D-223 lockstep for the new verb + types; `docs/skills/` protocol/tools surfaces updated (§18).
-- [ ] Cross-agent + cross-tenant isolation: removing agent A's connection never affects agent B / tenant B (integration-tested, §6 rule 10).
-- [ ] `scripts/smoke/phase-156.sh` OK ≥ 2, FAIL = 0; prior smokes (esp. 92-band + 152) pass.
+- [x] The verb: request/response wire types, method name in `methods.go`, service handler with identity/lock/validation symmetrical to `add_mcp_connection`; unknown name → loud typed error (`ErrConnectionNotFound` → 404), no revision, no event; boot-declared name → distinct loud typed error (`ErrBootDeclaredConnection` → 400).
+- [x] The removing revision drops the descriptor, prunes the server's tool-exposure residue, and carries all sibling sections forward — the Phase 152 rebuild-completeness guard extended to cover this setter (one table row) proves it mechanically.
+- [x] Reconcile detach leg: after remove (or rollback past an add), the next run's projected catalog contains none of the server's tools, the MCP registry no longer lists it, and the transport is closed (goroutine baseline asserted); a concurrent-run test proves race-freedom (`TestE2E_AgentConfig_RemoveConnection_*`). NOTE: 92o's run-start reconcile never shipped (parked band) — this phase BUILDS the reconcile mechanism, detach-only (§4.3 deviation, D-287 as-built note).
+- [x] Remove wins over pause: a removed server's exposure residue is pruned in the same revision, so no `paused_servers` entry survives to re-expose it (`TestRemoveMCPConnection_DropsDescriptor_PrunesResidue_CarriesSiblings`).
+- [~] Re-add after remove works end-to-end (`TestE2E_..._DetachOnReconcile` re-add leg); token-reuse-without-second-consent is structurally guaranteed (D-287 call 3 — the verb never touches the token store) but the full OAuth-consent fixture flow is deferred with the parked 92m/n band (§4.3).
+- [x] `mcp.connection.removed` canonical event registered + emitted; D-209 docs regen (`make protocol-docs-gen`); full D-223 lockstep for the new verb + types (`make protocol-ts-gen` + `-check`). `docs/skills/` carries no `agent_config.*` connection-verb surface (§18 exempt).
+- [x] Cross-agent + cross-tenant isolation: the verb + reconcile are identity-scoped by the caller triple (unit + E2E). `agent_id` is registration metadata, never an isolation filter.
+- [x] `scripts/smoke/phase-156.sh` OK ≥ 2, FAIL = 0; prior smokes (esp. 92-band + 152) pass.
 
 ## Files added or changed
 
@@ -92,13 +92,13 @@ D-240 decision 5 deliberately deferred connection removal ("pausing is the revok
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse: the projection view remains a compiled artifact — remove-under-load stress (N≥100 mixed runs/edits) under `-race`.
-- [ ] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] Concurrent-reuse: remove-under-load stress N≥150 mixed runs/edits under `-race` (`TestReconcileConnections_RemoveUnderLoad_Stress`); N=128 concurrent reconciles + N=16 concurrent E2E reconciles.
+- [x] Integration test wires real drivers + a real stdio MCP subprocess end-to-end, asserts identity propagation, covers ≥1 failure mode (unknown / boot-declared name), runs under `-race`
+- [x] If new vocabulary: glossary "Detach-on-reconcile" present
+- [x] Findings departed from: the parked 92o attach leg — justified in D-287's as-built note + §4.3

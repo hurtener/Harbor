@@ -64,6 +64,8 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"AgentConfigConnectionsDiff":                  reflect.TypeOf(types.AgentConfigConnectionsDiff{}),
 	"AgentConfigAddMCPConnectionRequest":          reflect.TypeOf(types.AgentConfigAddMCPConnectionRequest{}),
 	"AgentConfigAddMCPConnectionResponse":         reflect.TypeOf(types.AgentConfigAddMCPConnectionResponse{}),
+	"AgentConfigRemoveMCPConnectionRequest":       reflect.TypeOf(types.AgentConfigRemoveMCPConnectionRequest{}),
+	"AgentConfigRemoveMCPConnectionResponse":      reflect.TypeOf(types.AgentConfigRemoveMCPConnectionResponse{}),
 	"AgentConfigSessionOverlay":                   reflect.TypeOf(types.AgentConfigSessionOverlay{}),
 	"AgentConfigSessionSetUserPromptRequest":      reflect.TypeOf(types.AgentConfigSessionSetUserPromptRequest{}),
 	"AgentConfigSessionSetUserPromptResponse":     reflect.TypeOf(types.AgentConfigSessionSetUserPromptResponse{}),

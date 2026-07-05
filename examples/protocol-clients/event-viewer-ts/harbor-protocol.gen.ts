@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:b463f4f85e2a94e1eb24fc9a37f19ca3031f95d894077a9ff954a33b5891722f";
+export const WIRE_SURFACE_DIGEST = "sha256:7e23aa87fe2ffcf3337bf6011b6f0d77a6b63a28e0bd3bbdeb50d1d93a3a2126";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -25,6 +25,7 @@ export type HarborMethod =
   | "agent_config.diff"
   | "agent_config.get"
   | "agent_config.list_revisions"
+  | "agent_config.remove_mcp_connection"
   | "agent_config.rollback"
   | "agent_config.session.set_source_disables"
   | "agent_config.session.set_user_prompt"
@@ -199,6 +200,7 @@ export type HarborEventType =
   | "mcp.connection.failed"
   | "mcp.connection.paused"
   | "mcp.connection.pending"
+  | "mcp.connection.removed"
   | "mcp.connection.resumed"
   | "mcp.raw_html_trust_toggled"
   | "mcp.resource_offloaded"
@@ -449,6 +451,18 @@ export interface AgentConfigPromptLayersDiff {
   user_changed: boolean;
   user_from?: string;
   user_to?: string;
+}
+
+export interface AgentConfigRemoveMCPConnectionRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  name: string;
+}
+
+export interface AgentConfigRemoveMCPConnectionResponse {
+  revision: AgentConfigRevisionView;
+  name: string;
+  protocol_version: string;
 }
 
 export interface AgentConfigRevisionView {

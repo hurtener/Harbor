@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 124 canonical event types a Harbor Runtime can publish, read from the live
+The 123 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -618,6 +618,18 @@ Payload `MCPConnectionLifecyclePayload` — safe payload (delivered typed, verba
 | `RevisionID` | `string` |  |
 | `PauseToken` | `string` |  |
 | `Reason` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `mcp.connection.removed`
+
+Payload `MCPConnectionRemovedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ServerID` | `string` |  |
+| `RevisionID` | `string` |  |
 | `OccurredAt` | `time.Time` |  |
 
 ## `mcp.connection.resumed`
@@ -1340,27 +1352,6 @@ Payload `ToolPolicyExhaustedPayload` — safe payload (delivered typed, verbatim
 | `Attempts` | `int` |  |
 | `LastClass` | `tools.ErrorClass` |  |
 | `LastError` | `string` |  |
-
-## `tool.provider_credential_fetch_failed`
-
-Payload `ProviderCredentialFetchFailedPayload` — safe payload (delivered typed, verbatim).
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `Provider` | `string` |  |
-| `Endpoint` | `string` |  |
-| `Reason` | `string` |  |
-
-## `tool.provider_credential_fetched`
-
-Payload `ProviderCredentialFetchedPayload` — safe payload (delivered typed, verbatim).
-
-| Wire key | Go type | Notes |
-|---|---|---|
-| `Provider` | `string` |  |
-| `Endpoint` | `string` |  |
-| `FormatVersion` | `int` |  |
-| `ExpiresAt` | `time.Time` |  |
 
 ## `tool.rejected`
 

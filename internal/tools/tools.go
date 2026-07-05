@@ -377,6 +377,30 @@ type CatalogReplacer interface {
 	Replace(wrapped []ToolDescriptor) error
 }
 
+// CatalogSourceDeregisterer is the optional surface a ToolCatalog exposes
+// when it supports removing every tool registered under one source id. The
+// detach-on-reconcile run-start step (agent_config.remove_mcp_connection and
+// rollback-past-add) uses it to prune a no-longer-declared MCP server's tools
+// from the catalog so the next run's projected catalog excludes them — the
+// physical inverse of the boot-time per-source Register loop.
+//
+// Removal semantics:
+//   - DeregisterSource removes every descriptor whose Tool.Source equals
+//     source and returns the count removed.
+//   - Removal is atomic from the catalog's external view: a concurrent
+//     Resolve / List sees either the full set or the pruned set.
+//   - A source with no registered tools removes nothing (returns 0) and is a
+//     no-op — idempotent across repeated deregisters of the same source.
+//
+// A catalog implementation that does not support source deregistration skips
+// this interface; callers branch on the type assertion (the absence is the
+// signal), matching CatalogReplacer.
+type CatalogSourceDeregisterer interface {
+	// DeregisterSource removes every tool whose Source == source and returns
+	// the number removed.
+	DeregisterSource(source ToolSourceID) int
+}
+
 // ToolProvider is the seam for external tool sources. later phases
 // drivers (HTTP, MCP, A2A) implement Connect / Discover / Close to
 // pull in remote tools as ToolDescriptors. The in-process registrar

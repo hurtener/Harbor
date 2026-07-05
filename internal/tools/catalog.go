@@ -160,6 +160,36 @@ func (c *catalog) Replace(wrapped []ToolDescriptor) error {
 	return nil
 }
 
+// DeregisterSource implements CatalogSourceDeregisterer. It removes every
+// tool whose Source equals source from the catalog under the write lock and
+// returns the number removed. Concurrent Resolve / List callers see either
+// the full set or the pruned set, never a partial mix. A source with no
+// registered tools removes nothing and returns 0 (idempotent — a second
+// deregister of the same source is a no-op).
+//
+// This is the physical inverse of the boot-time per-source Register loop the
+// MCP attach path runs: detach-on-reconcile deregisters a no-longer-declared
+// MCP server's tools so the next run's projected catalog excludes them
+// (mcp.connection.removed / rollback-past-add). The optional SearchCache is
+// NOT pruned here (its interface carries no per-row delete); a removed tool
+// may linger in Search results until the index is rebuilt, but Resolve — the
+// dispatch gate — no longer finds it, so a stale Search hit cannot be
+// invoked. Deregistration is rare (a control-plane removal), so a full scan
+// under the write lock is cheaper than maintaining a source→names index on
+// every Register.
+func (c *catalog) DeregisterSource(source ToolSourceID) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var removed int
+	for name, d := range c.byName {
+		if d.Tool.Source == source {
+			delete(c.byName, name)
+			removed++
+		}
+	}
+	return removed
+}
+
 // Search implements ToolCatalog. Delegates to
 // the attached SearchCache when present; returns an empty slice when
 // no cache is configured (honest "discovery unavailable" — no panic).

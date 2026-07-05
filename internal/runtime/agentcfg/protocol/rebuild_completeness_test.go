@@ -87,8 +87,8 @@ func rcAssertSeedComplete(t *testing.T, p agentcfg.ConfigPayload) {
 		if fv.IsNil() {
 			t.Fatalf("rebuild-completeness guard: ConfigPayload.%s is nil in the seed — a new section was "+
 				"added to agentcfg.ConfigPayload without extending rcSeed (rebuild_completeness_test.go). "+
-				"Populate it in rcSeed AND add its carry-forward to all five section-scoped setters "+
-				"(mcppolicy.go, addconnection.go, skills.go, promptlayers.go, llmparams.go) — see D-283.",
+				"Populate it in rcSeed AND add its carry-forward to all six section-scoped setters "+
+				"(mcppolicy.go, addconnection.go, removeconnection.go, skills.go, promptlayers.go, llmparams.go) — see D-283.",
 				field.Name)
 		}
 	}
@@ -183,6 +183,21 @@ func TestRebuildCompleteness_EverySetter_PreservesEverySibling(t *testing.T) {
 					},
 				}); err != nil {
 					t.Fatalf("add_mcp_connection: %v", err)
+				}
+			},
+		},
+		{
+			name:  "remove_mcp_connection",
+			owned: "Connections",
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				// Remove the seed's connection ("seed-conn"). Its tool-exposure
+				// residue prune targets only "seed-conn"-owned keys (none in the
+				// seed), so ToolExposure — and every other sibling — survives
+				// byte-identical; the guard proves the carry-forward.
+				if _, err := s.RemoveMCPConnection(ctx, prototypes.AgentConfigRemoveMCPConnectionRequest{
+					Identity: scope(), AgentID: rcAgent, Name: "seed-conn",
+				}); err != nil {
+					t.Fatalf("remove_mcp_connection: %v", err)
 				}
 			},
 		},

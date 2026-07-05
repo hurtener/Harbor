@@ -20,6 +20,8 @@ type stubProvider struct {
 }
 
 func (p *stubProvider) SourceID() tools.ToolSourceID { return p.id }
+
+func (p *stubProvider) Close(context.Context) error { return nil }
 func (p *stubProvider) Discover(context.Context) ([]tools.ToolDescriptor, error) {
 	return []tools.ToolDescriptor{
 		{Tool: tools.Tool{Name: string(p.id) + ".tool-a"}},

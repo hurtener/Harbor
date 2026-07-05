@@ -74,6 +74,8 @@ type mcpPageStubProvider struct {
 
 func (p *mcpPageStubProvider) SourceID() tools.ToolSourceID { return p.id }
 
+func (p *mcpPageStubProvider) Close(context.Context) error { return nil }
+
 func (p *mcpPageStubProvider) DisplayModes() []string { return nil }
 
 func (p *mcpPageStubProvider) ReadResource(context.Context, string) ([]byte, string, error) {

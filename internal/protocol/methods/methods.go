@@ -357,6 +357,20 @@ const (
 	// wire-transport route is `POST /v1/agent_config/add_mcp_connection`.
 	MethodAgentConfigAddMCPConnection Method = "agent_config.add_mcp_connection"
 
+	// MethodAgentConfigRemoveMCPConnection — admin verb: removes a
+	// runtime-added MCP server connection by name as a NEW revision. The
+	// revision drops the named descriptor AND prunes that server's
+	// tool-exposure residue (paused/disabled/loading entries), carrying every
+	// sibling section (incl. hooks) forward. An unknown name and a
+	// boot-declared (yaml) name each fail loud with a distinct typed error —
+	// the verb governs revisioned state only (a boot-declared server is
+	// edited in yaml + restart). The physical teardown (deregister the
+	// server's tools + close its transport) happens at the NEXT run's
+	// projection boundary — never mid-run — so an in-flight run keeps its
+	// snapshot. Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
+	// wire-transport route is `POST /v1/agent_config/remove_mcp_connection`.
+	MethodAgentConfigRemoveMCPConnection Method = "agent_config.remove_mcp_connection"
+
 	// MethodAgentConfigSessionSetUserPrompt — session-safe verb (the
 	// non-admin lower tier): a session-scoped end user sets a user
 	// prompt layer that composes ABOVE the operator base (it can extend the
@@ -918,6 +932,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSetPromptLayers:          {},
 	MethodAgentConfigSetLLMParams:             {},
 	MethodAgentConfigAddMCPConnection:         {},
+	MethodAgentConfigRemoveMCPConnection:      {},
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
 	MethodAgentConfigSessionSkillsList:        {},
@@ -1159,30 +1174,31 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the twenty-two
+// canonicalAgentConfigMethods is the closed set of the twenty-three
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
 // (set_tool_exposure), the layered-prompt verb (set_prompt_layers), the
 // per-agent LLM-params verb (set_llm_params), the add-connection verb
-// (add_mcp_connection), the five session safe-subset verbs, and the five
-// user-tier verbs (user.get / user.set_revision / user.list_revisions /
-// user.diff / user.rollback). IsAgentConfigMethod is O(1); the
-// agent-config wire handler branches on the trailing path segment to
-// dispatch.
+// (add_mcp_connection), the remove-connection verb (remove_mcp_connection),
+// the five session safe-subset verbs, and the five user-tier verbs
+// (user.get / user.set_revision / user.list_revisions / user.diff /
+// user.rollback). IsAgentConfigMethod is O(1); the agent-config wire handler
+// branches on the trailing path segment to dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
-	MethodAgentConfigGet:              {},
-	MethodAgentConfigSetRevision:      {},
-	MethodAgentConfigListRevisions:    {},
-	MethodAgentConfigDiff:             {},
-	MethodAgentConfigRollback:         {},
-	MethodAgentConfigSkillsList:       {},
-	MethodAgentConfigSkillsUpsert:     {},
-	MethodAgentConfigSkillsDelete:     {},
-	MethodAgentConfigSetToolExposure:  {},
-	MethodAgentConfigSetPromptLayers:  {},
-	MethodAgentConfigSetLLMParams:     {},
-	MethodAgentConfigAddMCPConnection: {},
+	MethodAgentConfigGet:                 {},
+	MethodAgentConfigSetRevision:         {},
+	MethodAgentConfigListRevisions:       {},
+	MethodAgentConfigDiff:                {},
+	MethodAgentConfigRollback:            {},
+	MethodAgentConfigSkillsList:          {},
+	MethodAgentConfigSkillsUpsert:        {},
+	MethodAgentConfigSkillsDelete:        {},
+	MethodAgentConfigSetToolExposure:     {},
+	MethodAgentConfigSetPromptLayers:     {},
+	MethodAgentConfigSetLLMParams:        {},
+	MethodAgentConfigAddMCPConnection:    {},
+	MethodAgentConfigRemoveMCPConnection: {},
 	// Session-user safe subset (the non-admin lower tier).
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
@@ -1236,17 +1252,18 @@ var canonicalAgentConfigSessionMethods = map[Method]struct{}{
 // also admin-gated at the wire handler (the whole family is admin-scoped),
 // but this set names the WRITES for callers that distinguish them.
 var canonicalAgentConfigAdminMethods = map[Method]struct{}{
-	MethodAgentConfigSetRevision:      {},
-	MethodAgentConfigRollback:         {},
-	MethodAgentConfigSkillsUpsert:     {},
-	MethodAgentConfigSkillsDelete:     {},
-	MethodAgentConfigSetToolExposure:  {},
-	MethodAgentConfigSetPromptLayers:  {},
-	MethodAgentConfigSetLLMParams:     {},
-	MethodAgentConfigAddMCPConnection: {},
+	MethodAgentConfigSetRevision:         {},
+	MethodAgentConfigRollback:            {},
+	MethodAgentConfigSkillsUpsert:        {},
+	MethodAgentConfigSkillsDelete:        {},
+	MethodAgentConfigSetToolExposure:     {},
+	MethodAgentConfigSetPromptLayers:     {},
+	MethodAgentConfigSetLLMParams:        {},
+	MethodAgentConfigAddMCPConnection:    {},
+	MethodAgentConfigRemoveMCPConnection: {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the twenty-two
+// IsAgentConfigMethod reports whether m is one of the twenty-three
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

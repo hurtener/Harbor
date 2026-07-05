@@ -779,6 +779,11 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// projection production applies (D-094 mirror of cmd_dev.go);
 				// resolved per run against the agent-config hooks section.
 				runCompletionHook: projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
+				// run-start reconcile detach leg (D-094 mirror of cmd_dev.go):
+				// detach a no-longer-declared MCP server before catalog
+				// projection. Nil detacher (no MCP registry) = no reconcile.
+				connectionDetacher: devstackConnectionDetacher(stack),
+				bootDeclaredMCP:    devstackBootDeclaredMCPSet(cfg),
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1259,6 +1264,9 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// the configured ModelProfiles gate set_llm_params (D-094 mirror
 				// of cmd/harbor): a per-agent model pin is validated at set time.
 				agentcfgprotocol.WithValidModels(devstackValidModels(cfg)),
+				// boot-declared (yaml) MCP servers the remove verb rejects and
+				// the run-start reconcile never detaches (D-094 mirror).
+				agentcfgprotocol.WithBootDeclaredMCPServers(devstackBootDeclaredMCPNames(cfg)),
 			}
 			// the runtime MCP-attach concrete (D-094 mirror of cmd/harbor's
 			// devMCPConnectionAttacher) drives the real dial → initialize →
@@ -1500,6 +1508,12 @@ type DevStackRunLoopDriver struct {
 	// per run against the agent-config hooks section (D-094 mirror).
 	runCompletionHook *steering.CompletionHookSpec
 
+	// run-start reconcile detach leg (D-094 mirror): detach an MCP server the
+	// agent's active revision no longer declares before the catalog is
+	// projected. connectionDetacher is nil when no MCP registry is present.
+	connectionDetacher projection.ConnectionDetacher
+	bootDeclaredMCP    map[string]struct{}
+
 	// Phase 107a parity (D-195 dated-note follow-up) — per-task
 	// trajectory map for the Enricher seam, the D-094 mirror of the
 	// production driver. Trajectories are stored before RunLoop.Run
@@ -1570,6 +1584,12 @@ type devStackRunLoopDriverOpts struct {
 
 	// static run-completion hook default (D-094 mirror); nil when unset.
 	runCompletionHook *steering.CompletionHookSpec
+
+	// run-start reconcile detach leg (D-094 mirror). connectionDetacher is nil
+	// when the stack has no MCP registry; bootDeclaredMCP is the yaml-declared
+	// server set the reconcile never detaches.
+	connectionDetacher projection.ConnectionDetacher
+	bootDeclaredMCP    map[string]struct{}
 }
 
 // devStackTenantOverrideResolver mirrors cmd/harbor's
@@ -1610,14 +1630,16 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		tokenBudget:     opts.tokenBudget,
 		compression:     opts.compression,
 		// Phase 84b (D-189) — disposition policy passthrough.
-		dispositionPolicy: opts.dispositionPolicy,
-		tenantOverrides:   opts.tenantOverrides,
-		sessionOverrides:  opts.sessionOverrides,
-		agentConfig:       opts.agentConfig,
-		agentConfigID:     opts.agentConfigID,
-		sessionOverlay:    opts.sessionOverlay,
-		runCompletionHook: opts.runCompletionHook,
-		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
+		dispositionPolicy:  opts.dispositionPolicy,
+		tenantOverrides:    opts.tenantOverrides,
+		sessionOverrides:   opts.sessionOverrides,
+		agentConfig:        opts.agentConfig,
+		agentConfigID:      opts.agentConfigID,
+		sessionOverlay:     opts.sessionOverlay,
+		runCompletionHook:  opts.runCompletionHook,
+		connectionDetacher: opts.connectionDetacher,
+		bootDeclaredMCP:    opts.bootDeclaredMCP,
+		trajectories:       make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
 
@@ -1651,6 +1673,30 @@ func (d *DevStackRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Conte
 func (d *DevStackRunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
 	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, d.agentConfigID, q, d.runCompletionHook)
 	return hook, err
+}
+
+// reconcileConnections mirrors the production driver's run-start reconcile
+// detach leg (D-094, CLAUDE.md §17.6): it detaches every MCP server attached
+// but no longer declared by the agent's active config revision before the
+// catalog is projected. A reconcile error is logged loud but does not fail
+// the run (detach is teardown hygiene). Shared verbatim with production via
+// the projection package.
+func (d *DevStackRunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
+	if d.connectionDetacher == nil {
+		return
+	}
+	detached, err := projection.ReconcileConnections(ctx, d.agentConfig, d.agentConfigID, q, d.connectionDetacher, d.bootDeclaredMCP)
+	if err != nil {
+		if d.logger != nil {
+			d.logger.ErrorContext(ctx, "devstack: run-start MCP reconcile detach failed",
+				slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
+		}
+		return
+	}
+	if detached > 0 && d.logger != nil {
+		d.logger.InfoContext(ctx, "devstack: run-start MCP reconcile detached servers",
+			slog.String("agent_id", d.agentConfigID), slog.Int("detached", detached))
+	}
 }
 
 func (d *DevStackRunLoopDriver) start(ctx context.Context) error {
@@ -1742,6 +1788,11 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		}
 		return
 	}
+
+	// Run-start reconciliation (detach leg, D-094 mirror): detach any MCP
+	// server the agent's active revision no longer declares before the catalog
+	// is projected. Next-turn semantics — an in-flight run keeps its snapshot.
+	d.reconcileConnections(taskCtx, q)
 
 	// Phase 83f (D-149) — mirror the production runOne's per-run
 	// consumer wiring. Same fail-loud semantics: a memory or skills

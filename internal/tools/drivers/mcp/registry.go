@@ -54,6 +54,10 @@ type serverProvider interface {
 	// request identity triple. Powers `mcp.servers.read_resource` — the
 	// MCP Apps `ui://` UI-document fetch.
 	ReadResource(ctx context.Context, uri string) (content []byte, mimeType string, err error)
+	// Close shuts the provider's transport down gracefully and idempotently.
+	// Deregister calls it so a detach-on-reconcile teardown drains the
+	// subprocess / connection at the next-turn projection boundary.
+	Close(ctx context.Context) error
 }
 
 // compile-time assertion: the MCP *Provider satisfies serverProvider.
@@ -340,6 +344,52 @@ func (r *Registry) Register(reg ServerRegistration) error {
 		},
 	}
 	return nil
+}
+
+// Deregister removes the named server from the Registry and closes its
+// transport gracefully — the physical inverse of Register. It is the
+// registry leg of detach-on-reconcile: when a run-start reconciliation finds
+// a server that is attached but no longer declared by the agent's active
+// config revision (a removed connection, or a rollback past an add), it
+// deregisters the server so observability surfaces (mcp.servers.list) no
+// longer list it and the subprocess / connection drains.
+//
+// The map entry is deleted under the write lock (so the server vanishes from
+// the Registry atomically), then the provider's Close runs OUTSIDE the lock
+// (a transport close can block on session teardown and must not stall
+// concurrent reads). An unknown name returns ErrServerNotFound. Idempotent
+// in effect: a second Deregister of the same name returns ErrServerNotFound,
+// which the reconcile caller treats as already-detached.
+func (r *Registry) Deregister(ctx context.Context, name string) error {
+	r.mu.Lock()
+	e, ok := r.servers[name]
+	if ok {
+		delete(r.servers, name)
+	}
+	r.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	if err := e.provider.Close(ctx); err != nil {
+		return fmt.Errorf("mcp: deregister %q: close transport: %w", name, err)
+	}
+	return nil
+}
+
+// SourceIDs returns the source ids of every currently-registered server —
+// the process-local enumeration the run-start reconciliation diffs against
+// the agent's declared connection set. Identity-free (a process-local read of
+// the attached set, not an identity-scoped projection like ListServers); the
+// result is a fresh sorted slice, safe to retain.
+func (r *Registry) SourceIDs() []string {
+	r.mu.RLock()
+	out := make([]string, 0, len(r.servers))
+	for name := range r.servers {
+		out = append(out, name)
+	}
+	r.mu.RUnlock()
+	sort.Strings(out)
+	return out
 }
 
 // ReadResource fetches a single resource's content from the named MCP
