@@ -265,6 +265,9 @@ func classifySessionsError(method methods.Method, err error) (protoerrors.Code, 
 	case errors.Is(err, sessionsprotocol.ErrErasureUnsupported):
 		return protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			m + ": session erasure is not supported on this runtime"
+	case errors.Is(err, sessionsprotocol.ErrErasureRecordFailed):
+		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+			m + ": erasure record-of-fact could not be durably completed — the session's data is gone; retry to converge"
 	case errors.Is(err, sessionsprotocol.ErrInvalidRequest):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": invalid request — " + err.Error()

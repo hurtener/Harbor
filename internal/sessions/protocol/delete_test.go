@@ -110,6 +110,24 @@ func TestService_Delete_NotFound_Mapped(t *testing.T) {
 	}
 }
 
+// TestService_Delete_ErasureRecordFailed_Mapped pins D-286's new mapping:
+// the eraser's sessions.ErrErasureRecordFailed (destructive steps done,
+// the durable record-of-fact could not be completed) is mapped to the
+// Service's own ErrErasureRecordFailed (the handler turns it into a
+// 500 naming the record failure, distinct from the generic default).
+func TestService_Delete_ErasureRecordFailed_Mapped(t *testing.T) {
+	t.Parallel()
+	er := &fakeEraser{err: sessions.ErrErasureRecordFailed}
+	svc, err := sessionsprotocol.NewService(&fakeProjector{}, sessionsprotocol.WithEraser(er))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	_, derr := svc.Delete(context.Background(), prototypes.SessionsDeleteRequest{Identity: scope("t1", "u1", "s1")})
+	if !errors.Is(derr, sessionsprotocol.ErrErasureRecordFailed) {
+		t.Fatalf("Delete err=%v, want ErrErasureRecordFailed", derr)
+	}
+}
+
 // TestService_Delete_NoEraser_Unsupported pins capability gating: a
 // Service built without an eraser answers ErrErasureUnsupported (the
 // handler maps it to a 404) and HasEraser reports false.
