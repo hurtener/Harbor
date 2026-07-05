@@ -26,9 +26,12 @@ import (
 // EVERY sibling section (skills / prompt-layers / llm-params / hooks) forward
 // under the rebuild-completeness guard. The PHYSICAL teardown — deregistering
 // the server's tools from the catalog + MCP registry and closing its
-// transport — happens NOT here but at the next run's projection boundary
-// (run-start reconciliation's detach leg), so a live transport is never yanked
-// mid-run. Rollback past an add detaches through the identical reconcile path.
+// transport — happens NOT here but at the next run-start reconcile (the
+// detach leg). Exposure correctness is next-turn; teardown is process-global:
+// an in-flight run whose next step calls the detached server fails loudly
+// (typed not-found / closed transport), never a hang or a silent success —
+// see the projection.ReconcileConnections godoc for the full contract.
+// Rollback past an add detaches through the identical reconcile path.
 //
 // # The verb governs REVISIONED state only (two distinct loud errors)
 //
@@ -105,14 +108,18 @@ func (s *Service) RemoveMCPConnection(ctx context.Context, req prototypes.AgentC
 
 	// Build the removing revision: connections minus the named descriptor,
 	// tool-exposure residue for that server pruned, every sibling section
-	// carried forward (the rebuild-completeness guard).
+	// carried forward (the rebuild-completeness guard). The remaining declared
+	// set guards the prefix prune: a sibling server whose name extends the
+	// removed name (e.g. removing "git" with "git_hub" still declared) never
+	// loses its own disable/loading entries — an over-prune would silently
+	// RE-ENABLE an admin-disabled tool (a policy downgrade, CLAUDE.md §13).
 	payload := agentcfg.ConfigPayload{}
 	if hasActive {
 		payload.Skills = active.Payload.Skills
 		payload.PromptLayers = active.Payload.PromptLayers
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
-		payload.ToolExposure = pruneExposureResidue(active.Payload.ToolExposure, name)
+		payload.ToolExposure = pruneExposureResidue(active.Payload.ToolExposure, name, remaining)
 	}
 	if len(remaining) > 0 {
 		payload.Connections = &agentcfg.ConnectionsSection{Servers: remaining}
@@ -152,28 +159,46 @@ func dropConnection(in []agentcfg.MCPConnectionDescriptor, name string) (remaini
 // entry that belongs to the removed server dropped: the server's paused-set
 // entry (exact match) and per-server loading-mode override (keyed by source
 // id), plus every disabled-tool and per-tool loading override whose catalog
-// name is prefixed by the server's source id (the MCP driver names a source's
-// tools "<source>_<tool>" / "<source>__resource.<uri>" — both carry the
-// "<source>_" prefix). A nil / empty result section returns nil so an
-// all-pruned section drops out of the canonical form. The input is never
-// mutated.
+// name is prefixed by the removed server's source id (the MCP driver names a
+// source's tools "<source>_<tool>" / "<source>__resource.<uri>" — both carry
+// the "<source>_" prefix).
 //
-// A different server whose name shares the removed server's "<source>_"
-// prefix could in principle see one disabled-tool key over-pruned; the
-// collision requires one MCP source name to be an underscore-extension of
-// another and is accepted as a deliberate V1 simplification (the prune is
-// hygiene, not a security boundary — a re-enabled sibling tool is re-disabled
-// by the next tool-exposure edit).
-func pruneExposureResidue(te *agentcfg.ToolExposure, server string) *agentcfg.ToolExposure {
+// Sibling safety (load-bearing): connection names may legally contain "_", so
+// a tool id like "git_hub_clone" is prefixed by BOTH "git_" and "git_hub_".
+// The prune therefore takes the REMAINING declared descriptors and refuses to
+// drop any entry that is also prefixed by a remaining server's "<name>_" —
+// pruning it would silently RE-ENABLE that sibling's admin-disabled tool (a
+// policy downgrade, CLAUDE.md §13 silent degradation). Ambiguous entries stay;
+// a leftover key that in fact belonged to the removed server is inert residue,
+// which is strictly safer than a re-enabled capability.
+//
+// A nil / empty result section returns nil so an all-pruned section drops out
+// of the canonical form. The input is never mutated.
+func pruneExposureResidue(te *agentcfg.ToolExposure, server string, remaining []agentcfg.MCPConnectionDescriptor) *agentcfg.ToolExposure {
 	if te == nil {
 		return nil
 	}
+	keepPrefixes := make([]string, 0, len(remaining))
+	for _, d := range remaining {
+		keepPrefixes = append(keepPrefixes, d.Name+"_")
+	}
 	prefix := server + "_"
+	drop := func(key string) bool {
+		if !strings.HasPrefix(key, prefix) {
+			return false
+		}
+		for _, kp := range keepPrefixes {
+			if strings.HasPrefix(key, kp) {
+				return false // also claimed by a remaining sibling — keep it.
+			}
+		}
+		return true
+	}
 	out := &agentcfg.ToolExposure{
 		PausedServers:      dropExact(te.PausedServers, server),
-		DisabledTools:      dropPrefixed(te.DisabledTools, prefix),
+		DisabledTools:      dropWhere(te.DisabledTools, drop),
 		ServerLoadingModes: dropMapKey(te.ServerLoadingModes, server),
-		ToolLoadingModes:   dropMapKeysPrefixed(te.ToolLoadingModes, prefix),
+		ToolLoadingModes:   dropMapKeysWhere(te.ToolLoadingModes, drop),
 	}
 	if len(out.PausedServers) == 0 && len(out.DisabledTools) == 0 &&
 		len(out.ServerLoadingModes) == 0 && len(out.ToolLoadingModes) == 0 {
@@ -194,12 +219,12 @@ func dropExact(in []string, v string) []string {
 	return out
 }
 
-// dropPrefixed returns a fresh copy of in with every element carrying prefix
-// removed (nil when the result is empty).
-func dropPrefixed(in []string, prefix string) []string {
+// dropWhere returns a fresh copy of in with every element for which drop
+// returns true removed (nil when the result is empty).
+func dropWhere(in []string, drop func(string) bool) []string {
 	var out []string
 	for _, s := range in {
-		if !strings.HasPrefix(s, prefix) {
+		if !drop(s) {
 			out = append(out, s)
 		}
 	}
@@ -224,15 +249,15 @@ func dropMapKey(m map[string]string, k string) map[string]string {
 	return out
 }
 
-// dropMapKeysPrefixed returns a fresh copy of m without any key carrying
-// prefix (nil when the result is empty).
-func dropMapKeysPrefixed(m map[string]string, prefix string) map[string]string {
+// dropMapKeysWhere returns a fresh copy of m without any key for which drop
+// returns true (nil when the result is empty).
+func dropMapKeysWhere(m map[string]string, drop func(string) bool) map[string]string {
 	if len(m) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(m))
 	for key, val := range m {
-		if !strings.HasPrefix(key, prefix) {
+		if !drop(key) {
 			out[key] = val
 		}
 	}

@@ -503,9 +503,11 @@ type AgentConfigAddMCPConnectionResponse struct {
 // server's tool-exposure residue (its paused/disabled/loading entries),
 // carrying every sibling section forward. An unknown name and a boot-declared
 // (yaml) name each fail loud with a distinct typed error (a boot-declared
-// server is edited in yaml + restart, never through this verb). The physical
-// teardown (deregister tools + close transport) happens at the next run's
-// projection boundary — never mid-run — so no live transport is yanked here.
+// server is edited in yaml + restart, never through this verb). The verb
+// itself never tears anything down — the physical teardown (deregister tools
+// + close transport) happens at the next run-start reconcile; an in-flight
+// run whose next step calls the detached server fails loudly (typed
+// not-found / closed transport), never a hang or a silent success.
 type AgentConfigRemoveMCPConnectionRequest struct {
 	Identity IdentityScope `json:"identity"`
 	AgentID  string        `json:"agent_id"`

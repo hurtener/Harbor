@@ -2920,20 +2920,31 @@ per §17.8). Status: Shipped (V1.6).
   registry deregistration), internal/protocol + web/console (wire).
 - **RFC:** §6.16 (the control plane), §6.4 (the catalog), §3.3 (pause vs
   removal semantics).
-- **Deps:** 152 (the completeness guard this setter joins), 92m
-  (add-connection), 92n (resume-completes-attach), 92o (run-start
-  reconciliation — the mechanism gaining the detach leg), 118 (D-223).
+- **Deps:** 152 (the completeness guard this setter joins), 92f (the shipped
+  add-connection verb), 118 (D-223). **As-built:** the plan originally also
+  cited 92m/92n/92o — that 92k–92q MCP-OAuth band is still PARKED
+  (planning-only, unshipped); 92o's run-start reconciliation never existed in
+  code. Phase 156 BUILT run-start reconciliation from scratch, DETACH-ONLY
+  (plus the primitives beneath it: MCP-registry Deregister/SourceIDs, provider
+  Close, catalog source-deregistration, the driver-agnostic
+  ConnectionDetacher seam + both D-094 twin concretes, wired into both
+  run-loop drivers); the attach leg (restart-survival) lands with the future
+  band. See D-287's as-built note.
 - **What it delivers:** supersedes D-240 decision 5's deferral through its
   own recorded revisit clause — a removal need pause cannot serve emerged
   (a coordinator's delete flow; pause leaves the descriptor forever and
   resume resurrects the server). The verb records a new revision dropping
   the named descriptor AND pruning that server's tool-exposure residue
-  atomically, carrying all sibling sections (incl. Hooks) forward under the
-  D-283 guard; unknown / boot-declared names fail loud with distinct typed
-  errors. Run-start reconciliation gains the detach leg: declared-vs-
-  attached diff deregisters undeclared servers from the catalog + MCP
-  registry and closes the transport at the next-turn projection boundary —
-  never mid-run — and rollback past an add detaches through the SAME
+  atomically (sibling-safe: entries also claimed by a remaining server's
+  `<name>_` prefix are never pruned), carrying all sibling sections (incl.
+  Hooks) forward under the D-283 guard; unknown / boot-declared names fail
+  loud with distinct typed errors. Run-start reconciliation (built here,
+  detach-only): declared-vs-attached diff deregisters undeclared servers from
+  the catalog + MCP registry and closes the transport at a run-start
+  reconcile — never in the middle of the run that triggered it; exposure is
+  next-turn, teardown is process-global (a cross-session in-flight caller of
+  a detached server fails loudly with a typed error — test-pinned, D-287 call
+  2 as amended) — and rollback past an add detaches through the SAME
   reconcile path (one mechanism, §13), closing D-240's deferred rollback
   gap. Agent-bound sealed tokens are NOT deleted on remove (re-add reuses
   consent; revocation is provider-side). New canonical

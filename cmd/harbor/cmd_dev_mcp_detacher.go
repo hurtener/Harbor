@@ -19,8 +19,10 @@ import (
 // Detach deregisters a no-longer-declared MCP server's tools from the live
 // catalog and the MCP registry and closes its transport gracefully — the
 // physical teardown a `agent_config.remove_mcp_connection` revision (or a
-// rollback past an add) implies. It runs at the next run's projection boundary
-// (never mid-run), so an in-flight run keeps its snapshot.
+// rollback past an add) implies. It runs at a run-start reconcile, never in
+// the middle of the run that triggered it; teardown is process-global, so a
+// DIFFERENT session's in-flight run calling the detached server fails loudly
+// (typed not-found / closed transport — see projection.ReconcileConnections).
 //
 // The harbortest/devstack helper carries a mirror of this concrete so
 // integration tests exercise the same real detach path.
@@ -73,6 +75,10 @@ func bootDeclaredMCPServerSet(cfg *config.Config) map[string]struct{} {
 }
 
 // AttachedSources returns the source ids currently live in the MCP registry.
+// NOTE: Registry.SourceIDs is a PROCESS-GLOBAL enumeration — correct for the
+// single-agent dev wiring, but the future multi-agent attach leg must scope
+// the attached set to the reconciling agent (see the
+// projection.ConnectionDetacher interface doc).
 func (d *devMCPConnectionDetacher) AttachedSources(_ context.Context) []string {
 	if d.registry == nil {
 		return nil

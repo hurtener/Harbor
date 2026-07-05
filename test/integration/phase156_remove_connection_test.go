@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -329,11 +331,85 @@ func TestE2E_AgentConfig_RemoveConnection_FailureModes(t *testing.T) {
 	}
 }
 
+// TestE2E_AgentConfig_RemoveConnection_InFlightCallFailsLoud pins the HONEST
+// in-flight semantics (the PR-464 adversarial-review amendment to the "keeps
+// its snapshot" claim): teardown is process-global, so a run mid-flight when
+// its server is removed + reconciled from ANOTHER session sees its next call
+// fail LOUDLY — a typed catalog not-found at dispatch, and a typed
+// closed-transport error on an already-resolved descriptor — never a hang, a
+// panic, or a silent success.
+func TestE2E_AgentConfig_RemoveConnection_InFlightCallFailsLoud(t *testing.T) {
+	binPath := buildMCPTestServer(t)
+	h := newRmHarness(t, binPath)
+
+	if add := h.addStdio(t, binPath); add.State != "online" {
+		t.Fatalf("add state = %q", add.State)
+	}
+
+	// Simulate an in-flight run's dispatch state: the run has already resolved
+	// the descriptor from the live catalog (as the dispatch executor does per
+	// step) and holds the run-scoped identity ctx.
+	desc, ok := h.catalog.Resolve("mcptest_echo")
+	if !ok {
+		t.Fatal("echo tool not resolvable before remove")
+	}
+	inFlightCtx, err := identity.With(context.Background(), rmID())
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	// Prove the captured descriptor works BEFORE the detach.
+	if _, ierr := desc.Invoke(inFlightCtx, json.RawMessage(`{"message":"pre-detach"}`)); ierr != nil {
+		t.Fatalf("pre-detach invoke failed: %v", ierr)
+	}
+
+	// Remove the connection, then reconcile from a DIFFERENT session (the
+	// cross-session teardown: the catalog + registry are process-global).
+	if rec := h.post(t, "remove_mcp_connection",
+		prototypes.AgentConfigRemoveMCPConnectionRequest{AgentID: rmAgent, Name: rmFixtureSrv}, adminScopes()); rec.Code != http.StatusOK {
+		t.Fatalf("remove: %d %s", rec.Code, rec.Body.String())
+	}
+	otherSession := identity.Quadruple{Identity: identity.Identity{TenantID: rmTenant, UserID: rmUser, SessionID: "sess-rm-other"}}
+	if _, rerr := projection.ReconcileConnections(context.Background(), h.registry, rmAgent, otherSession, h.detacher, nil); rerr != nil {
+		t.Fatalf("cross-session reconcile: %v", rerr)
+	}
+
+	// Loud shape 1 — dispatch-time resolve: the tool is gone from the shared
+	// catalog, so the executor's Resolve misses (its loud tool-not-found path).
+	if _, stillThere := h.catalog.Resolve("mcptest_echo"); stillThere {
+		t.Fatal("echo tool still resolvable after cross-session detach")
+	}
+
+	// Loud shape 2 — an already-resolved descriptor (the in-flight run's
+	// current step): the invoke returns a TYPED closed-transport error,
+	// bounded in time — never a hang, a panic, or a silent success.
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("PANIC invoking detached server: %v", r)
+			}
+		}()
+		_, ierr := desc.Invoke(inFlightCtx, json.RawMessage(`{"message":"post-detach"}`))
+		done <- ierr
+	}()
+	select {
+	case ierr := <-done:
+		if ierr == nil {
+			t.Fatal("post-detach invoke silently succeeded — want a loud typed error")
+		}
+		if !errors.Is(ierr, mcpdrv.ErrNotConnected) {
+			t.Fatalf("post-detach invoke error = %v, want a typed mcpdrv.ErrNotConnected", ierr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("post-detach invoke HUNG — the loud-failure contract requires a prompt typed error")
+	}
+}
+
 // TestE2E_AgentConfig_RemoveConnection_ConcurrentReconciles proves N≥10
 // concurrent run-start reconciles during/after a remove are race-free and
 // converge (at-most-once effective detach; the registry + catalog stay
-// consistent). In-flight runs that already captured their catalog are
-// unaffected — the detach is a run-start act, serialised per agent.
+// consistent). Exposure is next-turn; an in-flight run calling the detached
+// server fails loudly (see ..._InFlightCallFailsLoud).
 func TestE2E_AgentConfig_RemoveConnection_ConcurrentReconciles(t *testing.T) {
 	binPath := buildMCPTestServer(t)
 	h := newRmHarness(t, binPath)

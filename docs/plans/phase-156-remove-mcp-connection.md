@@ -27,7 +27,7 @@ D-240 decision 5 deliberately deferred connection removal ("pausing is the revok
 ## Goals
 
 - `agent_config.remove_mcp_connection` removes a named connection descriptor as a new revision: fail-loud if the name is unknown; the SAME revision prunes the removed server's tool-exposure residue (its paused/disabled/loading entries) so no stale keys linger; all sibling sections (incl. `Hooks`) carried forward.
-- Run-start reconciliation gains the detach leg: declared-set vs attached-set diff detaches undeclared servers — deregistering their tools from the planner catalog view and the MCP registry, and tearing the transport down gracefully at the projection boundary. In-flight runs keep their snapshot (D-025/D-234); teardown never happens mid-run.
+- Run-start reconciliation gains the detach leg: declared-set vs attached-set diff detaches undeclared servers — deregistering their tools from the planner catalog view and the MCP registry, and tearing the transport down gracefully at a run-start reconcile (never in the middle of the run that triggered it). **Honest in-flight semantics (amended by the PR-464 adversarial review):** EXPOSURE correctness is next-turn and independent of teardown (a removed server never appears in any catalog view projected after the removal revision — D-025/D-234); TEARDOWN is process-global (the catalog + registry are shared across sessions), so a different session's in-flight run whose next step calls the detached server fails LOUDLY — a typed catalog not-found at dispatch or a closed-transport error — never a hang, a panic, or a silent success (test-pinned). A refcount/drain protocol was considered and rejected (D-287 call 2 as amended).
 - Rollback to a pre-add revision detaches through the identical reconcile path (one mechanism, no parallel implementation — §13).
 - A canonical `mcp.connection.removed` event emits per removal (SafePayload), alongside the existing `agent.config.revised`.
 
@@ -35,7 +35,7 @@ D-240 decision 5 deliberately deferred connection removal ("pausing is the revok
 
 - No removal of CONFIG-declared (yaml) servers via the verb — those are boot config, not revisioned state; the verb rejects a name that resolves to a boot-declared server with a distinct loud error (the operator edits yaml + restarts for those).
 - No agent-bound sealed-token deletion on remove: the token store entry persists so a re-add reuses the completed consent (re-add is a first-class flow, see the reconciliation phase); real credential revocation is provider-side. Documented in godoc + the skill; a `revoke` surface is a named follow-up if the need emerges.
-- No mid-run teardown, no draining protocol — next-turn semantics only, per the warm-transport model.
+- No draining protocol, no refcounting: teardown fires at a run-start reconcile, never in the middle of the run that triggered it, and a cross-session in-flight caller of a detached server fails loudly (see Goals — honest in-flight semantics). Exposure stays next-turn per the warm-transport model.
 
 ## Acceptance criteria
 
@@ -64,10 +64,10 @@ D-240 decision 5 deliberately deferred connection removal ("pausing is the revok
 
 ## Test plan
 
-- **Unit:** validation legs (unknown name, boot-declared name, empty name), residue pruning, diff arm, event emission.
-- **Integration:** real MCP stdio fixture (`cmd/harbor-mcptest-stdio`, §17.8): add → tools visible → remove → next-turn catalog excludes + registry empty + transport closed; rollback-past-add leg through the same assertions; re-add-reuses-token leg; failure mode = remove of unknown name.
+- **Unit:** validation legs (unknown name, boot-declared name, empty name), residue pruning (incl. the sibling-prefix regression: removing `git` with `git_hub` still declared must not prune `git_hub_clone` — a policy downgrade otherwise), diff arm, event emission.
+- **Integration:** real MCP stdio fixture (`cmd/harbor-mcptest-stdio`, §17.8): add → tools visible → remove → next-turn catalog excludes + registry empty + transport closed; rollback-past-add leg through the same assertions; re-add-reuses-token leg; failure mode = remove of unknown name; in-flight loud-failure shape (a run mid-flight whose server is removed + reconciled from another session sees its next call fail with a typed error — never hang/panic/silent success).
 - **Conformance:** N/A — no new driver seam.
-- **Concurrency / leak:** N≥10 concurrent runs during a remove — in-flight snapshots stable, next runs excluded, `-race` clean, goroutine baseline after transport teardown (the leak test IS the teardown proof).
+- **Concurrency / leak:** N≥10 concurrent reconciles during a remove — converged final state, next runs excluded, `-race` clean, goroutine baseline after transport teardown (the leak test IS the teardown proof).
 
 ## Smoke script additions
 
@@ -83,7 +83,7 @@ D-240 decision 5 deliberately deferred connection removal ("pausing is the revok
 
 ## Risks / open questions
 
-- Transport teardown ordering vs. a run that starts DURING the teardown — the projection boundary must serialize per-agent (the existing per-`(tenant, agentID)` lock); the concurrency test targets exactly this window.
+- Transport teardown ordering vs. a run that starts DURING the teardown — reconcile holds NO cross-run lock (the per-`(tenant, agentID)` write lock serialises the VERB's read-modify-write only, not run-starts); safety comes from the atomic active-revision read, the idempotent detacher (an already-gone source is a no-op), and each primitive (catalog deregister, registry deregister, transport close) being internally synchronised, so N concurrent reconciles converge. The concurrency tests target exactly this window. Two accepted residual windows until the attach leg lands (code-commented + D-287 as-built note): a reconcile racing a concurrent re-add can detach the freshly re-added server (heals at the next add/restart), and `AttachedSources()` is process-global (the multi-agent attach leg must scope it per agent).
 - Whether the MCP registry deregistration needs a Console-visible transitional state ("removing") — V1 answer: no; next-turn semantics make removal atomic from the observer's view. Revisit only with operator evidence.
 
 ## Glossary additions

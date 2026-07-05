@@ -1678,9 +1678,13 @@ func (d *DevStackRunLoopDriver) projectRunCompletionHook(ctx context.Context, q 
 // reconcileConnections mirrors the production driver's run-start reconcile
 // detach leg (D-094, CLAUDE.md §17.6): it detaches every MCP server attached
 // but no longer declared by the agent's active config revision before the
-// catalog is projected. A reconcile error is logged loud but does not fail
-// the run (detach is teardown hygiene). Shared verbatim with production via
-// the projection package.
+// catalog is projected. Exposure correctness is next-turn and independent of
+// teardown; teardown is process-global — a different session's in-flight run
+// calling the detached server fails LOUDLY (typed catalog not-found / closed
+// transport), never a hang (see the projection.ReconcileConnections godoc).
+// A reconcile error is logged loud but does not fail the run (detach is
+// teardown hygiene). Shared verbatim with production via the projection
+// package.
 func (d *DevStackRunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
 	if d.connectionDetacher == nil {
 		return
@@ -1791,7 +1795,8 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 
 	// Run-start reconciliation (detach leg, D-094 mirror): detach any MCP
 	// server the agent's active revision no longer declares before the catalog
-	// is projected. Next-turn semantics — an in-flight run keeps its snapshot.
+	// is projected. Exposure is next-turn; teardown is process-global (an
+	// in-flight run calling a detached server fails loud — see the wrapper doc).
 	d.reconcileConnections(taskCtx, q)
 
 	// Phase 83f (D-149) — mirror the production runOne's per-run

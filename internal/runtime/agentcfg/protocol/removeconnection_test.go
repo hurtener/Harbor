@@ -113,6 +113,62 @@ func TestRemoveMCPConnection_DropsDescriptor_PrunesResidue_CarriesSiblings(t *te
 	}
 }
 
+// TestRemoveMCPConnection_SiblingPrefixServer_DisableSurvives is the
+// adversarial-review regression: connection names legally contain "_", so
+// removing server "git" while sibling "git_hub" stays declared must NOT prune
+// "git_hub_clone" from DisabledTools — that would silently RE-ENABLE the
+// sibling's admin-disabled tool (a policy downgrade, CLAUDE.md §13). The
+// removed server's OWN residue is still pruned.
+func TestRemoveMCPConnection_SiblingPrefixServer_DisableSurvives(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	s, err := agentcfgprotocol.NewService(reg)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	payload := agentcfg.ConfigPayload{
+		Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
+			{Name: "git", Transport: agentcfg.MCPTransportHTTP, URL: "https://example.invalid/git"},
+			{Name: "git_hub", Transport: agentcfg.MCPTransportHTTP, URL: "https://example.invalid/git_hub"},
+		}},
+		ToolExposure: &agentcfg.ToolExposure{
+			// "git_clone" belongs to the removed server; "git_hub_clone" belongs
+			// to the SIBLING (it is prefixed by both "git_" and "git_hub_").
+			DisabledTools:    []string{"git_clone", "git_hub_clone"},
+			ToolLoadingModes: map[string]string{"git_clone": "deferred", "git_hub_clone": "deferred"},
+		},
+	}
+	if _, serr := reg.SetRevision(ctx, q, "agent-remove", agentcfg.ConfigScopeAgent, payload); serr != nil {
+		t.Fatalf("seed: %v", serr)
+	}
+
+	resp, err := s.RemoveMCPConnection(ctx, removeReq("git"))
+	if err != nil {
+		t.Fatalf("RemoveMCPConnection: %v", err)
+	}
+	te := resp.Revision.Payload.ToolExposure
+	if te == nil {
+		t.Fatal("tool_exposure unexpectedly nil — the sibling's disable was wiped")
+	}
+	// The sibling's admin-disabled tool SURVIVES the prune.
+	if got := te.DisabledTools; len(got) != 1 || got[0] != "git_hub_clone" {
+		t.Fatalf("disabled_tools = %v, want [git_hub_clone] (sibling disable must survive — policy downgrade otherwise)", got)
+	}
+	if _, ok := te.ToolLoadingModes["git_hub_clone"]; !ok {
+		t.Error("sibling's tool_loading_modes entry was wrongly pruned")
+	}
+	// The removed server's OWN residue is pruned.
+	if _, ok := te.ToolLoadingModes["git_clone"]; ok {
+		t.Error("removed server's own tool_loading_modes entry survived the prune")
+	}
+	// And only the sibling descriptor remains.
+	if conns := resp.Revision.Payload.Connections; conns == nil || len(conns.Servers) != 1 || conns.Servers[0].Name != "git_hub" {
+		t.Fatalf("connections = %#v, want [git_hub]", resp.Revision.Payload.Connections)
+	}
+}
+
 func TestRemoveMCPConnection_UnknownName_FailsLoud_NoRevisionNoEvent(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)

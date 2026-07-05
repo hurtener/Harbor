@@ -648,14 +648,18 @@ func (d *perTaskRunLoopDriver) projectRunCompletionHook(ctx context.Context, q i
 // reconcileConnections runs the DETACH leg of run-start reconciliation before
 // the catalog is projected: it detaches every MCP server attached but no
 // longer declared by the agent's active config revision (a removed connection
-// or a rollback past an add), so the next run's projected catalog excludes it,
-// the registry no longer lists it, and the transport drains. It is a
-// projection-boundary act (next-turn semantics), serialised per agent by the
-// same registry read the projection uses. A reconcile error is logged LOUD
-// (never silently swallowed, CLAUDE.md §13) but does NOT fail the run —
-// detach is teardown hygiene, not a run precondition; a run continues even if
-// an old transport refuses to close. Shared verbatim with the devstack twin
-// via the projection package (CLAUDE.md §17.6).
+// or a rollback past an add), so this and every later run's projected catalog
+// excludes it, the registry no longer lists it, and the transport drains.
+// Exposure correctness is next-turn and independent of teardown; teardown is
+// process-global — a DIFFERENT session's in-flight run whose next step calls
+// the detached server fails LOUDLY (typed catalog not-found / closed
+// transport), never a hang or a silent success (see the
+// projection.ReconcileConnections godoc for the full honest-semantics
+// contract). A reconcile error is logged LOUD (never silently swallowed,
+// CLAUDE.md §13) but does NOT fail the run — detach is teardown hygiene, not
+// a run precondition; a run continues even if an old transport refuses to
+// close. Shared verbatim with the devstack twin via the projection package
+// (CLAUDE.md §17.6).
 func (d *perTaskRunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
 	if d.connectionDetacher == nil {
 		return
@@ -707,8 +711,9 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 
 	// Run-start reconciliation (detach leg): before projecting the catalog,
 	// detach any MCP server the agent's active revision no longer declares
-	// (a removed connection / a rollback past an add). Next-turn semantics —
-	// an in-flight run already past this point keeps its snapshot.
+	// (a removed connection / a rollback past an add). Exposure is next-turn;
+	// teardown is process-global (an in-flight run calling a detached server
+	// fails loud — see the reconcileConnections wrapper doc).
 	d.reconcileConnections(taskCtx, q)
 
 	// build the per-run consumer state BEFORE

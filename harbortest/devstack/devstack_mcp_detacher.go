@@ -76,6 +76,10 @@ func devstackBootDeclaredMCPSet(cfg *config.Config) map[string]struct{} {
 }
 
 // AttachedSources returns the source ids currently live in the MCP registry.
+// NOTE: Registry.SourceIDs is a PROCESS-GLOBAL enumeration — correct for the
+// single-agent dev wiring, but the future multi-agent attach leg must scope
+// the attached set to the reconciling agent (see the
+// projection.ConnectionDetacher interface doc).
 func (d *MCPConnectionDetacher) AttachedSources(_ context.Context) []string {
 	if d.registry == nil {
 		return nil

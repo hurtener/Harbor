@@ -364,11 +364,14 @@ const (
 	// sibling section (incl. hooks) forward. An unknown name and a
 	// boot-declared (yaml) name each fail loud with a distinct typed error —
 	// the verb governs revisioned state only (a boot-declared server is
-	// edited in yaml + restart). The physical teardown (deregister the
-	// server's tools + close its transport) happens at the NEXT run's
-	// projection boundary — never mid-run — so an in-flight run keeps its
-	// snapshot. Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
-	// wire-transport route is `POST /v1/agent_config/remove_mcp_connection`.
+	// edited in yaml + restart). The verb itself never tears anything down:
+	// the physical teardown (deregister the server's tools + close its
+	// transport) happens at the NEXT run-start reconcile. Exposure is
+	// next-turn; teardown is process-global — an in-flight run whose next
+	// step calls the detached server fails loudly (typed not-found / closed
+	// transport), never a hang or a silent success. Identity-mandatory;
+	// requires the `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/remove_mcp_connection`.
 	MethodAgentConfigRemoveMCPConnection Method = "agent_config.remove_mcp_connection"
 
 	// MethodAgentConfigSessionSetUserPrompt — session-safe verb (the

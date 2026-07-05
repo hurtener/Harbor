@@ -64,7 +64,11 @@ func loadOverlay(ctx context.Context, ov sessionoverlay.Store, agentID string, i
 type ConnectionDetacher interface {
 	// AttachedSources returns the source ids currently live in the MCP
 	// registry (the attached set the reconcile diffs against the declared
-	// set). A fresh slice; the caller may retain it.
+	// set). A fresh slice; the caller may retain it. NOTE: the concretes
+	// today enumerate the PROCESS-GLOBAL registry — correct for the
+	// single-agent dev wiring, but the future multi-agent attach leg must
+	// scope the attached set to the reconciling agent or one agent's
+	// reconcile would see (and detach) another agent's sources.
 	AttachedSources(ctx context.Context) []string
 	// Detach deregisters the named source's tools from the catalog + MCP
 	// registry and closes its transport gracefully. Idempotent — a source
@@ -90,18 +94,42 @@ var ErrReconcileRead = errors.New("agentcfg/projection: run-start reconcile acti
 // drains. Boot-declared (yaml) servers are NEVER detached (they are not
 // revisioned state); the bootDeclared set gates them out.
 //
-// This is a projection-boundary act (next-turn semantics): it runs at
-// run start, never mid-run, so an in-flight run keeps its snapshot (the
-// warm-transport / next-turn-projection model). It is idempotent — an
-// already-detached server is skipped
-// (the attached set no longer lists it) — and the caller serialises run-starts
-// per agent via the existing lock, so two concurrent run-starts cannot
-// double-detach.
+// # Honest in-flight semantics (read this before assuming isolation)
+//
+// This is a projection-boundary act: it fires at run START, never in the
+// middle of the calling run, and EXPOSURE correctness is next-turn — a
+// removed server never appears in any catalog view projected after the
+// removal revision. Physical TEARDOWN is a separate, process-global effect:
+// the catalog and MCP registry are shared across sessions, so a reconcile
+// triggered by one session's run-start can deregister a source and close its
+// transport while ANOTHER session's run is mid-flight and about to call it.
+// That in-flight run's prompt snapshot is unchanged, but its NEXT call to the
+// detached server fails LOUDLY — a typed catalog not-found at dispatch, or a
+// closed-transport error from the driver — never a hang, a panic, or a
+// silent success. This is the same failure class as an operator stopping a
+// boot-declared server mid-run, and it is the deliberate trade: a
+// refcount/drain protocol was rejected as complexity the removal semantics do
+// not need.
+//
+// # Serialisation and idempotency
+//
+// Reconcile holds NO cross-run lock of its own: safety comes from the
+// registry read being atomic, the detacher being idempotent (an
+// already-detached source is a no-op), and each underlying primitive
+// (catalog deregister, registry deregister, transport close) being
+// internally synchronised. N concurrent reconciles converge to the same
+// state; the concurrent tests pin this.
 //
 // It is DETACH-ONLY by design: attaching a declared-but-absent server (the
 // restart-survival reconcile) is a separate, deferred concern; the live add
 // verb is the attach path, and re-add after remove reuses the persisted
-// agent-bound token through that verb (no second consent).
+// agent-bound token through that verb (no second consent). Two windows are
+// accepted until the attach leg lands: a reconcile racing a concurrent re-add
+// of the same name can detach the freshly re-added server (a stale
+// declared-set read — heals at the next add or restart), and
+// AttachedSources() is today a process-global enumeration (fine for the
+// single-agent dev wiring; the future multi-agent attach leg must scope the
+// attached set per agent).
 //
 // A nil registry, an empty agentID, or a nil detacher returns (0, nil) — the
 // backward-compatible "no reconcile" path. A registry read error is returned
