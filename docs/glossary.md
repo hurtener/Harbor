@@ -144,8 +144,6 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`AssertSequence`** — Phase 71 (`harbortest`) public assertion that checks a list of `events.EventType` appears as an ordered subsequence of an `EventLog`'s captured events. Intervening event types are allowed; only the order of the want list is enforced. The right semantics for flow-level tests where bus-internal events (audit.admin_scope_used, bus.dropped) may interleave with the agent's emits. RFC §6.13, D-085.
 
-**Aggregating projector** — a Projector implementation that widens a Protocol read surface beyond the caller's own `(tenant, user, session)` triple for an elevated observer: tenant-wide task/agent enumeration under the verified admin scope claim, emitted with `audit.admin_scope_used`. Slots in behind the existing per-subsystem `Projector` interface without reshaping the Service (the shape the tasks projector godoc reserved). The identity-scoped read path is unchanged and keeps mandatory full-triple identity; widening is explicit, gated, and loud — never a silent narrowing or an optional-identity knob. Phase 153, D-284.
-
 ## B
 
 **Background Jobs page** — Console route at `/background-jobs` (served under the `(console)` route group with no `/console/` URL prefix — CONVENTIONS.md §1 / D-121; Phase 73h). A focused queue projection of `tasks.list` with `kinds=["background"]` (the plural `[]TaskKind` slice — the canonical 73d shape, never a `type=background` scalar) with queue-shaped affordances: faceted filter chips, saved-filter chips, virtualised queue table with priority badge / progress mini-bar / parent-session deep-link / orphan badge, bulk-action toolbar (per-row invocations of the shipped Phase 54 `cancel` / `pause` / `resume` / `prioritize` verbs — no parallel bulk endpoint), and a per-job right-rail with Details / Progress / Logs / Pending approvals / Artifacts for this Job / Related Sessions tabs. The page is a runtime lens (RFC §7.1) — every row round-trips through `tasks.list`; the Console DB holds only saved-filter chips, column visibility, and bulk-select state per D-061. D-128.
@@ -923,8 +921,6 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`RuntimeInfo`** — Phase 72f wire type (`internal/protocol/types/posture.go`) carrying the `runtime.info` response: build identity, protocol version, advertised capabilities, uptime, instance ID, and display name. The instance ID is minted at boot and persisted to StateStore so a Console's per-attachment identity does not flicker across reboots.
 
 **`RuntimeHealth`** — Phase 72f wire type carrying the `runtime.health` response: a `Subsystems []SubsystemHealth` slice. Each `SubsystemHealth` entry pins one subsystem's `Status` (`"ready"` / `"degraded"` / `"unavailable"`) and an optional `Detail` reason string.
-
-**Rebuild-completeness guard** — the reflection-backed test contract that keeps the agent-config section-merge invariant mechanical: a seed constructor populates every `ConfigPayload` section and asserts (via reflection over the struct's fields) that it covers them all, then every section-scoped setter is invoked against the fully-populated active revision and every non-target section must survive byte-identically. Adding a new config section without extending every setter's carry-forward fails `go test` with a message naming the field. Phase 152, D-283.
 
 ## S
 
