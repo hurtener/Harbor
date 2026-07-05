@@ -118,6 +118,102 @@ func TestService_ConcurrentSameAgentWrites_NoLostSibling(t *testing.T) {
 	}
 }
 
+// TestService_ConcurrentInterleavedSectionWrites_HooksNeverDropped is the
+// D-283 concurrency case: with a run-completion hook pinned FIRST, N>=100
+// concurrent section-scoped writes across FOUR verbs that each own a
+// DIFFERENT section (prompt / tool-exposure / llm-params / skills — none of
+// them Hooks) must never drop the pinned hook. This is the interleaved-
+// sections guarantee the rebuild-completeness fix protects under CONCURRENT
+// same-agent writes, not just the serial case the hooks_test.go regression
+// covers. Run under -race.
+func TestService_ConcurrentInterleavedSectionWrites_HooksNeverDropped(t *testing.T) {
+	s := svc(t, true) // withSkills — the skills verb needs a SkillStore
+	ctx := context.Background()
+	const n = 120
+
+	if _, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{
+			Hooks: &prototypes.AgentConfigHooks{
+				RunCompletion: &prototypes.AgentConfigRunCompletionHook{Tool: "run-transcript-sink", TimeoutMS: 5000},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed hooks: %v", err)
+	}
+
+	baseline := runtime.NumGoroutine()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			var err error
+			switch i % 4 {
+			case 0:
+				_, err = s.SetPromptLayers(ctx, prototypes.AgentConfigSetPromptLayersRequest{
+					Identity: scope(), AgentID: testAgentID,
+					PromptLayers: prototypes.AgentConfigPromptLayers{Base: strPtr(fmt.Sprintf("ibase-%d", i))},
+				})
+			case 1:
+				_, err = s.SetToolExposure(ctx, prototypes.AgentConfigSetToolExposureRequest{
+					Identity: scope(), AgentID: testAgentID,
+					ToolExposure: prototypes.AgentConfigToolExposure{PausedServers: []string{fmt.Sprintf("isrv-%d", i)}},
+				})
+			case 2:
+				_, err = s.SetLLMParams(ctx, prototypes.AgentConfigSetLLMParamsRequest{
+					Identity: scope(), AgentID: testAgentID,
+					LLMParams: prototypes.AgentConfigLLMParams{Temperature: f64(0.6)},
+				})
+			case 3:
+				_, err = s.SkillsUpsert(ctx, prototypes.AgentConfigSkillsUpsertRequest{
+					Identity: scope(), AgentID: testAgentID,
+					Skill: prototypes.AgentConfigSkillInput{
+						Name: fmt.Sprintf("iskill-%d", i), Trigger: "t", Steps: []string{"s"},
+						Origin: "generated", Scope: "session",
+					},
+				})
+			}
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent interleaved write failed: %v", err)
+	}
+
+	get, err := s.Get(ctx, prototypes.AgentConfigGetRequest{Identity: scope(), AgentID: testAgentID})
+	if err != nil || !get.Set || get.Revision == nil {
+		t.Fatalf("get: %+v err=%v", get, err)
+	}
+	p := get.Revision.Payload
+	// The pinned hook must survive EVERY concurrent sibling-section write —
+	// the D-283 guarantee under concurrency, not just serially.
+	if p.Hooks == nil || p.Hooks.RunCompletion == nil || p.Hooks.RunCompletion.Tool != "run-transcript-sink" {
+		t.Fatalf("hooks dropped under concurrent interleaved-section writes: %+v", p.Hooks)
+	}
+	if p.PromptLayers == nil || p.ToolExposure == nil || p.LLMParams == nil || p.Skills == nil {
+		t.Errorf("a sibling section was lost under concurrent writes: prompt=%v expo=%v llm=%v skills=%v",
+			p.PromptLayers, p.ToolExposure, p.LLMParams, p.Skills)
+	}
+
+	var after int
+	for range 50 {
+		after = runtime.NumGoroutine()
+		if after <= baseline+2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after > baseline+2 {
+		t.Errorf("goroutine leak: baseline=%d after=%d", baseline, after)
+	}
+}
+
 // TestService_ConcurrentMixedScopeWrites is the user-tier concurrent-reuse
 // gate (D-025 + the scope-aware write lock): N≥100 concurrent invocations
 // against ONE shared Service mixing admin-scope writes (to the agent chain),

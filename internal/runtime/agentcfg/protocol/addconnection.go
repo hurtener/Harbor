@@ -29,9 +29,10 @@ import (
 // records NO revision and registers NO server (a half-attached server is
 // never registered — CLAUDE.md §13). A successful attach records the
 // NON-SECRET descriptor as a config revision (preserving the skills /
-// tool-exposure / prompt-layer sections — the bidirectional section-merge
-// invariant). An auth-required attach parks on the unified pause/resume
-// primitive (the tool-side OAuth lineage — NOT a new auth dance).
+// tool-exposure / prompt-layer / llm-params / hooks sections — the
+// bidirectional section-merge invariant). An auth-required attach parks on
+// the unified pause/resume primitive (the tool-side OAuth lineage — NOT a
+// new auth dance).
 //
 // # Secret hygiene (CLAUDE.md §7, load-bearing)
 //
@@ -301,9 +302,9 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 // recordConnectionRevision writes a new config revision whose connections
 // section is the prior connections PLUS the new descriptor (the connection
 // added / replaced by name), preserving the skills + tool-exposure +
-// prompt-layer sections of the active revision (the bidirectional
-// section-merge invariant). The descriptor is NON-SECRET — no header / token
-// is ever part of the persisted payload.
+// prompt-layer + llm-params + hooks sections of the active revision (the
+// bidirectional section-merge invariant). The descriptor is NON-SECRET — no
+// header / token is ever part of the persisted payload.
 func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadruple, agentID string, desc agentcfg.MCPConnectionDescriptor) (agentcfg.Revision, error) {
 	// Serialise the registry read-modify-write per agent (NOT the preceding
 	// dial/handshake, which must not block a quick concurrent edit).
@@ -320,6 +321,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 		payload.ToolExposure = active.Payload.ToolExposure
 		payload.PromptLayers = active.Payload.PromptLayers
 		payload.LLMParams = active.Payload.LLMParams
+		payload.Hooks = active.Payload.Hooks
 	}
 	servers = append(servers, desc)
 	payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}

@@ -17,8 +17,10 @@ import (
 // seeds ALL FIVE sections and asserts each verb preserves the four it does
 // not own — in particular Connections + LLMParams, the unguarded siblings.
 func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
-	// A full payload pinning all five sections — the seed every verb must
-	// preserve (minus the one it replaces).
+	// A full payload pinning all six sections — the seed every verb must
+	// preserve (minus the one it replaces). Hooks (D-280) is owned by NO verb
+	// in this matrix (it rides set_revision only), so it must ALWAYS survive —
+	// the exact D-283 regression this seed now guards.
 	seed := func() prototypes.AgentConfigPayload {
 		return prototypes.AgentConfigPayload{
 			PromptLayers: &prototypes.AgentConfigPromptLayers{Base: strPtr("seed-base")},
@@ -28,6 +30,9 @@ func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
 				{Name: "seed-conn", Transport: "stdio", Command: []string{"server-bin"}},
 			}},
 			LLMParams: &prototypes.AgentConfigLLMParams{Temperature: f64(0.5)},
+			Hooks: &prototypes.AgentConfigHooks{
+				RunCompletion: &prototypes.AgentConfigRunCompletionHook{Tool: "seed-hook-tool", TimeoutMS: 5000},
+			},
 		}
 	}
 
@@ -135,6 +140,12 @@ func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
 			// (the previously-unguarded sibling that regressions could drop).
 			if p.Connections == nil || len(p.Connections.Servers) != 1 || p.Connections.Servers[0].Name != "seed-conn" {
 				t.Errorf("%s wiped the connections sibling: %+v", tc.name, p.Connections)
+			}
+			// Hooks is likewise owned by NO verb here — it must ALWAYS survive
+			// (the D-283 regression: none of the five setters carried Hooks
+			// forward until this phase).
+			if p.Hooks == nil || p.Hooks.RunCompletion == nil || p.Hooks.RunCompletion.Tool != "seed-hook-tool" {
+				t.Errorf("%s wiped the hooks sibling: %+v", tc.name, p.Hooks)
 			}
 		})
 	}

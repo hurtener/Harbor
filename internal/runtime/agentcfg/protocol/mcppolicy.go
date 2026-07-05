@@ -18,17 +18,20 @@ import (
 // `.resumed` overlay events for each server whose pause state flipped.
 //
 // Desired-state replace semantics: a set replaces ONLY the tool-exposure
-// section of the envelope; the skills + prompt-layer sections of the active
-// revision are preserved (a tool-exposure edit never clears an agent's
-// skills). The edit applies NEXT-turn (the run-start projection reads the
-// active revision; the live transport stays warm — pause is projection-time,
-// not a teardown).
+// section of the envelope; the skills + prompt-layer + connections +
+// llm-params + hooks sections of the active revision are preserved (a
+// tool-exposure edit never clears an agent's skills or a pinned
+// run-completion hook — CLAUDE.md §13). The edit applies NEXT-turn (the
+// run-start projection reads the active revision; the live transport stays
+// warm — pause is projection-time, not a teardown).
 
 // SetToolExposure records a new config revision pinning the supplied
 // MCP-exposure desired state (paused servers + disabled tools) and emits an
 // `mcp.connection.paused` / `.resumed` event for each server whose pause
-// state changed relative to the prior active revision. The skills + prompt
-// sections of the active revision are carried forward unchanged.
+// state changed relative to the prior active revision. The skills +
+// prompt-layer + connections + llm-params + hooks sections of the active
+// revision are carried forward unchanged — every sibling section survives a
+// tool-exposure edit.
 func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfigSetToolExposureRequest) (prototypes.AgentConfigSetToolExposureResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetToolExposureResponse{}, err
@@ -68,6 +71,7 @@ func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfi
 		payload.PromptLayers = active.Payload.PromptLayers
 		payload.Connections = active.Payload.Connections
 		payload.LLMParams = active.Payload.LLMParams
+		payload.Hooks = active.Payload.Hooks
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
