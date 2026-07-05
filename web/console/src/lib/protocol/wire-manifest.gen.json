@@ -65,6 +65,11 @@
         {
           "key": "updated_at",
           "type": "string"
+        },
+        {
+          "key": "identity",
+          "type": "object",
+          "ref": "IdentityScope"
         }
       ]
     },
@@ -1555,6 +1560,11 @@
         {
           "key": "search",
           "type": "string",
+          "optional": true
+        },
+        {
+          "key": "tenant_ids",
+          "type": "array",
           "optional": true
         }
       ]
@@ -5815,6 +5825,11 @@
           "key": "identities",
           "type": "array",
           "ref": "IdentityScope",
+          "optional": true
+        },
+        {
+          "key": "tenant_ids",
+          "type": "array",
           "optional": true
         },
         {

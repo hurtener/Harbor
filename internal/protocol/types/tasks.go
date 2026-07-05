@@ -197,6 +197,17 @@ type TaskFilter struct {
 	// tenant is a cross-tenant fan-in and requires the `auth.ScopeAdmin`
 	// claim. Empty = the caller's own identity scope.
 	Identities []IdentityScope `json:"identities,omitempty"`
+	// TenantIDs is the admin-widened FLEET-enumeration selector: when
+	// non-empty, `tasks.list` enumerates every task across ALL sessions of
+	// the named tenants (a coordinator control plane rendering a
+	// fleet-wide Tasks board), not just the caller's own triple. It
+	// mirrors `SessionFilter.TenantIDs`. Widening requires the verified
+	// `auth.ScopeAdmin` claim — a non-empty TenantIDs without the claim
+	// fails closed with the scope-mismatch error, never a silent narrowing
+	// to own scope. Empty (the default) is byte-compatible with the
+	// session-scoped read. Unlike `Identities` (a post-projection row
+	// facet), TenantIDs selects the enumeration SCOPE.
+	TenantIDs []string `json:"tenant_ids,omitempty"`
 	// Since is an optional lower bound on StartedAt (zero = unbounded).
 	Since time.Time `json:"since,omitempty"`
 	// Until is an optional upper bound on StartedAt (zero = unbounded).

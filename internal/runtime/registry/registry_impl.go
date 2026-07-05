@@ -333,6 +333,48 @@ func (r *Registry) List(ctx context.Context) ([]AgentRecord, error) {
 	return out, nil
 }
 
+// ListTenant enumerates every AgentRecord across ALL sessions of one
+// tenant — the admin-widened fleet read. See AgentRegistry.ListTenant.
+//
+// The registry persists per-(tenant, user, session) with no
+// cross-identity index, so ListTenant reads the StateStore's ONE
+// maintenance-scan surface — ListKind over the `agent.record.` prefix —
+// and keeps the records whose registration Identity is in the named
+// tenant. ListKind requires the explicit maintenance-scope claim (it
+// crosses identity boundaries by construction); the admin gate at the
+// Protocol edge authorised the fleet read, and every returned record is
+// projected under its OWN identity (never widened for mutation). An empty
+// tenantID fails loud rather than dumping the whole store.
+//
+// This is not identity-scoped by ctx: the caller's ctx identity is
+// irrelevant to which records the fleet read returns — the explicit
+// tenant argument is the scope, exactly as the tasks ListTenant seam.
+func (r *Registry) ListTenant(ctx context.Context, tenantID string) ([]AgentRecord, error) {
+	if r.closed.Load() {
+		return nil, ErrRegistryClosed
+	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("%w: ListTenant requires a non-empty tenant id", ErrInvalidConfig)
+	}
+	recs, err := r.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, recordKindPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("registry: ListTenant scan: %w", err)
+	}
+	out := make([]AgentRecord, 0, len(recs))
+	for _, sr := range recs {
+		var ar AgentRecord
+		if uerr := json.Unmarshal(sr.Bytes, &ar); uerr != nil {
+			return nil, fmt.Errorf("registry: ListTenant unmarshal record: %w", uerr)
+		}
+		if ar.Identity.TenantID != tenantID {
+			continue
+		}
+		out = append(out, ar)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AgentID < out[j].AgentID })
+	return out, nil
+}
+
 // Inspect returns the read-side AgentSnapshot for agentID.
 func (r *Registry) Inspect(ctx context.Context, agentID string) (*AgentSnapshot, error) {
 	rec, err := r.Get(ctx, agentID)

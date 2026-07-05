@@ -382,6 +382,28 @@ type TaskRegistry interface {
 	// Empty pointer fields in `f` are wildcards.
 	List(ctx context.Context, sessionID identity.Identity, f TaskFilter) ([]TaskSummary, error)
 
+	// ListTenant enumerates every task across ALL sessions of one tenant
+	// — the admin-widened FLEET read. It is a SEPARATE method from the
+	// session-scoped List, NOT an optional/blank-session variant of it:
+	// List keeps a mandatory full (tenant, user, session) triple; there
+	// is no identity-downgrading knob on the session-scoped path (CLAUDE.md
+	// §13). ListTenant takes an explicit `tenantID` and returns FULL Task
+	// copies (not TaskSummary) so an aggregating projector can attribute
+	// each row to its own (tenant, user, session) without an N+1
+	// identity-scoped Get.
+	//
+	// ListTenant is an ADMIN-GATE-ONLY call site: the Tasks Protocol
+	// service is the sole production caller, and it gates on the verified
+	// `auth.ScopeAdmin` claim BEFORE invoking. ListTenant itself does not
+	// re-check the claim (the gate is the Protocol service's), but an empty
+	// `tenantID` fails loud with `ErrInvalidRequest` — a fleet read with no
+	// named tenant is a caller bug, never a whole-store dump.
+	//
+	// The optional pointer fields on `f` apply as wildcards, exactly as on
+	// List (the Identities-style facet narrowing is applied by the
+	// Protocol service post-projection). Result order is unspecified.
+	ListTenant(ctx context.Context, tenantID string, f TaskFilter) ([]*Task, error)
+
 	// Cancel transitions the task to `StatusCancelled`. The descendant
 	// walk depends on the task's `PropagateOnCancel`:
 	//

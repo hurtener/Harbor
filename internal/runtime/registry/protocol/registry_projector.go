@@ -132,6 +132,16 @@ func (p *RegistryProjector) projectRecord(ctx context.Context, id identity.Ident
 		Hosting:      projectHosting(rec.Hosting),
 		RegisteredAt: rec.RegisteredAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:    rec.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		// Per-row identity attribution — the agent's own registration
+		// (tenant, user, session) scope. For a non-widened listing this is
+		// the caller's own scope; for a widened (fleet) listing it is the
+		// agent's own scope, so a coordinator can attribute each row.
+		// agent_id (the ID field) is NOT an isolation principal.
+		Identity: prototypes.IdentityScope{
+			Tenant:  rec.Identity.TenantID,
+			User:    rec.Identity.UserID,
+			Session: rec.Identity.SessionID,
+		},
 	}
 	if p.config != nil {
 		if cfg, err := p.config.Config(ctx, id, rec.AgentID); err == nil {

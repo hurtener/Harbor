@@ -138,6 +138,15 @@ type Agent struct {
 	RegisteredAt string `json:"registered_at"`
 	// UpdatedAt is the RFC3339 timestamp of the most recent mutation.
 	UpdatedAt string `json:"updated_at"`
+	// Identity is the (tenant, user, session) triple the agent is
+	// registered within — the per-row identity attribution a coordinator
+	// uses to attribute a widened (fleet) `agents.list` row to its owning
+	// source. For a non-widened listing it is the caller's own scope; for
+	// an admin-widened listing it is the agent's own registration scope.
+	// `agent_id` (the ID field) is a registration identity, NOT an
+	// isolation principal — this Identity triple is the isolation
+	// attribution.
+	Identity IdentityScope `json:"identity"`
 }
 
 // AgentFilter is the server-enforced facet filter on `agents.list`.
@@ -149,6 +158,16 @@ type AgentFilter struct {
 	PlannerType []string `json:"planner_type,omitempty"`
 	// Search is a free-text query over Name + Description (case-fold).
 	Search string `json:"search,omitempty"`
+	// TenantIDs is the admin-widened FLEET-enumeration selector: when
+	// non-empty, `agents.list` enumerates every registered agent across
+	// ALL sessions of the named tenants (a coordinator control plane
+	// rendering a fleet-wide Agents catalog), not just the caller's own
+	// triple. It mirrors `SessionFilter.TenantIDs` and the tasks analogue.
+	// Widening requires the verified `auth.ScopeAdmin` claim — a non-empty
+	// TenantIDs without the claim fails closed with the scope-mismatch
+	// error, never a silent narrowing. Empty (the default) is
+	// byte-compatible with the identity-scoped read.
+	TenantIDs []string `json:"tenant_ids,omitempty"`
 }
 
 // AgentListRequest is the `agents.list` request body.

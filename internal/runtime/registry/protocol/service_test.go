@@ -16,16 +16,18 @@ import (
 // RegistryProjector, exercised in registry_projector_test.go against a
 // real Agent Registry.
 type fakeProjector struct {
-	agents   []prototypes.Agent
-	getResp  prototypes.AgentGetResponse
-	tools    []prototypes.AgentToolBinding
-	mem      prototypes.AgentMemoryBinding
-	gov      prototypes.AgentGovernance
-	skills   []prototypes.AgentSkillBinding
-	perms    prototypes.AgentPermissions
-	metrics  prototypes.AgentMetrics
-	notFound bool
-	listErr  error
+	agents       []prototypes.Agent
+	fleetAgents  []prototypes.Agent
+	getResp      prototypes.AgentGetResponse
+	tools        []prototypes.AgentToolBinding
+	mem          prototypes.AgentMemoryBinding
+	gov          prototypes.AgentGovernance
+	skills       []prototypes.AgentSkillBinding
+	perms        prototypes.AgentPermissions
+	metrics      prototypes.AgentMetrics
+	notFound     bool
+	listErr      error
+	fleetTenants [][]string // records the tenant sets ListTenantAgents was called with
 }
 
 func (f *fakeProjector) ListAgents(_ context.Context, _ identity.Identity) ([]prototypes.Agent, error) {
@@ -33,6 +35,14 @@ func (f *fakeProjector) ListAgents(_ context.Context, _ identity.Identity) ([]pr
 		return nil, f.listErr
 	}
 	return f.agents, nil
+}
+
+func (f *fakeProjector) ListTenantAgents(_ context.Context, tenantIDs []string) ([]prototypes.Agent, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	f.fleetTenants = append(f.fleetTenants, tenantIDs)
+	return f.fleetAgents, nil
 }
 
 func (f *fakeProjector) GetAgent(_ context.Context, _ identity.Identity, _ string) (prototypes.AgentGetResponse, error) {
@@ -107,7 +117,7 @@ func TestService_List_IdentityMandatory(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := svc.List(context.Background(), prototypes.AgentListRequest{Identity: tc.scope})
+			_, err := svc.List(context.Background(), prototypes.AgentListRequest{Identity: tc.scope}, false)
 			if !errors.Is(err, agentsprotocol.ErrIdentityRequired) {
 				t.Fatalf("List(%s) err = %v, want ErrIdentityRequired", tc.name, err)
 			}
@@ -124,7 +134,7 @@ func TestService_List_PaginatesAndAggregates(t *testing.T) {
 	svc, _ := agentsprotocol.NewService(fp)
 	resp, err := svc.List(context.Background(), prototypes.AgentListRequest{
 		Identity: validScope, Page: 1, PageSize: 2,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -152,7 +162,7 @@ func TestService_List_FacetFilter(t *testing.T) {
 	resp, err := svc.List(context.Background(), prototypes.AgentListRequest{
 		Identity: validScope,
 		Filter:   prototypes.AgentFilter{Status: []prototypes.AgentStatus{prototypes.AgentStatusActive}},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -163,7 +173,7 @@ func TestService_List_FacetFilter(t *testing.T) {
 	resp, err = svc.List(context.Background(), prototypes.AgentListRequest{
 		Identity: validScope,
 		Filter:   prototypes.AgentFilter{Search: "BATCH"},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("List(search): %v", err)
 	}
@@ -176,7 +186,7 @@ func TestService_List_PageSizeOutOfRange(t *testing.T) {
 	svc, _ := agentsprotocol.NewService(&fakeProjector{})
 	_, err := svc.List(context.Background(), prototypes.AgentListRequest{
 		Identity: validScope, PageSize: prototypes.MaxAgentListPageSize + 1,
-	})
+	}, false)
 	if !errors.Is(err, agentsprotocol.ErrInvalidRequest) {
 		t.Fatalf("List(oversize) err = %v, want ErrInvalidRequest", err)
 	}
@@ -280,7 +290,7 @@ func TestService_Metrics_Rollup(t *testing.T) {
 
 func TestService_List_ProjectorError_Propagates(t *testing.T) {
 	svc, _ := agentsprotocol.NewService(&fakeProjector{listErr: errors.New("store down")})
-	_, err := svc.List(context.Background(), prototypes.AgentListRequest{Identity: validScope})
+	_, err := svc.List(context.Background(), prototypes.AgentListRequest{Identity: validScope}, false)
 	if err == nil || errors.Is(err, agentsprotocol.ErrIdentityRequired) {
 		t.Fatalf("List propagation err = %v, want a wrapped non-identity error", err)
 	}

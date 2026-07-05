@@ -262,6 +262,32 @@ type AgentRegistry interface {
 	// scope.
 	List(ctx context.Context) ([]AgentRecord, error)
 
+	// ListTenant enumerates every AgentRecord registered across ALL
+	// sessions of one tenant — the admin-widened FLEET read. It is a
+	// SEPARATE method from the ctx-identity-scoped List, NOT a widened
+	// mode of it: List keeps its mandatory full-triple scope; there is no
+	// identity-downgrading knob (CLAUDE.md §13). ListTenant takes an
+	// EXPLICIT tenant argument and returns records across every (user,
+	// session) under that tenant, each carrying its own registration
+	// Identity for per-row attribution.
+	//
+	// It is an ADMIN-GATE-ONLY call site: the Agents Protocol service is
+	// the sole production caller and gates on the verified
+	// `auth.ScopeAdmin` claim BEFORE invoking. An empty `tenantID` fails
+	// loud with ErrInvalidConfig — a fleet read never dumps the whole
+	// store.
+	//
+	// Because the registry persists per-(tenant, user, session) with no
+	// cross-identity index, ListTenant reads the StateStore's ONE
+	// maintenance-scan surface (ListKind over the agent-record prefix) and
+	// filters to the named tenant in memory. That scan is the store's
+	// sanctioned cross-identity primitive; it grants read VISIBILITY for
+	// the fleet projection, and each record is projected under its OWN
+	// identity (agent_id is never an isolation key). At V1 fleet
+	// cardinality the scan is acceptable; a dedicated per-tenant index is a
+	// future optimisation, not a correctness gap.
+	ListTenant(ctx context.Context, tenantID string) ([]AgentRecord, error)
+
 	// Inspect returns the read-side AgentSnapshot for agentID. Fleet
 	// observation — ordinary identity scope.
 	Inspect(ctx context.Context, agentID string) (*AgentSnapshot, error)

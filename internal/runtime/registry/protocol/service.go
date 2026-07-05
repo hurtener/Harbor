@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hurtener/Harbor/internal/audit"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/registry"
@@ -37,6 +39,11 @@ var (
 	// always injects one; this guards a misconfiguration rather than
 	// nil-panicking (CLAUDE.md §5).
 	ErrControlUnsupported = errors.New("registry/protocol: fleet-control not wired on this Service")
+	// ErrScopeMismatch — an admin-widened `agents.list` fleet enumeration
+	// (a non-empty Filter.TenantIDs) was issued without the verified
+	// `auth.ScopeAdmin` claim. Fails closed — never a silent narrowing to
+	// own scope (CLAUDE.md §6 rule 5 / §13).
+	ErrScopeMismatch = errors.New("registry/protocol: fleet enumeration requires the admin scope claim")
 )
 
 // Projector is the read seam the Service depends on. The V1 production
@@ -47,6 +54,12 @@ type Projector interface {
 	// ListAgents returns every agent visible to id, in agent_id order.
 	// The Service applies the facet filter + pagination on top.
 	ListAgents(ctx context.Context, id identity.Identity) ([]prototypes.Agent, error)
+	// ListTenantAgents returns every agent across ALL sessions of the
+	// named tenants — the admin-widened FLEET read. It is invoked by
+	// Service.List ONLY after the admin-scope gate passes; each row carries
+	// full per-(tenant, user, session) identity attribution. This lands the
+	// aggregating fleet projector behind the unchanged Projector interface.
+	ListTenantAgents(ctx context.Context, tenantIDs []string) ([]prototypes.Agent, error)
 	// GetAgent returns the full projection for agentID, or
 	// ErrAgentNotFound.
 	GetAgent(ctx context.Context, id identity.Identity, agentID string) (prototypes.AgentGetResponse, error)
@@ -89,6 +102,8 @@ type Controller interface {
 type Service struct {
 	projector  Projector
 	controller Controller
+	bus        events.EventBus // optional — nil ⇒ admin audit emit is logged only
+	redactor   audit.Redactor  // optional — defence-in-depth before the emit
 	logger     *slog.Logger
 }
 
@@ -101,6 +116,31 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Service) {
 		if l != nil {
 			s.logger = l
+		}
+	}
+}
+
+// WithBus wires the canonical events.EventBus the Service publishes the
+// `audit.admin_scope_used` event onto when an admin-widened `agents.list`
+// fleet enumeration succeeds. A nil bus is treated as "WithBus not
+// supplied" — the fleet path still works, but the audit observation is
+// logged at Info instead of published (the admin action is NEVER fully
+// silent — CLAUDE.md §13).
+func WithBus(b events.EventBus) Option {
+	return func(s *Service) {
+		if b != nil {
+			s.bus = b
+		}
+	}
+}
+
+// WithRedactor wires the audit.Redactor the Service runs the
+// `audit.admin_scope_used` payload through before publishing. A nil
+// redactor is treated as "WithRedactor not supplied".
+func WithRedactor(r audit.Redactor) Option {
+	return func(s *Service) {
+		if r != nil {
+			s.redactor = r
 		}
 	}
 }
@@ -153,10 +193,19 @@ func validIdentity(scope prototypes.IdentityScope) (identity.Identity, error) {
 }
 
 // List implements the `agents.list` method. It validates identity,
-// resolves the identity-scoped agent set from the Projector, applies the
-// facet filter + free-text search + pagination, and computes the
-// filtered-view aggregates.
-func (s *Service) List(ctx context.Context, req prototypes.AgentListRequest) (prototypes.AgentListResponse, error) {
+// resolves the agent set from the Projector — the caller's own
+// identity-scoped set, or (when the request names tenants for fleet
+// widening AND the verified admin claim is present) the admin-widened set
+// across the named tenants — applies the facet filter + free-text search
+// + pagination, computes the filtered-view aggregates, and emits an
+// `audit.admin_scope_used` event on a successful fleet enumeration.
+//
+// adminScoped is the verified-JWT scope decision the wire handler computes
+// from `auth.HasScope(ctx, auth.ScopeAdmin)`. It is consulted ONLY when
+// the request names tenants for fleet widening (Filter.TenantIDs); a
+// non-widened request never requires it and stays byte-compatible with
+// the identity-scoped read.
+func (s *Service) List(ctx context.Context, req prototypes.AgentListRequest, adminScoped bool) (prototypes.AgentListResponse, error) {
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentListResponse{}, err
@@ -175,7 +224,25 @@ func (s *Service) List(ctx context.Context, req prototypes.AgentListRequest) (pr
 		page = 1
 	}
 
-	all, err := s.projector.ListAgents(ctx, id)
+	// Fleet widening. A non-empty Filter.TenantIDs is the admin-widened
+	// FLEET-enumeration selector: enumerate every agent across all sessions
+	// of the named tenants. Widening requires the verified admin claim — a
+	// widened request without it fails LOUD with ErrScopeMismatch, never a
+	// silent narrowing to own scope (CLAUDE.md §6 rule 5 / §13).
+	widenTenants := dedupeNonEmpty(req.Filter.TenantIDs)
+	widened := len(widenTenants) > 0
+	if widened && !adminScoped {
+		return prototypes.AgentListResponse{}, fmt.Errorf(
+			"%w: agents.list named %d tenant(s) for fleet enumeration", ErrScopeMismatch, len(widenTenants))
+	}
+
+	var all []prototypes.Agent
+	if widened {
+		// adminScoped is guaranteed true here.
+		all, err = s.projector.ListTenantAgents(ctx, widenTenants)
+	} else {
+		all, err = s.projector.ListAgents(ctx, id)
+	}
 	if err != nil {
 		return prototypes.AgentListResponse{}, fmt.Errorf("registry/protocol: list: %w", err)
 	}
@@ -209,6 +276,10 @@ func (s *Service) List(ctx context.Context, req prototypes.AgentListRequest) (pr
 		rows = filtered[start:end]
 	}
 
+	if widened {
+		s.emitAdminAudit(ctx, id, "agents.list", len(widenTenants))
+	}
+
 	return prototypes.AgentListResponse{
 		Agents:     rows,
 		Page:       page,
@@ -217,6 +288,29 @@ func (s *Service) List(ctx context.Context, req prototypes.AgentListRequest) (pr
 		TotalRows:  totalRows,
 		Aggregates: aggregates,
 	}, nil
+}
+
+// dedupeNonEmpty returns the input slice with empty strings dropped and
+// duplicates collapsed, preserving first-seen order. It normalises the
+// admin-widened Filter.TenantIDs selector so the gate + audit count the
+// distinct named tenants.
+func dedupeNonEmpty(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 // agentMatches reports whether an agent satisfies the facet filter.

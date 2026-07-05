@@ -93,6 +93,17 @@ export interface TaskFilter {
   kinds?: TaskKind[];
   parent_task_id?: string;
   identities?: TaskIdentity[];
+  /**
+   * Phase 153 (D-284) — the admin-widened FLEET-enumeration selector. When
+   * non-empty, `tasks.list` enumerates every task across ALL sessions of the
+   * named tenants (a coordinator's fleet Tasks board), not just the caller's
+   * own triple. Widening requires the verified `auth.ScopeAdmin` claim; a
+   * non-empty value without it fails closed with the scope-mismatch error —
+   * never a silent narrowing. Empty is byte-compatible with the
+   * session-scoped read. Unlike `identities` (a post-projection row facet),
+   * `tenant_ids` selects the enumeration SCOPE.
+   */
+  tenant_ids?: string[];
   since?: string;
   until?: string;
   error_classes?: string[];

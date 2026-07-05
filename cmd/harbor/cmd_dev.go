@@ -972,6 +972,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// (pause / drain / restart / force_stop / deregister) drive the
 		// real registry behind the admin-gated Protocol surface.
 		agentsprotocol.WithController(agentRegistry),
+		// wire the bus + redactor so an admin-widened `agents.list` fleet
+		// enumeration emits the `audit.admin_scope_used` event (never a
+		// silent privileged read — CLAUDE.md §13).
+		agentsprotocol.WithBus(bus),
+		agentsprotocol.WithRedactor(red),
 	)
 	if err != nil {
 		closeAll(ctx)

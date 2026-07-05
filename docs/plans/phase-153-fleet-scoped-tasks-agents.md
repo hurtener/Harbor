@@ -42,15 +42,15 @@
 
 ## Acceptance criteria
 
-- [ ] `tasks.TaskRegistry` (the seam shared by the `inprocess` and `durable` drivers via `internal/tasks/engine`) gains an explicit tenant-scoped enumeration — a separate method taking an explicit tenant scope argument, NOT an optional/blank session on the existing `List` (identity stays mandatory on the session-scoped path; no identity-downgrading knob, CLAUDE.md §13).
-- [ ] The driver conformance suite covers the tenant-scoped read on all shipped task drivers with parity.
-- [ ] A tasks aggregating projector implements the existing `Projector` interface's widened read; `Service.List` routes to it ONLY when the request names widened scope AND `adminScoped` is true; a widened request without the claim → the existing `ErrScopeMismatch`, loud.
-- [ ] `agents.list` gains the same shape: an aggregating projector over the Agent Registry enumerating agents across sessions of named tenants under the admin claim; same loud gate, same audit emit.
-- [ ] Wire changes are additive (widening fields on the two list requests + per-row identity attribution where missing); full D-223 TS lockstep (manifest regen + typed-client mirror) and D-209 protocol-docs regen in the same PR.
-- [ ] `audit.admin_scope_used` emitted on every widened call, tagged with the method name and tenant count.
-- [ ] Cross-session isolation proof (§6 rule 10): an integration test runs N≥10 concurrent sessions across ≥2 tenants and asserts (a) non-admin callers see exactly their own triple's rows, (b) an admin scoped to tenant A never receives tenant B rows, (c) no cross-talk under `-race`.
-- [ ] `docs/skills/` surfaces mentioning `tasks.list` / `agents.list` (grep `metadata.surface: protocol|tasks`) updated in the same PR (§18).
-- [ ] `scripts/smoke/phase-153.sh` shows OK ≥ 2, FAIL = 0; prior smokes pass.
+- [x] `tasks.TaskRegistry` (the seam shared by the `inprocess` and `durable` drivers via `internal/tasks/engine`) gains an explicit tenant-scoped enumeration — a separate method taking an explicit tenant scope argument, NOT an optional/blank session on the existing `List` (identity stays mandatory on the session-scoped path; no identity-downgrading knob, CLAUDE.md §13). — `ListTenant(ctx, tenantID, f)` on `TaskRegistry`, shared impl in `engine.Engine`.
+- [x] The driver conformance suite covers the tenant-scoped read on all shipped task drivers with parity. — `ListTenant_*` subtests in `conformancetest`, run against both inprocess + durable.
+- [x] A tasks aggregating projector implements the existing `Projector` interface's widened read; `Service.List` routes to it ONLY when the request names widened scope AND `adminScoped` is true; a widened request without the claim → the existing `ErrScopeMismatch`, loud. — `aggregating_projector.go`, routed on `filter.tenant_ids`.
+- [x] `agents.list` gains the same shape: an aggregating projector over the Agent Registry enumerating agents across sessions of named tenants under the admin claim; same loud gate, same audit emit. — `registry.ListTenant` (StateStore maintenance-scan) + `ListTenantAgents` + new `ErrScopeMismatch`.
+- [x] Wire changes are additive (widening fields on the two list requests + per-row identity attribution where missing); full D-223 TS lockstep (manifest regen + typed-client mirror) and D-209 protocol-docs regen in the same PR. — `TaskFilter.TenantIDs`, `AgentFilter.TenantIDs`, `Agent.Identity`; manifest + `types.md` regenerated.
+- [x] `audit.admin_scope_used` emitted on every widened call, tagged with the method name and tenant count. — tasks `emitAdminAudit` + new agents `emitAdminAudit`.
+- [x] Cross-session isolation proof (§6 rule 10): an integration test runs N≥10 concurrent sessions across ≥2 tenants and asserts (a) non-admin callers see exactly their own triple's rows, (b) an admin scoped to tenant A never receives tenant B rows, (c) no cross-talk under `-race`. — `test/integration/fleet_enumeration_test.go` (2×2×2 matrix, both task drivers, N=32 concurrent stress).
+- [x] `docs/skills/` surfaces mentioning `tasks.list` / `agents.list` (grep `metadata.surface: protocol|tasks`) updated in the same PR (§18). — `use-the-harbor-protocol/SKILL.md` gains a fleet-enumeration note.
+- [x] `scripts/smoke/phase-153.sh` shows OK ≥ 2, FAIL = 0; prior smokes pass.
 
 ## Files added or changed
 
@@ -98,13 +98,13 @@
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse: the new aggregating projectors are compiled artifacts — N≥100 concurrent widened+narrow reads against single shared instances under `-race`.
-- [ ] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] Concurrent-reuse: the new aggregating projectors are compiled artifacts — N≥100 concurrent widened+narrow reads against single shared instances under `-race`. — `TestListTenantTasks_ConcurrentReuse_D025` (128) + `TestListTenantAgents_ConcurrentReuse_D025` (128).
+- [x] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
+- [x] If new vocabulary: glossary updated — "Aggregating projector".
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed — none departed.

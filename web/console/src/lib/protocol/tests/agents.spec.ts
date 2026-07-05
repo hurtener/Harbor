@@ -108,7 +108,8 @@ describe('AgentsProtocol typed view', () => {
           tools_count: 2,
           mcp_count: 1,
           registered_at: '2026-05-20T12:00:00Z',
-          updated_at: '2026-05-20T12:00:00Z'
+          updated_at: '2026-05-20T12:00:00Z',
+          identity: { tenant: 't1', user: 'u1', session: 's1' }
         }
       ],
       page: 1,

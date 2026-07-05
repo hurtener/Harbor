@@ -175,7 +175,10 @@ func (h *AgentsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch method {
 	case methods.MethodAgentsList:
-		h.serveList(w, r, body, wireScope)
+		// `agents.list` consults the verified admin claim ONLY for a fleet
+		// widening (Filter.TenantIDs). controlScoped is the same
+		// `auth.ScopeAdmin` decision the fleet-control verbs use.
+		h.serveList(w, r, body, wireScope, controlScoped)
 	case methods.MethodAgentsGet:
 		h.serveGet(w, r, body, wireScope)
 	case methods.MethodAgentsTools:
@@ -219,7 +222,7 @@ func decodeAgentsBody(body []byte, req any) error {
 	return dec.Decode(req)
 }
 
-func (h *AgentsHandler) serveList(w http.ResponseWriter, r *http.Request, body []byte, scope prototypes.IdentityScope) {
+func (h *AgentsHandler) serveList(w http.ResponseWriter, r *http.Request, body []byte, scope prototypes.IdentityScope, adminScoped bool) {
 	var req prototypes.AgentListRequest
 	if err := decodeAgentsBody(body, &req); err != nil {
 		writeAgentsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
@@ -227,7 +230,7 @@ func (h *AgentsHandler) serveList(w http.ResponseWriter, r *http.Request, body [
 		return
 	}
 	req.Identity = scope
-	resp, err := h.service.List(r.Context(), req)
+	resp, err := h.service.List(r.Context(), req, adminScoped)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentsList, err)
 		return
@@ -404,6 +407,9 @@ func classifyAgentsError(method methods.Method, err error) (protoerrors.Code, in
 	case errors.Is(err, agentsprotocol.ErrInvalidRequest):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": invalid request — " + err.Error()
+	case errors.Is(err, agentsprotocol.ErrScopeMismatch):
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			m + ": fleet enumeration requires the verified `admin` scope claim"
 	case errors.Is(err, agentsprotocol.ErrControlScopeRequired):
 		return protoerrors.CodeIdentityScopeRequired, http.StatusForbidden,
 			m + ": fleet control requires the elevated admin control claim"
