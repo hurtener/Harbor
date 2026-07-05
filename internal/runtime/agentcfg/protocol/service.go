@@ -157,6 +157,16 @@ type Service struct {
 	// with ErrCoordinatorUnavailable rather than silently dropping the auth
 	// requirement (CLAUDE.md §13).
 	coordinator pauseresume.Coordinator
+	// bootDeclaredMCPServers is the set of MCP server names declared in the
+	// boot yaml (`tools.mcp_servers[].name`). `remove_mcp_connection` rejects
+	// a name in this set with a DISTINCT loud error: the verb governs
+	// revisioned state only, so a boot-declared server is edited in yaml +
+	// restart, never removed through the control plane. A nil / empty set
+	// means no yaml-declared servers (every unknown name is a plain
+	// not-found). Populated at the cmd/harbor + devstack boundary from the
+	// loaded config.
+	bootDeclaredMCPServers map[string]struct{}
+
 	// stdioAllowlist is the fail-closed set of permitted stdio commands
 	// (matched on argv[0]). A stdio add whose command[0] is absent from this
 	// set is rejected (an empty / nil set rejects EVERY stdio add — the
@@ -341,6 +351,29 @@ func WithStdioAllowlist(commands []string) Option {
 			}
 		}
 		s.stdioAllowlist = set
+	}
+}
+
+// WithBootDeclaredMCPServers records the set of MCP server names declared in
+// the boot yaml (`tools.mcp_servers[].name`). `remove_mcp_connection` rejects
+// a name in this set with ErrBootDeclaredConnection (distinct from the
+// unknown-name error) — a boot-declared server is not revisioned state and is
+// edited in yaml + restart. An empty / nil list leaves every unknown name a
+// plain not-found. Injected at the cmd/harbor + devstack boundary from the
+// loaded config so the verb (and the run-start reconcile, which never detaches
+// a boot server) share one authoritative set.
+func WithBootDeclaredMCPServers(names []string) Option {
+	return func(s *Service) {
+		if len(names) == 0 {
+			return
+		}
+		set := make(map[string]struct{}, len(names))
+		for _, n := range names {
+			if n != "" {
+				set[n] = struct{}{}
+			}
+		}
+		s.bootDeclaredMCPServers = set
 	}
 }
 

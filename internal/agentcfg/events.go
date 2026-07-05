@@ -77,6 +77,16 @@ const (
 	// recording revision id, the pause token, and the author identity — never
 	// a secret / credential / auth code.
 	EventTypeMCPConnectionAuthRequired events.EventType = "mcp.connection.auth_required"
+
+	// EventTypeMCPConnectionRemoved — emitted when an admin removes a
+	// runtime-added MCP server connection (agent_config.remove_mcp_connection):
+	// a new revision drops the named descriptor and prunes that server's
+	// tool-exposure residue. The physical teardown (deregister the server's
+	// tools + close its transport) happens at the NEXT run's projection
+	// boundary — this event marks the desired-state removal, not the transport
+	// close. Carries the agent id, the removed server id, the recording
+	// revision id, and the author identity — never a secret.
+	EventTypeMCPConnectionRemoved events.EventType = "mcp.connection.removed"
 )
 
 func init() {
@@ -89,6 +99,7 @@ func init() {
 		EventTypeMCPConnectionAdded,
 		EventTypeMCPConnectionFailed,
 		EventTypeMCPConnectionAuthRequired,
+		EventTypeMCPConnectionRemoved,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -165,6 +176,26 @@ type MCPConnectionResumedPayload struct {
 	// RevisionID is the tool-exposure revision that recorded the resume.
 	RevisionID string
 	// OccurredAt is the resume instant.
+	OccurredAt time.Time
+}
+
+// MCPConnectionRemovedPayload is the typed payload for
+// EventTypeMCPConnectionRemoved. SafePayload — every field is
+// operator-visible audit metadata; no secret-shaped content is carried. It
+// mirrors the paused/resumed payload shape (the removal is the same class of
+// desired-state edit).
+type MCPConnectionRemovedPayload struct {
+	events.SafeSealed
+	// Author is the identity that recorded the removal.
+	Author identity.Quadruple
+	// AgentID is the agent whose MCP connection was removed (a registration
+	// identity, NOT an isolation principal).
+	AgentID string
+	// ServerID is the MCP source id that was removed.
+	ServerID string
+	// RevisionID is the revision that dropped the descriptor + pruned residue.
+	RevisionID string
+	// OccurredAt is the removal instant.
 	OccurredAt time.Time
 }
 

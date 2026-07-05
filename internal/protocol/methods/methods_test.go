@@ -115,6 +115,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigSetPromptLayers,
 	methods.MethodAgentConfigSetLLMParams,
 	methods.MethodAgentConfigAddMCPConnection,
+	methods.MethodAgentConfigRemoveMCPConnection,
 	methods.MethodAgentConfigSessionSetUserPrompt,
 	methods.MethodAgentConfigSessionSetSourceDisables,
 	methods.MethodAgentConfigSessionSkillsList,
@@ -143,18 +144,19 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + mcp.apps.tool_context) = 83, + governance tenant-override admin
 	// pair two (governance.set_tenant_overrides +
 	// governance.get_tenant_overrides) = 85, + governance.rotate_key one
-	// = 86, + agent-config control plane twelve (agent_config.get +
+	// = 86, + agent-config control plane thirteen (agent_config.get +
 	// set_revision + list_revisions + diff + rollback + skills.{list,
 	// upsert,delete} + set_tool_exposure + set_prompt_layers +
-	// set_llm_params + add_mcp_connection) = 98, + agent-config session
-	// safe subset five (agent_config.session.set_user_prompt +
-	// set_source_disables + skills.{list,upsert,delete}) = 103,
-	// + State-snapshots state.history one = 104,
+	// set_llm_params + add_mcp_connection + remove_mcp_connection) = 99,
+	// + agent-config session safe subset five
+	// (agent_config.session.set_user_prompt + set_source_disables +
+	// skills.{list,upsert,delete}) = 104,
+	// + State-snapshots state.history one = 105,
 	// + agent-config USER tier five (agent_config.user.get + set_revision +
-	// list_revisions + diff + rollback) = 109,
-	// + Sessions-page erasure one (sessions.delete) = 110.
-	if len(got) != 110 {
-		t.Fatalf("Methods() returned %d methods, want 110", len(got))
+	// list_revisions + diff + rollback) = 110,
+	// + Sessions-page erasure one (sessions.delete) = 111.
+	if len(got) != 111 {
+		t.Fatalf("Methods() returned %d methods, want 111", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

@@ -63,6 +63,7 @@ import type {
 	AgentConfigSetLLMParamsResponse,
 	AgentConfigMCPConnectionDescriptor,
 	AgentConfigAddMCPConnectionResponse,
+	AgentConfigRemoveMCPConnectionResponse,
 	AgentConfigSkillInput,
 	AgentConfigSkillsListResponse,
 	AgentConfigSkillsUpsertResponse,
@@ -1141,6 +1142,20 @@ export class AgentConfigNamespace {
 		return this.#t.request<AgentConfigAddMCPConnectionResponse>(
 			'/v1/agent_config/add_mcp_connection',
 			body,
+		);
+	}
+	/** `agent_config.remove_mcp_connection` — remove a runtime-added MCP server
+	 * connection by name; records a revision (dropping the descriptor + pruning
+	 * that server's tool-exposure residue) + emits `mcp.connection.removed`. The
+	 * physical detach happens at the next run's projection boundary. An unknown
+	 * or boot-declared (yaml) name fails loud with a distinct error. */
+	removeMcpConnection(
+		agentId: string,
+		name: string,
+	): Promise<AgentConfigRemoveMCPConnectionResponse> {
+		return this.#t.request<AgentConfigRemoveMCPConnectionResponse>(
+			'/v1/agent_config/remove_mcp_connection',
+			{ agent_id: agentId, name },
 		);
 	}
 	/** `agent_config.skills.list` — list the agent's skills (metadata only). */

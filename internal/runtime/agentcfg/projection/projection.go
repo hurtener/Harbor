@@ -54,6 +54,122 @@ func loadOverlay(ctx context.Context, ov sessionoverlay.Store, agentID string, i
 	return o, err
 }
 
+// ConnectionDetacher is the driver-agnostic seam the run-start reconciliation
+// uses to detach a no-longer-declared runtime-added MCP server at the
+// next-turn projection boundary. The concrete (wired at the cmd/harbor +
+// devstack boundary) deregisters the source's tools from the planner catalog
+// view + the MCP registry and closes its transport gracefully — the physical
+// inverse of the add path's attach. Keeping it an injected interface preserves
+// this package's §4.4 boundary: the projection imports no concrete MCP driver.
+type ConnectionDetacher interface {
+	// AttachedSources returns the source ids currently live in the MCP
+	// registry (the attached set the reconcile diffs against the declared
+	// set). A fresh slice; the caller may retain it. NOTE: the concretes
+	// today enumerate the PROCESS-GLOBAL registry — correct for the
+	// single-agent dev wiring, but the future multi-agent attach leg must
+	// scope the attached set to the reconciling agent or one agent's
+	// reconcile would see (and detach) another agent's sources.
+	AttachedSources(ctx context.Context) []string
+	// Detach deregisters the named source's tools from the catalog + MCP
+	// registry and closes its transport gracefully. Idempotent — a source
+	// already gone is a no-op the concrete swallows.
+	Detach(ctx context.Context, source string) error
+}
+
+// ErrReconcileRead wraps an active-revision read failure inside
+// ReconcileConnections so the run-loop caller can distinguish a fail-loud
+// read error (never a silent "detach nothing", CLAUDE.md §13) from a
+// best-effort detach error.
+var ErrReconcileRead = errors.New("agentcfg/projection: run-start reconcile active-revision read failed")
+
+// ReconcileConnections is the DETACH leg of run-start reconciliation. It
+// compares the agent's DECLARED runtime-added connections (the active config
+// revision's connections section) against the ATTACHED set (the live MCP
+// registry) and detaches every server that is attached but no longer declared
+// AND not boot-declared — a connection removed via
+// `agent_config.remove_mcp_connection`, or a server re-declared away by a
+// rollback past an add. Detaching deregisters the server's tools from the
+// catalog + MCP registry and closes its transport, so the NEXT run's projected
+// catalog excludes them, the registry no longer lists it, and the subprocess
+// drains. Boot-declared (yaml) servers are NEVER detached (they are not
+// revisioned state); the bootDeclared set gates them out.
+//
+// # Honest in-flight semantics (read this before assuming isolation)
+//
+// This is a projection-boundary act: it fires at run START, never in the
+// middle of the calling run, and EXPOSURE correctness is next-turn — a
+// removed server never appears in any catalog view projected after the
+// removal revision. Physical TEARDOWN is a separate, process-global effect:
+// the catalog and MCP registry are shared across sessions, so a reconcile
+// triggered by one session's run-start can deregister a source and close its
+// transport while ANOTHER session's run is mid-flight and about to call it.
+// That in-flight run's prompt snapshot is unchanged, but its NEXT call to the
+// detached server fails LOUDLY — a typed catalog not-found at dispatch, or a
+// closed-transport error from the driver — never a hang, a panic, or a
+// silent success. This is the same failure class as an operator stopping a
+// boot-declared server mid-run, and it is the deliberate trade: a
+// refcount/drain protocol was rejected as complexity the removal semantics do
+// not need.
+//
+// # Serialisation and idempotency
+//
+// Reconcile holds NO cross-run lock of its own: safety comes from the
+// registry read being atomic, the detacher being idempotent (an
+// already-detached source is a no-op), and each underlying primitive
+// (catalog deregister, registry deregister, transport close) being
+// internally synchronised. N concurrent reconciles converge to the same
+// state; the concurrent tests pin this.
+//
+// It is DETACH-ONLY by design: attaching a declared-but-absent server (the
+// restart-survival reconcile) is a separate, deferred concern; the live add
+// verb is the attach path, and re-add after remove reuses the persisted
+// agent-bound token through that verb (no second consent). Two windows are
+// accepted until the attach leg lands: a reconcile racing a concurrent re-add
+// of the same name can detach the freshly re-added server (a stale
+// declared-set read — heals at the next add or restart), and
+// AttachedSources() is today a process-global enumeration (fine for the
+// single-agent dev wiring; the future multi-agent attach leg must scope the
+// attached set per agent).
+//
+// A nil registry, an empty agentID, or a nil detacher returns (0, nil) — the
+// backward-compatible "no reconcile" path. A registry read error is returned
+// wrapped in ErrReconcileRead (fail loud, never swallowed). Detach errors are
+// joined and returned (the caller logs them loud) but do not abort the diff:
+// one server that refuses to close must not strand the others. Only the
+// identity triple is used (the registry is identity-scoped, never keyed by
+// run). Returns the number of servers detached.
+func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, detacher ConnectionDetacher, bootDeclared map[string]struct{}) (int, error) {
+	if reg == nil || agentID == "" || detacher == nil {
+		return 0, nil
+	}
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return 0, fmt.Errorf("%w: agent %q: %w", ErrReconcileRead, agentID, err)
+	}
+	declared := make(map[string]struct{})
+	if ok {
+		for _, d := range rev.Payload.ConnectionDescriptors() {
+			declared[d.Name] = struct{}{}
+		}
+	}
+	var detached int
+	var errs []error
+	for _, src := range detacher.AttachedSources(ctx) {
+		if _, boot := bootDeclared[src]; boot {
+			continue // boot-declared servers are never detached by reconcile.
+		}
+		if _, ok := declared[src]; ok {
+			continue // still declared — keep it attached.
+		}
+		if derr := detacher.Detach(ctx, src); derr != nil {
+			errs = append(errs, fmt.Errorf("detach %q: %w", src, derr))
+			continue
+		}
+		detached++
+	}
+	return detached, errors.Join(errs...)
+}
+
 // ActiveSkillViews applies an agent's active-config skills membership to the
 // run's skill-directory views at run start. It resolves the agent's active
 // revision once and, when the revision pins a skills section, keeps only the

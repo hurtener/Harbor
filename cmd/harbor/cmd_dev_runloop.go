@@ -221,6 +221,20 @@ type perTaskRunLoopDriverOpts struct {
 	// effective hook via the shared projection (agent-config over this yaml
 	// over none) and pins it into the RunSpec, so an edit lands next-run.
 	runCompletionHook *steering.CompletionHookSpec
+
+	// connectionDetacher drives the DETACH leg of run-start reconciliation:
+	// at run start the driver detaches every MCP server that is attached but
+	// no longer declared by the agent's active config revision (a removed
+	// connection, or a rollback past an add), so the next run's projected
+	// catalog excludes it. OPTIONAL — nil means no reconcile (the
+	// backward-compatible path). Injected at the cmd/harbor boundary (it
+	// imports the concrete MCP driver; this driver stays driver-agnostic).
+	connectionDetacher projection.ConnectionDetacher
+
+	// bootDeclaredMCP is the set of boot-declared (yaml) MCP server names the
+	// reconcile MUST NEVER detach (they are not revisioned state). Nil/empty
+	// when no yaml server is declared.
+	bootDeclaredMCP map[string]struct{}
 }
 
 // tenantOverrideResolver is the narrow read seam the run loop uses to
@@ -289,6 +303,12 @@ type perTaskRunLoopDriver struct {
 	// the effective hook per run via the shared projection.
 	runCompletionHook *steering.CompletionHookSpec
 
+	// connectionDetacher + bootDeclaredMCP drive the run-start reconcile
+	// detach leg (see the opts godoc). connectionDetacher is nil when the MCP
+	// registry / catalog are absent (no reconcile).
+	connectionDetacher projection.ConnectionDetacher
+	bootDeclaredMCP    map[string]struct{}
+
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
 	// completion for tasks.get enrichment. Reads are safe under RLock;
@@ -352,16 +372,18 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		grantedScopes:   append([]string(nil), opts.grantedScopes...),
 		artifactStore:   opts.artifactStore,
 		// disposition policy passthrough.
-		dispositionPolicy: opts.dispositionPolicy,
-		tenantOverrides:   opts.tenantOverrides,
-		sessionOverrides:  opts.sessionOverrides,
-		agentConfig:       opts.agentConfig,
-		agentConfigID:     opts.agentConfigID,
-		sessionOverlay:    opts.sessionOverlay,
-		runCompletionHook: opts.runCompletionHook,
-		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
-		tokenBudget:       opts.tokenBudget,
-		compression:       opts.compression,
+		dispositionPolicy:  opts.dispositionPolicy,
+		tenantOverrides:    opts.tenantOverrides,
+		sessionOverrides:   opts.sessionOverrides,
+		agentConfig:        opts.agentConfig,
+		agentConfigID:      opts.agentConfigID,
+		sessionOverlay:     opts.sessionOverlay,
+		runCompletionHook:  opts.runCompletionHook,
+		connectionDetacher: opts.connectionDetacher,
+		bootDeclaredMCP:    opts.bootDeclaredMCP,
+		trajectories:       make(map[tasks.TaskID]*planner.Trajectory),
+		tokenBudget:        opts.tokenBudget,
+		compression:        opts.compression,
 	}, nil
 }
 
@@ -623,6 +645,37 @@ func (d *perTaskRunLoopDriver) projectRunCompletionHook(ctx context.Context, q i
 	return hook, err
 }
 
+// reconcileConnections runs the DETACH leg of run-start reconciliation before
+// the catalog is projected: it detaches every MCP server attached but no
+// longer declared by the agent's active config revision (a removed connection
+// or a rollback past an add), so this and every later run's projected catalog
+// excludes it, the registry no longer lists it, and the transport drains.
+// Exposure correctness is next-turn and independent of teardown; teardown is
+// process-global — a DIFFERENT session's in-flight run whose next step calls
+// the detached server fails LOUDLY (typed catalog not-found / closed
+// transport), never a hang or a silent success (see the
+// projection.ReconcileConnections godoc for the full honest-semantics
+// contract). A reconcile error is logged LOUD (never silently swallowed,
+// CLAUDE.md §13) but does NOT fail the run — detach is teardown hygiene, not
+// a run precondition; a run continues even if an old transport refuses to
+// close. Shared verbatim with the devstack twin via the projection package
+// (CLAUDE.md §17.6).
+func (d *perTaskRunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
+	if d.connectionDetacher == nil {
+		return
+	}
+	detached, err := projection.ReconcileConnections(ctx, d.agentConfig, d.agentConfigID, q, d.connectionDetacher, d.bootDeclaredMCP)
+	if err != nil {
+		d.logger.ErrorContext(ctx, "perTaskRunLoopDriver: run-start MCP reconcile detach failed",
+			slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
+		return
+	}
+	if detached > 0 {
+		d.logger.InfoContext(ctx, "perTaskRunLoopDriver: run-start MCP reconcile detached servers",
+			slog.String("agent_id", d.agentConfigID), slog.Int("detached", detached))
+	}
+}
+
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
@@ -655,6 +708,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			slog.String("err", err.Error()))
 		return
 	}
+
+	// Run-start reconciliation (detach leg): before projecting the catalog,
+	// detach any MCP server the agent's active revision no longer declares
+	// (a removed connection / a rollback past an add). Exposure is next-turn;
+	// teardown is process-global (an in-flight run calling a detached server
+	// fails loud — see the reconcileConnections wrapper doc).
+	d.reconcileConnections(taskCtx, q)
 
 	// build the per-run consumer state BEFORE
 	// handing the RunSpec to the RunLoop. The four primitives the

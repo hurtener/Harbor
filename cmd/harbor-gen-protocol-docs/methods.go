@@ -487,6 +487,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigAddMCPConnectionRequest", Response: "AgentConfigAddMCPConnectionResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigRemoveMCPConnection: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigRemoveMCPConnection),
+			Mutates: true,
+			Request: "AgentConfigRemoveMCPConnectionRequest", Response: "AgentConfigRemoveMCPConnectionResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigSessionSetUserPrompt: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSessionSetUserPrompt),
 			Mutates: true,

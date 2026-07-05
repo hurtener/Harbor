@@ -349,6 +349,28 @@ export interface AgentConfigAddMCPConnectionResponse {
 	protocol_version: string;
 }
 
+/** `agent_config.remove_mcp_connection` request — admin-scoped. Removes a
+ * runtime-added MCP server connection by name as a new revision (dropping the
+ * descriptor + pruning that server's tool-exposure residue, carrying every
+ * sibling section forward). An unknown name and a boot-declared (yaml) name
+ * each fail loud with a distinct typed error. The physical teardown happens at
+ * the next run's projection boundary. Mirrors
+ * `types.AgentConfigRemoveMCPConnectionRequest`. */
+export interface AgentConfigRemoveMCPConnectionRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+}
+
+/** `agent_config.remove_mcp_connection` response — the recorded removing
+ * revision and the removed name. Mirrors
+ * `types.AgentConfigRemoveMCPConnectionResponse`. */
+export interface AgentConfigRemoveMCPConnectionResponse {
+	revision: AgentConfigRevisionView;
+	name: string;
+	protocol_version: string;
+}
+
 /** One skill in the agent's store — metadata only. Mirrors
  * `types.AgentConfigSkillSummary`. */
 export interface AgentConfigSkillSummary {

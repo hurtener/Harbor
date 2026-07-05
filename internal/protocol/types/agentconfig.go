@@ -496,6 +496,38 @@ type AgentConfigAddMCPConnectionResponse struct {
 	ProtocolVersion string `json:"protocol_version"`
 }
 
+// AgentConfigRemoveMCPConnectionRequest is the admin-scoped
+// `agent_config.remove_mcp_connection` request — remove a runtime-added MCP
+// server connection by name. The verb governs REVISIONED state only: it
+// records a new revision that drops the named descriptor AND prunes that
+// server's tool-exposure residue (its paused/disabled/loading entries),
+// carrying every sibling section forward. An unknown name and a boot-declared
+// (yaml) name each fail loud with a distinct typed error (a boot-declared
+// server is edited in yaml + restart, never through this verb). The verb
+// itself never tears anything down — the physical teardown (deregister tools
+// + close transport) happens at the next run-start reconcile; an in-flight
+// run whose next step calls the detached server fails loudly (typed
+// not-found / closed transport), never a hang or a silent success.
+type AgentConfigRemoveMCPConnectionRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Name is the runtime-added MCP source id to remove.
+	Name string `json:"name"`
+}
+
+// AgentConfigRemoveMCPConnectionResponse is the
+// `agent_config.remove_mcp_connection` response — the recorded removing
+// revision and the name that was removed.
+type AgentConfigRemoveMCPConnectionResponse struct {
+	// Revision is the recorded config revision whose connections section
+	// dropped the named descriptor (with the server's tool-exposure residue
+	// pruned in the same atomic revision).
+	Revision AgentConfigRevisionView `json:"revision"`
+	// Name is the removed MCP source id (echoed for the caller's convenience).
+	Name            string `json:"name"`
+	ProtocolVersion string `json:"protocol_version"`
+}
+
 // AgentConfigSkillSummary is the wire projection of one skill in the
 // agent's store — metadata only, never the full body.
 type AgentConfigSkillSummary struct {

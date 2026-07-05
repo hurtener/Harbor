@@ -27,9 +27,18 @@ type stubProvider struct {
 	resourceBody []byte
 	resourceMime string
 	resourceErr  error
+	closed       int
+	closeErr     error
 }
 
 func (p *stubProvider) SourceID() tools.ToolSourceID { return p.id }
+
+func (p *stubProvider) Close(_ context.Context) error {
+	p.mu.Lock()
+	p.closed++
+	p.mu.Unlock()
+	return p.closeErr
+}
 
 func (p *stubProvider) DisplayModes() []string { return p.displayModes }
 

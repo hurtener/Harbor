@@ -735,11 +735,20 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// pin is validated at set time (parity with the tenant model-swap).
 		agentcfgprotocol.WithValidModels(validModels),
 	}
+	// bootMCPNames is the set of boot-declared (yaml) MCP server names. The
+	// remove verb rejects them (distinct loud error) and the run-start
+	// reconcile never detaches them — they are not revisioned state.
+	bootMCPNames := bootDeclaredMCPServerNames(cfg)
+	agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithBootDeclaredMCPServers(bootMCPNames))
+	var mcpDetacher projection.ConnectionDetacher
 	if toolCat != nil && mcpRegistry != nil {
 		mcpAttacher := newDevMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.logger,
 			identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}, oauthProviders)
 		closers = append(closers, mcpAttacher.Close)
 		agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(mcpAttacher))
+		// The DETACH-leg concrete the run-start reconcile drives (§4.4 glue —
+		// it imports the concrete MCP driver; the run loop stays driver-agnostic).
+		mcpDetacher = newDevMCPConnectionDetacher(toolCat, mcpRegistry, opts.logger)
 	}
 	agentConfigService, err := agentcfgprotocol.NewService(agentConfigRegistry, agentConfigOpts...)
 	if err != nil {
@@ -827,6 +836,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// resolved per run against the agent-config hooks section (agent-config
 		// over yaml over none). Nil when the operator configured no static hook.
 		runCompletionHook: projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
+		// run-start reconcile detach leg: detach an MCP server the agent's
+		// active revision no longer declares (a removed connection / a rollback
+		// past an add) before the catalog is projected. Nil detacher (no MCP
+		// registry) = no reconcile.
+		connectionDetacher: mcpDetacher,
+		bootDeclaredMCP:    bootDeclaredMCPServerSet(cfg),
 	})
 	if err != nil {
 		closeAll(ctx)
