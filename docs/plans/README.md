@@ -2867,9 +2867,21 @@ per §17.8). Status: Shipped (V1.6).
   attempts (the "document the undercount" alternative is rejected —
   compliance counts must be accurate). Fault-injection tested
   (bus-fails-once-then-heals; interrupt-mid-cascade-then-converge). No
-  wire-shape change. See `docs/plans/phase-155-erasure-audit-integrity.md`.
+  wire-shape change. Mechanism shipped: a durable erasure-ledger
+  checkpoint (StateStore-backed, keyed under the actor's observability
+  scope so it survives the erased triple's own `DeleteScope` clear) is
+  persisted after every destructive step, strictly before
+  `StateStore.DeleteScope`'s irreversible clear; the final
+  `session.erased` emit reads only from the ledger and is now part of
+  `Erase`'s success criteria (redactor refusal / bus-publish failure both
+  fail loud with the new `ErrErasureRecordFailed`, mapped through
+  `sessions/protocol.ErrErasureRecordFailed` to HTTP 500). Concurrent
+  `sessions.delete` calls for the SAME session serialize via a striped
+  in-process lock so exactly one call ever runs the cascade — the other
+  observes the genuine not-found path, never a double event. See
+  `docs/plans/phase-155-erasure-audit-integrity.md`.
 - **Decision:** D-286.
-- **Status:** Pending.
+- **Status:** Shipped (v1.11).
 
 ---
 

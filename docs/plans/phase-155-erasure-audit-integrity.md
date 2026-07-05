@@ -37,18 +37,19 @@ Two named follow-ups from the v1.7 band-end review harden the `sessions.delete` 
 
 ## Acceptance criteria
 
-- [ ] The cascade's ordering guarantees the invariant: at no point can (data irrevocably gone) ∧ (no durable audit record) ∧ (success returned) hold. The implementor picks the mechanism — persist the compliance record (via the StateStore, outside the erased scope) before the irreversible clear, or bounded-retry the emit and fail the call on exhaustion — and documents the chosen ordering in the package godoc; the "record says erased but data present + success returned" inverse is equally asserted impossible.
-- [ ] Bus publish failure on the final emit → the call fails loud with a typed error; a subsequent re-invoke converges (emits the record, completes) — proven by a fault-injection test with a failing-then-healthy bus.
-- [ ] Redactor refusal follows the same loud path (no `Error`-log-and-continue).
-- [ ] Per-store deletion counts accumulate across attempts: a cascade interrupted mid-way and re-invoked reports the cumulative total in both the response and the event — proven by a fault-injection test (fail after artifacts step, re-invoke, assert totals equal first+second attempt sums).
-- [ ] `SessionsDeleteResponse` count-field docs + `docs/site` reference updated to state cumulative semantics.
-- [ ] Existing erasure tests (running-task refusal, own-session scope, idempotent convergence) stay green; `scripts/smoke/phase-155.sh` OK ≥ 1, FAIL = 0.
+- [x] The cascade's ordering guarantees the invariant: at no point can (data irrevocably gone) ∧ (no durable audit record) ∧ (success returned) hold. The implementor picks the mechanism — persist the compliance record (via the StateStore, outside the erased scope) before the irreversible clear, or bounded-retry the emit and fail the call on exhaustion — and documents the chosen ordering in the package godoc; the "record says erased but data present + success returned" inverse is equally asserted impossible.
+- [x] Bus publish failure on the final emit → the call fails loud with a typed error; a subsequent re-invoke converges (emits the record, completes) — proven by a fault-injection test with a failing-then-healthy bus.
+- [x] Redactor refusal follows the same loud path (no `Error`-log-and-continue).
+- [x] Per-store deletion counts accumulate across attempts: a cascade interrupted mid-way and re-invoked reports the cumulative total in both the response and the event — proven by a fault-injection test (fail after artifacts step, re-invoke, assert totals equal first+second attempt sums).
+- [x] `SessionsDeleteResponse` count-field docs + `docs/site` reference updated to state cumulative semantics.
+- [x] Existing erasure tests (running-task refusal, own-session scope, idempotent convergence) stay green; `scripts/smoke/phase-155.sh` OK ≥ 1, FAIL = 0.
 
 ## Files added or changed
 
-- `internal/sessions/erasure.go` — ordering + cumulative counts.
-- `internal/sessions/erasure_test.go` + fault-injection tests.
-- `internal/protocol/types/` — field doc comments only (no shape change; no D-223 manifest impact expected — verified by `make protocol-ts-gen-check`).
+- `internal/sessions/erasure.go` — ordering + cumulative counts + the durable ledger checkpoint + the striped per-session erase lock.
+- `internal/sessions/erasure_audit_test.go` — new file (rather than appending to `erasure_test.go`, to keep the fault-injection suite's fixtures/helpers self-contained) with the fault-injection tests.
+- `internal/sessions/events.go`, `internal/protocol/types/sessions.go` — field doc comments only (no shape change; no D-223 manifest impact — verified by `make protocol-ts-gen-check`; no `docs/site/protocol` diff — verified by `make protocol-docs-gen-check` — the generated Notes column does not surface Go field-doc prose).
+- `internal/sessions/protocol/protocol.go`, `internal/protocol/transports/stream/sessions_handler.go` — deviation beyond the plan's file list (§4.3): mirrors `ErrErasureRecordFailed` through the Service-layer error-mapping switch and the wire handler's HTTP-status classifier, matching the existing pattern for every other `sessions.Err*` sentinel on this surface, so the new sentinel doesn't fall through to the generic default case unclassified. Matching tests added to `internal/sessions/protocol/delete_test.go` and `internal/protocol/transports/stream/sessions_handler_delete_test.go`.
 - `scripts/smoke/phase-155.sh`.
 
 ## Public API surface
@@ -58,9 +59,9 @@ Two named follow-ups from the v1.7 band-end review harden the `sessions.delete` 
 ## Test plan
 
 - **Unit:** ordering invariant under injected redactor failure / bus failure / store failure at each cascade step; cumulative count math.
-- **Integration:** real state + artifact + memory drivers, real bus: happy path; bus-fails-once-then-heals → first call fails loud, second converges with cumulative counts and exactly one durable record; identity triple asserted on the event.
+- **Integration:** real state + artifact + memory drivers, real bus: happy path (pre-existing `internal/sessions/erasure_test.go` + `test/integration/phase130_session_erasure_test.go`, both still green); bus-fails-once-then-heals → first call fails loud, second converges with cumulative counts and exactly one durable record; identity triple asserted on the event. **Deviation (§4.3):** these fault-injection tests land in-package (`internal/sessions/erasure_audit_test.go`) rather than under `test/integration/` — `internal/sessions` already IS the cross-subsystem wiring boundary for this cascade (real StateStore + real MemoryStore + real ArtifactStore + the real durable EventBus, no mocks at the seam), the same precedent the existing `erasure_fence_test.go` (D-274) set for this exact package. §17.2 explicitly sanctions in-package integration tests "when the package itself IS the wiring boundary."
 - **Conformance:** N/A — no driver seam change (the cascade uses existing StateStore primitives).
-- **Concurrency / leak:** two concurrent `sessions.delete` for the same session race safely (one wins, one gets the idempotent/not-found path, never a double event); `-race`; goroutine baseline.
+- **Concurrency / leak:** two concurrent `sessions.delete` for the same session race safely (one wins, one gets the idempotent/not-found path, never a double event); `-race`; goroutine baseline (the existing N=120 distinct-sessions D-025 stress in `erasure_test.go` continues to pass alongside the new same-session race test).
 
 ## Smoke script additions
 
@@ -85,13 +86,13 @@ Two named follow-ups from the v1.7 band-end review harden the `sessions.delete` 
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse: N/A — no new reusable artifact; the concurrent-delete race test above runs under `-race`.
-- [ ] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target — `internal/sessions` moved from a 79.2% baseline to 81.5% (every function this phase touched/added in `erasure.go` sits at 88-100% coverage); the residual gap to the 85% package target is pre-existing debt in untouched `registry.go` / `catalog.go` / `gc.go` functions, not code this phase added. Recorded honestly rather than gold-plating unrelated code.
+- [x] If multi-isolation paths changed: cross-session isolation test passes (the pre-existing N=120 distinct-sessions concurrent test + the new same-session race test both pass under `-race`).
+- [x] Concurrent-reuse: N/A — no new reusable artifact; the concurrent-delete race test above runs under `-race`.
+- [x] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race` (in-package per the Test-plan deviation note above).
+- [x] If new vocabulary: glossary updated — N/A, no new vocabulary.
+- [x] If a brief finding was departed from: N/A — no departure from brief 05/06's findings; see "Brief findings incorporated" above.

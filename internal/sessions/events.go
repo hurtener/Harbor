@@ -78,14 +78,25 @@ type SessionGCReapedPayload struct {
 // event is published under the actor's observability scope so it never
 // re-persists durable state under the erased triple. SafePayload by
 // construction — every field is a bounded id, count, or timestamp.
+//
+// This is the durable record-of-fact for a right-to-erasure operation,
+// and publishing it is part of `sessions.delete`'s SUCCESS CRITERIA
+// rather than a best-effort afterthought: Erase only ever returns
+// success once this payload has been redacted and durably published.
+// The count fields are CUMULATIVE across any converging retries the
+// cascade needed (see internal/sessions.CascadeEraser's package godoc)
+// — the true total actually removed, never just the last attempt's own
+// count.
 type SessionErasedPayload struct {
 	events.SafeSealed
 	// SessionID is the session that was erased.
 	SessionID string
 	// StateRecordsDeleted is the number of StateStore records removed by
-	// the kind-agnostic scope delete.
+	// the kind-agnostic scope delete. Cumulative across converging
+	// attempts.
 	StateRecordsDeleted int
-	// ArtifactsDeleted is the number of artifacts removed.
+	// ArtifactsDeleted is the number of artifacts removed. Cumulative
+	// across converging attempts.
 	ArtifactsDeleted int
 	// MemoryPurged is true when the session's memory was flushed clean.
 	MemoryPurged bool

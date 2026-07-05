@@ -319,6 +319,15 @@ type SessionsDeleteRequest struct {
 // SessionsDeleteResponse reports the erasure outcome with non-sensitive
 // deletion telemetry only — never any erased user content. The counts
 // let an operator confirm the cascade reached every scoped store.
+//
+// Cumulative-count semantics: if a transient fault
+// interrupts the cascade mid-way and the caller re-invokes
+// `sessions.delete` to converge, the counts below are the TRUE
+// cumulative total actually removed across every attempt — never just
+// the last (converging) attempt's own, possibly-smaller, count. A
+// caller that only ever sees ONE successful response (the common case)
+// reads these exactly as before; the cumulative guarantee only becomes
+// observable across a retried sequence.
 type SessionsDeleteResponse struct {
 	// SessionID is the session that was erased.
 	SessionID string `json:"session_id"`
@@ -328,10 +337,12 @@ type SessionsDeleteResponse struct {
 	// StateRecordsDeleted is the number of StateStore records removed by
 	// the kind-agnostic scope delete (the session.lifecycle record, run-
 	// scoped trajectories, planner checkpoints, and the durable event
-	// stream all live under the triple and all go).
+	// stream all live under the triple and all go). Cumulative across
+	// converging attempts — see the type's doc comment.
 	StateRecordsDeleted int `json:"state_records_deleted"`
 	// ArtifactsDeleted is the number of artifacts removed from the
-	// session's scope.
+	// session's scope. Cumulative across converging attempts — see the
+	// type's doc comment.
 	ArtifactsDeleted int `json:"artifacts_deleted"`
 	// MemoryPurged is true when the session's memory was flushed to a
 	// clean state.

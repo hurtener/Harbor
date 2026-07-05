@@ -2,9 +2,11 @@ package sessions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
@@ -16,18 +18,27 @@ import (
 )
 
 // erasureAuditSession is the reserved session slot the content-free
-// `session.erased` audit event is published under. The erasure runs
-// own-session-only, so the actor's verified triple IS the erased triple;
-// publishing the audit event under the erased session would re-persist a
-// durable StateRecord there (the durable event bus keys every event by
-// its identity triple) and leave the erased session's `state.history`
-// non-empty. Instead the event rides the actor's (tenant, user) with
-// this reserved observability session — the compliance sink — so the
-// erased triple stays genuinely empty post-erasure (RFC §6.13 / §7). The
-// angle-bracket shape can never collide with a real conversation id (it
-// is not a legal JWT claim or session-header value), mirroring the
-// session-discovery catalog's sentinel.
+// `session.erased` audit event — and the durable erasure-ledger
+// checkpoint described below — are published/persisted under. The
+// erasure runs own-session-only, so the actor's verified triple IS the
+// erased triple; publishing/persisting under the erased session would
+// re-persist a durable StateRecord there (the durable event bus keys
+// every event by its identity triple) and leave the erased session's
+// `state.history` non-empty. Instead both ride the actor's
+// (tenant, user) with this reserved observability session — the
+// compliance sink — so the erased triple stays genuinely empty
+// post-erasure (RFC §6.13 / §7). The angle-bracket shape can never
+// collide with a real conversation id (it is not a legal JWT claim or
+// session-header value), mirroring the session-discovery catalog's
+// sentinel.
 const erasureAuditSession = "<erasure-audit>"
+
+// erasureLedgerKindPrefix namespaces the durable erasure-ledger
+// checkpoint StateStore records (see erasureLedgerRecord). One record
+// per erased session id, keyed under the actor's observability scope
+// (ledgerScope) so it survives the erased triple's own
+// StateStore.DeleteScope clear.
+const erasureLedgerKindPrefix = "session.erasure.pending."
 
 // CascadeEraser performs the ordered, fail-loud, idempotent session
 // erasure cascade behind `sessions.delete`: it refuses fail-loud on a
@@ -35,8 +46,8 @@ const erasureAuditSession = "<erasure-audit>"
 // State (the kind-agnostic StateStore scope delete removes the durable
 // session-lifecycle record + run-scoped trajectories + planner
 // checkpoints + the durable event stream), clears the registry's
-// in-memory catalogs, and emits a redacted, content-free `session.erased`
-// audit event under the actor's observability scope.
+// in-memory catalogs, and completes with a redacted, content-free
+// `session.erased` audit event under the actor's observability scope.
 //
 // There is no ACID transaction across the three independent stores; the
 // cascade is ordered and every per-store delete is idempotent, so a
@@ -48,11 +59,90 @@ const erasureAuditSession = "<erasure-audit>"
 // capability fails the whole cascade loud right there — the same
 // retry-safe posture as a mid-cascade store error, just earlier.
 //
+// # The audit record is part of the erasure's success criteria
+//
+// Two follow-ups (issues #409/#410) hardened this cascade's audit trail
+// on top of the ordering + fencing shape above. Previously, the final
+// `session.erased` emit was best-effort AFTER the destructive steps
+// completed: a transient bus/redactor failure lost the ONLY audit record
+// while Erase still reported success, and — because the destructive
+// steps (specifically StateStore.DeleteScope) had already removed the
+// session-lifecycle record — a re-invoke returned ErrSessionNotFound,
+// leaving no second chance to emit. Separately, a mid-cascade retry
+// re-ran idempotent deletes that found fewer records the second time, so
+// the reported counts reflected only the final converging attempt.
+//
+// The BINDING ordering invariant: at no point may (data irrevocably
+// gone) ∧ (no durable audit record) ∧ (success returned) hold — nor the
+// inverse (record says erased, data present, success returned). The
+// chosen mechanism is to persist a durable compliance checkpoint
+// (erasureLedgerRecord, via the StateStore the cascade already drives)
+// BEFORE each destructive step's result would otherwise become
+// unrecoverable, rather than bounded-retrying the emit in-call.
+// Concretely:
+//
+//  1. The ledger checkpoint is persisted under the actor's observability
+//     scope (ledgerScope — same reserved (tenant, user, <erasure-audit>)
+//     slot the final event publishes under), NOT the erased triple, so it
+//     survives StateStore.DeleteScope's clear of the erased session's own
+//     scope. It is tenant/user-scoped OPERATOR AUDIT DATA about a deleted
+//     session — never user content — addressing the phase plan's
+//     identity-scoping risk note head-on.
+//  2. The ledger is checkpointed immediately after EVERY destructive step
+//     (artifacts, memory, state), accumulating each step's own count onto
+//     whatever a PRIOR interrupted attempt already contributed (loaded at
+//     the top of Erase). This is what makes counts cumulative across
+//     converging attempts (#410): a step whose data is already gone on a
+//     retry contributes 0 locally, but the ledger already holds the
+//     earlier attempt's non-zero contribution.
+//  3. Because the ledger holds the complete, accurate counts BEFORE
+//     StateStore.DeleteScope ever runs (steps 1-2 checkpoint before step
+//     3), the compliance record is durably persisted strictly before the
+//     irreversible clear — satisfying the first half of the invariant.
+//     The final record-of-fact emit (completeErasure/emitErased) reads
+//     ONLY from the ledger, never recomputing counts, so it can't drift.
+//  4. A re-invoke after the destructive steps completed but the final
+//     emit failed finds the session already gone (ErrSessionNotFound from
+//     the registry pre-flight) AND a still-present ledger checkpoint —
+//     recognized as a CONVERGING retry: it skips every destructive step
+//     (nothing left to do) and goes straight to completeErasure, which
+//     re-attempts the record + emit using the ledger's cumulative counts.
+//     Only a successful emit clears the ledger, so an emit failure keeps
+//     the session "re-invokable" without ever touching a store again.
+//  5. A redactor refusal or a bus-publish failure at the final emit both
+//     fail Erase loud with the wrapped sentinel ErrErasureRecordFailed
+//     (no `Error`-log-and-continue) — the same loud path, because both
+//     mean the durable record-of-fact did not land.
+//  6. Concurrent Erase calls for the SAME session are serialized by a
+//     striped in-process lock (lockSession) so exactly one goroutine ever
+//     runs the cascade for a given session at a time: the loser blocks
+//     until the winner's cascade (through ledger cleanup) is fully done,
+//     then sees the genuine ErrSessionNotFound with no ledger — "one
+//     wins, one gets the not-found path, never a double event."
+//
+// Documented residual gap (accepted, not silently dropped): there is no
+// ACID transaction spanning a destructive store (artifacts/memory/state)
+// and the StateStore the ledger checkpoint itself is persisted through —
+// a generalized transactional-outbox subsystem is an explicit non-goal
+// of this design. A failure in the narrow window between a destructive
+// step succeeding and its OWN checkpoint save committing means that
+// step's contribution is not durably recorded; a converging retry's
+// local count for that step is by then 0 (already deleted), so the
+// final total under-counts by exactly that step's amount. This is
+// strictly narrower than the earlier whole-cascade gap it replaces (a
+// failure ANYWHERE previously lost the whole attempt's counts) and is
+// pinned by TestCascadeEraser_LedgerSaveFailure_LoudAndRetrySafe rather
+// than left silently untested. It never affects the fail-loud /
+// no-lost-record invariant (CLAUDE.md §13) — only count exactness on
+// this specific interleaving.
+//
 // A constructed *CascadeEraser is immutable after construction and safe
-// to share across N concurrent goroutines, each erasing a distinct
-// session: every method's per-call state lives in the call's arguments
-// and locals; the shared stores + registry are each independently
-// concurrency-safe.
+// to share across N concurrent goroutines: every method's per-call state
+// lives in the call's arguments and locals, the shared stores + registry
+// are each independently concurrency-safe, and the fixed-size striped
+// lock array (eraseLocks) is the one internally-synchronized mutable
+// field — it never grows with the number of distinct sessions ever
+// erased.
 type CascadeEraser struct {
 	registry *Registry
 	state    state.StateStore
@@ -62,7 +152,23 @@ type CascadeEraser struct {
 	redactor audit.Redactor // optional — defence-in-depth before the emit
 	clock    Clock
 	logger   *slog.Logger
+
+	// eraseLocks stripes a fixed-size array of mutexes over the
+	// (tenant, user, session) key so concurrent Erase calls for the SAME
+	// session serialize (see lockSession); distinct sessions run fully
+	// concurrently except for the rare shard collision (benign — erasure
+	// is a rare operation). Fixed size — never grows with the number of
+	// distinct sessions ever erased (an internally-synchronized array,
+	// not a growing map).
+	eraseLocks [eraseLockShards]sync.Mutex
 }
+
+// eraseLockShards bounds the per-session erase-serialization lock
+// memory to a constant footprint regardless of how many distinct
+// sessions are ever erased over the process's lifetime — the same
+// striped-mutex pattern as
+// internal/runtime/agentcfg/protocol/service.go's writeLocks.
+const eraseLockShards = 256
 
 // CascadeEraserDeps bundles the seams the CascadeEraser drives. Registry,
 // State, Memory, Artifacts, and Bus are mandatory; Redactor, Clock, and
@@ -82,6 +188,19 @@ type CascadeEraserDeps struct {
 // mandatory dependency. Fails closed (CLAUDE.md §5) rather than building
 // an eraser that would nil-panic on the first erasure.
 var ErrEraserMisconfigured = errors.New("sessions: CascadeEraser missing a mandatory dependency")
+
+// ErrErasureRecordFailed — the cascade's destructive steps completed (in
+// this attempt or an earlier converging one) but the durable
+// record-of-fact could not be completed: a redactor refusal or a
+// bus-publish failure at the final `session.erased` emit.
+// Erase fails the WHOLE call loud rather than reporting success with a
+// missing/incomplete audit trail. The session's scoped data IS gone;
+// the durable erasure-ledger checkpoint (persisted before the
+// irreversible StateStore.DeleteScope clear — see erasureLedgerRecord)
+// survives, so a re-invoke converges: it skips straight to re-attempting
+// the record + emit from the checkpointed cumulative counts, never
+// re-running a destructive step.
+var ErrErasureRecordFailed = errors.New("sessions: erasure record-of-fact could not be durably completed")
 
 // NewCascadeEraser builds the session-erasure cascade orchestrator.
 // Registry / State / Memory / Artifacts / Bus are mandatory — a nil
@@ -124,29 +243,48 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 // Erase runs the full erasure cascade for the verified identity. The
 // identity is the caller's own verified `(tenant, user, session)` — the
 // own-session-only scope contract is enforced at the wire / service edge
-// before Erase is reached. Order (RFC §6.9):
+// before Erase is reached. Order (RFC §6.9, hardened with the durable
+// record-of-fact ordering + cumulative counts described above):
 //
+//  0. lock: serialize concurrent Erase calls for this exact session
+//     (lockSession) so only one goroutine ever runs the steps below for
+//     it at a time; load any durable erasure-ledger checkpoint a PRIOR
+//     interrupted attempt left behind.
 //  1. refuse-if-running: load+verify the session record under id and
-//     probe the running-task seam. A refusal touches NO store.
+//     probe the running-task seam. A refusal touches NO store — UNLESS a
+//     ledger checkpoint already exists, in which case ErrSessionNotFound
+//     here means the destructive steps already fully completed on a
+//     prior attempt and only the final record-of-fact remains: Erase
+//     converges via completeErasure without touching artifacts / memory
+//     / state again.
 //  2. fence: mark the triple erased on the event bus, BEFORE any
 //     destructive step. A present-but-failing Fence capability fails the
 //     WHOLE erasure loud here — nothing has been touched yet, so this is
 //     retry-safe. A bus that does not implement the capability at all is
 //     a logged downgrade, not an error (see fenceSession).
-//  3. artifacts: enumerate the session's artifacts and delete each.
-//  4. memory: flush the session's memory to a clean state.
+//  3. artifacts: enumerate the session's artifacts and delete each, then
+//     durably checkpoint the cumulative count (issue #410).
+//  4. memory: flush the session's memory to a clean state, then
+//     checkpoint.
 //  5. state: kind-agnostic scope delete (the session-lifecycle record,
 //     run-scoped trajectories, planner checkpoints, and the durable event
-//     stream all live under the triple and all go).
-//  6. clear the registry's in-memory catalogs + discovery-catalog entry.
-//  7. emit the redacted, content-free `session.erased` audit event under
-//     the actor's observability scope.
+//     stream all live under the triple and all go) — THE irreversible
+//     clear — then checkpoint the final cumulative count. Because steps
+//     3-5 each checkpoint before the NEXT step runs, the ledger is
+//     always durably complete strictly before this step's clear takes
+//     effect ("record before the irreversible clear" ordering).
+//  6. complete: clear the registry's in-memory catalogs, build the
+//     redacted content-free `session.erased` payload from the ledger's
+//     cumulative counts, publish it, and — only once published — remove
+//     the ledger checkpoint (completeErasure).
 //
 // Returns ErrSessionRunning (refused — 409), ErrSessionNotFound (absent
-// under the caller's identity — 404), or a wrapped store/fence error (loud,
-// retry-safe: every step through state.DeleteScope is idempotent, and the
-// fence step (2) runs before step 3 ever touches a store). The response
-// carries non-sensitive deletion telemetry only.
+// under the caller's identity AND no pending ledger — 404),
+// ErrErasureRecordFailed (destructive steps done, record incomplete —
+// re-invokable), or a wrapped store/fence error (loud, retry-safe: every
+// step through state.DeleteScope is idempotent, and the fence step (2)
+// runs before step 3 ever touches a store). The response carries
+// non-sensitive deletion telemetry only.
 func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
 	if err := identity.Validate(id); err != nil {
@@ -160,9 +298,22 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, err
 	}
 
+	// 0. Serialize concurrent Erase calls for this exact session.
+	unlock := e.lockSession(id)
+	defer unlock()
+
+	ledger, hasLedger, err := e.loadLedger(ctx, id)
+	if err != nil {
+		return zero, fmt.Errorf("sessions: erase ledger load: %w", err)
+	}
+
 	// 1. Refuse-if-running pre-flight (load+verify + probe). Touches
-	//    nothing on refusal.
+	//    nothing on refusal — unless a pending ledger says the
+	//    destructive work already finished (converging retry).
 	if _, perr := e.registry.preflightErase(ctx, id.SessionID); perr != nil {
+		if errors.Is(perr, ErrSessionNotFound) && hasLedger {
+			return e.completeErasure(ctx, id, ledger)
+		}
 		return zero, perr
 	}
 
@@ -190,40 +341,122 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, fmt.Errorf("sessions: erase fence: %w", err)
 	}
 
-	// 3. Artifacts.
+	// 3. Artifacts — checkpoint immediately so an interruption before the
+	//    next step never loses this attempt's contribution (#410).
 	artifactsDeleted, err := e.eraseArtifacts(ctx, id)
 	if err != nil {
 		return zero, fmt.Errorf("sessions: erase artifacts: %w", err)
+	}
+	ledger.ArtifactsDeleted += artifactsDeleted
+	if err := e.saveLedger(ctx, id, ledger); err != nil {
+		return zero, fmt.Errorf("sessions: erase ledger checkpoint (artifacts): %w", err)
 	}
 
 	// 4. Memory.
 	if err := e.memory.Flush(ctx, identity.Quadruple{Identity: id}); err != nil {
 		return zero, fmt.Errorf("sessions: erase memory: %w", err)
 	}
+	ledger.MemoryPurged = true
+	if err := e.saveLedger(ctx, id, ledger); err != nil {
+		return zero, fmt.Errorf("sessions: erase ledger checkpoint (memory): %w", err)
+	}
 
 	// 5. State scope delete (removes the session-lifecycle record + every
-	//    kind/run under the triple, including the durable event stream).
+	//    kind/run under the triple, including the durable event stream) —
+	//    the irreversible clear. The ledger already durably holds every
+	//    count up to and including this step's result BEFORE Erase ever
+	//    reports success.
 	stateDeleted, err := e.state.DeleteScope(ctx, id)
 	if err != nil {
 		return zero, fmt.Errorf("sessions: erase state: %w", err)
 	}
+	ledger.StateRecordsDeleted += stateDeleted
+	if err := e.saveLedger(ctx, id, ledger); err != nil {
+		return zero, fmt.Errorf("sessions: erase ledger checkpoint (state): %w", err)
+	}
 
-	// 6. Clear the registry's in-memory catalogs + discovery catalog.
+	// 6. Complete: registry clear + redacted record-of-fact emit + ledger
+	//    cleanup.
+	return e.completeErasure(ctx, id, ledger)
+}
+
+// completeErasure finishes the cascade's final leg. It (re-)clears the
+// registry's in-memory catalogs — idempotent, safe whether or not a
+// prior attempt already ran it — builds the redacted, content-free
+// `session.erased` payload from the durably checkpointed ledger counts,
+// publishes it, and — only once the publish has durably succeeded —
+// removes the ledger checkpoint. Reached either fresh (from Erase's
+// step 6, right after DeleteScope) or via a converging retry (Erase's
+// pre-flight found the session already gone but a ledger checkpoint
+// still pending).
+func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (prototypes.SessionsDeleteResponse, error) {
+	var zero prototypes.SessionsDeleteResponse
 	if err := e.registry.clearErased(ctx, id); err != nil {
 		return zero, fmt.Errorf("sessions: erase registry clear: %w", err)
 	}
 
-	// 7. Emit the content-free audit event under the actor's
-	//    observability scope (never the erased triple).
 	resp := prototypes.SessionsDeleteResponse{
 		SessionID:           id.SessionID,
 		Deleted:             true,
-		StateRecordsDeleted: stateDeleted,
-		ArtifactsDeleted:    artifactsDeleted,
-		MemoryPurged:        true,
+		StateRecordsDeleted: ledger.StateRecordsDeleted,
+		ArtifactsDeleted:    ledger.ArtifactsDeleted,
+		MemoryPurged:        ledger.MemoryPurged,
 	}
-	e.emitErased(ctx, id, resp)
+	if err := e.emitErased(ctx, id, resp); err != nil {
+		return zero, err
+	}
+	// The record-of-fact is durably published at this point — the
+	// invariant this cascade defends is already satisfied. A failure
+	// removing the now-superfluous ledger checkpoint is logged loudly
+	// rather than failing an already-successful erasure: the only
+	// residual effect is a stray durable ledger record (harmless) and,
+	// on an implausible further invocation for this already-erased
+	// session id, a duplicate emit — never a lost record (CLAUDE.md §13
+	// concerns itself with losing the record, not an over-cautious
+	// extra one).
+	if err := e.deleteLedger(ctx, id); err != nil {
+		e.logger.WarnContext(ctx, "sessions: erasure ledger checkpoint cleanup failed after a successful record-of-fact emit — a stray durable record may remain",
+			slog.String("session_id", id.SessionID),
+			slog.String("tenant_id", id.TenantID),
+			slog.String("user_id", id.UserID),
+			slog.String("error", err.Error()))
+	}
 	return resp, nil
+}
+
+// lockSession acquires the striped per-session lock serializing
+// concurrent Erase calls for the SAME (tenant, user, session) so exactly
+// one goroutine ever runs the cascade for a given session at a time — a
+// second caller blocks until the first's cascade (including the final
+// record-of-fact emit + ledger cleanup) has fully finished. By the time
+// the loser acquires the lock the session and its ledger are gone, so
+// its own pre-flight returns the genuine ErrSessionNotFound: "one wins,
+// one gets the not-found path, never a double event" (CLAUDE.md §11).
+// Distinct sessions that happen to hash to the same shard serialize
+// occasionally too — benign over-locking (erasure is rare), never a
+// correctness loss.
+func (e *CascadeEraser) lockSession(id identity.Identity) func() {
+	key := id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID
+	m := &e.eraseLocks[eraseLockShard(key)]
+	m.Lock()
+	return m.Unlock
+}
+
+// eraseLockShard maps a session lock key to a stable shard index in
+// [0, eraseLockShards). FNV-1a over the key bytes — deterministic and
+// allocation-free — so the same session key always resolves to the same
+// shard.
+func eraseLockShard(key string) uint32 {
+	const (
+		offset = 2166136261
+		prime  = 16777619
+	)
+	h := uint32(offset)
+	for i := range len(key) {
+		h ^= uint32(key[i])
+		h *= prime
+	}
+	return h % eraseLockShards
 }
 
 // fenceSession marks the session's triple erased on the event bus so a
@@ -293,19 +526,108 @@ func (e *CascadeEraser) eraseArtifacts(ctx context.Context, id identity.Identity
 	return deleted, nil
 }
 
-// emitErased publishes the redacted, content-free `session.erased` audit
-// event under the actor's observability scope. The erased session id
-// rides as a payload field; the event Identity is the actor's
-// (tenant, user) with the reserved erasureAuditSession slot, so the emit
-// never re-persists durable state under the erased triple.
+// erasureLedgerRecord is the durable checkpoint the cascade persists via
+// the StateStore's ordinary Save/Load/Delete surface — NOT the erasure
+// scope delete — under the actor's observability scope (ledgerScope),
+// keyed per erased session id. It exists solely to survive across
+// interrupted/retried Erase attempts for ONE session: its cumulative
+// counts are the source of truth completeErasure reads from, and its
+// presence is what tells a later Erase call "the destructive steps
+// already ran; only the record-of-fact remains." It carries no user
+// content — bounded counts and a bool, the same shape as
+// SessionErasedPayload minus the timestamp.
+type erasureLedgerRecord struct {
+	ArtifactsDeleted    int  `json:"artifacts_deleted"`
+	MemoryPurged        bool `json:"memory_purged"`
+	StateRecordsDeleted int  `json:"state_records_deleted"`
+}
+
+// ledgerScope returns the StateStore identity the erasure ledger for id's
+// session is persisted under: the actor's (tenant, user) with the
+// reserved erasureAuditSession slot — the SAME scope the final
+// `session.erased` event publishes under. It is deliberately NOT the
+// erased triple: StateStore.DeleteScope(ctx, id) removes every record
+// under the erased triple, and a ledger stored there would vanish at
+// exactly the moment it is needed to survive.
+func ledgerScope(id identity.Identity) identity.Quadruple {
+	return identity.Quadruple{Identity: identity.Identity{
+		TenantID:  id.TenantID,
+		UserID:    id.UserID,
+		SessionID: erasureAuditSession,
+	}}
+}
+
+// ledgerKind returns the StateStore Kind the erasure ledger for
+// sessionID is keyed under. Namespaced per session id so concurrent
+// erasures of DISTINCT sessions belonging to the same actor never share
+// a slot.
+func ledgerKind(sessionID string) string {
+	return erasureLedgerKindPrefix + sessionID
+}
+
+// loadLedger returns the durable erasure checkpoint for id's session, if
+// one exists from a prior attempt (interrupted mid-cascade, or between
+// the irreversible clear and a successful record-of-fact emit). Returns
+// the zero ledger and hasLedger=false when none exists — a fresh
+// erasure attempt with no prior progress to accumulate onto.
+func (e *CascadeEraser) loadLedger(ctx context.Context, id identity.Identity) (erasureLedgerRecord, bool, error) {
+	rec, err := e.state.Load(ctx, ledgerScope(id), ledgerKind(id.SessionID))
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return erasureLedgerRecord{}, false, nil
+		}
+		return erasureLedgerRecord{}, false, err
+	}
+	var ledger erasureLedgerRecord
+	if err := json.Unmarshal(rec.Bytes, &ledger); err != nil {
+		return erasureLedgerRecord{}, false, fmt.Errorf("corrupt erasure ledger for session %q: %w", id.SessionID, err)
+	}
+	return ledger, true, nil
+}
+
+// saveLedger durably persists ledger's current cumulative counts for
+// id's session. Called after every destructive step so an interruption
+// before the NEXT step never loses this attempt's contribution (#410).
+// A fresh EventID is minted per call: this is a new logical version of
+// the checkpoint slot, not a retried write of the same one, so Save's
+// same-EventID-different-Bytes conflict rule does not apply — Save
+// simply overwrites the (Identity, Kind) slot, exactly as intended.
+func (e *CascadeEraser) saveLedger(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) error {
+	bytes, err := json.Marshal(ledger)
+	if err != nil {
+		return fmt.Errorf("marshal erasure ledger: %w", err)
+	}
+	return e.state.Save(ctx, state.StateRecord{
+		ID:       state.NewEventID(),
+		Identity: ledgerScope(id),
+		Kind:     ledgerKind(id.SessionID),
+		Bytes:    bytes,
+	})
+}
+
+// deleteLedger removes the erasure-ledger checkpoint for id's session.
+// Idempotent (state.StateStore.Delete on an absent key is a no-op).
+func (e *CascadeEraser) deleteLedger(ctx context.Context, id identity.Identity) error {
+	return e.state.Delete(ctx, ledgerScope(id), ledgerKind(id.SessionID))
+}
+
+// emitErased builds, redacts, and publishes the redacted, content-free
+// `session.erased` audit event under the actor's observability scope.
+// The erased session id rides as a payload field; the event Identity is
+// the actor's (tenant, user) with the reserved erasureAuditSession slot,
+// so the emit never re-persists durable state under the erased triple.
 //
-// The emit is best-effort observability — the erasure has already
-// completed durably, so a bus failure is logged loudly rather than
-// failing the (successful) erasure. The SafePayload is run through the
-// audit.Redactor when one is wired (defence-in-depth); a redactor refusal
-// logs loudly and skips the publish — never an unredacted emit
-// (CLAUDE.md §7 rule 6 / §13).
-func (e *CascadeEraser) emitErased(ctx context.Context, actor identity.Identity, resp prototypes.SessionsDeleteResponse) {
+// This is now part of Erase's SUCCESS CRITERIA, not best-effort
+// observability. The SafePayload is run through the audit.Redactor when
+// one is wired (defence-in-depth); a redactor refusal returns a wrapped
+// ErrErasureRecordFailed rather than logging and continuing (CLAUDE.md
+// §7 rule 6 / §13), and so does a bus.Publish failure. Either failure
+// means the durable record-of-fact did not land — completeErasure
+// propagates the error as Erase's own, and the ledger checkpoint
+// (already durably persisted before this call ever runs, across
+// whichever attempt got the destructive steps done) survives so a
+// re-invoke converges without re-running any destructive step.
+func (e *CascadeEraser) emitErased(ctx context.Context, actor identity.Identity, resp prototypes.SessionsDeleteResponse) error {
 	now := e.clock.Now()
 	payload := SessionErasedPayload{
 		SessionID:           resp.SessionID,
@@ -321,9 +643,9 @@ func (e *CascadeEraser) emitErased(ctx context.Context, actor identity.Identity,
 	}
 	if e.redactor != nil {
 		if _, err := e.redactor.Redact(ctx, payload); err != nil {
-			e.logger.ErrorContext(ctx, "sessions: session.erased redaction failed — event NOT published",
+			e.logger.ErrorContext(ctx, "sessions: session.erased redaction failed — erasure fails loud; a re-invoke converges",
 				append(logAttrs, slog.String("error", err.Error()))...)
-			return
+			return fmt.Errorf("sessions: erase record: %w: redaction failed: %w", ErrErasureRecordFailed, err)
 		}
 	}
 	observability := identity.Quadruple{Identity: identity.Identity{
@@ -338,7 +660,9 @@ func (e *CascadeEraser) emitErased(ctx context.Context, actor identity.Identity,
 		Payload:    payload,
 	}
 	if err := e.bus.Publish(ctx, ev); err != nil {
-		e.logger.WarnContext(ctx, "sessions: session.erased emit failed",
+		e.logger.ErrorContext(ctx, "sessions: session.erased emit failed — erasure fails loud; a re-invoke converges",
 			append(logAttrs, slog.String("error", err.Error()))...)
+		return fmt.Errorf("sessions: erase record: %w: publish failed: %w", ErrErasureRecordFailed, err)
 	}
+	return nil
 }

@@ -84,6 +84,14 @@ var (
 	// CodeUnknownMethod (404) so a client that probed the route detects
 	// the unwired surface exactly as it would a missing route.
 	ErrErasureUnsupported = errors.New("sessions/protocol: session erasure is not wired on this runtime")
+	// ErrErasureRecordFailed — the erasure cascade's destructive steps
+	// completed but the durable `session.erased` record-of-fact could not
+	// be completed (a redactor refusal or a bus-publish failure).
+	// Delete fails the whole call loud rather than reporting success with
+	// a missing audit trail; the session's data IS gone, and a re-invoke
+	// converges (it re-attempts only the record, no destructive step
+	// re-runs). The handler maps it to CodeRuntimeError (500).
+	ErrErasureRecordFailed = errors.New("sessions/protocol: erasure record-of-fact could not be durably completed")
 	// ErrMisconfigured — NewService was called with a nil Projector.
 	ErrMisconfigured = errors.New("sessions/protocol: NewService missing a mandatory dependency")
 )
@@ -399,6 +407,9 @@ func (s *Service) Delete(ctx context.Context, req prototypes.SessionsDeleteReque
 		case errors.Is(err, sessions.ErrIdentityMismatch):
 			return prototypes.SessionsDeleteResponse{},
 				fmt.Errorf("%w: %w", ErrIdentityRequired, err)
+		case errors.Is(err, sessions.ErrErasureRecordFailed):
+			return prototypes.SessionsDeleteResponse{},
+				fmt.Errorf("%w: %w", ErrErasureRecordFailed, err)
 		default:
 			return prototypes.SessionsDeleteResponse{},
 				fmt.Errorf("sessions/protocol: delete: %w", err)
