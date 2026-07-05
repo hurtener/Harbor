@@ -2194,6 +2194,18 @@ func collectLiveReload(v reflect.Value, prefix []string, out *[]string) {
 // closed (CLAUDE.md §7: a profiler is never exposed off-box). Loopback
 // is the numeric 127.0.0.0/8 or ::1 (matching the runtime's isLoopback
 // check); a hostname like "localhost" is intentionally rejected.
+func ValidateLoopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("must be host:port, got %q (%w)", addr, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("must be a loopback address (127.0.0.0/8 or ::1), got host %q — the pprof debug listener is never exposed off-box", host)
+	}
+	return nil
+}
+
 // isLoopbackHostname reports whether a URL hostname is loopback for the
 // purposes of the credential-source TLS carve-out: a numeric loopback IP
 // (127.0.0.0/8 or ::1) or the literal "localhost". Unlike
@@ -2209,16 +2221,4 @@ func isLoopbackHostname(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-func ValidateLoopbackAddr(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("must be host:port, got %q (%w)", addr, err)
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("must be a loopback address (127.0.0.0/8 or ::1), got host %q — the pprof debug listener is never exposed off-box", host)
-	}
-	return nil
 }
