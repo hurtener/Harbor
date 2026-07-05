@@ -5,15 +5,20 @@
 // BuildProviders walks `cfg.OAuthProviders[]`, constructs the shared
 // crypto chain ONCE (one operator-supplied KEK env var per binary →
 // AES-256-GCM Sealer → StateStore-backed TokenStore), and dispatches
-// each entry to the §4.4 driver registry by `Driver` name. Credentials
-// enter via env-var indirection (CLAUDE.md §7 rule 2 — never
-// hardcoded, never logged): `os.Getenv` resolves `ClientIDEnv` /
-// `ClientSecretEnv` at this boundary, and the KEK is read from the env
-// var named in `cfg.OAuthTokenKEKEnv` (32 hex bytes; the Sealer
-// enforces length). Every failure is loud: empty / wrong-length KEK,
-// missing env-var contents, unknown driver, and factory errors all
-// crash assembly with a wrapped error naming the offending field
-// (CLAUDE.md §13 amendment).
+// each entry to the §4.4 driver registry by `Driver` name. Each entry's
+// OWN client credential resolves through the §4.4 credential-source seam
+// (`internal/tools/auth/credsource`): `env` (the default — resolved at
+// boot from `ClientIDEnv` / `ClientSecretEnv`, fail-loud when unset) or
+// `remote` (an authenticated pull from a coordinator endpoint at first
+// need). BuildProviders constructs the source, calls its boot-time
+// `ValidateAtBoot`, and threads it onto `ProviderConfig.CredentialSource`;
+// the driver resolves the credential at its need-point (CLAUDE.md §7
+// rule 2 — never hardcoded, never logged). The KEK is read from the env
+// var named in `cfg.OAuthTokenKEKEnv` (32 hex bytes; the Sealer enforces
+// length). Every failure is loud: empty / wrong-length KEK, an unset env
+// credential, a malformed remote block, unknown driver / source, and
+// factory errors all crash assembly with a wrapped error naming the
+// offending field (CLAUDE.md §13 amendment).
 package auth
 
 import (
@@ -21,12 +26,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 )
 
 // BuildDeps bundles the shared runtime collaborators BuildProviders
@@ -74,25 +81,24 @@ func BuildProviders(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps)
 		Coordinator: deps.Coordinator,
 	}
 	for i, p := range cfg.OAuthProviders {
-		clientID := os.Getenv(p.ClientIDEnv)
-		if clientID == "" {
-			return nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d]): env var %q (named by client_id_env) is unset or empty",
-				p.Name, i, p.ClientIDEnv)
+		src, err := buildCredentialSource(i, p, deps)
+		if err != nil {
+			return nil, err
 		}
-		clientSecret := os.Getenv(p.ClientSecretEnv)
-		if clientSecret == "" {
-			return nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d]): env var %q (named by client_secret_env) is unset or empty",
-				p.Name, i, p.ClientSecretEnv)
+		// The env source resolves + fails loud here (today's boot
+		// behavior); the remote source validates only the block shape and
+		// defers the network pull to first use.
+		if err := src.ValidateAtBoot(ctx); err != nil {
+			return nil, err
 		}
 		pcfg := ProviderConfig{
-			Name:         p.Name,
-			ClientID:     clientID,
-			ClientSecret: clientSecret,
-			Scopes:       append([]string(nil), p.Scopes...),
-			AuthURL:      p.AuthURL,
-			TokenURL:     p.TokenURL,
-			RedirectURL:  p.RedirectURL,
-			Extra:        p.Extra,
+			Name:             p.Name,
+			CredentialSource: src,
+			Scopes:           append([]string(nil), p.Scopes...),
+			AuthURL:          p.AuthURL,
+			TokenURL:         p.TokenURL,
+			RedirectURL:      p.RedirectURL,
+			Extra:            p.Extra,
 		}
 		prov, err := Resolve(ctx, p.Driver, pcfg, factoryDeps)
 		if err != nil {
@@ -102,6 +108,41 @@ func BuildProviders(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps)
 		providers[p.Name] = prov
 	}
 	return providers, nil
+}
+
+// buildCredentialSource constructs the §4.4 credential source declared by
+// the provider entry (defaulting to `env`), mapping the operator YAML
+// onto the neutral `credsource.Config` boundary. The remote source
+// receives the shared bus + redactor so it can emit its SafePayload fetch
+// events; the env source ignores them.
+func buildCredentialSource(index int, p config.ToolOAuthProviderConfig, deps BuildDeps) (credsource.Source, error) {
+	name := p.CredentialSource
+	if name == "" {
+		name = credsource.SourceEnv
+	}
+	scfg := credsource.Config{
+		ProviderName:    p.Name,
+		ProviderIndex:   index,
+		ClientIDEnv:     p.ClientIDEnv,
+		ClientSecretEnv: p.ClientSecretEnv,
+		Clock:           time.Now,
+		Bus:             deps.Bus,
+		Redactor:        deps.Redactor,
+	}
+	if p.Remote != nil {
+		scfg.Remote = &credsource.RemoteConfig{
+			URL:          p.Remote.URL,
+			AuthTokenEnv: p.Remote.AuthTokenEnv,
+			CacheTTL:     p.Remote.CacheTTL,
+			Timeout:      p.Remote.Timeout,
+		}
+	}
+	src, err := credsource.Resolve(name, scfg)
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d], credential_source=%q): %w",
+			p.Name, index, name, err)
+	}
+	return src, nil
 }
 
 // resolveTokenKEK reads the named env var and decodes its value as a

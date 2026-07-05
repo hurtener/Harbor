@@ -49,6 +49,7 @@ import (
 	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 	"github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
@@ -192,12 +193,11 @@ func newP148ProviderAndBus(t *testing.T, broker *p142Broker) (auth.OAuthProvider
 	coord := pauseresume.New()
 
 	prov, err := tokenexchange.New(auth.ProviderConfig{
-		Name:         p142Provider,
-		ClientID:     p142BrokerClient,
-		ClientSecret: p142BrokerSecret,
-		Scopes:       []string{"Mail.Read"},
-		TokenURL:     broker.tokenURL(),
-		Extra:        map[string]string{"audience": p142Audience},
+		Name:             p142Provider,
+		CredentialSource: credsource.Static(p142BrokerClient, p142BrokerSecret),
+		Scopes:           []string{"Mail.Read"},
+		TokenURL:         broker.tokenURL(),
+		Extra:            map[string]string{"audience": p142Audience},
 	}, auth.FactoryDeps{
 		Store:       store,
 		Bus:         bus,

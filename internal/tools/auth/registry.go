@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 )
 
 // OAuth provider driver registry.
@@ -36,23 +37,23 @@ import (
 // import driver internals. The dev stack maps the YAML struct onto
 // this struct at the boundary.
 //
-// Credentials enter via env-var indirection (§7 rule 2): `ClientID` /
-// `ClientSecret` are the **already-resolved** secret values (the
-// dev-stack reads `os.Getenv(cfg.ClientIDEnv)` etc. before calling
-// the factory). A driver that finds them empty fails closed.
+// Credentials enter through the [credsource.Source] seam (§7 rule 2 —
+// env-var indirection or an authenticated remote pull; never hardcoded,
+// never logged). `BuildProviders` constructs the source from the
+// provider's declared `credential_source` and threads it here as
+// `CredentialSource`; the driver calls `CredentialSource.Resolve(ctx)`
+// at its credential-need point. A driver that resolves an empty
+// credential fails closed. Direct constructors (headless embedders,
+// tests) supply `credsource.Static(id, secret)` so there is exactly ONE
+// credential-resolution path (§13, no dual "static fields" path).
 type ProviderConfig struct {
 	// Name is the operator-facing provider name. Surfaced in error
 	// messages.
 	Name string
-	// ClientID is the resolved OAuth client_id (read from the env
-	// var named in `config.ToolOAuthProviderConfig.ClientIDEnv`).
-	// Required — drivers fail closed when empty.
-	ClientID string
-	// ClientSecret is the resolved OAuth client_secret (read from
-	// the env var named in
-	// `config.ToolOAuthProviderConfig.ClientSecretEnv`). Required —
-	// drivers fail closed when empty. NEVER logged.
-	ClientSecret string
+	// CredentialSource resolves the provider's OWN client credential
+	// (`client_id` / `client_secret`) — either at boot (env) or lazily
+	// at first use (remote). Required; drivers fail closed when nil.
+	CredentialSource credsource.Source
 	// Scopes is the requested OAuth scope list.
 	Scopes []string
 	// AuthURL is the authorization endpoint.

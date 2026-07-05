@@ -40,16 +40,16 @@ A `tools.oauth_providers[]` entry's client credential is resolved from the proce
 
 ## Acceptance criteria
 
-- [ ] `config.ToolOAuthProviderConfig` gains `credential_source` (`env` default | `remote`) + the `remote` block; `config.Validate` requires exactly the fields the declared source needs (env source: today's rules unchanged; remote source: url + auth_token_env, and rejects a populated `client_id_env`/`client_secret_env` alongside `remote` — one source, no dual path, §13).
-- [ ] A §4.4 seam: credential-source interface + `env` and `remote` drivers + factory dispatch by name; drivers self-register; blank imports live in `internal/drivers/prod` (D-196); factory error lists registered sources.
-- [ ] `BuildProviders` threads the source into provider construction; the `env` source resolves at build time with today's exact fail-loud messages (behavioral no-op for existing configs, asserted by test).
-- [ ] The `remote` source: authenticated fetch (Authorization: Bearer from `auth_token_env`) with timeout; response parsed strictly; credential held memory-only with TTL (default derived from `expires_in`, capped by `cache_ttl`); single-flight per provider; refetch on expiry.
-- [ ] Failure legs are typed + loud: unreachable/non-200/malformed → a new sentinel wrapping the provider + url (no secret bytes in the error), the tool call fails, and a SafePayload failure event is emitted; there is NO fallback to env or unauthenticated operation.
-- [ ] The `tokenexchange` driver (and `oauth2`) consume the resolved credential through the source seam with zero behavior change when `env` is declared.
-- [ ] Fixture per §17.8: a local fixture credential server (the contract's reference implementation) drives an end-to-end integration test — boot with `remote` declared and NO broker envs → first tool-auth need pulls the credential → a token exchange against the local fixture broker succeeds; rotation leg: fixture swaps the credential, post-TTL fetch picks it up without restart.
-- [ ] The credential-fetch contract documented (docs site config/reference page) + `examples/` config gains a commented `credential_source: remote` block; CONFIG enumerations updated.
-- [ ] New canonical event type registered; D-209 docs regen in the same PR. No Protocol method/wire-type change → no D-223 impact (asserted in PR body).
-- [ ] `scripts/smoke/phase-154.sh` shows OK ≥ 1, FAIL = 0; prior smokes pass.
+- [x] `config.ToolOAuthProviderConfig` gains `credential_source` (`env` default | `remote`) + the `remote` block; `config.Validate` requires exactly the fields the declared source needs (env source: today's rules unchanged; remote source: url + auth_token_env, and rejects a populated `client_id_env`/`client_secret_env` alongside `remote` — one source, no dual path, §13).
+- [x] A §4.4 seam: credential-source interface + `env` and `remote` drivers + factory dispatch by name; drivers self-register; blank imports live in `internal/drivers/prod` (D-196); factory error lists registered sources.
+- [x] `BuildProviders` threads the source into provider construction; the `env` source resolves at build time with today's exact fail-loud messages (behavioral no-op for existing configs, asserted by test).
+- [x] The `remote` source: authenticated fetch (Authorization: Bearer from `auth_token_env`) with timeout; response parsed strictly; credential held memory-only with TTL (default derived from `expires_in`, capped by `cache_ttl`); single-flight per provider; refetch on expiry.
+- [x] Failure legs are typed + loud: unreachable/non-200/malformed → a new sentinel wrapping the provider + url (no secret bytes in the error), the tool call fails, and a SafePayload failure event is emitted; there is NO fallback to env or unauthenticated operation.
+- [x] The `tokenexchange` driver (and `oauth2`) consume the resolved credential through the source seam with zero behavior change when `env` is declared.
+- [x] Fixture per §17.8: a local fixture credential server (the contract's reference implementation) drives an end-to-end integration test — boot with `remote` declared and NO broker envs → first tool-auth need pulls the credential → a token exchange against the local fixture broker succeeds; rotation leg: fixture swaps the credential, post-TTL fetch picks it up without restart.
+- [x] The credential-fetch contract documented (docs site config/reference page) + `examples/` config gains a commented `credential_source: remote` block; CONFIG enumerations updated.
+- [x] New canonical event type registered; D-209 docs regen in the same PR. No Protocol method/wire-type change → no D-223 impact (asserted in PR body).
+- [x] `scripts/smoke/phase-154.sh` shows OK ≥ 1, FAIL = 0; prior smokes pass.
 
 ## Files added or changed
 
@@ -98,13 +98,13 @@ A `tools.oauth_providers[]` entry's client credential is resolved from the proce
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse: the remote source + wrapped provider are compiled artifacts — the N≥100 single-flight stress above under `-race`.
-- [ ] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] Concurrent-reuse: the remote source + wrapped provider are compiled artifacts — the N≥100 single-flight stress above under `-race`.
+- [x] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed

@@ -11,6 +11,9 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
+	// Register the `env` credential source so BuildProviders can resolve
+	// the default source at boot (the driver self-registers via init()).
+	_ "github.com/hurtener/Harbor/internal/tools/auth/credsource/drivers/env"
 )
 
 // bpTestDriverOnce registers the in-test provider driver exactly once
@@ -22,14 +25,19 @@ func registerBPTestDriver(t *testing.T) {
 	t.Helper()
 	bpTestDriverOnce.Do(func() {
 		MustRegister("bp-test", func(cfg ProviderConfig, deps FactoryDeps) (OAuthProvider, error) {
-			// Mirror the oauth2 driver's shape: ONE OAuthConfig per
-			// provider entry, built over the shared crypto chain.
+			// Mirror the oauth2 driver's shape: resolve the credential
+			// through the source seam, then build ONE OAuthConfig per
+			// provider entry over the shared crypto chain.
+			cred, err := cfg.CredentialSource.Resolve(context.Background())
+			if err != nil {
+				return nil, err
+			}
 			oauthCfg := OAuthConfig{
 				Source:       toolsToolSource(cfg.Name),
 				SourceName:   cfg.Name,
 				BindingScope: ScopeUser,
-				ClientID:     cfg.ClientID,
-				ClientSecret: cfg.ClientSecret,
+				ClientID:     cred.ClientID,
+				ClientSecret: cred.ClientSecret,
 				AuthorizeURL: cfg.AuthURL,
 				TokenURL:     cfg.TokenURL,
 				RedirectURI:  cfg.RedirectURL,

@@ -82,14 +82,28 @@
 // emits the canonical tool.credential_exchanged event (zero token
 // bytes).
 //
+// # Credential source
+//
+// The runtime's OWN broker client credential (`client_id` /
+// `client_secret`) is resolved through the §4.4 credential-source seam
+// (`internal/tools/auth/credsource`), NOT captured at construction. With
+// the default `env` source the credential is resolved once at boot
+// (zero behavior change); with the `remote` source it is pulled from a
+// coordinator endpoint LAZILY at the first exchange — TTL-cached in
+// memory, single-flight, fail-loud. A resolution failure fails the
+// exchange with the typed credsource.ErrCredentialSourceUnavailable; the
+// driver NEVER falls back to env, to an unauthenticated call, or to the
+// interactive flow (§13). A resolved credential with an empty component
+// fails the exchange loud.
+//
 // # Fail-loud at construction
 //
 // Operator-facing seams demand explicit configuration. The driver
-// fails closed on: empty ClientID / ClientSecret (the env vars named
-// by client_id_env / client_secret_env were unset), empty TokenURL
-// (the broker endpoint — auth_url / redirect_url are interactive-flow
-// fields and are NOT required here), a malformed extra.cache_ttl_cap,
-// and missing deps (Store / Bus / Redactor / Coordinator).
+// fails closed on: a nil CredentialSource (BuildProviders always threads
+// one), empty TokenURL (the broker endpoint — auth_url / redirect_url
+// are interactive-flow fields and are NOT required here), a malformed
+// extra.cache_ttl_cap, and missing deps (Store / Bus / Redactor /
+// Coordinator).
 package tokenexchange
 
 import (
@@ -112,6 +126,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 )
 
 // DriverName is the canonical name the driver registers under. The
@@ -152,13 +167,17 @@ const (
 // upstream failures reuse the parent package's sentinels
 // (auth.ErrExchangeFailed, auth.ErrAuthRequired, auth.ErrIdentityRequired).
 var (
-	// ErrMissingClientID — cfg.ClientID was empty at construction. The
-	// dev stack resolves os.Getenv(client_id_env) before calling the
-	// factory; an empty value means the env var was unset.
-	ErrMissingClientID = errors.New("auth/tokenexchange: ClientID is empty (the env var named by client_id_env was unset or empty)")
-	// ErrMissingClientSecret — cfg.ClientSecret was empty at
-	// construction.
-	ErrMissingClientSecret = errors.New("auth/tokenexchange: ClientSecret is empty (the env var named by client_secret_env was unset or empty)")
+	// ErrMissingCredentialSource — cfg.CredentialSource was nil at
+	// construction. BuildProviders always threads one (env or remote);
+	// a nil source is a direct-construction bug.
+	ErrMissingCredentialSource = errors.New("auth/tokenexchange: CredentialSource is nil (BuildProviders threads the env/remote source; direct callers pass credsource.Static)")
+	// ErrMissingClientID — the resolved credential carried an empty
+	// client_id. Surfaced at exchange time (the credential resolves
+	// through the source seam — at boot for env, lazily for remote).
+	ErrMissingClientID = errors.New("auth/tokenexchange: resolved client_id is empty")
+	// ErrMissingClientSecret — the resolved credential carried an empty
+	// client_secret.
+	ErrMissingClientSecret = errors.New("auth/tokenexchange: resolved client_secret is empty")
 	// ErrMissingTokenURL — cfg.TokenURL was empty. The broker's
 	// RFC-8693 token-exchange endpoint is mandatory; auth_url /
 	// redirect_url are interactive-flow fields and are NOT used.
@@ -182,11 +201,8 @@ func init() {
 // operator-config entry. Registered as the driver's auth.Factory; the
 // dev stack never calls it directly — auth.Resolve dispatches by name.
 func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, error) {
-	if cfg.ClientID == "" {
-		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingClientID, cfg.Name)
-	}
-	if cfg.ClientSecret == "" {
-		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingClientSecret, cfg.Name)
+	if cfg.CredentialSource == nil {
+		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingCredentialSource, cfg.Name)
 	}
 	if cfg.TokenURL == "" {
 		return nil, fmt.Errorf("%w (provider name=%q)", ErrMissingTokenURL, cfg.Name)
@@ -233,24 +249,23 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 	}
 
 	return &provider{
-		name:         cfg.Name,
-		source:       source,
-		tokenURL:     cfg.TokenURL,
-		brokerHost:   brokerHost,
-		clientID:     cfg.ClientID,
-		clientSecret: cfg.ClientSecret,
-		scopes:       append([]string(nil), cfg.Scopes...),
-		audience:     audience,
-		cacheTTLCap:  cacheTTLCap,
-		httpClient:   httpClient,
-		now:          clock,
-		bus:          deps.Bus,
-		redactor:     deps.Redactor,
-		coordinator:  deps.Coordinator,
-		store:        deps.Store, // held to honour the FactoryDeps contract; Put is NEVER called
-		cache:        make(map[string]cachedToken),
-		gens:         make(map[string]uint64),
-		flight:       make(map[string]*exchangeCall),
+		name:        cfg.Name,
+		source:      source,
+		tokenURL:    cfg.TokenURL,
+		brokerHost:  brokerHost,
+		credSource:  cfg.CredentialSource,
+		scopes:      append([]string(nil), cfg.Scopes...),
+		audience:    audience,
+		cacheTTLCap: cacheTTLCap,
+		httpClient:  httpClient,
+		now:         clock,
+		bus:         deps.Bus,
+		redactor:    deps.Redactor,
+		coordinator: deps.Coordinator,
+		store:       deps.Store, // held to honour the FactoryDeps contract; Put is NEVER called
+		cache:       make(map[string]cachedToken),
+		gens:        make(map[string]uint64),
+		flight:      make(map[string]*exchangeCall),
 	}, nil
 }
 
@@ -262,20 +277,23 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 // own mutex. Per-run identity is read from ctx on every call, never
 // from the provider.
 type provider struct {
-	name         string
-	source       tools.ToolSourceID
-	tokenURL     string
-	brokerHost   string
-	clientID     string
-	clientSecret string
-	scopes       []string
-	audience     string
-	cacheTTLCap  time.Duration
-	httpClient   *http.Client
-	now          func() time.Time
-	bus          events.EventBus
-	redactor     audit.Redactor
-	coordinator  pauseresume.Coordinator
+	name       string
+	source     tools.ToolSourceID
+	tokenURL   string
+	brokerHost string
+	// credSource resolves the runtime's OWN broker client credential
+	// (`client_id` / `client_secret`) — at boot for the env source,
+	// lazily at exchange time for the remote source. Never
+	// logged; the resolved values ride the broker request body only.
+	credSource  credsource.Source
+	scopes      []string
+	audience    string
+	cacheTTLCap time.Duration
+	httpClient  *http.Client
+	now         func() time.Time
+	bus         events.EventBus
+	redactor    audit.Redactor
+	coordinator pauseresume.Coordinator
 
 	// store is the shared TokenStore. Held only to honour the
 	// FactoryDeps mandatory-dep contract; brokered tokens live in the
@@ -527,6 +545,23 @@ type brokerError struct {
 // exchange performs one RFC-8693 token-exchange POST against the broker
 // and maps the outcome onto (token / *consentError / ErrExchangeFailed).
 func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Token, error) {
+	// Resolve the runtime's OWN broker client credential through the
+	// §4.4 credential-source seam. For the env source this returns the
+	// boot-resolved value (zero behavior change); for the remote source
+	// this is the lazy, TTL-cached, single-flight coordinator pull. A
+	// resolution failure fails the exchange loud (credsource carries the
+	// typed ErrCredentialSourceUnavailable; no fallback — §13).
+	cred, err := p.credSource.Resolve(ctx)
+	if err != nil {
+		return auth.Token{}, fmt.Errorf("%w: resolve broker client credential: %w", auth.ErrExchangeFailed, err)
+	}
+	if cred.ClientID == "" {
+		return auth.Token{}, fmt.Errorf("%w: %w (provider name=%q)", auth.ErrExchangeFailed, ErrMissingClientID, p.name)
+	}
+	if cred.ClientSecret == "" {
+		return auth.Token{}, fmt.Errorf("%w: %w (provider name=%q)", auth.ErrExchangeFailed, ErrMissingClientSecret, p.name)
+	}
+
 	subjectToken, err := encodeSubjectToken(id)
 	if err != nil {
 		return auth.Token{}, fmt.Errorf("%w: encode subject token: %w", auth.ErrExchangeFailed, err)
@@ -540,10 +575,10 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	if len(p.scopes) > 0 {
 		form.Set("scope", strings.Join(p.scopes, " "))
 	}
-	// Runtime→broker client authentication (§7 rule 2 env-indirection;
-	// the resolved values arrived via FactoryDeps).
-	form.Set("client_id", p.clientID)
-	form.Set("client_secret", p.clientSecret)
+	// Runtime→broker client authentication (§7 rule 2; the credential was
+	// resolved through the credential-source seam above).
+	form.Set("client_id", cred.ClientID)
+	form.Set("client_secret", cred.ClientSecret)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
