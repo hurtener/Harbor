@@ -281,6 +281,11 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |149 | HTTP-manifest boot loader wiring (the `tools.http_manifests[]` knob goes live: `assembleCatalogBand` loads each declared UTCP-style manifest via the shipped Phase 27 `LoadManifest`/`RegisterManifest` pair and registers its tools by name — after built-ins, BEFORE the catalog Builder applies `tools.entries[]`, so the EXISTING by-name `entries[].oauth` binding wraps manifest tools with zero new OAuth machinery, closing the "no config-declarable tool can exercise catalog OAuth wrapping end-to-end" gap and giving adopters a black-box vehicle for D-271 token exchange; `config.Validate` flips from REJECTING a populated list (the SDK-friction-audit dead-knob guard) to VALIDATING it, with `config.Load` resolving relative entries against the config directory under the §7 rule 5 Clean+prefix posture; boot fails loud naming file + config key on missing/unparseable/`ErrManifestInvalid` manifests and on tool-name collisions — never a silent skip; one wiring home (`Assemble`) serves binary + devstack per D-196/D-197; NO manifest-level `oauth` field (the by-name path is THE binding home, §13) and NO change to `WrapWithOAuth` pre-check semantics (southbound injection is Phase 148's, for MCP); D-279) | internal/runtime/assemble + internal/config + internal/tools/drivers/http + examples | §6.4, §3.4 | 26, 27, 64a, 110d, 142 | 80% | Shipped (v1.10) |
 |150 | Run-completion hook: transcript egress through the tool catalog (the runtime's first run-lifecycle hook — memory/audit/analytics sinks need the full conversation at completion for runs no client observes (background + disconnected runs have no observer to pull it), and NO generic run-completion signal exists today (a plain foreground `Stack.RunOnce` completing emits nothing; only `task.completed`/`task.failed` fire from the tasks engine, so a bus subscriber cannot cover all run types); fix = `RunSpec.CompletionHook` fired EXACTLY ONCE at `RunLoop.Run`'s single terminal boundary via a deferred fire over the named returns — every terminal outcome (goal / no_path / constraints_conflict incl. REJECT + pause-timeout / cancelled incl. cancel-while-paused / error) with the outcome IN the payload, never mid-run, never on pause — the one seam ALL run types terminate through (`runonce.go:305`, `cmd_dev_runloop.go:972`); egress = a NAMED CATALOG TOOL dispatched through the existing `spec.ToolExecutor.ExecuteDecision` path (provenance, identity, per-tool policy retries, and args-free `tool.*` audit events come FREE; a bespoke HTTP egress client is the REJECTED §13 parallel implementation), under `context.WithTimeout(context.WithoutCancel(runCtx), timeout)` so the cancelled-run case fires with identity values preserved (the `internal/tools/auth` precedent); a hook failure NEVER alters the settled run outcome — `run.hook_failed` on the bus + Warn, success emits `run.hook_dispatched` (SafePayloads: metadata only, never transcript content); payload = typed golden-pinned `RunCompletionPayload` (`format_version: 1`) assembling the ordered conversation from LIVE run state (initial goal, steering USER_MESSAGE/REDIRECT entries accumulated as per-run stack-local state with step indices — today they are consumed per-step and durably lost, assistant preambles + final answer, D-274 counts; the dispatch does NOT touch `OnToolDispatched`/`ToolCallsSeen`/trajectory); config = yaml `runtime.hooks.run_completion.{tool,timeout}` (the reserved `RuntimeConfig` slot's first body) paired with a new versioned agentcfg `hooks` section riding the EXISTING `set_revision`/`get`/`diff`/`rollback` surface (next-run projection per D-234; `projection.ActiveRunCompletionHook` twinned cmd/devstack per §17.6; wire impact types-only → `AgentConfigHooks` + diff arm + D-223 TS mirror/manifest + protocol-docs regen, NO new verb); §13 consumer E2E: a run with a hook targeting a real fixture tool receives the full ordered transcript incl. a steering-injected mid-run user message, identity asserted AT the receiving tool, hook-error + cancelled-run failure legs, N≥10 concurrent no-transcript-bleed `-race`; 148's per-identity MCP bearer applies automatically via ctx identity (same-wave consumer); D-280) | internal/runtime/steering + internal/agentcfg + internal/runtime/agentcfg/projection + internal/config + internal/protocol/types + cmd/harbor | §6.17, §6.3, §6.4, §6.13, §6.16 | 53, 83i, 92a, 132, 148, 149 (soft) | 80% | Shipped (v1.10) |
 |151 | Runtime loading-mode control on tool exposure (extends the ONE exposure section — `agentcfg.ToolExposure` gains `server_loading_modes` (per-`ToolSourceID` default, tool-form descriptors only via the additive `Tool.Form` classification) + `tool_loading_modes` (per-name, exact) riding the existing `agent_config.set_tool_exposure` verb, no new verb; ONE pinned precedence order — exposure per-tool > exposure per-server > boot `tools.entries[].loading_mode` > driver default (the mcp.go `LoadingAlways` tool hardcode becomes the overridable default; resources/prompts stay driver-deferred) — closing the two-knobs-undefined-precedence §13 smell; applied NEXT-turn at the shared `projection.ActivePlannerCatalogView` seam via a new `tools.LoadingOverrideView` (List filters on the EFFECTIVE mode, Resolve never filters — the D-167 two-turn `tool_search` discovery cycle is untouched; disable stays strictly stronger: hidden from List AND Resolve), in-flight runs keep their snapshot per D-025/D-234; admin tier only — loading is not capability-narrowing (`VisibleNames` spans both modes; the app-call gate ignores it) and the D-256/D-258 narrow-only tiers gain no map fields; unknown value → loud 400 `invalid_request`, no revision, no event; `DiffToolExposure` gains structured loading arms (audit = `agent.config.revised` + diff, no new event); `tools.describe` gains optional `agent_id` reporting the projected EFFECTIVE `loading_mode` (absent = boot-effective, byte-compatible); additive wire changes with full D-223 lockstep + D-209 docs regen same-PR; integration test on the real MCP stdio fixture (flip → prompt-list excludes / `tool_search` surfaces / Resolve returns; flip-back; invalid-mode failure; cross-agent + cross-tenant isolation) + N≥100 flip-under-load D-025 stress; lands after 148 merges (same files — coordination, not semantic); D-281) | agentcfg + internal/tools + internal/runtime/agentcfg + internal/protocol | §6.4, §6.16 | 92a, 92d, 107c, 110a, 118 | 85% | Shipped (v1.10) |
+|152 | agentcfg section-setter hooks carry-forward + rebuild-completeness guard (all FIVE section-scoped setters — `set_tool_exposure`, `add_mcp_connection`, `set_skills`, `set_prompt_layers`, `set_llm_params` — drop the D-280 `Hooks` section when rebuilding the payload, so any section edit silently erases a pinned run-completion hook (§13 silent degradation on the subsystem's own "bidirectional section-merge invariant"); fix = carry `Hooks` forward in all five + a reflection-backed rebuild-completeness guard (seed constructor populates EVERY `ConfigPayload` section and reflect-asserts full field coverage, then each setter must preserve every non-target section byte-identically — a future section addition fails `go test` naming the field); no new verb (hooks stay `set_revision`-only), no wire change, no TS/docs impact; Protocol-level regression E2E (`set_revision` hooks → `set_tool_exposure` → `get` hook intact) + `projection.ActiveRunCompletionHook` resolves post-edit; D-283) | internal/runtime/agentcfg/protocol | §6.16, §6.17 | 150, 151, 92d, 92f, 92m | 85% | Pending |
+|153 | Admin-widened fleet enumeration for `tasks.list` + `agents.list` (today both project ONLY the caller's own triple — a fleet observer's synthetic session sees nothing, unlike `sessions.list` which widens to `(tenant, user)` / admin-named tenants; fix = the reserved "aggregating projector" behind the EXISTING per-subsystem `Projector` interfaces: explicit tenant-scoped enumeration on the task-registry seam (a separate method with an explicit tenant argument — NEVER an optional/blank session on the identity-scoped read, no identity-downgrading knob §13) with conformance parity across inprocess/durable drivers, + the agents analogue over the Agent Registry; gate = the ONE existing `auth.ScopeAdmin` claim (no new "fleet scope" vocabulary), widened-without-claim → loud `ErrScopeMismatch` (never silent narrowing), every widened call emits `audit.admin_scope_used`; rows carry full identity attribution; additive wire fields + full D-223 lockstep + D-209 docs regen; §6 rule 10 isolation E2E (2 tenants × 2 users × 2 sessions; non-admin never widens, admin-A never sees tenant B) + N≥10 concurrent mixed listers `-race`; cross-RUNTIME federation stays coordinator-side, as with sessions; D-284) | internal/tasks + internal/runtime/registry + internal/protocol + web/console | §6.8, §6.16, §5.2 | 87, 53a, 118, 130 | 85% | Pending |
+|154 | OAuth provider credential source: env or coordinator-served pull (a `tools.oauth_providers[]` client credential is env-resolved ONCE at boot — a broker credential minted post-boot can never reach a running runtime, forcing the one-reboot provisioning step; fix = a §4.4 `credential_source` seam on the provider entry: `env` (today's boot-time fail-loud resolution, the DEFAULT — existing configs byte-compatible §10) or `remote` (authenticated PULL of `client_id`/`client_secret` from a coordinator endpoint via the runtime's service token env, at first need — memory-only TTL cache, single-flight, strict `format_version`-ed parse); fail-loud everywhere: boot validates declared-source shape, fetch failure = typed sentinel + SafePayload event, NEVER fallback to env/unauthenticated/interactive (one mode per source §13); declaring both sources on one entry = validation error; hot-reload/admin-verb push REJECTED (credential passthrough per D-271 + post-exec env immutability); no catalog re-wrap (provider instance stays boot-constructed, only cred resolution is late); §17.8 fixture credential server E2E incl. zero-env boot → first-need pull → tokenexchange succeeds + rotation leg; new canonical fetch events + D-209 regen, no Protocol wire change; defense-in-depth: broker secret never enters runtime env; D-285) | internal/tools/auth + internal/config + internal/drivers/prod + examples | §6.4, §3.3 | 142, 148, 30, 149 | 85% | Pending |
+|155 | Session-erasure audit integrity (issues #409/#410 from the v1.7 band-end review: the `session.erased` record-of-fact (D-262) is emitted best-effort AFTER the irreversible clear — one bus/redactor failure loses the only audit record while the call reports success, and re-invoke returns `not_found`; retried mid-cascade erasures also under-report deletion counts (idempotent re-runs find fewer records); fix = the ordering invariant becomes binding: never (data gone AND no durable record AND success) nor the inverse — record/emit failure fails `sessions.delete` LOUD with a typed sentinel and the session still re-invokable, re-invoke converges (fault-injection tested: bus fails once then heals); deletion counts accumulate across converging attempts (the #410 "document the undercount" alternative REJECTED — compliance counts must be accurate); no wire-shape change (field docs state cumulative semantics, `protocol-ts-gen-check` proves no manifest impact); D-286) | internal/sessions + internal/protocol/types | §6.9, §6.13 | 130 | 85% | Pending |
+|156 | `agent_config.remove_mcp_connection` + detach-on-reconcile (supersedes D-240 decision 5's deferral via its OWN recorded revisit clause — "a removal need pause cannot serve" emerged: a coordinator delete flow must actually remove a runtime-added MCP connection, which pause cannot express (descriptor persists; resume resurrects); the verb = a new revision dropping the named descriptor AND pruning that server's tool-exposure residue atomically, all sibling sections (incl. Hooks) carried forward under the D-283 completeness guard which this setter JOINS; unknown name / boot-declared (yaml) name = distinct loud typed errors (the verb governs revisioned state only); run-start reconciliation gains the detach leg: declared-vs-attached diff deregisters undeclared servers from catalog + MCP registry and closes the transport at the NEXT-turn projection boundary (never mid-run; in-flight snapshots stable per D-025/D-234) — rollback past an add detaches through the SAME reconcile path (one mechanism §13), closing D-240's deferred rollback gap; agent-bound sealed tokens NOT deleted on remove (re-add reuses consent; revocation is provider-side; documented); new canonical `mcp.connection.removed` event; full D-223 lockstep + D-209 regen; real-stdio-fixture E2E (add → remove → next-turn catalog/registry/transport all clear; rollback leg; re-add-reuses-token leg) + remove-under-load `-race` stress + goroutine-baseline teardown proof; D-287) | internal/runtime/agentcfg + internal/agentcfg + internal/tools + internal/protocol + web/console | §6.16, §6.4, §3.3 | 152, 92m, 92n, 92o, 118 | 85% | Pending |
 
 V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j + 85m (MCP client/host compliance — the prioritised first post-V1 work; 85k is the separate Harbor agent-builder skills phase). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Per the MCP 2026-07-28 RC re-plan (2026-05-28) the 85-band re-shapes: 85a / 85b / 85f are ready now; 85d / 85m revisit after SDK-RC (≈ Aug 2026); 85g / 85j revisit after RC-final (2026-07-28); 85c / 85e / 85h / 85i are cut. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100. The next release tag is V1.1.x — both the hygiene + positioning + UX band (101–104 + 108) and the Playground-depth band (105 + 106 + 107 + 107a + 107c + 107d) roll up under it; the previously-sketched V1.2 / V1.3 splits collapse. Phases 105–107c ship with this release: Console first-attach UX (105), Playground real assistant response (106), the streaming completion pipeline (107), reasoning trace projection (107a), and native tool-calling + deferred tools/skills + search meta-tools (107c) — the four built-in `*_search`/`*_get` meta-tools plus the optional `declarative_action` escape-hatch tool preserving brief 07's prompt-engineered path for weaker models. The 107b streaming answer extractor was deliberately superseded by 107c (one cutover instead of stop-gap-then-replace); the file at `docs/plans/phase-107b-streaming-answer-extractor.md` is kept as historical context. Phase 107d (shipped) is the native-tool-calling follow-up that closes 107c's documented serialization carve-out: it wires the already-shipped `internal/runtime/parallel.Executor` (Phase 47 / D-056) into the dev `ToolExecutor`, flips the React planner to native `CallParallel` emission for N>1 tool-calls, and pins the `JoinKind`-collapses-to-`JoinAll`-on-native semantic (D-169). Phase 107e (pending) closes the last `ErrDecisionShapeUnsupported` carve-out the dev `ToolExecutor` carries: it wires `planner.SpawnTask` + `planner.AwaitTask` dispatch through the already-shipped `tasks.TaskRegistry` (Phase 47 / D-056) and teaches the per-task RunLoop driver to drive `KindBackground` tasks (closing the D-097 dead-task gap for the background kind), bounded by a new `planner.absolute_max_spawn_depth` recursion cap; on the synchronous V1.1.x runloop a retain-turn spawn blocks in-decision and a non-retain-turn spawn is joined by an explicit `AwaitTask` (eager push wake-on-resolution is a documented steering-runloop follow-up). SpawnTask + AwaitTask dispatch land together per §13 (D-170). Phase 108 starts a 14-round page-by-page visual-polish series (one phase per Console page, anchored to `docs/design/console/page-*.md` + `docs/design/console/CONVENTIONS.md`) and is the largest piece still pending under V1.1.x. Background context for the native-tool-calling cutover: research brief 15. **Immediately after Phase 108, the three-phase "MCP Apps host" wave 109a–c lands (D-172):** 109a (MCP Apps runtime + Protocol surface — `_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy), 109b (Console sandboxed-iframe host + the official `ext-apps` AppBridge in manual-handler mode + inline DisplayMode), 109c (fullscreen-tab + pip-split DisplayMode layout). This wave **deprecates and supersedes Phase 85g**, pulling MCP Apps forward from the post-V1 85-band: Apps is a stable independent extension (`io.modelcontextprotocol/ui`), not gated on the July RC, and ships an official host bridge that removes 85g's hand-rolled-bridge risk. The architectural invariant is D-173 — the AppBridge runs in manual-handler mode and every app→host call is Protocol-proxied through the Runtime, never a direct MCP connection, so an in-iframe app stays inside the `(tenant, user, session)` isolation boundary and the unified approval/OAuth gates. The 14-round page-polish series continues from the next free integer after the 109 band; the band precedes it in execution order, it does not displace it. **Live Runtime reframe (2026-06-01, D-177):** after 108d shipped the topology-first Live Runtime page, an operator review found it low-value and Playground-overlapping on the dominant planner/RunLoop runtime (no engine graph). Phase 108e supersedes the topology-first composition (D-126) with a single-runtime **capability-adaptive cockpit** — the runtime's advertised `runtime.info` capabilities compose the page (an always-present spine + capability-gated topology / health / cost panels), so it is full on a planner runtime and richer on engine/multi-agent shapes with no rebuild. Plan: `docs/plans/phase-108e-live-runtime-capability-cockpit.md`. **Protocol auth-hardening sequence (114–116, D-219):** a planning + adversarial review of the Protocol surface found a steering-control privilege escalation — `dispatchControl` derived caller scope + tenant from the request *body* instead of the verified context identity, so a caller could assert `scope:"admin"` in the body and the cross-tenant gate could never fire. Phase 114 (shipped) closes it: the control surface now reads authority from `identity.From(ctx)` + the JWT scope claims, fails closed when no verified identity is present, and a non-admin caller can steer only runs it owns (admin for cross-tenant). 114 is the prerequisite hardening for the lesser-privileged-token work: Phase 115 adds production JWKS verification + a `harbor serve` auth path (giving the inert `JWKSURL`/`JWKSFile` config fields a consumer), and Phase 116 introduces the non-admin session-scoped token contract — the consumer that makes 114's derivation load-bearing and the seam where the `session_user` tier becomes safe to grant. Independently, Phase 117 hardens the chat module's encapsulation boundary (D-091) so it renders self-contained — its own theming contract, font-family inheritance, and host/theme parameterization — with no Console look-and-feel leakage, and Phase 118 builds the long-tracked `protocol-ts-gen-check` gate as a field-level lockstep VERIFICATION of the hand-maintained per-page TS client against a committed, Go-generated wire manifest (`cmd/harbor-protocol-ts-lockstep`) — a D-093 deviation (D-223): the "generate" half (per-domain generated TS type modules) is a deferred future phase and the `cmd/harbor-gen-protocol-ts` name stays reserved for it.
 
@@ -2752,6 +2757,151 @@ per §17.8). Status: Shipped (V1.6).
   `docs/plans/phase-151-tool-loading-exposure.md`.
 - **Decision:** D-281.
 - **Status:** Shipped (v1.10).
+
+---
+
+### Phase 152 — agentcfg section-setter hooks carry-forward + rebuild-completeness guard
+
+- **Subsystem:** internal/runtime/agentcfg/protocol (the five section-scoped
+  setters + the new guard test).
+- **RFC:** §6.16 (the agent-config control plane), §6.17 (the hooks section
+  whose loss this fixes).
+- **Deps:** 150 (the `Hooks` section), 151 (the loading maps on
+  `set_tool_exposure` — the setter the headline bug rides), 92d/92f (the
+  exposure section + revision registry), 92m (add-connection).
+- **What it delivers:** all five section-scoped setters (`set_tool_exposure`,
+  `add_mcp_connection`, `set_skills`, `set_prompt_layers`, `set_llm_params`)
+  rebuild the `ConfigPayload` by hand and none carries the D-280 `Hooks`
+  section forward — any section edit silently erases a pinned run-completion
+  hook (§13 silent degradation against the subsystem's own section-merge
+  invariant). Fix: carry `Hooks` in all five, plus a reflection-backed
+  rebuild-completeness guard — a seed constructor populates every payload
+  section and reflect-asserts full field coverage (a new section fails the
+  seed first, naming the field), then each setter must preserve every
+  non-target section byte-identically. No new verb, no wire change.
+  Regression E2E at the Protocol service layer + the run-start projection
+  (`projection.ActiveRunCompletionHook`) resolving after an interleaved
+  edit. See `docs/plans/phase-152-agentcfg-hooks-carry-forward.md`.
+- **Decision:** D-283.
+- **Status:** Pending.
+
+---
+
+### Phase 153 — Admin-widened fleet enumeration for `tasks.list` + `agents.list`
+
+- **Subsystem:** internal/tasks (registry seam + engine + conformance +
+  protocol projectors), internal/runtime/registry/protocol (the agents
+  analogue), internal/protocol/types + web/console (additive wire).
+- **RFC:** §6.8 (tasks), §6.16 (Agent Registry), §5.2 (the Protocol read
+  surface).
+- **Deps:** 87 (durable task driver — conformance parity), 53a (Agent
+  Registry), 118 (D-223 lockstep gate), 130 (the sessions admin/audit
+  precedent shape).
+- **What it delivers:** the reserved aggregating projector. `tasks.list` /
+  `agents.list` today project only the caller's own triple — a fleet
+  observer sees nothing. This phase adds explicit tenant-scoped enumeration
+  on the task-registry seam (a separate method with an explicit tenant
+  argument, never an optional session — no identity-downgrading knob, §13)
+  with conformance parity across both task drivers, and the agents analogue
+  over the Agent Registry; both behind the EXISTING per-subsystem
+  `Projector` interfaces. Gate = the one existing `auth.ScopeAdmin` claim,
+  exactly like sessions: widened-without-claim fails loud
+  (`ErrScopeMismatch`, never silent narrowing); every widened call emits
+  `audit.admin_scope_used`; rows carry full identity attribution.
+  Cross-runtime federation stays coordinator-side over per-runtime reads.
+  Additive wire fields with full D-223 lockstep + D-209 docs regen; §6
+  rule 10 isolation E2E + N≥10 concurrent mixed listers under `-race`.
+  See `docs/plans/phase-153-fleet-scoped-tasks-agents.md`.
+- **Decision:** D-284.
+- **Status:** Pending.
+
+---
+
+### Phase 154 — OAuth provider credential source: env or coordinator-served pull
+
+- **Subsystem:** internal/tools/auth (the new `credsource` seam + drivers +
+  `BuildProviders` threading), internal/config (schema + validation),
+  internal/drivers/prod (blank imports), examples + docs site (the
+  documented fetch contract).
+- **RFC:** §6.4 (the D-271 paragraph's additive credential-source sentence),
+  §3.3 (fail-loud posture).
+- **Deps:** 142 (`tokenexchange` — the motivating consumer), 148
+  (per-identity southbound binding), 30 (tool-side OAuth), 149
+  (config-declared manifest tools — the E2E's black-box OAuth vehicle).
+- **What it delivers:** zero-touch broker provisioning. Today a provider's
+  client credential is env-resolved once at boot, so a coordinator-minted
+  credential can never reach a running runtime (the one-reboot step). A
+  §4.4 `credential_source` seam on the provider entry: `env` (default,
+  byte-compatible) or `remote` — an authenticated pull of
+  `client_id`/`client_secret` from a coordinator endpoint via the runtime's
+  service token, at first need, memory-only TTL cache, single-flight,
+  strict `format_version`-ed parse. Fail-loud everywhere; no fallback to
+  env / unauthenticated / interactive; both-sources-on-one-entry is a
+  validation error. Hot-reload / an admin verb carrying the secret is
+  REJECTED (D-271 credential passthrough + post-exec env immutability).
+  No catalog re-wrap: the provider instance stays boot-constructed; only
+  credential resolution is late. §17.8 fixture credential server E2E
+  (zero-env boot → first-need pull → token exchange succeeds; rotation
+  leg). Defense-in-depth: the broker secret never enters the runtime's
+  environment. See `docs/plans/phase-154-broker-credential-source.md`.
+- **Decision:** D-285.
+- **Status:** Pending.
+
+---
+
+### Phase 155 — Session-erasure audit integrity
+
+- **Subsystem:** internal/sessions (the erasure cascade),
+  internal/protocol/types (field docs only).
+- **RFC:** §6.9 (sessions), §6.13 (the audited event).
+- **Deps:** 130 (the erasure method + cascade, D-262).
+- **What it delivers:** issues #409/#410 from the v1.7 band-end review. The
+  `session.erased` record-of-fact is emitted best-effort AFTER the
+  irreversible clear — one bus/redactor failure loses the only audit record
+  while the call reports success, with no second chance (re-invoke returns
+  `not_found`); and retried mid-cascade erasures under-report deletion
+  counts. Fix: the ordering invariant becomes binding — never (data gone
+  AND no durable record AND success returned), nor the inverse; a
+  record/emit failure fails `sessions.delete` loud with a typed sentinel
+  and the session still re-invokable; counts accumulate across converging
+  attempts (the "document the undercount" alternative is rejected —
+  compliance counts must be accurate). Fault-injection tested
+  (bus-fails-once-then-heals; interrupt-mid-cascade-then-converge). No
+  wire-shape change. See `docs/plans/phase-155-erasure-audit-integrity.md`.
+- **Decision:** D-286.
+- **Status:** Pending.
+
+---
+
+### Phase 156 — `agent_config.remove_mcp_connection` + detach-on-reconcile
+
+- **Subsystem:** internal/runtime/agentcfg (verb + projection detach leg),
+  internal/agentcfg (connections diff arm), internal/tools (catalog + MCP
+  registry deregistration), internal/protocol + web/console (wire).
+- **RFC:** §6.16 (the control plane), §6.4 (the catalog), §3.3 (pause vs
+  removal semantics).
+- **Deps:** 152 (the completeness guard this setter joins), 92m
+  (add-connection), 92n (resume-completes-attach), 92o (run-start
+  reconciliation — the mechanism gaining the detach leg), 118 (D-223).
+- **What it delivers:** supersedes D-240 decision 5's deferral through its
+  own recorded revisit clause — a removal need pause cannot serve emerged
+  (a coordinator's delete flow; pause leaves the descriptor forever and
+  resume resurrects the server). The verb records a new revision dropping
+  the named descriptor AND pruning that server's tool-exposure residue
+  atomically, carrying all sibling sections (incl. Hooks) forward under the
+  D-283 guard; unknown / boot-declared names fail loud with distinct typed
+  errors. Run-start reconciliation gains the detach leg: declared-vs-
+  attached diff deregisters undeclared servers from the catalog + MCP
+  registry and closes the transport at the next-turn projection boundary —
+  never mid-run — and rollback past an add detaches through the SAME
+  reconcile path (one mechanism, §13), closing D-240's deferred rollback
+  gap. Agent-bound sealed tokens are NOT deleted on remove (re-add reuses
+  consent; revocation is provider-side). New canonical
+  `mcp.connection.removed` event; full D-223 + D-209; real-stdio-fixture
+  E2E + remove-under-load `-race` stress + goroutine-baseline teardown
+  proof. See `docs/plans/phase-156-remove-mcp-connection.md`.
+- **Decision:** D-287.
+- **Status:** Pending.
 
 ---
 

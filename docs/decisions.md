@@ -7568,3 +7568,87 @@ run through one shared catalog under `-race`. No deviation from the plan.
 3. **The gate is mechanical and injection-verified.** The `godoc_jargon_patterns` loop now greps `sdk/` alongside `internal/` and `cmd/` (a planted `D-999` / `Phase 99` comment under `sdk/` FAILs the audit; verified by injection, reverted). `harbortest/` is deliberately absent from the directory set.
 
 **Cross-references.** CLAUDE.md §13 (the godoc-hygiene prohibition, now enforced over `sdk/`), D-204/D-205 (the alias-based facade whose public godoc this covers; the no-behavior invariant preserved), D-094 (the twin-mirror annotations the `harbortest/` carve-out protects), §17.6 (the fix-what-the-audit-finds discipline that surfaced this). Enforced by: `scripts/drift-audit.sh` (godoc hygiene scan).
+
+---
+
+## D-283 — Every section-scoped agent-config setter carries ALL sibling sections forward; a rebuild-completeness guard makes the invariant mechanical
+
+**Date:** 2026-07-04
+
+**Status:** Accepted (Phase 152, V1.11)
+
+**Where it lives:** `docs/plans/phase-152-agentcfg-hooks-carry-forward.md`, `internal/runtime/agentcfg/protocol/` (the five section-scoped setters + `rebuild_completeness_test.go`).
+
+**Context.** The agent-config revision model replaces ONE section per edit and promises the rest of the envelope survives ("the bidirectional section-merge invariant"). But each setter rebuilds `ConfigPayload` by hand, enumerating the sibling sections that existed when it was written. When the `Hooks` section landed (D-280), none of the five existing setters gained the carry-forward — so any tool-exposure / connection / skills / prompt-layer / LLM-params edit silently erased a pinned run-completion hook. Deterministic, same-surface, no error: the §13 silent-degradation shape. The second consumer (a coordinator control plane pinning an auto-save hook, then driving exposure edits) trips it on its golden path.
+
+**Decision.** (1) All five setters carry `Hooks` forward, symmetrically with their existing sibling carry-forwards. (2) A rebuild-completeness guard test makes the invariant mechanical: a seed constructor populates every `ConfigPayload` section and reflection-asserts it covers every struct field (a newly added section fails the SEED first, with a message naming the field); each setter is then invoked against the fully-populated active revision and every non-target section must survive byte-identically. Adding a seventh section without extending every setter fails `go test` — the omission class is closed, not just this instance. (3) There is deliberately still NO section-scoped hooks setter — hooks ride `set_revision`; this decision changes carry-forward only.
+
+**Cross-references.** D-280 (the Hooks section), D-281/D-234/D-237 (the exposure section + next-turn revision model this preserves), CLAUDE.md §13 (silent degradation). Phase 156 extends the guard to the removal setter it adds.
+
+---
+
+## D-284 — Fleet enumeration of tasks + agents rides the EXISTING admin scope claim as widened, audited projections; no new scope vocabulary, no session-optional reads
+
+**Date:** 2026-07-04
+
+**Status:** Accepted (Phase 153, V1.11)
+
+**Where it lives:** `docs/plans/phase-153-fleet-scoped-tasks-agents.md`, `internal/tasks/protocol/`, `internal/runtime/registry/protocol/`.
+
+**The question.** A fleet observer (coordinator control plane) must enumerate tasks and registered agents across sessions on a runtime — today `tasks.list` / `agents.list` project only the caller's own `(tenant, user, session)` triple, so a synthetic observer session sees nothing; unlike `sessions.list`, which widens to `(tenant, user)` and, under the verified admin claim, to named tenants. What is the sanctioned widening shape?
+
+**Decision.** Mirror the sessions precedent exactly, per CLAUDE.md §6 rule 5 (cross-session observers — "admin, Console fleet view" — require the elevated claim): (1) `auth.ScopeAdmin` is THE claim — no new "fleet scope" vocabulary. (2) Widening is explicit on the wire and gated LOUD: a widened request without the verified claim fails with the existing scope-mismatch error, never silently narrows. (3) The registry seams gain an EXPLICIT tenant-scoped enumeration method — never an optional/blank session on the identity-scoped read (no identity-downgrading knob, §13; the session-scoped path keeps mandatory full-triple identity). (4) Every widened call emits `audit.admin_scope_used`. (5) Cross-RUNTIME federation stays coordinator-side over per-runtime reads, the same division as sessions/events. This lands the "future cross-runtime aggregating projector" the tasks projector godoc reserved, behind the unchanged `Projector` interface.
+
+**Cross-references.** D-059 (`agent_id` is never an isolation principal — the widened agents read still scopes rows by the tuple), D-262/Phase 130 (the sessions admin/audit precedent shape), D-228 (durable task driver — conformance parity for the new read), D-223/D-209 (wire lockstep + docs regen), CLAUDE.md §6 rules 2/5/10, §13.
+
+---
+
+## D-285 — OAuth provider client credentials resolve through a credential-source seam: `env` (boot-time, default) or `remote` (coordinator-served PULL at first need); push over the Protocol stays rejected
+
+**Date:** 2026-07-04
+
+**Status:** Accepted (Phase 154, V1.11)
+
+**Where it lives:** `docs/plans/phase-154-broker-credential-source.md`, `internal/tools/auth/credsource/` (seam + drivers), `internal/tools/auth/build_providers.go`, RFC §6.4 (the D-271 paragraph's additive credential-source sentence).
+
+**The question.** A coordinator that mints a runtime's broker credential (for the D-271 `tokenexchange` provider) AFTER the runtime booted has no way to deliver it: `BuildProviders` resolves `client_id_env`/`client_secret_env` once at boot and a running process's environment is fixed at exec. The one-reboot provisioning step survives every front-load. How does a post-boot credential reach the runtime?
+
+**Decision.** A §4.4 credential-source seam on the provider entry: `credential_source: env` (today's boot-time resolution, the default — existing configs byte-compatible) or `remote` (the runtime PULLS `client_id`/`client_secret` from a coordinator-served endpoint, authenticated by the runtime's own service token from env, at first need — memory-only TTL cache, single-flight, strict parse, `format_version`-ed response). Fail-loud everywhere: boot validates the declared source's shape; a remote fetch failure fails the tool call with a typed sentinel + a SafePayload audit event — NEVER a fallback to env, to an unauthenticated call, or to the interactive flow (one mode per source, §13). Declaring both env and remote fields on one entry is a validation error — no dual path.
+
+**Rejected: hot-reload / an admin verb that installs a provider.** Two independent reasons: a verb carrying the secret is a secret riding the Protocol — the credential-passthrough shape D-271 already rejected (recorded so it is not re-litigated); and a secretless "re-read the env" reload is incoherent (the env cannot change post-exec). The provider LIST stays boot-declared; only credential resolution is late.
+
+**Why this is the D-271 posture, one level up.** The broker client credential is itself an externally-owned credential: pulled per-need from the authority that owns it, cached in memory only, never persisted (a sealed per-runtime copy would recreate the shadow-store revocation hole D-061/D-271 name). Defense-in-depth win recorded: with `remote`, the broker secret never enters the runtime's environment at all.
+
+**Cross-references.** D-271 (the pull model + push rejection this mirrors), D-278 (per-identity southbound binding — unchanged), D-090/D-095 (WrapWithOAuth + the flow-strategy registry — untouched; the provider instance is still boot-constructed, so no catalog re-wrap), D-196 (blank-import home for the two source drivers), CLAUDE.md §4.4, §7 rules 2/3, §10, §13, §17.8 (fixture-server gate).
+
+---
+
+## D-286 — The session-erasure audit record is part of the erasure's success criteria: durable record-of-fact ordering + cumulative deletion counts
+
+**Date:** 2026-07-04
+
+**Status:** Accepted (Phase 155, V1.11)
+
+**Where it lives:** `docs/plans/phase-155-erasure-audit-integrity.md`, `internal/sessions/erasure.go`.
+
+**Context.** Issues #409/#410 (v1.7 band-end review, deferred from PR #406). D-262 designates `session.erased` as the record-of-fact for a right-to-erasure operation, but the emit is best-effort AFTER the irreversible clear: one bus/redactor failure loses the only audit record while the call reports success, and a re-invoke returns `not_found` — no second chance. Separately, a retried mid-cascade erasure re-runs idempotent deletes that find fewer records, so reported counts reflect only the final converging attempt.
+
+**Decision.** (1) The ordering invariant becomes binding: at no point may (data irrevocably gone) ∧ (no durable audit record) ∧ (success returned) hold — nor the inverse (record written, data present, success returned). A record/emit failure fails the `sessions.delete` call loud with a typed sentinel, with the session still re-invokable; a re-invoke converges. (2) Deletion counts accumulate across converging attempts — the response and event report true totals. The #410 alternative (document per-attempt semantics) is REJECTED: the counts feed a compliance surface; accurate beats documented-as-inaccurate. (3) No wire-shape change; field docs state the cumulative semantics.
+
+**Cross-references.** D-262 (the erasure method + record-of-fact designation), D-274 (the loud-fence precedent on this same cascade), CLAUDE.md §13 (fail loudly), §17.6 (fix-what-the-review-finds). Closes #409, #410.
+
+---
+
+## D-287 — Connection removal is a first-class revision verb + the detach leg of run-start reconciliation; supersedes D-240 decision 5's deferral via its recorded revisit clause
+
+**Date:** 2026-07-04
+
+**Status:** Accepted (Phase 156, V1.11)
+
+**Where it lives:** `docs/plans/phase-156-remove-mcp-connection.md`, `internal/runtime/agentcfg/protocol/removeconnection.go`, `internal/runtime/agentcfg/projection/` (the detach leg).
+
+**Context.** D-240 decision 5 deferred detach-on-rollback with an explicit revisit condition: "revisited if a removal need emerges that pause cannot serve." It emerged: a coordinator's delete flow must actually remove a runtime-added MCP connection — pause cannot express removal (the descriptor persists forever; resume resurrects the server). This supersession travels D-240's own sanctioned path, not re-litigation.
+
+**Decision.** (1) `agent_config.remove_mcp_connection`: a new revision whose connections section drops the named descriptor AND prunes that server's tool-exposure residue in the same atomic revision; all sibling sections (incl. Hooks) carried forward under the D-283 completeness guard, which this setter joins. Unknown name and boot-declared (yaml) name each fail loud with distinct typed errors — the verb governs revisioned state only. (2) Run-start reconciliation gains the detach leg: declared-vs-attached diff deregisters undeclared servers from the catalog + MCP registry and closes the transport at the next-turn projection boundary — never mid-run; in-flight runs keep their snapshot (D-025/D-234). Rollback past an add detaches through the SAME reconcile path (one mechanism, §13). (3) Agent-bound sealed tokens are NOT deleted on remove: re-add reuses completed consent; credential revocation is provider-side. Documented; a revoke surface is a named follow-up if the need emerges. (4) New canonical `mcp.connection.removed` event (SafePayload).
+
+**Cross-references.** D-240 (the superseded deferral — decision 5 only; decisions 1–4/6 unchanged), D-241..D-247 (the 92k–92q band this completes), D-237 (warm-transport / next-turn model preserved — teardown is a projection-boundary act), D-283 (the completeness guard), D-223/D-209 (lockstep + docs regen), CLAUDE.md §6 rule 10, §13, §17.8.
