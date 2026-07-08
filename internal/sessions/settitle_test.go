@@ -206,6 +206,52 @@ func TestRegistry_SetTitle_ControlCharsRejected(t *testing.T) {
 	}
 }
 
+// TestRegistry_SetTitle_InvisibleOnlyRejected pins the Unicode Cf
+// posture: a title made ONLY of format characters (zero-width space
+// U+200B etc.) and whitespace survives TrimSpace non-empty but renders
+// as nothing — it is rejected as ErrInvalidTitle (invalid, NOT treated
+// as a clear), while a title that merely CONTAINS format characters
+// alongside visible text stays valid (emoji ZWJ sequences depend on
+// U+200D).
+func TestRegistry_SetTitle_InvisibleOnlyRejected(t *testing.T) {
+	t.Parallel()
+	reg, _, _ := titleTestWiring(t)
+	id := ident("t1", "u1", "s1")
+	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := reg.SetTitle(ctxFor(id), id.SessionID, id, "visible before"); err != nil {
+		t.Fatalf("SetTitle (seed): %v", err)
+	}
+	// Invisible-only inputs — all rejected, never a silent clear.
+	for _, invisible := range []string{
+		"\u200b",             // zero-width space
+		"\u200b\u200b\u200b", // several
+		"\u200d",             // zero-width joiner alone
+		"\u200e\u200f",       // directional marks
+		" \u200b \u2060 ",    // format chars mixed with whitespace
+		"\ufeff",             // BOM / zero-width no-break space
+	} {
+		err := reg.SetTitle(ctxFor(id), id.SessionID, id, invisible)
+		if !errors.Is(err, sessions.ErrInvalidTitle) {
+			t.Errorf("invisible-only title %q: err = %v, want ErrInvalidTitle", invisible, err)
+		}
+	}
+	// The pre-existing title is untouched (rejected ≠ cleared).
+	snap, err := reg.Inspect(ctxFor(id), id.SessionID)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if snap.Title != "visible before" {
+		t.Errorf("title = %q after rejected invisible-only inputs, want %q untouched", snap.Title, "visible before")
+	}
+	// Format characters MIXED with visible text stay valid — the
+	// family-emoji ZWJ sequence is the canonical legitimate use.
+	if err := reg.SetTitle(ctxFor(id), id.SessionID, id, "family \U0001F468\u200d\U0001F469\u200d\U0001F467 chat"); err != nil {
+		t.Fatalf("ZWJ-containing title should be valid: %v", err)
+	}
+}
+
 func TestRegistry_SetTitle_UnknownID_NotFound(t *testing.T) {
 	t.Parallel()
 	reg, _, _ := titleTestWiring(t)

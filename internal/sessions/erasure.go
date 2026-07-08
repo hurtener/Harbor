@@ -429,8 +429,15 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	//    kind/run under the triple, including the durable event stream) —
 	//    the irreversible clear. The ledger already durably holds every
 	//    count up to and including this step's result BEFORE Erase ever
-	//    reports success.
-	stateDeleted, err := e.state.DeleteScope(ctx, id)
+	//    reports success. The clear runs through the registry's
+	//    deleteScopeSerialized — the same r.mu the whole-record writers
+	//    (Touch / Close / SetTitle) hold across their load→save — so a
+	//    writer that loaded the record before this clear can never save
+	//    it back AFTER it, re-persisting an erased session's lifecycle
+	//    record. Lock ordering: this call site already holds the striped
+	//    per-session erase lock; registry methods never acquire the
+	//    striped locks, so striped → r.mu is acyclic.
+	stateDeleted, err := e.registry.deleteScopeSerialized(ctx, e.state, id)
 	if err != nil {
 		return zero, fmt.Errorf("sessions: erase state: %w", err)
 	}

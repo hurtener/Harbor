@@ -44,6 +44,7 @@
   } from '$lib/components/playground/PlaygroundArtifactsCard.svelte';
   import TraceToggle, { type TraceNode } from '$lib/components/playground/TraceToggle.svelte';
   import { ChatPanel, type ChatMessage, type ChatProtocolClient } from '$lib/chat/index.js';
+  import { MAX_SESSION_TITLE_LEN } from '$lib/sessions/types.js';
   import AppPanel from '$lib/components/playground/AppPanel.svelte';
   import AppTabStrip from '$lib/components/playground/AppTabStrip.svelte';
   import SplitPane from '$lib/components/playground/SplitPane.svelte';
@@ -843,10 +844,14 @@
       es.addEventListener('tool.rejected', onInterventionClear);
       es.addEventListener('tool.auth_completed', onInterventionClear);
 
-      // D-288 — a rename (this page's own `sessions.set_title` call, or
-      // another client's) refreshes the switcher's title labels. The
-      // event is content-free by design (identity scope + session id +
-      // source only — never the title string), so the handler simply
+      // D-288 — a rename of the ACTIVE session refreshes the switcher's
+      // title labels. The SSE subscription is scoped to this page's own
+      // (tenant, user, session) triple, so only the active session's
+      // title_changed events arrive here — a sibling session renamed
+      // elsewhere does NOT reach this page live (its label refreshes on
+      // the next sessions.list read, e.g. a page re-mount or switch).
+      // The event is content-free by design (identity scope + session id
+      // + source only — never the title string), so the handler simply
       // refetches the projection rather than decoding a payload.
       es.addEventListener('session.title_changed', () => {
         void refreshSessionList();
@@ -1034,8 +1039,9 @@
   }
 
   // refreshSessionList loads the connection's sessions for the switcher.
-  // Re-invoked on `session.title_changed` (subscribeEvents) so a rename —
-  // this page's own or another client's — refreshes the switcher labels.
+  // Re-invoked on `session.title_changed` (subscribeEvents) so a rename
+  // of the ACTIVE session — the only session whose events the page's
+  // triple-scoped SSE subscription carries — refreshes the labels.
   async function refreshSessionList(): Promise<void> {
     if (client === null) return;
     try {
@@ -1607,6 +1613,7 @@
           class="rename-input"
           data-testid="playground-rename-input"
           bind:value={renameDraft}
+          maxlength={MAX_SESSION_TITLE_LEN}
           disabled={renameBusy}
           onkeydown={(e) => {
             if (e.key === 'Enter') void saveRenameActive();

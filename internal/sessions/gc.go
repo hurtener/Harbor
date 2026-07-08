@@ -2,14 +2,12 @@ package sessions
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/state"
 )
 
 // startSweeper kicks off the background GC goroutine. The goroutine
@@ -108,11 +106,37 @@ func (r *Registry) GC(ctx context.Context, policy GCPolicy) (int, error) {
 			continue
 		}
 
-		// Load the latest record so we honor any concurrent Touch.
-		rec, err := r.store.Load(ctx, q, sessionKind)
-		if err != nil {
-			if errors.Is(err, state.ErrNotFound) {
-				// Record disappeared (e.g. via a future Delete path).
+		// The load→check→mutate→save runs through mutateSession (one
+		// r.mu critical section, shared with Touch / Close / SetTitle)
+		// so the reap can never lose a concurrent writer's update — a
+		// SetTitle racing this save previously had a window to
+		// re-persist Closed=false after the reap, resurrecting the
+		// session as a GC-invisible zombie (the lost-update family the
+		// serialized read-modify-write path closes). Loading the latest
+		// record inside the section also honors a concurrent Touch.
+		var reason string
+		if _, err := r.mutateSession(ctx, q.Identity, func(s *Session) error {
+			if s.Closed {
+				// Already closed (e.g. via Close path); just drop the
+				// in-memory tracking entry (the mutator runs under r.mu).
+				delete(r.openSessions, q.SessionID)
+				return errSkipSave
+			}
+			switch {
+			case !s.OpenedAt.IsZero() && now.Sub(s.OpenedAt) > policy.HardCap:
+				reason = "gc:hard_cap"
+			case !s.LastSeen.IsZero() && now.Sub(s.LastSeen) > policy.IdleTTL:
+				reason = "gc:idle"
+			default:
+				return errSkipSave
+			}
+			s.Closed = true
+			s.ClosedAt = now
+			s.ClosedReason = reason
+			return nil
+		}); err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				// Record disappeared (e.g. via the erasure path).
 				// Drop from openSessions and move on.
 				r.mu.Lock()
 				delete(r.openSessions, q.SessionID)
@@ -120,43 +144,12 @@ func (r *Registry) GC(ctx context.Context, policy GCPolicy) (int, error) {
 				continue
 			}
 			if firstErr == nil {
-				firstErr = fmt.Errorf("sessions: GC load %q: %w", q.SessionID, err)
+				firstErr = fmt.Errorf("sessions: GC reap %q: %w", q.SessionID, err)
 			}
 			continue
 		}
-		var s Session
-		if err := json.Unmarshal(rec.Bytes, &s); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("sessions: GC unmarshal %q: %w", q.SessionID, err)
-			}
-			continue
-		}
-		if s.Closed {
-			// Already closed (e.g. via Close path); just drop the
-			// in-memory tracking entry.
-			r.mu.Lock()
-			delete(r.openSessions, q.SessionID)
-			r.mu.Unlock()
-			continue
-		}
-
-		var reason string
-		switch {
-		case !s.OpenedAt.IsZero() && now.Sub(s.OpenedAt) > policy.HardCap:
-			reason = "gc:hard_cap"
-		case !s.LastSeen.IsZero() && now.Sub(s.LastSeen) > policy.IdleTTL:
-			reason = "gc:idle"
-		default:
-			continue
-		}
-
-		s.Closed = true
-		s.ClosedAt = now
-		s.ClosedReason = reason
-		if err := r.save(ctx, s); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("sessions: GC save %q: %w", q.SessionID, err)
-			}
+		if reason == "" {
+			// Skipped: already closed, or neither TTL nor hard-cap hit.
 			continue
 		}
 		r.mu.Lock()

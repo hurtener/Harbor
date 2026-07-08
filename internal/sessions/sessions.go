@@ -119,17 +119,37 @@ const MaxSessionTitleLen = 200
 var ErrInvalidTitle = errors.New("sessions: invalid title")
 
 // validateTitle enforces the manual-title shape: single-line (no
-// newline/control characters) and at most MaxSessionTitleLen runes.
-// Callers pass an already-trimmed title; an empty string is valid here
-// (SetTitle handles the empty-clears-title semantics separately).
+// newline/control characters), at most MaxSessionTitleLen runes, and
+// not invisible-only. Callers pass an already-trimmed title; an empty
+// string is valid here (SetTitle handles the empty-clears-title
+// semantics separately).
+//
+// Unicode format characters (category Cf — zero-width space U+200B,
+// zero-width joiner U+200D, directional marks, ...) are NOT control
+// characters (unicode.IsControl is Cc-only), so a title may
+// legitimately contain them — emoji ZWJ sequences depend on U+200D.
+// The one shape rejected on top of the control-character rule is a
+// title made ONLY of format characters and whitespace: it survives
+// strings.TrimSpace non-empty but renders as nothing — neither a
+// usable display name nor an intentional clear. Invisible-only input
+// fails loud with ErrInvalidTitle (invalid, NOT treated as a clear) so
+// the caller learns the input was garbage rather than silently losing
+// the existing title.
 func validateTitle(trimmed string) error {
 	if utf8.RuneCountInString(trimmed) > MaxSessionTitleLen {
 		return fmt.Errorf("%w: exceeds %d runes", ErrInvalidTitle, MaxSessionTitleLen)
 	}
+	visible := false
 	for _, r := range trimmed {
 		if r == '\n' || r == '\r' || unicode.IsControl(r) {
 			return fmt.Errorf("%w: contains a newline or control character", ErrInvalidTitle)
 		}
+		if !unicode.Is(unicode.Cf, r) && !unicode.IsSpace(r) {
+			visible = true
+		}
+	}
+	if !visible {
+		return fmt.Errorf("%w: contains no visible characters (format characters / whitespace only)", ErrInvalidTitle)
 	}
 	return nil
 }
