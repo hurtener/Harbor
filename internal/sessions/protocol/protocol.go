@@ -1,8 +1,10 @@
-// Package protocol implements the two `sessions.*` Protocol methods the
+// Package protocol implements the `sessions.*` Protocol methods the
 // Console Sessions page consumes:
 //
-//   - sessions.list    — paginated, filtered SessionRegistry projection.
-//   - sessions.inspect — full per-session snapshot for the detail view.
+//   - sessions.list      — paginated, filtered SessionRegistry projection.
+//   - sessions.inspect   — full per-session snapshot for the detail view.
+//   - sessions.delete    — own-session-only data-lifecycle erasure.
+//   - sessions.set_title — sets/clears a session's human-readable title.
 //
 // # The seam (CLAUDE.md §4.4)
 //
@@ -94,6 +96,10 @@ var (
 	ErrErasureRecordFailed = errors.New("sessions/protocol: erasure record-of-fact could not be durably completed")
 	// ErrMisconfigured — NewService was called with a nil Projector.
 	ErrMisconfigured = errors.New("sessions/protocol: NewService missing a mandatory dependency")
+	// ErrTitleSetUnsupported — `sessions.set_title` reached a Service that
+	// was built without a TitleSetter. The handler maps it to
+	// CodeUnknownMethod (404), the same posture as ErrErasureUnsupported.
+	ErrTitleSetUnsupported = errors.New("sessions/protocol: session title-set is not wired on this runtime")
 )
 
 // Eraser is the seam the Service depends on for `sessions.delete`. The
@@ -112,6 +118,23 @@ type Eraser interface {
 	Erase(ctx context.Context, id identity.Identity) (prototypes.SessionsDeleteResponse, error)
 }
 
+// TitleSetter is the write seam the Service dispatches `sessions.set_title`
+// to. The V1 production implementation is `*sessions.Registry` — its
+// SetTitle method satisfies this interface directly (Registry already
+// implements the wider SessionRegistry, of which SetTitle is one
+// method). The Service depends ONLY on this narrow interface (CLAUDE.md
+// §4.4) — a future remote / cross-runtime title-set slots in behind it
+// without reshaping the Service.
+type TitleSetter interface {
+	// SetTitle sets or clears the title of session `id` for the CALLER's
+	// verified `(tenant, user)` (`ident`). See sessions.SessionRegistry's
+	// SetTitle for the full semantics (trim, validate, empty clears,
+	// (tenant, user) write scope). Returns sessions.ErrInvalidTitle,
+	// sessions.ErrSessionNotFound, or sessions.ErrIdentityMismatch on
+	// refusal.
+	SetTitle(ctx context.Context, id string, ident identity.Identity, title string) error
+}
+
 // Projector is the read seam the Service depends on. The V1 production
 // implementation is ListerProjector. Every method takes the verified
 // identity triple plus the resolved admin-scope flag so the
@@ -128,14 +151,15 @@ type Projector interface {
 	InspectSession(ctx context.Context, id identity.Identity, sessionID string, adminScoped bool) (prototypes.SessionsInspectResponse, error)
 }
 
-// Service implements the two `sessions.*` Protocol methods. It is a
+// Service implements the `sessions.*` Protocol methods. It is a
 // safe for concurrent reuse compiled artifact — immutable after NewService.
 type Service struct {
-	projector Projector
-	eraser    Eraser          // optional — nil ⇒ sessions.delete is unsupported (capability not wired)
-	bus       events.EventBus // optional — nil ⇒ admin audit emit is logged only
-	redactor  audit.Redactor  // optional — defence-in-depth before the emit
-	logger    *slog.Logger
+	projector   Projector
+	eraser      Eraser          // optional — nil ⇒ sessions.delete is unsupported (capability not wired)
+	titleSetter TitleSetter     // optional — nil ⇒ sessions.set_title is unsupported (capability not wired)
+	bus         events.EventBus // optional — nil ⇒ admin audit emit is logged only
+	redactor    audit.Redactor  // optional — defence-in-depth before the emit
+	logger      *slog.Logger
 }
 
 // Option configures NewService.
@@ -175,6 +199,19 @@ func WithEraser(e Eraser) Option {
 	return func(s *Service) {
 		if e != nil {
 			s.eraser = e
+		}
+	}
+}
+
+// WithTitleSetter wires the TitleSetter the Service dispatches
+// `sessions.set_title` to. When unsupplied (or nil) the Service answers
+// `sessions.set_title` with ErrTitleSetUnsupported (the handler maps it
+// to a 404) — a runtime that did not wire a title setter is honestly
+// read-only on session titles. A non-nil setter enables the write path.
+func WithTitleSetter(ts TitleSetter) Option {
+	return func(s *Service) {
+		if ts != nil {
+			s.titleSetter = ts
 		}
 	}
 }
@@ -376,6 +413,19 @@ var _ Eraser = (*sessions.CascadeEraser)(nil)
 // the capability advertisement so a read-only runtime stays honest.
 func (s *Service) HasEraser() bool { return s.eraser != nil }
 
+// Compile-time assertion: *sessions.Registry (the V1 production
+// SessionRegistry, which SetTitle is one method of) satisfies the
+// TitleSetter seam the Service dispatches `sessions.set_title` to. The
+// assertion lives here (the seam's home) rather than in package
+// sessions, which cannot import this package without a cycle.
+var _ TitleSetter = (*sessions.Registry)(nil)
+
+// HasTitleSetter reports whether the Service was wired with a
+// TitleSetter — i.e. whether `sessions.set_title` is supported. The
+// wiring layer can use it exactly like HasEraser to gate any future
+// capability advertisement.
+func (s *Service) HasTitleSetter() bool { return s.titleSetter != nil }
+
 // Delete implements the `sessions.delete` method — the identity-scoped,
 // own-session-only data-lifecycle erasure of a whole session and its
 // scoped State, Memory, and Artifacts.
@@ -416,6 +466,63 @@ func (s *Service) Delete(ctx context.Context, req prototypes.SessionsDeleteReque
 		}
 	}
 	return resp, nil
+}
+
+// SetTitle implements the `sessions.set_title` method — sets or clears a
+// session's human-readable title.
+//
+// The write scope is the owning `(tenant, user)`: req.Identity's
+// tenant/user MUST equal the caller's verified identity (the wire
+// handler overlays the verified triple and rejects any body-identity
+// mismatch as identity_required before this method is reached, mirroring
+// `sessions.delete`). req.SessionID is a DEDICATED field and MAY name a
+// sibling session of the caller's own `(tenant, user)` — the SessionID
+// component of req.Identity itself is unused for targeting (only its
+// tenant/user matter). A nil TitleSetter (the capability was not wired)
+// is reported as ErrTitleSetUnsupported.
+func (s *Service) SetTitle(ctx context.Context, req prototypes.SessionsSetTitleRequest) (prototypes.SessionsSetTitleResponse, error) {
+	id, err := validIdentity(req.Identity)
+	if err != nil {
+		return prototypes.SessionsSetTitleResponse{}, err
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		return prototypes.SessionsSetTitleResponse{},
+			fmt.Errorf("%w: session_id is empty", ErrInvalidRequest)
+	}
+	if s.titleSetter == nil {
+		return prototypes.SessionsSetTitleResponse{}, ErrTitleSetUnsupported
+	}
+	if err := s.titleSetter.SetTitle(ctx, sessionID, id, req.Title); err != nil {
+		switch {
+		case errors.Is(err, sessions.ErrInvalidTitle):
+			return prototypes.SessionsSetTitleResponse{},
+				fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+		case errors.Is(err, sessions.ErrSessionNotFound):
+			return prototypes.SessionsSetTitleResponse{},
+				fmt.Errorf("%w: %w", ErrSessionNotFound, err)
+		case errors.Is(err, sessions.ErrIdentityMismatch):
+			return prototypes.SessionsSetTitleResponse{},
+				fmt.Errorf("%w: %w", ErrIdentityRequired, err)
+		default:
+			return prototypes.SessionsSetTitleResponse{},
+				fmt.Errorf("sessions/protocol: set_title: %w", err)
+		}
+	}
+	// The registry already applied the exact trim/clear transform this
+	// mirrors — recomputed here (not returned by SetTitle, per its public
+	// API surface) purely to shape the response; Title is echoed back to
+	// the SAME caller that just supplied it, never onto the event bus.
+	title := strings.TrimSpace(req.Title)
+	source := string(sessions.TitleSourceManual)
+	if title == "" {
+		source = string(sessions.TitleSourceUnset)
+	}
+	return prototypes.SessionsSetTitleResponse{
+		SessionID:   sessionID,
+		Title:       title,
+		TitleSource: source,
+	}, nil
 }
 
 // sortRows orders rows in-place per the resolved sort.

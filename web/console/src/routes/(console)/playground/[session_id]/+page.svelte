@@ -169,7 +169,12 @@
 
   // D-171 — the connection's other conversations (sessions.list), for the
   // session switcher. One token, many sessions.
-  let sessionList = $state<Array<{ session_id: string; last_activity_at?: string }>>([]);
+  let sessionList = $state<Array<{ session_id: string; last_activity_at?: string; title?: string }>>([]);
+  // D-288 — inline rename of the ACTIVE session (sessions.set_title).
+  let renamingActive = $state(false);
+  let renameDraft = $state('');
+  let renameBusy = $state(false);
+  let renameError = $state<string | null>(null);
   // True once at least one `llm.cost.recorded` reading has landed — gates
   // the Cost tile so it shows "—" rather than a fabricated $0.0000.
   let hasCostReading = $state(false);
@@ -750,7 +755,8 @@
           'pause.resumed',
           'tool.approved',
           'tool.rejected',
-          'tool.auth_completed'
+          'tool.auth_completed',
+          'session.title_changed'
         ]
       });
       const es = new EventSource(url);
@@ -836,6 +842,15 @@
       es.addEventListener('tool.approved', onInterventionClear);
       es.addEventListener('tool.rejected', onInterventionClear);
       es.addEventListener('tool.auth_completed', onInterventionClear);
+
+      // D-288 — a rename (this page's own `sessions.set_title` call, or
+      // another client's) refreshes the switcher's title labels. The
+      // event is content-free by design (identity scope + session id +
+      // source only — never the title string), so the handler simply
+      // refetches the projection rather than decoding a payload.
+      es.addEventListener('session.title_changed', () => {
+        void refreshSessionList();
+      });
       es.onerror = () => {
         // EventSource auto-reconnects on transient drops; only nullify
         // on a permanent close to avoid resubscribe storms.
@@ -1019,15 +1034,50 @@
   }
 
   // refreshSessionList loads the connection's sessions for the switcher.
+  // Re-invoked on `session.title_changed` (subscribeEvents) so a rename —
+  // this page's own or another client's — refreshes the switcher labels.
   async function refreshSessionList(): Promise<void> {
     if (client === null) return;
     try {
       const resp = await client.sessions.list<{
-        rows?: Array<{ session_id: string; last_activity_at?: string }>;
+        rows?: Array<{ session_id: string; last_activity_at?: string; title?: string }>;
       }>({ filter: {}, limit: 50 });
       sessionList = resp.rows ?? [];
     } catch {
       sessionList = [];
+    }
+  }
+
+  /** The active session's title from the freshest sessionList read ("" when unset). */
+  const activeTitle = $derived(sessionList.find((s) => s.session_id === sessionID)?.title ?? '');
+
+  /** Opens the inline rename editor for the ACTIVE session (D-288). */
+  function startRenameActive(): void {
+    renameDraft = activeTitle;
+    renameError = null;
+    renamingActive = true;
+  }
+
+  function cancelRenameActive(): void {
+    renamingActive = false;
+    renameDraft = '';
+    renameError = null;
+  }
+
+  /** Saves the draft title for the ACTIVE session via `sessions.set_title`. */
+  async function saveRenameActive(): Promise<void> {
+    if (client === null || renameBusy) return;
+    renameBusy = true;
+    renameError = null;
+    try {
+      await client.sessions.setTitle(sessionID, renameDraft.trim());
+      await refreshSessionList();
+      renamingActive = false;
+      renameDraft = '';
+    } catch (err) {
+      renameError = err instanceof ProtocolError ? err.message : String(err);
+    } finally {
+      renameBusy = false;
     }
   }
 
@@ -1542,13 +1592,61 @@
         onchange={(e) => switchSession((e.currentTarget as HTMLSelectElement).value)}
       >
         {#if !sessionList.some((s) => s.session_id === sessionID)}
-          <option value={sessionID}>{sessionID || '—'}</option>
+          <option value={sessionID}>{activeTitle || sessionID || '—'}</option>
         {/if}
         {#each sessionList as s (s.session_id)}
-          <option value={s.session_id}>{s.session_id}</option>
+          <option value={s.session_id}>{s.title || s.session_id}</option>
         {/each}
       </select>
     </label>
+
+    {#if renamingActive}
+      <span class="rename-inline">
+        <input
+          type="text"
+          class="rename-input"
+          data-testid="playground-rename-input"
+          bind:value={renameDraft}
+          disabled={renameBusy}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') void saveRenameActive();
+            else if (e.key === 'Escape') cancelRenameActive();
+          }}
+        />
+        <button
+          type="button"
+          class="session-new small"
+          data-testid="playground-rename-save"
+          disabled={renameBusy}
+          onclick={() => void saveRenameActive()}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          class="session-new small ghost"
+          data-testid="playground-rename-cancel"
+          disabled={renameBusy}
+          onclick={cancelRenameActive}
+        >
+          Cancel
+        </button>
+        {#if renameError}
+          <span class="rename-error" data-testid="playground-rename-error">{renameError}</span>
+        {/if}
+      </span>
+    {:else}
+      <button
+        type="button"
+        class="session-new small"
+        data-testid="playground-rename-start"
+        title={activeTitle ? 'Rename this conversation' : 'Add a title for this conversation'}
+        onclick={startRenameActive}
+      >
+        Rename
+      </button>
+    {/if}
+
     <button
       type="button"
       class="session-new"
@@ -1938,6 +2036,44 @@
 
   .session-new:hover {
     border-color: var(--color-accent);
+  }
+
+  .session-new.small {
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .session-new.ghost {
+    background: none;
+    color: var(--color-text-muted);
+  }
+
+  .session-new:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* D-288 inline rename — the ACTIVE session's title editor. */
+  .rename-inline {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .rename-input {
+    width: var(--size-rename-input-width);
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+  }
+
+  .rename-error {
+    flex-basis: 100%;
+    color: var(--color-danger);
+    font-size: var(--text-xs);
   }
 
   .view-save-input {

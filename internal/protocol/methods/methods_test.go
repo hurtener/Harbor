@@ -97,6 +97,7 @@ var wantMethods = []methods.Method{
 	methods.MethodSessionsList,
 	methods.MethodSessionsInspect,
 	methods.MethodSessionsDelete,
+	methods.MethodSessionsSetTitle,
 	methods.MethodRunsSetOverrides,
 	methods.MethodStateHistory,
 	methods.MethodAuthRotateToken,
@@ -154,9 +155,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + State-snapshots state.history one = 105,
 	// + agent-config USER tier five (agent_config.user.get + set_revision +
 	// list_revisions + diff + rollback) = 110,
-	// + Sessions-page erasure one (sessions.delete) = 111.
-	if len(got) != 111 {
-		t.Fatalf("Methods() returned %d methods, want 111", len(got))
+	// + Sessions-page erasure one (sessions.delete) = 111,
+	// + Sessions-page rename one (sessions.set_title, D-288) = 112.
+	if len(got) != 112 {
+		t.Fatalf("Methods() returned %d methods, want 112", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -250,9 +252,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodTasksList: "tasks.list",
 		methods.MethodTasksGet:  "tasks.get",
 
-		methods.MethodSessionsList:    "sessions.list",
-		methods.MethodSessionsInspect: "sessions.inspect",
-		methods.MethodSessionsDelete:  "sessions.delete",
+		methods.MethodSessionsList:     "sessions.list",
+		methods.MethodSessionsInspect:  "sessions.inspect",
+		methods.MethodSessionsDelete:   "sessions.delete",
+		methods.MethodSessionsSetTitle: "sessions.set_title",
 
 		methods.MethodRunsSetOverrides: "runs.set_overrides",
 		methods.MethodAuthRotateToken:  "auth.rotate_token",
@@ -385,14 +388,14 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			t.Errorf("IsTasksMethod(%q) = false, want true", m)
 		}
 	}
-	// Phase 73c (D-122): the two sessions.* methods route through the
-	// Sessions-page handler, NOT the steering inbox.
+	// Phase 73c (D-122) + Phase 157 (D-288): the sessions.* methods route
+	// through the Sessions-page handler, NOT the steering inbox.
 	for _, m := range []methods.Method{
 		methods.MethodSessionsList, methods.MethodSessionsInspect,
-		methods.MethodSessionsDelete,
+		methods.MethodSessionsDelete, methods.MethodSessionsSetTitle,
 	} {
 		if methods.IsControlMethod(m) {
-			t.Errorf("IsControlMethod(%q) = true, want false — sessions.* methods are read-only, route through the Sessions handler", m)
+			t.Errorf("IsControlMethod(%q) = true, want false — sessions.* methods route through the Sessions handler, not the steering inbox", m)
 		}
 		if !methods.IsSessionsMethod(m) {
 			t.Errorf("IsSessionsMethod(%q) = false, want true", m)

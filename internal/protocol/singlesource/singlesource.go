@@ -194,11 +194,12 @@ var CanonicalMethods = map[string]struct{}{
 	// Console-Tasks-page cluster — two methods.
 	"tasks.list": {},
 	"tasks.get":  {},
-	// Console-Sessions-page cluster — three methods (two reads + the
-	// data-lifecycle erasure verb).
-	"sessions.list":    {},
-	"sessions.inspect": {},
-	"sessions.delete":  {},
+	// Console-Sessions-page cluster — four methods (two reads + the
+	// data-lifecycle erasure verb + the rename verb).
+	"sessions.list":      {},
+	"sessions.inspect":   {},
+	"sessions.delete":    {},
+	"sessions.set_title": {},
 	// Console-Playground-page cluster — one method.
 	"runs.set_overrides": {},
 	// State-snapshots cluster — one method (the windowed event-replay read).
@@ -587,17 +588,19 @@ var CanonicalWireTypes = map[string]string{
 	// SessionStatus / SessionSort are string-enum types (like
 	// methods.Method / errors.Code) and are NOT listed here —
 	// CanonicalWireTypes records struct wire types only.
-	"Window":                  "types",
-	"SessionFilter":           "types",
-	"SessionsListRequest":     "types",
-	"SessionRow":              "types",
-	"SessionsListResponse":    "types",
-	"InterventionSummary":     "types",
-	"ArtifactRefSummary":      "types",
-	"SessionsInspectRequest":  "types",
-	"SessionsInspectResponse": "types",
-	"SessionsDeleteRequest":   "types",
-	"SessionsDeleteResponse":  "types",
+	"Window":                   "types",
+	"SessionFilter":            "types",
+	"SessionsListRequest":      "types",
+	"SessionRow":               "types",
+	"SessionsListResponse":     "types",
+	"InterventionSummary":      "types",
+	"ArtifactRefSummary":       "types",
+	"SessionsInspectRequest":   "types",
+	"SessionsInspectResponse":  "types",
+	"SessionsDeleteRequest":    "types",
+	"SessionsDeleteResponse":   "types",
+	"SessionsSetTitleRequest":  "types",
+	"SessionsSetTitleResponse": "types",
 	// Console Playground-page wire types — all live
 	// in internal/protocol/types (internal/protocol/types/runs.go).
 	"RunOverrides":            "types",

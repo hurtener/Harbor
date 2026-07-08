@@ -123,6 +123,18 @@ func TestCascadeEraser_FullErasure_CascadesAndAudits(t *testing.T) {
 	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	// D-288: a manual title set before erasure must die WITH the
+	// session.lifecycle record (it rides the same StateStore.DeleteScope
+	// cascade as everything else under the triple — no separate title
+	// store to forget about).
+	if err := f.reg.SetTitle(ctx, id.SessionID, id, "My conversation"); err != nil {
+		t.Fatalf("SetTitle: %v", err)
+	}
+	if snap, err := f.reg.Get(ictx, id.SessionID); err != nil {
+		t.Fatalf("Get after SetTitle: %v", err)
+	} else if snap.Title != "My conversation" || snap.TitleSource != sessions.TitleSourceManual {
+		t.Fatalf("pre-erasure title = %q/%q, want \"My conversation\"/manual", snap.Title, snap.TitleSource)
+	}
 	// A memory turn.
 	if err := f.mem.AddTurn(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage: "hello", AssistantResponse: "world",
@@ -176,6 +188,11 @@ func TestCascadeEraser_FullErasure_CascadesAndAudits(t *testing.T) {
 	// The session-lifecycle record is hard-deleted.
 	if _, err := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); !errors.Is(err, state.ErrNotFound) {
 		t.Errorf("session.lifecycle survived erasure: err=%v", err)
+	}
+	// D-288: the title is gone WITH the record — a SetTitle attempt on
+	// the erased id is not_found, never a resurrection of the row.
+	if err := f.reg.SetTitle(ctx, id.SessionID, id, "resurrect?"); !errors.Is(err, sessions.ErrSessionNotFound) {
+		t.Errorf("SetTitle after erasure = %v, want ErrSessionNotFound", err)
 	}
 	// The erased triple's durable event stream is gone — state.history for
 	// the erased triple is empty (no re-persisted erasure record).

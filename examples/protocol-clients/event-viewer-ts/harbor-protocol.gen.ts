@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:7e23aa87fe2ffcf3337bf6011b6f0d77a6b63a28e0bd3bbdeb50d1d93a3a2126";
+export const WIRE_SURFACE_DIGEST = "sha256:6825fbf8dc6652c1df70898fb3bea8591e197c3e49d2082ac248695748dfffc3";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -119,6 +119,7 @@ export type HarborMethod =
   | "sessions.delete"
   | "sessions.inspect"
   | "sessions.list"
+  | "sessions.set_title"
   | "start"
   | "state.history"
   | "tasks.get"
@@ -236,6 +237,7 @@ export type HarborEventType =
   | "session.erased"
   | "session.gc_reaped"
   | "session.opened"
+  | "session.title_changed"
   | "session.touched"
   | "skill.deleted"
   | "skill.identity_rejected"
@@ -1921,6 +1923,8 @@ export interface SessionRow {
   has_pending_intervention: boolean;
   has_failed_task: boolean;
   identity: IdentityScope;
+  title?: string;
+  title_source?: string;
 }
 
 export interface SessionsDeleteRequest {
@@ -1958,6 +1962,18 @@ export interface SessionsListResponse {
   rows: SessionRow[];
   next_cursor: string;
   truncated: boolean;
+}
+
+export interface SessionsSetTitleRequest {
+  identity: IdentityScope;
+  session_id: string;
+  title: string;
+}
+
+export interface SessionsSetTitleResponse {
+  session_id: string;
+  title: string;
+  title_source: string;
 }
 
 export interface SizeRange {

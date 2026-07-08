@@ -178,11 +178,12 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	steering.EventTypeRunHookFailed:     {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookFailedPayload{})}},
 
 	// --- Sessions.
-	sessions.EventTypeSessionOpened:   {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionOpenedPayload{})}},
-	sessions.EventTypeSessionTouched:  {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionTouchedPayload{})}},
-	sessions.EventTypeSessionClosed:   {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionClosedPayload{})}},
-	sessions.EventTypeSessionGCReaped: {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionGCReapedPayload{})}},
-	sessions.EventTypeSessionErased:   {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionErasedPayload{})}},
+	sessions.EventTypeSessionOpened:       {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionOpenedPayload{})}},
+	sessions.EventTypeSessionTouched:      {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionTouchedPayload{})}},
+	sessions.EventTypeSessionClosed:       {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionClosedPayload{})}},
+	sessions.EventTypeSessionGCReaped:     {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionGCReapedPayload{})}},
+	sessions.EventTypeSessionErased:       {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionErasedPayload{})}},
+	sessions.EventTypeSessionTitleChanged: {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionTitleChangedPayload{})}},
 
 	// --- Skills.
 	skills.EventTypeSkillUpserted:             {Payloads: []reflect.Type{reflect.TypeOf(skills.SkillUpsertedPayload{})}},

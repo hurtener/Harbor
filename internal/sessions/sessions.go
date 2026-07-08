@@ -41,7 +41,10 @@ package sessions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/identity"
 )
@@ -50,6 +53,16 @@ import (
 // Identity field carries the triple captured on Open and is immutable
 // afterwards. Closed transitions to true on Close; ClosedAt stays zero
 // while Closed is false.
+//
+// Title / TitleSource are additive fields: an older persisted session
+// record (one written before these fields existed) decodes with both
+// zero-valued (""), which is exactly TitleSourceUnset — no migration
+// needed. Title is set/cleared exclusively through SetTitle, which
+// enforces the manual semantics (trim, length/control-character
+// validation, empty clears both fields). Title is user-derived free
+// text and MUST NEVER be copied into an event/log/audit payload
+// (CLAUDE.md §7 rule 7 — content-free posture) — only SessionID +
+// TitleSource ride SessionTitleChangedPayload.
 //
 // Limits and Context are reserved slots — later phases will populate
 // Limits with the cost / token ceilings and
@@ -66,6 +79,59 @@ type Session struct {
 	ClosedReason string
 	Limits       SessionLimits
 	Context      map[string]any
+	Title        string
+	TitleSource  TitleSource
+}
+
+// TitleSource marks who produced a session's Title. The wire verb
+// `sessions.set_title` ALWAYS writes TitleSourceManual (empty title
+// clears both fields to TitleSourceUnset) — TitleSourceAuto is not
+// expressible over the wire; it is declared here for the runtime's
+// internal auto-naming writer, which is the only producer. This makes
+// "manual wins" structurally unforgeable: a caller can never claim
+// `auto` provenance for a title they set themselves.
+type TitleSource string
+
+const (
+	// TitleSourceUnset — no title has ever been set, or the title was
+	// cleared (an empty SetTitle call resets both Title and
+	// TitleSource to this zero value).
+	TitleSourceUnset TitleSource = ""
+	// TitleSourceAuto — the title was produced by the runtime's internal
+	// auto-naming writer. Not reachable via the `sessions.set_title`
+	// wire verb.
+	TitleSourceAuto TitleSource = "auto"
+	// TitleSourceManual — the title was set by an authenticated caller
+	// via `sessions.set_title`. Manual titles are never silently
+	// overwritten by an auto-namer.
+	TitleSourceManual TitleSource = "manual"
+)
+
+// MaxSessionTitleLen bounds a manual session title (runes, post-trim).
+// A title exceeding this bound is rejected fail-loud with ErrInvalidTitle
+// — never silently clamped (CLAUDE.md §13).
+const MaxSessionTitleLen = 200
+
+// ErrInvalidTitle — SetTitle was called with a title that, after
+// trimming leading/trailing whitespace, either exceeds
+// MaxSessionTitleLen runes or contains a newline/control character.
+// Titles are single-line, bounded, display strings.
+var ErrInvalidTitle = errors.New("sessions: invalid title")
+
+// validateTitle enforces the manual-title shape: single-line (no
+// newline/control characters) and at most MaxSessionTitleLen runes.
+// Callers pass an already-trimmed title; an empty string is valid here
+// (SetTitle handles the empty-clears-title semantics separately).
+func validateTitle(trimmed string) error {
+	if utf8.RuneCountInString(trimmed) > MaxSessionTitleLen {
+		return fmt.Errorf("%w: exceeds %d runes", ErrInvalidTitle, MaxSessionTitleLen)
+	}
+	for _, r := range trimmed {
+		if r == '\n' || r == '\r' || unicode.IsControl(r) {
+			return fmt.Errorf("%w: contains a newline or control character", ErrInvalidTitle)
+		}
+	}
+	return nil
 }
 
 // SessionLimits is reserved for later phases (cost ceilings, tool
@@ -140,6 +206,22 @@ type SessionRegistry interface {
 	Close(ctx context.Context, id string, reason string) error
 	Inspect(ctx context.Context, id string) (*SessionSnapshot, error)
 	GC(ctx context.Context, policy GCPolicy) (int, error)
+
+	// SetTitle sets or clears the manual title of session `id`. `ident`
+	// is the CALLER's verified (tenant, user, session) — id MAY name a
+	// sibling session of the same (tenant, user) (the write scope is
+	// (tenant, user), matching sessions.list); it is not
+	// required to equal ident.SessionID. Semantics: trims whitespace;
+	// an empty-after-trim title clears Title and resets TitleSource to
+	// TitleSourceUnset; a non-empty title is validated (MaxSessionTitleLen,
+	// no newline/control characters — ErrInvalidTitle, never a silent
+	// clamp) and stored with TitleSource = TitleSourceManual. Unknown id
+	// (or an id belonging to a different (tenant, user)) returns
+	// ErrSessionNotFound; a stored-identity (tenant, user) mismatch
+	// (defence-in-depth) returns ErrIdentityMismatch. Renaming a CLOSED
+	// session is allowed; renaming an ERASED session is
+	// ErrSessionNotFound (the record is gone).
+	SetTitle(ctx context.Context, id string, ident identity.Identity, title string) error
 
 	// CloseRegistry cancels the sweeper goroutine and joins it.
 	// Idempotent. Distinct method name (rather than Close) so it

@@ -164,6 +164,8 @@ func projectRow(snap sessions.SessionSnapshot) prototypes.SessionRow {
 			User:    snap.Identity.UserID,
 			Session: snap.Identity.SessionID,
 		},
+		Title:       snap.Title,
+		TitleSource: string(snap.TitleSource),
 	}
 }
 

@@ -36,6 +36,7 @@
   import IdentityCell from '$lib/components/sessions/IdentityCell.svelte';
   import { formatDurationNS, formatRelative, shortSessionID, statusKind } from '$lib/sessions/format.js';
   import type { SessionFilter, SessionRow, SessionSort } from '$lib/sessions/types.js';
+  import { MAX_SESSION_TITLE_LEN } from '$lib/sessions/types.js';
   import type { TaskRow } from '$lib/protocol/tasks.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
@@ -84,6 +85,13 @@
   let selected = $state<Set<string>>(new Set());
   let bulkBusy = $state(false);
   let bulkResult = $state<string | null>(null);
+
+  // ---- Inline rename (D-288: sessions.set_title) ----
+  // At most one row is in edit mode at a time — renamingID names it.
+  let renamingID = $state<string | null>(null);
+  let renameDraft = $state('');
+  let renameBusy = $state(false);
+  let renameError = $state<string | null>(null);
 
   // ---- Saved views (Console-DB-backed — D-061) ----
   let savedFilters = $state<SessionsSavedFilter[]>([]);
@@ -308,6 +316,45 @@
     }
   }
 
+  // ---- Inline rename (D-288: sessions.set_title) -----------------------
+  /** Opens the inline rename editor for `row`, seeded with its current title. */
+  function startRename(row: SessionRow): void {
+    renamingID = row.session_id;
+    renameDraft = row.title ?? '';
+    renameError = null;
+  }
+
+  /** Closes the inline rename editor without saving. */
+  function cancelRename(): void {
+    renamingID = null;
+    renameDraft = '';
+    renameError = null;
+  }
+
+  /**
+   * Saves the draft title via `sessions.set_title`, updates the row
+   * in-place (no full reload needed), and surfaces a 400
+   * (oversize / control-character) as an inline error rather than
+   * closing the editor.
+   */
+  async function saveRename(sessionID: string): Promise<void> {
+    if (!sessionsClient || renameBusy) return;
+    renameBusy = true;
+    renameError = null;
+    try {
+      const resp = await sessionsClient.setTitle(sessionID, renameDraft.trim());
+      rows = rows.map((r) =>
+        r.session_id === sessionID ? { ...r, title: resp.title, title_source: resp.title_source } : r
+      );
+      renamingID = null;
+      renameDraft = '';
+    } catch (err) {
+      renameError = err instanceof ProtocolError ? err.message : String(err);
+    } finally {
+      renameBusy = false;
+    }
+  }
+
   // ---- DataTable column config (lean — registry-owned + Events) -------
   const columns: DataTableColumn[] = [
     { key: 'session', label: 'Session' },
@@ -485,9 +532,65 @@
           {#snippet row(r)}
             {@const s = r as SessionRow}
             <td>
-              <span class="session-id" data-testid="catalog-row" data-session-id={s.session_id} title={s.session_id}>
-                {shortSessionID(s.session_id)}
-              </span>
+              {#if renamingID === s.session_id}
+                <span class="rename-inline" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="presentation">
+                  <input
+                    type="text"
+                    class="rename-input mono"
+                    data-testid="session-rename-input"
+                    bind:value={renameDraft}
+                    maxlength={MAX_SESSION_TITLE_LEN}
+                    disabled={renameBusy}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') void saveRename(s.session_id);
+                      else if (e.key === 'Escape') cancelRename();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    class="control small"
+                    data-testid="session-rename-save"
+                    disabled={renameBusy}
+                    onclick={() => void saveRename(s.session_id)}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    class="control small ghost"
+                    data-testid="session-rename-cancel"
+                    disabled={renameBusy}
+                    onclick={cancelRename}
+                  >
+                    Cancel
+                  </button>
+                  {#if renameError}
+                    <span class="rename-error" data-testid="session-rename-error">{renameError}</span>
+                  {/if}
+                </span>
+              {:else}
+                <span
+                  class="session-id"
+                  class:has-title={!!s.title}
+                  data-testid="catalog-row"
+                  data-session-id={s.session_id}
+                  title={s.title ? `${s.title} (${s.session_id})` : s.session_id}
+                >
+                  {s.title ? s.title : shortSessionID(s.session_id)}
+                </span>
+                <button
+                  type="button"
+                  class="rename-btn"
+                  data-testid="session-rename-start"
+                  title={s.title ? 'Rename session' : 'Add a session title'}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    startRename(s);
+                  }}
+                >
+                  Rename
+                </button>
+              {/if}
             </td>
             <td><StatusChip kind={statusKind(s.status)} label={s.status} /></td>
             <td>{s.agent_name || '—'}</td>
@@ -661,9 +764,64 @@
   }
 
   .session-id {
+    display: inline-block;
+    max-width: var(--size-session-max-width);
+    overflow: hidden;
     color: var(--color-accent);
     font-weight: 600;
     font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  /* A titled row renders proportional text (not monospace) and gets a
+     wider truncation budget — the title is the human-facing label,
+     the id fallback is the terse mono form (D-288). */
+  .session-id.has-title {
+    max-width: var(--size-title-max-width);
+    font-weight: 500;
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+  }
+
+  .rename-btn {
+    margin-inline-start: var(--space-2);
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+    text-decoration: underline;
+    cursor: pointer;
+    vertical-align: middle;
+  }
+
+  .rename-btn:hover {
+    color: var(--color-accent);
+  }
+
+  .rename-inline {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .rename-input {
+    width: var(--size-rename-input-width);
+    background: var(--color-bg);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .rename-error {
+    flex-basis: 100%;
+    color: var(--color-danger);
     font-size: var(--text-xs);
   }
 

@@ -363,6 +363,11 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "SessionsDeleteRequest", Response: "SessionsDeleteResponse",
 			Auth: "Own-session-only — a caller erases solely their own verified `(tenant, user, session)`; a body identity mismatching the verified identity is rejected `identity_required`. No admin / cross-tenant path.",
 		},
+		methods.MethodSessionsSetTitle: {
+			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsSetTitle), Mutates: true,
+			Request: "SessionsSetTitleRequest", Response: "SessionsSetTitleResponse",
+			Auth: "Owning-(tenant, user)-scoped, not own-session-only — the body `Identity`'s tenant/user MUST equal the verified identity, but the target `session_id` (a dedicated request field) MAY name a sibling session of the same owner. Always writes `manual` provenance; no admin / cross-tenant path.",
+		},
 
 		// --- Flows: five reads + the one admin run.
 		methods.MethodFlowsList:         flowsRead(methods.MethodFlowsList, "FlowListRequest", "FlowListResponse", crossTenantAdminOnly),

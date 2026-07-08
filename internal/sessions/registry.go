@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -379,6 +380,81 @@ func (r *Registry) Close(ctx context.Context, id string, reason string) error {
 			SessionID: id,
 			ClosedAt:  now.UnixNano(),
 			Reason:    reason,
+		},
+	})
+	return nil
+}
+
+// SetTitle sets or clears the manual title of session `id` for the
+// CALLER's verified `(tenant, user)` (`ident`). Unlike Touch/Close/
+// Inspect, the target `id` is NOT required to equal `ident.SessionID` —
+// the write scope is `(tenant, user)`, matching `sessions.list`, so a
+// caller may rename a sibling session. `ident` still carries a full
+// triple (identity.Validate requires all three components) — its
+// SessionID is the caller's OWN connecting session and is used only for
+// identity validation, never as the load key.
+//
+// Semantics: the title is trimmed; an empty-after-trim value clears
+// Title and resets TitleSource to TitleSourceUnset; a non-empty value
+// is validated (MaxSessionTitleLen, no newline/control characters —
+// ErrInvalidTitle on violation, never a silent clamp per CLAUDE.md
+// §13) and stored with TitleSource = TitleSourceManual. The target
+// session is loaded under the caller's own (tenant, user) plus the
+// target id — a session belonging to a DIFFERENT (tenant, user) is
+// simply not found at that StateStore key, so a cross-user/cross-tenant
+// rename attempt surfaces as the same ErrSessionNotFound a genuinely
+// unknown id would (existence is never revealed across identities).
+// Renaming a CLOSED session is allowed (title is metadata on a
+// historical conversation, not a lifecycle mutation); renaming an
+// ERASED session is ErrSessionNotFound (DeleteScope already removed
+// the record).
+func (r *Registry) SetTitle(ctx context.Context, id string, ident identity.Identity, title string) error {
+	if r.closed.Load() {
+		return ErrRegistryClosed
+	}
+	if err := identity.Validate(ident); err != nil {
+		return err
+	}
+	trimmed := strings.TrimSpace(title)
+	if trimmed != "" {
+		if err := validateTitle(trimmed); err != nil {
+			return err
+		}
+	}
+
+	target := identity.Identity{TenantID: ident.TenantID, UserID: ident.UserID, SessionID: id}
+	stored, err := r.loadSession(ctx, target)
+	if err != nil {
+		return err
+	}
+	// Defence-in-depth (mirrors Touch/Close): verify the record we got
+	// back actually belongs to the caller's (tenant, user). The
+	// StateStore key already scopes the load to exactly this pair, so
+	// this should be unreachable via the public API — it guards against
+	// a future driver bug rather than a real forgery path.
+	if stored.Identity.TenantID != ident.TenantID || stored.Identity.UserID != ident.UserID {
+		return fmt.Errorf("%w: stored=(%s,%s) caller=(%s,%s)",
+			ErrIdentityMismatch,
+			stored.Identity.TenantID, stored.Identity.UserID,
+			ident.TenantID, ident.UserID)
+	}
+
+	if trimmed == "" {
+		stored.Title = ""
+		stored.TitleSource = TitleSourceUnset
+	} else {
+		stored.Title = trimmed
+		stored.TitleSource = TitleSourceManual
+	}
+	if err := r.save(ctx, *stored); err != nil {
+		return err
+	}
+	r.publish(ctx, identity.Quadruple{Identity: stored.Identity}, events.Event{
+		Type:     EventTypeSessionTitleChanged,
+		Identity: identity.Quadruple{Identity: stored.Identity},
+		Payload: SessionTitleChangedPayload{
+			SessionID: id,
+			Source:    string(stored.TitleSource),
 		},
 	})
 	return nil

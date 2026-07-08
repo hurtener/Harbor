@@ -277,9 +277,15 @@ re-invokable, and deletion counts are cumulative across retries — closing the
 paired erasure-integrity issues #409 and #410. And a silent-degradation bug is
 closed: agent-config section edits no longer erase a pinned run-completion hook,
 with a reflection-backed guard making the omission class impossible to
-reintroduce. One new Protocol method,
-three canonical events, one config surface — all additive; the Harbor Protocol
-holds at `0.1.0`.
+reintroduce. Sessions stop displaying as raw ids: a session now carries an
+optional **title** (`sessions.set_title`) that a caller can set on their own
+or a sibling session of the same `(tenant, user)` — the wire verb always
+writes `manual` provenance so a human-set name can never be silently
+overwritten by a later auto-namer, and the title never rides an event
+payload (`session.title_changed` is content-free). The Sessions page and
+Playground switcher both render title-or-id with an inline rename. Two new
+Protocol methods, four canonical events, one config surface — all additive;
+the Harbor Protocol holds at `0.1.0`.
 
 **Harbor v1.10.0.** v1.9's typed answers and brokered credentials reach the
 Protocol and the MCP wire. Any task can now return a **schema-validated
