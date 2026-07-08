@@ -258,6 +258,16 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.12 (unreleased).** Sessions stop displaying as raw ids: a
+session now carries an optional **title** (`sessions.set_title`) that a
+caller can set on their own or a sibling session of the same
+`(tenant, user)` — the wire verb always writes `manual` provenance so a
+human-set name can never be silently overwritten by a later auto-namer,
+and the title never rides an event payload (`session.title_changed` is
+content-free). The Sessions page and Playground switcher both render
+title-or-id with an inline rename. One new Protocol method, one canonical
+event — all additive; the Harbor Protocol holds at `0.1.0`.
+
 **Harbor v1.11.0.** The fleet-and-lifecycle line — the coordinator control
 plane grows the surfaces it was missing. An admin observer can enumerate
 **tasks and agents across every session** on a runtime: pass

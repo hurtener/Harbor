@@ -1152,6 +1152,11 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			sessionsOpts := []sessionsprotocol.Option{
 				sessionsprotocol.WithBus(bus),
 				sessionsprotocol.WithRedactor(stack.Audit),
+				// sessions.set_title (D-288) only needs the registry
+				// itself — wired unconditionally within this
+				// `stack.Sessions != nil` block, mirroring production
+				// cmd/harbor/cmd_dev.go::bootDevStack.
+				sessionsprotocol.WithTitleSetter(stack.Sessions),
 			}
 			// Wire the session-erasure cascade (`sessions.delete`)
 			// over the real scoped stores when all are present, so an

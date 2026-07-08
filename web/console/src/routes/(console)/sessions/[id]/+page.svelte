@@ -228,6 +228,18 @@
         <div class="main">
           <section class="panel card" data-testid="session-detail-header">
             <header class="header-line">
+              {#if snapshot.row.title}
+                <!-- D-288 — the human-readable title leads when set; the raw
+                     id demotes to the mono sibling (rename lives on the
+                     Sessions list + Playground; the header is display-only). -->
+                <span
+                  class="session-title"
+                  data-testid="session-detail-title"
+                  title={`${snapshot.row.title} (${snapshot.row.session_id})`}
+                >
+                  {snapshot.row.title}
+                </span>
+              {/if}
               <span class="mono id" title={snapshot.row.session_id}>{snapshot.row.session_id}</span>
               <button type="button" class="control small" data-testid="session-copy-id" onclick={() => void copyID()}>
                 Copy id
@@ -346,6 +358,18 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
+  }
+
+  /* D-288 — the session's human-readable title, truncated with the full
+     title + id in the tooltip (same budget token as the list page). */
+  .session-title {
+    max-width: var(--size-title-max-width);
+    overflow: hidden;
+    color: var(--color-text);
+    font-size: var(--text-lg);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .header-meta {

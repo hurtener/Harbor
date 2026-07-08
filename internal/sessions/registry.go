@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -294,7 +295,10 @@ func (r *Registry) Get(ctx context.Context, id string) (*Session, error) {
 // Touch updates LastSeen and re-saves. Identity-mandatory; ctx
 // Identity is compared against the stored Identity, mismatch returns
 // ErrIdentityMismatch. Touch on a Closed session returns
-// ErrReopenAfterClose (Closed records are read-only).
+// ErrReopenAfterClose (Closed records are read-only). The
+// load→mutate→save runs through mutateSession (one r.mu critical
+// section) so a concurrent Close / SetTitle / GC reap can never lose
+// this write — or have this write resurrect theirs.
 func (r *Registry) Touch(ctx context.Context, id string) error {
 	if r.closed.Load() {
 		return ErrRegistryClosed
@@ -303,23 +307,21 @@ func (r *Registry) Touch(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("sessions: Touch requires identity in ctx: %w", identity.ErrIdentityMissing)
 	}
-	stored, err := r.loadSession(ctx, ident)
-	if err != nil {
-		return err
-	}
-	if !sameIdentity(stored.Identity, ident) {
-		return fmt.Errorf("%w: stored=(%s,%s,%s) ctx=(%s,%s,%s)",
-			ErrIdentityMismatch,
-			stored.Identity.TenantID, stored.Identity.UserID, stored.Identity.SessionID,
-			ident.TenantID, ident.UserID, ident.SessionID)
-	}
-	if stored.Closed {
-		return fmt.Errorf("%w: SessionID=%q closed at %s",
-			ErrReopenAfterClose, id, stored.ClosedAt.Format(time.RFC3339))
-	}
 	now := r.clock.Now()
-	stored.LastSeen = now
-	if err := r.save(ctx, *stored); err != nil {
+	if _, err := r.mutateSession(ctx, ident, func(stored *Session) error {
+		if !sameIdentity(stored.Identity, ident) {
+			return fmt.Errorf("%w: stored=(%s,%s,%s) ctx=(%s,%s,%s)",
+				ErrIdentityMismatch,
+				stored.Identity.TenantID, stored.Identity.UserID, stored.Identity.SessionID,
+				ident.TenantID, ident.UserID, ident.SessionID)
+		}
+		if stored.Closed {
+			return fmt.Errorf("%w: SessionID=%q closed at %s",
+				ErrReopenAfterClose, id, stored.ClosedAt.Format(time.RFC3339))
+		}
+		stored.LastSeen = now
+		return nil
+	}); err != nil {
 		return err
 	}
 	r.publish(ctx, identity.Quadruple{Identity: ident}, events.Event{
@@ -335,7 +337,10 @@ func (r *Registry) Touch(ctx context.Context, id string) error {
 
 // Close marks the session Closed and emits session.closed. Idempotent:
 // closing an already-closed session is a no-op AND preserves the
-// original ClosedReason.
+// original ClosedReason. The load→mutate→save runs through
+// mutateSession (one r.mu critical section — this previously loaded
+// OUTSIDE the lock, leaving a lost-update window where a concurrent
+// SetTitle / Touch could re-persist Closed=false after Close returned).
 func (r *Registry) Close(ctx context.Context, id string, reason string) error {
 	if r.closed.Load() {
 		return ErrRegistryClosed
@@ -344,34 +349,37 @@ func (r *Registry) Close(ctx context.Context, id string, reason string) error {
 	if !ok {
 		return fmt.Errorf("sessions: Close requires identity in ctx: %w", identity.ErrIdentityMissing)
 	}
-	stored, err := r.loadSession(ctx, ident)
-	if err != nil {
+	now := r.clock.Now()
+	closedNow := false
+	if _, err := r.mutateSession(ctx, ident, func(stored *Session) error {
+		if !sameIdentity(stored.Identity, ident) {
+			return fmt.Errorf("%w: stored=(%s,%s,%s) ctx=(%s,%s,%s)",
+				ErrIdentityMismatch,
+				stored.Identity.TenantID, stored.Identity.UserID, stored.Identity.SessionID,
+				ident.TenantID, ident.UserID, ident.SessionID)
+		}
+		if stored.Closed {
+			// Idempotent: original reason wins, no event re-emit.
+			return errSkipSave
+		}
+		stored.Closed = true
+		stored.ClosedAt = now
+		stored.ClosedReason = reason
+		closedNow = true
+		return nil
+	}); err != nil {
 		return err
 	}
-	if !sameIdentity(stored.Identity, ident) {
-		return fmt.Errorf("%w: stored=(%s,%s,%s) ctx=(%s,%s,%s)",
-			ErrIdentityMismatch,
-			stored.Identity.TenantID, stored.Identity.UserID, stored.Identity.SessionID,
-			ident.TenantID, ident.UserID, ident.SessionID)
-	}
-
-	r.mu.Lock()
-	if stored.Closed {
-		// Idempotent: original reason wins, no event re-emit.
-		r.mu.Unlock()
+	if !closedNow {
 		return nil
 	}
-	now := r.clock.Now()
-	stored.Closed = true
-	stored.ClosedAt = now
-	stored.ClosedReason = reason
-	if err := r.save(ctx, *stored); err != nil {
-		r.mu.Unlock()
-		return err
-	}
+	// Drop the in-memory tracking entry only after the save succeeded (a
+	// failed save must not orphan the entry). The brief window where the
+	// record is persisted Closed but still listed in openSessions is
+	// benign — GC's already-closed branch drops such entries idempotently.
+	r.mu.Lock()
 	delete(r.openSessions, id)
 	r.mu.Unlock()
-
 	r.publish(ctx, identity.Quadruple{Identity: ident}, events.Event{
 		Type:     EventTypeSessionClosed,
 		Identity: identity.Quadruple{Identity: ident},
@@ -379,6 +387,86 @@ func (r *Registry) Close(ctx context.Context, id string, reason string) error {
 			SessionID: id,
 			ClosedAt:  now.UnixNano(),
 			Reason:    reason,
+		},
+	})
+	return nil
+}
+
+// SetTitle sets or clears the manual title of session `id` for the
+// CALLER's verified `(tenant, user)` (`ident`). Unlike Touch/Close/
+// Inspect, the target `id` is NOT required to equal `ident.SessionID` —
+// the write scope is `(tenant, user)`, matching `sessions.list`, so a
+// caller may rename a sibling session. `ident` still carries a full
+// triple (identity.Validate requires all three components) — its
+// SessionID is the caller's OWN connecting session and is used only for
+// identity validation, never as the load key.
+//
+// Semantics: the title is trimmed; an empty-after-trim value clears
+// Title and resets TitleSource to TitleSourceUnset; a non-empty value
+// is validated (MaxSessionTitleLen, no newline/control characters —
+// ErrInvalidTitle on violation, never a silent clamp per CLAUDE.md
+// §13) and stored with TitleSource = TitleSourceManual. The target
+// session is loaded under the caller's own (tenant, user) plus the
+// target id — a session belonging to a DIFFERENT (tenant, user) is
+// simply not found at that StateStore key, so a cross-user/cross-tenant
+// rename attempt surfaces as the same ErrSessionNotFound a genuinely
+// unknown id would (existence is never revealed across identities).
+// Renaming a CLOSED session is allowed (title is metadata on a
+// historical conversation, not a lifecycle mutation); renaming an
+// ERASED session is ErrSessionNotFound (DeleteScope already removed
+// the record).
+func (r *Registry) SetTitle(ctx context.Context, id string, ident identity.Identity, title string) error {
+	if r.closed.Load() {
+		return ErrRegistryClosed
+	}
+	if err := identity.Validate(ident); err != nil {
+		return err
+	}
+	trimmed := strings.TrimSpace(title)
+	if trimmed != "" {
+		if err := validateTitle(trimmed); err != nil {
+			return err
+		}
+	}
+
+	// The load→verify→mutate→save runs through mutateSession (one r.mu
+	// critical section, shared with Touch / Close / the GC reap and the
+	// eraser's deleteScopeSerialized). Without it, a SetTitle racing a
+	// Close could re-persist Closed=false after Close returned nil
+	// (resurrecting a closed session the GC no longer tracks), and a
+	// SetTitle racing an erasure could re-persist the session.lifecycle
+	// record after DeleteScope's irreversible clear.
+	target := identity.Identity{TenantID: ident.TenantID, UserID: ident.UserID, SessionID: id}
+	stored, err := r.mutateSession(ctx, target, func(stored *Session) error {
+		// Defence-in-depth (mirrors Touch/Close): verify the record we
+		// got back actually belongs to the caller's (tenant, user). The
+		// StateStore key already scopes the load to exactly this pair, so
+		// this should be unreachable via the public API — it guards
+		// against a future driver bug rather than a real forgery path.
+		if stored.Identity.TenantID != ident.TenantID || stored.Identity.UserID != ident.UserID {
+			return fmt.Errorf("%w: stored=(%s,%s) caller=(%s,%s)",
+				ErrIdentityMismatch,
+				stored.Identity.TenantID, stored.Identity.UserID,
+				ident.TenantID, ident.UserID)
+		}
+		if trimmed == "" {
+			stored.Title = ""
+			stored.TitleSource = TitleSourceUnset
+		} else {
+			stored.Title = trimmed
+			stored.TitleSource = TitleSourceManual
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	r.publish(ctx, identity.Quadruple{Identity: stored.Identity}, events.Event{
+		Type:     EventTypeSessionTitleChanged,
+		Identity: identity.Quadruple{Identity: stored.Identity},
+		Payload: SessionTitleChangedPayload{
+			SessionID: id,
+			Source:    string(stored.TitleSource),
 		},
 	})
 	return nil
@@ -642,6 +730,75 @@ func (r *Registry) CloseRegistry(_ context.Context) error {
 	close(r.done)
 	r.wg.Wait()
 	return nil
+}
+
+// errSkipSave is the sentinel a mutateSession mutator returns to report
+// "this call is a no-op — do not persist and do not fail" (Close's
+// idempotent already-closed branch). Unexported and never wrapped;
+// mutateSession swallows it after skipping the save.
+var errSkipSave = errors.New("sessions: skip save")
+
+// mutateSession is the ONE serialized read-modify-write path for the
+// session.lifecycle record: it loads the record at ident, applies fn,
+// and persists the result, all inside a single r.mu critical section.
+//
+// Every whole-record writer (Touch / Close / SetTitle / the GC reap)
+// MUST route through it — a load→mutate→save that doesn't hold the lock
+// across all three steps races the others as a classic lost update: a
+// SetTitle that loads before a Close saves would re-persist
+// Closed=false AFTER Close returned nil, resurrecting a closed session
+// as a GC-invisible zombie (Close already dropped it from openSessions)
+// and violating the pinned reopen-after-close invariant. Serializing
+// the family also closes the Touch-vs-SetTitle field clobber, and —
+// together with the eraser's deleteScopeSerialized — the
+// re-persist-after-erasure window.
+//
+// fn runs WITH r.mu held: it may mutate the loaded record and the
+// registry's in-memory maps (openSessions / idIndex), but MUST NOT call
+// back into any registry method that takes r.mu, publish to the bus, or
+// perform its own store I/O. Returning errSkipSave skips the save and
+// reports success (the idempotent no-op shape); any other error aborts
+// without persisting. Event publishes happen at the call sites AFTER
+// the critical section, mirroring Close's original shape.
+func (r *Registry) mutateSession(ctx context.Context, ident identity.Identity, fn func(*Session) error) (*Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, err := r.loadSession(ctx, ident)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(stored); err != nil {
+		if errors.Is(err, errSkipSave) {
+			return stored, nil
+		}
+		return nil, err
+	}
+	if err := r.save(ctx, *stored); err != nil {
+		return nil, err
+	}
+	return stored, nil
+}
+
+// deleteScopeSerialized runs the erasure cascade's irreversible
+// StateStore.DeleteScope while holding the SAME r.mu the whole-record
+// writers (mutateSession) hold across their load→save. Without it, a
+// Touch / SetTitle that loaded the record before DeleteScope could save
+// it back AFTER the clear — re-persisting the session.lifecycle record
+// of an erased session (undermining the erasure-integrity guarantee
+// that the erased triple stays empty). Under the shared lock the writer
+// either completes fully before the clear (its write is removed with
+// everything else) or loads after it and observes ErrSessionNotFound.
+//
+// The store is the CALLER's (the eraser's) StateStore handle — in every
+// production assembly it is the same store the registry wraps, and the
+// serialization guarantee only holds when it is. Lock ordering: the
+// eraser holds its striped per-session lock OUTSIDE r.mu (striped →
+// r.mu, the same order clearErased uses); no registry method acquires
+// the striped locks, so no cycle exists.
+func (r *Registry) deleteScopeSerialized(ctx context.Context, store state.StateStore, id identity.Identity) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return store.DeleteScope(ctx, id)
 }
 
 // loadSession is the shared "fetch the session record by SessionID"

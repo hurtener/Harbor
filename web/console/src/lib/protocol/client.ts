@@ -791,10 +791,13 @@ export class AgentsNamespace {
 }
 
 /**
- * The `sessions.*` namespace (Phase 73c / D-122). The Runtime mounts
- * these at `POST /v1/sessions/{verb}` — the Sessions handler shares the
- * same identity + cross-tenant scope-claim gating the tools / flows
- * handlers use. Both methods are read-only.
+ * The `sessions.*` namespace (Phase 73c / D-122; `set_title` — Phase
+ * 157 / D-288). The Runtime mounts these at `POST /v1/sessions/{verb}` —
+ * the Sessions handler shares the same identity + cross-tenant
+ * scope-claim gating the tools / flows handlers use. `list` / `inspect`
+ * are read-only; `set_title` mutates (the write scope is the owning
+ * `(tenant, user)`, not own-session-only — `session_id` may name a
+ * sibling session of the caller's own `(tenant, user)`).
  */
 export class SessionsNamespace {
 	readonly #t: Transport;
@@ -808,6 +811,14 @@ export class SessionsNamespace {
 	/** `sessions.inspect` — a single session's full snapshot. */
 	inspect<R = unknown>(sessionID: string): Promise<R> {
 		return this.#t.request<R>('/v1/sessions/inspect', { session_id: sessionID });
+	}
+	/**
+	 * `sessions.set_title` — sets (non-empty `title`) or clears (empty
+	 * `title`) a session's human-readable name. ALWAYS writes `manual`
+	 * provenance; an over-bound / malformed title is rejected 400.
+	 */
+	setTitle<R = unknown>(sessionID: string, title: string): Promise<R> {
+		return this.#t.request<R>('/v1/sessions/set_title', { session_id: sessionID, title });
 	}
 }
 

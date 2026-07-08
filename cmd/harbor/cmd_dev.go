@@ -1098,6 +1098,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		sessionsprotocol.WithBus(bus),
 		sessionsprotocol.WithRedactor(red),
 		sessionsprotocol.WithLogger(opts.logger),
+		// sessions.set_title only needs the registry itself — no
+		// State/Memory/Artifacts cascade like sessions.delete — so it is
+		// wired unconditionally whenever the registry exists (mirrors
+		// sessionsProjector above).
+		sessionsprotocol.WithTitleSetter(sessionRegistry),
 	}
 	if sessionLifecycleAvailable {
 		eraser, eraserErr := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{

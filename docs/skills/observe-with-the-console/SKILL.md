@@ -61,6 +61,8 @@ This page absorbs several things that are NOT standalone nav pages:
 
 Every session for the attached identity. Idle TTL countdown, hard-cap countdown, status (active / idle / expired). Sweep events when sessions are reaped. Click a session for its detail.
 
+A session row shows its **title** when one is set (truncated, with the full title + id in a tooltip) and falls back to the bare id otherwise. Click **Rename** inline to set/change/clear it — this calls `sessions.set_title` (D-288) and can name any session of your own `(tenant, user)`, not just the one you're currently attached to.
+
 ### Tasks — the request-level view
 
 Every chat message creates a Task. Every background spawn creates a Task. Every steer creates a Task. The Tasks page is the master list — filter by status (running / paused / completed / failed), by session, by identity.

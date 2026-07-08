@@ -853,6 +853,22 @@ const (
 	// Sessions handler. Identity-mandatory. The wire-transport route is
 	// `POST /v1/sessions/delete`.
 	MethodSessionsDelete Method = "sessions.delete"
+	// MethodSessionsSetTitle — sets or clears a session's human-readable
+	// title. The write scope is the owning `(tenant, user)` —
+	// the same scope `sessions.list` reads at — NOT own-session-only:
+	// the body `Identity`'s tenant/user MUST equal the verified identity,
+	// but the target `session_id` (a dedicated request field) MAY name a
+	// sibling session of the same owner. The wire verb ALWAYS writes
+	// `manual` provenance (empty title clears both fields to unset);
+	// `auto` provenance is not expressible over the wire. An over-bound
+	// or malformed title fails loud with `CodeInvalidRequest` (400) —
+	// never a silent clamp. Publishes the content-free
+	// `session.title_changed` event on success (identity scope + session
+	// id + source only — never the title string). The mutating sibling
+	// of `sessions.list` / `sessions.inspect` / `sessions.delete`; it
+	// routes through the same Sessions handler. Identity-mandatory. The
+	// wire-transport route is `POST /v1/sessions/set_title`.
+	MethodSessionsSetTitle Method = "sessions.set_title"
 
 	// MethodRunsSetOverrides — Records the
 	// reasoning-effort / temperature / max-tokens / system-prompt
@@ -978,9 +994,10 @@ var canonicalMethods = map[Method]struct{}{
 	MethodTasksList: {},
 	MethodTasksGet:  {},
 
-	MethodSessionsList:    {},
-	MethodSessionsInspect: {},
-	MethodSessionsDelete:  {},
+	MethodSessionsList:     {},
+	MethodSessionsInspect:  {},
+	MethodSessionsDelete:   {},
+	MethodSessionsSetTitle: {},
 
 	MethodRunsSetOverrides: {},
 
@@ -1426,27 +1443,30 @@ func IsFlowsMethod(m Method) bool {
 	return ok
 }
 
-// canonicalSessionsMethods is the closed sub-set of the three Sessions-
+// canonicalSessionsMethods is the closed sub-set of the four Sessions-
 // page methods — the two read methods `sessions.list` and
 // `sessions.inspect`, plus the mutating `sessions.delete` data-lifecycle
-// erasure verb. IsSessionsMethod is O(1); the stream transport branches
+// erasure verb and the mutating `sessions.set_title` rename verb.
+// IsSessionsMethod is O(1); the stream transport branches
 // on it to route the request through the Sessions handler instead of the
-// task-control surface. The first two are read-only; `sessions.delete`
-// mutates (it gates its own own-session-only erasure at the handler /
-// service edge).
+// task-control surface. The first two are read-only; `sessions.delete` /
+// `sessions.set_title` mutate (each gates its own identity-scoped write
+// at the handler / service edge).
 var canonicalSessionsMethods = map[Method]struct{}{
-	MethodSessionsList:    {},
-	MethodSessionsInspect: {},
-	MethodSessionsDelete:  {},
+	MethodSessionsList:     {},
+	MethodSessionsInspect:  {},
+	MethodSessionsDelete:   {},
+	MethodSessionsSetTitle: {},
 }
 
-// IsSessionsMethod reports whether m is one of the three canonical
+// IsSessionsMethod reports whether m is one of the four canonical
 // Sessions-page methods (— `sessions.list`, `sessions.inspect`,
-// `sessions.delete`). The stream transport branches on this to route
-// the request through the Sessions handler instead of the task-control
-// / search / posture / pause / topology / artifacts / memory / mcp /
-// tools / flows surfaces. NOT a control method — a new non-control
-// method extends THIS predicate, never the steering inbox.
+// `sessions.delete`, `sessions.set_title`). The stream transport
+// branches on this to route the request through the Sessions handler
+// instead of the task-control / search / posture / pause / topology /
+// artifacts / memory / mcp / tools / flows surfaces. NOT a control
+// method — a new non-control method extends THIS predicate, never the
+// steering inbox.
 func IsSessionsMethod(m Method) bool {
 	_, ok := canonicalSessionsMethods[m]
 	return ok

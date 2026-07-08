@@ -84,6 +84,10 @@ export interface SessionRow {
   has_failed_task: boolean;
   /** The impersonation triplet (Phase 72b / D-107) for the Identity column. */
   identity: SessionIdentityScope;
+  /** The session's human-readable name, "" when unset (D-288). */
+  title?: string;
+  /** Who produced `title`: "manual" | "auto" | "" (unset). */
+  title_source?: string;
 }
 
 /** The `sessions.list` reply — a page of rows plus the opaque next cursor. */
@@ -138,6 +142,33 @@ export interface SessionsDeleteResponse {
   memory_purged: boolean;
 }
 
+/**
+ * The `sessions.set_title` request body (D-288) — sets or clears a
+ * session's human-readable title. The write scope is the owning
+ * `(tenant, user)`: `identity` MUST equal the caller's verified identity
+ * (folded in automatically by the shared transport when omitted — see
+ * `$lib/protocol/client.ts`'s `request()`); `session_id` is a DEDICATED
+ * field that MAY name a sibling session of the same owner. The wire verb
+ * ALWAYS writes `manual` provenance; an empty (or whitespace-only) title
+ * clears it. Over `MAX_SESSION_TITLE_LEN` runes, or containing a
+ * newline/control character, is rejected with a 400 — never silently
+ * clamped.
+ */
+export interface SessionsSetTitleRequest {
+  identity?: SessionIdentityScope;
+  session_id: string;
+  title: string;
+}
+
+/** The `sessions.set_title` reply — the resulting title state (D-288). */
+export interface SessionsSetTitleResponse {
+  session_id: string;
+  title: string;
+  title_source: string;
+}
+
 /** The Sessions-page pagination bounds — mirror the Go-side constants. */
 export const DEFAULT_SESSION_LIST_LIMIT = 50;
 export const MAX_SESSION_LIST_LIMIT = 200;
+/** Mirrors `sessions.MaxSessionTitleLen` (Go) — D-288. */
+export const MAX_SESSION_TITLE_LEN = 200;

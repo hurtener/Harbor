@@ -223,6 +223,14 @@ type SessionRow struct {
 	// Identity column renders the Actor triple plus a separate
 	// `impersonating` chip when Impersonating is non-empty.
 	Identity IdentityScope `json:"identity"`
+	// Title is the session's human-readable name, "" when unset.
+	// Additive field — omitted on the wire when empty.
+	Title string `json:"title,omitempty"`
+	// TitleSource records who produced Title: "manual" (set via
+	// `sessions.set_title`) or "auto" (the runtime's internal auto-namer);
+	// "" when Title is unset. Additive field — omitted on the wire when
+	// empty.
+	TitleSource string `json:"title_source,omitempty"`
 }
 
 // SessionsListResponse is the `sessions.list` reply: a page of catalog
@@ -347,4 +355,53 @@ type SessionsDeleteResponse struct {
 	// MemoryPurged is true when the session's memory was flushed to a
 	// clean state.
 	MemoryPurged bool `json:"memory_purged"`
+}
+
+// SessionsSetTitleRequest is the `sessions.set_title` request body — sets
+// or clears a session's human-readable title.
+//
+// The write scope is the owning `(tenant, user)`: Identity's Tenant/User
+// MUST equal the caller's verified identity (the same defence-in-depth
+// check `sessions.delete` runs — a mismatch is rejected `identity_required`
+// before any further logic). SessionID is a DEDICATED request field and
+// MAY name a sibling session of the caller's own `(tenant, user)` — the
+// motivating consumer renames a sibling session from the Sessions-page
+// list, not only the caller's own connecting session. There is NO
+// elevation knob and NO cross-tenant / cross-user path: a SessionID
+// belonging to a different `(tenant, user)` resolves to `not_found`
+// (existence is never revealed across identities).
+//
+// The wire verb ALWAYS writes TitleSource = "manual" (an empty Title
+// clears both Title and TitleSource to unset) — "auto" is not
+// expressible over the wire (the runtime's internal auto-naming writer
+// is the only producer), so a manual title can never be forged into an
+// auto-overwritable one.
+//
+// Title is bounded and single-line: over MaxSessionTitleLen (200) runes,
+// or containing a newline/control character, fails loud with a 400
+// (CodeInvalidRequest) — never a silent clamp (CLAUDE.md §13).
+type SessionsSetTitleRequest struct {
+	// Identity is the caller's (tenant, user, session) scope. Mandatory —
+	// an incomplete triple fails closed with CodeIdentityRequired. Tenant
+	// and User MUST equal the verified identity.
+	Identity IdentityScope `json:"identity"`
+	// SessionID is the session to rename — the caller's own connecting
+	// session or a sibling session of the same (tenant, user).
+	SessionID string `json:"session_id"`
+	// Title is the new title. Empty (after trimming) clears the title.
+	Title string `json:"title"`
+}
+
+// SessionsSetTitleResponse is the `sessions.set_title` reply — the
+// resulting title state after the call. Title is user-derived content
+// and is safe to echo back to the SAME caller that just supplied it
+// (unlike the event payload, which stays content-free).
+type SessionsSetTitleResponse struct {
+	// SessionID is the session that was renamed.
+	SessionID string `json:"session_id"`
+	// Title is the resulting title ("" when cleared).
+	Title string `json:"title"`
+	// TitleSource is the resulting source: "manual" when Title is
+	// non-empty, "" (unset) when cleared.
+	TitleSource string `json:"title_source"`
 }

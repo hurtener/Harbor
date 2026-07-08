@@ -12,7 +12,8 @@ import type { ProtocolClient } from './client.js';
 import type {
   SessionsInspectResponse,
   SessionsListRequest,
-  SessionsListResponse
+  SessionsListResponse,
+  SessionsSetTitleResponse
 } from '../sessions/types.js';
 
 /**
@@ -38,5 +39,17 @@ export class SessionsProtocol {
   /** `sessions.inspect` — a single session's full snapshot. */
   inspect(sessionID: string): Promise<SessionsInspectResponse> {
     return this.#client.sessions.inspect<SessionsInspectResponse>(sessionID);
+  }
+
+  /**
+   * `sessions.set_title` (D-288) — sets (non-empty `title`) or clears
+   * (empty `title`) a session's human-readable name. The write scope is
+   * the owning `(tenant, user)`, not own-session-only: `sessionID` may
+   * name a sibling session of the caller's own `(tenant, user)`. Always
+   * writes `manual` provenance; an over-bound / malformed title rejects
+   * with a `ProtocolError` (400).
+   */
+  setTitle(sessionID: string, title: string): Promise<SessionsSetTitleResponse> {
+    return this.#client.sessions.setTitle<SessionsSetTitleResponse>(sessionID, title);
   }
 }

@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 111 canonical Harbor Protocol methods, generated from the single-source registry
+The 112 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -50,6 +50,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `sessions.delete` | `POST /v1/sessions/delete` | sessions (read-only) | [`SessionsDeleteRequest`](./types.md#sessionsdeleterequest) | [`SessionsDeleteResponse`](./types.md#sessionsdeleteresponse) | mutating; Own-session-only — a caller erases solely their own verified `(tenant, user, session)`; a body identity mismatching the verified identity is rejected `identity_required`. No admin / cross-tenant path. |
 | `sessions.inspect` | `POST /v1/sessions/inspect` | sessions (read-only) | [`SessionsInspectRequest`](./types.md#sessionsinspectrequest) | [`SessionsInspectResponse`](./types.md#sessionsinspectresponse) | read-only |
 | `sessions.list` | `POST /v1/sessions/list` | sessions (read-only) | [`SessionsListRequest`](./types.md#sessionslistrequest) | [`SessionsListResponse`](./types.md#sessionslistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `sessions.set_title` | `POST /v1/sessions/set_title` | sessions (read-only) | [`SessionsSetTitleRequest`](./types.md#sessionssettitlerequest) | [`SessionsSetTitleResponse`](./types.md#sessionssettitleresponse) | mutating; Owning-(tenant, user)-scoped, not own-session-only — the body `Identity`'s tenant/user MUST equal the verified identity, but the target `session_id` (a dedicated request field) MAY name a sibling session of the same owner. Always writes `manual` provenance; no admin / cross-tenant path. |
 
 ## Pause snapshot
 

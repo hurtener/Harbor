@@ -217,6 +217,20 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/sessions/delete" \
 
 The response carries non-sensitive deletion telemetry only — never erased content. The bytes are **hard-deleted** (not tombstoned); the only durable trace is a redacted, content-free `session.erased` audit event written under your observability scope (so a follow-up `state.history` for the erased session returns empty). Rules: identity is mandatory (`identity_required`/401, which a body identity mismatching your verified triple also hits); a session with a **RUNNING task is refused** `session_running`/409 with **no store touched** — wait for the task to finish (or cancel it) and retry; an absent session is `not_found`/404. Check `runtime.info.capabilities` for `session_lifecycle` before calling — a runtime that did not wire an eraser does not advertise it and answers a 404 at the route.
 
+## 4c. Naming a session — `sessions.set_title`
+
+Sessions display as raw ids until you give one a human-readable **title**: `sessions.set_title` sets (non-empty `title`) or clears (empty `title`) the `Title` field on the session record (D-288). Unlike `sessions.delete`, the write scope is your whole verified `(tenant, user)`, not just your own connecting session — `session_id` is a **dedicated field** that may name a **sibling** session you own, so a Console-style "rename any of my sessions from the list" flow needs no elevation. The route is `POST /v1/sessions/set_title`:
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/sessions/set_title" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {"tenant": "dev", "user": "dev", "session": "'$SESSION'"}, "session_id": "'$SESSION'", "title": "Q3 onboarding chat"}'
+# → 200 {"session_id":"...","title":"Q3 onboarding chat","title_source":"manual"}
+```
+
+The verb **always** writes `title_source: "manual"` — `auto` provenance is not expressible over the wire, so a title you set here can never be silently overwritten by a later auto-namer (that's the internal-only producer behind Phase 158). An empty `title` clears both fields back to unset. Titles are single-line and bounded to 200 runes: a title with a newline/control character, or over the limit, is rejected `invalid_request`/400 — **never a silent clamp**. Rules: identity is mandatory (`identity_required`/401, same body-identity-mismatch check as `sessions.delete`); a `session_id` you don't own (wrong tenant/user, or simply unknown) is `not_found`/404 — existence is never revealed across identities; renaming a **closed** session is fine (it's metadata on a historical conversation), renaming an **erased** one is `not_found` (the record is gone). The title itself never rides an event, log, or audit payload — `session.title_changed` carries only `{session_id, source}`, so a subscriber that wants the text re-reads `sessions.list` / `sessions.inspect`, both of which now project `title` / `title_source` on every row.
+
 ## 5. Pause + steer + resume
 
 The unified pause/resume primitive (RFC §3.3) is one wire choreography for every cause — HITL approval, tool-side OAuth, operator pause. The steering verbs share one route shape, `POST /v1/control/{method}`, with the run id and your steering scope in the body's `identity`:

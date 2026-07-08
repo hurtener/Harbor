@@ -20,6 +20,12 @@ const (
 	// (re-persisting under the erased triple would leave the session's
 	// `state.history` non-empty — RFC §6.13 / §7).
 	EventTypeSessionErased events.EventType = "session.erased"
+	// EventTypeSessionTitleChanged marks a successful `sessions.set_title`
+	// (set OR clear). Content-free by construction: the title
+	// string NEVER rides this payload — only the SessionID and the
+	// resulting TitleSource. Consumers refetch the projection
+	// (`sessions.list` / `sessions.inspect`) for the title text.
+	EventTypeSessionTitleChanged events.EventType = "session.title_changed"
 )
 
 func init() {
@@ -28,6 +34,7 @@ func init() {
 	events.RegisterEventType(EventTypeSessionClosed)
 	events.RegisterEventType(EventTypeSessionGCReaped)
 	events.RegisterEventType(EventTypeSessionErased)
+	events.RegisterEventType(EventTypeSessionTitleChanged)
 }
 
 // SessionOpenedPayload reports a successful Open. Carries the
@@ -69,6 +76,28 @@ type SessionGCReapedPayload struct {
 	SessionID string
 	ReapedAt  int64 // unix nanoseconds
 	Reason    string
+}
+
+// SessionTitleChangedPayload reports a successful `sessions.set_title`
+// call (set OR clear). Carries the SessionID and the resulting Source
+// ONLY — the title string itself NEVER rides this payload (the same
+// content-free contract SessionErasedPayload follows): the title is
+// user-derived free text, and SafePayload types are published WITHOUT a
+// redactor pass (the bus skips the redactor for types sealed via
+// SafeSealed), so any raw content here would leak straight to every
+// subscriber. Consumers that want the title text refetch
+// `sessions.list` / `sessions.inspect`.
+//
+// SafePayload by construction — every field is a bounded id or a
+// closed-set enum string.
+type SessionTitleChangedPayload struct {
+	events.SafeSealed
+	// SessionID is the session whose title changed.
+	SessionID string
+	// Source is the resulting TitleSource after the call: "manual" when
+	// a non-empty title was set, "" (TitleSourceUnset) when the title
+	// was cleared. Never "auto" — the wire verb cannot produce it.
+	Source string
 }
 
 // SessionErasedPayload reports a completed session erasure. It carries

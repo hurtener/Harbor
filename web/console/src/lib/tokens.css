@@ -211,6 +211,8 @@
   --size-sparkline-dot: 6px;       /* static dot when only one sample */
   --size-chip-min-width: 3rem;     /* numeric chip in ControlsCard */
   --size-session-max-width: 8rem;  /* session id truncation */
+  --size-title-max-width: 16rem;   /* session title truncation (D-288) */
+  --size-rename-input-width: 14rem; /* inline session-rename text input (D-288) */
   --size-code-font: 0.9em;         /* inline code relative size */
   --size-code-padding-x: 0.3em;    /* inline code horizontal padding */
   --size-code-padding-y: 0.1em;    /* inline code vertical padding */

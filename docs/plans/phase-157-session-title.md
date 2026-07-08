@@ -44,17 +44,17 @@ Sessions are displayed by raw id everywhere (the Sessions page renders `shortSes
 
 ## Acceptance criteria
 
-- [ ] `internal/sessions.Session` gains `Title string` + `TitleSource TitleSource` (`""`=unset, `"auto"`, `"manual"`); old persisted records load with both zero-valued (additive JSON, proven by a round-trip test against a pre-change fixture blob).
-- [ ] `SessionRegistry.SetTitle(ctx, id, ident, title)` — manual semantics: trims whitespace; rejects titles containing newline/control characters or exceeding `MaxSessionTitleLen` (200 runes) with typed `ErrInvalidTitle` (NO silent clamp, §13); empty-after-trim clears Title AND resets TitleSource to unset; unknown id → `ErrSessionNotFound`; stored-identity `(tenant, user)` mismatch → `ErrIdentityMismatch`. Renaming a CLOSED session is allowed (metadata on a historical conversation); renaming an ERASED session is `not_found`.
-- [ ] Authorization scope: the target session must belong to the caller's verified `(tenant, user)` — the same scope `sessions.list` already reads at. The body `Identity`'s tenant/user MUST equal the verified identity (mirroring `assertSessionsIdentity` in the delete path); the target `session_id` rides a dedicated request field and MAY differ from the caller's own session (renaming a sibling session from the Sessions page is the motivating consumer). Cross-user / cross-tenant → `identity_required` / `not_found`; no elevation knob, no admin widening (D-288).
-- [ ] `sessions.set_title` Protocol method: `MethodSessionsSetTitle` registered (method set + `canonicalSessionsMethods` + conformance); stream handler branch beside list/inspect/delete; oversize/invalid title → `CodeInvalidRequest` 400; response returns `{session_id, title, title_source}`.
-- [ ] `SessionRow` gains `title` + `title_source` (additive, `omitempty`); `projectRow` copies them; `sessions.list` + `sessions.inspect` surface them.
-- [ ] Canonical `session.title_changed` event (SafePayload) published on every successful set/clear, carrying identity scope + session id + source ONLY — a test asserts the payload contains no title content (grep-the-marshaled-bytes assertion).
-- [ ] Erasure: a titled session's `sessions.delete` leaves no title anywhere (rides the existing `DeleteScope` clear — asserted by extending an existing erasure test); the Phase 155 fault-injection + conformance suites stay green untouched.
-- [ ] Console Sessions page: Session column renders the truncated title when set (tooltip = full title + id; id fallback unchanged when unset); an inline rename affordance calls the typed client's `setTitle`, refreshes the row, and surfaces the 400 on invalid input. Tokens-only styling, `<PageState>` contract untouched (D-121).
-- [ ] Console Playground: switcher options render `title || session_id`; a rename control on the ACTIVE session calls `setTitle`; the existing live event subscription refreshes the session list on `session.title_changed`.
-- [ ] Full lockstep in the same PR: `make protocol-ts-gen` (manifest + `sessions.ts` + `client.ts` mirror), `make protocol-docs-gen`, `singlesource.CanonicalWireTypes`, the three generator `typeindex.go` registrations, `methods_test.go`. `ProtocolVersion` unbumped (additive).
-- [ ] `scripts/smoke/phase-157.sh` OK ≥ 3, FAIL = 0 (set→inspect round-trip, clear, oversize-400).
+- [x] `internal/sessions.Session` gains `Title string` + `TitleSource TitleSource` (`""`=unset, `"auto"`, `"manual"`); old persisted records load with both zero-valued (additive JSON, proven by a round-trip test against a pre-change fixture blob).
+- [x] `SessionRegistry.SetTitle(ctx, id, ident, title)` — manual semantics: trims whitespace; rejects titles containing newline/control characters or exceeding `MaxSessionTitleLen` (200 runes) with typed `ErrInvalidTitle` (NO silent clamp, §13); empty-after-trim clears Title AND resets TitleSource to unset; unknown id → `ErrSessionNotFound`; stored-identity `(tenant, user)` mismatch → `ErrIdentityMismatch`. Renaming a CLOSED session is allowed (metadata on a historical conversation); renaming an ERASED session is `not_found`.
+- [x] Authorization scope: the target session must belong to the caller's verified `(tenant, user)` — the same scope `sessions.list` already reads at. The body `Identity`'s tenant/user MUST equal the verified identity (mirroring `assertSessionsIdentity` in the delete path); the target `session_id` rides a dedicated request field and MAY differ from the caller's own session (renaming a sibling session from the Sessions page is the motivating consumer). Cross-user / cross-tenant → `identity_required` / `not_found`; no elevation knob, no admin widening (D-288).
+- [x] `sessions.set_title` Protocol method: `MethodSessionsSetTitle` registered (method set + `canonicalSessionsMethods` + conformance); stream handler branch beside list/inspect/delete; oversize/invalid title → `CodeInvalidRequest` 400; response returns `{session_id, title, title_source}`.
+- [x] `SessionRow` gains `title` + `title_source` (additive, `omitempty`); `projectRow` copies them; `sessions.list` + `sessions.inspect` surface them.
+- [x] Canonical `session.title_changed` event (SafePayload) published on every successful set/clear, carrying identity scope + session id + source ONLY — a test asserts the payload contains no title content (grep-the-marshaled-bytes assertion).
+- [x] Erasure: a titled session's `sessions.delete` leaves no title anywhere (rides the existing `DeleteScope` clear — asserted by extending an existing erasure test); the Phase 155 fault-injection + conformance suites stay green untouched.
+- [x] Console Sessions page: Session column renders the truncated title when set (tooltip = full title + id; id fallback unchanged when unset); an inline rename affordance calls the typed client's `setTitle`, refreshes the row, and surfaces the 400 on invalid input. Tokens-only styling, `<PageState>` contract untouched (D-121).
+- [x] Console Playground: switcher options render `title || session_id`; a rename control on the ACTIVE session calls `setTitle`; the existing live event subscription refreshes the session list on `session.title_changed`.
+- [x] Full lockstep in the same PR: `make protocol-ts-gen` (manifest + `sessions.ts` + `client.ts` mirror), `make protocol-docs-gen`, `singlesource.CanonicalWireTypes`, the three generator `typeindex.go` registrations, `methods_test.go`. `ProtocolVersion` unbumped (additive).
+- [x] `scripts/smoke/phase-157.sh` OK ≥ 3, FAIL = 0 (set→inspect round-trip, clear, oversize-400).
 
 ## Files added or changed
 
@@ -108,15 +108,52 @@ Sessions are displayed by raw id everywhere (the Sessions page renders `shortSes
 
 - "Session title" (docs/glossary.md, same PR).
 
+## As-built notes (adversarial-review hardening)
+
+- **Serialized whole-record writes.** The review empirically confirmed a
+  lost-update race on the `session.lifecycle` record: `SetTitle` (and the
+  pre-existing `Touch` / GC-reap) performed load→mutate→save without
+  holding the registry lock across all three steps, so a `SetTitle`
+  racing a `Close` could re-persist `Closed=false` after `Close`
+  returned — resurrecting a closed session as a GC-invisible zombie —
+  and a `SetTitle` racing `sessions.delete` could re-persist the record
+  after `DeleteScope`'s irreversible clear. As built, every whole-record
+  writer (`Touch` / `Close` / `SetTitle` / the GC reap) routes through
+  one serialized read-modify-write path (`mutateSession`, a single
+  `r.mu` critical section), and the erasure cascade's `DeleteScope` runs
+  through `deleteScopeSerialized` under the same mutex. Pinned by
+  `TestRegistry_Interleave_CloseVsSetTitle_ClosedSurvives` and
+  `TestRegistry_Interleave_EraseVsSetTitle_NoResurrection` (both
+  verified to FAIL against the pre-fix code, run under `-race -count=5`).
+- **Invisible-only titles are invalid.** Unicode format characters
+  (category Cf — zero-width space, ZWJ, directional marks) are not
+  control characters, so the plan's letter (newline/control rejection)
+  admitted a title rendering as nothing. As built: a title that is ONLY
+  format characters + whitespace is rejected `ErrInvalidTitle` (invalid,
+  never treated as a clear); format characters mixed with visible text
+  stay valid (emoji ZWJ sequences depend on U+200D). Pinned by
+  `TestRegistry_SetTitle_InvisibleOnlyRejected`.
+- **Detail-page header title.** The `[id]` detail header renders the
+  title (display-only, truncated, full title + id tooltip) when set —
+  rename affordances live on the Sessions list + Playground switcher.
+
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse: registry D-025 stress extended (N≥100, `-race`) as above
-- [ ] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: N/A — none departed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target — `internal/sessions`
+  lands at **85.0%** (the stated target, raised from the 82.0%
+  pre-phase baseline; the adversarial-review hardening's serialized
+  write path + interleave tests closed the last gap). Per-function on
+  the code this phase added: `SetTitle` 100%, `validateTitle` 100%,
+  `mutateSession` 91.7%, `deleteScopeSerialized` 100%.
+  `internal/protocol/transports/stream` 69.0% (baseline 68.7% —
+  maintained per the stated target) and `internal/sessions/protocol`
+  62.8% (baseline 59.7% — raised).
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] Concurrent-reuse: registry D-025 stress extended (N≥100, `-race`) as above
+- [x] Integration test wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, runs under `-race`
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A — none departed
