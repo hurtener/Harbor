@@ -150,6 +150,42 @@ type AgentConfigHooks struct {
 	RunCompletion *AgentConfigRunCompletionHook `json:"run_completion,omitempty"`
 }
 
+// AgentConfigNaming is the wire projection of the session auto-naming policy
+// section of the config envelope. Declared as its own section so a set
+// REPLACES only this section, preserving the siblings. Opt-in, default off: an
+// ABSENT section means "no per-agent policy" (the yaml `runtime.naming` fleet
+// default, then off, resolves at run start). A PRESENT section is
+// authoritative either way — `auto: true` enables, and a bare `{auto: false}`
+// is an explicit per-agent OPT-OUT that overrides a yaml-on fleet default
+// (section presence is the signal; a present section is preserved verbatim
+// through normalization, never dropped as inert).
+//
+// `after_turns` and `max_title_len` resolve to their runtime defaults (1, 80)
+// when zero; `max_repetitions` is REQUIRED ≥ 1 whenever `repeat_every` > 0
+// (`agent_config.set_revision` rejects a repeating policy with no cap —
+// `invalid_request` 400 — so unbounded periodic re-naming is unrepresentable);
+// a set `model` is validated against the configured ModelProfiles.
+type AgentConfigNaming struct {
+	// Auto enables session auto-naming for the agent (false in a present
+	// section = an explicit off that overrides the yaml fleet default).
+	Auto bool `json:"auto,omitempty"`
+	// AfterTurns is the completed-run count at which the first auto-name
+	// fires; 0 inherits the runtime default (1).
+	AfterTurns int `json:"after_turns,omitempty"`
+	// RepeatEvery, when > 0, re-names every N completed turns after the
+	// first; 0 names once only.
+	RepeatEvery int `json:"repeat_every,omitempty"`
+	// MaxRepetitions caps the TOTAL auto-namings (including the first);
+	// required ≥ 1 when RepeatEvery > 0. Ignored when RepeatEvery == 0.
+	MaxRepetitions int `json:"max_repetitions,omitempty"`
+	// MaxTitleLen bounds the auto title in runes; 0 inherits the runtime
+	// default (80). A set value must be in [8, 200].
+	MaxTitleLen int `json:"max_title_len,omitempty"`
+	// Model, when set, is the model the auto-naming call requests (empty =
+	// the run's effective model).
+	Model string `json:"model,omitempty"`
+}
+
 // AgentConfigPayload is the wire projection of an agent-config envelope.
 // Every section is optional so later consumers extend it without a schema
 // break.
@@ -173,6 +209,9 @@ type AgentConfigPayload struct {
 	// Hooks, when non-nil, pins the agent's run-lifecycle-hook section (the
 	// run-completion hook) for the revision.
 	Hooks *AgentConfigHooks `json:"hooks,omitempty"`
+	// Naming, when non-nil, pins the agent's session auto-naming policy
+	// section for the revision.
+	Naming *AgentConfigNaming `json:"naming,omitempty"`
 }
 
 // AgentConfigRevisionView is the wire projection of one immutable config
@@ -298,10 +337,46 @@ type AgentConfigHooksDiff struct {
 	RunCompletionTimeoutTo      string `json:"run_completion_timeout_to,omitempty"`
 }
 
+// AgentConfigNamingDiff is the wire projection of the session auto-naming
+// policy per-field delta across two revisions. Each dimension reports whether
+// it changed plus its from / to display values (an ABSENT section renders
+// every dimension as the empty string).
+//
+// `auto_from` / `auto_to` are TRI-STATE display strings — "" (section
+// absent) / "false" / "true" — because section presence is semantic: a
+// present bare `{auto: false}` section is an explicit per-agent opt-out that
+// overrides a yaml-on fleet default, and the diff must show exactly that
+// revision (absent → "false") rather than rendering it as no change.
+type AgentConfigNamingDiff struct {
+	AutoChanged bool   `json:"auto_changed"`
+	AutoFrom    string `json:"auto_from,omitempty"`
+	AutoTo      string `json:"auto_to,omitempty"`
+
+	AfterTurnsChanged bool   `json:"after_turns_changed"`
+	AfterTurnsFrom    string `json:"after_turns_from,omitempty"`
+	AfterTurnsTo      string `json:"after_turns_to,omitempty"`
+
+	RepeatEveryChanged bool   `json:"repeat_every_changed"`
+	RepeatEveryFrom    string `json:"repeat_every_from,omitempty"`
+	RepeatEveryTo      string `json:"repeat_every_to,omitempty"`
+
+	MaxRepetitionsChanged bool   `json:"max_repetitions_changed"`
+	MaxRepetitionsFrom    string `json:"max_repetitions_from,omitempty"`
+	MaxRepetitionsTo      string `json:"max_repetitions_to,omitempty"`
+
+	MaxTitleLenChanged bool   `json:"max_title_len_changed"`
+	MaxTitleLenFrom    string `json:"max_title_len_from,omitempty"`
+	MaxTitleLenTo      string `json:"max_title_len_to,omitempty"`
+
+	ModelChanged bool   `json:"model_changed"`
+	ModelFrom    string `json:"model_from,omitempty"`
+	ModelTo      string `json:"model_to,omitempty"`
+}
+
 // AgentConfigDiff is the wire projection of a server-side revision
 // compare — the structured skills + tool-exposure + connection set-diffs,
-// the prompt-layer text delta, the per-agent LLM-parameter delta, and the
-// run-lifecycle-hook delta.
+// the prompt-layer text delta, the per-agent LLM-parameter delta, the
+// run-lifecycle-hook delta, and the session auto-naming policy delta.
 type AgentConfigDiff struct {
 	FromRevisionID string                      `json:"from_revision_id"`
 	ToRevisionID   string                      `json:"to_revision_id"`
@@ -311,6 +386,7 @@ type AgentConfigDiff struct {
 	Connections    AgentConfigConnectionsDiff  `json:"connections"`
 	LLMParams      AgentConfigLLMParamsDiff    `json:"llm_params"`
 	Hooks          AgentConfigHooksDiff        `json:"hooks"`
+	Naming         AgentConfigNamingDiff       `json:"naming"`
 }
 
 // AgentConfigGetRequest is the `agent_config.get` request — read the

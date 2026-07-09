@@ -115,6 +115,78 @@ Phase 157 gives sessions a title and a manual verb; this phase makes the runtime
 
 - "Session auto-naming" (docs/glossary.md, same PR).
 
+## As-built notes (§4.3 deviations)
+
+- **Eligibility read helper added.** The plan's Public API listed only
+  `RecordCompletedTurn` + `SetTitleAuto`, but the eligibility gate needs the
+  session's title provenance + counters. As built: `*sessions.Registry` gains a
+  read-only `AutoNamingState(ctx, id, ident) (sessions.AutoNamingState, error)`
+  (`{TitleSource, CurrentTitle, TurnCount, AutoNameCount, LastAutoNamedTurn}`);
+  the steering trigger consumes the three methods through a narrow
+  `steering.SessionTitler` interface. `RecordCompletedTurn` + `SetTitleAuto`
+  join the `SessionRegistry` interface; `AutoNamingState` stays on the concrete
+  (+ the steering interface) to bound interface churn.
+- **Model resolution split (D-094 mirror).** `projection.ActiveNamingPolicy`
+  returns the policy's `model`; each run-loop driver computes the effective
+  model fallback (policy model → the run's `LLMOverrides.Model` → `""`), the
+  same one-place-precedence deviation `ActiveRunCompletionHook` documents.
+- **Normalization preserves section presence (adversarial-review M1 fix;
+  supersedes the round-1 "normalization drop rule" note).** Round 1 dropped an
+  "inert" naming section (auto false + all-zero) at normalize time, mirroring
+  the hooks empty-tool posture, and justified it as "a bare `auto:false` is
+  indistinguishable from unset at the Go `bool` level." That justification is
+  RETRACTED: section PRESENCE is the distinguishable signal. The inert-drop
+  made a bare `{auto: false}` opt-out revision silently vanish (200 OK, section
+  normalized away, agent keeps auto-naming and spending over a yaml-on fleet
+  default). As built: `NormalizePayload` preserves ANY non-nil naming section
+  verbatim (model trimmed); the projection's section-present branch treats
+  `Auto=false` as the explicit per-agent off that wins over yaml. Pinned by
+  `TestNormalizePayload_Naming_PresenceIsPreserved`, the projection's
+  `agentcfg_bare_auto_false_overrides_yaml_on` leg, and the E2E footgun
+  regression `TestE2E_SessionAutoNaming_BareAutoFalseRevision_OverridesYamlOn`.
+- **Terminal-boundary ordering: hook first, naming second (adversarial-review
+  S1 fix).** The naming defer registers BEFORE the hook defer, so via LIFO the
+  run-completion hook fires FIRST — its `CompletedAt`/`DurationMS` are stamped
+  before the (up to 10s, synchronous) naming LLM call can inflate them, and
+  transcript egress is never delayed behind naming. Pinned by
+  `TestRun_TerminalOrdering_HookFiresBeforeNaming` (a slow naming completer
+  advances a fake clock 7s; the hook payload's duration excludes it).
+- **Failure-retry posture (documented per adversarial-review S3).** A naming
+  failure does NOT consume the `max_repetitions` cap (only a successful
+  `SetTitleAuto` bumps `AutoNameCount`), so a still-due title is retried at
+  every subsequent completed run until one succeeds. Deliberate — a transient
+  LLM outage must not permanently un-name a session — but on a naming-on fleet
+  with a DOWN naming LLM every completed run pays one failing (≤ 10s)
+  synchronous attempt + one `session.naming_failed`, indefinitely. Worst-case
+  post-run latency envelope: hook timeout + naming timeout, serialized
+  (default 10s + 10s). Documented in the `NamingSpec`/`fireNaming` godoc,
+  `docs/CONFIG.md`, and the D-289 as-built note.
+- **`max_repetitions` default 5 implemented at the policy layer
+  (adversarial-review N2).** `NamingPolicy.WithDefaults` applies
+  `MaxRepetitions = 5` when `RepeatEvery > 0` and the cap is unset, so the
+  documented default is real for programmatically-built policies (embedders
+  bypassing the yaml/wire edges); the wire and yaml validators still REQUIRE
+  an explicit cap ≥ 1 whenever `repeat_every > 0`.
+- **Synchronous trigger.** `fireNaming` runs synchronously inside `Run`'s
+  deferred region (not a spawned goroutine), so the goroutine-baseline
+  guarantee holds trivially; the accepted concurrent-completion race is between
+  DISTINCT runs' terminal boundaries, serialized by the registry writes.
+- **Governance E2E leg uses the rate-limit tier, not the budget ceiling.** The
+  end-to-end governance-block leg
+  (`TestE2E_SessionAutoNaming_GovernanceBlock_SkipsLoudly`) composes real
+  identity-tier enforcement into the real wrapped chain and blocks the naming
+  call's PreCall with a one-shot rate-limit bucket (capacity 1: the planner
+  call drains it, the naming call underflows → `governance_blocked` on the
+  bus, run untouched). A deterministic budget-CEILING breach would require
+  synthetic cost accounting (the scripted provider reports no cost; the
+  corrections usage-backfill knob only fires on all-zero usage) — the rate
+  limiter exercises the same PreCall gate on the same chain with exact
+  one-call semantics. The remaining plan-listed E2E legs all shipped:
+  set_revision-enable over yaml-off
+  (`TestE2E_SessionAutoNaming_SetRevisionEnable_OverridesYamlOff`) and the
+  repeat cadence + cap across a real run sequence
+  (`TestE2E_SessionAutoNaming_RepeatCadence_CapHonored`).
+
 ## Pre-merge checklist
 
 - [ ] `make drift-audit` passes

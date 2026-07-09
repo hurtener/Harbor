@@ -407,6 +407,69 @@ this timeout, so a wedged sink cannot leak the hook goroutine. Non-positive
 without `runtime.hooks.run_completion.tool` is rejected (a timeout for a
 hook that will never fire). A negative value is rejected.
 
+### runtime.naming.auto
+
+Enables session auto-naming fleet-wide (the `runtime.naming` block). Opt-in,
+default `false` (off): with the block absent or `auto: false` the runtime
+writes no naming counters, makes no naming LLM calls, and emits no naming
+events. A per-agent, versioned agent-config `naming` section overrides this
+default at run start (agent-config over this yaml over off) — a PRESENT
+section is authoritative either way, so a bare `{auto: false}` revision is an
+explicit per-agent opt-out that wins over a yaml-on fleet default (section
+presence is the signal; it is never dropped as inert). When on, the runtime
+titles a session itself at each run's terminal boundary via ONE governed
+`Complete` call over a bounded transcript digest; a naming failure never
+alters the run outcome (it emits `session.naming_failed` + a Warn log).
+
+The naming call is bounded by a FIXED runtime timeout (10s) — unlike the
+run-completion hook, whose timeout is per-section configurable, the naming
+timeout is not an operator knob. The trigger runs synchronously at the run's
+terminal boundary, AFTER the completion hook, so the worst-case post-run
+latency is hook timeout + naming timeout, serialized. A naming FAILURE does
+not consume the `max_repetitions` cap: as long as a title is due, the runtime
+retries on every subsequent completed run until one succeeds — so on a
+naming-on fleet whose naming LLM is DOWN, every completed run pays one
+failing (≤ 10s) naming attempt and emits one `session.naming_failed` until
+the LLM recovers or the policy is switched off.
+
+### runtime.naming.after_turns
+
+The number of completed runs after which the FIRST auto-name fires (fire on
+the Nth completed run). Zero (the default) resolves to `1` at run start. A
+negative value is rejected.
+
+### runtime.naming.repeat_every
+
+When greater than 0, re-names the session every N completed turns after the
+first. Zero (the default) names once only. A negative value is rejected.
+
+### runtime.naming.max_repetitions
+
+Caps the TOTAL number of auto-namings (including the first). It is REQUIRED
+`>= 1` whenever `runtime.naming.repeat_every > 0` — no unlimited value exists,
+so unbounded periodic re-naming is unrepresentable. Ignored when
+`repeat_every` is 0 (naming happens once). A negative value is rejected. For
+a repeating policy constructed programmatically (an embedder building a
+naming spec by hand, bypassing the yaml/wire validators), the policy-level
+default of `5` applies when the cap is unset — the no-unlimited invariant
+holds on every path.
+
+### runtime.naming.max_title_len
+
+Bounds the auto-generated title in runes. Zero (the default) resolves to `80`
+at run start; a set value must be within `[8, 200]`. The auto title is
+deterministically clamped to this bound (unlike the manual `sessions.set_title`
+verb, which rejects oversize input — the trusted-internal vs untrusted-boundary
+asymmetry is intentional).
+
+### runtime.naming.model
+
+The model the auto-naming `Complete` call requests. Empty (the default) uses
+the run's effective model. A set value is validated against
+`llm.model_profiles` at boot; point it at a cheap profile to keep naming
+inexpensive (the naming call consumes the session identity's governance
+budget by design).
+
 ---
 
 ## Memory

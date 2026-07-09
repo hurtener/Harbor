@@ -364,6 +364,75 @@ func ActiveRunCompletionHook(ctx context.Context, reg agentcfg.Registry, agentID
 	return nil, false, nil
 }
 
+// NamingResolution is the resolved session auto-naming policy for a run: the
+// defaulted [steering.NamingPolicy] plus the model the naming call should
+// request (empty = the run's effective model / the client default). Returned by
+// [ActiveNamingPolicy] when a policy is active for the run.
+type NamingResolution struct {
+	Policy steering.NamingPolicy
+	Model  string
+}
+
+// ActiveNamingPolicy resolves the session auto-naming policy for a run at run
+// start with next-run projection semantics. Resolution precedence is
+// pinned here (and by a table test — CLAUDE.md §17.6): the agent-config
+// `naming` section (when present) over the static yaml `runtime.naming` fleet
+// default over off. The two run-loop drivers (production dev + devstack twin)
+// call this ONE helper, so the precedence cannot drift between binaries.
+//
+// A section is "active" only when its Auto is true — an agent-config section
+// present with Auto false is an explicit per-agent off that WINS over the yaml
+// default (returns active=false), and a config-free runtime resolves to off, so
+// the opt-in invariant holds (no counters, no LLM calls, no events). The
+// returned policy is defaulted (WithDefaults) so the trigger consumes concrete
+// values.
+//
+// A nil registry, an empty agentID, or an agent with no active revision / no
+// naming section falls through to the yaml default. A registry read error is
+// returned so the caller fails the run loudly (CLAUDE.md §13): no silent
+// fall-through on a read failure. The active revision is read ONCE per run; the
+// returned value is fresh (concurrent-reuse clean). Only the identity triple is
+// used (the registry is identity-scoped, never keyed by run).
+func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, yamlDefault config.RuntimeNamingConfig) (NamingResolution, bool, error) {
+	if reg != nil && agentID != "" {
+		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+		if err != nil {
+			return NamingResolution{}, false, err
+		}
+		if ok {
+			if n, set := rev.Payload.NamingView(); set {
+				// The agent-config section WINS (present overrides yaml). Auto
+				// false is an explicit per-agent off.
+				if !n.Auto {
+					return NamingResolution{}, false, nil
+				}
+				return NamingResolution{
+					Policy: steering.NamingPolicy{
+						AfterTurns:     n.AfterTurns,
+						RepeatEvery:    n.RepeatEvery,
+						MaxRepetitions: n.MaxRepetitions,
+						MaxTitleLen:    n.MaxTitleLen,
+					}.WithDefaults(),
+					Model: n.Model,
+				}, true, nil
+			}
+		}
+	}
+	// Fall through to the static yaml default (when it enables naming).
+	if yamlDefault.Auto {
+		return NamingResolution{
+			Policy: steering.NamingPolicy{
+				AfterTurns:     yamlDefault.AfterTurns,
+				RepeatEvery:    yamlDefault.RepeatEvery,
+				MaxRepetitions: yamlDefault.MaxRepetitions,
+				MaxTitleLen:    yamlDefault.MaxTitleLen,
+			}.WithDefaults(),
+			Model: yamlDefault.Model,
+		}, true, nil
+	}
+	return NamingResolution{}, false, nil
+}
+
 // ActivePlannerCatalogView builds the run's planner-facing catalog view at
 // run start, applying the agent's active-config tool exposure: a paused MCP
 // server's tools and any individually-disabled tool are excluded from the

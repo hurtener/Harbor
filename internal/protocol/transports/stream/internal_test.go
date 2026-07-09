@@ -9,8 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
+
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 )
 
 // idQuad builds an identity.Quadruple for test fixtures.
@@ -385,5 +390,22 @@ func TestStreamLoop_ForwardsEventAndKeepalive(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(body), []byte(": keepalive")) {
 		t.Errorf("streamLoop did not emit a keepalive comment:\n%s", body)
+	}
+}
+
+// TestClassifyAgentConfigError_InvalidNaming400 pins the wire mapping the
+// phase-158 smoke caught missing: an invalid naming section (e.g. repeat_every
+// with no cap) is a CLIENT error — CodeInvalidRequest / 400 — not a server
+// fault, mirroring the ErrInvalidHooks / ErrInvalidLLMParams siblings.
+func TestClassifyAgentConfigError_InvalidNaming400(t *testing.T) {
+	code, status, _ := classifyAgentConfigError(
+		methods.MethodAgentConfigSetRevision,
+		fmt.Errorf("wrap: %w", agentcfgprotocol.ErrInvalidNaming),
+	)
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
+	}
+	if code != protoerrors.CodeInvalidRequest {
+		t.Errorf("code = %q, want %q", code, protoerrors.CodeInvalidRequest)
 	}
 }

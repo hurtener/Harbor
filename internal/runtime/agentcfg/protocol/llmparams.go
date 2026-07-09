@@ -71,6 +71,7 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 		payload.ToolExposure = active.Payload.ToolExposure
 		payload.Connections = active.Payload.Connections
 		payload.Hooks = active.Payload.Hooks
+		payload.Naming = active.Payload.Naming
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)

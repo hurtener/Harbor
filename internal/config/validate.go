@@ -129,6 +129,41 @@ func (c *Config) validateRuntime() error {
 		return fieldError("runtime.hooks.run_completion.tool",
 			"must be set when runtime.hooks.run_completion.timeout is configured")
 	}
+	return c.validateRuntimeNaming()
+}
+
+// validateRuntimeNaming validates the `runtime.naming` fleet-default
+// auto-naming block: the same bounds the agent-config `naming` section is
+// validated against. A negative after_turns / repeat_every / max_repetitions
+// is rejected; a set max_title_len must be in [8,200]; a repeat_every > 0 with
+// max_repetitions < 1 is rejected (no unlimited value exists). The model is
+// validated against ModelProfiles at boot when set. The block is only
+// meaningfully consulted when auto is true, but the bounds are enforced
+// regardless so a mistake surfaces at boot rather than at first run.
+func (c *Config) validateRuntimeNaming() error {
+	n := c.Runtime.Naming
+	if n.AfterTurns < 0 {
+		return fieldError("runtime.naming.after_turns", "must not be negative")
+	}
+	if n.RepeatEvery < 0 {
+		return fieldError("runtime.naming.repeat_every", "must not be negative")
+	}
+	if n.MaxRepetitions < 0 {
+		return fieldError("runtime.naming.max_repetitions", "must not be negative")
+	}
+	if n.RepeatEvery > 0 && n.MaxRepetitions < 1 {
+		return fieldError("runtime.naming.max_repetitions",
+			"must be >= 1 when runtime.naming.repeat_every > 0 (no unlimited value exists)")
+	}
+	if n.MaxTitleLen != 0 && (n.MaxTitleLen < 8 || n.MaxTitleLen > 200) {
+		return fieldError("runtime.naming.max_title_len", "must be within [8,200]")
+	}
+	if strings.TrimSpace(n.Model) != "" {
+		if _, ok := c.LLM.ModelProfiles[n.Model]; !ok {
+			return fieldError("runtime.naming.model",
+				fmt.Sprintf("references model %q with no configured llm.model_profiles entry", n.Model))
+		}
+	}
 	return nil
 }
 

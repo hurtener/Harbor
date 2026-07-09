@@ -87,6 +87,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -235,6 +236,22 @@ type perTaskRunLoopDriverOpts struct {
 	// reconcile MUST NEVER detach (they are not revisioned state). Nil/empty
 	// when no yaml server is declared.
 	bootDeclaredMCP map[string]struct{}
+
+	// namingDefault is the static `runtime.naming` fleet-default auto-naming
+	// policy; the driver resolves the effective policy per run (agent-config
+	// over this yaml over off). Opt-in, default off.
+	namingDefault config.RuntimeNamingConfig
+
+	// sessionTitler is the session-registry seam the auto-naming trigger
+	// writes/reads through (RecordCompletedTurn / AutoNamingState /
+	// SetTitleAuto). The same *sessions.Registry the sessions Protocol routes
+	// project over. Nil ⇒ no auto-naming trigger even when a policy resolves.
+	sessionTitler steering.SessionTitler
+
+	// namingLLM is the run's wrapped LLM client the ONE naming Complete call
+	// flows through (governance/safety via ctx identity). Nil ⇒ no auto-naming
+	// trigger.
+	namingLLM steering.NamingCompleter
 }
 
 // tenantOverrideResolver is the narrow read seam the run loop uses to
@@ -309,6 +326,13 @@ type perTaskRunLoopDriver struct {
 	connectionDetacher projection.ConnectionDetacher
 	bootDeclaredMCP    map[string]struct{}
 
+	// session auto-naming wiring: the static fleet-default policy, the
+	// session-registry titler seam, and the run's wrapped LLM client. All
+	// three are needed for the trigger to fire; any nil = no auto-naming.
+	namingDefault config.RuntimeNamingConfig
+	sessionTitler steering.SessionTitler
+	namingLLM     steering.NamingCompleter
+
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
 	// completion for tasks.get enrichment. Reads are safe under RLock;
@@ -381,6 +405,9 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		runCompletionHook:  opts.runCompletionHook,
 		connectionDetacher: opts.connectionDetacher,
 		bootDeclaredMCP:    opts.bootDeclaredMCP,
+		namingDefault:      opts.namingDefault,
+		sessionTitler:      opts.sessionTitler,
+		namingLLM:          opts.namingLLM,
 		trajectories:       make(map[tasks.TaskID]*planner.Trajectory),
 		tokenBudget:        opts.tokenBudget,
 		compression:        opts.compression,
@@ -643,6 +670,36 @@ func (d *perTaskRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Contex
 func (d *perTaskRunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
 	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, d.agentConfigID, q, d.runCompletionHook)
 	return hook, err
+}
+
+// projectNaming resolves the effective session auto-naming spec for this run
+// at run start via the SAME shared projection the devstack twin uses (the shared projection,
+// CLAUDE.md §17.6): agent-config `naming` section over the static
+// `runtime.naming` yaml over off. Returns nil when no policy is active OR the
+// naming dependencies (titler + wrapped LLM client) are not wired — opt-in,
+// default off. The naming model resolves to the policy's model, else the run's
+// effective model override, else "" (the client default). Next-turn-only.
+func (d *perTaskRunLoopDriver) projectNaming(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*steering.NamingSpec, error) {
+	if d.sessionTitler == nil || d.namingLLM == nil {
+		return nil, nil
+	}
+	res, active, err := projection.ActiveNamingPolicy(ctx, d.agentConfig, d.agentConfigID, q, d.namingDefault)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return nil, nil
+	}
+	model := res.Model
+	if model == "" && ov != nil && ov.Model != nil {
+		model = *ov.Model
+	}
+	return &steering.NamingSpec{
+		Policy: res.Policy,
+		Titler: d.sessionTitler,
+		LLM:    d.namingLLM,
+		Model:  model,
+	}, nil
 }
 
 // reconcileConnections runs the DETACH leg of run-start reconciliation before
@@ -1083,6 +1140,27 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return
 	}
 
+	// Resolve the effective session auto-naming spec once at run start
+	// (agent-config over yaml over off). A read error fails the run loudly
+	// rather than silently dropping the operator's configured policy.
+	namingSpec, nmErr := d.projectNaming(taskCtx, q, llmOverrides)
+	if nmErr != nil {
+		d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: naming-policy projection failed; failing run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", nmErr.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "naming-policy projection failed: " + nmErr.Error(),
+		}); mErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after naming-policy-projection error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -1115,6 +1193,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		MaxSteps:         d.maxStepsRunLoop,
 		Compression:      d.compression,  // trajectory compression runner
 		CompletionHook:   completionHook, // run-completion transcript egress (nil = no hook)
+		Naming:           namingSpec,     // session auto-naming (nil = off)
 	}
 	// save the trajectory ref before Run so the Enricher
 	// can read it post-completion (including concurrently — the map is

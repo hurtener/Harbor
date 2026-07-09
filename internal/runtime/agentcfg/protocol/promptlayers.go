@@ -63,6 +63,7 @@ func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfi
 		payload.Connections = active.Payload.Connections
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
+		payload.Naming = active.Payload.Naming
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)

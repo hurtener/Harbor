@@ -177,6 +177,9 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	steering.EventTypeRunHookDispatched: {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookDispatchedPayload{})}},
 	steering.EventTypeRunHookFailed:     {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookFailedPayload{})}},
 
+	// --- Session auto-naming.
+	steering.EventTypeSessionNamingFailed: {Payloads: []reflect.Type{reflect.TypeOf(steering.SessionNamingFailedPayload{})}},
+
 	// --- Sessions.
 	sessions.EventTypeSessionOpened:       {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionOpenedPayload{})}},
 	sessions.EventTypeSessionTouched:      {Payloads: []reflect.Type{reflect.TypeOf(sessions.SessionTouchedPayload{})}},

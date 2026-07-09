@@ -174,6 +174,7 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.Connections = active.Payload.Connections
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
+		payload.Naming = active.Payload.Naming
 	}
 	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload)
 }

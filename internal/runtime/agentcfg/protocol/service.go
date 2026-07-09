@@ -93,6 +93,22 @@ var (
 	// so an invalid override can never be persisted — no revision, no
 	// event — fail loud, never a silent drop (CLAUDE.md §13).
 	ErrInvalidToolExposureLoading = errors.New("agentcfg/protocol: invalid tool-loading-mode override")
+	// ErrInvalidNaming — a set_revision carrying a naming section supplied an
+	// invalid session auto-naming policy: a negative after_turns / repeat_every
+	// / max_repetitions, a max_title_len outside [8,200], a repeat_every > 0
+	// with max_repetitions < 1 (no unlimited value exists), or an unknown
+	// model. Validated at set time BEFORE any registry write so an invalid
+	// policy can never be persisted — fail loud, never a silent clamp
+	// (CLAUDE.md §13). The model is validated via the same validateModel path
+	// as set_llm_params.
+	ErrInvalidNaming = errors.New("agentcfg/protocol: invalid naming section")
+)
+
+// namingMaxTitleLenBounds is the inclusive [min,max] a set max_title_len must
+// fall within. 0 is exempt (inherits the runtime default at run start).
+const (
+	namingMinTitleLen = 8
+	namingMaxTitleLen = 200
 )
 
 // validLLMReasoningEffort is the canonical reasoning-effort taxonomy the
@@ -479,6 +495,42 @@ func (s *Service) validateHooks(h *prototypes.AgentConfigHooks) error {
 	return nil
 }
 
+// validateNaming validates a session auto-naming policy section at set time:
+// the numeric bounds (no negative after_turns / repeat_every / max_repetitions,
+// a set max_title_len in [8,200]), the no-unlimited invariant (repeat_every > 0
+// REQUIRES max_repetitions ≥ 1), and the model (against the configured
+// ModelProfiles, via the same validateModel path set_llm_params uses). A nil
+// section (no naming edit) is a no-op. Each numeric field is bounds-checked
+// only against its rule; a zero after_turns / max_title_len is valid (inherits
+// the runtime default at run start).
+func (s *Service) validateNaming(n *prototypes.AgentConfigNaming) error {
+	if n == nil {
+		return nil
+	}
+	if n.AfterTurns < 0 {
+		return fmt.Errorf("%w: after_turns %d must not be negative", ErrInvalidNaming, n.AfterTurns)
+	}
+	if n.RepeatEvery < 0 {
+		return fmt.Errorf("%w: repeat_every %d must not be negative", ErrInvalidNaming, n.RepeatEvery)
+	}
+	if n.MaxRepetitions < 0 {
+		return fmt.Errorf("%w: max_repetitions %d must not be negative", ErrInvalidNaming, n.MaxRepetitions)
+	}
+	if n.RepeatEvery > 0 && n.MaxRepetitions < 1 {
+		return fmt.Errorf("%w: repeat_every > 0 requires max_repetitions >= 1 (no unlimited value exists)", ErrInvalidNaming)
+	}
+	if n.MaxTitleLen != 0 && (n.MaxTitleLen < namingMinTitleLen || n.MaxTitleLen > namingMaxTitleLen) {
+		return fmt.Errorf("%w: max_title_len %d outside [%d,%d]", ErrInvalidNaming, n.MaxTitleLen, namingMinTitleLen, namingMaxTitleLen)
+	}
+	if n.Model != "" {
+		m := n.Model
+		if err := s.validateModel(&m); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidNaming, err)
+		}
+	}
+	return nil
+}
+
 // NewService builds the agent-config Service over a Registry. registry is
 // mandatory — a nil fails loud with ErrMisconfigured rather than building
 // a Service that would nil-panic on the first request (CLAUDE.md §5).
@@ -544,6 +596,12 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	// set time (parity with set_tool_exposure) so an unknown value can never
 	// be persisted.
 	if err := validateToolExposureLoading(req.Payload.ToolExposure); err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
+	// A full-payload set that pins a naming section is validated at set time —
+	// the numeric bounds, the no-unlimited invariant, and the model — rejected
+	// loud before any registry write.
+	if err := s.validateNaming(req.Payload.Naming); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payloadToDomain(req.Payload))
@@ -691,6 +749,16 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 		}
 		out.Hooks = wh
 	}
+	if p.Naming != nil {
+		out.Naming = &prototypes.AgentConfigNaming{
+			Auto:           p.Naming.Auto,
+			AfterTurns:     p.Naming.AfterTurns,
+			RepeatEvery:    p.Naming.RepeatEvery,
+			MaxRepetitions: p.Naming.MaxRepetitions,
+			MaxTitleLen:    p.Naming.MaxTitleLen,
+			Model:          p.Naming.Model,
+		}
+	}
 	return out
 }
 
@@ -790,6 +858,16 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 		}
 		out.Hooks = dh
 	}
+	if p.Naming != nil {
+		out.Naming = &agentcfg.NamingSection{
+			Auto:           p.Naming.Auto,
+			AfterTurns:     p.Naming.AfterTurns,
+			RepeatEvery:    p.Naming.RepeatEvery,
+			MaxRepetitions: p.Naming.MaxRepetitions,
+			MaxTitleLen:    p.Naming.MaxTitleLen,
+			Model:          p.Naming.Model,
+		}
+	}
 	return out
 }
 
@@ -847,6 +925,31 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			RunCompletionTimeoutChanged: d.Hooks.RunCompletionTimeoutChanged,
 			RunCompletionTimeoutFrom:    d.Hooks.RunCompletionTimeoutFrom,
 			RunCompletionTimeoutTo:      d.Hooks.RunCompletionTimeoutTo,
+		},
+		Naming: prototypes.AgentConfigNamingDiff{
+			AutoChanged: d.Naming.AutoChanged,
+			AutoFrom:    d.Naming.AutoFrom,
+			AutoTo:      d.Naming.AutoTo,
+
+			AfterTurnsChanged: d.Naming.AfterTurnsChanged,
+			AfterTurnsFrom:    d.Naming.AfterTurnsFrom,
+			AfterTurnsTo:      d.Naming.AfterTurnsTo,
+
+			RepeatEveryChanged: d.Naming.RepeatEveryChanged,
+			RepeatEveryFrom:    d.Naming.RepeatEveryFrom,
+			RepeatEveryTo:      d.Naming.RepeatEveryTo,
+
+			MaxRepetitionsChanged: d.Naming.MaxRepetitionsChanged,
+			MaxRepetitionsFrom:    d.Naming.MaxRepetitionsFrom,
+			MaxRepetitionsTo:      d.Naming.MaxRepetitionsTo,
+
+			MaxTitleLenChanged: d.Naming.MaxTitleLenChanged,
+			MaxTitleLenFrom:    d.Naming.MaxTitleLenFrom,
+			MaxTitleLenTo:      d.Naming.MaxTitleLenTo,
+
+			ModelChanged: d.Naming.ModelChanged,
+			ModelFrom:    d.Naming.ModelFrom,
+			ModelTo:      d.Naming.ModelTo,
 		},
 	}
 }

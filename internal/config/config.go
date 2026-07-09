@@ -452,6 +452,11 @@ type RuntimeConfig struct {
 	// Hooks configures the runtime's run-lifecycle hooks. The only hook
 	// point today is the run-completion hook (`runtime.hooks.run_completion`).
 	Hooks RuntimeHooksConfig `yaml:"hooks,omitempty"`
+	// Naming is the fleet-default session auto-naming policy
+	// (`runtime.naming`). Opt-in, default off: with the block absent (or
+	// `auto: false`) the runtime does no auto-naming. A per-agent
+	// agent-config `naming` section overrides this default at run start.
+	Naming RuntimeNamingConfig `yaml:"naming,omitempty"`
 }
 
 // RuntimeHooksConfig is the runtime's run-lifecycle hook block.
@@ -475,6 +480,32 @@ type RunCompletionHookConfig struct {
 	// Timeout bounds the detached hook dispatch. Non-positive falls back to
 	// the runtime default (10s) at run start.
 	Timeout time.Duration `yaml:"timeout,omitempty"`
+}
+
+// RuntimeNamingConfig is the static fleet-default session auto-naming policy
+// (`runtime.naming`). The durable, versioned per-agent equivalent is the
+// agent-config `naming` section (agentcfg.NamingSection); resolution at run
+// start is agent-config over this yaml over off. Opt-in, default off: with
+// `Auto` false the runtime writes no counters, makes no naming LLM calls, and
+// emits no naming events.
+type RuntimeNamingConfig struct {
+	// Auto enables session auto-naming fleet-wide (false = off).
+	Auto bool `yaml:"auto,omitempty"`
+	// AfterTurns is the completed-run count at which the first auto-name
+	// fires. Zero defaults to 1 at run start; negative is rejected.
+	AfterTurns int `yaml:"after_turns,omitempty"`
+	// RepeatEvery, when > 0, re-names every N completed turns after the
+	// first; 0 names once only. Negative is rejected.
+	RepeatEvery int `yaml:"repeat_every,omitempty"`
+	// MaxRepetitions caps the TOTAL auto-namings (including the first);
+	// required >= 1 when RepeatEvery > 0 (no unlimited value exists).
+	MaxRepetitions int `yaml:"max_repetitions,omitempty"`
+	// MaxTitleLen bounds the auto title in runes. Zero defaults to 80 at run
+	// start; a set value must be in [8, 200].
+	MaxTitleLen int `yaml:"max_title_len,omitempty"`
+	// Model, when set, is the model the auto-naming call requests (empty =
+	// the run's effective model). Validated against ModelProfiles at boot.
+	Model string `yaml:"model,omitempty"`
 }
 
 // MemoryConfig is owned by the memory subsystem phases.

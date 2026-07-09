@@ -265,8 +265,16 @@ caller can set on their own or a sibling session of the same
 human-set name can never be silently overwritten by a later auto-namer,
 and the title never rides an event payload (`session.title_changed` is
 content-free). The Sessions page and Playground switcher both render
-title-or-id with an inline rename. One new Protocol method, one canonical
-event — all additive; the Harbor Protocol holds at `0.1.0`.
+title-or-id with an inline rename. And the runtime can now **name a session
+itself** — opt-in and default off: enable a `naming` policy (a versioned
+agent-config section riding `set_revision`, or a `runtime.naming` yaml fleet
+default) and, at each run's terminal boundary, the runtime makes one governed
+`Complete` call over a bounded transcript digest and writes an `auto` title —
+never overwriting a human's `manual` one, and never on a config-free runtime
+(zero counters, zero LLM calls, zero events). A naming failure never alters the
+run's outcome and is never silent (`session.naming_failed` carries a stable
+error class, never content). All wire changes are additive; the Harbor Protocol
+holds at `0.1.0`.
 
 **Harbor v1.11.0.** The fleet-and-lifecycle line — the coordinator control
 plane grows the surfaces it was missing. An admin observer can enumerate

@@ -401,6 +401,17 @@ type RunSpec struct {
 	// behaviour. See completion.go for the payload contract + the detached
 	// cancellation bridge.
 	CompletionHook *CompletionHookSpec
+
+	// Naming, when set, is the per-run session auto-naming configuration: at
+	// Run's terminal boundary the runloop fires the auto-naming trigger once
+	// (a sibling of the completion hook) — records the completed turn and,
+	// when a title is due, makes ONE bounded Complete call over a transcript
+	// digest and writes the result through the registry's manual-safe auto
+	// path. The trigger runs AFTER (fin, err) settle and can NEVER alter them;
+	// a failure emits session.naming_failed + a Warn and nothing else. A nil
+	// Naming is byte-identical to the naming-off behaviour (no counters, no
+	// LLM calls, no events). See naming.go.
+	Naming *NamingSpec
 }
 
 // Run drives the planner to a terminal planner.Finish decision. It Opens
@@ -471,6 +482,26 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	var steeringEntries []steeringEntry
 	initialGoal := spec.Base.Goal
 	runStartedAt := rl.clock.Now()
+	// TERMINAL-BOUNDARY ORDERING (load-bearing, LIFO): the auto-naming defer
+	// is registered FIRST and the completion-hook defer SECOND, so the HOOK
+	// fires first at the terminal exit. The hook stamps CompletedAt/DurationMS
+	// from the clock when it fires — if naming (a synchronous, up-to-10s LLM
+	// call) ran first, a slow naming call would inflate the hook's timestamps
+	// and delay transcript egress. Naming has no timing fields of its own, so
+	// running second costs it nothing. Pinned by
+	// TestRun_TerminalOrdering_HookFiresBeforeNaming.
+	//
+	// The session auto-naming trigger is a SIBLING of the completion hook at
+	// the same terminal boundary: registered after runCtx/identity are
+	// established so it never fires for a pre-run misconfiguration, and reads
+	// the settled (fin, err) named returns. Fires only when a naming policy is
+	// active for the run; a nil Naming is byte-identical to the naming-off
+	// path.
+	if spec.Naming != nil && spec.Naming.Titler != nil {
+		defer func() {
+			rl.fireNaming(runCtx, spec, q, steeringEntries, initialGoal, fin)
+		}()
+	}
 	if spec.CompletionHook != nil && spec.CompletionHook.Tool != "" {
 		defer func() {
 			rl.fireCompletionHook(runCtx, spec, q, fin, err, steeringEntries, initialGoal, runStartedAt)
@@ -556,7 +587,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// interleaves it just ahead of that step. Captured exactly once
 			// per drained event (drained events apply exactly once, even on
 			// the paused-accumulation path). Stack-local — concurrent-reuse clean.
-			if applyErr == nil && spec.CompletionHook != nil && spec.CompletionHook.Tool != "" {
+			if applyErr == nil && (steeringCaptureWanted(spec)) {
 				if se, ok := captureSteeringEntry(ev, trajStepLen(spec.Base.Trajectory)); ok {
 					steeringEntries = append(steeringEntries, se)
 				}

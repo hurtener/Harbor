@@ -103,6 +103,22 @@ export interface AgentConfigHooks {
 	run_completion?: AgentConfigRunCompletionHook;
 }
 
+/** The session auto-naming policy section of the config envelope — opt-in,
+ * default off. An ABSENT section falls through to the yaml `runtime.naming`
+ * fleet default; a PRESENT section is authoritative either way (a bare
+ * `{auto: false}` is an explicit opt-out overriding a yaml-on default).
+ * `after_turns` / `max_title_len` inherit the runtime defaults
+ * (1, 80) when zero; `max_repetitions` is required >= 1 when `repeat_every` > 0
+ * (no unlimited value). Mirrors `types.AgentConfigNaming`. */
+export interface AgentConfigNaming {
+	auto?: boolean;
+	after_turns?: number;
+	repeat_every?: number;
+	max_repetitions?: number;
+	max_title_len?: number;
+	model?: string;
+}
+
 /** An agent-config envelope — every section optional and forward-compatible.
  * Mirrors `types.AgentConfigPayload`. */
 export interface AgentConfigPayload {
@@ -112,6 +128,7 @@ export interface AgentConfigPayload {
 	connections?: AgentConfigConnections;
 	llm_params?: AgentConfigLLMParams;
 	hooks?: AgentConfigHooks;
+	naming?: AgentConfigNaming;
 }
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
@@ -198,6 +215,32 @@ export interface AgentConfigHooksDiff {
 	run_completion_timeout_to?: string;
 }
 
+/** The session auto-naming policy per-field delta across two revisions.
+ * `auto_from` / `auto_to` are TRI-STATE display strings — "" (section absent)
+ * / "false" / "true" — so a bare `{auto: false}` opt-out revision registers
+ * as a change against an absent section. Mirrors
+ * `types.AgentConfigNamingDiff`. */
+export interface AgentConfigNamingDiff {
+	auto_changed: boolean;
+	auto_from?: string;
+	auto_to?: string;
+	after_turns_changed: boolean;
+	after_turns_from?: string;
+	after_turns_to?: string;
+	repeat_every_changed: boolean;
+	repeat_every_from?: string;
+	repeat_every_to?: string;
+	max_repetitions_changed: boolean;
+	max_repetitions_from?: string;
+	max_repetitions_to?: string;
+	max_title_len_changed: boolean;
+	max_title_len_from?: string;
+	max_title_len_to?: string;
+	model_changed: boolean;
+	model_from?: string;
+	model_to?: string;
+}
+
 /** A server-side revision compare. Mirrors `types.AgentConfigDiff`. */
 export interface AgentConfigDiff {
 	from_revision_id: string;
@@ -208,6 +251,7 @@ export interface AgentConfigDiff {
 	connections: AgentConfigConnectionsDiff;
 	llm_params: AgentConfigLLMParamsDiff;
 	hooks: AgentConfigHooksDiff;
+	naming: AgentConfigNamingDiff;
 }
 
 /** `agent_config.get` request. */
