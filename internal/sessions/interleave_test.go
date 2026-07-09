@@ -8,8 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events/drivers/durable"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/state"
 )
@@ -141,82 +145,208 @@ func TestRegistry_Interleave_EraseVsSetTitle_NoResurrection(t *testing.T) {
 	}
 }
 
+// catalogSaveGate wraps a real StateStore and, while armed, parks the FIRST
+// `session.catalog` Save it sees until released — a deterministic interleave
+// gate for the catalog lost-update. The gate disarms itself on capture, so
+// every subsequent catalog save (e.g. a concurrent Open's add) passes
+// through untouched. All other kinds always pass through.
+type catalogSaveGate struct {
+	state.StateStore
+	mu       sync.Mutex
+	armed    bool
+	captured chan struct{} // closed once when the armed save parks
+	release  chan struct{} // closed by the test to release the parked save
+}
+
+func newCatalogSaveGate(inner state.StateStore) *catalogSaveGate {
+	return &catalogSaveGate{StateStore: inner}
+}
+
+// arm primes the gate: the NEXT `session.catalog` Save parks until release.
+// Returns the captured/release channel pair for this arming.
+func (g *catalogSaveGate) arm() (captured <-chan struct{}, release chan struct{}) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.armed = true
+	g.captured = make(chan struct{})
+	g.release = make(chan struct{})
+	return g.captured, g.release
+}
+
+func (g *catalogSaveGate) Save(ctx context.Context, r state.StateRecord) error {
+	if r.Kind == "session.catalog" {
+		g.mu.Lock()
+		if g.armed {
+			g.armed = false
+			captured, release := g.captured, g.release
+			g.mu.Unlock()
+			close(captured)
+			<-release
+		} else {
+			g.mu.Unlock()
+		}
+	}
+	return g.StateStore.Save(ctx, r)
+}
+
 // TestRegistry_Interleave_EraseVsOpen_NoResurrection pins the catalog
-// lost-update fix (FIX-1): the per-(tenant, user) discovery catalog's
-// read-modify-write must serialize an Open's add against an erasure's
-// remove. Before folding removeFromCatalog into clearErased's r.mu section
-// (and routing both catalog writers through the serialized mutateCatalog
-// path), the confirmed race was: the eraser loads the catalog {keep, erase},
-// an Open(new) completes its own add ({keep, erase, new}), the eraser saves
-// its stale difference ({keep}); the freshly-opened session's record survived
-// but its catalog entry was gone — invisible to sessions.list and never
-// re-discovered by a fresh process after a restart (the StateStore has no
-// List). Each iteration races one Erase against one Open of a sibling and
-// asserts a FRESH registry over the SAME store re-discovers every surviving
-// session (the kept one AND the newly-opened one) while the erased one stays
-// gone.
+// lost-update fix DETERMINISTICALLY: the per-(tenant, user) discovery
+// catalog's read-modify-write must serialize an Open's add against an
+// erasure's remove. The lost-update window (between the eraser's catalog
+// Load and its Save) is nanoseconds on the inmem driver, so a bare
+// go-Erase/go-Open race virtually never lands in it — a stochastic
+// interleave passes even against the UN-serialized pre-fix code and would
+// rubber-stamp a future revert. Instead, a gated StateStore parks the
+// eraser's catalog Save after its Load has returned, drives Open(C) into
+// exactly that window, then releases:
+//
+//   - PRE-fix (catalog RMW outside r.mu): the eraser parks WITHOUT holding
+//     r.mu, so Open(C) completes its add ({keep, erase, C}); the released
+//     eraser then saves its stale difference ({keep}) — C's catalog entry
+//     is lost-updated away, and a fresh registry never re-discovers C.
+//     FAILS in one iteration (A/B-verified against the pre-fix shape).
+//   - POST-fix (mutateCatalog under r.mu; the remove folded into
+//     clearErased's critical section): the eraser parks while HOLDING
+//     r.mu, so Open(C) blocks on the registry lock instead of racing —
+//     the bounded wait expires, the gate is released either way (the
+//     deadlock-avoidance branch), the eraser completes, and Open(C)'s add
+//     then lands on the post-remove catalog. A fresh registry re-discovers
+//     keep AND C; the erased session stays gone.
 func TestRegistry_Interleave_EraseVsOpen_NoResurrection(t *testing.T) {
-	f := newErasureFixture(t, nil)
 	ctx := context.Background()
 
-	const iterations = 20
-	for i := range iterations {
-		const tenant, user = "t1", "u1"
-		keep := ident(tenant, user, fmt.Sprintf("s-keep-%d", i))
-		erase := ident(tenant, user, fmt.Sprintf("s-erase-%d", i))
-		open := ident(tenant, user, fmt.Sprintf("s-open-%d", i))
-		if _, err := f.reg.Open(ctxFor(keep), keep.SessionID, keep); err != nil {
-			t.Fatalf("iter %d: Open keep: %v", i, err)
-		}
-		if _, err := f.reg.Open(ctxFor(erase), erase.SessionID, erase); err != nil {
-			t.Fatalf("iter %d: Open erase: %v", i, err)
-		}
+	// Build the erasure wiring over the GATED store (real drivers on every
+	// other seam — the gate is a pass-through except for the one armed save).
+	red := auditpatterns.New()
+	inner, err := state.Open(ctx, config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = inner.Close(ctx) })
+	gate := newCatalogSaveGate(inner)
 
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			if _, err := f.eraser.Erase(ctx, erase); err != nil {
-				t.Errorf("iter %d: Erase: %v", i, err)
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			if _, err := f.reg.Open(ctxFor(open), open.SessionID, open); err != nil {
-				t.Errorf("iter %d: Open (racing erase): %v", i, err)
-			}
-		}()
-		wg.Wait()
+	bus, err := durable.New(ctx, config.EventsConfig{
+		Driver:                   "durable",
+		MaxSubscribersPerSession: 16,
+		SubscriberBufferSize:     256,
+		IdleTimeout:              60 * time.Second,
+		DropWindow:               time.Second,
+		ReplayBufferSize:         64,
+	}, red, gate)
+	if err != nil {
+		t.Fatalf("durable.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(ctx) })
+	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
+		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
+	}, memory.Deps{State: gate, Bus: bus})
+	if err != nil {
+		t.Fatalf("memory.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = mem.Close(ctx) })
+	arts, err := artifacts.Open(ctx, config.ArtifactsConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("artifacts.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = arts.Close(ctx) })
+	reg, err := sessions.New(gate, config.SessionsConfig{
+		IdleTTL: 24 * time.Hour, HardCap: 720 * time.Hour, SweepInterval: time.Hour,
+	}, bus)
+	if err != nil {
+		t.Fatalf("sessions.New: %v", err)
+	}
+	t.Cleanup(func() { _ = reg.CloseRegistry(ctx) })
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: reg, State: gate, Memory: mem, Artifacts: arts, Bus: bus, Redactor: red,
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
 
-		// A FRESH registry over the SAME store re-hydrates the in-memory index
-		// ONLY from the persisted catalog — so it re-discovers exactly the
-		// sessions the catalog still records. Both survivors (keep + open) MUST
-		// be there; the erased one MUST NOT.
-		fresh, err := sessions.New(f.store, config.SessionsConfig{
-			IdleTTL: 24 * time.Hour, HardCap: 720 * time.Hour, SweepInterval: time.Hour,
-		}, f.bus)
-		if err != nil {
-			t.Fatalf("iter %d: fresh registry: %v", i, err)
+	const tenant, user = "t1", "u1"
+	keep := ident(tenant, user, "s-keep")
+	erase := ident(tenant, user, "s-erase")
+	open := ident(tenant, user, "s-open")
+	if _, err := reg.Open(ctxFor(keep), keep.SessionID, keep); err != nil {
+		t.Fatalf("Open keep: %v", err)
+	}
+	if _, err := reg.Open(ctxFor(erase), erase.SessionID, erase); err != nil {
+		t.Fatalf("Open erase: %v", err)
+	}
+
+	// Arm the gate, then start the erasure: its clearErased loads the catalog
+	// {keep, erase}, computes the difference, and its Save parks on the gate.
+	captured, release := gate.arm()
+	eraseDone := make(chan error, 1)
+	go func() { _, eerr := eraser.Erase(ctx, erase); eraseDone <- eerr }()
+	select {
+	case <-captured:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the eraser's catalog save to reach the gate")
+	}
+
+	// The eraser's stale catalog write is parked. Drive Open(C) into the
+	// window. Post-fix, Open blocks on r.mu (the eraser holds it across the
+	// parked save), so wait bounded and release the gate EITHER WAY — the
+	// deadlock-avoidance branch; pre-fix, Open completes inside the window.
+	openDone := make(chan error, 1)
+	go func() { _, oerr := reg.Open(ctxFor(open), open.SessionID, open); openDone <- oerr }()
+	var openErr error
+	openCompletedInWindow := false
+	select {
+	case openErr = <-openDone:
+		openCompletedInWindow = true
+	case <-time.After(300 * time.Millisecond):
+		// Open is blocked on the registry lock (the post-fix serialization).
+	}
+	close(release)
+	if !openCompletedInWindow {
+		select {
+		case openErr = <-openDone:
+		case <-time.After(10 * time.Second):
+			t.Fatal("Open never completed after the gate release")
 		}
-		snaps, err := fresh.ListSnapshots(ctx, sessions.SessionListFilter{
-			TenantIDs: []string{tenant}, UserIDs: []string{user}, IncludeClosed: true,
-		})
-		_ = fresh.CloseRegistry(ctx)
-		if err != nil {
-			t.Fatalf("iter %d: fresh ListSnapshots: %v", i, err)
+	}
+	if openErr != nil {
+		t.Fatalf("Open (racing erase): %v", openErr)
+	}
+	select {
+	case eerr := <-eraseDone:
+		if eerr != nil {
+			t.Fatalf("Erase: %v", eerr)
 		}
-		got := make(map[string]bool, len(snaps))
-		for _, s := range snaps {
-			got[s.ID] = true
-		}
-		if !got[keep.SessionID] {
-			t.Fatalf("iter %d: kept session %q not re-discovered by a fresh registry (catalog lost-update)", i, keep.SessionID)
-		}
-		if !got[open.SessionID] {
-			t.Fatalf("iter %d: session %q opened while racing an erase was NOT re-discovered by a fresh registry — its catalog entry was lost-updated away", i, open.SessionID)
-		}
-		if got[erase.SessionID] {
-			t.Fatalf("iter %d: erased session %q re-discovered by a fresh registry (catalog not cleaned)", i, erase.SessionID)
-		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Erase never completed after the gate release")
+	}
+
+	// A FRESH registry over the SAME store re-hydrates the in-memory index
+	// ONLY from the persisted catalog — so it re-discovers exactly the
+	// sessions the catalog still records. Both survivors (keep + open) MUST
+	// be there; the erased one MUST NOT.
+	fresh, err := sessions.New(inner, config.SessionsConfig{
+		IdleTTL: 24 * time.Hour, HardCap: 720 * time.Hour, SweepInterval: time.Hour,
+	}, bus)
+	if err != nil {
+		t.Fatalf("fresh registry: %v", err)
+	}
+	snaps, err := fresh.ListSnapshots(ctx, sessions.SessionListFilter{
+		TenantIDs: []string{tenant}, UserIDs: []string{user}, IncludeClosed: true,
+	})
+	_ = fresh.CloseRegistry(ctx)
+	if err != nil {
+		t.Fatalf("fresh ListSnapshots: %v", err)
+	}
+	got := make(map[string]bool, len(snaps))
+	for _, s := range snaps {
+		got[s.ID] = true
+	}
+	if !got[keep.SessionID] {
+		t.Fatalf("kept session %q not re-discovered by a fresh registry (catalog lost-update)", keep.SessionID)
+	}
+	if !got[open.SessionID] {
+		t.Fatalf("session %q opened inside the erasure's RMW window was NOT re-discovered by a fresh registry — its catalog entry was lost-updated away", open.SessionID)
+	}
+	if got[erase.SessionID] {
+		t.Fatalf("erased session %q re-discovered by a fresh registry (catalog not cleaned)", erase.SessionID)
 	}
 }

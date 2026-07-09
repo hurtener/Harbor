@@ -152,7 +152,10 @@ byte-identical to v1.11).
   (mirroring the naming-section presence rule): an empty section is the
   explicit per-agent NO-HOOK that overrides the yaml default, `NormalizePayload`
   preserves any non-nil section, and `agent_config.diff` gains a presence
-  dimension so the opt-out is a visible revision. No wire-type change. (D-290.)
+  dimension — carried to the wire as the additive
+  `AgentConfigHooksDiff.section_present_*` fields (TS mirror, wire manifest,
+  and generated Protocol reference regenerated) — so the opt-out is a
+  visible revision end to end. The request shape is unchanged. (D-290.)
 
 ### Internal
 
@@ -167,8 +170,10 @@ byte-identical to v1.11).
   `invalid_request`/400 class). The wave-end checkpoint additionally closes
   the pre-existing session-discovery-catalog lost-update, re-arms
   auto-naming after a manual clear (per-cycle `max_repetitions`), and makes
-  an agent-config `hooks`-section presence authoritative (D-290) — all
-  additive or behavioral, no wire-type change — and lands the wave E2E
+  an agent-config `hooks`-section presence authoritative (D-290) — the only
+  checkpoint wire change is the additive
+  `AgentConfigHooksDiff.section_present_*` diff fields, so `ProtocolVersion`
+  still holds at `0.1.0` — and lands the wave E2E
   (`test/integration/wave_v112_test.go`) composing the title lifecycle,
   identity-scoped event discipline, own-vs-foreign refusal, governance
   interplay, live-revision precedence, and a cross-tenant concurrency stress

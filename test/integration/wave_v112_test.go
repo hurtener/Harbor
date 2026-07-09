@@ -35,12 +35,14 @@
 //     revision opts the agent out (zero naming calls/counters/events over N
 //     runs); flipping it back on mid-session is honored on the next run
 //     (next-turn projection).
-//  6. ConcurrencyStress (§17.3) — N≥10 sessions across ≥2 tenants, naming on,
-//     distinct scripted titles; concurrent runs + wire sibling renames + one
-//     `sessions.delete` + `sessions.list` polls; asserts no title bleed, the
-//     final catalog EXACTLY equals the surviving sessions AND a fresh registry
-//     over the same store re-discovers all of them (pins the checkpoint's
-//     catalog lost-update fix), and a restored goroutine baseline.
+//  6. ConcurrencyStress (§17.3) — N≥10 sessions across ≥2 tenants, naming on;
+//     concurrent runs + wire sibling renames + one `sessions.delete` PER
+//     TENANT (two total) + `sessions.list` polls, with two sessions per
+//     tenant OPENED INSIDE the concurrent goroutines so catalog adds race the
+//     deletes' catalog removes (the FIX-1 interleave, live); asserts no title
+//     bleed, the final catalog EXACTLY equals the surviving sessions AND a
+//     fresh registry over the same store re-discovers all of them —
+//     pre-opened and concurrently-opened — and a restored goroutine baseline.
 //
 // Real drivers on every seam; the only test seam is the scripted LLM driver
 // (registered through the real llm registry). Runs under -race. No time.Sleep
@@ -321,7 +323,10 @@ func TestE2E_WaveV112_EventDiscipline_IdentityScoped(t *testing.T) {
 		t.Fatalf("run status = %s, want Complete", s)
 	}
 
-	// Collect owner events for a bounded window; assert three content-free.
+	// Collect owner events for a bounded window; assert three content-free —
+	// neither the MANUAL secret nor the AUTO title text may ride the payload
+	// (the auto path publishes through the same content-free contract).
+	const autoTitle = "Auto Named Title"
 	var srcs []string
 	deadline := time.After(5 * time.Second)
 collect:
@@ -334,7 +339,10 @@ collect:
 			}
 			raw, _ := json.Marshal(p)
 			if strings.Contains(string(raw), secret) {
-				t.Fatalf("title_changed leaked title content: %s", raw)
+				t.Fatalf("title_changed leaked the manual title content: %s", raw)
+			}
+			if strings.Contains(string(raw), autoTitle) {
+				t.Fatalf("title_changed leaked the AUTO title content: %s", raw)
 			}
 			srcs = append(srcs, p.Source)
 		case <-deadline:
@@ -472,8 +480,11 @@ func TestE2E_WaveV112_GovernanceInterplay(t *testing.T) {
 
 // TestE2E_WaveV112_PrecedenceMatrix_LiveRevisions proves the agentcfg › yaml
 // precedence through live revisions on one agent: yaml naming ON; a bare
-// {auto:false} revision opts the agent out (zero naming over N runs); flipping
-// it back on mid-session is honored on the next run (next-turn projection).
+// {auto:false} revision opts the agent out — asserted as ZERO naming LLM
+// calls (exact request count), ZERO naming counter writes (AutoNamingState:
+// TurnCount frozen, AutoNameCount 0), and ZERO title_changed events (a live
+// subscription held across the opted-out runs) — then flipping it back on
+// mid-session is honored on the next run (next-turn projection).
 func TestE2E_WaveV112_PrecedenceMatrix_LiveRevisions(t *testing.T) {
 	server := newScriptedLLMServer(t,
 		scriptedFinishResponse("answer 1"),        // run 1 planner (yaml-on baseline)
@@ -516,7 +527,10 @@ func TestE2E_WaveV112_PrecedenceMatrix_LiveRevisions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set_revision (opt out): %v", err)
 	}
-	// Runs 2 & 3: opted out — no naming call, title stays unset.
+	// Runs 2 & 3: opted out — zero naming calls, zero counter writes, zero
+	// events. A live title_changed subscription is held ACROSS the opted-out
+	// runs (subscribed after the clear so its own unset event is not counted).
+	optOutSub := waveV112Subscribe(t, stack, devID, sessions.EventTypeSessionTitleChanged)
 	for _, r := range []string{"run 2", "run 3"} {
 		if s := phase158RunOnce(t, stack, idCtx, devID, r); s != tasks.StatusComplete {
 			t.Fatalf("%s = %s", r, s)
@@ -525,7 +539,29 @@ func TestE2E_WaveV112_PrecedenceMatrix_LiveRevisions(t *testing.T) {
 	if title, src := waveV112InspectTitle(t, sessSvc, devID, devID.SessionID); title != "" || src != "" {
 		t.Fatalf("opted-out agent named itself: %q/%q, want unset", title, src)
 	}
+	// Zero events across the opted-out runs (bounded negative-assertion drain).
+	select {
+	case ev := <-optOutSub.Events():
+		t.Fatalf("opted-out agent emitted a title_changed event: %+v", ev)
+	case <-time.After(300 * time.Millisecond):
+	}
+	optOutSub.Cancel()
+	// Zero counter writes: run 1 (yaml-on) counted turn 1; the manual clear
+	// zeroed AutoNameCount/LastAutoNamedTurn (the re-arm fix); the two
+	// opted-out runs must not have counted at all.
+	st, err := stack.Sessions.AutoNamingState(idCtx, devID.SessionID, devID)
+	if err != nil {
+		t.Fatalf("AutoNamingState: %v", err)
+	}
+	if st.TurnCount != 1 || st.AutoNameCount != 0 {
+		t.Fatalf("opted-out runs wrote naming counters: turn %d auto %d, want 1/0 (frozen at run 1 + cleared)", st.TurnCount, st.AutoNameCount)
+	}
+	// Zero naming LLM calls: run 1 = planner + naming (2); runs 2 & 3 =
+	// planner only (1 each) — exactly 4 requests total before the flip.
 	reqsBeforeFlip := len(server.Requests())
+	if reqsBeforeFlip != 4 {
+		t.Fatalf("LLM requests before the flip = %d, want exactly 4 (run-1 planner+naming, runs 2-3 planner only)", reqsBeforeFlip)
+	}
 
 	// Flip back on mid-session — honored on the NEXT run (next-turn projection).
 	if _, err := cfgSvc.SetRevision(context.Background(), prototypes.AgentConfigSetRevisionRequest{
@@ -547,10 +583,15 @@ func TestE2E_WaveV112_PrecedenceMatrix_LiveRevisions(t *testing.T) {
 }
 
 // TestE2E_WaveV112_ConcurrencyStress fires N sessions across two tenants with
-// naming on, interleaving runs, wire sibling renames, one delete, and list
-// polls — asserting no title bleed, the final catalog EXACTLY equals the
+// naming on, interleaving runs, wire sibling renames, one `sessions.delete`
+// PER TENANT (two total), and list polls — and, crucially for the catalog
+// lost-update pin, OPENS two sessions per tenant from INSIDE the concurrent
+// goroutines, so their catalog adds genuinely interleave with the deletes'
+// catalog removes and the list polls (a pre-opened-only population would
+// leave no Open racing an Erase, making the "pins the catalog fix" claim
+// hollow). Asserts no title bleed, the final catalog EXACTLY equals the
 // surviving sessions, a FRESH registry over the same store re-discovers them
-// all (pins the checkpoint catalog lost-update fix), and a restored goroutine
+// all — pre-opened AND concurrently-opened — and a restored goroutine
 // baseline.
 func TestE2E_WaveV112_ConcurrencyStress(t *testing.T) {
 	const perTenant = 6 // 2 tenants × 6 = 12 sessions
@@ -578,10 +619,11 @@ func TestE2E_WaveV112_ConcurrencyStress(t *testing.T) {
 	baseline := goruntime.NumGoroutine()
 
 	type sess struct {
-		id      identity.Identity
-		idCtx   context.Context
-		erased  bool
-		renamed string
+		id       identity.Identity
+		idCtx    context.Context
+		erased   bool
+		lateOpen bool // opened INSIDE the concurrent goroutine (races the deletes)
+		renamed  string
 	}
 	var all []sess
 	for _, ten := range tenants {
@@ -591,10 +633,17 @@ func TestE2E_WaveV112_ConcurrencyStress(t *testing.T) {
 			if err != nil {
 				t.Fatalf("identity.With: %v", err)
 			}
-			if _, err := stack.Sessions.EnsureOpen(ic, id); err != nil {
-				t.Fatalf("EnsureOpen %s: %v", id.SessionID, err)
+			// Sessions 4 & 5 of each tenant are opened INSIDE their goroutine
+			// (concurrent with the tenant's delete + everyone's list polls) so
+			// a catalog ADD genuinely races a catalog REMOVE on the same
+			// (tenant, user) — the FIX-1 interleave, live. The rest pre-open.
+			lateOpen := i >= perTenant-2
+			if !lateOpen {
+				if _, err := stack.Sessions.EnsureOpen(ic, id); err != nil {
+					t.Fatalf("EnsureOpen %s: %v", id.SessionID, err)
+				}
 			}
-			all = append(all, sess{id: id, idCtx: ic, erased: i == 0, renamed: fmt.Sprintf("rename-%s-%d", ten, i)})
+			all = append(all, sess{id: id, idCtx: ic, erased: i == 0, lateOpen: lateOpen, renamed: fmt.Sprintf("rename-%s-%d", ten, i)})
 		}
 	}
 
@@ -604,8 +653,17 @@ func TestE2E_WaveV112_ConcurrencyStress(t *testing.T) {
 		wg.Add(1)
 		go func(s sess) {
 			defer wg.Done()
-			// A concurrent run (may auto-name), a wire sibling rename (manual —
-			// wins over any auto title), and a list poll.
+			// Late-open sessions materialise HERE, racing the sibling delete's
+			// catalog remove; then a concurrent run (may auto-name), a wire
+			// sibling rename (manual — wins over any auto title), and a list
+			// poll.
+			if s.lateOpen {
+				if _, err := stack.Sessions.EnsureOpen(s.idCtx, s.id); err != nil {
+					errCount.Add(1)
+					t.Errorf("concurrent EnsureOpen %s: %v", s.id.SessionID, err)
+					return
+				}
+			}
 			if st := phase158RunOnce(t, stack, s.idCtx, s.id, "stress run"); st != tasks.StatusComplete {
 				errCount.Add(1)
 				t.Errorf("run %s = %s", s.id.SessionID, st)

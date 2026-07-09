@@ -919,6 +919,10 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			ReasoningEffortTo:      d.LLMParams.ReasoningEffortTo,
 		},
 		Hooks: prototypes.AgentConfigHooksDiff{
+			SectionPresentChanged: d.Hooks.SectionPresentChanged,
+			SectionPresentFrom:    d.Hooks.SectionPresentFrom,
+			SectionPresentTo:      d.Hooks.SectionPresentTo,
+
 			RunCompletionToolChanged: d.Hooks.RunCompletionToolChanged,
 			RunCompletionToolFrom:    d.Hooks.RunCompletionToolFrom,
 			RunCompletionToolTo:      d.Hooks.RunCompletionToolTo,

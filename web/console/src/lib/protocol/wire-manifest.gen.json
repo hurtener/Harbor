@@ -337,6 +337,20 @@
       "home": "types",
       "fields": [
         {
+          "key": "section_present_changed",
+          "type": "boolean"
+        },
+        {
+          "key": "section_present_from",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "section_present_to",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "run_completion_tool_changed",
           "type": "boolean"
         },

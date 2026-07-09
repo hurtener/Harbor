@@ -327,7 +327,20 @@ type AgentConfigLLMParamsDiff struct {
 // per-field delta across two revisions. Each dimension reports whether it
 // changed plus its from / to display values (an unset hook is the empty
 // string).
+//
+// `section_present_from` / `section_present_to` render the hooks-section
+// PRESENCE ("present" when the section exists — with or without a
+// run-completion tool — "" when absent), because presence is semantic: a
+// present bare `{}` hooks section is an explicit per-agent no-hook that
+// overrides a yaml fleet hook, and the diff must show exactly that revision
+// (absent → "present" with empty tool/timeout) rather than rendering it as
+// no change. Mirrors the naming diff's tri-state `auto` precedent. Additive
+// fields — the Protocol version holds.
 type AgentConfigHooksDiff struct {
+	SectionPresentChanged bool   `json:"section_present_changed"`
+	SectionPresentFrom    string `json:"section_present_from,omitempty"`
+	SectionPresentTo      string `json:"section_present_to,omitempty"`
+
 	RunCompletionToolChanged bool   `json:"run_completion_tool_changed"`
 	RunCompletionToolFrom    string `json:"run_completion_tool_from,omitempty"`
 	RunCompletionToolTo      string `json:"run_completion_tool_to,omitempty"`

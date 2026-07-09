@@ -321,7 +321,7 @@ func RunCompletionHookFromConfig(rc config.RunCompletionHookConfig) *steering.Co
 // devstack twin) call this ONE helper, so the precedence cannot drift
 // between binaries.
 //
-// A PRESENT hooks section is authoritative (mirrors the naming section,
+// A PRESENT hooks section is authoritative (mirrors the naming
 // section): a run-completion hook with a non-empty tool pins it, while a
 // present section with no/empty run-completion tool is an explicit per-agent
 // NO-HOOK that WINS over yamlDefault (returns (nil, false)). Only an ABSENT
