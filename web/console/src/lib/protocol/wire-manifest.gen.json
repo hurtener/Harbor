@@ -581,12 +581,12 @@
         },
         {
           "key": "auto_from",
-          "type": "boolean",
+          "type": "string",
           "optional": true
         },
         {
           "key": "auto_to",
-          "type": "boolean",
+          "type": "string",
           "optional": true
         },
         {

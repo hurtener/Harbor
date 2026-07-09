@@ -267,8 +267,8 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `auto_changed` | `bool` |  |
-| `auto_from` | `bool` | optional (`omitempty`) |
-| `auto_to` | `bool` | optional (`omitempty`) |
+| `auto_from` | `string` | optional (`omitempty`) |
+| `auto_to` | `string` | optional (`omitempty`) |
 | `after_turns_changed` | `bool` |  |
 | `after_turns_from` | `string` | optional (`omitempty`) |
 | `after_turns_to` | `string` | optional (`omitempty`) |

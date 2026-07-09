@@ -445,8 +445,8 @@ export interface AgentConfigNaming {
 
 export interface AgentConfigNamingDiff {
   auto_changed: boolean;
-  auto_from?: boolean;
-  auto_to?: boolean;
+  auto_from?: string;
+  auto_to?: string;
   after_turns_changed: boolean;
   after_turns_from?: string;
   after_turns_to?: string;

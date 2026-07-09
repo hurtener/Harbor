@@ -116,3 +116,68 @@ func TestSetLLMParams_PreservesPinnedNaming(t *testing.T) {
 		t.Fatalf("naming section was dropped by set_llm_params: %+v", got.Revision)
 	}
 }
+
+// TestDiff_Naming_BareOptOutVisible proves `agent_config.diff` is NOT blind
+// to the bare `{auto: false}` opt-out revision at the wire level: a revision
+// with NO naming section diffed against one carrying the bare opt-out
+// registers `auto_changed` with the tri-state display ("" → "false") — the
+// exact revision the presence-preserve fix made meaningful never renders as
+// "no change in any section" in the Console diff view.
+func TestDiff_Naming_BareOptOutVisible(t *testing.T) {
+	ctx := context.Background()
+	s, err := agentcfgprotocol.NewService(newRegistry(t))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	// Revision 1: a payload with NO naming section (an unrelated section so
+	// the envelope is non-empty).
+	r1, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{
+			Skills: &prototypes.AgentConfigSkillsSelection{Names: []string{"s1"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("rev1: %v", err)
+	}
+	// Revision 2: same envelope + the bare opt-out naming section.
+	r2, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{
+			Skills: &prototypes.AgentConfigSkillsSelection{Names: []string{"s1"}},
+			Naming: &prototypes.AgentConfigNaming{Auto: false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("rev2 (bare opt-out): %v", err)
+	}
+	if r1.Revision.RevisionID == r2.Revision.RevisionID {
+		t.Fatal("the bare opt-out did not produce a new revision (idempotent re-set) — presence is not being preserved")
+	}
+
+	// absent → bare opt-out.
+	d, err := s.Diff(ctx, prototypes.AgentConfigDiffRequest{
+		Identity: scope(), AgentID: testAgentID,
+		FromRevision: r1.Revision.RevisionID, ToRevision: r2.Revision.RevisionID,
+	})
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	n := d.Diff.Naming
+	if !n.AutoChanged || n.AutoFrom != "" || n.AutoTo != "false" {
+		t.Fatalf("absent→bareOptOut wire diff = %+v, want auto_changed with \"\"→\"false\"", n)
+	}
+
+	// bare opt-out → absent (the rollback direction).
+	d2, err := s.Diff(ctx, prototypes.AgentConfigDiffRequest{
+		Identity: scope(), AgentID: testAgentID,
+		FromRevision: r2.Revision.RevisionID, ToRevision: r1.Revision.RevisionID,
+	})
+	if err != nil {
+		t.Fatalf("reverse diff: %v", err)
+	}
+	n2 := d2.Diff.Naming
+	if !n2.AutoChanged || n2.AutoFrom != "false" || n2.AutoTo != "" {
+		t.Fatalf("bareOptOut→absent wire diff = %+v, want auto_changed with \"false\"→\"\"", n2)
+	}
+}

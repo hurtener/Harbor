@@ -215,12 +215,15 @@ export interface AgentConfigHooksDiff {
 	run_completion_timeout_to?: string;
 }
 
-/** The session auto-naming policy per-field delta across two revisions. Mirrors
+/** The session auto-naming policy per-field delta across two revisions.
+ * `auto_from` / `auto_to` are TRI-STATE display strings — "" (section absent)
+ * / "false" / "true" — so a bare `{auto: false}` opt-out revision registers
+ * as a change against an absent section. Mirrors
  * `types.AgentConfigNamingDiff`. */
 export interface AgentConfigNamingDiff {
 	auto_changed: boolean;
-	auto_from?: boolean;
-	auto_to?: boolean;
+	auto_from?: string;
+	auto_to?: string;
 	after_turns_changed: boolean;
 	after_turns_from?: string;
 	after_turns_to?: string;

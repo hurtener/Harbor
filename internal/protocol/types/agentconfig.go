@@ -339,12 +339,18 @@ type AgentConfigHooksDiff struct {
 
 // AgentConfigNamingDiff is the wire projection of the session auto-naming
 // policy per-field delta across two revisions. Each dimension reports whether
-// it changed plus its from / to display values (an unset section is the
-// all-zero baseline).
+// it changed plus its from / to display values (an ABSENT section renders
+// every dimension as the empty string).
+//
+// `auto_from` / `auto_to` are TRI-STATE display strings — "" (section
+// absent) / "false" / "true" — because section presence is semantic: a
+// present bare `{auto: false}` section is an explicit per-agent opt-out that
+// overrides a yaml-on fleet default, and the diff must show exactly that
+// revision (absent → "false") rather than rendering it as no change.
 type AgentConfigNamingDiff struct {
-	AutoChanged bool `json:"auto_changed"`
-	AutoFrom    bool `json:"auto_from,omitempty"`
-	AutoTo      bool `json:"auto_to,omitempty"`
+	AutoChanged bool   `json:"auto_changed"`
+	AutoFrom    string `json:"auto_from,omitempty"`
+	AutoTo      string `json:"auto_to,omitempty"`
 
 	AfterTurnsChanged bool   `json:"after_turns_changed"`
 	AfterTurnsFrom    string `json:"after_turns_from,omitempty"`

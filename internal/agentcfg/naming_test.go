@@ -74,12 +74,13 @@ func TestNormalizePayload_Naming_PresenceIsPreserved(t *testing.T) {
 	}
 }
 
-// TestDiffNaming_PerFieldDelta proves each dimension reports its own delta.
+// TestDiffNaming_PerFieldDelta proves each dimension reports its own delta,
+// with Auto as the tri-state "" (absent) / "false" / "true" display string.
 func TestDiffNaming_PerFieldDelta(t *testing.T) {
 	from := agentcfg.ConfigPayload{Naming: namingSection(true, 1, 2, 3, 80, "m1")}
 	to := agentcfg.ConfigPayload{Naming: namingSection(false, 1, 2, 3, 80, "m1")} // only auto flipped
 	d := agentcfg.DiffNaming(from, to)
-	if !d.Changed() || !d.AutoChanged || d.AutoFrom != true || d.AutoTo != false {
+	if !d.Changed() || !d.AutoChanged || d.AutoFrom != "true" || d.AutoTo != "false" {
 		t.Errorf("auto delta = %+v", d)
 	}
 	if d.ModelChanged || d.AfterTurnsChanged {
@@ -95,6 +96,42 @@ func TestDiffNaming_PerFieldDelta(t *testing.T) {
 	}
 	if agentcfg.DiffNaming(from, from).Changed() {
 		t.Error("identical naming sections reported a change")
+	}
+}
+
+// TestDiffNaming_AbsentVsBareOptOut_Registers proves the diff is NOT blind to
+// the bare `{auto: false}` opt-out revision the presence-preserve fix made
+// meaningful: an absent section and a present bare opt-out differ in BOTH
+// directions (Auto tri-state "" vs "false"), so the revision never renders as
+// "no change in any section" (the phantom-revision follow-up).
+func TestDiffNaming_AbsentVsBareOptOut_Registers(t *testing.T) {
+	absent := agentcfg.ConfigPayload{}
+	bareOptOut := agentcfg.ConfigPayload{Naming: namingSection(false, 0, 0, 0, 0, "")}
+
+	// absent -> bare opt-out.
+	d := agentcfg.DiffNaming(absent, bareOptOut)
+	if !d.Changed() || !d.AutoChanged {
+		t.Fatalf("absent->bareOptOut did not register: %+v", d)
+	}
+	if d.AutoFrom != "" || d.AutoTo != "false" {
+		t.Errorf("absent->bareOptOut auto tri-state = %q->%q, want \"\"->\"false\"", d.AutoFrom, d.AutoTo)
+	}
+
+	// bare opt-out -> absent (a rollback past the opt-out).
+	d2 := agentcfg.DiffNaming(bareOptOut, absent)
+	if !d2.Changed() || !d2.AutoChanged {
+		t.Fatalf("bareOptOut->absent did not register: %+v", d2)
+	}
+	if d2.AutoFrom != "false" || d2.AutoTo != "" {
+		t.Errorf("bareOptOut->absent auto tri-state = %q->%q, want \"false\"->\"\"", d2.AutoFrom, d2.AutoTo)
+	}
+
+	// Two absent sections and two identical bare opt-outs are still no-change.
+	if agentcfg.DiffNaming(absent, absent).Changed() {
+		t.Error("absent vs absent reported a change")
+	}
+	if agentcfg.DiffNaming(bareOptOut, bareOptOut).Changed() {
+		t.Error("bareOptOut vs bareOptOut reported a change")
 	}
 }
 

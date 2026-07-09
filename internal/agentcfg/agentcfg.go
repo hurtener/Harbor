@@ -952,11 +952,19 @@ func runCompletionHookStrings(p ConfigPayload) (tool, timeout string) {
 // NamingDiff is the per-field delta of the session auto-naming policy
 // section across two revisions. Each dimension reports whether it changed
 // plus its from / to display values (an unset section renders every field
-// as "" / false). Deterministic.
+// as ""). Deterministic.
+//
+// Auto is a TRI-STATE display string — "" (section ABSENT) / "false" /
+// "true" — because section PRESENCE is semantic: a present bare
+// `{auto: false}` section is an explicit per-agent opt-out that overrides a
+// yaml-on fleet default, while an absent section falls through to yaml. A
+// two-state bool would render absent and bare-opt-out identically, making
+// exactly that revision invisible to `agent_config.diff` (a phantom
+// revision in the Console diff view).
 type NamingDiff struct {
 	AutoChanged bool
-	AutoFrom    bool
-	AutoTo      bool
+	AutoFrom    string
+	AutoTo      string
 
 	AfterTurnsChanged bool
 	AfterTurnsFrom    string
@@ -988,8 +996,10 @@ func (d NamingDiff) Changed() bool {
 
 // DiffNaming computes the per-field delta of two session auto-naming states.
 // Exported so the diff is one canonical implementation shared by the driver
-// and tests. An unset section is compared as all-zero (Auto false, numeric
-// dimensions "", empty model).
+// and tests. An ABSENT section renders every dimension "" — including Auto
+// (the tri-state), so absent→bare-`{auto:false}` ("" → "false") and its
+// inverse register as changes even though every OTHER dimension is
+// zero-valued on both sides.
 func DiffNaming(from, to ConfigPayload) NamingDiff {
 	fa, faft, frep, fmax, fmtl, fmodel := namingStrings(from)
 	ta, taft, trep, tmax, tmtl, tmodel := namingStrings(to)
@@ -1022,12 +1032,15 @@ func DiffNaming(from, to ConfigPayload) NamingDiff {
 
 // namingStrings renders a payload's auto-naming section to its canonical
 // display values (auto, after_turns, repeat_every, max_repetitions,
-// max_title_len, model); an unset section renders (false, "", "", "", "", "").
-// A numeric zero renders "" so a set→unset transition registers as a change.
-func namingStrings(p ConfigPayload) (auto bool, afterTurns, repeatEvery, maxReps, maxTitleLen, model string) {
+// max_title_len, model); an ABSENT section renders ("", "", "", "", "", "").
+// Auto is the tri-state "" / "false" / "true" — a PRESENT section always
+// renders "false" or "true", so section presence itself is diffable (the
+// bare `{auto: false}` opt-out registers against an absent section). A
+// numeric zero renders "" so a set→unset transition registers as a change.
+func namingStrings(p ConfigPayload) (auto, afterTurns, repeatEvery, maxReps, maxTitleLen, model string) {
 	n, ok := p.NamingView()
 	if !ok {
-		return false, "", "", "", "", ""
+		return "", "", "", "", "", ""
 	}
 	itoaOrEmpty := func(v int) string {
 		if v == 0 {
@@ -1035,7 +1048,7 @@ func namingStrings(p ConfigPayload) (auto bool, afterTurns, repeatEvery, maxReps
 		}
 		return strconv.Itoa(v)
 	}
-	return n.Auto, itoaOrEmpty(n.AfterTurns), itoaOrEmpty(n.RepeatEvery),
+	return strconv.FormatBool(n.Auto), itoaOrEmpty(n.AfterTurns), itoaOrEmpty(n.RepeatEvery),
 		itoaOrEmpty(n.MaxRepetitions), itoaOrEmpty(n.MaxTitleLen), n.Model
 }
 
