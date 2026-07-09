@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:6825fbf8dc6652c1df70898fb3bea8591e197c3e49d2082ac248695748dfffc3";
+export const WIRE_SURFACE_DIGEST = "sha256:e3c17056fc6a42be7d79210c0edb1203e3f814f9c2ce370f2dcc6dd581575b5f";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -236,6 +236,7 @@ export type HarborEventType =
   | "session.closed"
   | "session.erased"
   | "session.gc_reaped"
+  | "session.naming_failed"
   | "session.opened"
   | "session.title_changed"
   | "session.touched"
@@ -346,6 +347,7 @@ export interface AgentConfigDiff {
   connections: AgentConfigConnectionsDiff;
   llm_params: AgentConfigLLMParamsDiff;
   hooks: AgentConfigHooksDiff;
+  naming: AgentConfigNamingDiff;
 }
 
 export interface AgentConfigDiffRequest {
@@ -432,6 +434,36 @@ export interface AgentConfigMCPConnectionDescriptor {
   meta_annotations?: Record<string, string>;
 }
 
+export interface AgentConfigNaming {
+  auto?: boolean;
+  after_turns?: number;
+  repeat_every?: number;
+  max_repetitions?: number;
+  max_title_len?: number;
+  model?: string;
+}
+
+export interface AgentConfigNamingDiff {
+  auto_changed: boolean;
+  auto_from?: boolean;
+  auto_to?: boolean;
+  after_turns_changed: boolean;
+  after_turns_from?: string;
+  after_turns_to?: string;
+  repeat_every_changed: boolean;
+  repeat_every_from?: string;
+  repeat_every_to?: string;
+  max_repetitions_changed: boolean;
+  max_repetitions_from?: string;
+  max_repetitions_to?: string;
+  max_title_len_changed: boolean;
+  max_title_len_from?: string;
+  max_title_len_to?: string;
+  model_changed: boolean;
+  model_from?: string;
+  model_to?: string;
+}
+
 export interface AgentConfigPayload {
   prompt_layers?: AgentConfigPromptLayers;
   skills?: AgentConfigSkillsSelection;
@@ -439,6 +471,7 @@ export interface AgentConfigPayload {
   connections?: AgentConfigConnections;
   llm_params?: AgentConfigLLMParams;
   hooks?: AgentConfigHooks;
+  naming?: AgentConfigNaming;
 }
 
 export interface AgentConfigPromptLayers {

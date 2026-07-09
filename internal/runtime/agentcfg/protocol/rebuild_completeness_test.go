@@ -60,6 +60,9 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 		Hooks: &agentcfg.HooksSection{
 			RunCompletion: &agentcfg.RunCompletionHook{Tool: "seed-hook-tool", TimeoutMS: 9000},
 		},
+		Naming: &agentcfg.NamingSection{
+			Auto: true, AfterTurns: 2, RepeatEvery: 3, MaxRepetitions: 5, MaxTitleLen: 100, Model: "seed-model",
+		},
 	}
 	rcAssertSeedComplete(t, seed)
 	return seed

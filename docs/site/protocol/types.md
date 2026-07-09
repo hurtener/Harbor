@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 307 canonical Harbor Protocol wire types, generated from the single-source
+The 309 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -113,6 +113,7 @@ Declared in `internal/protocol/types`.
 | `connections` | `types.AgentConfigConnectionsDiff` — see [`AgentConfigConnectionsDiff`](./types.md#agentconfigconnectionsdiff) |  |
 | `llm_params` | `types.AgentConfigLLMParamsDiff` — see [`AgentConfigLLMParamsDiff`](./types.md#agentconfigllmparamsdiff) |  |
 | `hooks` | `types.AgentConfigHooksDiff` — see [`AgentConfigHooksDiff`](./types.md#agentconfighooksdiff) |  |
+| `naming` | `types.AgentConfigNamingDiff` — see [`AgentConfigNamingDiff`](./types.md#agentconfignamingdiff) |  |
 
 ## AgentConfigDiffRequest
 
@@ -246,6 +247,44 @@ Declared in `internal/protocol/types`.
 | `oauth_provider` | `string` | optional (`omitempty`) |
 | `meta_annotations` | `map[string]string` | optional (`omitempty`) |
 
+## AgentConfigNaming
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `auto` | `bool` | optional (`omitempty`) |
+| `after_turns` | `int` | optional (`omitempty`) |
+| `repeat_every` | `int` | optional (`omitempty`) |
+| `max_repetitions` | `int` | optional (`omitempty`) |
+| `max_title_len` | `int` | optional (`omitempty`) |
+| `model` | `string` | optional (`omitempty`) |
+
+## AgentConfigNamingDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `auto_changed` | `bool` |  |
+| `auto_from` | `bool` | optional (`omitempty`) |
+| `auto_to` | `bool` | optional (`omitempty`) |
+| `after_turns_changed` | `bool` |  |
+| `after_turns_from` | `string` | optional (`omitempty`) |
+| `after_turns_to` | `string` | optional (`omitempty`) |
+| `repeat_every_changed` | `bool` |  |
+| `repeat_every_from` | `string` | optional (`omitempty`) |
+| `repeat_every_to` | `string` | optional (`omitempty`) |
+| `max_repetitions_changed` | `bool` |  |
+| `max_repetitions_from` | `string` | optional (`omitempty`) |
+| `max_repetitions_to` | `string` | optional (`omitempty`) |
+| `max_title_len_changed` | `bool` |  |
+| `max_title_len_from` | `string` | optional (`omitempty`) |
+| `max_title_len_to` | `string` | optional (`omitempty`) |
+| `model_changed` | `bool` |  |
+| `model_from` | `string` | optional (`omitempty`) |
+| `model_to` | `string` | optional (`omitempty`) |
+
 ## AgentConfigPayload
 
 Declared in `internal/protocol/types`.
@@ -258,6 +297,7 @@ Declared in `internal/protocol/types`.
 | `connections` | `*types.AgentConfigConnections` — see [`AgentConfigConnections`](./types.md#agentconfigconnections) | optional (`omitempty`) |
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
+| `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
 
 ## AgentConfigPromptLayers
 

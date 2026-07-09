@@ -119,6 +119,7 @@ func (s *Service) RemoveMCPConnection(ctx context.Context, req prototypes.AgentC
 		payload.PromptLayers = active.Payload.PromptLayers
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
+		payload.Naming = active.Payload.Naming
 		payload.ToolExposure = pruneExposureResidue(active.Payload.ToolExposure, name, remaining)
 	}
 	if len(remaining) > 0 {

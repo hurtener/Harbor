@@ -277,6 +277,39 @@ type HooksSection struct {
 	RunCompletion *RunCompletionHook `json:"run_completion,omitempty"`
 }
 
+// NamingSection is the session auto-naming policy section of the config
+// envelope. Declared as its own optional section so a set REPLACES only this
+// section, preserving the sibling sections (the section-merge invariant).
+// Opt-in, default off: a nil section (or one that normalises away) means the
+// runtime does no auto-naming for the agent — byte-identical to the naming-off
+// path (no counters, no LLM calls, no events). Resolution at run start is
+// agent-config over the yaml `runtime.naming` fleet default over off.
+type NamingSection struct {
+	// Auto enables session auto-naming for the agent. False (the zero value)
+	// is off — the section carrying Auto=false is inert.
+	Auto bool `json:"auto,omitempty"`
+	// AfterTurns is the completed-run count at which the FIRST auto-name
+	// fires (fire on the Nth completed run). Zero resolves to the default
+	// (1) at run start; a negative value is rejected at set time.
+	AfterTurns int `json:"after_turns,omitempty"`
+	// RepeatEvery, when > 0, re-names every N completed turns after the
+	// first; 0 (the default) names once only. Negative is rejected at set
+	// time.
+	RepeatEvery int `json:"repeat_every,omitempty"`
+	// MaxRepetitions is the hard cap on the TOTAL number of auto-namings
+	// (including the first). It is REQUIRED ≥ 1 whenever RepeatEvery > 0 —
+	// no unlimited value exists, so unbounded periodic re-naming is
+	// unrepresentable. Ignored when RepeatEvery == 0 (naming happens once).
+	MaxRepetitions int `json:"max_repetitions,omitempty"`
+	// MaxTitleLen bounds the auto title (runes). Zero resolves to the
+	// default (80) at run start; a set value must be in [8, 200].
+	MaxTitleLen int `json:"max_title_len,omitempty"`
+	// Model, when set, is the model the auto-naming Complete call requests
+	// (validated against ModelProfiles at set time); empty uses the run's
+	// effective model.
+	Model string `json:"model,omitempty"`
+}
+
 // ConfigPayload is the forward-compatible config envelope. Every section
 // is an optional pointer so later consumers extend the envelope without a
 // schema break; only Skills is wired in the first wave.
@@ -287,6 +320,7 @@ type ConfigPayload struct {
 	Connections  *ConnectionsSection `json:"connections,omitempty"`
 	LLMParams    *LLMParams          `json:"llm_params,omitempty"`
 	Hooks        *HooksSection       `json:"hooks,omitempty"`
+	Naming       *NamingSection      `json:"naming,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -347,6 +381,9 @@ type Diff struct {
 	// Hooks is the per-field delta of the run-lifecycle-hook section
 	// (the run-completion hook's tool + timeout).
 	Hooks HooksDiff
+	// Naming is the per-field delta of the session auto-naming policy
+	// section.
+	Naming NamingDiff
 }
 
 // Registry is the durable, identity-scoped, versioned desired-state
@@ -445,6 +482,26 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 				}
 				out.Hooks = &HooksSection{RunCompletion: &RunCompletionHook{Tool: tool, TimeoutMS: timeout}}
 			}
+		}
+	}
+	if p.Naming != nil {
+		// Trim the model to the canonical "inherit the run's effective model"
+		// form (empty). A section that carries NO intent — Auto off AND every
+		// numeric field zero AND no model — normalises away entirely (equal
+		// states hash equal, no spurious revision, no phantom diff), mirroring
+		// the hooks "empty tool → drop" posture. A section with any field set
+		// (or Auto true) is kept verbatim so an explicit per-agent policy
+		// (including an explicit Auto=false with other fields set) survives.
+		n := &NamingSection{
+			Auto:           p.Naming.Auto,
+			AfterTurns:     p.Naming.AfterTurns,
+			RepeatEvery:    p.Naming.RepeatEvery,
+			MaxRepetitions: p.Naming.MaxRepetitions,
+			MaxTitleLen:    p.Naming.MaxTitleLen,
+			Model:          strings.TrimSpace(p.Naming.Model),
+		}
+		if n.Auto || n.AfterTurns != 0 || n.RepeatEvery != 0 || n.MaxRepetitions != 0 || n.MaxTitleLen != 0 || n.Model != "" {
+			out.Naming = n
 		}
 	}
 	return out
@@ -673,6 +730,17 @@ func (p ConfigPayload) RunCompletionHookView() (*RunCompletionHook, bool) {
 	return p.Hooks.RunCompletion, true
 }
 
+// NamingView returns the agent's session auto-naming section from a payload
+// and whether it is set. A nil section returns (nil, false). The returned
+// pointer is the payload's own (read-only) section — callers that mutate must
+// copy first. A convenience for the auto-naming run-start projection.
+func (p ConfigPayload) NamingView() (*NamingSection, bool) {
+	if p.Naming == nil {
+		return nil, false
+	}
+	return p.Naming, true
+}
+
 // ConnectionDescriptors returns the agent's runtime-added MCP connection
 // descriptors from a payload, or nil when the payload pins no connections
 // section. A convenience for the add-connection consumer + the diff.
@@ -877,6 +945,96 @@ func runCompletionHookStrings(p ConfigPayload) (tool, timeout string) {
 		timeout = strconv.Itoa(rc.TimeoutMS)
 	}
 	return tool, timeout
+}
+
+// NamingDiff is the per-field delta of the session auto-naming policy
+// section across two revisions. Each dimension reports whether it changed
+// plus its from / to display values (an unset section renders every field
+// as "" / false). Deterministic.
+type NamingDiff struct {
+	AutoChanged bool
+	AutoFrom    bool
+	AutoTo      bool
+
+	AfterTurnsChanged bool
+	AfterTurnsFrom    string
+	AfterTurnsTo      string
+
+	RepeatEveryChanged bool
+	RepeatEveryFrom    string
+	RepeatEveryTo      string
+
+	MaxRepetitionsChanged bool
+	MaxRepetitionsFrom    string
+	MaxRepetitionsTo      string
+
+	MaxTitleLenChanged bool
+	MaxTitleLenFrom    string
+	MaxTitleLenTo      string
+
+	ModelChanged bool
+	ModelFrom    string
+	ModelTo      string
+}
+
+// Changed reports whether any auto-naming dimension differs between the two
+// revisions.
+func (d NamingDiff) Changed() bool {
+	return d.AutoChanged || d.AfterTurnsChanged || d.RepeatEveryChanged ||
+		d.MaxRepetitionsChanged || d.MaxTitleLenChanged || d.ModelChanged
+}
+
+// DiffNaming computes the per-field delta of two session auto-naming states.
+// Exported so the diff is one canonical implementation shared by the driver
+// and tests. An unset section is compared as all-zero (Auto false, numeric
+// dimensions "", empty model).
+func DiffNaming(from, to ConfigPayload) NamingDiff {
+	fa, faft, frep, fmax, fmtl, fmodel := namingStrings(from)
+	ta, taft, trep, tmax, tmtl, tmodel := namingStrings(to)
+	return NamingDiff{
+		AutoChanged: fa != ta,
+		AutoFrom:    fa,
+		AutoTo:      ta,
+
+		AfterTurnsChanged: faft != taft,
+		AfterTurnsFrom:    faft,
+		AfterTurnsTo:      taft,
+
+		RepeatEveryChanged: frep != trep,
+		RepeatEveryFrom:    frep,
+		RepeatEveryTo:      trep,
+
+		MaxRepetitionsChanged: fmax != tmax,
+		MaxRepetitionsFrom:    fmax,
+		MaxRepetitionsTo:      tmax,
+
+		MaxTitleLenChanged: fmtl != tmtl,
+		MaxTitleLenFrom:    fmtl,
+		MaxTitleLenTo:      tmtl,
+
+		ModelChanged: fmodel != tmodel,
+		ModelFrom:    fmodel,
+		ModelTo:      tmodel,
+	}
+}
+
+// namingStrings renders a payload's auto-naming section to its canonical
+// display values (auto, after_turns, repeat_every, max_repetitions,
+// max_title_len, model); an unset section renders (false, "", "", "", "", "").
+// A numeric zero renders "" so a set→unset transition registers as a change.
+func namingStrings(p ConfigPayload) (auto bool, afterTurns, repeatEvery, maxReps, maxTitleLen, model string) {
+	n, ok := p.NamingView()
+	if !ok {
+		return false, "", "", "", "", ""
+	}
+	itoaOrEmpty := func(v int) string {
+		if v == 0 {
+			return ""
+		}
+		return strconv.Itoa(v)
+	}
+	return n.Auto, itoaOrEmpty(n.AfterTurns), itoaOrEmpty(n.RepeatEvery),
+		itoaOrEmpty(n.MaxRepetitions), itoaOrEmpty(n.MaxTitleLen), n.Model
 }
 
 // LoadingModeChange is one entry in a loading-mode override diff: the

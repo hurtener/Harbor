@@ -81,6 +81,27 @@ type Session struct {
 	Context      map[string]any
 	Title        string
 	TitleSource  TitleSource
+	// TurnCount / AutoNameCount / LastAutoNamedTurn are the auto-naming
+	// counters. They are additive JSON fields: an older persisted record
+	// (written before auto-naming existed) decodes with all three
+	// zero-valued. They are written ONLY when a naming policy is active for
+	// the run (a config-free runtime never touches them), so a naming-off
+	// fleet carries no per-run write amplification and the counters read
+	// zero for every session. Written exclusively through
+	// RecordCompletedTurn (bumps TurnCount) and SetTitleAuto (bumps
+	// AutoNameCount + LastAutoNamedTurn alongside the title, in ONE record
+	// save).
+	//
+	// TurnCount counts runs completed while a naming policy was active —
+	// counting starts at policy enablement, so enabling naming mid-session
+	// counts turns from enablement, not from session open (a documented
+	// consequence of writing counters only when the policy is active).
+	// AutoNameCount is the number of auto-naming LLM calls that produced a
+	// title. LastAutoNamedTurn is the TurnCount at which the most recent
+	// auto-naming landed (the re-naming cadence anchor).
+	TurnCount         int
+	AutoNameCount     int
+	LastAutoNamedTurn int
 }
 
 // TitleSource marks who produced a session's Title. The wire verb
@@ -117,6 +138,13 @@ const MaxSessionTitleLen = 200
 // MaxSessionTitleLen runes or contains a newline/control character.
 // Titles are single-line, bounded, display strings.
 var ErrInvalidTitle = errors.New("sessions: invalid title")
+
+// ErrManualTitle — SetTitleAuto was refused because the session's current
+// TitleSource is TitleSourceManual. The internal auto-naming write path
+// NEVER overwrites a human-set title: manual wins, structurally. A caller
+// that sees this treats it as a benign skip (the run's outcome is
+// unaffected), not a failure.
+var ErrManualTitle = errors.New("sessions: auto-naming refused — title is manual")
 
 // validateTitle enforces the manual-title shape: single-line (no
 // newline/control characters), at most MaxSessionTitleLen runes, and
@@ -168,6 +196,26 @@ type SessionLimits struct {
 type SessionSnapshot struct {
 	Session
 	Running bool
+}
+
+// AutoNamingState is the read-side projection the auto-naming eligibility
+// check consumes: the session's current title provenance plus its three
+// naming counters. It is a lightweight read (no lifecycle mutation) so the
+// terminal-boundary trigger can decide whether a title is due without a
+// second whole-record write.
+type AutoNamingState struct {
+	// TitleSource is the session's current title provenance — the auto-namer
+	// never overwrites TitleSourceManual.
+	TitleSource TitleSource
+	// CurrentTitle is the session's current title (may be empty). The
+	// re-naming path includes it in the digest so the model can refine an
+	// existing auto title; it NEVER rides an event payload.
+	CurrentTitle string
+	// TurnCount / AutoNameCount / LastAutoNamedTurn are the session's naming
+	// counters (see Session).
+	TurnCount         int
+	AutoNameCount     int
+	LastAutoNamedTurn int
 }
 
 // RunningProbe is the seam the GC sweeper consults so it can honor
@@ -242,6 +290,30 @@ type SessionRegistry interface {
 	// session is allowed; renaming an ERASED session is
 	// ErrSessionNotFound (the record is gone).
 	SetTitle(ctx context.Context, id string, ident identity.Identity, title string) error
+
+	// RecordCompletedTurn increments the session's TurnCount and returns the
+	// new value. It is called from the run loop's terminal boundary ONLY when
+	// a naming policy is active for the run — a naming-off runtime never calls
+	// it, so it writes nothing for the naming-off fleet. `ident` is the run's
+	// verified (tenant, user, session); a stored-identity mismatch returns
+	// ErrIdentityMismatch, an unknown / erased id returns ErrSessionNotFound.
+	// The load→bump→save runs through the serialized whole-record write path
+	// (never a torn two-write update).
+	RecordCompletedTurn(ctx context.Context, id string, ident identity.Identity) (int, error)
+
+	// SetTitleAuto sets the session's title from the internal auto-namer and
+	// bumps AutoNameCount + LastAutoNamedTurn in the SAME record save. It
+	// REFUSES with ErrManualTitle when the current TitleSource is
+	// TitleSourceManual (manual wins, structurally). `title` is expected to be
+	// already clamped by the caller to the naming policy bound; the registry
+	// re-clamps defensively to MaxSessionTitleLen runes and single-line, and
+	// rejects an empty-after-trim title with ErrInvalidTitle (the auto path
+	// never intentionally clears). On success it stores TitleSource =
+	// TitleSourceAuto and publishes a content-free session.title_changed
+	// (source=auto). `ident` is the run's verified triple; a stored-identity
+	// mismatch returns ErrIdentityMismatch, an unknown / erased id returns
+	// ErrSessionNotFound.
+	SetTitleAuto(ctx context.Context, id string, ident identity.Identity, title string) error
 
 	// CloseRegistry cancels the sweeper goroutine and joins it.
 	// Idempotent. Distinct method name (rather than Close) so it

@@ -115,6 +115,33 @@ Phase 157 gives sessions a title and a manual verb; this phase makes the runtime
 
 - "Session auto-naming" (docs/glossary.md, same PR).
 
+## As-built notes (§4.3 deviations)
+
+- **Eligibility read helper added.** The plan's Public API listed only
+  `RecordCompletedTurn` + `SetTitleAuto`, but the eligibility gate needs the
+  session's title provenance + counters. As built: `*sessions.Registry` gains a
+  read-only `AutoNamingState(ctx, id, ident) (sessions.AutoNamingState, error)`
+  (`{TitleSource, CurrentTitle, TurnCount, AutoNameCount, LastAutoNamedTurn}`);
+  the steering trigger consumes the three methods through a narrow
+  `steering.SessionTitler` interface. `RecordCompletedTurn` + `SetTitleAuto`
+  join the `SessionRegistry` interface; `AutoNamingState` stays on the concrete
+  (+ the steering interface) to bound interface churn.
+- **Model resolution split (D-094 mirror).** `projection.ActiveNamingPolicy`
+  returns the policy's `model`; each run-loop driver computes the effective
+  model fallback (policy model → the run's `LLMOverrides.Model` → `""`), the
+  same one-place-precedence deviation `ActiveRunCompletionHook` documents.
+- **Normalization drop rule.** A non-inert `naming` section is kept verbatim
+  (model trimmed); an entirely-inert section (auto false + all-zero + empty
+  model) normalises to nil (the hooks "empty tool → drop" posture). An explicit
+  per-agent opt-out over a yaml-on fleet default is therefore expressed by an
+  `auto:false` section that carries at least one other set field (a bare
+  `auto:false` is indistinguishable from "unset" at the Go `bool` level and
+  falls through to the yaml default).
+- **Synchronous trigger.** `fireNaming` runs synchronously inside `Run`'s
+  deferred region (not a spawned goroutine), so the goroutine-baseline
+  guarantee holds trivially; the accepted concurrent-completion race is between
+  DISTINCT runs' terminal boundaries, serialized by the registry writes.
+
 ## Pre-merge checklist
 
 - [ ] `make drift-audit` passes

@@ -114,7 +114,7 @@ tools:
 
 The planner discovers every MCP server's tools at boot — there's no per-server enable flag; listing the server registers its tools. Built-in tools live in the harbor binary — list `clock.now` to enable, omit to disable. MCP servers are external processes; see [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md) for the skill-vs-tool axis.
 
-`runtime.hooks.run_completion.{tool, timeout}` names a catalog tool that receives every run's transcript at completion — see `docs/CONFIG.md` › Runtime.
+`runtime.hooks.run_completion.{tool, timeout}` names a catalog tool that receives every run's transcript at completion — see `docs/CONFIG.md` › Runtime. `runtime.naming.{auto, after_turns, repeat_every, max_repetitions, max_title_len, model}` is the opt-in, default-off **session auto-naming** fleet default: with it enabled, the runtime titles a session itself at each run's terminal boundary via one governed LLM call over a bounded transcript digest (`max_repetitions` is required `>= 1` whenever `repeat_every > 0` — no unlimited value). A per-agent agent-config `naming` section overrides this default; see `docs/CONFIG.md` › Runtime.
 
 ### `skills`
 

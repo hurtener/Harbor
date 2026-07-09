@@ -612,6 +612,27 @@ func TestValidate_TableDriven(t *testing.T) {
 			},
 			"runtime.hooks.run_completion.tool",
 		},
+		// Session auto-naming (D-289).
+		{
+			"naming negative after_turns",
+			func(c *config.Config) { c.Runtime.Naming.Auto = true; c.Runtime.Naming.AfterTurns = -1 },
+			"runtime.naming.after_turns",
+		},
+		{
+			"naming repeat_every without max_repetitions",
+			func(c *config.Config) { c.Runtime.Naming.Auto = true; c.Runtime.Naming.RepeatEvery = 2 },
+			"runtime.naming.max_repetitions",
+		},
+		{
+			"naming max_title_len out of bounds",
+			func(c *config.Config) { c.Runtime.Naming.Auto = true; c.Runtime.Naming.MaxTitleLen = 5 },
+			"runtime.naming.max_title_len",
+		},
+		{
+			"naming unknown model",
+			func(c *config.Config) { c.Runtime.Naming.Auto = true; c.Runtime.Naming.Model = "no-such-profile" },
+			"runtime.naming.model",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -645,6 +666,30 @@ func TestValidate_RunCompletionHook_Accepted(t *testing.T) {
 		mutate(cfg)
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("case %d: Validate rejected a valid run-completion hook config: %v", i, err)
+		}
+	}
+}
+
+// TestValidate_RuntimeNaming_Accepted proves valid auto-naming configs pass:
+// off (the default), a once-only policy, and a repeating policy with a cap and
+// defaulted bounds.
+func TestValidate_RuntimeNaming_Accepted(t *testing.T) {
+	cases := []func(*config.Config){
+		func(c *config.Config) {}, // off — the default
+		func(c *config.Config) { c.Runtime.Naming.Auto = true },
+		func(c *config.Config) {
+			c.Runtime.Naming.Auto = true
+			c.Runtime.Naming.AfterTurns = 2
+			c.Runtime.Naming.RepeatEvery = 3
+			c.Runtime.Naming.MaxRepetitions = 5
+			c.Runtime.Naming.MaxTitleLen = 100
+		},
+	}
+	for i, mutate := range cases {
+		cfg := mustLoadValid(t)
+		mutate(cfg)
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("case %d: Validate rejected a valid runtime.naming config: %v", i, err)
 		}
 	}
 }

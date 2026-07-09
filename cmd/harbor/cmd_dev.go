@@ -842,6 +842,13 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// registry) = no reconcile.
 		connectionDetacher: mcpDetacher,
 		bootDeclaredMCP:    bootDeclaredMCPServerSet(cfg),
+		// session auto-naming: the static fleet-default policy, the
+		// session-registry titler seam, and the run's wrapped LLM client.
+		// Opt-in, default off — resolved per run (agent-config over yaml over
+		// off). A nil LLM client (no driver) leaves auto-naming inert.
+		namingDefault: cfg.Runtime.Naming,
+		sessionTitler: sessionRegistry,
+		namingLLM:     stack.LLM,
 	})
 	if err != nil {
 		closeAll(ctx)

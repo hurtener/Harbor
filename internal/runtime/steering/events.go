@@ -56,6 +56,17 @@ const (
 	// Payload is RunHookFailedPayload (metadata only — identity, tool,
 	// outcome, error class; never transcript content or raw error text).
 	EventTypeRunHookFailed events.EventType = "run.hook_failed"
+
+	// EventTypeSessionNamingFailed — emitted by the run loop's
+	// terminal-boundary auto-naming trigger when a title could not be
+	// produced or applied: an LLM error, a timeout, an empty / unusable
+	// candidate, a governance block, a manual-title skip, or a contained
+	// internal panic. The naming failure NEVER alters the settled run
+	// outcome — this event plus a Warn log are the whole failure posture.
+	// Payload is SessionNamingFailedPayload (SafePayload: identity scope +
+	// session id + a stable error class; NEVER the transcript, the prompt,
+	// or the candidate title).
+	EventTypeSessionNamingFailed events.EventType = "session.naming_failed"
 )
 
 func init() {
@@ -64,6 +75,7 @@ func init() {
 	events.RegisterEventType(EventTypeControlApplied)
 	events.RegisterEventType(EventTypeRunHookDispatched)
 	events.RegisterEventType(EventTypeRunHookFailed)
+	events.RegisterEventType(EventTypeSessionNamingFailed)
 }
 
 // RunHookDispatchedPayload is the typed payload for a run.hook_dispatched
@@ -100,6 +112,22 @@ type RunHookFailedPayload struct {
 	// dispatch failure ("timeout" / "no_executor" / "encode_failed" /
 	// "unsupported_shape" / "dispatch_failed" / "cancelled" / "panic").
 	// Never the raw error message.
+	ErrorClass string
+}
+
+// SessionNamingFailedPayload is the typed payload for a
+// session.naming_failed event. SafePayload by construction: the session id
+// (a bounded id) and a stable, low-cardinality error class ONLY — never the
+// transcript, the prompt, the raw model output, the candidate title, or a raw
+// error message (any of which could carry user-derived content — §7). The
+// identity scope rides on the Event itself, not duplicated here.
+type SessionNamingFailedPayload struct {
+	events.SafeSealed
+	// SessionID is the session whose auto-naming was skipped / failed.
+	SessionID string
+	// ErrorClass is a stable, low-cardinality classification of the failure
+	// or skip ("llm_error" / "timeout" / "empty_title" / "governance_blocked"
+	// / "manual_title" / "internal"). Never the raw error message.
 	ErrorClass string
 }
 

@@ -407,6 +407,51 @@ this timeout, so a wedged sink cannot leak the hook goroutine. Non-positive
 without `runtime.hooks.run_completion.tool` is rejected (a timeout for a
 hook that will never fire). A negative value is rejected.
 
+### runtime.naming.auto
+
+Enables session auto-naming fleet-wide (the `runtime.naming` block). Opt-in,
+default `false` (off): with the block absent or `auto: false` the runtime
+writes no naming counters, makes no naming LLM calls, and emits no naming
+events. A per-agent, versioned agent-config `naming` section overrides this
+default at run start (agent-config over this yaml over off). When on, the
+runtime titles a session itself at each run's terminal boundary via ONE
+governed `Complete` call over a bounded transcript digest; a naming failure
+never alters the run outcome (it emits `session.naming_failed` + a Warn log).
+
+### runtime.naming.after_turns
+
+The number of completed runs after which the FIRST auto-name fires (fire on
+the Nth completed run). Zero (the default) resolves to `1` at run start. A
+negative value is rejected.
+
+### runtime.naming.repeat_every
+
+When greater than 0, re-names the session every N completed turns after the
+first. Zero (the default) names once only. A negative value is rejected.
+
+### runtime.naming.max_repetitions
+
+Caps the TOTAL number of auto-namings (including the first). It is REQUIRED
+`>= 1` whenever `runtime.naming.repeat_every > 0` — no unlimited value exists,
+so unbounded periodic re-naming is unrepresentable. Ignored when
+`repeat_every` is 0 (naming happens once). A negative value is rejected.
+
+### runtime.naming.max_title_len
+
+Bounds the auto-generated title in runes. Zero (the default) resolves to `80`
+at run start; a set value must be within `[8, 200]`. The auto title is
+deterministically clamped to this bound (unlike the manual `sessions.set_title`
+verb, which rejects oversize input — the trusted-internal vs untrusted-boundary
+asymmetry is intentional).
+
+### runtime.naming.model
+
+The model the auto-naming `Complete` call requests. Empty (the default) uses
+the run's effective model. A set value is validated against
+`llm.model_profiles` at boot; point it at a cheap profile to keep naming
+inexpensive (the naming call consumes the session identity's governance
+budget by design).
+
 ---
 
 ## Memory

@@ -784,6 +784,13 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// projection. Nil detacher (no MCP registry) = no reconcile.
 				connectionDetacher: devstackConnectionDetacher(stack),
 				bootDeclaredMCP:    devstackBootDeclaredMCPSet(cfg),
+				// session auto-naming (D-289, D-094 mirror of cmd_dev.go): the
+				// static fleet-default policy + the session-registry titler +
+				// the run's wrapped LLM client. Opt-in, default off; resolved
+				// per run (agent-config over yaml over off).
+				namingDefault: cfg.Runtime.Naming,
+				sessionTitler: stack.Sessions,
+				namingLLM:     stack.LLMClient,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1519,6 +1526,13 @@ type DevStackRunLoopDriver struct {
 	connectionDetacher projection.ConnectionDetacher
 	bootDeclaredMCP    map[string]struct{}
 
+	// session auto-naming wiring (D-289, D-094 mirror of production): the
+	// static fleet-default policy, the session-registry titler seam, and the
+	// run's wrapped LLM client. Any nil = no auto-naming (opt-in, default off).
+	namingDefault config.RuntimeNamingConfig
+	sessionTitler steering.SessionTitler
+	namingLLM     steering.NamingCompleter
+
 	// Phase 107a parity (D-195 dated-note follow-up) — per-task
 	// trajectory map for the Enricher seam, the D-094 mirror of the
 	// production driver. Trajectories are stored before RunLoop.Run
@@ -1595,6 +1609,11 @@ type devStackRunLoopDriverOpts struct {
 	// server set the reconcile never detaches.
 	connectionDetacher projection.ConnectionDetacher
 	bootDeclaredMCP    map[string]struct{}
+
+	// session auto-naming wiring (D-289, D-094 mirror of production).
+	namingDefault config.RuntimeNamingConfig
+	sessionTitler steering.SessionTitler
+	namingLLM     steering.NamingCompleter
 }
 
 // devStackTenantOverrideResolver mirrors cmd/harbor's
@@ -1644,6 +1663,9 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		runCompletionHook:  opts.runCompletionHook,
 		connectionDetacher: opts.connectionDetacher,
 		bootDeclaredMCP:    opts.bootDeclaredMCP,
+		namingDefault:      opts.namingDefault,
+		sessionTitler:      opts.sessionTitler,
+		namingLLM:          opts.namingLLM,
 		trajectories:       make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
@@ -1678,6 +1700,34 @@ func (d *DevStackRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Conte
 func (d *DevStackRunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
 	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, d.agentConfigID, q, d.runCompletionHook)
 	return hook, err
+}
+
+// projectNaming resolves the effective session auto-naming spec for this run
+// at run start via the SAME shared projection the production driver uses
+// (D-094 mirror, CLAUDE.md §17.6): agent-config `naming` section over the
+// static `runtime.naming` yaml over off. Returns nil when no policy is active
+// OR the naming dependencies are not wired (opt-in, default off). Next-turn.
+func (d *DevStackRunLoopDriver) projectNaming(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*steering.NamingSpec, error) {
+	if d.sessionTitler == nil || d.namingLLM == nil {
+		return nil, nil
+	}
+	res, active, err := projection.ActiveNamingPolicy(ctx, d.agentConfig, d.agentConfigID, q, d.namingDefault)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return nil, nil
+	}
+	model := res.Model
+	if model == "" && ov != nil && ov.Model != nil {
+		model = *ov.Model
+	}
+	return &steering.NamingSpec{
+		Policy: res.Policy,
+		Titler: d.sessionTitler,
+		LLM:    d.namingLLM,
+		Model:  model,
+	}, nil
 }
 
 // reconcileConnections mirrors the production driver's run-start reconcile
@@ -2082,6 +2132,22 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return
 	}
 
+	// Resolve the effective session auto-naming spec once at run start (SAME
+	// shared projection production uses; agent-config over yaml over off). A
+	// read error fails the run loudly.
+	namingSpec, nmErr := d.projectNaming(taskCtx, q, llmOverrides)
+	if nmErr != nil {
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "naming-policy projection failed: " + nmErr.Error(),
+		}); mErr != nil && d.logger != nil {
+			d.logger.Warn("devstack runloop: MarkFailed after naming-policy-projection error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -2113,6 +2179,7 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		MaxSteps:         d.maxStepsRunLoop,
 		Compression:      d.compression,  // Phase 111e (D-202) — trajectory compression runner
 		CompletionHook:   completionHook, // run-completion transcript egress (D-094 mirror; nil = none)
+		Naming:           namingSpec,     // session auto-naming (D-094 mirror; nil = off)
 	}
 	// Phase 107a parity (D-195 dated-note follow-up — D-094 mirror of
 	// cmd/harbor/cmd_dev_runloop.go): save the trajectory ref before

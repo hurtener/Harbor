@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
@@ -470,6 +472,174 @@ func (r *Registry) SetTitle(ctx context.Context, id string, ident identity.Ident
 		},
 	})
 	return nil
+}
+
+// RecordCompletedTurn increments the session's TurnCount and returns the new
+// value. The run loop's terminal boundary calls it once per completed run
+// WHEN a naming policy is active — never otherwise, so a naming-off runtime
+// writes nothing (the opt-in invariant). The load→bump→save runs through
+// mutateSession (one r.mu critical section, shared with Touch / Close /
+// SetTitle / SetTitleAuto / the GC reap and the eraser's
+// deleteScopeSerialized) so a concurrent write can never lose the increment
+// or resurrect an erased record.
+//
+// `ident` is the run's verified (tenant, user, session). The target session
+// is loaded under that exact triple; a session belonging to a different
+// (tenant, user, session) is not found at that StateStore key
+// (ErrSessionNotFound). A stored-identity mismatch (defence-in-depth) returns
+// ErrIdentityMismatch. Renaming/counting a CLOSED session is allowed (a run
+// can complete against a session the operator closed mid-flight); an ERASED
+// session is ErrSessionNotFound.
+func (r *Registry) RecordCompletedTurn(ctx context.Context, id string, ident identity.Identity) (int, error) {
+	if r.closed.Load() {
+		return 0, ErrRegistryClosed
+	}
+	if err := identity.Validate(ident); err != nil {
+		return 0, err
+	}
+	target := identity.Identity{TenantID: ident.TenantID, UserID: ident.UserID, SessionID: id}
+	var count int
+	stored, err := r.mutateSession(ctx, target, func(stored *Session) error {
+		if stored.Identity.TenantID != ident.TenantID || stored.Identity.UserID != ident.UserID {
+			return fmt.Errorf("%w: stored=(%s,%s) caller=(%s,%s)",
+				ErrIdentityMismatch,
+				stored.Identity.TenantID, stored.Identity.UserID,
+				ident.TenantID, ident.UserID)
+		}
+		stored.TurnCount++
+		count = stored.TurnCount
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	_ = stored
+	return count, nil
+}
+
+// SetTitleAuto sets the session's title from the internal auto-namer. It
+// REFUSES with ErrManualTitle when the current TitleSource is
+// TitleSourceManual — manual wins, structurally, so a human's title is never
+// overwritten by the runtime. On success it stores the (defensively
+// re-clamped) title with TitleSource = TitleSourceAuto and bumps AutoNameCount
+// + LastAutoNamedTurn in the SAME record save (never a torn two-write update),
+// then publishes a content-free session.title_changed (source=auto).
+//
+// `title` is expected to be already clamped by the caller (the trigger) to the
+// naming policy's max-title-len; the registry re-clamps defensively to
+// MaxSessionTitleLen runes on a single line and rejects an empty-after-trim
+// title with ErrInvalidTitle (the auto path never intentionally clears — an
+// empty candidate is the caller's `empty_title` skip, handled before this
+// call). The whole read→refuse/mutate→save runs through mutateSession (the one
+// serialized whole-record path).
+func (r *Registry) SetTitleAuto(ctx context.Context, id string, ident identity.Identity, title string) error {
+	if r.closed.Load() {
+		return ErrRegistryClosed
+	}
+	if err := identity.Validate(ident); err != nil {
+		return err
+	}
+	clamped := clampAutoTitle(title)
+	if clamped == "" {
+		return fmt.Errorf("%w: auto title empty after trim/clamp", ErrInvalidTitle)
+	}
+	target := identity.Identity{TenantID: ident.TenantID, UserID: ident.UserID, SessionID: id}
+	stored, err := r.mutateSession(ctx, target, func(stored *Session) error {
+		if stored.Identity.TenantID != ident.TenantID || stored.Identity.UserID != ident.UserID {
+			return fmt.Errorf("%w: stored=(%s,%s) caller=(%s,%s)",
+				ErrIdentityMismatch,
+				stored.Identity.TenantID, stored.Identity.UserID,
+				ident.TenantID, ident.UserID)
+		}
+		if stored.TitleSource == TitleSourceManual {
+			return ErrManualTitle
+		}
+		stored.Title = clamped
+		stored.TitleSource = TitleSourceAuto
+		stored.AutoNameCount++
+		stored.LastAutoNamedTurn = stored.TurnCount
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	r.publish(ctx, identity.Quadruple{Identity: stored.Identity}, events.Event{
+		Type:     EventTypeSessionTitleChanged,
+		Identity: identity.Quadruple{Identity: stored.Identity},
+		Payload: SessionTitleChangedPayload{
+			SessionID: id,
+			Source:    string(stored.TitleSource),
+		},
+	})
+	return nil
+}
+
+// AutoNamingState reads the session's title provenance + naming counters for
+// the terminal-boundary eligibility check. It is a read-only load (no
+// lifecycle mutation, no lock held across the read) under the run's verified
+// triple; an unknown / erased id returns ErrSessionNotFound, a stored-identity
+// mismatch returns ErrIdentityMismatch.
+func (r *Registry) AutoNamingState(ctx context.Context, id string, ident identity.Identity) (AutoNamingState, error) {
+	if r.closed.Load() {
+		return AutoNamingState{}, ErrRegistryClosed
+	}
+	if err := identity.Validate(ident); err != nil {
+		return AutoNamingState{}, err
+	}
+	target := identity.Identity{TenantID: ident.TenantID, UserID: ident.UserID, SessionID: id}
+	stored, err := r.loadSession(ctx, target)
+	if err != nil {
+		return AutoNamingState{}, err
+	}
+	if stored.Identity.TenantID != ident.TenantID || stored.Identity.UserID != ident.UserID {
+		return AutoNamingState{}, fmt.Errorf("%w: stored=(%s,%s) caller=(%s,%s)",
+			ErrIdentityMismatch,
+			stored.Identity.TenantID, stored.Identity.UserID,
+			ident.TenantID, ident.UserID)
+	}
+	return AutoNamingState{
+		TitleSource:       stored.TitleSource,
+		CurrentTitle:      stored.Title,
+		TurnCount:         stored.TurnCount,
+		AutoNameCount:     stored.AutoNameCount,
+		LastAutoNamedTurn: stored.LastAutoNamedTurn,
+	}, nil
+}
+
+// clampAutoTitle deterministically post-processes the auto-namer's own model
+// output into a stored title: it takes the first non-empty line, trims
+// surrounding whitespace, strips control characters, and cuts to
+// MaxSessionTitleLen runes. Unlike SetTitle (an untrusted boundary that
+// rejects oversize input), the auto path CLAMPS — it is trusted-internal
+// post-processing of the runtime's own LLM call, and the asymmetry is
+// intentional.
+func clampAutoTitle(title string) string {
+	// Single line: take the first line with visible content.
+	line := title
+	if idx := strings.IndexAny(title, "\r\n"); idx >= 0 {
+		// Prefer the first non-empty line rather than blindly cutting at the
+		// first newline (a leading blank line must not yield an empty title).
+		for _, cand := range strings.FieldsFunc(title, func(r rune) bool { return r == '\n' || r == '\r' }) {
+			if strings.TrimSpace(cand) != "" {
+				line = cand
+				break
+			}
+		}
+	}
+	// Strip control characters (defence-in-depth; the model should not emit
+	// them, but a stray one must never reach the stored record).
+	line = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, line)
+	line = strings.TrimSpace(line)
+	if utf8.RuneCountInString(line) > MaxSessionTitleLen {
+		runes := []rune(line)
+		line = strings.TrimSpace(string(runes[:MaxSessionTitleLen]))
+	}
+	return line
 }
 
 // Erase is the registry-side pre-flight + in-memory clear for a session
