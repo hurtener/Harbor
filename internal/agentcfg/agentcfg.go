@@ -280,13 +280,16 @@ type HooksSection struct {
 // NamingSection is the session auto-naming policy section of the config
 // envelope. Declared as its own optional section so a set REPLACES only this
 // section, preserving the sibling sections (the section-merge invariant).
-// Opt-in, default off: a nil section (or one that normalises away) means the
-// runtime does no auto-naming for the agent — byte-identical to the naming-off
-// path (no counters, no LLM calls, no events). Resolution at run start is
-// agent-config over the yaml `runtime.naming` fleet default over off.
+// Opt-in, default off: a NIL section means "no per-agent policy" (the yaml
+// `runtime.naming` fleet default, then off, resolves at run start). A PRESENT
+// section is authoritative either way: Auto=true enables, Auto=false is an
+// explicit per-agent OPT-OUT that overrides a yaml-on fleet default — section
+// presence is the operator's signal, and normalization preserves any non-nil
+// section verbatim (never an inert-drop).
 type NamingSection struct {
 	// Auto enables session auto-naming for the agent. False (the zero value)
-	// is off — the section carrying Auto=false is inert.
+	// in a PRESENT section is an explicit off that overrides the yaml fleet
+	// default.
 	Auto bool `json:"auto,omitempty"`
 	// AfterTurns is the completed-run count at which the FIRST auto-name
 	// fires (fire on the Nth completed run). Zero resolves to the default
@@ -485,23 +488,22 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		}
 	}
 	if p.Naming != nil {
-		// Trim the model to the canonical "inherit the run's effective model"
-		// form (empty). A section that carries NO intent — Auto off AND every
-		// numeric field zero AND no model — normalises away entirely (equal
-		// states hash equal, no spurious revision, no phantom diff), mirroring
-		// the hooks "empty tool → drop" posture. A section with any field set
-		// (or Auto true) is kept verbatim so an explicit per-agent policy
-		// (including an explicit Auto=false with other fields set) survives.
-		n := &NamingSection{
+		// A non-nil naming section is ALWAYS preserved (model trimmed to the
+		// canonical "inherit the run's effective model" empty form) — section
+		// PRESENCE is the operator's signal, so presence-vs-absence stays
+		// distinguishable through normalization. A bare `{auto: false}`
+		// section is an explicit per-agent OPT-OUT that must override a yaml
+		// fleet default at run start; dropping it as "inert" (the hooks
+		// empty-tool posture) would silently discard the opt-out and keep the
+		// agent auto-naming (and spending). The run-start projection's
+		// section-present branch treats Auto=false as the explicit off.
+		out.Naming = &NamingSection{
 			Auto:           p.Naming.Auto,
 			AfterTurns:     p.Naming.AfterTurns,
 			RepeatEvery:    p.Naming.RepeatEvery,
 			MaxRepetitions: p.Naming.MaxRepetitions,
 			MaxTitleLen:    p.Naming.MaxTitleLen,
 			Model:          strings.TrimSpace(p.Naming.Model),
-		}
-		if n.Auto || n.AfterTurns != 0 || n.RepeatEvery != 0 || n.MaxRepetitions != 0 || n.MaxTitleLen != 0 || n.Model != "" {
-			out.Naming = n
 		}
 	}
 	return out

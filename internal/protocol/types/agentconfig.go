@@ -152,10 +152,13 @@ type AgentConfigHooks struct {
 
 // AgentConfigNaming is the wire projection of the session auto-naming policy
 // section of the config envelope. Declared as its own section so a set
-// REPLACES only this section, preserving the siblings. Opt-in, default off: a
-// nil section (or one carrying no policy) means the runtime does no
-// auto-naming for the agent. Resolution at run start is agent-config over the
-// yaml `runtime.naming` fleet default over off.
+// REPLACES only this section, preserving the siblings. Opt-in, default off: an
+// ABSENT section means "no per-agent policy" (the yaml `runtime.naming` fleet
+// default, then off, resolves at run start). A PRESENT section is
+// authoritative either way — `auto: true` enables, and a bare `{auto: false}`
+// is an explicit per-agent OPT-OUT that overrides a yaml-on fleet default
+// (section presence is the signal; a present section is preserved verbatim
+// through normalization, never dropped as inert).
 //
 // `after_turns` and `max_title_len` resolve to their runtime defaults (1, 80)
 // when zero; `max_repetitions` is REQUIRED ≥ 1 whenever `repeat_every` > 0
@@ -163,7 +166,8 @@ type AgentConfigHooks struct {
 // `invalid_request` 400 — so unbounded periodic re-naming is unrepresentable);
 // a set `model` is validated against the configured ModelProfiles.
 type AgentConfigNaming struct {
-	// Auto enables session auto-naming for the agent (false = off).
+	// Auto enables session auto-naming for the agent (false in a present
+	// section = an explicit off that overrides the yaml fleet default).
 	Auto bool `json:"auto,omitempty"`
 	// AfterTurns is the completed-run count at which the first auto-name
 	// fires; 0 inherits the runtime default (1).

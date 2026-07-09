@@ -482,11 +482,15 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	var steeringEntries []steeringEntry
 	initialGoal := spec.Base.Goal
 	runStartedAt := rl.clock.Now()
-	if spec.CompletionHook != nil && spec.CompletionHook.Tool != "" {
-		defer func() {
-			rl.fireCompletionHook(runCtx, spec, q, fin, err, steeringEntries, initialGoal, runStartedAt)
-		}()
-	}
+	// TERMINAL-BOUNDARY ORDERING (load-bearing, LIFO): the auto-naming defer
+	// is registered FIRST and the completion-hook defer SECOND, so the HOOK
+	// fires first at the terminal exit. The hook stamps CompletedAt/DurationMS
+	// from the clock when it fires — if naming (a synchronous, up-to-10s LLM
+	// call) ran first, a slow naming call would inflate the hook's timestamps
+	// and delay transcript egress. Naming has no timing fields of its own, so
+	// running second costs it nothing. Pinned by
+	// TestRun_TerminalOrdering_HookFiresBeforeNaming.
+	//
 	// The session auto-naming trigger is a SIBLING of the completion hook at
 	// the same terminal boundary: registered after runCtx/identity are
 	// established so it never fires for a pre-run misconfiguration, and reads
@@ -496,6 +500,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if spec.Naming != nil && spec.Naming.Titler != nil {
 		defer func() {
 			rl.fireNaming(runCtx, spec, q, steeringEntries, initialGoal, fin)
+		}()
+	}
+	if spec.CompletionHook != nil && spec.CompletionHook.Tool != "" {
+		defer func() {
+			rl.fireCompletionHook(runCtx, spec, q, fin, err, steeringEntries, initialGoal, runStartedAt)
 		}()
 	}
 

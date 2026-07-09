@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -169,6 +170,19 @@ func TestNamingPolicy_WithDefaults(t *testing.T) {
 	}
 	if clamped := (NamingPolicy{MaxTitleLen: 999}).WithDefaults(); clamped.MaxTitleLen != 200 {
 		t.Errorf("MaxTitleLen 999 clamps to %d, want 200", clamped.MaxTitleLen)
+	}
+	// A repeating policy with an unset cap gets the documented default (5) —
+	// the no-unlimited invariant holds for programmatically-built policies too.
+	if def := (NamingPolicy{RepeatEvery: 2}).WithDefaults(); def.MaxRepetitions != 5 {
+		t.Errorf("repeating policy with unset cap: MaxRepetitions = %d, want defaulted 5", def.MaxRepetitions)
+	}
+	// A non-repeating policy leaves the cap alone (it is never consulted).
+	if def := (NamingPolicy{}).WithDefaults(); def.MaxRepetitions != 0 {
+		t.Errorf("once-only policy: MaxRepetitions = %d, want 0 (untouched)", def.MaxRepetitions)
+	}
+	// An explicit cap is respected.
+	if def := (NamingPolicy{RepeatEvery: 2, MaxRepetitions: 3}).WithDefaults(); def.MaxRepetitions != 3 {
+		t.Errorf("explicit cap: MaxRepetitions = %d, want 3", def.MaxRepetitions)
 	}
 }
 
@@ -533,4 +547,97 @@ func lastNamingClass(bus *fakeBus) string {
 		}
 	}
 	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Terminal-boundary ordering: the hook fires BEFORE naming (LIFO — the
+// naming defer registers first, the hook defer second).
+// ---------------------------------------------------------------------------
+
+// orderRecordingCompleter is a NamingCompleter that records its invocation on
+// a shared sequence AND advances the fake clock — simulating a SLOW naming
+// LLM call. If the hook ran after naming, the clock advance would inflate the
+// hook payload's CompletedAt/DurationMS.
+type orderRecordingCompleter struct {
+	clk   *fakeClock
+	slow  time.Duration
+	seq   *[]string
+	seqMu *sync.Mutex
+}
+
+func (c *orderRecordingCompleter) Complete(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+	c.seqMu.Lock()
+	*c.seq = append(*c.seq, "naming")
+	c.seqMu.Unlock()
+	c.clk.advance(c.slow) // the "slow LLM": time passes during the naming call
+	return llm.CompleteResponse{Content: "A Title"}, nil
+}
+
+// orderRecordingExecutor wraps recordingHookExecutor and records the hook
+// dispatch on the shared sequence.
+type orderRecordingExecutor struct {
+	*recordingHookExecutor
+	seq   *[]string
+	seqMu *sync.Mutex
+}
+
+func (e *orderRecordingExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, d planner.Decision) (any, any, error) {
+	e.seqMu.Lock()
+	*e.seq = append(*e.seq, "hook")
+	e.seqMu.Unlock()
+	return e.recordingHookExecutor.ExecuteDecision(ctx, rc, d)
+}
+
+// TestRun_TerminalOrdering_HookFiresBeforeNaming pins the S1 defer ordering:
+// at the terminal boundary the run-completion hook dispatches FIRST, so a
+// slow naming LLM call can never inflate the hook's CompletedAt/DurationMS or
+// delay transcript egress. The naming completer advances the fake clock by
+// 7s; the hook payload's DurationMS must not include it.
+func TestRun_TerminalOrdering_HookFiresBeforeNaming(t *testing.T) {
+	clk := newFakeClock()
+	reg := NewRegistry(WithClock(clk))
+	coord := &stubCoordinator{}
+	rl, err := NewRunLoop(reg, coord, WithRunLoopClock(clk))
+	if err != nil {
+		t.Fatalf("NewRunLoop: %v", err)
+	}
+
+	var seq []string
+	var seqMu sync.Mutex
+	exec := &orderRecordingExecutor{recordingHookExecutor: &recordingHookExecutor{}, seq: &seq, seqMu: &seqMu}
+	titler := newFakeTitler()
+	comp := &orderRecordingCompleter{clk: clk, slow: 7 * time.Second, seq: &seq, seqMu: &seqMu}
+
+	spec := RunSpec{
+		Planner:        finishPlanner(),
+		Base:           planner.RunContext{Quadruple: runA, Goal: "order test", Trajectory: &planner.Trajectory{}},
+		MaxSteps:       8,
+		ToolExecutor:   exec,
+		CompletionHook: &CompletionHookSpec{Tool: hookTool},
+		Naming:         &NamingSpec{Policy: activePolicy(1, 0, 0), Titler: titler, LLM: comp},
+	}
+	if _, err := rl.Run(context.Background(), spec); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	seqMu.Lock()
+	gotSeq := append([]string(nil), seq...)
+	seqMu.Unlock()
+	if len(gotSeq) != 2 || gotSeq[0] != "hook" || gotSeq[1] != "naming" {
+		t.Fatalf("terminal-boundary order = %v, want [hook naming] (the hook fires first)", gotSeq)
+	}
+
+	calls := exec.hookCalls()
+	if len(calls) != 1 {
+		t.Fatalf("hook dispatched %d times, want 1", len(calls))
+	}
+	// The naming call advanced the clock 7s AFTER the hook stamped its
+	// payload — DurationMS must not include the naming latency.
+	if d := calls[0].payload.DurationMS; d >= 7000 {
+		t.Errorf("hook payload DurationMS = %d, includes the slow naming call (want < 7000)", d)
+	}
+	// Naming still succeeded (running second costs it nothing).
+	if got := titler.appliedTitle("session-a"); got != "A Title" {
+		t.Errorf("naming title = %q, want %q", got, "A Title")
+	}
 }

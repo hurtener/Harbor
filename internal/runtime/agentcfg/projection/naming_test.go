@@ -65,12 +65,15 @@ func TestActiveNamingPolicy_Precedence(t *testing.T) {
 		}
 	})
 
-	t.Run("agentcfg_auto_false_overrides_yaml_on", func(t *testing.T) {
+	t.Run("agentcfg_bare_auto_false_overrides_yaml_on", func(t *testing.T) {
 		reg := newRegistry(t)
-		// An explicit per-agent section with auto=false (plus another field set
-		// so it survives normalization) WINS over a yaml default that is on.
+		// THE M1 footgun regression: a BARE `{auto: false}` section — no other
+		// field set — is an explicit per-agent opt-out. Normalization preserves
+		// it (section presence is the signal), so it WINS over a yaml default
+		// that is on. Before the fix the section was dropped as "inert" and the
+		// agent silently kept auto-naming.
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
-			Naming: &agentcfg.NamingSection{Auto: false, MaxTitleLen: 90},
+			Naming: &agentcfg.NamingSection{Auto: false},
 		}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
@@ -80,7 +83,7 @@ func TestActiveNamingPolicy_Precedence(t *testing.T) {
 			t.Fatalf("err: %v", err)
 		}
 		if active {
-			t.Error("agentcfg auto=false should override yaml auto=true → off")
+			t.Error("a bare agentcfg auto:false section must override yaml auto=true → off")
 		}
 	})
 }

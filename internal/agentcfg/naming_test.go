@@ -34,19 +34,33 @@ func TestContentHash_IncludesNaming(t *testing.T) {
 	}
 }
 
-// TestNormalizePayload_Naming_InertDropsAndTrims proves an entirely-inert
-// section drops away, a section with any field set survives, and the model is
-// trimmed.
-func TestNormalizePayload_Naming_InertDropsAndTrims(t *testing.T) {
-	// Inert (auto false + all zero + empty model) → dropped.
+// TestNormalizePayload_Naming_PresenceIsPreserved proves any non-nil naming
+// section survives normalization VERBATIM (model trimmed) — section presence
+// is the operator's signal. The load-bearing case is the bare `{auto: false}`
+// opt-out: dropping it as "inert" would silently discard an explicit
+// per-agent opt-out over a yaml-on fleet default (the M1 footgun — the agent
+// would keep auto-naming and spending after a 200 OK opt-out).
+func TestNormalizePayload_Naming_PresenceIsPreserved(t *testing.T) {
+	// A bare auto:false section (the explicit opt-out) is PRESERVED.
 	got := agentcfg.NormalizePayload(agentcfg.ConfigPayload{Naming: namingSection(false, 0, 0, 0, 0, "  ")})
-	if got.Naming != nil {
-		t.Fatalf("inert naming section should drop to nil, got %+v", got.Naming)
+	if got.Naming == nil {
+		t.Fatal("a bare auto:false naming section was dropped — the explicit opt-out signal is lost")
 	}
+	if got.Naming.Auto {
+		t.Fatalf("auto flipped on: %+v", got.Naming)
+	}
+	// Presence is hash-distinguishable from absence (a bare opt-out section
+	// is a REAL revision, never normalized into the no-section state).
 	hNone, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{})
-	hInert, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{Naming: namingSection(false, 0, 0, 0, 0, "")})
-	if hNone != hInert {
-		t.Fatal("an inert naming section must hash equal to no section")
+	hOptOut, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{Naming: namingSection(false, 0, 0, 0, 0, "")})
+	if hNone == hOptOut {
+		t.Fatal("a present auto:false naming section must hash differently from no section")
+	}
+	// Idempotency: a re-set of the same opt-out hashes equal (the idempotent
+	// no-op re-set is between two PRESENT sections, not present-vs-absent).
+	hOptOut2, _ := agentcfg.ContentHash(agentcfg.NormalizePayload(agentcfg.ConfigPayload{Naming: namingSection(false, 0, 0, 0, 0, "  ")}))
+	if hOptOut != hOptOut2 {
+		t.Fatal("normalization is not a fixpoint for the naming opt-out section")
 	}
 	// Auto=true survives.
 	gotOn := agentcfg.NormalizePayload(agentcfg.ConfigPayload{Naming: namingSection(true, 0, 0, 0, 0, "")})

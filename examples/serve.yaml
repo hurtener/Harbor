@@ -112,6 +112,22 @@ artifacts:
 #     run_completion:
 #       tool: run_transcript_sink
 #       timeout: 10s
+#
+#   # Session auto-naming — OPT-IN, default OFF. With this block absent (or
+#   # `auto: false`) the runtime writes no naming counters, makes no naming
+#   # LLM calls, and emits no naming events. When on, the runtime titles a
+#   # session at each run's terminal boundary via one governed LLM call over
+#   # a bounded transcript digest; a naming failure never alters the run
+#   # outcome. A per-agent agent-config `naming` section overrides this fleet
+#   # default (a bare `{auto: false}` revision is an explicit per-agent
+#   # opt-out). See docs/CONFIG.md -> Runtime.
+#   naming:
+#     auto: true                    # false (default) = off
+#     after_turns: 1                # first auto-name after N completed runs (default 1)
+#     repeat_every: 0               # 0 = name once; >0 re-names every N turns
+#     max_repetitions: 5            # REQUIRED >=1 when repeat_every > 0 (no unlimited value)
+#     max_title_len: 80             # rune bound [8,200] (default 80); auto output is clamped
+#     model: ""                     # empty = the run's effective model; else a model_profiles key
 
 tasks:
   # inprocess (default) or durable. durable persists task/group/patch

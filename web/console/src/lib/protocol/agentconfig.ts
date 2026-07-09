@@ -104,7 +104,10 @@ export interface AgentConfigHooks {
 }
 
 /** The session auto-naming policy section of the config envelope — opt-in,
- * default off. `after_turns` / `max_title_len` inherit the runtime defaults
+ * default off. An ABSENT section falls through to the yaml `runtime.naming`
+ * fleet default; a PRESENT section is authoritative either way (a bare
+ * `{auto: false}` is an explicit opt-out overriding a yaml-on default).
+ * `after_turns` / `max_title_len` inherit the runtime defaults
  * (1, 80) when zero; `max_repetitions` is required >= 1 when `repeat_every` > 0
  * (no unlimited value). Mirrors `types.AgentConfigNaming`. */
 export interface AgentConfigNaming {

@@ -3021,8 +3021,13 @@ per §17.8). Status: Shipped (V1.6).
   in one record save. A governance block SKIPS naming loudly
   (`governance_blocked`) and the run is untouched; every failure emits
   `session.naming_failed` (stable error class, never content). Scripted-LLM
-  E2E covers enable/manual-halts/re-arm/cadence-and-cap/governance legs;
-  N≥10 concurrent sessions prove no title bleed under `-race`. See
+  E2E covers the set_revision-enable / bare-`auto:false`-opt-out /
+  manual-halts / clear-re-arms / cadence-and-cap / governance-block legs
+  (as built, the governance leg blocks the naming PreCall via a one-shot
+  rate-limit tier rather than a budget ceiling — a deterministic ceiling
+  breach needs synthetic cost accounting the scripted provider cannot
+  supply; §4.3-documented in the plan's As-built section); N≥10 concurrent
+  sessions prove no title bleed under `-race`. See
   `docs/plans/phase-158-session-auto-naming.md`.
 - **Decision:** D-289.
 - **Status:** Shipped (v1.12).

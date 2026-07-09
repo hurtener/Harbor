@@ -108,6 +108,22 @@ type SessionTitler interface {
 // title writes, so the record is never torn, and the cost is one redundant
 // call in a narrow window (the same posture as the connection-reconcile accepted
 // window).
+//
+// # Failure-retry posture and latency envelope
+//
+// A naming FAILURE does not burn the max-repetitions cap (only a successful
+// SetTitleAuto bumps AutoNameCount), so as long as a title is due the trigger
+// retries on EVERY subsequent completed run until one succeeds. Deliberate:
+// a transient LLM outage must not permanently un-name a session. The flip
+// side is worth knowing when operating a naming-on fleet against a DOWN
+// naming LLM: every completed run then pays one failing synchronous Complete
+// attempt (bounded by DefaultNamingTimeout, 10s) and emits one
+// session.naming_failed — indefinitely, until the LLM recovers or the policy
+// is switched off. The trigger runs SYNCHRONOUSLY at the terminal boundary,
+// AFTER the completion hook (see the ordering note in RunLoop.Run), so the
+// worst-case added latency before Run's caller-side bookkeeping completes is
+// hook timeout + naming timeout, serialized (default 10s + 10s); the run's
+// settled (fin, err) are unaffected either way.
 type NamingSpec struct {
 	// Policy is the resolved, defaulted auto-naming policy.
 	Policy NamingPolicy
@@ -136,10 +152,17 @@ func steeringCaptureWanted(spec RunSpec) bool {
 	return false
 }
 
-// WithDefaults fills the zero-valued policy fields with the session auto-naming defaults:
-// AfterTurns → 1, MaxTitleLen → 80 (and clamped into [8,200] when set). It
-// leaves RepeatEvery / MaxRepetitions untouched (validated at set time). The
-// run-start projection applies it so the trigger consumes concrete values.
+// WithDefaults fills the zero-valued policy fields with the session
+// auto-naming defaults: AfterTurns → 1, MaxTitleLen → 80 (clamped into
+// [8,200] when set), and — for a REPEATING policy (RepeatEvery > 0) whose cap
+// is unset — MaxRepetitions → 5, the documented default total (including the
+// first call). The default keeps the no-unlimited invariant intact for a
+// policy constructed programmatically (an embedder building a NamingSpec by
+// hand): a repeating policy always reaches the trigger with a concrete cap.
+// The wire and yaml edges still REQUIRE an explicit cap ≥ 1 whenever
+// repeat_every > 0 (rejected at set/boot time), so the default is
+// defence-in-depth there, never a silent unlimited. The run-start projection
+// applies WithDefaults so the trigger consumes concrete values.
 func (p NamingPolicy) WithDefaults() NamingPolicy {
 	out := p
 	if out.AfterTurns <= 0 {
@@ -153,6 +176,9 @@ func (p NamingPolicy) WithDefaults() NamingPolicy {
 	}
 	if out.MaxTitleLen > 200 {
 		out.MaxTitleLen = 200
+	}
+	if out.RepeatEvery > 0 && out.MaxRepetitions <= 0 {
+		out.MaxRepetitions = 5
 	}
 	return out
 }
@@ -179,15 +205,23 @@ func namingDue(p NamingPolicy, st sessions.AutoNamingState) bool {
 }
 
 // fireNaming is the run loop's terminal-boundary auto-naming trigger. It runs
-// from a deferred closure over Run's named returns AFTER (fin, err) are
-// settled and NEVER alters them. When a naming policy is active it always
-// records the completed turn (the only counter write); then, if a title is due
-// and the current title is not manual, it makes ONE bounded Complete call over
-// a transcript digest and writes the result through SetTitleAuto. Every
+// SYNCHRONOUSLY from a deferred closure over Run's named returns AFTER
+// (fin, err) are settled — and after the completion hook has fired (the
+// hook-first ordering keeps the hook's timestamps accurate; see RunLoop.Run)
+// — and NEVER alters them. When a naming policy is active it always records
+// the completed turn (the only counter write); then, if a title is due and
+// the current title is not manual, it makes ONE bounded Complete call over a
+// transcript digest and writes the result through SetTitleAuto. Every
 // failure or skip emits session.naming_failed with a stable class + a Warn
 // log; success is signalled by the registry's content-free
 // session.title_changed(source=auto). A recover() contains any panic so a
 // wedged dependency can never replace the settled run result.
+//
+// A failure does NOT burn the cap (only a successful SetTitleAuto bumps
+// AutoNameCount), so a still-due title is retried at every subsequent
+// completed run until one succeeds — see the NamingSpec godoc's
+// "Failure-retry posture and latency envelope" for the operational
+// consequences on a naming-on fleet with a down LLM.
 func (rl *RunLoop) fireNaming(runCtx context.Context, spec RunSpec, q identity.Quadruple, steering []steeringEntry, initialGoal string, fin planner.Finish) {
 	ns := spec.Naming
 	if ns == nil || ns.Titler == nil {
@@ -415,11 +449,13 @@ func hardCutBytes(s string, maxBytes int) string {
 }
 
 // clampNamingTitle deterministically post-processes the naming model output
-// into a candidate title: the first non-empty line, whitespace-trimmed,
-// control characters stripped, quotes stripped, cut to maxTitleLen runes. An
-// all-empty result is "" (the empty_title skip). This is the trusted-internal
-// clamp — the asymmetry with SetTitle's reject-on-oversize is
-// intentional; the registry re-clamps defensively.
+// into a candidate title: the first non-empty line, newline/CR characters
+// removed, whitespace- and quote-trimmed, cut to maxTitleLen runes. General
+// control-character stripping is NOT done here — the registry's defensive
+// re-clamp (SetTitleAuto) strips control characters before the record is
+// saved, so a stray one never persists. An all-empty result is "" (the
+// empty_title skip). This is the trusted-internal clamp — the asymmetry with
+// SetTitle's reject-on-oversize is intentional.
 func clampNamingTitle(raw string, maxTitleLen int) string {
 	line := raw
 	for _, cand := range strings.FieldsFunc(raw, func(r rune) bool { return r == '\n' || r == '\r' }) {
