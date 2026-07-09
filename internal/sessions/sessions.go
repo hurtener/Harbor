@@ -57,9 +57,11 @@ import (
 // Title / TitleSource are additive fields: an older persisted session
 // record (one written before these fields existed) decodes with both
 // zero-valued (""), which is exactly TitleSourceUnset — no migration
-// needed. Title is set/cleared exclusively through SetTitle, which
-// enforces the manual semantics (trim, length/control-character
-// validation, empty clears both fields). Title is user-derived free
+// needed. Title has two writers: SetTitle (the sessions.set_title verb —
+// manual set/clear, with trim + length/control-character validation, and an
+// empty value clears the title and resets the auto-naming counters) and
+// SetTitleAuto (the internal auto-namer — writes TitleSource="auto",
+// refusing to overwrite a manual title). Title is user-derived free
 // text and MUST NEVER be copied into an event/log/audit payload
 // (CLAUDE.md §7 rule 7 — content-free posture) — only SessionID +
 // TitleSource ride SessionTitleChangedPayload.

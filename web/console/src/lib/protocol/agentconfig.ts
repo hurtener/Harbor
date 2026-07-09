@@ -204,9 +204,16 @@ export interface AgentConfigLLMParamsDiff {
 	reasoning_effort_to?: string;
 }
 
-/** The run-lifecycle-hook per-field delta across two revisions. Mirrors
- * `types.AgentConfigHooksDiff`. */
+/** The run-lifecycle-hook per-field delta across two revisions.
+ * `section_present_from` / `section_present_to` render the hooks-section
+ * PRESENCE ("present" / "" when absent) — a present bare `{}` hooks section
+ * is an explicit per-agent no-hook that overrides a yaml fleet hook, and the
+ * presence dimension makes exactly that revision visible (absent → "present"
+ * with empty tool/timeout). Mirrors `types.AgentConfigHooksDiff`. */
 export interface AgentConfigHooksDiff {
+	section_present_changed: boolean;
+	section_present_from?: string;
+	section_present_to?: string;
 	run_completion_tool_changed: boolean;
 	run_completion_tool_from?: string;
 	run_completion_tool_to?: string;

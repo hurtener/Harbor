@@ -531,6 +531,69 @@ func TestRegistry_SetTitle_ClearEmitsUnsetSource(t *testing.T) {
 	}
 }
 
+// TestRegistry_SetTitle_NoOpWriteEmitsNoEvent pins FIX-6(a): a SetTitle that
+// changes nothing — clearing an already-unset title, or an identical manual
+// re-set — persists nothing and emits NO session.title_changed (a content-free
+// event on a no-change write is a spurious wake-up for every subscriber). A
+// genuine change still emits exactly one event.
+func TestRegistry_SetTitle_NoOpWriteEmitsNoEvent(t *testing.T) {
+	t.Parallel()
+	reg, _, bus := titleTestWiring(t)
+	id := ident("t1", "u1", "s1")
+	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	received := make(chan events.Event, 8)
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant: "t1", User: "u1", Session: "s1",
+		Types: []events.EventType{sessions.EventTypeSessionTitleChanged},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+	go func() {
+		for ev := range sub.Events() {
+			received <- ev
+		}
+	}()
+
+	// Clearing an already-unset title is a no-op — no event.
+	if err := reg.SetTitle(ctxFor(id), id.SessionID, id, ""); err != nil {
+		t.Fatalf("SetTitle (clear on unset): %v", err)
+	}
+	// A first real set — exactly one event.
+	if err := reg.SetTitle(ctxFor(id), id.SessionID, id, "A title"); err != nil {
+		t.Fatalf("SetTitle (set): %v", err)
+	}
+	// An identical manual re-set is a no-op — no event.
+	if err := reg.SetTitle(ctxFor(id), id.SessionID, id, "A title"); err != nil {
+		t.Fatalf("SetTitle (identical re-set): %v", err)
+	}
+
+	// Collect events for a bounded window; exactly one (the real set) must
+	// arrive, and no more.
+	var got []events.Event
+	deadline := time.After(500 * time.Millisecond)
+collect:
+	for {
+		select {
+		case ev := <-received:
+			got = append(got, ev)
+		case <-deadline:
+			break collect
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d session.title_changed events, want exactly 1 (the two no-op writes must emit nothing)", len(got))
+	}
+	payload, ok := got[0].Payload.(sessions.SessionTitleChangedPayload)
+	if !ok || payload.Source != string(sessions.TitleSourceManual) {
+		t.Fatalf("the one event = %+v, want Source=manual", got[0].Payload)
+	}
+}
+
 // TestRegistry_SetTitle_OldBlob_AdditiveRoundTrip proves a session
 // record persisted BEFORE this phase (no title/title_source keys in the
 // JSON at all) decodes with both zero-valued — TitleSourceUnset — with

@@ -194,6 +194,13 @@ func (p NamingPolicy) WithDefaults() NamingPolicy {
 // The manual check is the caller's responsibility (it emits the manual_title
 // skip class); namingDue assumes a non-manual title and evaluates the count /
 // cadence gates.
+//
+// The AutoNameCount == 0 first branch is what re-arms auto-naming after a
+// manual clear: clearing a title (SetTitle with an empty value) zeroes
+// AutoNameCount + LastAutoNamedTurn, so this branch fires again and a fresh
+// auto-name lands even under repeat_every == 0 (name-once). The
+// max_repetitions cap is therefore PER-CYCLE — each clear opens a new arming
+// cycle with its own cap budget — not a per-session-lifetime ceiling.
 func namingDue(p NamingPolicy, st sessions.AutoNamingState) bool {
 	if st.AutoNameCount == 0 {
 		return st.TurnCount >= p.AfterTurns

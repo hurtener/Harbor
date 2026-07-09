@@ -385,8 +385,9 @@ RemoteTransport driver. Default: `loopback`. Validation:
 
 ## Runtime
 
-Runtime run-lifecycle configuration. The first populated body is the
-run-completion hook.
+Runtime run-lifecycle configuration. Two populated bodies: the
+run-completion hook and the `runtime.naming` session auto-naming fleet
+default.
 
 ### runtime.hooks.run_completion.tool
 
@@ -395,8 +396,12 @@ terminal boundary (the run-completion hook). Empty (the default) disables
 the static hook — the per-agent, versioned agent-config `hooks` section can
 still enable it. The tool need not be exposed to the planner: the executor
 resolves it against the full catalog. Resolution at run start is
-agent-config over this yaml over no hook. A hook failure never alters the
-run outcome (it emits `run.hook_failed` + a Warn log).
+agent-config over this yaml over no hook — a PRESENT agent-config `hooks`
+section is authoritative either way, so a section with no/empty
+run-completion tool (a bare `hooks: {}`) is an explicit per-agent NO-HOOK
+that overrides this yaml fleet hook (section presence is the signal; it is
+never dropped as inert). A hook failure never alters the run outcome (it
+emits `run.hook_failed` + a Warn log).
 
 ### runtime.hooks.run_completion.timeout
 
@@ -452,7 +457,10 @@ so unbounded periodic re-naming is unrepresentable. Ignored when
 a repeating policy constructed programmatically (an embedder building a
 naming spec by hand, bypassing the yaml/wire validators), the policy-level
 default of `5` applies when the cap is unset — the no-unlimited invariant
-holds on every path.
+holds on every path. The cap is PER-CYCLE, not per-session-lifetime: a
+manual clear (an empty `sessions.set_title`) re-arms auto-naming by zeroing
+the naming counters, so each clear opens a fresh arming cycle with its own
+cap budget.
 
 ### runtime.naming.max_title_len
 

@@ -60,20 +60,42 @@ func TestActiveRunCompletionHook_Precedence(t *testing.T) {
 		}
 	})
 
-	t.Run("agentcfg with empty tool falls through to yaml", func(t *testing.T) {
+	t.Run("agentcfg present empty-tool hooks section is the explicit no-hook (wins over yaml)", func(t *testing.T) {
 		reg := newRegistry(t)
-		// An empty-tool hooks section normalises away — it must NOT shadow yaml.
+		// A PRESENT hooks section with an empty run-completion tool is an
+		// explicit per-agent NO-HOOK (D-290): it OVERRIDES the yaml fleet hook,
+		// it does NOT fall through. (Before FIX-2 this silently normalised away
+		// and shadowed nothing, so the yaml hook kept dispatching the run
+		// transcript the operator meant to stop — the presence footgun.)
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 			Hooks: &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: ""}},
 		}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
 		got, ok, err := projection.ActiveRunCompletionHook(ctx, reg, projAgent, projID(), yaml)
-		if err != nil || !ok {
-			t.Fatalf("resolve: ok=%v err=%v", ok, err)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
 		}
-		if got.Tool != "yaml-sink" {
-			t.Errorf("Tool = %q, want yaml-sink (empty agentcfg tool falls through)", got.Tool)
+		if ok || got != nil {
+			t.Errorf("resolved = %+v ok=%v, want (nil,false): a present empty-tool hooks section is the explicit no-hook that wins over yaml", got, ok)
+		}
+	})
+
+	t.Run("agentcfg bare {} hooks section is the explicit no-hook (wins over yaml)", func(t *testing.T) {
+		reg := newRegistry(t)
+		// A present hooks section with a nil run-completion (a bare `{}`) is the
+		// same explicit no-hook opt-out.
+		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+			Hooks: &agentcfg.HooksSection{},
+		}); err != nil {
+			t.Fatalf("SetRevision: %v", err)
+		}
+		got, ok, err := projection.ActiveRunCompletionHook(ctx, reg, projAgent, projID(), yaml)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if ok || got != nil {
+			t.Errorf("resolved = %+v ok=%v, want (nil,false): a bare {} hooks section is the explicit no-hook that wins over yaml", got, ok)
 		}
 	})
 

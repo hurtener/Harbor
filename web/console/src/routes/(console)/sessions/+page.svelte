@@ -110,6 +110,14 @@
     return f;
   }
 
+  // B2 posture: this page is deliberately poll-on-demand — it (re)loads via
+  // loadCatalog on mount, filter/sort/page changes, and explicit reload, and
+  // does NOT hold a live `session.title_changed` subscription. A rename made
+  // elsewhere surfaces on the next load, not instantly. The live title
+  // consumer is the Playground switcher (event-driven refresh); the Sessions
+  // page is a catalog/audit view where a manual reload is the expected
+  // affordance. Intentional — do not add a live subscription here without
+  // revisiting the B2 decision.
   /** Loads `sessions.list` for the current filter / sort / page. */
   async function loadCatalog(cursor = ''): Promise<void> {
     if (!sessionsClient) {

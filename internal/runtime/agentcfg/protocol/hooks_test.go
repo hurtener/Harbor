@@ -171,3 +171,74 @@ func TestAddMCPConnection_PreservesPinnedHook(t *testing.T) {
 		t.Fatalf("connection add did not apply: %+v", got.Revision.Payload.Connections)
 	}
 }
+
+// TestDiff_Hooks_ExplicitNoHookVisible proves `agent_config.diff` is NOT
+// blind to the explicit no-hook revision at the wire level (mirrors
+// TestDiff_Naming_BareOptOutVisible): a revision with NO hooks section
+// diffed against one carrying a bare `{}` hooks section registers
+// `section_present_changed` with "" → "present" — while tool and timeout are
+// empty on both sides, so WITHOUT the presence dimension the per-agent
+// no-hook opt-out would render as "no change in any section" in the Console
+// diff view (a phantom revision).
+func TestDiff_Hooks_ExplicitNoHookVisible(t *testing.T) {
+	ctx := context.Background()
+	s, err := agentcfgprotocol.NewService(newRegistry(t))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	// Revision 1: a payload with NO hooks section (an unrelated section so
+	// the envelope is non-empty).
+	r1, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{
+			Skills: &prototypes.AgentConfigSkillsSelection{Names: []string{"s1"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("rev1: %v", err)
+	}
+	// Revision 2: same envelope + the bare `{}` hooks section (the explicit
+	// per-agent no-hook).
+	r2, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{
+			Skills: &prototypes.AgentConfigSkillsSelection{Names: []string{"s1"}},
+			Hooks:  &prototypes.AgentConfigHooks{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("rev2 (bare no-hook): %v", err)
+	}
+	if r1.Revision.RevisionID == r2.Revision.RevisionID {
+		t.Fatal("the bare no-hook did not produce a new revision (idempotent re-set) — presence is not being preserved")
+	}
+
+	// absent → bare no-hook.
+	d, err := s.Diff(ctx, prototypes.AgentConfigDiffRequest{
+		Identity: scope(), AgentID: testAgentID,
+		FromRevision: r1.Revision.RevisionID, ToRevision: r2.Revision.RevisionID,
+	})
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	h := d.Diff.Hooks
+	if !h.SectionPresentChanged || h.SectionPresentFrom != "" || h.SectionPresentTo != "present" {
+		t.Fatalf("absent→noHook wire diff = %+v, want section_present_changed with \"\"→\"present\"", h)
+	}
+	if h.RunCompletionToolChanged || h.RunCompletionTimeoutChanged {
+		t.Fatalf("absent→noHook wire diff = %+v, want tool/timeout unchanged (both empty) — presence is the only signal", h)
+	}
+
+	// bare no-hook → absent (the rollback direction).
+	d2, err := s.Diff(ctx, prototypes.AgentConfigDiffRequest{
+		Identity: scope(), AgentID: testAgentID,
+		FromRevision: r2.Revision.RevisionID, ToRevision: r1.Revision.RevisionID,
+	})
+	if err != nil {
+		t.Fatalf("reverse diff: %v", err)
+	}
+	h2 := d2.Diff.Hooks
+	if !h2.SectionPresentChanged || h2.SectionPresentFrom != "present" || h2.SectionPresentTo != "" {
+		t.Fatalf("noHook→absent wire diff = %+v, want section_present_changed with \"present\"→\"\"", h2)
+	}
+}

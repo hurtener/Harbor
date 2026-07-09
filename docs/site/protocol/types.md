@@ -168,6 +168,9 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `section_present_changed` | `bool` |  |
+| `section_present_from` | `string` | optional (`omitempty`) |
+| `section_present_to` | `string` | optional (`omitempty`) |
 | `run_completion_tool_changed` | `bool` |  |
 | `run_completion_tool_from` | `string` | optional (`omitempty`) |
 | `run_completion_tool_to` | `string` | optional (`omitempty`) |

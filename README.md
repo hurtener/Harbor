@@ -258,7 +258,7 @@ below — the repo stays the source of truth.
 
 ## Status
 
-**Harbor v1.12 (unreleased).** Sessions stop displaying as raw ids: a
+**Harbor v1.12.** Sessions stop displaying as raw ids: a
 session now carries an optional **title** (`sessions.set_title`) that a
 caller can set on their own or a sibling session of the same
 `(tenant, user)` — the wire verb always writes `manual` provenance so a
@@ -273,8 +273,8 @@ default) and, at each run's terminal boundary, the runtime makes one governed
 never overwriting a human's `manual` one, and never on a config-free runtime
 (zero counters, zero LLM calls, zero events). A naming failure never alters the
 run's outcome and is never silent (`session.naming_failed` carries a stable
-error class, never content). All wire changes are additive; the Harbor Protocol
-holds at `0.1.0`.
+error class, never content). One new Protocol method, two canonical events, one
+config surface — all additive; the Harbor Protocol holds at `0.1.0`.
 
 **Harbor v1.11.0.** The fleet-and-lifecycle line — the coordinator control
 plane grows the surfaces it was missing. An admin observer can enumerate

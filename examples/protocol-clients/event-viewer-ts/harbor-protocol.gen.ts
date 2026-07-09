@@ -378,6 +378,9 @@ export interface AgentConfigHooks {
 }
 
 export interface AgentConfigHooksDiff {
+  section_present_changed: boolean;
+  section_present_from?: string;
+  section_present_to?: string;
   run_completion_tool_changed: boolean;
   run_completion_tool_from?: string;
   run_completion_tool_to?: string;

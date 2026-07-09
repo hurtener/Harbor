@@ -26,6 +26,159 @@ user-scope revision scan — issue
 per-domain Protocol wire-type modules + the shared chat-module extraction — the
 D-093 / D-091 follow-ons.)
 
+## [1.12.0] — 2026-07-09
+
+The name-your-sessions release: sessions stop displaying as raw ids. The
+canonical session record gains an optional human-readable title with
+provenance, a new Protocol verb lets a caller rename any session they own —
+with the Console Sessions page and Playground switcher shipping the rename
+affordance in the same wave — and the runtime can now title a session
+itself: an opt-in, default-off auto-naming policy that makes one governed
+LLM call at a run's terminal boundary and can never overwrite a human's
+name. A latent lost-update race on the session record, predating this wave,
+is closed by serializing every whole-record writer. One new Protocol
+method, two new canonical events, one new config surface; all additive —
+the Harbor Protocol holds at `0.1.0` (no error-code or version change), and
+existing configs stay byte-compatible (a config-free runtime is
+byte-identical to v1.11).
+
+### Added
+
+- **Session titles — `Title` + `TitleSource` on the record,
+  `sessions.set_title`, Console rename.** *(protocol)* Sessions displayed
+  as raw ids everywhere, and a coordinator consumer must not shadow-store a
+  human-readable name (D-061) — so it lands framework-side. The session
+  record gains `Title` plus a `TitleSource` provenance mark
+  (`unset | auto | manual`), persisted as an additive JSON round-trip
+  through the existing `session.lifecycle` kind (zero migration) and erased
+  with the record by the existing `DeleteScope` cascade. The new
+  `sessions.set_title` verb ALWAYS writes `manual` — `auto` is not
+  expressible over the wire, so the internal auto-namer is its sole
+  producer and manual-wins is structurally unforgeable. The write is scoped
+  to the owning `(tenant, user)` — the scope `sessions.list` reads at — so
+  a Console-style "rename any of my sessions" flow needs no elevation;
+  metadata-only, no admin widening, and a cross-identity target is
+  `not_found` (existence is never revealed). Empty-after-trim clears;
+  over-bound (> 200 runes), multi-line, or invisible-only
+  (format-character) input fails LOUD with `400 invalid_request` — never a
+  silent clamp. The title is user-derived content and never rides an
+  event, log, or audit payload: `session.title_changed` is content-free
+  (`{session_id, source}`), and consumers refetch — `sessions.list` /
+  `sessions.inspect` project `title` / `title_source` on every row. The
+  §13 consumers ship same-wave: the Sessions page renders the truncated
+  title (full title + id in the tooltip, id fallback) with an inline
+  rename, and the Playground switcher renders `title || session_id` with
+  an active-session rename and event-driven list refresh. (D-288.)
+- **Session auto-naming — opt-in policy + terminal-boundary titling.**
+  *(runtime)* Opt-in and DEFAULT OFF: with no `naming` config anywhere the
+  runtime is byte-identical to v1.11 — zero counters, zero LLM calls, zero
+  events (test-pinned). Policy home pairs a versioned agent-config
+  `naming` section riding the existing `set_revision` (no new verb; joins
+  the D-283 rebuild-completeness guard) with a yaml `runtime.naming` fleet
+  default — precedence agentcfg › yaml › off, resolved once at run start
+  (next-turn projection). A PRESENT section is authoritative either way: a
+  bare `{auto: false}` revision is an explicit per-agent opt-out that wins
+  over a yaml-on fleet default (section presence is the signal — never
+  dropped as inert). Knobs: `after_turns` (default 1), `repeat_every`
+  (0 = name once), `max_repetitions` (required ≥ 1 whenever repeating —
+  no unlimited value exists, so unbounded periodic re-naming is
+  unrepresentable; default 5 for programmatically built policies),
+  `max_title_len` (default 80; auto output is deterministically clamped —
+  the manual verb, by contrast, rejects; the trusted-internal vs
+  untrusted-boundary asymmetry is intentional), and `model` (empty = the
+  run's effective model; point it at a cheap profile — the spend is
+  deliberately the tenant's). The mechanism is a sibling of the
+  run-completion hook at the run loop's terminal boundary — it fires after
+  `(fin, err)` settle and never alters them, with the hook firing FIRST so
+  a slow naming call can never inflate the hook payload's timing — making
+  ONE governed `Complete` call on the run's already-wrapped LLM client
+  (governance outermost: a ceiling/rate block SKIPS naming loudly and the
+  run is untouched) over a ≤ 4 KiB bounded transcript digest, then writing
+  through the internal `SetTitleAuto` path, which refuses `manual` titles
+  and updates title + counters in one record save. Failure is loud but
+  contained: `session.naming_failed` carries a stable error class
+  (`llm_error` / `timeout` / `empty_title` / `governance_blocked` /
+  `manual_title` / `internal`), never content — and a failure does not
+  burn the cap: a still-due title retries on every completed run until one
+  succeeds (the naming call is bounded by a fixed 10s runtime timeout;
+  worst-case post-run latency is hook + naming timeouts, serialized).
+  (D-289.)
+
+### Fixed
+
+- **Lost-update race on the session record.** *(runtime)* The registry's
+  whole-record writers — the pre-existing `Touch` and GC-reap, joined by
+  the new `SetTitle` — did load→mutate→save without holding the registry
+  lock across all three steps, so a write racing `Close` could re-persist
+  `Closed=false` (resurrecting a closed session as a GC-invisible zombie,
+  violating reopen-after-close), and one racing `sessions.delete` could
+  re-persist the record after the irreversible clear (empirically
+  confirmed pre-fix). Every whole-record writer (`Touch` / `Close` /
+  `SetTitle` / the GC reap) now flows through ONE serialized
+  read-modify-write path, and the erasure cascade's `DeleteScope` runs
+  under the same mutex — pinned by interleave tests verified to fail
+  against the pre-fix code. Surfaced by D-288's verb widening the writer
+  set; the fix covers the pre-existing writers too. (D-288.)
+- **Lost-update race on the session-discovery catalog.** *(runtime)* The
+  per-`(tenant, user)` discovery catalog — the index that lets
+  `sessions.list` survive a restart, since the StateStore has no List — did
+  its own read-modify-write WITHOUT the registry lock held across all three
+  steps: an erasure's catalog remove racing a concurrent `Open` of a
+  sibling session could save a stale set-difference that dropped the
+  freshly-opened session's catalog entry. The session's record survived but
+  became invisible to `sessions.list` and was never re-discovered after a
+  restart (nor GC-swept). Both catalog writers (the `Open` add and the
+  erasure remove) now flow through ONE serialized read-modify-write path,
+  and the erasure's catalog remove is folded into its in-memory-clear
+  critical section under the registry lock — pinned by an Erase-vs-Open
+  interleave test asserting a fresh registry over the same store
+  re-discovers every surviving session. Surfaced by D-288's `set_title`
+  widening the writer set alongside the record race above. (D-288.)
+- **Auto-naming re-arm after a manual clear.** *(runtime)* Clearing a
+  session's title via `sessions.set_title` reset the title + provenance but
+  NOT the naming counters, so once any auto-name had landed a clear→re-arm
+  never fired under a name-once policy (`repeat_every: 0`) — the documented
+  unqualified re-arm was a silent dead-end. A manual clear now zeroes the
+  naming counters (`AutoNameCount` / `LastAutoNamedTurn`) in the same record
+  save, opening a fresh arming cycle; the `max_repetitions` cap is therefore
+  per-cycle, not per-session-lifetime. A no-op `set_title` (clearing an
+  already-unset title, or an identical manual re-set) now also suppresses
+  the redundant `session.title_changed` event. (D-289.)
+- **Agent-config `hooks`-section presence footgun.** *(runtime)* A
+  `set_revision` carrying a bare `hooks: {}` (or a run-completion section
+  with an empty tool) returned 200 but was silently normalised away, so a
+  per-agent opt-out of run-transcript egress fell through to the yaml fleet
+  hook and kept dispatching. A PRESENT hooks section is now authoritative
+  (mirroring the naming-section presence rule): an empty section is the
+  explicit per-agent NO-HOOK that overrides the yaml default, `NormalizePayload`
+  preserves any non-nil section, and `agent_config.diff` gains a presence
+  dimension — carried to the wire as the additive
+  `AgentConfigHooksDiff.section_present_*` fields (TS mirror, wire manifest,
+  and generated Protocol reference regenerated) — so the opt-out is a
+  visible revision end to end. The request shape is unchanged. (D-290.)
+
+### Internal
+
+- One additive Protocol method (`sessions.set_title`) with its
+  request/response wire types; two additive canonical events
+  (`session.title_changed`, `session.naming_failed`); the additive
+  `SessionRow.title` / `title_source` projections and the
+  `AgentConfigNaming` section + its diff arm. The generated Protocol
+  reference and the TS wire manifest were regenerated for every wire
+  change — all additive, so `ProtocolVersion` holds at `0.1.0`, and no
+  error code was added (an invalid naming policy maps to the existing
+  `invalid_request`/400 class). The wave-end checkpoint additionally closes
+  the pre-existing session-discovery-catalog lost-update, re-arms
+  auto-naming after a manual clear (per-cycle `max_repetitions`), and makes
+  an agent-config `hooks`-section presence authoritative (D-290) — the only
+  checkpoint wire change is the additive
+  `AgentConfigHooksDiff.section_present_*` diff fields, so `ProtocolVersion`
+  still holds at `0.1.0` — and lands the wave E2E
+  (`test/integration/wave_v112_test.go`) composing the title lifecycle,
+  identity-scoped event discipline, own-vs-foreign refusal, governance
+  interplay, live-revision precedence, and a cross-tenant concurrency stress
+  under `-race`.
+
 ## [1.11.0] — 2026-07-05
 
 The fleet-and-lifecycle release: the control plane a coordinator drives over

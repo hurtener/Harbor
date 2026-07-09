@@ -195,12 +195,13 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 	r.openSessions[id] = q
 
 	// record the new SessionID in the (tenant, user) catalog so a
-	// later process can re-discover it (the StateStore has no List). The
-	// catalog write happens while holding r.mu, but it only touches the
-	// StateStore (its own concurrency boundary) — no nested registry-lock
-	// acquisition. A catalog write failure fails the Open loud (§13 — no
-	// silent degradation): a session the catalog never learned about
-	// would silently vanish from sessions.list after a restart.
+	// later process can re-discover it (the StateStore has no List). This
+	// runs while holding r.mu — the serialized catalog RMW path
+	// (mutateCatalog) requires it — so the add serializes with a concurrent
+	// erasure's removeFromCatalog and neither lost-updates the other. A
+	// catalog write failure fails the Open loud (§13 — no silent
+	// degradation): a session the catalog never learned about would
+	// silently vanish from sessions.list after a restart.
 	if cerr := r.addToCatalog(ctx, ident.TenantID, ident.UserID, id); cerr != nil {
 		return nil, cerr
 	}
@@ -404,10 +405,16 @@ func (r *Registry) Close(ctx context.Context, id string, reason string) error {
 // identity validation, never as the load key.
 //
 // Semantics: the title is trimmed; an empty-after-trim value clears
-// Title and resets TitleSource to TitleSourceUnset; a non-empty value
-// is validated (MaxSessionTitleLen, no newline/control characters —
+// Title, resets TitleSource to TitleSourceUnset, AND zeroes the
+// auto-naming counters (AutoNameCount / LastAutoNamedTurn) in the same
+// save — a clear starts a NEW auto-naming arming cycle, so a re-arm fires
+// again (the cap is per-cycle, not per-session-lifetime). A non-empty
+// value is validated (MaxSessionTitleLen, no newline/control characters —
 // ErrInvalidTitle on violation, never a silent clamp per CLAUDE.md
-// §13) and stored with TitleSource = TitleSourceManual. The target
+// §13) and stored with TitleSource = TitleSourceManual. A write that
+// changes nothing (clearing an already-unset title, or an identical
+// manual re-set) is a no-op: nothing is persisted and no
+// session.title_changed event is emitted. The target
 // session is loaded under the caller's own (tenant, user) plus the
 // target id — a session belonging to a DIFFERENT (tenant, user) is
 // simply not found at that StateStore key, so a cross-user/cross-tenant
@@ -439,6 +446,7 @@ func (r *Registry) SetTitle(ctx context.Context, id string, ident identity.Ident
 	// SetTitle racing an erasure could re-persist the session.lifecycle
 	// record after DeleteScope's irreversible clear.
 	target := identity.Identity{TenantID: ident.TenantID, UserID: ident.UserID, SessionID: id}
+	changed := false
 	stored, err := r.mutateSession(ctx, target, func(stored *Session) error {
 		// Defence-in-depth (mirrors Touch/Close): verify the record we
 		// got back actually belongs to the caller's (tenant, user). The
@@ -452,16 +460,42 @@ func (r *Registry) SetTitle(ctx context.Context, id string, ident identity.Ident
 				ident.TenantID, ident.UserID)
 		}
 		if trimmed == "" {
+			// Clearing an already-unset, never-auto-named title is a no-op:
+			// skip the save AND the event (a content-free session.title_changed
+			// on a write that changed nothing is a spurious wake-up for every
+			// subscriber).
+			if stored.Title == "" && stored.TitleSource == TitleSourceUnset &&
+				stored.AutoNameCount == 0 && stored.LastAutoNamedTurn == 0 {
+				return errSkipSave
+			}
 			stored.Title = ""
 			stored.TitleSource = TitleSourceUnset
+			// A manual clear STARTS A NEW auto-naming arming cycle: reset the
+			// naming counters in the SAME record save so a re-arm fires again.
+			// Without this, once any auto-name landed (AutoNameCount ≥ 1),
+			// namingDue's AutoNameCount==0 first branch never re-triggered under
+			// repeat_every==0 — clear→re-arm was a silent dead-end. The
+			// max-repetitions cap is therefore PER-CYCLE: each clear opens a
+			// fresh cycle with its own cap budget.
+			stored.AutoNameCount = 0
+			stored.LastAutoNamedTurn = 0
 		} else {
+			// Identical manual re-set is a no-op: skip the save and the event.
+			if stored.Title == trimmed && stored.TitleSource == TitleSourceManual {
+				return errSkipSave
+			}
 			stored.Title = trimmed
 			stored.TitleSource = TitleSourceManual
 		}
+		changed = true
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	if !changed {
+		// No-op write (errSkipSave): nothing persisted, no event emitted.
+		return nil
 	}
 	r.publish(ctx, identity.Quadruple{Identity: stored.Identity}, events.Event{
 		Type:     EventTypeSessionTitleChanged,
@@ -499,7 +533,7 @@ func (r *Registry) RecordCompletedTurn(ctx context.Context, id string, ident ide
 	}
 	target := identity.Identity{TenantID: ident.TenantID, UserID: ident.UserID, SessionID: id}
 	var count int
-	stored, err := r.mutateSession(ctx, target, func(stored *Session) error {
+	if _, err := r.mutateSession(ctx, target, func(stored *Session) error {
 		if stored.Identity.TenantID != ident.TenantID || stored.Identity.UserID != ident.UserID {
 			return fmt.Errorf("%w: stored=(%s,%s) caller=(%s,%s)",
 				ErrIdentityMismatch,
@@ -509,11 +543,9 @@ func (r *Registry) RecordCompletedTurn(ctx context.Context, id string, ident ide
 		stored.TurnCount++
 		count = stored.TurnCount
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		return 0, err
 	}
-	_ = stored
 	return count, nil
 }
 
@@ -715,19 +747,26 @@ func (r *Registry) preflightErase(ctx context.Context, id string) (*Session, err
 }
 
 // clearErased removes the session's in-memory catalogs (openSessions +
-// idIndex) and its persisted per-(tenant, user) discovery catalog entry.
-// It performs no session-record delete (DeleteScope owns that). The
-// in-memory map deletes are guarded by r.mu; the catalog read-modify-
-// write goes through the StateStore (its own concurrency boundary).
-// Idempotent — clearing an already-cleared session is a no-op.
+// idIndex) and its persisted per-(tenant, user) discovery catalog entry,
+// all under ONE r.mu critical section. It performs no session-record delete
+// (DeleteScope owns that). Idempotent — clearing an already-cleared session
+// is a no-op.
+//
+// The catalog remove is folded INTO the r.mu section (it previously ran
+// AFTER releasing r.mu, racing Open's addToCatalog as a lost update):
+// holding r.mu across the map deletes AND the catalog read-modify-write
+// serializes it with a concurrent Open of a sibling session, so an
+// Open(C)-during-Erase(B) can never drop C's freshly-added catalog entry.
+// Lock order is preserved — the eraser holds its striped per-session lock
+// OUTSIDE r.mu (striped → r.mu).
 func (r *Registry) clearErased(ctx context.Context, ident identity.Identity) error {
 	if r.closed.Load() {
 		return ErrRegistryClosed
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.openSessions, ident.SessionID)
 	delete(r.idIndex, ident.SessionID)
-	r.mu.Unlock()
 	// Remove the session from the (tenant, user) discovery catalog so a
 	// later process does not re-hydrate a now-erased session id.
 	if err := r.removeFromCatalog(ctx, ident.TenantID, ident.UserID, ident.SessionID); err != nil {
