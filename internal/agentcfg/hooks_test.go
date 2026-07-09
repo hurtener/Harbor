@@ -45,19 +45,32 @@ func TestContentHash_IncludesHooks(t *testing.T) {
 	}
 }
 
-// TestNormalizePayload_Hooks_EmptyToolDropsSection proves an empty /
-// whitespace-only tool normalises the whole hooks section away (a hook with
-// no target is not a hook), and a negative timeout normalises to 0.
-func TestNormalizePayload_Hooks_EmptyToolDropsSection(t *testing.T) {
+// TestNormalizePayload_Hooks_EmptyToolPreservesSection proves an empty /
+// whitespace-only tool normalises the RunCompletion to nil BUT PRESERVES the
+// enclosing hooks section (the explicit per-agent no-hook, D-290 / FIX-2), and
+// a negative timeout normalises to 0.
+func TestNormalizePayload_Hooks_EmptyToolPreservesSection(t *testing.T) {
+	// An empty-tool section is preserved as a present section with nil
+	// RunCompletion (the explicit no-hook — section presence is the signal).
 	got := agentcfg.NormalizePayload(agentcfg.ConfigPayload{Hooks: hooksSection("   ", 5000)})
-	if got.Hooks != nil {
-		t.Fatalf("empty-tool hooks section should drop to nil, got %+v", got.Hooks)
+	if got.Hooks == nil {
+		t.Fatalf("empty-tool hooks section should be PRESERVED (present no-hook), got nil")
 	}
-	// Hash equality: an empty-tool section equals no section.
+	if got.Hooks.RunCompletion != nil {
+		t.Fatalf("empty-tool RunCompletion should normalise to nil, got %+v", got.Hooks.RunCompletion)
+	}
+	// Canonical form: a bare `{}` and an empty-tool `{run_completion:{tool:""}}`
+	// share ONE canonical form (both = present no-hook) → hash equal.
+	hBare, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{Hooks: &agentcfg.HooksSection{}})
+	hEmptyTool, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{Hooks: hooksSection("", 0)})
+	if hBare != hEmptyTool {
+		t.Fatal("a bare {} and an empty-tool hooks section must share one canonical form (hash equal)")
+	}
+	// Presence is distinguishable: a present no-hook section must NOT hash
+	// equal to an ABSENT section (this is the FIX-2 footgun the hash guards).
 	hNone, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{})
-	hEmpty, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{Hooks: hooksSection("", 0)})
-	if hNone != hEmpty {
-		t.Fatal("an empty-tool hooks section must hash equal to no section")
+	if hNone == hEmptyTool {
+		t.Fatal("a present no-hook section must NOT hash equal to an absent section (presence is semantic)")
 	}
 	// Negative timeout normalises to 0.
 	gotNeg := agentcfg.NormalizePayload(agentcfg.ConfigPayload{Hooks: hooksSection("sink", -1)})
@@ -68,6 +81,28 @@ func TestNormalizePayload_Hooks_EmptyToolDropsSection(t *testing.T) {
 	gotTrim := agentcfg.NormalizePayload(agentcfg.ConfigPayload{Hooks: hooksSection("  sink  ", 3000)})
 	if gotTrim.Hooks == nil || gotTrim.Hooks.RunCompletion.Tool != "sink" {
 		t.Fatalf("tool should be trimmed to 'sink', got %+v", gotTrim.Hooks)
+	}
+}
+
+// TestDiffHooks_SectionPresence proves the presence dimension makes an
+// absent→present-no-hook toggle a visible revision (FIX-2 / D-290).
+func TestDiffHooks_SectionPresence(t *testing.T) {
+	absent := agentcfg.ConfigPayload{}
+	presentNoHook := agentcfg.ConfigPayload{Hooks: &agentcfg.HooksSection{}}
+	d := agentcfg.DiffHooks(absent, presentNoHook)
+	if !d.Changed() {
+		t.Fatal("absent → present no-hook must register as a change (else the opt-out is invisible in agent_config.diff)")
+	}
+	if !d.SectionPresentChanged || d.SectionPresentFrom != "" || d.SectionPresentTo != "present" {
+		t.Errorf("presence delta = %+v, want from='' to='present'", d)
+	}
+	// Tool/timeout are empty on both sides — presence is the ONLY signal here.
+	if d.RunCompletionToolChanged || d.RunCompletionTimeoutChanged {
+		t.Errorf("tool/timeout should be unchanged (both empty): %+v", d)
+	}
+	// Two present no-hook sections do not differ.
+	if agentcfg.DiffHooks(presentNoHook, presentNoHook).Changed() {
+		t.Error("two present no-hook sections reported a change")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -230,14 +231,19 @@ func TestReconcileConnections_RemoveUnderLoad_Stress(t *testing.T) {
 	assertGoroutineBaseline(t, base)
 }
 
-// assertGoroutineBaseline fails if goroutines did not return to baseline.
+// assertGoroutineBaseline polls (bounded) until the goroutine count is back
+// within a small tolerance of the captured baseline. The bounded deadline-poll
+// shape (2s deadline, 10ms poll) replaces a 50×runtime.Gosched() spin that
+// flaked when detach goroutines had not yet been scheduled out at the moment of
+// the check.
 func assertGoroutineBaseline(t *testing.T, base int) {
 	t.Helper()
-	for range 50 {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		if runtime.NumGoroutine() <= base+2 {
 			return
 		}
-		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
 	}
 	t.Errorf("goroutines did not return to baseline: base=%d now=%d", base, runtime.NumGoroutine())
 }

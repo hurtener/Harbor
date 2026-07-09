@@ -200,6 +200,11 @@ func TestNamingDue_TruthTable(t *testing.T) {
 		{"repeat_not_due", activePolicy(1, 2, 3), sessions.AutoNamingState{TurnCount: 2, AutoNameCount: 1, LastAutoNamedTurn: 1}, false},
 		{"repeat_due", activePolicy(1, 2, 3), sessions.AutoNamingState{TurnCount: 3, AutoNameCount: 1, LastAutoNamedTurn: 1}, true},
 		{"repeat_cap_reached", activePolicy(1, 2, 3), sessions.AutoNamingState{TurnCount: 99, AutoNameCount: 3, LastAutoNamedTurn: 5}, false},
+		// Re-arm after a manual clear (FIX-3): SetTitle's clear zeroes
+		// AutoNameCount + LastAutoNamedTurn, so the AutoNameCount==0 first
+		// branch fires again even for a name-once (repeat_every==0) policy that
+		// had already named — the cap is per-cycle.
+		{"rearm_after_clear_name_once", activePolicy(1, 0, 0), sessions.AutoNamingState{TurnCount: 5, AutoNameCount: 0, LastAutoNamedTurn: 0}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

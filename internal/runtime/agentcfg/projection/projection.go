@@ -316,18 +316,25 @@ func RunCompletionHookFromConfig(rc config.RunCompletionHookConfig) *steering.Co
 // ActiveRunCompletionHook resolves the run-completion hook for a run at run
 // start with next-run projection semantics. Resolution precedence is
 // pinned here (and by a table test — CLAUDE.md §17.6): the agent-config
-// `hooks` section (when it sets a non-empty run-completion tool) over the
-// static yaml default over no hook. The two run-loop drivers (the production
-// dev driver and the harbortest devstack twin) call this ONE helper, so the
-// precedence cannot drift between binaries.
+// `hooks` section (when PRESENT) over the static yaml default over no hook.
+// The two run-loop drivers (the production dev driver and the harbortest
+// devstack twin) call this ONE helper, so the precedence cannot drift
+// between binaries.
+//
+// A PRESENT hooks section is authoritative (mirrors the naming section,
+// section): a run-completion hook with a non-empty tool pins it, while a
+// present section with no/empty run-completion tool is an explicit per-agent
+// NO-HOOK that WINS over yamlDefault (returns (nil, false)). Only an ABSENT
+// (nil) hooks section falls through to yamlDefault — otherwise a per-agent
+// opt-out of transcript egress would be silently discarded.
 //
 // yamlDefault is the operator's static `runtime.hooks.run_completion`
 // projection (nil when unset). The returned spec's AgentID is stamped from
 // agentID (registration metadata, never an isolation key — §6). A nil
-// registry, an empty agentID, an agent with no active revision, or an active
-// revision with no hooks section falls through to yamlDefault. A registry
-// read error is returned so the caller fails the run loudly (CLAUDE.md §13):
-// no silent fall-through to yaml on a read failure.
+// registry, an empty agentID, or an agent with no active revision falls
+// through to yamlDefault. A registry read error is returned so the caller
+// fails the run loudly (CLAUDE.md §13): no silent fall-through to yaml on a
+// read failure.
 //
 // The active revision is read ONCE per run; the returned spec is fresh, so
 // concurrent / in-flight runs keep their own snapshot (the concurrent-reuse
@@ -339,8 +346,15 @@ func ActiveRunCompletionHook(ctx context.Context, reg agentcfg.Registry, agentID
 		if err != nil {
 			return nil, false, err
 		}
-		if ok {
-			if rc, set := rev.Payload.RunCompletionHookView(); set && rc.Tool != "" {
+		if ok && rev.Payload.Hooks != nil {
+			// A PRESENT hooks section is authoritative (mirrors the naming
+			// section): a run-completion hook with a non-empty tool pins
+			// it, and a present section with no/empty run-completion tool is the
+			// explicit per-agent NO-HOOK that WINS over the yaml default (returns
+			// (nil, false) rather than falling through — otherwise a per-agent
+			// opt-out of transcript egress would be silently discarded and the
+			// yaml hook would keep dispatching).
+			if rc, set := rev.Payload.RunCompletionHookView(); set && strings.TrimSpace(rc.Tool) != "" {
 				spec := &steering.CompletionHookSpec{
 					Tool:    rc.Tool,
 					Timeout: time.Duration(rc.TimeoutMS) * time.Millisecond,
@@ -348,6 +362,7 @@ func ActiveRunCompletionHook(ctx context.Context, reg agentcfg.Registry, agentID
 				}
 				return spec, true, nil
 			}
+			return nil, false, nil
 		}
 	}
 	// Fall through to the static yaml default (when set).

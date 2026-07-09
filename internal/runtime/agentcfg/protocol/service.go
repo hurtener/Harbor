@@ -482,8 +482,9 @@ func (s *Service) validateLLMParams(lp *prototypes.AgentConfigLLMParams) error {
 // negative run-completion timeout_ms is rejected loud (parity with the yaml
 // validator's `runtime.hooks.run_completion.timeout` negative rejection). A
 // nil section (no hooks edit) is a no-op; a zero timeout inherits the runtime
-// default at run start and an empty tool normalises the section away — both
-// valid.
+// default at run start. A present section with an empty run-completion tool is
+// VALID — it is preserved as the explicit per-agent no-hook that overrides a
+// yaml fleet hook at run start, not normalised away.
 func (s *Service) validateHooks(h *prototypes.AgentConfigHooks) error {
 	if h == nil || h.RunCompletion == nil {
 		return nil

@@ -260,9 +260,10 @@ type ConnectionsSection struct {
 // dispatch timeout. It mirrors the static `runtime.hooks.run_completion`
 // yaml; resolution at run start is agent-config over yaml over no hook.
 type RunCompletionHook struct {
-	// Tool is the catalog tool name the transcript is dispatched to. An
-	// empty tool normalises the whole hooks section away (a hook with no
-	// target is not a hook).
+	// Tool is the catalog tool name the transcript is dispatched to. An empty
+	// tool normalises the RunCompletion to nil BUT preserves the enclosing
+	// hooks section (a present section with no tool is the explicit per-agent
+	// no-hook that overrides a yaml fleet hook at run start).
 	Tool string `json:"tool"`
 	// TimeoutMS is the dispatch timeout in milliseconds. Zero falls through
 	// to the runtime default at run start. Negative is rejected at set time.
@@ -272,8 +273,17 @@ type RunCompletionHook struct {
 // HooksSection is the run-lifecycle-hook section of the config envelope.
 // Declared as its own section so a set REPLACES only this section,
 // preserving the sibling sections (the section-merge invariant).
+//
+// Section PRESENCE is authoritative (mirrors NamingSection): a NIL section
+// means "no per-agent hook policy" (the yaml `runtime.hooks.run_completion`
+// fleet default, then no hook, resolves at run start). A PRESENT section with
+// a non-nil RunCompletion (non-empty tool) pins the agent's hook; a PRESENT
+// section with a nil / empty-tool RunCompletion is an explicit per-agent
+// NO-HOOK that OVERRIDES a yaml-on fleet default — normalization
+// preserves any non-nil section (never an inert-drop).
 type HooksSection struct {
-	// RunCompletion, when non-nil, pins the agent's run-completion hook.
+	// RunCompletion pins the agent's run-completion hook when non-nil with a
+	// non-empty tool. Nil in a PRESENT section is the explicit no-hook.
 	RunCompletion *RunCompletionHook `json:"run_completion,omitempty"`
 }
 
@@ -471,11 +481,20 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		}
 	}
 	if p.Hooks != nil {
-		// A run-completion hook with an empty (whitespace-only) tool is not a
-		// hook; normalise it away so a semantically-empty section produces one
-		// canonical form (equal states hash equal, no spurious revision, no
-		// phantom diff). A negative TimeoutMS normalises to 0 (defaulted at run
-		// start) — set-time validation is where a negative is rejected.
+		// A non-nil hooks section is ALWAYS preserved (mirrors the naming
+		// section) — section PRESENCE is the operator's signal. A present hooks
+		// section with no/empty run-completion tool is an explicit per-agent
+		// NO-HOOK that overrides a yaml fleet hook at run start; dropping
+		// it as "inert" would silently discard the opt-out and keep dispatching
+		// the yaml hook (leaking the run transcript the operator meant to stop).
+		// A run-completion hook with a non-empty tool is preserved (whitespace
+		// trimmed; a negative TimeoutMS normalises to 0, defaulted at run start —
+		// set-time validation is where a negative is rejected); an empty /
+		// whitespace-only tool canonicalises the RunCompletion to nil so
+		// `{run_completion:{tool:""}}` and a bare `{}` share ONE canonical form
+		// (equal states hash equal, no spurious revision), while both stay
+		// distinguishable from an ABSENT (nil) section.
+		hs := &HooksSection{}
 		if p.Hooks.RunCompletion != nil {
 			tool := strings.TrimSpace(p.Hooks.RunCompletion.Tool)
 			if tool != "" {
@@ -483,9 +502,10 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 				if timeout < 0 {
 					timeout = 0
 				}
-				out.Hooks = &HooksSection{RunCompletion: &RunCompletionHook{Tool: tool, TimeoutMS: timeout}}
+				hs.RunCompletion = &RunCompletionHook{Tool: tool, TimeoutMS: timeout}
 			}
 		}
+		out.Hooks = hs
 	}
 	if p.Naming != nil {
 		// A non-nil naming section is ALWAYS preserved (model trimmed to the
@@ -903,6 +923,16 @@ func llmParamStrings(lp *LLMParams) (model, temperature, maxTokens, reasoningEff
 // two revisions. Reports whether the run-completion hook's tool / timeout
 // changed plus their from / to display values (an unset hook renders "").
 type HooksDiff struct {
+	// SectionPresentChanged reports whether the hooks-section PRESENCE differs
+	// (absent vs present). A present-but-empty section (the explicit per-agent
+	// no-hook) renders no tool and no timeout, so WITHOUT this dimension
+	// a yaml-hook-on agent toggling to an explicit `{}` opt-out would be an
+	// invisible revision in agent_config.diff (a phantom revision in the
+	// Console diff view). Mirrors NamingDiff's tri-state Auto. Present renders
+	// "present"; absent renders "".
+	SectionPresentChanged bool
+	SectionPresentFrom    string
+	SectionPresentTo      string
 	// RunCompletionToolChanged reports whether the hook's target tool differs.
 	RunCompletionToolChanged bool
 	RunCompletionToolFrom    string
@@ -916,16 +946,24 @@ type HooksDiff struct {
 // Changed reports whether the run-lifecycle-hook section differs between the
 // two revisions.
 func (d HooksDiff) Changed() bool {
-	return d.RunCompletionToolChanged || d.RunCompletionTimeoutChanged
+	return d.SectionPresentChanged || d.RunCompletionToolChanged || d.RunCompletionTimeoutChanged
 }
 
 // DiffHooks computes the per-field delta of two run-lifecycle-hook states.
 // Exported so the diff is one canonical implementation shared by the driver
-// and tests. An unset hook is compared as the empty tool + empty timeout.
+// and tests. An ABSENT section renders no presence + empty tool/timeout; a
+// PRESENT-but-empty section (explicit no-hook) renders presence "present" with
+// empty tool/timeout — so absent→`{}` (and its inverse) registers as a change
+// even though tool and timeout are empty on both sides.
 func DiffHooks(from, to ConfigPayload) HooksDiff {
+	fp := hooksSectionPresence(from)
+	tp := hooksSectionPresence(to)
 	ft, ftimeout := runCompletionHookStrings(from)
 	tt, ttimeout := runCompletionHookStrings(to)
 	return HooksDiff{
+		SectionPresentChanged:       fp != tp,
+		SectionPresentFrom:          fp,
+		SectionPresentTo:            tp,
 		RunCompletionToolChanged:    ft != tt,
 		RunCompletionToolFrom:       ft,
 		RunCompletionToolTo:         tt,
@@ -935,8 +973,21 @@ func DiffHooks(from, to ConfigPayload) HooksDiff {
 	}
 }
 
+// hooksSectionPresence renders a payload's hooks-section presence as the
+// diffable display string: "present" when the section is present (with or
+// without a run-completion tool), "" when absent. Presence is semantic — a
+// present bare `{}` is an explicit per-agent no-hook that overrides a yaml
+// fleet hook.
+func hooksSectionPresence(p ConfigPayload) string {
+	if p.Hooks != nil {
+		return "present"
+	}
+	return ""
+}
+
 // runCompletionHookStrings renders a payload's run-completion hook to its
-// canonical display strings (tool, timeout-ms); an unset hook renders ("", "").
+// canonical display strings (tool, timeout-ms); an unset hook (absent section
+// OR a present section with no run-completion tool) renders ("", "").
 func runCompletionHookStrings(p ConfigPayload) (tool, timeout string) {
 	rc, ok := p.RunCompletionHookView()
 	if !ok {

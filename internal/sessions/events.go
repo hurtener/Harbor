@@ -20,11 +20,13 @@ const (
 	// (re-persisting under the erased triple would leave the session's
 	// `state.history` non-empty — RFC §6.13 / §7).
 	EventTypeSessionErased events.EventType = "session.erased"
-	// EventTypeSessionTitleChanged marks a successful `sessions.set_title`
-	// (set OR clear). Content-free by construction: the title
-	// string NEVER rides this payload — only the SessionID and the
-	// resulting TitleSource. Consumers refetch the projection
-	// (`sessions.list` / `sessions.inspect`) for the title text.
+	// EventTypeSessionTitleChanged marks a successful title change. It has TWO
+	// producers: the `sessions.set_title` verb via SetTitle (a manual set OR
+	// clear) and the internal auto-namer via SetTitleAuto (an auto set).
+	// Content-free by construction: the title string NEVER rides this payload
+	// — only the SessionID and the resulting TitleSource ("manual" / "auto" /
+	// "" on clear). Consumers refetch the projection (`sessions.list` /
+	// `sessions.inspect`) for the title text.
 	EventTypeSessionTitleChanged events.EventType = "session.title_changed"
 )
 
@@ -78,10 +80,12 @@ type SessionGCReapedPayload struct {
 	Reason    string
 }
 
-// SessionTitleChangedPayload reports a successful `sessions.set_title`
-// call (set OR clear). Carries the SessionID and the resulting Source
-// ONLY — the title string itself NEVER rides this payload (the same
-// content-free contract SessionErasedPayload follows): the title is
+// SessionTitleChangedPayload reports a successful title change from EITHER
+// producer — the `sessions.set_title` verb (SetTitle: manual set or clear)
+// or the internal auto-namer (SetTitleAuto: auto set). Carries the SessionID
+// and the resulting Source ONLY — the title string itself NEVER rides this
+// payload (the same content-free contract SessionErasedPayload follows): the
+// title is
 // user-derived free text, and SafePayload types are published WITHOUT a
 // redactor pass (the bus skips the redactor for types sealed via
 // SafeSealed), so any raw content here would leak straight to every
@@ -94,9 +98,12 @@ type SessionTitleChangedPayload struct {
 	events.SafeSealed
 	// SessionID is the session whose title changed.
 	SessionID string
-	// Source is the resulting TitleSource after the call: "manual" when
-	// a non-empty title was set, "" (TitleSourceUnset) when the title
-	// was cleared. Never "auto" — the wire verb cannot produce it.
+	// Source is the resulting TitleSource after the call — a three-value
+	// domain: "manual" when a caller set a non-empty title via
+	// sessions.set_title, "auto" when the internal auto-namer set it via
+	// SetTitleAuto, and "" (TitleSourceUnset) when the title was cleared. The
+	// wire verb produces only "manual" / ""; the "auto" value comes from the
+	// runtime's own auto-naming path.
 	Source string
 }
 

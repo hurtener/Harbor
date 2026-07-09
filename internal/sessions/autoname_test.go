@@ -98,6 +98,68 @@ func TestRegistry_SetTitleAuto_SetsAutoAndBumpsCountersInOneSave(t *testing.T) {
 	}
 }
 
+// TestRegistry_SetTitle_ClearResetsAutoNamingCounters_ReArms pins FIX-3:
+// a manual clear (SetTitle with an empty value) zeroes AutoNameCount +
+// LastAutoNamedTurn in the same record save so auto-naming RE-ARMS. Before
+// the fix, clear reset only Title/TitleSource; the counters survived, so
+// namingDue's AutoNameCount==0 first branch never re-triggered under a
+// name-once policy and clear→re-arm was a silent dead-end.
+func TestRegistry_SetTitle_ClearResetsAutoNamingCounters_ReArms(t *testing.T) {
+	t.Parallel()
+	reg, _, _ := titleTestWiring(t)
+	id := ident("t1", "u1", "s1")
+	openForNaming(t, reg, id)
+
+	// One completed turn, an auto-name lands (count=1).
+	if _, err := reg.RecordCompletedTurn(ctxFor(id), id.SessionID, id); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if err := reg.SetTitleAuto(ctxFor(id), id.SessionID, id, "First auto title"); err != nil {
+		t.Fatalf("SetTitleAuto: %v", err)
+	}
+	st, err := reg.AutoNamingState(ctxFor(id), id.SessionID, id)
+	if err != nil {
+		t.Fatalf("AutoNamingState (post-auto): %v", err)
+	}
+	if st.AutoNameCount != 1 || st.LastAutoNamedTurn != 1 {
+		t.Fatalf("post-auto counters = auto %d last %d, want 1/1", st.AutoNameCount, st.LastAutoNamedTurn)
+	}
+
+	// A manual clear must reset the naming counters — starting a new cycle.
+	if err := reg.SetTitle(ctxFor(id), id.SessionID, id, ""); err != nil {
+		t.Fatalf("SetTitle (clear): %v", err)
+	}
+	st, err = reg.AutoNamingState(ctxFor(id), id.SessionID, id)
+	if err != nil {
+		t.Fatalf("AutoNamingState (post-clear): %v", err)
+	}
+	if st.TitleSource != sessions.TitleSourceUnset {
+		t.Errorf("post-clear TitleSource = %q, want unset", st.TitleSource)
+	}
+	if st.AutoNameCount != 0 || st.LastAutoNamedTurn != 0 {
+		t.Fatalf("post-clear counters = auto %d last %d, want 0/0 (re-arm)", st.AutoNameCount, st.LastAutoNamedTurn)
+	}
+	// TurnCount is untouched (it counts completed runs, not naming events).
+	if st.TurnCount != 1 {
+		t.Errorf("post-clear TurnCount = %d, want 1 (unchanged by a clear)", st.TurnCount)
+	}
+
+	// Re-arm proof: a new auto-name lands again on the next completed turn.
+	if _, err := reg.RecordCompletedTurn(ctxFor(id), id.SessionID, id); err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	if err := reg.SetTitleAuto(ctxFor(id), id.SessionID, id, "Second auto title"); err != nil {
+		t.Fatalf("SetTitleAuto (re-arm) = %v, want nil (a clear re-armed naming)", err)
+	}
+	st, err = reg.AutoNamingState(ctxFor(id), id.SessionID, id)
+	if err != nil {
+		t.Fatalf("AutoNamingState (post-rearm): %v", err)
+	}
+	if st.CurrentTitle != "Second auto title" || st.AutoNameCount != 1 {
+		t.Errorf("post-rearm = %q/auto %d, want \"Second auto title\"/1", st.CurrentTitle, st.AutoNameCount)
+	}
+}
+
 func TestRegistry_SetTitleAuto_RefusesManualTitle(t *testing.T) {
 	t.Parallel()
 	reg, _, _ := titleTestWiring(t)

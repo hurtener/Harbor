@@ -71,25 +71,43 @@ func (r *Registry) loadCatalog(ctx context.Context, tenant, user string) (sessio
 	return cat, nil
 }
 
-// addToCatalog records sessionID in the (tenant, user) catalog. A no-op
-// when the id is already present (idempotent). Caller need not hold
-// r.mu — the StateStore is its own concurrency boundary, and the
-// read-modify-write is benign under concurrency because the only
-// mutation is set-union (adding an id twice is a no-op).
-func (r *Registry) addToCatalog(ctx context.Context, tenant, user, sessionID string) error {
+// mutateCatalog is the ONE serialized read-modify-write path for the
+// per-(tenant, user) discovery catalog. It loads the catalog, applies fn
+// (which mutates the passed *sessionCatalog and reports whether anything
+// changed), and — only when fn reports a change — persists the result.
+//
+// It MUST be called with r.mu held. The catalog is a single shared record
+// per (tenant, user); a load→modify→save that does NOT hold r.mu across all
+// three steps races a concurrent catalog writer as a classic lost update.
+// The confirmed shape: an erasure's removeFromCatalog loads {A,B}; an
+// Open(C) then completes its own add ({A,B,C}); the eraser saves its stale
+// difference ({A}); session C's record survives but its catalog entry is
+// gone — invisible to sessions.list and never re-discovered by a fresh
+// process after a restart (the StateStore has no List). Holding the SAME
+// r.mu the session-record writers (mutateSession) hold serializes the Open
+// add against the erasure remove and closes the window.
+//
+// Lock order is unchanged: the eraser holds its striped per-session lock
+// OUTSIDE r.mu (striped → r.mu, the order clearErased already used);
+// mutateCatalog acquires no other lock and performs no bus I/O, so no cycle
+// exists.
+func (r *Registry) mutateCatalog(ctx context.Context, tenant, user string, fn func(cat *sessionCatalog) bool) error {
 	cat, err := r.loadCatalog(ctx, tenant, user)
 	if err != nil {
 		return err
 	}
-	for _, id := range cat.SessionIDs {
-		if id == sessionID {
-			return nil // already catalogued
-		}
+	if !fn(&cat) {
+		return nil // no change — skip the save
 	}
-	cat.SessionIDs = append(cat.SessionIDs, sessionID)
-	bytes, merr := json.Marshal(cat)
-	if merr != nil {
-		return fmt.Errorf("sessions: marshal catalog: %w", merr)
+	return r.saveCatalog(ctx, tenant, user, cat)
+}
+
+// saveCatalog persists the (tenant, user) catalog record. Shared by the
+// mutateCatalog RMW path.
+func (r *Registry) saveCatalog(ctx context.Context, tenant, user string, cat sessionCatalog) error {
+	bytes, err := json.Marshal(cat)
+	if err != nil {
+		return fmt.Errorf("sessions: marshal catalog: %w", err)
 	}
 	rec := state.StateRecord{
 		ID:        state.NewEventID(),
@@ -104,47 +122,48 @@ func (r *Registry) addToCatalog(ctx context.Context, tenant, user, sessionID str
 	return nil
 }
 
+// addToCatalog records sessionID in the (tenant, user) catalog. A no-op
+// when the id is already present (idempotent). MUST be called with r.mu
+// held: it routes through mutateCatalog, the single serialized catalog RMW
+// path (see there for why the lock is load-bearing). Open holds r.mu across
+// its whole critical section; that is where this call runs.
+func (r *Registry) addToCatalog(ctx context.Context, tenant, user, sessionID string) error {
+	return r.mutateCatalog(ctx, tenant, user, func(cat *sessionCatalog) bool {
+		for _, id := range cat.SessionIDs {
+			if id == sessionID {
+				return false // already catalogued
+			}
+		}
+		cat.SessionIDs = append(cat.SessionIDs, sessionID)
+		return true
+	})
+}
+
 // removeFromCatalog drops sessionID from the (tenant, user) catalog. A
 // no-op when the id is absent (idempotent). The catalog record is keyed
 // by (tenant, user) — NOT by the session triple — so a session-scoped
 // StateStore.DeleteScope never reaches it; the erasure cascade calls
 // this explicitly so an erased session leaves no dangling catalog entry
-// to re-hydrate after a restart. Caller need not hold r.mu — the
-// StateStore is its own concurrency boundary, and the read-modify-write
-// is a set-difference (removing an absent id is a no-op).
+// to re-hydrate after a restart. MUST be called with r.mu held: it routes
+// through mutateCatalog (folded into clearErased's r.mu critical section)
+// so the erasure remove serializes with Open's add.
 func (r *Registry) removeFromCatalog(ctx context.Context, tenant, user, sessionID string) error {
-	cat, err := r.loadCatalog(ctx, tenant, user)
-	if err != nil {
-		return err
-	}
-	kept := make([]string, 0, len(cat.SessionIDs))
-	found := false
-	for _, id := range cat.SessionIDs {
-		if id == sessionID {
-			found = true
-			continue
+	return r.mutateCatalog(ctx, tenant, user, func(cat *sessionCatalog) bool {
+		kept := make([]string, 0, len(cat.SessionIDs))
+		found := false
+		for _, id := range cat.SessionIDs {
+			if id == sessionID {
+				found = true
+				continue
+			}
+			kept = append(kept, id)
 		}
-		kept = append(kept, id)
-	}
-	if !found {
-		return nil // already absent
-	}
-	cat.SessionIDs = kept
-	bytes, merr := json.Marshal(cat)
-	if merr != nil {
-		return fmt.Errorf("sessions: marshal catalog: %w", merr)
-	}
-	rec := state.StateRecord{
-		ID:        state.NewEventID(),
-		Identity:  catalogQuad(tenant, user),
-		Kind:      catalogKind,
-		Bytes:     bytes,
-		UpdatedAt: r.clock.Now(),
-	}
-	if serr := r.store.Save(ctx, rec); serr != nil {
-		return fmt.Errorf("sessions: save catalog: %w", serr)
-	}
-	return nil
+		if !found {
+			return false // already absent
+		}
+		cat.SessionIDs = kept
+		return true
+	})
 }
 
 // hydrateFromCatalog repopulates the in-memory idIndex / openSessions
