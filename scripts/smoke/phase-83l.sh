@@ -42,7 +42,7 @@ assert_grep_present 'NetworkDefaults:\s*networkDefaultsFromConfig' "internal/llm
     "llm.SnapshotFromConfig projects NetworkDefaults onto the snapshot (D-155 via 110c)"
 assert_grep_present 'DisableCorrections:\s*disableCorrectionsFromConfig' "internal/llm/from_config.go" \
     "llm.SnapshotFromConfig projects llm.corrections onto the snapshot (D-155 via 110c)"
-assert_grep_present 'llm\.SnapshotFromConfig' "cmd/harbor/cmd_dev.go" \
+assert_grep_present 'llm\.SnapshotFromConfig' "cmd/harbor/devcompose.go" \
     "bootDevStack consumes the exported projection (110c)"
 
 # Devstack routes through the ONE assembly fan-out (110d / D-197),

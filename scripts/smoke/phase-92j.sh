@@ -57,11 +57,11 @@ assert_grep_present 'func ActiveLLMOverrides' \
     internal/runtime/agentcfg/projection/projection.go \
     'phase 92j: ActiveLLMOverrides projection present'
 assert_grep_present 'projection.ActiveLLMOverrides' \
-    cmd/harbor/cmd_dev_runloop.go \
+    internal/runtime/serve/runloop.go \
     'phase 92j: production run loop calls ActiveLLMOverrides'
-assert_grep_present 'projection.ActiveLLMOverrides' \
+assert_grep_present 'serve.NewRunLoopDriver' \
     harbortest/devstack/devstack.go \
-    'phase 92j: devstack twin calls ActiveLLMOverrides (D-094)'
+    'phase 92j: devstack consumes the promoted driver (which calls ActiveLLMOverrides — single-homed)'
 
 # 6. The extended 3-arg ComposeLLMOverrides (session > agent > tenant).
 assert_grep_present 'func ComposeLLMOverrides\(session \*PendingOverride, agent, tenant \*planner.LLMOverrides\)' \

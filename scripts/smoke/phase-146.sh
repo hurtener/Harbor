@@ -150,18 +150,18 @@ fi
 # 3d. Both per-task drivers + RunOnce consume the shared builder — no
 #     private terminal-validation copy survives.
 MISSING=0
-for f in internal/runtime/assemble/runonce.go cmd/harbor/cmd_dev_runloop.go harbortest/devstack/devstack.go; do
+for f in internal/runtime/assemble/runonce.go internal/runtime/serve/runloop.go; do
   grep -q 'runctx.FinishAnswerEnvelope' "$f" || { fail "phase 146: ${f} does not call runctx.FinishAnswerEnvelope"; MISSING=1; }
 done
-[ "${MISSING}" = "0" ] && ok "phase 146: RunOnce + both per-task drivers build the envelope via runctx.FinishAnswerEnvelope"
+[ "${MISSING}" = "0" ] && ok "phase 146: RunOnce + the promoted per-task driver build the envelope via runctx.FinishAnswerEnvelope"
 
-# 3e. The typed terminal code is defined and both drivers stamp it.
+# 3e. The typed terminal code is defined and the promoted driver stamps it
+# (the devstack twin is single-homed onto this driver — phase 159).
 if grep -q 'TaskErrorCodeOutputInvalid' internal/planner/answer_envelope.go &&
-   grep -q 'TaskErrorCodeOutputInvalid' cmd/harbor/cmd_dev_runloop.go &&
-   grep -q 'TaskErrorCodeOutputInvalid' harbortest/devstack/devstack.go; then
-  ok "phase 146: output_invalid terminal code defined and stamped by both drivers"
+   grep -q 'TaskErrorCodeOutputInvalid' internal/runtime/serve/runloop.go; then
+  ok "phase 146: output_invalid terminal code defined and stamped by the promoted driver"
 else
-  fail "phase 146: TaskErrorCodeOutputInvalid wiring missing from a driver"
+  fail "phase 146: TaskErrorCodeOutputInvalid wiring missing from the driver"
 fi
 
 # ----------------------------------------------------------------------------

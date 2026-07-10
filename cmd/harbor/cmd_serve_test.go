@@ -19,6 +19,9 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 )
 
 // serveBootYAML is the bus-wired hermetic config for the production-boot
@@ -128,28 +131,32 @@ func TestBootDevStack_ServeProductionBoot_GatesDevSurfacesAndVerifiesJWKS(t *tes
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	stack, err := bootDevStack(ctx, devBootOptions{
-		cfgPath: cfgPath,
-		// allowMock lets the hermetic stack boot without a real provider;
-		// the production gating under test is signer == nil (driven by
-		// authValidatorFactory), independent of the LLM-provider gate.
-		allowMock:            true,
-		authValidatorFactory: newJWKSValidatorFactory(),
-		logger:               logger,
-		stderr:               &stderr,
+	stack, err := serve.Boot(ctx, serve.Options{
+		ConfigPath: cfgPath,
+		Logger:     logger,
+		Stderr:     &stderr,
+		// The production serve posture: JWKS factory, no dev seams. allowMock
+		// lets the hermetic stack boot without a real provider; the gating
+		// under test is the absence of dev seams, independent of the LLM gate.
+		AuthValidatorFactory: newJWKSValidatorFactory(),
+		BuildLLMSnapshot:     newLLMSnapshotBuilder(true),
+		MCPDefaultIdentity:   identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
+		DisplayName:          "harbor dev",
+		InstanceID:           devInstanceID(),
+		BuildVersion:         HarborVersion,
+		BuildCommit:          "dev",
+		SubcommandLabel:      "serve",
 	})
 	if err != nil {
-		t.Fatalf("bootDevStack (serve path): %v", err)
+		t.Fatalf("serve.Boot (serve path): %v", err)
 	}
 	defer func() {
 		cc, ccCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer ccCancel()
-		for i := len(stack.closeFns) - 1; i >= 0; i-- {
-			_ = stack.closeFns[i](cc)
-		}
+		stack.Close(cc)
 	}()
 
-	h := stack.server.Handler
+	h := stack.Handler()
 	if h == nil {
 		t.Fatal("booted stack has no HTTP handler")
 	}

@@ -6,7 +6,7 @@
 // consumer-side run-loop path is exercised, not just the registry round-trip
 // (closes the wave's adversarial-review WARN).
 
-package main
+package serve
 
 import (
 	"context"
@@ -82,7 +82,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
 
 	// A driver with no registry wired → ungated (every skill passes).
-	bare := &perTaskRunLoopDriver{}
+	bare := &RunLoopDriver{}
 	got, err := bare.projectAgentConfigSkills(ctx, q, acTestViews("a", "b"))
 	if err != nil {
 		t.Fatalf("bare driver: %v", err)
@@ -92,7 +92,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigSkills_AtRunStart(t *testing.T)
 	}
 
 	// A driver with the registry wired but no active revision → ungated.
-	d := &perTaskRunLoopDriver{agentConfig: reg, agentConfigID: agentID}
+	d := &RunLoopDriver{agentConfig: reg, agentConfigID: agentID}
 	got, err = d.projectAgentConfigSkills(ctx, q, acTestViews("a", "b"))
 	if err != nil {
 		t.Fatalf("no-revision driver: %v", err)
@@ -176,7 +176,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 	}
 
 	// No registry wired → ungated (all three tools visible).
-	bare := &perTaskRunLoopDriver{catalog: cat}
+	bare := &RunLoopDriver{catalog: cat}
 	v, err := bare.projectAgentConfigCatalog(ctx, q, filter)
 	if err != nil {
 		t.Fatalf("bare: %v", err)
@@ -186,7 +186,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 	}
 
 	// Registry wired; pause srvA + disable srvB_three → next run sees neither.
-	d := &perTaskRunLoopDriver{agentConfig: reg, agentConfigID: agentID, catalog: cat}
+	d := &RunLoopDriver{agentConfig: reg, agentConfigID: agentID, catalog: cat}
 	if _, err := reg.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
 		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srvA"}, DisabledTools: []string{"srvB_three"}},
 	}); err != nil {
@@ -218,7 +218,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 	base := func(s string) *string { return &s }
 
 	// No registry wired → bundle passes through unchanged.
-	bare := &perTaskRunLoopDriver{}
+	bare := &RunLoopDriver{}
 	ov, err := bare.projectAgentConfigPromptLayers(ctx, q, nil)
 	if err != nil {
 		t.Fatalf("bare driver: %v", err)
@@ -228,7 +228,7 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigPromptLayers_AtRunStart(t *test
 	}
 
 	// Registry wired but no active revision → unchanged.
-	d := &perTaskRunLoopDriver{agentConfig: reg, agentConfigID: agentID}
+	d := &RunLoopDriver{agentConfig: reg, agentConfigID: agentID}
 	ov, err = d.projectAgentConfigPromptLayers(ctx, q, nil)
 	if err != nil {
 		t.Fatalf("no-revision driver: %v", err)

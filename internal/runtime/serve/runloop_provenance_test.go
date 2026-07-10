@@ -1,4 +1,4 @@
-package main
+package serve
 
 // Agent-provenance producer test: proves the per-task run-loop driver
 // actually stamps its agentConfigID onto the run ctx via
@@ -50,15 +50,15 @@ func runProvenanceProbe(t *testing.T, agentConfigID string) string {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &provenanceProbePlanner{got: make(chan string, 1)}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:           bus,
-		runLoop:       rl,
-		planner:       p,
-		tasks:         reg,
-		agentConfigID: agentConfigID,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:           bus,
+		RunLoop:       rl,
+		Planner:       p,
+		Tasks:         reg,
+		AgentConfigID: agentConfigID,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)

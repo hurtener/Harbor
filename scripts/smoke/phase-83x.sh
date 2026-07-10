@@ -91,7 +91,7 @@ assert_grep_absent \
     'W8/D-171 dev boot no longer Opens a fixed dev session at boot (crash fix)'
 assert_grep_present \
     'WithSessionEnsurer' \
-    'cmd/harbor/cmd_dev.go' \
+    'internal/runtime/serve/serve.go' \
     'W8/D-171 dev wires the SessionEnsurer (create-on-first-use)'
 
 # -----------------------------------------------------------------------------

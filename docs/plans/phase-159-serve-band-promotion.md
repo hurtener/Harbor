@@ -118,13 +118,13 @@ None.
 
 ## Acceptance criteria
 
-- [ ] A new package `internal/runtime/serve` exports the promoted serve band:
+- [x] A new package `internal/runtime/serve` exports the promoted serve band:
   the constructor (the `bootDevStack` body, renamed to a feature name — e.g.
   `serve.Boot(ctx, Options) (*Handle, error)` — with NO godoc phase/D-number
   jargon, §13), the `Options` struct (the promoted `devBootOptions`, renamed),
   and the handle type (the promoted `devStack`, renamed — e.g. `serve.Handle`)
   with `Serve(ctx) error` + `Close(ctx)` methods.
-- [ ] **Posture split, pinned at two levels.** The in-package
+- [x] **Posture split, pinned at two levels.** The in-package
   `internal/runtime/serve` tests pin: (a) a nil auth-validator factory fails
   `Boot` loud (named error, no listener); (b) the constructor mounts ONLY the
   shared surfaces (no dev route, no auth rotate surface, no Console mount
@@ -134,19 +134,19 @@ None.
   tests pin: the dev surfaces (bootstrap-token endpoint, dev mint, drafts)
   ANSWER under the `harbor dev` composition and 404 under the `harbor serve`
   composition.
-- [ ] `cmd/harbor/cmd_serve.go` calls `serve.Boot` with its
+- [x] `cmd/harbor/cmd_serve.go` calls `serve.Boot` with its
   `newJWKSValidatorFactory()` injected and no dev seams composed (unchanged
   behavior); `harbor serve` still mints no token (D-220 invariant intact —
   the statement lives in `serve --help`, and the existing serve smoke asserts
   the posture).
-- [ ] `cmd/harbor/cmd_dev.go` calls `serve.Boot` with a dev-signer-built
+- [x] `cmd/harbor/cmd_dev.go` calls `serve.Boot` with a dev-signer-built
   factory and composes the dev-only policy (mock gate via the LLM snapshot
   override, dev-token mint, drafts + bootstrap via the pre-CORS route seam,
   rotate via the auth-surface seam, fixture seeding via the post-boot hook,
   hot-reload supervisor around the handle) — all in `cmd/harbor`, none in the
   promoted package. `cmd/harbor/cmd_console.go` (a separate file) thin-calls
   the same way and adds the Console mount.
-- [ ] `harbortest/devstack` consumes the promoted band: its hand-mirrored
+- [x] `harbortest/devstack` consumes the promoted band: its hand-mirrored
   transports/mux composition block (`harbortest/devstack/devstack.go`
   ~877–1310, the `muxOpts`/`transports.NewMux` fan-out) is DELETED and replaced
   by a call into `serve`. The kit's `Skip*` knobs stay devstack-side as kit
@@ -154,15 +154,15 @@ None.
   GAINS the options its mirror omitted (`WithAgentsService`, `WithAuthSurface`,
   `WithGovernanceService`, `WithGovernanceKeyRotate`) — closing that drift IS
   the point of single-homing; a kit-surface test pins the new parity.
-- [ ] Godoc hygiene: no `Phase NN` / `D-NNN` / `brief NN` / wave-band strings
+- [x] Godoc hygiene: no `Phase NN` / `D-NNN` / `brief NN` / wave-band strings
   in the promoted package's non-test Go source (the drift-audit godoc gate);
   every promoted identifier is named for its FEATURE, not its origin phase.
-- [ ] Concurrent-reuse: the promoted `Handle` is a compiled artifact (built
+- [x] Concurrent-reuse: the promoted `Handle` is a compiled artifact (built
   once, serves many requests) — a D-025 test runs N≥100 concurrent requests
   against one served instance under `-race`, asserting no data races, no
   identity bleed across concurrent requests, and goroutine baseline restored
   after `Close`.
-- [ ] Cross-phase regression: every existing smoke that boots `harbor dev` /
+- [x] Cross-phase regression: every existing smoke that boots `harbor dev` /
   `harbor serve` still passes against the new build, and the enumerated set of
   smokes whose greps target moved symbols (see Files) is re-pointed in the
   same PR; `make preflight` green.
@@ -353,21 +353,56 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
       (the served handle carries the identity middleware — the D-025 test
       asserts no cross-request identity bleed).
-- [ ] **Reusable artifact (the served `Handle`): concurrent-reuse test passes
+- [x] **Reusable artifact (the served `Handle`): concurrent-reuse test passes
       — N≥100 concurrent requests against one instance under `-race`, no
       races, no identity bleed, no goroutine leak after `Close`.** See §5 +
       §11 + D-025.
-- [ ] **Consumes a shipped subsystem's surface (assembly + transports) AND
+- [x] **Consumes a shipped subsystem's surface (assembly + transports) AND
       closes the promotion seam for two callers: an integration test wires
       real drivers end-to-end, asserts identity propagation, covers ≥1 failure
       mode, runs under `-race`.** See §17.
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: N/A — none departed
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A — none departed
+
+## As-built notes + deviations (§4.3)
+
+The phase shipped as specified. Three faithful realizations worth recording:
+
+1. **The "LLM snapshot override" seam is a builder, not a mutator.** The plan
+   named the seam as the mock's config mutation (`:440-443`). It landed as
+   `Options.BuildLLMSnapshot func(*config.Config) (*llm.ConfigSnapshot, error)`
+   — the dev caller's builder runs the fail-loud provider gate
+   (`validateLLMProvider`, which BOTH `harbor dev` and `harbor serve` already
+   ran) AND applies the mock override, folding the two into one seam. This
+   avoids a second `config.Load` (the promoted `Boot` loads the config once)
+   while keeping all dev LLM policy caller-side. A nil builder is the default
+   `llm.SnapshotFromConfig` projection.
+
+2. **The dev signer is built ONCE caller-side and reused across hot-reload
+   reboots.** The pre-promotion `bootDevStack` minted a fresh dev signer on
+   every boot, so a hot-reload reboot silently invalidated the
+   previously-printed dev token. Moving the signer out of the boot body into
+   `cmd/harbor/devcompose.go` (captured by the factory + auth-surface closures
+   the supervisor re-passes) makes the printed token stable across reloads — a
+   behaviour-improving side effect, not a regression.
+
+3. **`harbortest/devstack` composes the promoted building blocks rather than
+   routing its whole assembly through `serve.Boot`.** The kit's public API
+   (`AssembleOpts` + `DevStack` + `Skip*`/override knobs) is consumed by 40+
+   integration tests and must stay stable, so the single-homing landed at the
+   building-block level: the shared `serve.BuildMux` fan-out (deleting the
+   kit's hand-mirrored mux block and gaining the omitted agents / auth-rotate /
+   governance-override / governance-key-rotate surfaces) plus the promoted
+   `serve.RunLoopDriver` / `serve.NewMCPConnectionAttacher` /
+   `serve.NewMCPConnectionDetacher` / `serve.NewSessionEnsurerAdapter` /
+   `serve.NewEnricher` (deleting the kit's driver + glue mirror files). The
+   anti-drift integration test asserts the cmd thin-caller and the devstack
+   thin-caller mount the same shared surface set.

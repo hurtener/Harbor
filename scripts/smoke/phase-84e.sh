@@ -55,8 +55,8 @@ assert_or_skip 'func FetchMemoryBlocks\(' \
 
 # Both run-loop call sites must call FetchMemoryBlocks; no surviving
 # inline GetLLMContext block.
-if [ -f "cmd/harbor/cmd_dev_runloop.go" ] && [ -f "harbortest/devstack/devstack.go" ]; then
-    if grep -q 'runctx\.FetchMemoryBlocks' cmd/harbor/cmd_dev_runloop.go \
+if [ -f "internal/runtime/serve/runloop.go" ] && [ -f "harbortest/devstack/devstack.go" ]; then
+    if grep -q 'runctx\.FetchMemoryBlocks' internal/runtime/serve/runloop.go \
     && grep -q 'runctx\.FetchMemoryBlocks' harbortest/devstack/devstack.go; then
         ok "static: both run-loop call sites delegate to runctx.FetchMemoryBlocks"
     else
@@ -67,8 +67,8 @@ else
 fi
 
 # No surviving inline GetLLMContext fetch block (the collapsed duplication).
-if [ -f "cmd/harbor/cmd_dev_runloop.go" ]; then
-    inline_count=$(grep -c '\.GetLLMContext(' cmd/harbor/cmd_dev_runloop.go 2>/dev/null || true)
+if [ -f "internal/runtime/serve/runloop.go" ]; then
+    inline_count=$(grep -c '\.GetLLMContext(' internal/runtime/serve/runloop.go 2>/dev/null || true)
     if [[ "${inline_count}" -eq 0 ]]; then
         ok "static: cmd_dev_runloop.go has no inline GetLLMContext call (fully delegated)"
     else

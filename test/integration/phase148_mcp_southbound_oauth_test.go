@@ -37,7 +37,6 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/hurtener/Harbor/harbortest/devstack"
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	patternsAudit "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
@@ -46,6 +45,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
@@ -365,7 +365,7 @@ func TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection(t *testing.T) {
 	cat := tools.NewCatalog()
 	mcpReg := mcpdrv.NewRegistry()
 	sysID := identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}
-	attacher := devstack.NewMCPConnectionAttacher(cat, mcpReg, bus, nil, sysID,
+	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil, sysID,
 		map[string]auth.OAuthProvider{p142Provider: prov})
 	t.Cleanup(func() { _ = attacher.Close(context.Background()) })
 

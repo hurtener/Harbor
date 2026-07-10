@@ -48,7 +48,9 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 )
 
 // Flag names for the `serve` subcommand. Declared as constants so the
@@ -139,26 +141,36 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	stack, err := bootDevStack(ctx, devBootOptions{
-		cfgPath:         cfgPath,
-		port:            port,
-		bindAddr:        bindAddrOverride,
-		allowMock:       false, // production demands a real LLM provider
-		logger:          logger,
-		stderr:          cmd.ErrOrStderr(),
-		serveConsole:    false, // the Console is served only by `harbor console`
-		subcommandLabel: "serve",
-		// The PRODUCTION auth path: build the JWKS-backed validator from
-		// the operator's identity config. A non-nil factory also marks
-		// the boot as production, so no dev-only surface is mounted.
-		authValidatorFactory: newJWKSValidatorFactory(),
+	stack, err := serve.Boot(ctx, serve.Options{
+		ConfigPath:      cfgPath,
+		Port:            port,
+		BindAddr:        bindAddrOverride,
+		Logger:          logger,
+		Stderr:          cmd.ErrOrStderr(),
+		SubcommandLabel: "serve",
+		// The PRODUCTION auth path: build the JWKS-backed validator from the
+		// operator's identity config. No dev-only seam is composed, so no
+		// dev surface (bootstrap, drafts, rotate, Console) is mounted.
+		AuthValidatorFactory: newJWKSValidatorFactory(),
+		MCPDefaultIdentity: identity.Identity{
+			TenantID:  DevTenant,
+			UserID:    DevUser,
+			SessionID: DevSession,
+		},
+		DisplayName:  "harbor dev",
+		InstanceID:   devInstanceID(),
+		BuildVersion: HarborVersion,
+		BuildCommit:  "dev",
+		// production demands a real LLM provider (allowMock=false): the gate
+		// fails loud on a missing provider.
+		BuildLLMSnapshot: newLLMSnapshotBuilder(false),
 	})
 	if err != nil {
 		return emitCLIError(cmd, bootErrorToCLIError("serve", err))
 	}
-	defer stack.close(context.Background())
+	defer stack.Close(context.Background())
 
-	if err := stack.serve(ctx); err != nil {
+	if err := stack.Serve(ctx); err != nil {
 		return emitCLIError(cmd, CLIError{
 			Subcommand: "serve",
 			Message:    fmt.Sprintf("serve stopped: %v", err),

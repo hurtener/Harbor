@@ -45,7 +45,7 @@ assert_grep_absent 'func attachDevStackMCPServer' harbortest/devstack/devstack.g
 assert_grep_absent 'func attachDevMCPServer'      cmd/harbor/cmd_dev.go 'phase 110d: cmd attachDevMCPServer deleted'
 assert_grep_absent 'func applyToolCatalogWiring'  cmd/harbor/cmd_dev.go 'phase 110d: cmd applyToolCatalogWiring deleted'
 assert_grep_absent 'func projectMCPToolPolicies'  cmd/harbor/cmd_dev.go 'phase 110d: cmd policy-projection helper promoted to mcpdrv'
-assert_grep_present 'assemble\.Assemble\(' cmd/harbor/cmd_dev.go 'phase 110d: bootDevStack wraps assemble.Assemble'
+assert_grep_present 'assemble\.Assemble\(' internal/runtime/serve/serve.go 'phase 110d: bootDevStack wraps assemble.Assemble'
 assert_grep_present 'assemble\.Assemble\(' harbortest/devstack/devstack.go 'phase 110d: devstack.Assemble wraps assemble.Assemble'
 
 # --- 3. The promoted helpers exist at their owning packages ----------------

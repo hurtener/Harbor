@@ -37,9 +37,9 @@ assert_file "internal/protocol/transports/cors/cors.go" \
 assert_file "internal/protocol/transports/cors/cors_test.go" \
     "phase 83v: cors middleware unit tests"
 
-# 3. The middleware is wired into the dev boot path.
+# 3. The middleware is wired into the dev boot path (promoted serve band).
 assert_grep_present 'cors\.Wrap\(router' \
-    "cmd/harbor/cmd_dev.go" \
+    "internal/runtime/serve/serve.go" \
     "phase 83v: cors.Wrap mounted around dev mux"
 
 # 4. D-094 mirror — devstack.Assemble wraps the same way as production.

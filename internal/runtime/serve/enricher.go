@@ -1,4 +1,4 @@
-package main
+package serve
 
 import (
 	"context"
@@ -9,32 +9,39 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 )
 
-// devEnricher is the production tasks.get Enricher for the dev stack.
+// Enricher is the production tasks.get Enricher for the dev stack.
 // It provides parent-session / cost / planner-snapshot enrichment from
 // in-memory runtime state, plus trajectory projection.
 //
 // safe for concurrent reuse: the enricher is immutable after construction — the
 // trajectory accessor is a pure function (no mutable receiver state).
-type devEnricher struct {
+type Enricher struct {
 	trajectoryFn func(tasks.TaskID) *planner.Trajectory
+}
+
+// NewEnricher builds the tasks.get Enricher over a trajectory accessor.
+// The accessor is a pure function (the run-loop driver's TrajectoryByTaskID),
+// so the returned Enricher is safe for concurrent reuse.
+func NewEnricher(trajectoryFn func(tasks.TaskID) *planner.Trajectory) *Enricher {
+	return &Enricher{trajectoryFn: trajectoryFn}
 }
 
 // ParentSession returns a zero-valued ref — the parent-session card
 // is populated by the projector from the task identity when no
 // enricher backfills it.
-func (e *devEnricher) ParentSession(_ context.Context, _ identity.Identity, _ string) prototypes.TaskParentSessionRef {
+func (e *Enricher) ParentSession(_ context.Context, _ identity.Identity, _ string) prototypes.TaskParentSessionRef {
 	return prototypes.TaskParentSessionRef{}
 }
 
 // Cost returns a zero-valued cost rollup — cost aggregation is
 // deferred to the `llm.cost.recorded` event stream.
-func (e *devEnricher) Cost(_ context.Context, _ identity.Identity, _ string) prototypes.TaskCostRollup {
+func (e *Enricher) Cost(_ context.Context, _ identity.Identity, _ string) prototypes.TaskCostRollup {
 	return prototypes.TaskCostRollup{PerStep: []prototypes.TaskCostStep{}}
 }
 
 // PlannerSnapshot returns nil — planner-checkpoint references are
 // deferred to the checkpoint store.
-func (e *devEnricher) PlannerSnapshot(_ context.Context, _ identity.Identity, _ string) *prototypes.TaskPlannerSnapshotRef {
+func (e *Enricher) PlannerSnapshot(_ context.Context, _ identity.Identity, _ string) *prototypes.TaskPlannerSnapshotRef {
 	return nil
 }
 
@@ -42,7 +49,7 @@ func (e *devEnricher) PlannerSnapshot(_ context.Context, _ identity.Identity, _ 
 // the Protocol wire. Steps with empty ReasoningTrace are filtered out.
 // Returns nil when the task's trajectory is unavailable (evicted or
 // the run-loop didn't store one).
-func (e *devEnricher) Trajectory(_ context.Context, _ identity.Identity, taskID string) *prototypes.TaskTrajectoryRef {
+func (e *Enricher) Trajectory(_ context.Context, _ identity.Identity, taskID string) *prototypes.TaskTrajectoryRef {
 	if e.trajectoryFn == nil {
 		return nil
 	}

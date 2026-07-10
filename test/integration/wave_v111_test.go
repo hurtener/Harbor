@@ -82,6 +82,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -138,9 +139,9 @@ func waveV111DevStack(t *testing.T, binPath string, override planner.Planner) *d
 func waveV111ConnService(t *testing.T, stack *devstack.DevStack, binPath string) (*agentcfgprotocol.Service, projection.ConnectionDetacher) {
 	t.Helper()
 	dev := identity.Identity{TenantID: devstack.DefaultDevTenant, UserID: devstack.DefaultDevUser, SessionID: devstack.DefaultDevSession}
-	attacher := devstack.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, stack.Bus, nil, dev, stack.OAuthProviders)
+	attacher := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, stack.Bus, nil, dev, stack.OAuthProviders)
 	t.Cleanup(func() { _ = attacher.Close(context.Background()) })
-	detacher := devstack.NewMCPConnectionDetacher(stack.Catalog, stack.MCPRegistry, nil)
+	detacher := serve.NewMCPConnectionDetacher(stack.Catalog, stack.MCPRegistry, nil)
 
 	svc, err := agentcfgprotocol.NewService(stack.AgentConfig,
 		agentcfgprotocol.WithBus(stack.Bus),

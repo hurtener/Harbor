@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/harbortest/devstack"
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
@@ -28,6 +27,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
@@ -80,9 +80,9 @@ func newRmHarness(t *testing.T, binPath string) *rmHarness {
 	mcpReg := mcpdrv.NewRegistry()
 	coord := pauseresume.New(pauseresume.WithBus(bus))
 	// REAL attach + detach concretes (the devstack D-094 mirrors of cmd/harbor).
-	attacher := devstack.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
+	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
 		identity.Identity{TenantID: rmTenant, UserID: rmUser, SessionID: rmSession}, nil)
-	detacher := devstack.NewMCPConnectionDetacher(cat, mcpReg, nil)
+	detacher := serve.NewMCPConnectionDetacher(cat, mcpReg, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithConnectionAttacher(attacher),

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/harbortest/devstack"
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
@@ -23,6 +22,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
@@ -32,7 +32,7 @@ import (
 // 92f) end-to-end with REAL drivers: the StateStore-backed registry, the
 // in-memory bus, a real tool catalog + MCP registry, the unified pause/resume
 // Coordinator, the real Protocol Service + wire handler, and the production
-// runtime MCP-attach concrete (devstack.NewMCPConnectionAttacher) driving a
+// runtime MCP-attach concrete (serve.NewMCPConnectionAttacher) driving a
 // REAL stdio MCP server subprocess (the cmd/harbor-mcptest-stdio fixture,
 // §17.8 — a fixture derived from a real server). It proves: an admin add
 // dials → initialize → discover → registers → the server's tools reach the
@@ -80,7 +80,7 @@ func newAddcHarness(t *testing.T, stdioAllowlist []string) *addcHarness {
 	// The REAL production attach concrete (the devstack D-094 mirror of
 	// cmd/harbor's devMCPConnectionAttacher) — drives the real MCP attach
 	// against the live catalog + registry + bus.
-	attacher := devstack.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
+	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
 		identity.Identity{TenantID: addcTenant, UserID: addcUser, SessionID: addcSession}, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),

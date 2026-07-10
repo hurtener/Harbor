@@ -65,9 +65,9 @@ assert_grep_present 'stdio_allowlist' \
 assert_grep_present 'type ConnectionAttacher interface' \
     internal/runtime/agentcfg/protocol/addconnection.go \
     'phase 92f: ConnectionAttacher seam present (the section 4.4 boundary)'
-assert_grep_present 'func newDevMCPConnectionAttacher' \
-    cmd/harbor/cmd_dev_mcp_attacher.go \
-    'phase 92f: production attach concrete present'
+assert_grep_present 'func NewMCPConnectionAttacher' \
+    internal/runtime/serve/mcp_attacher.go \
+    'phase 92f: production attach concrete present (promoted to the serve band)'
 
 # 8. The typed Console method + wire interface exist.
 assert_grep_present 'addMcpConnection' \

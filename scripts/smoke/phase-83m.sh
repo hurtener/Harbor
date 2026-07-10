@@ -31,7 +31,7 @@ assert_grep_present '"\.db"' "cmd/harbor/cmd_dev_hot_reload.go" \
 # ----------------------------------------------------------------------------
 # Item 3 — draftStore + agentRegistry closers wired.
 # ----------------------------------------------------------------------------
-assert_grep_present 'draftStore\.Close' "cmd/harbor/cmd_dev.go" \
+assert_grep_present 'draftStore\.Close' "cmd/harbor/devcompose.go" \
     "bootDevStack registers draftStore.Close in the closer chain (item 3)"
 # Phase 110d (D-197): the Agent Registry (and its Close) is owned by
 # the promoted assembly the dev binary wraps.
@@ -46,11 +46,11 @@ assert_grep_present 'agentRegistry\.Close' "internal/runtime/assemble/assemble.g
 # Item 4's keyword shaper was deleted by Phase 111d (D-201): the
 # skills Directory replaced the raw-Search `<skills_context>` path.
 # Assert the supersession (the run loops consume Directory.View now).
-assert_grep_absent 'ExtractSkillKeywords' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_absent 'ExtractSkillKeywords' "internal/runtime/serve/runloop.go" \
     "runloop no longer calls the deleted keyword shaper (111d, D-201)"
-assert_grep_present 'skillsDirectory\.View' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'skillsDirectory\.View' "internal/runtime/serve/runloop.go" \
     "runloop consumes skills Directory.View (111d supersession of item 4)"
-assert_grep_present 'skillsDirectory\.View' "harbortest/devstack/devstack.go" \
+assert_grep_present 'skillsDirectory\.View' "internal/runtime/serve/runloop.go" \
     "devstack consumes skills Directory.View (111d supersession of item 4)"
 
 # ----------------------------------------------------------------------------
@@ -64,9 +64,9 @@ assert_grep_present 'c\.cfg\.Timeout' "internal/llm/safety.go" \
 # ----------------------------------------------------------------------------
 assert_grep_present 'GrantedScopes\s*\[\]string' "internal/config/config.go" \
     "ToolsConfig.GrantedScopes field declared (item 6)"
-assert_grep_present 'cfg\.Tools\.GrantedScopes' "cmd/harbor/cmd_dev.go" \
+assert_grep_present 'cfg\.Tools\.GrantedScopes' "internal/runtime/serve/serve.go" \
     "bootDevStack reads GrantedScopes from config (item 6)"
-assert_grep_present 'grantedScopes' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'grantedScopes' "internal/runtime/serve/runloop.go" \
     "cmd_dev_runloop threads grantedScopes through to runtimeCatalogView (item 6)"
 assert_grep_present '### tools\.granted_scopes' "docs/CONFIG.md" \
     "CONFIG.md documents the new tools.granted_scopes field (item 6)"

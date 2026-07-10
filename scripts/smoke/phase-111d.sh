@@ -47,9 +47,9 @@ assert_grep_absent 'Phase 60+ bootstrap will call' "cmd/harbor/main.go" \
     "no stale Phase-60+ registration promise survives in main.go"
 
 # ── 1b. Static: the Directory is the <skills_context> producer ──────
-assert_grep_present 'skillsDirectory\.View' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'skillsDirectory\.View' "internal/runtime/serve/runloop.go" \
     "run loop consumes Directory.View (D-201 owner decision: wire it)"
-assert_grep_present 'skillsDirectory\.View' "harbortest/devstack/devstack.go" \
+assert_grep_present 'skillsDirectory\.View' "internal/runtime/serve/runloop.go" \
     "devstack mirror consumes Directory.View"
 assert_grep_absent 'func ExtractSkillKeywords' "internal/runtime/runctx/runctx.go" \
     "the deprecated keyword shaper is deleted (D-195 notice executed)"

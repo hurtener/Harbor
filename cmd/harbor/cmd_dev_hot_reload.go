@@ -86,6 +86,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 )
 
 // Canonical event types the hot-reload supervisor emits on the bus.
@@ -161,14 +162,14 @@ const debounceWindow = 250 * time.Millisecond
 // reusable across boots (each `harbor dev` invocation gets one).
 type hotReloadSupervisor struct {
 	logger       *slog.Logger
-	bootOpts     devBootOptions
+	bootOpts     serve.Options
 	cfg          config.DevHotReloadConfig
 	watchRoots   []string
 	policy       string
 	drainTimeout time.Duration
 
 	mu    sync.Mutex
-	stack *devStack
+	stack *serve.Handle
 }
 
 // newHotReloadSupervisor validates the inputs and returns a fresh
@@ -182,8 +183,8 @@ type hotReloadSupervisor struct {
 // loaded config file's directory.
 func newHotReloadSupervisor(
 	logger *slog.Logger,
-	bootOpts devBootOptions,
-	initialStack *devStack,
+	bootOpts serve.Options,
+	initialStack *serve.Handle,
 	cfg config.DevHotReloadConfig,
 	watchRoots []string,
 ) (*hotReloadSupervisor, error) {
@@ -301,7 +302,7 @@ func (s *hotReloadSupervisor) Run(ctx context.Context) error {
 	serveCtx, serveCancel := context.WithCancel(ctx)
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- s.stack.serve(serveCtx)
+		serveErr <- s.stack.Serve(serveCtx)
 	}()
 
 	// Debounce timer — collapses a burst of events into one rebuild.
@@ -402,7 +403,7 @@ func (s *hotReloadSupervisor) Run(ctx context.Context) error {
 
 // CurrentStack returns the supervisor's current active stack. Used by
 // runDev to drain the stack on ctx-cancel.
-func (s *hotReloadSupervisor) CurrentStack() *devStack {
+func (s *hotReloadSupervisor) CurrentStack() *serve.Handle {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stack
@@ -449,14 +450,14 @@ func (s *hotReloadSupervisor) handleRebuildAndRestartServe(
 	// Now drain the stack itself per policy (this is the runtime-side
 	// drain — RunLoops, tool catalogs, etc.).
 	drainCtx, drainCancel := s.drainContext(ctx)
-	current.close(drainCtx)
+	current.Close(drainCtx)
 	drainCancel()
 
 	// Rebuild. The bootDevStack opts are unchanged across rebuilds —
 	// the supervisor is a "re-read everything from disk and rebuild"
 	// mechanism. Operators who changed harbor.yaml see the new values
 	// because bootDevStack re-runs config.Load.
-	newStack, err := bootDevStack(ctx, s.bootOpts)
+	newStack, err := serve.Boot(ctx, s.bootOpts)
 	if err != nil {
 		s.logger.Error("hot-reload: reboot failed",
 			slog.String("err", err.Error()),
@@ -477,7 +478,7 @@ func (s *hotReloadSupervisor) handleRebuildAndRestartServe(
 	// observing completed has a live server to connect to.
 	newServeCtx, newServeCancel := context.WithCancel(ctx)
 	go func() {
-		serveErr <- newStack.serve(newServeCtx)
+		serveErr <- newStack.Serve(newServeCtx)
 	}()
 
 	// Emit completed on the NEW stack's bus.
@@ -517,8 +518,8 @@ func (s *hotReloadSupervisor) drainContext(parent context.Context) (context.Cont
 // supplied stack's bus. A nil bus or an unwired stack is a no-op (we
 // log Debug and continue — observability is best-effort, not
 // correctness).
-func (s *hotReloadSupervisor) emitTriggered(ctx context.Context, stack *devStack, path, op string) {
-	if stack == nil || stack.bus == nil {
+func (s *hotReloadSupervisor) emitTriggered(ctx context.Context, stack *serve.Handle, path, op string) {
+	if stack == nil || stack.Bus == nil {
 		return
 	}
 	id := identity.Identity{
@@ -526,7 +527,7 @@ func (s *hotReloadSupervisor) emitTriggered(ctx context.Context, stack *devStack
 		UserID:    DevUser,
 		SessionID: DevSession,
 	}
-	if err := stack.bus.Publish(ctx, events.Event{
+	if err := stack.Bus.Publish(ctx, events.Event{
 		Type:     EventTypeDevHotReloadTriggered,
 		Identity: identity.Quadruple{Identity: id},
 		Payload: DevHotReloadTriggeredPayload{
@@ -545,13 +546,13 @@ func (s *hotReloadSupervisor) emitTriggered(ctx context.Context, stack *devStack
 // supplied stack's bus.
 func (s *hotReloadSupervisor) emitCompleted(
 	ctx context.Context,
-	stack *devStack,
+	stack *serve.Handle,
 	path, op string,
 	elapsed time.Duration,
 	success bool,
 	errMsg string,
 ) {
-	if stack == nil || stack.bus == nil {
+	if stack == nil || stack.Bus == nil {
 		return
 	}
 	id := identity.Identity{
@@ -559,7 +560,7 @@ func (s *hotReloadSupervisor) emitCompleted(
 		UserID:    DevUser,
 		SessionID: DevSession,
 	}
-	if err := stack.bus.Publish(ctx, events.Event{
+	if err := stack.Bus.Publish(ctx, events.Event{
 		Type:     EventTypeDevHotReloadCompleted,
 		Identity: identity.Quadruple{Identity: id},
 		Payload: DevHotReloadCompletedPayload{

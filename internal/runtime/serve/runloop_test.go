@@ -11,7 +11,7 @@
 // then Finish — letting the test assert the RunLoop actually ran
 // (the Coordinator.Request call from RequestPause is observable).
 
-package main
+package serve
 
 import (
 	"context"
@@ -199,13 +199,13 @@ func (p *driverTestPlanner) Next(_ context.Context, rc planner.RunContext) (plan
 // TestPerTaskRunLoopDriver_FailsLoud_NilBus — the driver constructor
 // rejects a nil bus. Sanity for the §13 fail-loudly contract.
 func TestPerTaskRunLoopDriver_FailsLoud_NilBus(t *testing.T) {
-	_, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		runLoop: &steering.RunLoop{},
-		planner: &driverTestPlanner{},
-		tasks:   stubTaskRegistry{},
+	_, err := NewRunLoopDriver(RunLoopDriverOptions{
+		RunLoop: &steering.RunLoop{},
+		Planner: &driverTestPlanner{},
+		Tasks:   stubTaskRegistry{},
 	})
 	if err == nil {
-		t.Fatal("newPerTaskRunLoopDriver(nil bus) returned nil error, want failure")
+		t.Fatal("NewRunLoopDriver(nil bus) returned nil error, want failure")
 	}
 }
 
@@ -213,13 +213,13 @@ func TestPerTaskRunLoopDriver_FailsLoud_NilBus(t *testing.T) {
 func TestPerTaskRunLoopDriver_FailsLoud_NilRunLoop(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
-	_, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		planner: &driverTestPlanner{},
-		tasks:   stubTaskRegistry{},
+	_, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		Planner: &driverTestPlanner{},
+		Tasks:   stubTaskRegistry{},
 	})
 	if err == nil {
-		t.Fatal("newPerTaskRunLoopDriver(nil runLoop) returned nil error, want failure")
+		t.Fatal("NewRunLoopDriver(nil runLoop) returned nil error, want failure")
 	}
 }
 
@@ -227,13 +227,13 @@ func TestPerTaskRunLoopDriver_FailsLoud_NilRunLoop(t *testing.T) {
 func TestPerTaskRunLoopDriver_FailsLoud_NilPlanner(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
-	_, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: &steering.RunLoop{},
-		tasks:   stubTaskRegistry{},
+	_, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: &steering.RunLoop{},
+		Tasks:   stubTaskRegistry{},
 	})
 	if err == nil {
-		t.Fatal("newPerTaskRunLoopDriver(nil planner) returned nil error, want failure")
+		t.Fatal("NewRunLoopDriver(nil planner) returned nil error, want failure")
 	}
 }
 
@@ -243,13 +243,13 @@ func TestPerTaskRunLoopDriver_FailsLoud_NilPlanner(t *testing.T) {
 func TestPerTaskRunLoopDriver_FailsLoud_NilTasks(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
-	_, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: &steering.RunLoop{},
-		planner: &driverTestPlanner{},
+	_, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: &steering.RunLoop{},
+		Planner: &driverTestPlanner{},
 	})
 	if err == nil {
-		t.Fatal("newPerTaskRunLoopDriver(nil tasks) returned nil error, want failure")
+		t.Fatal("NewRunLoopDriver(nil tasks) returned nil error, want failure")
 	}
 }
 
@@ -283,14 +283,14 @@ func TestPerTaskRunLoopDriver_PicksUpTaskSpawned_DrivesRunLoop(t *testing.T) {
 		pauseReason: planner.PauseApprovalRequired,
 		stepsCh:     stepsCh,
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -329,14 +329,14 @@ func TestPerTaskRunLoopDriver_FSMBridge_MarksComplete(t *testing.T) {
 	}
 	// Planner finishes immediately with FinishGoal (no pause).
 	p := &driverTestPlanner{finishGoalImmediately: true}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -369,14 +369,14 @@ func TestPerTaskRunLoop_FinishGoal_PopulatesTaskResult(t *testing.T) {
 		finishGoalImmediately: true,
 		finishPayload:         map[string]any{"answer": "hello world"},
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -432,14 +432,14 @@ func TestPerTaskRunLoop_FinishGoal_EmptyAnswer_StillPopulatesShape(t *testing.T)
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &driverTestPlanner{finishGoalImmediately: true} // nil finishPayload
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -509,14 +509,14 @@ func TestPerTaskRunLoopDriver_FSMBridge_MarksFailed_OnPlannerError(t *testing.T)
 	}
 	// Planner that errors on Next.
 	p := &driverTestPlanner{errOnNext: errors.New("planner exploded")}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -565,14 +565,14 @@ func TestPerTaskRunLoopDriver_FSMBridge_MarksFailed_OnCtxCancel(t *testing.T) {
 		pauseReason: planner.PauseApprovalRequired,
 		stepsCh:     stepsCh,
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -632,14 +632,14 @@ func TestPerTaskRunLoopDriver_SkipsBackgroundTasks(t *testing.T) {
 	}
 	stepsCh := make(chan int, 4)
 	p := &driverTestPlanner{stepsCh: stepsCh}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -685,15 +685,15 @@ func TestPerTaskRunLoopDriver_DrivesBackgroundTasks_WhenEnabled(t *testing.T) {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &driverTestPlanner{finishGoalImmediately: true, finishPayload: map[string]any{"answer": "bg done"}}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:             bus,
-		runLoop:         rl,
-		planner:         p,
-		tasks:           reg,
-		driveBackground: true,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:             bus,
+		RunLoop:         rl,
+		Planner:         p,
+		Tasks:           reg,
+		DriveBackground: true,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -741,14 +741,14 @@ func TestPerTaskRunLoopDriver_Close_DrainsRunningRuns(t *testing.T) {
 		pauseReason: planner.PauseApprovalRequired,
 		stepsCh:     stepsCh,
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -795,14 +795,14 @@ func TestPerTaskRunLoopDriver_IdempotentStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: &driverTestPlanner{},
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: &driverTestPlanner{},
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("first Start: %v", err)
@@ -837,14 +837,14 @@ func TestPerTaskRunLoopDriver_ConcurrentReuse_NoRaceUnderLoad(t *testing.T) {
 	// RunLoop returns quickly and the FSM bridge transitions Pending
 	// → Running → Complete under stress.
 	p := &driverTestPlanner{finishGoalImmediately: true}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -907,14 +907,14 @@ func TestTrajectoryByTaskID_ConcurrentReads(t *testing.T) {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &driverTestPlanner{finishGoalImmediately: true}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -994,7 +994,7 @@ func itoa(i int) string {
 // --- tenant-default LLM override resolution (run-start seam) ---
 
 // fakeTenantOverrides is a test double for the run-loop's
-// tenantOverrideResolver seam.
+// TenantOverrideResolver seam.
 type fakeTenantOverrides struct {
 	spec governance.TenantOverrideSpec
 	set  bool
@@ -1011,7 +1011,7 @@ func ovF64(f float64) *float64 { return &f }
 // TestResolveLLMOverrides_NilResolver asserts a driver with no resolver
 // returns no overrides (the run uses agent/config defaults).
 func TestResolveLLMOverrides_NilResolver(t *testing.T) {
-	d := &perTaskRunLoopDriver{logger: slog.Default()}
+	d := &RunLoopDriver{logger: slog.Default()}
 	ov, err := d.resolveLLMOverrides(context.Background(), validQuadForOv())
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides: %v", err)
@@ -1024,7 +1024,7 @@ func TestResolveLLMOverrides_NilResolver(t *testing.T) {
 // TestResolveLLMOverrides_NoRecord asserts a tenant with no record yields
 // nil overrides.
 func TestResolveLLMOverrides_NoRecord(t *testing.T) {
-	d := &perTaskRunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{set: false}}
+	d := &RunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{set: false}}
 	ov, err := d.resolveLLMOverrides(context.Background(), validQuadForOv())
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides: %v", err)
@@ -1038,7 +1038,7 @@ func TestResolveLLMOverrides_NoRecord(t *testing.T) {
 // the planner override bundle field-for-field.
 func TestResolveLLMOverrides_ProjectsSpec(t *testing.T) {
 	mt := 2048
-	d := &perTaskRunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{
+	d := &RunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{
 		set: true,
 		spec: governance.TenantOverrideSpec{
 			Model:             ovStr("model-x"),
@@ -1073,7 +1073,7 @@ func TestResolveLLMOverrides_ProjectsSpec(t *testing.T) {
 // propagates (the run loop then fails the run loudly rather than silently
 // dropping the admin's policy).
 func TestResolveLLMOverrides_ErrorPropagates(t *testing.T) {
-	d := &perTaskRunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{err: errors.New("state down")}}
+	d := &RunLoopDriver{logger: slog.Default(), tenantOverrides: fakeTenantOverrides{err: errors.New("state down")}}
 	if _, err := d.resolveLLMOverrides(context.Background(), validQuadForOv()); err == nil {
 		t.Fatal("want resolver error to propagate, got nil")
 	}
@@ -1109,12 +1109,12 @@ func TestPerTaskRunLoopDriver_AppliesTenantOverride_ToRunContext(t *testing.T) {
 			}
 		},
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:     bus,
-		runLoop: rl,
-		planner: p,
-		tasks:   reg,
-		tenantOverrides: fakeTenantOverrides{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:     bus,
+		RunLoop: rl,
+		Planner: p,
+		Tasks:   reg,
+		TenantOverrides: fakeTenantOverrides{
 			set: true,
 			spec: governance.TenantOverrideSpec{
 				Model:             ovStr("model-x"),
@@ -1124,7 +1124,7 @@ func TestPerTaskRunLoopDriver_AppliesTenantOverride_ToRunContext(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -1176,15 +1176,15 @@ func TestPerTaskRunLoopDriver_TenantOverrideResolutionError_MarksFailed(t *testi
 			}
 		},
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:             bus,
-		runLoop:         rl,
-		planner:         p,
-		tasks:           reg,
-		tenantOverrides: fakeTenantOverrides{err: errors.New("state down")},
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:             bus,
+		RunLoop:         rl,
+		Planner:         p,
+		Tasks:           reg,
+		TenantOverrides: fakeTenantOverrides{err: errors.New("state down")},
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -1217,7 +1217,7 @@ func TestResolveLLMOverrides_SessionOverTenant(t *testing.T) {
 		Model:                ovStr("session-model"),
 		SystemPromptOverride: ovStr("session-replace-prompt"),
 	})
-	d := &perTaskRunLoopDriver{
+	d := &RunLoopDriver{
 		logger:           slog.Default(),
 		sessionOverrides: store,
 		tenantOverrides: fakeTenantOverrides{set: true, spec: governance.TenantOverrideSpec{
@@ -1271,7 +1271,7 @@ func TestResolveLLMOverrides_SessionOnly(t *testing.T) {
 	store := runsprotocol.NewStore()
 	q := validQuadForOv()
 	store.Set(q.Identity, runsprotocol.PendingOverride{Model: ovStr("session-only-model")})
-	d := &perTaskRunLoopDriver{logger: slog.Default(), sessionOverrides: store}
+	d := &RunLoopDriver{logger: slog.Default(), sessionOverrides: store}
 	ov, err := d.resolveLLMOverrides(context.Background(), q)
 	if err != nil {
 		t.Fatalf("resolveLLMOverrides: %v", err)
@@ -1314,20 +1314,20 @@ func TestPerTaskRunLoopDriver_AppliesSessionOverride_ToRunContext(t *testing.T) 
 			}
 		},
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:              bus,
-		runLoop:          rl,
-		planner:          p,
-		tasks:            reg,
-		sessionOverrides: store,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:              bus,
+		RunLoop:          rl,
+		Planner:          p,
+		Tasks:            reg,
+		SessionOverrides: store,
 		// tenant default also set — the session model must WIN over it.
-		tenantOverrides: fakeTenantOverrides{set: true, spec: governance.TenantOverrideSpec{
+		TenantOverrides: fakeTenantOverrides{set: true, spec: governance.TenantOverrideSpec{
 			Model:       ovStr("tenant-model"),
 			Temperature: ovF64(0.7),
 		}},
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)

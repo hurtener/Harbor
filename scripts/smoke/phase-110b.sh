@@ -43,16 +43,16 @@ assert_grep_absent 'func ExtractSkillKeywords' "internal/runtime/runctx/runctx.g
 for def in 'func projectMemoryBlocks' 'func projectSkillsContext' \
     'func extractSkillKeywords' 'func extractAssistantAnswer' \
     ') resolveInputArtifacts(' 'skillKeywordStopwords'; do
-    assert_grep_absent "${def}" "cmd/harbor/cmd_dev_runloop.go" \
+    assert_grep_absent "${def}" "internal/runtime/serve/runloop.go" \
         "cmd runloop no longer defines '${def}'"
 done
-assert_grep_present 'runctx\.FetchMemoryBlocks' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
     "cmd runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
-assert_grep_present 'runctx\.ResolveInputArtifacts' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'runctx\.ResolveInputArtifacts' "internal/runtime/serve/runloop.go" \
     "cmd runloop calls runctx.ResolveInputArtifacts"
-assert_grep_present 'events\.IdentityStampingEmitter' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'events\.IdentityStampingEmitter' "internal/runtime/serve/runloop.go" \
     "cmd runloop builds Emit via events.IdentityStampingEmitter"
-assert_grep_present 'llm\.NewChunkPublisher' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'llm\.NewChunkPublisher' "internal/runtime/serve/runloop.go" \
     "cmd runloop builds OnChunk via llm.NewChunkPublisher"
 
 # 3. devstack no longer defines its duplicate copies (including the
@@ -72,17 +72,17 @@ done
 #    builds its completion envelope through the shared builder, the
 #    shared builder constructs the canonical planner.AnswerEnvelope,
 #    and no hand-rolled envelope literal survives in devstack.
-assert_grep_present 'OnChunk:' "harbortest/devstack/devstack.go" \
+assert_grep_present 'OnChunk:' "internal/runtime/serve/runloop.go" \
     "devstack RunSpec wires OnChunk (streaming parity)"
-assert_grep_present 'Emit:' "harbortest/devstack/devstack.go" \
+assert_grep_present 'Emit:' "internal/runtime/serve/runloop.go" \
     "devstack RunSpec wires Emit (planner-telemetry parity)"
-assert_grep_present 'runctx\.FinishAnswerEnvelope' "harbortest/devstack/devstack.go" \
+assert_grep_present 'runctx\.FinishAnswerEnvelope' "internal/runtime/serve/runloop.go" \
     "devstack MarkComplete builds the envelope via the shared runctx builder"
 assert_grep_present 'planner\.AnswerEnvelope' "internal/runtime/runctx/answer_envelope.go" \
     "the shared builder constructs the canonical planner.AnswerEnvelope"
-assert_grep_absent 'planner\.AnswerEnvelope{' "harbortest/devstack/devstack.go" \
+assert_grep_absent 'planner\.AnswerEnvelope{' "internal/runtime/serve/runloop.go" \
     "no hand-rolled envelope literal survives in devstack (§13 one-builder rule)"
-assert_grep_absent 'MarkComplete(taskCtx, taskID, tasks.TaskResult{})' "harbortest/devstack/devstack.go" \
+assert_grep_absent 'MarkComplete(taskCtx, taskID, tasks.TaskResult{})' "internal/runtime/serve/runloop.go" \
     "devstack empty-TaskResult{} completion drift closed"
 
 # 5. The spawn-depth default is single-sourced (D-196 call 4 — the
