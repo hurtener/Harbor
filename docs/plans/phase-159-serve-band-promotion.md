@@ -7,13 +7,16 @@ agent carrying compiled in-process Go tools cannot — the serve composition
 (`bootDevStack`, `devBootOptions`, the `devStack` serve/close lifecycle) is
 trapped in `cmd/harbor` (`package main`), unreachable to any importer. This
 phase promotes that band into ONE importable internal package
-(`internal/runtime/serve`), leaving dev-only policy behind in `cmd/harbor`.
-`harbor serve` / `harbor dev` / `harbor console` become thin callers; the
-test-kit `harbortest/devstack` is re-wired onto the promoted band as the
-second consumer (§13), deleting its hand-mirrored transports/mux block — the
-same re-homing move D-197 made for `assemble.Assemble`. Pure promotion: no new
-options surface, no wire changes, no new Protocol methods. It unblocks Phase
-160 (`sdk/server` + `harbor scaffold --with-server`).
+(`internal/runtime/serve`), leaving dev-only policy behind in `cmd/harbor`,
+composed caller-side through explicit injection seams on the promoted
+options/handle. `harbor serve` / `harbor dev` / `harbor console` become thin
+callers; the test-kit `harbortest/devstack` is re-wired onto the promoted band
+as the second consumer (§13), deleting its hand-mirrored transports/mux block —
+the same re-homing move D-197 made for `assemble.Assemble`. The re-homing adds
+an honestly-enumerated NEW options/handle seam surface (the injection seams the
+two real callers need — see Goals), but ZERO wire changes and no new Protocol
+methods. It unblocks Phase 160 (`sdk/server` + `harbor scaffold
+--with-server`).
 
 ## RFC anchor
 
@@ -31,27 +34,27 @@ options surface, no wire changes, no new Protocol methods. It unblocks Phase
 
 ## Brief findings incorporated
 
-- brief 06 §5: "when the only assembly prior art is `package main` + a
-  `*testing.T` fixture, every embedder re-implements boot." The serve band is
-  the last such trap below the network surface: `bootDevStack` lives in
-  `package main` and its only other copy is devstack's `*testing.T`-gated
-  serve wiring — exactly the two-hand-ordered-copies drift D-197 closed one
-  layer down (assembly). This phase promotes the layer above it (listener
-  composition) to ONE home and converts both callers to thin wrappers.
-- brief 06 §5 (metrics/observability edge): the promoted constructor keeps the
-  transport mux composition (`transports.NewMux` + the per-surface option
-  wiring) in one place, so the two callers can no longer drift on WHICH
-  surfaces they mount (devstack's mux block had already accreted a mirror of
-  cmd's option list — `harbortest/devstack/devstack.go` ~1300).
-- brief 07 §5 (elegance/one-dispatch principle read structurally): a single
-  serve constructor with a single posture seam (the auth-validator factory)
-  is one mechanism, not a with-flag / without-flag fork (§13). Production
-  posture and dev posture are the SAME code path selected by whether the
-  factory is non-nil — never two parallel serve builders.
-- brief 01 §5: two hand-ordered copies of a boot fan-out are two modes of the
-  same feature and drift on security-adjacent surfaces; the serve band mounts
-  the auth middleware, so keeping it single-homed is integrity-relevant, not
-  just tidiness.
+- brief 01 §5: "An egress endpoint with two bolted-on modes is a trap. …
+  Harbor: pick one model and ship it. … There is no legacy 'before' mode to be
+  compatible with." Two coexisting compositions of the same serve surface —
+  `cmd/harbor`'s and devstack's hand-mirrored copy — are exactly that trap, and
+  they had ALREADY drifted on which transport surfaces they mount (the kit's
+  mux omits `WithAgentsService` / `WithAuthSurface` / `WithGovernanceService` /
+  `WithGovernanceKeyRotate`). The serve band mounts the auth middleware, so
+  single-homing it is integrity-relevant, not just tidiness.
+- brief 06 §5 ("Tightly coupled Playground"): a dev/test surface that "both
+  *consumes* and *re-implements* runtime concepts" — duplicating routes and
+  API wiring — is the named anti-pattern; devstack's hand-mirrored mux block is
+  the same shape one layer down, and the promotion deletes it. The same
+  brief-06 lesson, as distilled into D-197's recorded text ("when the only
+  assembly prior art is `package main` + a `*testing.T` fixture, every
+  embedder re-implements boot"), applies to the serve band unchanged — it was
+  exactly that shape.
+- brief 07 §1/§8 (the single-dispatch architecture): one mechanism the runtime
+  owns, parameterized — collapsing a mode matrix "into a single dimension
+  Harbor controls" — never parallel modes. Production and dev are ONE promoted
+  constructor parameterized by the (required) auth-validator factory plus
+  caller-side seam composition; never two serve builders (§13).
 
 ## Findings I'm departing from (if any)
 
@@ -63,34 +66,51 @@ None.
   `devStack` struct + its `serve`/`close`) lives in ONE importable internal
   package, `internal/runtime/serve` (naming: `internal/server` is already the
   protocol-server package — do not collide).
-- `harbor serve`, `harbor dev`, and `harbor console` are thin callers of the
-  promoted package. `harbor serve` continues to inject its JWKS
-  `authValidatorFactory` (production posture); `harbor dev` continues to pass a
-  nil factory (dev posture).
-- Dev-only policy STAYS in `cmd/harbor`: the mock-LLM escape hatch
+- **The promoted constructor REQUIRES a non-nil auth-validator factory.**
+  Identity is mandatory (§6): a nil factory is a loud construction error,
+  never an unauthenticated listener. The dev signer NEVER promotes —
+  `harbor dev` injects a factory built from its ephemeral dev signer;
+  `harbor serve` injects its JWKS factory (`newJWKSValidatorFactory()`,
+  unchanged).
+- **The constructor mounts ONLY the surfaces every caller shares. Dev-only
+  surfaces are composed CALLER-SIDE by `cmd/harbor`** through explicit
+  injection seams the promoted `Options`/`Handle` expose:
+  - **extra pre-CORS routes** (the draft-scaffolding + bootstrap-token mounts,
+    today `cmd_dev.go:1429`/`:1460`);
+  - **the transports auth-surface option** (the dev key-rotate surface threaded
+    at `:1331`);
+  - **an LLM snapshot override** (the mock's config mutation at `:440-443`);
+  - **a post-boot hook receiving subsystem handles** (the fixture seeding at
+    `:1599`);
+  - the Console mount stays a `cmd_console.go` composition over the same route
+    seam (`:1496-1502`).
+  These seams are the phase's honestly-enumerated NEW options/handle surface —
+  exactly what the two real callers need today, no speculative additions.
+- Dev-only POLICY stays in `cmd/harbor`: the mock-LLM escape hatch
   (`validateLLMProvider` + the `devmock.go` blank import, D-089), the
-  hot-reload supervisor (D-099), the dev-token mint + bootstrap-token
-  endpoint, draft scaffolding, and Console embedding (D-091). The promoted
-  constructor carries NO `allowMock` knob and NO dev-signer.
-- The auth-validator factory remains the single posture seam: a non-nil
-  factory = production posture (dev-only surfaces not mounted); nil = dev
-  posture.
+  hot-reload supervisor (D-099), the dev signer + dev-token mint/print +
+  bootstrap-token endpoint, draft scaffolding, post-boot fixture seeding
+  (`seedDevFixtures`), and Console embedding (D-091). The promoted constructor
+  carries NO `allowMock` knob and NO dev-signer.
+- `harbor serve`, `harbor dev`, and `harbor console` are thin callers of the
+  promoted package.
 - `harbortest/devstack` is re-wired to consume the promoted band, deleting its
   hand-mirrored per-caller transports/mux block — the D-197 second-consumer
-  move.
+  move. The kit's `Skip*` knobs STAY devstack-side as kit policy layered over
+  the promoted `Options`.
 
 ## Non-goals
 
-- No new options on the serve surface, no new knobs, no speculative embedder
-  wishlist (§13 options-creep guard). `Options` is exactly the union the two
-  real callers (cmd + devstack) need today.
+- No speculative embedder wishlist on the promoted `Options` (§13
+  options-creep guard) — the surface is exactly the injection seams + fields
+  the two real callers (cmd + devstack) need today, enumerated in Goals.
 - No wire changes, no new Protocol methods, no new event types, no
-  `ProtocolVersion` bump — pure Go re-homing (the D-197 posture).
+  `ProtocolVersion` bump (the D-197 posture).
 - No `sdk/server` facade and no `harbor scaffold --with-server` — those are
   Phase 160 (the promotion's first EXTERNAL consumer).
-- No change to the dev-only surfaces themselves (mock gate, hot-reload,
-  dev-token mint, drafts, Console) — they stay byte-for-byte in `cmd/harbor`,
-  only their call into the serve band changes.
+- No change to the dev-only surfaces' BEHAVIOR (mock gate, hot-reload,
+  dev-token mint, drafts, Console) — they stay in `cmd/harbor`; only their
+  composition path changes (through the promoted seams).
 - No change to `assemble.Assemble` (D-197) — the promoted serve band sits
   ABOVE assembly and calls it; the boundary "Assemble ends where the network
   surface begins" (D-197 point 4) is preserved, this phase just gives the
@@ -104,25 +124,36 @@ None.
   jargon, §13), the `Options` struct (the promoted `devBootOptions`, renamed),
   and the handle type (the promoted `devStack`, renamed — e.g. `serve.Handle`)
   with `Serve(ctx) error` + `Close(ctx)` methods.
-- [ ] The auth-validator factory field on `Options` is the posture seam: a
-  non-nil factory builds the production JWKS validator and does NOT mount the
-  dev-only bootstrap-token endpoint / dev-token surfaces; a nil factory keeps
-  the dev posture. A table test pins BOTH postures (production: dev surfaces
-  return 404; dev: they answer).
+- [ ] **Posture split, pinned at two levels.** The in-package
+  `internal/runtime/serve` tests pin: (a) a nil auth-validator factory fails
+  `Boot` loud (named error, no listener); (b) the constructor mounts ONLY the
+  shared surfaces (no dev route, no auth rotate surface, no Console mount
+  unless injected); (c) each injection seam works — an injected pre-CORS
+  route / auth-surface option / LLM snapshot override / post-boot hook is
+  observed exactly where the caller placed it. The caller-level `cmd/harbor`
+  tests pin: the dev surfaces (bootstrap-token endpoint, dev mint, drafts)
+  ANSWER under the `harbor dev` composition and 404 under the `harbor serve`
+  composition.
 - [ ] `cmd/harbor/cmd_serve.go` calls `serve.Boot` with its
-  `newJWKSValidatorFactory()` injected (unchanged behavior); `harbor serve`
-  still mints no token (D-220 invariant intact — asserted by the existing
-  serve smoke).
-- [ ] `cmd/harbor/cmd_dev.go` calls `serve.Boot` with a nil factory and layers
-  the dev-only policy (mock gate, hot-reload supervisor, dev-token mint,
-  drafts, Console embed) AROUND it — these stay in `cmd/harbor`, not in the
-  promoted package. `harbor console` likewise thin-calls.
+  `newJWKSValidatorFactory()` injected and no dev seams composed (unchanged
+  behavior); `harbor serve` still mints no token (D-220 invariant intact —
+  the statement lives in `serve --help`, and the existing serve smoke asserts
+  the posture).
+- [ ] `cmd/harbor/cmd_dev.go` calls `serve.Boot` with a dev-signer-built
+  factory and composes the dev-only policy (mock gate via the LLM snapshot
+  override, dev-token mint, drafts + bootstrap via the pre-CORS route seam,
+  rotate via the auth-surface seam, fixture seeding via the post-boot hook,
+  hot-reload supervisor around the handle) — all in `cmd/harbor`, none in the
+  promoted package. `cmd/harbor/cmd_console.go` (a separate file) thin-calls
+  the same way and adds the Console mount.
 - [ ] `harbortest/devstack` consumes the promoted band: its hand-mirrored
-  transports/mux composition block (`harbortest/devstack/devstack.go` ~1300,
-  the `muxOpts`/`transports.NewMux` fan-out) is DELETED and replaced by a call
-  into `serve` (the `SkipTransports`/test-kit knobs are preserved as promoted
-  `Options`, per the devstack precedent). No behavior change to the kit's
-  public surface (`DevStack.Handler` / `DevStack.Mux` semantics unchanged).
+  transports/mux composition block (`harbortest/devstack/devstack.go`
+  ~877–1310, the `muxOpts`/`transports.NewMux` fan-out) is DELETED and replaced
+  by a call into `serve`. The kit's `Skip*` knobs stay devstack-side as kit
+  policy over the promoted `Options`. **Owned behavior change:** the kit's mux
+  GAINS the options its mirror omitted (`WithAgentsService`, `WithAuthSurface`,
+  `WithGovernanceService`, `WithGovernanceKeyRotate`) — closing that drift IS
+  the point of single-homing; a kit-surface test pins the new parity.
 - [ ] Godoc hygiene: no `Phase NN` / `D-NNN` / `brief NN` / wave-band strings
   in the promoted package's non-test Go source (the drift-audit godoc gate);
   every promoted identifier is named for its FEATURE, not its origin phase.
@@ -132,34 +163,76 @@ None.
   identity bleed across concurrent requests, and goroutine baseline restored
   after `Close`.
 - [ ] Cross-phase regression: every existing smoke that boots `harbor dev` /
-  `harbor serve` still passes against the new build (no serve-surface
-  regression); `make preflight` green.
+  `harbor serve` still passes against the new build, and the ~14 smokes whose
+  greps target moved symbols are re-pointed in the same PR (see Files);
+  `make preflight` green.
 
 ## Files added or changed
 
 - `internal/runtime/serve/serve.go` (new) — the promoted constructor
-  (`Boot`), `Options`, `Handle` + `Serve`/`Close`, the auth-factory posture
-  seam. Package godoc names the feature (serve band), not the phase.
-- `internal/runtime/serve/serve_test.go` (new) — posture table test (prod vs
-  dev), the D-025 concurrent-reuse test, goroutine-baseline teardown.
+  (`Boot`), `Options` (incl. the injection seams: pre-CORS routes, auth-surface
+  option, LLM snapshot override, post-boot hook; plus the fields the callers
+  already pass — `MCPDefaultIdentity`, version/instance/DisplayName stamps),
+  `Handle` + `Serve`/`Close`, the required-factory check. Package godoc names
+  the feature (serve band) and its distinction from `internal/server`.
+- `internal/runtime/serve/serve_test.go` (new) — nil-factory fail-loud,
+  shared-surfaces-only + per-seam injection tests, the D-025 concurrent-reuse
+  test, goroutine-baseline teardown.
+- **Promoted alongside the band (production functions, all-internal imports):**
+  - `cmd/harbor/cmd_dev_runloop.go::newPerTaskRunLoopDriver` — the per-task
+    run-loop driver moves with the band (a sibling file under
+    `internal/runtime/serve/`).
+  - the MCP connection attacher/detacher
+    (`cmd/harbor/cmd_dev_mcp_detacher.go` and the attach wiring in
+    `cmd_dev.go`).
+  - the session ensurer adapter (`cmd/harbor/session_ensurer.go`).
+- **Stays cmd-side (dev policy):**
+  - `validateLLMProvider` + the `devmock.go` mock gate (D-089).
+  - the hot-reload supervisor (D-099).
+  - `seedDevFixtures` (`cmd/harbor/devseed.go`) — invoked via the post-boot
+    hook seam.
+  - `devEnricher` (`cmd_dev.go:1057`) — dev-only task enrichment.
+  - the dev identity constants (`DevTenant`/`DevUser`/`DevSession`) — the
+    promoted `Options` takes `MCPDefaultIdentity` explicitly; the constants
+    stay dev-cmd vocabulary.
+  - version/instance/DisplayName stamps — passed as `Options` fields.
 - `cmd/harbor/cmd_serve.go` — `bootDevStack(...)` call becomes
-  `serve.Boot(...)`; `newJWKSValidatorFactory()` stays (it is production
-  policy that the caller injects).
+  `serve.Boot(...)`; `newJWKSValidatorFactory()` stays (production policy the
+  caller injects).
 - `cmd/harbor/cmd_dev.go` — `bootDevStack` / `devBootOptions` / `devStack` +
-  its `serve`/`close` DELETED (moved to `internal/runtime/serve`); the dev-cmd
-  becomes a thin caller that layers dev-only policy (mock gate, hot-reload,
-  dev-token mint, drafts, Console) around `serve.Boot`.
-- `cmd/harbor/cmd_console.go` (if separate) — thin-call conversion.
+  its `serve`/`close` DELETED (moved); the dev-cmd becomes a thin caller that
+  composes dev-only policy through the promoted seams.
+- `cmd/harbor/cmd_console.go` — thin-call conversion + the Console mount over
+  the route seam.
 - `cmd/harbor/cmd_dev_test.go` — unit tests for the dev-only helpers that stay
   (`validateLLMProvider`, `parsePortFromBind`, `newDevSigner`) keep passing;
-  serve-band tests move to the promoted package.
+  serve-band tests move to the promoted package; NEW caller-level posture tests
+  (dev surfaces answer under dev, 404 under serve).
 - `harbortest/devstack/devstack.go` — the hand-mirrored transports/mux block
-  (~1300–1370) deleted; `assembleWith`/serve wiring re-pointed at
-  `internal/runtime/serve`. The test-kit-only knobs (`SkipTransports`,
-  signer, draft temp-dir, httptest-able `Handler`) stay in devstack (D-197
-  boundary).
+  (~877–1310) deleted; serve wiring re-pointed at `internal/runtime/serve`;
+  `Skip*` knobs preserved as kit policy. The kit's hand-mirrored driver files
+  are DELETED in favor of the promoted versions in the same phase: the
+  `newDevStackRunLoopDriver` run-loop-driver mirror,
+  `harbortest/devstack/devstack_mcp_attacher.go`,
+  `harbortest/devstack/devstack_mcp_detacher.go`,
+  `harbortest/devstack/session_ensurer.go`, `harbortest/devstack/enricher.go`
+  (where the promoted equivalents replace them; kit-only pieces stay).
 - `harbortest/devstack/devstack_test.go` — kit-surface parity assertions
-  unchanged / re-pointed.
+  re-pointed + the new gained-options parity pin.
+- **Mechanical smoke fallout (same PR):**
+  - `scripts/smoke/phase-112a.sh` + `scripts/smoke/phase-144.sh` — the sdk
+    func-body allow-lists gain the `sdk/server` entries when Phase 160 lands;
+    THIS phase updates the allow-list entry SHAPE so the exact-func-count
+    constraint can express a named per-file extension (keeping the gate green
+    across both phases).
+  - the ~14 smokes that grep `cmd_dev.go` / `cmd_dev_runloop.go` for symbols
+    the promotion moves are re-pointed at the new homes in the same PR — e.g.
+    `phase-110d.sh:48` (asserts `assemble.Assemble(` in `cmd_dev.go`),
+    `phase-83f.sh` (greps `cmd_dev_runloop.go` for `memory.MemoryStore` /
+    `runctx.FetchMemoryBlocks`), plus the rest surfaced by
+    `grep -rln cmd_dev scripts/smoke/` (107e, 110a–d, 111b/d/e/f, 120, 126b,
+    138, 139, 146, 150, 65, 73c, 73f, 83i, 83w, …) — each grep target updated
+    to the promoted file path.
 - `scripts/smoke/phase-159.sh` (new) — serve/dev boot-parity assertions.
 - `docs/plans/README.md` — Phase 159 row Status + detail block.
 - `docs/decisions.md` — D-291.
@@ -170,10 +243,15 @@ None.
 
 - `serve.Boot(ctx context.Context, opts serve.Options) (*serve.Handle, error)`
   — the promoted constructor (renamed `bootDevStack`; returns the partial
-  handle on error, the D-197 lifecycle contract).
+  handle on error, the D-197 lifecycle contract; REQUIRES a non-nil
+  auth-validator factory).
 - `serve.Options` — the promoted `devBootOptions`: config, logger, the
-  `AuthValidatorFactory` posture seam, the test-kit `Skip*` knobs, and exactly
-  the fields the two real callers pass today. No speculative additions.
+  REQUIRED `AuthValidatorFactory`, the caller-side injection seams (extra
+  pre-CORS routes, transports auth-surface option, LLM snapshot override,
+  post-boot hook receiving subsystem handles), `MCPDefaultIdentity`,
+  version/instance/DisplayName stamps, and the test-kit `Skip*` knobs the kit
+  layers over — exactly the fields the two real callers pass today. No
+  speculative additions.
 - `serve.Handle.Serve(ctx) error` / `serve.Handle.Close(ctx)` — the promoted
   `devStack.serve` / `devStack.close`.
 - Nothing new is exported from `sdk/` (Phase 160) and no new Protocol wire
@@ -181,18 +259,23 @@ None.
 
 ## Test plan
 
-- **Unit:** posture table test (non-nil factory → production: dev-only
-  endpoints 404; nil factory → dev: they answer); `Boot` partial-failure
-  returns the partial `Handle` for `Close` to drain (the D-197 contract);
-  `Serve`/`Close` idempotency; the auth-factory error path (a factory that
-  errors fails `Boot` loud, never a silent unauthenticated fallback).
+- **Unit:** nil-factory → loud error, no listener; shared-surfaces-only
+  posture table (no dev route / rotate surface / Console mount unless
+  injected); per-seam injection tests (route, auth-surface, LLM snapshot
+  override, post-boot hook each observed); `Boot` partial-failure returns the
+  partial `Handle` for `Close` to drain (the D-197 contract); `Serve`/`Close`
+  idempotency; the auth-factory error path (a factory that errors fails `Boot`
+  loud, never a silent unauthenticated fallback). Caller-level `cmd/harbor`
+  tests: dev surfaces answer under the dev composition, 404 under the serve
+  composition.
 - **Integration:** `test/integration/` — boot the promoted `serve.Boot` with
   real drivers (`state/inmem`, `events/inmem`, `audit/patterns`) + an injected
   JWKS factory, drive `/healthz` + one canonical Protocol method over the
   wire, assert identity propagation through the auth middleware to a
   scope-checked read; a missing-identity request is rejected (≥1 failure
   mode); prove the devstack thin-caller and the cmd thin-caller mount the SAME
-  surface set (the anti-drift assertion — the reason the block was single-homed).
+  surface set (the anti-drift assertion — the reason the block was
+  single-homed).
 - **Conformance:** N/A — no persistence-driver seam changes; the promoted band
   composes existing drivers.
 - **Concurrency / leak:** D-025 — N≥100 concurrent requests against one served
@@ -204,15 +287,19 @@ None.
 
 ## Smoke script additions
 
-- live-server: `/healthz` returns 200 on a `harbor serve`-postured boot (or,
-  where a production-postured boot needs a JWKS the smoke can't easily mint,
-  assert the dev-postured `/healthz` + one canonical method round-trip and
-  document that the production-posture probe is covered by the integration
-  test + Phase 160's `phase-160.sh`). The skeleton lands with the 404/405/501
-  → SKIP convention; real assertions land with the implementation PR.
-- Assert `harbor serve` boot still prints "mints no token" (D-220 invariant)
-  and that a `harbor dev` boot still answers `/healthz` — the no-regression
-  parity check.
+- live-server: `/healthz` returns 200 + one canonical Protocol method
+  round-trips on the preflight dev boot — the no-regression boot-parity check
+  for the promoted band. The constraint on deeper smoke probing is that a
+  smoke cannot spend an LLM turn (minting a production JWKS is trivial via
+  `harbor token`; an LLM-driven dispatch is not smoke material) — the
+  production-posture and seam-behavior proofs live in the in-package +
+  caller-level tests and the integration test, and Phase 160's `phase-160.sh`
+  adds the production-postured external boot.
+- Assert the D-220 posture line ("mints no token") in `harbor serve --help`
+  output (the string lives in the help text, not boot output) and that a
+  `harbor dev` boot still answers `/healthz`.
+- Done-definition: `OK ≥ 2, FAIL = 0` once the phase ships (the skeleton's
+  `skip` is replaced by the assertions above).
 
 ## Coverage target
 
@@ -238,11 +325,14 @@ None.
   there should be none (cmd is a leaf), but the promotion must verify no
   service package reaches back into `main`. If one does, that reach-back is
   itself the thing to fix (it was a `package main` leak).
-- **What exactly is "dev-only".** The line is drawn at the auth-factory
-  posture seam: anything gated behind `factory == nil` (bootstrap-token
-  endpoint, dev-token mint print, mock gate, drafts, Console embed, hot-reload
-  supervisor) stays in `cmd/harbor`. The serve band mounts only what BOTH
-  postures share. The posture table test is the guard that this line held.
+- **The seam inventory is the line, and it must not grow silently.** Dev-only
+  behavior reaches the promoted band ONLY through the enumerated injection
+  seams (routes, auth-surface option, LLM snapshot override, post-boot hook).
+  The temptation during implementation is to promote "just one more" dev
+  surface into the constructor for convenience — that re-opens the posture
+  hole the required-factory + caller-composition design closes. The
+  shared-surfaces-only in-package test plus the caller-level 404 tests are the
+  guards that the line held.
 - **Naming collision.** `internal/server` is the protocol-server package;
   `internal/runtime/serve` is the config→listener composition. The two names
   are close — the package godoc must state the distinction so a future

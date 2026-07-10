@@ -45,14 +45,17 @@ does.
 v1.13.0 opens by closing that gap in two staged phases:
 
 - **159 (Stage 1)** promotes the serve band into ONE importable internal
-  package (`internal/runtime/serve`), leaving dev-only policy in `cmd/harbor`;
-  `harbor serve`/`dev`/`console` become thin callers and `harbortest/devstack`
-  is re-wired onto it as the §13 second consumer. Pure Go re-homing — no wire
-  changes.
+  package (`internal/runtime/serve`) whose constructor REQUIRES a non-nil
+  auth-validator factory, leaving dev-only policy in `cmd/harbor` composed
+  caller-side through explicit injection seams; `harbor serve`/`dev`/`console`
+  become thin callers and `harbortest/devstack` is re-wired onto it as the §13
+  second consumer. New Go-side option/handle seams, ZERO wire changes.
 - **160 (Stage 2)** adds the curated `sdk/server` facade (production-only
   posture), the opt-in `harbor scaffold --with-server`, and the acceptance
-  centerpiece — a `test/integration` **parity gate** proving `harbor serve` and
-  a scaffolded `--with-server` binary reach parity from the same config.
+  centerpiece — the **parity gate**: both binaries from the same base config
+  for method-status parity / dev-404s / identity+401, the compiled-tool legs
+  on the scaffolded binary, CI mechanics in-module (scripted LLM), the
+  subprocess wire end-to-end as an env-gated live leg.
 
 ---
 
@@ -74,10 +77,17 @@ plan; agents should re-verify against their worktree, not re-derive the design:
   local-dev loop the `sdk/server` facade documents.
 - The mock LLM driver is internal-only and excluded from BOTH prod aggregators
   (D-089) — the promoted serve constructor must not be able to seat it.
-- The posture seam already exists: `bootDevStack` mounts dev-only surfaces only
-  when `authValidatorFactory == nil` (`cmd/harbor/cmd_dev.go:876`, `:1438`).
+- The dev-surface mounts are already caller-side, signer-gated material: the
+  `signer != nil` gates at `cmd/harbor/cmd_dev.go:1403`/`:1453` guard the
+  draft + bootstrap mounts (`:1429`/`:1460`), the dev key-rotate surface
+  threads at `:1331` (`transports.WithAuthSurface`), the mock's LLM config
+  mutation sits at `:440-443`, the Console mount at `:1496-1502`, and fixture
+  seeding at `:1599` — exactly the surfaces 159 re-expresses as caller-side
+  composition through explicit injection seams on the promoted Options/Handle
+  (the promoted constructor itself REQUIRES a non-nil auth-validator factory;
+  nil is a loud error — identity is mandatory §6).
 - `harbortest/devstack` carries a hand-mirrored transports/mux block
-  (`harbortest/devstack/devstack.go` ~878–1300, the `muxOpts` fan-out +
+  (`harbortest/devstack/devstack.go` ~877–1310, the `muxOpts` fan-out +
   `transports.NewMux` at `:1300`) — the copy 159 deletes (the D-197 move).
 
 ---
@@ -98,14 +108,22 @@ worktree agents never collide in `docs/decisions.md`.
 
 Promote `bootDevStack` / `devBootOptions` / `devStack` (+ serve/close) out of
 `cmd/harbor` into `internal/runtime/serve` (naming: `internal/server` is already
-the protocol-server package — do NOT collide). Dev-only policy STAYS in
-`cmd/harbor`: mock-LLM escape hatch (D-089), hot-reload supervisor (D-099),
-dev-token mint + bootstrap-token endpoint, drafts, Console embed (D-091) — the
-promoted constructor carries no `allowMock` knob and no dev-signer. The
-auth-validator factory is the single posture seam. `harbor serve`/`dev`/`console`
-become thin callers. **Second consumer same-wave (§13):** `harbortest/devstack`
-re-wired onto the promoted band, its hand-mirrored transports/mux block deleted
-(the D-197 move). Pure promotion — no new options surface, no wire changes.
+the protocol-server package — do NOT collide). The promoted constructor
+REQUIRES a non-nil auth-validator factory (nil = loud error; identity is
+mandatory §6) and mounts ONLY the surfaces every caller shares — the dev
+signer NEVER promotes. Dev-only surfaces are composed CALLER-SIDE by
+`cmd/harbor` through explicit injection seams on the promoted Options/Handle
+(extra pre-CORS routes, the transports auth-surface option, an LLM snapshot
+override, a post-boot hook with subsystem handles); dev-only POLICY stays
+cmd-side: mock-LLM escape hatch (D-089), hot-reload supervisor (D-099), dev
+signer + dev-token mint + bootstrap-token endpoint, drafts, Console embed
+(D-091). `harbor serve`/`dev`/`console` become thin callers. **Second consumer
+same-wave (§13):** `harbortest/devstack` re-wired onto the promoted band, its
+hand-mirrored transports/mux block (~877–1310) deleted (the D-197 move); the
+kit's mux GAINS the options its mirror omitted (`WithAgentsService` /
+`WithAuthSurface` / `WithGovernanceService` / `WithGovernanceKeyRotate`) — an
+owned behavior change; closing that drift is the point. An honestly-enumerated
+NEW options/handle seam surface, but zero wire changes.
 
 Gate: `scripts/smoke/phase-159.sh` (boot-parity `/healthz` + one canonical
 method); the D-025 served-handle N≥100 `-race` + goroutine-baseline test; the
@@ -114,9 +132,10 @@ integration test proving cmd + devstack thin callers mount the SAME surface set
 smokes still pass — no regression).
 
 **Decision D-291:** external Protocol serving is a decided contract — one
-promoted serve constructor + a curated `sdk/server` facade, production-only
-posture; supersedes the SDK's deliberate Protocol-server omission (cites the
-D-197 / D-204 precedents).
+promoted serve constructor (required auth-validator factory; dev surfaces
+caller-composed) + a curated `sdk/server` facade, production-only posture;
+supersedes the SDK's deliberate Protocol-server omission recorded in D-205
+item 2 (amended in place; cites the D-197 / D-204 precedents).
 
 ### Stage 2 — the facade + scaffold + parity gate (160) · Dep 159
 
@@ -126,24 +145,39 @@ cmd/harbor scaffold + test/integration, L, D-292).**
 Curated `sdk/server` facade — `server.Open(ctx, cfg, Options{RegisterCatalog})`
 → handle with `Serve`/`Close`, alias/forward over the promoted constructor.
 Production-only by construction (always builds JWKS from `cfg.Identity`, fails
-loud when absent; re-runs `Validate`; no dev-signer, no mock). `RegisterCatalog`
-rides the `assemble.Options.PreRegisterTools` pre-policy seam (adapter, not a
-second registration path; the post-assembly `Catalog.Register` trap is named).
+loud when absent; re-runs `Validate`; no dev-signer, no mock, no injection
+seams). The registrar mechanism: a NEW optional
+`assemble.Options.RegisterCatalog func(tools.ToolCatalog) error` invoked at the
+existing `PreRegisterTools` application point (adapter, not a second
+registration path; the post-assembly `Catalog.Register` trap is named).
 `harbor scaffold --with-server` (opt-in; default stays headless RunOnce)
-generates `cmd/<agent>/main.go`. **Parity gate** (`test/integration`): boots
-`harbor serve` + a scaffolded `--with-server` binary from the SAME config and
-asserts (a) manifest-driven method parity, (b) generated-tool discovery +
-dispatch, (c) approval-gate wrap FIRES on both (pre-policy proof), (d) dev-only
-surfaces 404 on both, (e) §17.3 real drivers + identity propagation + ≥1 failure
-mode (401) + N≥10 stress + `-race`. No new wire types — no D-223/D-209 churn.
+generates `cmd/<agent>/main.go`. **Parity gate, scoped per leg:** BOTH binaries
+from the SAME base config — (a) manifest-driven method-status parity (from the
+Go-side `methods.Methods()` registry in-module; the `wire-manifest.gen.json`
+methods key for any script-side probe), (d) dev-only surfaces 404 on both,
+(e) §17.3 real drivers + identity propagation + ≥1 failure mode (401) + N≥10
+stress + `-race`. SCAFFOLDED BINARY ONLY — (b) generated-tool discovery +
+dispatch, (c) approval-gate wrap FIRES (pre-policy proof); the `tools.entries[]`
+block naming the generated tool lives in the scaffolded binary's config
+OVERLAY — a stock serve booted against it fails loud `ErrToolNotRegistered`
+(deliberate fail-closed; assertable as a negative), and a wrap-fires mirror on
+both binaries MAY use a builtin tool. **CI/live split (§17.8):** the (b)/(c)
+mechanics gate is an in-module `test/integration` scripted-LLM test (the
+83l/158 precedent) under `-race`; the wire-level end-to-end against the real
+scaffolded subprocess binary is an env-gated `HARBOR_LIVE_*` live leg (the
+131d precedent) — it IS Stage 2's live-verification step (§5 item 2). No new
+wire types — no D-223/D-209 churn.
 
-§18 same-PR: `scaffold-a-harbor-agent` + `add-an-in-process-tool` (+
-`use-the-harbor-protocol` checked), `embed-harbor-headless` recipe companion,
-docs/site stubs + nav, README pointer.
+§18 same-PR: `scaffold-a-harbor-agent` + `add-an-in-process-tool` +
+`configure-production-identity` (+ `use-the-harbor-protocol` checked),
+`embed-harbor-headless` recipe companion, docs/site stubs + nav, README
+pointer.
 
-Gate: `scripts/smoke/phase-160.sh` (scaffold `--with-server` → external build →
-token-minted JWKS boot → `/healthz` + tool dispatch; SKIP on a build without the
-flag) + the parity gate under `-race`.
+Gate: `scripts/smoke/phase-160.sh` — the no-LLM subset (scaffold
+`--with-server` → external build with the `replace` directive → token-minted
+JWKS boot → `/healthz` → tool-discovery probe → 401-without-token; `OK ≥ 3`;
+the dispatch leg is env-gated SKIP by default; SKIP on a build without the
+flag) + the in-module parity-gate CI legs under `-race`.
 
 **Decision D-292:** the compiled-tool registrar rides the pre-policy catalog
 seam; `harbor scaffold --with-server` is the opt-in consumer
@@ -187,19 +221,22 @@ Per the operator's mandate for this wave, EACH phase clears:
    the one validated 5× across the 114–118 sequence (it found real bugs on
    115/117/118 and LIVE Console bugs on 118).
 2. **Live verification.** 159: boot the promoted `serve` band under both
-   postures (a `harbor serve`-postured boot with a `harbor token`-minted JWKS,
-   and a `harbor dev` boot) and confirm the surface parity + the dev-only-404
-   posture split by hand, not just in-test. 160: scaffold `--with-server` into a
-   real temp module, build it externally, boot it with a minted JWKS, and drive
-   the generated tool through the wire — the honest external-adopter path.
+   compositions (a `harbor serve` boot with a `harbor token`-minted JWKS, and
+   a `harbor dev` boot) and confirm the surface parity + the dev-only-404
+   composition split by hand, not just in-test. 160: run the env-gated
+   `HARBOR_LIVE_*` leg — scaffold `--with-server` into a real temp module,
+   build it externally, boot it with a minted JWKS, and drive the generated
+   tool through the wire (the honest external-adopter path; this live leg is
+   the wire-level half of the §17.8 CI/live split, not a CI job).
 3. **The standard gate:** `make drift-audit` + `markdownlint-cli2` repo-wide +
    `make check-mirror` (no AGENTS/CLAUDE touch) + `make preflight`. Coverage ≥
    the plan's 85% target on new packages.
 
-**Auto-merge authority:** the operator has granted the coordinator auto-merge
-authority for this wave — clear the gates, land the PR, proceed to the next
-stage without a manual merge handoff. The §17.5 audit still gates any subsequent
-band.
+**Auto-merge authority:** granted by the operator for this wave and recorded in
+the wave's plans PR (#470) description — "operator authorized auto-merge for
+this wave, 2026-07-10." The coordinator clears the gates, lands the PR, and
+proceeds to the next stage without a manual merge handoff. The §17.5 audit
+still gates any subsequent band.
 
 ---
 
@@ -246,19 +283,28 @@ layout is unchanged — no RFC layout PR needed.
    `internal/runtime/serve` (distinct from `internal/server`, the protocol
    server it composes). D-291.
 2. ~~Does the promoted constructor carry a dev/mock knob?~~ **RESOLVED: no** —
-   dev-only policy stays in `cmd/harbor`; posture is selected by the
-   auth-validator factory (non-nil = production). D-291.
+   the constructor REQUIRES a non-nil auth-validator factory (nil = loud
+   error) and mounts only shared surfaces; dev-only surfaces are composed
+   caller-side by `cmd/harbor` through explicit injection seams; the dev
+   signer never promotes. D-291.
 3. ~~Is `sdk/server` dev-capable?~~ **RESOLVED: production-only by
    construction** — always builds JWKS from `cfg.Identity`, fails loud when
-   absent; the local-dev loop is `harbor token`. No dev-signer, no mock. D-292.
+   absent; the local-dev loop is `harbor token`; no dev-signer, no mock, and
+   the injection seams are curated out of the facade. D-292.
 4. ~~How does a compiled tool get its policy/approval/OAuth wrapping?~~
-   **RESOLVED:** `RegisterCatalog` rides the existing
-   `assemble.Options.PreRegisterTools` pre-policy seam — an adapter, never a
-   second registration path; the post-assembly `Catalog.Register` bypass is the
-   named trap. D-292.
+   **RESOLVED:** a NEW optional `assemble.Options.RegisterCatalog` callback
+   invoked at the existing `PreRegisterTools` application point — an adapter,
+   never a second registration path; the post-assembly `Catalog.Register`
+   bypass is the named trap. D-292.
 5. ~~Does `harbor serve` go through `sdk/server`?~~ **RESOLVED: no** — it calls
    the promoted internal constructor directly with a nil registrar; the internal
    and facade paths are the SAME constructor, parameterized. D-292.
-6. ~~Any wire/Protocol changes?~~ **RESOLVED: none** — pure Go re-homing +
-   facade; no methods/types/errors/events, no `ProtocolVersion` bump, no
-   D-223/D-209 churn.
+6. ~~Any wire/Protocol changes?~~ **RESOLVED: none** — Go re-homing + new
+   Go-side option/handle seams + facade; no methods/types/errors/events, no
+   `ProtocolVersion` bump, no D-223/D-209 churn.
+7. ~~Can the parity gate's compiled-tool legs run on both binaries in CI?~~
+   **RESOLVED: no, by design** — (b)/(c) are scaffolded-binary-only (the tool
+   overlay + `ErrToolNotRegistered` fail-closed on stock serve); the CI gate
+   for their mechanics is the in-module scripted-LLM test, and the subprocess
+   wire end-to-end is the env-gated `HARBOR_LIVE_*` live-verification leg.
+   D-292.
