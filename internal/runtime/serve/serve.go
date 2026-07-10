@@ -141,7 +141,16 @@ type PostBootFunc func(ctx context.Context, h PostBootHandles) error
 // config) is carried so a hot-reload supervisor re-reads the file on each
 // reboot by re-calling Boot with the same Options.
 type Options struct {
-	ConfigPath      string
+	ConfigPath string
+
+	// Config, when non-nil, is used directly instead of loading and
+	// validating ConfigPath — the entry point for a caller that already
+	// holds a validated (or programmatically-built) configuration.
+	// Boot re-runs the full-binary Validate on it so a hand-built config
+	// cannot bypass validation. When both Config and ConfigPath are set
+	// Config wins; when Config is nil ConfigPath is loaded.
+	Config *config.Config
+
 	Port            int
 	BindAddr        string
 	Logger          *slog.Logger
@@ -174,6 +183,14 @@ type Options struct {
 	// reading the boot line sees the dev-only posture. A stamp only; the mock
 	// gate itself is caller policy inside BuildLLMSnapshot.
 	DevAllowMock bool
+
+	// RegisterCatalog forwards a compiled-tool registrar onto the
+	// assembly's pre-policy catalog seam (assemble.Options.RegisterCatalog):
+	// a tool it registers is wrapped with its declared approval / OAuth /
+	// policy shell before the run loop can dispatch it. Nil is a no-op —
+	// the stock serve caller passes nil; an external serving binary passes
+	// its agent's RegisterTools.
+	RegisterCatalog func(catalog tools.ToolCatalog) error
 
 	// Caller-side injection seams (all optional).
 	BuildLLMSnapshot LLMSnapshotBuilder
@@ -221,9 +238,22 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		opts.Stderr = io.Discard
 	}
 
-	cfg, err := config.Load(ctx, opts.ConfigPath, config.WithLogger(opts.Logger))
-	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+	var cfg *config.Config
+	if opts.Config != nil {
+		// A caller-supplied config is re-validated with the full-binary
+		// profile so a programmatically-built config cannot bypass
+		// validation (the identity/JWKS ceremony a Protocol server MUST
+		// carry is enforced here, loud, before any subsystem opens).
+		if vErr := opts.Config.Validate(); vErr != nil {
+			return nil, fmt.Errorf("config: %w", vErr)
+		}
+		cfg = opts.Config
+	} else {
+		loaded, err := config.Load(ctx, opts.ConfigPath, config.WithLogger(opts.Logger))
+		if err != nil {
+			return nil, fmt.Errorf("config: %w", err)
+		}
+		cfg = loaded
 	}
 
 	// LLM snapshot — the caller-side builder runs any dev gate + override;
@@ -244,6 +274,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		LLMSnapshot:        &llmCfg,
 		MCPDefaultIdentity: opts.MCPDefaultIdentity,
 		ApprovalAuthorizer: server.NewProtocolScopeAuthorizer(toolapproval.NewIdentityAuthorizer()),
+		RegisterCatalog:    opts.RegisterCatalog,
 	})
 	closers := make([]func(context.Context) error, 0, 8)
 	if stack != nil {

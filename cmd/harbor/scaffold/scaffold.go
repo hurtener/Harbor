@@ -70,6 +70,13 @@ type Options struct {
 	// skipped and listed under `Result.Skipped`. The operator-edit
 	// survival invariant.
 	Patch bool
+	// WithServer opts into emitting a `cmd/<name>/main.go` that serves
+	// the Harbor Protocol via `sdk/server` — an external Protocol server
+	// carrying this project's compiled in-process tools. Purely
+	// additive: the default (false) output is unchanged, and the
+	// generated `agent.go` gains a `RegisterTools` seam the main.go
+	// passes to `server.Open`.
+	WithServer bool
 }
 
 // Result reports what Scaffold wrote. Files are paths RELATIVE to

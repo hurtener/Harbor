@@ -196,7 +196,12 @@ The fastest path is the four-step CLI flow above: `harbor init` drops a
 tiered, commented `harbor.yaml` plus companion docs; you edit one
 LLM-provider example block, run `harbor validate`, then
 `harbor scaffold --name <name>` to materialise the Go project (`go.mod`, a
-worked agent importing the `sdk/` facade, a `harbortest`-driven test). From
+worked agent importing the `sdk/` facade, a `harbortest`-driven test). Add
+`--with-server` and the scaffold also emits a `cmd/<name>/main.go` that serves
+the Protocol from your own binary via the `sdk/server` facade — a scaffolded
+agent with compiled in-process Go tools then reaches wire parity with the stock
+`harbor serve` (production-only posture; the local-dev loop is
+`harbor token keygen` → `identity.jwks_file` → `harbor token mint`). From
 there:
 
 - `harbor dev` — boots the local Runtime + Protocol server, mints an ephemeral

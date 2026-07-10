@@ -62,6 +62,7 @@ const (
 	flagScaffoldOutput     = "output"
 	flagScaffoldFromConfig = "from-config"
 	flagScaffoldPatch      = "patch"
+	flagScaffoldWithServer = "with-server"
 )
 
 // scaffoldJSONResult is the wire shape `harbor scaffold --json` emits
@@ -92,9 +93,15 @@ The rendered config passes Harbor's config validator (` + "`harbor validate`" + 
 when ` + "`harbor validate`" + ` ships; ` + "`internal/config.Load + Validate`" + ` directly today)
 with zero further edits.
 
+Pass --with-server to additionally emit a cmd/<name>/main.go that serves
+the Harbor Protocol with this project's compiled in-process tools (an
+external Protocol server at parity with ` + "`harbor serve`" + `). The default
+(flagless) scaffold stays headless.
+
 Examples:
   harbor scaffold --name my-agent
   harbor scaffold --name my-agent --output ./projects/my-agent
+  harbor scaffold --name my-agent --with-server
   harbor scaffold --name my-agent --template ` + scaffold.DefaultTemplate + ` --json`,
 		Args: cobra.NoArgs,
 		RunE: runScaffold,
@@ -108,6 +115,8 @@ Examples:
 		"path to an operator-edited harbor.yaml; when unset, ./harbor.yaml is auto-detected")
 	cmd.Flags().Bool(flagScaffoldPatch, false,
 		"skip files that already exist in --output (preserve operator-edited code on re-runs)")
+	cmd.Flags().Bool(flagScaffoldWithServer, false,
+		"also emit cmd/<name>/main.go serving the Protocol via sdk/server (opt-in; default scaffold stays headless)")
 	return cmd
 }
 
@@ -117,11 +126,12 @@ Examples:
 func runScaffold(cmd *cobra.Command, _ []string) error {
 	// Every flag below is statically registered on this command, so the
 	// GetString lookups cannot fail; the blank-error discards are intentional.
-	name, _ := cmd.Flags().GetString(flagScaffoldName)          //nolint:errcheck // flag statically registered; lookup cannot fail
-	tmpl, _ := cmd.Flags().GetString(flagScaffoldTemplate)      //nolint:errcheck // flag statically registered; lookup cannot fail
-	outDir, _ := cmd.Flags().GetString(flagScaffoldOutput)      //nolint:errcheck // flag statically registered; lookup cannot fail
-	fromCfg, _ := cmd.Flags().GetString(flagScaffoldFromConfig) //nolint:errcheck // flag statically registered; lookup cannot fail
-	patch, _ := cmd.Flags().GetBool(flagScaffoldPatch)          //nolint:errcheck // flag statically registered; lookup cannot fail
+	name, _ := cmd.Flags().GetString(flagScaffoldName)           //nolint:errcheck // flag statically registered; lookup cannot fail
+	tmpl, _ := cmd.Flags().GetString(flagScaffoldTemplate)       //nolint:errcheck // flag statically registered; lookup cannot fail
+	outDir, _ := cmd.Flags().GetString(flagScaffoldOutput)       //nolint:errcheck // flag statically registered; lookup cannot fail
+	fromCfg, _ := cmd.Flags().GetString(flagScaffoldFromConfig)  //nolint:errcheck // flag statically registered; lookup cannot fail
+	patch, _ := cmd.Flags().GetBool(flagScaffoldPatch)           //nolint:errcheck // flag statically registered; lookup cannot fail
+	withServer, _ := cmd.Flags().GetBool(flagScaffoldWithServer) //nolint:errcheck // flag statically registered; lookup cannot fail
 	if outDir == "" {
 		// Default to ./<name>. validateName (inside Scaffold) will
 		// reject an empty/invalid name with ErrInvalidName, which
@@ -136,6 +146,7 @@ func runScaffold(cmd *cobra.Command, _ []string) error {
 		OutputDir:      outDir,
 		FromConfigPath: fromCfg,
 		Patch:          patch,
+		WithServer:     withServer,
 	})
 	if err != nil {
 		return emitCLIError(cmd, scaffoldErrorToCLIError(err))

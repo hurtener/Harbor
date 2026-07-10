@@ -94,7 +94,8 @@ assert_grep_present 'internal/tools/schema' \
 # derived from the list, so a decision-gated addition appends ONE entry.
 
 allowed_func_specs='sdk/tools/inproc/inproc.go|^func RegisterFunc\[|RegisterFunc|1
-sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped|1'
+sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped|1
+sdk/server/server.go|^func Open\(|Open|1'
 allowed_func_files=$(echo "${allowed_func_specs}" | cut -d'|' -f1)
 allowed_file_count=$(echo "${allowed_func_specs}" | grep -c '^')
 func_files=$(grep -lE '^func ' -r sdk/ --include='*.go' --exclude='*_test.go' | sed 's#^\./##' | sort -u) || func_files=""

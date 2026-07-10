@@ -101,7 +101,8 @@ fi
 # a func declaration in any un-listed file fails, AND extra funcs inside
 # an allow-listed file fail — behavior cannot silently accrete.
 allowed_func_specs='sdk/tools/inproc/inproc.go|^func RegisterFunc\[|RegisterFunc|1
-sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped|1'
+sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped|1
+sdk/server/server.go|^func Open\(|Open|1'
 
 allowed_func_files=$(echo "${allowed_func_specs}" | cut -d'|' -f1)
 allowed_file_count=$(echo "${allowed_func_specs}" | grep -c '^')

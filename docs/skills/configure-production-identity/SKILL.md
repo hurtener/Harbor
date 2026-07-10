@@ -53,6 +53,22 @@ identity:
 mandatory for the production profile. That has a direct consequence for your
 tokens (the §3 exact-match contract).
 
+### The same contract binds external serving binaries (`--with-server` / `sdk/server`)
+
+The stock `harbor serve` binary is not the only production Protocol server. A
+scaffolded agent built with `harbor scaffold --with-server` — whose
+`cmd/<agent>/main.go` reaches the Protocol through the public `sdk/server`
+facade — is **also** a production Protocol server, and it enforces the exact
+same identity contract: `server.Open` always builds the JWKS verifier from this
+`identity:` stanza and **fails loud** (naming the missing field) when the JWKS
+source is absent. There is no dev-signer and no mock knob on that path — the
+posture is production-only by construction. So everything below (the claim
+shape, the iss/aud exact-match rule, the `harbor token` self-issuing on-ramp)
+applies verbatim whether you deploy `harbor serve` or your own
+`--with-server` binary. See
+[`scaffold-a-harbor-agent`](../scaffold-a-harbor-agent/SKILL.md) for the
+serving scaffold and its `harbor token` local-dev loop.
+
 ## 2. The claim shape
 
 Harbor's verifier reads a flat set of claims off the JWT. The multi-isolation

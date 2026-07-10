@@ -52,6 +52,51 @@ func TestScaffold_HappyPath_WritesAllFiles(t *testing.T) {
 	}
 }
 
+// TestScaffold_WithServer_EmitsServerMain proves the opt-in serving
+// scaffold: --with-server emits cmd/<name>/main.go alongside the
+// skeleton, and the toolless project still gains a RegisterTools seam
+// (which the generated main.go passes to server.Open). The default
+// (WithServer=false) output is unchanged — the golden test covers that.
+func TestScaffold_WithServer_EmitsServerMain(t *testing.T) {
+	t.Parallel()
+	out := filepath.Join(t.TempDir(), "srv-agent")
+	result, err := Scaffold(Options{Name: "srv-agent", OutputDir: out, WithServer: true})
+	if err != nil {
+		t.Fatalf("Scaffold --with-server: %v", err)
+	}
+	mainRel := filepath.Join("cmd", "srv-agent", "main.go")
+	found := false
+	for _, f := range result.Files {
+		if f == mainRel {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("result.Files missing %q; got %v", mainRel, result.Files)
+	}
+	mainSrc, err := os.ReadFile(filepath.Join(out, mainRel))
+	if err != nil {
+		t.Fatalf("read generated main.go: %v", err)
+	}
+	for _, want := range []string{
+		"package main",
+		`"github.com/hurtener/Harbor/sdk/server"`,
+		"server.Open(ctx, cfg, server.Options{",
+		"RegisterCatalog: agent.RegisterTools,",
+	} {
+		if !strings.Contains(string(mainSrc), want) {
+			t.Errorf("generated main.go missing %q", want)
+		}
+	}
+	agentSrc, err := os.ReadFile(filepath.Join(out, "agent.go"))
+	if err != nil {
+		t.Fatalf("read agent.go: %v", err)
+	}
+	if !strings.Contains(string(agentSrc), "func RegisterTools(cat tools.ToolCatalog) error") {
+		t.Error("agent.go must declare RegisterTools under --with-server")
+	}
+}
+
 // TestScaffold_DefaultTemplate_IsMinimalReact pins the
 // DefaultTemplate constant. A regression here means a sibling phase
 // has re-pointed the default without updating this test, which is the

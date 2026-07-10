@@ -107,6 +107,49 @@ harbor dev
 
 `harbor dev` boots the Runtime on `127.0.0.1:18080` and mints an ephemeral `HARBOR_DEV_TOKEN` (printed on stderr). The Console is a separate process — see [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) for the attach flow.
 
+## 6. Serve the Protocol from your own binary (`--with-server`)
+
+`harbor dev` is the development loop; when you want your agent — with its compiled in-process Go tools — to serve the Harbor Protocol from its **own** binary at parity with the stock `harbor serve`, add `--with-server`:
+
+```bash
+harbor scaffold --name my-first-agent --with-server
+```
+
+This is purely additive — the default (flagless) scaffold stays headless. `--with-server` also emits a serving entry point:
+
+```text
+my-first-agent/
+├── cmd/my-first-agent/
+│   └── main.go        # loads harbor.yaml, blank-imports sdk/drivers/prod,
+│                      # passes agent.RegisterTools to sdk/server.Open, serves
+└── ... (the usual skeleton)
+```
+
+`main.go` mirrors `harbor serve`'s `--config` / `--port` / `--bind` flags and reaches the Protocol through the public `sdk/server` facade, so the module builds and serves as a standalone external binary. It is **production-only by construction**: `server.Open` always builds the JWKS verifier from `identity.*` and fails loud when the JWKS source is missing — there is no dev signer and no mock. Your `RegisterTools` runs at the pre-policy catalog seam, so every tool keeps its declared `tools.entries` approval / OAuth / policy wrapping (see [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md)).
+
+Because the server verifies every request against your identity provider's JWK Set, the **local-development loop** is the three-command `harbor token` flow — the same loop a self-hosted `harbor serve` operator uses:
+
+```bash
+# 1. Generate a signing keypair + public JWK Set.
+harbor token keygen --out ./keys
+
+# 2. In harbor.yaml, point identity.jwks_file at the emitted set
+#    (and remove identity.jwks_url — set exactly one source):
+#      identity:
+#        jwks_file: ./keys/jwks.json
+
+# 3. Build + run the server.
+go build ./cmd/my-first-agent && ./my-first-agent --config ./harbor.yaml
+
+# 4. Mint a short-lived JWT whose iss/aud match harbor.yaml, then call the
+#    Protocol with it (Authorization: Bearer <token>):
+harbor token mint --key ./keys/private.pem \
+  --tenant acme --user alice --session s1 \
+  --issuer <identity.issuer> --audience <identity.audience>
+```
+
+See [`configure-production-identity`](../configure-production-identity/SKILL.md) for the JWKS posture and [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md) for driving the wire surface.
+
 ## Common failure modes
 
 - **`harbor init` overwrote my edits.** It won't — `harbor init --target <dir>` refuses to overwrite any of its four target files: if `harbor.yaml`, `AGENTS.md`, `CLAUDE.md`, or `README.md` already exists it errors out (per-file, fail-loud). Delete the conflicting file or pick a fresh `--target` directory and re-run.

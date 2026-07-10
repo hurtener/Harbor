@@ -25,6 +25,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
 
 // minimalCfg is the examples-shaped minimal config the golden boot
@@ -257,6 +258,115 @@ func TestAssemble_NilConfig_FailsLoud(t *testing.T) {
 		t.Errorf("expected nil stack on nil cfg")
 	}
 }
+
+// TestAssemble_RegisterCatalog_PrePolicy_ApprovalWrapFires proves the
+// compiled-tool registrar rides the pre-policy catalog seam: a tool
+// registered via Options.RegisterCatalog AND named in cfg.Tools.Entries
+// behind an approval gate gets that gate wired — the empirical proof
+// that registration landed BEFORE the catalog Builder's tools.entries
+// wrapping (not merely that the tool is registered).
+func TestAssemble_RegisterCatalog_PrePolicy_ApprovalWrapFires(t *testing.T) {
+	cfg := minimalCfg(t)
+	cfg.Tools.Entries = []config.ToolEntryConfig{
+		{Name: "compiled.tool", Approval: &config.ToolApprovalConfig{Policy: "deny-all"}},
+	}
+	registerCalled := false
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
+		RegisterCatalog: func(cat tools.ToolCatalog) error {
+			registerCalled = true
+			return inproc.RegisterFunc[compiledIn, compiledOut](
+				cat, "compiled.tool",
+				func(_ context.Context, in compiledIn) (compiledOut, error) {
+					return compiledOut{Echo: in.Msg}, nil
+				},
+				tools.WithDescription("compiled test tool"),
+			)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	defer func() { _ = stack.Close(context.Background()) }()
+
+	if !registerCalled {
+		t.Fatal("RegisterCatalog callback was never invoked")
+	}
+	if _, ok := stack.Catalog.Resolve("compiled.tool"); !ok {
+		t.Fatal("compiled.tool did not register via RegisterCatalog")
+	}
+	// The approval gate is the empirical wrap: it only wires if the tool
+	// was on the catalog BEFORE the Builder applied tools.entries.
+	if _, ok := stack.Gates["compiled.tool"]; !ok {
+		t.Error("tools.entries[] naming the RegisterCatalog tool did NOT wire an approval gate — " +
+			"the registrar did not ride the pre-policy seam (registration landed after the Builder)")
+	}
+}
+
+// TestAssemble_RegisterCatalog_Error_FailsLoud — a registrar error is
+// surfaced loud (never a silent skip), and the partial stack drains.
+func TestAssemble_RegisterCatalog_Error_FailsLoud(t *testing.T) {
+	cfg := minimalCfg(t)
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
+		RegisterCatalog: func(tools.ToolCatalog) error {
+			return errSentinelRegistrar
+		},
+	})
+	if stack != nil {
+		defer func() { _ = stack.Close(context.Background()) }()
+	}
+	if err == nil || !strings.Contains(err.Error(), "register-catalog") {
+		t.Fatalf("expected loud register-catalog error, got %v", err)
+	}
+}
+
+// TestAssemble_PostAssemblyRegister_SkipsTheWrap is the documented trap
+// (D-292): a tool registered on the catalog AFTER Assemble returns does
+// NOT receive the tools.entries wrapping — its approval gate is absent.
+// Pinned so a future refactor cannot silently move the registrar off
+// the pre-policy seam and rationalise it as equivalent.
+func TestAssemble_PostAssemblyRegister_SkipsTheWrap(t *testing.T) {
+	cfg := minimalCfg(t)
+	// Note: "late.tool" is deliberately NOT in cfg.Tools.Entries — an
+	// entry naming an unregistered tool fails Assemble loud
+	// (fail-closed). The trap is that even a would-be-wrapped tool
+	// registered post-assembly reaches the catalog WITHOUT a gate.
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	defer func() { _ = stack.Close(context.Background()) }()
+
+	if err := inproc.RegisterFunc[compiledIn, compiledOut](
+		stack.Catalog, "late.tool",
+		func(_ context.Context, in compiledIn) (compiledOut, error) {
+			return compiledOut{Echo: in.Msg}, nil
+		},
+	); err != nil {
+		t.Fatalf("post-assembly Catalog.Register: %v", err)
+	}
+	if _, ok := stack.Catalog.Resolve("late.tool"); !ok {
+		t.Fatal("late.tool did not register post-assembly")
+	}
+	if _, ok := stack.Gates["late.tool"]; ok {
+		t.Error("a post-assembly-registered tool got an approval gate — the wrapping band must run only at assembly time")
+	}
+}
+
+// compiledIn / compiledOut are the typed I/O for the RegisterCatalog
+// test tools.
+type compiledIn struct {
+	Msg string `json:"msg"`
+}
+type compiledOut struct {
+	Echo string `json:"echo"`
+}
+
+// errSentinelRegistrar is the forced registrar failure.
+var errSentinelRegistrar = errBoom("registrar boom")
+
+type errBoom string
+
+func (e errBoom) Error() string { return string(e) }
 
 // TestAssemble_ForcedFailures_PartialStackClosesClean — the
 // table-driven mid-assembly failure gate: each stage's error returns
