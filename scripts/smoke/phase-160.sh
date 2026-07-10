@@ -3,46 +3,20 @@
 #
 # Phase 160 — sdk/server + `harbor scaffold --with-server` + parity gate.
 #
-# When the phase lands, this asserts the no-LLM subset of the external-serving
-# path (a smoke cannot spend an LLM turn):
-#   - `harbor scaffold --with-server` into a temp dir as an EXTERNAL module
-#     (replace-directive appended to go.mod so it builds against the local
-#     checkout — the phase-112b.sh:216 precedent);
+# The no-LLM subset of the external-serving path (a smoke cannot spend an LLM
+# turn):
+#   - `harbor scaffold --with-server --from-config <probe>` into a temp dir as
+#     an EXTERNAL module (replace-directive appended to go.mod so it builds
+#     against the local checkout — the phase-112b.sh:216 precedent);
 #   - `go build` the generated cmd/<agent> against the sdk/ facade;
-#   - boot it with a `harbor token`-minted JWKS production posture;
-#   - /healthz returns 200; the generated custom tool is PRESENT in the
-#     catalog listing (discovery probe); a request without a token is
-#     rejected 401. OK >= 3, FAIL = 0.
-# The tool DISPATCH leg (an LLM-driven invocation through the executor) is
-# env-gated: SKIP by default, runs under the HARBOR_LIVE_* live leg.
-# Degradation: SKIP on a build whose `harbor scaffold` lacks `--with-server`
-# (unknown-flag error -> SKIP, mirroring the 404/405/501 convention for a CLI
-# flag). Until then it SKIPs. Real assertions land with the implementation PR.
-#
-# Phase NN smoke template heritage below (kept for helper reference).
-#
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+#   - boot it behind a `harbor token`-minted JWKS production posture
+#     (keygen -> jwks_file -> mint);
+#   - /healthz 200; the generated custom tool is PRESENT in tools.list
+#     (discovery probe, authenticated); a request without a token -> 401.
+#   OK >= 3, FAIL = 0.
+# The tool DISPATCH leg (LLM-driven invocation) is the env-gated live leg
+# (HARBOR_LIVE_SERVE) run by the coordinator — SKIP here.
+# Degradation: SKIP on a build whose `harbor scaffold` lacks `--with-server`.
 
 set -euo pipefail
 
@@ -52,17 +26,274 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase NN assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+BIN="${ROOT}/bin/harbor"
+GATE_DEADLINE_SECS="${HARBOR_PHASE160_GATE_DEADLINE_SECS:-240}"
 
-skip "phase 160: smoke skeleton — sdk/server + scaffold --with-server not yet implemented; replace with the no-LLM subset (scaffold->build->token-minted-boot->/healthz + discovery probe + 401-without-token; dispatch env-gated) when the phase lands"
+# with_deadline <cmd...> — portable bounded execution (macOS ships no
+# GNU timeout by default; perl's alarm is the fallback).
+with_deadline() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${GATE_DEADLINE_SECS}" "$@"
+    else
+        perl -e 'alarm shift; exec @ARGV' "${GATE_DEADLINE_SECS}" "$@"
+    fi
+}
+
+if [[ ! -x "${BIN}" ]]; then
+    skip "phase 160: ${BIN} not built — run 'make build' (preflight builds it)"
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+
+# --- 0. Degradation: does this build's scaffold carry --with-server? ---------
+
+# Capture the help text first: piping directly into `grep -q` under
+# `pipefail` lets grep close the pipe early, SIGPIPE-killing `harbor`, and the
+# pipeline then reports failure even though the flag IS present.
+scaffold_help="$("${BIN}" scaffold --help 2>&1 || true)"
+if ! printf '%s' "${scaffold_help}" | grep -q -- '--with-server'; then
+    skip "phase 160: harbor scaffold has no --with-server flag on this build"
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+
+TMPDIR="$(mktemp -d)"
+SERVER_PID=""
+STOCK_PID=""
+cleanup() {
+    for pid in "${SERVER_PID}" "${STOCK_PID}"; do
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+        fi
+    done
+    rm -rf "${TMPDIR}"
+}
+trap cleanup EXIT
+
+KEYS="${TMPDIR}/keys"
+ISSUER="https://issuer.smoke.local"
+AUDIENCE="phase-160-server"
+
+# --- 1. keygen: the production JWKS local-dev loop ---------------------------
+
+if ! "${BIN}" token keygen --out "${KEYS}" --alg ES256 >/dev/null 2>&1; then
+    fail 'phase 160: harbor token keygen failed'
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+if [[ -f "${KEYS}/jwks.json" && -f "${KEYS}/private.pem" ]]; then
+    ok 'phase 160: harbor token keygen produced jwks.json + private.pem (the production JWKS local-dev loop)'
+else
+    fail 'phase 160: keygen did not produce jwks.json + private.pem'
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+
+# --- 2. Probe config: jwks_file posture + a compiled custom tool -------------
+
+PROBE_YAML="${TMPDIR}/harbor.yaml"
+cat > "${PROBE_YAML}" <<YAML
+server:
+  bind_addr: 127.0.0.1:0
+  shutdown_grace_period: 5s
+identity:
+  jwt_algorithms: [ES256]
+  issuer: ${ISSUER}
+  audience: ${AUDIENCE}
+  jwks_file: ${KEYS}/jwks.json
+telemetry:
+  log_format: json
+  log_level: error
+  service_name: phase-160-server
+llm:
+  provider: openrouter
+  model: anthropic/claude-haiku-4-5
+  api_key: env.OPENROUTER_API_KEY
+  timeout: 60s
+  model_profiles:
+    anthropic/claude-haiku-4-5:
+      context_window_tokens: 200000
+tools:
+  custom:
+    - name: weather.lookup
+      description: Look up current weather by city.
+      input:
+        city: string
+      output:
+        summary: string
+YAML
+
+# --- 3. Scaffold --with-server as an external module -------------------------
+
+PROJ="${TMPDIR}/srv-agent"
+if ! (cd "${TMPDIR}" && "${BIN}" scaffold --name srv-agent --output "${PROJ}" --with-server --from-config "${PROBE_YAML}") >/dev/null 2>&1; then
+    fail 'phase 160: harbor scaffold --with-server --from-config failed'
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+if [[ -f "${PROJ}/cmd/srv-agent/main.go" ]]; then
+    ok 'phase 160: scaffold --with-server emitted cmd/srv-agent/main.go (the serving entry point)'
+else
+    fail 'phase 160: scaffold --with-server did not emit cmd/<name>/main.go'
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+{
+    printf '\n'
+    printf 'replace github.com/hurtener/Harbor => %s\n' "${ROOT}"
+} >> "${PROJ}/go.mod"
+
+# --- 4. External build of the serving binary ---------------------------------
+
+BUILD_LOG="${TMPDIR}/build.log"
+if ! with_deadline sh -c "cd '${PROJ}' && go mod tidy && go build -o '${TMPDIR}/srv-agent-bin' ./cmd/srv-agent" >"${BUILD_LOG}" 2>&1; then
+    fail 'phase 160: EXTERNAL BUILD RED — scaffolded --with-server binary does not build (see tail)'
+    tail -30 "${BUILD_LOG}" | sed 's/^/    /'
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+ok 'phase 160: EXTERNAL BUILD green — scaffolded --with-server binary builds against the sdk/ facade'
+
+# --- 5. Boot the serving binary behind the minted JWKS posture ---------------
+# bifrost accepts any non-empty key at construction (it validates against the
+# provider only on a real request), so a dummy key lets the production server
+# BOOT without spending an LLM turn — discovery + 401 never call the LLM.
+
+SERVER_LOG="${TMPDIR}/server.log"
+OPENROUTER_API_KEY="sk-phase160-smoke-dummy" \
+    "${TMPDIR}/srv-agent-bin" --config "${PROBE_YAML}" --bind 127.0.0.1:0 \
+    >"${SERVER_LOG}" 2>&1 &
+SERVER_PID=$!
+
+# Discover the ephemeral bound address the server prints at listen time.
+BOUND=""
+for _ in $(seq 1 50); do
+    if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+        break
+    fi
+    BOUND="$(grep -o 'HARBOR_DEV_BOUND=[^ ]*' "${SERVER_LOG}" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+    [[ -n "${BOUND}" ]] && break
+    sleep 0.2
+done
+
+if [[ -z "${BOUND}" ]]; then
+    fail 'phase 160: scaffolded server did not bind a listener (no HARBOR_DEV_BOUND in log; see tail)'
+    tail -30 "${SERVER_LOG}" | sed 's/^/    /'
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+BASE="http://${BOUND}"
+
+# Wait for /healthz.
+HEALTHY=""
+for _ in $(seq 1 50); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/healthz" 2>/dev/null || true)"
+    if [[ "${code}" == "200" ]]; then
+        HEALTHY=1
+        break
+    fi
+    sleep 0.2
+done
+if [[ -n "${HEALTHY}" ]]; then
+    ok "phase 160: scaffolded --with-server binary booted; /healthz 200 at ${BASE} (production JWKS posture)"
+else
+    fail 'phase 160: scaffolded server /healthz never returned 200 (see tail)'
+    tail -30 "${SERVER_LOG}" | sed 's/^/    /'
+    smoke_summary
+    return 0 2>/dev/null || exit 0
+fi
+
+# --- 6. 401 without a token (identity is mandatory) --------------------------
+
+noauth_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -d '{}' "${BASE}/v1/tools/list" 2>/dev/null || true)"
+if [[ "${noauth_code}" == "401" ]]; then
+    ok 'phase 160: tools.list without a token -> 401 (identity mandatory)'
+else
+    fail "phase 160: tools.list without a token -> ${noauth_code} (want 401)"
+fi
+
+# --- 7. Discovery: the compiled tool is present in the catalog ---------------
+
+TOKEN="$("${BIN}" token mint --key "${KEYS}/private.pem" \
+    --tenant acme --user alice --session s1 \
+    --issuer "${ISSUER}" --audience "${AUDIENCE}" 2>/dev/null | tr -d '\r\n' || true)"
+if [[ -z "${TOKEN}" ]]; then
+    fail 'phase 160: harbor token mint produced no token'
+else
+    list_body="$(curl -s -X POST -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${TOKEN}" -d '{}' "${BASE}/v1/tools/list" 2>/dev/null || true)"
+    if printf '%s' "${list_body}" | grep -q 'weather.lookup'; then
+        ok 'phase 160: discovery — the compiled tool weather.lookup is present in the served catalog (tools.list, authenticated)'
+    else
+        fail "phase 160: discovery — weather.lookup absent from tools.list; body=${list_body}"
+    fi
+fi
+
+# --- 8. Script-side manifest method-status parity (both binaries) ------------
+# Boot the STOCK `harbor serve` against the SAME probe yaml (a nil-registrar
+# composition — `tools.custom` is scaffold input the runtime ignores), then
+# probe every canonical method from the generated wire manifest's `methods`
+# key on BOTH listeners unauthenticated and compare status CLASSES. A method
+# mounted on one composition but not the other fails here.
+
+STOCK_LOG="${TMPDIR}/stock.log"
+OPENROUTER_API_KEY="sk-phase160-smoke-dummy" \
+    "${BIN}" serve --config "${PROBE_YAML}" --bind 127.0.0.1:0 \
+    >"${STOCK_LOG}" 2>&1 &
+STOCK_PID=$!
+
+STOCK_BOUND=""
+for _ in $(seq 1 50); do
+    if ! kill -0 "${STOCK_PID}" 2>/dev/null; then
+        break
+    fi
+    STOCK_BOUND="$(grep -o 'HARBOR_DEV_BOUND=[^ ]*' "${STOCK_LOG}" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+    [[ -n "${STOCK_BOUND}" ]] && break
+    sleep 0.2
+done
+
+if [[ -z "${STOCK_BOUND}" ]]; then
+    fail 'phase 160: stock harbor serve did not bind for the parity probe (see tail)'
+    tail -20 "${STOCK_LOG}" | sed 's/^/    /'
+else
+    MANIFEST="web/console/src/lib/protocol/wire-manifest.gen.json"
+    if PARITY_OUT="$(python3 - "${MANIFEST}" "http://${STOCK_BOUND}" "${BASE}" <<'PYEOF'
+import json, sys, urllib.request
+
+manifest, stock_base, scaffold_base = sys.argv[1], sys.argv[2], sys.argv[3]
+methods = json.load(open(manifest))["methods"]
+
+def probe(base, method):
+    url = base + "/v1/" + method.replace(".", "/")
+    req = urllib.request.Request(url, data=b"{}", method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+mismatches = []
+for m in methods:
+    a, b = probe(stock_base, m), probe(scaffold_base, m)
+    if a // 100 != b // 100:
+        mismatches.append(f"{m}: stock={a} scaffold={b}")
+if mismatches:
+    print("MISMATCH " + "; ".join(mismatches))
+    sys.exit(1)
+print(f"OK {len(methods)} methods, identical status classes")
+PYEOF
+)"; then
+        ok "phase 160: manifest method-status parity — ${PARITY_OUT#OK } (stock serve vs scaffolded binary, wire-manifest methods key)"
+    else
+        fail "phase 160: manifest method-status parity BROKEN: ${PARITY_OUT}"
+    fi
+fi
+
+# --- 9. Dispatch leg — env-gated live leg (needs a real LLM) ------------------
+
+skip 'phase 160: tool DISPATCH leg is the env-gated HARBOR_LIVE_SERVE live leg (needs a real LLM); run by the wave live-verification step (test/integration TestE2E_Live_Phase160_ScaffoldedServer_Dispatch)'
 
 smoke_summary

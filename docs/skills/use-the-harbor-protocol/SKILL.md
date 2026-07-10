@@ -22,6 +22,8 @@ The Protocol is what makes Harbor headless. The Runtime never imports Console co
 
 ## 1. The wire — base URL, auth, identity
 
+This same wire surface is served by any production Harbor Protocol server — the stock `harbor serve` binary **or** an external Go binary built with `harbor scaffold --with-server` (which reaches the Protocol through the public `sdk/server` facade; see [`scaffold-a-harbor-agent`](../scaffold-a-harbor-agent/SKILL.md)). Both enforce the identical JWKS auth posture below, so a client written against one drives the other unchanged.
+
 The wire is **REST-per-method**: each Protocol method is its own route under `/v1/`, you POST a flat JSON body, and you get a flat JSON response back — there is no JSON-RPC envelope. Every request carries:
 
 ```http

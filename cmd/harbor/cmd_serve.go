@@ -45,11 +45,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hurtener/Harbor/internal/audit"
-	"github.com/hurtener/Harbor/internal/config"
-	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 )
 
@@ -105,7 +101,7 @@ Examples:
 		RunE: runServe,
 	}
 	cmd.Flags().String(flagServeConfig, DefaultDevConfig, "path to harbor.yaml")
-	cmd.Flags().Int(flagServePort, DefaultServePort, "loopback fallback port (server.bind_addr wins)")
+	cmd.Flags().Int(flagServePort, DefaultServePort, "backstop port used only if the config carries no server.bind_addr (config loading defaults it, so --bind is the practical override)")
 	cmd.Flags().String(flagServeBind, "", "host:port to bind (overrides server.bind_addr; host:0 = ephemeral)")
 	return cmd
 }
@@ -155,14 +151,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		// The PRODUCTION auth path: build the JWKS-backed validator from the
 		// operator's identity config. No dev-only seam is composed, so no
 		// dev surface (bootstrap, drafts, rotate, Console) is mounted.
-		AuthValidatorFactory: newJWKSValidatorFactory(),
+		AuthValidatorFactory: serve.NewJWKSAuthValidatorFactory(),
 		MCPDefaultIdentity: identity.Identity{
 			TenantID:  DevTenant,
 			UserID:    DevUser,
 			SessionID: DevSession,
 		},
 		DisplayName:  "harbor serve",
-		InstanceID:   serveInstanceID(),
+		InstanceID:   serve.InstanceID("harbor-serve"),
 		BuildVersion: HarborVersion,
 		BuildCommit:  "dev",
 		// production demands a real LLM provider (allowMock=false): the gate
@@ -183,30 +179,4 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		})
 	}
 	return nil
-}
-
-// serveInstanceID mints a stable-per-process instance identifier for the
-// production Runtime. A Console attached to multiple Runtimes keys each
-// attachment by it.
-func serveInstanceID() string {
-	if h, err := os.Hostname(); err == nil && h != "" {
-		return "harbor-serve-" + h
-	}
-	return "harbor-serve"
-}
-
-// newJWKSValidatorFactory returns the production auth-validator factory
-// `harbor serve` injects into the promoted serve constructor
-// (serve.Boot). It projects the operator's identity config onto a
-// JWKS-backed Validator (URL or file source), wiring the assembled
-// redactor / bus / logger. The initial JWKS fetch runs synchronously
-// inside the projection, so a bad source fails the boot loud.
-func newJWKSValidatorFactory() func(context.Context, *config.Config, audit.Redactor, events.EventBus, *slog.Logger) (auth.Validator, error) {
-	return func(ctx context.Context, cfg *config.Config, red audit.Redactor, bus events.EventBus, logger *slog.Logger) (auth.Validator, error) {
-		return auth.NewJWKSValidator(ctx, cfg.Identity, auth.ValidatorDeps{
-			Redactor: red,
-			Logger:   logger,
-			Bus:      bus,
-		})
-	}
 }

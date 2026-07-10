@@ -620,7 +620,7 @@ func TestServeComposition_HonorsConfigBindAddr(t *testing.T) {
 		},
 		MCPDefaultIdentity: identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
 		DisplayName:        "harbor serve",
-		InstanceID:         serveInstanceID(),
+		InstanceID:         serve.InstanceID("harbor-serve"),
 		BuildVersion:       HarborVersion,
 		BuildCommit:        "dev",
 		BuildLLMSnapshot:   newLLMSnapshotBuilder(true),

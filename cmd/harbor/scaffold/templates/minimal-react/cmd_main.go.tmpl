@@ -1,0 +1,113 @@
+// Command {{.Name}} serves the Harbor Protocol from this project's own
+// binary, carrying the compiled in-process tools RegisterTools wires.
+//
+// It is the external-serving sibling of `harbor serve`: same production
+// posture (a JWKS-backed JWT verifier built from identity.jwks_url /
+// identity.jwks_file; no dev signer, no mock), reached through the
+// public sdk/server facade.
+//
+// # Local-development loop (the harbor token three-command flow)
+//
+// This server verifies every request against your identity provider's
+// JWK Set. For local development, mint your own keypair + token:
+//
+//	# 1. Generate a signing keypair + public JWK Set.
+//	harbor token keygen --out ./keys
+//
+//	# 2. Point identity.jwks_file at the emitted set in harbor.yaml:
+//	#      identity:
+//	#        jwks_file: ./keys/jwks.json
+//	#    (and remove identity.jwks_url — set exactly one source).
+//
+//	# 3. Build + run this server.
+//	go build ./cmd/{{.Name}} && ./{{.Name}} --config ./harbor.yaml
+//
+//	# 4. Mint a short-lived JWT whose iss/aud match harbor.yaml, then
+//	#    call the Protocol with it:
+//	harbor token mint --key ./keys/private.pem \
+//	    --tenant acme --user alice --session s1 \
+//	    --issuer <identity.issuer> --audience <identity.audience>
+//
+// Before any non-local deployment, replace identity.issuer /
+// identity.audience / the JWKS source with your real OIDC provider's
+// values.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	// Blank-import the production driver aggregator so every store /
+	// bus / LLM the runtime opens resolves its real driver.
+	_ "github.com/hurtener/Harbor/sdk/drivers/prod"
+
+	"github.com/hurtener/Harbor/sdk/config"
+	"github.com/hurtener/Harbor/sdk/server"
+
+	agent "github.com/example/{{.Name}}"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "{{.Name}}:", err)
+		os.Exit(1)
+	}
+}
+
+// run loads the configuration, opens the Protocol server with this
+// project's tools registered at the pre-policy catalog seam, and serves
+// until SIGINT / SIGTERM.
+func run() error {
+	// The flag trio mirrors `harbor serve`: --config, --bind (overrides
+	// server.bind_addr; the HARBOR_BIND env var is the flagless
+	// equivalent), and --port (a backstop used only when the config
+	// carries no server.bind_addr — config loading defaults it, so
+	// --bind is the practical override).
+	configPath := flag.String("config", "harbor.yaml", "path to harbor.yaml")
+	port := flag.Int("port", 8686, "backstop port used only if the config carries no server.bind_addr (config loading defaults it, so --bind is the practical override)")
+	bind := flag.String("bind", "", "host:port to bind (overrides server.bind_addr; host:0 = ephemeral)")
+	flag.Parse()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := config.Load(ctx, *configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	// --bind (or HARBOR_BIND) overrides the configured bind address; the
+	// --port fallback applies only when neither is set and the config
+	// carries no bind_addr.
+	bindOverride := *bind
+	if bindOverride == "" {
+		bindOverride = os.Getenv("HARBOR_BIND")
+	}
+	switch {
+	case bindOverride != "":
+		cfg.Server.BindAddr = bindOverride
+	case cfg.Server.BindAddr == "":
+		cfg.Server.BindAddr = fmt.Sprintf("127.0.0.1:%d", *port)
+	}
+
+	h, err := server.Open(ctx, cfg, server.Options{
+		// RegisterTools registers this project's compiled tools at the
+		// pre-policy catalog seam, so each keeps its declared approval /
+		// OAuth / policy wrapping from tools.entries in harbor.yaml.
+		RegisterCatalog: agent.RegisterTools,
+	})
+	if err != nil {
+		return fmt.Errorf("open server: %w", err)
+	}
+	defer func() { _ = h.Close(context.Background()) }()
+
+	// Serve blocks until ctx cancels (SIGINT / SIGTERM), then drains.
+	if err := h.Serve(ctx); err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+	return nil
+}

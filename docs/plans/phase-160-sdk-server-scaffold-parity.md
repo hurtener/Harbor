@@ -125,38 +125,46 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `sdk/server` package exists: `Open`, `Options{RegisterCatalog}`, the
-  handle type + `Serve`/`Close`, and a load-from-path convenience
-  (`server.OpenFromConfigFile` or an `Options` config-path field — one, not
-  both). It is alias/forward over `internal/runtime/serve` plus the ONE
-  `Options`→`serve.Options` adapter func (the D-205 single-carve-out posture;
-  the facade's no-behavior guard allow-lists it by name).
-- [ ] Production posture pinned: `Open` with a `cfg.Identity` missing its JWKS
-  source fails loud with a named-field error (test asserts the error names the
-  field); there is NO code path in `sdk/server` that mounts a dev-signer, a
-  bootstrap-token endpoint, or any Phase 159 injection seam (grep-gated in the
-  facade test, mirroring D-205's mock-exclusion assertion).
-- [ ] Validation is not bypassable: `Open` re-runs `config.Validate` (the
-  serve profile) on the passed config; an invalid programmatic config fails
-  loud at `Open`, not at first request.
-- [ ] The assembly gains the optional `assemble.Options.RegisterCatalog`
+- [x] `sdk/server` package exists: `Open`, `Options{RegisterCatalog}`, the
+  handle type + `Serve`/`Close`, and a load-from-path convenience (an `Options`
+  `ConfigPath` field — not a separate `OpenFromConfigFile`). It is alias/forward
+  over the internal serving band (`internal/runtime/serve/external`, which
+  facades `internal/runtime/serve`) plus the ONE `Options`→internal-options
+  adapter func `Open` (the D-205 single-carve-out posture; the facade's
+  no-behavior guard allow-lists it by name in `phase-112a.sh`/`phase-144.sh`).
+- [x] Production posture pinned: `Open` with a `cfg.Identity` missing its JWKS
+  source fails loud with a named-field error (`TestOpen_MissingJWKS_FailsLoudNamingField`
+  asserts the error names the `identity`/`jwks` field); there is NO code path in
+  `sdk/server` that mounts a dev-signer, a bootstrap-token endpoint, or any
+  Phase 159 injection seam (grep-gated in `TestFacade_NoDevSurfaces_NoInjectionSeams`,
+  mirroring D-205's mock-exclusion assertion).
+- [x] Validation is not bypassable: `Open` re-runs `config.Validate` (the full
+  serve profile, via the internal band's `Boot`) on the passed config; an
+  invalid programmatic config fails loud at `Open`, not at first request
+  (`TestOpen_InvalidConfig_FailsLoudAtOpen`).
+- [x] The assembly gains the optional `assemble.Options.RegisterCatalog`
   callback at the `PreRegisterTools` application point, and it fires
   pre-policy: a tool registered via `RegisterCatalog` and declared (in yaml)
-  behind an approval gate is INVOKED through the gate — a test asserts the
-  approval wrap fires (proving registration landed before the Builder's
-  `tools.entries` wrapping). A companion negative test shows a post-assembly
-  `Catalog.Register` does NOT get the wrap (the documented trap, pinned so a
-  future refactor can't silently move the seam).
-- [ ] `harbor scaffold --with-server` generates `cmd/<agent>/main.go` (loads
-  yaml via `--config`, binds via `--bind`, blank-imports `sdk/drivers/prod`,
-  calls `server.Open` with `agent.RegisterTools`, serves, handles SIGTERM →
-  `Close`). The default (flagless) scaffold is unchanged (headless RunOnce).
-  The scaffolded module compiles as an EXTERNAL module against the `sdk/`
-  facade only (no `internal/` imports).
-- [ ] `harbor serve` calls `internal/runtime/serve` directly with a nil
-  registrar (NOT through `sdk/server`) — the internal path and the facade path
-  are the SAME constructor, parameterized by the registrar.
-- [ ] Parity gate — scoped per leg:
+  behind an approval gate wires the approval gate — `TestAssemble_RegisterCatalog_PrePolicy_ApprovalWrapFires`
+  asserts the wrap OBJECT (`stack.Gates[name]`) fires (proving registration
+  landed before the Builder's `tools.entries` wrapping). A companion negative
+  test (`TestAssemble_PostAssemblyRegister_SkipsTheWrap`) shows a post-assembly
+  `Catalog.Register` does NOT get the wrap (the documented trap), plus a
+  registrar-error fail-loud test.
+- [x] `harbor scaffold --with-server` generates `cmd/<agent>/main.go` (loads
+  yaml via `--config`, binds via `--bind`/`--port`, blank-imports
+  `sdk/drivers/prod`, calls `server.Open` with `agent.RegisterTools`, serves,
+  handles SIGINT/SIGTERM → `Close`). The default (flagless) scaffold is
+  unchanged (headless RunOnce) — pinned by
+  `TestScaffold_DefaultOutput_HasNoServerSurface`. The scaffolded module
+  compiles as an EXTERNAL module against the `sdk/` facade only (the
+  replace-directive build in `phase-160.sh`; `cmd_main.go.tmpl` imports no
+  `internal/`).
+- [x] `harbor serve` calls `internal/runtime/serve` directly with a nil
+  registrar (NOT through `sdk/server`) — unchanged from Phase 159; the internal
+  path and the facade path are the SAME constructor, parameterized by the
+  registrar.
+- [x] Parity gate — scoped per leg:
   - **Both binaries, same base config** — (a) **manifest-driven method-status
     parity**: every canonical Protocol method (driven in-module from the
     Go-side `methods.Methods()` registry — NOT mux introspection; a
@@ -182,8 +190,37 @@ None.
     precedent) under `-race`; the wire-level end-to-end against the real
     scaffolded subprocess binary is an env-gated live leg (`HARBOR_LIVE_*`,
     the Phase 131d precedent) run as the wave's live-verification step.
-- [ ] §18 same-PR skill + docs updates (below) land in this PR.
-- [ ] `scripts/smoke/phase-160.sh` OK ≥ 3, FAIL = 0.
+  - **As-built scoping (honest).** `test/integration/phase160_serve_parity_test.go`
+    boots the stock composition via `serve.Boot` (the serve subcommand's exact
+    posture: the shared production JWKS factory + `PreferConfigBindAddr`, nil
+    registrar) and the scaffolded composition via `external.Open` (the path an
+    `sdk/server` binary ships) from one base config, both on REAL listeners
+    with a real RSA JWKS file + minted RS256 tokens. Legs (a) (status-CLASS
+    comparison per method from `methods.Methods()`), (d), and (e) (incl. the
+    N≥16 stress with a goroutine-baseline eventually-poll) pass on both. Leg
+    (b) dispatch runs IN CI with the scripted-LLM pattern
+    (`TestE2E_Phase160_ScriptedLLM_DispatchAndApprovalGate/dispatch`): a
+    canned tool-call drives the compiled tool through the served catalog over
+    the wire (`control.start` → `tasks.get`), the terminal envelope carries
+    `tool_calls_seen ≥ 1`, and the handler's fixture marker round-trips into
+    the follow-up LLM prompt. Leg (c) is observed BEHAVIORALLY
+    (`…/approval_gate_fires`): the deny-all entries wrap on the compiled tool
+    FIRES on dispatch — `tool.approval_requested` with a Coordinator pause
+    token — proving the SERVED descriptor is the wrapped one; the structural
+    assembly-seam `stack.Gates` pin and the
+    `errors.Is(err, catalog.ErrToolNotRegistered)` fail-closed negative
+    (naming the tool) complete the leg. The script-side manifest probe lives
+    in `phase-160.sh`: stock `harbor serve` and the scaffolded binary boot
+    from the same probe yaml and every `wire-manifest.gen.json` method is
+    status-class-compared across both. The env-gated `HARBOR_LIVE_SERVE` live
+    leg covers the REAL-LLM wire path end to end (build CLI → keygen →
+    scaffold → implement the generated stub → external build → subprocess
+    boot → mint → dispatch → fixture-answer + `tool_calls_seen` assertions) —
+    the §17.8 CI/live split with CI carrying deterministic dispatch and live
+    carrying the real provider.
+- [x] §18 same-PR skill + docs updates (below) land in this PR.
+- [x] `scripts/smoke/phase-160.sh` OK ≥ 3, FAIL = 0 (as built: OK 6, SKIP 1
+  (the env-gated dispatch leg), FAIL 0).
 
 ## Files added or changed
 
@@ -301,6 +338,11 @@ None.
   token is rejected 401. `OK ≥ 3, FAIL = 0` achievable without an LLM turn.
 - The tool DISPATCH leg (an LLM-driven invocation through the executor) is
   env-gated: SKIP by default, runs under the `HARBOR_LIVE_*` live leg.
+- Env vars (new, §4.2 item 7): `HARBOR_LIVE_SERVE=1` gates the live leg
+  (`TestE2E_Live_Phase160_ScaffoldedServer_Dispatch`; requires a real
+  `OPENROUTER_API_KEY` in the environment). The generated `--with-server`
+  `main.go` honors `HARBOR_BIND` as the flagless `--bind` equivalent
+  (mirroring `harbor serve`; documented in the generated README).
 - Degradation path: SKIP on a build whose `harbor scaffold` lacks
   `--with-server` (the 404/405/501-style SKIP convention read for a CLI flag —
   an unknown-flag error → SKIP).

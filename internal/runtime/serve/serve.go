@@ -84,6 +84,35 @@ var ErrAuthValidatorFactoryRequired = errors.New("serve: auth-validator factory 
 // ephemeral dev signer. It is REQUIRED — a nil factory fails Boot loud.
 type AuthValidatorFactory func(ctx context.Context, cfg *config.Config, red audit.Redactor, bus events.EventBus, logger *slog.Logger) (auth.Validator, error)
 
+// NewJWKSAuthValidatorFactory returns THE production auth-validator
+// factory: it projects the operator's identity config onto a JWKS-backed
+// Validator (URL or file source), wiring the assembled redactor / bus /
+// logger. The initial JWKS fetch runs synchronously inside the
+// projection, so a bad source fails the boot loud. Every production
+// serve caller (the serve subcommand and the external-serving facade)
+// injects this one factory — a second hand-rolled copy is the drift this
+// shared constructor exists to prevent.
+func NewJWKSAuthValidatorFactory() AuthValidatorFactory {
+	return func(ctx context.Context, cfg *config.Config, red audit.Redactor, bus events.EventBus, logger *slog.Logger) (auth.Validator, error) {
+		return auth.NewJWKSValidator(ctx, cfg.Identity, auth.ValidatorDeps{
+			Redactor: red,
+			Logger:   logger,
+			Bus:      bus,
+		})
+	}
+}
+
+// InstanceID mints a stable-per-process instance identifier of the form
+// "<prefix>-<hostname>" (bare prefix when the hostname is unavailable).
+// A Console attached to multiple Runtimes keys each attachment by it.
+// Shared by every production serve caller so the id shape stays uniform.
+func InstanceID(prefix string) string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return prefix + "-" + h
+	}
+	return prefix
+}
+
 // AuthSurfaceBuilder builds the optional token-rotate surface after the
 // runtime is assembled (it needs the redactor + bus the assembly produces).
 // The dev caller injects a builder that closes over its dev signer; the
@@ -141,7 +170,16 @@ type PostBootFunc func(ctx context.Context, h PostBootHandles) error
 // config) is carried so a hot-reload supervisor re-reads the file on each
 // reboot by re-calling Boot with the same Options.
 type Options struct {
-	ConfigPath      string
+	ConfigPath string
+
+	// Config, when non-nil, is used directly instead of loading and
+	// validating ConfigPath — the entry point for a caller that already
+	// holds a validated (or programmatically-built) configuration.
+	// Boot re-runs the full-binary Validate on it so a hand-built config
+	// cannot bypass validation. When both Config and ConfigPath are set
+	// Config wins; when Config is nil ConfigPath is loaded.
+	Config *config.Config
+
 	Port            int
 	BindAddr        string
 	Logger          *slog.Logger
@@ -174,6 +212,14 @@ type Options struct {
 	// reading the boot line sees the dev-only posture. A stamp only; the mock
 	// gate itself is caller policy inside BuildLLMSnapshot.
 	DevAllowMock bool
+
+	// RegisterCatalog forwards a compiled-tool registrar onto the
+	// assembly's pre-policy catalog seam (assemble.Options.RegisterCatalog):
+	// a tool it registers is wrapped with its declared approval / OAuth /
+	// policy shell before the run loop can dispatch it. Nil is a no-op —
+	// the stock serve caller passes nil; an external serving binary passes
+	// its agent's RegisterTools.
+	RegisterCatalog func(catalog tools.ToolCatalog) error
 
 	// Caller-side injection seams (all optional).
 	BuildLLMSnapshot LLMSnapshotBuilder
@@ -221,9 +267,22 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		opts.Stderr = io.Discard
 	}
 
-	cfg, err := config.Load(ctx, opts.ConfigPath, config.WithLogger(opts.Logger))
-	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+	var cfg *config.Config
+	if opts.Config != nil {
+		// A caller-supplied config is re-validated with the full-binary
+		// profile so a programmatically-built config cannot bypass
+		// validation (the identity/JWKS ceremony a Protocol server MUST
+		// carry is enforced here, loud, before any subsystem opens).
+		if vErr := opts.Config.Validate(); vErr != nil {
+			return nil, fmt.Errorf("config: %w", vErr)
+		}
+		cfg = opts.Config
+	} else {
+		loaded, err := config.Load(ctx, opts.ConfigPath, config.WithLogger(opts.Logger))
+		if err != nil {
+			return nil, fmt.Errorf("config: %w", err)
+		}
+		cfg = loaded
 	}
 
 	// LLM snapshot — the caller-side builder runs any dev gate + override;
@@ -244,6 +303,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		LLMSnapshot:        &llmCfg,
 		MCPDefaultIdentity: opts.MCPDefaultIdentity,
 		ApprovalAuthorizer: server.NewProtocolScopeAuthorizer(toolapproval.NewIdentityAuthorizer()),
+		RegisterCatalog:    opts.RegisterCatalog,
 	})
 	closers := make([]func(context.Context) error, 0, 8)
 	if stack != nil {

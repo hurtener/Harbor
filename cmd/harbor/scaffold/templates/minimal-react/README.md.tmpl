@@ -57,9 +57,53 @@ A Harbor agent project scaffolded from the `{{.Template}}` template.
 ├── README.md         (this file)
 ├── go.mod
 ├── harbor.yaml       Harbor runtime configuration
-├── agent.go          your agent code
+├── agent.go          your agent code{{if .WithServer}}
+├── cmd/{{.Name}}/
+│   └── main.go       Protocol server entry point (--with-server){{end}}
 └── agent_test.go     harbortest-driven test
 ```
+{{- if .WithServer}}
+
+## Serving the Protocol (`--with-server`)
+
+`cmd/{{.Name}}/main.go` serves the Harbor Protocol from your own binary,
+carrying the compiled in-process tools `RegisterTools` (in `agent.go`)
+wires. It is the external-serving sibling of `harbor serve`: the same
+production posture (a JWKS-backed JWT verifier built from
+`identity.jwks_url` / `identity.jwks_file`; no dev signer, no mock),
+reached through the public `github.com/hurtener/Harbor/sdk/server`
+facade. Every tool `RegisterTools` registers keeps its declared
+approval / OAuth / policy wrapping from `tools.entries` in `harbor.yaml`.
+
+Because the server verifies every request against your identity
+provider's JWK Set, the local-development loop is the three-command
+`harbor token` flow:
+
+```sh
+# 1. Generate a signing keypair + public JWK Set.
+harbor token keygen --out ./keys
+
+# 2. In harbor.yaml, point identity.jwks_file at the emitted set
+#    (and remove identity.jwks_url — set exactly one source):
+#      identity:
+#        jwks_file: ./keys/jwks.json
+
+# 3. Build + run the server.
+go build ./cmd/{{.Name}} && ./{{.Name}} --config ./harbor.yaml
+
+# 4. Mint a short-lived JWT whose iss/aud match harbor.yaml and call
+#    the Protocol with it (Authorization: Bearer <token>):
+harbor token mint --key ./keys/private.pem \
+  --tenant acme --user alice --session s1 \
+  --issuer https://issuer.example.com --audience {{.Name}}
+```
+
+Before any non-local deployment, replace `identity.issuer` /
+`identity.audience` / the JWKS source with your real OIDC provider's
+values. The server binds `server.bind_addr` from `harbor.yaml`;
+override it with `--bind <host:port>` or the `HARBOR_BIND` environment
+variable (the flagless equivalent, mirroring `harbor serve`).
+{{- end}}
 
 ## References
 

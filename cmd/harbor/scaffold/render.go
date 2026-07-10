@@ -42,6 +42,11 @@ type templateVars struct {
 	// friendly type names. One entry per generated
 	// `tools/<name>.go` stub + matching test.
 	CustomTools []customToolView
+	// WithServer is Options.WithServer. When true the generated
+	// `agent.go` emits a `RegisterTools` seam even with no tools
+	// declared, and the fan-out renderer emits `cmd/<Name>/main.go`.
+	// Templates reference it as {{.WithServer}}.
+	WithServer bool
 }
 
 // customToolView is the per-tool projection the `tools/*.go.tmpl`
@@ -106,6 +111,7 @@ func renderProject(name string, opts Options, absOut, upstreamPath string, upstr
 		Name:          opts.Name,
 		GoPackageName: strings.ReplaceAll(opts.Name, "-", "_"),
 		Template:      name,
+		WithServer:    opts.WithServer,
 	}
 	if upstreamCfg != nil {
 		vars.BuiltIns = append([]string(nil), upstreamCfg.Tools.BuiltIn...)
@@ -177,6 +183,21 @@ func renderProject(name string, opts Options, absOut, upstreamPath string, upstr
 		skipped = append(skipped, toolSkipped...)
 	}
 
+	// The opt-in serving entry point: cmd/<Name>/main.go, rendered only
+	// under Options.WithServer so the default scaffold stays headless.
+	if opts.WithServer {
+		serverWritten, serverSkipped, serverErr := renderServerMain(root, opts.Name, vars, absOut, opts.Patch)
+		if serverErr != nil {
+			return nil, nil, serverErr
+		}
+		if serverWritten != "" {
+			written = append(written, serverWritten)
+		}
+		if serverSkipped != "" {
+			skipped = append(skipped, serverSkipped)
+		}
+	}
+
 	sort.Strings(written)
 	sort.Strings(skipped)
 	return written, skipped, nil
@@ -190,9 +211,18 @@ func isFanOutTemplate(rel string) bool {
 	switch rel {
 	case "tool.go.tmpl", "tool_test.go.tmpl":
 		return true
+	case serverMainTemplate:
+		// Rendered conditionally (only under Options.WithServer) to
+		// cmd/<Name>/main.go by renderServerMain — never by the generic
+		// walk, so the default scaffold output is unchanged.
+		return true
 	}
 	return false
 }
+
+// serverMainTemplate is the embedded template rendered to
+// cmd/<Name>/main.go when Options.WithServer is set.
+const serverMainTemplate = "cmd_main.go.tmpl"
 
 // renderOneTemplate parses + executes a single template and writes
 // it to `outRel` under `absOut`. Returns `(written, skipped, err)`
@@ -278,6 +308,15 @@ func renderCustomTools(root string, vars templateVars, absOut string, patch bool
 		}
 	}
 	return written, skipped, nil
+}
+
+// renderServerMain renders the serving entry point to
+// cmd/<Name>/main.go. Returns (written, skipped, err) with exactly one
+// of written/skipped non-empty on success.
+func renderServerMain(root, name string, vars templateVars, absOut string, patch bool) (string, string, error) {
+	embedPath := filepath.Join(root, serverMainTemplate)
+	outRel := filepath.Join("cmd", name, "main.go")
+	return renderOneTemplate(embedPath, serverMainTemplate, outRel, absOut, vars, patch)
 }
 
 // loadUpstreamConfig resolves the operator-supplied yaml. Returns

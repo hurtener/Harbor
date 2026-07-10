@@ -73,6 +73,26 @@ func RegisterTools(cat tools.ToolCatalog) error {
 
 The catalog is the planner's tool index. Registration validates at boot — a duplicate name or a schema-underivable type fails LOUDLY (`ErrToolDuplicateName` / `ErrSchemaBuild`), never silently.
 
+### Serving compiled tools with their declared policy (`sdk/server`)
+
+When you serve your agent from your own binary (`harbor scaffold --with-server`, which reaches the Protocol through `sdk/server` — see [`scaffold-a-harbor-agent`](../scaffold-a-harbor-agent/SKILL.md)), pass this same `RegisterTools` as the server's registrar:
+
+```go
+h, err := server.Open(ctx, cfg, server.Options{RegisterCatalog: agent.RegisterTools})
+```
+
+`RegisterCatalog` runs at the runtime's **pre-policy catalog seam** — the same point operator YAML tools register — *before* the catalog Builder applies each `tools.entries[]` declaration. So a compiled tool you register here receives the identical declared **approval gate / OAuth binding / reliability policy** an operator's YAML-declared tool gets. Declaring an approval gate for a compiled tool is therefore just a `tools.entries[]` block in `harbor.yaml`:
+
+```yaml
+tools:
+  entries:
+    - name: weather.get_current
+      approval:
+        policy: deny-all      # every invocation pauses for HITL approval
+```
+
+**The trap:** registering a tool any *other* way — after `server.Open` returns, via a post-assembly `Catalog.Register` — skips the wrapping band entirely, so the tool reaches the planner with **no** approval/OAuth/policy shell. Always register through `RegisterCatalog`; a declared-but-unregistered tool fails the boot loud (`ErrToolNotRegistered`), never a silent no-op.
+
 ### Always-loaded vs deferred — picking a `loading_mode` (Phase 107c)
 
 After 107c the React planner runs on native provider tool-calling and the operator gets a per-tool knob: should this tool appear in the LLM's catalog EVERY turn (`always`) or stay hidden until the LLM searches for it (`deferred`)?

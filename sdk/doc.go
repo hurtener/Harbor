@@ -16,12 +16,13 @@
 // Additions are cheap and additive; removals follow the
 // Protocol-style deprecation posture (RFC §5.3).
 //
-// The V1.2 inventory (RFC §3.6 item 3): sdk/identity, sdk/events,
+// The inventory (RFC §3.6 items 3 + 6): sdk/identity, sdk/events,
 // sdk/config, sdk/tools (+ tools/inproc, tools/builtin), sdk/llm,
 // sdk/memory, sdk/state, sdk/artifacts, sdk/skills, sdk/planner
 // (+ planner/react, planner/deterministic), sdk/tasks, sdk/steering,
-// sdk/dispatch, sdk/runctx, sdk/assemble, and sdk/drivers/prod (the
-// public blank-import driver aggregator).
+// sdk/dispatch, sdk/runctx, sdk/assemble, sdk/server (serve the
+// Protocol from your own binary), and sdk/drivers/prod (the public
+// blank-import driver aggregator).
 //
 // A minimal headless embedding (docs/recipes/embed-harbor-headless.md
 // expressed through the facade):

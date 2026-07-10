@@ -70,6 +70,82 @@ func TestScaffold_Golden_MatchesAcmeAgent(t *testing.T) {
 	}
 }
 
+// TestScaffold_WithServer_EmitsServerMainAndRegisterTools pins the
+// opt-in serving scaffold: --with-server emits cmd/<name>/main.go that
+// loads yaml, blank-imports the driver aggregator, and calls
+// server.Open with the project's RegisterTools; agent.go grows a
+// RegisterTools seam. The default output is unchanged (no cmd/ tree,
+// no server import) — pinned by the sibling negative below.
+func TestScaffold_WithServer_EmitsServerMainAndRegisterTools(t *testing.T) {
+	t.Parallel()
+	out := filepath.Join(t.TempDir(), "srv-agent")
+	root := NewRootCmd()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"scaffold", "--name", "srv-agent", "--output", out, "--with-server"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("scaffold --with-server: %v", err)
+	}
+
+	mainPath := filepath.Join(out, "cmd", "srv-agent", "main.go")
+	mainSrc, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("read generated main.go: %v", err)
+	}
+	for _, want := range []string{
+		`package main`,
+		`_ "github.com/hurtener/Harbor/sdk/drivers/prod"`,
+		`"github.com/hurtener/Harbor/sdk/server"`,
+		`agent "github.com/example/srv-agent"`,
+		`server.Open(ctx, cfg, server.Options{`,
+		`RegisterCatalog: agent.RegisterTools,`,
+		`flag.String("config"`,
+		`flag.String("bind"`,
+		`config.Load(ctx, *configPath)`,
+	} {
+		if !strings.Contains(string(mainSrc), want) {
+			t.Errorf("generated main.go missing %q", want)
+		}
+	}
+
+	agentSrc, err := os.ReadFile(filepath.Join(out, "agent.go"))
+	if err != nil {
+		t.Fatalf("read generated agent.go: %v", err)
+	}
+	if !strings.Contains(string(agentSrc), "func RegisterTools(cat tools.ToolCatalog) error") {
+		t.Error("agent.go must declare RegisterTools under --with-server (main.go passes it to server.Open)")
+	}
+}
+
+// TestScaffold_DefaultOutput_HasNoServerSurface pins that the default
+// (flagless) scaffold is UNCHANGED by the --with-server addition: no
+// cmd/ tree, and agent.go does not import or reference the server
+// facade (D-206 additive-only invariant).
+func TestScaffold_DefaultOutput_HasNoServerSurface(t *testing.T) {
+	t.Parallel()
+	out := filepath.Join(t.TempDir(), "plain-agent")
+	root := NewRootCmd()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"scaffold", "--name", "plain-agent", "--output", out})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("scaffold: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "cmd")); !os.IsNotExist(err) {
+		t.Errorf("default scaffold emitted a cmd/ tree (want none): stat err = %v", err)
+	}
+	agentSrc, err := os.ReadFile(filepath.Join(out, "agent.go"))
+	if err != nil {
+		t.Fatalf("read agent.go: %v", err)
+	}
+	if strings.Contains(string(agentSrc), "sdk/server") {
+		t.Error("default agent.go references sdk/server — the --with-server surface must stay opt-in")
+	}
+	if strings.Contains(string(agentSrc), "func RegisterTools") {
+		t.Error("default (toolless) agent.go declares RegisterTools — should only appear with tools or --with-server")
+	}
+}
+
 // TestScaffoldCmd_JSON_HappyPath pins the --json wire shape on
 // success. Smoke scripts depend on this exactly.
 func TestScaffoldCmd_JSON_HappyPath(t *testing.T) {

@@ -134,6 +134,20 @@ type Options struct {
 	// in cfg.Tools.Entries can wrap in-process fixtures.
 	PreRegisterTools []tools.ToolDescriptor
 
+	// RegisterCatalog is an optional callback invoked at the same
+	// pre-policy point as PreRegisterTools — on the freshly-constructed
+	// catalog, BEFORE builtin registration and BEFORE the catalog
+	// Builder wraps every entry with its declared reliability shell,
+	// approval gate, and OAuth binding (cfg.Tools.Entries). A compiled
+	// in-process tool registered here therefore receives the IDENTICAL
+	// wrapping an operator's YAML-declared tool gets. It is an adapter
+	// over the one registration seam, never a second registration path:
+	// registering the same tool after Assemble returns (a post-assembly
+	// Catalog.Register) skips the reliability/approval/OAuth shell.
+	// A non-nil error from the callback fails Assemble loud (the partial
+	// stack is returned for the caller to drain).
+	RegisterCatalog func(catalog tools.ToolCatalog) error
+
 	// MCPDefaultIdentity is the transport-event fallback identity for
 	// attached MCP servers. Zero value falls
 	// back to DefaultMCPIdentity.
@@ -703,6 +717,18 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	for _, d := range opts.PreRegisterTools {
 		if regErr := toolCat.Register(d); regErr != nil {
 			return fmt.Errorf("tools/preregister[%q]: %w", d.Tool.Name, regErr)
+		}
+	}
+
+	// The compiled-tool registrar rides the same pre-policy seam as
+	// PreRegisterTools: it runs on the bare catalog, ahead of builtin
+	// registration and the Builder's tools.entries wrapping, so a tool
+	// it registers is wrapped with its declared approval/OAuth/policy
+	// shell exactly like an operator's YAML tool. A callback error is
+	// loud (never a silent skip).
+	if opts.RegisterCatalog != nil {
+		if regErr := opts.RegisterCatalog(toolCat); regErr != nil {
+			return fmt.Errorf("tools/register-catalog: %w", regErr)
 		}
 	}
 

@@ -1,9 +1,11 @@
-# Embed Harbor headless (no `harbor dev`, no Protocol server)
+# Embed Harbor headless (serving the Protocol is an opt-in sibling)
 
 Run a Harbor agent runtime inside your own Go program — no CLI, no
 HTTP listener, no Console. One call turns a validated config into a
 running stack; you drive a goal through the planner/run-loop and read
-the answer.
+the answer. **Headless is the default story of this recipe**; when you
+DO want to expose the wire surface, the additive opt-in sibling is
+`sdk/server` — see [Serve the Protocol from your binary](#serve-the-protocol-from-your-binary-the-opt-in-sibling) at the end.
 
 This recipe is acceptance-gated: its end-to-end path is executed by
 `test/integration/phase110d_assemble_test.go`, so every snippet
@@ -387,6 +389,53 @@ if sub != nil { // nil = empty tiers = the sanctioned latent default
 multi-runtime path (Phase 111a, D-198): no process-global state, one
 Subsystem per stack, accumulator state persisted in that stack's
 StateStore.
+
+## Serve the Protocol from your binary (the opt-in sibling)
+
+Everything above runs the agent **headless** — no listener. When you
+want the same compiled agent to expose the Harbor Protocol over the
+wire at parity with the stock `harbor serve` binary, swap
+`assemble.Assemble` + `RunOnce` for the `sdk/server` facade:
+
+```go
+import (
+    _ "github.com/hurtener/Harbor/sdk/drivers/prod"
+
+    "github.com/hurtener/Harbor/sdk/config"
+    "github.com/hurtener/Harbor/sdk/server"
+)
+
+cfg, err := config.Load(ctx, "harbor.yaml")
+// ... handle err ...
+
+h, err := server.Open(ctx, cfg, server.Options{
+    RegisterCatalog: RegisterTools, // your project's tool registrar
+})
+// ... handle err ...
+defer h.Close(ctx)
+
+if err := h.Serve(ctx); err != nil { // blocks until ctx cancels
+    // ...
+}
+```
+
+Three things distinguish the serving path from the headless one:
+
+- **Production-only by construction.** `server.Open` ALWAYS builds the
+  JWKS verifier from `cfg.Identity` and re-runs the full config
+  `Validate` — a missing JWKS source fails `Open` loud, naming the
+  field. There is no dev-signer and no mock knob (unlike the headless
+  recipe's offline-CI variation). The local-dev loop is the three
+  `harbor token` commands: `keygen` → set `identity.jwks_file` → `mint`.
+- **Compiled tools keep their declared policy.** `RegisterCatalog` runs
+  at the runtime's pre-policy catalog seam, so a tool it registers gets
+  the identical `tools.entries[]` approval / OAuth / policy wrapping an
+  operator's YAML tool gets — registering tools any other way (after
+  `Open` returns) skips that shell.
+- **You don't hand-write `main.go`.** `harbor scaffold --with-server`
+  emits exactly this `cmd/<agent>/main.go` for you (the `--config` /
+  `--port` / `--bind` flag trio included). Reach for the snippet above
+  only when embedding the server into a larger program.
 
 ## Variations
 
