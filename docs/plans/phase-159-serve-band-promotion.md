@@ -163,9 +163,9 @@ None.
   identity bleed across concurrent requests, and goroutine baseline restored
   after `Close`.
 - [ ] Cross-phase regression: every existing smoke that boots `harbor dev` /
-  `harbor serve` still passes against the new build, and the ~14 smokes whose
-  greps target moved symbols are re-pointed in the same PR (see Files);
-  `make preflight` green.
+  `harbor serve` still passes against the new build, and the enumerated set of
+  smokes whose greps target moved symbols (see Files) is re-pointed in the
+  same PR; `make preflight` green.
 
 ## Files added or changed
 
@@ -183,15 +183,21 @@ None.
     run-loop driver moves with the band (a sibling file under
     `internal/runtime/serve/`).
   - the MCP connection attacher/detacher
-    (`cmd/harbor/cmd_dev_mcp_detacher.go` and the attach wiring in
-    `cmd_dev.go`).
+    (`cmd/harbor/cmd_dev_mcp_attacher.go` and
+    `cmd/harbor/cmd_dev_mcp_detacher.go`).
   - the session ensurer adapter (`cmd/harbor/session_ensurer.go`).
+  - `devEnricher` (`cmd/harbor/dev_enricher.go`, wired at `cmd_dev.go:1057`) —
+    despite the name it is production tasks.get enrichment: it is wired into
+    the tasks projector unconditionally (a `harbor serve` boot carries it
+    today) and wraps the promoted run-loop driver's `TrajectoryByTaskID`, so
+    it moves with the band; its devstack mirror
+    (`harbortest/devstack/enricher.go`) is deleted in favor of the promoted
+    version (below).
 - **Stays cmd-side (dev policy):**
   - `validateLLMProvider` + the `devmock.go` mock gate (D-089).
   - the hot-reload supervisor (D-099).
   - `seedDevFixtures` (`cmd/harbor/devseed.go`) — invoked via the post-boot
     hook seam.
-  - `devEnricher` (`cmd_dev.go:1057`) — dev-only task enrichment.
   - the dev identity constants (`DevTenant`/`DevUser`/`DevSession`) — the
     promoted `Options` takes `MCPDefaultIdentity` explicitly; the constants
     stay dev-cmd vocabulary.
@@ -225,14 +231,16 @@ None.
     THIS phase updates the allow-list entry SHAPE so the exact-func-count
     constraint can express a named per-file extension (keeping the gate green
     across both phases).
-  - the ~14 smokes that grep `cmd_dev.go` / `cmd_dev_runloop.go` for symbols
-    the promotion moves are re-pointed at the new homes in the same PR — e.g.
-    `phase-110d.sh:48` (asserts `assemble.Assemble(` in `cmd_dev.go`),
-    `phase-83f.sh` (greps `cmd_dev_runloop.go` for `memory.MemoryStore` /
+  - the enumerated set of smokes that grep `cmd_dev.go` /
+    `cmd_dev_runloop.go` for symbols the promotion moves is re-pointed at the
+    new homes in the same PR — e.g. `phase-110d.sh:48` (asserts
+    `assemble.Assemble(` in `cmd_dev.go`), `phase-83f.sh` (greps
+    `cmd_dev_runloop.go` for `memory.MemoryStore` /
     `runctx.FetchMemoryBlocks`), plus the rest surfaced by
     `grep -rln cmd_dev scripts/smoke/` (107e, 110a–d, 111b/d/e/f, 120, 126b,
-    138, 139, 146, 150, 65, 73c, 73f, 83i, 83w, …) — each grep target updated
-    to the promoted file path.
+    138, 139, 146, 150, 65, 73c, 73f, 83i, 83w, …) — the implementor re-runs
+    that grep for the authoritative list and updates each grep target to the
+    promoted file path.
 - `scripts/smoke/phase-159.sh` (new) — serve/dev boot-parity assertions.
 - `docs/plans/README.md` — Phase 159 row Status + detail block.
 - `docs/decisions.md` — D-291.

@@ -5,9 +5,14 @@
 #
 # When the phase lands, this asserts the promoted serve band still answers the
 # same surfaces after the config->listener composition left package main:
-#   - /healthz returns 200 on a booted dev-postured server;
+#   - /healthz returns 200 on the booted preflight dev server;
 #   - one canonical Protocol method round-trips (no serve-surface regression);
-#   - the dev boot still prints its dev-token / "mints no token" invariants.
+#   - the D-220 posture line ("mints no token") is asserted in
+#     `harbor serve --help` output (the string lives in the help text, NOT
+#     boot output); the dev boot still prints its HARBOR_DEV_TOKEN line.
+# Deeper probing (production posture, seam behavior) lives in the in-package,
+# caller-level, and integration tests — a smoke cannot spend an LLM turn.
+# Done-definition: OK >= 2, FAIL = 0 once the phase ships.
 # Until then it SKIPs. Real assertions land with the implementation PR.
 #
 # Phase NN smoke template heritage below (kept for helper reference).

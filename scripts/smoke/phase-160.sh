@@ -3,12 +3,18 @@
 #
 # Phase 160 — sdk/server + `harbor scaffold --with-server` + parity gate.
 #
-# When the phase lands, this asserts the external-serving path works:
-#   - `harbor scaffold --with-server` into a temp dir as an EXTERNAL module;
+# When the phase lands, this asserts the no-LLM subset of the external-serving
+# path (a smoke cannot spend an LLM turn):
+#   - `harbor scaffold --with-server` into a temp dir as an EXTERNAL module
+#     (replace-directive appended to go.mod so it builds against the local
+#     checkout — the phase-112b.sh:216 precedent);
 #   - `go build` the generated cmd/<agent> against the sdk/ facade;
 #   - boot it with a `harbor token`-minted JWKS production posture;
-#   - /healthz returns 200 and the generated custom tool dispatches through
-#     the catalog.
+#   - /healthz returns 200; the generated custom tool is PRESENT in the
+#     catalog listing (discovery probe); a request without a token is
+#     rejected 401. OK >= 3, FAIL = 0.
+# The tool DISPATCH leg (an LLM-driven invocation through the executor) is
+# env-gated: SKIP by default, runs under the HARBOR_LIVE_* live leg.
 # Degradation: SKIP on a build whose `harbor scaffold` lacks `--with-server`
 # (unknown-flag error -> SKIP, mirroring the 404/405/501 convention for a CLI
 # flag). Until then it SKIPs. Real assertions land with the implementation PR.
@@ -57,6 +63,6 @@ source "scripts/smoke/common.sh"
 # `skip "phase NN: not yet implemented"` to keep preflight green.
 # ----------------------------------------------------------------------------
 
-skip "phase 160: smoke skeleton — sdk/server + scaffold --with-server not yet implemented; replace with scaffold->build->token-minted-boot->/healthz+tool-dispatch assertions when the phase lands"
+skip "phase 160: smoke skeleton — sdk/server + scaffold --with-server not yet implemented; replace with the no-LLM subset (scaffold->build->token-minted-boot->/healthz + discovery probe + 401-without-token; dispatch env-gated) when the phase lands"
 
 smoke_summary
