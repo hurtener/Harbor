@@ -62,10 +62,13 @@ func main() {
 // project's tools registered at the pre-policy catalog seam, and serves
 // until SIGINT / SIGTERM.
 func run() error {
-	// The flag trio mirrors `harbor serve`: --config, --port (loopback
-	// fallback), --bind (overrides server.bind_addr).
+	// The flag trio mirrors `harbor serve`: --config, --bind (overrides
+	// server.bind_addr; the HARBOR_BIND env var is the flagless
+	// equivalent), and --port (a backstop used only when the config
+	// carries no server.bind_addr — config loading defaults it, so
+	// --bind is the practical override).
 	configPath := flag.String("config", "harbor.yaml", "path to harbor.yaml")
-	port := flag.Int("port", 8686, "loopback fallback port (server.bind_addr wins)")
+	port := flag.Int("port", 8686, "backstop port used only if the config carries no server.bind_addr (config loading defaults it, so --bind is the practical override)")
 	bind := flag.String("bind", "", "host:port to bind (overrides server.bind_addr; host:0 = ephemeral)")
 	flag.Parse()
 

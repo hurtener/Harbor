@@ -319,6 +319,40 @@ func TestAssemble_RegisterCatalog_Error_FailsLoud(t *testing.T) {
 	}
 }
 
+// TestAssemble_RegisterCatalog_DuplicateName_FailsLoud — a registrar
+// that collides with an already-registered name (its own double
+// registration, a builtin, or a pre-registered fixture) fails Assemble
+// loud through the catalog's duplicate-name rejection, never a silent
+// last-writer-wins.
+func TestAssemble_RegisterCatalog_DuplicateName_FailsLoud(t *testing.T) {
+	cfg := minimalCfg(t)
+	register := func(cat tools.ToolCatalog) error {
+		for range 2 { // second registration of the same name must collide
+			if err := inproc.RegisterFunc[compiledIn, compiledOut](
+				cat, "dup.tool",
+				func(_ context.Context, in compiledIn) (compiledOut, error) {
+					return compiledOut{Echo: in.Msg}, nil
+				},
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
+		RegisterCatalog: register,
+	})
+	if stack != nil {
+		defer func() { _ = stack.Close(context.Background()) }()
+	}
+	if err == nil {
+		t.Fatal("Assemble succeeded with a name-colliding registrar — want a loud duplicate-name error")
+	}
+	if !strings.Contains(err.Error(), "register-catalog") || !strings.Contains(err.Error(), "dup.tool") {
+		t.Errorf("error should carry the register-catalog seam and the colliding name, got %v", err)
+	}
+}
+
 // TestAssemble_PostAssemblyRegister_SkipsTheWrap is the documented trap
 // (D-292): a tool registered on the catalog AFTER Assemble returns does
 // NOT receive the tools.entries wrapping — its approval gate is absent.

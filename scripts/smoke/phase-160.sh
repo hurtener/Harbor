@@ -59,11 +59,14 @@ fi
 
 TMPDIR="$(mktemp -d)"
 SERVER_PID=""
+STOCK_PID=""
 cleanup() {
-    if [[ -n "${SERVER_PID}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
-        kill "${SERVER_PID}" 2>/dev/null || true
-        wait "${SERVER_PID}" 2>/dev/null || true
-    fi
+    for pid in "${SERVER_PID}" "${STOCK_PID}"; do
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+        fi
+    done
     rm -rf "${TMPDIR}"
 }
 trap cleanup EXIT
@@ -228,8 +231,69 @@ else
     fi
 fi
 
-# --- 8. Dispatch leg — env-gated live leg (needs a real LLM) -----------------
+# --- 8. Script-side manifest method-status parity (both binaries) ------------
+# Boot the STOCK `harbor serve` against the SAME probe yaml (a nil-registrar
+# composition — `tools.custom` is scaffold input the runtime ignores), then
+# probe every canonical method from the generated wire manifest's `methods`
+# key on BOTH listeners unauthenticated and compare status CLASSES. A method
+# mounted on one composition but not the other fails here.
 
-skip 'phase 160: tool DISPATCH leg is the env-gated HARBOR_LIVE_SERVE live leg (needs a real LLM); run by the wave live-verification step'
+STOCK_LOG="${TMPDIR}/stock.log"
+OPENROUTER_API_KEY="sk-phase160-smoke-dummy" \
+    "${BIN}" serve --config "${PROBE_YAML}" --bind 127.0.0.1:0 \
+    >"${STOCK_LOG}" 2>&1 &
+STOCK_PID=$!
+
+STOCK_BOUND=""
+for _ in $(seq 1 50); do
+    if ! kill -0 "${STOCK_PID}" 2>/dev/null; then
+        break
+    fi
+    STOCK_BOUND="$(grep -o 'HARBOR_DEV_BOUND=[^ ]*' "${STOCK_LOG}" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+    [[ -n "${STOCK_BOUND}" ]] && break
+    sleep 0.2
+done
+
+if [[ -z "${STOCK_BOUND}" ]]; then
+    fail 'phase 160: stock harbor serve did not bind for the parity probe (see tail)'
+    tail -20 "${STOCK_LOG}" | sed 's/^/    /'
+else
+    MANIFEST="web/console/src/lib/protocol/wire-manifest.gen.json"
+    if PARITY_OUT="$(python3 - "${MANIFEST}" "http://${STOCK_BOUND}" "${BASE}" <<'PYEOF'
+import json, sys, urllib.request
+
+manifest, stock_base, scaffold_base = sys.argv[1], sys.argv[2], sys.argv[3]
+methods = json.load(open(manifest))["methods"]
+
+def probe(base, method):
+    url = base + "/v1/" + method.replace(".", "/")
+    req = urllib.request.Request(url, data=b"{}", method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+mismatches = []
+for m in methods:
+    a, b = probe(stock_base, m), probe(scaffold_base, m)
+    if a // 100 != b // 100:
+        mismatches.append(f"{m}: stock={a} scaffold={b}")
+if mismatches:
+    print("MISMATCH " + "; ".join(mismatches))
+    sys.exit(1)
+print(f"OK {len(methods)} methods, identical status classes")
+PYEOF
+)"; then
+        ok "phase 160: manifest method-status parity — ${PARITY_OUT#OK } (stock serve vs scaffolded binary, wire-manifest methods key)"
+    else
+        fail "phase 160: manifest method-status parity BROKEN: ${PARITY_OUT}"
+    fi
+fi
+
+# --- 9. Dispatch leg — env-gated live leg (needs a real LLM) ------------------
+
+skip 'phase 160: tool DISPATCH leg is the env-gated HARBOR_LIVE_SERVE live leg (needs a real LLM); run by the wave live-verification step (test/integration TestE2E_Live_Phase160_ScaffoldedServer_Dispatch)'
 
 smoke_summary

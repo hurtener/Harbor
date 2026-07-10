@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,40 @@ func TestOpen_Success_RegistrarRuns(t *testing.T) {
 		go func() { defer wg.Done(); _ = h.BindAddr() }()
 	}
 	wg.Wait()
+
+	// Serve binds a real listener and answers /healthz; it returns when
+	// ctx cancels (bounded eventually-poll for the bound port).
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = h.Serve(ctx)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	served := false
+	for time.Now().Before(deadline) {
+		addr := h.BindAddr()
+		if addr != "" && !strings.HasSuffix(addr, ":0") {
+			resp, gErr := http.Get("http://" + addr + "/healthz")
+			if gErr == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					served = true
+					break
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !served {
+		t.Error("Serve never answered /healthz within the deadline")
+	}
+	cancel()
+	select {
+	case <-serveDone:
+	case <-time.After(10 * time.Second):
+		t.Error("Serve did not return after ctx cancel")
+	}
+
 	cc, c := context.WithTimeout(context.Background(), 3*time.Second)
 	defer c()
 	if err := h.Close(cc); err != nil {
@@ -151,6 +186,40 @@ func TestOpen_MissingJWKS_NamesField(t *testing.T) {
 	_, err := external.Open(context.Background(), cfg, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("want a loud identity-field error, got %v", err)
+	}
+}
+
+// TestExternal_NoDevSurfaces_NoInjectionSeams is the production-posture
+// grep gate on the INTERNAL serving band (the sibling of the sdk/server
+// facade gate): this package is where a dev seam would actually seat, so
+// its production source must not reference the serve band's dev-only
+// injection seams, a dev signer, or a mock knob. The production JWKS
+// factory (serve.NewJWKSAuthValidatorFactory) is the one legitimate
+// auth-factory reference.
+func TestExternal_NoDevSurfaces_NoInjectionSeams(t *testing.T) {
+	forbidden := []string{
+		"BuildAuthSurface", "BuildLLMSnapshot", "ExtraRoutes", "PostBoot",
+		"devSigner", "DevAllowMock", "allowMock", "HARBOR_DEV_ALLOW_MOCK",
+		"bootstrap",
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, rErr := os.ReadFile(name)
+		if rErr != nil {
+			t.Fatalf("read %s: %v", name, rErr)
+		}
+		for _, bad := range forbidden {
+			if strings.Contains(string(src), bad) {
+				t.Errorf("%s references forbidden dev/injection identifier %q — the external serving band is production-only", name, bad)
+			}
+		}
 	}
 }
 

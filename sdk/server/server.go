@@ -38,8 +38,11 @@ type Options struct {
 // Open composes the production Protocol server from cfg (or, when cfg is
 // nil, from Options.ConfigPath) and returns a Handle whose Serve binds
 // the listener. The configuration is validated loud before any
-// subsystem opens, and the JWT validator is always built from
-// cfg.Identity — a missing JWKS source fails Open, naming the field.
+// subsystem opens — a missing JWKS source fails Open, naming the field —
+// and the JWT validator is always built from cfg.Identity, its JWKS
+// source fetched synchronously while the boot composes (a bad source
+// fails Open with everything opened so far drained; never a server that
+// starts and rejects every request).
 //
 // This is the facade's single Options adapter: it forwards to the
 // internal serving band, which owns the JWKS factory, the config

@@ -138,7 +138,7 @@ func TestBootDevStack_ServeProductionBoot_GatesDevSurfacesAndVerifiesJWKS(t *tes
 		// The production serve posture: JWKS factory, no dev seams. allowMock
 		// lets the hermetic stack boot without a real provider; the gating
 		// under test is the absence of dev seams, independent of the LLM gate.
-		AuthValidatorFactory: newJWKSValidatorFactory(),
+		AuthValidatorFactory: serve.NewJWKSAuthValidatorFactory(),
 		BuildLLMSnapshot:     newLLMSnapshotBuilder(true),
 		MCPDefaultIdentity:   identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
 		DisplayName:          "harbor dev",

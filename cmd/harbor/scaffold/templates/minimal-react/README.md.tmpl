@@ -100,8 +100,9 @@ harbor token mint --key ./keys/private.pem \
 
 Before any non-local deployment, replace `identity.issuer` /
 `identity.audience` / the JWKS source with your real OIDC provider's
-values. The server binds `server.bind_addr` from `harbor.yaml`
-(override with `--bind`).
+values. The server binds `server.bind_addr` from `harbor.yaml`;
+override it with `--bind <host:port>` or the `HARBOR_BIND` environment
+variable (the flagless equivalent, mirroring `harbor serve`).
 {{- end}}
 
 ## References

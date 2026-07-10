@@ -3166,8 +3166,39 @@ per §17.8). Status: Shipped (V1.6).
   `use-the-harbor-protocol` checked), `embed-harbor-headless` recipe
   companion, docs/site stubs + nav, README pointer. See
   `docs/plans/phase-160-sdk-server-scaffold-parity.md`.
+- **As-built (§4.3):** shipped as specified with three recorded realizations.
+  (1) The facade forwards to an internal sibling package
+  `internal/runtime/serve/external` (the production `Open` — config
+  re-validation, the shared JWKS factory, the registrar adaptation, build
+  identity from Go build info — plus a `Handle` wrapper whose
+  `Close(ctx) error` matches the plan's public API); `sdk/server` stays
+  alias/forward + the ONE `Options` adapter, and the load-from-path
+  convenience is an `Options.ConfigPath` field (not a separate
+  `OpenFromConfigFile`). The production JWKS factory + instance-id shape are
+  single-homed as `serve.NewJWKSAuthValidatorFactory` / `serve.InstanceID`,
+  reused by `cmd_serve.go` and the external band. (2) The parity gate boots
+  the scaffolded composition through `external.Open` (the shipped path) and
+  covers leg (b) DISPATCH in CI with the scripted-LLM pattern (canned
+  tool-call → the compiled tool dispatches through the catalog; the terminal
+  envelope carries `tool_calls_seen ≥ 1` and the handler's fixture marker
+  round-trips into the follow-up prompt) and leg (c) behaviorally (the
+  deny-all gate FIRES on the dispatched compiled tool —
+  `tool.approval_requested` with a pause token — plus the structural
+  assembly-seam `Gates` pin); the fail-closed negative asserts
+  `errors.Is(err, catalog.ErrToolNotRegistered)` naming the tool. The
+  script-side probe exists in `scripts/smoke/phase-160.sh`: stock
+  `harbor serve` + the scaffolded binary boot from the same probe yaml and
+  every `wire-manifest.gen.json` method is status-class-compared across both.
+  (3) The env-gated live leg (`HARBOR_LIVE_SERVE=1`, needs a real
+  `OPENROUTER_API_KEY`) runs the FULL wire choreography in-test: build the
+  CLI, `token keygen`, scaffold `--with-server`, implement the generated
+  stub, external build (replace directive), boot the subprocess, mint, drive
+  `control.start` → poll `tasks.get` → assert the fixture answer +
+  `tool_calls_seen ≥ 1`. New env vars: `HARBOR_LIVE_SERVE` (live-leg gate);
+  the generated `main.go` honors `HARBOR_BIND` (documented in its README),
+  mirroring `harbor serve`.
 - **Decision:** D-292.
-- **Status:** Pending.
+- **Status:** Shipped.
 
 ---
 

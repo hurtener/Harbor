@@ -18,7 +18,7 @@ API, read the godoc.
 | [Select and configure a planner](configure-a-planner.md) | The `planner` config block and the swappable-driver seam. |
 | [Run the local dev loop](run-harbor-dev.md) | `harbor validate` + `harbor dev` — boot a Runtime on the loopback. |
 | [Test an agent](test-an-agent.md) | The public `harbortest` kit — `RunOnce`, `AssertNoLeaks`, `SimulateFailure`. |
-| [Embed Harbor headless](embed-harbor-headless.md) | `config.Defaults` → `ValidateCore` → `assemble.Assemble` → drive the run loop in your own Go program — no CLI, no Protocol server. |
+| [Embed Harbor headless](embed-harbor-headless.md) | `config.Defaults` → `ValidateCore` → `assemble.Assemble` → drive the run loop in your own Go program. Headless is the default; serving the Protocol from your binary (`sdk/server`) is the opt-in sibling section. |
 | [Steer and resume a run](steer-and-resume-a-run.md) | The ONE pause/resume choreography — two triggers (HITL approval, tool-side OAuth completion) + the durable-pause / max-park lifecycle. |
 | [Use memory and skills from Go](use-memory-and-skills-from-go.md) | The canonical skills surface headless: `importer.ImportAndStore` to ingest, the Phase-38 handlers to retrieve, `skills.NewDirectory(...).View` to inject. |
 | [Observe an embedded runtime](observe-an-embedded-runtime.md) | The bus-first observability chain — redactor → bus → `telemetry.New` Logger → metrics bridge → tracer bridge — and the engine run-error hook. |

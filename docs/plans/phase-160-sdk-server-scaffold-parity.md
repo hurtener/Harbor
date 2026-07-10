@@ -191,20 +191,33 @@ None.
     scaffolded subprocess binary is an env-gated live leg (`HARBOR_LIVE_*`,
     the Phase 131d precedent) run as the wave's live-verification step.
   - **As-built scoping (honest).** `test/integration/phase160_serve_parity_test.go`
-    boots both compositions via `serve.Boot` (stock nil-registrar vs. scaffolded
-    registrar + tool overlay) from one base config with a real RSA JWKS file +
-    minted RS256 tokens (not an injected/mocked validator). Legs (a)/(d)/(e)
-    pass on both. For (b)/(c): the served mux wires no wire-side approval
-    annotator, so a config-declared gate reads `auto` on `tools.get` — the
-    authoritative pre-policy wrap observation is therefore the assemble-layer
-    `stack.Gates` assertion on the EXACT scaffolded config + registrar, plus
-    wire-level discovery (`tools.list` contains the compiled tool on the
-    scaffolded composition, absent on stock) and the `ErrToolNotRegistered`
-    fail-closed negative (`TestE2E_Phase160_StockServe_ToolOverlay_FailsClosed`).
-    The mock LLM cannot emit a tool call, so the LLM-DRIVEN dispatch through the
-    firing gate (the full (b)) is the env-gated `HARBOR_LIVE_SERVE` live leg +
-    `phase-160.sh`'s scaffold→build→boot→discovery choreography — matching the
-    §17.8 CI/live split.
+    boots the stock composition via `serve.Boot` (the serve subcommand's exact
+    posture: the shared production JWKS factory + `PreferConfigBindAddr`, nil
+    registrar) and the scaffolded composition via `external.Open` (the path an
+    `sdk/server` binary ships) from one base config, both on REAL listeners
+    with a real RSA JWKS file + minted RS256 tokens. Legs (a) (status-CLASS
+    comparison per method from `methods.Methods()`), (d), and (e) (incl. the
+    N≥16 stress with a goroutine-baseline eventually-poll) pass on both. Leg
+    (b) dispatch runs IN CI with the scripted-LLM pattern
+    (`TestE2E_Phase160_ScriptedLLM_DispatchAndApprovalGate/dispatch`): a
+    canned tool-call drives the compiled tool through the served catalog over
+    the wire (`control.start` → `tasks.get`), the terminal envelope carries
+    `tool_calls_seen ≥ 1`, and the handler's fixture marker round-trips into
+    the follow-up LLM prompt. Leg (c) is observed BEHAVIORALLY
+    (`…/approval_gate_fires`): the deny-all entries wrap on the compiled tool
+    FIRES on dispatch — `tool.approval_requested` with a Coordinator pause
+    token — proving the SERVED descriptor is the wrapped one; the structural
+    assembly-seam `stack.Gates` pin and the
+    `errors.Is(err, catalog.ErrToolNotRegistered)` fail-closed negative
+    (naming the tool) complete the leg. The script-side manifest probe lives
+    in `phase-160.sh`: stock `harbor serve` and the scaffolded binary boot
+    from the same probe yaml and every `wire-manifest.gen.json` method is
+    status-class-compared across both. The env-gated `HARBOR_LIVE_SERVE` live
+    leg covers the REAL-LLM wire path end to end (build CLI → keygen →
+    scaffold → implement the generated stub → external build → subprocess
+    boot → mint → dispatch → fixture-answer + `tool_calls_seen` assertions) —
+    the §17.8 CI/live split with CI carrying deterministic dispatch and live
+    carrying the real provider.
 - [x] §18 same-PR skill + docs updates (below) land in this PR.
 - [x] `scripts/smoke/phase-160.sh` OK ≥ 3, FAIL = 0 (as built: OK 6, SKIP 1
   (the env-gated dispatch leg), FAIL 0).
@@ -325,6 +338,11 @@ None.
   token is rejected 401. `OK ≥ 3, FAIL = 0` achievable without an LLM turn.
 - The tool DISPATCH leg (an LLM-driven invocation through the executor) is
   env-gated: SKIP by default, runs under the `HARBOR_LIVE_*` live leg.
+- Env vars (new, §4.2 item 7): `HARBOR_LIVE_SERVE=1` gates the live leg
+  (`TestE2E_Live_Phase160_ScaffoldedServer_Dispatch`; requires a real
+  `OPENROUTER_API_KEY` in the environment). The generated `--with-server`
+  `main.go` honors `HARBOR_BIND` as the flagless `--bind` equivalent
+  (mirroring `harbor serve`; documented in the generated README).
 - Degradation path: SKIP on a build whose `harbor scaffold` lacks
   `--with-server` (the 404/405/501-style SKIP convention read for a CLI flag —
   an unknown-flag error → SKIP).

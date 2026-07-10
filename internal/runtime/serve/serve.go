@@ -84,6 +84,35 @@ var ErrAuthValidatorFactoryRequired = errors.New("serve: auth-validator factory 
 // ephemeral dev signer. It is REQUIRED — a nil factory fails Boot loud.
 type AuthValidatorFactory func(ctx context.Context, cfg *config.Config, red audit.Redactor, bus events.EventBus, logger *slog.Logger) (auth.Validator, error)
 
+// NewJWKSAuthValidatorFactory returns THE production auth-validator
+// factory: it projects the operator's identity config onto a JWKS-backed
+// Validator (URL or file source), wiring the assembled redactor / bus /
+// logger. The initial JWKS fetch runs synchronously inside the
+// projection, so a bad source fails the boot loud. Every production
+// serve caller (the serve subcommand and the external-serving facade)
+// injects this one factory — a second hand-rolled copy is the drift this
+// shared constructor exists to prevent.
+func NewJWKSAuthValidatorFactory() AuthValidatorFactory {
+	return func(ctx context.Context, cfg *config.Config, red audit.Redactor, bus events.EventBus, logger *slog.Logger) (auth.Validator, error) {
+		return auth.NewJWKSValidator(ctx, cfg.Identity, auth.ValidatorDeps{
+			Redactor: red,
+			Logger:   logger,
+			Bus:      bus,
+		})
+	}
+}
+
+// InstanceID mints a stable-per-process instance identifier of the form
+// "<prefix>-<hostname>" (bare prefix when the hostname is unavailable).
+// A Console attached to multiple Runtimes keys each attachment by it.
+// Shared by every production serve caller so the id shape stays uniform.
+func InstanceID(prefix string) string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return prefix + "-" + h
+	}
+	return prefix
+}
+
 // AuthSurfaceBuilder builds the optional token-rotate surface after the
 // runtime is assembled (it needs the redactor + bus the assembly produces).
 // The dev caller injects a builder that closes over its dev signer; the

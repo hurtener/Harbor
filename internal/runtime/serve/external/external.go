@@ -9,11 +9,16 @@
 // config (a JWK Set fetched from identity.jwks_url or loaded from
 // identity.jwks_file) and re-runs the full-binary Validate on the
 // configuration, so a hand-built config cannot bypass validation and a
-// config missing its JWKS source fails loud, naming the field. There is
-// no dev-signer, no mock-LLM escape hatch, and none of the caller-side
-// injection seams the serve band exposes for the dev subcommand — a
-// server opened here is exactly the production surface harbor serve
-// mounts, parameterized only by the compiled-tool registrar.
+// config missing its JWKS source fails loud, naming the field, before
+// any subsystem opens. The JWKS source itself is then fetched and
+// parsed synchronously while the boot composes (an unreachable URL or a
+// keyless set fails Open non-zero; subsystems opened up to that point
+// are drained before Open returns — the caller never sees a partial
+// server). There is no dev-signer, no mock-LLM escape hatch, and none
+// of the caller-side injection seams the serve band exposes for the dev
+// subcommand — a server opened here is exactly the production surface
+// harbor serve mounts, parameterized only by the compiled-tool
+// registrar.
 //
 // The local-development loop is the three-command harbor token flow:
 // keygen a keypair, point identity.jwks_file at the emitted JWK Set,
@@ -25,13 +30,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
+	"runtime/debug"
 
-	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
-	"github.com/hurtener/Harbor/internal/events"
-	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -74,11 +76,12 @@ func (h *Handle) BindAddr() string { return h.h.BindAddr() }
 // seam so the served agent's tools receive their declared approval /
 // OAuth / policy wrapping.
 //
-// The configuration is validated (loud, naming the offending field) and
-// the JWT validator is built from the operator's identity config before
-// any subsystem opens: a missing JWKS source, an unreachable provider,
-// or a missing LLM provider fails Open non-zero rather than starting a
-// server that rejects every request.
+// The configuration is validated (loud, naming the offending field)
+// before any subsystem opens; the JWKS source is then fetched + parsed
+// synchronously during the boot composition, so a missing JWKS source, an
+// unreachable provider, or a missing LLM provider fails Open non-zero —
+// never a server that starts and rejects every request. On any boot
+// failure the already-opened subsystems are drained before Open returns.
 func Open(ctx context.Context, cfg *config.Config, configPath string, registerCatalog func(catalog tools.ToolCatalog) error) (*Handle, error) {
 	if cfg == nil {
 		if configPath == "" {
@@ -91,21 +94,26 @@ func Open(ctx context.Context, cfg *config.Config, configPath string, registerCa
 		cfg = loaded
 	}
 
+	version, commit := buildIdentity()
 	boot, err := serve.Boot(ctx, serve.Options{
 		Config:          cfg,
 		SubcommandLabel: "server",
 		// Production honors the operator-configured server.bind_addr,
 		// which may name a non-loopback interface.
 		PreferConfigBindAddr: true,
-		// The production auth path: build the JWKS-backed validator from
-		// the operator's identity config. No dev-only seam is composed.
-		AuthValidatorFactory: prodJWKSFactory(),
+		// The production auth path: the ONE shared JWKS-backed validator
+		// factory (the same one the serve subcommand injects). No
+		// dev-only seam is composed.
+		AuthValidatorFactory: serve.NewJWKSAuthValidatorFactory(),
 		RegisterCatalog:      registerCatalog,
 		DisplayName:          cfg.Telemetry.ServiceName,
-		InstanceID:           serverInstanceID(),
+		InstanceID:           serve.InstanceID("harbor-server"),
+		BuildVersion:         version,
+		BuildCommit:          commit,
 		Stderr:               os.Stderr,
-		// BuildLLMSnapshot nil → the default production projection; a
-		// missing real provider fails loud at driver construction.
+		// No LLM-snapshot builder is injected → the default production
+		// projection applies; a missing real provider fails loud at
+		// driver construction.
 	})
 	if err != nil {
 		return nil, err
@@ -113,27 +121,24 @@ func Open(ctx context.Context, cfg *config.Config, configPath string, registerCa
 	return &Handle{h: boot}, nil
 }
 
-// prodJWKSFactory returns the production auth-validator factory: it
-// projects the operator's identity config onto a JWKS-backed Validator
-// (URL or file source), wiring the assembled redactor / bus / logger.
-// The initial JWKS fetch runs synchronously, so a bad source fails the
-// boot loud.
-func prodJWKSFactory() serve.AuthValidatorFactory {
-	return func(ctx context.Context, cfg *config.Config, red audit.Redactor, bus events.EventBus, logger *slog.Logger) (auth.Validator, error) {
-		return auth.NewJWKSValidator(ctx, cfg.Identity, auth.ValidatorDeps{
-			Redactor: red,
-			Logger:   logger,
-			Bus:      bus,
-		})
+// buildIdentity resolves the hosting binary's build identity from the Go
+// build info (the main module's version + the vcs revision when the
+// binary was built from a checkout), so runtime.info from an externally
+// served binary reports a real version instead of an empty string.
+func buildIdentity() (version, commit string) {
+	version, commit = "unknown", "unknown"
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version, commit
 	}
-}
-
-// serverInstanceID mints a stable-per-process instance identifier for
-// the served Runtime. A Console attached to multiple Runtimes keys each
-// attachment by it.
-func serverInstanceID() string {
-	if h, err := os.Hostname(); err == nil && h != "" {
-		return "harbor-server-" + h
+	if v := info.Main.Version; v != "" {
+		version = v
 	}
-	return "harbor-server"
+	for _, s := range info.Settings {
+		if s.Key == "vcs.revision" && s.Value != "" {
+			commit = s.Value
+			break
+		}
+	}
+	return version, commit
 }
