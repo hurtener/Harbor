@@ -154,8 +154,9 @@ The facade is a curated, top-level **`sdk/`** package tree of **alias-based re-e
 3. **The V1.2 facade inventory** (the audited set the templates, recipes, and devstack already treated as public): `sdk/identity`, `sdk/events`, `sdk/config`, `sdk/tools` (+ `inproc`, `builtin`), `sdk/llm`, `sdk/memory`, `sdk/state`, `sdk/artifacts`, `sdk/skills`, `sdk/planner` (+ the `react`/`deterministic` registration import paths), `sdk/tasks`, `sdk/steering`, `sdk/dispatch`, `sdk/runctx`, `sdk/assemble`, and `sdk/drivers/prod` (the public blank-import aggregator). Phase 112b's consumer conversions flushed out additive extensions (per item 2's "additions are cheap" posture; recorded in D-206): `sdk/audit`, `sdk/telemetry` (+ `telemetry/eventbus`), `sdk/governance`, `sdk/tools/auth`, `sdk/skills/{importer,tools,generator}`, and the `ErrorClass` vocabulary on `sdk/tools`. The pause/resume Coordinator stays deliberately private (D-205's curation call) — the assembled stack is its supported construction path.
 4. **External consumers are gated mechanically.** The scaffold templates emit `sdk/` imports (a tool-declaring scaffold MUST compile as an external module), and a standing smoke gate compiles a scaffolded external module against the facade — the class of breakage the SDK friction audit found can never silently return.
 5. **`harbortest/` remains the test kit**; its parameter vocabulary becomes externally satisfiable through the `sdk/` aliases rather than kit-local forks.
+6. **The facade includes ONE curated serving facade — `sdk/server` (Settled — D-291).** An external binary that has assembled a stack (§3.6 embed path) can also **serve the Protocol surface** over the network — the third adopter path (§5.6) reaches parity with the stock `harbor serve`. `sdk/server` is a thin alias/forward over the promoted internal serve constructor (§5.6): `server.Open(ctx, cfg, server.Options{RegisterCatalog})` returns a handle with `Serve`/`Close`. It is **production-only by construction** — `Open` always builds the JWKS validator from `cfg.Identity` and fails loud (naming the missing field) when identity config is absent; there is no dev-signer option and no mock knob on this seam. The local-dev loop uses `harbor token keygen` → `identity.jwks_file` → `harbor token mint` (§8), exactly as an external `harbor serve` operator would. This is the only `sdk/` package that mounts a network listener; the embed-headless posture (no listener) stays the default (§5.6).
 
-Phases 112a (the facade tree) and 112b (external consumers + the compile gate) implement this section. See D-204.
+Phases 112a (the facade tree) and 112b (external consumers + the compile gate) implement the alias tree; Phase 160 adds `sdk/server`. See D-204, D-291.
 
 ---
 
@@ -227,7 +228,7 @@ Reject-on-sight violations:
 
 ### 5.3 Versioning
 
-The Protocol version is pinned in `internal/protocol/types/version.go`. Bumping the version is an RFC change. Breaking changes require a deprecation window so third-party Consoles aren't whipsawed.
+The Protocol version is pinned in `internal/protocol/types/version.go`. Bumping the version is an RFC change. Breaking changes require a deprecation window so third-party Consoles aren't whipsawed. The deprecation-window obligation extends to **embedder binaries** that mount the Protocol surface via the promoted serve constructor / `sdk/server` (§5.6, D-291): a self-hosted binary serving the surface is a Protocol server like any other, and a breaking wire change whipsaws its clients identically.
 
 ### 5.4 Wire transport
 
@@ -245,6 +246,19 @@ Phase 60 (Protocol wire transport) is no longer a decision gate; it is a normal 
 ### 5.5 Authentication
 
 JWT, asymmetric algorithms only (RS256/RS384/RS512/ES256/ES384/ES512). The triple `(tenant, user, session)` is in the JWT claims; the Protocol rejects any request without an identity scope. (Settled — `AGENTS.md` §7.) Extended scopes (`admin`, `console:fleet`) gate cross-session and cross-tenant subscriptions.
+
+### 5.6 External Protocol serving (Settled — D-291)
+
+An external binary — a scaffolded agent with compiled in-process Go tools, a headless embedder that also wants a network surface — may **serve the Protocol** at parity with the stock `harbor serve`. This is a **decided contract**, superseding the earlier deliberate omission where the serve composition lived only inside `cmd/harbor` (package `main`, unreachable to any importer). It rests on two pieces:
+
+1. **One promoted serve constructor.** The config→listener composition (`bootDevStack` + its options + the `devStack` serve/close lifecycle) is promoted out of `cmd/harbor` into an importable internal package (`internal/runtime/serve`), the same re-homing move §3.6/D-197 made for `assemble.Assemble`. `harbor serve`, `harbor dev`, and `harbor console` all become thin callers of it. Dev-only policy stays in `cmd/harbor`: the mock-LLM escape hatch (§7 posture, D-089), the hot-reload supervisor, the dev-token mint + bootstrap-token endpoint, draft scaffolding, and the embedded Console — the promoted constructor carries **no** dev knobs.
+2. **One curated `sdk/server` facade** (§3.6 item 6) over that constructor, exposing `server.Open(ctx, cfg, Options{RegisterCatalog})` → a handle with `Serve`/`Close`.
+
+**Posture (binding).** The **authentication seam is the posture switch**: a non-nil auth-validator factory selects **production posture** — the JWKS validator from §5.5 is built from `cfg.Identity`, and dev-only surfaces (bootstrap-token endpoint, dev-token mint) are **not mounted**. The `sdk/server` facade is production-only *by construction*: it always builds the JWKS validator and **fails loud** (naming the missing field) when `cfg.Identity` is absent — no dev-signer, no mock. Local development against `sdk/server` uses the `harbor token` bring-your-own-issuer on-ramp (§8), identical to a self-hosted `harbor serve`.
+
+**Compiled-tool registration rides the existing pre-policy seam.** `Options.RegisterCatalog` fires at the assembly's `PreRegisterTools` point — **before** builtin registration and the catalog Builder's per-entry `tools.entries` wrapping — so a compiled tool receives the same declared approval / OAuth / policy shell an operator's YAML-declared tool gets. It is an adapter over that one seam, never a second registration path (a post-assembly `Catalog.Register` bypasses the wrapping and is the documented trap). See D-292.
+
+**The embed-headless posture stays the default.** Most embedders want no listener; `assemble.Assemble` + `Stack.RunOnce` (§3.6) remain the zero-network path. `sdk/server` is the additive opt-in for the binary that wants the wire surface too. Phases 159 (the promotion) and 160 (`sdk/server` + `harbor scaffold --with-server` + the parity gate) implement this section.
 
 ---
 
