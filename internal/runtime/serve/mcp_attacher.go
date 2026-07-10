@@ -1,4 +1,4 @@
-package main
+package serve
 
 import (
 	"context"
@@ -29,7 +29,7 @@ import (
 // The harbortest/devstack helper carries a mirror of this concrete so
 // integration tests exercise the same real attach path.
 
-// devMCPConnectionAttacher implements agentcfgprotocol.ConnectionAttacher by
+// MCPConnectionAttacher implements agentcfgprotocol.ConnectionAttacher by
 // reusing the boot-time mcpdrv.Attach lifecycle (dial → initialize →
 // discover → register) against the LIVE catalog + registry + bus. It owns a
 // mutex-guarded closer chain so a runtime-added server's transport drains on
@@ -38,7 +38,7 @@ import (
 // Concurrent reuse: the collaborators (catalog / registry / bus / logger /
 // defaultIdentity) are set once at construction; the only mutable state is
 // the closers slice, guarded by mu (documented internally-synchronised).
-type devMCPConnectionAttacher struct {
+type MCPConnectionAttacher struct {
 	catalog         tools.ToolCatalog
 	registry        *mcpdrv.Registry
 	bus             events.EventBus
@@ -53,11 +53,11 @@ type devMCPConnectionAttacher struct {
 	closers []func(context.Context) error
 }
 
-// newDevMCPConnectionAttacher builds the production attacher. catalog,
+// NewMCPConnectionAttacher builds the production attacher. catalog,
 // registry, and bus are mandatory (mcpdrv.Attach validates them too).
 // oauthProviders may be nil when no provider is declared.
-func newDevMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider) *devMCPConnectionAttacher {
-	return &devMCPConnectionAttacher{
+func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider) *MCPConnectionAttacher {
+	return &MCPConnectionAttacher{
 		catalog:         catalog,
 		registry:        registry,
 		bus:             bus,
@@ -75,7 +75,7 @@ func newDevMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Reg
 // the subprocess. An auth-required condition is surfaced by wrapping
 // agentcfgprotocol.ErrAuthRequired so the service parks on the unified
 // pause/resume primitive.
-func (a *devMCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol.AttachRequest) error {
+func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol.AttachRequest) error {
 	ms := config.MCPServerConfig{
 		Name:            req.Name,
 		TransportMode:   transportModeForAdd(req.Transport),
@@ -118,7 +118,7 @@ func (a *devMCPConnectionAttacher) Attach(ctx context.Context, req agentcfgproto
 // Close drains every runtime-added server's transport in reverse order. Wired
 // into the boot closer chain so a runtime-added subprocess does not outlive
 // the stack.
-func (a *devMCPConnectionAttacher) Close(ctx context.Context) error {
+func (a *MCPConnectionAttacher) Close(ctx context.Context) error {
 	a.mu.Lock()
 	closers := a.closers
 	a.closers = nil
@@ -132,10 +132,10 @@ func (a *devMCPConnectionAttacher) Close(ctx context.Context) error {
 	return firstErr
 }
 
-// mcpAddStdioAllowlist projects the operator's stdio allowlist out of config
+// MCPAddStdioAllowlist projects the operator's stdio allowlist out of config
 // for the runtime add-connection gate. A nil block yields a nil allowlist
 // (fail-closed — every stdio add is rejected).
-func mcpAddStdioAllowlist(cfg *config.Config) []string {
+func MCPAddStdioAllowlist(cfg *config.Config) []string {
 	if cfg == nil || cfg.Tools.MCPAddConnection == nil {
 		return nil
 	}

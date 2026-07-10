@@ -51,13 +51,13 @@ assert_grep_present 'Two interfaces' "internal/llm/summarizer/summarizer.go" \
 
 # 3. Budget.TokenBudget gains its production writers: both run-loop
 #    driver shells project the budget + the runner (D-094 both-sides).
-assert_grep_present 'Budget: planner\.Budget{TokenBudget: d\.tokenBudget}' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'Budget: planner\.Budget{TokenBudget: d\.tokenBudget}' "internal/runtime/serve/runloop.go" \
     "cmd run-loop driver projects planner.token_budget onto RunSpec.Base.Budget"
-assert_grep_present 'Compression:      d\.compression' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'Compression:      d\.compression' "internal/runtime/serve/runloop.go" \
     "cmd run-loop driver wires RunSpec.Compression"
-assert_grep_present 'Budget: planner\.Budget{TokenBudget: d\.tokenBudget}' "harbortest/devstack/devstack.go" \
+assert_grep_present 'Budget: planner\.Budget{TokenBudget: d\.tokenBudget}' "internal/runtime/serve/runloop.go" \
     "devstack run-loop driver projects the budget (D-094 mirror)"
-assert_grep_present 'Compression:      d\.compression' "harbortest/devstack/devstack.go" \
+assert_grep_present 'Compression:      d\.compression' "internal/runtime/serve/runloop.go" \
     "devstack run-loop driver wires RunSpec.Compression (D-094 mirror)"
 
 # 4. The merged 110d assembly constructs the runner when the budget is

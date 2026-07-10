@@ -38,14 +38,14 @@ func TestDevStack_SessionOverrideStore_SharedWithDriver(t *testing.T) {
 		t.Fatal("RunsOverrideStore nil — shared session-override Store not exposed")
 	}
 	// The driver Consumes from the SAME Store the runs Service writes into.
-	if stack.RunLoopDriver.sessionOverrides != stack.RunsOverrideStore {
+	if stack.RunLoopDriver.SessionOverridesStore() != stack.RunsOverrideStore {
 		t.Fatal("driver.sessionOverrides is NOT the exposed RunsOverrideStore — the SET↔CONSUME seam is split (runs.set_overrides would be inert)")
 	}
 	// A set into the shared store is Consumable through the driver's handle.
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
 	model := "mock/echo"
 	stack.RunsOverrideStore.Set(id, runsprotocol.PendingOverride{Model: &model})
-	po, found := stack.RunLoopDriver.sessionOverrides.Consume(id)
+	po, found := stack.RunLoopDriver.SessionOverridesStore().Consume(id)
 	if !found || po.Model == nil || *po.Model != "mock/echo" {
 		t.Fatalf("driver did not Consume the set override: found=%v model=%v", found, po.Model)
 	}

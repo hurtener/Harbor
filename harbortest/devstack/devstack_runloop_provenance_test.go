@@ -17,6 +17,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -80,20 +81,20 @@ func runDevstackProvenanceProbe(t *testing.T, agentConfigID string) string {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &provenanceProbePlanner{got: make(chan string, 1)}
-	driver, err := newDevStackRunLoopDriver(devStackRunLoopDriverOpts{
-		bus:           bus,
-		runLoop:       rl,
-		planner:       p,
-		tasks:         reg,
-		agentConfigID: agentConfigID,
+	driver, err := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
+		Bus:           bus,
+		RunLoop:       rl,
+		Planner:       p,
+		Tasks:         reg,
+		AgentConfigID: agentConfigID,
 	})
 	if err != nil {
-		t.Fatalf("newDevStackRunLoopDriver: %v", err)
+		t.Fatalf("serve.NewRunLoopDriver: %v", err)
 	}
-	if err := driver.start(context.Background()); err != nil {
-		t.Fatalf("driver.start: %v", err)
+	if err := driver.Start(context.Background()); err != nil {
+		t.Fatalf("driver.Start: %v", err)
 	}
-	t.Cleanup(func() { _ = driver.close(context.Background()) })
+	t.Cleanup(func() { _ = driver.Close(context.Background()) })
 
 	id := identity.Identity{TenantID: "tenant-prov", UserID: "user-prov", SessionID: "sess-prov"}
 	ctx, err := identity.With(context.Background(), id)

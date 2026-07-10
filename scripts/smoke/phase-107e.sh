@@ -15,7 +15,7 @@
 # §4.3 conversion (2026-06-10, program follow-ups chore): the plan's
 # original live LLM-elicited spawn-then-join (AC-15 / smoke steps 4-7)
 # is covered by the static Go-test gate instead (the phase-110a smoke
-# pattern): `cmd/harbor/cmd_dev_spawn_await_test.go::
+# pattern): `internal/runtime/serve/spawn_await_test.go::
 # TestSpawnThenAwait_BackgroundDrivenEndToEnd` runs the SAME semantics
 # deterministically — real TaskRegistry + real per-task driver
 # (driveBackground=true) + the promoted production executor, spawn →
@@ -56,15 +56,15 @@ fi
 # (depth cap, terminal polling, D-026 projection, failed child,
 # concurrent reuse).
 # ----------------------------------------------------------------------------
-if [ ! -f "cmd/harbor/cmd_dev_spawn_await_test.go" ]; then
-  skip "phase 107e: cmd/harbor/cmd_dev_spawn_await_test.go absent (pre-107e build)"
+if [ ! -f "internal/runtime/serve/spawn_await_test.go" ]; then
+  skip "phase 107e: internal/runtime/serve/spawn_await_test.go absent (pre-107e build)"
 else
-  if go test ./cmd/harbor/ \
+  if go test ./internal/runtime/serve/ \
       -run 'TestSpawnThenAwait_BackgroundDrivenEndToEnd|TestSpawnTask_RetainTurn_BlocksAndReturnsOutcome' \
       -race -count=1 -timeout 300s >/dev/null 2>&1; then
     ok "phase 107e: spawn→background-run→await-join E2E pair passes under -race (AC-15)"
   else
-    fail "phase 107e: spawn/await driver E2Es failed (run: go test ./cmd/harbor/ -run 'TestSpawnThenAwait|TestSpawnTask_RetainTurn' -race)"
+    fail "phase 107e: spawn/await driver E2Es failed (run: go test ./internal/runtime/serve/ -run 'TestSpawnThenAwait|TestSpawnTask_RetainTurn' -race)"
   fi
 
   if go test ./internal/runtime/dispatch/ \

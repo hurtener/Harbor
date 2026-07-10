@@ -31,10 +31,10 @@ assert_grep_present 'ConfigScopeUser' \
 # 3. The §17.6 twin-parity grep — BOTH run-loop drivers route prompt-layer
 #    projection through the single shared ApplyPromptLayers seam.
 assert_grep_present 'projection.ApplyPromptLayers' \
-    cmd/harbor/cmd_dev_runloop.go \
+    internal/runtime/serve/runloop.go \
     'phase 126b: prod run-loop driver routes through the shared ApplyPromptLayers seam'
-assert_grep_present 'projection.ApplyPromptLayers' \
+assert_grep_present 'serve.NewRunLoopDriver' \
     harbortest/devstack/devstack.go \
-    'phase 126b: devstack twin routes through the shared ApplyPromptLayers seam'
+    'phase 126b: devstack consumes the promoted run-loop driver (which routes through the shared ApplyPromptLayers seam — single-homed)'
 
 smoke_summary

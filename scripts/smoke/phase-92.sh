@@ -53,7 +53,7 @@ assert_grep_present 'LLMOverrides \*LLMOverrides' \
 
 # 5. The run loop resolves the tenant default at run start (the consumer).
 assert_grep_present 'resolveLLMOverrides' \
-    cmd/harbor/cmd_dev_runloop.go \
+    internal/runtime/serve/runloop.go \
     'phase 92: run-start tenant-override resolution wired'
 
 # ----------------------------------------------------------------------------

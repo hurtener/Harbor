@@ -73,7 +73,7 @@
 // dispatch executor (a later phase) is the right home for background
 // task execution.
 
-package main
+package serve
 
 import (
 	"context"
@@ -103,26 +103,26 @@ import (
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
-// perTaskRunLoopDriverOpts bundles the dependencies the driver
+// RunLoopDriverOptions bundles the dependencies the driver
 // consumes. Bus + RunLoop + Planner + TaskRegistry are all mandatory;
-// a nil any of them returns ErrPerTaskRunLoopMisconfigured from
-// newPerTaskRunLoopDriver. The TaskRegistry is what the driver calls
+// a nil any of them returns ErrRunLoopDriverMisconfigured from
+// NewRunLoopDriver. The TaskRegistry is what the driver calls
 // MarkRunning / MarkComplete / MarkFailed on to advance the FSM
 // (closes issue #123).
-type perTaskRunLoopDriverOpts struct {
-	logger   *slog.Logger
-	bus      events.EventBus
-	runLoop  *steering.RunLoop
-	planner  planner.Planner
-	tasks    tasks.TaskRegistry // mandatory: the FSM the driver advances on Run exit
-	taskKind tasks.TaskKind     // KindForeground at V1; the driver spawns RunLoops for this kind
+type RunLoopDriverOptions struct {
+	Logger   *slog.Logger
+	Bus      events.EventBus
+	RunLoop  *steering.RunLoop
+	Planner  planner.Planner
+	Tasks    tasks.TaskRegistry // mandatory: the FSM the driver advances on Run exit
+	TaskKind tasks.TaskKind     // KindForeground at V1; the driver spawns RunLoops for this kind
 
 	// driveBackground widens the driver to ALSO
 	// drive KindBackground tasks — the ones a planner-emitted SpawnTask
 	// creates. False (the default / legacy test path) keeps the
 	// foreground-only behaviour. Recursion is bounded at the spawn site
 	// by the dev executor's absolute_max_spawn_depth cap, not here.
-	driveBackground bool
+	DriveBackground bool
 
 	// RunContext consumer wiring. All three of
 	// memory / skillsDirectory / planningHints are OPTIONAL: a dev
@@ -133,10 +133,10 @@ type perTaskRunLoopDriverOpts struct {
 	// pinned-then-recent, capability-filtered `<skills_context>`
 	// producer (the directory carries its own MaxEntries cap; the
 	// pre-111d SkillStore.Search + skillsContextMax pair is deleted).
-	memory          memory.MemoryStore
-	memoryRecall    memory.RecallSettings
-	skillsDirectory *skills.Directory
-	planningHints   *planner.PlanningHints
+	Memory          memory.MemoryStore
+	MemoryRecall    memory.RecallSettings
+	SkillsDirectory *skills.Directory
+	PlanningHints   *planner.PlanningHints
 
 	// tool dispatch + Catalog projection +
 	// Trajectory. The tool catalog is the shared catalog the rest of
@@ -144,16 +144,16 @@ type perTaskRunLoopDriverOpts struct {
 	// tools, etc.). MaxStepsRunLoop caps the runloop's outer step
 	// counter (separate from the planner-internal cap that goes onto
 	// react via PlannerConfig.MaxSteps).
-	catalog         tools.ToolCatalog
-	executor        steering.ToolExecutor
-	maxStepsRunLoop int
+	Catalog         tools.ToolCatalog
+	Executor        steering.ToolExecutor
+	MaxStepsRunLoop int
 
 	// operator-declared GrantedScopes
 	// threaded into the per-run catalog view's CatalogFilter. Tools
 	// whose AuthScopes exceed this set are invisible to the planner.
 	// Nil / empty list means no scopes granted (the existing latent
 	// default before the plumb-through).
-	grantedScopes []string
+	GrantedScopes []string
 
 	// the artifact store the multimodal
 	// materializer reads from. Required only when `task.InputArtifactIDs`
@@ -161,7 +161,7 @@ type perTaskRunLoopDriverOpts struct {
 	// store with input artifacts on the task degrades gracefully —
 	// the materializer emits text-stub-only references the LLM
 	// routes via the catalog.
-	artifactStore artifacts.ArtifactStore
+	ArtifactStore artifacts.ArtifactStore
 
 	// trajectory compression. `tokenBudget`
 	// projects onto RunSpec.Base.Budget.TokenBudget (the per-run
@@ -170,14 +170,14 @@ type perTaskRunLoopDriverOpts struct {
 	// planner.CompressionRunner the runloop invokes at each step
 	// boundary when the budget is non-zero. Both zero/nil (the
 	// default) = compression off, byte-identical behaviour.
-	tokenBudget int
-	compression *planner.CompressionRunner
+	TokenBudget int
+	Compression *planner.CompressionRunner
 
 	// the per-agent attachment disposition policy
 	// decoded from `multimodal.disposition` (the middle precedence
 	// layer of the disposition resolution). Zero value = no agent
 	// policy; the runtime default applies.
-	dispositionPolicy planner.DispositionPolicy
+	DispositionPolicy planner.DispositionPolicy
 
 	// tenantOverrides resolves an admin-set tenant default for the run's
 	// LLM parameters at run start (model / extra-instructions /
@@ -187,7 +187,7 @@ type perTaskRunLoopDriverOpts struct {
 	// run and pins the resolved snapshot into the run's RunContext so the
 	// swap lands on this run (next-turn relative to the admin's set), never
 	// mid-flight.
-	tenantOverrides tenantOverrideResolver
+	TenantOverrides TenantOverrideResolver
 
 	// sessionOverrides is the in-process pending-override Store the
 	// `runs.set_overrides` Service writes into. The driver Consumes the
@@ -196,7 +196,7 @@ type perTaskRunLoopDriverOpts struct {
 	// nil Store means "no session overrides" (the run uses tenant/config
 	// only). It is the SAME Store handed to the runs Service so a set and
 	// the consume meet.
-	sessionOverrides *runsprotocol.Store
+	SessionOverrides *runsprotocol.Store
 
 	// agentConfig resolves the agent's active config revision at run start
 	// (the agent-config control plane). OPTIONAL — a nil registry means
@@ -205,8 +205,8 @@ type perTaskRunLoopDriverOpts struct {
 	// the active revision ONCE at run start and pins the resolved
 	// skills-set into the per-run projection so a config edit applies on
 	// the NEXT run (next-turn-only), never mid-flight.
-	agentConfig   agentcfg.Registry
-	agentConfigID string
+	AgentConfig   agentcfg.Registry
+	AgentConfigID string
 
 	// sessionOverlay resolves the SESSION-scoped safe-subset overlay (the
 	// non-admin lower tier) at run start: the session's user prompt layer,
@@ -215,13 +215,13 @@ type perTaskRunLoopDriverOpts struct {
 	// by the REAL (tenant, user, session) triple, so it is session-isolated.
 	// OPTIONAL — nil means "no session overlay" (the run uses the admin agent
 	// config only). The SAME store the session-safe Protocol verbs write into.
-	sessionOverlay sessionoverlay.Store
+	SessionOverlay sessionoverlay.Store
 
 	// runCompletionHook is the static `runtime.hooks.run_completion`
 	// projection (nil when unset). At run start the driver resolves the
 	// effective hook via the shared projection (agent-config over this yaml
 	// over none) and pins it into the RunSpec, so an edit lands next-run.
-	runCompletionHook *steering.CompletionHookSpec
+	RunCompletionHook *steering.CompletionHookSpec
 
 	// connectionDetacher drives the DETACH leg of run-start reconciliation:
 	// at run start the driver detaches every MCP server that is attached but
@@ -230,41 +230,41 @@ type perTaskRunLoopDriverOpts struct {
 	// catalog excludes it. OPTIONAL — nil means no reconcile (the
 	// backward-compatible path). Injected at the cmd/harbor boundary (it
 	// imports the concrete MCP driver; this driver stays driver-agnostic).
-	connectionDetacher projection.ConnectionDetacher
+	ConnectionDetacher projection.ConnectionDetacher
 
 	// bootDeclaredMCP is the set of boot-declared (yaml) MCP server names the
 	// reconcile MUST NEVER detach (they are not revisioned state). Nil/empty
 	// when no yaml server is declared.
-	bootDeclaredMCP map[string]struct{}
+	BootDeclaredMCP map[string]struct{}
 
 	// namingDefault is the static `runtime.naming` fleet-default auto-naming
 	// policy; the driver resolves the effective policy per run (agent-config
 	// over this yaml over off). Opt-in, default off.
-	namingDefault config.RuntimeNamingConfig
+	NamingDefault config.RuntimeNamingConfig
 
 	// sessionTitler is the session-registry seam the auto-naming trigger
 	// writes/reads through (RecordCompletedTurn / AutoNamingState /
 	// SetTitleAuto). The same *sessions.Registry the sessions Protocol routes
 	// project over. Nil ⇒ no auto-naming trigger even when a policy resolves.
-	sessionTitler steering.SessionTitler
+	SessionTitler steering.SessionTitler
 
 	// namingLLM is the run's wrapped LLM client the ONE naming Complete call
 	// flows through (governance/safety via ctx identity). Nil ⇒ no auto-naming
 	// trigger.
-	namingLLM steering.NamingCompleter
+	NamingLLM steering.NamingCompleter
 }
 
-// tenantOverrideResolver is the narrow read seam the run loop uses to
+// TenantOverrideResolver is the narrow read seam the run loop uses to
 // resolve an admin-set tenant default at run start. The
 // `*governance.TenantOverridePolicy` concrete satisfies it.
-type tenantOverrideResolver interface {
+type TenantOverrideResolver interface {
 	Get(ctx context.Context, tenant string) (governance.TenantOverrideSpec, bool, error)
 }
 
-// perTaskRunLoopDriver subscribes to `task.spawned` and drives a
+// RunLoopDriver subscribes to `task.spawned` and drives a
 // RunLoop per spawned foreground task. The driver is constructed by
 // bootDevStack and Closed during stack teardown.
-type perTaskRunLoopDriver struct {
+type RunLoopDriver struct {
 	logger          *slog.Logger
 	bus             events.EventBus
 	runLoop         *steering.RunLoop
@@ -300,7 +300,7 @@ type perTaskRunLoopDriver struct {
 	dispositionPolicy planner.DispositionPolicy
 
 	// admin-set tenant-default override resolver (nil = none).
-	tenantOverrides tenantOverrideResolver
+	tenantOverrides TenantOverrideResolver
 
 	// session-level pending-override Store, Consumed at run start (nil = none).
 	sessionOverrides *runsprotocol.Store
@@ -352,66 +352,74 @@ type perTaskRunLoopDriver struct {
 	closedOnce sync.Once
 }
 
-// ErrPerTaskRunLoopMisconfigured fires when newPerTaskRunLoopDriver
+// ErrRunLoopDriverMisconfigured fires when NewRunLoopDriver
 // is called with a nil bus / RunLoop / planner. Driver invariant: all
 // three are mandatory.
-var ErrPerTaskRunLoopMisconfigured = errors.New("dev: per-task RunLoop driver missing a mandatory dependency")
+var ErrRunLoopDriverMisconfigured = errors.New("dev: per-task RunLoop driver missing a mandatory dependency")
 
-// newPerTaskRunLoopDriver validates the opts and returns a stopped
+// NewRunLoopDriver validates the opts and returns a stopped
 // driver. Call Start before serving; call Close to drain.
-func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriver, error) {
-	if opts.bus == nil {
-		return nil, fmt.Errorf("%w: bus is nil", ErrPerTaskRunLoopMisconfigured)
+func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
+	if opts.Bus == nil {
+		return nil, fmt.Errorf("%w: bus is nil", ErrRunLoopDriverMisconfigured)
 	}
-	if opts.runLoop == nil {
-		return nil, fmt.Errorf("%w: runLoop is nil", ErrPerTaskRunLoopMisconfigured)
+	if opts.RunLoop == nil {
+		return nil, fmt.Errorf("%w: runLoop is nil", ErrRunLoopDriverMisconfigured)
 	}
-	if opts.planner == nil {
-		return nil, fmt.Errorf("%w: planner is nil", ErrPerTaskRunLoopMisconfigured)
+	if opts.Planner == nil {
+		return nil, fmt.Errorf("%w: planner is nil", ErrRunLoopDriverMisconfigured)
 	}
-	if opts.tasks == nil {
-		return nil, fmt.Errorf("%w: tasks is nil", ErrPerTaskRunLoopMisconfigured)
+	if opts.Tasks == nil {
+		return nil, fmt.Errorf("%w: tasks is nil", ErrRunLoopDriverMisconfigured)
 	}
-	if opts.logger == nil {
-		opts.logger = slog.Default()
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
 	}
-	if opts.taskKind == "" {
-		opts.taskKind = tasks.KindForeground
+	if opts.TaskKind == "" {
+		opts.TaskKind = tasks.KindForeground
 	}
-	return &perTaskRunLoopDriver{
-		logger:          opts.logger,
-		bus:             opts.bus,
-		runLoop:         opts.runLoop,
-		planner:         opts.planner,
-		tasks:           opts.tasks,
-		taskKind:        opts.taskKind,
-		driveBackground: opts.driveBackground,
-		memory:          opts.memory,
-		memoryRecall:    opts.memoryRecall,
-		skillsDirectory: opts.skillsDirectory,
-		planningHints:   opts.planningHints,
-		catalog:         opts.catalog,
-		executor:        opts.executor,
-		maxStepsRunLoop: opts.maxStepsRunLoop,
-		grantedScopes:   append([]string(nil), opts.grantedScopes...),
-		artifactStore:   opts.artifactStore,
+	return &RunLoopDriver{
+		logger:          opts.Logger,
+		bus:             opts.Bus,
+		runLoop:         opts.RunLoop,
+		planner:         opts.Planner,
+		tasks:           opts.Tasks,
+		taskKind:        opts.TaskKind,
+		driveBackground: opts.DriveBackground,
+		memory:          opts.Memory,
+		memoryRecall:    opts.MemoryRecall,
+		skillsDirectory: opts.SkillsDirectory,
+		planningHints:   opts.PlanningHints,
+		catalog:         opts.Catalog,
+		executor:        opts.Executor,
+		maxStepsRunLoop: opts.MaxStepsRunLoop,
+		grantedScopes:   append([]string(nil), opts.GrantedScopes...),
+		artifactStore:   opts.ArtifactStore,
 		// disposition policy passthrough.
-		dispositionPolicy:  opts.dispositionPolicy,
-		tenantOverrides:    opts.tenantOverrides,
-		sessionOverrides:   opts.sessionOverrides,
-		agentConfig:        opts.agentConfig,
-		agentConfigID:      opts.agentConfigID,
-		sessionOverlay:     opts.sessionOverlay,
-		runCompletionHook:  opts.runCompletionHook,
-		connectionDetacher: opts.connectionDetacher,
-		bootDeclaredMCP:    opts.bootDeclaredMCP,
-		namingDefault:      opts.namingDefault,
-		sessionTitler:      opts.sessionTitler,
-		namingLLM:          opts.namingLLM,
+		dispositionPolicy:  opts.DispositionPolicy,
+		tenantOverrides:    opts.TenantOverrides,
+		sessionOverrides:   opts.SessionOverrides,
+		agentConfig:        opts.AgentConfig,
+		agentConfigID:      opts.AgentConfigID,
+		sessionOverlay:     opts.SessionOverlay,
+		runCompletionHook:  opts.RunCompletionHook,
+		connectionDetacher: opts.ConnectionDetacher,
+		bootDeclaredMCP:    opts.BootDeclaredMCP,
+		namingDefault:      opts.NamingDefault,
+		sessionTitler:      opts.SessionTitler,
+		namingLLM:          opts.NamingLLM,
 		trajectories:       make(map[tasks.TaskID]*planner.Trajectory),
-		tokenBudget:        opts.tokenBudget,
-		compression:        opts.compression,
+		tokenBudget:        opts.TokenBudget,
+		compression:        opts.Compression,
 	}, nil
+}
+
+// SessionOverridesStore returns the pending-override Store the driver
+// consumes at run start. It is the seam a caller wires the runs.set_overrides
+// service to so a set reaches the run; exposed so a caller can assert the two
+// share one Store.
+func (d *RunLoopDriver) SessionOverridesStore() *runsprotocol.Store {
+	return d.sessionOverrides
 }
 
 // Start opens the admin-scoped subscription and launches the
@@ -419,7 +427,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 // The supplied ctx anchors the subscription's lifetime — when ctx
 // cancels (e.g. boot was aborted before Close), the subscription
 // cancels along with it.
-func (d *perTaskRunLoopDriver) Start(ctx context.Context) error {
+func (d *RunLoopDriver) Start(ctx context.Context) error {
 	if d.started {
 		return nil
 	}
@@ -461,7 +469,7 @@ func (d *perTaskRunLoopDriver) Start(ctx context.Context) error {
 // launches a per-task goroutine that calls RunLoop.Run. The loop
 // terminates when the subscription channel closes (subCtx cancelled
 // → bus closes the subscription channel).
-func (d *perTaskRunLoopDriver) subscribeLoop() {
+func (d *RunLoopDriver) subscribeLoop() {
 	defer d.subLoopWG.Done()
 	for ev := range d.sub.Events() {
 		d.handleEvent(ev)
@@ -472,7 +480,7 @@ func (d *perTaskRunLoopDriver) subscribeLoop() {
 // task of the given kind. It always drives its configured taskKind; with
 // driveBackground set it additionally drives
 // KindBackground.
-func (d *perTaskRunLoopDriver) drivesKind(kind tasks.TaskKind) bool {
+func (d *RunLoopDriver) drivesKind(kind tasks.TaskKind) bool {
 	if kind == d.taskKind {
 		return true
 	}
@@ -488,10 +496,10 @@ func (d *perTaskRunLoopDriver) drivesKind(kind tasks.TaskKind) bool {
 // absolute_max_spawn_depth cap. A malformed payload (wrong type) is
 // logged and skipped — the event registration guarantees the shape, so a
 // mismatch here is a programmer error.
-func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
+func (d *RunLoopDriver) handleEvent(ev events.Event) {
 	payload, ok := ev.Payload.(tasks.TaskSpawnedPayload)
 	if !ok {
-		d.logger.Warn("perTaskRunLoopDriver: task.spawned with unexpected payload type",
+		d.logger.Warn("RunLoopDriver: task.spawned with unexpected payload type",
 			slog.String("got", fmt.Sprintf("%T", ev.Payload)))
 		return
 	}
@@ -507,7 +515,7 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 		RunID:    string(payload.TaskID),
 	}
 	if err := identity.Validate(q.Identity); err != nil {
-		d.logger.Warn("perTaskRunLoopDriver: task.spawned with incomplete identity",
+		d.logger.Warn("RunLoopDriver: task.spawned with incomplete identity",
 			slog.String("task_id", string(payload.TaskID)),
 			slog.String("err", err.Error()))
 		return
@@ -597,7 +605,7 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 // A nil result means "no overrides — use the agent/config defaults". A
 // tenant-resolver error is returned (the caller fails the run loudly);
 // the session Consume cannot error (in-process map read).
-func (d *perTaskRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quadruple) (*planner.LLMOverrides, error) {
+func (d *RunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quadruple) (*planner.LLMOverrides, error) {
 	// Tenant arm.
 	var tenant *planner.LLMOverrides
 	if d.tenantOverrides != nil {
@@ -641,7 +649,7 @@ func (d *perTaskRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identi
 // views to that set (the agent-config control plane's run-start
 // projection). The logic is shared verbatim with the devstack twin via the
 // projection package so the two binaries cannot drift (CLAUDE.md §17.6).
-func (d *perTaskRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
+func (d *RunLoopDriver) projectAgentConfigSkills(ctx context.Context, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
 	return projection.ActiveSkillViews(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, views)
 }
 
@@ -649,7 +657,7 @@ func (d *perTaskRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q i
 // the agent's active-config tool exposure (paused MCP servers + disabled
 // tools excluded) via the SAME shared projection the devstack twin uses
 // (CLAUDE.md §17.6). Next-turn-only; the live transport stays warm.
-func (d *perTaskRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
+func (d *RunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
 	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, d.catalog, filter)
 }
 
@@ -658,7 +666,7 @@ func (d *perTaskRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q 
 // config onto the run's resolved override bundle at run start, via the SAME
 // shared projection the devstack twin uses (CLAUDE.md §17.6). Next-turn-only;
 // the immutable per-run snapshot is undisturbed for in-flight runs.
-func (d *perTaskRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
+func (d *RunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
 	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, ov)
 }
 
@@ -667,7 +675,7 @@ func (d *perTaskRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Contex
 // uses (CLAUDE.md §17.6): agent-config `hooks` section over the static
 // `runtime.hooks.run_completion` yaml over none. Next-turn-only; an edit is
 // invisible to an in-flight run.
-func (d *perTaskRunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
+func (d *RunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
 	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, d.agentConfigID, q, d.runCompletionHook)
 	return hook, err
 }
@@ -679,7 +687,7 @@ func (d *perTaskRunLoopDriver) projectRunCompletionHook(ctx context.Context, q i
 // naming dependencies (titler + wrapped LLM client) are not wired — opt-in,
 // default off. The naming model resolves to the policy's model, else the run's
 // effective model override, else "" (the client default). Next-turn-only.
-func (d *perTaskRunLoopDriver) projectNaming(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*steering.NamingSpec, error) {
+func (d *RunLoopDriver) projectNaming(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*steering.NamingSpec, error) {
 	if d.sessionTitler == nil || d.namingLLM == nil {
 		return nil, nil
 	}
@@ -717,23 +725,23 @@ func (d *perTaskRunLoopDriver) projectNaming(ctx context.Context, q identity.Qua
 // a run precondition; a run continues even if an old transport refuses to
 // close. Shared verbatim with the devstack twin via the projection package
 // (CLAUDE.md §17.6).
-func (d *perTaskRunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
+func (d *RunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
 	if d.connectionDetacher == nil {
 		return
 	}
 	detached, err := projection.ReconcileConnections(ctx, d.agentConfig, d.agentConfigID, q, d.connectionDetacher, d.bootDeclaredMCP)
 	if err != nil {
-		d.logger.ErrorContext(ctx, "perTaskRunLoopDriver: run-start MCP reconcile detach failed",
+		d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP reconcile detach failed",
 			slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
 		return
 	}
 	if detached > 0 {
-		d.logger.InfoContext(ctx, "perTaskRunLoopDriver: run-start MCP reconcile detached servers",
+		d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP reconcile detached servers",
 			slog.String("agent_id", d.agentConfigID), slog.Int("detached", detached))
 	}
 }
 
-func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
+func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
 	// every identity-scoped storage method). The ctx is derived from
@@ -743,7 +751,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// Pre-Run identity attachment failed — the run never starts.
 		// This is a programmer error: handleEvent already validated the
 		// identity. Log loud and bail.
-		d.logger.Warn("perTaskRunLoopDriver: identity.With failed before Run",
+		d.logger.Warn("RunLoopDriver: identity.With failed before Run",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", idErr.Error()))
@@ -759,7 +767,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// registry is unhealthy. Either way, do not run the planner —
 		// the eventual terminal Mark* would fail and we would have
 		// burned LLM cycles for no FSM transition. Log Warn and bail.
-		d.logger.Warn("perTaskRunLoopDriver: MarkRunning failed; skipping Run",
+		d.logger.Warn("RunLoopDriver: MarkRunning failed; skipping Run",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", err.Error()))
@@ -783,7 +791,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// it later — see RunContext.Goal godoc).
 	task, gErr := d.tasks.Get(taskCtx, taskID)
 	if gErr != nil {
-		d.logger.Warn("perTaskRunLoopDriver: tasks.Get failed; failing run",
+		d.logger.Warn("RunLoopDriver: tasks.Get failed; failing run",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", gErr.Error()))
@@ -791,7 +799,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Code:    "runtime_fetch_error",
 			Message: fmt.Sprintf("tasks.Get: %v", gErr),
 		}); fErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+			d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("err", fErr.Error()))
 		}
@@ -808,7 +816,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	if len(task.OutputSchema) > 0 {
 		cs, cErr := planner.CompileOutputSchema(task.OutputSchema)
 		if cErr != nil {
-			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: output-schema compile failed; failing run",
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: output-schema compile failed; failing run",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", cErr.Error()))
@@ -816,7 +824,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 				Code:    planner.TaskErrorCodeOutputInvalid,
 				Message: "output-schema compile failed: " + cErr.Error(),
 			}); fErr != nil {
-				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(output_invalid) failed",
+				d.logger.Warn("RunLoopDriver: MarkFailed(output_invalid) failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", fErr.Error()))
 			}
@@ -843,7 +851,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	if d.memory != nil {
 		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall, d.logger)
 		if mErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: FetchMemoryBlocks failed; failing run",
+			d.logger.Warn("RunLoopDriver: FetchMemoryBlocks failed; failing run",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))
@@ -851,7 +859,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 				Code:    "runtime_fetch_error",
 				Message: fmt.Sprintf("FetchMemoryBlocks: %v", mErr),
 			}); fErr != nil {
-				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", fErr.Error()))
 			}
@@ -879,7 +887,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}),
 		})
 		if sErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: skills Directory.View failed; failing run",
+			d.logger.Warn("RunLoopDriver: skills Directory.View failed; failing run",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", sErr.Error()))
@@ -887,7 +895,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 				Code:    "runtime_fetch_error",
 				Message: fmt.Sprintf("skills Directory.View: %v", sErr),
 			}); fErr != nil {
-				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", fErr.Error()))
 			}
@@ -901,7 +909,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// runtime StateStore — an error means the runtime is unhealthy).
 		gated, gErr := d.projectAgentConfigSkills(taskCtx, q, views)
 		if gErr != nil {
-			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: agent-config skills projection failed; failing run",
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: agent-config skills projection failed; failing run",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", gErr.Error()))
@@ -909,7 +917,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 				Code:    "runtime_fetch_error",
 				Message: "agent-config skills projection: " + gErr.Error(),
 			}); fErr != nil {
-				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", fErr.Error()))
 			}
@@ -958,7 +966,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			GrantedScopes: d.grantedScopes,
 		})
 		if vErr != nil {
-			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: agent-config tool-exposure projection failed; failing run",
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: agent-config tool-exposure projection failed; failing run",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", vErr.Error()))
@@ -966,7 +974,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 				Code:    "runtime_fetch_error",
 				Message: "agent-config tool-exposure projection: " + vErr.Error(),
 			}); fErr != nil {
-				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", fErr.Error()))
 			}
@@ -1080,7 +1088,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// means the runtime is already unhealthy.
 	llmOverrides, ovErr := d.resolveLLMOverrides(taskCtx, q)
 	if ovErr != nil {
-		d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: tenant-override resolution failed; failing run",
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: tenant-override resolution failed; failing run",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", ovErr.Error()))
@@ -1088,7 +1096,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "tenant-override resolution failed: " + ovErr.Error(),
 		}); mErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after override-resolution error failed",
+			d.logger.Warn("RunLoopDriver: MarkFailed after override-resolution error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))
@@ -1103,7 +1111,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// operator's configured prompt.
 	llmOverrides, plErr := d.projectAgentConfigPromptLayers(taskCtx, q, llmOverrides)
 	if plErr != nil {
-		d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: prompt-layer projection failed; failing run",
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: prompt-layer projection failed; failing run",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", plErr.Error()))
@@ -1111,7 +1119,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "prompt-layer projection failed: " + plErr.Error(),
 		}); mErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after prompt-layer-projection error failed",
+			d.logger.Warn("RunLoopDriver: MarkFailed after prompt-layer-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))
@@ -1124,7 +1132,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// loudly rather than silently dropping the operator's configured hook.
 	completionHook, chErr := d.projectRunCompletionHook(taskCtx, q)
 	if chErr != nil {
-		d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: run-completion-hook projection failed; failing run",
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run-completion-hook projection failed; failing run",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", chErr.Error()))
@@ -1132,7 +1140,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "run-completion-hook projection failed: " + chErr.Error(),
 		}); mErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after run-completion-hook-projection error failed",
+			d.logger.Warn("RunLoopDriver: MarkFailed after run-completion-hook-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))
@@ -1145,7 +1153,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// rather than silently dropping the operator's configured policy.
 	namingSpec, nmErr := d.projectNaming(taskCtx, q, llmOverrides)
 	if nmErr != nil {
-		d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: naming-policy projection failed; failing run",
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: naming-policy projection failed; failing run",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", nmErr.Error()))
@@ -1153,7 +1161,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "naming-policy projection failed: " + nmErr.Error(),
 		}); mErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after naming-policy-projection error failed",
+			d.logger.Warn("RunLoopDriver: MarkFailed after naming-policy-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))
@@ -1218,7 +1226,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		switch {
 		case errors.Is(err, context.Canceled):
 			code = planner.TaskErrorCodeCancelled
-			d.logger.Debug("perTaskRunLoopDriver: run cancelled",
+			d.logger.Debug("RunLoopDriver: run cancelled",
 				slog.String("task_id", string(taskID)))
 		case compiledSchema != nil && (errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)):
 			// A schema-constrained run whose generation-steering retry loop
@@ -1227,12 +1235,12 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			// success (§13). This is the RunLoop.Run failure shape of the
 			// two output-invalid failure modes.
 			code = planner.TaskErrorCodeOutputInvalid
-			d.logger.Warn("perTaskRunLoopDriver: schema-constrained run exhausted the correction budget",
+			d.logger.Warn("RunLoopDriver: schema-constrained run exhausted the correction budget",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", err.Error()))
 		default:
-			d.logger.Warn("perTaskRunLoopDriver: RunLoop.Run failed",
+			d.logger.Warn("RunLoopDriver: RunLoop.Run failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", err.Error()))
@@ -1246,7 +1254,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			// (raced with an external Cancel) or the registry is
 			// unhealthy. The driver continues serving subsequent
 			// spawn events.
-			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after Run error failed",
+			d.logger.Warn("RunLoopDriver: MarkFailed after Run error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))
@@ -1277,7 +1285,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// answer that never validated.
 		envelope, envErr := runctx.FinishAnswerEnvelope(fin, traj, compiledSchema)
 		if envErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: terminal output-schema validation failed; failing run",
+			d.logger.Warn("RunLoopDriver: terminal output-schema validation failed; failing run",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", envErr.Error()))
@@ -1285,7 +1293,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 				Code:    planner.TaskErrorCodeOutputInvalid,
 				Message: "terminal output failed schema validation: " + envErr.Error(),
 			}); mErr != nil {
-				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(output_invalid) failed",
+				d.logger.Warn("RunLoopDriver: MarkFailed(output_invalid) failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("run_id", q.RunID),
 					slog.String("err", mErr.Error()))
@@ -1310,7 +1318,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 				Timestamp:         time.Now(),
 			}
 			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil {
-				d.logger.Warn("perTaskRunLoopDriver: memory.AddTurn failed; run still marked complete",
+				d.logger.Warn("RunLoopDriver: memory.AddTurn failed; run still marked complete",
 					slog.String("task_id", string(taskID)),
 					slog.String("run_id", q.RunID),
 					slog.String("err", mErr.Error()))
@@ -1319,19 +1327,19 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 
 		raw, err := json.Marshal(envelope)
 		if err != nil {
-			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: marshal TaskResult.Value failed",
+			d.logger.ErrorContext(taskCtx, "RunLoopDriver: marshal TaskResult.Value failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("err", err.Error()))
 			raw = []byte("{}")
 		}
 		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{Value: raw}); mErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: MarkComplete failed",
+			d.logger.Warn("RunLoopDriver: MarkComplete failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", mErr.Error()))
 			return
 		}
-		d.logger.Info("perTaskRunLoopDriver: run finished (complete)",
+		d.logger.Info("RunLoopDriver: run finished (complete)",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("reason", string(fin.Reason)),
@@ -1347,13 +1355,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		Code:    planner.TaskErrorCodeForFinish(fin.Reason),
 		Message: "RunLoop finished without satisfying goal: " + string(fin.Reason),
 	}); mErr != nil {
-		d.logger.Warn("perTaskRunLoopDriver: MarkFailed after non-goal Finish failed",
+		d.logger.Warn("RunLoopDriver: MarkFailed after non-goal Finish failed",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", mErr.Error()))
 		return
 	}
-	d.logger.Info("perTaskRunLoopDriver: run finished (failed)",
+	d.logger.Info("RunLoopDriver: run finished (failed)",
 		slog.String("task_id", string(taskID)),
 		slog.String("run_id", q.RunID),
 		slog.String("reason", string(fin.Reason)))
@@ -1380,7 +1388,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 // caps the rendered rows and appends an explicit "+K more" line on
 // overflow (AC-6) — this function returns the FULL slice so the renderer
 // can compute the overflow count.
-func (d *perTaskRunLoopDriver) resolveSessionArtifacts(
+func (d *RunLoopDriver) resolveSessionArtifacts(
 	ctx context.Context, sessionQ identity.Quadruple,
 ) []planner.ArtifactManifestEntry {
 	if d.artifactStore == nil {
@@ -1394,7 +1402,7 @@ func (d *perTaskRunLoopDriver) resolveSessionArtifacts(
 	}
 	refs, err := d.artifactStore.List(ctx, scope)
 	if err != nil {
-		d.logger.Warn("perTaskRunLoopDriver: session-artifact List failed; proceeding with no manifest",
+		d.logger.Warn("RunLoopDriver: session-artifact List failed; proceeding with no manifest",
 			slog.String("tenant_id", sessionQ.TenantID),
 			slog.String("user_id", sessionQ.UserID),
 			slog.String("session_id", sessionQ.SessionID),
@@ -1417,7 +1425,7 @@ func (d *perTaskRunLoopDriver) resolveSessionArtifacts(
 // indefinitely would block Close; the dev cmd's serve loop applies
 // the Server.ShutdownGracePeriod ceiling at the http boundary, so a
 // blocked Close eventually surfaces as a graceless exit.
-func (d *perTaskRunLoopDriver) Close(_ context.Context) error {
+func (d *RunLoopDriver) Close(_ context.Context) error {
 	d.closedOnce.Do(func() {
 		if !d.started {
 			return
@@ -1441,7 +1449,7 @@ func (d *perTaskRunLoopDriver) Close(_ context.Context) error {
 // TrajectoryByTaskID returns the planner trajectory for a completed run,
 // or nil when the task's trajectory has been evicted or never existed.
 // Reads are safe under concurrent access (RLock).
-func (d *perTaskRunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Trajectory {
+func (d *RunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Trajectory {
 	d.trajMu.RLock()
 	defer d.trajMu.RUnlock()
 	return d.trajectories[taskID]

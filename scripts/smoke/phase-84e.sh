@@ -53,22 +53,22 @@ assert_or_skip 'func FetchMemoryBlocks\(' \
     "internal/runtime/runctx/memory_fetch.go" \
     "static: runctx.FetchMemoryBlocks is the single production home for the memory step"
 
-# Both run-loop call sites must call FetchMemoryBlocks; no surviving
-# inline GetLLMContext block.
-if [ -f "cmd/harbor/cmd_dev_runloop.go" ] && [ -f "harbortest/devstack/devstack.go" ]; then
-    if grep -q 'runctx\.FetchMemoryBlocks' cmd/harbor/cmd_dev_runloop.go \
-    && grep -q 'runctx\.FetchMemoryBlocks' harbortest/devstack/devstack.go; then
-        ok "static: both run-loop call sites delegate to runctx.FetchMemoryBlocks"
+# The run-loop driver is single-homed (the devstack kit consumes the
+# promoted driver), so ONE call site must delegate to FetchMemoryBlocks;
+# no surviving inline GetLLMContext block.
+if [ -f "internal/runtime/serve/runloop.go" ]; then
+    if grep -q 'runctx\.FetchMemoryBlocks' internal/runtime/serve/runloop.go; then
+        ok "static: the promoted run-loop driver delegates to runctx.FetchMemoryBlocks (single-homed; devstack consumes it)"
     else
-        skip "static: at least one call site has not adopted FetchMemoryBlocks (Phase 84e not yet implemented)"
+        skip "static: the run-loop driver has not adopted FetchMemoryBlocks (Phase 84e not yet implemented)"
     fi
 else
-    skip "static: run-loop files absent (Phase 84e not yet implemented)"
+    skip "static: run-loop file absent (Phase 84e not yet implemented)"
 fi
 
 # No surviving inline GetLLMContext fetch block (the collapsed duplication).
-if [ -f "cmd/harbor/cmd_dev_runloop.go" ]; then
-    inline_count=$(grep -c '\.GetLLMContext(' cmd/harbor/cmd_dev_runloop.go 2>/dev/null || true)
+if [ -f "internal/runtime/serve/runloop.go" ]; then
+    inline_count=$(grep -c '\.GetLLMContext(' internal/runtime/serve/runloop.go 2>/dev/null || true)
     if [[ "${inline_count}" -eq 0 ]]; then
         ok "static: cmd_dev_runloop.go has no inline GetLLMContext call (fully delegated)"
     else

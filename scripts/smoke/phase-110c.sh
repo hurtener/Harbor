@@ -65,7 +65,7 @@ assert_grep_present 'func Defaults\(\) \*Config' internal/config/loader.go 'phas
 assert_grep_present 'func \(c \*Config\) ValidateCore\(\) error' internal/config/validate.go 'phase 110c: config.ValidateCore profile exists'
 assert_grep_count 'DefaultSkillsContextMax = ' internal/config/config.go 1 'phase 110c: skills_context_max default has ONE source (config.DefaultSkillsContextMax)'
 assert_grep_count 'DefaultSpawnDepthCap = '    internal/config/config.go 1 'phase 110c: spawn-depth default has ONE source (config.DefaultSpawnDepthCap)'
-assert_grep_absent 'devRuntimeSkillsContextMaxDefault'      cmd/harbor/cmd_dev_runloop.go 'phase 110c: cmd run-loop skills-cap literal deleted'
+assert_grep_absent 'devRuntimeSkillsContextMaxDefault'      internal/runtime/serve/runloop.go 'phase 110c: cmd run-loop skills-cap literal deleted'
 assert_grep_absent 'devStackRuntimeSkillsContextMaxDefault' harbortest/devstack/devstack.go 'phase 110c: devstack run-loop skills-cap literal deleted'
 
 # --- 5. The projection + profile unit suites pass under -race --------------

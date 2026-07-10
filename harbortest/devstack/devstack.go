@@ -77,15 +77,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	goruntime "runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -120,37 +116,24 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
-	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
-	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
-	"github.com/hurtener/Harbor/internal/runtime/flow"
-	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
-	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
-	"github.com/hurtener/Harbor/internal/search"
-	searchartifacts "github.com/hurtener/Harbor/internal/search/artifacts"
-	searchevents "github.com/hurtener/Harbor/internal/search/events"
-	searchsessions "github.com/hurtener/Harbor/internal/search/sessions"
-	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
 	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
-	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
-	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
-	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
 // DefaultDevTenant / DefaultDevUser / DefaultDevSession match the
@@ -402,7 +385,7 @@ type DevStack struct {
 	// rely on these — without RunLoop, the spawned task sits at
 	// StatusPending forever and the planner never runs.
 	RunLoop       *steering.RunLoop
-	RunLoopDriver *DevStackRunLoopDriver
+	RunLoopDriver *serve.RunLoopDriver
 
 	// RunsOverrideStore is the session-level pending-override Store shared
 	// by the mounted `runs.set_overrides` route and the run-loop driver's
@@ -647,6 +630,11 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// mounted `agent_config.*` Protocol service, so a skills edit lands on
 	// the next run. Built whenever the assembly opened a StateStore.
 	const devAgentConfigID = "harbor-dev-agent"
+	// tenantPolicy is the admin-set tenant-default LLM-override policy — ONE
+	// instance shared by the run-loop driver (consume at run start) and the
+	// mounted governance surface (set/get), mirroring production. Built
+	// whenever the assembly opened a StateStore.
+	var tenantPolicy *governance.TenantOverridePolicy
 	if core.State != nil {
 		reg, regErr := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: core.State, Bus: bus})
 		if regErr != nil {
@@ -666,6 +654,13 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		stack.SessionOverlay = ovStore
 		stack.closeFns = append(stack.closeFns, ovStore.Close)
+
+		tp, tpErr := governance.NewTenantOverridePolicy(core.State, bus, devstackValidModels(cfg), nil)
+		if tpErr != nil {
+			return stack, fmt.Errorf("governance tenant-override policy: %w", tpErr)
+		}
+		tenantPolicy = tp
+		stack.closeFns = append(stack.closeFns, tp.Close)
 	}
 
 	// Steering surface + run-loop driver. Skip-aware: the Mux phase
@@ -691,7 +686,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// `cmd/harbor/cmd_dev.go::bootDevStack`. A `start` on a not-yet-
 		// existing session materialises its registry row.
 		surfaceOpts = append(surfaceOpts,
-			protocol.WithSessionEnsurer(newSessionEnsurer(core.Sessions)))
+			protocol.WithSessionEnsurer(serve.NewSessionEnsurerAdapter(core.Sessions)))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
@@ -728,84 +723,62 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			if dpErr != nil {
 				return stack, fmt.Errorf("devstack multimodal disposition policy: %w", dpErr)
 			}
-			driver, drvErr := newDevStackRunLoopDriver(devStackRunLoopDriverOpts{
-				bus:     bus,
-				runLoop: stack.RunLoop,
-				planner: core.Planner,
-				tasks:   taskReg, // D-098: helper mirrors production's FSM bridge (D-094 source-of-truth invariant)
-				logger:  opts.Logger,
-				// Phase 92b (D-232) — the session-override Store the driver
-				// Consumes at run start; the SAME instance is handed to the
-				// runs Service below so a runs.set_overrides reaches the run
-				// (D-094 mirror of cmd_dev.go's shared runsStore).
-				sessionOverrides: runsStore,
-				// Phase 83f (D-149): per-run consumer wiring. Explicit
-				// AssembleOpts overrides win; otherwise the cfg-opened
-				// stores + the SAME exported projections production uses
-				// (Phase 110c, D-196).
-				memory:       resolveMemoryStore(opts, stack),
-				memoryRecall: memory.RecallFromConfig(cfg.Memory),
-				// Phase 111d (D-201): the Phase-39 Directory is the
-				// `<skills_context>` producer (mirrors production).
-				skillsDirectory: skillsDir,
-				planningHints:   resolvePlanningHints(opts, cfg),
-				// Phase 83i (D-152) / 110a (D-194) / 110d (D-197): the
-				// catalog + executor are the assembly's — the ONE
-				// promoted dispatch executor production wires.
-				catalog:         stack.Catalog,
-				executor:        core.Executor,
-				maxStepsRunLoop: cfg.Planner.MaxSteps,
-				// Phase 83m (Item 6, D-156): operator-declared scopes.
-				grantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
-				// Round-7 F11 / D-166 — multimodal input materializer.
-				artifactStore: stack.Artifacts,
-				// Phase 111e (D-202) — trajectory compression: the
-				// assembly-built runner + the operator's token budget
-				// (D-094 mirror of cmd_dev.go's projection).
-				tokenBudget: cfg.Planner.TokenBudget,
-				compression: core.Compression,
-				// Phase 84b (D-189) — the per-agent attachment
-				// disposition policy (D-094 mirror of cmd_dev.go's
-				// projection).
-				dispositionPolicy: dispositionPolicy,
-				// agent-config registry — run-start skills projection
-				// (D-094 mirror of cmd_dev.go).
-				agentConfig:   stack.AgentConfig,
-				agentConfigID: stack.AgentConfigID,
-				// session-scoped safe-subset overlay — run-start composition
-				// (D-094 mirror of cmd_dev.go).
-				sessionOverlay: stack.SessionOverlay,
-				// static run-completion hook default — the SAME shared yaml
-				// projection production applies (D-094 mirror of cmd_dev.go);
-				// resolved per run against the agent-config hooks section.
-				runCompletionHook: projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
-				// run-start reconcile detach leg (D-094 mirror of cmd_dev.go):
-				// detach a no-longer-declared MCP server before catalog
-				// projection. Nil detacher (no MCP registry) = no reconcile.
-				connectionDetacher: devstackConnectionDetacher(stack),
-				bootDeclaredMCP:    devstackBootDeclaredMCPSet(cfg),
-				// session auto-naming (D-289, D-094 mirror of cmd_dev.go): the
-				// static fleet-default policy + the session-registry titler +
-				// the run's wrapped LLM client. Opt-in, default off; resolved
-				// per run (agent-config over yaml over off).
-				namingDefault: cfg.Runtime.Naming,
-				sessionTitler: stack.Sessions,
-				namingLLM:     stack.LLMClient,
+			// The promoted per-task run-loop driver — the SAME concrete
+			// production boots (the kit's hand-mirrored copy is deleted in
+			// favor of this single home). Explicit AssembleOpts overrides win;
+			// otherwise the cfg-opened stores + the shared exported
+			// projections production uses.
+			var devDetacher projection.ConnectionDetacher
+			if stack.Catalog != nil && stack.MCPRegistry != nil {
+				devDetacher = serve.NewMCPConnectionDetacher(stack.Catalog, stack.MCPRegistry, opts.Logger)
+			}
+			driver, drvErr := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
+				Bus:                bus,
+				RunLoop:            stack.RunLoop,
+				Planner:            core.Planner,
+				Tasks:              taskReg,
+				Logger:             opts.Logger,
+				SessionOverrides:   runsStore,
+				Memory:             resolveMemoryStore(opts, stack),
+				MemoryRecall:       memory.RecallFromConfig(cfg.Memory),
+				SkillsDirectory:    skillsDir,
+				PlanningHints:      resolvePlanningHints(opts, cfg),
+				Catalog:            stack.Catalog,
+				Executor:           core.Executor,
+				MaxStepsRunLoop:    cfg.Planner.MaxSteps,
+				GrantedScopes:      append([]string(nil), cfg.Tools.GrantedScopes...),
+				ArtifactStore:      stack.Artifacts,
+				TokenBudget:        cfg.Planner.TokenBudget,
+				Compression:        core.Compression,
+				DispositionPolicy:  dispositionPolicy,
+				TenantOverrides:    tenantPolicy,
+				AgentConfig:        stack.AgentConfig,
+				AgentConfigID:      stack.AgentConfigID,
+				SessionOverlay:     stack.SessionOverlay,
+				RunCompletionHook:  projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
+				ConnectionDetacher: devDetacher,
+				BootDeclaredMCP:    serve.BootDeclaredMCPServerSet(cfg),
+				NamingDefault:      cfg.Runtime.Naming,
+				SessionTitler:      stack.Sessions,
+				NamingLLM:          stack.LLMClient,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
 			}
-			if startErr := driver.start(context.Background()); startErr != nil {
+			if startErr := driver.Start(context.Background()); startErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver start: %w", startErr)
 			}
 			stack.RunLoopDriver = driver
 			stack.RunsOverrideStore = runsStore
-			stack.closeFns = append(stack.closeFns, driver.close)
+			stack.closeFns = append(stack.closeFns, driver.Close)
 		}
 	}
 
 	// Auth. The dev signer mints an ephemeral ES256 keypair + a
 	// Bearer token under the configured identity. Skip-aware.
+	// rotateSurface backs the dev-only auth.rotate_token method — the kit now
+	// mounts it (parity with the promoted band; the mirror omitted it).
+	var rotateSurface *auth.RotateSurface
 	if !opts.SkipAuth {
 		priv, keyErr := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if keyErr != nil {
@@ -821,6 +794,13 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		stack.SigningKey = priv
 		stack.Validator = validator
+
+		rs, rsErr := auth.NewRotateSurface(&devstackTokenIssuer{priv: priv}, stack.Audit,
+			auth.WithRotateBus(bus))
+		if rsErr != nil {
+			return stack, fmt.Errorf("auth.NewRotateSurface: %w", rsErr)
+		}
+		rotateSurface = rs
 
 		tenant := opts.Identity.Tenant
 		if tenant == "" {
@@ -875,432 +855,70 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// auth is enabled). SkipTransports OR SkipSteering both leave
 	// these nil — a Mux without a Surface is meaningless.
 	if !opts.SkipTransports && !opts.SkipSteering {
-		muxOpts := []transports.Option{}
-		if stack.Validator != nil {
-			muxOpts = append(muxOpts, transports.WithValidator(stack.Validator))
-		} else {
-			// When auth is skipped but transports are not, the
-			// caller wants the wire surface without JWT validation
-			// (rare — used only by tests that compose their own
-			// auth path). The transports package exposes
-			// `WithoutValidator` for that explicit opt-out.
-			muxOpts = append(muxOpts, transports.WithoutValidator())
+		lg := opts.Logger
+		if lg == nil {
+			lg = slog.Default()
 		}
-		// The session-erasure cascade (`sessions.delete`) is wired
-		// only when every scoped store the cascade deletes is present (the
-		// SessionRegistry + State + Memory + Artifacts). The same condition
-		// drives the eraser wiring below and the CapSessionLifecycle
-		// advertisement here, so the capability is honest about the route.
-		sessionLifecycleAvailable := stack.Sessions != nil && stack.State != nil &&
-			stack.Memory != nil && stack.Artifacts != nil
-		// Phase 72f / 72g (D-111 / D-112): mirror `bootDevStack` — wire
-		// the single posture surface so all seven posture methods route
-		// through it. Governance identity-tier ENFORCEMENT is wired by
-		// the shared assembly (Phase 111a, D-198); the posture provider
-		// below is the read-only projection of the same config.
-		postureSurface, postErr := protocol.NewPostureSurface(protocol.PostureDeps{
-			Build: types.RuntimeInfo{
-				BuildVersion:   "devstack",
-				BuildCommit:    "devstack",
-				BuildGoVersion: goruntime.Version(),
-				// The host's renderable MCP App display modes — the Console
-				// reads these off runtime.info to seed the `ui/initialize`
-				// host-context `availableDisplayModes`.
-				MCPAppDisplayModes: cfg.Tools.MCPAppHostDisplayModes(),
-			},
-			Clock:    time.Now,
-			BootedAt: time.Now(),
-			Health: func(_ context.Context) []types.SubsystemHealth {
-				return runtimeposture.HealthFromConfig(cfg)
-			},
-			// §17.6 F3: Counters + Metrics wired to live runtime state —
-			// the task registry's per-identity running/background counts,
-			// the assembly's SessionRegistry (Phase 110d closes the stale
-			// nil-SessionLister drift — the kit HAS assembled a session
-			// registry since D-171), and the MetricsRegistry's bus-fed
-			// counter snapshot. Tracks the production boot field-for-field.
-			Counters: runtimeposture.CountersProvider(taskReg, stack.Sessions, stack.MCPRegistry),
-			Drivers: func() []types.SubsystemDriver {
-				return runtimeposture.DriversFromConfig(cfg)
-			},
-			Metrics:     runtimeposture.MetricsProvider(metricsReg, slog.Default()),
-			Governance:  governance.NewPostureProvider(governance.ConfigFromOperator(cfg.Governance)),
-			LLM:         llm.NewPostureProvider(llmPostureCfg),
-			Redactor:    stack.Audit,
-			Bus:         bus,
-			DisplayName: "harbor devstack",
-			InstanceID:  "harbor-devstack",
-			// Round-8 F1 / phase 84a — D-094 mirror. The devstack is
-			// planner/RunLoop-shaped (same as the production `harbor
-			// dev` boot); no engine-graph topology accessor is wired.
-			TopologyAvailable: false,
-			// The agent-config control plane is mounted below only when
-			// stack.AgentConfig != nil; advertise `agent_config` from the
-			// SAME boolean so the capability can never claim an absent
-			// surface (the agentConfigService variable does not exist yet
-			// at this construction point).
-			AgentConfigAvailable: stack.AgentConfig != nil,
-			// Advertise session_lifecycle iff the `sessions.delete` eraser
-			// is wired below.
-			SessionLifecycleAvailable: sessionLifecycleAvailable,
+
+		// The MCP-attach concrete backing agent_config.add_mcp_connection —
+		// the promoted concrete (the kit's mirror is deleted). Its Close joins
+		// the closer chain so a runtime-added subprocess drains on teardown.
+		var attacher agentcfgprotocol.ConnectionAttacher
+		if stack.Catalog != nil && stack.MCPRegistry != nil {
+			att := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, opts.Logger,
+				resolveDevIdentity(opts), stack.OAuthProviders)
+			stack.closeFns = append(stack.closeFns, att.Close)
+			attacher = att
+		}
+
+		// Single-homed Protocol surface construction + fan-out. The kit's
+		// hand-mirrored mux block is deleted in favor of this shared builder,
+		// which closes the drift the mirror carried: the kit now GAINS the
+		// agents / auth-rotate / governance-override / governance-key-rotate
+		// surfaces the mirror omitted.
+		built, bErr := serve.BuildMux(serve.MuxInput{
+			Cfg:                  cfg,
+			Surface:              stack.Surface,
+			Bus:                  bus,
+			Redactor:             stack.Audit,
+			Logger:               lg,
+			Metrics:              metricsReg,
+			LLMSnapshot:          llmPostureCfg,
+			Tasks:                stack.Tasks,
+			Sessions:             stack.Sessions,
+			Agents:               core.Agents,
+			Artifacts:            stack.Artifacts,
+			Memory:               stack.Memory,
+			Catalog:              stack.Catalog,
+			Coordinator:          stack.Coordinator,
+			MCPRegistry:          stack.MCPRegistry,
+			MCPToolContext:       stack.MCPToolContext,
+			State:                stack.State,
+			Skills:               stack.Skills,
+			AgentConfig:          stack.AgentConfig,
+			AgentConfigID:        stack.AgentConfigID,
+			SessionOverlay:       stack.SessionOverlay,
+			RunsStore:            runsStore,
+			RunLoopDriver:        stack.RunLoopDriver,
+			OAuthProviders:       stack.OAuthProviders,
+			TenantOverridePolicy: tenantPolicy,
+			KeyRotator:           core.KeyRotator,
+			ValidModels:          devstackValidModels(cfg),
+			MCPAttacher:          attacher,
+			MCPStdioAllowlist:    append([]string(nil), opts.MCPStdioAllowlist...),
+			BootDeclaredMCP:      serve.BootDeclaredMCPServerNames(cfg),
+			Validator:            stack.Validator,
+			AuthSurface:          rotateSurface,
+			DisplayName:          "harbor devstack",
+			InstanceID:           "harbor-devstack",
+			BuildVersion:         "devstack",
+			BuildCommit:          "devstack",
+			TopologyAvailable:    false,
 		})
-		if postErr != nil {
-			return stack, fmt.Errorf("protocol.NewPostureSurface: %w", postErr)
-		}
-		muxOpts = append(muxOpts, transports.WithPostureSurface(postureSurface))
-
-		// Phase 83w F6 (D-164): mount the twelve `mcp.servers.*` methods
-		// so the Console MCP Connections page renders live data. The
-		// devstack mirrors the production `cmd/harbor` boot path
-		// (CLAUDE.md §17.6 / §17.6 source-of-truth invariant — the
-		// fixture must not diverge from production). The V1 dev posture
-		// uses NoOAuthAccessor since dev typically attaches MCP without
-		// OAuth — the OAuth-binding verbs fail loud per CLAUDE.md §13
-		// while the read-only methods (list / get / resources / prompts /
-		// health) — the surface the Connections page leans on — serve
-		// real data.
-		if stack.MCPRegistry != nil {
-			mcpRegAccessor, mraErr := mcpconsole.NewRegistryAccessor(stack.MCPRegistry)
-			if mraErr != nil {
-				return stack, fmt.Errorf("mcp accessor: %w", mraErr)
-			}
-			mcpSurface, msErr := protocol.NewMCPSurface(protocol.MCPDeps{
-				MCP:      mcpRegAccessor,
-				OAuth:    mcpconsole.NewNoOAuthAccessor(),
-				Redactor: stack.Audit,
-				Bus:      bus,
-			})
-			if msErr != nil {
-				return stack, fmt.Errorf("mcp surface: %w", msErr)
-			}
-			muxOpts = append(muxOpts, transports.WithMCPSurface(mcpSurface))
+		if bErr != nil {
+			return stack, bErr
 		}
 
-		// Mount the MCP Apps host surface (`mcp.servers.read_resource`
-		// + the `mcp.apps.call_tool` proxy) for parity with the
-		// production cmd/harbor boot path (CLAUDE.md §17.6 — the fixture
-		// must not diverge from production). Without this a test routed
-		// through the devstack mux gets 404 on the Apps methods while
-		// `harbor dev` serves them.
-		//
-		// Gated on the MCP/catalog band being present (the same `MCPRegistry`
-		// signal the MCP-surface block above uses) — under `SkipCatalog` the
-		// whole band is nil and there is nothing to mount. But WHEN the band IS
-		// present, the accessor is constructed FAIL-LOUD (matching cmd_dev):
-		// the catalog band always builds the catalog + artifact store +
-		// tool-context store alongside the registry, so a nil sub-dep here is a
-		// real wiring regression, not a config choice — a per-dep silent guard
-		// would mask it and let the wave-end E2E pass against a fixture that
-		// diverges from production (CLAUDE.md §13 / §17.6).
-		if stack.MCPRegistry != nil {
-			appsAccessor, aaErr := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-				Registry:    stack.MCPRegistry,
-				Catalog:     stack.Catalog,
-				Store:       stack.Artifacts,
-				Bus:         bus,
-				ToolContext: stack.MCPToolContext,
-				// Mirror of cmd_dev.go: the app→host exposure gate reads CURRENT
-				// agent-config desired state (the planner-snapshot /
-				// app-call-current asymmetry), UNIONing the session overlay's
-				// narrow-only disables. Inert when no registry is wired.
-				AgentConfig:    stack.AgentConfig,
-				AgentID:        stack.AgentConfigID,
-				SessionOverlay: stack.SessionOverlay,
-				Threshold:      cfg.Artifacts.HeavyOutputThresholdBytes,
-			})
-			if aaErr != nil {
-				return stack, fmt.Errorf("mcp apps accessor: %w", aaErr)
-			}
-			appsSurface, asErr := protocol.NewAppsSurface(protocol.AppsDeps{
-				Resource:    appsAccessor,
-				Invoker:     appsAccessor,
-				ToolContext: appsAccessor,
-			})
-			if asErr != nil {
-				return stack, fmt.Errorf("mcp apps surface: %w", asErr)
-			}
-			muxOpts = append(muxOpts, transports.WithAppsSurface(appsSurface))
-		}
-
-		// Phase 72e: mount the `pause.list` snapshot route. The
-		// devstack mirrors the production `cmd/harbor` boot path
-		// (CLAUDE.md §17.6 — the fixture must not diverge from
-		// production) — the unified Coordinator + the artifact store +
-		// the configured heavy-content threshold are wired so the
-		// wave-end E2E exercises the real route.
-		if stack.Coordinator != nil && stack.Artifacts != nil {
-			muxOpts = append(muxOpts, transports.WithPauseList(
-				stack.Coordinator, stack.Artifacts, cfg.Artifacts.HeavyOutputThresholdBytes))
-		}
-		// Phase 73j (D-118): mount the three `memory.*` read routes for
-		// the Console Memory page. The devstack mirrors production
-		// (CLAUDE.md §17.6) — the MemoryStore + the artifact store +
-		// the heavy-content threshold are wired so the wave-end E2E
-		// exercises the real routes.
-		if stack.Memory != nil {
-			muxOpts = append(muxOpts, transports.WithMemory(stack.Memory, cfg.Memory.Driver))
-		}
-		// Phase 125: mount the `state.history` windowed event-replay
-		// route. The devstack mirrors the production `cmd/harbor` boot
-		// path (CLAUDE.md §17.6) — the durable bus + the artifact store
-		// are the same instances the runtime publishes/stores against,
-		// so the wave-end E2E exercises the real windowed read.
-		if stack.Artifacts != nil {
-			muxOpts = append(muxOpts, transports.WithStateHistory(bus, stack.Artifacts))
-		}
-		// Phase 73f: mount the `tools.*` route family. The devstack
-		// mirrors the production `cmd/harbor` boot path (CLAUDE.md
-		// §17.6) — the catalog projector is built over the same tool
-		// catalog the runtime dispatches against so the wave-end E2E
-		// exercises the real route.
-		if stack.Catalog != nil {
-			// The optional loading-mode resolver projects tools.describe's
-			// effective loading_mode through the agent-config tool-exposure
-			// overrides — mirrors the production cmd/harbor wiring
-			// (CLAUDE.md §17.6) so the wave-end E2E exercises the real seam.
-			var toolsProjectorOpts []toolsprotocol.CatalogProjectorOption
-			if stack.AgentConfig != nil {
-				toolsProjectorOpts = append(toolsProjectorOpts,
-					toolsprotocol.WithLoadingResolver(projection.LoadingResolverAdapter{Registry: stack.AgentConfig}))
-			}
-			toolsProjector, projErr := toolsprotocol.NewCatalogProjector(stack.Catalog, toolsProjectorOpts...)
-			if projErr != nil {
-				return stack, fmt.Errorf("tools/protocol projector: %w", projErr)
-			}
-			toolsService, svcErr := toolsprotocol.NewService(toolsProjector,
-				toolsprotocol.WithBus(bus),
-				toolsprotocol.WithRedactor(stack.Audit),
-			)
-			if svcErr != nil {
-				return stack, fmt.Errorf("tools/protocol service: %w", svcErr)
-			}
-			muxOpts = append(muxOpts, transports.WithToolsService(toolsService))
-		}
-		// Phase 73i (D-117): mount the six Console Flows-page routes.
-		// The devstack mirrors the production `cmd/harbor` boot path
-		// (CLAUDE.md §17.6) — an empty flow.Registry + the real
-		// artifact store + the configured heavy-content threshold are
-		// wired so the wave-end E2E exercises the real routes.
-		if stack.Artifacts != nil && stack.Tasks != nil {
-			flowRegistry := flow.NewRegistry()
-			flowCatalog, fcErr := flowprotocol.NewRegistryCatalog(
-				flowRegistry, stack.Artifacts, cfg.Artifacts.HeavyOutputThresholdBytes)
-			if fcErr != nil {
-				return stack, fmt.Errorf("flow protocol catalog: %w", fcErr)
-			}
-			taskReg := stack.Tasks
-			flowInvoker, fiErr := flowprotocol.NewFuncInvoker(
-				func(launchCtx context.Context, id identity.Identity, flowID string, _ map[string]any) (string, time.Time, error) {
-					runCtx, rerr := identity.WithRun(launchCtx, id, "flow-run-"+flowID)
-					if rerr != nil {
-						return "", time.Time{}, fmt.Errorf("flows.run: identity scope incomplete: %w", rerr)
-					}
-					handle, serr := taskReg.SpawnTool(runCtx, tasks.SpawnToolRequest{
-						Identity:    identity.Quadruple{Identity: id},
-						ToolName:    flowID,
-						Description: "Console flows.run invocation of " + flowID,
-					})
-					if serr != nil {
-						return "", time.Time{}, fmt.Errorf("flows.run: spawn failed: %w", serr)
-					}
-					return string(handle.ID), time.Now(), nil
-				}, flowRegistry)
-			if fiErr != nil {
-				return stack, fmt.Errorf("flow protocol invoker: %w", fiErr)
-			}
-			flowsSurface, fsErr := flowprotocol.NewSurface(flowCatalog, flowInvoker)
-			if fsErr != nil {
-				return stack, fmt.Errorf("flow protocol surface: %w", fsErr)
-			}
-			muxOpts = append(muxOpts, transports.WithFlows(flowsSurface))
-		}
-		// Phase 73d (D-123): mount the two Console Tasks-page read
-		// routes. The devstack mirrors the production `cmd/harbor` boot
-		// path (CLAUDE.md §17.6) — the registry projector is built over
-		// the same TaskRegistry the runtime drives so the wave-end E2E
-		// exercises the real routes.
-		if stack.Tasks != nil {
-			// Phase 107a parity (D-195 dated-note follow-up): mirror the
-			// production `cmd/harbor` boot path — the Enricher projects the
-			// run-loop driver's per-task trajectory map onto `tasks.get`
-			// reads. Only wired when the assembly produced a driver
-			// (SkipRunLoop / no-planner stacks read un-enriched tasks,
-			// same as a production boot without a run loop).
-			var projectorOpts []tasksprotocol.RegistryProjectorOption
-			if stack.RunLoopDriver != nil {
-				projectorOpts = append(projectorOpts,
-					tasksprotocol.WithEnricher(&devStackEnricher{
-						trajectoryFn: stack.RunLoopDriver.TrajectoryByTaskID,
-					}))
-			}
-			tasksProjector, tpErr := tasksprotocol.NewRegistryProjector(stack.Tasks, projectorOpts...)
-			if tpErr != nil {
-				return stack, fmt.Errorf("tasks/protocol projector: %w", tpErr)
-			}
-			tasksService, tsErr := tasksprotocol.NewService(tasksProjector,
-				tasksprotocol.WithBus(bus),
-				tasksprotocol.WithRedactor(stack.Audit),
-			)
-			if tsErr != nil {
-				return stack, fmt.Errorf("tasks/protocol service: %w", tsErr)
-			}
-			muxOpts = append(muxOpts, transports.WithTasksService(tasksService))
-		}
-		// D-171: mount the two `sessions.*` Console routes over the
-		// SessionRegistry so an integration test exercises the real
-		// sessions.list / sessions.inspect path (create-on-first-use,
-		// listing, restart re-discovery). Mirrors production
-		// `cmd/harbor/cmd_dev.go::bootDevStack`.
-		if stack.Sessions != nil {
-			sessionsProjector, spErr := sessionsprotocol.NewListerProjector(stack.Sessions)
-			if spErr != nil {
-				return stack, fmt.Errorf("sessions/protocol projector: %w", spErr)
-			}
-			sessionsOpts := []sessionsprotocol.Option{
-				sessionsprotocol.WithBus(bus),
-				sessionsprotocol.WithRedactor(stack.Audit),
-				// sessions.set_title (D-288) only needs the registry
-				// itself — wired unconditionally within this
-				// `stack.Sessions != nil` block, mirroring production
-				// cmd/harbor/cmd_dev.go::bootDevStack.
-				sessionsprotocol.WithTitleSetter(stack.Sessions),
-			}
-			// Wire the session-erasure cascade (`sessions.delete`)
-			// over the real scoped stores when all are present, so an
-			// integration test exercises the full three-store erasure path.
-			// Mirrors production `cmd/harbor/cmd_dev.go::bootDevStack`.
-			if sessionLifecycleAvailable {
-				eraser, eErr := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-					Registry:  stack.Sessions,
-					State:     stack.State,
-					Memory:    stack.Memory,
-					Artifacts: stack.Artifacts,
-					Bus:       bus,
-					Redactor:  stack.Audit,
-				})
-				if eErr != nil {
-					return stack, fmt.Errorf("sessions/protocol eraser: %w", eErr)
-				}
-				sessionsOpts = append(sessionsOpts, sessionsprotocol.WithEraser(eraser))
-			}
-			sessionsService, ssErr := sessionsprotocol.NewService(sessionsProjector, sessionsOpts...)
-			if ssErr != nil {
-				return stack, fmt.Errorf("sessions/protocol service: %w", ssErr)
-			}
-			muxOpts = append(muxOpts, transports.WithSessionsService(sessionsService))
-		}
-		// Phase 72c (D-108) + Phase 73l (D-120) parity: mount the five
-		// `search.*` methods and the artifacts surface. Production
-		// `cmd/harbor/cmd_dev.go::bootDevStack` wires both at mux
-		// construction; the devstack previously omitted them — a
-		// tests-track-production gap the §17.5 Protocol-track audit's
-		// Auth-column probe surfaced (CLAUDE.md §17.6).
-		if stack.Artifacts != nil {
-			artDriverName := cfg.Artifacts.Driver
-			if artDriverName == "" {
-				artDriverName = "inmem"
-			}
-			artifactsSurface, asErr := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
-				Store:        stack.Artifacts,
-				Redactor:     stack.Audit,
-				Bus:          bus,
-				Clock:        time.Now,
-				DriverName:   artDriverName,
-				MaxBodyBytes: cfg.Protocol.ResolvedMaxRequestBytes(),
-			})
-			if asErr != nil {
-				return stack, fmt.Errorf("protocol artifacts surface: %w", asErr)
-			}
-			muxOpts = append(muxOpts, transports.WithArtifactsSurface(artifactsSurface))
-		}
-		if stack.Sessions != nil && stack.Tasks != nil && stack.Artifacts != nil {
-			searchDeps := search.Deps{Redactor: stack.Audit, AdminScope: server.SearchAdminScopeFromAuth}
-			searchSessions, seErr := searchsessions.New(stack.Sessions, searchDeps)
-			if seErr != nil {
-				return stack, fmt.Errorf("search sessions: %w", seErr)
-			}
-			searchTasks, seErr := searchtasks.New(stack.Sessions, stack.Tasks, searchDeps)
-			if seErr != nil {
-				return stack, fmt.Errorf("search tasks: %w", seErr)
-			}
-			searchArtifacts, seErr := searchartifacts.New(stack.Artifacts, searchDeps)
-			if seErr != nil {
-				return stack, fmt.Errorf("search artifacts: %w", seErr)
-			}
-			searchers := []search.Searcher{searchSessions, searchTasks, searchArtifacts}
-			if replayer, ok := bus.(events.Replayer); ok {
-				searchEvents, seErr2 := searchevents.New(replayer, searchDeps)
-				if seErr2 != nil {
-					return stack, fmt.Errorf("search events: %w", seErr2)
-				}
-				searchers = append(searchers, searchEvents)
-			}
-			searchRegistry, srErr := search.NewRegistry(searchers...)
-			if srErr != nil {
-				return stack, fmt.Errorf("search registry: %w", srErr)
-			}
-			searchSurface, ssErr := protocol.NewSearchSurface(searchRegistry, server.SearchAdminScopeFromAuth)
-			if ssErr != nil {
-				return stack, fmt.Errorf("search surface: %w", ssErr)
-			}
-			muxOpts = append(muxOpts, transports.WithSearch(searchSurface))
-		}
-		// Phase 73n (D-130) / 92b (D-232): mount the Console Playground-page
-		// route (`runs.set_overrides`) over the SAME `runsStore` the
-		// run-loop driver Consumes from (created at function scope above) —
-		// so a recorded session override actually reaches the next run, not
-		// a void. WithValidModels rejects an unknown session model swap at
-		// set time (fail loud, mirroring the tenant layer + cmd/harbor).
-		runsService, rsErr := runsprotocol.NewService(runsStore,
-			runsprotocol.WithBus(bus),
-			runsprotocol.WithRedactor(stack.Audit),
-			runsprotocol.WithValidModels(devstackValidModels(cfg)),
-		)
-		if rsErr != nil {
-			return stack, fmt.Errorf("runs/protocol service: %w", rsErr)
-		}
-		muxOpts = append(muxOpts, transports.WithRunsService(runsService))
-		// Mount the admin-scoped agent-config control-plane routes
-		// (`POST /v1/agent_config/*`) over the SAME registry the run-loop
-		// driver projects at run start (D-094 mirror of cmd/harbor) — so a
-		// skills edit through the mounted route reaches the next run.
-		if stack.AgentConfig != nil {
-			agentConfigOpts := []agentcfgprotocol.Option{
-				agentcfgprotocol.WithSkillStore(stack.Skills),
-				agentcfgprotocol.WithBus(bus),
-				agentcfgprotocol.WithCoordinator(stack.Coordinator),
-				agentcfgprotocol.WithStdioAllowlist(append([]string(nil), opts.MCPStdioAllowlist...)),
-				// session-safe lower tier (non-admin): the overlay store backs
-				// the `agent_config.session.*` verbs (D-094 mirror of cmd/harbor).
-				agentcfgprotocol.WithSessionOverlay(stack.SessionOverlay),
-				// the configured ModelProfiles gate set_llm_params (D-094 mirror
-				// of cmd/harbor): a per-agent model pin is validated at set time.
-				agentcfgprotocol.WithValidModels(devstackValidModels(cfg)),
-				// boot-declared (yaml) MCP servers the remove verb rejects and
-				// the run-start reconcile never detaches (D-094 mirror).
-				agentcfgprotocol.WithBootDeclaredMCPServers(devstackBootDeclaredMCPNames(cfg)),
-			}
-			// the runtime MCP-attach concrete (D-094 mirror of cmd/harbor's
-			// devMCPConnectionAttacher) drives the real dial → initialize →
-			// discover → register lifecycle for an admin add of a NEW MCP
-			// connection against the LIVE catalog + registry + bus. Built only
-			// when the catalog band is present.
-			if stack.Catalog != nil && stack.MCPRegistry != nil {
-				attacher := NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, nil,
-					resolveDevIdentity(opts), stack.OAuthProviders)
-				stack.closeFns = append(stack.closeFns, attacher.Close)
-				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(attacher))
-			}
-			agentConfigService, acErr := agentcfgprotocol.NewService(stack.AgentConfig, agentConfigOpts...)
-			if acErr != nil {
-				return stack, fmt.Errorf("agent-config/protocol service: %w", acErr)
-			}
-			muxOpts = append(muxOpts, transports.WithAgentConfigService(agentConfigService))
-		}
-		mux, muxErr := transports.NewMux(stack.Surface, bus, muxOpts...)
-		if muxErr != nil {
-			return stack, fmt.Errorf("transports.NewMux: %w", muxErr)
-		}
 		router := http.NewServeMux()
 		router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -1314,15 +932,8 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			//nolint:errcheck // readiness-probe response write; a failure is non-actionable
 			_, _ = w.Write([]byte(`{"status":"ready"}`))
 		})
-		// Phase 66 / D-100 — mirror production: mount the draft
-		// handler at devdraft.RoutePrefix under the same auth
-		// middleware as the Protocol mux. The handler is registered
-		// BEFORE the /v1/ catch-all so Go's longest-prefix-match
-		// routes /v1/dev/drafts/* to the draft handler. The DraftStore
-		// is always constructed (the helper carries the same shape
-		// production does — D-094 source-of-truth invariant); when
-		// SkipAuth is set, the draft handler is mounted bare so tests
-		// can inject identity themselves.
+		// Draft handler — mounted under the same auth middleware as the
+		// Protocol mux (bare when SkipAuth so tests inject identity themselves).
 		if stack.DraftStore != nil {
 			draftHandler, dErr := devdraft.NewHandler(stack.DraftStore, nil)
 			if dErr != nil {
@@ -1330,11 +941,6 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			var mounted http.Handler = draftHandler
 			if stack.Validator != nil {
-				// D-094 mirror: production threads opts.logger via
-				// auth.MWLogger so auth-rejection lines show up in
-				// operator logs. The helper threads opts.Logger when
-				// non-nil; nil is the silent-rejection test default
-				// (audit W2).
 				var mwOpts []auth.MiddlewareOption
 				if opts.Logger != nil {
 					mwOpts = append(mwOpts, auth.MWLogger(opts.Logger))
@@ -1343,30 +949,17 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			router.Handle(devdraft.RoutePrefix+"/", mounted)
 		}
-		// Phase 111b (D-199) — mirror production: mount the tool-OAuth
-		// callback endpoint over the SAME Stack.OAuthProviders the
-		// assembly's catalog band produced (thin-caller parity per
-		// 110d / D-197). Mounted WITHOUT auth middleware by design —
-		// the provider redirect carries no Harbor JWT; the one-time
-		// `state` nonce is the capability and the handler restores
-		// identity from the provider's own flow record. Registered
-		// BEFORE the /v1/ catch-all so the exact match wins.
+		// Tool-OAuth callback endpoint — mounted WITHOUT auth middleware (the
+		// one-time state nonce is the capability). Registered before the /v1/
+		// catch-all so the exact match wins.
 		var cbOpts []toolauth.CallbackOption
 		if opts.Logger != nil {
 			cbOpts = append(cbOpts, toolauth.WithCallbackLogger(opts.Logger))
 		}
 		router.Handle(toolauth.CallbackRoutePattern,
 			toolauth.CallbackHandler(stack.OAuthProviders, cbOpts...))
-		router.Handle("/v1/", mux)
+		router.Handle("/v1/", built.Mux)
 		stack.Mux = router
-		// Phase 83v (D-162) — CORS middleware. D-094 source-of-truth
-		// invariant: devstack tracks the production `bootDevStack` field-
-		// for-field. The middleware wraps the WHOLE router so every
-		// surface is reachable cross-origin from an allowed Console origin
-		// (or any origin when CORSDevAllowAny is set). Empty allowlist +
-		// CORSDevAllowAny=false is the default-deny posture — the
-		// middleware passes through with no CORS headers (the pre-83v
-		// behavior).
 		stack.Handler = cors.Wrap(router, cors.Config{
 			AllowedOrigins: append([]string(nil), cfg.Server.AllowedOrigins...),
 			DevAllowAny:    cfg.Server.CORSDevAllowAny,
@@ -1442,936 +1035,35 @@ func resolvePlanningHints(opts AssembleOpts, cfg *config.Config) *planner.Planni
 	return planner.HintsFromConfig(cfg.Planner.PlanningHints)
 }
 
-// DevStackRunLoopDriver mirrors `cmd/harbor`'s package-private
-// `perTaskRunLoopDriver`. The duplication is intentional per D-094's
-// source-of-truth invariant: both ship the same shape (subscribe to
-// `task.spawned`, launch a goroutine per spawned foreground task,
-// drive the planner via `RunLoop.Run`, drain on Close). When the
-// production shape evolves, both move in the same PR.
-//
-// The driver is exported as a pointer-shaped opaque type — tests
-// inspect via the `RunLoop` field rather than reaching into the
-// driver's internals.
-type DevStackRunLoopDriver struct {
-	bus     events.EventBus
-	runLoop *steering.RunLoop
-	planner planner.Planner
-	tasks   tasks.TaskRegistry // D-098: the FSM the driver advances on Run exit
-	logger  *slog.Logger       // audit N5: opt-in; matches production's Warn logging when supplied
-
-	// Phase 83f (D-149) per-run consumer wiring — mirrors the
-	// production driver's matching fields. Optional; nil = no
-	// projection (the planner omits the corresponding wrapper).
-	// Phase 111d (D-201): the skills surface is the Phase-39
-	// Directory (the `<skills_context>` producer), mirroring
-	// production's swap off raw SkillStore.Search.
-	memory          memory.MemoryStore
-	memoryRecall    memory.RecallSettings
-	skillsDirectory *skills.Directory
-	planningHints   *planner.PlanningHints
-
-	// Phase 83i (D-152) — tool dispatch + Catalog projection.
-	catalog         tools.ToolCatalog
-	executor        steering.ToolExecutor
-	maxStepsRunLoop int
-
-	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
-	grantedScopes []string
-
-	// Round-7 F11 / D-166 — artifact store for multimodal materializer.
-	artifactStore artifacts.ArtifactStore
-
-	// Phase 111e (D-202) — trajectory compression projection, the
-	// D-094 mirror of the production driver's fields.
-	tokenBudget int
-	compression *planner.CompressionRunner
-
-	// Phase 84b (D-189) — per-agent attachment disposition policy
-	// (D-094 mirror of the production driver's field).
-	dispositionPolicy planner.DispositionPolicy
-
-	// admin-set tenant-default LLM override resolver — the D-094 mirror
-	// of the production driver's field. OPTIONAL (nil = no overrides);
-	// the kit does not construct a governance policy by default, so this
-	// stays nil and the run uses agent/config defaults, but the SHAPE
-	// tracks production so the mirror does not drift.
-	tenantOverrides devStackTenantOverrideResolver
-
-	// session-level pending-override Store — Consumed (one-shot) at run
-	// start and composed OVER the tenant default (session › tenant ›
-	// config), the D-094 mirror of the production driver. It is the SAME
-	// Store the devstack's runs Service writes into, so a
-	// runs.set_overrides through the mounted route reaches the run.
-	sessionOverrides *runsprotocol.Store
-
-	// agent-config registry + the agent's registration id, read once at run
-	// start to project the active skills-set (D-094 mirror of the
-	// production driver). Nil = no projection.
-	agentConfig   agentcfg.Registry
-	agentConfigID string
-
-	// session-scoped safe-subset overlay store (D-094 mirror of production):
-	// the session user layer + narrow-only disables + personal skills,
-	// composed over the admin agent config at run start. Nil = none.
-	sessionOverlay sessionoverlay.Store
-
-	// static run-completion hook default (the twin of the production
-	// driver's `runtime.hooks.run_completion`); nil when unset. Resolved
-	// per run against the agent-config hooks section (D-094 mirror).
-	runCompletionHook *steering.CompletionHookSpec
-
-	// run-start reconcile detach leg (D-094 mirror): detach an MCP server the
-	// agent's active revision no longer declares before the catalog is
-	// projected. connectionDetacher is nil when no MCP registry is present.
-	connectionDetacher projection.ConnectionDetacher
-	bootDeclaredMCP    map[string]struct{}
-
-	// session auto-naming wiring (D-289, D-094 mirror of production): the
-	// static fleet-default policy, the session-registry titler seam, and the
-	// run's wrapped LLM client. Any nil = no auto-naming (opt-in, default off).
-	namingDefault config.RuntimeNamingConfig
-	sessionTitler steering.SessionTitler
-	namingLLM     steering.NamingCompleter
-
-	// Phase 107a parity (D-195 dated-note follow-up) — per-task
-	// trajectory map for the Enricher seam, the D-094 mirror of the
-	// production driver. Trajectories are stored before RunLoop.Run
-	// and retained after completion for tasks.get enrichment. Reads
-	// are safe under RLock; writes acquire the full mutex. An evicted
-	// task returns nil.
-	trajMu       sync.RWMutex
-	trajectories map[tasks.TaskID]*planner.Trajectory
-
-	subCtx     context.Context
-	subCancel  context.CancelFunc
-	sub        events.Subscription
-	subLoopWG  sync.WaitGroup
-	runsWG     sync.WaitGroup
-	started    bool
-	closedOnce sync.Once
-}
-
-type devStackRunLoopDriverOpts struct {
-	bus     events.EventBus
-	runLoop *steering.RunLoop
-	planner planner.Planner
-	tasks   tasks.TaskRegistry
-	logger  *slog.Logger // optional; when non-nil, Mark* failures log Warn (matches production)
-
-	// Phase 83f (D-149): per-run consumer wiring. See production
-	// `perTaskRunLoopDriverOpts` godoc. Phase 111d (D-201): the
-	// skills surface is the Directory.
-	memory          memory.MemoryStore
-	memoryRecall    memory.RecallSettings
-	skillsDirectory *skills.Directory
-	planningHints   *planner.PlanningHints
-
-	// Phase 83i (D-152): tool dispatch + Catalog projection +
-	// Trajectory wiring. Optional; nil catalog ⇒ planner sees no
-	// tools, nil executor ⇒ CallTool decisions get appended with no
-	// observation. Tests that need full end-to-end pass real values.
-	catalog         tools.ToolCatalog
-	executor        steering.ToolExecutor
-	maxStepsRunLoop int
-
-	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
-	grantedScopes []string
-
-	// Round-7 F11 / D-166 — artifact store for multimodal materializer.
-	artifactStore artifacts.ArtifactStore
-
-	// Phase 111e (D-202) — trajectory compression: the per-run token
-	// budget + the assembly-built runner. Zero/nil = compression off.
-	tokenBudget int
-	compression *planner.CompressionRunner
-
-	// Phase 84b (D-189) — per-agent attachment disposition policy.
-	dispositionPolicy planner.DispositionPolicy
-
-	// admin-set tenant-default LLM override resolver (D-094 mirror).
-	tenantOverrides devStackTenantOverrideResolver
-
-	// session-level pending-override Store (D-094 mirror).
-	sessionOverrides *runsprotocol.Store
-
-	// agent-config registry + agent id (D-094 mirror of production).
-	agentConfig   agentcfg.Registry
-	agentConfigID string
-
-	// session-scoped safe-subset overlay store (D-094 mirror of production).
-	sessionOverlay sessionoverlay.Store
-
-	// static run-completion hook default (D-094 mirror); nil when unset.
-	runCompletionHook *steering.CompletionHookSpec
-
-	// run-start reconcile detach leg (D-094 mirror). connectionDetacher is nil
-	// when the stack has no MCP registry; bootDeclaredMCP is the yaml-declared
-	// server set the reconcile never detaches.
-	connectionDetacher projection.ConnectionDetacher
-	bootDeclaredMCP    map[string]struct{}
-
-	// session auto-naming wiring (D-289, D-094 mirror of production).
-	namingDefault config.RuntimeNamingConfig
-	sessionTitler steering.SessionTitler
-	namingLLM     steering.NamingCompleter
-}
-
-// devStackTenantOverrideResolver mirrors cmd/harbor's
-// tenantOverrideResolver — the narrow read seam the run loop uses to
-// resolve an admin-set tenant default at run start.
-type devStackTenantOverrideResolver interface {
-	Get(ctx context.Context, tenant string) (governance.TenantOverrideSpec, bool, error)
-}
-
-func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
-	if opts.bus == nil {
-		return nil, fmt.Errorf("devstack RunLoop driver: bus is nil")
+// resolveDevIdentity resolves the dev identity triple from AssembleOpts,
+// substituting the package defaults.
+func resolveDevIdentity(opts AssembleOpts) identity.Identity {
+	tenant := opts.Identity.Tenant
+	if tenant == "" {
+		tenant = DefaultDevTenant
 	}
-	if opts.runLoop == nil {
-		return nil, fmt.Errorf("devstack RunLoop driver: runLoop is nil")
+	user := opts.Identity.User
+	if user == "" {
+		user = DefaultDevUser
 	}
-	if opts.planner == nil {
-		return nil, fmt.Errorf("devstack RunLoop driver: planner is nil")
+	session := opts.Identity.Session
+	if session == "" {
+		session = DefaultDevSession
 	}
-	if opts.tasks == nil {
-		return nil, fmt.Errorf("devstack RunLoop driver: tasks is nil")
-	}
-	return &DevStackRunLoopDriver{
-		bus:             opts.bus,
-		runLoop:         opts.runLoop,
-		planner:         opts.planner,
-		tasks:           opts.tasks,
-		logger:          opts.logger,
-		memory:          opts.memory,
-		memoryRecall:    opts.memoryRecall,
-		skillsDirectory: opts.skillsDirectory,
-		planningHints:   opts.planningHints,
-		catalog:         opts.catalog,
-		executor:        opts.executor,
-		maxStepsRunLoop: opts.maxStepsRunLoop,
-		grantedScopes:   append([]string(nil), opts.grantedScopes...),
-		artifactStore:   opts.artifactStore,
-		tokenBudget:     opts.tokenBudget,
-		compression:     opts.compression,
-		// Phase 84b (D-189) — disposition policy passthrough.
-		dispositionPolicy:  opts.dispositionPolicy,
-		tenantOverrides:    opts.tenantOverrides,
-		sessionOverrides:   opts.sessionOverrides,
-		agentConfig:        opts.agentConfig,
-		agentConfigID:      opts.agentConfigID,
-		sessionOverlay:     opts.sessionOverlay,
-		runCompletionHook:  opts.runCompletionHook,
-		connectionDetacher: opts.connectionDetacher,
-		bootDeclaredMCP:    opts.bootDeclaredMCP,
-		namingDefault:      opts.namingDefault,
-		sessionTitler:      opts.sessionTitler,
-		namingLLM:          opts.namingLLM,
-		trajectories:       make(map[tasks.TaskID]*planner.Trajectory),
-	}, nil
+	return identity.Identity{TenantID: tenant, UserID: user, SessionID: session}
 }
 
-// projectAgentConfigSkills mirrors the production driver's run-start
-// agent-config skills projection (D-094): it calls the SAME shared
-// projection function the production driver uses, so the two binaries
-// cannot drift (CLAUDE.md §17.6).
-func (d *DevStackRunLoopDriver) projectAgentConfigSkills(ctx context.Context, q identity.Quadruple, views []skills.SkillView) ([]skills.SkillView, error) {
-	return projection.ActiveSkillViews(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, views)
+// devstackTokenIssuer implements auth.TokenIssuer for the kit's dev-only
+// auth.rotate_token surface. It re-mints an ES256 token for the verified
+// identity using the same ephemeral key the validator trusts.
+type devstackTokenIssuer struct {
+	priv *ecdsa.PrivateKey
 }
 
-// projectAgentConfigCatalog mirrors the production driver's run-start
-// agent-config tool-exposure projection (D-094): the SAME shared projection
-// excludes a paused MCP server's tools / disabled tools from the run's view.
-func (d *DevStackRunLoopDriver) projectAgentConfigCatalog(ctx context.Context, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
-	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, d.catalog, filter)
-}
-
-// projectAgentConfigPromptLayers overlays the agent's durable layered system
-// prompt resolved from the active config onto the run's resolved override
-// bundle at run start, via the SAME shared projection the production driver
-// uses (D-094 mirror, CLAUDE.md §17.6).
-func (d *DevStackRunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
-	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, d.agentConfigID, q, ov)
-}
-
-// projectRunCompletionHook resolves the effective run-completion hook for
-// this run at run start via the SAME shared projection the production driver
-// uses (D-094 mirror, CLAUDE.md §17.6): agent-config `hooks` section over the
-// static yaml default over none. Next-turn-only.
-func (d *DevStackRunLoopDriver) projectRunCompletionHook(ctx context.Context, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
-	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, d.agentConfigID, q, d.runCompletionHook)
-	return hook, err
-}
-
-// projectNaming resolves the effective session auto-naming spec for this run
-// at run start via the SAME shared projection the production driver uses
-// (D-094 mirror, CLAUDE.md §17.6): agent-config `naming` section over the
-// static `runtime.naming` yaml over off. Returns nil when no policy is active
-// OR the naming dependencies are not wired (opt-in, default off). Next-turn.
-func (d *DevStackRunLoopDriver) projectNaming(ctx context.Context, q identity.Quadruple, ov *planner.LLMOverrides) (*steering.NamingSpec, error) {
-	if d.sessionTitler == nil || d.namingLLM == nil {
-		return nil, nil
-	}
-	res, active, err := projection.ActiveNamingPolicy(ctx, d.agentConfig, d.agentConfigID, q, d.namingDefault)
+func (i *devstackTokenIssuer) IssueToken(_ context.Context, id identity.Identity, _ []auth.Scope, now time.Time) (string, time.Time, error) {
+	token, err := signDevToken(i.priv, id.TenantID, id.UserID, id.SessionID)
 	if err != nil {
-		return nil, err
+		return "", time.Time{}, err
 	}
-	if !active {
-		return nil, nil
-	}
-	model := res.Model
-	if model == "" && ov != nil && ov.Model != nil {
-		model = *ov.Model
-	}
-	return &steering.NamingSpec{
-		Policy: res.Policy,
-		Titler: d.sessionTitler,
-		LLM:    d.namingLLM,
-		Model:  model,
-	}, nil
-}
-
-// reconcileConnections mirrors the production driver's run-start reconcile
-// detach leg (D-094, CLAUDE.md §17.6): it detaches every MCP server attached
-// but no longer declared by the agent's active config revision before the
-// catalog is projected. Exposure correctness is next-turn and independent of
-// teardown; teardown is process-global — a different session's in-flight run
-// calling the detached server fails LOUDLY (typed catalog not-found / closed
-// transport), never a hang (see the projection.ReconcileConnections godoc).
-// A reconcile error is logged loud but does not fail the run (detach is
-// teardown hygiene). Shared verbatim with production via the projection
-// package.
-func (d *DevStackRunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
-	if d.connectionDetacher == nil {
-		return
-	}
-	detached, err := projection.ReconcileConnections(ctx, d.agentConfig, d.agentConfigID, q, d.connectionDetacher, d.bootDeclaredMCP)
-	if err != nil {
-		if d.logger != nil {
-			d.logger.ErrorContext(ctx, "devstack: run-start MCP reconcile detach failed",
-				slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
-		}
-		return
-	}
-	if detached > 0 && d.logger != nil {
-		d.logger.InfoContext(ctx, "devstack: run-start MCP reconcile detached servers",
-			slog.String("agent_id", d.agentConfigID), slog.Int("detached", detached))
-	}
-}
-
-func (d *DevStackRunLoopDriver) start(ctx context.Context) error {
-	if d.started {
-		return nil
-	}
-	d.subCtx, d.subCancel = context.WithCancel(context.Background())
-	sub, err := d.bus.Subscribe(d.subCtx, events.Filter{
-		Admin: true,
-		Types: []events.EventType{tasks.EventTypeTaskSpawned},
-	})
-	if err != nil {
-		d.subCancel()
-		return fmt.Errorf("subscribe(task.spawned): %w", err)
-	}
-	d.sub = sub
-	d.started = true
-
-	// Anchor subCtx to the supplied ctx so a stack teardown that
-	// cancels the boot ctx propagates into the driver.
-	go func() {
-		select {
-		case <-ctx.Done():
-			d.subCancel()
-		case <-d.subCtx.Done():
-		}
-	}()
-
-	d.subLoopWG.Add(1)
-	go d.subscribeLoop()
-	return nil
-}
-
-func (d *DevStackRunLoopDriver) subscribeLoop() {
-	defer d.subLoopWG.Done()
-	for ev := range d.sub.Events() {
-		d.handleEvent(ev)
-	}
-}
-
-func (d *DevStackRunLoopDriver) handleEvent(ev events.Event) {
-	payload, ok := ev.Payload.(tasks.TaskSpawnedPayload)
-	if !ok {
-		return
-	}
-	if payload.Kind != tasks.KindForeground {
-		return
-	}
-	q := identity.Quadruple{
-		Identity: ev.Identity.Identity,
-		RunID:    string(payload.TaskID),
-	}
-	if err := identity.Validate(q.Identity); err != nil {
-		return
-	}
-	d.runsWG.Add(1)
-	go func() {
-		defer d.runsWG.Done()
-		d.runOne(q, payload.TaskID)
-	}()
-}
-
-// runOne mirrors cmd/harbor/cmd_dev_runloop.go::perTaskRunLoopDriver.
-// runOne (D-098). The helper is a 1:1 reflection of the production
-// bridge per D-094's source-of-truth invariant: integration tests
-// must observe the same FSM transitions production observes.
-//
-// The bridge advances the task FSM Pending → Running → {Complete,
-// Failed} based on the RunLoop's exit shape. See the production
-// implementation's docstring for the full Reason → Mark* mapping.
-// Errors from Mark* are silently dropped here (the helper does not
-// hold a slog.Logger; production's bridge logs Warn instead): a Mark*
-// failure post-Run is benign for the helper because the test asserts
-// on the FSM state directly, not on driver logs.
-func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
-	taskCtx, idErr := identity.With(d.subCtx, q.Identity)
-	if idErr != nil {
-		return
-	}
-	if err := d.tasks.MarkRunning(taskCtx, taskID); err != nil {
-		// Pending → Running failed (raced with Cancel, or registry
-		// unhealthy). Skip Run — the eventual terminal Mark* would
-		// fail too. Match production's logging when a logger was
-		// supplied (audit N5; D-094 helper-tracks-production).
-		if d.logger != nil {
-			d.logger.Warn("devstack runloop: MarkRunning failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", err.Error()))
-		}
-		return
-	}
-
-	// Run-start reconciliation (detach leg, D-094 mirror): detach any MCP
-	// server the agent's active revision no longer declares before the catalog
-	// is projected. Exposure is next-turn; teardown is process-global (an
-	// in-flight run calling a detached server fails loud — see the wrapper doc).
-	d.reconcileConnections(taskCtx, q)
-
-	// Phase 83f (D-149) — mirror the production runOne's per-run
-	// consumer wiring. Same fail-loud semantics: a memory or skills
-	// fetch error fails the run with `runtime_fetch_error` and the LLM
-	// is never called. The implementation mirrors
-	// cmd/harbor/cmd_dev_runloop.go::perTaskRunLoopDriver.runOne.
-	task, gErr := d.tasks.Get(taskCtx, taskID)
-	if gErr != nil {
-		if d.logger != nil {
-			d.logger.Warn("devstack runloop: tasks.Get failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", gErr.Error()))
-		}
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-			Code:    "runtime_fetch_error",
-			Message: fmt.Sprintf("tasks.Get: %v", gErr),
-		}); mErr != nil && d.logger != nil {
-			d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", mErr.Error()))
-		}
-		return
-	}
-
-	// Compile the per-task output schema ONCE at run start (D-094 mirror
-	// of cmd/harbor/cmd_dev_runloop.go). A compile failure fails the run
-	// LOUD with the output_invalid terminal code — the LLM is never
-	// called on a degraded run (§13). Nil for the common schemaless task.
-	var compiledSchema *planner.OutputSchemaValidator
-	if len(task.OutputSchema) > 0 {
-		cs, cErr := planner.CompileOutputSchema(task.OutputSchema)
-		if cErr != nil {
-			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    planner.TaskErrorCodeOutputInvalid,
-				Message: "output-schema compile failed: " + cErr.Error(),
-			}); mErr != nil && d.logger != nil {
-				d.logger.Warn("devstack runloop: MarkFailed(output_invalid) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", mErr.Error()))
-			}
-			return
-		}
-		compiledSchema = cs
-	}
-
-	// Memory + skills are session-scoped (D-149) — see the production
-	// driver for the rationale. The fetch quadruple zeroes RunID.
-	sessionQ := identity.Quadruple{Identity: q.Identity}
-	var memBlocks *planner.MemoryBlocks
-	if d.memory != nil {
-		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall, d.logger)
-		if mErr != nil {
-			if d.logger != nil {
-				d.logger.Warn("devstack runloop: FetchMemoryBlocks failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", mErr.Error()))
-			}
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    "runtime_fetch_error",
-				Message: fmt.Sprintf("FetchMemoryBlocks: %v", mErr),
-			}); fErr != nil && d.logger != nil {
-				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", fErr.Error()))
-			}
-			return
-		}
-		memBlocks = mb
-	}
-
-	var skillsCtx []any
-	if d.skillsDirectory != nil {
-		// Phase 111d (D-201) — mirror the production runloop: the
-		// Phase-39 Directory view (pinned-then-recent, identity-
-		// scoped, capability-filtered, redacted) is the
-		// `<skills_context>` producer; the keyword-shaped raw-Search
-		// path is deleted (executing the D-195 deprecation notice).
-		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{
-			AllowedTools: tools.VisibleNames(d.catalog, tools.CatalogFilter{
-				TenantID:      q.TenantID,
-				UserID:        q.UserID,
-				SessionID:     q.SessionID,
-				GrantedScopes: d.grantedScopes,
-			}),
-		})
-		if sErr != nil {
-			if d.logger != nil {
-				d.logger.Warn("devstack runloop: skills Directory.View failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", sErr.Error()))
-			}
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    "runtime_fetch_error",
-				Message: fmt.Sprintf("skills Directory.View: %v", sErr),
-			}); fErr != nil && d.logger != nil {
-				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", fErr.Error()))
-			}
-			return
-		}
-		// Project the agent's active config skills-set ONCE at run start —
-		// the D-094 mirror of the production driver's agent-config skills
-		// projection. A registry read error fails the run loudly.
-		gated, gErr := d.projectAgentConfigSkills(taskCtx, q, views)
-		if gErr != nil {
-			if d.logger != nil {
-				d.logger.Warn("devstack runloop: agent-config skills projection failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", gErr.Error()))
-			}
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    "runtime_fetch_error",
-				Message: "agent-config skills projection: " + gErr.Error(),
-			}); fErr != nil && d.logger != nil {
-				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", fErr.Error()))
-			}
-			return
-		}
-		skillsCtx = runctx.ProjectSkillsDirectory(gated)
-	}
-
-	counters := &planner.RepairCounters{}
-
-	// Phase 83i (D-152) — mirror the production driver: per-run
-	// Trajectory + Catalog view + executor + outer max-steps.
-	traj := &planner.Trajectory{Query: task.Query}
-	var catalogView planner.ToolCatalogView
-	if d.catalog != nil {
-		// Phase 83m (Item 6, D-156): mirror the production runloop —
-		// the per-run CatalogFilter carries the operator-configured
-		// GrantedScopes so AuthScopes-protected tools are gated the
-		// same way they are in `cmd/harbor`.
-		// Phase 110a (D-194): the per-run view is the promoted
-		// `tools.NewPlannerView` — the same constructor production
-		// wires (the pre-110a devstack-local mirror is deleted).
-		// Agent-config tool-exposure projection (D-094 mirror of
-		// cmd_dev_runloop.go): a paused MCP server's tools / disabled tools
-		// are excluded via the SAME shared projection production uses; a
-		// registry read error fails the run loud.
-		view, vErr := d.projectAgentConfigCatalog(taskCtx, q, tools.CatalogFilter{
-			TenantID:      q.TenantID,
-			UserID:        q.UserID,
-			SessionID:     q.SessionID,
-			GrantedScopes: d.grantedScopes,
-		})
-		if vErr != nil {
-			if d.logger != nil {
-				d.logger.Warn("devstack runloop: agent-config tool-exposure projection failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", vErr.Error()))
-			}
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    "runtime_fetch_error",
-				Message: "agent-config tool-exposure projection: " + vErr.Error(),
-			}); fErr != nil && d.logger != nil {
-				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", fErr.Error()))
-			}
-			return
-		}
-		catalogView = view
-	}
-
-	// D-094 mirror of cmd/harbor/cmd_dev_runloop.go: per-run
-	// OnToolDispatched hook that advances Task.ToolCount via the
-	// registry by `count` after every successful tool dispatch (D-274:
-	// count is 1 for a CallTool, len(Branches) for a CallParallel).
-	// Errors are surfaced loud — silent degradation of an observability
-	// counter is forbidden per §13.
-	dispatchHook := func(hookCtx context.Context, count int) error {
-		for range count {
-			if err := d.tasks.IncrementToolCount(hookCtx, taskID); err != nil {
-				return fmt.Errorf("tasks.IncrementToolCount(%q): %w", taskID, err)
-			}
-		}
-		return nil
-	}
-
-	// Phase 110b (D-195) — Emit/OnChunk parity. The kit previously
-	// wired NEITHER closure, so planner telemetry (`planner.decision`
-	// / `planner.finish`) and token streaming (`llm.completion.chunk`)
-	// were silently dead on the official test surface — devstack
-	// validated weaker semantics than production ships (§17.6). Both
-	// now come from the SAME promoted constructors production wires,
-	// with the driver-lifetime d.subCtx bounding every publish (D-207,
-	// closing D-195's correction — the cmd mirror passes its subCtx
-	// identically).
-	emit := events.IdentityStampingEmitterContext(d.subCtx, d.bus, q, d.logger)
-	chunkPub := llm.NewChunkPublisherContext(d.subCtx, d.bus, q, string(taskID), d.logger)
-	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
-		// D-272 streaming posture (D-276 mirror of the production driver):
-		// on a schema-constrained task, SUPPRESS assistant-content and
-		// reasoning token DELTAS at this OnChunk → llm.completion.chunk
-		// seam. Step-boundary `done` signals still fire but forward with
-		// an EMPTY delta — never the done chunk's own text — so no token
-		// content leaks on the schema path regardless of driver flush
-		// behaviour; tool-dispatch events are unaffected.
-		if compiledSchema != nil {
-			if !done {
-				return
-			}
-			chunkPub("", done, string(kind))
-			return
-		}
-		chunkPub(delta, done, string(kind))
-	}
-
-	// Round-7 F11 / D-166 — the SAME promoted input-artifact policy
-	// production calls (Phase 110b — D-195). Phase 84b (D-189): the
-	// disposition is resolved per attachment by the planner-homed
-	// pure resolver (hint > agent policy > runtime default); this
-	// driver is a THIN caller (D-094 mirror of cmd_dev_runloop.go).
-	inputArtifacts := runctx.ResolveInputArtifacts(taskCtx, d.artifactStore, q, task.InputArtifactIDs, d.logger, runctx.InputArtifactOptions{
-		Hints:   runctx.DispositionHints(task.InputArtifactDispositions),
-		Policy:  d.dispositionPolicy,
-		Catalog: catalogView,
-		Emit:    emit,
-	})
-
-	// Phase 107f (D-176 mirror of cmd/harbor/cmd_dev_runloop.go §17.6
-	// parity): build the read-only session-artifact manifest the planner
-	// renders into `<session_artifacts>`. Session-scoped List (TaskID
-	// empty wildcard); a List error → no manifest (logged), never a
-	// fabricated one.
-	sessionArtifacts := d.resolveSessionArtifacts(taskCtx, sessionQ)
-
-	// Resolve the admin-set tenant default once at run start (D-094 mirror
-	// of cmd/harbor/cmd_dev_runloop.go). A resolution error fails the run
-	// loudly rather than silently dropping the policy.
-	llmOverrides, ovErr := d.resolveLLMOverrides(taskCtx, q)
-	if ovErr != nil {
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-			Code:    planner.TaskErrorCodeRunLoopError,
-			Message: "tenant-override resolution failed: " + ovErr.Error(),
-		}); mErr != nil && d.logger != nil {
-			d.logger.Warn("devstack runloop: MarkFailed after override-resolution error failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", mErr.Error()))
-		}
-		return
-	}
-
-	// Overlay the agent's durable layered system prompt resolved from the
-	// active config at run start, via the SAME shared projection the
-	// production driver uses (D-094 mirror, CLAUDE.md §17.6). A read error
-	// fails the run loudly.
-	llmOverrides, plErr := d.projectAgentConfigPromptLayers(taskCtx, q, llmOverrides)
-	if plErr != nil {
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-			Code:    planner.TaskErrorCodeRunLoopError,
-			Message: "prompt-layer projection failed: " + plErr.Error(),
-		}); mErr != nil && d.logger != nil {
-			d.logger.Warn("devstack runloop: MarkFailed after prompt-layer-projection error failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", mErr.Error()))
-		}
-		return
-	}
-
-	// Resolve the effective run-completion hook once at run start via the SAME
-	// shared projection production uses (agent-config over yaml over none). A
-	// read error fails the run loudly.
-	completionHook, chErr := d.projectRunCompletionHook(taskCtx, q)
-	if chErr != nil {
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-			Code:    planner.TaskErrorCodeRunLoopError,
-			Message: "run-completion-hook projection failed: " + chErr.Error(),
-		}); mErr != nil && d.logger != nil {
-			d.logger.Warn("devstack runloop: MarkFailed after run-completion-hook-projection error failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", mErr.Error()))
-		}
-		return
-	}
-
-	// Resolve the effective session auto-naming spec once at run start (SAME
-	// shared projection production uses; agent-config over yaml over off). A
-	// read error fails the run loudly.
-	namingSpec, nmErr := d.projectNaming(taskCtx, q, llmOverrides)
-	if nmErr != nil {
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-			Code:    planner.TaskErrorCodeRunLoopError,
-			Message: "naming-policy projection failed: " + nmErr.Error(),
-		}); mErr != nil && d.logger != nil {
-			d.logger.Warn("devstack runloop: MarkFailed after naming-policy-projection error failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", mErr.Error()))
-		}
-		return
-	}
-
-	spec := steering.RunSpec{
-		Planner: d.planner,
-		Base: planner.RunContext{
-			Quadruple:        q,
-			Query:            task.Query,
-			Goal:             task.Query,
-			LLMOverrides:     llmOverrides, // admin-set tenant default (D-094 mirror)
-			MemoryBlocks:     memBlocks,
-			SkillsContext:    skillsCtx,
-			RepairCounters:   counters,
-			PlanningHints:    d.planningHints,
-			Catalog:          catalogView,
-			Trajectory:       traj,
-			Emit:             emit,    // Phase 110b (D-195) — planner-side telemetry parity
-			OnChunk:          onChunk, // Phase 110b (D-195) — per-token streaming parity
-			InputArtifacts:   inputArtifacts,
-			SessionArtifacts: sessionArtifacts,
-			// Phase 111e (D-202) — per-run token budget for the runloop's
-			// compression gate (D-094 mirror of production).
-			Budget: planner.Budget{TokenBudget: d.tokenBudget},
-			// the per-task output schema compiled at run start (D-094
-			// mirror of production) — engages the React driver's existing
-			// per-turn steering with zero planner change. Nil when absent.
-			OutputSchema: compiledSchema,
-		},
-		TaskID:           taskID,
-		ToolExecutor:     d.executor,
-		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
-		MaxSteps:         d.maxStepsRunLoop,
-		Compression:      d.compression,  // Phase 111e (D-202) — trajectory compression runner
-		CompletionHook:   completionHook, // run-completion transcript egress (D-094 mirror; nil = none)
-		Naming:           namingSpec,     // session auto-naming (D-094 mirror; nil = off)
-	}
-	// Phase 107a parity (D-195 dated-note follow-up — D-094 mirror of
-	// cmd/harbor/cmd_dev_runloop.go): save the trajectory ref before
-	// Run so the Enricher can read it post-completion (including
-	// concurrently — the map is mutex-guarded per D-025).
-	d.trajMu.Lock()
-	d.trajectories[taskID] = traj
-	d.trajMu.Unlock()
-
-	// Twin of cmd/harbor/cmd_dev_runloop.go: stamp the acting agent's
-	// registration id as southbound provenance (D-094 mirror). Provenance
-	// only — never an isolation principal (§6); empty agentConfigID is a
-	// no-op.
-	runCtx := tools.WithInvokingAgent(d.subCtx, d.agentConfigID)
-	fin, err := d.runLoop.Run(runCtx, spec)
-	if err != nil {
-		code := planner.TaskErrorCodeRunLoopError
-		switch {
-		case errors.Is(err, context.Canceled):
-			code = planner.TaskErrorCodeCancelled
-		case compiledSchema != nil && (errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)):
-			// D-276 mirror: a schema-constrained run that exhausted the
-			// correction budget fails LOUD with output_invalid.
-			code = planner.TaskErrorCodeOutputInvalid
-		}
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-			Code:    code,
-			Message: err.Error(),
-		}); mErr != nil && d.logger != nil {
-			d.logger.Warn("devstack runloop: MarkFailed failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", mErr.Error()))
-		}
-		return
-	}
-	if fin.Reason == planner.FinishGoal {
-		// Phase 110b (D-195) — answer-envelope parity, now via the ONE
-		// shared builder (runctx.FinishAnswerEnvelope, D-276) production +
-		// RunOnce also call: schemaless → the byte-identical three-key
-		// envelope; schema-constrained → capture + validate the terminal
-		// payload and add the validated `answer_payload`. A schema-invalid
-		// answer fails the task LOUD with output_invalid — never a
-		// MarkComplete of an unvalidated envelope (§13). Built BEFORE the
-		// memory writeback so a schema failure never persists a turn.
-		envelope, envErr := runctx.FinishAnswerEnvelope(fin, traj, compiledSchema)
-		if envErr != nil {
-			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    planner.TaskErrorCodeOutputInvalid,
-				Message: "terminal output failed schema validation: " + envErr.Error(),
-			}); mErr != nil && d.logger != nil {
-				d.logger.Warn("devstack runloop: MarkFailed(output_invalid) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", mErr.Error()))
-			}
-			return
-		}
-
-		// Phase 83i (D-152) — memory writeback mirror. AssistantResponse
-		// is the envelope's Answer (the validated payload string on a
-		// schema run; the extracted answer text otherwise).
-		if d.memory != nil {
-			turn := memory.ConversationTurn{
-				UserMessage:       task.Query,
-				AssistantResponse: envelope.Answer,
-				Timestamp:         time.Now(),
-			}
-			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil && d.logger != nil {
-				d.logger.Warn("devstack runloop: memory.AddTurn failed; run still marked complete",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", mErr.Error()))
-			}
-		}
-		raw, encErr := json.Marshal(envelope)
-		if encErr != nil {
-			if d.logger != nil {
-				d.logger.Error("devstack runloop: marshal TaskResult.Value failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", encErr.Error()))
-			}
-			raw = []byte("{}")
-		}
-		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{Value: raw}); mErr != nil && d.logger != nil {
-			d.logger.Warn("devstack runloop: MarkComplete failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("err", mErr.Error()))
-		}
-		return
-	}
-	if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-		Code:    planner.TaskErrorCodeForFinish(fin.Reason),
-		Message: "RunLoop finished without satisfying goal: " + string(fin.Reason),
-	}); mErr != nil && d.logger != nil {
-		d.logger.Warn("devstack runloop: MarkFailed failed",
-			slog.String("task_id", string(taskID)),
-			slog.String("err", mErr.Error()))
-	}
-}
-
-// resolveLLMOverrides mirrors `cmd/harbor/cmd_dev_runloop.go`'s run-start
-// resolution (D-094 parity): the tenant default (via the resolver) is
-// composed UNDER the Consumed one-shot session override (session › tenant
-// › config) via the production `runsprotocol.ComposeLLMOverrides`. A
-// resolver error propagates so the caller fails the run loudly; the
-// session Consume cannot error (in-process map read).
-func (d *DevStackRunLoopDriver) resolveLLMOverrides(ctx context.Context, q identity.Quadruple) (*planner.LLMOverrides, error) {
-	var tenant *planner.LLMOverrides
-	if d.tenantOverrides != nil {
-		spec, set, err := d.tenantOverrides.Get(ctx, q.TenantID)
-		if err != nil {
-			return nil, err
-		}
-		if set {
-			tenant = &planner.LLMOverrides{
-				Model:             spec.Model,
-				Temperature:       spec.Temperature,
-				MaxTokens:         spec.MaxTokens,
-				ReasoningEffort:   spec.ReasoningEffort,
-				ExtraInstructions: spec.ExtraInstructions,
-			}
-		}
-	}
-	// Per-agent arm — the agent-config LLM-params section (admin-pinned,
-	// versioned), resolved via the SAME shared projection the production run
-	// loop calls (D-094 parity). It overrides the tenant-wide baseline per
-	// field.
-	agentLayer, err := projection.ActiveLLMOverrides(ctx, d.agentConfig, d.agentConfigID, q)
-	if err != nil {
-		return nil, err
-	}
-	var session *runsprotocol.PendingOverride
-	if d.sessionOverrides != nil {
-		if po, found := d.sessionOverrides.Consume(q.Identity); found {
-			session = &po
-		}
-	}
-	return runsprotocol.ComposeLLMOverrides(session, agentLayer, tenant), nil
-}
-
-// resolveSessionArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go`'s
-// session-artifact manifest build (Phase 107f — D-176, §17.6 parity). It
-// lists `ArtifactStore.List` scoped to the run's `(tenant, user,
-// session)` triple (TaskID empty = session-wide wildcard) and hands the
-// refs to the shared `planner.BuildArtifactManifest`, so the harness and
-// the production run loop produce byte-identical manifests.
-//
-// Fail-soft: a nil store or a List error yields NO manifest (logged) —
-// the turn proceeds, never a fabricated one (CLAUDE.md §5).
-func (d *DevStackRunLoopDriver) resolveSessionArtifacts(
-	ctx context.Context, sessionQ identity.Quadruple,
-) []planner.ArtifactManifestEntry {
-	if d.artifactStore == nil {
-		return nil
-	}
-	scope := artifacts.ArtifactScope{
-		TenantID:  sessionQ.TenantID,
-		UserID:    sessionQ.UserID,
-		SessionID: sessionQ.SessionID,
-	}
-	refs, err := d.artifactStore.List(ctx, scope)
-	if err != nil {
-		if d.logger != nil {
-			d.logger.Warn("devstack RunLoop driver: session-artifact List failed; proceeding with no manifest",
-				slog.String("session_id", sessionQ.SessionID),
-				slog.String("err", err.Error()))
-		}
-		return nil
-	}
-	return planner.BuildArtifactManifest(refs)
-}
-
-// TrajectoryByTaskID returns the planner trajectory for a completed run,
-// or nil when the task's trajectory has been evicted or never existed.
-// Reads are safe under concurrent access (RLock / D-025). The D-094
-// mirror of the production driver's accessor — the Enricher seam's
-// trajectory source (Phase 107a parity, D-195 dated-note follow-up).
-func (d *DevStackRunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Trajectory {
-	d.trajMu.RLock()
-	defer d.trajMu.RUnlock()
-	return d.trajectories[taskID]
-}
-
-func (d *DevStackRunLoopDriver) close(_ context.Context) error {
-	d.closedOnce.Do(func() {
-		if !d.started {
-			return
-		}
-		d.subCancel()
-		if d.sub != nil {
-			d.sub.Cancel()
-		}
-		d.subLoopWG.Wait()
-		d.runsWG.Wait()
-	})
-	return nil
+	return token, now.Add(DefaultTokenTTL), nil
 }

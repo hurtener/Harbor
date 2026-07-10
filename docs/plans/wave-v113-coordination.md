@@ -308,3 +308,24 @@ layout is unchanged — no RFC layout PR needed.
    for their mechanics is the in-module scripted-LLM test, and the subprocess
    wire end-to-end is the env-gated `HARBOR_LIVE_*` live-verification leg.
    D-292.
+
+---
+
+## 8. Stage-1 (159) as-built notes for the Stage-2 dispatch + audit
+
+- 159 shipped with two adversarial review rounds; all findings fixed in-PR.
+  Notables for 160 + the §17.5 audit: the promoted `serve.Options` gained
+  `PreferConfigBindAddr` (production-only opt-in — the bind-address
+  discriminator regression the reviews caught live; `sdk/server`'s `Open`
+  must set it, matching `harbor serve`), and the sdk func-body allow-lists
+  in `phase-112a.sh` / `phase-144.sh` now use a single spec-list shape
+  (`file|name-regex|name|func-count`) so 160's `sdk/server` entries append
+  one line each instead of rewriting the constraints.
+- **Carried follow-up for the §17.5 checkpoint audit:** a driver-options
+  parity pin for the residual Boot↔devstack composition band — the kit
+  composes the promoted building blocks (`serve.BuildMux` +
+  `serve.NewRunLoopDriver`) rather than calling `serve.Boot`, so the
+  `RunLoopDriverOptions` / `MuxInput` field sets each caller passes remain
+  the one hand-maintained mirror. The mounted-surface half is pinned by
+  `test/integration/phase159_serve_band_test.go`; the options-field half
+  needs a reflective parity pin.

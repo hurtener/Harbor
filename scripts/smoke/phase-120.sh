@@ -24,7 +24,7 @@ source "scripts/smoke/common.sh"
 METRICS_GO="internal/telemetry/metrics.go"
 PROM_GO="internal/telemetry/drivers/prometheus/prometheus.go"
 ASSEMBLE_GO="internal/runtime/assemble/assemble.go"
-CMD_DEV_GO="cmd/harbor/cmd_dev.go"
+CMD_DEV_GO="internal/runtime/serve/serve.go"
 EVENTS_GO="internal/events/events.go"
 VALIDATE_GO="internal/config/validate.go"
 
@@ -83,7 +83,7 @@ assert_grep_present 'IsLoopback\(\)' "$VALIDATE_GO" \
 # ── pprof debug listener is OFF the Protocol mux (static) ──────────────
 # Handlers are registered explicitly on a private mux, never blank-imported
 # onto http.DefaultServeMux — so nothing pprof lands on the Protocol mux.
-DEV_GO="cmd/harbor/cmd_dev.go"
+DEV_GO="internal/runtime/serve/serve.go"
 assert_grep_present 'debugMux := http.NewServeMux\(\)' "$DEV_GO" \
     "phase 120: pprof on its own private mux"
 assert_grep_present 'nhpprof.Index' "$DEV_GO" \

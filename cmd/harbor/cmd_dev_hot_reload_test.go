@@ -47,6 +47,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 )
 
 // TestResolveHotReloadWatchRoots_UnionsConfigDirAndDedupes — the
@@ -226,13 +227,13 @@ func TestIsGoSource(t *testing.T) {
 // invariants.
 func TestNewHotReloadSupervisor_RejectsNilDeps(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	stack := &devStack{} // sentinel — non-nil
+	stack := &serve.Handle{} // sentinel — non-nil
 	cfg := config.DevHotReloadConfig{}
 
 	cases := []struct {
 		name       string
 		logger     *slog.Logger
-		stack      *devStack
+		stack      *serve.Handle
 		watchRoots []string
 	}{
 		{"nil_logger", nil, stack, []string{"."}},
@@ -241,7 +242,7 @@ func TestNewHotReloadSupervisor_RejectsNilDeps(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newHotReloadSupervisor(tc.logger, devBootOptions{}, tc.stack, cfg, tc.watchRoots)
+			_, err := newHotReloadSupervisor(tc.logger, serve.Options{}, tc.stack, cfg, tc.watchRoots)
 			if err == nil {
 				t.Errorf("newHotReloadSupervisor with %s: err = nil, want non-nil", tc.name)
 			}
@@ -253,10 +254,10 @@ func TestNewHotReloadSupervisor_RejectsNilDeps(t *testing.T) {
 // Policy defaults to "drain"; non-positive DrainTimeout defaults to 5s.
 func TestNewHotReloadSupervisor_DefaultsPolicyAndDrainTimeout(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	stack := &devStack{}
+	stack := &serve.Handle{}
 	cfg := config.DevHotReloadConfig{} // empty — defaults should apply
 
-	sup, err := newHotReloadSupervisor(logger, devBootOptions{}, stack, cfg, []string{"."})
+	sup, err := newHotReloadSupervisor(logger, serve.Options{}, stack, cfg, []string{"."})
 	if err != nil {
 		t.Fatalf("newHotReloadSupervisor: %v", err)
 	}
@@ -272,7 +273,7 @@ func TestNewHotReloadSupervisor_DefaultsPolicyAndDrainTimeout(t *testing.T) {
 // shape against a real bootDevStack: write a watched file, observe a
 // dev.hot_reload.triggered event, observe a dev.hot_reload.completed
 // event, confirm the supervisor's CurrentStack() points at a fresh
-// devStack (different bus instance).
+// serve.Handle (different bus instance).
 //
 // This is the in-package version of the integration test — it pins
 // the production wiring without needing the `test/integration/`
@@ -296,21 +297,15 @@ func TestHotReloadSupervisor_FileChangeTriggersRebuild(t *testing.T) {
 	bootCtx, bootCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer bootCancel()
 
-	bootOpts := devBootOptions{
-		cfgPath:   cfgPath,
-		allowMock: true,
-		logger:    logger,
-		stderr:    io.Discard,
-		port:      0, // ephemeral — http.Server binds to :0
-	}
-	stack, err := bootDevStack(bootCtx, bootOpts)
+	bootOpts := devServeOptionsForTest(t, cfgPath, logger)
+	stack, err := serve.Boot(bootCtx, bootOpts)
 	if err != nil {
 		t.Fatalf("bootDevStack: %v", err)
 	}
 	t.Cleanup(func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		stack.close(closeCtx)
+		stack.Close(closeCtx)
 	})
 
 	cfg := config.DevHotReloadConfig{
@@ -328,7 +323,7 @@ func TestHotReloadSupervisor_FileChangeTriggersRebuild(t *testing.T) {
 	// not race the first triggered event. The dev triple matches what
 	// the supervisor's emit helpers stamp on the canonical event.
 	id := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
-	sub, err := stack.bus.Subscribe(bootCtx, events.Filter{
+	sub, err := stack.Bus.Subscribe(bootCtx, events.Filter{
 		Tenant:  id.TenantID,
 		User:    id.UserID,
 		Session: id.SessionID,
@@ -355,10 +350,10 @@ func TestHotReloadSupervisor_FileChangeTriggersRebuild(t *testing.T) {
 		final := sup.CurrentStack()
 		if final != nil && final != stack {
 			// A rebuild happened: the supervisor's CurrentStack is a
-			// different *devStack instance. Drain it.
+			// different *serve.Handle instance. Drain it.
 			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			final.close(closeCtx)
+			final.Close(closeCtx)
 		}
 	})
 
@@ -443,15 +438,11 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	bootCtx := context.Background()
-	stack, err := bootDevStack(bootCtx, devBootOptions{
-		cfgPath: cfgPath, allowMock: true, logger: logger, stderr: io.Discard,
-	})
+	stack, err := serve.Boot(bootCtx, devServeOptionsForTest(t, cfgPath, logger))
 	if err != nil {
 		t.Fatalf("bootDevStack: %v", err)
 	}
-	bootOpts := devBootOptions{
-		cfgPath: cfgPath, allowMock: true, logger: logger, stderr: io.Discard,
-	}
+	bootOpts := devServeOptionsForTest(t, cfgPath, logger)
 	hrCfg := config.DevHotReloadConfig{
 		Policy:       config.DevHotReloadPolicyDrain,
 		DrainTimeout: 2 * time.Second,
@@ -472,7 +463,7 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 		if final != nil && final != stack {
 			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			final.close(closeCtx)
+			final.Close(closeCtx)
 		}
 	})
 
@@ -494,7 +485,7 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 		t.Fatal("first rebuild did not complete within 5s — supervisor did not swap stacks")
 	}
 	newStack := sup.CurrentStack()
-	if newStack == nil || newStack.bus == nil {
+	if newStack == nil || newStack.Bus == nil {
 		t.Fatal("supervisor's new stack has no bus")
 	}
 
@@ -519,7 +510,7 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 		t.Fatal("second rebuild did not complete within 5s")
 	}
 	finalStack := sup.CurrentStack()
-	if finalStack == nil || finalStack.bus == nil {
+	if finalStack == nil || finalStack.Bus == nil {
 		t.Fatal("supervisor's final stack has no bus")
 	}
 
@@ -528,9 +519,9 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 	// 0} returns every event strictly newer than zero — i.e. the
 	// whole post-rebuild stream.
 	id := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
-	replayer, ok := finalStack.bus.(events.Replayer)
+	replayer, ok := finalStack.Bus.(events.Replayer)
 	if !ok {
-		t.Fatalf("final bus does not implement events.Replayer (%T)", finalStack.bus)
+		t.Fatalf("final bus does not implement events.Replayer (%T)", finalStack.Bus)
 	}
 	// Poll for the completed event — it may take a few ms after the
 	// stack swap for the emit to land. Bounded by the same 5s window.
@@ -580,7 +571,7 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 //  1. Log the honest WARN ("Go source change detected") guiding a
 //     manual `make build` + restart — observed via a captured logger.
 //  2. NOT drive an in-process rebuild — CurrentStack() stays pinned to
-//     the initial stack (a reboot swaps in a fresh *devStack), which is
+//     the initial stack (a reboot swaps in a fresh *serve.Handle), which is
 //     the observable proxy for "no dev.hot_reload.completed{Success=
 //     true} was emitted for the .go edit" (completed is emitted ONLY on
 //     the reboot path, immediately after the swap).
@@ -608,14 +599,8 @@ func TestHotReloadSupervisor_GoSourceChange_WarnsNoRebuild(t *testing.T) {
 	bootCtx, bootCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer bootCancel()
 
-	bootOpts := devBootOptions{
-		cfgPath:   cfgPath,
-		allowMock: true,
-		logger:    logger,
-		stderr:    io.Discard,
-		port:      0,
-	}
-	stack, err := bootDevStack(bootCtx, bootOpts)
+	bootOpts := devServeOptionsForTest(t, cfgPath, logger)
+	stack, err := serve.Boot(bootCtx, bootOpts)
 	if err != nil {
 		t.Fatalf("bootDevStack: %v", err)
 	}
@@ -642,7 +627,7 @@ func TestHotReloadSupervisor_GoSourceChange_WarnsNoRebuild(t *testing.T) {
 		if final != nil && final != stack {
 			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			final.close(closeCtx)
+			final.Close(closeCtx)
 		}
 	})
 
@@ -706,14 +691,8 @@ func TestHotReloadSupervisor_CtxCancel_ReturnsCleanly(t *testing.T) {
 	bootCtx, bootCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer bootCancel()
 
-	bootOpts := devBootOptions{
-		cfgPath:   cfgPath,
-		allowMock: true,
-		logger:    logger,
-		stderr:    io.Discard,
-		port:      0,
-	}
-	stack, err := bootDevStack(bootCtx, bootOpts)
+	bootOpts := devServeOptionsForTest(t, cfgPath, logger)
+	stack, err := serve.Boot(bootCtx, bootOpts)
 	if err != nil {
 		t.Fatalf("bootDevStack: %v", err)
 	}
@@ -757,7 +736,7 @@ func TestHotReloadSupervisor_CtxCancel_ReturnsCleanly(t *testing.T) {
 	// runDev path drains via CurrentStack — we mirror that here).
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stack.close(closeCtx)
+	stack.Close(closeCtx)
 }
 
 // TestHotReloadSupervisor_MissingWatchRoot_StatErrFailsLoud — a
@@ -786,21 +765,15 @@ func TestHotReloadSupervisor_MissingWatchRoot_LogsAndSkips(t *testing.T) {
 	bootCtx, bootCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer bootCancel()
 
-	bootOpts := devBootOptions{
-		cfgPath:   cfgPath,
-		allowMock: true,
-		logger:    logger,
-		stderr:    io.Discard,
-		port:      0,
-	}
-	stack, err := bootDevStack(bootCtx, bootOpts)
+	bootOpts := devServeOptionsForTest(t, cfgPath, logger)
+	stack, err := serve.Boot(bootCtx, bootOpts)
 	if err != nil {
 		t.Fatalf("bootDevStack: %v", err)
 	}
 	t.Cleanup(func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		stack.close(closeCtx)
+		stack.Close(closeCtx)
 	})
 
 	sup, err := newHotReloadSupervisor(logger, bootOpts, stack,

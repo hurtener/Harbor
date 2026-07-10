@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,10 +22,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 )
 
 // TestValidateLLMProvider_NoMockEscape_Bifrost_RejectsEmptyProvider —
@@ -280,159 +284,10 @@ memory:
   strategy: none
 `
 
-// TestBootDevStack_CoordinatorEmitsPauseResumedOnBus pins F1 from the
-// Wave 11.5 §17.5 closeout audit: the production `bootDevStack` MUST
-// construct its pauseresume.Coordinator with WithBus(bus) so the
-// canonical pause.resumed event (carrying D-096's typed Decision
-// marker) reaches subscribers. A bare pauseresume.New() short-
-// circuits emit when bus == nil — the regression this test guards.
-//
-// The test boots the production bootDevStack, subscribes to
-// pause.resumed under the (tenant=dev, user=dev, session=dev) triple
-// (which matches the dev token bootDevStack mints), drives a
-// Request + Resume round-trip on stack.coordinator, and asserts the
-// event lands with the typed Decision marker populated.
-func TestBootDevStack_CoordinatorEmitsPauseResumedOnBus(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "harbor.yaml")
-	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
-		t.Fatalf("write cfg: %v", err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	stack, err := bootDevStack(ctx, devBootOptions{
-		cfgPath:   cfgPath,
-		allowMock: true, // mock-driver escape per §13 amendment
-		logger:    logger,
-		stderr:    io.Discard,
-	})
-	if err != nil {
-		t.Fatalf("bootDevStack: %v", err)
-	}
-	defer func() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer closeCancel()
-		for i := len(stack.closeFns) - 1; i >= 0; i-- {
-			_ = stack.closeFns[i](closeCtx)
-		}
-	}()
-
-	// Subscribe BEFORE driving the Request so the fan-out bus does not
-	// race the publish (pattern PR #111 / the catalog tests pinned).
-	id := identity.Identity{TenantID: "dev", UserID: "dev", SessionID: "dev"}
-	sub, err := stack.bus.Subscribe(ctx, events.Filter{
-		Tenant:  id.TenantID,
-		User:    id.UserID,
-		Session: id.SessionID,
-		Types:   []events.EventType{pauseresume.EventTypePauseResumed},
-	})
-	if err != nil {
-		t.Fatalf("bus.Subscribe: %v", err)
-	}
-	defer sub.Cancel()
-
-	idCtx, err := identity.With(ctx, id)
-	if err != nil {
-		t.Fatalf("identity.With: %v", err)
-	}
-	pause, err := stack.coordinator.Request(idCtx, pauseresume.PauseRequest{
-		Identity: id,
-		Reason:   pauseresume.ReasonApprovalRequired,
-	})
-	if err != nil {
-		t.Fatalf("coordinator.Request: %v", err)
-	}
-	if err := stack.coordinator.Resume(idCtx, pause.Token, pauseresume.DecisionApprove, nil); err != nil {
-		t.Fatalf("coordinator.Resume: %v", err)
-	}
-
-	select {
-	case ev, ok := <-sub.Events():
-		if !ok {
-			t.Fatal("subscription closed before pause.resumed observed")
-		}
-		if ev.Type != pauseresume.EventTypePauseResumed {
-			t.Fatalf("event type = %q, want %q", ev.Type, pauseresume.EventTypePauseResumed)
-		}
-		p, ok := ev.Payload.(pauseresume.PauseResumedPayload)
-		if !ok {
-			t.Fatalf("payload type = %T, want pauseresume.PauseResumedPayload", ev.Payload)
-		}
-		if p.Decision != pauseresume.DecisionApprove {
-			t.Errorf("payload.Decision = %q, want %q", p.Decision, pauseresume.DecisionApprove)
-		}
-		if p.Token != string(pause.Token) {
-			t.Errorf("payload.Token = %q, want %q", p.Token, string(pause.Token))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("pause.resumed event did not arrive on bus — F1 regression: " +
-			"bootDevStack must construct pauseresume.New(WithBus(bus))")
-	}
-}
-
-// TestBootDevStack_AppendsDraftStoreAndRegistryClosers — Phase 83m
-// (Item 3, D-156): the §17.5 audit pinned two constructed subsystems
-// (agent registry + draft store) whose Close was NEVER appended to the
-// closer chain. A clean shutdown therefore leaked file handles /
-// goroutines from any future driver that owns them. The fix appends
-// both Close functions; this test asserts both closers run cleanly on
-// stack teardown (a no-op for the V1 drivers; the canary for any
-// future driver that owns resources).
-func TestBootDevStack_AppendsDraftStoreAndRegistryClosers(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "harbor.yaml")
-	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
-		t.Fatalf("write cfg: %v", err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	stack, err := bootDevStack(ctx, devBootOptions{
-		cfgPath:   cfgPath,
-		allowMock: true,
-		logger:    logger,
-		stderr:    io.Discard,
-	})
-	if err != nil {
-		t.Fatalf("bootDevStack: %v", err)
-	}
-
-	// The draft store + agent registry are wired during boot. The
-	// test asserts the closers run cleanly (the failure mode pre-fix
-	// was a silent omit; the closers simply weren't in the chain. We
-	// can't easily pointer-compare closer entries because they're
-	// bound method values, but if either omit returned silently the
-	// stack.close drain would still succeed — so we directly invoke
-	// the underlying Close methods via the stack's draftStore field
-	// and assert no error). For the registry, the closer is reachable
-	// only through the chain; we drain it and assert no error fires.
-	if stack.draftStore == nil {
-		t.Fatal("stack.draftStore is nil — bootDevStack did not construct the draft store")
-	}
-	if err := stack.draftStore.Close(ctx); err != nil {
-		t.Errorf("draftStore.Close (direct) returned %v, want nil", err)
-	}
-
-	// Drain the closer chain. Every closer must return nil; a leak
-	// from a future driver that owns resources would surface here.
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer closeCancel()
-	for i := len(stack.closeFns) - 1; i >= 0; i-- {
-		if cErr := stack.closeFns[i](closeCtx); cErr != nil {
-			t.Errorf("closer %d returned %v, want nil", i, cErr)
-		}
-	}
-}
-
-// bootStackForBootstrapTest boots a bootDevStack against the minimal
-// bus-wired YAML used by other dev tests. Caller is responsible for
-// draining the closers.
-func bootStackForBootstrapTest(t *testing.T, ctx context.Context, serveConsole bool) *devStack {
+// bootDevForTest boots the dev-only serve composition (ephemeral signer +
+// drafts/bootstrap routes + mock LLM) against the minimal bus-wired YAML and
+// returns the promoted serve.Handle. Cleanup drains the stack.
+func bootDevForTest(t *testing.T, ctx context.Context, serveConsole bool) *serve.Handle {
 	t.Helper()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "harbor.yaml")
@@ -440,42 +295,35 @@ func bootStackForBootstrapTest(t *testing.T, ctx context.Context, serveConsole b
 		t.Fatalf("write cfg: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	stack, err := bootDevStack(ctx, devBootOptions{
-		cfgPath:      cfgPath,
-		allowMock:    true,
-		logger:       logger,
-		stderr:       io.Discard,
-		serveConsole: serveConsole,
-	})
+	comp, err := newDevComposition(devCompositionOptions{allowMock: true, serveConsole: serveConsole})
 	if err != nil {
-		t.Fatalf("bootDevStack(serveConsole=%v): %v", serveConsole, err)
+		t.Fatalf("newDevComposition: %v", err)
 	}
-	return stack
+	handle, err := serve.Boot(ctx, comp.serveOptions(cfgPath, 0, "", "dev", logger, io.Discard))
+	if err != nil {
+		t.Fatalf("serve.Boot (dev composition, serveConsole=%v): %v", serveConsole, err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		handle.Close(closeCtx)
+	})
+	return handle
 }
 
-func drainStack(t *testing.T, stack *devStack) {
-	t.Helper()
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer closeCancel()
-	for i := len(stack.closeFns) - 1; i >= 0; i-- {
-		_ = stack.closeFns[i](closeCtx)
-	}
-}
-
-// TestBootDevStack_BootstrapEndpointRegistered_HarborDev — Phase 105
-// AC-6: POST /v1/dev/bootstrap.json is mounted on the `harbor dev`
-// stack. A loopback peer receives a 200 + a connection envelope.
-func TestBootDevStack_BootstrapEndpointRegistered_HarborDev(t *testing.T) {
+// TestDevComposition_BootstrapEndpointRegistered_HarborDev — the dev
+// composition mounts POST /v1/dev/bootstrap.json; a loopback peer receives a
+// 200 + a connection envelope carrying the dev identity triple.
+func TestDevComposition_BootstrapEndpointRegistered_HarborDev(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	stack := bootStackForBootstrapTest(t, ctx, false /* serveConsole */)
-	defer drainStack(t, stack)
+	handle := bootDevForTest(t, ctx, false /* serveConsole */)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
-	stack.server.Handler.ServeHTTP(rec, req)
+	handle.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 from bootstrap on harbor dev, got %d: %s", rec.Code, rec.Body.String())
@@ -500,45 +348,292 @@ func TestBootDevStack_BootstrapEndpointRegistered_HarborDev(t *testing.T) {
 	}
 }
 
-// TestBootDevStack_BootstrapEndpointRegistered_HarborConsole — Phase
-// 105 AC-6: POST /v1/dev/bootstrap.json is also mounted when
-// bootDevStack runs with serveConsole=true (the `harbor console`
-// path). The handler must respond identically.
-func TestBootDevStack_BootstrapEndpointRegistered_HarborConsole(t *testing.T) {
+// TestDevComposition_BootstrapEndpointRegistered_HarborConsole — the console
+// composition (serveConsole=true) mounts the bootstrap endpoint identically.
+func TestDevComposition_BootstrapEndpointRegistered_HarborConsole(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	stack := bootStackForBootstrapTest(t, ctx, true /* serveConsole */)
-	defer drainStack(t, stack)
+	handle := bootDevForTest(t, ctx, true /* serveConsole */)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
-	stack.server.Handler.ServeHTTP(rec, req)
+	handle.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 from bootstrap on harbor console, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-// TestBootDevStack_BootstrapEndpoint_NonLoopback_Returns403 — Phase 105
-// AC-7: a non-loopback peer is rejected by the loopback gate, even
-// though the route is registered. The gate reads r.RemoteAddr directly.
-func TestBootDevStack_BootstrapEndpoint_NonLoopback_Returns403(t *testing.T) {
+// TestDevComposition_BootstrapEndpoint_NonLoopback_Returns403 — the loopback
+// gate rejects a non-loopback peer even though the route is registered; a
+// spoofed X-Forwarded-For is ignored (the gate reads r.RemoteAddr directly).
+func TestDevComposition_BootstrapEndpoint_NonLoopback_Returns403(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	stack := bootStackForBootstrapTest(t, ctx, false)
-	defer drainStack(t, stack)
+	handle := bootDevForTest(t, ctx, false)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
 	req.RemoteAddr = "192.168.1.5:54321"
-	// Spoofed XFF MUST be ignored.
 	req.Header.Set("X-Forwarded-For", "127.0.0.1")
 	rec := httptest.NewRecorder()
-	stack.server.Handler.ServeHTTP(rec, req)
+	handle.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-loopback peer, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDevComposition_DraftEndpointMounted — the dev composition mounts the
+// draft-scaffolding handler under devdraft.RoutePrefix. Without a token the
+// auth middleware rejects the request (401), which still proves the route is
+// mounted (a 404 would mean the dev seam did not fire).
+func TestDevComposition_DraftEndpointMounted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	handle := bootDevForTest(t, ctx, false)
+
+	req := httptest.NewRequest(http.MethodGet, devdraft.RoutePrefix+"/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	handle.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("draft endpoint returned 404 — the dev route seam did not mount it")
+	}
+}
+
+// TestServeComposition_BootstrapEndpoint_404 — the production serve posture
+// composes NO dev seams (no ExtraRoutes), so the dev-only bootstrap endpoint
+// is NOT mounted: a POST returns 404. This is the caller-level half of the
+// posture split (the dev surfaces answer under dev, 404 under serve).
+func TestServeComposition_BootstrapEndpoint_404(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	// A production-shaped validator source with NO dev seams. We reuse an
+	// ephemeral signer only as a KeySet provider — the point is that no
+	// ExtraRoutes / BuildAuthSurface are composed, so no dev surface mounts.
+	signer, err := newDevSigner()
+	if err != nil {
+		t.Fatalf("newDevSigner: %v", err)
+	}
+	handle, err := serve.Boot(ctx, serve.Options{
+		ConfigPath:      cfgPath,
+		Logger:          logger,
+		Stderr:          io.Discard,
+		SubcommandLabel: "serve",
+		AuthValidatorFactory: func(_ context.Context, _ *config.Config, red audit.Redactor, bus events.EventBus, lg *slog.Logger) (auth.Validator, error) {
+			return auth.NewValidator(signer.KeySet(), auth.WithRedactor(red), auth.WithEventBus(bus), auth.WithLogger(lg))
+		},
+		MCPDefaultIdentity: identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
+		DisplayName:        "harbor dev",
+		InstanceID:         devInstanceID(),
+		BuildVersion:       HarborVersion,
+		BuildCommit:        "dev",
+		BuildLLMSnapshot:   newLLMSnapshotBuilder(true),
+	})
+	if err != nil {
+		t.Fatalf("serve.Boot (serve composition): %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		handle.Close(closeCtx)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	handle.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for the dev-only bootstrap endpoint under the serve composition, got %d", rec.Code)
+	}
+}
+
+// TestServeComposition_NilFactory_FailsLoud — Boot with a nil auth-validator
+// factory is a loud construction error (identity is mandatory), never an
+// unauthenticated listener.
+func TestServeComposition_NilFactory_FailsLoud(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	_, err := serve.Boot(context.Background(), serve.Options{
+		ConfigPath: cfgPath,
+		Stderr:     io.Discard,
+	})
+	if !errors.Is(err, serve.ErrAuthValidatorFactoryRequired) {
+		t.Fatalf("expected ErrAuthValidatorFactoryRequired, got %v", err)
+	}
+}
+
+// devServeOptionsForTest builds a dev-composition serve.Options (ephemeral
+// signer + mock LLM) against the given config path. The captured signer is
+// stable across a supervisor's reboots, so the printed token stays valid.
+func devServeOptionsForTest(t *testing.T, cfgPath string, logger *slog.Logger) serve.Options {
+	t.Helper()
+	comp, err := newDevComposition(devCompositionOptions{allowMock: true})
+	if err != nil {
+		t.Fatalf("newDevComposition: %v", err)
+	}
+	return comp.serveOptions(cfgPath, 0, "", "dev", logger, io.Discard)
+}
+
+// writeBindAddrCfg writes the minimal bus-wired YAML with the given
+// server.bind_addr substituted in.
+func writeBindAddrCfg(t *testing.T, bindAddr string) string {
+	t.Helper()
+	yaml := strings.Replace(bootDevStackBusWiredYAML, "bind_addr: 127.0.0.1:0", "bind_addr: "+bindAddr, 1)
+	cfgPath := filepath.Join(t.TempDir(), "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	return cfgPath
+}
+
+// TestDevComposition_HonorsPortFlag_IgnoresConfigBindAddr is the regression
+// pin for the bind-address discriminator: a dev boot against a serve-shaped
+// yaml (a NON-loopback `server.bind_addr`) must resolve the caller's
+// loopback 127.0.0.1:<port> — never the config address. Pre-promotion this
+// was gated on the production factory being non-nil; with the factory now
+// mandatory for all callers the gate is the explicit PreferConfigBindAddr
+// opt-in the dev composition never sets.
+func TestDevComposition_HonorsPortFlag_IgnoresConfigBindAddr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cfgPath := writeBindAddrCfg(t, "0.0.0.0:8080")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	comp, err := newDevComposition(devCompositionOptions{allowMock: true})
+	if err != nil {
+		t.Fatalf("newDevComposition: %v", err)
+	}
+	// The operator passed --port 19999; the config says 0.0.0.0:8080.
+	handle, err := serve.Boot(ctx, comp.serveOptions(cfgPath, 19999, "", "dev", logger, io.Discard))
+	if err != nil {
+		t.Fatalf("serve.Boot (dev composition): %v", err)
+	}
+	t.Cleanup(func() {
+		cc, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		handle.Close(cc)
+	})
+	if got := handle.BindAddr(); got != "127.0.0.1:19999" {
+		t.Fatalf("dev bind address = %q, want 127.0.0.1:19999 (--port honored; non-loopback config bind_addr ignored)", got)
+	}
+}
+
+// TestDevComposition_LiveListenerStaysLoopback_NonLoopbackConfig proves the
+// regression live: a dev boot against a non-loopback config bind_addr BINDS
+// a loopback listener (never 0.0.0.0 — the dev-token stack must not be
+// exposed off-box).
+func TestDevComposition_LiveListenerStaysLoopback_NonLoopbackConfig(t *testing.T) {
+	cfgPath := writeBindAddrCfg(t, "0.0.0.0:8080")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	pr, pw := io.Pipe()
+	comp, err := newDevComposition(devCompositionOptions{allowMock: true})
+	if err != nil {
+		t.Fatalf("newDevComposition: %v", err)
+	}
+	opts := comp.serveOptions(cfgPath, 0, "", "dev", logger, pw)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handle, err := serve.Boot(ctx, opts)
+	if err != nil {
+		t.Fatalf("serve.Boot: %v", err)
+	}
+
+	served := make(chan error, 1)
+	go func() { served <- handle.Serve(ctx) }()
+
+	boundCh := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(pr)
+		for sc.Scan() {
+			if strings.HasPrefix(sc.Text(), "HARBOR_DEV_BOUND=") {
+				boundCh <- strings.TrimPrefix(sc.Text(), "HARBOR_DEV_BOUND=")
+				return
+			}
+		}
+		boundCh <- ""
+	}()
+
+	var bound string
+	select {
+	case bound = <-boundCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("HARBOR_DEV_BOUND never printed")
+	}
+	if !strings.HasPrefix(bound, "127.0.0.1:") {
+		t.Fatalf("dev listener bound %q — MUST stay loopback despite the non-loopback config bind_addr", bound)
+	}
+
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after ctx cancel")
+	}
+	_ = pw.Close()
+	cc, c := context.WithTimeout(context.Background(), 5*time.Second)
+	defer c()
+	handle.Close(cc)
+}
+
+// TestServeComposition_HonorsConfigBindAddr — the production serve posture
+// (PreferConfigBindAddr set by cmd_serve.go) resolves the operator-configured
+// `server.bind_addr` when no override is given.
+func TestServeComposition_HonorsConfigBindAddr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cfgPath := writeBindAddrCfg(t, "127.0.0.1:18443")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	signer, err := newDevSigner()
+	if err != nil {
+		t.Fatalf("newDevSigner: %v", err)
+	}
+	handle, err := serve.Boot(ctx, serve.Options{
+		ConfigPath:           cfgPath,
+		Port:                 19998, // the config bind_addr must win over the port fallback
+		Logger:               logger,
+		Stderr:               io.Discard,
+		SubcommandLabel:      "serve",
+		PreferConfigBindAddr: true,
+		AuthValidatorFactory: func(_ context.Context, _ *config.Config, red audit.Redactor, bus events.EventBus, lg *slog.Logger) (auth.Validator, error) {
+			return auth.NewValidator(signer.KeySet(), auth.WithRedactor(red), auth.WithEventBus(bus), auth.WithLogger(lg))
+		},
+		MCPDefaultIdentity: identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
+		DisplayName:        "harbor serve",
+		InstanceID:         serveInstanceID(),
+		BuildVersion:       HarborVersion,
+		BuildCommit:        "dev",
+		BuildLLMSnapshot:   newLLMSnapshotBuilder(true),
+	})
+	if err != nil {
+		t.Fatalf("serve.Boot (serve composition): %v", err)
+	}
+	t.Cleanup(func() {
+		cc, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		handle.Close(cc)
+	})
+	if got := handle.BindAddr(); got != "127.0.0.1:18443" {
+		t.Fatalf("serve bind address = %q, want the config's 127.0.0.1:18443 (PreferConfigBindAddr)", got)
 	}
 }

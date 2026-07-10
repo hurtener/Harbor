@@ -97,24 +97,21 @@ fi
 # F6 — Runtime exposes mcp.servers.list.
 # ----------------------------------------------------------------------------
 
-# F6.1 — cmd_dev.go constructs the MCPSurface from the boot-time
-# mcpRegistry.
+# F6.1 — the promoted mux builder constructs the MCPSurface from the
+# boot-time mcpRegistry (single-homed; both callers consume it).
 assert_grep_present 'protocol\.NewMCPSurface\(protocol\.MCPDeps\{' \
-    "cmd/harbor/cmd_dev.go" \
-    "phase 83w F6: bootDevStack constructs MCPSurface"
+    "internal/runtime/serve/mux.go" \
+    "phase 83w F6: the serve mux builder constructs MCPSurface"
 
-# F6.2 — bootDevStack threads the MCPSurface into transports.NewMux.
+# F6.2 — the mux builder threads the MCPSurface into transports.NewMux.
 assert_grep_present 'transports\.WithMCPSurface\(mcpSurface\)' \
-    "cmd/harbor/cmd_dev.go" \
-    "phase 83w F6: bootDevStack wires MCPSurface into transports.NewMux"
+    "internal/runtime/serve/mux.go" \
+    "phase 83w F6: the serve mux builder wires MCPSurface into transports.NewMux"
 
-# F6.3 — devstack.Assemble mirrors per D-094.
-assert_grep_present 'protocol\.NewMCPSurface\(protocol\.MCPDeps\{' \
+# F6.3 — the devstack thin-caller consumes the promoted mux builder.
+assert_grep_present 'serve\.BuildMux' \
     "harbortest/devstack/devstack.go" \
-    "phase 83w F6: devstack.Assemble constructs MCPSurface (D-094 mirror)"
-assert_grep_present 'transports\.WithMCPSurface\(mcpSurface\)' \
-    "harbortest/devstack/devstack.go" \
-    "phase 83w F6: devstack.Assemble wires MCPSurface (D-094 mirror)"
+    "phase 83w F6: devstack.Assemble consumes the promoted mux builder (which mounts MCPSurface — single-homed)"
 
 # F6.4 — mcpconsole gained a NoOAuthAccessor for the V1 dev posture
 # (no OAuth providers configured).

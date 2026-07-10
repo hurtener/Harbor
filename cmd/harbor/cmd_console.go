@@ -52,6 +52,8 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 )
 
 // defaultConsoleConfig is the embedded zero-config default `harbor
@@ -179,22 +181,36 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 			"harbor console: no harbor.yaml found — booting the embedded zero-config default (in-memory drivers + mock LLM). Pass --config for a real deployment.")
 	}
 
-	stack, err := bootDevStack(ctx, devBootOptions{
-		cfgPath:         cfgPath,
-		port:            port,
-		bindAddr:        bindAddrOverride,
-		allowMock:       allowMock,
-		logger:          logger,
-		stderr:          cmd.ErrOrStderr(),
-		serveConsole:    true,
-		subcommandLabel: "console",
+	// The mock-LLM escape hatch is dev policy: print the banner + capture the
+	// posture flag (the embedded zero-config default flips allowMock=true).
+	registerMockIfDevAllowMock(allowMock, cmd.ErrOrStderr())
+
+	comp, err := newDevComposition(devCompositionOptions{
+		allowMock:    allowMock,
+		serveConsole: true,
 	})
 	if err != nil {
 		return emitCLIError(cmd, bootErrorToCLIError("console", err))
 	}
-	defer stack.close(context.Background())
+	bootOpts := comp.serveOptions(cfgPath, port, bindAddrOverride, "console", logger, cmd.ErrOrStderr())
 
-	if err := stack.serve(ctx); err != nil {
+	stack, err := serve.Boot(ctx, bootOpts)
+	if err != nil {
+		return emitCLIError(cmd, bootErrorToCLIError("console", err))
+	}
+	defer stack.Close(context.Background())
+
+	// Mint + print the ephemeral dev token (dev policy — production mints none).
+	if tErr := comp.printDevToken("console", logger, cmd.ErrOrStderr()); tErr != nil {
+		return emitCLIError(cmd, CLIError{
+			Subcommand: "console",
+			Message:    fmt.Sprintf("dev token: %v", tErr),
+			Code:       CodeBootInternal,
+			Hint:       "this is an internal signing failure; re-run `harbor console`",
+		})
+	}
+
+	if err := stack.Serve(ctx); err != nil {
 		return emitCLIError(cmd, CLIError{
 			Subcommand: "console",
 			Message:    fmt.Sprintf("console server stopped: %v", err),

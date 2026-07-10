@@ -7,7 +7,7 @@
 // `tool_search`), the shared run-start projection
 // (`projection.ActivePlannerCatalogView`), and — per §17.8 — the REAL
 // `cmd/harbor-mcptest-stdio` MCP subprocess fixture attached through the
-// production `devstack.NewMCPConnectionAttacher` concrete, so the fixture's
+// production `serve.NewMCPConnectionAttacher` concrete, so the fixture's
 // `echo` tool reaches the catalog exactly as it would in `harbor dev`.
 //
 // What this test proves:
@@ -35,7 +35,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/harbortest/devstack"
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
@@ -50,6 +49,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/serve"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
@@ -112,7 +112,7 @@ func newLEHarness(t *testing.T, stdioAllowlist []string) *leHarness {
 
 	mcpReg := mcpdrv.NewRegistry()
 	coord := pauseresume.New(pauseresume.WithBus(bus))
-	attacher := devstack.NewMCPConnectionAttacher(cat, mcpReg, bus, nil, leID(leTenant), nil)
+	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil, leID(leTenant), nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithConnectionAttacher(attacher),

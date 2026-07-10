@@ -51,7 +51,7 @@ else
     ok 'phase 111f: internal/search has NO protocol/auth import (D-203 direction rule)'
 fi
 assert_file internal/server/search_scope.go 'phase 111f follow-up: the server-owned search ScopeChecker'
-assert_grep_present 'server\.SearchAdminScopeFromAuth' cmd/harbor/cmd_dev.go \
+assert_grep_present 'server\.SearchAdminScopeFromAuth' internal/runtime/serve/mux.go \
     'phase 111f follow-up: cmd injects the server-owned search ScopeChecker'
 
 # --- 2. Telemetry assembled in production ----------------------------------
@@ -78,7 +78,7 @@ assert_grep_present 'AuthorizeResolve\(ctx context\.Context, pending PendingInfo
 assert_grep_present 'Authorizer ResolveAuthorizer' internal/tools/approval/gate.go \
     'phase 111f: GateDeps carries the injected authorizer'
 assert_file internal/server/approval_authorizer.go 'phase 111f: the Protocol-side adapter (server-owned)'
-assert_grep_present 'server\.NewProtocolScopeAuthorizer\(toolapproval\.NewIdentityAuthorizer\(\)\)' cmd/harbor/cmd_dev.go \
+assert_grep_present 'server\.NewProtocolScopeAuthorizer\(toolapproval\.NewIdentityAuthorizer\(\)\)' internal/runtime/serve/serve.go \
     'phase 111f: cmd injects the wire-side authorizer at gate assembly'
 assert_grep_present 'server\.NewProtocolScopeAuthorizer\(toolapproval\.NewIdentityAuthorizer\(\)\)' harbortest/devstack/devstack.go \
     'phase 111f: devstack mirrors the production injection'

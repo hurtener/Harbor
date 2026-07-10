@@ -1,4 +1,4 @@
-package main
+package serve
 
 import (
 	"context"
@@ -12,13 +12,13 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// newSessionArtifactsTestDriver builds a minimal perTaskRunLoopDriver
+// newSessionArtifactsTestDriver builds a minimal RunLoopDriver
 // carrying only the fields resolveSessionArtifacts reads — a real
 // in-memory artifact store (no mock at the seam, §17) and a discard
 // logger.
-func newSessionArtifactsTestDriver(t *testing.T, store artifacts.ArtifactStore) *perTaskRunLoopDriver {
+func newSessionArtifactsTestDriver(t *testing.T, store artifacts.ArtifactStore) *RunLoopDriver {
 	t.Helper()
-	return &perTaskRunLoopDriver{
+	return &RunLoopDriver{
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		artifactStore: store,
 	}

@@ -85,7 +85,7 @@ assert_file docs/recipes/steer-and-resume-a-run.md 'phase 111b: the steer-and-re
 
 assert_grep_present 'func CallbackHandler\(providers map\[string\]OAuthProvider, opts \.\.\.CallbackOption\) http\.Handler' \
     internal/tools/auth/callback.go 'phase 111b: exported CallbackHandler signature'
-assert_grep_present 'CallbackRoutePattern' cmd/harbor/cmd_dev.go \
+assert_grep_present 'CallbackRoutePattern' internal/runtime/serve/serve.go \
     'phase 111b: harbor dev mounts the callback route'
 assert_grep_present 'CallbackRoutePattern' harbortest/devstack/devstack.go \
     'phase 111b: devstack mirrors the callback mount'

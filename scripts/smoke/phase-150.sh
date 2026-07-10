@@ -111,11 +111,11 @@ assert_grep_present 'RunCompletionPayloadFormatVersion = 1' \
 
 # Both run-loop driver twins resolve the hook via the ONE shared projection.
 assert_grep_present 'projection.ActiveRunCompletionHook' \
-    cmd/harbor/cmd_dev_runloop.go \
+    internal/runtime/serve/runloop.go \
     'phase 150: the production driver resolves the hook via the shared projection'
-assert_grep_present 'projection.ActiveRunCompletionHook' \
+assert_grep_present 'serve.NewRunLoopDriver' \
     harbortest/devstack/devstack.go \
-    'phase 150: the devstack twin resolves the hook via the shared projection (17.6 twin discipline)'
+    'phase 150: the devstack twin consumes the promoted driver (which resolves the hook via the shared projection — single-homed)'
 
 # The EMBED run type is covered too: RunOnce + the devstack twin apply the
 # SAME shared yaml projection (the silently-uncovered-embed gap the review

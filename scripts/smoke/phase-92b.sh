@@ -23,7 +23,7 @@ assert_grep_present 'Model \*string' \
 # 2. The session-override consume seam is wired in the run loop (Store.Consume
 #    called from production).
 assert_grep_present '\.Consume\(' \
-    cmd/harbor/cmd_dev_runloop.go \
+    internal/runtime/serve/runloop.go \
     'phase 92b: session-override consume seam wired at run start'
 
 # 3. The planner carries SystemPromptOverride (the session replace).

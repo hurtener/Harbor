@@ -3,42 +3,18 @@
 #
 # Phase 159 — serve-band promotion (internal/runtime/serve). Boot-parity smoke.
 #
-# When the phase lands, this asserts the promoted serve band still answers the
-# same surfaces after the config->listener composition left package main:
+# The config→listener composition left `package main` for the importable
+# `internal/runtime/serve` package. This smoke proves the promoted band still
+# answers the same surfaces after the move:
 #   - /healthz returns 200 on the booted preflight dev server;
-#   - one canonical Protocol method round-trips (no serve-surface regression);
-#   - the D-220 posture line ("mints no token") is asserted in
-#     `harbor serve --help` output (the string lives in the help text, NOT
-#     boot output); the dev boot still prints its HARBOR_DEV_TOKEN line.
-# Deeper probing (production posture, seam behavior) lives in the in-package,
+#   - one canonical Protocol method (runtime.info) round-trips under the dev
+#     token — no serve-surface regression;
+#   - `harbor serve --help` still advertises "mints no token" (D-220 posture;
+#     the string lives in the help text, not boot output).
+#
+# The production-posture + per-seam proofs live in the in-package,
 # caller-level, and integration tests — a smoke cannot spend an LLM turn.
-# Done-definition: OK >= 2, FAIL = 0 once the phase ships.
-# Until then it SKIPs. Real assertions land with the implementation PR.
-#
-# Phase NN smoke template heritage below (kept for helper reference).
-#
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# Done-definition: OK >= 2, FAIL = 0.
 
 set -euo pipefail
 
@@ -48,17 +24,52 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase NN assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+BIN="${ROOT}/bin/harbor"
 
-skip "phase 159: smoke skeleton — serve-band promotion not yet implemented; replace with /healthz + canonical-method boot-parity assertions when the phase lands"
+# 1. /healthz answers 200 on the booted serve band (the config→listener
+#    composition is alive after leaving package main).
+assert_status 200 "$(api_url /healthz)" "phase 159: /healthz 200 on the promoted serve band"
+
+# 2. One canonical Protocol method round-trips (no serve-surface regression).
+#    The dev boot runs behind the auth validator, so discover the dev token the
+#    boot printed and authenticate. A missing token SKIPs this leg cleanly (the
+#    authenticated happy path is also covered by the integration test).
+if [[ -z "${HARBOR_DEV_TOKEN:-}" ]] && [[ -n "${HARBOR_DATA_DIR:-}" ]] && [[ -f "${HARBOR_DATA_DIR}/server.log" ]]; then
+    HARBOR_DEV_TOKEN="$(grep -m1 '^HARBOR_DEV_TOKEN=' "${HARBOR_DATA_DIR}/server.log" 2>/dev/null | sed 's/^HARBOR_DEV_TOKEN=//' || true)"
+fi
+info_url="$(api_url '/v1/control/runtime.info')"
+if [[ -n "${HARBOR_DEV_TOKEN:-}" ]] && command -v curl >/dev/null 2>&1; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -X POST -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
+        --data '{}' "${info_url}" 2>/dev/null) || code="000"
+    case "${code}" in
+        404|501|000|'')
+            skip "phase 159: runtime.info not reachable (${code:-000}) — surface absent"
+            ;;
+        200)
+            ok "phase 159: runtime.info round-trips 200 under the dev token (serve surface intact)"
+            ;;
+        *)
+            fail "phase 159: runtime.info returned ${code}, want 200"
+            ;;
+    esac
+else
+    skip "phase 159: HARBOR_DEV_TOKEN not discoverable — runtime.info round-trip covered by the integration test"
+fi
+
+# 3. `harbor serve --help` still advertises the D-220 no-mint posture.
+if [[ -x "${BIN}" ]]; then
+    help_out="$(mktemp)"
+    if "${BIN}" serve --help >"${help_out}" 2>&1; then
+        assert_grep_present 'mints no token' "${help_out}" \
+            'phase 159: harbor serve still advertises "mints no token" (D-220 intact)'
+    else
+        skip 'phase 159: harbor serve --help unavailable in this build'
+    fi
+    rm -f "${help_out}"
+else
+    skip 'phase 159: harbor binary not built — serve --help posture check skipped'
+fi
 
 smoke_summary

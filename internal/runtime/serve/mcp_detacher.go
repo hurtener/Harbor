@@ -1,4 +1,4 @@
-package main
+package serve
 
 import (
 	"context"
@@ -27,27 +27,27 @@ import (
 // The harbortest/devstack helper carries a mirror of this concrete so
 // integration tests exercise the same real detach path.
 
-// devMCPConnectionDetacher implements projection.ConnectionDetacher against
+// MCPConnectionDetacher implements projection.ConnectionDetacher against
 // the LIVE catalog + registry. Concurrent reuse: the collaborators are set
 // once at construction; the type holds no mutable state (the registry +
 // catalog own their own synchronisation).
-type devMCPConnectionDetacher struct {
+type MCPConnectionDetacher struct {
 	catalog  tools.ToolCatalog
 	registry *mcpdrv.Registry
 	logger   *slog.Logger
 }
 
-// newDevMCPConnectionDetacher builds the production detacher. catalog and
+// NewMCPConnectionDetacher builds the production detacher. catalog and
 // registry are mandatory (the reconcile is a no-op without them).
-func newDevMCPConnectionDetacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, logger *slog.Logger) *devMCPConnectionDetacher {
-	return &devMCPConnectionDetacher{catalog: catalog, registry: registry, logger: logger}
+func NewMCPConnectionDetacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, logger *slog.Logger) *MCPConnectionDetacher {
+	return &MCPConnectionDetacher{catalog: catalog, registry: registry, logger: logger}
 }
 
-// bootDeclaredMCPServerNames returns the names of every MCP server declared in
+// BootDeclaredMCPServerNames returns the names of every MCP server declared in
 // the boot yaml (`tools.mcp_servers[].name`) — the set the remove verb rejects
 // and the run-start reconcile never detaches (boot-declared servers are not
 // revisioned state).
-func bootDeclaredMCPServerNames(cfg *config.Config) []string {
+func BootDeclaredMCPServerNames(cfg *config.Config) []string {
 	if cfg == nil {
 		return nil
 	}
@@ -60,10 +60,10 @@ func bootDeclaredMCPServerNames(cfg *config.Config) []string {
 	return out
 }
 
-// bootDeclaredMCPServerSet returns the boot-declared MCP server names as a set
+// BootDeclaredMCPServerSet returns the boot-declared MCP server names as a set
 // for the run-start reconcile's O(1) skip check.
-func bootDeclaredMCPServerSet(cfg *config.Config) map[string]struct{} {
-	names := bootDeclaredMCPServerNames(cfg)
+func BootDeclaredMCPServerSet(cfg *config.Config) map[string]struct{} {
+	names := BootDeclaredMCPServerNames(cfg)
 	if len(names) == 0 {
 		return nil
 	}
@@ -79,7 +79,7 @@ func bootDeclaredMCPServerSet(cfg *config.Config) map[string]struct{} {
 // single-agent dev wiring, but the future multi-agent attach leg must scope
 // the attached set to the reconciling agent (see the
 // projection.ConnectionDetacher interface doc).
-func (d *devMCPConnectionDetacher) AttachedSources(_ context.Context) []string {
+func (d *MCPConnectionDetacher) AttachedSources(_ context.Context) []string {
 	if d.registry == nil {
 		return nil
 	}
@@ -90,7 +90,7 @@ func (d *devMCPConnectionDetacher) AttachedSources(_ context.Context) []string {
 // supports source deregistration — the optional CatalogSourceDeregisterer
 // companion) and from the MCP registry, closing its transport gracefully. An
 // already-gone source is a no-op (ErrServerNotFound is swallowed — idempotent).
-func (d *devMCPConnectionDetacher) Detach(ctx context.Context, source string) error {
+func (d *MCPConnectionDetacher) Detach(ctx context.Context, source string) error {
 	if dc, ok := d.catalog.(tools.CatalogSourceDeregisterer); ok {
 		removed := dc.DeregisterSource(tools.ToolSourceID(source))
 		if d.logger != nil {

@@ -8,7 +8,7 @@
 // know both the concrete registry and the Protocol surface — and
 // translates the registry's lifecycle sentinels into the protocol-side
 // sentinels the surface's error mapper understands.
-package main
+package serve
 
 import (
 	"context"
@@ -20,18 +20,18 @@ import (
 	"github.com/hurtener/Harbor/internal/sessions"
 )
 
-// sessionEnsurerAdapter wraps a *sessions.Registry as a
+// SessionEnsurerAdapter wraps a *sessions.Registry as a
 // protocol.SessionEnsurer. Immutable after construction; the wrapped
 // registry is itself concurrency-safe, so the adapter is too.
-type sessionEnsurerAdapter struct {
+type SessionEnsurerAdapter struct {
 	reg *sessions.Registry
 }
 
-// newSessionEnsurerAdapter builds the adapter. A nil registry would be a
+// NewSessionEnsurerAdapter builds the adapter. A nil registry would be a
 // wiring bug; the caller (cmd_dev bootDevStack) always passes the
 // constructed registry.
-func newSessionEnsurerAdapter(reg *sessions.Registry) *sessionEnsurerAdapter {
-	return &sessionEnsurerAdapter{reg: reg}
+func NewSessionEnsurerAdapter(reg *sessions.Registry) *SessionEnsurerAdapter {
+	return &SessionEnsurerAdapter{reg: reg}
 }
 
 // EnsureSession implements protocol.SessionEnsurer. It calls the
@@ -40,7 +40,7 @@ func newSessionEnsurerAdapter(reg *sessions.Registry) *sessionEnsurerAdapter {
 // ControlSurface's mapSessionEnsureError reaches a stable Protocol code.
 // An unclassified error is wrapped (not swallowed) so the surface's
 // catch-all maps it to CodeRuntimeError (CLAUDE.md §5 — fail loud).
-func (a *sessionEnsurerAdapter) EnsureSession(ctx context.Context, ident identity.Identity) error {
+func (a *SessionEnsurerAdapter) EnsureSession(ctx context.Context, ident identity.Identity) error {
 	_, err := a.reg.EnsureOpen(ctx, ident)
 	switch {
 	case err == nil:
@@ -59,4 +59,4 @@ func (a *sessionEnsurerAdapter) EnsureSession(ctx context.Context, ident identit
 }
 
 // Compile-time assertion: the adapter satisfies the Protocol seam.
-var _ protocol.SessionEnsurer = (*sessionEnsurerAdapter)(nil)
+var _ protocol.SessionEnsurer = (*SessionEnsurerAdapter)(nil)

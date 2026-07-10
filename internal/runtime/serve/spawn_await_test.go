@@ -14,7 +14,7 @@
 // D-026 projection, concurrent reuse) is tested in
 // internal/runtime/dispatch/dispatch_test.go, where the code now lives.
 
-package main
+package serve
 
 import (
 	"context"
@@ -87,16 +87,16 @@ func TestSpawnThenAwait_BackgroundDrivenEndToEnd(t *testing.T) {
 		finishGoalImmediately: true,
 		finishPayload:         map[string]any{"answer": "child done"},
 	}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:             bus,
-		runLoop:         rl,
-		planner:         p,
-		tasks:           reg,
-		driveBackground: true,
-		executor:        exec,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:             bus,
+		RunLoop:         rl,
+		Planner:         p,
+		Tasks:           reg,
+		DriveBackground: true,
+		Executor:        exec,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)
@@ -161,16 +161,16 @@ func TestSpawnTask_RetainTurn_BlocksAndReturnsOutcome(t *testing.T) {
 	}
 	exec := newSpawnAwaitTestExecutor(t, reg, 32*1024, 4)
 	p := &driverTestPlanner{finishGoalImmediately: true, finishPayload: map[string]any{"answer": "retained answer"}}
-	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
-		bus:             bus,
-		runLoop:         rl,
-		planner:         p,
-		tasks:           reg,
-		driveBackground: true,
-		executor:        exec,
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		Bus:             bus,
+		RunLoop:         rl,
+		Planner:         p,
+		Tasks:           reg,
+		DriveBackground: true,
+		Executor:        exec,
 	})
 	if err != nil {
-		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
 	if err := driver.Start(context.Background()); err != nil {
 		t.Fatalf("driver.Start: %v", err)

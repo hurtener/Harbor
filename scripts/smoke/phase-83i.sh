@@ -50,15 +50,15 @@ assert_grep_present 'type PlannerView struct' "internal/tools/planner_view.go" \
 # ----------------------------------------------------------------------------
 # runOne wiring.
 # ----------------------------------------------------------------------------
-assert_grep_present 'Catalog:\s*catalogView' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'Catalog:\s*catalogView' "internal/runtime/serve/runloop.go" \
     "runOne populates RunContext.Catalog"
-assert_grep_present 'Trajectory:\s*traj' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'Trajectory:\s*traj' "internal/runtime/serve/runloop.go" \
     "runOne populates RunContext.Trajectory"
-assert_grep_present 'Emit:\s*emit' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'Emit:\s*emit' "internal/runtime/serve/runloop.go" \
     "runOne populates RunContext.Emit closure"
-assert_grep_present 'ToolExecutor:\s*d\.executor' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'ToolExecutor:\s*d\.executor' "internal/runtime/serve/runloop.go" \
     "runOne sets RunSpec.ToolExecutor"
-assert_grep_present 'd\.memory\.AddTurn' "cmd/harbor/cmd_dev_runloop.go" \
+assert_grep_present 'd\.memory\.AddTurn' "internal/runtime/serve/runloop.go" \
     "memory.AddTurn writeback on FinishGoal"
 
 # ----------------------------------------------------------------------------
@@ -70,11 +70,11 @@ assert_grep_present 'd\.memory\.AddTurn' "cmd/harbor/cmd_dev_runloop.go" \
 # dispatch.NewToolExecutor — the same instance production reads).
 assert_grep_present 'dispatch\.NewToolExecutor' "internal/runtime/assemble/assemble.go" \
     "the assembly wires the promoted executor (110a / D-194 via D-197)"
-assert_grep_present 'executor:\s*core\.Executor' "harbortest/devstack/devstack.go" \
+assert_grep_present 'Executor:\s*core\.Executor' "harbortest/devstack/devstack.go" \
     "devstack consumes the assembly's executor (110a / D-194 via D-197)"
-assert_grep_present 'tools\.NewPlannerView' "harbortest/devstack/devstack.go" \
+assert_grep_present 'tools\.NewPlannerView' "internal/runtime/serve/runloop.go" \
     "devstack wires the promoted catalog view (110a / D-194)"
-assert_grep_present 'd\.memory\.AddTurn' "harbortest/devstack/devstack.go" \
+assert_grep_present 'd\.memory\.AddTurn' "internal/runtime/serve/runloop.go" \
     "devstack mirror carries memory writeback (D-094)"
 
 smoke_summary
