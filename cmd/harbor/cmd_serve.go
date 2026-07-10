@@ -148,6 +148,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Logger:          logger,
 		Stderr:          cmd.ErrOrStderr(),
 		SubcommandLabel: "serve",
+		// Production honors the operator-configured `server.bind_addr`
+		// (which may be non-loopback). Dev/console never set this opt-in —
+		// they stay loopback-only regardless of the yaml.
+		PreferConfigBindAddr: true,
 		// The PRODUCTION auth path: build the JWKS-backed validator from the
 		// operator's identity config. No dev-only seam is composed, so no
 		// dev surface (bootstrap, drafts, rotate, Console) is mounted.
@@ -157,8 +161,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			UserID:    DevUser,
 			SessionID: DevSession,
 		},
-		DisplayName:  "harbor dev",
-		InstanceID:   devInstanceID(),
+		DisplayName:  "harbor serve",
+		InstanceID:   serveInstanceID(),
 		BuildVersion: HarborVersion,
 		BuildCommit:  "dev",
 		// production demands a real LLM provider (allowMock=false): the gate
@@ -181,12 +185,22 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// serveInstanceID mints a stable-per-process instance identifier for the
+// production Runtime. A Console attached to multiple Runtimes keys each
+// attachment by it.
+func serveInstanceID() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return "harbor-serve-" + h
+	}
+	return "harbor-serve"
+}
+
 // newJWKSValidatorFactory returns the production auth-validator factory
-// `harbor serve` injects into bootDevStack. It projects the operator's
-// identity config onto a JWKS-backed Validator (URL or file source),
-// wiring the assembled redactor / bus / logger. The initial JWKS fetch
-// runs synchronously inside the projection, so a bad source fails the
-// boot loud.
+// `harbor serve` injects into the promoted serve constructor
+// (serve.Boot). It projects the operator's identity config onto a
+// JWKS-backed Validator (URL or file source), wiring the assembled
+// redactor / bus / logger. The initial JWKS fetch runs synchronously
+// inside the projection, so a bad source fails the boot loud.
 func newJWKSValidatorFactory() func(context.Context, *config.Config, audit.Redactor, events.EventBus, *slog.Logger) (auth.Validator, error) {
 	return func(ctx context.Context, cfg *config.Config, red audit.Redactor, bus events.EventBus, logger *slog.Logger) (auth.Validator, error) {
 		return auth.NewJWKSValidator(ctx, cfg.Identity, auth.ValidatorDeps{

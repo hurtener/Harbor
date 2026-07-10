@@ -201,7 +201,7 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 	defer stack.Close(context.Background())
 
 	// Mint + print the ephemeral dev token (dev policy — production mints none).
-	if tErr := comp.printDevToken(logger, cmd.ErrOrStderr()); tErr != nil {
+	if tErr := comp.printDevToken("console", logger, cmd.ErrOrStderr()); tErr != nil {
 		return emitCLIError(cmd, CLIError{
 			Subcommand: "console",
 			Message:    fmt.Sprintf("dev token: %v", tErr),

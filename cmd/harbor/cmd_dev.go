@@ -225,9 +225,11 @@ func runDev(cmd *cobra.Command, _ []string) error {
 
 	// Mint + print the ephemeral dev token so an operator can curl the
 	// Protocol surface without writing JWT-signing code. Production
-	// (`harbor serve`) mints nothing. The token is stable across hot-reload
-	// reboots (the same signer backs every reboot), so we print it once here.
-	if tErr := comp.printDevToken(logger, cmd.ErrOrStderr()); tErr != nil {
+	// (`harbor serve`) mints nothing. The same signer backs every hot-reload
+	// reboot (so the validator keeps accepting old tokens), and the
+	// supervisor's onReboot hook below re-mints + re-prints a fresh token per
+	// reboot so a long-lived dev session never outlives the printed expiry.
+	if tErr := comp.printDevToken("dev", logger, cmd.ErrOrStderr()); tErr != nil {
 		stack.Close(context.Background())
 		return emitCLIError(cmd, CLIError{
 			Subcommand: "dev",
@@ -270,6 +272,19 @@ func runDev(cmd *cobra.Command, _ []string) error {
 			Code:       CodeBootInternal,
 			Hint:       "check cli.dev_hot_reload in harbor.yaml; pass --no-hot-reload to bypass",
 		})
+	}
+	// Every reboot re-announces the dev posture: the mock banner (when the
+	// escape hatch fired) prints on EVERY boot, and a fresh dev token is
+	// re-minted + re-printed so its 24h expiry restarts per reboot. A token
+	// re-mint failure is logged loud but does not kill the reboot — the
+	// previously printed token (same signer) keeps validating.
+	stderr := cmd.ErrOrStderr()
+	supervisor.onReboot = func(_ *serve.Handle) {
+		registerMockIfDevAllowMock(allowMock, stderr)
+		if tErr := comp.printDevToken("dev", logger, stderr); tErr != nil {
+			logger.Error("harbor dev: dev-token re-mint after hot-reload failed (the previously printed token remains valid)",
+				slog.String("error", tErr.Error()))
+		}
 	}
 	defer func() {
 		current := supervisor.CurrentStack()

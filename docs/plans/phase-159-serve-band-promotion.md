@@ -250,9 +250,11 @@ None.
 ## Public API surface
 
 - `serve.Boot(ctx context.Context, opts serve.Options) (*serve.Handle, error)`
-  — the promoted constructor (renamed `bootDevStack`; returns the partial
-  handle on error, the D-197 lifecycle contract; REQUIRES a non-nil
-  auth-validator factory).
+  — the promoted constructor (renamed `bootDevStack`; on any boot error every
+  already-opened subsystem is drained in-constructor and `nil` is returned —
+  the caller never receives a partial handle; the D-197 partial-`Stack` return
+  stays one layer DOWN on `assemble.Assemble`, whose partial stack `Boot`'s
+  rollback drains; REQUIRES a non-nil auth-validator factory).
 - `serve.Options` — the promoted `devBootOptions`: config, logger, the
   REQUIRED `AuthValidatorFactory`, the caller-side injection seams (extra
   pre-CORS routes, transports auth-surface option, LLM snapshot override,
@@ -270,20 +272,26 @@ None.
 - **Unit:** nil-factory → loud error, no listener; shared-surfaces-only
   posture table (no dev route / rotate surface / Console mount unless
   injected); per-seam injection tests (route, auth-surface, LLM snapshot
-  override, post-boot hook each observed); `Boot` partial-failure returns the
-  partial `Handle` for `Close` to drain (the D-197 contract); `Serve`/`Close`
+  override, post-boot hook each observed); `Boot` partial-failure drains
+  in-constructor and returns nil (the rollback drains `assemble.Assemble`'s
+  partial stack — the D-197 contract one layer down); `Serve`/`Close`
   idempotency; the auth-factory error path (a factory that errors fails `Boot`
   loud, never a silent unauthenticated fallback). Caller-level `cmd/harbor`
   tests: dev surfaces answer under the dev composition, 404 under the serve
   composition.
 - **Integration:** `test/integration/` — boot the promoted `serve.Boot` with
   real drivers (`state/inmem`, `events/inmem`, `audit/patterns`) + an injected
-  JWKS factory, drive `/healthz` + one canonical Protocol method over the
-  wire, assert identity propagation through the auth middleware to a
-  scope-checked read; a missing-identity request is rejected (≥1 failure
-  mode); prove the devstack thin-caller and the cmd thin-caller mount the SAME
-  surface set (the anti-drift assertion — the reason the block was
-  single-homed).
+  JWKS factory. As built, the POSITIVE identity-propagation leg (a JWKS-signed
+  token verified through the middleware to a scope-checked read) lives in the
+  caller-level `cmd/harbor/cmd_serve_test.go` production-boot test; the
+  integration test carries the missing-identity 401 rejection + the
+  cmd↔devstack same-surface-set anti-drift assertion, and the in-package
+  D-025 test carries the authenticated per-identity echo. Design intent:
+  drive `/healthz` + one canonical Protocol method over the wire, assert
+  identity propagation through the auth middleware to a scope-checked read;
+  a missing-identity request is rejected (≥1 failure mode); prove the
+  devstack thin-caller and the cmd thin-caller mount the SAME surface set
+  (the anti-drift assertion — the reason the block was single-homed).
 - **Conformance:** N/A — no persistence-driver seam changes; the promoted band
   composes existing drivers.
 - **Concurrency / leak:** D-025 — N≥100 concurrent requests against one served
@@ -311,7 +319,10 @@ None.
 
 ## Coverage target
 
-- `internal/runtime/serve`: 85%
+- `internal/runtime/serve`: 85% (as built: 85.5% — measured via
+  `go test -coverprofile` on the package after the review-round test
+  additions; the pre-review 63.6% shipped erroneously against this gate and
+  was corrected in the same PR)
 - `cmd/harbor`: existing package target maintained (the promotion removes code
   from `cmd/harbor`; coverage on the remaining dev-only policy must not drop
   below the current CLI target).
@@ -406,3 +417,34 @@ The phase shipped as specified. Three faithful realizations worth recording:
    `serve.NewEnricher` (deleting the kit's driver + glue mirror files). The
    anti-drift integration test asserts the cmd thin-caller and the devstack
    thin-caller mount the same shared surface set.
+
+## Promotion-found bug fixed in-PR: the bind-address discriminator
+
+The pre-promotion code honored the operator-configured `server.bind_addr`
+ONLY on the production path (`authValidatorFactory != nil` — the old
+production/dev discriminator). Making the factory mandatory for ALL callers
+collapsed that gate, so `cfg.Server.BindAddr` (always non-empty after
+`config.Load`'s defaulting) silently won over the dev caller's loopback
+`127.0.0.1:<port>`: `harbor dev --port N` ignored the flag, and a dev boot
+against a serve-shaped yaml (`bind_addr: 0.0.0.0:...`) would have exposed the
+dev-token stack off-box. Fixed in this PR by an explicit
+`serve.Options.PreferConfigBindAddr` opt-in that ONLY `cmd_serve.go` sets;
+dev/console stay loopback-only regardless of the yaml. Regression pins: the
+in-package `TestBoot_PreferConfigBindAddr_InPackage` plus the caller-level
+`TestDevComposition_HonorsPortFlag_IgnoresConfigBindAddr` /
+`TestDevComposition_LiveListenerStaysLoopback_NonLoopbackConfig` (a LIVE
+listener bind asserting the loopback prefix) /
+`TestServeComposition_HonorsConfigBindAddr`.
+
+## Follow-ups
+
+- **Boot↔devstack composition-band parity pin (driver options).** The kit
+  composes the promoted building blocks (`serve.BuildMux` +
+  `serve.NewRunLoopDriver` + the promoted glue) rather than calling
+  `serve.Boot`, so ONE residual mirror remains: the `RunLoopDriverOptions` /
+  `MuxInput` field sets each caller passes. The mounted-surface half is pinned
+  by the anti-drift integration test; a follow-up should add the
+  driver-options half — a parity pin asserting the two callers populate the
+  same `RunLoopDriverOptions` field set (e.g. reflective field-name
+  comparison), so a field added to one composition cannot silently skip the
+  other. Tracked for the post-160 checkpoint audit.

@@ -93,49 +93,48 @@ fi
 # and are not part of the alias-only forwarding surface (CLAUDE.md §5).
 #
 # D-273 amends D-205 item 1 from "exactly ONE func" to an ENUMERATED
-# allow-list of exactly TWO: sdk/tools/inproc.RegisterFunc (the first
-# generic-forward carve-out) and sdk/assemble.RunTyped (the second,
-# phase 144). Both exist because Go cannot express a generic function
-# as a `var` forward. The gate is FUNC-level, not file-level: a func
-# declaration in any THIRD file fails, AND a SECOND func (or method)
-# inside an allow-listed file fails — behavior cannot silently accrete
-# inside an already-allow-listed file. Additions stay decision-gated.
-allowed_func_files='sdk/tools/inproc/inproc.go
-sdk/assemble/runtyped.go'
+# allow-list. The list below is the SINGLE source: each entry is
+# `file|name-regex|name|func-count` — the file-set constraint and the
+# per-file func-count are both DERIVED from it, so a later decision-gated
+# addition (a new facade package with a named forward set) appends ONE
+# entry instead of rewriting the constraints. The gate stays FUNC-level:
+# a func declaration in any un-listed file fails, AND extra funcs inside
+# an allow-listed file fail — behavior cannot silently accrete.
+allowed_func_specs='sdk/tools/inproc/inproc.go|^func RegisterFunc\[|RegisterFunc|1
+sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped|1'
+
+allowed_func_files=$(echo "${allowed_func_specs}" | cut -d'|' -f1)
+allowed_file_count=$(echo "${allowed_func_specs}" | grep -c '^')
 
 func_files=$(grep -lE '^func ' -r sdk/ --include='*.go' --exclude='*_test.go' | sed 's#^\./##' | sort -u) || func_files=""
 unexpected_func_files=$(comm -23 <(echo "${func_files}") <(echo "${allowed_func_files}" | sort -u))
 if [ -z "${unexpected_func_files}" ]; then
-    ok 'phase 112a: no func bodies in the facade outside the enumerated two-func allow-list'
+    ok 'phase 112a: no func bodies in the facade outside the enumerated allow-list'
 else
     fail "phase 112a: found func declarations outside the enumerated allow-list — the facade must stay forwards-only (or the allow-list is stale): ${unexpected_func_files}"
 fi
-if [ "$(echo "${func_files}" | grep -c '^')" -eq 2 ]; then
-    ok 'phase 112a: EXACTLY two func-bearing files under sdk/ (the enumerated generic-forward allow-list)'
+if [ "$(echo "${func_files}" | grep -c '^')" -eq "${allowed_file_count}" ]; then
+    ok "phase 112a: EXACTLY ${allowed_file_count} func-bearing file(s) under sdk/ (the enumerated generic-forward allow-list)"
 else
-    fail "phase 112a: expected exactly 2 func-bearing files under sdk/, found $(echo "${func_files}" | grep -c '^'): ${func_files}"
+    fail "phase 112a: expected exactly ${allowed_file_count} func-bearing files under sdk/, found $(echo "${func_files}" | grep -c '^'): ${func_files}"
 fi
 
-# Func-level check: each allow-listed file declares EXACTLY ONE func
-# (methods start with `^func ` too, so they are counted) and that one
-# declaration IS the enumerated generic forward by name. A sneaky
-# helper appended to an allow-listed file fails here.
-assert_single_enumerated_func() {
-    local f="$1" want_re="$2" want_name="$3"
-    local count
+# Func-level check: each allow-listed file declares EXACTLY its enumerated
+# func count (methods start with `^func ` too, so they are counted) and the
+# named forward is present. A sneaky helper appended to an allow-listed file
+# fails here.
+while IFS='|' read -r f want_re want_name want_count; do
     count=$(grep -cE '^func ' "$f") || count=0
-    if [ "${count}" -ne 1 ]; then
-        fail "phase 112a: ${f} declares ${count} func bodies, want EXACTLY 1 (the enumerated forward ${want_name}) — behavior must not accrete inside an allow-listed file"
-        return
+    if [ "${count}" -ne "${want_count}" ]; then
+        fail "phase 112a: ${f} declares ${count} func bodies, want EXACTLY ${want_count} (the enumerated forward ${want_name}) — behavior must not accrete inside an allow-listed file"
+        continue
     fi
     if grep -qE "${want_re}" "$f"; then
-        ok "phase 112a: ${f} declares exactly ONE func and it is the enumerated forward ${want_name}"
+        ok "phase 112a: ${f} declares its enumerated func count (${want_count}) incl. the forward ${want_name}"
     else
-        fail "phase 112a: ${f}'s single func is NOT the enumerated forward ${want_name}"
+        fail "phase 112a: ${f} does NOT declare the enumerated forward ${want_name}"
     fi
-}
-assert_single_enumerated_func sdk/tools/inproc/inproc.go '^func RegisterFunc\[' 'RegisterFunc'
-assert_single_enumerated_func sdk/assemble/runtyped.go '^func RunTyped\[' 'RunTyped'
+done <<< "${allowed_func_specs}"
 
 # --- 5. The integrity test slice passes under -race --------------------------
 

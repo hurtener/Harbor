@@ -91,6 +91,7 @@ func (c *devComposition) serveOptions(cfgPath string, port int, bindAddr, label 
 		InstanceID:       devInstanceID(),
 		BuildVersion:     HarborVersion,
 		BuildCommit:      "dev",
+		DevAllowMock:     c.allowMock,
 		BuildLLMSnapshot: newLLMSnapshotBuilder(c.allowMock),
 		BuildAuthSurface: func(red audit.Redactor, bus events.EventBus, lg *slog.Logger) (*auth.RotateSurface, error) {
 			// The dev signer is the V1 auth.TokenIssuer; the redactor + bus
@@ -128,7 +129,10 @@ func (c *devComposition) extraRoutes() serve.ExtraRoutesFunc {
 		closers = append(closers, draftStore.Close)
 		draftHandler, err := devdraft.NewHandler(draftStore, m.Logger)
 		if err != nil {
-			return nil, fmt.Errorf("devdraft: handler: %w", err)
+			// Return the closers accumulated so far ALONGSIDE the error so
+			// the boot rollback drains the already-constructed draft store
+			// (Boot appends the returned closers before checking the error).
+			return closers, fmt.Errorf("devdraft: handler: %w", err)
 		}
 		draftMW := auth.Middleware(m.Validator, auth.MWLogger(m.Logger))
 		m.Router.Handle(devdraft.RoutePrefix+"/", draftMW(draftHandler))
@@ -152,7 +156,9 @@ func (c *devComposition) extraRoutes() serve.ExtraRoutesFunc {
 		if c.serveConsole {
 			consoleHandler, err := newConsoleAssetHandler(m.Logger)
 			if err != nil {
-				return nil, fmt.Errorf("console assets: %w", err)
+				// Same shape: hand back the accumulated closers so the boot
+				// rollback drains the draft store constructed above.
+				return closers, fmt.Errorf("console assets: %w", err)
 			}
 			m.Router.Handle("/", consoleHandler)
 		}
@@ -184,14 +190,16 @@ func (c *devComposition) postBoot(stderr io.Writer) serve.PostBootFunc {
 }
 
 // printDevToken mints a default-identity dev token and prints the
-// HARBOR_DEV_TOKEN contract line to stderr. Called once per `harbor dev` /
-// `harbor console` run before serving (the token is stable across reboots).
-func (c *devComposition) printDevToken(logger *slog.Logger, stderr io.Writer) error {
+// HARBOR_DEV_TOKEN contract line to stderr. Called on the initial boot AND
+// from the hot-reload supervisor's per-reboot hook (the same signer backs
+// every reboot, so earlier tokens keep validating; each re-mint restarts the
+// printed token's expiry). label names the subcommand in the log line.
+func (c *devComposition) printDevToken(label string, logger *slog.Logger, stderr io.Writer) error {
 	token, err := c.signer.SignDevToken(time.Now(), DevTenant, DevUser, DevSession, []string{"admin", "console:fleet"})
 	if err != nil {
 		return err
 	}
-	logger.Info("harbor dev: dev token minted",
+	logger.Info("harbor "+label+": dev token minted",
 		slog.String("kid", DevKID),
 		slog.String("tenant", DevTenant),
 		slog.String("user", DevUser),

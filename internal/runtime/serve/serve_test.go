@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,8 +21,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/identity"
 
 	// Real drivers + the mock LLM so Boot can assemble a full stack.
 	_ "github.com/hurtener/Harbor/internal/drivers/prod"
@@ -93,19 +97,58 @@ func (k *testKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 	return k.pub, "ES256", nil
 }
 
-// testFactory returns a valid auth-validator factory (mounts the auth
-// middleware; the tests do not need to mint a token — an unauthenticated
-// request yields 401, a missing route yields 404).
-func testFactory(t *testing.T) AuthValidatorFactory {
+// testSigner pairs an ephemeral ES256 keypair with a validator factory and a
+// token-mint helper, so tests can drive AUTHENTICATED requests under
+// arbitrary identity triples through the composed handler.
+type testSigner struct {
+	priv *ecdsa.PrivateKey
+	kid  string
+}
+
+func newTestSigner(t *testing.T) *testSigner {
 	t.Helper()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	ks := &testKeySet{kid: "serve-test", pub: &priv.PublicKey}
+	return &testSigner{priv: priv, kid: "serve-test"}
+}
+
+// factory returns the auth-validator factory backed by this signer's key.
+func (s *testSigner) factory() AuthValidatorFactory {
+	ks := &testKeySet{kid: s.kid, pub: &s.priv.PublicKey}
 	return func(_ context.Context, _ *config.Config, red audit.Redactor, bus events.EventBus, lg *slog.Logger) (auth.Validator, error) {
 		return auth.NewValidator(ks, auth.WithRedactor(red), auth.WithEventBus(bus), auth.WithLogger(lg))
 	}
+}
+
+// sign mints a Bearer JWT for the identity triple + scopes.
+func (s *testSigner) sign(t *testing.T, id identity.Identity, scopes []string) string {
+	t.Helper()
+	now := time.Now()
+	tok := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"sub":     id.UserID,
+		"exp":     now.Add(time.Hour).Unix(),
+		"nbf":     now.Add(-time.Minute).Unix(),
+		"iat":     now.Unix(),
+		"tenant":  id.TenantID,
+		"user":    id.UserID,
+		"session": id.SessionID,
+		"scopes":  scopes,
+	})
+	tok.Header["kid"] = s.kid
+	signed, err := tok.SignedString(s.priv)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+	return signed
+}
+
+// testFactory returns a valid auth-validator factory (mounts the auth
+// middleware; callers that need to MINT tokens use newTestSigner instead).
+func testFactory(t *testing.T) AuthValidatorFactory {
+	t.Helper()
+	return newTestSigner(t).factory()
 }
 
 func writeTestCfg(t *testing.T) string {
@@ -248,36 +291,100 @@ func TestBoot_PerSeam_Injection(t *testing.T) {
 	}
 }
 
+// identityEchoIssuer is the auth.TokenIssuer the D-025 test wires behind the
+// auth.rotate_token surface: the "token" it mints encodes the VERIFIED
+// identity triple the surface handed it, so each response provably reflects
+// the caller's own identity — a mismatched echo (or the surface's
+// body-vs-JWT identity check firing 401) is a cross-request identity bleed.
+type identityEchoIssuer struct{}
+
+func (identityEchoIssuer) IssueToken(_ context.Context, id identity.Identity, _ []auth.Scope, now time.Time) (string, time.Time, error) {
+	return "echo|" + id.TenantID + "|" + id.UserID + "|" + id.SessionID, now.Add(time.Hour), nil
+}
+
 // TestServedHandle_ConcurrentReuse pins the D-025 contract: the served Handle
-// is a compiled artifact — N≥100 concurrent requests against one instance
-// under -race, no races, no identity bleed, goroutine baseline restored after
-// Close.
+// is a compiled artifact — N≥100 concurrent AUTHENTICATED requests against
+// one instance under -race, each under its own (tenant,user,session) triple,
+// asserting (a) no data races, (b) no identity bleed: every response echoes
+// ONLY its caller's triple through the full auth-middleware→surface path,
+// (c) no cancellation cross-talk: cancelling some requests' contexts leaves
+// the others completing normally, (d) goroutine baseline restored after Close.
 func TestServedHandle_ConcurrentReuse(t *testing.T) {
 	base := goruntime.NumGoroutine()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, err := Boot(ctx, baseOptions(t))
+	signer := newTestSigner(t)
+	opts := baseOptions(t)
+	opts.AuthValidatorFactory = signer.factory()
+	// The identity-echoing authenticated surface: auth.rotate_token verifies
+	// the JWT, checks the body identity against the VERIFIED identity, and
+	// mints through the echo issuer — so the response's new_token carries the
+	// triple the server-side saw for THIS request.
+	opts.BuildAuthSurface = func(red audit.Redactor, bus events.EventBus, _ *slog.Logger) (*auth.RotateSurface, error) {
+		return auth.NewRotateSurface(identityEchoIssuer{}, red, auth.WithRotateBus(bus))
+	}
+
+	h, err := Boot(ctx, opts)
 	if err != nil {
 		t.Fatalf("Boot: %v", err)
 	}
 	handler := h.Handler()
 
-	const n = 200
+	// N distinct identities, one pre-minted token each (admin scope — the
+	// rotate surface requires it).
+	const n = 150
+	tokens := make([]string, n)
+	ids := make([]identity.Identity, n)
+	for i := range n {
+		ids[i] = identity.Identity{
+			TenantID:  fmt.Sprintf("tenant-%03d", i),
+			UserID:    fmt.Sprintf("user-%03d", i),
+			SessionID: fmt.Sprintf("sess-%03d", i),
+		}
+		tokens[i] = signer.sign(t, ids[i], []string{"admin"})
+	}
+
+	// Every 5th request runs under an already-cancelled context — the
+	// cancellation-cross-talk leg: those requests may fail any way they like,
+	// but the OTHER requests must still complete with their own echo.
+	cancelled := func(i int) bool { return i%5 == 0 }
+
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := range n {
 		go func(i int) {
 			defer wg.Done()
-			// Alternate identity per request; the auth middleware rejects
-			// (401) but the point is race-freedom + no cross-request bleed
-			// on the shared handler.
-			req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+			body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q}}`,
+				ids[i].TenantID, ids[i].UserID, ids[i].SessionID)
+			req := httptest.NewRequest(http.MethodPost, "/v1/auth/rotate_token", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+tokens[i])
+			if cancelled(i) {
+				reqCtx, reqCancel := context.WithCancel(context.Background())
+				reqCancel() // cancelled before dispatch — must not disturb siblings
+				req = req.WithContext(reqCtx)
+			}
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
+			if cancelled(i) {
+				return // its own outcome is unspecified; the point is isolation
+			}
 			if rec.Code != http.StatusOK {
-				t.Errorf("req %d: /healthz = %d, want 200", i, rec.Code)
+				t.Errorf("req %d: rotate_token = %d (an ErrRotateIdentityMismatch 401 here IS an identity bleed), body=%s", i, rec.Code, rec.Body.String())
+				return
+			}
+			var resp struct {
+				NewToken string `json:"new_token"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Errorf("req %d: decode: %v", i, err)
+				return
+			}
+			want := "echo|" + ids[i].TenantID + "|" + ids[i].UserID + "|" + ids[i].SessionID
+			if resp.NewToken != want {
+				t.Errorf("req %d: identity bleed — echoed %q, want %q", i, resp.NewToken, want)
 			}
 		}(i)
 	}

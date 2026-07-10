@@ -40,6 +40,7 @@ import (
 	"net/http"
 	nhpprof "net/http/pprof"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
@@ -112,7 +113,10 @@ type RouteMount struct {
 
 // ExtraRoutesFunc mounts caller-side pre-CORS routes and returns any closers
 // they registered. Called after the boot's validator and bind address are
-// known and before the CORS wrap.
+// known and before the CORS wrap. On error, the closers accumulated up to the
+// failing step MUST still be returned — Boot appends them to its rollback
+// chain before inspecting the error, so a partially-mounted seam never leaks
+// an already-constructed subsystem.
 type ExtraRoutesFunc func(ctx context.Context, m RouteMount) ([]func(context.Context) error, error)
 
 // PostBootHandles carries the assembled subsystem handles the post-boot hook
@@ -144,6 +148,14 @@ type Options struct {
 	Stderr          io.Writer
 	SubcommandLabel string
 
+	// PreferConfigBindAddr opts into honoring the operator-configured
+	// `server.bind_addr` (which may name a non-loopback interface) when no
+	// explicit BindAddr override is given. ONLY the production serve caller
+	// sets it. The dev/console callers leave it false so they stay
+	// loopback-only on 127.0.0.1:<Port> — a dev boot against a serve-shaped
+	// yaml must never expose the dev-token stack off-box.
+	PreferConfigBindAddr bool
+
 	// AuthValidatorFactory is REQUIRED (nil fails Boot loud).
 	AuthValidatorFactory AuthValidatorFactory
 
@@ -157,6 +169,11 @@ type Options struct {
 	// BuildVersion / BuildCommit stamp runtime.info's build identity.
 	BuildVersion string
 	BuildCommit  string
+	// DevAllowMock stamps the Serve start log's dev_allow_mock attribute —
+	// the dev caller sets it when the mock escape hatch fired so an operator
+	// reading the boot line sees the dev-only posture. A stamp only; the mock
+	// gate itself is caller policy inside BuildLLMSnapshot.
+	DevAllowMock bool
 
 	// Caller-side injection seams (all optional).
 	BuildLLMSnapshot LLMSnapshotBuilder
@@ -178,10 +195,16 @@ type Handle struct {
 	stderr          io.Writer
 	server          *http.Server
 	debugServer     *http.Server
-	bindAddr        string
 	effectiveDriver string
 	label           string
-	closeFns        []func(context.Context) error
+	devAllowMock    bool
+
+	// mu guards bindAddr (written by Serve once the listener binds, read by
+	// BindAddr) and closeFns (drained exactly once by Close). The Handle is
+	// a compiled artifact shared across goroutines — internally synchronized.
+	mu       sync.Mutex
+	bindAddr string
+	closeFns []func(context.Context) error
 }
 
 // Boot reads the config, opens every subsystem, composes the Protocol
@@ -461,11 +484,17 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	// Resolve the bind address before the extra-routes seam runs (the
-	// bootstrap handler puts it in its connection envelope).
+	// bootstrap handler puts it in its connection envelope). The
+	// operator-configured `server.bind_addr` — which may name a non-loopback
+	// interface and is always non-empty after config.Load's defaulting — is
+	// honored ONLY when the caller opted in via PreferConfigBindAddr (the
+	// production serve posture). Without the opt-in the caller-supplied
+	// loopback port wins, so dev/console boots never expose the dev-token
+	// stack off-box even against a serve-shaped yaml.
 	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.Port)
 	if opts.BindAddr != "" {
 		bindAddr = opts.BindAddr
-	} else if cfg.Server.BindAddr != "" {
+	} else if opts.PreferConfigBindAddr && cfg.Server.BindAddr != "" {
 		bindAddr = cfg.Server.BindAddr
 	}
 
@@ -484,11 +513,15 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			Logger:    opts.Logger,
 			BindAddr:  bindAddr,
 		})
+		// Append the returned closers BEFORE checking the error: the seam's
+		// contract lets a failing mount hand back the closers it accumulated
+		// so far, so the rollback drains a subsystem constructed before the
+		// failing step (never a leaked handle on a partial mount).
+		closers = append(closers, extra...)
 		if xErr != nil {
 			closeAll(ctx)
 			return nil, fmt.Errorf("extra routes: %w", xErr)
 		}
-		closers = append(closers, extra...)
 	}
 
 	router.Handle("/v1/", built.Mux)
@@ -568,6 +601,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		bindAddr:        bindAddr,
 		effectiveDriver: llmCfg.Driver,
 		label:           subcommandLabel,
+		devAllowMock:    opts.DevAllowMock,
 		closeFns:        closers,
 	}, nil
 }
@@ -579,12 +613,13 @@ func (h *Handle) Serve(ctx context.Context) error {
 		label = "dev"
 	}
 	h.logger.InfoContext(ctx, "harbor "+label+": starting Protocol server",
-		slog.String("bind", h.bindAddr),
+		slog.String("bind", h.BindAddr()),
 		slog.String("driver_llm", h.effectiveDriver),
 		slog.String("driver_state", h.Cfg.State.Driver),
 		slog.String("driver_events", h.Cfg.Events.Driver),
 		slog.String("driver_memory", h.Cfg.Memory.Driver),
 		slog.String("memory_strategy", h.Cfg.Memory.Strategy),
+		slog.Bool("dev_allow_mock", h.devAllowMock),
 	)
 
 	listener, err := net.Listen("tcp", h.server.Addr)
@@ -592,7 +627,9 @@ func (h *Handle) Serve(ctx context.Context) error {
 		return fmt.Errorf("listen %s: %w", h.server.Addr, err)
 	}
 	boundAddr := listener.Addr().String()
+	h.mu.Lock()
 	h.bindAddr = boundAddr
+	h.mu.Unlock()
 	_, _ = fmt.Fprintf(h.stderr, "HARBOR_DEV_BOUND=%s\n", boundAddr)
 	h.logger.InfoContext(ctx, "harbor "+label+": listener bound", slog.String("bind", boundAddr))
 
@@ -651,7 +688,12 @@ func (h *Handle) Serve(ctx context.Context) error {
 
 // BindAddr reports the address the listener is (or will be) bound to. After
 // Serve binds an ephemeral port it reflects the OS-assigned address.
-func (h *Handle) BindAddr() string { return h.bindAddr }
+// Internally synchronized — safe to call while Serve runs.
+func (h *Handle) BindAddr() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.bindAddr
+}
 
 // Handler returns the composed CORS-wrapped router the listener serves. It
 // lets a caller drive the Protocol surface (and any caller-mounted pre-CORS
@@ -659,10 +701,15 @@ func (h *Handle) BindAddr() string { return h.bindAddr }
 // the dev and serve compositions is asserted this way.
 func (h *Handle) Handler() http.Handler { return h.server.Handler }
 
-// Close runs every subsystem's Close in reverse dependency order. Idempotent.
+// Close runs every subsystem's Close in reverse dependency order. Idempotent:
+// the closer slice is drained exactly once; a second Close is a no-op.
 func (h *Handle) Close(ctx context.Context) {
-	for i := len(h.closeFns) - 1; i >= 0; i-- {
-		if cErr := h.closeFns[i](ctx); cErr != nil && h.logger != nil {
+	h.mu.Lock()
+	closers := h.closeFns
+	h.closeFns = nil
+	h.mu.Unlock()
+	for i := len(closers) - 1; i >= 0; i-- {
+		if cErr := closers[i](ctx); cErr != nil && h.logger != nil {
 			h.logger.Warn("serve: error closing subsystem during drain",
 				slog.String("error", cErr.Error()))
 		}

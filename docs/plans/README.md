@@ -3088,10 +3088,25 @@ per §17.8). Status: Shipped (V1.6).
   `PostBoot`). `harbortest/devstack` is the second consumer — its mux mirror
   and driver/glue mirror files are deleted; the kit gained the previously
   omitted agents / auth-rotate / governance-override / governance-key-rotate
-  surfaces. Deviation: the dev signer is now built ONCE caller-side and reused
-  across hot-reload reboots (the printed dev token stays valid across a reload
-  instead of being invalidated by a fresh per-reboot signer — a
-  behaviour-improving side effect of moving the signer out of the boot body).
+  surfaces. THREE §4.3 deviations (full text in the phase plan's as-built
+  section): (1) the plan's "LLM snapshot override" seam landed as a
+  `BuildLLMSnapshot(cfg) (*snapshot, error)` BUILDER folding the fail-loud
+  provider gate + mock override into one seam (avoids a double
+  `config.Load`); (2) the dev signer is built ONCE caller-side and reused
+  across hot-reload reboots — the validator keeps accepting earlier tokens,
+  and the supervisor's onReboot hook re-mints + re-prints a fresh token (and
+  the mock banner) per reboot; (3) the kit composes the promoted BUILDING
+  BLOCKS (`BuildMux` + the promoted driver/glue) rather than routing its whole
+  assembly through `serve.Boot`, preserving its stable `AssembleOpts` /
+  `Skip*` public API for its 40+ consumers. Promotion-found bug fixed in-PR:
+  the bind-address production/dev discriminator collapsed when the factory
+  became mandatory (a dev boot could inherit a non-loopback config
+  `bind_addr`); fixed via the explicit `Options.PreferConfigBindAddr` opt-in
+  only `harbor serve` sets, with in-package + caller-level + live-listener
+  regression pins. Named follow-up: a driver-options parity pin for the
+  residual Boot↔devstack composition band (the mounted-surface half is pinned
+  by the anti-drift integration test; the options-field half is tracked for
+  the post-160 checkpoint audit).
 
 ---
 

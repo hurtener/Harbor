@@ -168,6 +168,12 @@ type hotReloadSupervisor struct {
 	policy       string
 	drainTimeout time.Duration
 
+	// onReboot, when non-nil, runs after each successful reboot with the
+	// fresh stack — the dev caller re-prints its per-boot surfaces (the mock
+	// banner, a re-minted dev token) so every boot announces its posture and
+	// a long-lived dev session never outlives the printed token's expiry.
+	onReboot func(*serve.Handle)
+
 	mu    sync.Mutex
 	stack *serve.Handle
 }
@@ -472,6 +478,13 @@ func (s *hotReloadSupervisor) handleRebuildAndRestartServe(
 	s.mu.Lock()
 	s.stack = newStack
 	s.mu.Unlock()
+
+	// Re-announce the per-boot dev surfaces (mock banner + a re-minted dev
+	// token) on the fresh stack — every boot prints its posture, and a
+	// long-lived dev session gets a token whose expiry restarts per reboot.
+	if s.onReboot != nil {
+		s.onReboot(newStack)
+	}
 
 	// Start the fresh serve goroutine. Spawn BEFORE emitting completed
 	// so a wire subscriber that re-subscribes immediately upon

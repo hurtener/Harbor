@@ -161,6 +161,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	logger := in.Logger
 
 	muxOpts := []transports.Option{}
+	if logger != nil {
+		// Thread the caller's logger into the transports so serve-side
+		// request logs flow through the production handler (JSON under
+		// `harbor serve`), never a default text fallback.
+		muxOpts = append(muxOpts, transports.WithLogger(logger))
+	}
 	if in.Validator != nil {
 		muxOpts = append(muxOpts, transports.WithValidator(in.Validator))
 	} else {

@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -489,4 +490,150 @@ func devServeOptionsForTest(t *testing.T, cfgPath string, logger *slog.Logger) s
 		t.Fatalf("newDevComposition: %v", err)
 	}
 	return comp.serveOptions(cfgPath, 0, "", "dev", logger, io.Discard)
+}
+
+// writeBindAddrCfg writes the minimal bus-wired YAML with the given
+// server.bind_addr substituted in.
+func writeBindAddrCfg(t *testing.T, bindAddr string) string {
+	t.Helper()
+	yaml := strings.Replace(bootDevStackBusWiredYAML, "bind_addr: 127.0.0.1:0", "bind_addr: "+bindAddr, 1)
+	cfgPath := filepath.Join(t.TempDir(), "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	return cfgPath
+}
+
+// TestDevComposition_HonorsPortFlag_IgnoresConfigBindAddr is the regression
+// pin for the bind-address discriminator: a dev boot against a serve-shaped
+// yaml (a NON-loopback `server.bind_addr`) must resolve the caller's
+// loopback 127.0.0.1:<port> — never the config address. Pre-promotion this
+// was gated on the production factory being non-nil; with the factory now
+// mandatory for all callers the gate is the explicit PreferConfigBindAddr
+// opt-in the dev composition never sets.
+func TestDevComposition_HonorsPortFlag_IgnoresConfigBindAddr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cfgPath := writeBindAddrCfg(t, "0.0.0.0:8080")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	comp, err := newDevComposition(devCompositionOptions{allowMock: true})
+	if err != nil {
+		t.Fatalf("newDevComposition: %v", err)
+	}
+	// The operator passed --port 19999; the config says 0.0.0.0:8080.
+	handle, err := serve.Boot(ctx, comp.serveOptions(cfgPath, 19999, "", "dev", logger, io.Discard))
+	if err != nil {
+		t.Fatalf("serve.Boot (dev composition): %v", err)
+	}
+	t.Cleanup(func() {
+		cc, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		handle.Close(cc)
+	})
+	if got := handle.BindAddr(); got != "127.0.0.1:19999" {
+		t.Fatalf("dev bind address = %q, want 127.0.0.1:19999 (--port honored; non-loopback config bind_addr ignored)", got)
+	}
+}
+
+// TestDevComposition_LiveListenerStaysLoopback_NonLoopbackConfig proves the
+// regression live: a dev boot against a non-loopback config bind_addr BINDS
+// a loopback listener (never 0.0.0.0 — the dev-token stack must not be
+// exposed off-box).
+func TestDevComposition_LiveListenerStaysLoopback_NonLoopbackConfig(t *testing.T) {
+	cfgPath := writeBindAddrCfg(t, "0.0.0.0:8080")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	pr, pw := io.Pipe()
+	comp, err := newDevComposition(devCompositionOptions{allowMock: true})
+	if err != nil {
+		t.Fatalf("newDevComposition: %v", err)
+	}
+	opts := comp.serveOptions(cfgPath, 0, "", "dev", logger, pw)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handle, err := serve.Boot(ctx, opts)
+	if err != nil {
+		t.Fatalf("serve.Boot: %v", err)
+	}
+
+	served := make(chan error, 1)
+	go func() { served <- handle.Serve(ctx) }()
+
+	boundCh := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(pr)
+		for sc.Scan() {
+			if strings.HasPrefix(sc.Text(), "HARBOR_DEV_BOUND=") {
+				boundCh <- strings.TrimPrefix(sc.Text(), "HARBOR_DEV_BOUND=")
+				return
+			}
+		}
+		boundCh <- ""
+	}()
+
+	var bound string
+	select {
+	case bound = <-boundCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("HARBOR_DEV_BOUND never printed")
+	}
+	if !strings.HasPrefix(bound, "127.0.0.1:") {
+		t.Fatalf("dev listener bound %q — MUST stay loopback despite the non-loopback config bind_addr", bound)
+	}
+
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after ctx cancel")
+	}
+	_ = pw.Close()
+	cc, c := context.WithTimeout(context.Background(), 5*time.Second)
+	defer c()
+	handle.Close(cc)
+}
+
+// TestServeComposition_HonorsConfigBindAddr — the production serve posture
+// (PreferConfigBindAddr set by cmd_serve.go) resolves the operator-configured
+// `server.bind_addr` when no override is given.
+func TestServeComposition_HonorsConfigBindAddr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cfgPath := writeBindAddrCfg(t, "127.0.0.1:18443")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	signer, err := newDevSigner()
+	if err != nil {
+		t.Fatalf("newDevSigner: %v", err)
+	}
+	handle, err := serve.Boot(ctx, serve.Options{
+		ConfigPath:           cfgPath,
+		Port:                 19998, // the config bind_addr must win over the port fallback
+		Logger:               logger,
+		Stderr:               io.Discard,
+		SubcommandLabel:      "serve",
+		PreferConfigBindAddr: true,
+		AuthValidatorFactory: func(_ context.Context, _ *config.Config, red audit.Redactor, bus events.EventBus, lg *slog.Logger) (auth.Validator, error) {
+			return auth.NewValidator(signer.KeySet(), auth.WithRedactor(red), auth.WithEventBus(bus), auth.WithLogger(lg))
+		},
+		MCPDefaultIdentity: identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
+		DisplayName:        "harbor serve",
+		InstanceID:         serveInstanceID(),
+		BuildVersion:       HarborVersion,
+		BuildCommit:        "dev",
+		BuildLLMSnapshot:   newLLMSnapshotBuilder(true),
+	})
+	if err != nil {
+		t.Fatalf("serve.Boot (serve composition): %v", err)
+	}
+	t.Cleanup(func() {
+		cc, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		handle.Close(cc)
+	})
+	if got := handle.BindAddr(); got != "127.0.0.1:18443" {
+		t.Fatalf("serve bind address = %q, want the config's 127.0.0.1:18443 (PreferConfigBindAddr)", got)
+	}
 }
