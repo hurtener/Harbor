@@ -3228,7 +3228,7 @@ per §17.8). Status: Shipped (V1.6).
   HTTP / A2A tools emit none), and even those stamp an empty envelope run id
   (attribution-dead live AND on replay). The fix is one driver-neutral emit
   seam per producer on the one bus: the cost emit promotes to the MANDATORY
-  LLM-edge safety wrapper `llm.Open` returns around every driver (bifrost's
+  LLM-edge safety wrapper `llm.Open` composes around every driver (bifrost's
   internal emit deleted — one emit per driver-level completion, per attempt
   under retry, today's bifrost cadence) and the tool lifecycle emits land at
   the catalog-build descriptor-wrap seam — `catalog.Register` wraps every

@@ -111,9 +111,13 @@ None.
     carry the full quadruple + `Tool` (`react.go:757-769`).
 - **Fix (runtime): one driver-neutral seam per producer.**
   - **R1 — LLM usage/cost/model:** promote the `llm.cost.recorded` emit from
-    the bifrost driver to the MANDATORY safety wrapper `llm.Open` returns
-    around EVERY driver (`internal/llm/registry.go:438-460` — the returned
-    client is the safety wrapper; `Deps.Bus` is required non-nil at `Open`,
+    the bifrost driver to the MANDATORY safety wrapper `llm.Open` composes
+    around EVERY driver (`internal/llm/registry.go:438-460`; note the
+    safety pass is the innermost MANDATORY band of the composed chain — the
+    client `Open` actually RETURNS is the outermost wrapper (governance
+    outermost, D-043), so the emit rides the mandatory inner band and this
+    plan deliberately does NOT inherit the stale "returned client is a
+    `*safetyClient`" godoc claim; `Deps.Bus` is required non-nil at `Open`,
     and the model profiles live in the `ConfigSnapshot`, so the wrapper has
     bus + `ContextWindowTokens` in hand; `CompleteResponse` carries `Cost` +
     `Usage`, the request carries `Model`), and DELETE the bifrost-internal
@@ -284,21 +288,27 @@ None.
 ## Files added or changed
 
 - `internal/llm/safety.go` / `internal/llm/registry.go` (the mandatory
-  safety wrapper `llm.Open` returns, `registry.go:438-460` — `Deps.Bus`
+  safety wrapper `llm.Open` composes, `registry.go:438-460` — `Deps.Bus`
   required non-nil; profiles in the `ConfigSnapshot`) — the driver-neutral
   `llm.cost.recorded` emit (R1), one event per driver-level completion.
 - `internal/llm/drivers/bifrost/bifrost.go` (`:180`, `:283`) +
   `internal/llm/drivers/bifrost/cost.go` — the driver-internal emit deleted
   (folded into R1).
-- **Stale-godoc fallout the move falsifies (§17.6 read for docs), rewritten
-  to the observability-only truth (in-band synchronous accounting; the
-  event is telemetry):**
+- **Stale-godoc fallout the move falsifies or exposes (§17.6 read for
+  docs), rewritten to the observability-only / composed-chain truth
+  (in-band synchronous accounting; the event is telemetry):**
   - `internal/llm/events.go:152` — "Governance subscribes for per-identity
     accumulator updates" is false today (no subscription site exists).
   - `internal/llm/llm.go:188` — "Governance subscribes to
     `llm.cost.recorded` events" (same false claim).
   - `internal/governance/cost.go:207` — "The bifrost driver still emits
     llm.cost.recorded" becomes false after R1 (the safety wrapper emits).
+  - `internal/llm/registry.go:438-441` — "The returned client is a
+    `*safetyClient` wrapping the registered driver" is stale: production
+    `Open` returns the OUTERMOST wrapper of the composed chain (governance
+    outermost, D-043); the safety pass is the innermost mandatory band.
+    Rewritten so the mandatory-by-construction claim names the band, not
+    the return value.
 - `internal/tools/catalog.go` (`Register`, `:68`) — the universal
   descriptor-wrap shell: every registered descriptor's `Invoke` wrapped in
   the ONE lifecycle-emitting shell (R2); the catalog carries the bus.
