@@ -7,7 +7,8 @@
 # present in the state.history read-back under the preflight dev posture —
 # no real LLM needed (the mock driver reports synthetic usage, and the
 # driver-neutral cost emit this phase builds fires for the mock path too):
-#   - drive a scripted run via control.start; poll tasks.get to terminal;
+#   - drive a scripted run via the `start` method (POST /v1/control/start);
+#     poll tasks.get to terminal;
 #   - fetch state.history for the session; assert an llm.cost.recorded
 #     event whose payload carries Usage + Model keys;
 #   - assert a planner.decision event with a DecisionKind key and a

@@ -45,7 +45,8 @@ D-197 fixed one layer down for subsystem assembly. So a scaffolded agent can run
 a goal headless (embed) but cannot expose the same wire surface `harbor serve`
 does.
 
-v1.13.0 opens by closing that gap in two staged phases:
+v1.13.0 closes that gap — plus the session-rehydration live-test regression —
+in three staged phases:
 
 - **159 (Stage 1)** promotes the serve band into ONE importable internal
   package (`internal/runtime/serve`) whose constructor REQUIRES a non-nil
@@ -65,8 +66,9 @@ v1.13.0 opens by closing that gap in two staged phases:
   producer-side (not read-path): the `llm.cost.recorded` emit is
   bifrost-driver-local and the `tool.*` lifecycle emits are
   inproc-transport-local with attribution-dead envelopes. One driver-neutral
-  emit seam per producer (LLM-edge chain; the transport-agnostic dispatch
-  seam), content-free payloads only, zero wire changes, and the Console
+  emit seam per producer (the mandatory LLM-edge safety wrapper; the
+  catalog-build descriptor-wrap shell every dispatch path inherits),
+  content-free payloads only, zero wire changes, and the Console
   reducer/rehydration consumer in the same phase — leave-and-return renders
   identical to the live view (D-293).
 
@@ -208,30 +210,41 @@ the model chip. Root cause verified producer-side (the read path strips
 nothing — probed): `llm.cost.recorded` is emitted only inside the bifrost
 driver; `tool.*` lifecycle events only by the inproc transport (MCP/HTTP/A2A
 tools emit none) with attribution-dead empty envelope run ids. Fix: ONE
-driver-neutral emit seam per producer — the cost emit promotes to the LLM-edge
-wrapper chain (bifrost's internal emit deleted; one emit per call), the tool
-lifecycle emits move to the transport-agnostic dispatch seam with the full run
-quadruple (inproc's per-driver emits deleted; also fixes the latent LIVE
-attribution bug, §17.6). Payloads stay content-free (name/status/duration +
-usage/cost/model figures — never args/results, §7; sentinel-redaction test).
-Read path untouched (D-254 posture); works on inmem within process lifetime.
-ZERO wire changes — no D-223/D-209 churn (zero-diff proven). The §13/D-062
-consumer ships same-phase: `reduceHistoryTurns` folds the metadata into a
-widened `HistoryTurn` and `hydratePastTurns` populates header stats + badges +
-model chip — leave-and-return renders IDENTICAL to the live view.
+driver-neutral emit seam per producer — the cost emit promotes to the
+MANDATORY LLM-edge safety wrapper (`llm.Open` wraps every driver; bifrost's
+internal emit deleted; one emit per driver-level completion — per attempt
+under retry, today's bifrost cadence); the tool lifecycle emits land at the
+CATALOG-BUILD DESCRIPTOR-WRAP seam (`catalog.Register` wraps every
+descriptor's `Invoke` once), because `desc.Invoke` has FOUR production call
+sites (single executor, parallel-executor branches — the default for native
+N>1 — the MCP-Apps proxy, and the declarative-action re-invoke) and an
+executor-side emit would silently regress three of them; all four inherit
+the emit by construction, with the full run quadruple (inproc's per-driver
+emits + the orphaned `tools.WithBus` option deleted; also fixes the latent
+LIVE attribution bug, §17.6). Payloads stay content-free
+(name/status/duration + usage/cost/model figures — never args/results, §7;
+sentinel-redaction test). Read path untouched (D-254 posture); works on
+inmem within process lifetime. ZERO wire changes — no D-223/D-209 churn
+(zero-diff proven). The §13/D-062 consumer ships same-phase:
+`reduceHistoryTurns` folds the metadata into a widened `HistoryTurn` and
+`hydratePastTurns` populates header stats + badges + model chip —
+leave-and-return renders IDENTICAL to the live view.
 
-Gate: `scripts/smoke/phase-161.sh` (scripted mock run → `state.history` page
-carries cost `Usage`/`Model` keys + `planner.decision` `DecisionKind` +
-populated envelope `run` + the no-args negative; `OK ≥ 3`); the integration
-test (real drivers; the MCP leg against the real stdio fixture, §17.8;
-stream-vs-readback key equivalence; cross-identity refusal) under `-race`;
-Console vitest (reducer folding + rehydration regression); live rehydration
-verification (see §5).
+Gate: `scripts/smoke/phase-161.sh` (scripted mock run via the `start` method
+→ `state.history` page carries cost `Usage`/`Model` keys +
+`planner.decision` `DecisionKind` + populated envelope `run` + the no-args
+negative; `OK ≥ 3`); the integration test (real drivers; the MCP leg against
+the real stdio fixture, §17.8; stream-vs-readback key equivalence;
+cross-identity refusal) under `-race`; the CallParallel-branch lifecycle pin
+(≥2 quadruple-stamped `tool.invoked` per parallel turn) + the direct-invoke
+non-executor pin; Console vitest (reducer folding + rehydration regression);
+live rehydration verification (see §5).
 
 **Decision D-293:** durable-log read-back carries content-free turn metadata
 (usage/cost/latency/model/tool-name+status); session reopen reconstructs what
 the live stream showed — one driver-neutral emit seam per producer on the one
-bus; D-026/§7 boundaries preserved; D-062 surface+consumer same phase.
+bus (safety wrapper; catalog descriptor-wrap); D-026/§7 boundaries preserved;
+D-062 surface+consumer same phase.
 
 ---
 
@@ -262,7 +275,10 @@ plans PR with both phases that make it real scheduled behind it.
 **Wave-end:** 160 bundles the parity gate (real drivers across the serve
 surface, identity propagation, ≥1 failure mode, N≥10 stress); 161 bundles the
 rehydration integration test (real drivers, the MCP stdio fixture leg,
-stream-vs-readback equivalence, cross-identity refusal, `-race`). The §17.5
+stream-vs-readback equivalence, cross-identity refusal, `-race`). The phantom
+`top_p` MUST-FIX is carried by the wave-end §17.5 checkpoint punch list (the
+audit PR's artifact) — NOT by any of the three phases; 161's plan lists it as
+an explicit non-goal for the same reason. The §17.5
 checkpoint audit runs AFTER 161 merges and covers all three phases
 (159–161). **Do not scope any subsequent v1.13 band until the audit merges.**
 
@@ -321,7 +337,11 @@ assertions; keeps its pre-assigned `D-NNN` block (D-291 / D-292 / D-293 —
 already authored in the plans PRs; the implementation PR updates its
 **Status** /**As-built** notes, markdownlint-clean — blank lines around `---`
 and `## D-NNN`); updates any §18 skill/recipe/site surface it touches in the
-same PR (160 only; 161 touches none — internal emits + Console internals);
+same PR (160's list is enumerated in its plan; for 161 the grep-then-decide
+ritual was run: checked `drive-the-playground` (`surface: playground`) — its
+token/cost chip + history description becomes TRUER after the fix and no
+step goes stale, so no edit is required; no other skill names the reopen
+surface);
 regenerates nothing on the wire (all three phases: no wire changes — a
 manifest diff is a red flag); and runs `make drift-audit` +
 `markdownlint-cli2` + `make preflight` green before committing.

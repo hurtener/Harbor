@@ -6,21 +6,24 @@ Reopening a Playground session hydrates message CONTENT correctly but loses
 everything else: the header stats show "no turns yet" (tokens/cost/latency),
 the TOOL CALLS "INVOKED" badges vanish, and the model chip resets — the
 operator-confirmed live-test regression. Root cause, verified at the wire and
-in code: the read path does NOT strip anything (read-back ≡ published payloads
-— empirically confirmed against a live dev boot), but two metadata producers
-never publish onto the bus in the first place (`llm.cost.recorded` is emitted
-only inside the bifrost driver; `tool.invoked/completed/failed` only by the
-in-process transport driver, with an attribution-dead empty envelope run id),
-and the Console's history reducer discards even the metadata that IS present
-(`HistoryTurn` carries no stats fields; the reducer's own doc comment claims
-`planner.*`/`tool.*` reconstruction the code never does). This phase closes
-the producer gaps at ONE driver-neutral seam each (the LLM-edge wrapper chain;
-the transport-agnostic dispatch seam), keeps every payload content-free (tool
-NAME + status + duration only — never args/results, §7 rule 7 + D-026), and
-ships the §13/D-062 consumer in the same phase: `reduceHistoryTurns` folds the
-now-present keys and the Playground rehydration renders header stats, badges,
-and model chip IDENTICAL to the live view. Zero wire changes: no new methods,
-no new wire types, no new canonical event types.
+in code: the read path does NOT strip anything (a live dev-boot probe
+confirmed chunk + `planner.decision` payloads arrive INTACT in read-back; the
+stream-vs-readback acceptance test below is the proof for the cost/tool
+families), but two metadata producers never publish onto the bus in the first
+place (`llm.cost.recorded` is emitted only inside the bifrost driver;
+`tool.invoked/completed/failed` only by the in-process transport driver, with
+an attribution-dead empty envelope run id), and the Console's history reducer
+discards even the metadata that IS present (`HistoryTurn` carries no stats
+fields; the reducer's own doc comment claims `planner.*`/`tool.*`
+reconstruction the code never does). This phase closes the producer gaps at
+ONE driver-neutral seam each (the mandatory LLM-edge safety wrapper; a
+universal descriptor-wrap shell applied at catalog registration, which every
+dispatch path inherits by construction), keeps every payload content-free
+(tool NAME + status + duration only — never args/results, §7 rule 7 + D-026),
+and ships the §13/D-062 consumer in the same phase: `reduceHistoryTurns` folds
+the now-present keys and the Playground rehydration renders header stats,
+badges, and model chip IDENTICAL to the live view. Zero wire changes: no new
+methods, no new wire types, no new canonical event types.
 
 ## RFC anchor
 
@@ -47,12 +50,15 @@ no new wire types, no new canonical event types.
   in the bifrost driver only; `tool.*` in the inproc driver only) never put
   their records on the one bus for every driver/transport, so the replay path
   has nothing to fuse. The fix is one-bus discipline, not a second channel.
-- brief 07 §8 (the Dispatcher owns dispatch): the tool dispatcher is "inside
-  the runtime, not the LLM client" — one design unit owning validation,
-  identity, deadline, and cancellation for every transport. The tool
-  lifecycle emit belongs at that ONE seam (where the run quadruple is in
-  hand), not per-transport-driver — the per-driver emit is why MCP/HTTP/A2A
-  tools produce no lifecycle events today.
+- brief 07 §8 (the Dispatcher + catalog own dispatch): tool dispatch is
+  "inside the runtime, not the LLM client" — runtime-owned machinery owning
+  validation, identity, deadline, and cancellation for every transport. The
+  tool lifecycle emit therefore belongs on the runtime-owned descriptor
+  shell every transport's `Invoke` passes through (the catalog wraps it once
+  at registration), not per-transport-driver — the per-driver emit is why
+  MCP/HTTP/A2A tools produce no lifecycle events today, and an executor-side
+  emit would miss the three non-executor dispatch paths (see the Fix's
+  call-site enumeration).
 - brief 11 LR-6 (per-task detail pane): historical per-task detail — "tool
   name, source, … identity at invocation time" — is sourced "via Phase 57
   durable event log + Phase 60 protocol transport" with input/output
@@ -91,8 +97,9 @@ None.
     `ToolName`, `Transport`, `Attempts`, `DurationMS`, `ErrorClass` —
     `internal/tools/events.go:52-90`) are emitted ONLY by the in-process
     transport driver (`internal/tools/drivers/inproc/inproc.go:159`/`:165`).
-    MCP / HTTP / A2A tools — the live-test agent's tools — emit NO lifecycle
-    events at all (verified: no other emit site exists).
+    MCP / HTTP / A2A tools emit NO lifecycle events at all (verified: no
+    other emit site exists; the mechanism-level fix below covers every
+    transport regardless of which one a given agent uses).
   - **(b3)** Even the inproc emits are attribution-dead: they stamp
     `identity.Quadruple{Identity: id}` from the ctx TRIPLE
     (`inproc.go:185`/`:212`) — envelope `RunID` empty — and the payloads
@@ -104,26 +111,47 @@ None.
     carry the full quadruple + `Tool` (`react.go:757-769`).
 - **Fix (runtime): one driver-neutral seam per producer.**
   - **R1 — LLM usage/cost/model:** promote the `llm.cost.recorded` emit from
-    the bifrost driver to the LLM-edge wrapper chain that `llm.Open`
-    composes (driver-neutral: `CompleteResponse` carries `Cost` + `Usage`,
-    the request carries `Model`, the model profile carries
-    `ContextWindowTokens`), and DELETE the bifrost-internal emit in the same
-    change — one emit site, never two (brief 03's toggle-smell one layer
-    over; no double-emission). Payload type and keys UNCHANGED. Governance is
-    unaffected: cost accounting is in-band synchronous (the emit is
-    observability-only — `cost.go:12-20`'s recorded posture).
-  - **R2 — tool lifecycle:** move the tool lifecycle emits to the ONE
-    transport-agnostic dispatch seam (`internal/runtime/dispatch/dispatch.go`
-    `:238` band, where `desc.Invoke(ctx, d.Args)` dispatches every
-    transport and `rc.Quadruple` is in hand), stamping the FULL run
-    quadruple on the event envelope; DELETE the inproc driver's per-driver
-    emits in the same change (superseded — no double emission). Payload
-    shapes unchanged (name/transport/status/attempts/duration — content-free
-    by construction). This gives MCP/HTTP/A2A tools lifecycle events for the
-    first time AND makes every tool event turn-attributable, fixing the
-    latent LIVE bug (b3) in the same PR (§17.6 fix-both-sides: the live
-    status-resolution path `applyToolLifecycle` starts receiving decodable
-    frames).
+    the bifrost driver to the MANDATORY safety wrapper `llm.Open` returns
+    around EVERY driver (`internal/llm/registry.go:438-460` — the returned
+    client is the safety wrapper; `Deps.Bus` is required non-nil at `Open`,
+    and the model profiles live in the `ConfigSnapshot`, so the wrapper has
+    bus + `ContextWindowTokens` in hand; `CompleteResponse` carries `Cost` +
+    `Usage`, the request carries `Model`), and DELETE the bifrost-internal
+    emit in the same change — one emit site, never two (brief 03's
+    toggle-smell one layer over; no double-emission). **Cadence pinned:**
+    exactly ONE cost event per DRIVER-LEVEL completion — i.e. per attempt
+    under retry-with-feedback, preserving today's bifrost per-attempt
+    cadence and staying aligned with the per-call attempt-cost governance
+    tap. Payload type and keys UNCHANGED. Governance is unaffected: cost
+    accounting is in-band synchronous (the emit is observability-only —
+    `cost.go:12-20`'s recorded posture).
+  - **R2 — tool lifecycle:** `desc.Invoke` has FOUR production call sites —
+    the single-tool executor (`internal/runtime/dispatch/dispatch.go:238`),
+    the parallel executor's branches
+    (`internal/runtime/parallel/parallel.go:538` — the DEFAULT dispatch for
+    native N>1 tool calls since the 107d cutover; `phase-107d.sh:97`
+    documents ≥2 `tool.invoked` per parallel turn), the MCP-Apps proxy
+    (`internal/mcpconsole/apps.go:270`), and the declarative-action
+    re-invoke (`internal/tools/builtin/declarative_action.go:236`) — so an
+    executor-side emit would silently regress lifecycle events (and the
+    trace bridge's span closure, `tracebridge.go:79`) on three paths while
+    a single-run equivalence gate stayed green (the §17.8 rubber-stamp
+    shape). The emit therefore lands at the CATALOG-BUILD DESCRIPTOR-WRAP
+    seam: `catalog.Register` (`internal/tools/catalog.go:68`) wraps every
+    registered descriptor's `Invoke` in ONE universal lifecycle-emitting
+    shell (bus carried by the catalog; the run quadruple read from the
+    invocation ctx — the four call sites each have the run identity in hand
+    and stamp the ctx quadruple at the call edge where absent, the b3 fix),
+    so ALL FOUR call sites inherit the emit BY CONSTRUCTION. The inproc
+    driver's per-driver emits (`inproc.go:159`/`:165`) and the now-orphaned
+    `tools.WithBus` DescriptorOption (`policy.go:283`) are DELETED in the
+    same change — one emit site, no coverage loss, no double emission.
+    Payload shapes unchanged (name/transport/status/attempts/duration —
+    content-free by construction). This gives MCP/HTTP/A2A tools lifecycle
+    events for the first time AND makes every tool event turn-attributable,
+    fixing the latent LIVE bug (b3) in the same PR (§17.6 fix-both-sides:
+    the live status-resolution path `applyToolLifecycle` starts receiving
+    decodable frames).
   - **R3 — read path: untouched.** `state.history`'s identity scoping
     (`MatchesScoped`, session-named, admin never widens) and the
     pass-through projection stay byte-identical; after R1/R2, read-back ≡
@@ -168,8 +196,9 @@ None.
 - No session-pinned-JWT Tasks/Events enumeration posture change — a separate
   follow-up decision.
 - No Overview page "Recent Activity" read-back — out of scope.
-- No phantom `top_p` fix — that is the wave checkpoint's MUST-FIX, already
-  assigned elsewhere.
+- No phantom `top_p` fix — that MUST-FIX is carried by the v1.13 wave-end
+  §17.5 checkpoint punch list (see the coordination doc's wave-end section),
+  not by this phase.
 - No durable-driver-only features: everything here works on the inmem
   events driver within process lifetime (the live test ran inmem and
   `state.history` returned pages fine — verified again during this plan's
@@ -186,19 +215,37 @@ None.
 
 ## Acceptance criteria
 
-- [ ] **R1:** `llm.cost.recorded` is emitted at the driver-neutral LLM-edge
-  wrapper seam for EVERY driver's successful `Complete` (bifrost AND the
-  dev-posture mock), carrying the existing payload keys (`Model`, `Cost`,
-  `Usage`, `ContextWindowTokens`) and the run quadruple on the envelope; the
-  bifrost-internal emit is deleted in the same change; a test pins exactly
-  ONE cost event per completed LLM call (no double emission).
-- [ ] **R2:** tool lifecycle events (`tool.invoked` / `tool.completed` /
-  `tool.failed` / the existing failure variants) are emitted at the
-  transport-agnostic dispatch seam with the FULL run quadruple on the
-  envelope, for in-process AND MCP-transport tools (the MCP leg proven
+- [ ] **R1:** `llm.cost.recorded` is emitted at the mandatory LLM-edge
+  safety-wrapper seam for EVERY driver's driver-level completion (bifrost
+  AND the dev-posture mock), carrying the existing payload keys (`Model`,
+  `Cost`, `Usage`, `ContextWindowTokens`) and the run quadruple on the
+  envelope; the bifrost-internal emit is deleted in the same change; a test
+  pins exactly ONE cost event per DRIVER-LEVEL completion (per attempt under
+  retry-with-feedback — a retried call emits one event per attempt, matching
+  today's bifrost cadence; no double emission).
+- [ ] **R2:** the catalog-build descriptor-wrap shell emits tool lifecycle
+  events (`tool.invoked` / `tool.completed` / `tool.failed` / the existing
+  failure variants) with the FULL run quadruple on the envelope for EVERY
+  registered descriptor — inherited by all four `desc.Invoke` call sites by
+  construction — for in-process AND MCP-transport tools (the MCP leg proven
   against the real stdio fixture, §17.8); the inproc driver's per-driver
-  emits are deleted in the same change; payloads carry tool NAME +
-  transport + status + attempts + duration ONLY.
+  emits and the orphaned `tools.WithBus` DescriptorOption are deleted in the
+  same change; payloads carry tool NAME + transport + status + attempts +
+  duration ONLY.
+- [ ] **R2 parallel-branch coverage:** a native `CallParallel` turn (the
+  default N>1 dispatch since the 107d cutover) emits ≥2 quadruple-stamped
+  `tool.invoked` events — one per branch — plus matching terminal events,
+  through the parallel executor path (`parallel.go:538`); the behavior
+  `scripts/smoke/phase-107d.sh:97` documents stays true under the wrap seam.
+- [ ] **R2 non-executor coverage:** a descriptor resolved from the catalog
+  and invoked DIRECTLY (outside both executors) emits quadruple-stamped
+  lifecycle events — this pin covers the MCP-Apps-proxy
+  (`mcpconsole/apps.go:270`) and declarative-action
+  (`declarative_action.go:236`) call sites by construction, since both
+  invoke the same wrapped `Invoke` the pin exercises. A dedicated
+  Apps-proxy E2E is EXCLUDED, justified: the proxy adds no distinct
+  registration path, and Apps end-to-end coverage lives in the 109-band
+  suites.
 - [ ] **Redaction (§7):** a test drives a tool-calling run whose args and
   results contain a sentinel string, fetches the full `state.history`
   read-back, and asserts the sentinel appears NOWHERE in the page (raw
@@ -236,23 +283,42 @@ None.
 
 ## Files added or changed
 
-- `internal/llm/` (the wrapper chain `llm.Open` composes — the exact file
-  per the shipped chain layout, e.g. the safety/observability wrapper) —
-  the driver-neutral `llm.cost.recorded` emit (R1); bus + profile deps
-  threaded by the assembly.
+- `internal/llm/safety.go` / `internal/llm/registry.go` (the mandatory
+  safety wrapper `llm.Open` returns, `registry.go:438-460` — `Deps.Bus`
+  required non-nil; profiles in the `ConfigSnapshot`) — the driver-neutral
+  `llm.cost.recorded` emit (R1), one event per driver-level completion.
 - `internal/llm/drivers/bifrost/bifrost.go` (`:180`, `:283`) +
   `internal/llm/drivers/bifrost/cost.go` — the driver-internal emit deleted
   (folded into R1).
-- `internal/runtime/dispatch/dispatch.go` (the `desc.Invoke` band, `:238`) —
-  the transport-agnostic tool lifecycle emit with the run quadruple (R2).
+- **Stale-godoc fallout the move falsifies (§17.6 read for docs), rewritten
+  to the observability-only truth (in-band synchronous accounting; the
+  event is telemetry):**
+  - `internal/llm/events.go:152` — "Governance subscribes for per-identity
+    accumulator updates" is false today (no subscription site exists).
+  - `internal/llm/llm.go:188` — "Governance subscribes to
+    `llm.cost.recorded` events" (same false claim).
+  - `internal/governance/cost.go:207` — "The bifrost driver still emits
+    llm.cost.recorded" becomes false after R1 (the safety wrapper emits).
+- `internal/tools/catalog.go` (`Register`, `:68`) — the universal
+  descriptor-wrap shell: every registered descriptor's `Invoke` wrapped in
+  the ONE lifecycle-emitting shell (R2); the catalog carries the bus.
+- `internal/tools/policy.go` (`:283`) — the now-orphaned `tools.WithBus`
+  DescriptorOption deleted (the wrap seam supersedes its only purpose).
 - `internal/tools/drivers/inproc/inproc.go` (`:159`/`:165`,
   `publishToolInvoked`/`publishToolOutcome`) — per-driver emits deleted
   (superseded by R2).
 - `internal/tools/events.go` — payload shapes unchanged; godoc updated to
-  name the dispatch-seam emitter (no phase jargon).
-- `internal/runtime/dispatch/dispatch_test.go` + `internal/llm/*_test.go` —
-  the one-emit-per-call pins, the redaction sentinel test, the
-  stream-vs-readback equivalence test (in-package or
+  name the descriptor-wrap emitter (no phase jargon).
+- `test/integration/wave7a_test.go` — invokes `desc.Invoke` directly
+  (`:138`) and asserts lifecycle events (`:575-582`); breaks as previously
+  wired (`WithBus` fixture) — MIGRATES to the catalog-wrap seam (the
+  catalog carries the bus; the `WithBus` fixture wiring is replaced). Named
+  here so the break is a planned migration, not a surprise.
+- `internal/tools/catalog_test.go`, `internal/runtime/parallel/*_test.go`,
+  and `internal/llm/*_test.go` — the one-emit-per-completion pins, the
+  parallel-branch (≥2 `tool.invoked`) assertion, the direct-invoke
+  non-executor pin, the redaction sentinel test, the stream-vs-readback
+  equivalence test (in-package or
   `test/integration/phase161_rehydration_test.go` — real drivers, identity
   propagation, ≥1 failure mode, `-race`, per §17.3).
 - `test/integration/phase161_rehydration_test.go` (new) — completed
@@ -278,9 +344,11 @@ None.
 
 ## Public API surface
 
-- No new exported Go API is required by design; if the R1 wrapper needs a
-  constructor option for the bus/profile deps, it is an internal assembly
-  concern (`assemble.Assemble` threads it), not an `sdk/` change.
+- No new exported Go API is required by design: the R1 safety wrapper
+  already has the bus (`llm.Deps.Bus`, required non-nil at `Open`) and the
+  model profiles (`ConfigSnapshot`) in hand, and the R2 catalog wrap needs
+  only the bus the catalog carries — any constructor plumbing is an internal
+  assembly concern, not an `sdk/` change.
 - Wire: nothing — no new methods, types, errors, or event types. The
   enrichment is the CONTENT of already-flowing, already-registered events.
 - Console: `HistoryTurn` gains the stats fields (a Console-internal type,
@@ -288,13 +356,18 @@ None.
 
 ## Test plan
 
-- **Unit:** R1 — one `llm.cost.recorded` per completed `Complete` across two
-  drivers (mock + bifrost-shaped fake at the chain seam), keys pinned, no
-  double emission after the bifrost deletion; R2 — dispatch-seam emits carry
-  the full quadruple + name/status/duration for a table of outcomes
-  (success / failure / invalid-args / policy-exhausted), inproc emits gone;
-  Console vitest — reducer folding (cost sums, tool-row lifecycle
-  resolution, duration fallback, casing tolerance), `wire-events`
+- **Unit:** R1 — one `llm.cost.recorded` per DRIVER-LEVEL completion across
+  two drivers (mock + bifrost-shaped fake at the wrapper seam), keys pinned,
+  per-attempt cadence under retry pinned, no double emission after the
+  bifrost deletion; R2 — the descriptor-wrap shell emits the full
+  quadruple + name/status/duration for a table of outcomes (success /
+  failure / invalid-args / policy-exhausted), inproc emits + `WithBus`
+  gone, the
+  parallel-branch assertion (≥2 quadruple-stamped `tool.invoked` per native
+  `CallParallel` turn through `parallel.go:538`), and the direct-invoke
+  non-executor pin (covers the Apps-proxy + declarative-action call sites
+  by construction); Console vitest — reducer folding (cost sums, tool-row
+  lifecycle resolution, duration fallback, casing tolerance), `wire-events`
   attribution now decoding tool frames, rehydration regression fixture.
 - **Integration (`test/integration/phase161_rehydration_test.go`):** real
   drivers (inmem events/state, patterns redactor, scripted-LLM per the 83l
@@ -320,8 +393,8 @@ None.
   `internal/llm/mock/mock.go:148` — and R1's driver-neutral emit makes
   `llm.cost.recorded` fire for the mock path too, which is itself part of
   the phase's point):
-  - drive a scripted run via `control.start` against the preflight dev
-    server; poll `tasks.get` to terminal;
+  - drive a scripted run via the `start` method (`POST /v1/control/start`)
+    against the preflight dev server; poll `tasks.get` to terminal;
   - fetch `state.history` for the session; assert the page contains an
     `llm.cost.recorded` event whose payload carries `Usage` + `Model` keys;
   - assert a `planner.decision` event with a `DecisionKind` key and a
@@ -336,7 +409,7 @@ None.
 
 ## Coverage target
 
-- `internal/runtime/dispatch`: 85%
+- `internal/tools` (the catalog wrap): 85%
 - `internal/llm`: 85%
 - `internal/tools/drivers/inproc`: existing package target maintained (code
   removed, not added)
@@ -369,12 +442,12 @@ None.
 - **Double-emission during the cutover.** Both R1 and R2 DELETE the old emit
   site in the same change; the one-emit-per-call unit pins make a
   reintroduction loud.
-- **Attempts fidelity at the dispatch seam.** The policy shell (retries)
-  runs INSIDE `desc.Invoke`, so the seam-level emit sees the outcome, not
-  per-attempt internals; `Attempts` is derivable from the policy result
-  where exposed, else reported as the shell's terminal attempt count — the
-  implementor documents the choice in the payload godoc (a §4.3-recordable
-  refinement, not a design change).
+- **Attempts fidelity at the descriptor-wrap seam.** The policy shell
+  (retries) runs INSIDE the wrapped `Invoke`, so the shell-level emit sees
+  the terminal outcome, not per-attempt internals; `Attempts` is derivable
+  from the policy result where exposed, else reported as the shell's
+  terminal attempt count — the implementor documents the choice in the
+  payload godoc (a §4.3-recordable refinement, not a design change).
 
 ## Glossary additions
 
