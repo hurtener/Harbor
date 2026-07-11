@@ -388,6 +388,43 @@ func TestPostureDispatch_RuntimeHealth(t *testing.T) {
 	}
 }
 
+func TestPostureDispatch_RuntimeHealth_NoRetentionSeam_OmitsBlock(t *testing.T) {
+	// The base fixture wires no Retention seam — the additive block is
+	// omitted, and an older client reading only Subsystems is unaffected.
+	s, err := protocol.NewPostureSurface(basePostureDeps(t))
+	if err != nil {
+		t.Fatalf("NewPostureSurface: %v", err)
+	}
+	out, err := s.Dispatch(context.Background(), methods.MethodRuntimeHealth, validRequest())
+	if err != nil {
+		t.Fatalf("Dispatch(runtime.health): %v", err)
+	}
+	h := out.(*types.RuntimeHealth)
+	if h.Retention != nil {
+		t.Fatalf("Retention = %+v, want nil (no seam wired)", h.Retention)
+	}
+}
+
+func TestPostureDispatch_RuntimeHealth_RetentionSeam_Surfaces(t *testing.T) {
+	deps := basePostureDeps(t)
+	at := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	deps.Retention = func(_ context.Context, _ identity.Identity) []types.RetentionHorizon {
+		return []types.RetentionHorizon{{Surface: "events", OldestRetainedAt: at}}
+	}
+	s, err := protocol.NewPostureSurface(deps)
+	if err != nil {
+		t.Fatalf("NewPostureSurface: %v", err)
+	}
+	out, err := s.Dispatch(context.Background(), methods.MethodRuntimeHealth, validRequest())
+	if err != nil {
+		t.Fatalf("Dispatch(runtime.health): %v", err)
+	}
+	h := out.(*types.RuntimeHealth)
+	if len(h.Retention) != 1 || h.Retention[0].Surface != "events" || !h.Retention[0].OldestRetainedAt.Equal(at) {
+		t.Fatalf("Retention = %+v, want a single events horizon at %v", h.Retention, at)
+	}
+}
+
 func TestPostureDispatch_RuntimeCounters(t *testing.T) {
 	s := newPostureFixture(t)
 	out, err := s.Dispatch(context.Background(), methods.MethodRuntimeCounters, validRequest())

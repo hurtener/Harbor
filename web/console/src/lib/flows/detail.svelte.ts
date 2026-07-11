@@ -32,6 +32,40 @@ import type {
 } from '$lib/flows/types.js';
 import type { GraphInput } from '$lib/components/graph/types.js';
 
+/**
+ * Converts a pair of `<input type="date">` values (YYYY-MM-DD, or '' for
+ * unbounded) into the RFC-3339 UTC `since`/`until` bounds `flows.runs.list`
+ * expects. `flows.runs.list` uses a CLOSED window — both bounds inclusive,
+ * matching TaskFilter/sessions — so each picked day maps directly to its
+ * UTC midnight with no boundary compensation: a range of
+ * `2026-07-01`..`2026-07-03` selects runs from the start of Jul 1 through
+ * any run at the start of Jul 3 inclusive. An empty string leaves that
+ * side unbounded (undefined ⇒ omitted from the wire). A malformed date is
+ * treated as unbounded rather than sent as garbage.
+ */
+export function runWindowBounds(
+  sinceDate: string,
+  untilDate: string
+): { since?: string; until?: string } {
+  const bounds: { since?: string; until?: string } = {};
+  const since = dayStartUTC(sinceDate);
+  if (since !== null) bounds.since = since;
+  const until = dayStartUTC(untilDate);
+  if (until !== null) bounds.until = until;
+  return bounds;
+}
+
+/** Parses a YYYY-MM-DD string to the UTC-midnight RFC-3339 instant of
+ * that day, or null when the input is empty/malformed. */
+function dayStartUTC(date: string): string | null {
+  if (date === '') return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (m === null) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
 export class FlowDetailState {
   /* ---- connection + client (CONVENTIONS.md §6) ------------------- */
   connection = $state<RuntimeConnection | null>(null);
@@ -46,6 +80,14 @@ export class FlowDetailState {
   loadError = $state<PageError | null>(null);
   description = $state<FlowDescription | null>(null);
   runs = $state<FlowRun[]>([]);
+
+  /* ---- run-history date-range filter (D-295) --------------------- */
+  // The bound values are `<input type="date">` strings (YYYY-MM-DD) or
+  // '' for unbounded. They drive `flows.runs.list`'s since/until
+  // server-side, replacing the previous walk-and-filter interim.
+  runsSinceDate = $state('');
+  runsUntilDate = $state('');
+  runsFilterActive = $derived(this.runsSinceDate !== '' || this.runsUntilDate !== '');
 
   /* ---- run-summary rail (nested PageState) ----------------------- */
   selectedRunId = $state<string | null>(null);
@@ -122,9 +164,13 @@ export class FlowDetailState {
     this.status = 'loading';
     this.loadError = null;
     try {
+      const { since, until } = runWindowBounds(
+        this.runsSinceDate,
+        this.runsUntilDate
+      );
       const [desc, runsResp] = await Promise.all([
         this.#flows.describe(this.flowID),
-        this.#flows.runsList({ flow_id: this.flowID })
+        this.#flows.runsList({ flow_id: this.flowID, since, until })
       ]);
       this.description = desc;
       this.runs = runsResp.runs ?? [];
@@ -138,6 +184,25 @@ export class FlowDetailState {
   }
 
   refresh(): void {
+    void this.loadDetail();
+  }
+
+  /* ================================================================ */
+  /* Run-history date filter (D-295)                                   */
+  /* ================================================================ */
+
+  /** Applies the picked date range and reloads the run history
+   * server-side. Empty bounds mean unbounded on that side. */
+  applyRunFilter(sinceDate: string, untilDate: string): void {
+    this.runsSinceDate = sinceDate;
+    this.runsUntilDate = untilDate;
+    void this.loadDetail();
+  }
+
+  /** Clears the date range, restoring unbounded run-history paging. */
+  clearRunFilter(): void {
+    this.runsSinceDate = '';
+    this.runsUntilDate = '';
     void this.loadDetail();
   }
 

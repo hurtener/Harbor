@@ -209,6 +209,8 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 		return fmt.Errorf("durable: recover sequence counter: scan head records: %w", err)
 	}
 	var maxSeq uint64
+	var minSeq uint64
+	var minSeqOwner identity.Quadruple
 	for _, rec := range recs {
 		// ListKind matches kindHead as a literal PREFIX. Today only the
 		// exact head kind starts with it (entry records use the disjoint
@@ -228,13 +230,55 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 			if seq > maxSeq {
 				maxSeq = seq
 			}
+			if minSeq == 0 || seq < minSeq {
+				minSeq = seq
+				minSeqOwner = rec.Identity
+			}
 		}
 	}
 	b.nextSeq = maxSeq
+	// Seed the observed retention horizon from the persisted head — the
+	// oldest event's OccurredAt. The log is gap-free and untrimmed, so the
+	// global-minimum sequence IS the head; loading its one entry record
+	// (not a table scan) is the cheap min-index read.
+	if minSeq > 0 {
+		if err := b.recoverOldestRetained(ctx, minSeqOwner, minSeq); err != nil {
+			return err
+		}
+	}
 	b.logger.Info("durable event log: rehydrated sequence counter from persisted head records",
 		slog.String("driver", "durable"),
 		slog.Uint64("recovered_max_sequence", maxSeq),
 		slog.Int("session_count", len(recs)))
+	return nil
+}
+
+// recoverOldestRetained loads the persisted entry for the global-minimum
+// sequence and seeds oldestRetainedAt from its OccurredAt. A decode /
+// load failure fails the boot loudly (CLAUDE.md §13) — the horizon is
+// never silently started at zero when the log is non-empty. A
+// not-found entry for a sequence its head record claims is a corrupt log
+// and also fails loud.
+//
+// Best-effort, under-claims-safe: the seed reads the oldest-by-SEQUENCE
+// entry, while the live floor (sequenceAndStore) tracks oldest-by-
+// OccurredAt. These coincide when events were persisted in occurrence
+// order (the normal case); if a caller published an out-of-order
+// OccurredAt, the two can differ. The horizon is a coarse operational
+// signal, so this errs safe — the seed is the first persisted event's
+// stamp and any later-published-but-earlier-stamped event only pulls the
+// floor further back — so the reported horizon never claims MORE
+// retention than the log actually holds.
+func (b *bus) recoverOldestRetained(ctx context.Context, owner identity.Quadruple, seq uint64) error {
+	rec, err := b.store.Load(ctx, owner, kindEntryPrefix+seqToken(seq))
+	if err != nil {
+		return fmt.Errorf("durable: recover retention horizon: load oldest entry seq=%d: %w", seq, err)
+	}
+	ev, err := decodeEvent(rec.Bytes)
+	if err != nil {
+		return fmt.Errorf("durable: recover retention horizon: decode oldest entry seq=%d: %w", seq, err)
+	}
+	b.oldestRetainedAt = ev.OccurredAt
 	return nil
 }
 
@@ -329,6 +373,16 @@ type bus struct {
 	// order.
 	publishMu sync.Mutex
 	nextSeq   uint64
+	// oldestRetainedAt is the observed retention horizon for durable
+	// mode — the OccurredAt of the oldest persisted event, seeded at boot
+	// from the persisted log (recoverOldestRetained) and floored on every
+	// persist. Because the durable log is gap-free and untrimmed in V1 it
+	// only ever moves earlier (the boot seed IS the head), but the floor
+	// keeps it correct if a boot seed was skipped. Guarded by publishMu —
+	// the same lock the persist path holds — so the horizon, the sequence
+	// counter, and the persisted log never disagree. Zero when the log is
+	// empty. Unused in best-effort mode (the ring is the source there).
+	oldestRetainedAt time.Time
 
 	// Best-effort ring (used ONLY when bestEffort is true).
 	ringBuf  []events.Event
@@ -407,6 +461,34 @@ func (b *bus) Unfence(_ context.Context, id identity.Identity) error {
 	defer b.fenceMu.Unlock()
 	delete(b.fenced, fenceKey(id))
 	return nil
+}
+
+// OldestRetainedAt implements events.RetentionReporter. In durable mode
+// it returns the seeded/floored oldestRetainedAt — the OccurredAt of the
+// oldest persisted event; present is false when the log is empty. In
+// best-effort mode it reads the in-memory ring (like the inmem driver),
+// so the horizon advances as the ring evicts. Bus-internal notices are
+// excluded so the horizon matches a session read's history shape.
+func (b *bus) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
+	if b.closed.Load() {
+		return time.Time{}, false, events.ErrBusClosed
+	}
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	if b.bestEffort {
+		snapshot := b.ringSnapshotLocked()
+		for _, ev := range snapshot {
+			if events.IsBusInternalNotice(ev.Type) {
+				continue
+			}
+			return ev.OccurredAt, true, nil
+		}
+		return time.Time{}, false, nil
+	}
+	if b.oldestRetainedAt.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return b.oldestRetainedAt, true, nil
 }
 
 // Publish validates, redacts, sequences, persists, and fans out ev.
@@ -504,6 +586,13 @@ func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 		return fmt.Errorf("durable: persist event seq=%d: %w", seq, err)
 	}
 	b.nextSeq = seq
+	// Floor the observed retention horizon at the oldest persisted event.
+	// The untrimmed log means the first persisted event is the head, so
+	// this only sets the horizon on the empty-log edge (or an earlier
+	// out-of-order OccurredAt); later events are newer and leave it.
+	if b.oldestRetainedAt.IsZero() || ev.OccurredAt.Before(b.oldestRetainedAt) {
+		b.oldestRetainedAt = ev.OccurredAt
+	}
 	return nil
 }
 

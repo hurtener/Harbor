@@ -136,6 +136,18 @@ export interface FlowRunsListRequest {
   tenants?: string[];
   page?: number;
   page_size?: number;
+  /**
+   * Optional RFC-3339 lower bound (inclusive) on a run's started_at.
+   * Absent ⇒ unbounded. Applied server-side before pagination.
+   */
+  since?: string;
+  /**
+   * Optional RFC-3339 upper bound (INCLUSIVE) on a run's started_at — a
+   * closed window [since, until], matching TaskFilter/sessions. Absent ⇒
+   * unbounded. A request whose until precedes its since fails
+   * invalid_request.
+   */
+  until?: string;
 }
 
 export interface FlowRunsListResponse {

@@ -435,6 +435,7 @@ func (e *Engine) List(ctx context.Context, sessionID identity.Identity, f tasks.
 			Status:    t.Status,
 			Kind:      t.Kind,
 			Priority:  t.Priority,
+			CreatedAt: t.CreatedAt,
 			UpdatedAt: t.UpdatedAt,
 		})
 	}

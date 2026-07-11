@@ -262,6 +262,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"RuntimeCounters":                             reflect.TypeOf(types.RuntimeCounters{}),
 	"RuntimeDrivers":                              reflect.TypeOf(types.RuntimeDrivers{}),
 	"RuntimeHealth":                               reflect.TypeOf(types.RuntimeHealth{}),
+	"RetentionHorizon":                            reflect.TypeOf(types.RetentionHorizon{}),
 	"RuntimeInfo":                                 reflect.TypeOf(types.RuntimeInfo{}),
 	"RuntimeInfoRequest":                          reflect.TypeOf(types.RuntimeInfoRequest{}),
 	"SearchArtifactRef":                           reflect.TypeOf(types.SearchArtifactRef{}),

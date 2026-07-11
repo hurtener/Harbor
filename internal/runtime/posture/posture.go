@@ -28,8 +28,10 @@ package posture
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/sessions"
@@ -37,6 +39,105 @@ import (
 	"github.com/hurtener/Harbor/internal/telemetry"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
+
+// retention surface names — the durable surfaces `runtime.health`'s
+// retention block reports an observed oldest-retained horizon for.
+const (
+	retentionSurfaceEvents   = "events"
+	retentionSurfaceTasks    = "tasks"
+	retentionSurfaceSessions = "sessions"
+)
+
+// RetentionProvider returns a `protocol.PostureDeps.Retention` seam that
+// reports the OBSERVED oldest-retained timestamp per durable surface —
+// the honest, forward-looking retention horizon a fleet consumer reads
+// before issuing a windowed read. Every value is read live from the
+// store; NONE is a configured claim (Harbor has no retention knob — the
+// durable log is gap-free and untrimmed).
+//
+// Read scope mirrors CountersProvider — the shared posture-read posture:
+//
+//   - events: the bus's runtime-wide oldest retained event (a bare
+//     wall-clock instant, no identity content), sourced through the
+//     optional events.RetentionReporter capability both V1 bus drivers
+//     implement. A bus that reports none (empty log/ring, or a driver
+//     without the seam) contributes no events entry.
+//   - tasks: the oldest CreatedAt across the tasks retained in the
+//     caller's session scope.
+//   - sessions: the oldest OpenedAt across the sessions retained in the
+//     caller's tenant (open OR closed-but-retained — "oldest retained",
+//     not "oldest ever", since the registry's idle GC reaps old
+//     sessions).
+//
+// A surface with no retained rows contributes no entry (its horizon is
+// absent, never a fabricated zero). A registry read error degrades that
+// one surface to absent while the others still report — a posture read is
+// a best-effort observability snapshot, never a load-bearing path. A nil
+// dependency simply omits that surface.
+func RetentionProvider(bus events.EventBus, taskReg tasks.TaskRegistry, lister sessions.SessionLister) func(context.Context, identity.Identity) []types.RetentionHorizon {
+	return func(ctx context.Context, id identity.Identity) []types.RetentionHorizon {
+		out := make([]types.RetentionHorizon, 0, 3)
+
+		if reporter, ok := bus.(events.RetentionReporter); ok {
+			if oldest, present, err := reporter.OldestRetainedAt(ctx); err == nil && present {
+				out = append(out, types.RetentionHorizon{
+					Surface:          retentionSurfaceEvents,
+					OldestRetainedAt: oldest,
+				})
+			}
+		}
+
+		if taskReg != nil {
+			summaries, err := taskReg.List(ctx, id, tasks.TaskFilter{})
+			if err == nil {
+				var oldest int64
+				for _, s := range summaries {
+					if s.CreatedAt == 0 {
+						continue
+					}
+					if oldest == 0 || s.CreatedAt < oldest {
+						oldest = s.CreatedAt
+					}
+				}
+				if oldest > 0 {
+					out = append(out, types.RetentionHorizon{
+						Surface:          retentionSurfaceTasks,
+						OldestRetainedAt: time.Unix(0, oldest).UTC(),
+					})
+				}
+			}
+		}
+
+		if lister != nil {
+			snaps, err := lister.ListSnapshots(ctx, sessions.SessionListFilter{
+				TenantIDs:     []string{id.TenantID},
+				IncludeClosed: true,
+			})
+			if err == nil {
+				var oldest time.Time
+				for _, s := range snaps {
+					if s.OpenedAt.IsZero() {
+						continue
+					}
+					if oldest.IsZero() || s.OpenedAt.Before(oldest) {
+						oldest = s.OpenedAt
+					}
+				}
+				if !oldest.IsZero() {
+					out = append(out, types.RetentionHorizon{
+						Surface:          retentionSurfaceSessions,
+						OldestRetainedAt: oldest.UTC(),
+					})
+				}
+			}
+		}
+
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+}
 
 // CountersProvider returns a `protocol.PostureDeps.Counters` seam that
 // reads live runtime state. taskReg supplies the running / background

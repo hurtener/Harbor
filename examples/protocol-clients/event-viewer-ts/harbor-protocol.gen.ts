@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:c913602a92db90f851cdbd7b0bea30eae1279ac34d1870691573ff5989d3abdb";
+export const WIRE_SURFACE_DIGEST = "sha256:1acc57a8a0a7550f43d51b15b17ef5eccd142de26dafb06c0f78d4c8a23f5766";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -1263,6 +1263,8 @@ export interface FlowRunsListRequest {
   tenants?: string[];
   page?: number;
   page_size?: number;
+  since?: string;
+  until?: string;
 }
 
 export interface FlowRunsListResponse {
@@ -1867,6 +1869,11 @@ export interface ReadMCPResourceResponse {
   protocol_version: string;
 }
 
+export interface RetentionHorizon {
+  surface: string;
+  oldest_retained_at?: string;
+}
+
 export interface RunOverrides {
   session_id: string;
   reasoning_effort?: string;
@@ -1901,6 +1908,7 @@ export interface RuntimeDrivers {
 
 export interface RuntimeHealth {
   subsystems: SubsystemHealth[];
+  retention?: RetentionHorizon[];
 }
 
 export interface RuntimeInfo {

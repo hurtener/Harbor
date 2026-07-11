@@ -72,6 +72,7 @@ type PostureSurface struct {
 	build       types.RuntimeInfo
 	clock       func() time.Time
 	health      func(ctx context.Context) []types.SubsystemHealth
+	retention   func(ctx context.Context, ident identity.Identity) []types.RetentionHorizon
 	counters    func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
 	drivers     func() []types.SubsystemDriver
 	metrics     func(ctx context.Context) types.MetricsSnapshot
@@ -116,6 +117,17 @@ type PostureDeps struct {
 	BootedAt time.Time
 	// Health returns the per-subsystem readiness rollup. Mandatory.
 	Health func(ctx context.Context) []types.SubsystemHealth
+	// Retention returns the OBSERVED per-surface retention horizons (the
+	// oldest-retained timestamp for the durable surfaces) that
+	// `runtime.health` carries alongside the readiness rollup. Optional:
+	// a nil seam omits the retention block (an older / headless wiring
+	// that surfaces no horizons), so existing callers are unaffected. The
+	// production mux wires it; the events horizon it carries is the fleet
+	// consumer's window-edge honesty signal. Read scope follows the
+	// Counters seam: the events horizon is runtime-wide (a bare
+	// timestamp), tasks/sessions are the oldest retained within the
+	// caller's scope.
+	Retention func(ctx context.Context, ident identity.Identity) []types.RetentionHorizon
 	// Counters returns the low-cardinality live counters for the
 	// caller's identity scope. Mandatory.
 	Counters func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
@@ -229,6 +241,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		build:       deps.Build,
 		clock:       deps.Clock,
 		health:      deps.Health,
+		retention:   deps.Retention,
 		counters:    deps.Counters,
 		drivers:     deps.Drivers,
 		metrics:     deps.Metrics,
@@ -341,7 +354,7 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 	case methods.MethodRuntimeInfo:
 		return s.handleInfo(), nil
 	case methods.MethodRuntimeHealth:
-		return s.handleHealth(ctx), nil
+		return s.handleHealth(ctx, id), nil
 	case methods.MethodRuntimeCounters:
 		return s.handleCounters(ctx, id), nil
 	case methods.MethodRuntimeDrivers:
@@ -389,15 +402,22 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	return &out
 }
 
-// handleHealth builds the runtime.health response from the Health seam.
-// A nil seam return is normalised to an empty slice so the wire shape
-// is stable.
-func (s *PostureSurface) handleHealth(ctx context.Context) *types.RuntimeHealth {
+// handleHealth builds the runtime.health response from the Health seam
+// plus the optional Retention seam. A nil Health return is normalised to
+// an empty slice so the wire shape is stable. The retention block is
+// additive: a nil Retention seam (or an empty return) simply omits it.
+func (s *PostureSurface) handleHealth(ctx context.Context, id identity.Identity) *types.RuntimeHealth {
 	subs := s.health(ctx)
 	if subs == nil {
 		subs = []types.SubsystemHealth{}
 	}
-	return &types.RuntimeHealth{Subsystems: subs}
+	out := &types.RuntimeHealth{Subsystems: subs}
+	if s.retention != nil {
+		if horizons := s.retention(ctx, id); len(horizons) > 0 {
+			out.Retention = horizons
+		}
+	}
+	return out
 }
 
 // handleCounters builds the runtime.counters response from the Counters

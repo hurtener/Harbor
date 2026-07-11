@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 // the runtime-posture wire types.
 //
 // Harbor ships five read-only Protocol methods that expose the live
@@ -114,12 +116,53 @@ const (
 	HealthStatusUnavailable = "unavailable"
 )
 
+// RetentionHorizon is one durable surface's OBSERVED oldest-retained
+// timestamp — the operational answer to "how far back does this runtime
+// actually hold data?" that a fleet consumer needs BEFORE issuing a
+// windowed read, so a merged "last 7 days" view over heterogeneous
+// runtimes can mark "this runtime retains only back to X" rather than
+// imply a complete window.
+//
+// The value is OBSERVED, never a configured claim: it is the wall-clock
+// time of the oldest row the surface currently retains, read live from
+// the store. Harbor has no retention/pruning knob — the durable event
+// log is gap-free and untrimmed — so there is no configured duration to
+// echo; a configured "keep 7d" on a two-day-old deployment would be a
+// lie the observed head is not. It is the honest forward-looking
+// companion to the at-read `truncated` flag a windowed read carries:
+// the horizon says "expect gaps before X" ahead of the read; `truncated`
+// says "this read hit the gap" after it.
+//
+// OldestRetainedAt is "oldest RETAINED", not "oldest ever": a ring-backed
+// events surface advances its horizon as it evicts, and the session
+// registry's idle GC reaps old sessions — so the horizon tracks what is
+// still held, which is exactly the honest signal a consumer needs.
+type RetentionHorizon struct {
+	// Surface names the durable surface this horizon covers — one of
+	// "events", "tasks", "sessions". The "events" entry also covers the
+	// conversation-history read, whose substrate IS the event log.
+	Surface string `json:"surface"`
+	// OldestRetainedAt is the RFC-3339 wall-clock time of the oldest row
+	// the surface currently retains. Zero/absent (the field is omitted)
+	// when the surface holds no rows yet — never a fabricated value.
+	OldestRetainedAt time.Time `json:"oldest_retained_at,omitempty"`
+}
+
 // RuntimeHealth is the runtime.health response: a per-subsystem
-// readiness rollup across the runtime's registered subsystems.
+// readiness rollup across the runtime's registered subsystems, plus the
+// observed per-surface retention horizons.
 type RuntimeHealth struct {
 	// Subsystems is the per-subsystem readiness slice — one entry per
 	// subsystem the runtime knows about.
 	Subsystems []SubsystemHealth `json:"subsystems"`
+	// Retention is the observed retention horizon per durable surface —
+	// the oldest-retained timestamp for "events", "tasks", and
+	// "sessions". Additive: an older client that does not read it is
+	// unaffected. A surface with no rows yet, or a runtime that wired no
+	// retention seam for it, simply omits its entry (the whole slice is
+	// omitted when empty). Values are OBSERVED, never configured claims —
+	// see RetentionHorizon.
+	Retention []RetentionHorizon `json:"retention,omitempty"`
 }
 
 // RuntimeCounters is the runtime.counters response: the low-cardinality
