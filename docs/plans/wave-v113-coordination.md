@@ -100,8 +100,9 @@ in three staged phases:
   reasoning (the live `ReasoningAccordion`, interleaved with the tool calls
   each step preceded) is lost on reopen. VERDICT ZERO-WIRE, Console-only:
   the live steps come from the tasks.get enricher over the in-memory
-  trajectory (evicted on reopen), so the reducer reconstructs the ordered
-  `reasoningSteps` from the durable `planner.decision.ReasoningTrace` +
+  trajectory (in-memory-only, absent on reopen), so the reducer reconstructs
+  the ordered `reasoningSteps` (step-appending decisions only) from the
+  durable `planner.decision.ReasoningTrace` +
   `tool.*` events `state.history` already carries — reopen renders identical
   to live (D-298).
 
@@ -362,15 +363,18 @@ reasoning steps — the ordered per-ReAct-step native thinking interleaved
 with the tool calls each step preceded. **Zero-wire, Console reducer only**
 (verified live probe + code trace, 2026-07-11): the live path's reasoning
 steps come from the tasks.get enricher projection over the IN-MEMORY
-trajectory (`serve/enricher.go:62-73`), evicted on reopen — the enricher
-cannot serve a reopened run (the probed run's `tasks.get` returned
-`not_found`), so the ONLY durable source is the event stream, which already
-carries `planner.decision` (one per trajectory step, ordered by `sequence`,
-each with `ReasoningTrace`) + `tool.*`. Byte-equivalence is by construction
-(`emitDecision` and `rc.OnReasoning` feed the same `resp.Reasoning`).
-`reduceHistoryTurns` folds the trace into `HistoryTurn.reasoningSteps
-{index, reasoning_trace}` (index = the per-run decision ordinal matching the
-enricher's sparse-index-into-full-sequence); `hydratePastTurns` sets
+trajectory (`internal/runtime/serve/enricher.go:49-56`), in-memory-only —
+the enricher cannot serve a reopened run (the task record survives but its
+trajectory projection is reaped), so the ONLY durable source is the event
+stream, which already carries `planner.decision` (each step-appending
+decision, ordered by `sequence`, with `ReasoningTrace`) + `tool.*`.
+Byte-equivalence is by construction (`emitDecision` and `rc.OnReasoning` feed
+the same `resp.Reasoning`; `DecisionPayload` is SafeSealed so the bus skips
+the redactor — persisted trace is raw). `reduceHistoryTurns` folds the trace
+into `HistoryTurn.reasoningSteps {index, reasoning_trace}` ONLY for
+step-appending `DecisionKind`s (CallTool/CallParallel/SpawnTask/AwaitTask —
+`Finish`/`RequestPause` emit a decision but no `traj.Step`), index = the
+per-run step ordinal over those; `hydratePastTurns` sets
 `message.reasoningSteps`, which the bubble already prefers over the flat
 text. No file conflict with 163 (163 = flows/retention Go+wire; 165 = the
 Console Playground reducer). Gate: `scripts/smoke/phase-165.sh`

@@ -13,10 +13,14 @@ IDENTICAL to the live view.
 
 **Verdict: ZERO-WIRE, Console-only** (verified by live probe + code trace,
 2026-07-11). The live path's reasoning steps come from the tasks.get
-**enricher projection over the in-memory trajectory**, which is evicted on
-reopen — so the enricher can never serve a reopened run (and, on this build, a
-reopened run's task record is often gone entirely: `tasks.get` returned
-`not_found` for the probed run). The ONLY durable source is the event stream,
+**enricher trajectory projection, which is in-memory-only** (`Enricher.Trajectory`
+reads `trajectoryFn(taskID)` — the in-memory trajectory — and returns nil when
+it is "unavailable (evicted …)",
+`internal/runtime/serve/enricher.go:49-56`): the task record survives a reopen,
+but the trajectory projection does NOT — `tasks.get` carries no trajectory
+field for a run whose in-memory trajectory has been reaped, so the enricher can
+never serve a reopened run's reasoning steps. The ONLY durable source is the
+event stream,
 which already carries everything needed: `planner.decision` events (one per
 trajectory step, ordered by `sequence`, each carrying `ReasoningTrace` +
 `DecisionKind` + `Tool`) plus `tool.invoked`/`tool.completed`/`tool.failed`
@@ -61,11 +65,11 @@ no runtime change, no wire change, no lockstep churn.
   against the tree).** Both `reasoningText` and `reasoningSteps` draw from the
   SAME native-model thinking channel, `llm.CompleteResponse.Reasoning`. The
   planner's former textual `Reasoning` action field was DELIBERATELY REMOVED
-  (`internal/planner/decision.go:36-39` documents the drop). The chain: the
+  (`internal/planner/decision.go:36-38` documents the drop). The chain: the
   ReAct planner threads `resp.Reasoning` → `rc.OnReasoning`
   (`internal/planner/react/react.go:720`, `:730-731`); the runloop copies that
   terminal string onto `trajectory.Step.ReasoningTrace`
-  (`internal/runtime/steering/runloop.go:725` sets `stepReasoning` from
+  (`internal/runtime/steering/runloop.go:724-725` sets `stepReasoning` from
   `OnReasoning`, `:921` stamps it on the appended `planner.Step`); the enricher
   projects each non-empty step's `{Index: i, ReasoningTrace}` onto the wire
   (`internal/runtime/serve/enricher.go:62-73`). `reasoning_trace` is
@@ -84,7 +88,7 @@ no runtime change, no wire change, no lockstep churn.
   the SAME `resp.Reasoning` value into (a) the `planner.decision` event's
   `ReasoningTrace` and (b) `stepReasoning` → `trajectory.Step.ReasoningTrace`
   (`runloop.go:725`/`:921`). The enricher projects the trajectory step's trace
-  verbatim (`enricher.go:71`). So `planner.decision.ReasoningTrace` in the
+  verbatim (`enricher.go:66-67`). So `planner.decision.ReasoningTrace` in the
   durable read-back equals the `reasoning_trace` the live enriched `tasks.get`
   serves — the same bytes. Live probe (session `sess-ca866eb2-ccb`, run
   `01KX7KPCQ0ZCK7EQHXW4FTEEE2`, runtime `127.0.0.1:18163`): the `state.history`
@@ -96,29 +100,60 @@ no runtime change, no wire change, no lockstep churn.
   separate, already-resolved Anthropic-native-thinking question; the STRUCTURE
   is fully reconstructable regardless, and a real-reasoning run rides the same
   key.)
-- **The `index` semantics — pinned precisely.** The live `ReasoningStep.index`
-  is the enricher's `i` from `for i, step := range traj.Steps`
-  (`enricher.go:63`): the 0-based position in the FULL step sequence
-  (including empty-reasoning steps), then non-empty-reasoning steps are the
-  only ones emitted (`enricher.go:64-65`; `parseReasoningSteps` applies the
-  same non-empty filter, `answer-envelope.ts:62`). There is exactly ONE
-  `planner.decision` event per trajectory step, in order (each `Planner.Next`
-  emits one decision and the runloop appends one step). So the reducer derives
-  `index` as the per-run ordinal of the `planner.decision` event within the
-  run's ordered decision stream, and EMITS a step only when its
-  `ReasoningTrace` is non-empty — reproducing the enricher's
-  sparse-index-into-full-sequence exactly (a `Finish` step with empty
-  reasoning advances the index but is not emitted, matching the live view).
+- **The `index` semantics — pinned precisely (corrected: NOT every decision
+  is a step).** The live `ReasoningStep.index` is the enricher's `i` from
+  `for i, step := range traj.Steps` (`internal/runtime/serve/enricher.go:61`):
+  the 0-based position in the FULL trajectory-step sequence, then only
+  non-empty-`ReasoningTrace` steps are emitted (`enricher.go:62`,`:66-67`;
+  `parseReasoningSteps` applies the same non-empty filter,
+  `src/routes/(console)/playground/[session_id]/answer-envelope.ts:62`).
+  **The key correction: `emitDecision` fires for EVERY decision — including
+  `Finish` and `RequestPause` (`internal/planner/react/react.go:559`,`:720`,
+  each writing `resp.Reasoning` verbatim to the event's `ReasoningTrace`) —
+  but the runloop appends a `traj.Step` ONLY in the `default` branch of its
+  decision switch (CallTool / CallParallel / SpawnTask / AwaitTask,
+  `internal/runtime/steering/runloop.go:917-923`); `case planner.Finish:
+  return d, nil` (`:795-796`) and `case planner.RequestPause` (`:798`) append
+  NO step.** So a `Finish` carrying NON-EMPTY reasoning (common — the final
+  answer turn often has the most thinking) has no `traj.Step` and the live
+  view never shows it; a mid-run `RequestPause` with reasoning likewise has
+  no step. Therefore the reducer must fold a step into `reasoningSteps` ONLY
+  for decisions whose `DecisionKind ∈ {CallTool, CallParallel, SpawnTask,
+  AwaitTask}` — the step-appending kinds — incrementing the per-run step
+  ordinal ONLY on those, and EMITTING only when the trace is non-empty.
+  `Finish` / `RequestPause` / `Cancelled` are excluded from BOTH the ordinal
+  and emission (mirroring the runloop's `default`-branch gate exactly). This
+  is the ONE non-obvious correctness point of the phase.
 - **Reducer extension (`web/console/src/lib/sessions/history.ts`).**
   `HistoryTurn` gains `reasoningSteps: HistoryReasoningStep[]` (shape
   `{index: number; reasoning_trace: string}`, matching the wire `ReasoningStep`
-  at `web/console/src/lib/chat/types.ts:118-121`). `reduceHistoryTurns` reads
-  the `ReasoningTrace` key (PascalCase/snake tolerant, same as its existing
-  `DecisionKind`/`Tool` reads at `history.ts:283-288`) off each
-  `planner.decision` event, increments the per-run decision ordinal on every
-  decision, and appends `{index, reasoning_trace}` when the trace is non-empty
-  — in event (sequence) order. The flat `turn.reasoning` (161) is left exactly
-  as-is (it stays the fallback and the non-goal boundary).
+  at `web/console/src/lib/chat/types.ts:118-121`). In the existing
+  `planner.decision` branch (`history.ts:283-290`, where 161 already reads
+  `DecisionKind` + `Tool` for the tool-call badges), `reduceHistoryTurns`
+  additionally reads the `ReasoningTrace` key (PascalCase/snake tolerant); it
+  increments a per-run STEP ordinal ONLY when `DecisionKind ∈ {CallTool,
+  CallParallel, SpawnTask, AwaitTask}` (the step-appending kinds — `Finish` /
+  `RequestPause` / `Cancelled` touch neither the ordinal nor the emission),
+  and appends `{index, reasoning_trace}` when the trace is non-empty — in
+  event (sequence) order. `DecisionKind` is already in the payload and already
+  read here, so the fix stays zero-wire. The flat `turn.reasoning` (161) is
+  left exactly as-is (it stays the fallback and the non-goal boundary).
+- **Bytes are identical — the redactor is a no-op on `ReasoningTrace`
+  (verified).** The reopen source is the bus-persisted `planner.decision`
+  event; the live enricher reads the raw in-memory
+  `trajectory.Step.ReasoningTrace`. These would differ only if the bus
+  redactor scrubbed the persisted reasoning — but `DecisionPayload` embeds
+  `events.SafeSealed` (`internal/planner/events.go:139-140`), i.e. it is a
+  `SafePayload`, and the bus SKIPS the audit redactor entirely for
+  SafePayloads (`internal/events/drivers/inmem/inmem.go:369-374`: redact only
+  `if _, safe := payload.(events.SafePayload); !safe`). So the persisted
+  `ReasoningTrace` is the RAW `resp.Reasoning`, byte-identical to the
+  enricher's raw in-memory value. (The `emitDecision` godoc line "the audit
+  redactor processes the payload on the bus", `react.go:717-719`, is
+  imprecise for this specific payload — SafeSealed makes it a no-op; reasoning
+  is model output, not a secret-shaped key the redactor matches. Consequently
+  the theoretical "live shows more than reopen" asymmetry does NOT arise: both
+  paths carry raw reasoning.)
 - **Hydration (`+page.svelte` `hydratePastTurns`, ~`:955-1006`).** The
   hydrated agent message sets `reasoningSteps: turn.reasoningSteps.length > 0 ?
   turn.reasoningSteps : undefined` alongside the existing `reasoningText`
@@ -149,8 +184,9 @@ no runtime change, no wire change, no lockstep churn.
   investigation and is NOT part of this phase.
 - `tasks.get` / trajectory / enricher changes — this phase reconstructs from
   `state.history` events, NOT by calling `tasks.get` per historical run (which
-  cannot answer for a reopened run: the in-memory trajectory is evicted and the
-  task record may be gone — `not_found` in the probe). No runtime or wire
+  cannot answer for a reopened run: the enricher's trajectory projection is
+  in-memory-only and absent once the trajectory is reaped — the task record
+  survives, the trajectory does not, `enricher.go:49-56`). No runtime or wire
   surface is touched.
 - No new wire method, wire type, or canonical event type; no `ProtocolVersion`
   bump; therefore no D-223 lockstep and no D-209 docs regen (a manifest or
@@ -162,19 +198,29 @@ no runtime change, no wire change, no lockstep churn.
 
 - [ ] `HistoryTurn.reasoningSteps: {index: number; reasoning_trace: string}[]`
   added (matching the wire `ReasoningStep` shape); `reduceHistoryTurns` folds
-  each `planner.decision` event's `ReasoningTrace` into it, index = the per-run
-  0-based decision ordinal, emitted only when the trace is non-empty, in
-  sequence order. The flat `turn.reasoning` fold is unchanged.
+  a step ONLY for `planner.decision` events whose `DecisionKind ∈ {CallTool,
+  CallParallel, SpawnTask, AwaitTask}` (the step-appending kinds), incrementing
+  the per-run 0-based STEP ordinal only on those and emitting `{index,
+  reasoning_trace}` only when the trace is non-empty, in sequence order;
+  `Finish` / `RequestPause` / `Cancelled` decisions are excluded from both the
+  ordinal and emission. The flat `turn.reasoning` fold is unchanged.
 - [ ] Ordering + interleaving correct: for a multi-step, multi-tool fixture the
-  reconstructed `reasoningSteps` are in decision order, their `index` values
-  match the enricher's `i`-over-`traj.Steps` (empty-reasoning steps advance the
-  index without emitting), and they interleave with the reconstructed
+  reconstructed `reasoningSteps` are in step order, their `index` values match
+  the enricher's `i`-over-`traj.Steps` (empty-reasoning STEP-appending
+  decisions advance the index without emitting; `Finish` / `RequestPause`
+  decisions advance NEITHER), and they interleave with the reconstructed
   `toolCalls` in the same order the live view shows.
 - [ ] Byte-equivalence pin: for a captured `state.history` window of a real
   reasoning-bearing run, `reduceHistoryTurns(...).reasoningSteps` equals the
   `parseReasoningSteps(...)` output for the same run's enriched `tasks.get`
   detail (same indices, same traces) — a vitest asserts the two producers
-  agree.
+  agree. **The fixture MUST include a REASONING-BEARING `Finish` decision AND
+  a mid-run `RequestPause` decision** (both carrying non-empty reasoning): a
+  fixture without them is the §17.8 rubber-stamp that goes green while
+  production diverges — the empty-mock-`Finish` case cannot catch the
+  over-emit/mis-index bug. The pin asserts neither the `Finish` nor the
+  `RequestPause` produces a `reasoningSteps` entry, and that a step-appending
+  decision AFTER the `RequestPause` keeps the correct (un-shifted) index.
 - [ ] Page-window-boundary safety: a run whose events span two loaded
   `state.history` pages reconstructs its steps with no duplication and no
   reorder (the reducer already merges pages oldest-first via
@@ -281,20 +327,28 @@ No Go files, no wire types, no generated artifacts.
 ## Risks / open questions
 
 - **The `index` derivation is the one correctness subtlety.** It must match the
-  enricher's `i`-over-`traj.Steps` (increment on EVERY `planner.decision`, emit
-  only non-empty): a reducer that indexed only the emitted (non-empty) steps
-  would drift from the live indices on any run with an empty-reasoning step
-  (e.g. `Finish`). The byte-equivalence vitest against a captured
-  real-reasoning window (with at least one empty-reasoning step) is the guard.
-- **One-decision-per-step assumption.** The mapping "one `planner.decision`
-  event ↔ one trajectory step, in order" holds for the ReAct single-tool path
-  (verified: probe showed 2 decisions ↔ 2 steps). `CallParallel` /
-  `SpawnTask` / repair-loop steps could in principle emit a different
-  decision↔step cardinality; the implementer verifies the reducer's ordinal
-  against the enricher's actual `traj.Steps` append semantics for those shapes
-  and, if they diverge, pins the divergence (the common single-tool case is
-  exact and is what the operator asked for). This is a test-fixture question,
-  not a wire question.
+  enricher's `i`-over-`traj.Steps`, which counts STEP-APPENDING decisions only
+  (CallTool / CallParallel / SpawnTask / AwaitTask). Two ways to get it wrong,
+  both caught by the mandated fixture (AC-3): (a) incrementing/emitting on a
+  `Finish` or `RequestPause` — those emit a `planner.decision` event with
+  reasoning but append NO `traj.Step` (`runloop.go:795-798` return before the
+  `default`-branch append at `:917-923`), so folding them phantom-adds a step
+  the live view never shows and, for a mid-run `RequestPause`, shifts every
+  later index; (b) indexing only the emitted (non-empty) steps — which drifts
+  on a step-appending decision that carried empty reasoning (its `i` still
+  advances on the enricher side). The guard is the byte-equivalence vitest
+  over a captured window containing a reasoning-bearing `Finish`, a mid-run
+  `RequestPause`, and at least one empty-reasoning CallTool step.
+- **Decision↔step cardinality.** The corrected rule (fold only
+  step-appending `DecisionKind`s) makes the mapping exact by construction: the
+  runloop's `default` branch appends exactly one `traj.Step` per
+  CallTool/CallParallel/SpawnTask/AwaitTask decision (`runloop.go:917-923`),
+  which is precisely the set the reducer folds — so one folded decision ↔ one
+  `traj.Step`, in order. The probe showed 2 decisions (1 CallTool + 1 Finish)
+  ↔ 1 folded step (the Finish excluded). The implementer still verifies the
+  ordinal against the enricher's `traj.Steps` for a `CallParallel` /
+  `SpawnTask` shape (one decision → one step there too, per the switch) via
+  the fixture; this is a test-fixture question, not a wire question.
 - **Empty traces under the mock / non-thinking providers.** The reopened view
   shows fewer (or zero) reasoning steps exactly when the live view did — honest
   parity, not a regression. The fallback to flat `reasoningText` covers the
