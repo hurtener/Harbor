@@ -1,4 +1,4 @@
-# Harbor v1.13.0 — The Serve-Parity Wave (phases 159–161) — wave coordination
+# Harbor v1.13.0 — The Serve-Parity + Historical-Observability Wave (phases 159–164) — wave coordination
 
 > Per Harbor §17.7 wave delivery cadence. This is the coordination artifact for
 > the v1.13.0 wave ("Serve parity" + the session-rehydration live-test fix).
@@ -13,8 +13,11 @@
 > (159), give it a curated `sdk/server` facade + an opt-in serving scaffold and
 > prove parity (160). **Added 2026-07-10 (operator):** Phase 161 joins the wave
 > as Stage 3 — the session-rehydration live-test fix (reopen loses per-turn
-> tokens/cost/latency, TOOL CALLS badges, model chip; D-293). Additive public
-> API + one importable internal package + producer-side event enrichment ⇒
+> tokens/cost/latency, TOOL CALLS badges, model chip; D-293). **Extended
+> 2026-07-10 (operator, four filed asks):** Stages 4/5 — the historical
+> observability + MCP-discovery band: 162 `events.list` (D-294) ∥ 164 MCP
+> OAuth requirement discovery (D-297), then 163 the windowed-reads honesty
+> pair (D-295 + D-296). Additive public API + additive wire surfaces ⇒
 > additive **minor** bump ⇒ ships as **v1.13.0**.
 
 ---
@@ -71,6 +74,26 @@ in three staged phases:
   content-free payloads only, zero wire changes, and the Console
   reducer/rehydration consumer in the same phase — leave-and-return renders
   identical to the live view (D-293).
+- **162 (Stage 4, added 2026-07-10)** ships `events.list` — the durable,
+  time-ranged, cross-session raw-event read (the biggest
+  historical-observability gap: subscribe is live-only, aggregate is
+  counts-only, state.history is per-session) — reusing the existing
+  `EventFilter` + the `state.history` paging grammar + row projection, with
+  §6-derived fleet widening, and the Console Events page historical window
+  as the D-062 consumer (D-294).
+- **164 (Stage 4, parallel with 162)** makes Harbor discover a connected MCP
+  server's advertised OAuth requirement (401 challenge → RFC 9728 →
+  RFC 8414 chain) and surface it VERBATIM as inert Protocol data on the
+  connection view — never running the flow, never holding a token (D-271
+  stays PULL), SSRF-bounded discovery fetches, spec-derived fixtures
+  (§17.8), MCP Connections page consumer (D-297).
+- **163 (Stage 5, last)** is the windowed-reads honesty pair: optional
+  `since`/`until` on `flows.runs.list` mirroring `TaskFilter` (D-295), and
+  retention horizons as Protocol data on `runtime.health` — the OBSERVED
+  `oldest_retained_at` per durable surface (the filed ask's
+  configured-retention premise was verified false; the durable log is
+  untrimmed in V1), plus the counters/metrics TSDB re-recorded as a
+  decided-NO (D-296).
 
 ---
 
@@ -110,13 +133,17 @@ plan; agents should re-verify against their worktree, not re-derive the design:
 ## 3. Phases
 
 Decision numbers are **pre-assigned** (D-291 for 159, D-292 for 160, D-293 for
-161) so parallel worktree agents never collide in `docs/decisions.md`.
+161, D-294 for 162, D-295/D-296 for 163, D-297 for 164) so parallel worktree
+agents never collide in `docs/decisions.md`.
 
 | Phase | Title | Decision | Stage | Size |
 |-------|-------|----------|-------|------|
 | 159 | Serve-band promotion (`internal/runtime/serve`) | D-291 | 1 | L |
 | 160 | `sdk/server` facade + `harbor scaffold --with-server` + parity gate | D-292 | 2 | L |
 | 161 | Session rehydration carries per-turn metadata | D-293 | 3 | M |
+| 162 | `events.list`: durable time-ranged cross-session raw-event read | D-294 | 4 | L |
+| 164 | MCP OAuth requirement discovery, surfaced as data | D-297 | 4 | M |
+| 163 | Windowed-reads honesty pair (flows since/until + retention horizons) | D-295 + D-296 | 5 | S |
 
 ### Stage 1 — the promotion (159)
 
@@ -246,6 +273,79 @@ the live stream showed — one driver-neutral emit seam per producer on the one
 bus (safety wrapper; catalog descriptor-wrap); D-026/§7 boundaries preserved;
 D-062 surface+consumer same phase.
 
+### Stage 4 — historical events read ∥ MCP OAuth discovery (162 ∥ 164) · added 2026-07-10
+
+Two parallel worktree agents (the phases share no code seam). **BOTH touch
+the wire manifest** (162: a new method + request/response types; 164:
+additive connection-view types) — the SECOND-merged PR rebases onto main and
+re-runs `make protocol-ts-gen` + `make protocol-docs-gen` before its final
+push, so the committed manifest + generated reference reflect both surfaces
+(named explicitly here because a stale regen is a silent lockstep break the
+gates only catch at CI).
+
+**162 — `events.list` (internal/events + internal/protocol + web/console,
+L, D-294).** The durable, time-ranged, cross-session raw-event read: the
+existing `EventFilter` (already carrying `since`/`until`) + a tail-first
+sequence-based cursor mirroring `state.history`'s grammar, rows = the
+existing `StateEvent` projection (no new row shape); non-admin reads scope
+to the verified triple, fleet widening requires the verified admin claim
+derived server-side + one `audit.admin_scope_used` per request (§6 item 5);
+`truncated` at the retention edge; the `HistoryReplayer` seam on BOTH
+drivers (durable = real windows; inmem = ring + honest truncation, no
+capability ceremony); redaction + D-026 by-reference unchanged. D-062
+consumer same phase: the Console Events page historical window (existing
+`WINDOW_SPEC` picker drives it; live tail unchanged; retention-gap notice).
+Operator latitude exercised as NO additions (each candidate adjacency is
+answerable from the rows or the aggregate). Gate:
+`scripts/smoke/phase-162.sh` (scripted run → rows + cursor paging + 401;
+`OK ≥ 3`); the two-identity isolation + widened-read-audit integration legs
+under `-race`; full D-223/D-209 regen.
+
+**164 — MCP OAuth requirement discovery (internal/tools/auth +
+internal/tools/drivers/mcp + internal/protocol + web/console, M, D-297).**
+Detect the MCP auth-spec challenge (401 + `WWW-Authenticate`
+`resource_metadata` — net-new capture; nothing handles 401 in the driver
+today) or an `mcp.servers.probe`; walk RFC 9728 → `authorization_servers[]`
+→ RFC 8414/OIDC metadata REUSING the existing `Provider.resolveEndpoints`
+(RFC 7591 registration reported, never invoked); surface verbatim +
+provenance as an additive `oauth_requirement` on `MCPServerView`. Hard
+boundaries: no flow execution, no token custody (D-271 stays PULL), inert
+untrusted data (report, don't follow), SSRF-bounded discovery fetches
+(same-origin default, redirect/timeout/size caps, https-only off-loopback,
+no credentials — each negative-tested). §17.8: spec-derived fixtures
+(wrong-field mutation must fail). D-062 consumer same phase: the MCP
+Connections page requirement card. SSRF guardrails are PER HOP (the
+RFC 8414 authorization-server hop is inherently cross-origin → requires the
+explicit per-connection origin allowance; allowed fetches also refuse
+private-range/IP-literal hosts). Sibling reconciliation: the ready 85b and
+the parked 92p (reserved D-246) each reuse this single-homed discovery
+chain and add only their flow legs (Phase 148 precedent) — one discovery
+mechanism, N consumers; 85b's plan gains a pointer note in this PR.
+`mcp.servers.probe` triggers discovery (its `MCPProbeRow` return unchanged;
+the requirement is read via `get`/`list`). Gate:
+`scripts/smoke/phase-164.sh` (unit-tests class: discovery + SSRF
+go-test leg + manifest grep; `OK ≥ 2`); the fixture-server integration test
+with its recording assertions under `-race`; full D-223/D-209 regen.
+
+### Stage 5 — the windowed-reads honesty pair (163) · LAST
+
+**163 — flows `since`/`until` + retention horizons (internal/protocol +
+internal/events + web/console, S, D-295 + D-296).** (1) Optional
+`since`/`until` on `FlowRunsListRequest` mirroring `TaskFilter` exactly
+(additive; bounds on `StartedAt` before pagination; scope rules unchanged);
+consumer = the flow detail page's run-history date filter. (2) Retention
+horizons as data: an additive `retention` block on `runtime.health` with
+the OBSERVED per-surface `oldest_retained_at` (events/tasks/sessions) — the
+filed ask's configured-retention premise was verified FALSE (the durable
+log is "gap-free and untrimmed in V1", `durable.go:776`; no retention knob
+exists anywhere), so the observed horizon is the honest v1 shape; pairs
+with the at-read `truncated` flag; consumer = the Events page window-edge
+honesty banner composing with 162. The counters/metrics TSDB is
+re-recorded as a decided-NO so it is not re-opened. Gate:
+`scripts/smoke/phase-163.sh` (`runtime.health` retention block +
+flows-bounds acceptance; `OK ≥ 2`); the seeded-runs bounded-window +
+horizon-accuracy integration legs under `-race`; full D-223/D-209 regen.
+
 ---
 
 ## 4. Sequencing (§17.7 waves)
@@ -261,7 +361,17 @@ exists on `main`.
 **Stage 3 (after Stage 2 merges; added 2026-07-10):** 161 — the
 session-rehydration metadata fix. Its deps (125, 157, 118, 124) are all
 shipped, so it is buildable at any point; it runs as Stage 3 so the wave
-drains serially and the §17.5 checkpoint audits all three phases together.
+drains serially through the serve band.
+
+**Stage 4 (after Stage 3 merges; added 2026-07-10):** 162 ∥ 164 — two
+PARALLEL worktree agents (no shared code seam: events/protocol vs
+tools-auth/mcp). Both touch the wire manifest: the SECOND-merged PR rebases
+onto main and re-runs `make protocol-ts-gen` + `make protocol-docs-gen`
+before its final push (see the Stage 4 section's explicit note).
+
+**Stage 5 (after Stage 4 drains; LAST):** 163 — the honesty pair. It runs
+last because its Events-page window-edge banner composes with 162's page
+work, and it is the smallest slice (S).
 
 **Primitive-with-consumer (§13):** 159 ships the promoted constructor WITH its
 second consumer (`harbortest/devstack` re-wire) in the same phase — never
@@ -269,18 +379,24 @@ second consumer (`harbortest/devstack` re-wire) in the same phase — never
 --with-server`) and the parity gate that exercises both end-to-end. 161 ships
 the producer-side event enrichment WITH its D-062 Console consumer (the
 reducer + rehydration) and the tests that exercise the metadata end-to-end.
-The RFC §5.6 primitive (external serving as a decided contract) lands in THIS
-plans PR with both phases that make it real scheduled behind it.
+162 ships `events.list` WITH the Console Events historical window; 164 ships
+the discovery surfacing WITH the MCP Connections requirement card; 163 ships
+both additive fields WITH the flow-detail date filter + the Events
+window-edge banner. The RFC §5.6 primitive (external serving as a decided
+contract) lands in the serve-parity plans PR with both phases that make it
+real scheduled behind it.
 
 **Wave-end:** 160 bundles the parity gate (real drivers across the serve
 surface, identity propagation, ≥1 failure mode, N≥10 stress); 161 bundles the
 rehydration integration test (real drivers, the MCP stdio fixture leg,
-stream-vs-readback equivalence, cross-identity refusal, `-race`). The phantom
+stream-vs-readback equivalence, cross-identity refusal, `-race`); 162/163/164
+each bundle their real-driver integration legs (§17.3; 164 additionally the
+§17.8 spec-derived fixture discriminator). The phantom
 `top_p` MUST-FIX is carried by the wave-end §17.5 checkpoint punch list (the
-audit PR's artifact) — NOT by any of the three phases; 161's plan lists it as
-an explicit non-goal for the same reason. The §17.5
-checkpoint audit runs AFTER 161 merges and covers all three phases
-(159–161). **Do not scope any subsequent v1.13 band until the audit merges.**
+audit PR's artifact) — NOT by any phase; 161's plan lists it as an explicit
+non-goal for the same reason. The §17.5 checkpoint audit runs AFTER 163
+merges and covers ALL SIX phases (159–164). **Do not scope any subsequent
+band until the audit merges.**
 
 ---
 
@@ -293,7 +409,11 @@ Per the operator's mandate for this wave, EACH phase clears:
    names — for 159 the import-cycle / dev-vs-prod-posture line; for 160 the
    pre-policy-seam wiring + the manifest-vs-mux false-green; for 161
    double-emission on the cutover, content leakage past the content-free
-   boundary, and window-flooding mistaken for the regression), then a second
+   boundary, and window-flooding mistaken for the regression; for 162 the
+   admin-fan-in disclosure edge + cursor stability under clock skew; for 164
+   the SSRF guardrail table + the report-don't-follow boundary + the 92p
+   one-mechanism reconciliation; for 163 the observed-horizon derivation
+   cost + the premise-correction fidelity), then a second
    pass after the first round of fixes lands. The implement→adversarial→fix
    loop is the one validated 5× across the 114–118 sequence (it found real
    bugs on 115/117/118 and LIVE Console bugs on 118).
@@ -309,7 +429,15 @@ Per the operator's mandate for this wave, EACH phase clears:
    tools) — run a tool-calling turn in the Playground, leave, reopen, and
    confirm by hand that header stats, per-message badges, TOOL CALLS, and
    the model chip render identical to the live view (the exact regression
-   the operator reported).
+   the operator reported). 162: the Console Events page historical window
+   against a LIVE runtime — pick a 7-day window, see real rows from before
+   the page was opened, scroll up through pages, and see the retention-gap
+   notice on the inmem posture. 164: discovery from a REAL
+   OAuth-challenging MCP fixture rendered in the Console MCP Connections
+   page (challenge → probe → the requirement card shows endpoints/scopes/
+   PKCE + source URL). 163: smoke-driven (the health retention block + the
+   flows bounds acceptance; the banner is exercised in 162's live pass by
+   re-checking after 163 merges).
 3. **The standard gate:** `make drift-audit` + `markdownlint-cli2` repo-wide +
    `make check-mirror` (no AGENTS/CLAUDE touch) + `make preflight`. Coverage ≥
    the plan's 85% target on new packages.
@@ -328,12 +456,14 @@ Each dispatched worktree agent operates **only inside its own worktree** (`pwd`
 first; STOP if a path resolves outside it; NEVER `git merge main`; NEVER leave
 conflict markers). Per §16, each agent: reads the master-plan detail block + the
 cited RFC sections (§5.6, §3.6, §5.4, §5.5, §6.1, §6.4, §8 for 159/160;
-§6.13, §5.2, §6.4, §6.5, §7 for 161) + the informing briefs (01/06/07 for 159;
-03/06/07 for 160; 06/07/11 for 161) + the predecessor plans in `Deps` + the
+§6.13, §5.2, §6.4, §6.5, §7 for 161; §6.13, §5.2, §4, §7 for 162; §5.2,
+§6.1, §6.13, §6.14, §7 for 163; §6.4, §5.2, §6.15, §7 for 164) + the
+informing briefs (01/06/07 for 159; 03/06/07 for 160; 06/07/11 for 161;
+06/11 for 162 and 163; 09/14 for 164) + the predecessor plans in `Deps` + the
 §16 workflow; fills every template section of its already-authored plan file
 (the plans exist — the agent IMPLEMENTS against them, it does not re-author the
 design); replaces its `scripts/smoke/phase-NNN.sh` skeleton's `skip` with real
-assertions; keeps its pre-assigned `D-NNN` block (D-291 / D-292 / D-293 —
+assertions; keeps its pre-assigned `D-NNN` block (D-291…D-297 —
 already authored in the plans PRs; the implementation PR updates its
 **Status** /**As-built** notes, markdownlint-clean — blank lines around `---`
 and `## D-NNN`); updates any §18 skill/recipe/site surface it touches in the
@@ -341,10 +471,16 @@ same PR (160's list is enumerated in its plan; for 161 the grep-then-decide
 ritual was run: checked `drive-the-playground` (`surface: playground`) — its
 token/cost chip + history description becomes TRUER after the fix and no
 step goes stale, so no edit is required; no other skill names the reopen
-surface);
-regenerates nothing on the wire (all three phases: no wire changes — a
-manifest diff is a red flag); and runs `make drift-audit` +
-`markdownlint-cli2` + `make preflight` green before committing.
+surface; for 162/163/164 the implementor re-runs the ritual — the
+`observe-with-the-console` (`surface: console`) and
+`use-the-harbor-protocol` (`surface: protocol`) skills are the likely
+matches for 162/163's new reads, and any hit is updated in the same PR);
+handles the wire correctly per phase (159/160/161: NO wire changes — a
+manifest diff is a red flag; 162/163/164: additive wire changes with the
+FULL `make protocol-ts-gen` + `make protocol-docs-gen` regen committed, and
+the Stage-4 second-merged PR re-runs both after its rebase); and runs
+`make drift-audit` + `markdownlint-cli2` + `make preflight` green before
+committing.
 
 Each dispatch prompt MUST carry: the master-plan detail block; the mandatory
 reading list; the §16 workflow; the validation gate; the **pre-assigned
