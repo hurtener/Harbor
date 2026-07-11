@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:ba2a9c0b3aed968512e2d722b5db19848ad32f63e3437a6f4ecc72eee5677fdd";
+export const WIRE_SURFACE_DIGEST = "sha256:c913602a92db90f851cdbd7b0bea30eae1279ac34d1870691573ff5989d3abdb";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -1389,6 +1389,17 @@ export interface MCPAppRef {
   raw_html_trusted: boolean;
 }
 
+export interface MCPAuthorizationServerView {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  scopes_supported: string[];
+  code_challenge_methods_supported: string[];
+  registration_endpoint?: string;
+  resource?: string;
+  source_url: string;
+}
+
 export interface MCPBindingScopeCount {
   binding_scope: string;
   count: number;
@@ -1402,9 +1413,26 @@ export interface MCPBindingView {
   last_used_at: string;
 }
 
+export interface MCPDiscoveryStepStatusView {
+  step: string;
+  target: string;
+  ok: boolean;
+  reason?: string;
+  detail?: string;
+}
+
 export interface MCPHealthBucket {
   start_ms: number;
   latency_ms: number;
+}
+
+export interface MCPOAuthRequirementView {
+  resource_metadata_url: string;
+  authorization_servers: MCPAuthorizationServerView[];
+  discovered_at: string;
+  source: string;
+  source_url: string;
+  status: MCPDiscoveryStepStatusView[];
 }
 
 export interface MCPPromptArg {
@@ -1579,6 +1607,7 @@ export interface MCPServerView {
   error_rate_per_min: number;
   oauth_binding_count: number;
   raw_html_trusted: boolean;
+  oauth_requirement?: MCPOAuthRequirementView;
 }
 
 export interface MCPServersListRequest {
