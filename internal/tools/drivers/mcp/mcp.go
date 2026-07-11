@@ -182,6 +182,17 @@ type Config struct {
 	// (those are stamped last). Read once at construction; immutable
 	// thereafter.
 	MetaAnnotations map[string]string
+
+	// OnAuthChallenge, when non-nil, is invoked whenever an MCP HTTP call to
+	// this server answers `401` with a `WWW-Authenticate` Bearer challenge —
+	// the MCP authorization spec's OAuth step-up. The callback records the
+	// advertised OAuth requirement on the connection's registry state so an
+	// operator can inspect it. Capture is pure observation: it never
+	// retries, never attaches credentials, and never alters the call's error
+	// semantics. Optional; nil disables challenge capture (stdio connections
+	// never set it — the challenge is an HTTP-auth construct). Read once at
+	// construction; immutable thereafter.
+	OnAuthChallenge func(AuthChallenge)
 }
 
 // pushIdentity returns the identity to stamp on a server-pushed

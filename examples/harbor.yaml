@@ -711,6 +711,16 @@ tools:
   #       search:
   #         max_attempts: 6
   #         timeout_ms: 5000
+  #     # OAuth requirement discovery (D-297): when this server advertises an
+  #     # OAuth requirement (a 401 + WWW-Authenticate step-up), Harbor
+  #     # DISCOVERS the RFC 9728 -> RFC 8414 metadata chain and surfaces it as
+  #     # inert data on mcp.servers.get — it NEVER runs the flow, holds a
+  #     # token, or dials a discovered endpoint. The authorization-server hop
+  #     # is inherently cross-origin and is fetched only for the public https
+  #     # origins listed here (private-range / IP-literal hosts are refused).
+  #     # Omit to leave the AS half of the chain needs-allowance (partial).
+  #     oauth_discovery_allowed_origins:
+  #       - https://login.example.com
   #
   #   - name: filesystem
   #     transport_mode: stdio

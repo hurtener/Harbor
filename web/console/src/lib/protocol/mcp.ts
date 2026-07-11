@@ -40,6 +40,52 @@ export interface MCPServerView {
   error_rate_per_min: number;
   oauth_binding_count: number;
   raw_html_trusted: boolean;
+  /**
+   * The OAuth requirement the server ADVERTISED and Harbor DISCOVERED on
+   * demand (D-297) — inert, server-supplied, UNVERIFIED data. Present only on
+   * the detail read (mcp.servers.get / after a probe); omitted on list rows.
+   * Mirrors types.MCPServerView.oauth_requirement.
+   */
+  oauth_requirement?: MCPOAuthRequirementView | null;
+}
+
+/**
+ * Discovered MCP OAuth requirement, surfaced as inert Protocol data (D-297).
+ * Harbor never runs the flow, holds a token, or dials a discovered endpoint —
+ * it is a proposal an operator confirms. Mirrors types.MCPOAuthRequirementView.
+ */
+export interface MCPOAuthRequirementView {
+  resource_metadata_url: string;
+  authorization_servers: MCPAuthorizationServerView[];
+  discovered_at: string;
+  source: string;
+  source_url: string;
+  status: MCPDiscoveryStepStatusView[];
+}
+
+/**
+ * One RFC 8414 / OIDC authorization-server metadata document, verbatim.
+ * registration_endpoint is reported, never invoked. Mirrors
+ * types.MCPAuthorizationServerView.
+ */
+export interface MCPAuthorizationServerView {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  scopes_supported: string[];
+  code_challenge_methods_supported: string[];
+  registration_endpoint?: string;
+  resource?: string;
+  source_url: string;
+}
+
+/** One typed per-hop discovery status. Mirrors types.MCPDiscoveryStepStatusView. */
+export interface MCPDiscoveryStepStatusView {
+  step: string;
+  target: string;
+  ok: boolean;
+  reason?: string;
+  detail?: string;
 }
 
 /** mcp.servers.list response — mirrors types.MCPServersListResponse. */

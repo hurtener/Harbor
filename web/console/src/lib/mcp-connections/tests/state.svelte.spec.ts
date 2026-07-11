@@ -223,4 +223,59 @@ describe('McpDetailState — four-state contract + control-surface routing', () 
     expect(detail.error?.code).toBe('not_found');
     expect(detail.server).toBeNull();
   });
+
+  it('carries the discovered oauth_requirement onto detail.server (D-297)', async () => {
+    seedConnection();
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        server: {
+          name: 'oauth-server',
+          transport: 'streamable-http',
+          url_or_command: 'https://mcp.example/oauth',
+          state: 'auth_pending',
+          last_discovery_at: '',
+          tool_count: 1,
+          resource_count: 0,
+          prompt_count: 0,
+          recent_latency_ms: 0,
+          error_rate_per_min: 0,
+          oauth_binding_count: 0,
+          raw_html_trusted: false,
+          oauth_requirement: {
+            resource_metadata_url: 'https://mcp.example/.well-known/oauth-protected-resource',
+            authorization_servers: [
+              {
+                issuer: 'https://as.example',
+                authorization_endpoint: 'https://as.example/authorize',
+                token_endpoint: 'https://as.example/token',
+                scopes_supported: ['openid', 'email'],
+                code_challenge_methods_supported: ['S256'],
+                registration_endpoint: 'https://as.example/register',
+                source_url: 'https://as.example/.well-known/oauth-authorization-server'
+              }
+            ],
+            discovered_at: '2026-07-11T00:00:00Z',
+            source: 'probe',
+            source_url: 'https://mcp.example/.well-known/oauth-protected-resource',
+            status: [{ step: 'protected_resource', target: 'x', ok: true }]
+          }
+        },
+        display_modes_advertised: [],
+        content_shapes: [],
+        tool_policy: { timeout_ms: 5000, max_retries: 2, concurrency_cap: 4 },
+        bindings_summary: [],
+        protocol_version: '1.0.0'
+      })
+    );
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const detail = new McpDetailState();
+    await detail.load('oauth-server');
+    expect(detail.status).toBe('ready');
+    expect(detail.server?.oauth_requirement?.source).toBe('probe');
+    expect(detail.server?.oauth_requirement?.authorization_servers).toHaveLength(1);
+    expect(detail.server?.oauth_requirement?.authorization_servers[0].token_endpoint).toBe(
+      'https://as.example/token'
+    );
+  });
 });

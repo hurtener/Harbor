@@ -91,6 +91,44 @@ type MCPServerRow struct {
 	PolicyTimeoutMs   int64
 	PolicyMaxRetries  int
 	PolicyConcurrency int
+	// OAuthRequirement is the discovered OAuth requirement the server
+	// advertised — nil when discovery has not run. Populated only on
+	// the detail read (GetServer / probe-triggered), never on the hot list row.
+	OAuthRequirement *MCPOAuthRequirementRow
+}
+
+// MCPOAuthRequirementRow is the runtime-side projection of a discovered MCP
+// OAuth requirement chain. It is inert, server-supplied, UNVERIFIED
+// data — a report an operator confirms, never config Harbor follows.
+type MCPOAuthRequirementRow struct {
+	ResourceMetadataURL  string
+	AuthorizationServers []MCPAuthServerRow
+	DiscoveredAt         time.Time
+	Source               string
+	SourceURL            string
+	Status               []MCPDiscoveryStepRow
+}
+
+// MCPAuthServerRow is one RFC 8414 / OIDC authorization-server metadata
+// document, verbatim. RegistrationEndpoint is reported, never invoked.
+type MCPAuthServerRow struct {
+	Issuer                        string
+	AuthorizationEndpoint         string
+	TokenEndpoint                 string
+	ScopesSupported               []string
+	CodeChallengeMethodsSupported []string
+	RegistrationEndpoint          string
+	Resource                      string
+	SourceURL                     string
+}
+
+// MCPDiscoveryStepRow is one typed per-hop discovery status.
+type MCPDiscoveryStepRow struct {
+	Step   string
+	Target string
+	OK     bool
+	Reason string
+	Detail string
 }
 
 // MCPListFilter is the runtime-side filter the MCPAccessor's ListServers
@@ -886,6 +924,47 @@ func projectServerRow(row MCPServerRow) types.MCPServerView {
 		ErrorRatePerMin:   row.ErrorRatePerMin,
 		OAuthBindingCount: mcpCountToWire(row.OAuthBindingCount),
 		RawHTMLTrusted:    row.RawHTMLTrusted,
+		OAuthRequirement:  projectOAuthRequirement(row.OAuthRequirement),
+	}
+}
+
+// projectOAuthRequirement maps the runtime-side discovered OAuth requirement
+// onto the wire view. Nil (no discovery run) maps to nil — the field is
+// omitempty on the wire.
+func projectOAuthRequirement(row *MCPOAuthRequirementRow) *types.MCPOAuthRequirementView {
+	if row == nil {
+		return nil
+	}
+	servers := make([]types.MCPAuthorizationServerView, 0, len(row.AuthorizationServers))
+	for _, as := range row.AuthorizationServers {
+		servers = append(servers, types.MCPAuthorizationServerView{
+			Issuer:                        as.Issuer,
+			AuthorizationEndpoint:         as.AuthorizationEndpoint,
+			TokenEndpoint:                 as.TokenEndpoint,
+			ScopesSupported:               nonNilStrings(as.ScopesSupported),
+			CodeChallengeMethodsSupported: nonNilStrings(as.CodeChallengeMethodsSupported),
+			RegistrationEndpoint:          as.RegistrationEndpoint,
+			Resource:                      as.Resource,
+			SourceURL:                     as.SourceURL,
+		})
+	}
+	status := make([]types.MCPDiscoveryStepStatusView, 0, len(row.Status))
+	for _, st := range row.Status {
+		status = append(status, types.MCPDiscoveryStepStatusView{
+			Step:   st.Step,
+			Target: st.Target,
+			OK:     st.OK,
+			Reason: st.Reason,
+			Detail: st.Detail,
+		})
+	}
+	return &types.MCPOAuthRequirementView{
+		ResourceMetadataURL:  row.ResourceMetadataURL,
+		AuthorizationServers: servers,
+		DiscoveredAt:         row.DiscoveredAt,
+		Source:               row.Source,
+		SourceURL:            row.SourceURL,
+		Status:               status,
 	}
 }
 

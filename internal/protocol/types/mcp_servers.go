@@ -80,6 +80,77 @@ type MCPServerView struct {
 	// RawHTMLTrusted reports whether the per-server raw-HTML opt-in flag
 	// is set. Default false (default-deny).
 	RawHTMLTrusted bool `json:"raw_html_trusted"`
+	// OAuthRequirement is the OAuth requirement the server ADVERTISED and
+	// Harbor DISCOVERED on demand — the verbatim RFC 9728 → RFC 8414
+	// metadata chain plus provenance. It is inert, server-supplied, UNVERIFIED
+	// data: a proposal an operator confirms, never config Harbor follows —
+	// Harbor never runs the OAuth flow, never holds a token, and never dials a
+	// discovered endpoint. Present only on the DETAIL read (mcp.servers.get,
+	// and after a probe triggers discovery); the list projection omits it so
+	// the hot list row stays compact. Nil / omitted when no discovery has run.
+	OAuthRequirement *MCPOAuthRequirementView `json:"oauth_requirement,omitempty"`
+}
+
+// MCPOAuthRequirementView is the discovered MCP OAuth requirement, surfaced as
+// inert Protocol data. The Console renders it as "discovered
+// requirement (unverified — from the connected server)". Harbor never acts on
+// it: no flow, no token custody, no endpoint dialing.
+type MCPOAuthRequirementView struct {
+	// ResourceMetadataURL is the RFC 9728 protected-resource-metadata URL the
+	// discovery walked.
+	ResourceMetadataURL string `json:"resource_metadata_url"`
+	// AuthorizationServers is the verbatim RFC 8414 metadata for each
+	// advertised authorization server that resolved. Always non-nil (may be
+	// empty when the cross-origin AS hop was refused — see Status).
+	AuthorizationServers []MCPAuthorizationServerView `json:"authorization_servers"`
+	// DiscoveredAt is the wall-clock instant discovery ran.
+	DiscoveredAt time.Time `json:"discovered_at"`
+	// Source is "challenge" (a 401 WWW-Authenticate step-up) or "probe" (an
+	// operator-triggered probe).
+	Source string `json:"source"`
+	// SourceURL is the resource-metadata URL discovery started from.
+	SourceURL string `json:"source_url"`
+	// Status is the typed per-hop outcome list — a partial chain reports the
+	// hops it refused / failed here rather than surfacing silently empty.
+	Status []MCPDiscoveryStepStatusView `json:"status"`
+}
+
+// MCPAuthorizationServerView is one RFC 8414 / OIDC authorization-server
+// metadata document, verbatim. RegistrationEndpoint is reported, never invoked.
+type MCPAuthorizationServerView struct {
+	// Issuer is the authorization server's issuer identifier.
+	Issuer string `json:"issuer"`
+	// AuthorizationEndpoint is the RFC 6749 authorization endpoint URL.
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	// TokenEndpoint is the RFC 6749 token endpoint URL. NEVER dialed by Harbor.
+	TokenEndpoint string `json:"token_endpoint"`
+	// ScopesSupported is the advertised scope list. Always non-nil.
+	ScopesSupported []string `json:"scopes_supported"`
+	// CodeChallengeMethodsSupported is the advertised PKCE method list. Always
+	// non-nil.
+	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
+	// RegistrationEndpoint is the optional RFC 7591 dynamic-registration
+	// endpoint, REPORTED but never invoked.
+	RegistrationEndpoint string `json:"registration_endpoint,omitempty"`
+	// Resource is the optional RFC 8707 resource identifier.
+	Resource string `json:"resource,omitempty"`
+	// SourceURL is the URL this metadata document was fetched from.
+	SourceURL string `json:"source_url"`
+}
+
+// MCPDiscoveryStepStatusView is one typed per-hop discovery status. A failed
+// hop carries a stable Reason code so a partial chain reports what it refused.
+type MCPDiscoveryStepStatusView struct {
+	// Step names the hop ("protected_resource" / "authorization_server").
+	Step string `json:"step"`
+	// Target is the URL the hop attempted.
+	Target string `json:"target"`
+	// OK reports whether the hop succeeded.
+	OK bool `json:"ok"`
+	// Reason is the stable machine-readable failure code (empty when OK).
+	Reason string `json:"reason,omitempty"`
+	// Detail is a human-readable message (never a credential).
+	Detail string `json:"detail,omitempty"`
 }
 
 // MCPServersListRequest is the wire shape for mcp.servers.list — a paged,
