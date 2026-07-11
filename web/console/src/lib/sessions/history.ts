@@ -105,6 +105,20 @@ export async function loadSessionHistory(
 	return { events, headSequence: head, tailSequence: tail, hasMore, truncated };
 }
 
+/** A reconstructed reasoning step on a reopened turn — the ordered
+ *  per-ReAct-step provider-side thinking trace, mirroring the wire
+ *  `ReasoningStep` shape (`$lib/chat/types.ts`) so the hydrated message
+ *  field is assignment-compatible with the live path's. `index` is the
+ *  0-based position in the FULL trajectory-step sequence (the enricher's
+ *  `i`-over-`traj.Steps`), so a reopened accordion renders identically to
+ *  the live `parseReasoningSteps(enriched tasks.get)` projection. */
+export interface HistoryReasoningStep {
+	/** The step's 0-based position in the run's trajectory-step sequence. */
+	index: number;
+	/** The provider-side thinking trace captured for the step (never empty). */
+	reasoning_trace: string;
+}
+
 /** A reconstructed tool-call row on a reopened turn (content-free — the
  *  tool NAME + status + a short redacted summary, NEVER raw args/results). */
 export interface HistoryToolCall {
@@ -143,6 +157,16 @@ export interface HistoryTurn {
 	durationMs: number;
 	/** The turn's reconstructed tool-call rows (content-free). */
 	toolCalls: HistoryToolCall[];
+	/**
+	 * The turn's reconstructed ordered reasoning steps — the per-ReAct-step
+	 * provider-side thinking, reconstructed from the run's `planner.decision`
+	 * events, byte-equivalent to what the live enricher trajectory projection
+	 * (`parseReasoningSteps`) produces. Folded ONLY for step-appending
+	 * decisions (`DecisionKind ∈ {CallTool, CallParallel, SpawnTask,
+	 * AwaitTask}`) with non-empty reasoning — `Finish` / `RequestPause`
+	 * decisions append no trajectory step, so they emit no reasoning step.
+	 */
+	reasoningSteps: HistoryReasoningStep[];
 }
 
 /** Reads the first present string field across PascalCase / snake_case keys. */
@@ -175,6 +199,22 @@ function readObject(obj: Record<string, unknown>, keys: string[]): Record<string
 /** The set of task-lifecycle terminal types (mirrors the live decoder). */
 const TERMINAL_TASK_TYPES = new Set(['task.completed', 'task.failed', 'task.cancelled']);
 
+/**
+ * The STEP-APPENDING `DecisionKind`s — the runloop appends exactly one
+ * `traj.Step` per decision of these kinds (its `default`-branch cases),
+ * while `Finish` / `RequestPause` return before the append. The enricher
+ * indexes reasoning steps over `traj.Steps`, so the reducer must advance
+ * the per-run step ordinal ONLY on these kinds to match the live index.
+ * An allowlist (not a Finish/RequestPause denylist) so any unknown/future
+ * non-step-appending kind auto-excludes.
+ */
+const STEP_APPENDING_DECISION_KINDS = new Set([
+	'CallTool',
+	'CallParallel',
+	'SpawnTask',
+	'AwaitTask'
+]);
+
 /** The run id an event belongs to — the wire `run` field, or a payload TaskID. */
 function eventRunID(ev: StateEvent): string {
 	if (ev.run) return ev.run;
@@ -195,6 +235,15 @@ function eventRunID(ev: StateEvent): string {
  *     (`Model`) — summed across the run's LLM calls.
  *   - `planner.decision` with `DecisionKind === 'CallTool'` → opens a tool-call
  *     row (status `invoked`) keyed by the tool name.
+ *   - `planner.decision` with a STEP-APPENDING `DecisionKind` (`CallTool` /
+ *     `CallParallel` / `SpawnTask` / `AwaitTask`) → advances the per-run step
+ *     ordinal and, when the decision's `ReasoningTrace` is non-empty, appends
+ *     `{index, reasoning_trace}` — reconstructing the ordered reasoning-step
+ *     sequence the live enricher trajectory projection serves. `Finish` /
+ *     `RequestPause` (and any non-matching kind) append no trajectory step in
+ *     the runloop, so they touch NEITHER the ordinal nor the emission — a
+ *     reasoning-bearing `Finish`/`RequestPause` never shows a step, exactly
+ *     as the live view does not (the one correctness subtlety of the reopen).
  *   - `tool.completed` / `tool.failed` → resolves the matching open row's
  *     status + a short content-free summary (duration / error class), mirroring
  *     the live `applyToolLifecycle` reducer.
@@ -211,6 +260,10 @@ export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[]
 	const byRun = new Map<string, HistoryTurn>();
 	// Per-run task lifecycle instants, for the duration fallback.
 	const started = new Map<string, string>();
+	// Per-run 0-based trajectory-step ordinal — advanced ONLY on
+	// step-appending decisions, mirroring the enricher's `i`-over-`traj.Steps`
+	// so a reopened reasoning step's `index` equals the live projection's.
+	const stepOrdinal = new Map<string, number>();
 
 	const turnFor = (runID: string, at: string): HistoryTurn => {
 		let t = byRun.get(runID);
@@ -227,7 +280,8 @@ export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[]
 				costUSD: 0,
 				model: '',
 				durationMs: 0,
-				toolCalls: []
+				toolCalls: [],
+				reasoningSteps: []
 			};
 			byRun.set(runID, t);
 			order.push(runID);
@@ -285,6 +339,25 @@ export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[]
 			const tool = readString(p, ['Tool', 'tool']);
 			if (kind === 'CallTool' && tool !== '') {
 				resolveToolRow(turn, tool, 'invoked', '');
+			}
+			// Reconstruct the ordered reasoning step. The runloop appends a
+			// `traj.Step` ONLY for step-appending decisions, and the enricher
+			// indexes reasoning over those steps; `Finish` / `RequestPause`
+			// emit a `planner.decision` event (often with reasoning) but append
+			// NO step, so they must advance neither the ordinal nor the
+			// emission — folding them would phantom-add a step the live view
+			// never shows and shift every later index (the one correctness
+			// subtlety). The `ReasoningTrace` bytes are the raw provider
+			// reasoning: `DecisionPayload` is a `SafePayload`, so the bus skips
+			// the redactor — byte-identical to the live enricher's in-memory
+			// value.
+			if (STEP_APPENDING_DECISION_KINDS.has(kind)) {
+				const index = stepOrdinal.get(runID) ?? 0;
+				const trace = readString(p, ['ReasoningTrace', 'reasoning_trace']);
+				if (trace !== '') {
+					turn.reasoningSteps.push({ index, reasoning_trace: trace });
+				}
+				stepOrdinal.set(runID, index + 1);
 			}
 		} else if (ev.type === 'tool.completed') {
 			const tool = readString(p, ['ToolName', 'tool_name']);
