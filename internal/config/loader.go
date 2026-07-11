@@ -150,7 +150,7 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source, configDir stri
 	// Strip deprecated governance keys from the byte stream BEFORE the
 	// strict decode would reject them. Each stripped key emits a single
 	// `config.deprecated_field` slog.Warn. Operators migrating
-	// from a pre-Phase-36a config rebuild the values under
+	// from a pre-tiered config rebuild the values under
 	// `governance.identity_tiers`.
 	cleaned, err := stripDeprecatedGovernanceKeys(data, source, lc.logger)
 	if err != nil {

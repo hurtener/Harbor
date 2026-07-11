@@ -140,8 +140,6 @@ export interface ChatOverrides {
 	reasoningEffort?: string;
 	/** The sampling temperature, in [0, 2]. */
 	temperature?: number;
-	/** The nucleus-sampling top-p, in [0, 1]. */
-	topP?: number;
 	/** The per-message MaxTokens ceiling. */
 	maxTokens?: number;
 	/** A one-message system-prompt override. */

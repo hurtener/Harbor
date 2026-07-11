@@ -18,8 +18,8 @@
 //
 // canonical skills surface. The `skill_search` /
 // `skill_get` / `skill_list` / `skill_propose` built-ins are thin
-// delegations to the Phase-38 `internal/skills/tools` handlers and
-// the Phase-41 `internal/skills/generator`. The capability envelope
+// delegations to the `internal/skills/tools` handlers and
+// the `internal/skills/generator`. The capability envelope
 // (which tools the run may see) is computed per call from the
 // catalog's visible set under the run's identity + granted scopes —
 // never LLM-supplied — so the capability filter, tool-name redaction,
@@ -98,9 +98,9 @@ var registry = map[string]registrar{
 		return registerToolGet(rc.Catalog)
 	},
 	// the skill meta-tools are thin delegations
-	// to the Phase-38 `internal/skills/tools` handlers (capability
+	// to the `internal/skills/tools` handlers (capability
 	// filter + redaction + budgeter on the production path) and the
-	// Phase-41 generator. The builtin registry stays the ONE
+	// skill generator. The builtin registry stays the ONE
 	// registration carrier; `skills/tools` + `skills/generator` are
 	// the ONE implementation home.
 	"skill_search": registerSkillSearch,

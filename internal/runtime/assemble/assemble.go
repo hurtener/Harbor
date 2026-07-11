@@ -746,7 +746,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// loud. SkillStore + ArtifactStore are threaded so the skill_* set
 	// / artifact_fetch reach their backing stores. Note:
 	// Bus + Redactor + GrantedScopes feed the skill_* delegations to
-	// the Phase-38 handlers + Phase-41 generator — the capability
+	// the skills-tools handlers + skill generator — the capability
 	// filter, redaction, budgeter, and the generator's audit-mandatory
 	// emit all run on this production path.
 	if err := builtin.RegisterWith(builtin.RegistryContext{

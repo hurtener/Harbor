@@ -2,8 +2,8 @@
   // Harbor Console — Playground Controls card (Phase 73n / D-130, 108 / D-167,
   // 108a fidelity pass).
   //
-  // The right-rail Controls card: reasoning-effort (segmented), temperature +
-  // top-p sliders with live numeric values, max-tokens, and a collapsible
+  // The right-rail Controls card: reasoning-effort (segmented), a temperature
+  // slider with a live numeric value, max-tokens, and a collapsible
   // system-prompt override. Overrides apply LIVE (debounced) — they re-wire the
   // NEXT message, so there is no "save" button (108a D-Q3 / operator feedback:
   // a save button is wrong when the controls implicitly affect the next turn).
@@ -30,20 +30,18 @@
     onapply: (overrides: {
       reasoningEffort?: string;
       temperature?: number;
-      topP?: number;
       maxTokens?: number;
       systemPromptOverride?: string;
     }) => void;
   } = $props();
 
-  // Defaults: reasoning unset ('' = the agent's default); temperature/top-p sit
-  // at neutral resting values so the numeric readout shows a real number rather
+  // Defaults: reasoning unset ('' = the agent's default); temperature sits
+  // at a neutral resting value so the numeric readout shows a real number rather
   // than the prior "—". Nothing is sent until the operator changes a control.
-  const DEFAULTS = { reasoningEffort: '', temperature: 1, topP: 1, maxTokens: '', systemPrompt: '' };
+  const DEFAULTS = { reasoningEffort: '', temperature: 1, maxTokens: '', systemPrompt: '' };
 
   let reasoningEffort = $state(DEFAULTS.reasoningEffort);
   let temperature = $state<number>(DEFAULTS.temperature);
-  let topP = $state<number>(DEFAULTS.topP);
   let maxTokens = $state('');
   let systemPrompt = $state('');
   let systemPromptOpen = $state(false);
@@ -58,20 +56,17 @@
   function composeOverrides(): {
     reasoningEffort?: string;
     temperature?: number;
-    topP?: number;
     maxTokens?: number;
     systemPromptOverride?: string;
   } {
     const o: {
       reasoningEffort?: string;
       temperature?: number;
-      topP?: number;
       maxTokens?: number;
       systemPromptOverride?: string;
     } = {};
     if (reasoningEffort !== '') o.reasoningEffort = reasoningEffort;
     o.temperature = temperature;
-    o.topP = topP;
     if (maxTokens !== '') {
       const m = Number(maxTokens);
       if (!Number.isNaN(m)) o.maxTokens = m;
@@ -99,7 +94,6 @@
   function resetDefaults(): void {
     reasoningEffort = DEFAULTS.reasoningEffort;
     temperature = DEFAULTS.temperature;
-    topP = DEFAULTS.topP;
     maxTokens = DEFAULTS.maxTokens;
     systemPrompt = DEFAULTS.systemPrompt;
     systemPromptOpen = false;
@@ -171,24 +165,6 @@
         oninput={applyLive}
       />
       <span class="numeric-chip tabular">{temperature.toFixed(1)}</span>
-    </div>
-  </label>
-
-  <!-- Top P — slider + live numeric value -->
-  <label class="control-field">
-    <span class="control-label">Top P</span>
-    <div class="slider-row">
-      <input
-        class="slider"
-        type="range"
-        min="0"
-        max="1"
-        step="0.05"
-        data-testid="controls-top-p"
-        bind:value={topP}
-        oninput={applyLive}
-      />
-      <span class="numeric-chip tabular">{topP.toFixed(2)}</span>
     </div>
   </label>
 

@@ -269,7 +269,11 @@ fi
 # -----------------------------------------------------------------------------
 godoc_jargon_count=0
 godoc_jargon_patterns=(
-    '(Phase|phase-)[0-9]+'
+    # Case-insensitive on the leading P and tolerant of the separator so the
+    # hyphenated "Phase-39" and spaced "Phase 39" forms are caught alongside
+    # "Phase39" / "phase-39" (the pre-tightening `(Phase|phase-)[0-9]+`
+    # missed capital-P-hyphen — see the v1.13 checkpoint W5 fix).
+    '[Pp]hase[ -]?[0-9]+'
     '\bD-[0-9]+'
     '\b[Bb]rief [0-9]+'
     '\b(Wave|Round|Stage)[ -][0-9A-Z]+'

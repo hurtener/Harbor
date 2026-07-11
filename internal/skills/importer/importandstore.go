@@ -1,5 +1,5 @@
 // importandstore.go — the exported one-call ingest path.
-// The Phase-40 importer shipped a complete parse pipeline and
+// The Skills.md importer shipped a complete parse pipeline and
 // then no shipped path invoked it: the only non-test consumers were
 // devdraft's path-safety reuse ("a Harbor-defining
 // feature that is unreachable is not shipped"). ImportAndStore
@@ -73,7 +73,7 @@ func WithOverwrite() ImportStoreOption {
 	return func(o *importStoreOptions) { o.overwrite = true }
 }
 
-// ImportAndStore reads the Skills.md file at `path`, runs the Phase-40
+// ImportAndStore reads the Skills.md file at `path`, runs the
 // Import pipeline (frontmatter scan, validation, path-safe attachment
 // resolution rooted at the file's directory), and upserts the
 // resulting `Origin=pack` skill into `store` under `id`.
@@ -88,7 +88,7 @@ func WithOverwrite() ImportStoreOption {
 //     always writes Origin=pack, so pack→pack replace succeeds).
 //
 // Attachments (inline `![alt](rel/path)` references) resolve against
-// the file's directory via the Phase-40 path-safety helper (§7 rule
+// the file's directory via the path-safety helper (§7 rule
 // 5) and upload through `deps.Store` scoped to the calling identity
 // (TaskID = "skill-import" for provenance).
 //

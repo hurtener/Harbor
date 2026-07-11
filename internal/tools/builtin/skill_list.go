@@ -11,7 +11,7 @@ import (
 )
 
 // SkillListArgs is the LLM-facing input shape for the `skill_list`
-// built-in (— the Phase-38 third tool's first
+// built-in (— the skills-tools third tool's first
 // production registration). The `capability` field is omitted and
 // server-computed (see skill_capability.go).
 type SkillListArgs struct {
@@ -23,7 +23,7 @@ type SkillListArgs struct {
 }
 
 // registerSkillList installs the `skill_list` built-in as a thin
-// delegation to the Phase-38 handler (`skilltools.ListHandler`):
+// delegation to the skills-tools handler (`skilltools.ListHandler`):
 // paged enumeration, capability-filtered + redacted, summary-only
 // (full content stays behind `skill_get`).
 func registerSkillList(rc RegistryContext) error {

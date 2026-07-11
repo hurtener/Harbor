@@ -70,6 +70,31 @@ consumers, no parallel implementation (§13).
 
 None.
 
+## As-built (§4.3 deviation — RFC 8414 hop is a separate SSRF-guarded fetch)
+
+The plan's design prose describes the RFC 8414 hop as "REUSES the existing
+`Provider.resolveEndpoints` machinery … no second parser." As built, that is
+precise only for the PARSE shape, not the FETCH. The report-only walker's RFC
+8414 authorization-server hop is an intentionally SEPARATE fetch path
+(`internal/tools/auth/discovery.go` — `fetchHop` at `:394`, the issuer→metadata
+URL derivation `authServerMetadataURL` at `:498`), NOT a call into
+`Provider.resolveEndpoints` / `fetchDiscovery`. What IS single-homed is the
+metadata PARSE struct `discoveredMetadata` (`internal/tools/auth/provider.go:117`),
+shared with the interactive-flow resolver.
+
+Why the fetch forks: the report-only hop needs per-hop SSRF guardrails
+(cross-origin allowance for the inherently cross-origin AS hop, private-range /
+IP-literal refusal via the post-DNS `net.Dialer.Control` backstop, bounded
+redirects, size cap, https-only, no credentials) AND typed per-step statuses
+(`DiscoveryStepStatus`) that `resolveEndpoints` neither has nor should grow —
+`resolveEndpoints` performs an un-guarded fetch and caches into flow-execution
+state that report-only discovery must never touch. Composing it directly would
+either leak SSRF exposure into the interactive path or contaminate flow state
+from a read. The separate walker strengthens the single-homing claim: siblings
+85b / 92p reuse THIS guardrailed walker (`auth.Discoverer` → `auth.OAuthRequirement`),
+never the ungated flow fetch. Recorded as a permanent §4.3 deviation; D-297's
+"As-built (Phase 164, §4.3)" block carries the same correction.
+
 ## Goals
 
 - **Detect.** Two triggers, both at the runtime's MCP connection edge (the

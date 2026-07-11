@@ -35,7 +35,7 @@ check_jargon() {
     fi
 }
 
-check_jargon '(Phase|phase-)[0-9]+' 'Phase NN / phase-NN'
+check_jargon '[Pp]hase[ -]?[0-9]+' 'Phase NN / phase-NN'
 check_jargon '\bD-[0-9]+' 'D-NNN'
 check_jargon '\b[Bb]rief [0-9]+' 'brief NN'
 check_jargon '\b(Wave|Round|Stage)[ -][0-9A-Z]+' 'Wave/Round/Stage band'

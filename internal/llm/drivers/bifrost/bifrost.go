@@ -66,10 +66,6 @@ type Driver struct {
 	// driver-owned lifecycle (TTL + LRU evict with remote delete, plus
 	// a Close-time sweep). Internally synchronized.
 	files *providerFileCache
-	// profiles is the per-model profile map (read-only after construction).
-	// Used to stamp the model's context-window onto the
-	// `llm.cost.recorded` event so the Console can show context %.
-	profiles map[string]llm.ModelProfile
 
 	closed atomic.Bool
 }
@@ -110,7 +106,6 @@ func New(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		bus:       deps.Bus,
 		artifacts: deps.Artifacts,
 		files:     newProviderFileCache(defaultFileCacheCapacity, defaultFileCacheTTL),
-		profiles:  cfg.ModelProfiles,
 	}, nil
 }
 

@@ -129,9 +129,12 @@ func init() {
 //   - `ReasoningChars` is the rune count of the captured reasoning
 //     trace — a scannable size signal that never carries raw content.
 //   - `ReasoningTrace` is the provider-side thinking trace captured
-//     for the step. Reasoning can be sensitive; the event
-//     is published onto the bus where the audit redactor processes it
-//     before any sink persists it (CLAUDE.md §7). `inspect-runs`
+//     for the step, persisted VERBATIM. Because DecisionPayload embeds
+//     SafeSealed (a SafePayload), the event bus SKIPS the audit redactor
+//     for it — the trace a sink persists is byte-identical to the one
+//     the enricher captured. Reconstruction of a run's reasoning channel
+//     relies on that fidelity, so the trace is treated as operator-only
+//     debug data, never routed to an untrusted surface. `inspect-runs`
 //     surfaces it as `steps[].reasoning_trace`.
 //
 // The emit is the observability surface that lets `harbor inspect-runs`

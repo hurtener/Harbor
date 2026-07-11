@@ -70,8 +70,8 @@ are additive wire (full D-223/D-209 regen); consumers ship same-phase.
 - **HA — flow-run time filter (verified anchors).** `FlowRunsListRequest`
   (`internal/protocol/types/flows.go:303-320`; Console mirror
   `web/console/src/lib/flows/types.ts:133-140`) gains optional `since` /
-  `until` (RFC-3339 UTC, inclusive-lower / exclusive-upper on the run's
-  `StartedAt` — the field the run rows already carry and sort by,
+  `until` (RFC-3339 UTC, inclusive on BOTH bounds — a closed window on the
+  run's `StartedAt`, the field the run rows already carry and sort by,
   `flows.go:289-290`, `:323`), mirroring `TaskFilter.Since`/`.Until`
   EXACTLY (`internal/protocol/types/tasks.go:211-214`; Console
   `tasks.ts:107-108`). Additive: both optional, absent ⇒ unbounded — zero
@@ -131,7 +131,7 @@ are additive wire (full D-223/D-209 regen); consumers ship same-phase.
 
 - [x] `FlowRunsListRequest.Since`/`.Until` (additive, `omitempty`,
   RFC-3339): bounds filter run rows on `StartedAt`
-  (inclusive lower / exclusive upper); absent ⇒ unbounded; `until < since`
+  (inclusive on both bounds — a closed window); absent ⇒ unbounded; `until < since`
   fails `CodeInvalidRequest` (matching the tasks-filter posture); paging
   interacts correctly (bounds applied before pagination; page counts
   reflect the bounded set). Covered by

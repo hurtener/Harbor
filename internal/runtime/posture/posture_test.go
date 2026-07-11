@@ -3,11 +3,14 @@ package posture
 import (
 	"context"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/sessions"
+	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
@@ -22,6 +25,53 @@ func TestCountersProvider_NilDeps_ReportsZeros(t *testing.T) {
 	c := provider(context.Background(), id)
 	if c.TasksRunning != 0 || c.SessionsActive != 0 || c.BackgroundJobsActive != 0 || c.MCPConnectionsHealthy != 0 {
 		t.Errorf("nil-dep counters = %+v, want all zero", c)
+	}
+}
+
+// TestCountersProvider_TaskAndSessionCounts asserts the Counters seam
+// tallies RUNNING tasks (with the background subset) and ACTIVE sessions
+// from the live registries — the per-identity counting branches.
+func TestCountersProvider_TaskAndSessionCounts(t *testing.T) {
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	now := time.Now().UnixNano()
+	taskReg := &fakeTaskReg{summaries: []tasks.TaskSummary{
+		{ID: "r1", Status: tasks.StatusRunning, Kind: tasks.KindForeground, CreatedAt: now},
+		{ID: "r2", Status: tasks.StatusRunning, Kind: tasks.KindBackground, CreatedAt: now},
+		{ID: "done", Status: tasks.StatusComplete, Kind: tasks.KindForeground, CreatedAt: now},
+	}}
+	lister := &fakeLister{snaps: []sessions.SessionSnapshot{
+		{Session: sessions.Session{ID: "s1"}},
+		{Session: sessions.Session{ID: "s2"}},
+		{Session: sessions.Session{ID: "s3"}},
+	}}
+
+	c := CountersProvider(taskReg, lister, nil)(context.Background(), id)
+	if c.TasksRunning != 2 {
+		t.Errorf("TasksRunning = %d, want 2 (only running)", c.TasksRunning)
+	}
+	if c.BackgroundJobsActive != 1 {
+		t.Errorf("BackgroundJobsActive = %d, want 1 (running background subset)", c.BackgroundJobsActive)
+	}
+	if c.SessionsActive != 3 {
+		t.Errorf("SessionsActive = %d, want 3 (open snapshots)", c.SessionsActive)
+	}
+}
+
+// TestCountersProvider_ReadError_DegradesToZero asserts a registry read
+// error degrades that one counter to zero rather than failing the whole
+// posture read (best-effort snapshot).
+func TestCountersProvider_ReadError_DegradesToZero(t *testing.T) {
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	taskReg := &fakeTaskReg{err: context.DeadlineExceeded}
+	lister := &fakeLister{snaps: []sessions.SessionSnapshot{
+		{Session: sessions.Session{ID: "s1"}},
+	}}
+	c := CountersProvider(taskReg, lister, nil)(context.Background(), id)
+	if c.TasksRunning != 0 || c.BackgroundJobsActive != 0 {
+		t.Errorf("task counters on read error = %+v, want zero", c)
+	}
+	if c.SessionsActive != 1 {
+		t.Errorf("SessionsActive = %d, want 1 (the healthy surface still reports)", c.SessionsActive)
 	}
 }
 

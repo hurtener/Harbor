@@ -10,7 +10,7 @@ import (
 
 // deprecatedGovernanceKeys is the closed set of YAML keys the loader
 // strips from the `governance:` block and warns about. Each
-// key was a PRE-Phase-36a single-knob stub that the loader validated
+// key was a pre-tiered single-knob stub that the loader validated
 // but the governance enforcement engine never consumed — exactly the
 // confusion trap CLAUDE.md §13's "Test stubs as production defaults
 // on operator-facing seams" entry warns against, one layer up. An

@@ -35,33 +35,41 @@ import type { GraphInput } from '$lib/components/graph/types.js';
 /**
  * Converts a pair of `<input type="date">` values (YYYY-MM-DD, or '' for
  * unbounded) into the RFC-3339 UTC `since`/`until` bounds `flows.runs.list`
- * expects. `flows.runs.list` uses a CLOSED window — both bounds inclusive,
- * matching TaskFilter/sessions — so each picked day maps directly to its
- * UTC midnight with no boundary compensation: a range of
- * `2026-07-01`..`2026-07-03` selects runs from the start of Jul 1 through
- * any run at the start of Jul 3 inclusive. An empty string leaves that
- * side unbounded (undefined ⇒ omitted from the wire). A malformed date is
- * treated as unbounded rather than sent as garbage.
+ * expects. The server filters on `StartedAt` with BOTH bounds inclusive
+ * (`filterRunsByWindow`, protocol.go — a run is dropped only when its
+ * `StartedAt` is `Before(since)` or `After(until)`). So the lower bound
+ * maps to the picked day's UTC midnight (its earliest instant), while the
+ * upper bound maps to the NEXT day's UTC midnight so the WHOLE picked end
+ * day is included: an inclusive `until` at start-of-day would exclude
+ * every run after 00:00:00 on that day (the bug this fixes — "end day
+ * July 3" dropped all of July 3). A range of `2026-07-01`..`2026-07-03`
+ * therefore selects every run from the start of Jul 1 through the end of
+ * Jul 3. An empty string leaves that side unbounded (undefined ⇒ omitted
+ * from the wire). A malformed date is treated as unbounded rather than
+ * sent as garbage.
  */
 export function runWindowBounds(
   sinceDate: string,
   untilDate: string
 ): { since?: string; until?: string } {
   const bounds: { since?: string; until?: string } = {};
-  const since = dayStartUTC(sinceDate);
+  const since = dayStartUTC(sinceDate, 0);
   if (since !== null) bounds.since = since;
-  const until = dayStartUTC(untilDate);
+  // +1 day: with an inclusive `until` on StartedAt, the whole end day is
+  // covered by the next day's midnight boundary.
+  const until = dayStartUTC(untilDate, 1);
   if (until !== null) bounds.until = until;
   return bounds;
 }
 
 /** Parses a YYYY-MM-DD string to the UTC-midnight RFC-3339 instant of
- * that day, or null when the input is empty/malformed. */
-function dayStartUTC(date: string): string | null {
+ * that day plus `dayOffset` days, or null when the input is
+ * empty/malformed. */
+function dayStartUTC(date: string, dayOffset: number): string | null {
   if (date === '') return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
   if (m === null) return null;
-  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + dayOffset);
   if (Number.isNaN(ms)) return null;
   return new Date(ms).toISOString();
 }

@@ -10,7 +10,7 @@ import (
 )
 
 // registerSkillPropose installs the `skill_propose` built-in as a
-// thin delegation to the Phase-41 generator (`generator.Propose`) —
+// thin delegation to the skill generator (`generator.Propose`) —
 // its first production registration.
 //
 // The settled generator semantics ride unchanged through this carrier: draft
