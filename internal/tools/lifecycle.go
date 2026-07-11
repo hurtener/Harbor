@@ -43,6 +43,14 @@ func wrapDescriptorLifecycle(bus events.EventBus, d ToolDescriptor) ToolDescript
 	wrapped.Invoke = func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
 		start := time.Now()
 		publishToolInvoked(ctx, bus, name, transport, start)
+		// The outcome emit is INLINE, not deferred — byte-identical to the
+		// per-transport emit this shell supersedes. A genuine panic inside the
+		// inner Invoke therefore skips the outcome event (the run fails loudly
+		// regardless). A bare `defer` would be wrong here: on panic the named
+		// error is nil, so it would emit tool.completed for a panicking call;
+		// the only correct panic-hardening is recover-emit-failed-then-repanic,
+		// which is not worth the overhead on this hot dispatch path for a case
+		// §5 forbids in production code anyway ("no panic in production paths").
 		result, err := inner(ctx, args)
 		publishToolOutcome(ctx, bus, name, transport, start, err)
 		return result, err

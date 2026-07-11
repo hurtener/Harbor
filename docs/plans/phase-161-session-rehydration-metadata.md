@@ -71,6 +71,29 @@ methods, no new wire types, no new canonical event types.
 
 None.
 
+## As-built refinements (implementation PR)
+
+The full list is recorded in `docs/decisions.md` D-293's "As-built
+refinements" note; the six items are §4.3-recordable refinements that did not
+change the design. The most substantive is a CROSS-PHASE §17.6 fix bundled
+into this PR:
+
+- **Pre-existing trajectory-append data race (phases 158/159), fixed here.**
+  The wave-end `-race` run surfaced a race — NOT introduced by this phase (this
+  phase's added tool-lifecycle events merely perturbed scheduling enough to
+  make the latent race reproduce) — between `serve.Enricher.Trajectory` (an
+  out-of-band `tasks.get` reader of an IN-FLIGHT run's reasoning trace) and
+  `steering.RunLoop`'s per-step `Trajectory.Steps` append: `RunLoopDriver`'s
+  `trajMu` guarded only the trajectory MAP, never the Steps slice. Fixed per
+  the `Trajectory` type's "the Runtime serialises concurrent access" contract:
+  a per-run `*sync.RWMutex` (`RunSpec.TrajectoryMu`) shared between the
+  steering append and the serve driver's `trackedTrajectory` entry;
+  `TrajectoryByTaskID` returns a defensive snapshot under that lock. Pinned by
+  a deterministic regression test
+  (`TestRunLoopDriver_TrajectoryByTaskID_ConcurrentDuringAppend`,
+  `internal/runtime/serve/trajectory_race_test.go`) that is race-detected
+  without the mutex and green with it.
+
 ## Goals
 
 - The durable event stream's read-back carries enough CONTENT-FREE metadata
@@ -423,10 +446,21 @@ None.
 
 ## Coverage target
 
-- `internal/tools` (the catalog wrap): 85%
-- `internal/llm`: 85%
+- `internal/tools` (the catalog wrap): 85% aspirational. **As-built: 81.6%**
+  (up from the pre-existing `main` baseline of 77.9% — this PR IMPROVES it
+  toward the target, does not regress it; the residual gap to 85% is
+  pre-existing uncovered surface across the large package, not new code —
+  the new `lifecycle.go` + catalog-wrap seam is well covered:
+  `wrapDescriptorLifecycle` 100%, `WithCatalogBus`/`NewCatalog` 100%,
+  `publishToolOutcome` 91%). Closing the residual to 85% is out of this
+  phase's scope (it would require covering unrelated pre-existing paths).
+- `internal/llm`: 85% aspirational. **As-built: 79.3%** (up from the
+  pre-existing `main` baseline of 78.9%; the new safety-wrapper cost emit is
+  covered — `Complete` 97%, `emitCostRecorded` 75% — the residual gap is
+  pre-existing uncovered driver/error surface). Improved toward the target,
+  not regressed.
 - `internal/tools/drivers/inproc`: existing package target maintained (code
-  removed, not added)
+  removed, not added).
 - Console: vitest suites listed above (the frontend job has no Go-style
   coverage gate; the named specs are binding).
 
@@ -473,7 +507,13 @@ None.
 - [x] `make preflight` passes
 - [x] `make check-mirror` passes
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [x] Coverage on touched packages ≥ stated target
+- [⏳] Coverage on touched packages ≥ stated target — the binding 85% line is
+      NOT met: `internal/tools` 81.6%, `internal/llm` 79.3%. Both are IMPROVED
+      over the pre-existing `main` baseline (77.9% / 78.9%), not regressed, so
+      §14's "or this PR explicitly improves it toward the target" clause holds;
+      the residual gap to 85% is pre-existing uncovered surface across these
+      large packages (the new code is well covered — see the Coverage target
+      section). Closing the residual is out of this phase's scope.
 - [x] If multi-isolation paths changed: cross-session isolation test passes
       (the read-path scoping is untouched and re-pinned; the new emits carry
       per-run identity — the D-025 stress asserts no cross-run bleed).
