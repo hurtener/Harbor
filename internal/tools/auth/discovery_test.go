@@ -388,24 +388,62 @@ func TestDiscoverer_Discover_ConcurrentReuse(t *testing.T) {
 	wg.Wait()
 }
 
-// Without the test bypass, a dial to a private/loopback address is refused at
-// dial time (the DNS-rebinding defence) — even for a same-origin 9728 hop.
-func TestDiscoverer_Discover_DialTimePrivateRefusal(t *testing.T) {
+// The DNS-rebinding defence: a HOSTNAME that RESOLVES to a private/loopback
+// address must be refused at dial time. This is the load-bearing case — the
+// hostname (`localhost`) is not an IP literal (net.ParseIP returns nil for it),
+// so a pre-resolution guard would let it through; only a post-resolution
+// net.Dialer.Control check (seeing the resolved 127.0.0.1 / ::1) catches it.
+//
+// Fail-without / pass-with: against a pre-resolution DialContext guard this
+// test FAILS (the `localhost` name skips the ParseIP check and the fetch
+// succeeds); against the Control-based guard it PASSES (the resolved loopback
+// IP is refused). Verified both directions during implementation.
+func TestDiscoverer_Discover_DialTimeHostnameToPrivateRefusal(t *testing.T) {
+	// httptest binds 127.0.0.1; we reach it via the `localhost` HOSTNAME so the
+	// guard must resolve the name to a private IP to catch it.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"resource":"x","authorization_servers":["https://as.example.net"]}`))
 	}))
 	defer srv.Close()
 
-	// Strict discoverer (no WithPrivateNetworkAccessForTest): the loopback dial
-	// is refused by the transport's dial-control guard.
+	if net.ParseIP("localhost") != nil {
+		t.Fatal("precondition: `localhost` must be a hostname, not an IP literal")
+	}
+	// Rewrite the IP-literal httptest URL to the `localhost` hostname form.
+	hostnameURL := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
+
+	// Strict discoverer (no WithPrivateNetworkAccessForTest): the dial to the
+	// resolved loopback address is refused by the post-resolution Control guard.
 	d := NewDiscoverer(WithDiscoveryTimeout(2 * time.Second))
 	req := d.Discover(context.Background(), DiscoveryInput{
-		ServerURL:           srv.URL,
+		ServerURL:           hostnameURL,
+		ResourceMetadataURL: hostnameURL + prWellKnown,
+		Source:              "probe",
+	})
+	if len(req.Status) == 0 || req.Status[0].OK {
+		t.Fatalf("hostname-resolving-to-private dial should be refused; statuses=%+v", req.Status)
+	}
+	if req.Status[0].Reason != ReasonFetchFailed {
+		t.Errorf("reason = %q, want %q", req.Status[0].Reason, ReasonFetchFailed)
+	}
+}
+
+// Defence-in-depth: an IP-literal loopback dial is also refused (this path was
+// already caught pre-fix by the literal check; kept as a regression guard).
+func TestDiscoverer_Discover_DialTimeIPLiteralPrivateRefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"resource":"x","authorization_servers":["https://as.example.net"]}`))
+	}))
+	defer srv.Close()
+
+	d := NewDiscoverer(WithDiscoveryTimeout(2 * time.Second))
+	req := d.Discover(context.Background(), DiscoveryInput{
+		ServerURL:           srv.URL, // http://127.0.0.1:PORT
 		ResourceMetadataURL: srv.URL + prWellKnown,
 		Source:              "probe",
 	})
 	if len(req.Status) == 0 || req.Status[0].OK {
-		t.Fatalf("loopback dial should be refused; statuses=%+v", req.Status)
+		t.Fatalf("loopback IP-literal dial should be refused; statuses=%+v", req.Status)
 	}
 	if req.Status[0].Reason != ReasonFetchFailed {
 		t.Errorf("reason = %q, want %q", req.Status[0].Reason, ReasonFetchFailed)
@@ -442,6 +480,45 @@ func TestIsPrivateIP(t *testing.T) {
 		if got := isPrivateIP(ip); got != want {
 			t.Errorf("isPrivateIP(%s) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+// The aggregate walk budget: a 9728 doc packing more than maxAuthServers
+// entries is truncated (reported, not silently dropped), bounding total time.
+func TestDiscoverer_Discover_AuthServerCountCapped(t *testing.T) {
+	asServer := httptest.NewServer(&recordingHandler{routes: map[string][]byte{
+		asWellKnown: loadFixture(t, "rfc8414_authorization_server.json"),
+	}})
+	defer asServer.Close()
+
+	// Advertise many more AS entries than the cap (all pointing at the one AS
+	// fixture so each resolves; the cap must still truncate the walk).
+	list := make([]string, 0, maxAuthServers+5)
+	for range maxAuthServers + 5 {
+		list = append(list, asServer.URL)
+	}
+	prBody, _ := json.Marshal(map[string]any{"resource": "x", "authorization_servers": list})
+	prServer := httptest.NewServer(&recordingHandler{routes: map[string][]byte{prWellKnown: prBody}})
+	defer prServer.Close()
+
+	d := NewDiscoverer(WithPrivateNetworkAccessForTest())
+	req := d.Discover(context.Background(), DiscoveryInput{
+		ServerURL:           prServer.URL,
+		ResourceMetadataURL: prServer.URL + prWellKnown,
+		Source:              "probe",
+		AllowedOrigins:      []string{asServer.URL},
+	})
+	if len(req.AuthorizationServers) > maxAuthServers {
+		t.Fatalf("walked %d authorization servers, cap is %d", len(req.AuthorizationServers), maxAuthServers)
+	}
+	var sawCap bool
+	for _, st := range req.Status {
+		if st.Reason == ReasonTooManyAuthServers {
+			sawCap = true
+		}
+	}
+	if !sawCap {
+		t.Errorf("truncation should be reported with reason %q; statuses=%+v", ReasonTooManyAuthServers, req.Status)
 	}
 }
 

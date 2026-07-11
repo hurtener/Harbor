@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
+	"testing"
 	"time"
 )
 
@@ -75,7 +77,16 @@ const (
 	// ReasonMetadataAbsent — the document parsed but named no
 	// authorization_servers (the 9728 hop) — nothing to walk.
 	ReasonMetadataAbsent = "metadata_absent"
+	// ReasonTooManyAuthServers — the 9728 doc advertised more authorization
+	// servers than the aggregate walk budget allows; the excess is truncated.
+	ReasonTooManyAuthServers = "too_many_authorization_servers"
 )
+
+// maxAuthServers caps how many advertised authorization servers one walk will
+// fetch — the aggregate walk budget. A hostile protected-resource document
+// could otherwise pack an unbounded authorization_servers[] whose per-entry
+// timeouts sum to minutes.
+const maxAuthServers = 8
 
 // AuthorizationServerMeta is one RFC 8414 / OIDC authorization-server-metadata
 // document, surfaced VERBATIM. It is inert data — Harbor never dials any of
@@ -212,13 +223,19 @@ func WithDiscoveryMaxBodyBytes(n int64) DiscovererOption {
 // WithPrivateNetworkAccessForTest relaxes the private-range / IP-literal
 // refusal so httptest fixtures on loopback can be reached.
 //
-// TEST-ONLY. Production MUST NOT call this: without it the Discoverer refuses
-// every private-range / loopback / IP-literal cross-origin target, which is
-// the load-bearing SSRF guardrail. It exists because httptest servers bind
-// loopback and the positive-path chain-walk tests must reach them; the
-// negative guardrail tests deliberately omit it to prove production refuses.
+// TEST-ONLY, mechanically enforced: it PANICS when invoked outside a test
+// binary (testing.Testing() is false in the production `harbor` binary), so it
+// can never accidentally disable the load-bearing SSRF guardrail in
+// production. It exists because httptest servers bind loopback and the
+// positive-path chain-walk tests must reach them; the negative guardrail tests
+// deliberately omit it to prove production refuses.
 func WithPrivateNetworkAccessForTest() DiscovererOption {
-	return func(d *Discoverer) { d.allowPrivate = true }
+	return func(d *Discoverer) {
+		if !testing.Testing() {
+			panic("auth: WithPrivateNetworkAccessForTest must never be used outside a test binary")
+		}
+		d.allowPrivate = true
+	}
 }
 
 // NewDiscoverer builds a Discoverer with strict SSRF defaults: 8 KiB body
@@ -235,21 +252,36 @@ func NewDiscoverer(opts ...DiscovererOption) *Discoverer {
 	for _, opt := range opts {
 		opt(d)
 	}
-	dialer := &net.Dialer{Timeout: d.perFetchTimeout}
-	transport := &http.Transport{
-		Proxy: nil, // never route discovery through a proxy
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if !d.allowPrivate {
-				host, _, splitErr := net.SplitHostPort(addr)
-				if splitErr != nil {
-					host = addr
-				}
-				if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
-					return nil, fmt.Errorf("%w: dial to private address %s refused", ErrDiscoveryRefused, host)
-				}
+	// Control runs AFTER DNS resolution with the resolved ip:port — this is the
+	// load-bearing SSRF backstop (the DNS-rebinding defence). A pre-resolution
+	// DialContext wrapper would see the hostname (net.ParseIP -> nil) and let a
+	// name that resolves to a private address slip through; Control sees the IP
+	// the connection is actually about to reach and fails closed.
+	dialer := &net.Dialer{
+		Timeout: d.perFetchTimeout,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			if d.allowPrivate {
+				return nil
 			}
-			return dialer.DialContext(ctx, network, addr)
+			host, _, splitErr := net.SplitHostPort(address)
+			if splitErr != nil {
+				host = address
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				// Control is invoked post-resolution — a non-IP here is
+				// unexpected; refuse fail-closed rather than dialing blind.
+				return fmt.Errorf("%w: unresolved dial address %q", ErrDiscoveryRefused, address)
+			}
+			if isPrivateIP(ip) {
+				return fmt.Errorf("%w: dial to private/loopback address %s refused", ErrDiscoveryRefused, host)
+			}
+			return nil
 		},
+	}
+	transport := &http.Transport{
+		Proxy:       nil, // never route discovery through a proxy
+		DialContext: dialer.DialContext,
 	}
 	d.httpClient = &http.Client{
 		Transport: transport,
@@ -321,8 +353,18 @@ func (d *Discoverer) Discover(ctx context.Context, in DiscoveryInput) OAuthRequi
 	}
 
 	// Hop 2 — RFC 8414 / OIDC authorization-server metadata per advertised AS
-	// (always cross-origin → always requires the explicit allowance).
-	for _, asURL := range pr.AuthorizationServers {
+	// (always cross-origin → always requires the explicit allowance). The AS
+	// count is capped (maxAuthServers): a hostile 9728 doc could otherwise pack
+	// hundreds of entries, each able to burn a full per-fetch timeout, summing
+	// to minutes — the aggregate walk budget. Excess entries are reported
+	// truncated, never silently dropped.
+	servers := pr.AuthorizationServers
+	if len(servers) > maxAuthServers {
+		req.Status = append(req.Status, failStatus(StepAuthorizationServer, prURL, ReasonTooManyAuthServers,
+			fmt.Sprintf("advertised %d authorization servers; walking the first %d (budget cap)", len(servers), maxAuthServers)))
+		servers = servers[:maxAuthServers]
+	}
+	for _, asURL := range servers {
 		asMetaURL := authServerMetadataURL(asURL)
 		asBody, asSt := d.fetchHop(ctx, asMetaURL, StepAuthorizationServer, serverOrigin, allowed)
 		req.Status = append(req.Status, asSt)

@@ -2291,5 +2291,11 @@ func validateDiscoveryOrigin(o string) error {
 	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("origin must be scheme://host[:port] only — no path, query, or fragment")
 	}
+	// Reject IP-literal hosts fail-fast: an allowance names a PUBLIC origin,
+	// never a bare IP (the runtime SSRF guard refuses private-range / IP-literal
+	// destinations anyway; catching it at config load fails faster).
+	if net.ParseIP(u.Hostname()) != nil {
+		return errors.New("origin must be a hostname, not an IP literal (an allowance names a public origin; bare IPs are refused)")
+	}
 	return nil
 }

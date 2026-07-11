@@ -3392,7 +3392,13 @@ per §17.8). Status: Shipped (V1.6).
   state, which report-only discovery must not touch. This strengthens the
   single-homing claim: 85b / 92p reuse this guardrailed walker, not the
   ungated flow fetch. A per-connection `oauth_discovery_allowed_origins`
-  config field carries the SSRF cross-origin allowances.
+  config field carries the SSRF cross-origin allowances (IP-literal / non-https
+  origins rejected at config load). The DNS-rebinding backstop is a
+  `net.Dialer.Control` hook running POST-DNS-resolution against the resolved
+  IP (a pre-resolution `DialContext` guard missed hostnames that resolve to
+  private addresses — caught in adversarial review, fixed with a
+  fail-without/pass-with test); an aggregate walk budget caps the
+  authorization-server fan-out.
 
 ---
 
