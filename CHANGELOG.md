@@ -22,9 +22,163 @@ Two versions move independently in Harbor (RFC §5.3):
 [#375](https://github.com/hurtener/Harbor/issues/375) remains parked with the
 92k–92q MCP-OAuth band; identity-scoped `StateStore` enumeration to bound the
 user-scope revision scan — issue
-[#396](https://github.com/hurtener/Harbor/issues/396); and the generated
-per-domain Protocol wire-type modules + the shared chat-module extraction — the
-D-093 / D-091 follow-ons.)
+[#396](https://github.com/hurtener/Harbor/issues/396); and the shared
+chat-module extraction to `web/shared/chat/` — the D-091 follow-on. A
+`HARBOR_LIVE_LLM`-gated smoke now guards Anthropic reasoning-chunk surfacing;
+the `internal/runtime/dispatch` parallel-cancel test flakes under full-suite
+`-race` CPU oversubscription — issue
+[#480](https://github.com/hurtener/Harbor/issues/480).)
+
+## [1.13.0] — 2026-07-11
+
+The adopter-serving + observability-history release. Two arcs land together.
+
+**Any agent can now serve the Protocol.** An external Go module that assembles
+its own runtime with compiled in-process tools was previously headless-only —
+it could `RunOnce` but could not mount the northbound Protocol surface, so it
+was not a first-class Protocol server without forking the runtime. That gap is
+closed: the serve composition (config → subsystems → auth → transports →
+listener), formerly trapped in `package main`, is promoted to one importable
+constructor; `harbor serve` / `dev` / `console` become thin callers of it, and
+the dev-only surfaces (dev-token mint, bootstrap endpoint, draft scaffolding,
+Console embedding) compose caller-side through explicit injection seams. A
+curated, production-only `sdk/server` facade exposes it, and
+`harbor scaffold --with-server` emits a `cmd/<agent>/main.go` that serves the
+full Protocol with the project's own compiled tools — at parity with
+`harbor serve`, enforced by a both-binary integration gate that boots each from
+one config and compares the whole method surface. The compiled-tool registrar
+rides the existing pre-policy catalog seam, so an in-process tool inherits every
+declared approval / OAuth / policy wrapping.
+
+**The Console stops losing history, and fleet observability gets a durable
+read.** Reopening a Playground session no longer drops what a run produced:
+per-turn tokens / cost / latency / model and the tool-call badges rehydrate,
+and the ordered reasoning-step ↔ tool-call interleaving is reconstructed from
+the durable event stream — both by relocating the cost and tool-lifecycle
+emissions to driver-neutral seams so the read-back carries what the live stream
+always did. A new durable, time-ranged, cross-session `events.list` lets a
+Protocol client render historical raw events over a `{since, until}` window
+without holding a shadow copy; `flows.runs.list` gains the same time window; and
+each durable surface reports its observed retention horizon so a windowed view
+degrades honestly at the edge. The MCP southbound driver discovers a connected
+server's advertised OAuth requirement (RFC 9728 → RFC 8414) and surfaces it as
+inert data on the connection view — the runtime never runs the flow or holds a
+token; discovery fetches are SSRF-guarded with a post-resolution dial check.
+
+All additive: the Harbor Protocol holds at `0.1.0` (no error-code or version
+change), and existing configs stay byte-compatible (a config-free runtime is
+byte-identical to v1.12). Seven phases, eight new decisions (D-291…D-298).
+
+### Added
+
+- **Serve-band promotion — one importable serve constructor.** *(runtime)*
+  The `bootDevStack` composition that turned a validated config into a running
+  Protocol server was reachable only from `package main`, so no external module
+  or test kit could mount it. It is promoted to `internal/runtime/serve` with a
+  required auth-validator factory (identity is mandatory; a nil factory fails
+  loud); the dev signer never promotes, and dev-only routes/surfaces are
+  composed caller-side via `ExtraRoutes` / `BuildAuthSurface` /
+  `BuildLLMSnapshot` / `PostBoot` seams. `harbor serve` / `dev` / `console` and
+  `harbortest/devstack` all become callers of the one constructor, deleting the
+  kit's hand-mirrored mux (net −900 lines). Purely internal wiring; no wire
+  change. (D-291)
+- **`sdk/server` facade + `harbor scaffold --with-server` + parity gate.**
+  *(sdk)* A curated `sdk/server.Open(ctx, cfg, {RegisterCatalog})` mounts the
+  promoted server behind a **production-only** JWKS posture — it always builds
+  the operator's verifier from `identity` and fails loud when absent; no dev
+  signer, no mock knob, no dev surface is reachable. `harbor scaffold
+  --with-server` (opt-in; the default scaffold stays headless) emits a
+  `cmd/<name>/main.go` that loads yaml, blank-imports the production driver
+  aggregator, passes the project's `RegisterTools` to the facade, and serves.
+  The compiled-tool registrar fires at the catalog's pre-policy point so an
+  in-process tool is wrapped by declared `tools.entries` policy exactly like any
+  other. A `test/integration` gate boots stock `harbor serve` and a scaffolded
+  binary from one config and asserts method-surface parity + custom-tool
+  dispatch; the wire-level leg runs env-gated against a real LLM. The
+  headless-embed path stays the default (D-091); external Protocol serving is a
+  decided contract with a deprecation window (RFC §5.6). (D-292)
+- **Session rehydration carries per-turn metadata.** *(runtime, console)* A
+  reopened Playground session recovered message text but lost every per-turn
+  stat, the model chip, and the tool-call badges — because `llm.cost.recorded`
+  was emitted only by the bifrost driver and `tool.*` only by the in-process
+  transport, so the durable read-back was missing them. The cost emission moves
+  to the mandatory LLM-edge safety wrapper (one event per driver completion,
+  every driver) and the tool-lifecycle emission moves to a catalog-build
+  descriptor shell (every transport, every dispatch path — single, parallel,
+  MCP-Apps, declarative), each carrying the full run quadruple (closing a latent
+  empty-`RunID` attribution bug). The Console reducer folds the now-present
+  metadata so reopen renders identically to live. Content-free throughout
+  (D-026 / §7 preserved). Zero wire change. (D-293)
+- **`events.list` — durable, time-ranged, cross-session raw-event read.**
+  *(protocol)* A Protocol client rendering historical fleet observability had
+  only a forward-only live tail and a counts-only aggregate — no way to read the
+  actual event rows over a `{since, until}` window without a forbidden shadow
+  store. The additive `events.list` reuses the existing `EventFilter` (its
+  `since`/`until` axes finally consumed) plus a tail-first sequence cursor
+  mirroring `state.history`, returning the same bus-redacted rows the SSE
+  projects. Fleet-widening derives server-side from the verified session and
+  requires the closed `admin` OR `console:fleet` scope set; the per-read
+  `truncated` flag marks the retention edge. Both event drivers implement the
+  windowed read (in-memory honest-ring, durable real-window). The Console Events
+  page gains the historical window as its same-phase consumer. Full lockstep +
+  smoke. (D-294)
+- **`flows.runs.list` time window + observed retention horizons.**
+  *(protocol)* `flows.runs.list` gains optional `since`/`until` (inclusive,
+  mirroring `TaskFilter` for cross-method consistency), bounded on `StartedAt`
+  before pagination. `runtime.health` gains a `retention` block reporting each
+  durable surface's **observed** oldest-retained timestamp (surfacing what is
+  actually retained — V1 has no prune knob — via an optional cross-driver
+  capability), so a consumer promising "the last N days" degrades honestly at
+  the window edge, pairing with `events.list`'s at-read `truncated` flag.
+  Counters/metrics deliberately do NOT become a time-series substrate. (D-295,
+  D-296)
+- **MCP OAuth requirement discovery, surfaced as data.** *(tools)* When the MCP
+  southbound driver meets the MCP-auth-spec challenge (401 +
+  `WWW-Authenticate resource_metadata`) or an operator probe, the runtime walks
+  the RFC 9728 protected-resource-metadata → RFC 8414 authorization-server chain
+  and surfaces the discovered endpoints/scopes **verbatim, as inert data** on
+  the MCP-connection view — a proposal an operator confirms, never auto-trusted
+  config. The runtime never runs the OAuth flow, never holds or refreshes a
+  token (the broker-pull custody model, D-271, is preserved); RFC 7591
+  registration is reported, never invoked. Discovery fetches are SSRF-guarded:
+  same-origin default on the resource hop, explicit per-connection allowance +
+  private-range/IP-literal refusal at **post-resolution dial time** (DNS-rebind
+  defence), bounded redirects, size/time caps, https-only, no credentials.
+  Conformance fixtures derive from the real RFC example documents. The one
+  discovery chain is single-homed for the parked flow-execution siblings to
+  reuse. (D-297)
+- **Structured reasoning-step rehydration on session reopen.** *(console)* The
+  ordered reasoning ↔ tool-call interleaving (which thinking preceded which
+  tool call) survived only in the live stream; reopen collapsed it to a flat
+  blob. The Console history reducer now reconstructs the per-step structure from
+  the same durable `planner.decision` + `tool.*` events, folding a reasoning
+  step only for trajectory-appending decision kinds
+  (`CallTool` / `CallParallel` / `SpawnTask` / `AwaitTask`) so the reopened index
+  is byte-identical to the live enricher's — `Finish` / `RequestPause` emit a
+  decision but no step and are correctly excluded. Zero wire change; the
+  reasoning trace rides a `SafePayload` and is persisted raw. (D-298)
+
+### Fixed
+
+- **The Playground Controls panel silently broke every override.** *(console)*
+  The panel composed a `top_p` field the runtime's `RunOverrides` never had, so
+  the strict `runs.set_overrides` decoder rejected the whole request — reasoning
+  effort, temperature, max-tokens, and system-prompt overrides all failed. The
+  unsupported field is removed and `RunOverrides` is promoted to a named,
+  lockstep-gated TS interface so a phantom key is now a compile error rather
+  than a silent runtime rejection.
+- **A latent trajectory data race** between the serve enricher and the steering
+  run loop's step append (predating this wave) is closed by a per-run mutex +
+  snapshot, surfaced and fixed under the rehydration work.
+- **A DNS-rebinding hole** in the MCP OAuth discovery guard (the private-IP
+  check ran on the pre-resolution hostname) is closed with a post-resolution
+  `net.Dialer.Control` check.
+- **A cross-user event-disclosure gap** — `events.list` / `events.aggregate` /
+  `events.subscribe` gated the tenant axis but not a foreign same-tenant user —
+  is closed in the shared filter path (§6 multi-isolation).
+- **~35 internal phase-number references** in godoc-visible source are rewritten
+  to name the feature, and the drift-audit pattern is tightened to catch the
+  hyphenated form that let them through (§13).
 
 ## [1.12.0] — 2026-07-09
 
