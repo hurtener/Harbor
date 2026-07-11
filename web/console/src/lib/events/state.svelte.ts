@@ -31,9 +31,43 @@ import {
 	type EventFacetState
 } from './filters.js';
 import { EVENT_TYPES } from './taxonomy.js';
+import { WINDOW_SPEC, type TimeWindow } from '$lib/protocol/events.js';
+import type { RuntimeHealth } from '$lib/protocol/posture.js';
 
 /** The auth scope claims that authorise cross-tenant event viewing (D-079). */
 export const ADMIN_SCOPES = ['admin', 'console:fleet'] as const;
+
+/**
+ * The window-edge honesty notice (D-296): when the picked window reaches
+ * back BEFORE the runtime's observed events retention horizon, the page
+ * warns that the runtime only retains events back to that instant, rather
+ * than implying a complete window. Returns null when the window sits
+ * entirely within retention, or when the horizon is unknown (no
+ * `oldest_retained_at` reported).
+ *
+ * Pure + exported so the compare is unit-tested without a live runtime.
+ * `nowMs` is injectable for deterministic tests.
+ */
+export function windowEdgeNotice(
+	window: TimeWindow,
+	retentionAtISO: string | null,
+	nowMs: number
+): string | null {
+	if (retentionAtISO === null || retentionAtISO === '') return null;
+	const retentionMs = Date.parse(retentionAtISO);
+	if (Number.isNaN(retentionMs)) return null;
+	const windowStartMs = nowMs - WINDOW_SPEC[window].windowNs / 1_000_000;
+	if (windowStartMs >= retentionMs) return null;
+	const when = new Date(retentionMs).toLocaleString();
+	return `This runtime retains events only back to ${when} — the selected ${WINDOW_SPEC[window].label.toLowerCase()} window reaches beyond it, so earlier events may be missing.`;
+}
+
+/** Extracts the observed `events` oldest-retained timestamp from a
+ * `runtime.health` response, or null when the runtime reports none. */
+export function eventsHorizonFrom(health: RuntimeHealth | null): string | null {
+	const entry = health?.retention?.find((r) => r.surface === 'events');
+	return entry?.oldest_retained_at ?? null;
+}
 
 /**
  * EventsPageState owns the whole Events page. Construct it once in the
@@ -81,6 +115,10 @@ export class EventsPageState {
 	 * window the window picker's `since` bound selects.
 	 */
 	history = $state<EventsHistory | null>(null);
+
+	/** The runtime's OBSERVED `events` retention horizon (RFC-3339), or
+	 * null when unknown. Drives the window-edge honesty banner (D-296). */
+	eventsHorizon = $state<string | null>(null);
 	/** The `artifacts.*` namespace — resolves heavy payloads (D-026). Null
 	 * until the connection resolves. */
 	artifacts: ArtifactsNamespace | null = null;
@@ -165,6 +203,16 @@ export class EventsPageState {
 	}
 
 	/**
+	 * The window-edge honesty banner text, or null when the selected
+	 * window sits within retention or the horizon is unknown (D-296).
+	 * Composes the runtime's observed `events` horizon with the picked
+	 * window span.
+	 */
+	get windowEdgeBanner(): string | null {
+		return windowEdgeNotice(this.facets.window, this.eventsHorizon, Date.now());
+	}
+
+	/**
 	 * Resolves the connection, wires the subscription + aggregator, and
 	 * opens both feeds. On a null connection the page renders the
 	 * Disconnected state — NEVER an Error (CONVENTIONS.md §4/§8).
@@ -184,6 +232,18 @@ export class EventsPageState {
 		this.aggregator = new EventsAggregator(client.events);
 		this.history = new EventsHistory(client.events);
 		this.artifacts = client.artifacts;
+		// Best-effort: fetch the runtime's observed retention horizon so the
+		// window-edge banner can warn when a picked window predates it. A
+		// failure here must NOT fail the page — the banner simply stays
+		// hidden (the honesty signal degrades to absent, never to an error).
+		void client.runtime
+			.health()
+			.then((h) => {
+				this.eventsHorizon = eventsHorizonFrom(h);
+			})
+			.catch(() => {
+				this.eventsHorizon = null;
+			});
 		try {
 			this.#reopen();
 			await this.aggregator.refresh();

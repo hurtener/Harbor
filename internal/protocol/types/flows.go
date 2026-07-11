@@ -316,6 +316,22 @@ type FlowRunsListRequest struct {
 	// PageSize is the per-page row count. Zero applies
 	// DefaultFlowListPageSize.
 	PageSize int `json:"page_size,omitempty"`
+	// Since is an optional lower bound on a run's StartedAt (zero =
+	// unbounded). The bound is INCLUSIVE: a run whose StartedAt equals
+	// Since is retained. It mirrors TaskFilter.Since/Until exactly — same
+	// field shape AND same inclusive boundary semantics — so every list
+	// method behaves identically on a time boundary. Absent ⇒ unbounded
+	// (zero behaviour change for existing callers). Bounds apply on the
+	// server, BEFORE pagination — the page counts reflect the bounded
+	// set, never a client-side walk-and-filter.
+	Since time.Time `json:"since,omitempty"`
+	// Until is an optional upper bound on a run's StartedAt (zero =
+	// unbounded). The bound is INCLUSIVE: a run whose StartedAt equals
+	// Until is retained, matching TaskFilter.Until and the sessions
+	// started-window (a closed window [Since, Until]). A request whose
+	// Until precedes its Since fails CodeInvalidRequest (the same
+	// validation posture the task-list filter holds). Absent ⇒ unbounded.
+	Until time.Time `json:"until,omitempty"`
 }
 
 // FlowRunsListResponse is the wire response for `flows.runs.list`.

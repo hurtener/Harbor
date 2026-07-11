@@ -282,6 +282,30 @@ func (b *bus) DroppedTotal() int64 {
 	return b.droppedTotal.Load()
 }
 
+// OldestRetainedAt implements events.RetentionReporter. It returns the
+// OccurredAt of the oldest event still in the replay ring — the observed
+// retention horizon — advancing as the ring evicts. present is false
+// when the ring holds no retained (non-notice) event. Snapshots the ring
+// under publishMu so the read never tears against an in-flight Publish.
+func (b *bus) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
+	if b.closed.Load() {
+		return time.Time{}, false, events.ErrBusClosed
+	}
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	b.publishMu.Unlock()
+	// The snapshot is oldest-first; the first non-notice event is the
+	// horizon. Bus-internal notices are excluded so the horizon matches
+	// the shape of the history a session read would surface.
+	for _, ev := range snapshot {
+		if events.IsBusInternalNotice(ev.Type) {
+			continue
+		}
+		return ev.OccurredAt, true, nil
+	}
+	return time.Time{}, false, nil
+}
+
 // startReaper launches the idle-subscription sweep goroutine. The
 // tick interval is IdleTimeout / 4 to keep latency to reaping
 // bounded by ~25% of the timeout.

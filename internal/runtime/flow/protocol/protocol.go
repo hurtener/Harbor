@@ -223,6 +223,9 @@ func (s *Surface) RunsList(ctx context.Context, req prototypes.FlowRunsListReque
 	if err := validatePageSize(req.PageSize); err != nil {
 		return prototypes.FlowRunsListResponse{}, err
 	}
+	if !req.Since.IsZero() && !req.Until.IsZero() && req.Since.After(req.Until) {
+		return prototypes.FlowRunsListResponse{}, fmt.Errorf("%w: `since` is after `until`", ErrInvalidRequest)
+	}
 	if crossTenantRequested(req.Tenants, id.TenantID) && !adminScoped {
 		return prototypes.FlowRunsListResponse{}, ErrCrossTenantScope
 	}
@@ -230,6 +233,11 @@ func (s *Surface) RunsList(ctx context.Context, req prototypes.FlowRunsListReque
 	if err != nil {
 		return prototypes.FlowRunsListResponse{}, classifyCatalogErr(err)
 	}
+	// Apply the optional time window on StartedAt BEFORE pagination, so
+	// the page counts reflect the bounded set (never a client-side
+	// walk-and-filter). Both bounds are inclusive, matching
+	// TaskFilter.Since/Until and the sessions started-window exactly.
+	runs = filterRunsByWindow(runs, req.Since, req.Until)
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].StartedAt.After(runs[j].StartedAt) })
 	page, pageSize := normalizePage(req.Page, req.PageSize)
 	pageRows, pageCount := paginateRuns(runs, page, pageSize)
@@ -424,6 +432,30 @@ func paginateRuns(runs []prototypes.FlowRun, page, pageSize int) ([]prototypes.F
 	out := make([]prototypes.FlowRun, end-start)
 	copy(out, runs[start:end])
 	return out, pageCount
+}
+
+// filterRunsByWindow returns the runs whose StartedAt falls in the
+// closed window [since, until]: BOTH bounds are inclusive, matching
+// TaskFilter.Since/Until and the sessions started-window exactly, so
+// every list method behaves identically on a time boundary. A zero since
+// (or until) leaves that side unbounded, so an all-zero window returns
+// runs unchanged. The caller applies this BEFORE pagination so page
+// counts reflect the bounded set.
+func filterRunsByWindow(runs []prototypes.FlowRun, since, until time.Time) []prototypes.FlowRun {
+	if since.IsZero() && until.IsZero() {
+		return runs
+	}
+	out := make([]prototypes.FlowRun, 0, len(runs))
+	for _, r := range runs {
+		if !since.IsZero() && r.StartedAt.Before(since) {
+			continue
+		}
+		if !until.IsZero() && r.StartedAt.After(until) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // sortDescription sorts a FlowDescription's nodes (by ID) and edges (by

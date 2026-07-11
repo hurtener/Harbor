@@ -58,6 +58,103 @@ source "scripts/smoke/common.sh"
 # `skip "phase NN: not yet implemented"` to keep preflight green.
 # ----------------------------------------------------------------------------
 
-skip "phase 163: smoke skeleton — flows since/until + retention horizons not yet implemented; replace with the runtime.health retention-block + flows-bounds-acceptance assertions when the phase lands"
+HEALTH_URL="$(api_url /v1/control/runtime.health)"
+START_URL="$(api_url /v1/control/start)"
+RUNS_URL="$(api_url /v1/flows/runs/list)"
+
+TOKEN="${HARBOR_DEV_TOKEN:-dev-token-placeholder}"
+ID_HEADERS=(-H "X-Harbor-Tenant: dev" -H "X-Harbor-User: dev" -H "X-Harbor-Session: dev")
+
+if ! command -v curl >/dev/null 2>&1; then
+  skip "phase 163: curl not available"
+  smoke_summary
+  exit 0
+fi
+
+# Route probe: a no-bearer POST distinguishes a missing route (404) from an
+# auth-rejected (401). 401 means the route is mounted AND identity-mandatory.
+set +e
+PROBE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+  -X POST -H 'Content-Type: application/json' -d '{}' "${HEALTH_URL}")
+set -e
+case "${PROBE:-000}" in
+  404 | 405 | 501 | 000)
+    skip "phase 163: /v1/control/runtime.health route not present (${PROBE:-000})"
+    smoke_summary
+    exit 0
+    ;;
+esac
+
+if [ -z "${HARBOR_DEV_TOKEN:-}" ] || ! command -v jq >/dev/null 2>&1; then
+  skip "phase 163: dev bearer / jq unavailable — retention + bounds semantics covered by Go integration tests"
+  smoke_summary
+  exit 0
+fi
+
+# 1. Drive a run so the mock LLM + react planner emit events into the bus —
+#    this gives the events retention horizon a non-empty head to report.
+curl -sS -X POST "${START_URL}" -H "Authorization: Bearer ${TOKEN}" \
+  "${ID_HEADERS[@]}" -H 'Content-Type: application/json' \
+  -d '{"query":"phase-163 retention-horizon seed","description":"phase-163 smoke"}' >/dev/null 2>&1 || true
+sleep 2
+
+# 2. Read runtime.health and assert the additive retention block is present.
+TMP="$(mktemp)"
+trap 'rm -f "${TMP}"' EXIT
+set +e
+ST=$(curl -s -o "${TMP}" -w '%{http_code}' --max-time 10 \
+  -X POST -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \
+  -H 'Content-Type: application/json' -d '{}' "${HEALTH_URL}")
+set -e
+if [ "${ST}" != "200" ]; then
+  skip "phase 163: runtime.health returned ${ST}"
+  smoke_summary
+  exit 0
+fi
+
+RET_LEN=$(jq -r '.retention | length' "${TMP}" 2>/dev/null || echo 0)
+if [ "${RET_LEN}" -gt 0 ]; then
+  ok "phase 163: runtime.health carries the additive retention block (${RET_LEN} surface(s))"
+else
+  fail "phase 163: runtime.health carries no retention block after a scripted run (D-296 seam not wired?)"
+fi
+
+# 3. The events retention entry carries a non-empty, RFC-3339-shaped
+#    oldest_retained_at (the observed head of the durable event log).
+EVENTS_AT=$(jq -r '.retention[]? | select(.surface == "events") | .oldest_retained_at // empty' "${TMP}" 2>/dev/null || echo "")
+if printf '%s' "${EVENTS_AT}" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'; then
+  ok "phase 163: events retention horizon is a non-empty RFC-3339 instant (${EVENTS_AT})"
+else
+  fail "phase 163: events retention horizon missing or not RFC-3339 (got '${EVENTS_AT}')"
+fi
+
+# 4. Flows leg (skip_if_404 when the dev config declares no flows — the
+#    bounds semantics are integration-covered): flows.runs.list ACCEPTS
+#    since/until without an invalid_request. Any flow_id is fine; a
+#    not_found flow still proves the bounds parsed. invalid_request (the
+#    until<since / malformed-bounds error) is the only FAIL shape.
+set +e
+FCODE=$(curl -s -o "${TMP}" -w '%{http_code}' --max-time 5 \
+  -X POST -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \
+  -H 'Content-Type: application/json' \
+  -d '{"flow_id":"__smoke__","since":"2026-01-01T00:00:00Z","until":"2026-12-31T00:00:00Z","page_size":1}' \
+  "${RUNS_URL}")
+set -e
+case "${FCODE:-000}" in
+  404 | 405 | 501 | 000)
+    skip "phase 163: flows.runs.list route not present (${FCODE:-000}) — bounds covered by integration"
+    ;;
+  400)
+    ERRC=$(jq -r '.error.code // .code // empty' "${TMP}" 2>/dev/null || echo "")
+    if [ "${ERRC}" = "invalid_request" ]; then
+      fail "phase 163: flows.runs.list rejected valid since/until as invalid_request"
+    else
+      ok "phase 163: flows.runs.list accepted since/until (400 ${ERRC:-non-bounds} — not a bounds rejection)"
+    fi
+    ;;
+  *)
+    ok "phase 163: flows.runs.list accepted since/until (${FCODE})"
+    ;;
+esac
 
 smoke_summary

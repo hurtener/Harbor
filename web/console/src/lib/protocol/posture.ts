@@ -58,12 +58,34 @@ export interface SubsystemHealth {
 }
 
 /**
+ * One durable surface's OBSERVED oldest-retained timestamp — the honest
+ * answer to "how far back does this runtime actually hold data?" a fleet
+ * consumer reads BEFORE a windowed read. OBSERVED, never a configured
+ * claim (Harbor has no retention knob). Mirrors `types.RetentionHorizon`.
+ */
+export interface RetentionHorizon {
+	/** The durable surface — `events`, `tasks`, or `sessions`. */
+	surface: string;
+	/**
+	 * RFC-3339 wall-clock time of the oldest retained row. Absent when
+	 * the surface holds no rows yet — never a fabricated value.
+	 */
+	oldest_retained_at?: string;
+}
+
+/**
  * `runtime.health` response — a per-subsystem readiness rollup across
- * the runtime's registered subsystems. Mirrors `types.RuntimeHealth`.
+ * the runtime's registered subsystems, plus the observed per-surface
+ * retention horizons. Mirrors `types.RuntimeHealth`.
  */
 export interface RuntimeHealth {
 	/** The per-subsystem readiness slice. */
 	subsystems: SubsystemHealth[];
+	/**
+	 * The observed retention horizon per durable surface (events / tasks
+	 * / sessions). Additive; absent when the runtime surfaces none.
+	 */
+	retention?: RetentionHorizon[];
 }
 
 // ── metrics.snapshot family ───────────────────────────────────────────

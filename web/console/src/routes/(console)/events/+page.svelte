@@ -225,6 +225,12 @@
         events were dropped by the subscription buffer.
       </p>
     {/if}
+
+    {#if state.windowEdgeBanner}
+      <p class="retention-strip" data-testid="events-retention-edge">
+        {state.windowEdgeBanner}
+      </p>
+    {/if}
   </section>
 
   <div class="layout">
@@ -486,14 +492,16 @@
   }
 
   .admin-notice,
-  .dropped-strip {
+  .dropped-strip,
+  .retention-strip {
     margin: var(--space-0);
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-sm);
     font-size: var(--text-xs);
   }
 
-  .admin-notice {
+  .admin-notice,
+  .retention-strip {
     color: var(--color-warning);
     background: var(--color-warning-soft);
   }

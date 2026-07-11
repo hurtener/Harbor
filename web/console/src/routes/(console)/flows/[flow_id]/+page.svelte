@@ -40,6 +40,12 @@
   const detail = new FlowDetailState();
   const flowID = $derived(page.params.flow_id ?? '');
 
+  // Local bindings for the run-history date-range filter inputs (D-295).
+  // The controller owns the applied bounds; these hold the in-progress
+  // picker values until Apply.
+  let sinceDate = $state('');
+  let untilDate = $state('');
+
   // Re-load whenever the route's flow id changes (client-side nav between flows).
   $effect(() => {
     detail.load(flowID, injectedFlows);
@@ -140,6 +146,50 @@
               <p class="source" data-testid="flow-source">
                 Source: <code>{detail.description.source}</code>
               </p>
+            {/if}
+          </div>
+
+          <div class="run-filter" data-testid="run-filter">
+            <span class="run-filter-label">Run history</span>
+            <label class="run-filter-field">
+              <span>From</span>
+              <input
+                type="date"
+                data-testid="run-filter-since"
+                bind:value={sinceDate}
+                max={untilDate || undefined}
+              />
+            </label>
+            <label class="run-filter-field">
+              <span>To</span>
+              <input
+                type="date"
+                data-testid="run-filter-until"
+                bind:value={untilDate}
+                min={sinceDate || undefined}
+              />
+            </label>
+            <button
+              type="button"
+              class="bar-action"
+              data-testid="run-filter-apply"
+              onclick={() => detail.applyRunFilter(sinceDate, untilDate)}
+            >
+              Apply
+            </button>
+            {#if detail.runsFilterActive}
+              <button
+                type="button"
+                class="bar-action"
+                data-testid="run-filter-clear"
+                onclick={() => {
+                  sinceDate = '';
+                  untilDate = '';
+                  detail.clearRunFilter();
+                }}
+              >
+                Clear
+              </button>
             {/if}
           </div>
 
@@ -260,6 +310,38 @@
     align-items: center;
     gap: var(--space-2);
     flex-wrap: wrap;
+  }
+
+  .run-filter {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-2);
+  }
+
+  .run-filter-label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-text);
+    margin-right: auto;
+  }
+
+  .run-filter-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .run-filter-field input {
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--color-text);
   }
 
   .layout {

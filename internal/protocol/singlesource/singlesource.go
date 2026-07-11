@@ -279,6 +279,7 @@ var CanonicalWireTypes = map[string]string{
 	"RuntimeInfoRequest": "types",
 	"RuntimeInfo":        "types",
 	"SubsystemHealth":    "types",
+	"RetentionHorizon":   "types",
 	"RuntimeHealth":      "types",
 	"RuntimeCounters":    "types",
 	"SubsystemDriver":    "types",

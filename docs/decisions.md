@@ -7779,6 +7779,8 @@ run through one shared catalog under `-race`. No deviation from the plan.
 
 **Protocol additions.** Two additive optional fields on `FlowRunsListRequest`; no new method, no `ProtocolVersion` bump; D-223 lockstep + D-209 regen in the same PR (bundled with D-296's fields in Phase 163).
 
+**As-built.** `flows.runs.list` uses a CLOSED window — INCLUSIVE lower AND inclusive upper — matching `TaskFilter.Until` (`internal/tasks/protocol/list.go:256` `.After(Until)`) and the sessions started-window (`internal/sessions/registry.go` / `filter.go`) exactly, so every list method behaves identically on a time boundary. Now "mirrors `TaskFilter` exactly" is true of BOTH the field shape (optional `omitempty` `time.Time`; `until<since` → `CodeInvalidRequest`) and the boundary semantics. The initial implementation shipped an exclusive upper (half-open window); that deviation was REVERTED to inclusive during review for cross-method Protocol consistency — a versioned surface must not have one lone half-open list method, an off-by-one footgun for consumers reusing a window helper across `tasks.list` / `sessions.list` / `flows.runs.list`. The Console date-filter maps each picked day directly to its UTC midnight with no boundary compensation.
+
 **Cross-references.** D-294 (the sibling window read shipping in the same wave), CLAUDE.md §6 (scope discipline). RFC §6.1, §5.2, §7. Plan: `docs/plans/phase-163-windowed-reads-honesty.md`.
 
 ---
@@ -7793,7 +7795,9 @@ run through one shared catalog under `-race`. No deviation from the plan.
 
 **Findings I'm departing from.** The filed ask's "surface the existing retention config" premise — corrected to the observed horizon per the verified evidence above (recorded in the plan's Findings-departure section too).
 
-**Protocol additions.** The additive `retention` block on `RuntimeHealth` (+ its per-surface entry type); no new method, no `ProtocolVersion` bump; D-223 lockstep + D-209 regen in the same PR (bundled with D-295 in Phase 163).
+**Protocol additions.** The additive `retention` block on `RuntimeHealth` (+ its per-surface entry type `RetentionHorizon`); no new method, no `ProtocolVersion` bump; D-223 lockstep + D-209 regen in the same PR (bundled with D-295 in Phase 163).
+
+**As-built.** (1) The events horizon is sourced through a new optional capability interface `events.RetentionReporter.OldestRetainedAt` both V1 bus drivers implement, type-asserted at the posture wiring seam (the `DroppedCounter` precedent — a single read surface discovered by type assertion, NOT a `Supports*` flag, so §4.4's no-ceremony rule holds). The durable driver seeds its horizon from the persisted head at boot (recovered from the global-minimum sequence's entry) and floors it on persist; the inmem/best-effort ring reads its head live (advances on eviction). (2) The events horizon is runtime-wide (a bare timestamp, no identity content); the tasks/sessions horizons are the oldest retained WITHIN THE READ'S SCOPE — mirroring `CountersProvider`'s established posture scoping (tasks per verified session via `TaskRegistry.List`; sessions per tenant via `SessionLister.ListSnapshots` incl. closed-but-retained) rather than a cross-tenant maintenance scan. `TaskSummary` gained an internal `CreatedAt` field (not a wire type — no lockstep) so the tasks horizon is a true spawn time. The `Retention` `PostureDeps` seam is optional (nil ⇒ block omitted) so existing surface constructions are unaffected; the production mux wires it.
 
 **Cross-references.** D-294 (the windowed read whose edges this makes predictable), D-254 (the `truncated` at-read flag this pairs with), CLAUDE.md §13 (honest degradation), §4.4/§9 (both drivers answer, no ceremony). RFC §5.2, §6.13, §6.14, §7. Plan: `docs/plans/phase-163-windowed-reads-honesty.md`.
 

@@ -243,6 +243,103 @@ func TestRunsList_SortedNewestFirst(t *testing.T) {
 	}
 }
 
+func TestRunsList_WindowBounds_FilterBeforePagination(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// Five runs at day 1..5.
+	runs := make([]prototypes.FlowRun, 0, 5)
+	for i := range 5 {
+		runs = append(runs, prototypes.FlowRun{
+			RunID:     "r" + string(rune('1'+i)),
+			StartedAt: base.AddDate(0, 0, i),
+		})
+	}
+
+	cases := []struct {
+		name         string
+		since, until time.Time
+		wantTotal    int
+		wantFirst    string // newest-first
+		wantLast     string
+	}{
+		{"unbounded", time.Time{}, time.Time{}, 5, "r5", "r1"},
+		{"since_only_inclusive", base.AddDate(0, 0, 2), time.Time{}, 3, "r5", "r3"},
+		{"until_only_inclusive", time.Time{}, base.AddDate(0, 0, 3), 4, "r4", "r1"},
+		{"both_inclusive_closed", base.AddDate(0, 0, 1), base.AddDate(0, 0, 4), 4, "r5", "r2"},
+		// Inclusive upper: a run at exactly Until is INCLUDED (matches
+		// TaskFilter/sessions — the reverted half-open deviation).
+		{"until_includes_boundary", time.Time{}, base.AddDate(0, 0, 2), 3, "r3", "r1"},
+		// Inclusive lower: a run at exactly Since is included.
+		{"since_includes_boundary", base.AddDate(0, 0, 4), time.Time{}, 1, "r5", "r5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cat := &fakeCatalog{runs: runs}
+			s := newSurface(t, cat, &fakeInvoker{})
+			resp, err := s.RunsList(context.Background(), prototypes.FlowRunsListRequest{
+				Identity: validScope(), FlowID: "f1",
+				Since: tc.since, Until: tc.until,
+			}, false)
+			if err != nil {
+				t.Fatalf("RunsList: %v", err)
+			}
+			if resp.TotalRows != tc.wantTotal {
+				t.Fatalf("TotalRows = %d, want %d", resp.TotalRows, tc.wantTotal)
+			}
+			if len(resp.Runs) == 0 {
+				t.Fatalf("no runs returned")
+			}
+			if resp.Runs[0].RunID != tc.wantFirst {
+				t.Fatalf("first = %q, want %q", resp.Runs[0].RunID, tc.wantFirst)
+			}
+			if resp.Runs[len(resp.Runs)-1].RunID != tc.wantLast {
+				t.Fatalf("last = %q, want %q", resp.Runs[len(resp.Runs)-1].RunID, tc.wantLast)
+			}
+		})
+	}
+}
+
+func TestRunsList_WindowBounds_PageCountsReflectBoundedSet(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	runs := make([]prototypes.FlowRun, 0, 5)
+	for i := range 5 {
+		runs = append(runs, prototypes.FlowRun{RunID: "r" + string(rune('1'+i)), StartedAt: base.AddDate(0, 0, i)})
+	}
+	cat := &fakeCatalog{runs: runs}
+	s := newSurface(t, cat, &fakeInvoker{})
+	// Closed window [day0, day3] ⇒ 4 runs (inclusive both bounds), page
+	// size 2 ⇒ 2 pages, not the unbounded 3 pages of 5 rows. Bounds apply
+	// BEFORE pagination.
+	resp, err := s.RunsList(context.Background(), prototypes.FlowRunsListRequest{
+		Identity: validScope(), FlowID: "f1",
+		Since: base, Until: base.AddDate(0, 0, 3),
+		PageSize: 2, Page: 1,
+	}, false)
+	if err != nil {
+		t.Fatalf("RunsList: %v", err)
+	}
+	if resp.TotalRows != 4 {
+		t.Fatalf("TotalRows = %d, want 4 (bounded set)", resp.TotalRows)
+	}
+	if resp.PageCount != 2 {
+		t.Fatalf("PageCount = %d, want 2", resp.PageCount)
+	}
+	if len(resp.Runs) != 2 {
+		t.Fatalf("page 1 rows = %d, want 2", len(resp.Runs))
+	}
+}
+
+func TestRunsList_UntilBeforeSinceRejected(t *testing.T) {
+	now := time.Now()
+	s := newSurface(t, &fakeCatalog{}, &fakeInvoker{})
+	_, err := s.RunsList(context.Background(), prototypes.FlowRunsListRequest{
+		Identity: validScope(), FlowID: "f1",
+		Since: now, Until: now.Add(-time.Hour),
+	}, false)
+	if !errors.Is(err, flowprotocol.ErrInvalidRequest) {
+		t.Fatalf("RunsList(until<since): err = %v, want ErrInvalidRequest", err)
+	}
+}
+
 func TestRunsList_CrossTenantWithoutAdminRejected(t *testing.T) {
 	s := newSurface(t, &fakeCatalog{}, &fakeInvoker{})
 	_, err := s.RunsList(context.Background(), prototypes.FlowRunsListRequest{

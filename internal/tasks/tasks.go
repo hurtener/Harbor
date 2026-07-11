@@ -304,6 +304,7 @@ type TaskSummary struct {
 	Status    TaskStatus
 	Kind      TaskKind
 	Priority  int
+	CreatedAt int64 // unix nanoseconds — the task's spawn time
 	UpdatedAt int64 // unix nanoseconds
 }
 

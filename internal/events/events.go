@@ -740,6 +740,36 @@ type DroppedCounter interface {
 	DroppedTotal() int64
 }
 
+// RetentionReporter is the optional capability a retention-bearing bus
+// driver implements to report the OBSERVED oldest-retained event time —
+// the runtime-wide retention horizon for the event log (the substrate
+// the conversation-history read projects). It is a sibling to
+// DroppedCounter / Replayer: a single read surface discovered by type
+// assertion, not a mandatory EventBus method (a future write-through bus
+// with no local retention may implement neither).
+//
+// The value is OBSERVED, never configured: Harbor has no retention knob
+// (the durable log is gap-free and untrimmed in V1), so the horizon is
+// simply the wall-clock time of the oldest event the bus still holds. It
+// is "oldest RETAINED", not "oldest ever": a best-effort ring advances
+// its horizon as it evicts, and a consumer reads the advancing edge as
+// the honest "expect gaps before X" signal that pairs with the at-read
+// truncated flag.
+//
+// The reported time carries no identity-scoped content — it is a bare
+// wall-clock instant over the whole retained set — so it is runtime-wide
+// and safe to expose without an identity filter (unlike the by-session
+// history reads). Both V1 bus drivers (inmem, durable) implement it.
+type RetentionReporter interface {
+	// OldestRetainedAt returns the OccurredAt of the oldest event the bus
+	// currently retains and present=true; (zero, false, nil) when the bus
+	// retains no events (an empty ring / empty log). It returns
+	// ErrBusClosed after Close. Bus-internal notices (see
+	// IsBusInternalNotice) are excluded so the horizon matches the shape
+	// of the history a session read would surface.
+	OldestRetainedAt(ctx context.Context) (oldest time.Time, present bool, err error)
+}
+
 // Sentinel errors. Callers compare via errors.Is.
 var (
 	// ErrUnknownEventType — Publish was called with an EventType not

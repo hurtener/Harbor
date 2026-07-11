@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 314 canonical Harbor Protocol wire types, generated from the single-source
+The 315 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -1584,6 +1584,8 @@ Declared in `internal/protocol/types`.
 | `tenants` | `[]string` | optional (`omitempty`) |
 | `page` | `int` | optional (`omitempty`) |
 | `page_size` | `int` | optional (`omitempty`) |
+| `since` | `time.Time` | optional (`omitempty`) |
+| `until` | `time.Time` | optional (`omitempty`) |
 
 ## FlowRunsListResponse
 
@@ -2543,6 +2545,15 @@ Declared in `internal/protocol/types`.
 | `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
 | `protocol_version` | `string` |  |
 
+## RetentionHorizon
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `surface` | `string` |  |
+| `oldest_retained_at` | `time.Time` | optional (`omitempty`) |
+
 ## RunOverrides
 
 Declared in `internal/protocol/types`.
@@ -2602,6 +2613,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `subsystems` | `[]types.SubsystemHealth` — see [`SubsystemHealth`](./types.md#subsystemhealth) |  |
+| `retention` | `[]types.RetentionHorizon` — see [`RetentionHorizon`](./types.md#retentionhorizon) | optional (`omitempty`) |
 
 ## RuntimeInfo
 
