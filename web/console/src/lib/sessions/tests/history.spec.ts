@@ -367,3 +367,56 @@ describe('reduceHistoryTurns — reasoning-step page-window-boundary safety (D-2
 		]);
 	});
 });
+
+describe('reduceHistoryTurns — reasoning-step per-run ordinal isolation (D-298)', () => {
+	// The plan named "a window with 2 tool-calling runs" as THE failure fixture:
+	// the per-run stepOrdinal Map must be keyed by runID, so each run's
+	// reasoningSteps restart at index 0. A shared (non-keyed) ordinal would
+	// carry run A's count into run B — this pins that it does not.
+	it('two tool-calling runs in one window each restart reasoningSteps at index 0', () => {
+		const turns = reduceHistoryTurns([
+			// Run A — two step-appending decisions.
+			ev('planner.decision', 'runA', { DecisionKind: 'CallTool', Tool: 'a1', ReasoningTrace: 'A step 0' }),
+			ev('tool.invoked', 'runA', { ToolName: 'a1' }),
+			ev('tool.completed', 'runA', { ToolName: 'a1', DurationMS: 100 }),
+			ev('planner.decision', 'runA', { DecisionKind: 'CallTool', Tool: 'a2', ReasoningTrace: 'A step 1' }),
+			ev('tool.invoked', 'runA', { ToolName: 'a2' }),
+			ev('tool.completed', 'runA', { ToolName: 'a2', DurationMS: 100 }),
+			ev('task.completed', 'runA', {}),
+			// Run B — a later run in the SAME window; its ordinal MUST restart at 0.
+			ev('planner.decision', 'runB', { DecisionKind: 'CallTool', Tool: 'b1', ReasoningTrace: 'B step 0' }),
+			ev('tool.invoked', 'runB', { ToolName: 'b1' }),
+			ev('tool.completed', 'runB', { ToolName: 'b1', DurationMS: 100 }),
+			ev('task.completed', 'runB', {})
+		]);
+		expect(turnOf(turns, 'runA').reasoningSteps).toEqual([
+			{ index: 0, reasoning_trace: 'A step 0' },
+			{ index: 1, reasoning_trace: 'A step 1' }
+		]);
+		// The pin: run B restarts at index 0 — the ordinal did NOT leak from run A.
+		expect(turnOf(turns, 'runB').reasoningSteps).toEqual([{ index: 0, reasoning_trace: 'B step 0' }]);
+	});
+
+	it('two runs whose events INTERLEAVE by sequence keep independent per-run ordinals', () => {
+		// The harder shape: the two runs' events are woven together in the
+		// window (as concurrent runs land on the one bus). The ordinal is keyed
+		// by runID, so interleaving must not cross-contaminate either index line.
+		const turns = reduceHistoryTurns([
+			ev('planner.decision', 'runA', { DecisionKind: 'CallTool', Tool: 'a1', ReasoningTrace: 'A step 0' }),
+			ev('planner.decision', 'runB', { DecisionKind: 'CallTool', Tool: 'b1', ReasoningTrace: 'B step 0' }),
+			ev('planner.decision', 'runA', { DecisionKind: 'CallParallel', ReasoningTrace: 'A step 1' }),
+			ev('planner.decision', 'runB', { DecisionKind: 'CallTool', Tool: 'b2', ReasoningTrace: 'B step 1' }),
+			// A reasoning-bearing Finish on each run — neither appends a step.
+			ev('planner.decision', 'runA', { DecisionKind: 'Finish', ReasoningTrace: 'A done' }),
+			ev('planner.decision', 'runB', { DecisionKind: 'Finish', ReasoningTrace: 'B done' })
+		]);
+		expect(turnOf(turns, 'runA').reasoningSteps).toEqual([
+			{ index: 0, reasoning_trace: 'A step 0' },
+			{ index: 1, reasoning_trace: 'A step 1' }
+		]);
+		expect(turnOf(turns, 'runB').reasoningSteps).toEqual([
+			{ index: 0, reasoning_trace: 'B step 0' },
+			{ index: 1, reasoning_trace: 'B step 1' }
+		]);
+	});
+});
