@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:58be79804b0c8339b5fa3882d23093cfebb3f14cebbe15f41aca9ab41e3eee97";
+export const WIRE_SURFACE_DIGEST = "sha256:c913602a92db90f851cdbd7b0bea30eae1279ac34d1870691573ff5989d3abdb";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -65,6 +65,7 @@ export type HarborMethod =
   | "auth.rotate_token"
   | "cancel"
   | "events.aggregate"
+  | "events.list"
   | "events.subscribe"
   | "flows.describe"
   | "flows.list"
@@ -1085,6 +1086,20 @@ export interface EventFilter {
   run_ids?: string[];
   since?: string;
   until?: string;
+}
+
+export interface EventsListRequest {
+  identity?: IdentityScope;
+  filter: EventFilter;
+  cursor?: number;
+  limit?: number;
+}
+
+export interface EventsListResponse {
+  events: StateEvent[];
+  next_cursor: number;
+  has_more: boolean;
+  truncated?: boolean;
 }
 
 export interface Flow {

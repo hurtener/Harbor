@@ -22,6 +22,7 @@ import type { Event, EventFilter } from '$lib/protocol/events.js';
 import type { PageStatus } from '$lib/components/ui/PageState.svelte';
 import { EventsSubscription, type EventSourceFactory } from './subscription.svelte.js';
 import { EventsAggregator } from './aggregate.svelte.js';
+import { EventsHistory, mergeEventRows } from './history.svelte.js';
 import {
 	compileFilter,
 	defaultFacetState,
@@ -72,6 +73,14 @@ export class EventsPageState {
 	/** The sparkline aggregate feed. Null until the connection resolves.
 	 * `$state` for the same reason as {@link subscription}. */
 	aggregator = $state<EventsAggregator | null>(null);
+	/**
+	 * The `events.list` historical-window read (D-294). Null until the
+	 * connection resolves. `$state` for the same reason as {@link
+	 * subscription}: the page reads its rows / truncated flag reactively.
+	 * The live SSE tail stays the forward edge; this fills the backward
+	 * window the window picker's `since` bound selects.
+	 */
+	history = $state<EventsHistory | null>(null);
 	/** The `artifacts.*` namespace — resolves heavy payloads (D-026). Null
 	 * until the connection resolves. */
 	artifacts: ArtifactsNamespace | null = null;
@@ -108,7 +117,12 @@ export class EventsPageState {
 	 * Phase 72c runtime-side `search.events` lands).
 	 */
 	get visibleEvents(): Event[] {
-		const all = this.subscription?.events ?? [];
+		// Merge the historical `events.list` window (backward edge) with the
+		// live SSE tail (forward edge) into one newest-first, de-duplicated
+		// list (D-294). The live tail is unchanged; history only backfills.
+		const live = this.subscription?.events ?? [];
+		const historical = this.history?.rows ?? [];
+		const all = historical.length > 0 ? mergeEventRows(historical, live) : live;
 		const q = this.search.trim().toLowerCase();
 		if (q === '') {
 			return all;
@@ -168,11 +182,17 @@ export class EventsPageState {
 		const client = new HarborClient({ connection });
 		this.subscription = new EventsSubscription(client.events, this.#esFactory);
 		this.aggregator = new EventsAggregator(client.events);
+		this.history = new EventsHistory(client.events);
 		this.artifacts = client.artifacts;
 		try {
 			this.#reopen();
 			await this.aggregator.refresh();
-			this.status = this.subscription.events.length === 0 ? 'empty' : 'ready';
+			// Backfill the historical window in parallel with the live tail —
+			// a read failure (e.g. a cross-tenant scope miss) is non-fatal:
+			// the live SSE feed still renders (EventsHistory holds its own
+			// error).
+			await this.#loadHistory();
+			this.status = this.visibleEvents.length === 0 ? 'empty' : 'ready';
 		} catch (e) {
 			this.error = describePageError(e);
 			this.status = 'error';
@@ -204,6 +224,10 @@ export class EventsPageState {
 		});
 		this.aggregator.window = this.facets.window;
 		this.aggregator.setFilter(filter);
+		// Re-drive the historical window read for the new filter (the window
+		// picker's `since` bound + identity axes flow through `compileFilter`
+		// inside #loadHistory). The live SSE tail above is untouched.
+		void this.#loadHistory();
 		// A `ready`/`empty` page that re-filters stays out of `loading`
 		// — the SSE feed re-populates live; only the first load shows the
 		// skeleton.
@@ -257,6 +281,40 @@ export class EventsPageState {
 	setPageSize(size: number): void {
 		this.pageSize = size;
 		this.page = 1;
+	}
+
+	/**
+	 * The honest retention-gap signal from the historical read (D-294) —
+	 * true when the substrate's oldest retained row sits above the true
+	 * first matching event (a best-effort inmem ring evicted older rows).
+	 * The page renders a retention-gap notice when set.
+	 */
+	get truncated(): boolean {
+		return this.history?.truncated ?? false;
+	}
+
+	/** True when older historical events remain to scroll up into. */
+	get canLoadOlder(): boolean {
+		return (this.history?.hasMore ?? false) && this.history?.status !== 'loading';
+	}
+
+	/** The historical-read error, when the `events.list` read failed. */
+	get historyError(): { code: string; message: string } | null {
+		return this.history?.error ?? null;
+	}
+
+	/** Loads the initial historical window for the current filter. */
+	async #loadHistory(): Promise<void> {
+		if (this.history === null) {
+			return;
+		}
+		this.history.setFilter(compileFilter(this.facets));
+		await this.history.loadInitial(this.pageSize);
+	}
+
+	/** Scrolls one page older through the durable event log (`events.list`). */
+	async loadOlderHistory(): Promise<void> {
+		await this.history?.loadOlder(this.pageSize);
 	}
 
 	/** Closes the SSE subscription — the page calls this on unmount. */

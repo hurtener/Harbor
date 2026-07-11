@@ -458,3 +458,7 @@ func (stubHistoryReplayer) Bounds(context.Context, events.Filter) (uint64, uint6
 func (stubHistoryReplayer) Window(context.Context, uint64, int, events.Filter) ([]events.Event, error) {
 	return nil, nil
 }
+
+func (stubHistoryReplayer) ListWindow(context.Context, events.EventListQuery) (events.EventListPage, error) {
+	return events.EventListPage{}, nil
+}

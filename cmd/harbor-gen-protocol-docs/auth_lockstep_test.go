@@ -68,6 +68,12 @@ var crossTenantProbes = map[methods.Method]crossTenantProbe{
 			Bucket:   time.Minute,
 		}
 	}},
+	methods.MethodEventsList: {body: func(id prototypes.IdentityScope) any {
+		return prototypes.EventsListRequest{
+			Identity: id,
+			Filter:   prototypes.EventFilter{TenantIDs: []string{otherTenant}},
+		}
+	}},
 	methods.MethodSearchQuery:       {body: searchProbeBody},
 	methods.MethodSearchSessions:    {body: searchProbeBody},
 	methods.MethodSearchTasks:       {body: searchProbeBody},

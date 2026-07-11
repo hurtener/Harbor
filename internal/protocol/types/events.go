@@ -51,6 +51,78 @@ type EventFilter struct {
 	Until time.Time `json:"until,omitempty"`
 }
 
+// Default + maximum page bounds for the `events.list` read. A client that
+// omits Limit gets DefaultEventsListLimit; a Limit above MaxEventsListLimit
+// is clamped down to MaxEventsListLimit (a larger ask is satisfied with the
+// maximum page, not rejected). A negative Limit is the one invalid value
+// (`CodeInvalidRequest`). The bounds mirror `state.history` so the two
+// windowed reads share a paging grammar.
+const (
+	// DefaultEventsListLimit is the page size used when an `events.list`
+	// request omits Limit (or sends zero).
+	DefaultEventsListLimit = 50
+	// MaxEventsListLimit is the largest page a single `events.list` request
+	// may ask for; a Limit above it is clamped down to this value.
+	MaxEventsListLimit = 200
+)
+
+// EventsListRequest is the wire request for the `events.list` Protocol
+// method — the durable, time-ranged, cross-session raw-event read. It
+// reuses the EventFilter above (identity axes + since/until time bounds +
+// event-type selector) plus a tail-first, sequence-based paging cursor
+// mirroring `state.history`'s grammar. Unlike `state.history` (by-id,
+// single session) it honours the filter's multi-valued identity sets and,
+// under a verified `admin` or `console:fleet` claim, fans in across
+// sessions in global-sequence order. The rows returned are the SAME flat
+// StateEvent projection `state.history` and the SSE stream carry — no new
+// row shape, no redaction change, no heavy-payload inlining.
+type EventsListRequest struct {
+	// Identity is the (tenant, user, session) scope envelope every
+	// Protocol client carries on the body. The handler pulls the
+	// authoritative identity from the JWT / X-Harbor-* edge headers
+	// (RFC §5.5) — this field is shape-only, declared so the body decode's
+	// `DisallowUnknownFields` accepts the Console's standard payload shape
+	// (`Transport.request` auto-injects `identity` on every request body).
+	// Optional in the wire schema; ignored by the handler.
+	Identity IdentityScope `json:"identity,omitempty"`
+	// Filter narrows the events returned. The empty filter (zero
+	// EventFilter) is interpreted as "every event in the caller's own
+	// identity tuple" (per the EventFilter godoc). A cross-tenant filter
+	// (a tenant other than the caller's, or multiple tenants) requires the
+	// verified `admin` OR `console:fleet` claim per the closed admin-scope
+	// set; scope is derived server-side, never from this body.
+	Filter EventFilter `json:"filter"`
+	// Cursor is the exclusive upper sequence bound (the scroll-up cursor):
+	// only events with Sequence < Cursor are returned. Zero means "from the
+	// tail" (the newest retained events). To scroll one page older, pass the
+	// prior response's NextCursor back here.
+	Cursor uint64 `json:"cursor,omitempty"`
+	// Limit is the page size K (clamped to MaxEventsListLimit;
+	// zero ⇒ DefaultEventsListLimit).
+	Limit int `json:"limit,omitempty"`
+}
+
+// EventsListResponse is the `events.list` reply: a bounded page of flat
+// events oldest-first within the window, plus a scroll-up cursor and the
+// honest retention-gap signal. Row shape is byte-identical to
+// `state.history`'s StateEvent projection.
+type EventsListResponse struct {
+	// Events is the page's events, oldest-first within the window.
+	Events []StateEvent `json:"events"`
+	// NextCursor is the lowest Sequence in this page — the value to pass
+	// back as Cursor to scroll one page older. Zero when the retained head
+	// is reached (no older events).
+	NextCursor uint64 `json:"next_cursor"`
+	// HasMore reports whether older matching events remain before the
+	// page's oldest event.
+	HasMore bool `json:"has_more"`
+	// Truncated is true when the substrate's oldest retained row sits above
+	// the true first matching event (a best-effort ring evicted older
+	// events) — the honest gap signal, never a silent drop. False on the
+	// gap-free durable log.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
 // EventBucket is a single time-bucketed count series — one stripe of the
 // per-event-type stacked-area sparkline the Events page renders (
 // ). Start (inclusive) and End (exclusive) are UTC; Counts is keyed

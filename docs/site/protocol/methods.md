@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 112 canonical Harbor Protocol methods, generated from the single-source registry
+The 113 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -183,6 +183,12 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
 | `state.history` | `POST /v1/state/history` | state snapshots (read-only) | [`StateHistoryRequest`](./types.md#statehistoryrequest) | [`StateHistoryResponse`](./types.md#statehistoryresponse) | read-only |
+
+## Events read
+
+| Method | Route | Classification | Request | Response | Auth (beyond identity) |
+|---|---|---|---|---|---|
+| `events.list` | `POST /v1/events/list` | events read (read-only) | [`EventsListRequest`](./types.md#eventslistrequest) | [`EventsListResponse`](./types.md#eventslistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 
 ## Auth
 

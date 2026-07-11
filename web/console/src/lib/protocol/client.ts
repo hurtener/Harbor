@@ -38,7 +38,12 @@ import type {
 	MemoryListResponse,
 	MemoryHealthResponse
 } from './memory-types.js';
-import type { EventAggregateRequest, EventAggregateResponse } from './events.js';
+import type {
+	EventAggregateRequest,
+	EventAggregateResponse,
+	EventsListRequest,
+	EventsListResponse
+} from './events.js';
 import type { RuntimeCounters, RuntimeHealth, MetricsSnapshot } from './posture.js';
 import type { PauseListRequest, PauseListResponse } from './pause.js';
 import type { SearchRequest, SearchResponse } from './search.js';
@@ -509,6 +514,22 @@ export class EventsNamespace {
 	aggregate(req: EventAggregateRequest): Promise<EventAggregateResponse> {
 		return this.#t.request<EventAggregateResponse>(
 			'/v1/events/aggregate',
+			req as unknown as Record<string, unknown>
+		);
+	}
+
+	/**
+	 * `events.list` — the durable, time-ranged, cross-session raw-event
+	 * read (D-294). Returns a bounded, tail-first page of the flat
+	 * `StateEvent` rows (same shape as `state.history` / the SSE
+	 * stream) plus a scroll-up `next_cursor` and the honest `truncated`
+	 * retention-gap flag. Pass the prior response's `next_cursor` back as
+	 * `cursor` to page one window older; a cross-tenant filter is gated on
+	 * the verified `admin` / `console:fleet` scope (D-079).
+	 */
+	list(req: EventsListRequest): Promise<EventsListResponse> {
+		return this.#t.request<EventsListResponse>(
+			'/v1/events/list',
 			req as unknown as Record<string, unknown>
 		);
 	}

@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 312 canonical Harbor Protocol wire types, generated from the single-source
+The 314 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -1311,6 +1311,28 @@ Declared in `internal/protocol/types`.
 | `run_ids` | `[]string` | optional (`omitempty`) |
 | `since` | `time.Time` | optional (`omitempty`) |
 | `until` | `time.Time` | optional (`omitempty`) |
+
+## EventsListRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) | optional (`omitempty`) |
+| `filter` | `types.EventFilter` — see [`EventFilter`](./types.md#eventfilter) |  |
+| `cursor` | `uint64` | optional (`omitempty`) |
+| `limit` | `int` | optional (`omitempty`) |
+
+## EventsListResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `events` | `[]types.StateEvent` — see [`StateEvent`](./types.md#stateevent) |  |
+| `next_cursor` | `uint64` |  |
+| `has_more` | `bool` |  |
+| `truncated` | `bool` | optional (`omitempty`) |
 
 ## Flow
 

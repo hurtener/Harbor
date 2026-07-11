@@ -645,8 +645,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// tasks-page two + agents-page eight +
 	// sessions-page two + Harbor runs-page one +
 	// auth.rotate_token one = 71.
-	if len(got) != 112 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 112 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane thirteen + agent-config session safe subset five + state.history one + agent-config user tier five + sessions.delete one + sessions.set_title one)", len(got))
+	if len(got) != 113 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 113 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three + MCP Apps host three + governance tenant-override admin pair two + governance.rotate_key one + agent-config control plane thirteen + agent-config session safe subset five + state.history one + agent-config user tier five + sessions.delete one + sessions.set_title one + events.list one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -743,6 +743,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodRunsSetOverrides: {},
 
 		methods.MethodStateHistory: {},
+
+		methods.MethodEventsList: {},
 
 		methods.MethodAuthRotateToken: {},
 
@@ -1023,6 +1025,17 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsStateMethod(m) {
 				t.Skip("state.* methods exercised by the stream state_history_handler tests + test/integration/phase125_state_history_test.go; conformance-suite scenario lands when the Stack wires a HistoryReplayer bus")
 			}
+			// events.list routes through its own stream-transport handler
+			// (POST /v1/events/list), NOT the REST ControlSurface — it needs an
+			// events.HistoryReplayer-bearing bus + an ArtifactStore the
+			// conformance Stack does not wire. Its happy-path + failure modes
+			// are exercised by the stream events_list_handler tests, the
+			// concurrent-reuse test, and
+			// test/integration/phase162_events_list_test.go (real drivers +
+			// real wire transport + real auth).
+			if methods.IsEventsListMethod(m) {
+				t.Skip("events.list routes through the stream events_list_handler; exercised by that handler's tests + test/integration/phase162_events_list_test.go; conformance-suite scenario lands when the Stack wires a HistoryReplayer bus")
+			}
 			// auth.rotate_token routes through its own
 			// stream-transport handler (AuthHandler over auth.RotateSurface),
 			// not the ControlSurface — its happy path is exercised by
@@ -1275,6 +1288,12 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// covered by internal/protocol/transports/stream/state_history_handler_test.go.
 			if methods.IsStateMethod(m) {
 				t.Skip("state.history malformed-request paths covered by internal/protocol/transports/stream/state_history_handler_test.go")
+			}
+			// events.list routes through its own stream-transport handler,
+			// not the ControlSurface — its malformed-request paths are
+			// covered by internal/protocol/transports/stream/events_list_handler_test.go.
+			if methods.IsEventsListMethod(m) {
+				t.Skip("events.list malformed-request paths covered by internal/protocol/transports/stream/events_list_handler_test.go")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)

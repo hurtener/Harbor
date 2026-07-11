@@ -166,47 +166,55 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `MethodEventsList` (`events.list`, `POST /v1/events/list`) registered
+- [x] `MethodEventsList` (`events.list`, `POST /v1/events/list`) registered
   (method set + canonical registration + conformance row); wire types
   `EventsListRequest{Identity, Filter EventFilter, Cursor, Limit}` /
   `EventsListResponse{Events []StateEvent, NextCursor, HasMore, Truncated}`
   in `internal/protocol/types` (single source, §8).
-- [ ] Tail-first paging semantics pinned: zero cursor ⇒ newest rows; each
+- [x] Tail-first paging semantics pinned: zero cursor ⇒ newest rows; each
   page is oldest-first within the window; `next_cursor` scrolls up;
   `has_more=false` + `next_cursor=0` at the retained head — mirroring
   `state.history` (a shared test asserts the two surfaces' paging grammar
   matches).
-- [ ] `since`/`until` bounds honored (inclusive/exclusive per the existing
+- [x] `since`/`until` bounds honored (inclusive/exclusive per the existing
   `EventFilter` godoc); a `until < since` request fails
   `CodeInvalidRequest` (the structurally-invalid posture the filter godoc
   already names, `types/events.go:28-30`).
-- [ ] Scoping: a non-widened caller gets only own-triple rows; a widened
-  read without the verified `admin` OR `console:fleet` claim (the closed
-  two-scope set, matching the aggregate handler) fails with the
-  scope-mismatch error; a widened read WITH either claim succeeds and emits
-  `audit.admin_scope_used` exactly once per request (the Bounds-then-Window
-  single-audit posture); scope is never read from the request body; a
-  `console:fleet`-only caller can `events.list` the SAME window it can
-  subscribe/aggregate over (the live/historical authz-parity pin).
-- [ ] Both V1 event drivers serve the read through the extended
+- [x] Scoping: a non-widened caller gets only own-triple rows — enforced
+  on the caller's VERIFIED triple, not the request filter's triple. The
+  cross-tenant AND cross-USER axes both elevate: naming a foreign tenant OR
+  a foreign user requires the closed two-scope claim (`admin` OR
+  `console:fleet`) and fails `CodeIdentityScopeRequired`/403 without it
+  (the `FilterFromWire` USER-axis gate closes a cross-user disclosure the
+  original review caught — a non-admin caller naming `{own-tenant,
+  foreign-user, foreign-session}` must NOT receive another user's rows;
+  §6). The SESSION axis deliberately does NOT elevate on a single foreign
+  value — a user legitimately reads their own other sessions (the Console
+  Sessions/Playground history flow); the broader cross-session-observer
+  posture question is routed to the wave checkpoint. A widened read WITH
+  either claim succeeds and emits `audit.admin_scope_used` exactly once per
+  request; scope is never read from the request body; a `console:fleet`-only
+  caller can `events.list` the SAME window it can subscribe/aggregate over
+  (the live/historical authz-parity pin).
+- [x] Both V1 event drivers serve the read through the extended
   `HistoryReplayer` seam: durable = real windows over the persisted log;
   inmem = ring contents + `truncated=true` past the ring head; a
   conformance scenario runs against both (no capability ceremony).
-- [ ] Rows are byte-identical to the `state.history` projection for the same
+- [x] Rows are byte-identical to the `state.history` projection for the same
   events (same `payloadWireValue`, same artifact-ref seeding) — a test pins
   row-shape equality; the sentinel-redaction posture holds (no raw
   args/results in any returned payload).
-- [ ] Console Events page: the window picker drives `events.list` for
+- [x] Console Events page: the window picker drives `events.list` for
   historical rows (initial load + scroll-up paging); the live SSE tail is
   unchanged; `truncated` renders a retention-gap notice; the empty-state
   copy is updated to reflect that read-back now exists (durable driver) and
   what the inmem ring honestly serves.
-- [ ] Full lockstep in the same PR: `make protocol-ts-gen` (manifest +
+- [x] Full lockstep in the same PR: `make protocol-ts-gen` (manifest +
   `events.ts` + `client.ts` mirrors), `make protocol-docs-gen`,
   `singlesource.CanonicalWireTypes`, generator typeindex registrations,
   `methods_test.go`. `ProtocolVersion` unbumped (additive).
-- [ ] `scripts/smoke/phase-162.sh` OK ≥ 3, FAIL = 0.
-- [ ] `-race` on touched packages; coverage ≥ 85% on touched Go packages.
+- [x] `scripts/smoke/phase-162.sh` OK ≥ 3, FAIL = 0.
+- [x] `-race` on touched packages; coverage ≥ 85% on touched Go packages.
 
 ## Files added or changed
 
@@ -302,10 +310,20 @@ None.
 
 - **Cross-session scan cost on the durable driver.** The persisted log is
   per-session-keyed with a global sequence; a fleet-wide window read is a
-  merge across session logs (or a global-order scan). The implementor picks
+  merge across session logs (a global-order scan). The implementor picks
   the read shape; the plan binds only the semantics (global-sequence order,
-  bounded page size, cursor-stable). A pathological fleet window is bounded
-  by `limit` per page — no unbounded scans.
+  bounded page size, cursor-stable). **As-built honest bound (corrected from
+  the earlier "no unbounded scans" wording):** the durable admin fleet read
+  gathers ALL candidate `(session, seq)` pairs below the cursor from the
+  head records and sorts them per page — so the *candidate gather* is
+  `O(events-below-cursor)` in memory/CPU, NOT bounded by `limit`. What IS
+  bounded by `limit` is the **entry I/O**: the loader stops after loading
+  `limit+1` MATCHING entries, so the expensive per-event StateStore reads
+  never exceed the page. The head-record identity pre-filter prunes
+  non-matching sessions before any entry load. This is acceptable for V1
+  (documented latitude); a follow-up for a **merged global-sequence index**
+  (so the candidate gather is also page-bounded) is tracked as HA-13 —
+  reword, don't optimise here.
 - **Admin fan-in is a disclosure edge.** The widened read reuses the
   existing `Matches` admin fan-in + mandatory audit emit; the integration
   test's two-identity isolation + widened-read legs are the guard (§6).
@@ -320,19 +338,19 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
       (the two-identity integration leg + the widened-read audit leg).
-- [ ] **Reusable-artifact concurrent-reuse:** the bus drivers' D-025 stress
+- [x] **Reusable-artifact concurrent-reuse:** the bus drivers' D-025 stress
       extended with concurrent windowed reads (N≥100, `-race`).
-- [ ] **Integration test wires real drivers end-to-end, asserts identity
+- [x] **Integration test wires real drivers end-to-end, asserts identity
       propagation, covers ≥1 failure mode, runs under `-race`** (§17.3).
-- [ ] Wire changes complete: `make protocol-ts-gen-check` +
+- [x] Wire changes complete: `make protocol-ts-gen-check` +
       `make protocol-docs-gen-check` green with the regenerated artifacts
       committed.
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: N/A — none departed
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A — none departed

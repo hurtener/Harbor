@@ -28,7 +28,15 @@
  * identity + timestamp. Heavy payload bytes are NEVER inlined: a
  * payload exceeding the heavy-content threshold carries an
  * {@link EventArtifactRef} the page resolves via `artifacts.get_ref`.
+ *
+ * # events.list (D-294) reuses the flat StateEvent row
+ *
+ * The `events.list` historical-window read returns the SAME flat
+ * {@link StateEvent} projection `state.history` carries — imported from
+ * `./state`, not re-declared (no new row shape).
  */
+
+import type { StateEvent } from './state';
 
 /* ------------------------------------------------------------------ */
 /* EventFilter — mirrors types.EventFilter                             */
@@ -172,6 +180,53 @@ export interface EventAggregateResponse {
 	buckets: EventBucket[];
 	/** The Protocol version the Runtime answered under. */
 	protocol_version: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* events.list — mirrors types.EventsList{Request,Response}            */
+/* ------------------------------------------------------------------ */
+
+/** Default + maximum page size for `events.list`, mirroring the Go bounds. */
+export const DEFAULT_EVENTS_LIST_LIMIT = 50;
+export const MAX_EVENTS_LIST_LIMIT = 200;
+
+/**
+ * The wire request for `events.list` — the durable, time-ranged,
+ * cross-session raw-event read. Mirrors `types.EventsListRequest`. Reuses
+ * {@link EventFilter} (identity axes + `since`/`until` bounds + event-type
+ * selector) plus a tail-first, sequence-based paging cursor mirroring
+ * `state.history`. The `identity` triple is folded server-side; a
+ * cross-tenant (fleet) filter requires the verified `admin` or
+ * `console:fleet` claim (D-079). `cursor` zero ⇒ from the newest retained
+ * events; pass the prior response's `next_cursor` back to scroll a page
+ * older.
+ */
+export interface EventsListRequest {
+	/** The event predicate (identity sets + since/until + types). */
+	filter: EventFilter;
+	/** Exclusive upper sequence bound; 0 (or omitted) ⇒ from the tail. */
+	cursor?: number;
+	/** Page size K (clamped to {@link MAX_EVENTS_LIST_LIMIT}; 0 ⇒ default). */
+	limit?: number;
+}
+
+/**
+ * The wire response for `events.list`. Mirrors
+ * `types.EventsListResponse`. Rows are the SAME flat {@link StateEvent}
+ * projection `state.history` and the SSE stream carry — no new row shape.
+ * `next_cursor` is the value to pass back as `cursor` to scroll one page
+ * older (0 at the retained head); `truncated` is the honest retention-gap
+ * signal (a best-effort ring evicted older events).
+ */
+export interface EventsListResponse {
+	/** The page's events, oldest-first within the window. */
+	events: StateEvent[];
+	/** Lowest sequence in this page — the scroll-up cursor (0 at the head). */
+	next_cursor: number;
+	/** Whether older matching events remain before this page. */
+	has_more: boolean;
+	/** True when a wrapped best-effort ring may have evicted older rows. */
+	truncated?: boolean;
 }
 
 /* ------------------------------------------------------------------ */

@@ -278,6 +278,82 @@ func TestFilterFromWire_RequiresAdminOnCrossTenant(t *testing.T) {
 	})
 }
 
+// TestFilterFromWire_RequiresAdminOnCrossUser — naming a user other than
+// the caller's, or naming multiple users, requires the elevated scope
+// (the cross-USER disclosure gate, mirroring the tenant axis). This closes
+// the row-read leak where a non-admin caller supplying {own-tenant,
+// foreign-user, foreign-session} received another user's events.
+func TestFilterFromWire_RequiresAdminOnCrossUser(t *testing.T) {
+	t.Parallel()
+	t.Run("single non-caller user (own tenant)", func(t *testing.T) {
+		t.Parallel()
+		conv := events.FilterFromWire(
+			prototypes.EventFilter{
+				TenantIDs:  []string{"tenant-A"},
+				UserIDs:    []string{"user-B"},
+				SessionIDs: []string{"session-B"},
+			},
+			"tenant-A", "user-A", "session-A",
+		)
+		if !conv.RequiresAdminScope {
+			t.Fatal("cross-user filter (own tenant, foreign user) must require the elevated scope")
+		}
+	})
+	t.Run("multiple users", func(t *testing.T) {
+		t.Parallel()
+		conv := events.FilterFromWire(
+			prototypes.EventFilter{UserIDs: []string{"user-A", "user-B"}},
+			"tenant-A", "user-A", "session-A",
+		)
+		if !conv.RequiresAdminScope {
+			t.Fatal("multi-user filter must require the elevated scope")
+		}
+	})
+	t.Run("caller's own user only", func(t *testing.T) {
+		t.Parallel()
+		conv := events.FilterFromWire(
+			prototypes.EventFilter{UserIDs: []string{"user-A"}},
+			"tenant-A", "user-A", "session-A",
+		)
+		if conv.RequiresAdminScope {
+			t.Fatal("same-user filter must not require the elevated scope")
+		}
+	})
+}
+
+// TestFilterFromWire_SessionAxisNotGatedOnForeignSingle — a
+// {same-tenant, same-user, different-session} read is a user reading their
+// OWN other sessions (the Console Sessions / Playground history flow); it
+// must NOT force elevation. Only a multi-session set elevates. This is the
+// deliberate asymmetry with the tenant/user axes (the broader cross-session
+// posture question is tracked at the wave checkpoint).
+func TestFilterFromWire_SessionAxisNotGatedOnForeignSingle(t *testing.T) {
+	t.Parallel()
+	t.Run("own-user other session is NOT elevated", func(t *testing.T) {
+		t.Parallel()
+		conv := events.FilterFromWire(
+			prototypes.EventFilter{SessionIDs: []string{"session-Z"}},
+			"tenant-A", "user-A", "session-A",
+		)
+		if conv.RequiresAdminScope {
+			t.Fatal("a user reading their own other session must not require the elevated scope")
+		}
+		if conv.Filter.Session != "session-Z" {
+			t.Fatalf("session not carried through: %q", conv.Filter.Session)
+		}
+	})
+	t.Run("multiple sessions elevate", func(t *testing.T) {
+		t.Parallel()
+		conv := events.FilterFromWire(
+			prototypes.EventFilter{SessionIDs: []string{"session-A", "session-B"}},
+			"tenant-A", "user-A", "session-A",
+		)
+		if !conv.RequiresAdminScope {
+			t.Fatal("a multi-session set must require the elevated scope")
+		}
+	})
+}
+
 // TestFilterFromWire_TypesAndWindow — Types are copied through and the
 // time window is normalised to UTC.
 func TestFilterFromWire_TypesAndWindow(t *testing.T) {

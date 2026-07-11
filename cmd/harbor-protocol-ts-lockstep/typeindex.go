@@ -287,6 +287,8 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"StateEvent":                                  reflect.TypeOf(types.StateEvent{}),
 	"StateHistoryRequest":                         reflect.TypeOf(types.StateHistoryRequest{}),
 	"StateHistoryResponse":                        reflect.TypeOf(types.StateHistoryResponse{}),
+	"EventsListRequest":                           reflect.TypeOf(types.EventsListRequest{}),
+	"EventsListResponse":                          reflect.TypeOf(types.EventsListResponse{}),
 	"SubsystemDriver":                             reflect.TypeOf(types.SubsystemDriver{}),
 	"SubsystemHealth":                             reflect.TypeOf(types.SubsystemHealth{}),
 	"TaskCostRollup":                              reflect.TypeOf(types.TaskCostRollup{}),
