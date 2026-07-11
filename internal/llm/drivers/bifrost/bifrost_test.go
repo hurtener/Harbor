@@ -245,57 +245,11 @@ func TestDriver_Complete_StreamCancellation(t *testing.T) {
 	}
 }
 
-// TestDriver_Complete_CostEmit — successful Complete publishes
-// `llm.cost.recorded` with the identity quadruple + model + cost +
-// usage.
-func TestDriver_Complete_CostEmit(t *testing.T) {
-	bus, busCleanup := openBus(t)
-	defer busCleanup()
-
-	sub, err := bus.Subscribe(context.Background(), events.Filter{
-		Admin: true,
-		Types: []events.EventType{llm.EventTypeCostRecorded},
-	})
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-	defer sub.Cancel()
-
-	stub := newStubClient()
-	drv := newDriverWithClient(stub, bfschemas.OpenAI, bus)
-	defer func() { _ = drv.Close(context.Background()) }()
-
-	ctx := withIdentity(t, context.Background(), "s-emit")
-	text := "x"
-	_, err = drv.Complete(ctx, llm.CompleteRequest{
-		Model:    "openai/gpt-5.3-chat",
-		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
-	})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
-	select {
-	case ev := <-sub.Events():
-		if ev.Type != llm.EventTypeCostRecorded {
-			t.Errorf("ev.Type = %q want %q", ev.Type, llm.EventTypeCostRecorded)
-		}
-		p, ok := ev.Payload.(llm.CostRecordedPayload)
-		if !ok {
-			t.Fatalf("payload type = %T", ev.Payload)
-		}
-		if p.Model != "openai/gpt-5.3-chat" {
-			t.Errorf("payload Model = %q", p.Model)
-		}
-		if p.Identity.SessionID != "s-emit" {
-			t.Errorf("payload Identity SessionID = %q", p.Identity.SessionID)
-		}
-		if p.Cost.TotalCost == 0 || p.Usage.TotalTokens == 0 {
-			t.Errorf("payload cost/usage zero: %+v %+v", p.Cost, p.Usage)
-		}
-	case <-time.After(2 * time.Second):
-		t.Errorf("did not observe llm.cost.recorded within 2s")
-	}
-}
+// NOTE: the `llm.cost.recorded` emit moved OFF this driver to the
+// mandatory LLM-edge safety wrapper (driver-neutral, one event per
+// driver-level completion for every driver). The cost-emit assertion now
+// lives at that seam in `internal/llm` (see the safety-wrapper cost
+// tests); a bifrost-local emit no longer exists to test here.
 
 // TestDriver_init_RegistersBifrost — the package's init() registered
 // the driver under "bifrost". (This DOES NOT call New — that would

@@ -22,8 +22,9 @@ import (
 //     as an `Artifact` whose bytes live in the store.
 //   - `Bus` is the canonical event bus. The safety pass publishes
 //     `llm.image.materialized` / `llm.context_leak` /
-//     `llm.context_window_exceeded`; the request-emit path (
-//     subscriber lands here) publishes `llm.cost.recorded`.
+//     `llm.context_window_exceeded`, and — driver-neutrally, once per
+//     driver-level completion — the observability-only
+//     `llm.cost.recorded`.
 //
 // The package does NOT depend on `state.StateStore` — the LLM client
 // is stateless across calls.
@@ -435,10 +436,16 @@ func registeredNames() string {
 // safety pass enforces. Deps are validated at construction —
 // `nil Artifacts` / `nil Bus` return wrapped errors immediately.
 //
-// The returned client is a `*safetyClient` wrapping the registered
-// driver: every `Complete` runs through `enforceContextSafety` BEFORE
-// the driver sees the request. This is mandatory by construction —
-// drivers cannot bypass it through the registry path.
+// The mandatory safety band is the INNERMOST wrapper of the composed
+// chain: `newSafetyClient(driver)` runs the context-safety pass — and
+// the driver-neutral `llm.cost.recorded` emit — on every `Complete`
+// BEFORE the driver sees the request. The client `Open` actually
+// RETURNS is the OUTERMOST wrapper of the chain (governance is the
+// outermost composed layer), not a bare `*safetyClient`; the safety band
+// is mandatory by
+// construction regardless — drivers cannot bypass it through the
+// registry path, and the compose order guarantees the inner band always
+// executes.
 //
 // # Unseated wrapper hooks warn loudly
 //

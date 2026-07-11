@@ -8,12 +8,16 @@
 // full-load `tasks.list` + N×`tasks.get` reconstruction.
 //
 // The reduction stays client-side (the surface returns flat events, never
-// pre-reduced turns): the agent answer + reasoning + tool calls for each
-// run are reconstructed from the `llm.completion.chunk` / `planner.*` /
-// `tool.*` events the runtime already publishes onto the durable log —
-// the same events the live SSE stream reduces. The user query text is NOT
-// carried in the durable event payloads (the task lifecycle payloads omit
-// it), so the caller folds it in from a single catalog lookup.
+// pre-reduced turns): the agent answer + reasoning are reconstructed from the
+// `llm.completion.chunk` deltas; the per-turn CONTENT-FREE metadata (usage /
+// cost / model from `llm.cost.recorded`, tool-call rows from `planner.decision`
+// + `tool.completed`/`tool.failed`, duration from the task lifecycle) is folded
+// from the SAME bus events the live SSE stream reduces — so a reopen renders
+// the header stats, per-message badges, TOOL CALLS badges, and model chip
+// IDENTICAL to the live view. Tool args/results NEVER reach a payload
+// (CLAUDE.md §7 rule 7), so none are folded. The user query text is NOT carried
+// in the durable event payloads (the task lifecycle payloads omit it), so the
+// caller folds it in from a single catalog lookup.
 
 import type { ProtocolClient } from '../protocol/client.js';
 import type { StateEvent, StateHistoryResponse } from '../protocol/state.js';
@@ -101,6 +105,18 @@ export async function loadSessionHistory(
 	return { events, headSequence: head, tailSequence: tail, hasMore, truncated };
 }
 
+/** A reconstructed tool-call row on a reopened turn (content-free — the
+ *  tool NAME + status + a short redacted summary, NEVER raw args/results). */
+export interface HistoryToolCall {
+	/** The tool the turn invoked. */
+	tool: string;
+	/** Resolved lifecycle status. */
+	status: 'invoked' | 'succeeded' | 'failed';
+	/** A short summary — duration for succeeded, error class/message for
+	 *  failed, '' for still-invoked. Never raw args/results. */
+	summary: string;
+}
+
 /** One reopened conversation turn reduced from the event window. */
 export interface HistoryTurn {
 	/** The run (task) id the turn belongs to. */
@@ -113,6 +129,20 @@ export interface HistoryTurn {
 	at: string;
 	/** Whether the run reached a terminal lifecycle event. */
 	terminal: boolean;
+	/** Total tokens summed across the run's `llm.cost.recorded` events. */
+	tokens: number;
+	/** Prompt (input) tokens summed across the run's cost events. */
+	promptTokens: number;
+	/** Completion (output) tokens summed across the run's cost events. */
+	outputTokens: number;
+	/** Cost in USD summed across the run's cost events. */
+	costUSD: number;
+	/** The model id last seen on a cost event (the run's model chip). */
+	model: string;
+	/** The run's active duration in ms (from task lifecycle timestamps). */
+	durationMs: number;
+	/** The turn's reconstructed tool-call rows (content-free). */
+	toolCalls: HistoryToolCall[];
 }
 
 /** Reads the first present string field across PascalCase / snake_case keys. */
@@ -123,6 +153,27 @@ function readString(obj: Record<string, unknown>, keys: string[]): string {
 	}
 	return '';
 }
+
+/** Reads the first present finite number across PascalCase / snake_case keys. */
+function readNumber(obj: Record<string, unknown>, keys: string[]): number {
+	for (const k of keys) {
+		const v = obj[k];
+		if (typeof v === 'number' && Number.isFinite(v)) return v;
+	}
+	return 0;
+}
+
+/** Reads a nested object field across PascalCase / snake_case keys. */
+function readObject(obj: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+	for (const k of keys) {
+		const v = obj[k];
+		if (v !== null && typeof v === 'object') return v as Record<string, unknown>;
+	}
+	return {};
+}
+
+/** The set of task-lifecycle terminal types (mirrors the live decoder). */
+const TERMINAL_TASK_TYPES = new Set(['task.completed', 'task.failed', 'task.cancelled']);
 
 /** The run id an event belongs to — the wire `run` field, or a payload TaskID. */
 function eventRunID(ev: StateEvent): string {
@@ -136,32 +187,83 @@ function eventRunID(ev: StateEvent): string {
 /**
  * `reduceHistoryTurns` folds a window of durable events into per-run turns,
  * reconstructing each run's answer + reasoning from its
- * `llm.completion.chunk` deltas (the same channel the live stream reduces).
- * Returns the turns oldest-first by first-seen event. The durable event
- * payloads are the redacted Go structs (PascalCase keys); the reader
- * tolerates both casings.
+ * `llm.completion.chunk` deltas, AND its content-free per-turn metadata from
+ * the same bus events the live stream reduces:
+ *
+ *   - `llm.cost.recorded` → usage (`Usage.TotalTokens` / `Usage.PromptTokens`
+ *     / `Usage.CompletionTokens`), cost (`Cost.TotalCost`), and the model id
+ *     (`Model`) — summed across the run's LLM calls.
+ *   - `planner.decision` with `DecisionKind === 'CallTool'` → opens a tool-call
+ *     row (status `invoked`) keyed by the tool name.
+ *   - `tool.completed` / `tool.failed` → resolves the matching open row's
+ *     status + a short content-free summary (duration / error class), mirroring
+ *     the live `applyToolLifecycle` reducer.
+ *   - `task.started` → task-terminal timestamps → the run's active `durationMs`
+ *     (a fallback; the Playground prefers the `tasks.list` `duration_ms`).
+ *
+ * NEVER folds tool args or results — those never reach an event payload
+ * (CLAUDE.md §7 rule 7). Returns the turns oldest-first by first-seen event.
+ * The durable event payloads are the redacted Go structs (PascalCase keys);
+ * the reader tolerates both casings.
  */
 export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[] {
 	const order: string[] = [];
 	const byRun = new Map<string, HistoryTurn>();
+	// Per-run task lifecycle instants, for the duration fallback.
+	const started = new Map<string, string>();
 
 	const turnFor = (runID: string, at: string): HistoryTurn => {
 		let t = byRun.get(runID);
 		if (t === undefined) {
-			t = { runID, answer: '', reasoning: '', at, terminal: false };
+			t = {
+				runID,
+				answer: '',
+				reasoning: '',
+				at,
+				terminal: false,
+				tokens: 0,
+				promptTokens: 0,
+				outputTokens: 0,
+				costUSD: 0,
+				model: '',
+				durationMs: 0,
+				toolCalls: []
+			};
 			byRun.set(runID, t);
 			order.push(runID);
 		}
 		return t;
 	};
 
+	// Resolve an open tool row (status 'invoked') for `tool`; append one if
+	// none is open (a terminal event never silently dropped). Mirrors the
+	// live `applyToolLifecycle`.
+	const resolveToolRow = (
+		turn: HistoryTurn,
+		tool: string,
+		status: HistoryToolCall['status'],
+		summary: string
+	) => {
+		for (const row of turn.toolCalls) {
+			if (row.tool === tool && row.status === 'invoked') {
+				row.status = status;
+				if (summary !== '') row.summary = summary;
+				return;
+			}
+		}
+		turn.toolCalls.push({ tool, status, summary });
+	};
+
 	for (const ev of events) {
 		const runID = eventRunID(ev);
 		if (runID === '') continue;
 		const turn = turnFor(runID, ev.occurred_at);
+		const p =
+			ev.payload !== null && typeof ev.payload === 'object'
+				? (ev.payload as Record<string, unknown>)
+				: {};
 
-		if (ev.type === 'llm.completion.chunk' && ev.payload !== null && typeof ev.payload === 'object') {
-			const p = ev.payload as Record<string, unknown>;
+		if (ev.type === 'llm.completion.chunk') {
 			const delta = readString(p, ['Delta', 'delta']);
 			const kind = readString(p, ['Kind', 'kind']);
 			if (kind === 'reasoning') {
@@ -169,9 +271,43 @@ export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[]
 			} else {
 				turn.answer += delta;
 			}
+		} else if (ev.type === 'llm.cost.recorded') {
+			const usage = readObject(p, ['Usage', 'usage']);
+			const cost = readObject(p, ['Cost', 'cost']);
+			turn.tokens += readNumber(usage, ['TotalTokens', 'total_tokens']);
+			turn.promptTokens += readNumber(usage, ['PromptTokens', 'prompt_tokens']);
+			turn.outputTokens += readNumber(usage, ['CompletionTokens', 'completion_tokens']);
+			turn.costUSD += readNumber(cost, ['TotalCost', 'total_cost']);
+			const model = readString(p, ['Model', 'model']);
+			if (model !== '') turn.model = model;
+		} else if (ev.type === 'planner.decision') {
+			const kind = readString(p, ['DecisionKind', 'decision_kind']);
+			const tool = readString(p, ['Tool', 'tool']);
+			if (kind === 'CallTool' && tool !== '') {
+				resolveToolRow(turn, tool, 'invoked', '');
+			}
+		} else if (ev.type === 'tool.completed') {
+			const tool = readString(p, ['ToolName', 'tool_name']);
+			const ms = readNumber(p, ['DurationMS', 'duration_ms']);
+			const summary = ms > 0 ? `${(ms / 1000).toFixed(1)}s` : '';
+			if (tool !== '') resolveToolRow(turn, tool, 'succeeded', summary);
+		} else if (ev.type === 'tool.failed' || ev.type === 'tool.policy_exhausted') {
+			const tool = readString(p, ['ToolName', 'tool_name']);
+			const cls = readString(p, ['ErrorClass', 'error_class', 'LastClass', 'last_class']);
+			const msg = readString(p, ['ErrorMessage', 'error_message', 'LastError', 'last_error']);
+			const summary = msg !== '' ? (cls !== '' ? `${cls}: ${msg}` : msg) : cls !== '' ? cls : 'failed';
+			if (tool !== '') resolveToolRow(turn, tool, 'failed', summary);
+		} else if (ev.type === 'task.started') {
+			started.set(runID, ev.occurred_at);
 		}
-		if (ev.type === 'task.completed' || ev.type === 'task.failed' || ev.type === 'task.cancelled') {
+
+		if (TERMINAL_TASK_TYPES.has(ev.type)) {
 			turn.terminal = true;
+			const startAt = started.get(runID);
+			if (startAt !== undefined && turn.durationMs === 0) {
+				const ms = Date.parse(ev.occurred_at) - Date.parse(startAt);
+				if (Number.isFinite(ms) && ms > 0) turn.durationMs = ms;
+			}
 		}
 	}
 

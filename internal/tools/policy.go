@@ -8,8 +8,6 @@ import (
 	"math/rand"
 	"strings"
 	"time"
-
-	"github.com/hurtener/Harbor/internal/events"
 )
 
 // ValidateMode selects which side of an invocation the policy
@@ -204,7 +202,6 @@ type descriptorConfig struct {
 	latencyHint time.Duration
 	safetyNotes string
 	source      ToolSourceID
-	bus         events.EventBus
 }
 
 // WithPolicy overrides the ToolPolicy applied to the registered
@@ -269,21 +266,6 @@ func WithSource(id ToolSourceID) DescriptorOption {
 	return func(c *descriptorConfig) { c.source = id }
 }
 
-// WithBus wires a canonical event bus into a tool registration so
-// the driver's Invoke wrapper publishes tool.invoked / tool.completed
-// / tool.failed around each invocation. Identity in the published
-// payload is read from the invocation ctx via identity.From; if no
-// identity is present the publish is skipped (a tool boundary that
-// rejects missing identity already errored before this point).
-//
-// Drivers (inproc, http, mcp, a2a) honour this option in their
-// Invoke closures so the event surface fires regardless of
-// transport. Zero value (nil bus) keeps the previous no-op
-// behaviour, so legacy registrations continue to work.
-func WithBus(bus events.EventBus) DescriptorOption {
-	return func(c *descriptorConfig) { c.bus = bus }
-}
-
 // ResolvedDescriptorConfig is the resolved option set after
 // applying DescriptorOptions. Drivers consume this when building
 // their ToolDescriptor — they read what the operator declared at
@@ -305,7 +287,6 @@ type ResolvedDescriptorConfig struct {
 	LatencyHint time.Duration
 	SafetyNotes string
 	Source      ToolSourceID
-	Bus         events.EventBus
 }
 
 // ResolveOptions applies opts to a fresh ResolvedDescriptorConfig
@@ -331,7 +312,6 @@ func ResolveOptions(opts ...DescriptorOption) ResolvedDescriptorConfig {
 		LatencyHint: cfg.latencyHint,
 		SafetyNotes: cfg.safetyNotes,
 		Source:      cfg.source,
-		Bus:         cfg.bus,
 	}
 }
 

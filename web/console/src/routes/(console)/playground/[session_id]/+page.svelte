@@ -956,9 +956,35 @@
       const hydrated: ChatMessage[] = [];
       for (const turn of fresh) {
         const meta = catalog.get(turn.runID);
-        activeWorkMs += meta?.durationMs ?? 0;
+        // Prefer the tasks.list duration_ms (the primary source, as today);
+        // fall back to the reducer's task-lifecycle-derived durationMs.
+        const durationMs = meta?.durationMs || turn.durationMs || 0;
         const at = meta?.at || turn.at || new Date().toISOString();
         const query = meta?.query ?? '';
+
+        // Fold the reopened turn into the session KPI accumulators the header
+        // + model chip read — so leave-and-return renders IDENTICAL to the live
+        // view (the acceptance centerpiece), not just the message bodies.
+        recordTurn(durationMs);
+        tokenCount += turn.tokens;
+        promptTokens += turn.promptTokens;
+        outputTokens += turn.outputTokens;
+        costUSD += turn.costUSD;
+        if (turn.tokens > 0 || turn.costUSD > 0) {
+          // A real reading exists — flip the KPI strip out of its "no turns
+          // yet" em-dash state so the reopened stats render (the operator's
+          // regression: reopen showed no tokens/cost).
+          hasCostReading = true;
+          const prev = turnCost[turn.runID] ?? { tokens: 0, cost: 0 };
+          turnCost[turn.runID] = { tokens: prev.tokens + turn.tokens, cost: prev.cost + turn.costUSD };
+        }
+        if (turn.model !== '') modelName = turn.model;
+        const toolCalls: ChatToolCall[] =
+          turn.toolCalls.length > 0
+            ? turn.toolCalls.map((tc) => ({ tool: tc.tool, status: tc.status, summary: tc.summary, runID: turn.runID }))
+            : [];
+        if (toolCalls.length > 0) turnTools[turn.runID] = [...toolCalls];
+
         if (query) {
           hydrated.push({ id: `h-${turn.runID}-u`, role: 'user', text: query, taskID: turn.runID, at });
         }
@@ -969,7 +995,13 @@
             text: turn.answer || '(no answer recorded)',
             taskID: turn.runID,
             at,
-            reasoningText: turn.reasoning || undefined
+            reasoningText: turn.reasoning || undefined,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            meta: {
+              elapsedMs: durationMs > 0 ? durationMs : undefined,
+              tokens: turn.tokens > 0 ? turn.tokens : undefined,
+              costUSD: turn.costUSD > 0 ? turn.costUSD : undefined
+            }
           });
         }
       }

@@ -227,7 +227,6 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 		tcat.WithSideEffect(tcat.SideEffectRead),
 		tcat.WithLoading(tcat.LoadingAlways),
 		tcat.WithTags("skills", "search"),
-		tcat.WithBus(deps.Bus),
 		tcat.WithSource(tcat.ToolSourceID("skills/tools")),
 	); err != nil {
 		return fmt.Errorf("skills/tools: register %s: %w", ToolNameSkillSearch, err)
@@ -244,7 +243,6 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 		tcat.WithSideEffect(tcat.SideEffectRead),
 		tcat.WithLoading(tcat.LoadingAlways),
 		tcat.WithTags("skills", "fetch"),
-		tcat.WithBus(deps.Bus),
 		tcat.WithSource(tcat.ToolSourceID("skills/tools")),
 	); err != nil {
 		return fmt.Errorf("skills/tools: register %s: %w", ToolNameSkillGet, err)
@@ -261,7 +259,6 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 		tcat.WithSideEffect(tcat.SideEffectRead),
 		tcat.WithLoading(tcat.LoadingAlways),
 		tcat.WithTags("skills", "list"),
-		tcat.WithBus(deps.Bus),
 		tcat.WithSource(tcat.ToolSourceID("skills/tools")),
 	); err != nil {
 		return fmt.Errorf("skills/tools: register %s: %w", ToolNameSkillList, err)

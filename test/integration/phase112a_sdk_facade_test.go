@@ -749,7 +749,6 @@ var _ = []any{
 	sdktools.Catalog,
 	sdktools.MustCatalog,
 	sdktools.WithAuthScopes,
-	sdktools.WithBus,
 	sdktools.WithCostHint,
 	sdktools.WithDescription,
 	sdktools.WithExamples,

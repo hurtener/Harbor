@@ -45,7 +45,6 @@ func registerSkillSearch(rc RegistryContext) error {
 		tools.WithSideEffect(tools.SideEffectRead),
 		tools.WithLoading(tools.LoadingAlways),
 		tools.WithTags("builtin", "meta", "discovery", "skills"),
-		tools.WithBus(rc.Bus),
 		tools.WithSource(tools.ToolSourceID("skills/tools")),
 	)
 }

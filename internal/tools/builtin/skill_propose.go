@@ -48,7 +48,6 @@ func registerSkillPropose(rc RegistryContext) error {
 		tools.WithSideEffect(tools.SideEffectWrite),
 		tools.WithLoading(tools.LoadingAlways),
 		tools.WithTags("builtin", "meta", "skills", "generate"),
-		tools.WithBus(rc.Bus),
 		tools.WithSource(tools.ToolSourceID("skills/generator")),
 	)
 }

@@ -26,9 +26,11 @@ type helloOut struct {
 }
 
 // registerHelloTool registers a thin in-process tool with the kit's
-// wrapped catalog so RunOnce-based tests can exercise the
-// tool.invoked / tool.completed event flow end-to-end.
-func registerHelloTool(t *testing.T, cat tools.ToolCatalog, bus events.EventBus) {
+// catalog so RunOnce-based tests can exercise the tool.invoked /
+// tool.completed event flow end-to-end. The catalog must be built with
+// tools.WithCatalogBus so its descriptor-wrap shell emits the lifecycle
+// events (the bus is carried by the catalog, not per-registration).
+func registerHelloTool(t *testing.T, cat tools.ToolCatalog) {
 	t.Helper()
 	if err := inproc.RegisterFunc[helloIn, helloOut](
 		cat,
@@ -37,7 +39,6 @@ func registerHelloTool(t *testing.T, cat tools.ToolCatalog, bus events.EventBus)
 			return helloOut{Message: "hi " + in.Name}, nil
 		},
 		tools.WithDescription("Say hi to a name"),
-		tools.WithBus(bus),
 	); err != nil {
 		t.Fatalf("RegisterFunc: %v", err)
 	}
@@ -50,8 +51,8 @@ func registerHelloTool(t *testing.T, cat tools.ToolCatalog, bus events.EventBus)
 // triggers.
 func TestRunOnce_RoundTrip_CapturesEvents(t *testing.T) {
 	bus := openInmemBus(t)
-	cat := tools.NewCatalog()
-	registerHelloTool(t, cat, bus)
+	cat := tools.NewCatalog(tools.WithCatalogBus(bus))
+	registerHelloTool(t, cat)
 
 	agent := harbortest.AgentFunc(func(ctx context.Context, in any) (any, error) {
 		d, _ := cat.Resolve("hello")
@@ -199,8 +200,8 @@ func TestRunOnce_AgentError_ReturnsLog(t *testing.T) {
 // share a Deps.Bus; the union log filters cleanly by RunID.
 func TestEventLog_RecordedEvents_FiltersByRun(t *testing.T) {
 	bus := openInmemBus(t)
-	cat := tools.NewCatalog()
-	registerHelloTool(t, cat, bus)
+	cat := tools.NewCatalog(tools.WithCatalogBus(bus))
+	registerHelloTool(t, cat)
 
 	agent := harbortest.AgentFunc(func(ctx context.Context, in any) (any, error) {
 		d, _ := cat.Resolve("hello")

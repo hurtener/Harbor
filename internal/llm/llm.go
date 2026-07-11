@@ -184,10 +184,11 @@ type CompleteRequest struct {
 // `trajectory.Step.ReasoningTrace` and only re-injects it when an
 // operator opts into replay (RFC §6.2 + §6.5).
 //
-// `Cost` + `Usage` propagate the provider's reported figures.
-// Governance subscribes to `llm.cost.recorded` events
-// emitted by the runtime when a `Complete` returns; the event payload
-// re-stamps these shapes.
+// `Cost` + `Usage` propagate the provider's reported figures. The
+// mandatory safety wrapper emits an observability-only
+// `llm.cost.recorded` event re-stamping these shapes once per
+// driver-level completion (governance accounting is in-band synchronous,
+// not a bus subscriber).
 type CompleteResponse struct {
 	Content   string
 	ToolCalls []ToolCallStructured

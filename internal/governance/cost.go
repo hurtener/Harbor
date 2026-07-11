@@ -203,9 +203,9 @@ func (a *CostAccumulator) PostCall(ctx context.Context, req llm.CompleteRequest,
 	if resp.Cost.TotalCost == 0 && len(resp.Content) == 0 && resp.Usage.TotalTokens == 0 &&
 		tapPending == 0 && tapAttempts == 0 {
 		// No accounting work to do — likely a failed call that the
-		// provider didn't price, with no reported attempt spend. The
-		// bifrost driver still emits llm.cost.recorded; governance just
-		// doesn't accumulate zero.
+		// provider didn't price, with no reported attempt spend. The LLM
+		// safety wrapper still emits llm.cost.recorded (observability);
+		// governance just doesn't accumulate zero.
 		return nil
 	}
 	ks, err := a.keyState(ctx, quad)

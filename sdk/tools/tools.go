@@ -165,8 +165,6 @@ var MustCatalog = internal.MustCatalog
 var (
 	// WithAuthScopes sets the OAuth scopes the tool requires.
 	WithAuthScopes = internal.WithAuthScopes
-	// WithBus threads the event bus into the registration.
-	WithBus = internal.WithBus
 	// WithCostHint sets the human-readable cost hint.
 	WithCostHint = internal.WithCostHint
 	// WithDescription sets the planner-visible description.

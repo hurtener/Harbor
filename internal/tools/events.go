@@ -10,15 +10,24 @@ import (
 // tool-side event types. Registered via init() so the
 // canonical events registry stays the single source of truth (see
 // internal/events/events.go).
+//
+// All five are produced by ONE universal lifecycle-emitting shell the
+// catalog wraps around every registered descriptor's Invoke (see
+// wrapDescriptorLifecycle) — never per-transport-driver — so every
+// dispatch path and every transport (in-process, MCP, HTTP, A2A, flow)
+// produces them by construction, each carrying the full run quadruple on
+// the envelope so the event is turn-attributable. Payloads are
+// content-free: tool NAME + transport + status + attempts + duration
+// only, never args or results (CLAUDE.md §7 rule 7).
 const (
-	// EventTypeToolInvoked — emitted at the start of every tool
-	// invocation (after argument validation succeeds; before the
-	// policy shell's first attempt). Carries identity + tool name
-	// + transport.
+	// EventTypeToolInvoked — emitted by the descriptor-wrap shell at the
+	// start of every tool invocation (before the wrapped Invoke's
+	// validation + policy shell runs). Carries identity + tool name +
+	// transport.
 	EventTypeToolInvoked events.EventType = "tool.invoked"
-	// EventTypeToolCompleted — emitted on a successful invocation
-	// (the policy shell returned a non-nil ToolResult). Carries
-	// identity + tool name + transport + attempts taken.
+	// EventTypeToolCompleted — emitted when the wrapped Invoke returns a
+	// ToolResult with no error. Carries identity + tool name + transport
+	// + attempts + duration.
 	EventTypeToolCompleted events.EventType = "tool.completed"
 	// EventTypeToolFailed — emitted on a terminal invocation
 	// failure (policy retries exhausted or a permanent class

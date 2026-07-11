@@ -261,6 +261,17 @@ type TenantOverrideResolver interface {
 	Get(ctx context.Context, tenant string) (governance.TenantOverrideSpec, bool, error)
 }
 
+// trackedTrajectory pairs a run's Trajectory with the per-run
+// `*sync.RWMutex` that guards its append-only Steps slice. The same
+// mutex is handed to the steering RunLoop via `RunSpec.TrajectoryMu`,
+// so the loop's per-step append and the Enricher's tasks.get snapshot
+// serialize against each other (the Trajectory type delegates
+// concurrency to the Runtime by contract).
+type trackedTrajectory struct {
+	traj *planner.Trajectory
+	mu   *sync.RWMutex
+}
+
 // RunLoopDriver subscribes to `task.spawned` and drives a
 // RunLoop per spawned foreground task. The driver is constructed by
 // bootDevStack and Closed during stack teardown.
@@ -335,10 +346,14 @@ type RunLoopDriver struct {
 
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
-	// completion for tasks.get enrichment. Reads are safe under RLock;
-	// writes acquire the full mutex. An evicted task returns nil.
+	// completion for tasks.get enrichment. `trajMu` guards the MAP; each
+	// entry carries its OWN per-run `*sync.RWMutex` (shared with the
+	// steering RunLoop via RunSpec.TrajectoryMu) that guards the
+	// Trajectory's append-only Steps slice — so a tasks.get of an
+	// IN-FLIGHT run snapshots the steps without racing the run loop's
+	// per-step append. An evicted task returns nil.
 	trajMu       sync.RWMutex
-	trajectories map[tasks.TaskID]*planner.Trajectory
+	trajectories map[tasks.TaskID]*trackedTrajectory
 
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
 	// subscription; the subscribe-loop returns; the WaitGroup drains
@@ -408,7 +423,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		namingDefault:      opts.NamingDefault,
 		sessionTitler:      opts.SessionTitler,
 		namingLLM:          opts.NamingLLM,
-		trajectories:       make(map[tasks.TaskID]*planner.Trajectory),
+		trajectories:       make(map[tasks.TaskID]*trackedTrajectory),
 		tokenBudget:        opts.TokenBudget,
 		compression:        opts.Compression,
 	}, nil
@@ -941,6 +956,11 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// `<available_tools>` section renders empty and the LLM has no
 	// tool affordance.
 	traj := &planner.Trajectory{Query: task.Query}
+	// Per-run guard for the trajectory's append-only Steps slice. Shared
+	// between the steering RunLoop's per-step append (RunSpec.TrajectoryMu)
+	// and the Enricher's tasks.get snapshot (TrajectoryByTaskID) so an
+	// in-flight read never races the append.
+	trajMu := &sync.RWMutex{}
 	var catalogView planner.ToolCatalogView
 	if d.catalog != nil {
 		// the catalog view's CatalogFilter
@@ -1202,12 +1222,17 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		Compression:      d.compression,  // trajectory compression runner
 		CompletionHook:   completionHook, // run-completion transcript egress (nil = no hook)
 		Naming:           namingSpec,     // session auto-naming (nil = off)
+		// the per-run trajectory-append guard, shared with the trajectories
+		// map entry below so a tasks.get of THIS in-flight run can snapshot
+		// the steps without racing the loop's per-step append.
+		TrajectoryMu: trajMu,
 	}
 	// save the trajectory ref before Run so the Enricher
-	// can read it post-completion (including concurrently — the map is
-	// mutex-guarded per the concurrent-reuse contract).
+	// can read it post-completion AND concurrently while the run is
+	// in-flight — the per-run trajMu (shared with the RunLoop's append
+	// above) serialises the Enricher's snapshot against the append.
 	d.trajMu.Lock()
-	d.trajectories[taskID] = traj
+	d.trajectories[taskID] = &trackedTrajectory{traj: traj, mu: trajMu}
 	d.trajMu.Unlock()
 
 	// Stamp the acting agent's registration id as southbound provenance for
@@ -1446,11 +1471,28 @@ func (d *RunLoopDriver) Close(_ context.Context) error {
 	return nil
 }
 
-// TrajectoryByTaskID returns the planner trajectory for a completed run,
-// or nil when the task's trajectory has been evicted or never existed.
-// Reads are safe under concurrent access (RLock).
+// TrajectoryByTaskID returns a defensive SNAPSHOT of a run's trajectory
+// (its Query + a copy of the append-only Steps slice), or nil when the
+// task's trajectory has been evicted or never existed. Safe for an
+// out-of-band Protocol reader (the Enricher on a tasks.get) to call
+// while the run is IN-FLIGHT: the snapshot is taken under the run's
+// per-run trajMu — the SAME lock the steering RunLoop holds around each
+// per-step append — so the returned Steps slice never observes a
+// mid-append slice header (the data race the Enricher would otherwise
+// hit against the run loop). Only the fields the Enricher reads (Query +
+// Steps) are copied; the trajectory's shared maps are deliberately NOT
+// aliased into the snapshot.
 func (d *RunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Trajectory {
 	d.trajMu.RLock()
-	defer d.trajMu.RUnlock()
-	return d.trajectories[taskID]
+	entry := d.trajectories[taskID]
+	d.trajMu.RUnlock()
+	if entry == nil || entry.traj == nil {
+		return nil
+	}
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+	return &planner.Trajectory{
+		Query: entry.traj.Query,
+		Steps: append([]planner.Step(nil), entry.traj.Steps...),
+	}
 }

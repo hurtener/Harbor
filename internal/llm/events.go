@@ -148,8 +148,11 @@ type ContextWindowExceededPayload struct {
 }
 
 // CostRecordedPayload is the typed payload for EventTypeCostRecorded.
-// SafePayload — cost / token counts are operator-visible. Governance
-// subscribes for per-identity accumulator updates.
+// SafePayload — cost / token counts are operator-visible. The event is
+// observability-only: the safety wrapper emits it once per driver-level
+// completion for dashboards, replay tooling, and session-reopen
+// reconstruction. Governance does NOT subscribe against it — cost
+// accounting is in-band synchronous in the governance PostCall.
 type CostRecordedPayload struct {
 	events.SafeSealed
 	Identity identity.Quadruple

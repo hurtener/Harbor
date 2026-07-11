@@ -93,20 +93,15 @@ type echoOut struct {
 }
 
 // wave7aIdentityEchoTool registers a tool that reads identity from
-// ctx and echoes the input message + the tenant claim. The bus
-// argument is optional — when non-nil the inproc driver publishes
-// tool.invoked / tool.completed / tool.failed around each invocation
-// so admin-scope subscribers can observe the lifecycle (Phase 26
-// event surface wiring).
-func wave7aIdentityEchoTool(t *testing.T, cat tools.ToolCatalog, name string, bus events.EventBus) {
+// ctx and echoes the input message + the tenant claim. Tool-lifecycle
+// events (tool.invoked / tool.completed / tool.failed) are emitted by
+// the catalog's universal descriptor-wrap shell when the catalog was
+// constructed with a bus (tools.WithCatalogBus) — NOT per-registration —
+// so admin-scope subscribers observe the lifecycle for every registered
+// tool regardless of transport. Callers that want to observe the
+// lifecycle build the catalog with tools.WithCatalogBus(bus).
+func wave7aIdentityEchoTool(t *testing.T, cat tools.ToolCatalog, name string) {
 	t.Helper()
-	opts := []tools.DescriptorOption{
-		tools.WithDescription("Echoes the input + stamps the tenant claim."),
-		tools.WithSideEffect(tools.SideEffectPure),
-	}
-	if bus != nil {
-		opts = append(opts, tools.WithBus(bus))
-	}
 	err := inproc.RegisterFunc[echoArgs, echoOut](cat, name,
 		func(ctx context.Context, in echoArgs) (echoOut, error) {
 			id, ok := identity.From(ctx)
@@ -115,7 +110,8 @@ func wave7aIdentityEchoTool(t *testing.T, cat tools.ToolCatalog, name string, bu
 			}
 			return echoOut{Echo: in.Message, Tenant: id.TenantID}, nil
 		},
-		opts...,
+		tools.WithDescription("Echoes the input + stamps the tenant claim."),
+		tools.WithSideEffect(tools.SideEffectPure),
 	)
 	if err != nil {
 		t.Fatalf("register %q: %v", name, err)
@@ -280,7 +276,7 @@ func TestE2E_Wave7a_Tool_Memory_Composition(t *testing.T) {
 	defer cleanup()
 
 	cat := tools.NewCatalog()
-	wave7aIdentityEchoTool(t, cat, "echo", nil)
+	wave7aIdentityEchoTool(t, cat, "echo")
 
 	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}
 	ctx, err := identity.With(context.Background(), id)
@@ -475,8 +471,8 @@ func TestE2E_Wave7a_DurablePersistence_SQLiteMemory_AcrossClose(t *testing.T) {
 		t.Fatalf("sqlite.New (1): %v", err)
 	}
 
-	cat := tools.NewCatalog()
-	wave7aIdentityEchoTool(t, cat, "echo", bus)
+	cat := tools.NewCatalog(tools.WithCatalogBus(bus))
+	wave7aIdentityEchoTool(t, cat, "echo")
 
 	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}
 	ctx, err := identity.With(context.Background(), id)
@@ -569,8 +565,8 @@ func TestE2E_Wave7a_Concurrent_MultiTenant_ToolsAndMemory(t *testing.T) {
 
 	mem, b, cleanup := openMemoryInMem(t, 1024)
 
-	cat := tools.NewCatalog()
-	wave7aIdentityEchoTool(t, cat, "echo", b)
+	cat := tools.NewCatalog(tools.WithCatalogBus(b))
+	wave7aIdentityEchoTool(t, cat, "echo")
 
 	// Admin-scope subscriber observes tool.invoked + tool.completed
 	// across all tenants. Phase 05's `Filter.Admin` is the documented

@@ -712,6 +712,14 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	if searchCache != nil {
 		catOpts = append(catOpts, tools.WithSearchCache(searchCache))
 	}
+	// Wire the bus so the catalog wraps every registered descriptor's
+	// Invoke in the universal tool-lifecycle-emitting shell — every
+	// dispatch path (single-tool, parallel branches, MCP-Apps proxy,
+	// declarative-action) then produces turn-attributable
+	// tool.invoked/.completed/.failed events for every transport.
+	if stack.Bus != nil {
+		catOpts = append(catOpts, tools.WithCatalogBus(stack.Bus))
+	}
 	toolCat := tools.NewCatalog(catOpts...)
 
 	for _, d := range opts.PreRegisterTools {
