@@ -1,4 +1,4 @@
-# Harbor v1.13.0 — The Serve-Parity + Historical-Observability Wave (phases 159–164) — wave coordination
+# Harbor v1.13.0 — The Serve-Parity + Historical-Observability Wave (phases 159–165) — wave coordination
 
 > Per Harbor §17.7 wave delivery cadence. This is the coordination artifact for
 > the v1.13.0 wave ("Serve parity" + the session-rehydration live-test fix).
@@ -87,13 +87,24 @@ in three staged phases:
   connection view — never running the flow, never holding a token (D-271
   stays PULL), SSRF-bounded discovery fetches, spec-derived fixtures
   (§17.8), MCP Connections page consumer (D-297).
-- **163 (Stage 5, last)** is the windowed-reads honesty pair: optional
+- **163 (Stage 5, ∥ 165)** is the windowed-reads honesty pair: optional
   `since`/`until` on `flows.runs.list` mirroring `TaskFilter` (D-295), and
   retention horizons as Protocol data on `runtime.health` — the OBSERVED
   `oldest_retained_at` per durable surface (the filed ask's
   configured-retention premise was verified false; the durable log is
   untrimmed in V1), plus the counters/metrics TSDB re-recorded as a
   decided-NO (D-296).
+- **165 (Stage 5, ∥ 163, operator-added 2026-07-11)** is structured
+  reasoning-steps rehydration: Phase 161 restored per-turn stats + flat
+  reasoning text + tool badges on reopen, but the ordered per-ReAct-step
+  reasoning (the live `ReasoningAccordion`, interleaved with the tool calls
+  each step preceded) is lost on reopen. VERDICT ZERO-WIRE, Console-only:
+  the live steps come from the tasks.get enricher over the in-memory
+  trajectory (in-memory-only, absent on reopen), so the reducer reconstructs
+  the ordered `reasoningSteps` (step-appending decisions only) from the
+  durable `planner.decision.ReasoningTrace` +
+  `tool.*` events `state.history` already carries — reopen renders identical
+  to live (D-298).
 
 ---
 
@@ -327,7 +338,7 @@ the requirement is read via `get`/`list`). Gate:
 go-test leg + manifest grep; `OK ≥ 2`); the fixture-server integration test
 with its recording assertions under `-race`; full D-223/D-209 regen.
 
-### Stage 5 — the windowed-reads honesty pair (163) · LAST
+### Stage 5 — the honesty pair (163) ∥ reasoning-steps rehydration (165)
 
 **163 — flows `since`/`until` + retention horizons (internal/protocol +
 internal/events + web/console, S, D-295 + D-296).** (1) Optional
@@ -345,6 +356,32 @@ re-recorded as a decided-NO so it is not re-opened. Gate:
 `scripts/smoke/phase-163.sh` (`runtime.health` retention block +
 flows-bounds acceptance; `OK ≥ 2`); the seeded-runs bounded-window +
 horizon-accuracy integration legs under `-race`; full D-223/D-209 regen.
+
+**165 — structured reasoning-steps rehydration (web/console, Console-only,
+D-298).** Extends 161's session-reopen rehydration to the STRUCTURED
+reasoning steps — the ordered per-ReAct-step native thinking interleaved
+with the tool calls each step preceded. **Zero-wire, Console reducer only**
+(verified live probe + code trace, 2026-07-11): the live path's reasoning
+steps come from the tasks.get enricher projection over the IN-MEMORY
+trajectory (`internal/runtime/serve/enricher.go:49-56`), in-memory-only —
+the enricher cannot serve a reopened run (the task record survives but its
+trajectory projection is reaped), so the ONLY durable source is the event
+stream, which already carries `planner.decision` (each step-appending
+decision, ordered by `sequence`, with `ReasoningTrace`) + `tool.*`.
+Byte-equivalence is by construction (`emitDecision` and `rc.OnReasoning` feed
+the same `resp.Reasoning`; `DecisionPayload` is SafeSealed so the bus skips
+the redactor — persisted trace is raw). `reduceHistoryTurns` folds the trace
+into `HistoryTurn.reasoningSteps {index, reasoning_trace}` ONLY for
+step-appending `DecisionKind`s (CallTool/CallParallel/SpawnTask/AwaitTask —
+`Finish`/`RequestPause` emit a decision but no `traj.Step`), index = the
+per-run step ordinal over those; `hydratePastTurns` sets
+`message.reasoningSteps`, which the bubble already prefers over the flat
+text. No file conflict with 163 (163 = flows/retention Go+wire; 165 = the
+Console Playground reducer). Gate: `scripts/smoke/phase-165.sh`
+(state.history carries `planner.decision.ReasoningTrace` + `tool.*`
+interleaved by `sequence`; `OK ≥ 2`) + the Console vitest (ordered
+reconstruction + byte-equivalence vs `parseReasoningSteps` + page-boundary),
+plus the rehydration regression; ZERO wire — no D-223/D-209 churn.
 
 ---
 
@@ -369,9 +406,13 @@ tools-auth/mcp). Both touch the wire manifest: the SECOND-merged PR rebases
 onto main and re-runs `make protocol-ts-gen` + `make protocol-docs-gen`
 before its final push (see the Stage 4 section's explicit note).
 
-**Stage 5 (after Stage 4 drains; LAST):** 163 — the honesty pair. It runs
-last because its Events-page window-edge banner composes with 162's page
-work, and it is the smallest slice (S).
+**Stage 5 (after Stage 4 drains; LAST):** 163 ∥ 165 — the honesty pair and
+the reasoning-steps rehydration, two PARALLEL worktree agents with no file
+conflict (163 = flows/retention Go+wire; 165 = the Console Playground
+reducer). 163 runs in Stage 5 because its Events-page banner composes with
+162's page work; 165 joins here (operator-added 2026-07-11) as a small
+Console-only slice touching no wire — no manifest regen, no second-merged
+rebase concern.
 
 **Primitive-with-consumer (§13):** 159 ships the promoted constructor WITH its
 second consumer (`harbortest/devstack` re-wire) in the same phase — never
@@ -382,7 +423,9 @@ reducer + rehydration) and the tests that exercise the metadata end-to-end.
 162 ships `events.list` WITH the Console Events historical window; 164 ships
 the discovery surfacing WITH the MCP Connections requirement card; 163 ships
 both additive fields WITH the flow-detail date filter + the Events
-window-edge banner. The RFC §5.6 primitive (external serving as a decided
+window-edge banner; 165 IS its own consumer (a Console reducer + rendering
+change over already-flowing events — the zero-wire case where the consumer
+is the whole phase). The RFC §5.6 primitive (external serving as a decided
 contract) lands in the serve-parity plans PR with both phases that make it
 real scheduled behind it.
 
@@ -391,12 +434,14 @@ surface, identity propagation, ≥1 failure mode, N≥10 stress); 161 bundles th
 rehydration integration test (real drivers, the MCP stdio fixture leg,
 stream-vs-readback equivalence, cross-identity refusal, `-race`); 162/163/164
 each bundle their real-driver integration legs (§17.3; 164 additionally the
-§17.8 spec-derived fixture discriminator). The phantom
+§17.8 spec-derived fixture discriminator); 165 bundles the Console
+rehydration regression + reducer vitest (Console-only — no Go/wire leg). The
+phantom
 `top_p` MUST-FIX is carried by the wave-end §17.5 checkpoint punch list (the
 audit PR's artifact) — NOT by any phase; 161's plan lists it as an explicit
-non-goal for the same reason. The §17.5 checkpoint audit runs AFTER 163
-merges and covers ALL SIX phases (159–164). **Do not scope any subsequent
-band until the audit merges.**
+non-goal for the same reason. The §17.5 checkpoint audit runs AFTER
+both Stage-5 phases (163 ∥ 165) merge and covers ALL SEVEN phases
+(159–165). **Do not scope any subsequent band until the audit merges.**
 
 ---
 
