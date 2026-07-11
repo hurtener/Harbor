@@ -121,9 +121,12 @@ no runtime change, no wire change, no lockstep churn.
   for decisions whose `DecisionKind ∈ {CallTool, CallParallel, SpawnTask,
   AwaitTask}` — the step-appending kinds — incrementing the per-run step
   ordinal ONLY on those, and EMITTING only when the trace is non-empty.
-  `Finish` / `RequestPause` / `Cancelled` are excluded from BOTH the ordinal
-  and emission (mirroring the runloop's `default`-branch gate exactly). This
-  is the ONE non-obvious correctness point of the phase.
+  `Finish` / `RequestPause` — and any non-step-appending kind — are excluded
+  from BOTH the ordinal and emission (mirroring the runloop's `default`-branch
+  gate exactly). The exclusion is expressed as an allowlist of the
+  step-appending kinds, so any unknown/future non-step-appending kind
+  auto-excludes without a plan edit. This is the ONE non-obvious correctness
+  point of the phase.
 - **Reducer extension (`web/console/src/lib/sessions/history.ts`).**
   `HistoryTurn` gains `reasoningSteps: HistoryReasoningStep[]` (shape
   `{index: number; reasoning_trace: string}`, matching the wire `ReasoningStep`
@@ -133,7 +136,8 @@ no runtime change, no wire change, no lockstep churn.
   additionally reads the `ReasoningTrace` key (PascalCase/snake tolerant); it
   increments a per-run STEP ordinal ONLY when `DecisionKind ∈ {CallTool,
   CallParallel, SpawnTask, AwaitTask}` (the step-appending kinds — `Finish` /
-  `RequestPause` / `Cancelled` touch neither the ordinal nor the emission),
+  `RequestPause`, and any non-step-appending kind, touch neither the ordinal
+  nor the emission; the allowlist auto-excludes unknown/future kinds),
   and appends `{index, reasoning_trace}` when the trace is non-empty — in
   event (sequence) order. `DecisionKind` is already in the payload and already
   read here, so the fix stays zero-wire. The flat `turn.reasoning` (161) is
@@ -196,21 +200,22 @@ no runtime change, no wire change, no lockstep churn.
 
 ## Acceptance criteria
 
-- [ ] `HistoryTurn.reasoningSteps: {index: number; reasoning_trace: string}[]`
+- [x] `HistoryTurn.reasoningSteps: {index: number; reasoning_trace: string}[]`
   added (matching the wire `ReasoningStep` shape); `reduceHistoryTurns` folds
   a step ONLY for `planner.decision` events whose `DecisionKind ∈ {CallTool,
   CallParallel, SpawnTask, AwaitTask}` (the step-appending kinds), incrementing
   the per-run 0-based STEP ordinal only on those and emitting `{index,
   reasoning_trace}` only when the trace is non-empty, in sequence order;
-  `Finish` / `RequestPause` / `Cancelled` decisions are excluded from both the
-  ordinal and emission. The flat `turn.reasoning` fold is unchanged.
-- [ ] Ordering + interleaving correct: for a multi-step, multi-tool fixture the
+  `Finish` / `RequestPause` decisions (and any non-step-appending kind — the
+  fold uses an allowlist of the step-appending kinds) are excluded from both
+  the ordinal and emission. The flat `turn.reasoning` fold is unchanged.
+- [x] Ordering + interleaving correct: for a multi-step, multi-tool fixture the
   reconstructed `reasoningSteps` are in step order, their `index` values match
   the enricher's `i`-over-`traj.Steps` (empty-reasoning STEP-appending
   decisions advance the index without emitting; `Finish` / `RequestPause`
   decisions advance NEITHER), and they interleave with the reconstructed
   `toolCalls` in the same order the live view shows.
-- [ ] Byte-equivalence pin: for a captured `state.history` window of a real
+- [x] Byte-equivalence pin: for a captured `state.history` window of a real
   reasoning-bearing run, `reduceHistoryTurns(...).reasoningSteps` equals the
   `parseReasoningSteps(...)` output for the same run's enriched `tasks.get`
   detail (same indices, same traces) — a vitest asserts the two producers
@@ -221,21 +226,21 @@ no runtime change, no wire change, no lockstep churn.
   over-emit/mis-index bug. The pin asserts neither the `Finish` nor the
   `RequestPause` produces a `reasoningSteps` entry, and that a step-appending
   decision AFTER the `RequestPause` keeps the correct (un-shifted) index.
-- [ ] Page-window-boundary safety: a run whose events span two loaded
+- [x] Page-window-boundary safety: a run whose events span two loaded
   `state.history` pages reconstructs its steps with no duplication and no
   reorder (the reducer already merges pages oldest-first via
   `loadSessionHistory`; the step fold must be order-stable across the merge).
-- [ ] `hydratePastTurns` sets the reopened agent message's `reasoningSteps`
+- [x] `hydratePastTurns` sets the reopened agent message's `reasoningSteps`
   (undefined when empty); `MessageBubble` renders the accordion; a run with no
   non-empty steps falls back to 161's `reasoningText` with no regression.
-- [ ] Rehydration regression test: reopen against a recorded event window
+- [x] Rehydration regression test: reopen against a recorded event window
   renders the ordered reasoning-step accordion + tool badges; the
   leave-and-return structure equals the live-view structure for the same run
   (the operator's UX requirement).
-- [ ] ZERO wire/runtime changes verified: no Go files touched;
+- [x] ZERO wire/runtime changes verified: no Go files touched;
   `make protocol-ts-gen-check` + `make protocol-docs-gen-check` produce no
   diff; no new method/type/event.
-- [ ] `scripts/smoke/phase-165.sh` OK ≥ 2, FAIL = 0.
+- [x] `scripts/smoke/phase-165.sh` OK ≥ 2, FAIL = 0.
 
 ## Files added or changed
 
@@ -365,19 +370,19 @@ No Go files, no wire types, no generated artifacts.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage: N/A for Go (Console-only); the named vitest suites pass under
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage: N/A for Go (Console-only); the named vitest suites pass under
       `npm run test` in the frontend CI job.
-- [ ] If multi-isolation paths changed: N/A — no Go/identity path touched (the
+- [x] If multi-isolation paths changed: N/A — no Go/identity path touched (the
       `state.history` scoping the reducer reads over is unchanged from 125/161).
-- [ ] **Reusable-artifact concurrent-reuse:** N/A — no new compiled Go artifact.
-- [ ] **Integration test:** the Console rehydration regression exercises the
+- [x] **Reusable-artifact concurrent-reuse:** N/A — no new compiled Go artifact.
+- [x] **Integration test:** the Console rehydration regression exercises the
       reopen path end-to-end over recorded events (real reducer, real render).
-- [ ] Zero wire diff: `make protocol-ts-gen-check` + `make
+- [x] Zero wire diff: `make protocol-ts-gen-check` + `make
       protocol-docs-gen-check` unchanged; no Go files in the diff.
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: the source-model correction is
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: the source-model correction is
       documented above (Findings) and in D-298.

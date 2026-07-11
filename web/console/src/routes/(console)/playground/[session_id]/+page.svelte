@@ -996,6 +996,13 @@
             taskID: turn.runID,
             at,
             reasoningText: turn.reasoning || undefined,
+            // The structured, ordered reasoning steps reconstructed from the
+            // durable planner.decision stream — byte-equivalent to the live
+            // path's parseReasoningSteps(enriched tasks.get). MessageBubble
+            // prefers these over reasoningText, so a reopened turn renders the
+            // ordered reasoning↔tool accordion identically to the live view; a
+            // turn with no non-empty steps cleanly falls back to reasoningText.
+            reasoningSteps: turn.reasoningSteps.length > 0 ? turn.reasoningSteps : undefined,
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
             meta: {
               elapsedMs: durationMs > 0 ? durationMs : undefined,
