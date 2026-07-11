@@ -58,6 +58,46 @@ source "scripts/smoke/common.sh"
 # `skip "phase NN: not yet implemented"` to keep preflight green.
 # ----------------------------------------------------------------------------
 
-skip "phase 164: smoke skeleton — MCP OAuth discovery not yet implemented; replace with the discovery/SSRF go-test leg + wire-manifest grep when the phase lands"
+# 1: the discovery chain walker + SSRF guardrail tests under -race
+# (internal/tools/auth), driven by the committed spec-derived fixtures.
+if go test -race -count=1 -timeout 240s \
+    -run 'TestDiscoverer|TestAuthServerMetadataURL' \
+    ./internal/tools/auth/... >/dev/null 2>&1; then
+    ok 'phase 164: OAuth discovery walker + SSRF guardrail tests pass under -race'
+else
+    fail 'phase 164: discovery walker tests failed (run `go test -race -run TestDiscoverer ./internal/tools/auth/...`)'
+fi
+
+# 2: the challenge-capture edge tests under -race (internal/tools/drivers/mcp).
+if go test -race -count=1 -timeout 240s \
+    -run 'WWWAuth|Challenge|BuildHTTPClient|OAuthDiscovery' \
+    ./internal/tools/drivers/mcp/... >/dev/null 2>&1; then
+    ok 'phase 164: WWW-Authenticate capture + registry-record tests pass under -race'
+else
+    fail 'phase 164: challenge-capture tests failed (run `go test -race -run Challenge ./internal/tools/drivers/mcp/...`)'
+fi
+
+# 3: the cross-subsystem discovery integration test under -race.
+if go test -race -count=1 -timeout 240s \
+    -run 'TestE2E_MCPOAuthDiscovery' ./test/integration/... >/dev/null 2>&1; then
+    ok 'phase 164: MCP OAuth discovery integration test passes under -race'
+else
+    fail 'phase 164: discovery integration test failed (run `go test -race -run TestE2E_MCPOAuthDiscovery ./test/integration/...`)'
+fi
+
+# 4: the additive oauth_requirement view type is registered in the wire
+# manifest (D-223 lockstep — the Console client mirrors it).
+assert_grep_present \
+    'MCPOAuthRequirementView' \
+    web/console/src/lib/protocol/wire-manifest.gen.json \
+    'phase 164: oauth_requirement view type present in the wire manifest (D-223)'
+
+# 5: custody boundary — the discovery fetch code attaches NO credentials
+# (no Authorization header is ever set on a discovery request).
+if grep -q 'Set("Authorization"' internal/tools/auth/discovery.go; then
+    fail 'phase 164: discovery.go sets an Authorization header — discovery fetches must carry NO credentials (D-297 / §7)'
+else
+    ok 'phase 164: discovery fetches attach no credentials (no Authorization header set)'
+fi
 
 smoke_summary

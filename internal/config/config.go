@@ -1292,6 +1292,20 @@ type MCPServerConfig struct {
 	// `io.modelcontextprotocol/`-prefixed key) and empty keys are rejected
 	// at validation. Optional. Restart-required.
 	MetaAnnotations map[string]string `yaml:"meta_annotations,omitempty"`
+	// OAuthDiscoveryAllowedOrigins is the explicit per-connection allowance
+	// list for OAuth-requirement discovery cross-origin metadata fetches
+	// When an MCP HTTP server advertises an OAuth requirement (a
+	// `401` + `WWW-Authenticate` step-up), Harbor DISCOVERS the RFC 9728 →
+	// RFC 8414 metadata chain and surfaces it as inert data; the
+	// authorization-server hop is inherently cross-origin and is fetched only
+	// when its origin (scheme://host[:port]) is listed here. Harbor never runs
+	// the OAuth flow, never holds a token, and never dials a discovered
+	// endpoint — the metadata is a report an operator confirms. Each entry
+	// must be a public https origin; the runtime additionally refuses
+	// private-range / IP-literal destinations at fetch time. Optional; empty
+	// means no cross-origin metadata fetch is permitted (the AS half of the
+	// chain surfaces as needs-allowance). Restart-required.
+	OAuthDiscoveryAllowedOrigins []string `yaml:"oauth_discovery_allowed_origins,omitempty"`
 }
 
 // ToolPolicyConfig is the operator-facing YAML projection of

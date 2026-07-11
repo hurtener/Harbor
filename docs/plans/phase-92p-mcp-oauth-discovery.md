@@ -1,6 +1,18 @@
 # Phase 92p — Spec-faithful MCP OAuth discovery (401 → RFC 9728 → AS)
 
 > Part of the **Runtime MCP tool-side OAuth** wave (`docs/plans/wave-mcp-oauth-decomposition.md`, §3 "92p"). PLANNING — parked; not yet implemented. Reserved decision: **D-246**.
+>
+> **Discovery reconciliation (added with the Phase 164 implementation PR, D-297).**
+> The `401 → RFC 9728 → RFC 8414` DISCOVERY chain (the `WWW-Authenticate`
+> `resource_metadata` step-up capture + the metadata walk) is **single-homed
+> in Phase 164's mechanism** (`docs/plans/phase-164-mcp-oauth-discovery-surfacing.md`
+> — shipped: the guardrailed chain walker in `internal/tools/auth/discovery.go`
+> plus the driver's `WWW-Authenticate` capture). When 92p is unparked it MUST
+> REUSE that walker's output (`auth.OAuthRequirement`) and add ONLY its
+> flow-execution legs (config synthesis + RFC 7591 registration CALL + PKCE
+> authorize + pause/resume park) — it must NOT grow a second discovery chain
+> (§13 one-mechanism, N-consumers; the Phase 148 precedent). 164 is the
+> *discovery-as-data* phase; 92p is a *runtime-flow* consumer of it.
 
 ## Summary
 

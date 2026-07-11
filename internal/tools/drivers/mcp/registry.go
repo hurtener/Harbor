@@ -10,6 +10,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // the MCP-Connections-page read API.
@@ -116,6 +117,13 @@ type ServerView struct {
 	ContentShapes []string
 	// Policy is the read-only ToolPolicy projection.
 	Policy tools.ToolPolicy
+	// OAuthRequirement is the OAuth requirement advertised by the server and
+	// discovered on demand — the verbatim RFC 9728 → RFC 8414 chain
+	// plus provenance. Nil when no discovery has run. Populated only on the
+	// DETAIL read (GetServer); the list projection leaves it nil so the hot
+	// list row stays compact (§4.3-recorded — the requirement rides get/probe,
+	// not list). It is inert, server-supplied, UNVERIFIED data.
+	OAuthRequirement *auth.OAuthRequirement
 }
 
 // ResourceView is one advertised resource.
@@ -224,6 +232,10 @@ type serverEntry struct {
 	policy       tools.ToolPolicy
 	displayModes []string
 	contentShape []string
+	// oauthAllowedOrigins is the explicit per-connection cross-origin
+	// allowance list for OAuth-requirement discovery fetches. Static
+	// operator config, set at Register; read-only thereafter.
+	oauthAllowedOrigins []string
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -247,6 +259,12 @@ type serverStats struct {
 	latencyBuckets    []HealthBucket
 	reconnects        []ReconnectEntry
 	discoveryCounter  int
+	// oauthChallenge is the most recent captured `WWW-Authenticate` Bearer
+	// challenge — inert, server-supplied. Nil when none seen.
+	oauthChallenge *AuthChallenge
+	// oauthRequirement is the discovered OAuth requirement chain.
+	// Nil when discovery has not run.
+	oauthRequirement *auth.OAuthRequirement
 }
 
 // Registry is the process-local MCP-server read API. It is a compiled
@@ -302,6 +320,10 @@ type ServerRegistration struct {
 	// InitialState is the server's starting state. Zero-valued →
 	// ServerStateOffline.
 	InitialState ServerState
+	// OAuthDiscoveryAllowedOrigins is the explicit per-connection cross-origin
+	// allowance list for OAuth-requirement discovery fetches. Empty
+	// leaves the authorization-server hop needs-allowance (partial discovery).
+	OAuthDiscoveryAllowedOrigins []string
 }
 
 // Register adds a server to the Registry. Re-registering the same name
@@ -336,8 +358,9 @@ func (r *Registry) Register(reg ServerRegistration) error {
 		// configured `tools.mcp_app_host.display_modes`, not a value scraped
 		// off the server (display modes are not a spec capability field;
 		// they ride the `ui/initialize` host-context the host dictates).
-		displayModes: reg.Provider.DisplayModes(),
-		contentShape: append([]string(nil), reg.ContentShapes...),
+		displayModes:        reg.Provider.DisplayModes(),
+		contentShape:        append([]string(nil), reg.ContentShapes...),
+		oauthAllowedOrigins: append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
 		stats: serverStats{
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
@@ -577,8 +600,62 @@ func (r *Registry) GetServer(ctx context.Context, name string) (*ServerView, err
 	}
 	r.mu.RLock()
 	v := e.viewLocked()
+	// The OAuth requirement rides the DETAIL read only (get/probe), never the
+	// hot list row — see ServerView.OAuthRequirement.
+	v.OAuthRequirement = e.stats.oauthRequirement
 	r.mu.RUnlock()
 	return &v, nil
+}
+
+// RecordAuthChallenge records a captured `WWW-Authenticate` Bearer challenge
+// on a server's state. It is invoked from the HTTP transport's
+// challenge-capture callback whenever an MCP call answers `401`. Pure
+// observation: it records inert, server-supplied data and never alters
+// transport state or call semantics. An unknown name is a no-op (the
+// connection may have been deregistered mid-flight) — recording a challenge is
+// best-effort observability, never a hard failure on the call path.
+func (r *Registry) RecordAuthChallenge(name string, ch AuthChallenge) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.servers[name]
+	if !ok {
+		return
+	}
+	captured := ch
+	e.stats.oauthChallenge = &captured
+}
+
+// RecordOAuthRequirement records the discovered OAuth requirement chain on a
+// server's state. Invoked by the on-demand discovery orchestrator
+// after a probe walks the chain. An unknown name returns ErrServerNotFound.
+func (r *Registry) RecordOAuthRequirement(name string, req *auth.OAuthRequirement) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.servers[name]
+	if !ok {
+		return ErrServerNotFound
+	}
+	e.stats.oauthRequirement = req
+	return nil
+}
+
+// OAuthDiscoveryTarget returns the inputs the on-demand discovery walker needs
+// for a server: the captured challenge (nil when none seen), the server URL,
+// and the per-connection cross-origin allowance list. An unknown name returns
+// ErrServerNotFound. The returned slices/pointers are copies — the caller may
+// read them without holding the registry lock.
+func (r *Registry) OAuthDiscoveryTarget(name string) (challenge *AuthChallenge, serverURL string, allowedOrigins []string, err error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.servers[name]
+	if !ok {
+		return nil, "", nil, ErrServerNotFound
+	}
+	if e.stats.oauthChallenge != nil {
+		ch := *e.stats.oauthChallenge
+		challenge = &ch
+	}
+	return challenge, e.urlOrCommand, append([]string(nil), e.oauthAllowedOrigins...), nil
 }
 
 // ListResources returns the advertised resources for a server. It runs a

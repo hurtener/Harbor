@@ -136,6 +136,12 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		ToolContext:      deps.ToolContext,
 		OAuthProvider:    oauthProvider,
 		MetaAnnotations:  cloneHeaderMap(ms.MetaAnnotations),
+		// Record any `WWW-Authenticate` OAuth step-up challenge on the
+		// registry state so an operator can inspect the advertised requirement
+		// Best-effort observability — never alters the call.
+		OnAuthChallenge: func(ch AuthChallenge) {
+			deps.Registry.RecordAuthChallenge(ms.Name, ch)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("mcp.New: %w", err)
@@ -177,6 +183,10 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		// audit fix). Per-tool overrides are not part of the registry
 		// projection; the per-server default is the headline.
 		Policy: defaultPolicy,
+		// The explicit cross-origin allowance list for OAuth-requirement
+		// discovery fetches. Empty leaves the authorization-server hop
+		// needs-allowance (partial discovery), never a network hole.
+		OAuthDiscoveryAllowedOrigins: append([]string(nil), ms.OAuthDiscoveryAllowedOrigins...),
 	}); regErr != nil {
 		return fmt.Errorf("registry.Register: %w", regErr)
 	}

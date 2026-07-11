@@ -108,11 +108,19 @@ type flowRecord struct {
 }
 
 // discoveredMetadata caches the subset of an OAuth-authorization-server
-// metadata document we consult.
+// metadata document we consult. It is the SINGLE parse shape for an
+// RFC 8414 / OIDC authorization-server-metadata document across the
+// package: the interactive-flow endpoint resolver (resolveEndpoints /
+// fetchDiscovery) reads the first three fields; the report-only OAuth
+// requirement-discovery walker (discovery.go) reads all of them. The
+// extra fields are additive JSON — the flow path ignores them.
 type discoveredMetadata struct {
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
-	RegistrationEndpoint  string `json:"registration_endpoint"`
+	Issuer                        string   `json:"issuer"`
+	AuthorizationEndpoint         string   `json:"authorization_endpoint"`
+	TokenEndpoint                 string   `json:"token_endpoint"`
+	RegistrationEndpoint          string   `json:"registration_endpoint"`
+	ScopesSupported               []string `json:"scopes_supported"`
+	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
 }
 
 // registrationResult caches the result of an RFC 7591 dynamic

@@ -1,0 +1,1 @@
+WWW-Authenticate: Bearer resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource", error="invalid_token", error_description="The access token is missing"

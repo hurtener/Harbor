@@ -293,6 +293,56 @@
       {/if}
     </section>
 
+    <!-- Discovered OAuth requirement (D-297) ──────────────────────── -->
+    {#if srv.oauth_requirement}
+      {@const req = srv.oauth_requirement}
+      <section class="rail-section" data-testid="oauth-requirement">
+        <h4 class="section-head">Discovered OAuth requirement</h4>
+        <p class="muted oauth-req-caveat" data-testid="oauth-requirement-unverified">
+          Unverified — advertised by the connected server. Harbor never runs the
+          flow, holds a token, or dials a discovered endpoint.
+        </p>
+        {#if req.authorization_servers.length === 0}
+          <p class="muted" data-testid="oauth-requirement-partial">
+            No authorization server resolved. The metadata chain surfaced
+            partially — see the discovery status below.
+          </p>
+        {:else}
+          {#each req.authorization_servers as as (as.issuer + as.source_url)}
+            <dl class="policy-grid" data-testid="oauth-requirement-as">
+              <dt>Issuer</dt>
+              <dd class="mono">{as.issuer || '—'}</dd>
+              <dt>Authorize</dt>
+              <dd class="mono">{as.authorization_endpoint || '—'}</dd>
+              <dt>Token</dt>
+              <dd class="mono">{as.token_endpoint || '—'}</dd>
+              <dt>Scopes</dt>
+              <dd>{as.scopes_supported.length > 0 ? as.scopes_supported.join(', ') : 'none advertised'}</dd>
+              <dt>PKCE</dt>
+              <dd>{as.code_challenge_methods_supported.length > 0 ? as.code_challenge_methods_supported.join(', ') : 'not advertised'}</dd>
+              {#if as.registration_endpoint}
+                <dt>Registration</dt>
+                <dd class="mono">{as.registration_endpoint}</dd>
+              {/if}
+            </dl>
+          {/each}
+        {/if}
+        <dl class="policy-grid">
+          <dt>Source</dt>
+          <dd>{req.source} · discovered {relativeTime(req.discovered_at)}</dd>
+          <dt>Source URL</dt>
+          <dd class="mono">{req.source_url}</dd>
+        </dl>
+        {#if req.status.some((s) => !s.ok)}
+          <ul class="oauth-req-status" data-testid="oauth-requirement-status">
+            {#each req.status.filter((s) => !s.ok) as st (st.step + st.target)}
+              <li class="muted">{st.step}: {st.reason}{st.detail ? ` — ${st.detail}` : ''}</li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    {/if}
+
     <!-- Content shapes / display modes ────────────────────────────── -->
     <section class="rail-section">
       <h4 class="section-head">Content shapes &amp; display modes</h4>
@@ -622,5 +672,18 @@
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
+  }
+
+  .oauth-req-caveat {
+    margin: var(--space-0) var(--space-0) var(--space-2);
+  }
+
+  .oauth-req-status {
+    margin: var(--space-2) var(--space-0) var(--space-0);
+    padding-inline-start: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--text-sm);
   }
 </style>

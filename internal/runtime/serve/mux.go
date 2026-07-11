@@ -214,7 +214,15 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 
 	// MCP servers + Apps host surfaces (the catalog band).
 	if in.MCPRegistry != nil {
-		mcpRegAccessor, aErr := mcpconsole.NewRegistryAccessor(in.MCPRegistry)
+		// Wire the on-demand OAuth-requirement discovery walker into
+		// the probe path: a probe against a server that answered a
+		// `WWW-Authenticate` OAuth step-up triggers the RFC 9728 → RFC 8414
+		// chain walk, whose verbatim result the operator reads via
+		// mcp.servers.get. Harbor never runs the flow or holds a token.
+		mcpRegAccessor, aErr := mcpconsole.NewRegistryAccessor(
+			in.MCPRegistry,
+			mcpconsole.WithOAuthDiscoverer(toolauth.NewDiscoverer()),
+		)
 		if aErr != nil {
 			return nil, wrapErr("mcp accessor", aErr)
 		}

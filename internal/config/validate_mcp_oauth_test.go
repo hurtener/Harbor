@@ -128,6 +128,39 @@ func TestValidate_MCPSouthboundOAuth_Table(t *testing.T) {
 			"tools.mcp_servers[0].meta_annotations",
 			"empty",
 		},
+		{
+			"oauth_discovery_allowed_origins IP literal rejected",
+			func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{{
+					Name: "gcal", TransportMode: "streamable_http", URL: "https://gcal.example.test",
+					OAuthDiscoveryAllowedOrigins: []string{"https://10.0.0.5"},
+				}}
+			},
+			"tools.mcp_servers[0].oauth_discovery_allowed_origins[0]",
+			"IP literal",
+		},
+		{
+			"oauth_discovery_allowed_origins non-https rejected",
+			func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{{
+					Name: "gcal", TransportMode: "streamable_http", URL: "https://gcal.example.test",
+					OAuthDiscoveryAllowedOrigins: []string{"http://login.example.com"},
+				}}
+			},
+			"tools.mcp_servers[0].oauth_discovery_allowed_origins[0]",
+			"https",
+		},
+		{
+			"oauth_discovery_allowed_origins with path rejected",
+			func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{{
+					Name: "gcal", TransportMode: "streamable_http", URL: "https://gcal.example.test",
+					OAuthDiscoveryAllowedOrigins: []string{"https://login.example.com/oauth"},
+				}}
+			},
+			"tools.mcp_servers[0].oauth_discovery_allowed_origins[0]",
+			"no path",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,8 +215,9 @@ func TestValidate_MCPSouthboundOAuth_Accepts(t *testing.T) {
 	withOAuthProvider(cfg)
 	cfg.Tools.MCPServers = []config.MCPServerConfig{{
 		Name: "gcal", TransportMode: "streamable_http", URL: "https://gcal.example.test",
-		OAuthProvider:   "m365-broker",
-		MetaAnnotations: map[string]string{"deployment": "prod", "team": "search"},
+		OAuthProvider:                "m365-broker",
+		MetaAnnotations:              map[string]string{"deployment": "prod", "team": "search"},
+		OAuthDiscoveryAllowedOrigins: []string{"https://login.microsoftonline.com"},
 	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid southbound binding rejected: %v", err)

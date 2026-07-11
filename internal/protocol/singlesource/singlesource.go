@@ -438,6 +438,9 @@ var CanonicalWireTypes = map[string]string{
 	// string-enum type (like methods.Method / errors.Code) and is NOT
 	// listed here — CanonicalWireTypes records struct wire types only.
 	"MCPServerView":                     "types",
+	"MCPOAuthRequirementView":           "types",
+	"MCPAuthorizationServerView":        "types",
+	"MCPDiscoveryStepStatusView":        "types",
 	"MCPServersListRequest":             "types",
 	"MCPServersListResponse":            "types",
 	"MCPServerGetRequest":               "types",

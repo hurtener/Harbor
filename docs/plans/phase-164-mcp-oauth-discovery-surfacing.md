@@ -186,17 +186,17 @@ None.
 
 ## Acceptance criteria
 
-- [ ] The MCP http(s) transport edge captures a `401` +
+- [x] The MCP http(s) transport edge captures a `401` +
   `WWW-Authenticate` challenge (with `resource_metadata` when present) and
   records it on the connection's registry state; capture never retries,
   never attaches credentials, never alters the call's error semantics
   (the caller still sees the dial/call failure it sees today).
-- [ ] The discovery chain fetcher resolves RFC 9728 → `authorization_
+- [x] The discovery chain fetcher resolves RFC 9728 → `authorization_
   servers[]` → RFC 8414/OIDC metadata, reusing the existing RFC 8414
   fetch/parse (`Provider.resolveEndpoints` composition — no second parser);
   partial chains surface partially with a typed per-step status (metadata
   absent / fetch refused / parse failed), never a silent empty.
-- [ ] SSRF guardrails pinned by tests, per hop: the 9728 hop's cross-origin
+- [x] SSRF guardrails pinned by tests, per hop: the 9728 hop's cross-origin
   refusal + explicit-allowance pass; the 8414 hop REQUIRING the allowance
   (and surfacing the typed needs-allowance partial status without it);
   private-range/IP-literal refusal on allowed cross-origin fetches;
@@ -204,13 +204,13 @@ None.
   loud); timeout enforced; https-only for non-loopback; no Authorization /
   cookie headers on any discovery fetch (asserted against a recording
   fixture server).
-- [ ] `MCPServerView.oauth_requirement` (additive wire type) carries the
+- [x] `MCPServerView.oauth_requirement` (additive wire type) carries the
   verbatim chain + `discovered_at` + `source` + `source_url`;
   `mcp.servers.list`/`get` project it; `mcp.servers.probe` TRIGGERS
   discovery on a challenge (its own `MCPProbeRow` return is unchanged) and
   the updated view is read via `mcp.servers.get` — one projection home,
   no probe-row wire change.
-- [ ] §17.8 fixtures derive from the REAL spec artifacts — the CONCRETE
+- [x] §17.8 fixtures derive from the REAL spec artifacts — the CONCRETE
   committed artifacts are the RFCs' own example documents: RFC 9728 §3.2's
   protected-resource-metadata response example and RFC 8414 §3.2's
   authorization-server-metadata response example, committed verbatim as
@@ -219,18 +219,18 @@ None.
   spec's example) — never a hand-invented shape; a wrong-field-name
   mutation of the fixture FAILS the test (the right-field/wrong-field
   discriminator).
-- [ ] Console MCP Connections page renders the discovered requirement
+- [x] Console MCP Connections page renders the discovered requirement
   (endpoints, scopes, PKCE, registration endpoint if advertised, source
   URL, discovered-at) marked as unverified server-supplied data; absent
   cleanly when no discovery has run.
-- [ ] Hard-boundary negative tests: no token endpoint is ever dialed by the
+- [x] Hard-boundary negative tests: no token endpoint is ever dialed by the
   runtime during or after discovery (recording fixture asserts zero
   non-metadata fetches); no discovered value lands in any config store.
-- [ ] Full lockstep in the same PR: `make protocol-ts-gen` +
+- [x] Full lockstep in the same PR: `make protocol-ts-gen` +
   `make protocol-docs-gen` (additive wire types on the mcp_servers
   surface). `ProtocolVersion` unbumped.
-- [ ] `scripts/smoke/phase-164.sh` OK ≥ 2, FAIL = 0.
-- [ ] `-race`; coverage ≥ 85% on touched Go packages.
+- [x] `scripts/smoke/phase-164.sh` OK ≥ 2, FAIL = 0.
+- [x] `-race`; coverage ≥ 85% on touched Go packages.
 
 ## Files added or changed
 
@@ -356,20 +356,20 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
       (the probe/read path identity legs).
-- [ ] **Reusable-artifact concurrent-reuse:** registry + walker under N≥100
+- [x] **Reusable-artifact concurrent-reuse:** registry + walker under N≥100
       concurrent probe/read `-race` stress; discovery goroutines joined.
-- [ ] **Integration test wires real drivers end-to-end (the real MCP http
+- [x] **Integration test wires real drivers end-to-end (the real MCP http
       transport + spec-derived fixture), asserts identity propagation,
       covers ≥1 failure mode, runs under `-race`** (§17.3 + §17.8).
-- [ ] Wire changes complete: `make protocol-ts-gen-check` +
+- [x] Wire changes complete: `make protocol-ts-gen-check` +
       `make protocol-docs-gen-check` green with regenerated artifacts
       committed.
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: N/A — none departed
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A — none departed

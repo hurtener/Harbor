@@ -38,15 +38,36 @@ import (
 // trust toggle.
 type RegistryAccessor struct {
 	reg *mcp.Registry
+	// discoverer, when non-nil, walks the advertised OAuth requirement chain
+	// on a probe that captured a `WWW-Authenticate` challenge. Nil
+	// leaves the probe path exactly as before (no discovery). It is an
+	// immutable, concurrency-safe compiled artifact.
+	discoverer *auth.Discoverer
+}
+
+// RegistryAccessorOption configures a RegistryAccessor.
+type RegistryAccessorOption func(*RegistryAccessor)
+
+// WithOAuthDiscoverer wires the on-demand OAuth-requirement discovery walker
+// into the probe path: a probe that captures a `WWW-Authenticate`
+// challenge triggers the chain walk and records the discovered requirement on
+// the connection's registry state (read back via mcp.servers.get). A nil
+// discoverer is a no-op — the probe path stays discovery-free.
+func WithOAuthDiscoverer(d *auth.Discoverer) RegistryAccessorOption {
+	return func(a *RegistryAccessor) { a.discoverer = d }
 }
 
 // NewRegistryAccessor wraps a *mcp.Registry as a protocol.MCPAccessor.
 // A nil registry is rejected — fail closed (CLAUDE.md §5).
-func NewRegistryAccessor(reg *mcp.Registry) (*RegistryAccessor, error) {
+func NewRegistryAccessor(reg *mcp.Registry, opts ...RegistryAccessorOption) (*RegistryAccessor, error) {
 	if reg == nil {
 		return nil, errors.New("mcpconsole: NewRegistryAccessor requires a non-nil *mcp.Registry")
 	}
-	return &RegistryAccessor{reg: reg}, nil
+	a := &RegistryAccessor{reg: reg}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a, nil
 }
 
 // compile-time assertion: RegistryAccessor satisfies protocol.MCPAccessor.
@@ -137,13 +158,46 @@ func (a *RegistryAccessor) RefreshDiscovery(ctx context.Context, name string) (p
 	}, nil
 }
 
-// Probe implements protocol.MCPAccessor.
+// Probe implements protocol.MCPAccessor. Beyond the transport round-trip, a
+// probe TRIGGERS OAuth-requirement discovery when the connection has
+// captured a `WWW-Authenticate` challenge and a discoverer is wired: it walks
+// the RFC 9728 → RFC 8414 chain and records the verbatim requirement on the
+// registry state, which the operator then reads via mcp.servers.get. The
+// probe's own return shape is UNCHANGED — discovery rides the view, never the
+// probe row. The probe error (e.g. a 401) is preserved: a server that
+// requires auth still reports the failure, and discovery still runs off the
+// captured challenge so the requirement is inspectable.
 func (a *RegistryAccessor) Probe(ctx context.Context, name string) (protocol.MCPProbeRow, error) {
-	r, err := a.reg.Probe(ctx, name)
-	if err != nil {
-		return protocol.MCPProbeRow{}, err
+	r, probeErr := a.reg.Probe(ctx, name)
+	a.maybeDiscoverOAuthRequirement(ctx, name)
+	if probeErr != nil {
+		return protocol.MCPProbeRow{}, probeErr
 	}
 	return protocol.MCPProbeRow{OK: r.OK, LatencyMs: r.LatencyMs, Error: r.Error}, nil
+}
+
+// maybeDiscoverOAuthRequirement walks the advertised OAuth requirement chain
+// when a discoverer is wired and the connection has captured a challenge, then
+// records it on the registry state. Best-effort observability — it never
+// affects the probe's result or error, and a refused/partial chain is recorded
+// with its typed per-hop statuses (never a silent empty).
+func (a *RegistryAccessor) maybeDiscoverOAuthRequirement(ctx context.Context, name string) {
+	if a.discoverer == nil {
+		return
+	}
+	challenge, serverURL, allowedOrigins, err := a.reg.OAuthDiscoveryTarget(name)
+	if err != nil || challenge == nil {
+		// No captured challenge → nothing advertised to discover.
+		return
+	}
+	req := a.discoverer.Discover(ctx, auth.DiscoveryInput{
+		ServerURL:           serverURL,
+		ResourceMetadataURL: challenge.ResourceMetadataURL,
+		Source:              "probe",
+		AllowedOrigins:      allowedOrigins,
+	})
+	//nolint:errcheck // best-effort observability; a server deregistered mid-probe is a benign no-op
+	_ = a.reg.RecordOAuthRequirement(name, &req)
 }
 
 // Health implements protocol.MCPAccessor.
@@ -191,6 +245,47 @@ func serverRow(v mcp.ServerView) protocol.MCPServerRow {
 		ContentShapes:     v.ContentShapes,
 		PolicyTimeoutMs:   int64(v.Policy.TimeoutMS),
 		PolicyMaxRetries:  v.Policy.MaxRetries,
+		OAuthRequirement:  oauthRequirementRow(v.OAuthRequirement),
+	}
+}
+
+// oauthRequirementRow maps a discovered auth.OAuthRequirement onto the
+// protocol runtime-side row. Nil (no discovery run, or a list-row
+// projection) maps to nil.
+func oauthRequirementRow(req *auth.OAuthRequirement) *protocol.MCPOAuthRequirementRow {
+	if req == nil {
+		return nil
+	}
+	servers := make([]protocol.MCPAuthServerRow, 0, len(req.AuthorizationServers))
+	for _, as := range req.AuthorizationServers {
+		servers = append(servers, protocol.MCPAuthServerRow{
+			Issuer:                        as.Issuer,
+			AuthorizationEndpoint:         as.AuthorizationEndpoint,
+			TokenEndpoint:                 as.TokenEndpoint,
+			ScopesSupported:               append([]string(nil), as.ScopesSupported...),
+			CodeChallengeMethodsSupported: append([]string(nil), as.CodeChallengeMethodsSupported...),
+			RegistrationEndpoint:          as.RegistrationEndpoint,
+			Resource:                      as.Resource,
+			SourceURL:                     as.SourceURL,
+		})
+	}
+	status := make([]protocol.MCPDiscoveryStepRow, 0, len(req.Status))
+	for _, st := range req.Status {
+		status = append(status, protocol.MCPDiscoveryStepRow{
+			Step:   string(st.Step),
+			Target: st.Target,
+			OK:     st.OK,
+			Reason: st.Reason,
+			Detail: st.Detail,
+		})
+	}
+	return &protocol.MCPOAuthRequirementRow{
+		ResourceMetadataURL:  req.ResourceMetadataURL,
+		AuthorizationServers: servers,
+		DiscoveredAt:         req.DiscoveredAt,
+		Source:               req.Source,
+		SourceURL:            req.SourceURL,
+		Status:               status,
 	}
 }
 

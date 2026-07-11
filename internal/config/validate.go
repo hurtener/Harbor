@@ -1509,6 +1509,16 @@ func (c *Config) validateTools() error {
 					fmt.Sprintf("key %q is reserved (tenant/user/session/agent_id/traceparent/tracestate and any io.modelcontextprotocol/-prefixed key are stamped by the runtime; choose a non-reserved key)", k))
 			}
 		}
+		// OAuth-requirement discovery cross-origin allowances: each
+		// entry must be a well-formed https origin (scheme://host[:port], no
+		// path). The runtime additionally refuses private-range / IP-literal
+		// destinations at fetch time; validation catches the format typo.
+		for j, o := range s.OAuthDiscoveryAllowedOrigins {
+			field := fmt.Sprintf("%s.oauth_discovery_allowed_origins[%d]", prefix, j)
+			if err := validateDiscoveryOrigin(o); err != nil {
+				return fieldError(field, err.Error())
+			}
+		}
 	}
 
 	// catalog wiring entries. Empty list is valid;
@@ -2256,4 +2266,36 @@ func isLoopbackHostname(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// validateDiscoveryOrigin checks that o is a well-formed OAuth-discovery
+// cross-origin allowance: an https origin of the form scheme://host[:port]
+// with no path, query, or fragment. It is intentionally permissive on
+// host shape — the runtime enforces the private-range / IP-literal refusal at
+// fetch time; this catches only the operator format typo pre-boot.
+func validateDiscoveryOrigin(o string) error {
+	trimmed := strings.TrimSpace(o)
+	if trimmed == "" {
+		return errors.New("origin must not be empty")
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("must be a valid origin URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return errors.New("origin must use the https scheme (scheme://host[:port])")
+	}
+	if u.Host == "" {
+		return errors.New("origin must include a host (scheme://host[:port])")
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("origin must be scheme://host[:port] only — no path, query, or fragment")
+	}
+	// Reject IP-literal hosts fail-fast: an allowance names a PUBLIC origin,
+	// never a bare IP (the runtime SSRF guard refuses private-range / IP-literal
+	// destinations anyway; catching it at config load fails faster).
+	if net.ParseIP(u.Hostname()) != nil {
+		return errors.New("origin must be a hostname, not an IP literal (an allowance names a public origin; bare IPs are refused)")
+	}
+	return nil
 }
