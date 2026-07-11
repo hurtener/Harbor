@@ -12,6 +12,10 @@
 server:
   bind_addr: 127.0.0.1:8080
   shutdown_grace_period: 30s
+  # CORS allowlist for a browser-based Console attaching to this Runtime.
+  # Uncomment and set to your Console origin(s) before serving the Console
+  # from a different host than the Runtime.
+  # allowed_origins: ["https://console.example.com"]
 
 identity:
   # Asymmetric algorithms only (Harbor §7 security rule 1).

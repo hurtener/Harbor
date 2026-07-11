@@ -26,7 +26,7 @@
 // executed the deprecation notice: the
 // `ExtractSkillKeywords` query shaper is DELETED along with the
 // raw-Search `<skills_context>` injection path it served; the
-// Phase-39 `skills.Directory` view (projected via
+// `skills.Directory` view (projected via
 // ProjectSkillsDirectory) is the canonical producer.
 package runctx
 
@@ -99,7 +99,7 @@ func ProjectSkillsContext(ranked []skills.RankedSkill) []any {
 	return out
 }
 
-// ProjectSkillsDirectory shapes a Phase-39 `skills.Directory.View`
+// ProjectSkillsDirectory shapes a `skills.Directory.View`
 // snapshot into the []any the planner's `<skills_context>` wrapper
 // renders (, executing the deprecation
 // notice: the keyword-shaped raw-Search injection path and its

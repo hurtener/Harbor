@@ -65,7 +65,7 @@ type Deps struct {
 //     model in the `CompleteRequest`; missing → `ErrUnsupportedModel`.
 //
 // `Provider` / `Model` / `APIKey` / `BaseURL` / `Timeout` are the
-// Phase-33 bifrost-driver knobs. Harbor stores them so the
+// bifrost-driver knobs. Harbor stores them so the
 // snapshot's shape is stable across phases; the mock driver ignores
 // them. the bifrost driver will read them.
 type ConfigSnapshot struct {

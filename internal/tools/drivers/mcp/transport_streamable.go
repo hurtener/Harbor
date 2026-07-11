@@ -8,7 +8,7 @@ import (
 // from cfg. The SDK's streamable transport is bidirectional over a
 // single HTTP request (newer than SSE) and ships internal reconnect
 // for the standalone SSE stream with exponential backoff — there is
-// no need for a Phase-28-internal reconnect state machine. Operator
+// no need for an internal reconnect state machine. Operator
 // recovery for transient transport failure rides on the outer
 // `ToolPolicy` retry shell.
 //

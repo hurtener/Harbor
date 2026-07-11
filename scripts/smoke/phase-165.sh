@@ -19,6 +19,10 @@
 #      invoke by sequence — the reconstructable ordering signal (SKIP when the
 #      mock turn invoked no tool; the tool-calling leg is pinned by the Console
 #      byte-equivalence vitest + the integration test).
+#   4. (env-gated, HARBOR_LIVE_LLM) a HIGH-effort Claude run surfaces at least
+#      one NON-EMPTY reasoning chunk (llm.completion.chunk Kind=reasoning) OR a
+#      planner.decision with a non-empty ReasoningTrace — the Anthropic
+#      reasoning-surfaces behaviour 161/165 depend on. CI (mock) SKIPs.
 # Done-definition: OK >= 2, FAIL = 0; 404/405/501 → SKIP until the phase ships.
 
 set -euo pipefail
@@ -124,6 +128,57 @@ if [ "${TOOL_OK}" -gt 0 ]; then
   fi
 else
   skip "phase 165: dev turn invoked no tool (mock path) — tool-interleaving pinned by Console byte-equivalence vitest"
+fi
+
+# 5. Reasoning-SURFACES regression (env-gated, 131d precedent). The mock path
+#    above proves the STRUCTURE (ReasoningTrace/DecisionKind keys) but leaves
+#    the traces EMPTY. This leg locks in the Anthropic-reasoning-surfaces
+#    behaviour that 161/165 depend on: a HIGH-effort Claude run MUST yield at
+#    least one NON-EMPTY reasoning chunk (llm.completion.chunk, Kind=reasoning)
+#    OR a planner.decision with a non-empty ReasoningTrace in the durable
+#    read-back. Requires the running server to be backed by a real Claude
+#    provider — CI (mock path) SKIPs.
+if [ -z "${HARBOR_LIVE_LLM:-}" ]; then
+  skip "phase 165: live reasoning-surfaces regression (set HARBOR_LIVE_LLM=1 with a Claude-backed server to run)"
+  smoke_summary
+  exit 0
+fi
+
+# Bias the next turn to high reasoning effort via runs.set_overrides, then
+# drive a reasoning-eliciting run under a dedicated session.
+RSESS="phase165-reasoning-live"
+RID_HEADERS=(-H "X-Harbor-Tenant: dev" -H "X-Harbor-User: dev" -H "X-Harbor-Session: ${RSESS}")
+OVR_URL="$(api_url /v1/runs/set_overrides)"
+curl -sS -X POST "${OVR_URL}" -H "Authorization: Bearer ${TOKEN}" \
+  "${RID_HEADERS[@]}" -H 'Content-Type: application/json' \
+  -d "{\"overrides\":{\"session_id\":\"${RSESS}\",\"reasoning_effort\":\"high\"}}" >/dev/null 2>&1 || true
+
+curl -sS -X POST "${START_URL}" -H "Authorization: Bearer ${TOKEN}" \
+  "${RID_HEADERS[@]}" -H 'Content-Type: application/json' \
+  -d '{"query":"A farmer has 17 sheep; all but 9 run away. Think step by step, then state how many remain.","description":"phase-165 live reasoning smoke"}' >/dev/null 2>&1 || true
+sleep 4
+
+RTMP="$(mktemp)"
+trap 'rm -f "${TMP}" "${RTMP}"' EXIT
+set +e
+RST=$(curl -s -o "${RTMP}" -w '%{http_code}' --max-time 15 \
+  -X POST -H "Authorization: Bearer ${TOKEN}" "${RID_HEADERS[@]}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"session_id\":\"${RSESS}\",\"before\":0,\"limit\":400}" "${STATE_URL}")
+set -e
+
+if [ "${RST}" != "200" ]; then
+  fail "phase 165: live reasoning read-back returned ${RST} (want 200 against a Claude-backed server)"
+  smoke_summary
+  exit 1
+fi
+
+REASON_CHUNKS=$(jq -r '[.events[] | select(.type == "llm.completion.chunk") | select(.payload.Kind == "reasoning") | select((.payload.Delta // "") | length > 0)] | length' "${RTMP}" 2>/dev/null || echo 0)
+REASON_TRACES=$(jq -r '[.events[] | select(.type == "planner.decision") | select((.payload.ReasoningTrace // "") | length > 0)] | length' "${RTMP}" 2>/dev/null || echo 0)
+if [ "${REASON_CHUNKS}" -gt 0 ] || [ "${REASON_TRACES}" -gt 0 ]; then
+  ok "phase 165: high-effort Claude run surfaced non-empty reasoning (chunks=${REASON_CHUNKS} traces=${REASON_TRACES}) — reasoning-surfaces regression locked in"
+else
+  fail "phase 165: high-effort Claude run produced NO non-empty reasoning chunk/trace in state.history — Anthropic reasoning surfaces regressed"
 fi
 
 smoke_summary

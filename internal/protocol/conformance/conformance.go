@@ -865,7 +865,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// `governance.posture` / `llm.posture` — are dispatched by
 			// PostureSurface, not ControlSurface. Their happy-paths are
 			// exercised by internal/protocol posture tests + the
-			// runtime-posture / phase72g_posture integration tests; the
+			// runtime-posture integration tests; the
 			// conformance-suite scenario lands later (same posture as
 			// the search cluster).
 			if methods.IsPostureMethod(m) {
@@ -888,8 +888,8 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// Stack does not wire — its runtime is task/steering-
 			// shaped. The method's happy-path + failure modes are
 			// exercised end-to-end by the own unit tests, the
-			// concurrent-reuse test, and test/integration/phase74_
-			// topology_test.go (real engine + real bus + real wire
+			// concurrent-reuse test, and the topology integration
+			// test (real engine + real bus + real wire
 			// transport). The conformance-suite scenario lands when
 			// the suite gains an engine-bearing Stack.
 			if methods.IsTopologyMethod(m) {

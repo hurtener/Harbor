@@ -1,10 +1,12 @@
 /**
  * Flow-detail run-history date-filter tests (D-295).
  *
- * Pins the pure `runWindowBounds` date→RFC-3339 conversion (inclusive
- * lower, exclusive upper made inclusive-of-the-end-day) and the
- * `FlowDetailState` fold: Apply drives `flows.runs.list` with the bounds
- * server-side; Clear restores unbounded paging.
+ * Pins the pure `runWindowBounds` date→RFC-3339 conversion (lower bound
+ * to the picked day's UTC midnight; upper bound to the NEXT day's UTC
+ * midnight so the whole picked end day is covered by the server's
+ * inclusive `until` on StartedAt) and the `FlowDetailState` fold: Apply
+ * drives `flows.runs.list` with the bounds server-side; Clear restores
+ * unbounded paging.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { FlowDetailState, runWindowBounds } from '../detail.svelte.js';
@@ -22,16 +24,16 @@ describe('runWindowBounds', () => {
     });
   });
 
-  it('maps the upper bound to the picked day UTC midnight (inclusive — no compensation)', () => {
+  it('maps the upper bound to the NEXT day UTC midnight so the whole end day is included', () => {
     expect(runWindowBounds('', '2026-07-01')).toEqual({
-      until: '2026-07-01T00:00:00.000Z'
+      until: '2026-07-02T00:00:00.000Z'
     });
   });
 
-  it('produces a closed [since, until] range for a both-sided window', () => {
+  it('produces a window covering the full end day for a both-sided range', () => {
     expect(runWindowBounds('2026-07-01', '2026-07-03')).toEqual({
       since: '2026-07-01T00:00:00.000Z',
-      until: '2026-07-03T00:00:00.000Z'
+      until: '2026-07-04T00:00:00.000Z'
     });
   });
 
@@ -83,15 +85,15 @@ describe('FlowDetailState run-history filter fold', () => {
 
     state.applyRunFilter('2026-07-01', '2026-07-03');
     await vi.waitFor(() => expect(calls.length).toBe(2));
-    // The end-day maps directly to its UTC midnight — no compensation.
-    // The server treats `until` as INCLUSIVE, so a run at exactly this
-    // instant is included (the closed-window semantics matching
-    // TaskFilter/sessions; the server-side inclusion is pinned by the Go
-    // `until_includes_boundary` case).
+    // The end-day maps to the NEXT day's UTC midnight. The server treats
+    // `until` as INCLUSIVE on StartedAt (the Go `until_includes_boundary`
+    // case), so mapping to start-of-day would DROP every run after
+    // 00:00:00 on the end day; the +1-day boundary covers the whole
+    // picked end day (Jul 3) instead.
     expect(calls[1]).toEqual({
       flow_id: 'f1',
       since: '2026-07-01T00:00:00.000Z',
-      until: '2026-07-03T00:00:00.000Z'
+      until: '2026-07-04T00:00:00.000Z'
     });
     expect(state.runsFilterActive).toBe(true);
   });

@@ -69,6 +69,7 @@
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
+  import type { RunOverrides } from '$lib/protocol/runs.js';
   import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
@@ -359,15 +360,16 @@
         return { taskID: resp.task_id };
       },
       async setOverrides(overrides) {
-        const payload: Record<string, unknown> = { session_id: sessionID };
+        // Typed as the named `RunOverrides` wire shape (NOT a loose
+        // Record) so a phantom key — e.g. the removed `top_p` — is a
+        // compile error rather than a request the runtime 400s wholesale
+        // at its `DisallowUnknownFields()` decoder (D-223 blind-spot fix).
+        const payload: RunOverrides = { session_id: sessionID };
         if (overrides.reasoningEffort !== undefined) {
           payload.reasoning_effort = overrides.reasoningEffort;
         }
         if (overrides.temperature !== undefined) {
           payload.temperature = overrides.temperature;
-        }
-        if (overrides.topP !== undefined) {
-          payload.top_p = overrides.topP;
         }
         if (overrides.maxTokens !== undefined) {
           payload.max_tokens = overrides.maxTokens;
@@ -1275,7 +1277,6 @@
   async function applyOverrides(overrides: {
     reasoningEffort?: string;
     temperature?: number;
-    topP?: number;
     maxTokens?: number;
     systemPromptOverride?: string;
   }): Promise<void> {

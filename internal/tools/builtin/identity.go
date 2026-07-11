@@ -21,7 +21,7 @@ var ErrIdentityRequired = errors.New("builtin: identity (tenant/user/session) is
 // `tool_get`, `artifact_fetch`, `declarative_action`) refuse to
 // operate without identity so cross-tenant discovery leaks are
 // structurally impossible. The skill_* built-ins delegate to the
-// Phase-38 handlers, which carry their own identity gate +
+// skills-tools handlers, which carry their own identity gate +
 // `skill.identity_rejected` emit.
 func requireIdentity(ctx context.Context) (identity.Quadruple, error) {
 	q, ok := identity.QuadrupleFrom(ctx)

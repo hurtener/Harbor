@@ -21,7 +21,7 @@ type SkillSearchArgs struct {
 }
 
 // registerSkillSearch installs the `skill_search` built-in as a thin
-// delegation to the Phase-38 handler (`skilltools.SearchHandler`):
+// delegation to the skills-tools handler (`skilltools.SearchHandler`):
 // capability filter + tool-name redaction run on every production
 // call. The pre-111d package-local query/projection body is deleted —
 // `internal/skills/tools` is the single implementation home.

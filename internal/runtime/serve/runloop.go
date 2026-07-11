@@ -129,7 +129,7 @@ type RunLoopDriverOptions struct {
 	// stack that did not open the respective subsystem hands nil; the
 	// driver projects the corresponding RunContext field to nil and
 	// the planner omits the wrapper. The skills
-	// surface is the Phase-39 `skills.Directory` — the bounded,
+	// surface is the `skills.Directory` — the bounded,
 	// pinned-then-recent, capability-filtered `<skills_context>`
 	// producer (the directory carries its own MaxEntries cap; the
 	// pre-111d SkillStore.Search + skillsContextMax pair is deleted).
@@ -885,7 +885,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 
 	var skillsCtx []any
 	if d.skillsDirectory != nil {
-		// the Phase-39 Directory is the
+		// the skills Directory is the
 		// `<skills_context>` producer — a bounded, STABLE
 		// pinned-then-recent browse window (identity-scoped via
 		// taskCtx, capability-filtered against the run's visible-tool

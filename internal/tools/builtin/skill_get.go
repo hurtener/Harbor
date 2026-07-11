@@ -11,7 +11,7 @@ import (
 
 // SkillGetArgs is the LLM-facing input shape for the `skill_get`
 // built-in. The pre-111d single-`name` shape is
-// replaced by the Phase-38 handler's multi-name + budget envelope —
+// replaced by the skills-tools handler's multi-name + budget envelope —
 // the `capability` field is omitted and server-computed (see
 // skill_capability.go).
 type SkillGetArgs struct {
@@ -25,7 +25,7 @@ type SkillGetArgs struct {
 }
 
 // registerSkillGet installs the `skill_get` built-in as a thin
-// delegation to the Phase-38 handler (`skilltools.GetHandler`):
+// delegation to the skills-tools handler (`skilltools.GetHandler`):
 // capability filter + redaction + the tiered token budgeter run on
 // every production call. The pre-111d package-local fetch/projection
 // body is deleted — `internal/skills/tools` is the single

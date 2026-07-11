@@ -385,7 +385,7 @@ type LLMCostOverridesConfig struct {
 // enforcement, no wrapper in the LLM chain.
 //
 // **Removed (governance-config consolidation):** the
-// pre-Phase-36a single-knob fields `default_max_tokens`,
+// pre-tiered single-knob fields `default_max_tokens`,
 // `cost_ceiling_usd`, and `rate_limit_tps` are no longer accepted on
 // `GovernanceConfig`. They were validated-but-ignored stubs: the
 // loader took them, the enforcement engine never consumed them, and an
@@ -393,7 +393,7 @@ type LLMCostOverridesConfig struct {
 // behaviour. The loader now emits a structured
 // `config.deprecated_field` slog warning when any of those keys
 // appears in YAML, drops the value, and proceeds. Operators migrating
-// from a pre-Phase-36a config build a `default` tier with the
+// from a pre-tiered config build a `default` tier with the
 // equivalent values under `IdentityTiers`.
 type GovernanceConfig struct {
 	RepairAttempts int `yaml:"repair_attempts"`
@@ -611,7 +611,7 @@ type MemorySummarizerConfig struct {
 // URI for SQLite; `:memory:` honoured for tests). `secret:"true"`
 // redacts the value in audit-redacted logs.
 //
-// `Directory` shapes the Phase-39 virtual directory the run loop
+// `Directory` shapes the skills virtual directory the run loop
 // injects as the per-turn `<skills_context>` prompt block (
 // ). All fields optional; restart-required.
 type SkillsConfig struct {

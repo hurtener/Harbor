@@ -41,7 +41,7 @@ import (
 
 // Options carries InMem-driver-specific knobs that don't live on
 // the generic `memory.ConfigSnapshot`. The summariser is the only
-// Phase-24-relevant option; future drivers may add more.
+// in-memory-driver-relevant option; future drivers may add more.
 //
 // `Summarizer` is REQUIRED when the configured strategy is
 // `rolling_summary`. The `New` constructor rejects a nil
@@ -128,7 +128,7 @@ func init() {
 	})
 }
 
-// driver is the Phase-24 in-memory MemoryStore. The driver itself
+// driver is the in-memory MemoryStore. The driver itself
 // owns identity-rejection emit + the closed flag; per-key state +
 // strategy logic live behind the strategy executor.
 //

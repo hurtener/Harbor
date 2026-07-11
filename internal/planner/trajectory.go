@@ -10,7 +10,7 @@ import "github.com/hurtener/Harbor/internal/planner/trajectory"
 //
 // The fail-loudly Serialize contract (RFC §6.2 + §3.4) lives at
 // internal/planner/trajectory/serialize.go; the handle registry lives
-// at internal/planner/trajectory/registry.go. Pre-Phase-43 stub
+// at internal/planner/trajectory/registry.go. The earlier stub
 // ErrTrajectoryNotImplemented is retired — the real contract replaces
 // it.
 
@@ -20,14 +20,14 @@ type Trajectory = trajectory.Trajectory
 // Step is the trajectory's per-step shape (action + observation +
 // failure + streams). Re-exported from the canonical subpackage.
 //
-// Note: pre-Phase-43, this type was named TrajectoryStep at the
+// Note: earlier, this type was named TrajectoryStep at the
 // planner-package level. The rename to Step is part of the
 // subpackage relocation; no external consumers of TrajectoryStep
-// existed pre-Phase-43.
+// existed in an earlier revision.
 type Step = trajectory.Step
 
 // Summary is the trajectory's compaction artefact (
-// summariser output). Pre-Phase-43 this was TrajectorySummary at the
+// summariser output). Earlier this was TrajectorySummary at the
 // planner-package level; the subpackage rename to Summary is part of
 type Summary = trajectory.Summary
 

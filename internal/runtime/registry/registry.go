@@ -58,7 +58,7 @@
 // a leaked read-only token must not be able to force-stop a fleet.
 // Every fleet-control command is audit-redacted and emitted. The
 // control-scope claim is trust-based in V1 (mirrors the events
-// package's Phase-05 Admin claim); cryptographic verification arrives
+// package's registry Admin claim); cryptographic verification arrives
 // with Protocol auth.
 //
 // # Concurrent reuse

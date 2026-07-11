@@ -48,6 +48,7 @@ import type { RuntimeCounters, RuntimeHealth, MetricsSnapshot } from './posture.
 import type { PauseListRequest, PauseListResponse } from './pause.js';
 import type { SearchRequest, SearchResponse } from './search.js';
 import type { StateHistoryRequest, StateHistoryResponse } from './state.js';
+import type { RunOverrides } from './runs.js';
 import type {
 	GovernanceTenantOverrides,
 	GovernanceGetTenantOverridesResponse,
@@ -877,10 +878,15 @@ export class RunsNamespace {
 	 * `runs.set_overrides` — record the next-message override. `overrides`
 	 * carries `session_id` plus the optional tuning fields
 	 * (`reasoning_effort` / `temperature` / `max_tokens` /
-	 * `system_prompt_override`). The override is session-scoped and
-	 * one-shot — it applies to the next `user_message` only.
+	 * `system_prompt_override` / `model`). The override is session-scoped
+	 * and one-shot — it applies to the next `user_message` only.
+	 *
+	 * The parameter is typed against the named `RunOverrides` wire
+	 * interface (NOT `Record<string, unknown>`) so `tsc` rejects a phantom
+	 * key at author time — a stray key would otherwise 400 the whole
+	 * request at the runtime's `DisallowUnknownFields()` decoder (D-223).
 	 */
-	setOverrides<R = unknown>(overrides: Record<string, unknown>): Promise<R> {
+	setOverrides<R = unknown>(overrides: RunOverrides): Promise<R> {
 		return this.#t.request<R>('/v1/runs/set_overrides', { overrides });
 	}
 }

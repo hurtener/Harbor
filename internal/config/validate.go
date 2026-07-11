@@ -511,7 +511,7 @@ func (c *Config) validateGovernance() error {
 	}
 	// validate the IdentityTiers block. Empty map is
 	// the latent default (no enforcement); the validator rejects only
-	// malformed entries. The pre-Phase-36a single-knob fields
+	// malformed entries. The pre-tiered single-knob fields
 	// (`default_max_tokens`, `cost_ceiling_usd`, `rate_limit_tps`)
 	// were removed — the loader now emits a deprecation
 	// warning and drops them before this validator runs, so there is

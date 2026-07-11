@@ -128,10 +128,15 @@ func FilterFromWire(
 	// {same-tenant, same-user, different-session} read must NOT force
 	// elevation — that would break a valid same-user flow. The tenant +
 	// user gates above already close the cross-USER / cross-TENANT
-	// disclosure; the session axis stays same-user-own-sessions. (The
-	// broader "cross-session observer needs elevated scope vs a user
-	// reading their own sessions" posture question across all event
-	// surfaces is tracked at the wave checkpoint, not resolved here.)
+	// disclosure. This is the settled posture (recorded in the decisions
+	// log): a SINGLE own-session read — the caller's current session OR
+	// one of their own other sessions — needs no elevation, so the
+	// everyday Sessions-list / Playground-history flow stays un-gated. A
+	// MULTI-value session set is NOT special-cased: it falls to the
+	// `default` branch below and elevates via the same `len>1 ⇒ admin`
+	// fan-in that governs the tenant and user axes (the trigger is
+	// cross-principal OR fan-in, never a single own-session read). The
+	// state.history and tasks.list surfaces agree.
 	switch len(wire.SessionIDs) {
 	case 1:
 		out.Filter.Session = wire.SessionIDs[0]

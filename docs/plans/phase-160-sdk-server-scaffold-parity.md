@@ -405,25 +405,25 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
       (the parity gate asserts identity propagation through the served surface
       on both compositions).
-- [ ] **Reusable artifact (the `sdk/server` `Handle`): concurrent-reuse
+- [x] **Reusable artifact (the `sdk/server` `Handle`): concurrent-reuse
       coverage — the parity gate's N≥10 stress + the inherited Phase 159 N≥100
       D-025 test cover the served handle under `-race`.** See §5 + §11 + D-025.
-- [ ] **Consumes shipped surfaces (serve band + scaffold + tools) AND closes
+- [x] **Consumes shipped surfaces (serve band + scaffold + tools) AND closes
       the external-serving seam: the parity gate wires real drivers end-to-end,
       asserts identity propagation, covers ≥1 failure mode (401), runs under
       `-race`.** See §17.
-- [ ] §18: `scaffold-a-harbor-agent` + `add-an-in-process-tool` +
+- [x] §18: `scaffold-a-harbor-agent` + `add-an-in-process-tool` +
       `configure-production-identity` (+ `use-the-harbor-protocol` checked)
       updated; recipe companion added; docs/site stubs + nav updated.
-- [ ] No new Protocol wire types — no D-223 manifest diff, no D-209 docs regen
+- [x] No new Protocol wire types — no D-223 manifest diff, no D-209 docs regen
       (verified: `make protocol-ts-gen-check` unchanged).
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: N/A — none departed
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A — none departed

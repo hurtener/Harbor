@@ -7,7 +7,7 @@ import "errors"
 // Trajectory-shaped sentinels (ErrUnserializable, ErrToolContextLost)
 // live in the canonical subpackage internal/planner/trajectory and
 // are re-exported as type aliases at trajectory.go in this package.
-// Pre-Phase-43 stub ErrTrajectoryNotImplemented is retired — Harbor
+// The earlier stub ErrTrajectoryNotImplemented is retired — Harbor
 // ships the real fail-loudly Serialize contract that replaces it.
 var (
 	// ErrPlannerClosed — operations against a planner whose Close()
