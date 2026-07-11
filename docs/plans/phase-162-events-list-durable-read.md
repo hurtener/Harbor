@@ -180,14 +180,22 @@ None.
   `EventFilter` godoc); a `until < since` request fails
   `CodeInvalidRequest` (the structurally-invalid posture the filter godoc
   already names, `types/events.go:28-30`).
-- [x] Scoping: a non-widened caller gets only own-triple rows; a widened
-  read without the verified `admin` OR `console:fleet` claim (the closed
-  two-scope set, matching the aggregate handler) fails with the
-  scope-mismatch error; a widened read WITH either claim succeeds and emits
-  `audit.admin_scope_used` exactly once per request (the Bounds-then-Window
-  single-audit posture); scope is never read from the request body; a
-  `console:fleet`-only caller can `events.list` the SAME window it can
-  subscribe/aggregate over (the live/historical authz-parity pin).
+- [x] Scoping: a non-widened caller gets only own-triple rows — enforced
+  on the caller's VERIFIED triple, not the request filter's triple. The
+  cross-tenant AND cross-USER axes both elevate: naming a foreign tenant OR
+  a foreign user requires the closed two-scope claim (`admin` OR
+  `console:fleet`) and fails `CodeIdentityScopeRequired`/403 without it
+  (the `FilterFromWire` USER-axis gate closes a cross-user disclosure the
+  original review caught — a non-admin caller naming `{own-tenant,
+  foreign-user, foreign-session}` must NOT receive another user's rows;
+  §6). The SESSION axis deliberately does NOT elevate on a single foreign
+  value — a user legitimately reads their own other sessions (the Console
+  Sessions/Playground history flow); the broader cross-session-observer
+  posture question is routed to the wave checkpoint. A widened read WITH
+  either claim succeeds and emits `audit.admin_scope_used` exactly once per
+  request; scope is never read from the request body; a `console:fleet`-only
+  caller can `events.list` the SAME window it can subscribe/aggregate over
+  (the live/historical authz-parity pin).
 - [x] Both V1 event drivers serve the read through the extended
   `HistoryReplayer` seam: durable = real windows over the persisted log;
   inmem = ring contents + `truncated=true` past the ring head; a
@@ -302,10 +310,20 @@ None.
 
 - **Cross-session scan cost on the durable driver.** The persisted log is
   per-session-keyed with a global sequence; a fleet-wide window read is a
-  merge across session logs (or a global-order scan). The implementor picks
+  merge across session logs (a global-order scan). The implementor picks
   the read shape; the plan binds only the semantics (global-sequence order,
-  bounded page size, cursor-stable). A pathological fleet window is bounded
-  by `limit` per page — no unbounded scans.
+  bounded page size, cursor-stable). **As-built honest bound (corrected from
+  the earlier "no unbounded scans" wording):** the durable admin fleet read
+  gathers ALL candidate `(session, seq)` pairs below the cursor from the
+  head records and sorts them per page — so the *candidate gather* is
+  `O(events-below-cursor)` in memory/CPU, NOT bounded by `limit`. What IS
+  bounded by `limit` is the **entry I/O**: the loader stops after loading
+  `limit+1` MATCHING entries, so the expensive per-event StateStore reads
+  never exceed the page. The head-record identity pre-filter prunes
+  non-matching sessions before any entry load. This is acceptable for V1
+  (documented latitude); a follow-up for a **merged global-sequence index**
+  (so the candidate gather is also page-bounded) is tracked as HA-13 —
+  reword, don't optimise here.
 - **Admin fan-in is a disclosure edge.** The widened read reuses the
   existing `Matches` admin fan-in + mandatory audit emit; the integration
   test's two-identity isolation + widened-read legs are the guard (§6).

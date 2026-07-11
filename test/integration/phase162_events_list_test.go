@@ -236,6 +236,31 @@ func TestE2E_Phase162_EventsList_IsolationAndFleetRead(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("console:fleet fleet-read status = %d, want 200", status)
 	}
+
+	// 5. Cross-USER, SAME-TENANT disclosure gate (§6). A non-admin caller
+	//    in tenant t-A naming a foreign user + session within its OWN
+	//    tenant must be REFUSED — the blind spot the cross-tenant-only
+	//    suite missed. Seed a sibling user in t-A first.
+	idAOther := identity.Identity{TenantID: "t-A", UserID: "u-A2", SessionID: "s-A2"}
+	phase162Seed(t, stack.bus, idAOther, 3)
+	status, raw = stack.list(t,
+		`{"filter":{"user_ids":["u-A2"],"session_ids":["s-A2"]}}`,
+		stack.token(t, idA, nil))
+	if status != http.StatusForbidden {
+		t.Fatalf("cross-user SAME-tenant read WITHOUT scope status = %d, want 403 (§6 disclosure gate); body=%s", status, raw)
+	}
+	// With the admin claim the same cross-user read succeeds.
+	status, raw = stack.list(t,
+		`{"filter":{"user_ids":["u-A2"],"session_ids":["s-A2"]}}`,
+		stack.token(t, idA, []string{string(auth.ScopeAdmin)}))
+	if status != http.StatusOK {
+		t.Fatalf("cross-user read WITH admin status = %d, want 200; body=%s", status, raw)
+	}
+	var crossUser prototypes.EventsListResponse
+	mustJSON(t, raw, &crossUser)
+	if len(crossUser.Events) != 3 {
+		t.Fatalf("admin cross-user read returned %d events, want 3", len(crossUser.Events))
+	}
 }
 
 func TestE2E_Phase162_EventsList_PagingAndMissingIdentity(t *testing.T) {

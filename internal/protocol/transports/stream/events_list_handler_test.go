@@ -165,6 +165,80 @@ func TestEventsList_CrossTenantWithAdminScope_OK(t *testing.T) {
 	}
 }
 
+// TestEventsList_CrossUserSameTenantWithoutScope_403 pins the §6 cross-USER
+// disclosure gate: a NON-admin caller naming {own-tenant, foreign-user,
+// foreign-session} is REFUSED — not silently narrowed, and never handed
+// another user's rows. This is the blind spot the original suite missed
+// (it only tested cross-TENANT-without-scope).
+func TestEventsList_CrossUserSameTenantWithoutScope_403(t *testing.T) {
+	h, bus := newEventsListHandler(t)
+	caller := identity.Identity{TenantID: "t-el", UserID: "u-a", SessionID: "s-a"}
+	foreign := identity.Identity{TenantID: "t-el", UserID: "u-b", SessionID: "s-b"}
+	publishPlain(t, bus, caller, 2)
+	publishPlain(t, bus, foreign, 3)
+
+	// Same tenant, but a foreign user + session — a cross-user read.
+	body := `{"filter":{"user_ids":["u-b"],"session_ids":["s-b"]}}`
+	status, resp := doEventsList(t, h.Handler(), body, &caller, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("cross-user read WITHOUT scope status = %d, want 403; body=%s", status, resp)
+	}
+	assertEventsListCode(t, resp, protoerrors.CodeIdentityScopeRequired)
+}
+
+// TestEventsList_CrossUserSameTenantWithScope_OK proves the widen path
+// works: with the admin claim the same cross-user read returns the foreign
+// user's rows (and only those).
+func TestEventsList_CrossUserSameTenantWithScope_OK(t *testing.T) {
+	h, bus := newEventsListHandler(t)
+	caller := identity.Identity{TenantID: "t-el", UserID: "u-a", SessionID: "s-a"}
+	foreign := identity.Identity{TenantID: "t-el", UserID: "u-b", SessionID: "s-b"}
+	publishPlain(t, bus, caller, 2)
+	publishPlain(t, bus, foreign, 3)
+
+	body := `{"filter":{"user_ids":["u-b"],"session_ids":["s-b"]}}`
+	status, resp := doEventsList(t, h.Handler(), body, &caller, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("cross-user read WITH admin status = %d, want 200; body=%s", status, resp)
+	}
+	var got prototypes.EventsListResponse
+	if err := json.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Events) != 3 {
+		t.Fatalf("admin cross-user read returned %d events, want 3 (foreign user)", len(got.Events))
+	}
+	for _, ev := range got.Events {
+		if ev.User != "u-b" || ev.Session != "s-b" {
+			t.Fatalf("admin cross-user read leaked %s/%s, want only u-b/s-b", ev.User, ev.Session)
+		}
+	}
+}
+
+// TestEventsList_OwnUserOtherSession_OK pins the deliberate session
+// non-gate: a caller reading their OWN other session (same tenant + user,
+// different session) is NOT elevation-gated — the legitimate Console
+// Sessions / Playground history flow.
+func TestEventsList_OwnUserOtherSession_OK(t *testing.T) {
+	h, bus := newEventsListHandler(t)
+	caller := identity.Identity{TenantID: "t-el", UserID: "u-a", SessionID: "s-a"}
+	other := identity.Identity{TenantID: "t-el", UserID: "u-a", SessionID: "s-other"}
+	publishPlain(t, bus, other, 4)
+
+	body := `{"filter":{"session_ids":["s-other"]}}`
+	status, resp := doEventsList(t, h.Handler(), body, &caller, nil)
+	if status != http.StatusOK {
+		t.Fatalf("own-user other-session read status = %d, want 200 (no elevation needed); body=%s", status, resp)
+	}
+	var got prototypes.EventsListResponse
+	if err := json.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Events) != 4 {
+		t.Fatalf("own-user other-session read returned %d events, want 4", len(got.Events))
+	}
+}
+
 func TestEventsList_CrossTenantWithFleetScope_OK(t *testing.T) {
 	h, bus := newEventsListHandler(t)
 	foreign := identity.Identity{TenantID: "t-other", UserID: "u-el", SessionID: "s-el"}
@@ -259,6 +333,48 @@ func TestEventsList_RowShapeMatchesStateHistory(t *testing.T) {
 	// The routable artifact ref must be present (no inline heavy bytes).
 	if len(elPage.Events[0].Artifacts) != 1 || elPage.Events[0].Artifacts[0].ID != ref.ID {
 		t.Fatalf("events.list row missing routable artifact ref %q: %+v", ref.ID, elPage.Events[0].Artifacts)
+	}
+}
+
+// sentinelPayload is a NON-safe event payload (embeds events.Sealed, not
+// SafeSealed) so the bus runs the audit redactor on publish. The `api_key`
+// field is a canonical secret-name alias → its value is masked to "***"
+// (audit.Placeholder). The sentinel therefore MUST NOT survive into the
+// persisted, read-back-able row.
+type sentinelPayload struct {
+	events.Sealed
+	Note   string `json:"note"`
+	APIKey string `json:"api_key"`
+}
+
+// TestEventsList_SentinelRedactionHolds is the acceptance-named guarantee:
+// no raw args/results survive the read-back. A secret-shaped value
+// published in a non-safe payload is masked at the bus publish boundary
+// (the single redactor), and events.list projects that SAME redacted row —
+// so the sentinel appears NOWHERE in the response body.
+func TestEventsList_SentinelRedactionHolds(t *testing.T) {
+	h, bus := newEventsListHandler(t)
+	const sentinel = "SENTINEL-DO-NOT-LEAK-abc123"
+	ev := events.Event{
+		Type:     events.EventTypeRuntimeWarning,
+		Identity: identity.Quadruple{Identity: evListID},
+		Payload:  sentinelPayload{Note: "carried a secret", APIKey: sentinel},
+	}
+	if err := bus.Publish(context.Background(), ev); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	status, resp := doEventsList(t, h.Handler(), `{"filter":{},"limit":10}`, &evListID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, resp)
+	}
+	if strings.Contains(string(resp), sentinel) {
+		t.Fatalf("SECRET LEAKED — sentinel %q present in events.list response: %s", sentinel, resp)
+	}
+	// Positive control: the redacted row DID come back (masked), so the
+	// absence above is redaction, not an empty page.
+	if !strings.Contains(string(resp), "***") {
+		t.Fatalf("expected the masked placeholder in the read-back row; body=%s", resp)
 	}
 }
 

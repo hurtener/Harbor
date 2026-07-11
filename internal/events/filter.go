@@ -23,9 +23,12 @@ import (
 //     compatibility with the pre-72a wire shape (no filter struct → full
 //     triple-scoped subscription).
 //   - A single non-caller TenantID OR len(TenantIDs) > 1 signals a
-//     cross-tenant request — the result has RequiresAdminScope == true
-//     so the wire edge can gate on auth.HasScope before calling
-//     Subscribe.
+//     cross-tenant request; likewise a single non-caller UserID OR
+//     len(UserIDs) > 1 signals a cross-USER request — either sets
+//     RequiresAdminScope == true so the wire edge can gate on
+//     auth.HasScope before calling Subscribe. The SessionID axis is NOT
+//     gated on a foreign single value: a user legitimately reads their
+//     own other sessions, so only a multi-session set elevates.
 //   - EventTypes are converted 1:1.
 //   - Since / Until are passed through unchanged.
 //
@@ -41,10 +44,13 @@ type WireConversion struct {
 	// Triple components are backfilled from the caller's identity.
 	Filter Filter
 	// RequiresAdminScope is true when the wire EventFilter requested a
-	// cross-tenant fan-in (a TenantID set other than the caller's own,
-	// or len(TenantIDs) > 1). The wire edge gates on auth.HasScope
-	// before calling Subscribe; without the scope, the request is
-	// rejected with CodeIdentityScopeRequired (HTTP 403).
+	// cross-tenant fan-in (a TenantID set other than the caller's own, or
+	// len(TenantIDs) > 1) OR a cross-user read (a UserID set other than
+	// the caller's own, or len(UserIDs) > 1) OR a multi-session set. The
+	// wire edge gates on auth.HasScope before calling Subscribe; without
+	// the scope, the request is rejected with CodeIdentityScopeRequired
+	// (HTTP 403). A same-user single foreign SessionID does NOT set this
+	// (a user reads their own sessions).
 	RequiresAdminScope bool
 	// Since / Until carry the optional time-window bounds from the wire
 	// filter. They are NOT enforced by Filter.Matches (the bus's
@@ -93,19 +99,39 @@ func FilterFromWire(
 		out.Filter.Tenant = callerTenant
 	}
 
-	// Users / Sessions / Runs: empty → caller's; single value used;
-	// multiple is preserved for the aggregator (Filter.Matches is
+	// Users: empty → caller's; a single FOREIGN user is a cross-user
+	// read that requires the elevated scope (mirroring the tenant axis
+	// above); multiple is preserved for the aggregator (Filter.Matches is
 	// single-valued, so a multi-user predicate uses Filter.Admin=true at
-	// the bus and the aggregator filters in Go).
+	// the bus and the aggregator filters in Go). Gating the single-value
+	// case closes a cross-USER disclosure on every row-returning consumer
+	// of this helper: without it a non-admin caller naming another user's
+	// id kept RequiresAdminScope=false, the wire edge folded only ELIDED
+	// axes, and the foreign user survived into the bus predicate — the
+	// caller received another user's rows. §6 forbids relying on
+	// user/session-id unguessability.
 	switch len(wire.UserIDs) {
 	case 1:
 		out.Filter.User = wire.UserIDs[0]
+		if out.Filter.User != callerUser {
+			out.RequiresAdminScope = true
+		}
 	case 0:
 		out.Filter.User = callerUser
 	default:
 		out.Filter.User = callerUser
 		out.RequiresAdminScope = true
 	}
+	// Sessions: empty → caller's; single value used AS-IS (NOT gated on
+	// != callerSession). A user legitimately reads their OWN other
+	// sessions (the Console Sessions / Playground history flow), so a
+	// {same-tenant, same-user, different-session} read must NOT force
+	// elevation — that would break a valid same-user flow. The tenant +
+	// user gates above already close the cross-USER / cross-TENANT
+	// disclosure; the session axis stays same-user-own-sessions. (The
+	// broader "cross-session observer needs elevated scope vs a user
+	// reading their own sessions" posture question across all event
+	// surfaces is tracked at the wave checkpoint, not resolved here.)
 	switch len(wire.SessionIDs) {
 	case 1:
 		out.Filter.Session = wire.SessionIDs[0]
