@@ -3,6 +3,7 @@ package events
 import (
 	"time"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
@@ -206,4 +207,84 @@ func containsOrEmpty(set []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// WireFilterHasFullTriple reports whether the wire filter names at least
+// one value on each of the tenant / user / session identity axes — the
+// fail-closed precondition a NON-admin ListWindow read must satisfy (an
+// elided axis on a non-widened read would leak across that axis via
+// MatchWire's "empty = any" rule). The handler folds the caller's triple
+// into elided axes before the driver call; this predicate is the driver's
+// defence-in-depth check that it did (CLAUDE.md §5 "fail loudly").
+func WireFilterHasFullTriple(wire prototypes.EventFilter) bool {
+	return len(wire.TenantIDs) > 0 && len(wire.UserIDs) > 0 && len(wire.SessionIDs) > 0
+}
+
+// WireFilterFirst returns the first element of set, or "" when empty. Used
+// to project a representative triple component onto the
+// audit.admin_scope_used notice a widened ListWindow read emits (the
+// notice records the REQUESTED scope, mirroring the Bounds admin path).
+func WireFilterFirst(set []string) string {
+	if len(set) == 0 {
+		return ""
+	}
+	return set[0]
+}
+
+// WireFilterMatchesTriple reports whether id's tenant/user/session
+// satisfy the wire filter's identity sets ("empty = any" per axis). It is
+// the CHEAP head-record pre-filter the durable `events.list` scan uses to
+// skip sessions the filter excludes before loading any entry record; the
+// run + event-type + since/until predicates are applied per event via
+// MatchWire (they need the persisted bytes). Pure function.
+func WireFilterMatchesTriple(wire prototypes.EventFilter, id identity.Identity) bool {
+	return containsOrEmpty(wire.TenantIDs, id.TenantID) &&
+		containsOrEmpty(wire.UserIDs, id.UserID) &&
+		containsOrEmpty(wire.SessionIDs, id.SessionID)
+}
+
+// ListWindowFromSnapshot selects the `events.list` page from a
+// sequence-ordered (ascending) event snapshot: the most-recent `limit`
+// events matching the wire filter with Sequence < before (before==0 ⇒ from
+// the tail), returned OLDEST-FIRST. Bus-internal notices are excluded.
+// It fills Events / NextCursor / HasMore; the caller sets Truncated from
+// the substrate's honest retention signal.
+//
+// Paging grammar mirrors the `state.history` window: NextCursor is the
+// lowest Sequence in the returned page (0 when no older matching events
+// remain), HasMore reports whether older matches sit below the page. The
+// scan collects up to limit+1 matches so HasMore is exact without a second
+// pass. Pure function — no package state, safe for concurrent use.
+func ListWindowFromSnapshot(snapshot []Event, before uint64, limit int, wire prototypes.EventFilter) EventListPage {
+	if limit <= 0 || len(snapshot) == 0 {
+		return EventListPage{}
+	}
+	// Walk newest-first, collecting up to limit+1 matches so we can tell
+	// whether an older match remains (HasMore) without a second scan.
+	matches := make([]Event, 0, limit+1)
+	for i := len(snapshot) - 1; i >= 0; i-- {
+		ev := snapshot[i]
+		if before != 0 && ev.Sequence >= before {
+			continue
+		}
+		if IsBusInternalNotice(ev.Type) || !MatchWire(ev, wire) {
+			continue
+		}
+		matches = append(matches, ev)
+		if len(matches) > limit {
+			break
+		}
+	}
+	var page EventListPage
+	if len(matches) > limit {
+		page.HasMore = true
+		matches = matches[:limit]
+		page.NextCursor = matches[len(matches)-1].Sequence // lowest in page
+	}
+	// Reverse to oldest-first.
+	for i, j := 0, len(matches)-1; i < j; i, j = i+1, j-1 {
+		matches[i], matches[j] = matches[j], matches[i]
+	}
+	page.Events = matches
+	return page
 }

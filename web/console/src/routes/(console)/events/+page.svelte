@@ -247,25 +247,39 @@
           onretry={() => void state.load()}
         >
           {#snippet empty()}
-            <!-- Phase 108h: the table feed is the LIVE `events.subscribe`
-                 SSE — it streams events going forward, with no historical
-                 backfill on an in-memory event driver. A quiet window for
-                 the caller's own session is empty until events fire; widen
-                 the scope (pin a session / tenant), generate activity, or
-                 run a `durable` event driver for read-back. -->
+            <!-- Phase 162 (D-294): the table now composes TWO feeds — the
+                 live `events.subscribe` SSE (forward edge) AND the durable
+                 `events.list` historical window (backward edge, driven by
+                 the time-range picker). On a `durable` driver an empty
+                 window means no events in the selected range; on the inmem
+                 driver the ring only retains recent events. -->
             <div class="empty-block" data-testid="events-empty">
               <p class="empty-headline">No events in this window</p>
               <p class="empty-detail">
-                The table streams live from <code>events.subscribe</code>,
-                scoped to the active filter (the caller's own session by
-                default). A quiet window shows no rows until events fire —
-                widen the scope (pin a session or tenant), generate activity,
-                or set <code>events.driver: durable</code> in
-                <code>harbor.yaml</code> for historical read-back. Otherwise
-                clear filters or widen the time range.
+                The table composes the live <code>events.subscribe</code> tail
+                with the durable <code>events.list</code> historical window
+                (driven by the time-range picker), scoped to the active filter
+                (the caller's own session by default). An empty window means no
+                events in the selected range — widen the scope (pin a session
+                or tenant), widen the time range, or generate activity. Set
+                <code>events.driver: durable</code> in <code>harbor.yaml</code>
+                for complete historical read-back; the default in-memory
+                driver's ring only retains recent events (a retention-gap
+                notice appears when older rows were evicted).
               </p>
             </div>
           {/snippet}
+
+          {#if state.truncated}
+            <!-- D-294 honest retention-gap notice: the substrate's oldest
+                 retained row sits above the window's true first event (a
+                 best-effort ring evicted older rows). Never a silent drop. -->
+            <div class="retention-notice" data-testid="events-truncated" role="status">
+              Older events in this window were not retained — the event driver's
+              buffer evicted them. Switch to a <code>durable</code> driver for
+              complete historical read-back.
+            </div>
+          {/if}
 
           <div class="table-scroll">
             <DataTable
@@ -296,6 +310,21 @@
             </DataTable>
           </div>
         </PageState>
+
+        {#if state.canLoadOlder}
+          <!-- D-294 scroll-up paging: fetch the next older `events.list`
+               page via next_cursor. The live tail is unaffected. -->
+          <div class="load-older">
+            <button
+              type="button"
+              class="load-older-btn"
+              data-testid="events-load-older"
+              onclick={() => void state.loadOlderHistory()}
+            >
+              Load older events
+            </button>
+          </div>
+        {/if}
 
         {#if state.displayStatus === 'ready' || state.displayStatus === 'empty'}
           <Pagination
@@ -516,6 +545,41 @@
   .empty-detail code {
     font-family: var(--font-mono);
     color: var(--color-text);
+  }
+
+  .retention-notice {
+    margin: var(--space-2) var(--space-0);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-xs);
+    color: var(--color-text);
+    background: var(--color-warning-soft);
+    border: var(--border-hairline);
+    border-color: var(--color-warning);
+    border-radius: var(--radius-md);
+  }
+
+  .retention-notice code {
+    font-family: var(--font-mono);
+  }
+
+  .load-older {
+    display: flex;
+    justify-content: center;
+    padding: var(--space-2) var(--space-0);
+  }
+
+  .load-older-btn {
+    font-size: var(--text-xs);
+    color: var(--color-text);
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-pill);
+    padding: var(--space-1) var(--space-4);
+    cursor: pointer;
+  }
+
+  .load-older-btn:hover {
+    background: var(--color-surface);
   }
 
   .status-grid {

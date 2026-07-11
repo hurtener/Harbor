@@ -796,6 +796,52 @@ func (b *bus) Window(_ context.Context, before uint64, limit int, f events.Filte
 	return out, nil
 }
 
+// ListWindow implements events.HistoryReplayer. It serves the cross-
+// session, time-ranged, cursor-paged `events.list` read from the in-memory
+// ring: a bounded backward page of the most-recent matching events with
+// Sequence < q.Before, returned oldest-first. Unlike Window (by-id,
+// single session via MatchesScoped), ListWindow filters with MatchWire —
+// the wire filter's multi-valued identity sets + since/until bounds — and,
+// when q.Admin is set, fans in across every retained session. A non-admin
+// query whose filter elides an identity axis is rejected with
+// ErrIdentityScopeRequired (fail closed — the handler folds the caller's
+// triple, but the driver does not trust that it did). A widened (Admin)
+// query emits one audit.admin_scope_used before returning.
+//
+// truncated is the ring's honest retention signal (b.evicted): once an
+// append has overwritten an occupied slot, older matching events may have
+// been dropped and the page's oldest row is not guaranteed to be the true
+// first match (CLAUDE.md §13 "never silently lossy").
+func (b *bus) ListWindow(_ context.Context, q events.EventListQuery) (events.EventListPage, error) {
+	if b.closed.Load() {
+		return events.EventListPage{}, events.ErrBusClosed
+	}
+	if b.ringCap == 0 {
+		return events.EventListPage{}, events.ErrReplayUnavailable
+	}
+	if !q.Admin && !events.WireFilterHasFullTriple(q.Filter) {
+		return events.EventListPage{}, events.ErrIdentityScopeRequired
+	}
+	if q.Admin {
+		b.emitAdminScopeUsedAndFanOut(events.Filter{
+			Tenant:  events.WireFilterFirst(q.Filter.TenantIDs),
+			User:    events.WireFilterFirst(q.Filter.UserIDs),
+			Session: events.WireFilterFirst(q.Filter.SessionIDs),
+		})
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		return events.EventListPage{}, nil
+	}
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	evicted := b.evicted
+	b.publishMu.Unlock()
+	page := events.ListWindowFromSnapshot(snapshot, q.Before, limit, q.Filter)
+	page.Truncated = evicted
+	return page, nil
+}
+
 // emitAdminScopeUsedAndFanOut surfaces admin-scope use on the bus so
 // abuse is retroactively detectable — mirrors the Replay admin path.
 func (b *bus) emitAdminScopeUsedAndFanOut(f events.Filter) {

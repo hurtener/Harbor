@@ -166,21 +166,21 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `MethodEventsList` (`events.list`, `POST /v1/events/list`) registered
+- [x] `MethodEventsList` (`events.list`, `POST /v1/events/list`) registered
   (method set + canonical registration + conformance row); wire types
   `EventsListRequest{Identity, Filter EventFilter, Cursor, Limit}` /
   `EventsListResponse{Events []StateEvent, NextCursor, HasMore, Truncated}`
   in `internal/protocol/types` (single source, §8).
-- [ ] Tail-first paging semantics pinned: zero cursor ⇒ newest rows; each
+- [x] Tail-first paging semantics pinned: zero cursor ⇒ newest rows; each
   page is oldest-first within the window; `next_cursor` scrolls up;
   `has_more=false` + `next_cursor=0` at the retained head — mirroring
   `state.history` (a shared test asserts the two surfaces' paging grammar
   matches).
-- [ ] `since`/`until` bounds honored (inclusive/exclusive per the existing
+- [x] `since`/`until` bounds honored (inclusive/exclusive per the existing
   `EventFilter` godoc); a `until < since` request fails
   `CodeInvalidRequest` (the structurally-invalid posture the filter godoc
   already names, `types/events.go:28-30`).
-- [ ] Scoping: a non-widened caller gets only own-triple rows; a widened
+- [x] Scoping: a non-widened caller gets only own-triple rows; a widened
   read without the verified `admin` OR `console:fleet` claim (the closed
   two-scope set, matching the aggregate handler) fails with the
   scope-mismatch error; a widened read WITH either claim succeeds and emits
@@ -188,25 +188,25 @@ None.
   single-audit posture); scope is never read from the request body; a
   `console:fleet`-only caller can `events.list` the SAME window it can
   subscribe/aggregate over (the live/historical authz-parity pin).
-- [ ] Both V1 event drivers serve the read through the extended
+- [x] Both V1 event drivers serve the read through the extended
   `HistoryReplayer` seam: durable = real windows over the persisted log;
   inmem = ring contents + `truncated=true` past the ring head; a
   conformance scenario runs against both (no capability ceremony).
-- [ ] Rows are byte-identical to the `state.history` projection for the same
+- [x] Rows are byte-identical to the `state.history` projection for the same
   events (same `payloadWireValue`, same artifact-ref seeding) — a test pins
   row-shape equality; the sentinel-redaction posture holds (no raw
   args/results in any returned payload).
-- [ ] Console Events page: the window picker drives `events.list` for
+- [x] Console Events page: the window picker drives `events.list` for
   historical rows (initial load + scroll-up paging); the live SSE tail is
   unchanged; `truncated` renders a retention-gap notice; the empty-state
   copy is updated to reflect that read-back now exists (durable driver) and
   what the inmem ring honestly serves.
-- [ ] Full lockstep in the same PR: `make protocol-ts-gen` (manifest +
+- [x] Full lockstep in the same PR: `make protocol-ts-gen` (manifest +
   `events.ts` + `client.ts` mirrors), `make protocol-docs-gen`,
   `singlesource.CanonicalWireTypes`, generator typeindex registrations,
   `methods_test.go`. `ProtocolVersion` unbumped (additive).
-- [ ] `scripts/smoke/phase-162.sh` OK ≥ 3, FAIL = 0.
-- [ ] `-race` on touched packages; coverage ≥ 85% on touched Go packages.
+- [x] `scripts/smoke/phase-162.sh` OK ≥ 3, FAIL = 0.
+- [x] `-race` on touched packages; coverage ≥ 85% on touched Go packages.
 
 ## Files added or changed
 
@@ -320,19 +320,19 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
       (the two-identity integration leg + the widened-read audit leg).
-- [ ] **Reusable-artifact concurrent-reuse:** the bus drivers' D-025 stress
+- [x] **Reusable-artifact concurrent-reuse:** the bus drivers' D-025 stress
       extended with concurrent windowed reads (N≥100, `-race`).
-- [ ] **Integration test wires real drivers end-to-end, asserts identity
+- [x] **Integration test wires real drivers end-to-end, asserts identity
       propagation, covers ≥1 failure mode, runs under `-race`** (§17.3).
-- [ ] Wire changes complete: `make protocol-ts-gen-check` +
+- [x] Wire changes complete: `make protocol-ts-gen-check` +
       `make protocol-docs-gen-check` green with the regenerated artifacts
       committed.
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: N/A — none departed
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A — none departed

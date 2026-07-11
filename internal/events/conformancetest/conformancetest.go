@@ -39,6 +39,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
 // Harness bundles the driver-specific bus constructors the suite needs.
@@ -389,6 +390,133 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	// ListWindow — the cross-session, time-ranged, cursor-paged
+	// `events.list` read. Both V1 drivers serve it through the extended
+	// HistoryReplayer seam (no capability ceremony); the scenarios pin the
+	// paging grammar (shared with state.history), the non-admin own-triple
+	// scoping, and the admin cross-session fan-in.
+
+	t.Run("ListWindow_TailFirst_MostRecentK_OldestFirst", func(t *testing.T) {
+		h := factory()
+		bus := h.NewBus(t)
+		hr := mustHistoryReplayer(t, bus)
+		id := mkID(1)
+		publishN(t, bus, id, 10)
+		page, err := hr.ListWindow(context.Background(), events.EventListQuery{
+			Filter: wireFilterFor(id), Limit: 3,
+		})
+		if err != nil {
+			t.Fatalf("ListWindow: %v", err)
+		}
+		if got := winSeqs(page.Events); len(got) != 3 || got[0] != 8 || got[1] != 9 || got[2] != 10 {
+			t.Fatalf("ListWindow(tail, 3) = %v, want seqs [8 9 10]", got)
+		}
+		if !page.HasMore || page.NextCursor != 8 {
+			t.Fatalf("ListWindow(tail, 3): HasMore=%v NextCursor=%d, want true / 8", page.HasMore, page.NextCursor)
+		}
+	})
+
+	t.Run("ListWindow_CursorScrollsUp_ToHead", func(t *testing.T) {
+		h := factory()
+		bus := h.NewBus(t)
+		hr := mustHistoryReplayer(t, bus)
+		id := mkID(1)
+		publishN(t, bus, id, 5)
+		// First page (tail): seqs [3 4 5], NextCursor 3, HasMore.
+		p1, err := hr.ListWindow(context.Background(), events.EventListQuery{Filter: wireFilterFor(id), Limit: 3})
+		if err != nil {
+			t.Fatalf("ListWindow page1: %v", err)
+		}
+		if p1.NextCursor != 3 || !p1.HasMore {
+			t.Fatalf("page1 NextCursor=%d HasMore=%v, want 3 / true", p1.NextCursor, p1.HasMore)
+		}
+		// Second page (scroll up): seqs [1 2], head reached — NextCursor 0.
+		p2, err := hr.ListWindow(context.Background(), events.EventListQuery{Filter: wireFilterFor(id), Before: p1.NextCursor, Limit: 3})
+		if err != nil {
+			t.Fatalf("ListWindow page2: %v", err)
+		}
+		if got := winSeqs(p2.Events); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+			t.Fatalf("page2 = %v, want seqs [1 2]", got)
+		}
+		if p2.HasMore || p2.NextCursor != 0 {
+			t.Fatalf("page2 HasMore=%v NextCursor=%d, want false / 0 at the head", p2.HasMore, p2.NextCursor)
+		}
+	})
+
+	t.Run("ListWindow_NonAdmin_ScopedToOwnTriple", func(t *testing.T) {
+		h := factory()
+		bus := h.NewBus(t)
+		hr := mustHistoryReplayer(t, bus)
+		idA, idB := mkID(1), mkID(2)
+		publishN(t, bus, idA, 4)
+		publishN(t, bus, idB, 4)
+		page, err := hr.ListWindow(context.Background(), events.EventListQuery{Filter: wireFilterFor(idA), Limit: 50})
+		if err != nil {
+			t.Fatalf("ListWindow: %v", err)
+		}
+		if len(page.Events) != 4 {
+			t.Fatalf("non-admin ListWindow returned %d events, want 4 (own triple only)", len(page.Events))
+		}
+		for _, ev := range page.Events {
+			if ev.Identity.SessionID != idA.SessionID {
+				t.Fatalf("non-admin ListWindow leaked session %q, want only %q", ev.Identity.SessionID, idA.SessionID)
+			}
+		}
+	})
+
+	t.Run("ListWindow_Admin_FansInAcrossSessions", func(t *testing.T) {
+		h := factory()
+		bus := h.NewBus(t)
+		hr := mustHistoryReplayer(t, bus)
+		idA, idB := mkID(1), mkID(2)
+		publishN(t, bus, idA, 3)
+		publishN(t, bus, idB, 3)
+		// An admin query naming no identity axes (empty sets = any) fans in
+		// across every session in global-sequence order.
+		page, err := hr.ListWindow(context.Background(), events.EventListQuery{
+			Filter: prototypes.EventFilter{}, Admin: true, Limit: 50,
+		})
+		if err != nil {
+			t.Fatalf("ListWindow(admin): %v", err)
+		}
+		sessions := map[string]int{}
+		for _, ev := range page.Events {
+			sessions[ev.Identity.SessionID]++
+		}
+		if sessions[idA.SessionID] != 3 || sessions[idB.SessionID] != 3 {
+			t.Fatalf("admin fan-in saw sessions %v, want 3 from each of A/B", sessions)
+		}
+		// Global-sequence order: oldest-first, strictly increasing.
+		for i := 1; i < len(page.Events); i++ {
+			if page.Events[i-1].Sequence >= page.Events[i].Sequence {
+				t.Fatalf("admin fan-in not in global-sequence order at %d: %v", i, winSeqs(page.Events))
+			}
+		}
+	})
+
+	t.Run("ListWindow_EmptyTripleNonAdmin_ErrIdentityScopeRequired", func(t *testing.T) {
+		h := factory()
+		bus := h.NewBus(t)
+		hr := mustHistoryReplayer(t, bus)
+		if _, err := hr.ListWindow(context.Background(), events.EventListQuery{
+			Filter: prototypes.EventFilter{}, Limit: 10,
+		}); !errors.Is(err, events.ErrIdentityScopeRequired) {
+			t.Fatalf("ListWindow(empty-triple non-admin): err=%v, want ErrIdentityScopeRequired", err)
+		}
+	})
+
+	t.Run("ListWindow_ReplayDisabled_ErrReplayUnavailable", func(t *testing.T) {
+		h := factory()
+		bus := h.NewReplayDisabledBus(t)
+		hr := mustHistoryReplayer(t, bus)
+		id := mkID(1)
+		if _, err := hr.ListWindow(context.Background(), events.EventListQuery{
+			Filter: wireFilterFor(id), Limit: 10,
+		}); !errors.Is(err, events.ErrReplayUnavailable) {
+			t.Fatalf("ListWindow(disabled): err=%v, want ErrReplayUnavailable", err)
+		}
+	})
+
 	t.Run("Fence_DropsLateEventsAndEmptiesHistory", func(t *testing.T) {
 		h := factory()
 		bus := h.NewBus(t)
@@ -584,6 +712,17 @@ func publishN(t *testing.T, bus events.EventBus, id identity.Quadruple, n int) {
 // filterFor builds the identity-scoped Filter for id's triple.
 func filterFor(id identity.Quadruple) events.Filter {
 	return events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
+}
+
+// wireFilterFor builds the single-session wire EventFilter for id's triple
+// — the shape the events.list handler folds a non-widened caller's triple
+// into before calling ListWindow.
+func wireFilterFor(id identity.Quadruple) prototypes.EventFilter {
+	return prototypes.EventFilter{
+		TenantIDs:  []string{id.TenantID},
+		UserIDs:    []string{id.UserID},
+		SessionIDs: []string{id.SessionID},
+	}
 }
 
 // winSeqs extracts the Sequence values of evs, for compact failure messages.

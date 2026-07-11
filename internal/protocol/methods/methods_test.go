@@ -100,6 +100,7 @@ var wantMethods = []methods.Method{
 	methods.MethodSessionsSetTitle,
 	methods.MethodRunsSetOverrides,
 	methods.MethodStateHistory,
+	methods.MethodEventsList,
 	methods.MethodAuthRotateToken,
 	methods.MethodGovernanceSetTenantOverrides,
 	methods.MethodGovernanceGetTenantOverrides,
@@ -156,9 +157,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + agent-config USER tier five (agent_config.user.get + set_revision +
 	// list_revisions + diff + rollback) = 110,
 	// + Sessions-page erasure one (sessions.delete) = 111,
-	// + Sessions-page rename one (sessions.set_title, D-288) = 112.
-	if len(got) != 112 {
-		t.Fatalf("Methods() returned %d methods, want 112", len(got))
+	// + Sessions-page rename one (sessions.set_title, D-288) = 112,
+	// + events-read one (events.list, D-294) = 113.
+	if len(got) != 113 {
+		t.Fatalf("Methods() returned %d methods, want 113", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -258,6 +260,8 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodSessionsSetTitle: "sessions.set_title",
 
 		methods.MethodRunsSetOverrides: "runs.set_overrides",
+		methods.MethodStateHistory:     "state.history",
+		methods.MethodEventsList:       "events.list",
 		methods.MethodAuthRotateToken:  "auth.rotate_token",
 	}
 	for m, want := range wireStrings {
@@ -448,7 +452,8 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) ||
 			methods.IsSessionsMethod(m) || methods.IsRunsMethod(m) ||
 			methods.IsGovernanceAdminMethod(m) || methods.IsAgentConfigMethod(m) ||
-			methods.IsAuthMethod(m) || methods.IsStateMethod(m) {
+			methods.IsAuthMethod(m) || methods.IsStateMethod(m) ||
+			methods.IsEventsListMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

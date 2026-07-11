@@ -217,6 +217,15 @@ type muxConfig struct {
 	// hydration has a live windowed-read surface.
 	stateHistoryBus       events.EventBus
 	stateHistoryArtifacts artifacts.ArtifactStore
+	// eventsListArtifacts feeds the `events.list` durable, time-ranged,
+	// cross-session raw-event read handler — the `POST /v1/events/list`
+	// route. The bus is the mandatory NewMux bus (always present); the
+	// ArtifactStore is OPTIONAL — when unsupplied the `events.list` route is
+	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight green
+	// on a partial build. Production wiring (`harbor dev` /
+	// `harbortest/devstack`) supplies it so the Console Events page has a
+	// live historical-window read.
+	eventsListArtifacts artifacts.ArtifactStore
 	// agentConfigService feeds the admin-scoped agent-config control-plane
 	// handler — the `POST /v1/agent_config/*` routes. OPTIONAL: when
 	// unsupplied the `/v1/agent_config/*` route is NOT mounted, so the
@@ -695,6 +704,28 @@ func WithStateHistory(bus events.EventBus, arts artifacts.ArtifactStore) Option 
 	}
 }
 
+// WithEventsList wires the `events.list` durable, time-ranged,
+// cross-session raw-event read handler into NewMux — the
+// `POST /v1/events/list` route. The bus is the mandatory NewMux bus (it
+// MUST implement events.HistoryReplayer to serve a non-error page; a bus
+// without the capability surfaces CodeRuntimeError per request); arts is
+// the ArtifactStore the heavy-payload refs are enriched from.
+//
+// A nil store leaves the `events.list` route UN-mounted (the route's smoke
+// `skip_if_404` keeps preflight green on a partial build). When supplied
+// the route is mounted and, when WithValidator is also set, wrapped in
+// auth.Middleware like every other transport.
+//
+// events.list is READ-ONLY (CLAUDE.md §13) — it projects the durable event
+// log; no mutation path is mounted.
+func WithEventsList(arts artifacts.ArtifactStore) Option {
+	return func(c *muxConfig) {
+		if arts != nil {
+			c.eventsListArtifacts = arts
+		}
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -1002,6 +1033,23 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		stateHistoryHandler = shh
 	}
 
+	// The `events.list` durable, time-ranged, cross-session raw-event read
+	// handler. Built only when WithEventsList supplied a non-nil artifact
+	// store (the bus is the mandatory NewMux bus). When missing the
+	// `POST /v1/events/list` route is left un-mounted — the smoke
+	// `skip_if_404` keeps preflight green on a partial build.
+	var eventsListHandler *stream.EventsListHandler
+	if cfg.eventsListArtifacts != nil {
+		elh, err := stream.NewEventsListHandler(
+			bus, cfg.eventsListArtifacts,
+			stream.WithEventsListLogger(cfg.logger),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("transports: build events.list handler: %w", err)
+		}
+		eventsListHandler = elh
+	}
+
 	// The admin-scoped agent-config control-plane handler. Built only when
 	// WithAgentConfigService supplied a non-nil service. When unsupplied
 	// the `/v1/agent_config/*` route is left un-mounted — the smoke
@@ -1160,6 +1208,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedStateHistory = mw(mountedStateHistory)
 		}
 		mux.Handle(stream.StateHistoryRoutePattern, mountedStateHistory)
+	}
+
+	if eventsListHandler != nil {
+		mountedEventsList := eventsListHandler.Handler()
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedEventsList = mw(mountedEventsList)
+		}
+		mux.Handle(stream.EventsListRoutePattern, mountedEventsList)
 	}
 	return mux, nil
 }

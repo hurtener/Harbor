@@ -924,6 +924,10 @@ func (b *windowErrBus) Window(context.Context, uint64, int, events.Filter) ([]ev
 	return nil, errors.New("window error bus: forced scan failure")
 }
 
+func (b *windowErrBus) ListWindow(ctx context.Context, q events.EventListQuery) (events.EventListPage, error) {
+	return b.hr.ListWindow(ctx, q)
+}
+
 // TestCascadeEraser_ReemitGuardScanFailure_EmitsAnyway pins the re-emit
 // guard's safe degradation: when the observability-history scan errors,
 // the guard reports "not emitted" and completeErasure publishes — the

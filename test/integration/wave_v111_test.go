@@ -623,6 +623,9 @@ func (b *waveV111FlakyBus) Bounds(ctx context.Context, f events.Filter) (uint64,
 func (b *waveV111FlakyBus) Window(ctx context.Context, before uint64, limit int, f events.Filter) ([]events.Event, error) {
 	return b.replayer.Window(ctx, before, limit, f)
 }
+func (b *waveV111FlakyBus) ListWindow(ctx context.Context, q events.EventListQuery) (events.EventListPage, error) {
+	return b.replayer.ListWindow(ctx, q)
+}
 
 func waveV111SeedSession(t *testing.T, stack *devstack.DevStack, id identity.Identity) {
 	t.Helper()

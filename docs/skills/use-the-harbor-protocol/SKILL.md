@@ -203,6 +203,18 @@ Heavy payloads (a large tool result offloaded above the heavy-output threshold) 
 
 Identity rules: identity is mandatory (an incomplete triple is `identity_required`/401); an unknown or cross-identity `session_id` is `not_found`/404 (existence is never revealed across identities — never a 403); a cross-tenant read requires the verified `admin` scope claim.
 
+**Cross-session / time-ranged historical read — `events.list`.** `state.history` is a **by-id** read (one session). When you want the raw events across a **time window** — possibly across sessions, for a fleet observability view — use `events.list` (`POST /v1/events/list`): the same wire `EventFilter` you pass to `events.subscribe`/`events.aggregate` (identity axes + `since`/`until` + `event_types`) plus the SAME tail-first paging grammar as `state.history`:
+
+```http
+POST /v1/events/list
+Authorization: Bearer <JWT>
+Content-Type: application/json
+
+{ "filter": { "since": "2026-07-04T00:00:00Z" }, "cursor": 0, "limit": 50 }
+```
+
+Rows are the **same flat `StateEvent` shape** `state.history` returns (heavy payloads by routable `StateArtifactRef`, never inline); `cursor: 0` reads from the tail and you scroll one page older by passing the response's `next_cursor` back as `cursor` (0 ⇒ the retained head). `truncated: true` is the honest retention-gap flag at the window edge (a best-effort in-memory ring evicted older rows; a `durable` driver serves complete windows). By default the read is scoped to your own verified triple; a **cross-tenant (fleet) widening** — a `filter.tenant_ids` naming a tenant other than yours — requires the verified `admin` **or** `console:fleet` scope (derived server-side from your session, never the body) and emits one `audit.admin_scope_used` per request. Same authz as the live/aggregate feeds, so a `console:fleet` operator reads historically exactly what it can subscribe to.
+
 **Fleet enumeration (admin-widened `tasks.list` / `agents.list`).** By default both list methods project only your own `(tenant, user, session)` triple — a synthetic observer session sees nothing. A coordinator control plane rendering a fleet-wide Tasks board / Agents catalog widens the read with an additive `filter.tenant_ids` selector: `POST /v1/tasks/list` (or `/v1/agents/list`) with `{"filter": {"tenant_ids": ["tenant-a", "tenant-b"]}}` enumerates every task / agent across ALL sessions of the named tenants. Widening rides the SAME verified `admin` scope claim (no new "fleet" scope) — a `tenant_ids` request without it fails LOUD with `403 {"code": "scope_mismatch"}`, never a silent narrowing to own scope. Every widened row carries full per-`identity` `{tenant,user,session}` attribution, and every widened call emits an `audit.admin_scope_used` event. Cross-RUNTIME federation stays coordinator-side over these per-runtime reads (the same division as `sessions.list` / `events.subscribe`).
 
 ## 4b. Erasing a session — `sessions.delete`

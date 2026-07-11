@@ -91,6 +91,8 @@ When the planner "doesn't pick a tool" you expect, check here first — confirm 
 
 Every event the runtime emits, in real time, across ALL tasks the attached identity has scope for. Filter by event type, by identity, by task. Pause/resume the stream.
 
+The table composes TWO feeds: the live `events.subscribe` tail (forward edge) AND a durable **historical window** read back over `events.list` (D-294), driven by the time-range picker — so you can scroll UP into events from before you attached ("Load older events"), not just watch new ones arrive. On a `durable` event driver the window is complete; on the default in-memory driver the ring only retains recent events and a retention-gap notice appears when older rows were evicted. A cross-tenant (fleet) window needs the `admin` or `console:fleet` scope, exactly like the live feed.
+
 Useful when you want a system-level view ("what's happening RIGHT NOW") instead of a per-task view. The Tasks page is "this run"; Events is "every run." It's also where you'd filter for audit-shaped activity across the fleet.
 
 The event types you see most often:

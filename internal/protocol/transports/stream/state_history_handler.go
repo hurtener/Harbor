@@ -242,8 +242,20 @@ func (h *StateHistoryHandler) project(ctx context.Context, evs []events.Event, h
 
 // projectEvent flattens one event into the StateEvent wire shape and
 // enriches any routable artifact refs from the artifact store
-// (best-effort).
+// (best-effort). It delegates to the package-shared projectStateEvent so
+// the `state.history` and `events.list` reads project byte-identical rows.
 func (h *StateHistoryHandler) projectEvent(ctx context.Context, ev events.Event) prototypes.StateEvent {
+	return projectStateEvent(ctx, h.artifacts, ev)
+}
+
+// projectStateEvent is the SHARED flat-event projection used by both the
+// `state.history` and `events.list` windowed reads: it flattens one event
+// into the StateEvent wire shape and enriches any routable artifact refs
+// from the artifact store (best-effort). Keeping it one function (not
+// copied per handler) is what guarantees the two surfaces' rows are
+// byte-identical for the same event (payloadWireValue pass-through + the
+// same artifact-ref seeding).
+func projectStateEvent(ctx context.Context, arts artifacts.ArtifactStore, ev events.Event) prototypes.StateEvent {
 	se := prototypes.StateEvent{
 		Type:       string(ev.Type),
 		Sequence:   ev.Sequence,
@@ -275,7 +287,7 @@ func (h *StateHistoryHandler) projectEvent(ctx context.Context, ev events.Event)
 		// Best-effort enrichment: a store hit fills SHA256 / Filename /
 		// SizeBytes / MimeType. A miss leaves the payload-derived fields —
 		// the ID still routes to artifacts.get_ref.
-		if got, found, gerr := h.artifacts.GetRef(ctx, scope, seed.id); gerr == nil && found && got != nil {
+		if got, found, gerr := arts.GetRef(ctx, scope, seed.id); gerr == nil && found && got != nil {
 			ref.SHA256 = got.SHA256
 			ref.Filename = got.Filename
 			if got.SizeBytes != 0 {

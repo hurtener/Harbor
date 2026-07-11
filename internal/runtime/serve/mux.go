@@ -271,6 +271,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 	if in.Artifacts != nil {
 		muxOpts = append(muxOpts, transports.WithStateHistory(bus, in.Artifacts))
+		muxOpts = append(muxOpts, transports.WithEventsList(in.Artifacts))
 	}
 
 	if in.Catalog != nil {

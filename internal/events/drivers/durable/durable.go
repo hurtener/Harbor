@@ -852,6 +852,174 @@ func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Fil
 	return out, nil
 }
 
+// ListWindow implements events.HistoryReplayer — the cross-session,
+// time-ranged, cursor-paged `events.list` read. Unlike Bounds/Window
+// (by-id, single session via MatchesScoped), it honours the wire filter's
+// multi-valued identity sets + since/until bounds (MatchWire) and, when
+// q.Admin is set, fans IN across sessions in GLOBAL-SEQUENCE order. A
+// non-admin query whose filter elides an identity axis is rejected with
+// ErrIdentityScopeRequired (fail closed). A widened (Admin) query emits one
+// audit.admin_scope_used before returning — the per-request audit that
+// makes the sanctioned fan-in observable.
+//
+// The durable persisted log never trims the per-session sequence list in
+// V1, so a durable-mode page reports truncated=false. In best-effort ring
+// mode (no StateStore) it reports truncated=evicted, exactly like
+// boundsBestEffort.
+func (b *bus) ListWindow(ctx context.Context, q events.EventListQuery) (events.EventListPage, error) {
+	if b.closed.Load() {
+		return events.EventListPage{}, events.ErrBusClosed
+	}
+	if !q.Admin && !events.WireFilterHasFullTriple(q.Filter) {
+		return events.EventListPage{}, events.ErrIdentityScopeRequired
+	}
+	if q.Admin {
+		b.emitAdminScopeUsed(events.Filter{
+			Tenant:  events.WireFilterFirst(q.Filter.TenantIDs),
+			User:    events.WireFilterFirst(q.Filter.UserIDs),
+			Session: events.WireFilterFirst(q.Filter.SessionIDs),
+		})
+	}
+	if q.Limit <= 0 {
+		return events.EventListPage{}, nil
+	}
+	if b.bestEffort {
+		// Best-effort mode with the ring disabled (ReplayBufferSize 0) has
+		// no windowed-read substrate — fail loud, never a silent empty page
+		// (mirrors windowBestEffort / the inmem driver).
+		if b.ringCap == 0 {
+			return events.EventListPage{}, events.ErrReplayUnavailable
+		}
+		b.publishMu.Lock()
+		snapshot := b.ringSnapshotLocked()
+		evicted := b.evicted
+		b.publishMu.Unlock()
+		page := events.ListWindowFromSnapshot(snapshot, q.Before, q.Limit, q.Filter)
+		page.Truncated = evicted
+		return page, nil
+	}
+	return b.listWindowDurable(ctx, q)
+}
+
+// listWindowDurable serves the events.list page from the persisted log. It
+// gathers the candidate session head records (the single named session for
+// a non-admin read; every session head via the maintenance ListKind scan
+// for a fleet read), merges their sequences in global-descending order,
+// then loads entries lazily — MatchWire filtering per event — collecting up
+// to limit+1 matches so HasMore is exact. A pathological fleet window is
+// bounded by limit per page (the load loop stops at limit+1 matches); no
+// unbounded entry scan runs.
+func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (events.EventListPage, error) {
+	type sessionHead struct {
+		id   identity.Quadruple
+		seqs []uint64
+	}
+	var heads []sessionHead
+
+	if !q.Admin {
+		// The handler folded the caller's triple; the filter names exactly
+		// one session. Resolve it and load just that head (no maintenance
+		// scan for the common own-session read).
+		quad := identity.Quadruple{Identity: identity.Identity{
+			TenantID:  events.WireFilterFirst(q.Filter.TenantIDs),
+			UserID:    events.WireFilterFirst(q.Filter.UserIDs),
+			SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
+		}}
+		if b.isFenced(quad) {
+			return events.EventListPage{}, nil
+		}
+		hd, err := b.loadHead(ctx, quad)
+		if err != nil {
+			return events.EventListPage{}, fmt.Errorf("durable: events.list load head: %w", err)
+		}
+		heads = append(heads, sessionHead{id: quad, seqs: hd.Sequences})
+	} else {
+		recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindHead)
+		if err != nil {
+			return events.EventListPage{}, fmt.Errorf("durable: events.list scan head records: %w", err)
+		}
+		for _, rec := range recs {
+			// ListKind matches kindHead as a literal PREFIX — guard on the
+			// exact kind so a future sibling kind under the same stem is not
+			// mis-decoded (mirrors recoverNextSeq).
+			if rec.Kind != kindHead {
+				continue
+			}
+			// Cheap identity pre-filter on the head's session triple: skip
+			// sessions the filter's identity sets exclude before loading any
+			// entry. Run + event-type + time predicates run per event below.
+			if !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) {
+				continue
+			}
+			if b.isFenced(rec.Identity) {
+				continue
+			}
+			hd, err := decodeHead(rec.Bytes)
+			if err != nil {
+				return events.EventListPage{}, fmt.Errorf("durable: events.list decode head (id=%s): %w", rec.ID, err)
+			}
+			heads = append(heads, sessionHead{id: rec.Identity, seqs: hd.Sequences})
+		}
+	}
+
+	// Merge candidate (session, seq) pairs below the cursor, global-
+	// descending by sequence.
+	type candidate struct {
+		id  identity.Quadruple
+		seq uint64
+	}
+	var cands []candidate
+	for _, h := range heads {
+		for _, seq := range h.seqs {
+			if q.Before != 0 && seq >= q.Before {
+				continue
+			}
+			cands = append(cands, candidate{id: h.id, seq: seq})
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].seq > cands[j].seq })
+
+	matches := make([]events.Event, 0, q.Limit+1)
+	for _, c := range cands {
+		if err := ctx.Err(); err != nil {
+			return events.EventListPage{}, err
+		}
+		rec, err := b.store.Load(ctx, c.id, kindEntryPrefix+seqToken(c.seq))
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				// The head lists a sequence whose entry record is missing —
+				// a torn write or storage bug. Fail loudly rather than
+				// serving a gap (RFC §6.13 / CLAUDE.md §13).
+				return events.EventListPage{}, fmt.Errorf("durable: events.list gap — head lists seq=%d but entry record is missing: %w",
+					c.seq, err)
+			}
+			return events.EventListPage{}, fmt.Errorf("durable: events.list load entry seq=%d: %w", c.seq, err)
+		}
+		ev, err := decodeEvent(rec.Bytes)
+		if err != nil {
+			return events.EventListPage{}, fmt.Errorf("durable: events.list decode entry seq=%d: %w", c.seq, err)
+		}
+		if events.IsBusInternalNotice(ev.Type) || !events.MatchWire(ev, q.Filter) {
+			continue
+		}
+		matches = append(matches, ev)
+		if len(matches) > q.Limit {
+			break
+		}
+	}
+
+	var page events.EventListPage
+	if len(matches) > q.Limit {
+		page.HasMore = true
+		matches = matches[:q.Limit]
+		page.NextCursor = matches[len(matches)-1].Sequence // lowest in page
+	}
+	reverseEvents(matches)
+	page.Events = matches
+	// The durable persisted log never trims — truncated is always false.
+	return page, nil
+}
+
 // boundsBestEffort reports the head/tail from the in-memory ring. The
 // best-effort ring EVICTS on overflow, so it reports truncated=evicted:
 // once an append has overwritten an occupied slot, older events were

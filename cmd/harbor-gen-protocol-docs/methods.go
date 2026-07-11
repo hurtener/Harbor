@@ -394,6 +394,16 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "StateHistoryRequest", Response: "StateHistoryResponse",
 		},
 
+		// --- Events read: durable, time-ranged, cross-session raw-event
+		// read. Non-widened callers see their own tuple; a cross-tenant
+		// (fleet) read admits the closed two-scope set (admin OR
+		// console:fleet), matching events.aggregate.
+		methods.MethodEventsList: {
+			Route: stream.EventsListRoutePattern, Mutates: false,
+			Request: "EventsListRequest", Response: "EventsListResponse",
+			CrossTenant: crossTenantAdminOrFleet,
+		},
+
 		// --- Auth.
 		methods.MethodAuthRotateToken: {
 			Route: wildcardRoute(stream.AuthRoutePattern, "auth.", methods.MethodAuthRotateToken), Mutates: true,
@@ -681,6 +691,8 @@ func classify(m methods.Method) string {
 		return "runs"
 	case methods.IsStateMethod(m):
 		return "state snapshots (read-only)"
+	case methods.IsEventsListMethod(m):
+		return "events read (read-only)"
 	case methods.IsAuthMethod(m):
 		return "auth"
 	case methods.IsGovernanceAdminMethod(m):
@@ -722,6 +734,7 @@ var methodClusters = []struct {
 	{"MCP apps", methods.IsMCPAppsMethod, "mcp-apps"},
 	{"Runs", methods.IsRunsMethod, "runs"},
 	{"State snapshots", methods.IsStateMethod, "state-snapshots"},
+	{"Events read", methods.IsEventsListMethod, "events-read"},
 	{"Auth", methods.IsAuthMethod, "auth"},
 	{"Governance admin", methods.IsGovernanceAdminMethod, "governance-admin"},
 	{"Agent config", methods.IsAgentConfigMethod, "agent-config"},

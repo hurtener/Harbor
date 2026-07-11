@@ -414,6 +414,18 @@ func (f Filter) Matches(ev Event) bool {
 // the named session); it is not a licence to widen the scan. This closes a
 // cross-session/cross-tenant disclosure on the ring-backed drivers, where
 // Matches(ev) under Admin returned the whole ring.
+//
+// The ONE sanctioned exception to "a by-id read never fans in" is
+// HistoryReplayer.ListWindow (the `events.list` substrate): it is an
+// authority-gated, EXPLICITLY-REQUESTED fleet read on a DISTINCT method,
+// carrying a verified `admin` OR `console:fleet` claim plus a per-request
+// `audit.admin_scope_used` emit. That is categorically different from the
+// silent Admin-widening-of-a-by-id-read this rule closed: there, an admin
+// asking for ONE session got the whole ring back with no explicit request
+// and no audit. ListWindow honours the wire filter's multi-valued identity
+// SETS (MatchWire) rather than one named triple, so its widening is the
+// operator's stated intent, gated and observed — not a leak. The by-id
+// reads (Bounds/Window) keep the never-fan-in rule verbatim.
 func (f Filter) MatchesScoped(ev Event) bool {
 	if f.Tenant != "" && ev.Identity.TenantID != f.Tenant {
 		return false
@@ -543,17 +555,32 @@ type Replayer interface {
 //     Sequence < before (before==0 ⇒ from the tail), returned OLDEST-FIRST
 //     within the window so the client appends them in order.
 //
-// Both reads are BY-ID: they answer for exactly the session the filter
-// names. Unlike Subscribe / Replay — whose Admin mode fans IN across
-// identities for a fleet-view tail — a HistoryReplayer read ALWAYS scopes
+// Bounds and Window are BY-ID: they answer for exactly the session the
+// filter names. Unlike Subscribe / Replay — whose Admin mode fans IN across
+// identities for a fleet-view tail — a Bounds/Window read ALWAYS scopes
 // to the filter's named session triple, even under Admin. Admin authority
 // is decided at the call edge (it authorises reading ANOTHER identity's
 // session); it never widens the per-session scan to return other sessions'
-// events from a shared ring. Drivers implement this with MatchesScoped
+// events from a shared ring. Drivers implement these two with MatchesScoped
 // (which honours the named triple regardless of Admin), never Matches. An
 // empty-triple non-admin filter is still rejected with
 // ErrIdentityScopeRequired; a driver that retains no events for the
 // filter's session returns ErrNoHistory from Bounds.
+//
+// ListWindow is the ONE deliberately-amended, cross-session member of this
+// seam — the `events.list` substrate. It is a time-ranged, filtered,
+// cursor-paged read that, when its query carries Admin (a verified `admin`
+// OR `console:fleet` claim, decided at the call edge from the verified
+// session — never the request body), FANS IN across sessions in
+// global-sequence order, honouring the wire filter's multi-valued identity
+// SETS + since/until bounds (MatchWire), and emits one
+// `audit.admin_scope_used` per widened request. This does NOT contradict
+// the never-fan-in rule the Bounds/Window godoc and MatchesScoped record:
+// that rule closed a SILENT Admin-widening of a by-id read (asking for one
+// session, getting the whole ring, no audit). ListWindow's widening is the
+// EXPLICIT, authority-gated, audited fleet read the operator asked for on a
+// distinct method — categorically different. A non-admin ListWindow scopes
+// to the caller's own triple exactly like Bounds/Window.
 //
 // The type assertion bus.(events.HistoryReplayer) is a compile-shaped
 // contract; a driver that does not implement it (or whose replay surface
@@ -584,6 +611,64 @@ type HistoryReplayer interface {
 	// events below before) returns (nil, nil). Identity-scoped exactly
 	// like Subscribe / Replay.
 	Window(ctx context.Context, before uint64, limit int, f Filter) ([]Event, error)
+	// ListWindow is the cross-session, time-ranged, cursor-paged windowed
+	// read backing the `events.list` Protocol method. Unlike Bounds/Window
+	// (by-id, single session), it honours the wire filter's multi-valued
+	// identity sets + since/until time bounds (MatchWire) and — when
+	// q.Admin is set (the verified fleet claim, decided at the call edge)
+	// — FANS IN across sessions in global-sequence order. A non-admin
+	// query scopes to the caller's own triple (the handler folds it into
+	// the filter's elided axes); a non-admin query whose filter still
+	// elides an identity axis is rejected with ErrIdentityScopeRequired
+	// (fail closed). A widened (Admin) query emits exactly one
+	// audit.admin_scope_used before returning — the per-request audit that
+	// makes the sanctioned fan-in observable.
+	//
+	// Paging mirrors Window: q.Before is the exclusive upper sequence
+	// bound (0 ⇒ from the tail); the page is the most-recent K matching
+	// events with Sequence < Before, returned OLDEST-FIRST. NextCursor is
+	// the lowest Sequence in the page (0 when the retained head is
+	// reached); HasMore reports whether older matching events remain;
+	// Truncated is the honest retention-gap signal (true on a wrapped
+	// best-effort ring, false on the gap-free durable log). Bus-internal
+	// notices (IsBusInternalNotice) are excluded, exactly like Window.
+	ListWindow(ctx context.Context, q EventListQuery) (EventListPage, error)
+}
+
+// EventListQuery is the request shape for HistoryReplayer.ListWindow (the
+// `events.list` substrate). Filter carries the multi-valued identity sets,
+// since/until time bounds, and event-type selector; the handler has
+// already folded the caller's triple into any elided axis on the
+// non-widened path, or gated the fan-in on the verified scope claim on the
+// widened path. Admin authorises the cross-session fan-in (decided at the
+// call edge from the verified session, never the request body).
+type EventListQuery struct {
+	// Filter is the wire predicate (identity sets + since/until + types).
+	Filter types.EventFilter
+	// Before is the exclusive upper sequence bound (the scroll-up cursor);
+	// 0 ⇒ from the tail (the newest retained events).
+	Before uint64
+	// Limit bounds the page size (the caller clamps to the wire max).
+	Limit int
+	// Admin authorises the cross-session fan-in. When false the read is
+	// scoped to the caller's own triple (folded into Filter by the
+	// handler); when true the driver fans in across sessions and emits
+	// one audit.admin_scope_used per request.
+	Admin bool
+}
+
+// EventListPage is the response shape for HistoryReplayer.ListWindow.
+type EventListPage struct {
+	// Events is the page, oldest-first within the window.
+	Events []Event
+	// NextCursor is the lowest Sequence in the page (0 when the retained
+	// head is reached — no older matching events).
+	NextCursor uint64
+	// HasMore reports whether older matching events remain below the page.
+	HasMore bool
+	// Truncated is the honest retention-gap signal (true on a wrapped ring
+	// whose oldest retained row may sit above the true first match).
+	Truncated bool
 }
 
 // Fencer is the optional capability a replay/history-capable bus driver

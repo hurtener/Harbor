@@ -174,7 +174,10 @@ observability is privileged to the first-party UI. Reopening a long
 conversation is a first-class read: the `state.history` method serves a
 bounded, tail-first window of a session's durable event stream with a
 scroll-up cursor, so a client rehydrates the newest turn first instead of
-re-streaming the whole history.
+re-streaming the whole history. Its sibling `events.list` widens that read to
+a time range across sessions — the same flat rows, the same paging grammar —
+so a fleet observability view scrolls the raw event log back over a window
+(fleet-wide reads gated on a verified `admin`/`console:fleet` scope).
 
 **Persistence** ships as three conformance-equal drivers everywhere it matters
 (StateStore, ArtifactStore, MemoryStore, …): in-memory for dev, SQLite

@@ -204,6 +204,9 @@ var CanonicalMethods = map[string]struct{}{
 	"runs.set_overrides": {},
 	// State-snapshots cluster — one method (the windowed event-replay read).
 	"state.history": {},
+	// Events-read cluster — one method (the durable, time-ranged,
+	// cross-session windowed raw-event read).
+	"events.list": {},
 	// Console-Settings-page cluster — one method.
 	"auth.rotate_token": {},
 	// Console-Flows-page cluster — six methods.
@@ -626,6 +629,12 @@ var CanonicalWireTypes = map[string]string{
 	"StateArtifactRef":     "types",
 	"StateEvent":           "types",
 	"StateHistoryResponse": "types",
+	// Events-read windowed raw-event wire types — the `events.list`
+	// request/response reuse the existing EventFilter + StateEvent row
+	// (no new row shape) and live in internal/protocol/types
+	// (internal/protocol/types/events.go).
+	"EventsListRequest":  "types",
+	"EventsListResponse": "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

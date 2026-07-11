@@ -904,6 +904,26 @@ const (
 	// is its own O(1) predicate. The wire-transport route is
 	// `POST /v1/state/history`.
 	MethodStateHistory Method = "state.history"
+
+	// MethodEventsList — the durable, time-ranged, cross-session raw-event
+	// read. It completes the events surface beside `events.subscribe` (the
+	// forward-only live tail) and `events.aggregate` (bucketed counts with
+	// no payloads): `events.list` returns a bounded, tail-first page of the
+	// flat `StateEvent` rows the SSE and `state.history` already project —
+	// the existing `EventFilter` (identity axes + `since`/`until` time
+	// bounds + event-type selector) plus a sequence-based scroll-up cursor
+	// mirroring `state.history`'s paging grammar. Non-widened callers read
+	// only their own identity tuple's rows; a cross-tenant (fleet) read
+	// requires the verified `admin` OR `console:fleet` claim (the closed
+	// two-scope set, matching `events.aggregate`), derived server-side from
+	// the verified session — never the request body — and emits one
+	// `audit.admin_scope_used` per widened request. Heavy payloads ride by
+	// a routable `StateArtifactRef`, never inline (RFC §6.5). NOT a control
+	// / streaming-events / search / posture / pause / topology / artifacts
+	// / memory / mcp / tools / flows / agents / sessions / tasks / runs /
+	// state method — `IsEventsListMethod` is its own O(1) predicate. The
+	// wire-transport route is `POST /v1/events/list`.
+	MethodEventsList Method = "events.list"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -1002,6 +1022,8 @@ var canonicalMethods = map[Method]struct{}{
 	MethodRunsSetOverrides: {},
 
 	MethodStateHistory: {},
+
+	MethodEventsList: {},
 
 	MethodAuthRotateToken: {},
 
@@ -1518,6 +1540,28 @@ func IsStateMethod(m Method) bool {
 	return ok
 }
 
+// canonicalEventsListMethods is the closed sub-set of the events-read
+// `events.list` surface. Today it holds the single `events.list` durable,
+// time-ranged, cross-session windowed read. It is distinct from the
+// streaming-events set (`events.subscribe` / `events.aggregate`): those
+// route through the SSE / aggregate transport, whereas `events.list` is a
+// one-shot request/response mounted at its own `POST /v1/events/list`
+// route (the state.history handler-shape). IsEventsListMethod is O(1); the
+// transport branches on it to keep the request out of the task-control
+// steering inbox.
+var canonicalEventsListMethods = map[Method]struct{}{
+	MethodEventsList: {},
+}
+
+// IsEventsListMethod reports whether m is the canonical `events.list`
+// read (— today just `events.list`). NOT a control / streaming-events
+// method — a new non-control events-read method extends THIS predicate,
+// never the steering inbox.
+func IsEventsListMethod(m Method) bool {
+	_, ok := canonicalEventsListMethods[m]
+	return ok
+}
+
 // canonicalAuthMethods is the closed sub-set of the `auth.*` methods
 // landed earlier. Today it holds the single
 // `auth.rotate_token` method. IsAuthMethod is O(1); the stream
@@ -1745,6 +1789,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsStateMethod(m) {
+		return false
+	}
+	if IsEventsListMethod(m) {
 		return false
 	}
 	if IsGovernanceAdminMethod(m) {
