@@ -46,18 +46,25 @@ consumers, no parallel implementation (§13).
   chain — while deliberately NOT closing the flow-execution half (that is
   the parked 92p's territory, and for this consumer the flow is
   consumer-side by design).
-- brief 09 §"What bifrost provides": discovery lazily populates
-  authorize/token URLs from `.well-known` metadata so operators "don't have
-  to hand-register" per server. Harbor already implements the RFC 8414 half
-  (`Provider.resolveEndpoints`, `internal/tools/auth/provider.go:858`); this
-  phase adds the upstream RFC 9728 step and REUSES the 8414
+- brief 09 §"What to lift from bifrost (concrete)" item 3 (the
+  OAuth-discovery option): "`ServerURL` populates `AuthorizeURL` /
+  `TokenURL` lazily via `.well-known/oauth-authorization-server`. Reduces
+  operator config burden." Harbor already implements that RFC 8414 half
+  (`Provider.resolveEndpoints`, `internal/tools/auth/provider.go:858`);
+  this phase adds the upstream RFC 9728 step and REUSES the 8414
   fetching/parsing rather than growing a second copy.
-- brief 09 §"the dynamic-registration footguns": registration can be
-  rejected, demand pre-registered clients, or mismatch redirects — a reason
-  this phase REPORTS `registration_endpoint` (RFC 7591) as data and never
-  invokes it (`Provider.ensureClient`, `provider.go:924`, stays unused
-  here): acting on registration is flow-execution, which is out of scope by
-  the custody boundary.
+- brief 09 §"What to lift from bifrost (concrete)" item 2 (the RFC 7591
+  dynamic-registration option): "Implementing it once means operators don't
+  have to hand-register a client app per server." The brief's
+  recommendation is about the FLOW-side phases; here the
+  `registration_endpoint` is REPORTED as data and never invoked
+  (`Provider.ensureClient`, `provider.go:924`, stays unused). The
+  report-don't-invoke posture is justified NOT by the brief (which is
+  positive on registration) but by this phase's custody boundary — invoking
+  registration is flow execution, which stays consumer-side by design —
+  plus the MCP authorization spec's own framing of discovery metadata as
+  advertisement rather than instruction (an explicitly non-brief
+  rationale).
 
 ## Findings I'm departing from (if any)
 
@@ -74,8 +81,11 @@ None.
      (net-new: nothing captures the challenge today, grep-verified);
   2. an explicit operator/consumer probe: `mcp.servers.probe` (the existing
      verb the Console already drives,
-     `internal/mcpconsole/mcpconsole.go:141`) runs discovery when the dial
-     answers the challenge — so discovery is on-demand, never a background
+     `internal/mcpconsole/mcpconsole.go:141`) TRIGGERS discovery when the
+     dial answers the challenge; the discovered requirement is then read via
+     the updated connection view (`mcp.servers.get`/`list`) — `probe`'s own
+     return stays the existing `MCPProbeRow` (`internal/protocol/mcp.go:
+     142-143`), unchanged. Discovery is on-demand, never a background
      crawler.
 - **Discover the metadata chain (report-only).**
   RFC 9728 protected-resource metadata (the challenge's `resource_metadata`
@@ -110,14 +120,27 @@ None.
     surfaced as a PROPOSAL an operator confirms, never auto-applied to any
     config. Nothing in Harbor consumes the discovered endpoints as config
     in this phase.
-  - **SSRF guardrails on the discovery fetches** (the `resource_metadata`
-    pointer is attacker-influenceable): same-origin-as-server default
-    (a metadata URL on a different origin than the declared MCP server URL
-    is refused unless the connection's config explicitly allows the named
-    origin), bounded redirects, per-fetch timeout, response size cap,
-    https-only for non-loopback, and NO credentials of any kind attached to
-    discovery fetches. Each refusal is a typed, loud error carried in the
-    discovery status — never a silent empty result (§13).
+  - **SSRF guardrails on the discovery fetches, specified PER HOP** (the
+    `resource_metadata` pointer is attacker-influenceable):
+    - *RFC 9728 hop (protected-resource metadata):* same-origin-as-server
+      default — a metadata URL on a different origin than the declared MCP
+      server URL is refused unless the connection's config explicitly
+      allows the named origin.
+    - *RFC 8414 hop (authorization-server metadata):* inherently
+      CROSS-origin (the AS is normally a different host), so this hop
+      always requires the explicit per-connection origin allowance for the
+      AS origin(s) — the stated UX consequence: most real discoveries need
+      an operator-granted allowance before the AS half of the chain
+      populates, and a chain refused at this hop surfaces partially (the
+      9728 half + a typed needs-allowance status), never silently empty.
+    - *All allowed cross-origin fetches additionally refuse* private-range
+      and IP-literal destinations (RFC 1918/4193/loopback/link-local and
+      bare-IP hosts) — an allowance names a public origin, never a network
+      hole.
+    - *Every hop:* bounded redirects, per-fetch timeout, response size cap,
+      https-only for non-loopback, and NO credentials of any kind attached.
+      Each refusal is a typed, loud error carried in the discovery status —
+      never a silent empty result (§13).
 - **Consumer, same phase (D-062).** The Console MCP Connections page
   (Phase 108m; a pure `mcp.servers.*` consumer,
   `web/console/src/routes/(console)/mcp-connections/+page.svelte:16-24`)
@@ -126,15 +149,23 @@ None.
   URL + discovered-at provenance — presented as "discovered requirement
   (unverified — from the connected server)", alongside the existing
   auth-pending state and binding count.
-- **Sibling reconciliation (§13 — one mechanism, two consumers).** The
-  parked Phase 92p (`docs/plans/phase-92p-mcp-oauth-discovery.md`, reserved
-  D-246) plans the SAME 401 → RFC 9728 → RFC 8414 chain but then
-  synthesizes an `OAuthConfig` and parks a runtime-side consent flow. This
-  phase ships the shared DISCOVERY mechanism + the report-only consumer;
-  if 92p is ever unparked it REUSES this phase's discovery output and adds
-  the synthesis/flow leg — the two phases are one discovery implementation
-  with two consumption postures, never parallel discovery code. 92p's plan
-  gains a pointer note in the same PR.
+- **Sibling reconciliation (§13 — one mechanism, N consumers).** TWO
+  sibling phases plan the SAME 401 → RFC 9728 → RFC 8414 chain with
+  flow-execution on top: the parked Phase 92p
+  (`docs/plans/phase-92p-mcp-oauth-discovery.md`, reserved D-246 —
+  synthesizes an `OAuthConfig` and parks a runtime-side consent flow) and
+  the ready Phase 85b (`docs/plans/phase-85b-mcp-http-oauth.md`, master row
+  status "Ready now (scope ↑)" — wires `auth.Provider` into the MCP driver
+  with RFC 9728 discovery, the `WWW-Authenticate` 401 step-up, and RFC 8707
+  resource indicators, running the interactive flow through pause/resume).
+  This phase single-homes the DISCOVERY mechanism (challenge capture +
+  chain walker) and ships the report-only consumer; when 85b lands — or if
+  92p is unparked — they REUSE this phase's discovery output and add their
+  flow legs (the Phase 148 precedent: one injection transport, later
+  phases reuse it). One discovery implementation, N consumption postures,
+  never parallel discovery code. Both sibling plan files carry pointer
+  notes recording this (85b's added in the plans PR; 92p's in this
+  phase's implementation PR).
 
 ## Non-goals
 
@@ -165,20 +196,27 @@ None.
   fetch/parse (`Provider.resolveEndpoints` composition — no second parser);
   partial chains surface partially with a typed per-step status (metadata
   absent / fetch refused / parse failed), never a silent empty.
-- [ ] SSRF guardrails pinned by tests: cross-origin metadata URL refused by
-  default and allowed only via explicit per-connection origin allowance;
+- [ ] SSRF guardrails pinned by tests, per hop: the 9728 hop's cross-origin
+  refusal + explicit-allowance pass; the 8414 hop REQUIRING the allowance
+  (and surfacing the typed needs-allowance partial status without it);
+  private-range/IP-literal refusal on allowed cross-origin fetches;
   redirect bound enforced; size cap enforced (an oversized body fails
   loud); timeout enforced; https-only for non-loopback; no Authorization /
   cookie headers on any discovery fetch (asserted against a recording
   fixture server).
 - [ ] `MCPServerView.oauth_requirement` (additive wire type) carries the
   verbatim chain + `discovered_at` + `source` + `source_url`;
-  `mcp.servers.list`/`get` project it; `mcp.servers.probe` triggers
-  discovery on a challenge and returns the updated view.
-- [ ] §17.8 fixtures derive from the REAL spec artifacts: the conformance
-  fixture server replays a captured/spec-derived RFC 9728 document and
-  RFC 8414 document (field names from the RFCs / the MCP 2025-06-18
-  authorization spec — never a hand-invented shape); a wrong-field-name
+  `mcp.servers.list`/`get` project it; `mcp.servers.probe` TRIGGERS
+  discovery on a challenge (its own `MCPProbeRow` return is unchanged) and
+  the updated view is read via `mcp.servers.get` — one projection home,
+  no probe-row wire change.
+- [ ] §17.8 fixtures derive from the REAL spec artifacts — the CONCRETE
+  committed artifacts are the RFCs' own example documents: RFC 9728 §3.2's
+  protected-resource-metadata response example and RFC 8414 §3.2's
+  authorization-server-metadata response example, committed verbatim as
+  `testdata/` fixtures with provenance comments (plus a captured
+  `WWW-Authenticate` challenge line per the MCP 2025-06-18 authorization
+  spec's example) — never a hand-invented shape; a wrong-field-name
   mutation of the fixture FAILS the test (the right-field/wrong-field
   discriminator).
 - [ ] Console MCP Connections page renders the discovered requirement
@@ -223,9 +261,11 @@ None.
   RFC 9728/8414 documents, with a recording layer for the
   zero-non-metadata-fetch and no-credential assertions.
 - `test/integration/phase164_mcp_oauth_discovery_test.go` (new).
-- `docs/plans/phase-92p-mcp-oauth-discovery.md` — a pointer note recording
-  the shared-discovery reconciliation (92p reuses this phase's chain if
-  unparked).
+- `docs/plans/phase-85b-mcp-http-oauth.md` — pointer note recording that
+  the 9728/8414 discovery chain is single-homed in this phase's mechanism
+  (85b reuses it when it lands) — ADDED IN THE PLANS PR.
+- `docs/plans/phase-92p-mcp-oauth-discovery.md` — the same pointer note for
+  the parked 92p (added in this phase's implementation PR).
 - `scripts/smoke/phase-164.sh` (new); `docs/plans/README.md`;
   `docs/decisions.md` (D-297); `docs/glossary.md`.
 
@@ -285,8 +325,9 @@ None.
 - 28 (the MCP southbound driver + its http transports), 30 (tools/auth —
   the OAuth provider home whose RFC 8414 machinery this composes), 108m
   (the MCP Connections page the consumer lands on), 118 (D-223 lockstep).
-  Related, NOT a dependency: 92p (parked; reserved D-246) — see the
-  sibling-reconciliation goal.
+  Related, NOT deps: 92p (parked; reserved D-246) and 85b (ready, not yet
+  landed) — the flow-executing siblings that reuse this phase's
+  single-homed discovery chain; see the sibling-reconciliation goal.
 
 ## Risks / open questions
 
@@ -295,9 +336,10 @@ None.
   URLs; the SSRF guardrails + report-don't-follow + no-credential rules are
   the load-bearing mitigations, each with an explicit negative test. The
   adversarial review should attack the guardrail table first.
-- **92p drift risk.** If 92p is later unparked against a stale memory of
-  its own plan, it could grow a second discovery chain; the pointer note in
-  92p's plan + D-297's one-mechanism record are the guards.
+- **Sibling drift risk (92p + 85b).** If 92p is unparked — or 85b is
+  implemented — against a stale memory of their own plans, either could
+  grow a second discovery chain; the pointer notes in both plan files +
+  D-297's one-mechanism record are the guards.
 - **Challenge capture placement.** The MCP driver's http transports have
   multiple dial/call paths; the capture must live at the shared transport
   edge so streamable-http and SSE both surface it — the implementor

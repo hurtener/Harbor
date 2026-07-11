@@ -4,6 +4,17 @@
 
 Wire Harbor's existing `auth.Provider` (Phase 30 — PKCE, RFC 7591 dynamic client registration, refresh, encrypted token store) into the MCP southbound driver, and extend it with the 2025-11-25 spec's authorization requirements the current provider lacks: RFC 9728 protected-resource-metadata discovery, `WWW-Authenticate`-driven 401 step-up, and RFC 8707 resource indicators for token audience binding. Today MCP HTTP servers get static `Headers` only — a `401 + WWW-Authenticate` triggers no flow. The interactive authorization flow runs through the unified pause/resume primitive, exactly as Phase 30 does for HTTP tools.
 
+> **Discovery reconciliation (added with the v1.13 Stage-4 plans PR, D-297).**
+> The RFC 9728 → RFC 8414 discovery chain (the `401` + `WWW-Authenticate`
+> `resource_metadata` step-up and its metadata walk) is **single-homed in
+> Phase 164's mechanism** (`docs/plans/phase-164-mcp-oauth-discovery-surfacing.md`),
+> which discovers the requirement and surfaces it as inert Protocol data.
+> When 85b lands it **REUSES** that chain rather than growing a second
+> discovery implementation, and adds only the flow-execution leg
+> (pause/resume + token custody) on top — the Phase 148 precedent of one
+> mechanism, later phases reuse it (§13). 85b remains the OAuth-*flow* phase;
+> 164 is the *discovery-as-data* phase.
+
 ## RFC anchor
 
 - RFC §6.4

@@ -1,4 +1,4 @@
-# Harbor v1.13.0 — The Serve-Parity Wave (phases 159–164) — wave coordination
+# Harbor v1.13.0 — The Serve-Parity + Historical-Observability Wave (phases 159–164) — wave coordination
 
 > Per Harbor §17.7 wave delivery cadence. This is the coordination artifact for
 > the v1.13.0 wave ("Serve parity" + the session-rehydration live-test fix).
@@ -314,9 +314,16 @@ untrusted data (report, don't follow), SSRF-bounded discovery fetches
 (same-origin default, redirect/timeout/size caps, https-only off-loopback,
 no credentials — each negative-tested). §17.8: spec-derived fixtures
 (wrong-field mutation must fail). D-062 consumer same phase: the MCP
-Connections page requirement card. Sibling reconciliation: the parked 92p
-(reserved D-246) reuses this chain if unparked — one discovery mechanism.
-Gate: `scripts/smoke/phase-164.sh` (unit-tests class: discovery + SSRF
+Connections page requirement card. SSRF guardrails are PER HOP (the
+RFC 8414 authorization-server hop is inherently cross-origin → requires the
+explicit per-connection origin allowance; allowed fetches also refuse
+private-range/IP-literal hosts). Sibling reconciliation: the ready 85b and
+the parked 92p (reserved D-246) each reuse this single-homed discovery
+chain and add only their flow legs (Phase 148 precedent) — one discovery
+mechanism, N consumers; 85b's plan gains a pointer note in this PR.
+`mcp.servers.probe` triggers discovery (its `MCPProbeRow` return unchanged;
+the requirement is read via `get`/`list`). Gate:
+`scripts/smoke/phase-164.sh` (unit-tests class: discovery + SSRF
 go-test leg + manifest grep; `OK ≥ 2`); the fixture-server integration test
 with its recording assertions under `-race`; full D-223/D-209 regen.
 

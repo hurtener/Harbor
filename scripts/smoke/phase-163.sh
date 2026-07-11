@@ -4,13 +4,16 @@
 # Phase 163 — windowed-reads honesty pair (flows since/until + retention
 # horizons on runtime.health).
 #
-# When the phase lands, this asserts:
-#   - runtime.health carries the additive `retention` block with an `events`
-#     oldest_retained_at after a scripted run (the `start` method);
+# When the phase lands, this asserts (two health-side assertions so the
+# done-definition is meetable even when the dev config declares no flows):
+#   - runtime.health carries the additive `retention` block;
+#   - after a scripted run (the `start` method) the block's `events` entry
+#     carries a non-empty, RFC-3339-parsable oldest_retained_at;
 #   - flows.runs.list accepts since/until without invalid_request
 #     (skip_if_404 when the dev config declares no flows — the bounds
 #     semantics are then covered by the integration test).
-# Done-definition: OK >= 2, FAIL = 0 once the phase ships.
+# Done-definition: OK >= 2, FAIL = 0 (achievable from the two health
+# assertions alone) once the phase ships.
 # Until then it SKIPs. Real assertions land with the implementation PR.
 #
 #   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh

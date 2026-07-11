@@ -2,8 +2,8 @@
 
 ## Summary
 
-A second Protocol consumer (an operator-filed ask from the 2026-07-10
-observability-history design review) wants to open a fleet observability view
+A second Protocol consumer (an operator-filed ask, 2026-07-10) wants to
+open a fleet observability view
 and answer "show me the raw events from 7 days ago to now, and let me scroll
 them." No surface answers it today: `events.subscribe` is a forward-only live
 tail, `events.aggregate` returns bucketed counts with no payloads, and
@@ -65,14 +65,19 @@ None.
     sequence-windowed (`web/console/src/lib/protocol/state.ts:20-26`; the
     handler at `internal/protocol/transports/stream/state_history_handler.go`).
   - `search.events` is NOT this read either: it is the server-enforced
-    text-search index surface (`internal/protocol/methods/methods.go:179-183`,
-    dispatched via `internal/protocol/search.go:115`) — it answers "find
-    events matching query q," never "enumerate the window's rows, paged."
+    text-search index surface (`internal/protocol/methods/methods.go:179-183`;
+    mapped onto its `SearchIndex` in `indexFor`,
+    `internal/protocol/search.go:115`) — it answers "find events matching
+    query q," never "enumerate the window's rows, paged."
   - Meanwhile the wire filter ALREADY carries the time bounds: wire
     `EventFilter.Since`/`.Until` (inclusive-lower/exclusive-upper RFC-3339 on
     `OccurredAt`, `internal/protocol/types/events.go:46-51`; Console mirror
-    `web/console/src/lib/protocol/events.ts:59-63`) — today consumed only by
-    the aggregate/subscribe filter, by no row read.
+    `web/console/src/lib/protocol/events.ts:59-63`). Their ONLY consumers
+    today are predicates over the live/count paths — the wire-filter matcher
+    (`events.MatchWire`, `internal/events/filter.go:158`, time bounds at
+    `:187-191`) and the aggregate count-window clamp
+    (`internal/events/aggregate.go:159-164`) — no historical ROW read
+    consumes them anywhere.
 - **The method.** Additive `events.list`: request = the existing wire
   `EventFilter` + `limit` + an opaque backward-paging `cursor`; response =
   `{events, next_cursor, has_more, truncated}` — tail-first windowing
@@ -81,14 +86,22 @@ None.
   shape `state_history_handler.go` already projects, with the same
   `payloadWireValue` pass-through and `StateArtifactRef` seed extraction).
   NO new row shape.
-- **Scoping (§6 item 5 — binding).** A non-admin caller reads ONLY rows
+- **Scoping (§6 item 5 — binding).** A non-widened caller reads ONLY rows
   matching its verified identity triple (the by-id `MatchesScoped` posture);
-  fleet widening follows the existing elevated-scope pattern: a request
-  naming tenants beyond the caller's own requires the verified
-  `auth.ScopeAdmin` claim, scope is derived SERVER-SIDE from the verified
-  session/JWT — never the request body — and every widened read emits
-  `audit.admin_scope_used` (the inmem/durable drivers' existing
-  admin-fan-in + audit shape on `Replay`/`Bounds`).
+  fleet widening follows the CLOSED TWO-SCOPE read set the reused
+  `EventFilter` contract already documents and the sibling aggregate handler
+  already enforces — the verified `auth.ScopeAdmin` OR
+  `auth.ScopeConsoleFleet` claim (`internal/protocol/types/events.go:41-44`;
+  `internal/protocol/transports/stream/handlers.go:141-143`) — so the Events
+  page's live and historical feeds can never diverge on authz. Scope is
+  derived SERVER-SIDE from the verified session/JWT — never the request
+  body — and every widened read emits `audit.admin_scope_used`. Precedent,
+  cited precisely: the identity fan-in exists on `Subscribe`/`Replay` only
+  (the inmem `Replay` admin path,
+  `internal/events/drivers/inmem/inmem.go:600`); `Bounds`/`Window`
+  contribute only the Bounds-then-Window single-audit pattern
+  (`inmem.go:748`) — the windowed fan-in itself is NEW, which is what the
+  godoc amendments below record.
 - **Honesty at the window edge.** The response reuses the `truncated`
   retention-gap flag `state.history` already returns
   (`internal/protocol/types/state.go:121` posture): rows older than the
@@ -101,6 +114,18 @@ None.
   inmem driver returns what its ring holds (`ReplayBufferSize` capacity)
   with `truncated=true` when the requested window reaches past the ring —
   honest degradation, no `Supports*` protocol, no driver-only feature.
+  **The seam's recorded scope contract is deliberately amended, not
+  silently violated:** the `HistoryReplayer` godoc pins "scoped to the
+  named session (`MatchesScoped`), never fanning in under Admin"
+  (`internal/events/events.go:562` block), and `MatchesScoped`'s godoc
+  records the cross-session disclosure that rule closed
+  (`internal/events/events.go:403-417`). This phase amends both godocs to
+  name the ONE sanctioned exception: an authority-gated,
+  explicitly-requested fleet read on a DISTINCT method (`events.list` with
+  the two-scope claim + per-request audit) — categorically different from
+  the silent Admin-widening-of-a-by-id-read that was the original bug. The
+  by-id reads (`Bounds`/`Window` for `state.history`) keep the never-fan-in
+  rule verbatim.
 - **Redaction + heavy content unchanged.** Rows stay the bus-redacted
   projection (the single redactor at the bus publish boundary is preserved;
   §7 rule 6); heavy payloads stay by-reference (`artifact_ref` seeds routed
@@ -155,11 +180,14 @@ None.
   `EventFilter` godoc); a `until < since` request fails
   `CodeInvalidRequest` (the structurally-invalid posture the filter godoc
   already names, `types/events.go:28-30`).
-- [ ] Scoping: non-admin caller gets only own-triple rows; a widened read
-  without the verified admin claim fails with the scope-mismatch error;
-  a widened read WITH it succeeds and emits `audit.admin_scope_used`
-  exactly once per request (the Bounds-then-Window single-audit posture);
-  scope is never read from the request body.
+- [ ] Scoping: a non-widened caller gets only own-triple rows; a widened
+  read without the verified `admin` OR `console:fleet` claim (the closed
+  two-scope set, matching the aggregate handler) fails with the
+  scope-mismatch error; a widened read WITH either claim succeeds and emits
+  `audit.admin_scope_used` exactly once per request (the Bounds-then-Window
+  single-audit posture); scope is never read from the request body; a
+  `console:fleet`-only caller can `events.list` the SAME window it can
+  subscribe/aggregate over (the live/historical authz-parity pin).
 - [ ] Both V1 event drivers serve the read through the extended
   `HistoryReplayer` seam: durable = real windows over the persisted log;
   inmem = ring contents + `truncated=true` past the ring head; a
@@ -184,7 +212,14 @@ None.
 
 - `internal/events/events.go` — the `HistoryReplayer` seam extended with the
   time-ranged, filtered, cursor-paged window read (name per implementor;
-  same optional-interface shape both drivers implement — D-254 precedent).
+  same optional-interface shape both drivers implement — D-254 precedent);
+  the seam godoc's never-fan-in contract (`events.go:562` block) amended to
+  name the one sanctioned, authority-gated fleet-read exception; and
+  `MatchesScoped`'s disclosure-history godoc (`events.go:403-417` — the
+  same file; `MatchesScoped` lives in `events.go`, not `filter.go`) amended
+  with the same why-safe-here rationale (explicit two-scope authority + a
+  dedicated method + per-request audit, vs the silent widening it
+  originally closed).
 - `internal/events/drivers/durable/durable.go` — the persisted-log
   implementation (global-sequence order, cross-session under an
   admin-fan-in filter, `MatchesScoped` for the non-widened path).

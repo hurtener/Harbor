@@ -2,9 +2,8 @@
 
 ## Summary
 
-Two small, bundled honesty asks from the 2026-07-10 observability-history
-design review (a second Protocol consumer rendering fleet views over a
-`{from, to}` window). First (LOW): `flows.runs.list` is the one run-history
+Two small, bundled honesty asks (operator-filed, 2026-07-10; a second
+Protocol consumer rendering fleet views over a `{from, to}` window). First (LOW): `flows.runs.list` is the one run-history
 read with no time bound — `FlowRunsListRequest` filters only by
 `flow_id`/`tenants`/`page`/`page_size` — so a 7-day flow-run view is a
 full-history walk with a client-side date filter; this phase adds optional
@@ -108,8 +107,9 @@ are additive wire (full D-223/D-209 regen); consumers ship same-phase.
 
 ## Non-goals
 
-- **No TSDB, re-recorded as decided-NO so it is not re-opened** (the
-  operator's observability-history design review §0, 2026-07-10):
+- **No TSDB, re-recorded as decided-NO so it is not re-opened**
+  (operator-decided, 2026-07-10; the full rationale is encoded here and in
+  D-296 so this document is self-contained):
   `runtime.counters` / `metrics.snapshot` are now-only snapshots (single
   `snapshot_at` — `internal/protocol/types/posture.go` `RuntimeCounters.
   SnapshotAt`; Console `posture.ts:41`, `:131`) and STAY that way. Harbor
@@ -217,14 +217,16 @@ are additive wire (full D-223/D-209 regen); consumers ship same-phase.
 
 ## Smoke script additions
 
-- live-server: `runtime.health` response carries the `retention` block with
-  an `events` `oldest_retained_at` after a scripted run (the `start`
-  method, `POST /v1/control/start`); `flows.runs.list` accepts
+- live-server, TWO health-side assertions so the done-definition is
+  meetable even when the dev config declares no flows: (1) the
+  `runtime.health` response carries the `retention` block; (2) after a
+  scripted run (the `start` method, `POST /v1/control/start`) the block's
+  `events` entry carries a non-empty, RFC-3339-parsable
+  `oldest_retained_at`. Third, flows leg: `flows.runs.list` accepts
   `since`/`until` without `invalid_request` (`skip_if_404` when the dev
-  config declares no flows — the bounds acceptance is then covered by the
-  integration test, and the smoke asserts the health block only).
-- Done-definition: `OK ≥ 2, FAIL = 0`; 404/405/501 → SKIP until the phase
-  ships.
+  config declares no flows — the bounds semantics are integration-covered).
+- Done-definition: `OK ≥ 2, FAIL = 0` (achievable from the two health
+  assertions alone); 404/405/501 → SKIP until the phase ships.
 
 ## Coverage target
 
