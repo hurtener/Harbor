@@ -87,9 +87,11 @@ var _ llm.Driver = (*Driver)(nil)
 //     (`ErrMissingAPIKey`);
 //   - `bf.Init` returns an error.
 //
-// `deps.Bus` is captured for the `llm.cost.recorded` emit path; nil
-// is tolerated (the safety pass's `Open` already rejects nil Bus, but
-// tests that construct a Driver directly may pass nil).
+// `deps.Bus` is captured for the provider-file-uploaded observability
+// emit (usage/cost telemetry rides the driver-neutral safety-wrapper
+// band, not this driver). Nil is tolerated (the safety pass's `Open`
+// already rejects nil Bus, but tests that construct a Driver directly
+// may pass nil).
 func New(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 	account, err := newAccount(cfg, deps)
 	if err != nil {
@@ -159,25 +161,21 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	}
 
 	if req.Stream {
-		return d.streamComplete(ctx, bctx, bfReq, req, id)
+		return d.streamComplete(ctx, bctx, bfReq, req)
 	}
-	return d.unaryComplete(ctx, bctx, bfReq, req, id)
+	return d.unaryComplete(bctx, bfReq)
 }
 
 // unaryComplete runs a non-streaming chat completion.
 func (d *Driver) unaryComplete(
-	ctx context.Context,
 	bctx *bfschemas.BifrostContext,
 	bfReq *bfschemas.BifrostChatRequest,
-	req llm.CompleteRequest,
-	id identity.Quadruple,
 ) (llm.CompleteResponse, error) {
 	resp, berr := d.client.ChatCompletionRequest(bctx, bfReq)
 	if berr != nil {
 		return llm.CompleteResponse{}, translateError(berr, "ChatCompletionRequest")
 	}
 	out := translateResponse(resp)
-	emitCostRecorded(ctx, d.bus, id, req.Model, out.Cost, out.Usage, d.profiles[req.Model].ContextWindowTokens)
 	return out, nil
 }
 
@@ -198,7 +196,6 @@ func (d *Driver) streamComplete(
 	bctx *bfschemas.BifrostContext,
 	bfReq *bfschemas.BifrostChatRequest,
 	req llm.CompleteRequest,
-	id identity.Quadruple,
 ) (llm.CompleteResponse, error) {
 	ch, berr := d.client.ChatCompletionStreamRequest(bctx, bfReq)
 	if berr != nil {
@@ -280,7 +277,6 @@ readLoop:
 		Usage:     finalUsage,
 		Cost:      finalCost,
 	}
-	emitCostRecorded(ctx, d.bus, id, req.Model, out.Cost, out.Usage, d.profiles[req.Model].ContextWindowTokens)
 	return out, nil
 }
 

@@ -175,6 +175,30 @@ describe('decodeToolLifecycle', () => {
 			decodeToolLifecycle(JSON.stringify({ type: 'planner.decision', run: 'r', payload: { Tool: 'x' } }))
 		).toBeNull();
 	});
+
+	// The R2 latent-live-bug pin (D-293 b3 / §17.6): tool.* payloads carry NO
+	// TaskID, so attribution rides the envelope `run`. BEFORE R2 the runtime
+	// stamped an EMPTY envelope run on every tool.* frame → `taskIDOf` yielded
+	// '' → the frame was silently dropped (dead status badges). AFTER R2 the
+	// frame carries the full run quadruple, so it decodes and attributes.
+	it('is attribution-dead without a run (the pre-R2 empty-envelope shape)', () => {
+		const f = JSON.stringify({ type: 'tool.completed', payload: { ToolName: 'youtube_get_metadata', DurationMS: 1200 } });
+		expect(decodeToolLifecycle(f)).toBeNull();
+	});
+
+	it('attributes on the run envelope alone once R2 populates it (no payload.TaskID)', () => {
+		const f = JSON.stringify({
+			type: 'tool.completed',
+			run: 'RUN-Q',
+			payload: { ToolName: 'youtube_get_metadata', DurationMS: 1200 }
+		});
+		expect(decodeToolLifecycle(f)).toEqual({
+			taskID: 'RUN-Q',
+			tool: 'youtube_get_metadata',
+			kind: 'completed',
+			summary: '1.2s'
+		});
+	});
 });
 
 describe('decodeIntervention', () => {

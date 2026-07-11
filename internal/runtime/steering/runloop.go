@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -412,6 +413,17 @@ type RunSpec struct {
 	// Naming is byte-identical to the naming-off behaviour (no counters, no
 	// LLM calls, no events). See naming.go.
 	Naming *NamingSpec
+
+	// TrajectoryMu, when set, guards the per-step `Trajectory.Steps` append
+	// so an OUT-OF-BAND Protocol reader — the serve Enricher projecting the
+	// reasoning trace on a `tasks.get` of an IN-FLIGHT run — can snapshot the
+	// steps without racing this loop's append. The Trajectory type delegates
+	// concurrency to the Runtime by contract (it is otherwise appended
+	// lock-free on the single run goroutine); this is that serialization
+	// primitive. Nil = no external reader wired, and the append stays
+	// lock-free (unchanged behaviour). The serve RunLoopDriver sets it and
+	// shares the SAME `*sync.RWMutex` with its trajectory-snapshot path.
+	TrajectoryMu *sync.RWMutex
 }
 
 // Run drives the planner to a terminal planner.Finish decision. It Opens
@@ -896,6 +908,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// prompt builder reads from Step.ReasoningTrace and finds
 			// an empty string on every prior step.
 			if spec.Base.Trajectory != nil {
+				// Guard the append against an out-of-band Protocol reader
+				// (the serve Enricher) snapshotting mid-append. Lock-free
+				// when no external reader is wired (TrajectoryMu nil).
+				if spec.TrajectoryMu != nil {
+					spec.TrajectoryMu.Lock()
+				}
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, planner.Step{
 					Action:            decision,
 					Observation:       observation,
@@ -903,6 +921,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					ReasoningTrace:    stepReasoning,
 					AssistantPreamble: stepAssistantContent,
 				})
+				if spec.TrajectoryMu != nil {
+					spec.TrajectoryMu.Unlock()
+				}
 			}
 		}
 	}

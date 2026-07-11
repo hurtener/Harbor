@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/events"
 )
 
 // catalog is the canonical in-memory ToolCatalog implementation.
@@ -21,6 +23,16 @@ type catalog struct {
 	// search index. nil means Search returns empty (honest "discovery
 	// unavailable"). Set via WithSearchCache option at construction.
 	searchCache ToolSearchCache
+
+	// bus is the optional canonical event bus. When set, Register wraps
+	// every registered descriptor's Invoke in the ONE universal
+	// lifecycle-emitting shell (tool.invoked / .completed / .failed /
+	// .invalid_args / .policy_exhausted), so all four dispatch call
+	// sites inherit tool-lifecycle events by construction — for EVERY
+	// transport, not just in-process. nil keeps the descriptor's Invoke
+	// verbatim (a pure no-op catalog, used by tests that don't observe
+	// the lifecycle surface). Set via WithCatalogBus at construction.
+	bus events.EventBus
 }
 
 // ToolSearchCache is the tool search index surface the catalog
@@ -34,6 +46,7 @@ type ToolSearchCache interface {
 
 type catalogConfig struct {
 	searchCache ToolSearchCache
+	bus         events.EventBus
 }
 
 // CatalogOption configures a catalog at construction.
@@ -44,6 +57,20 @@ type CatalogOption func(*catalogConfig)
 func WithSearchCache(sc ToolSearchCache) CatalogOption {
 	return func(cfg *catalogConfig) {
 		cfg.searchCache = sc
+	}
+}
+
+// WithCatalogBus wires the canonical event bus into the catalog so
+// Register wraps every registered descriptor's Invoke in the universal
+// tool-lifecycle-emitting shell. This is the single seam where tool
+// lifecycle events (tool.invoked / .completed / .failed / .invalid_args
+// / .policy_exhausted) are produced — every dispatch path that resolves
+// and invokes a descriptor inherits them by construction, for every
+// transport. A nil bus is the same as not supplying the option (no
+// shell). Production wiring supplies the runtime's bus.
+func WithCatalogBus(bus events.EventBus) CatalogOption {
+	return func(cfg *catalogConfig) {
+		cfg.bus = bus
 	}
 }
 
@@ -62,6 +89,7 @@ func NewCatalog(opts ...CatalogOption) ToolCatalog {
 	return &catalog{
 		byName:      make(map[string]ToolDescriptor),
 		searchCache: cfg.searchCache,
+		bus:         cfg.bus,
 	}
 }
 
@@ -78,6 +106,16 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	if err := validateExamples(d.Tool); err != nil {
 		return err
 	}
+	// Wrap the descriptor's Invoke in the universal lifecycle-emitting
+	// shell (no-op when the catalog carries no bus). Applied ONCE here at
+	// registration so every dispatch path that later resolves this
+	// descriptor inherits tool.invoked/.completed/.failed by
+	// construction — for every transport. Replace (the wiring builder's
+	// approval/oauth re-install) does NOT re-wrap: it swaps in
+	// descriptors whose inner Invoke is already this shelled one, so
+	// there is no double emission.
+	d = wrapDescriptorLifecycle(c.bus, d)
+
 	c.mu.Lock()
 	if _, exists := c.byName[d.Tool.Name]; exists {
 		c.mu.Unlock()

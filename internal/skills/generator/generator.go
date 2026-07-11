@@ -193,7 +193,6 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 		tcat.WithSideEffect(tcat.SideEffectWrite),
 		tcat.WithLoading(tcat.LoadingAlways),
 		tcat.WithTags("skills", "generate"),
-		tcat.WithBus(deps.Bus),
 		tcat.WithSource(tcat.ToolSourceID("skills/generator")),
 	); err != nil {
 		return fmt.Errorf("skills/generator: register %s: %w", ToolNameSkillPropose, err)

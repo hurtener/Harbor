@@ -135,7 +135,33 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	return c.driver.Complete(ctx, materialized)
+
+	resp, err := c.driver.Complete(ctx, materialized)
+	if err != nil {
+		// Pass the driver's response through UNCHANGED alongside the
+		// error — an errored attempt still carries a provider-reported
+		// `Cost` the outer retry/downgrade attempt-cost tap folds into
+		// governance accounting. Zeroing it here would silently drop
+		// intermediate-attempt spend. No cost observability emit on the
+		// error path (the emit rides successful driver-level completions,
+		// matching the old bifrost cadence).
+		return resp, err
+	}
+
+	// Driver-neutral cost/usage/model observability emit. The safety
+	// wrapper is the innermost mandatory band `Open` composes around
+	// EVERY driver, so `llm.cost.recorded` fires for every provider —
+	// bifrost, the dev-posture mock, any future driver — with no
+	// per-driver emit to maintain. One event per driver-level
+	// completion: because the retry-with-feedback wrapper composes
+	// OUTSIDE this mandatory inner band, a retried call routes through
+	// here once per attempt, so the emit preserves the per-attempt
+	// cadence the
+	// per-call attempt-cost governance tap already assumes. The emit is
+	// observability-only — cost accounting stays in-band synchronous in
+	// the governance PostCall.
+	emitCostRecorded(ctx, c.deps.Bus, id, req.Model, resp.Cost, resp.Usage, profile.ContextWindowTokens)
+	return resp, nil
 }
 
 // Close marks the client closed and tears down the driver.
@@ -352,6 +378,46 @@ func identityQuad(ctx context.Context) identity.Quadruple {
 	}
 	id, _ := identity.From(ctx)
 	return identity.Quadruple{Identity: id}
+}
+
+// emitCostRecorded publishes the `llm.cost.recorded` event after a
+// driver-level completion returns successfully. Driver-neutral: the
+// safety wrapper is the mandatory innermost band around every driver,
+// so this fires for bifrost, the dev-posture mock, and any future
+// provider without a per-driver emit.
+//
+// This is an OBSERVABILITY emit only — the governance accumulator does
+// NOT subscribe against it. Cost accounting is in-band synchronous (the
+// accumulator folds each call's cost, and every intermediate retry /
+// downgrade attempt via the per-call attempt-cost tap, in its PostCall),
+// so the next ceiling check sees the latest total without a bus-delivery
+// race. The event drives dashboards, replay tooling, and the reopen
+// read-back reconstruction; it is not the accounting path.
+//
+// Best-effort — never blocks the request path on the bus. A nil bus is
+// a no-op. The emit fires even when `cost.TotalCost == 0` because some
+// providers don't report cost at all (token usage is still recorded).
+//
+// The payload is `events.SafePayload`: cost figures and token counts
+// are operator-visible, not secret-shaped.
+func emitCostRecorded(ctx context.Context, bus events.EventBus, id identity.Quadruple, model string, cost Cost, usage Usage, contextWindow int) {
+	if bus == nil {
+		return
+	}
+	now := time.Now()
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort cost-telemetry emit — must not block the LLM call path.
+		Type:       EventTypeCostRecorded,
+		Identity:   id,
+		OccurredAt: now,
+		Payload: CostRecordedPayload{
+			Identity:            id,
+			Model:               model,
+			Cost:                cost,
+			Usage:               usage,
+			ContextWindowTokens: contextWindow,
+			OccurredAt:          now,
+		},
+	})
 }
 
 // emitContextLeak publishes the `llm.context_leak` event. Best-effort
