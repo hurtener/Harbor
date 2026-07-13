@@ -74,22 +74,21 @@ generated project unbuildable as emitted.
 
 ### Testing
 
-- `scripts/smoke/phase-160.sh` — the probe config now declares a built-in
-  (`clock.now`) **alongside** the custom tool, so the scaffold → build → boot
-  leg actually boots a scaffolded binary with built-ins declared, and the
-  authenticated discovery probe asserts BOTH tools reach the served catalog.
-  This is the end-to-end gate whose absence let the bug ship; it is verified to
-  FAIL against the pre-fix template with the adopter's exact error.
+- **The scaffold-serve smoke now boots a scaffolded binary that declares a
+  built-in.** Its probe config carries `clock.now` **alongside** the custom
+  tool, so the scaffold → build → boot leg exercises the mixed configuration,
+  and the authenticated discovery probe asserts BOTH tools reach the served
+  catalog. This is the end-to-end gate whose absence let the bug ship; it is
+  verified to FAIL against the pre-fix template with the adopter's exact error.
+  The serve-parity integration test declares a built-in on the scaffolded side
+  too, in both the in-process parity legs and the live (`HARBOR_LIVE_SERVE`)
+  leg.
 - `cmd/harbor/scaffold` — new unit gates: the rendered `agent.go` for a config
   declaring both built-ins and custom tools must not reference
   `builtin.RegisterWith` (and must still register the custom tool), and the
   rendered `go.mod` must name a published release with the `replace` commented.
-- `test/integration/phase160_serve_parity_test.go` — the scaffolded-side config
-  declares a built-in in both the in-process parity legs and the
-  `HARBOR_LIVE_SERVE` leg.
-- `scripts/smoke/phase-133.sh` gains two absence pins on `agent.go.tmpl`;
-  `scripts/smoke/phase-112b.sh`'s built-in-only leg asserts the registrar
-  carries no built-in registration.
+  The scaffold-template and serve-facade smokes gain matching absence pins, so
+  a built-in registration cannot creep back into the emitted registrar.
 - `internal/devdraft` — new gates on the `harbor dev` draft-seeding path: a
   stamped binary's release version reaches the seeded `go.mod`, and an
   un-stamped one falls back to a published release (never the dev sentinel).
