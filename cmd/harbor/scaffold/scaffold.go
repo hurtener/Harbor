@@ -77,6 +77,13 @@ type Options struct {
 	// generated `agent.go` gains a `RegisterTools` seam the main.go
 	// passes to `server.Open`.
 	WithServer bool
+	// HarborVersion is the scaffolding binary's own release version
+	// (`vX.Y.Z`), used as the `require github.com/hurtener/Harbor`
+	// version in the generated `go.mod` so the project builds straight
+	// off the module proxy. Empty — or an un-stamped source build's
+	// "v0.0.0-dev" sentinel — falls back to the binary's embedded build
+	// info and then to FallbackModuleVersion; see resolveModuleVersion.
+	HarborVersion string
 }
 
 // Result reports what Scaffold wrote. Files are paths RELATIVE to

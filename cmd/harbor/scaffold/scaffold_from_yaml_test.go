@@ -122,8 +122,9 @@ func TestScaffold_FromConfig_GeneratesCustomToolStubs(t *testing.T) {
 			t.Errorf("tools/weather_lookup.go missing %q; got:\n%s", expect, stubBody)
 		}
 	}
-	// The agent.go must include the RegisterTools function with both
-	// the built-in and the custom tool wired.
+	// The agent.go must include the RegisterTools function with the
+	// COMPILED custom tool wired. Built-ins are the runtime's job (see
+	// TestScaffold_FromConfig_BuiltInsAreNotRegisteredByTheRegistrar).
 	agent, err := os.ReadFile(filepath.Join(out, "agent.go"))
 	if err != nil {
 		t.Fatalf("read agent.go: %v", err)
@@ -131,15 +132,12 @@ func TestScaffold_FromConfig_GeneratesCustomToolStubs(t *testing.T) {
 	agentBody := string(agent)
 	for _, expect := range []string{
 		"func RegisterTools(cat tools.ToolCatalog) error",
-		`"clock.now"`,
 		"customtools.WeatherLookup",
 		// Phase 112b (D-206): the tool-declaring scaffold imports the
 		// public sdk/ facade so the output compiles as an EXTERNAL
 		// module (RFC §3.6 item 4).
 		`"github.com/hurtener/Harbor/sdk/tools"`,
-		`"github.com/hurtener/Harbor/sdk/tools/builtin"`,
 		`"github.com/hurtener/Harbor/sdk/tools/inproc"`,
-		"builtin.RegisterWith(builtin.RegistryContext{Catalog: cat}",
 	} {
 		if !strings.Contains(agentBody, expect) {
 			t.Errorf("agent.go missing %q; got:\n%s", expect, agentBody)
@@ -150,6 +148,120 @@ func TestScaffold_FromConfig_GeneratesCustomToolStubs(t *testing.T) {
 	// this module — the SDK friction audit's headline break).
 	if strings.Contains(agentBody, "hurtener/Harbor/internal") {
 		t.Errorf("agent.go imports an internal/ package — scaffold output must compile externally; got:\n%s", agentBody)
+	}
+}
+
+// TestScaffold_FromConfig_BuiltInsAreNotRegisteredByTheRegistrar is the
+// regression gate for the v1.13.1 duplicate-tool-name boot death: a
+// `--with-server` scaffold whose harbor.yaml declared ANY `tools.built_in`
+// entry could not boot, because the generated RegisterTools registered the
+// built-in on the pre-policy catalog seam AND the runtime registered it
+// again from `cfg.Tools.BuiltIn` (with the real SkillStore / ArtifactStore /
+// Bus / Redactor), so the catalog rejected the second registration with
+// ErrToolDuplicateName.
+//
+// Built-ins are CONFIG-driven and the runtime owns them. The generated
+// registrar carries this module's COMPILED tools and nothing else.
+func TestScaffold_FromConfig_BuiltInsAreNotRegisteredByTheRegistrar(t *testing.T) {
+	t.Parallel()
+	// The upstream yaml declares BOTH a built-in (clock.now) and a
+	// custom tool (weather.lookup) — the adopter shape that died.
+	upstream := minimalUpstreamYAML(t)
+	out := filepath.Join(t.TempDir(), "alpha")
+	if _, err := Scaffold(Options{
+		Name:           "alpha",
+		OutputDir:      out,
+		FromConfigPath: upstream,
+		WithServer:     true,
+	}); err != nil {
+		t.Fatalf("Scaffold: %v", err)
+	}
+	agent, err := os.ReadFile(filepath.Join(out, "agent.go"))
+	if err != nil {
+		t.Fatalf("read agent.go: %v", err)
+	}
+	agentBody := string(agent)
+	// The registrar must NOT touch the built-in registry in any form.
+	for _, forbidden := range []string{
+		"builtin.RegisterWith",
+		"builtin.RegistryContext",
+		`"github.com/hurtener/Harbor/sdk/tools/builtin"`,
+		`"clock.now"`,
+	} {
+		if strings.Contains(agentBody, forbidden) {
+			t.Errorf("agent.go registers a built-in (%q) — the runtime already registers it from tools.built_in, so the catalog rejects the duplicate and the boot dies; got:\n%s",
+				forbidden, agentBody)
+		}
+	}
+	// ...while the compiled custom tool IS registered through the seam.
+	for _, expect := range []string{
+		"func RegisterTools(cat tools.ToolCatalog) error",
+		"inproc.RegisterFunc[customtools.WeatherLookupInput, customtools.WeatherLookupOutput]",
+		`"weather.lookup"`,
+	} {
+		if !strings.Contains(agentBody, expect) {
+			t.Errorf("agent.go missing %q — the registrar must still wire this module's compiled tools; got:\n%s", expect, agentBody)
+		}
+	}
+	// The generated test must not assert the now-false invariant either
+	// (it would dispatch a built-in RegisterTools never registers).
+	agentTest, err := os.ReadFile(filepath.Join(out, "agent_test.go"))
+	if err != nil {
+		t.Fatalf("read agent_test.go: %v", err)
+	}
+	if strings.Contains(string(agentTest), `cat.Resolve("clock.now")`) {
+		t.Errorf("agent_test.go resolves a built-in off the catalog RegisterTools populates — built-ins never travel through the registrar; got:\n%s", string(agentTest))
+	}
+}
+
+// TestScaffold_GoMod_RequiresAPublishedHarborVersion pins the generated
+// go.mod's require line: it must name a real, proxy-resolvable release
+// (never the "v0.0.0-dev" un-stamped sentinel), and the `replace`
+// directive must stay COMMENTED — the project builds out of the box.
+func TestScaffold_GoMod_RequiresAPublishedHarborVersion(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		harborVersion string
+		want          string
+	}{
+		{"release binary stamps its own version", "v1.14.2", "v1.14.2"},
+		{"release candidate", "v2.0.0-rc.1", "v2.0.0-rc.1"},
+		{"un-stamped source build falls back", "v0.0.0-dev", FallbackModuleVersion},
+		{"git-describe derivative falls back", "v1.13.0-4-gdeadbee", FallbackModuleVersion},
+		{"empty falls back", "", FallbackModuleVersion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := filepath.Join(t.TempDir(), "alpha")
+			if _, err := Scaffold(Options{
+				Name:          "alpha",
+				OutputDir:     out,
+				HarborVersion: tc.harborVersion,
+			}); err != nil {
+				t.Fatalf("Scaffold: %v", err)
+			}
+			body, err := os.ReadFile(filepath.Join(out, "go.mod"))
+			if err != nil {
+				t.Fatalf("read go.mod: %v", err)
+			}
+			gomod := string(body)
+			want := "require github.com/hurtener/Harbor " + tc.want
+			if !strings.Contains(gomod, want) {
+				t.Errorf("go.mod missing %q; got:\n%s", want, gomod)
+			}
+			if strings.Contains(gomod, "v0.0.0-dev") {
+				t.Errorf("go.mod requires the un-stamped dev sentinel — the generated project cannot resolve it from the proxy; got:\n%s", gomod)
+			}
+			// The replace directive is a contributor convenience, not a
+			// prerequisite: it must ship commented out.
+			for _, line := range strings.Split(gomod, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "replace ") {
+					t.Errorf("go.mod carries an ACTIVE replace directive (%q) — it must stay commented; got:\n%s", trimmed, gomod)
+				}
+			}
+		})
 	}
 }
 

@@ -3676,6 +3676,8 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 
 **3. `RegisterTools(cat tools.ToolCatalog) error` is the operator's wiring entry point.** The generated `agent.go` includes one function that registers each built-in (calling `builtin.Register(cat, [...])`) and each custom tool (calling `inproc.RegisterFunc[Input, Output]` with the operator's typed Handle). The runtime does NOT auto-discover the scaffolded tools — the operator imports the generated `tools/` package + calls `RegisterTools` from their binary's bootstrap. This stays consistent with §1 ("no magic") and §13 ("primitive-with-consumer") — the generated wiring is a *consumer the operator chooses to wire*, not a runtime that silently scans `tools/`.
 
+**Correction (v1.13.1, 2026-07-13 — reported by an external adopter integrating `harbor scaffold --with-server`).** The "registers each built-in" half of item 3 was wrong and shipped a broken golden path: a scaffolded project whose `harbor.yaml` declared ANY `tools.built_in` entry could not boot — `open server: tools/builtin: builtin: failed to register built-in tool: "clock.now": tools: duplicate tool name`. The generated registrar registered the declared built-ins at the pre-policy catalog seam (with a Catalog-only `builtin.RegistryContext`), and the assembly THEN registered the same names from `cfg.Tools.BuiltIn` with the full context (SkillStore, ArtifactStore, Bus, Redactor, GrantedScopes) — the second registration hit `ErrToolDuplicateName`. The Catalog-only context was a second, latent defect: a stateful built-in registered that way (`artifact_fetch`, the `skill_*` set) would have been store-less. **Built-ins are config-driven and the RUNTIME owns them.** The generated `RegisterTools` now carries this module's COMPILED tools (`tools.custom`) and nothing else — the registrar seam's entire purpose; the yaml entry IS the built-in opt-in, with no Go wiring beside it. A built-ins-only project gets a `RegisterTools` that returns `nil` (the seam stays emitted so `cmd/<name>/main.go` keeps a stable shape). The decision's substance — the registrar is an explicit consumer the operator wires, the runtime never scans `tools/` — is unchanged; only the false claim about WHAT it registers is corrected. The gate that would have caught it now exists: `scripts/smoke/phase-160.sh`'s probe config declares a built-in alongside the custom tool, so the scaffold → build → BOOT leg exercises the shape (verified to FAIL against the pre-fix template).
+
 **4. `--patch` is the operator-edit-survival invariant.** When set: the existing output dir is accepted (no `ErrOutputDirExists`), existing files are SKIPPED (listed under `Result.Skipped`), only new files (newly-declared tools, missing scaffolded files) are written. The skipped list surfaces in the human + JSON output so the operator sees what scaffold left alone. The semantics are deliberately conservative: scaffold NEVER merges, NEVER modifies an existing file. Operators who want diff-and-merge use `git`. The rationale: an in-place merge would invite the silent-degradation failure mode CLAUDE.md §13 forbids — a "smart" scaffold that re-emits agent.go with a new RegisterTools body could overwrite hand-edited registration calls. Refuse to touch existing files; force the operator to delete (or git-rebase) if they want a fresh re-emit.
 
 **Why.** Without 83o the four-step workflow (`init → edit → validate → scaffold → dev`) collapses into "rewrite the yaml twice." The operator runs `harbor init`, edits the yaml, runs `harbor scaffold`, and the scaffold ships a fresh placeholder yaml that ignores everything the operator just edited. The result: operators distrust the framework and hand-author everything. 83o makes the operator's edit canonical end-to-end.
@@ -6950,6 +6952,20 @@ agent declares tools. Concretely:
    already pays the external-module build cost) rather than spawning a
    new smoke; `scripts/smoke/phase-133.sh` carries the static
    template-surface pins.
+
+**Correction (v1.13.1, 2026-07-13).** Item 1's `{{if or .BuiltIns .CustomTools}}`
+gate — and its built-ins-only `{{else}}` dispatch branch — assumed built-ins
+travel through `RegisterTools`. They do not, and a registrar that registered
+them killed the boot with `duplicate tool name` (see the same-dated correction
+on D-154). The gate is now `{{if .CustomTools}}`: it covers what the registrar
+actually carries — the module's COMPILED tools. The built-in-only shape renders
+an empty `RegisterTools` and no dispatch test (there is nothing the registrar
+registers to dispatch); `scripts/smoke/phase-112b.sh`'s built-in-only leg now
+asserts the registrar carries NO built-in registration and that the scaffold
+still compiles + tests green, and `scripts/smoke/phase-133.sh` gains two absence
+pins on `agent.go.tmpl` (`builtin.RegisterWith` / the `sdk/tools/builtin`
+import). The decision's substance — a tools-declaring scaffold must prove
+register-AND-dispatch, not mere compilation — is unchanged.
 
 **Why dispatch, not just registration.** The runtime owns tool dispatch
 at the catalog/executor level (RFC §6.4 "Code-level tool dispatch"), so

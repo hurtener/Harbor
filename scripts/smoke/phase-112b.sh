@@ -132,11 +132,12 @@ YAML
 
 # write_builtin_only_yaml <path> — a validator-passing harbor.yaml
 # declaring a built-in tool and NO custom tool. This renders the
-# scaffold test template's built-in-only branch (`{{if and .BuiltIns
-# (not .CustomTools)}}`), which carries its own uniquely-conditional
-# `errors` import and built-in dispatch path — a branch the
-# tool-declaring probe above (which always declares a custom tool)
-# never exercises.
+# scaffold's built-in-only shape: a `RegisterTools` seam that compiles
+# and registers NOTHING (built-ins are registered by the RUNTIME from
+# `tools.built_in` at boot, with their backing stores — a registrar that
+# registered them too collided on the tool name and killed the boot;
+# v1.13.1). The tool-declaring probe above always declares a custom tool,
+# so it never renders this shape.
 write_builtin_only_yaml() {
     cat > "$1" <<'YAML'
 server:
@@ -273,27 +274,35 @@ else
     fi
 fi
 
-# --- 3d. Built-in-only branch coverage (D-267) — a scaffold declaring a
-#         built-in and NO custom tool renders the template's `{{- else}}`
-#         branch (its uniquely-conditional `errors` import + built-in
-#         dispatch). The custom-tool probe above never renders it, so
-#         absent this leg the branch could silently regress to an
-#         uncompilable scaffold for built-in-only adopters. -----------------
+# --- 3d. Built-in-only branch coverage — a scaffold declaring a built-in
+#         and NO custom tool renders the templates' built-in-only shape
+#         (an empty `RegisterTools` seam; no dispatch test). The
+#         custom-tool probe above never renders it, so absent this leg the
+#         shape could silently regress to an uncompilable scaffold for
+#         built-in-only adopters. The registrar must ALSO be free of any
+#         built-in registration (v1.13.1): the runtime registers
+#         `tools.built_in` from config, and a second registration killed
+#         the boot with a duplicate tool name. -----------------------------
 
 write_builtin_only_yaml "${TMPDIR}/builtin-only.yaml"
 BUILTIN_OUT="${TMPDIR}/builtin-only-agent"
 if ! (cd "${TMPDIR}" && "${BIN}" scaffold --name builtin-only --output "${BUILTIN_OUT}" --from-config "${TMPDIR}/builtin-only.yaml") >/dev/null 2>&1; then
     fail 'phase 112b: harbor scaffold --from-config (built-in-only) failed'
 else
+    if grep -q 'builtin\.RegisterWith\|clock\.now' "${BUILTIN_OUT}/agent.go"; then
+        fail 'phase 112b: the generated registrar registers a declared built-in — the runtime already registers it from tools.built_in, so the catalog rejects the duplicate and the boot dies'
+    else
+        ok 'phase 112b: the generated registrar carries NO built-in registration (built-ins are runtime-registered from tools.built_in, with their backing stores)'
+    fi
     {
         printf '\n'
         printf 'replace github.com/hurtener/Harbor => %s\n' "${ROOT}"
     } >> "${BUILTIN_OUT}/go.mod"
     builtin_log="${TMPDIR}/builtin-only.log"
     if elapsed=$(run_bounded "${builtin_log}" "${BUILTIN_OUT}" sh -c 'go mod tidy && go test ./...'); then
-        ok "phase 112b: built-in-only branch green — a built-in-only scaffold compiles AND its register-and-dispatch test drives the built-in through the catalog in ${elapsed}s"
+        ok "phase 112b: built-in-only shape green — a built-in-only scaffold compiles AND its generated tests pass as an external module in ${elapsed}s"
     else
-        fail 'phase 112b: built-in-only branch RED — the built-in-only scaffold (template `{{- else}}` branch) does not compile or its register-and-dispatch test fails (see tail)'
+        fail 'phase 112b: built-in-only shape RED — the built-in-only scaffold does not compile or its generated tests fail (see tail)'
         tail -40 "${builtin_log}" | sed 's/^/    /'
     fi
 fi

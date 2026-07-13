@@ -73,6 +73,8 @@ func RegisterTools(cat tools.ToolCatalog) error {
 
 The catalog is the planner's tool index. Registration validates at boot — a duplicate name or a schema-underivable type fails LOUDLY (`ErrToolDuplicateName` / `ErrSchemaBuild`), never silently.
 
+**Do NOT register built-ins here.** `RegisterTools` is for the tools *your module compiles*. Anything you list under `tools.built_in` in `harbor.yaml` (`clock.now`, `artifact_fetch`, the `skill_*` set, …) is registered **by the runtime** at boot, from config, with its backing stores wired in — registering it in `RegisterTools` too is the duplicate name above, and the boot dies (`duplicate tool name: clock.now`). The yaml entry IS the opt-in; no Go wiring accompanies it.
+
 ### Serving compiled tools with their declared policy (`sdk/server`)
 
 When you serve your agent from your own binary (`harbor scaffold --with-server`, which reaches the Protocol through `sdk/server` — see [`scaffold-a-harbor-agent`](../scaffold-a-harbor-agent/SKILL.md)), pass this same `RegisterTools` as the server's registrar:

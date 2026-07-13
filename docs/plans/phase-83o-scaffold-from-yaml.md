@@ -254,3 +254,33 @@ None.
       adds two new tests for the from-config + patch surface
 - [ ] Glossary updated
 - [ ] If a brief finding was departed from: N/A
+
+## As-built correction (v1.13.1)
+
+The shipped shape of `RegisterTools` **no longer registers built-ins** — an
+external adopter using `harbor scaffold --with-server` found that a project
+whose `harbor.yaml` declared any `tools.built_in` entry could not boot:
+
+```text
+open server: tools/builtin: builtin: failed to register built-in tool:
+"clock.now": tools: duplicate tool name: name="clock.now"
+```
+
+The generated registrar ran at the pre-policy catalog seam and registered the
+declared built-ins with a Catalog-only `builtin.RegistryContext`; the runtime
+THEN registered the same names from `cfg.Tools.BuiltIn` with the full context
+(SkillStore, ArtifactStore, Bus, Redactor, GrantedScopes). The second
+registration hit `ErrToolDuplicateName` and the boot died. The Catalog-only
+context was a latent second defect: a stateful built-in registered that way
+(`artifact_fetch`, the `skill_*` set) would have been store-less.
+
+Built-ins are **config-driven and the runtime owns them**. The generated
+registrar carries this module's **compiled** tools (`tools.custom`) and nothing
+else — that is the whole point of the registrar seam. A project declaring only
+built-ins gets a `RegisterTools` that returns `nil` (the seam stays emitted so
+`cmd/<name>/main.go` keeps a stable shape). Acceptance criteria above that read
+"registers each built-in and each custom tool" are superseded by "registers each
+custom tool"; `tools.built_in` remains a pure yaml opt-in with no Go wiring.
+The end-to-end gate now lives in `scripts/smoke/phase-160.sh`, whose probe
+config declares a built-in alongside the custom tool and BOOTS the scaffolded
+binary.

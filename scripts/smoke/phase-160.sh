@@ -11,8 +11,10 @@
 #   - `go build` the generated cmd/<agent> against the sdk/ facade;
 #   - boot it behind a `harbor token`-minted JWKS production posture
 #     (keygen -> jwks_file -> mint);
-#   - /healthz 200; the generated custom tool is PRESENT in tools.list
-#     (discovery probe, authenticated); a request without a token -> 401.
+#   - /healthz 200; BOTH the generated custom tool AND the declared built-in
+#     (`tools.built_in`, runtime-registered from config) are PRESENT in
+#     tools.list (discovery probe, authenticated); a request without a token
+#     -> 401.
 #   OK >= 3, FAIL = 0.
 # The tool DISPATCH leg (LLM-driven invocation) is the env-gated live leg
 # (HARBOR_LIVE_SERVE) run by the coordinator — SKIP here.
@@ -115,6 +117,8 @@ llm:
     anthropic/claude-haiku-4-5:
       context_window_tokens: 200000
 tools:
+  built_in:
+    - clock.now
   custom:
     - name: weather.lookup
       description: Look up current weather by city.
@@ -125,6 +129,13 @@ tools:
 YAML
 
 # --- 3. Scaffold --with-server as an external module -------------------------
+# NOTE (v1.13.1): the probe declares a built-in ALONGSIDE the custom tool on
+# purpose. Built-ins are CONFIG-driven — the RUNTIME registers them from
+# `tools.built_in` at boot, with their backing stores. A generated registrar
+# that ALSO registered them handed the catalog the same name twice and the
+# scaffolded binary died at boot with `duplicate tool name: clock.now`. This
+# leg is the end-to-end gate for that: scaffold -> build -> BOOT with a
+# built-in declared, then assert BOTH tools reach the served catalog.
 
 PROJ="${TMPDIR}/srv-agent"
 if ! (cd "${TMPDIR}" && "${BIN}" scaffold --name srv-agent --output "${PROJ}" --with-server --from-config "${PROBE_YAML}") >/dev/null 2>&1; then
@@ -228,6 +239,15 @@ else
         ok 'phase 160: discovery — the compiled tool weather.lookup is present in the served catalog (tools.list, authenticated)'
     else
         fail "phase 160: discovery — weather.lookup absent from tools.list; body=${list_body}"
+    fi
+    # The declared built-in must ALSO be in the catalog — registered by the
+    # RUNTIME from tools.built_in (with its backing stores), not by the
+    # generated registrar. Both tools present = the two registration paths
+    # coexist instead of colliding.
+    if printf '%s' "${list_body}" | grep -q 'clock.now'; then
+        ok 'phase 160: discovery — the declared built-in clock.now is present in the served catalog (runtime-registered from tools.built_in, alongside the compiled tool)'
+    else
+        fail "phase 160: discovery — clock.now absent from tools.list; the declared built-in never reached the served catalog; body=${list_body}"
     fi
 fi
 

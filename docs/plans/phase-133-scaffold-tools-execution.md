@@ -165,3 +165,19 @@ None — no new vocabulary.
 - [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists** — the `phase-112b.sh` execution gate exercises scaffold → catalog dispatch end-to-end on a real external module.
 - [x] If new vocabulary: glossary updated — N/A, none introduced.
 - [x] If a brief finding was departed from: justified above + decisions.md entry filed — N/A, no departure.
+
+## As-built correction (v1.13.1)
+
+The register-and-dispatch gate is now gated on `{{if .CustomTools}}`, not
+`{{if or .BuiltIns .CustomTools}}`, and the built-in-only `{{else}}` dispatch
+branch is gone. Built-ins never travel through `RegisterTools`: the runtime
+registers them from `tools.built_in` at boot (with their backing stores), and a
+generated registrar that also registered them killed the boot with
+`duplicate tool name` (see the as-built correction in
+`phase-83o-scaffold-from-yaml.md`). The gate therefore covers what the registrar
+actually carries — the module's COMPILED tools. `scripts/smoke/phase-133.sh`
+keeps the static pins and adds two absence pins (`agent.go.tmpl` must never
+reference `builtin.RegisterWith` or import `sdk/tools/builtin`);
+`scripts/smoke/phase-112b.sh`'s built-in-only leg now asserts the registrar
+carries no built-in registration and that the built-in-only scaffold still
+compiles + tests green.

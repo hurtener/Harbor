@@ -34,9 +34,15 @@ type templateVars struct {
 	// origin.
 	Template string
 	// BuiltIns is the operator's `tools.built_in` list, projected onto
-	// the scaffold templates. Empty when no
-	// upstream yaml was loaded. The generated `agent.go` reads this
-	// to emit `builtin.Register(cat, [...])`.
+	// the scaffold templates. Empty when no upstream yaml was loaded.
+	//
+	// Built-ins are registered BY THE RUNTIME from `tools.built_in` at
+	// boot (with their backing stores), never by the generated
+	// `RegisterTools` — a second registration would collide on the tool
+	// name and kill the boot. Templates therefore read this list only to
+	// decide whether the project declares tools AT ALL (the
+	// `RegisterTools` seam is emitted either way); they must not emit a
+	// registration call per entry.
 	BuiltIns []string
 	// CustomTools is the projected `tools.custom[]` list with Go-
 	// friendly type names. One entry per generated
@@ -47,6 +53,11 @@ type templateVars struct {
 	// declared, and the fan-out renderer emits `cmd/<Name>/main.go`.
 	// Templates reference it as {{.WithServer}}.
 	WithServer bool
+	// HarborModuleVersion is the resolved `github.com/hurtener/Harbor`
+	// module version the generated `go.mod` requires. Always a
+	// proxy-resolvable release tag (see resolveModuleVersion), so the
+	// scaffolded project builds with no manual go.mod edit.
+	HarborModuleVersion string
 }
 
 // customToolView is the per-tool projection the `tools/*.go.tmpl`
@@ -108,10 +119,11 @@ func renderProject(name string, opts Options, absOut, upstreamPath string, upstr
 		return nil, nil, fmt.Errorf("%w: mkdir output dir %q: %w", ErrRender, absOut, err)
 	}
 	vars := templateVars{
-		Name:          opts.Name,
-		GoPackageName: strings.ReplaceAll(opts.Name, "-", "_"),
-		Template:      name,
-		WithServer:    opts.WithServer,
+		Name:                opts.Name,
+		GoPackageName:       strings.ReplaceAll(opts.Name, "-", "_"),
+		Template:            name,
+		WithServer:          opts.WithServer,
+		HarborModuleVersion: resolveModuleVersion(opts.HarborVersion),
 	}
 	if upstreamCfg != nil {
 		vars.BuiltIns = append([]string(nil), upstreamCfg.Tools.BuiltIn...)

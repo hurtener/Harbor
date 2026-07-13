@@ -29,6 +29,61 @@ the `internal/runtime/dispatch` parallel-cancel test flakes under full-suite
 `-race` CPU oversubscription — issue
 [#480](https://github.com/hurtener/Harbor/issues/480).)
 
+## [1.13.1] — 2026-07-13
+
+A scaffold patch release. Both bugs were reported by an external adopter
+integrating the `harbor scaffold --with-server` path — the first is a broken
+golden path (the scaffolded binary could not boot), the second made the
+generated project unbuildable as emitted.
+
+### Fixed
+
+- **`--with-server` scaffold died at boot when `harbor.yaml` declared any
+  `tools.built_in` entry.** The generated `RegisterTools` registered the
+  declared built-ins at the pre-policy catalog seam; the runtime then registered
+  the same names from `tools.built_in` (with their backing SkillStore /
+  ArtifactStore / Bus / Redactor), and the catalog rejected the duplicate:
+  `open server: tools/builtin: builtin: failed to register built-in tool:
+  "clock.now": tools: duplicate tool name`. Built-ins are **config-driven and
+  the runtime owns them** — the generated registrar now carries this module's
+  **compiled** tools (`tools.custom`) and nothing else, which is the registrar
+  seam's whole purpose. Listing a built-in in the yaml is the complete opt-in;
+  no Go wiring accompanies it. This also closes a latent second defect: the
+  generated `builtin.RegistryContext` was Catalog-only, so a stateful built-in
+  (`artifact_fetch`, the `skill_*` set) registered that way would have been
+  store-less. A project declaring only built-ins now gets a `RegisterTools` that
+  returns `nil` — the seam stays emitted so `cmd/<name>/main.go` keeps a stable
+  shape. Corrections appended to D-154 and D-267.
+- **The generated `go.mod` was unbuildable as emitted.** It required
+  `github.com/hurtener/Harbor v0.0.0-dev` with the `replace` directive commented
+  out, and told the reader Harbor "has not yet published a tagged module
+  release" — untrue since v1.0.0. The scaffold now emits a real, resolvable
+  `require github.com/hurtener/Harbor vX.Y.Z` — the release version of the
+  `harbor` binary that scaffolded the project (link-stamped version → the
+  binary's embedded build info → the last published release), so
+  `go mod tidy && go build ./...` works with no manual edit. A clearly-labelled
+  **commented** `replace` remains for contributors building against a local
+  Harbor checkout.
+
+### Testing
+
+- `scripts/smoke/phase-160.sh` — the probe config now declares a built-in
+  (`clock.now`) **alongside** the custom tool, so the scaffold → build → boot
+  leg actually boots a scaffolded binary with built-ins declared, and the
+  authenticated discovery probe asserts BOTH tools reach the served catalog.
+  This is the end-to-end gate whose absence let the bug ship; it is verified to
+  FAIL against the pre-fix template with the adopter's exact error.
+- `cmd/harbor/scaffold` — new unit gates: the rendered `agent.go` for a config
+  declaring both built-ins and custom tools must not reference
+  `builtin.RegisterWith` (and must still register the custom tool), and the
+  rendered `go.mod` must name a published release with the `replace` commented.
+- `test/integration/phase160_serve_parity_test.go` — the scaffolded-side config
+  declares a built-in in both the in-process parity legs and the
+  `HARBOR_LIVE_SERVE` leg.
+- `scripts/smoke/phase-133.sh` gains two absence pins on `agent.go.tmpl`;
+  `scripts/smoke/phase-112b.sh`'s built-in-only leg asserts the registrar
+  carries no built-in registration.
+
 ## [1.13.0] — 2026-07-11
 
 The adopter-serving + observability-history release. Two arcs land together.
