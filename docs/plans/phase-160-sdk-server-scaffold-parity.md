@@ -427,3 +427,17 @@ None.
       (verified: `make protocol-ts-gen-check` unchanged).
 - [x] If new vocabulary: glossary updated
 - [x] If a brief finding was departed from: N/A — none departed
+
+## As-built correction (v1.13.1)
+
+The smoke's probe config declared only `tools.custom`, so nothing exercised a
+scaffolded `--with-server` binary whose `harbor.yaml` also declared a
+`tools.built_in` entry — and that shape could not boot (duplicate tool name; see
+the as-built correction in `phase-83o-scaffold-from-yaml.md`). The gate is
+closed here: `scripts/smoke/phase-160.sh`'s probe now declares `clock.now`
+alongside `weather.lookup`, so the scaffold → build → BOOT leg runs with a
+built-in declared, and the discovery probe asserts BOTH tools reach the served
+catalog (the compiled one via `RegisterTools`, the built-in via the runtime's
+`tools.built_in` registration). `test/integration/phase160_serve_parity_test.go`
+carries the same declaration on the scaffolded-side config in both the
+in-process parity legs and the `HARBOR_LIVE_SERVE` leg.

@@ -101,11 +101,22 @@ memory:
   strategy: none
 `
 
-// The tools.entries[] overlay naming the compiled tool. A stock serve
-// (nil registrar) booted against this fails loud (the tool is not on the
-// catalog when the Builder applies the wrap).
+// The tools overlay the scaffolded composition boots against: a
+// tools.entries[] wrap naming the compiled tool, plus a `built_in`
+// declaration. A stock serve (nil registrar) booted against this fails
+// loud (the compiled tool is not on the catalog when the Builder applies
+// the wrap).
+//
+// The `built_in` entry is load-bearing (v1.13.1): built-ins are
+// CONFIG-driven and the RUNTIME registers them at boot (with their
+// backing stores). A registrar that ALSO registered them handed the
+// catalog the same name twice and the scaffolded binary died with
+// `duplicate tool name: clock.now` — so the two registration paths must
+// coexist here, and BOTH tools must reach the served catalog.
 const parityToolOverlay = `
 tools:
+  built_in:
+    - clock.now
   entries:
     - name: parity.echo
       approval:
@@ -556,6 +567,13 @@ func TestE2E_Phase160_ServeParity_BothCompositions(t *testing.T) {
 		if !toolListContains(t, scaffoldBody, "parity.echo") {
 			t.Errorf("scaffold tools.list does not contain the compiled tool parity.echo; body=%s", scaffoldBody)
 		}
+		// The declared built-in reached the SAME catalog — registered by
+		// the runtime from tools.built_in, not by the registrar. Both
+		// registration paths coexist (the v1.13.1 duplicate-tool-name
+		// boot death is the regression this pins).
+		if !toolListContains(t, scaffoldBody, "clock.now") {
+			t.Errorf("scaffold tools.list does not contain the declared built-in clock.now; the runtime's tools.built_in registration did not reach the served catalog; body=%s", scaffoldBody)
+		}
 		stockCode, stockBody := postJSONStatus(t, client, stock.baseURL+"/v1/tools/list", `{}`, tok)
 		if stockCode != http.StatusOK {
 			t.Fatalf("stock tools.list = %d, want 200", stockCode)
@@ -890,9 +908,11 @@ func TestE2E_Live_Phase160_ScaffoldedServer_Dispatch(t *testing.T) {
 	keysDir := filepath.Join(work, "keys")
 	runCmd(work, harborBin, "token", "keygen", "--out", keysDir, "--alg", "ES256")
 
-	// 3. The probe config: jwks_file posture + one custom tool + a real
-	// provider (key read from the environment by the server; never
-	// logged here).
+	// 3. The probe config: jwks_file posture + one custom tool + one
+	// declared built-in (the runtime registers it from config; the
+	// generated registrar must NOT, or the boot dies on a duplicate tool
+	// name — the v1.13.1 regression) + a real provider (key read from
+	// the environment by the server; never logged here).
 	const liveIssuer = "https://issuer.live.local"
 	const liveAudience = "phase-160-live"
 	cfgYAML := fmt.Sprintf(`
@@ -920,6 +940,8 @@ llm:
       context_window_tokens: 200000
       token_estimator: chars_div_4
 tools:
+  built_in:
+    - clock.now
   custom:
     - name: weather.lookup
       description: Look up current weather by city.

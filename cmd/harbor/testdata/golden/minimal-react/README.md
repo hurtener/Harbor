@@ -15,13 +15,18 @@ A Harbor agent project scaffolded from the `minimal-react` template.
    `llm.model`, `llm.api_key` (in `env.NAME` form), and add a matching
    `llm.model_profiles.<model>` entry.
 
-2. **Point `go.mod` at your Harbor checkout.** Harbor has not yet
-   published a tagged module release, so `go build` and `go test`
-   cannot fetch `github.com/hurtener/Harbor` from the module proxy
-   yet. Open `go.mod` and uncomment the `replace` directive at the
-   bottom, adjusting the relative path if your Harbor clone is not
-   adjacent to this project. Once Harbor v0.1.0 ships you can delete
-   the `replace` and run `go get github.com/hurtener/Harbor@v0.1.0`.
+2. **Fetch the dependencies.** `go.mod` already requires
+   `github.com/hurtener/Harbor v1.13.0` — the version
+   of the `harbor` binary that scaffolded this project — so it resolves
+   straight from the module proxy:
+
+   ```sh
+   go mod tidy && go build ./...
+   ```
+
+   Building against a **local** Harbor checkout instead? Uncomment the
+   `replace` directive at the bottom of `go.mod` and point it at your
+   clone.
 
 3. **Validate the config.**
 

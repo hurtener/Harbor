@@ -3,16 +3,20 @@
 // deterministic identity quadruple; AssertSequence pins the observed
 // event-type sequence; AssertNoLeaks catches cross-tenant / cross-
 // session payload leaks.
-{{- if or .BuiltIns .CustomTools}}
+{{- if .CustomTools}}
 //
-// Because harbor.yaml declares tools, this file also carries the
+// Because harbor.yaml declares custom tools, this file also carries the
 // register-and-dispatch gate (TestRegisterTools_DispatchesThroughCatalog
-// below): it proves a declared tool is not just COMPILED into
+// below): it proves a declared custom tool is not just COMPILED into
 // RegisterTools but actually registered AND invoked through the tool
 // catalog. A tools-declaring agent that never dispatches a tool is a
 // false green — Go does not flag an unused exported func — so the gate
 // asserts an observable dispatch signal, not merely that RegisterTools
 // exists.
+//
+// Built-ins (harbor.yaml's `tools.built_in`) are deliberately NOT part
+// of this gate: the RUNTIME registers them from config at boot, with
+// their backing stores. They never travel through RegisterTools.
 {{- end}}
 //
 // See https://pkg.go.dev/github.com/hurtener/Harbor/harbortest for the
@@ -21,22 +25,15 @@ package {{.GoPackageName}}
 
 import (
 	"context"
-{{- if or .BuiltIns .CustomTools}}
+{{- if .CustomTools}}
 	"encoding/json"
-{{- end}}
-{{- if and .BuiltIns (not .CustomTools)}}
-	"errors"
-{{- end}}
-{{- if or .BuiltIns .CustomTools}}
 	"fmt"
 {{- end}}
 	"testing"
 
 	"github.com/hurtener/Harbor/harbortest"
-{{- if or .BuiltIns .CustomTools}}
-	"github.com/hurtener/Harbor/sdk/tools"
-{{- end}}
 {{- if .CustomTools}}
+	"github.com/hurtener/Harbor/sdk/tools"
 
 	customtools "github.com/example/{{.Name}}/tools"
 {{- end}}
@@ -60,14 +57,14 @@ func TestEchoAgent_RoundTrips(t *testing.T) {
 	// agent emits an event under a foreign triple.
 	harbortest.AssertNoLeaks(t, log)
 }
-{{- if or .BuiltIns .CustomTools}}
+{{- if .CustomTools}}
 
 // TestRegisterTools_DispatchesThroughCatalog is the register-and-dispatch
-// gate for a tools-declaring agent. It registers every declared tool
-// onto a real catalog via RegisterTools, then drives at least one tool
-// THROUGH the catalog's executor under a Harbor identity (via RunOnce),
-// asserting the tool's effect is observed. If RegisterTools wires
-// nothing — the classic false green where a tools-declaring agent
+// gate for an agent that compiles its own tools. It registers every
+// declared custom tool onto a real catalog via RegisterTools, then drives
+// one of them THROUGH the catalog's executor under a Harbor identity (via
+// RunOnce), asserting the tool's effect is observed. If RegisterTools
+// wires nothing — the classic false green where a tools-declaring agent
 // compiles and passes while no tool is ever invoked — the Resolve below
 // fails loudly. Keep this test green as you replace the stubs with real
 // tools; it is the proof your tool wiring actually dispatches.
@@ -78,7 +75,6 @@ func TestRegisterTools_DispatchesThroughCatalog(t *testing.T) {
 			if err := RegisterTools(cat); err != nil {
 				return nil, fmt.Errorf("RegisterTools: %w", err)
 			}
-{{- if .CustomTools}}
 {{- $tool := index .CustomTools 0}}
 			// Dispatch the first declared custom tool through the catalog.
 			desc, ok := cat.Resolve("{{$tool.Name}}")
@@ -96,23 +92,6 @@ func TestRegisterTools_DispatchesThroughCatalog(t *testing.T) {
 			// res.Value is the tool's typed output — the observed effect
 			// of a real catalog dispatch.
 			return res.Value, nil
-{{- else}}
-{{- $name := index .BuiltIns 0}}
-			// No custom tools declared — dispatch the first built-in.
-			desc, ok := cat.Resolve("{{$name}}")
-			if !ok {
-				return nil, fmt.Errorf("built-in %q absent from catalog after RegisterTools — registration did not dispatch it", "{{$name}}")
-			}
-			// Reaching the executor IS the dispatch signal. A stub
-			// built-in may reject the empty payload with an args
-			// validation error; that still proves the register-and-
-			// dispatch wiring fired. Only ErrToolNotFound — registration
-			// produced nothing — is the false green this gate catches.
-			if _, derr := desc.Invoke(ctx, json.RawMessage(`{}`)); errors.Is(derr, tools.ErrToolNotFound) {
-				return nil, fmt.Errorf("built-in %q not dispatchable through catalog: %w", "{{$name}}", derr)
-			}
-			return "{{$name}}", nil
-{{- end}}
 		}), nil)
 	if err != nil {
 		t.Fatalf("register-and-dispatch gate failed: %v", err)

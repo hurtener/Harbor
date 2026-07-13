@@ -29,6 +29,73 @@ the `internal/runtime/dispatch` parallel-cancel test flakes under full-suite
 `-race` CPU oversubscription — issue
 [#480](https://github.com/hurtener/Harbor/issues/480).)
 
+## [1.13.1] — 2026-07-13
+
+A scaffold patch release. Both bugs were reported by an external adopter
+integrating the `harbor scaffold --with-server` path — the first is a broken
+golden path (the scaffolded binary could not boot), the second made the
+generated project unbuildable as emitted.
+
+### Fixed
+
+- **`--with-server` scaffold died at boot when `harbor.yaml` declared any
+  `tools.built_in` entry.** The generated `RegisterTools` registered the
+  declared built-ins at the pre-policy catalog seam; the runtime then registered
+  the same names from `tools.built_in` (with their backing SkillStore /
+  ArtifactStore / Bus / Redactor), and the catalog rejected the duplicate:
+  `open server: tools/builtin: builtin: failed to register built-in tool:
+  "clock.now": tools: duplicate tool name`. Built-ins are **config-driven and
+  the runtime owns them** — the generated registrar now carries this module's
+  **compiled** tools (`tools.custom`) and nothing else, which is the registrar
+  seam's whole purpose. Listing a built-in in the yaml is the complete opt-in;
+  no Go wiring accompanies it. This also closes a latent second defect: the
+  generated `builtin.RegistryContext` was Catalog-only, so a stateful built-in
+  (`artifact_fetch`, the `skill_*` set) registered that way would have been
+  store-less. A project declaring only built-ins now gets a `RegisterTools` that
+  returns `nil` — the seam stays emitted so `cmd/<name>/main.go` keeps a stable
+  shape. Corrections appended to D-154 and D-267.
+- **The generated `go.mod` was unbuildable as emitted.** It required
+  `github.com/hurtener/Harbor v0.0.0-dev` with the `replace` directive commented
+  out, and told the reader Harbor "has not yet published a tagged module
+  release" — untrue since v1.0.0. The scaffold now emits a real, resolvable
+  `require github.com/hurtener/Harbor vX.Y.Z` — the release version of the
+  `harbor` binary that scaffolded the project (link-stamped version → the
+  binary's embedded build info → the last published release), so
+  `go mod tidy && go build ./...` works with no manual edit. A clearly-labelled
+  **commented** `replace` remains for contributors building against a local
+  Harbor checkout. The version is threaded through **both** seeding paths —
+  `harbor scaffold` and the `harbor dev` draft store (`devdraft`) — so a
+  promoted draft pins the same release a scaffolded project does. Corrects
+  D-087 item 6, which deferred this pinning to release-engineering and shipped
+  `v0.0.0-dev` in the meantime. `make drift-audit` now gates the pin: it must
+  name a released CHANGELOG section, and may trail the newest by at most one
+  release (the deliberate merge→tag window, since a release's CHANGELOG section
+  lands before its tag is cut).
+
+### Testing
+
+- **The scaffold-serve smoke now boots a scaffolded binary that declares a
+  built-in.** Its probe config carries `clock.now` **alongside** the custom
+  tool, so the scaffold → build → boot leg exercises the mixed configuration,
+  and the authenticated discovery probe asserts BOTH tools reach the served
+  catalog. This is the end-to-end gate whose absence let the bug ship; it is
+  verified to FAIL against the pre-fix template with the adopter's exact error.
+  The serve-parity integration test declares a built-in on the scaffolded side
+  too, in both the in-process parity legs and the live (`HARBOR_LIVE_SERVE`)
+  leg.
+- `cmd/harbor/scaffold` — new unit gates: the rendered `agent.go` for a config
+  declaring both built-ins and custom tools must not reference
+  `builtin.RegisterWith` (and must still register the custom tool), and the
+  rendered `go.mod` must name a published release with the `replace` commented.
+  The scaffold-template and serve-facade smokes gain matching absence pins, so
+  a built-in registration cannot creep back into the emitted registrar.
+- `internal/devdraft` — new gates on the `harbor dev` draft-seeding path: a
+  stamped binary's release version reaches the seeded `go.mod`, and an
+  un-stamped one falls back to a published release (never the dev sentinel).
+- `make drift-audit` — a new mechanical check on `scaffold.FallbackModuleVersion`
+  (verified to bite on both a phantom pin and a two-release trail), so the
+  release-time bump is prompted rather than left to prose.
+
 ## [1.13.0] — 2026-07-11
 
 The adopter-serving + observability-history release. Two arcs land together.

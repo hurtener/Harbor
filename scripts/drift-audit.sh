@@ -291,6 +291,58 @@ if [ "${godoc_jargon_count}" -eq 0 ]; then
     ok 'godoc hygiene: no internal phase jargon in non-test Go source (phase 102)'
 fi
 
+# -----------------------------------------------------------------------------
+# Scaffold module pin — the `require github.com/hurtener/Harbor <version>` line
+# the scaffold engine emits when the binary cannot name its own release (an
+# un-stamped source build: `go build ./cmd/harbor`, `go run`, `go test`) comes
+# from `scaffold.FallbackModuleVersion`. It MUST name a version that is
+# actually published, or every source-built scaffold emits a go.mod no proxy
+# can resolve.
+#
+# Nothing prompts the bump on its own: godoc prose is not a gate and the golden
+# fixtures only fire AFTER someone edits the constant. This check is the prompt.
+#
+# The rule (CHANGELOG is the release ledger; git tags are unavailable in CI's
+# shallow checkout, so we do not consult them):
+#   - FAIL when the pin names no released CHANGELOG section at all (a phantom
+#     version — the catastrophic case: generated projects do not build).
+#   - The pin may TRAIL the newest section by exactly one release. That window
+#     is deliberate and correct: a release's CHANGELOG section lands on `main`
+#     BEFORE its tag is cut, and pinning the untagged version would break every
+#     source-built scaffold in the merge -> tag window. The pin therefore tracks
+#     the last PUBLISHED release, and is bumped once that tag exists.
+#   - FAIL when it trails by TWO OR MORE releases — by then the intervening
+#     version is long tagged and the bump was simply forgotten.
+# -----------------------------------------------------------------------------
+pin_line=$(grep -E '^const FallbackModuleVersion = ' cmd/harbor/scaffold/version.go 2>/dev/null || true)
+if [ -z "${pin_line}" ]; then
+    fail 'scaffold module pin: cmd/harbor/scaffold/version.go declares no FallbackModuleVersion const'
+else
+    pin_version=$(printf '%s' "${pin_line}" | sed -E 's/.*"v?([^"]+)".*/\1/')
+    # Released sections only, newest first; the [Unreleased] heading is skipped.
+    # bash 3.2 (macOS default) has no `mapfile`; read the list portably.
+    changelog_versions=()
+    while IFS= read -r v; do
+        [ -n "${v}" ] && changelog_versions+=("${v}")
+    done < <(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | sed -E 's/^## \[(.*)\]/\1/')
+    pin_index=-1
+    for i in "${!changelog_versions[@]}"; do
+        if [ "${changelog_versions[$i]}" = "${pin_version}" ]; then
+            pin_index=$i
+            break
+        fi
+    done
+    if [ "${#changelog_versions[@]}" -eq 0 ]; then
+        fail 'scaffold module pin: CHANGELOG.md carries no released "## [X.Y.Z]" section to check the pin against'
+    elif [ "${pin_index}" -lt 0 ]; then
+        fail "scaffold module pin: FallbackModuleVersion=v${pin_version} names no released CHANGELOG section — a scaffolded go.mod would require a version the module proxy cannot resolve"
+    elif [ "${pin_index}" -ge 2 ]; then
+        fail "scaffold module pin: FallbackModuleVersion=v${pin_version} trails the newest release (v${changelog_versions[0]}) by ${pin_index} releases — bump it in cmd/harbor/scaffold/version.go to the newest PUBLISHED tag and regenerate the goldens (go test ./cmd/harbor -run TestScaffold_Golden -update)"
+    else
+        ok "scaffold module pin: FallbackModuleVersion=v${pin_version} is a published release (newest: v${changelog_versions[0]}; a one-release trail is the merge->tag window)"
+    fi
+fi
+
 # Summary
 printf '\n=== drift-audit summary ===\n'
 printf 'OK:   %d\n' "${OK}"

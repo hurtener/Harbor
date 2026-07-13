@@ -26,11 +26,16 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 TEST_TPL="cmd/harbor/scaffold/templates/minimal-react/agent_test.go.tmpl"
+AGENT_TPL="cmd/harbor/scaffold/templates/minimal-react/agent.go.tmpl"
 
-# 1. The register-and-dispatch block is gated on tools being declared.
-assert_grep_present '\{\{- if or \.BuiltIns \.CustomTools\}\}' \
+# 1. The register-and-dispatch block is gated on COMPILED tools being
+#    declared. Built-ins do NOT travel through RegisterTools (v1.13.1):
+#    the runtime registers them from `tools.built_in` at boot, so a
+#    registrar that also registered them killed the boot with a duplicate
+#    tool name. The gate covers what the registrar actually carries.
+assert_grep_present '\{\{- if \.CustomTools\}\}' \
     "${TEST_TPL}" \
-    'phase 133: agent_test.go.tmpl gates the dispatch test on declared tools'
+    'phase 133: agent_test.go.tmpl gates the dispatch test on declared custom tools'
 
 # 2. The gated block calls RegisterTools (the register half).
 assert_grep_present 'RegisterTools\(cat\)' \
@@ -47,6 +52,19 @@ assert_grep_present 'cat\.Resolve\(' \
 assert_grep_present 'desc\.Invoke\(ctx' \
     "${TEST_TPL}" \
     'phase 133: the dispatch test invokes the tool through the executor'
+
+# 3b. The registrar template must never register a built-in (v1.13.1).
+#     Built-ins are config-driven and the RUNTIME owns them (it registers
+#     `tools.built_in` with the real SkillStore / ArtifactStore / Bus /
+#     Redactor). A generated `builtin.RegisterWith` handed the catalog the
+#     same name twice, so any `--with-server` scaffold declaring a built-in
+#     died at boot with `duplicate tool name`. This static pin keeps it out.
+assert_grep_absent 'builtin\.RegisterWith' \
+    "${AGENT_TPL}" \
+    'phase 133: agent.go.tmpl does NOT register built-ins (the runtime does, from tools.built_in)'
+assert_grep_absent 'sdk/tools/builtin' \
+    "${AGENT_TPL}" \
+    'phase 133: agent.go.tmpl does not import the built-in registry at all'
 
 # 4. The execution gate proper lives in phase-112b.sh.
 assert_grep_present 'EXTERNAL EXECUTION GATE' \

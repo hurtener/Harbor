@@ -147,6 +147,10 @@ func runScaffold(cmd *cobra.Command, _ []string) error {
 		FromConfigPath: fromCfg,
 		Patch:          patch,
 		WithServer:     withServer,
+		// The scaffolding binary's own release version becomes the
+		// generated go.mod's `require github.com/hurtener/Harbor` line,
+		// so the project builds off the module proxy with no edit.
+		HarborVersion: HarborVersion,
 	})
 	if err != nil {
 		return emitCLIError(cmd, scaffoldErrorToCLIError(err))

@@ -96,7 +96,11 @@ my-first-agent/
 └── harbor.yaml                 # the same yaml init dropped (copied verbatim)
 ```
 
-When the yaml declares tools (`tools.built_in` / `tools.custom`), `agent.go` gains a generated `RegisterTools` function and each custom tool gets a typed stub (input struct, output struct, handler) under `tools/`. The generated imports are the public `sdk/` facade paths, so the project builds as a standalone external module. The generated `agent_test.go` also gains a register-and-dispatch test that calls `RegisterTools` and invokes a declared tool **through the tool catalog** — so `go test ./...` proves your tools are actually wired, not just that the project compiles. Keep that test green as you replace the stubs with real tools. Use the stubs as the template for your real tools (see [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md)).
+When the yaml declares tools (`tools.built_in` / `tools.custom`), `agent.go` gains a generated `RegisterTools` function and each **custom** tool gets a typed stub (input struct, output struct, handler) under `tools/`. The generated imports are the public `sdk/` facade paths, so the project builds as a standalone external module. When the yaml declares custom tools, the generated `agent_test.go` also gains a register-and-dispatch test that calls `RegisterTools` and invokes a declared tool **through the tool catalog** — so `go test ./...` proves your tools are actually wired, not just that the project compiles. Keep that test green as you replace the stubs with real tools. Use the stubs as the template for your real tools (see [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md)).
+
+**`RegisterTools` carries your COMPILED tools only — never built-ins.** A tool you opt into under `tools.built_in` (`clock.now`, `artifact_fetch`, the `skill_*` set, …) is registered **by the runtime** at boot, straight from config, with its backing stores (skill store, artifact store, event bus, redactor) already threaded in. Registering one in `RegisterTools` as well hands the catalog the same name twice and the boot dies with `duplicate tool name`. The registrar seam exists for the tools *your module compiles*; the yaml is the whole opt-in for everything Harbor ships.
+
+`go.mod` requires the Harbor release that scaffolded the project, so `go mod tidy && go build ./...` resolves straight from the module proxy — no edit needed. (Building against a local Harbor checkout? Uncomment the `replace` at the bottom of `go.mod`.)
 
 ## 5. Boot the runtime
 

@@ -2,14 +2,15 @@ module github.com/example/{{.Name}}
 
 go 1.26
 
-require github.com/hurtener/Harbor v0.0.0-dev
+require github.com/hurtener/Harbor {{.HarborModuleVersion}}
 
-// Harbor has not yet published a tagged module release. Until it does,
-// uncomment the `replace` directive below and point it at your local
-// Harbor checkout (clone github.com/hurtener/Harbor first):
+// Harbor resolves from the module proxy — `go mod tidy && go build ./...`
+// works with no edit to this file.
 //
-//   replace github.com/hurtener/Harbor => ../Harbor
+// Building against a LOCAL Harbor checkout instead (contributors, or
+// testing an unreleased change)? Uncomment the directive below and point
+// it at your clone:
 //
-// Adjust the relative path if your Harbor clone is elsewhere. Once
-// Harbor v0.1.0 ships, delete the replace and run
-// `go get github.com/hurtener/Harbor@v0.1.0`.
+//	replace github.com/hurtener/Harbor => ../Harbor
+//
+// Adjust the relative path if your Harbor clone lives elsewhere.
