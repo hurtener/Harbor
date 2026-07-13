@@ -8,9 +8,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/cmd/harbor/scaffold"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
@@ -604,4 +606,72 @@ func drainEvents(t *testing.T, ch <-chan events.Event, n int) []events.EventType
 		// this is a "the bus is broken" escape).
 	}
 	return out
+}
+
+// TestStore_Create_SeededGoModPinsTheBinaryHarborVersion is the v1.13.1
+// regression gate for the draft-seeding path: `harbor dev`'s draft store
+// must thread the binary's own release version into the seeded project's
+// go.mod, exactly as `harbor scaffold` does. Without the threading the
+// seeded project always pinned the scaffold engine's fallback, silently
+// contradicting the operator-facing promise that the pin names "the
+// version of the harbor binary that scaffolded this project".
+func TestStore_Create_SeededGoModPinsTheBinaryHarborVersion(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), ".harbor", "drafts")
+	store, err := NewStore(Options{
+		Root: root,
+		Bus:  newTestBus(t),
+		// What the release-built binary passes (main.HarborVersion).
+		HarborVersion: "v1.14.2",
+	})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	draft, err := store.Create(ctxWith(t, testIdentity), CreateOptions{Name: "agent-x"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var gomod string
+	for _, f := range draft.Files {
+		if f.Path == "go.mod" {
+			gomod = string(f.Content)
+			break
+		}
+	}
+	if gomod == "" {
+		t.Fatal("seeded draft carries no go.mod")
+	}
+	const want = "require github.com/hurtener/Harbor v1.14.2"
+	if !strings.Contains(gomod, want) {
+		t.Errorf("seeded go.mod missing %q — the binary's release version did not reach the scaffold engine; got:\n%s", want, gomod)
+	}
+	// Never the un-stamped sentinel: a seeded draft that is promoted must
+	// resolve off the module proxy like any scaffolded project.
+	if strings.Contains(gomod, "v0.0.0-dev") {
+		t.Errorf("seeded go.mod requires the un-stamped dev sentinel; got:\n%s", gomod)
+	}
+}
+
+// TestStore_Create_SeededGoModFallsBackWhenUnstamped pins the un-stamped
+// path (the test kit, a source-built binary): the seeded go.mod still
+// names a published release rather than an unresolvable version.
+func TestStore_Create_SeededGoModFallsBackWhenUnstamped(t *testing.T) {
+	t.Parallel()
+	// newTestStore leaves Options.HarborVersion empty — the un-stamped shape.
+	store := newTestStore(t)
+	draft, err := store.Create(ctxWith(t, testIdentity), CreateOptions{Name: "agent-y"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var gomod string
+	for _, f := range draft.Files {
+		if f.Path == "go.mod" {
+			gomod = string(f.Content)
+			break
+		}
+	}
+	want := "require github.com/hurtener/Harbor " + scaffold.FallbackModuleVersion
+	if !strings.Contains(gomod, want) {
+		t.Errorf("seeded go.mod missing %q; got:\n%s", want, gomod)
+	}
 }

@@ -63,7 +63,14 @@ generated project unbuildable as emitted.
   binary's embedded build info → the last published release), so
   `go mod tidy && go build ./...` works with no manual edit. A clearly-labelled
   **commented** `replace` remains for contributors building against a local
-  Harbor checkout.
+  Harbor checkout. The version is threaded through **both** seeding paths —
+  `harbor scaffold` and the `harbor dev` draft store (`devdraft`) — so a
+  promoted draft pins the same release a scaffolded project does. Corrects
+  D-087 item 6, which deferred this pinning to release-engineering and shipped
+  `v0.0.0-dev` in the meantime. `make drift-audit` now gates the pin: it must
+  name a released CHANGELOG section, and may trail the newest by at most one
+  release (the deliberate merge→tag window, since a release's CHANGELOG section
+  lands before its tag is cut).
 
 ### Testing
 
@@ -83,6 +90,12 @@ generated project unbuildable as emitted.
 - `scripts/smoke/phase-133.sh` gains two absence pins on `agent.go.tmpl`;
   `scripts/smoke/phase-112b.sh`'s built-in-only leg asserts the registrar
   carries no built-in registration.
+- `internal/devdraft` — new gates on the `harbor dev` draft-seeding path: a
+  stamped binary's release version reaches the seeded `go.mod`, and an
+  un-stamped one falls back to a published release (never the dev sentinel).
+- `make drift-audit` — a new mechanical check on `scaffold.FallbackModuleVersion`
+  (verified to bite on both a phantom pin and a two-release trail), so the
+  release-time bump is prompted rather than left to prose.
 
 ## [1.13.0] — 2026-07-11
 

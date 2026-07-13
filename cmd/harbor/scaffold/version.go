@@ -33,6 +33,13 @@ const FallbackModuleVersion = "v1.13.0"
 // (`v1.13.0-4-gdeadbee`, `...-dirty`). Those fall back to
 // FallbackModuleVersion rather than emitting a `require` line no
 // proxy can resolve.
+//
+// CAVEAT for a future major: this accepts `v2.0.0` and above, but Go's
+// semantic-import-versioning rule requires the module PATH to carry a
+// `/v2` suffix at v2+, and `go.mod.tmpl` hardcodes the unsuffixed
+// `github.com/hurtener/Harbor`. A v2 cut must update the template's
+// require path (and Harbor's own module path) in the same change, or
+// the generated project will not resolve.
 var releaseVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[.0-9A-Za-z-]*)?$`)
 
 // resolveModuleVersion picks the Harbor module version the generated

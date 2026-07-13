@@ -75,6 +75,11 @@ type Store struct {
 	bus        events.EventBus
 	logger     *slog.Logger
 	maxFileLen int
+	// harborVersion is the binary's release version, threaded into the
+	// seeded project's go.mod (Options.HarborVersion). Immutable after
+	// construction, like every other field here — the Store is a
+	// compiled artifact shared across concurrent callers.
+	harborVersion string
 
 	// entropyMu guards the monotonic-ULID entropy reader. The
 	// ulid.MonotonicEntropy reader is NOT goroutine-safe per its
@@ -102,6 +107,15 @@ type Options struct {
 	// MaxFileBytes overrides the per-file size cap PATCH enforces.
 	// Zero falls back to defaultDraftFileMaxBytes (1 MiB).
 	MaxFileBytes int
+	// HarborVersion is the binary's own release version, threaded into
+	// the seeded project's `go.mod` as the required Harbor version — the
+	// same value `harbor scaffold` pins, so a draft-seeded project and a
+	// scaffolded one resolve the identical Harbor. The binary supplies
+	// it (`main.HarborVersion`, link-stamped at release); empty — the
+	// test kit, an un-stamped build — falls back to the scaffold
+	// engine's last-published-release pin. See
+	// cmd/harbor/scaffold.FallbackModuleVersion.
+	HarborVersion string
 }
 
 // NewStore builds a Store. Both `Options.Root` and `Options.Bus` are
@@ -127,11 +141,12 @@ func NewStore(opts Options) (*Store, error) {
 		logger = slog.Default()
 	}
 	return &Store{
-		root:       absRoot,
-		bus:        opts.Bus,
-		logger:     logger,
-		maxFileLen: maxLen,
-		entropy:    ulid.Monotonic(rand.Reader, 0),
+		root:          absRoot,
+		bus:           opts.Bus,
+		logger:        logger,
+		maxFileLen:    maxLen,
+		harborVersion: opts.HarborVersion,
+		entropy:       ulid.Monotonic(rand.Reader, 0),
 	}, nil
 }
 
@@ -226,6 +241,10 @@ func (s *Store) Create(ctx context.Context, opts CreateOptions) (*Draft, error) 
 		Name:      opts.Name,
 		Template:  tmpl,
 		OutputDir: draftRoot,
+		// The seeded project pins the SAME Harbor release `harbor
+		// scaffold` pins, so a promoted draft builds off the module
+		// proxy with no go.mod edit.
+		HarborVersion: s.harborVersion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("devdraft: seed draft: %w", err)

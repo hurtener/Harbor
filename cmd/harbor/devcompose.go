@@ -122,6 +122,10 @@ func (c *devComposition) extraRoutes() serve.ExtraRoutesFunc {
 			Root:   filepath.Join(".", ".harbor", "drafts"),
 			Bus:    m.Bus,
 			Logger: m.Logger,
+			// Seeded drafts pin the SAME Harbor release `harbor scaffold`
+			// pins, so a promoted draft builds off the module proxy with
+			// no go.mod edit.
+			HarborVersion: HarborVersion,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("devdraft: %w", err)
