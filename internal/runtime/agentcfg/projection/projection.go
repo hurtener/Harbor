@@ -26,6 +26,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // ErrSkillBodyMissing is returned by [ActiveSkillViews] when an agent's
@@ -60,16 +61,18 @@ func loadOverlay(ctx context.Context, ov sessionoverlay.Store, agentID string, i
 // devstack boundary) deregisters the source's tools from the planner catalog
 // view + the MCP registry and closes its transport gracefully — the physical
 // inverse of the add path's attach. Keeping it an injected interface preserves
-// this package's §4.4 boundary: the projection imports no concrete MCP driver.
+// this package's §4.4 boundary: the projection imports no concrete MCP driver
+// (auth carries only the plain reconcile-view owner tag, not a driver).
 type ConnectionDetacher interface {
-	// AttachedSources returns the source ids currently live in the MCP
-	// registry (the attached set the reconcile diffs against the declared
-	// set). A fresh slice; the caller may retain it. NOTE: the concretes
-	// today enumerate the PROCESS-GLOBAL registry — correct for the
-	// single-agent dev wiring, but the future multi-agent attach leg must
-	// scope the attached set to the reconciling agent or one agent's
-	// reconcile would see (and detach) another agent's sources.
-	AttachedSources(ctx context.Context) []string
+	// AttachedSources returns the reconciling owner's RUNTIME-ADDED source ids
+	// — the owner-scoped reconcile VIEW the reconcile diffs against the
+	// declared set. It deliberately does NOT return boot-declared servers or
+	// another owner's runtime-adds: the registry stays process-global and
+	// deployment-shared (boot servers resolve + dispatch by bare name across
+	// every session), but the reconcile VIEW is owner-scoped so one owner's
+	// run-start reconcile can never detach a boot server or another owner's
+	// connection. A fresh slice; the caller may retain it.
+	AttachedSources(ctx context.Context, owner auth.Owner) []string
 	// Detach deregisters the named source's tools from the catalog + MCP
 	// registry and closes its transport gracefully. Idempotent — a source
 	// already gone is a no-op the concrete swallows.
@@ -84,15 +87,31 @@ var ErrReconcileRead = errors.New("agentcfg/projection: run-start reconcile acti
 
 // ReconcileConnections is the DETACH leg of run-start reconciliation. It
 // compares the agent's DECLARED runtime-added connections (the active config
-// revision's connections section) against the ATTACHED set (the live MCP
-// registry) and detaches every server that is attached but no longer declared
-// AND not boot-declared — a connection removed via
-// `agent_config.remove_mcp_connection`, or a server re-declared away by a
-// rollback past an add. Detaching deregisters the server's tools from the
-// catalog + MCP registry and closes its transport, so the NEXT run's projected
-// catalog excludes them, the registry no longer lists it, and the subprocess
-// drains. Boot-declared (yaml) servers are NEVER detached (they are not
-// revisioned state); the bootDeclared set gates them out.
+// revision's connections section) against the reconciling OWNER's ATTACHED set
+// (the owner-scoped reconcile VIEW over the live MCP registry) and detaches
+// every server that owner has attached but no longer declares — a connection
+// removed via `agent_config.remove_mcp_connection`, or a server re-declared
+// away by a rollback past an add. Detaching deregisters the server's tools from
+// the catalog + MCP registry and closes its transport, so the NEXT run's
+// projected catalog excludes them, the registry no longer lists it, and the
+// subprocess drains.
+//
+// # Owner-scoped reconcile view (the fix for the process-global over-detach)
+//
+// The attached set the reconcile diffs against is the reconciling OWNER's
+// runtime-added entries only — the (tenant, agent) owner stamped at attach.
+// Boot-declared servers (untagged) and every OTHER owner's runtime-adds are
+// NOT in the view, so a run for owner A can never detach a boot server or a
+// tenant-B runtime-added connection, even though the underlying registry +
+// catalog stay process-global and deployment-shared (resolution + dispatch
+// stay bare-name; boot servers remain visible to every session). This is the
+// per-owner reconcile VIEW the design intends — NOT a store re-key, and NOT an
+// isolation key (agent_id is not an isolation principal). The owner is derived
+// from the run's verified triple (tenant) + agentID; a zero owner yields an
+// empty view (nothing to reconcile), so a reconcile without an owner detaches
+// nothing rather than falling back to the whole registry. The bootDeclared set
+// is retained as belt-and-suspenders (an owner's view already excludes boot
+// servers by construction, but the explicit skip documents the invariant).
 //
 // # Honest in-flight semantics (read this before assuming isolation)
 //
@@ -123,21 +142,23 @@ var ErrReconcileRead = errors.New("agentcfg/projection: run-start reconcile acti
 // It is DETACH-ONLY by design: attaching a declared-but-absent server (the
 // restart-survival reconcile) is a separate, deferred concern; the live add
 // verb is the attach path, and re-add after remove reuses the persisted
-// agent-bound token through that verb (no second consent). Two windows are
-// accepted until the attach leg lands: a reconcile racing a concurrent re-add
-// of the same name can detach the freshly re-added server (a stale
-// declared-set read — heals at the next add or restart), and
-// AttachedSources() is today a process-global enumeration (fine for the
-// single-agent dev wiring; the future multi-agent attach leg must scope the
-// attached set per agent).
+// agent-bound token through that verb (no second consent). One window is
+// accepted: a reconcile racing a concurrent re-add of the same name by the
+// SAME owner can detach the freshly re-added server (a stale declared-set read
+// — heals at the next add or restart). The earlier process-global
+// over-detach — where one owner's reconcile enumerated the whole registry and
+// could detach boot servers or another owner's runtime-adds — is CLOSED by the
+// owner-scoped reconcile view above: AttachedSources returns only the
+// reconciling owner's runtime-added entries.
 //
 // A nil registry, an empty agentID, or a nil detacher returns (0, nil) — the
 // backward-compatible "no reconcile" path. A registry read error is returned
 // wrapped in ErrReconcileRead (fail loud, never swallowed). Detach errors are
 // joined and returned (the caller logs them loud) but do not abort the diff:
-// one server that refuses to close must not strand the others. Only the
-// identity triple is used (the registry is identity-scoped, never keyed by
-// run). Returns the number of servers detached.
+// one server that refuses to close must not strand the others. The identity
+// triple + agentID form the owner-scoped reconcile view; the tenant + agent are
+// the owner tag (agent_id is registration metadata here, not an isolation key —
+// isolation stays the triple). Returns the number of servers detached.
 func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, detacher ConnectionDetacher, bootDeclared map[string]struct{}) (int, error) {
 	if reg == nil || agentID == "" || detacher == nil {
 		return 0, nil
@@ -152,11 +173,15 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 			declared[d.Name] = struct{}{}
 		}
 	}
+	// The owner-scoped reconcile view: the (tenant, agent) owner whose
+	// runtime-added entries this run reconciles. AttachedSources returns ONLY
+	// this owner's runtime-adds — never boot servers, never another owner's.
+	owner := auth.Owner{Tenant: id.TenantID, Agent: agentID}
 	var detached int
 	var errs []error
-	for _, src := range detacher.AttachedSources(ctx) {
+	for _, src := range detacher.AttachedSources(ctx, owner) {
 		if _, boot := bootDeclared[src]; boot {
-			continue // boot-declared servers are never detached by reconcile.
+			continue // defense-in-depth: the owner view already excludes boot servers.
 		}
 		if _, ok := declared[src]; ok {
 			continue // still declared — keep it attached.

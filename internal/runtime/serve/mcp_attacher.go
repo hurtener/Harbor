@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -28,6 +29,13 @@ import (
 //
 // The harbortest/devstack helper carries a mirror of this concrete so
 // integration tests exercise the same real attach path.
+
+// ErrRuntimeAddOwnerMissing is returned by MCPConnectionAttacher.Attach when a
+// runtime-added connection reaches the attach path without a full (tenant,
+// agent) owner. It is a fail-closed guard: a runtime-added entry with no owner
+// tag would be an unreconcilable orphan, so the attach is rejected loudly
+// rather than registering an untagged runtime-add.
+var ErrRuntimeAddOwnerMissing = errors.New("serve: runtime-added mcp connection is missing its (tenant, agent) owner")
 
 // MCPConnectionAttacher implements agentcfgprotocol.ConnectionAttacher by
 // reusing the boot-time mcpdrv.Attach lifecycle (dial → initialize →
@@ -76,6 +84,18 @@ func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Regist
 // agentcfgprotocol.ErrAuthRequired so the service parks on the unified
 // pause/resume primitive.
 func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol.AttachRequest) error {
+	// Stamp the (tenant, agent) reconcile-view owner tag from the verified
+	// caller identity + the target agent. Fail CLOSED when either component is
+	// missing: a runtime-added connection with no owner would be an
+	// unreconcilable orphan (a run-start reconcile could never scope to it,
+	// leaving it attached forever or, worse, detachable only by a
+	// process-global sweep). Never a silent untagged attach (CLAUDE.md §13).
+	owner := toolauth.Owner{Tenant: req.Identity.TenantID, Agent: req.AgentID}
+	if owner.IsZero() || owner.Tenant == "" || owner.Agent == "" {
+		return fmt.Errorf("%w: runtime-added connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
+			ErrRuntimeAddOwnerMissing, req.Name, owner.Tenant, owner.Agent)
+	}
+
 	ms := config.MCPServerConfig{
 		Name:            req.Name,
 		TransportMode:   transportModeForAdd(req.Transport),
@@ -102,6 +122,7 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		DefaultIdentity: a.defaultIdentity,
 		Closers:         &local,
 		OAuthProviders:  a.oauthProviders,
+		Owner:           owner,
 	})
 	// Merge whatever closers Attach appended (a successful Connect appends the
 	// provider's Close even if a later step failed — drain it on teardown).

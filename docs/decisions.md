@@ -8002,7 +8002,7 @@ Forcing elevation on a single own-other-session read would break the single most
 
 **Date:** 2026-07-13
 
-**Status:** Pending (Phase 172, v1.14 Track B)
+**Status:** Shipped (Phase 172, v1.14 Track B)
 
 **Where it lives:** `docs/plans/phase-172-events-aggregate-epoch-grid.md`; `internal/protocol/types/events.go`, `internal/events/aggregate.go`.
 
@@ -8035,6 +8035,32 @@ Forcing elevation on a single own-other-session read would break the single most
 **Protocol additions.** `EventAggregateRequest.ByTenant` + `EventBucket.CountsByTenant` (additive optional fields; no new method). `ProtocolVersion` stays 0.1.0 (additive). Full D-223 lockstep + D-209 regen in the same PR; §18 `use-the-harbor-protocol` SKILL.md updated.
 
 **Cross-references.** D-305 (171 — the aggregate must work on the durable driver and carry the server-derived `widened` decision before attribution can ride it; 173 depends on it), D-306 (composes with the anchored grid — same response), D-299 (the elevated-scope selector; server-derived widening), D-284 (the admin-widened read pattern). CLAUDE.md §6 (multi-isolation; defence-in-depth), §13 (opt-in, additive; no identity-downgrading knob), §18 (skill hygiene). RFC §6.13, §5.2, §6.5, §4, §7. Plan: `docs/plans/phase-173-events-aggregate-tenant-attribution.md`.
+
+---
+
+## D-308 — A widened (cross-principal / multi-value), scope-gated, audited read does NOT fold elided identity axes; it fans in across them. Only a non-widened own-scope read folds to the caller's triple
+
+**Date:** 2026-07-14
+
+**Status:** Accepted (landed with Phase 172; fixes a latent defect in Phases 72a / 162)
+
+**Where it lives:** `internal/protocol/transports/stream/handlers.go` (events.aggregate), `internal/protocol/transports/stream/events_list_handler.go` (events.list), `web/console/src/lib/events/filters.ts` (the Console sparkline consumer).
+
+**Context.** Both the `events.aggregate` and `events.list` handlers folded EVERY elided identity axis onto the caller's own triple — UNCONDITIONALLY, even when the read was `widened`. The `widened` decision (`conv.RequiresAdminScope`, computed pre-fold, D-305/D-299) authorizes a cross-session fan-in and emits one `audit.admin_scope_used`. But the unconditional fold then narrowed a real admin/`console:fleet` call naming `TenantIDs:[T2]` with elided user/session down to `{T2, caller-user, caller-session}` → EMPTY (the caller is not a principal in T2). So the flag authorized+audited a fan-in the fold immediately defeated. The substrate always supported the fan-in correctly (empty user/session axes + `Admin=true` fan across sessions — the `Aggregate_Admin_SessionLess_FansInAcrossSessions` conformance case proves `TenantIDs:[tenant-B]` → perTenant=4 because it drives the aggregator directly, bypassing the handler fold). A Console fleet review returned NO-GO on the resulting silently-blank sparkline (a §13 silent-degradation FAIL); Phase 172's first cut papered over it in the Console by dropping the foreign tenant pin (an own-scope fallback), which was dishonest — the banner and table showed cross-tenant data the sparkline hid.
+
+**Decision.** Make the fold asymmetric. On the WIDENED path, do NOT fold elided `user`/`session` axes — leave them wildcard so the substrate's `MatchWire` fans in across the named tenant scope; the pre-fold scope gate (`admin`/`console:fleet`, derived from the verified ctx, never the body) and the `audit.admin_scope_used` emission make that fan-in safe and accounted-for. On the NON-widened path, fold every elided axis to the caller's own component exactly as before (unchanged own-scope isolation). Concretely, the `user` and `session` folds are wrapped in `if !widened { ... }` in both handlers.
+
+**The tenant axis is a deliberate carve-out (name-to-widen, D-284 parity).** The `tenant` fold stays UNCONDITIONAL: an elided tenant folds to the caller's own tenant even for an admin. Widening the tenant axis requires NAMING tenant(s) in `Filter.TenantIDs` — identical to the `tasks.list` / `agents.list` fleet selector (`widened := len(TenantIDs) > 0`; the widened branch reads ONLY the named tenants; an empty tenant axis is own-scope). Gating the tenant fold too would let a request widened by a foreign/multi USER (tenant elided) silently fan across EVERY tenant — a broader read than the wire expressed and a divergence from the sibling fleet surfaces. So `events`' broader `widened` trigger (foreign-single-user, multi-user, multi-session — not just tenant) never wildcards the tenant axis: a foreign-user read with an elided tenant returns that user's events within the CALLER's own tenant only.
+
+**Why isolation is unchanged.** A non-admin naming a foreign principal (tenant OR user, or a multi-value set) is `widened` and hits the 403 `CodeIdentityScopeRequired` gate BEFORE the fold, so the un-folded wildcard path is reachable ONLY by a verified `admin`/`console:fleet` caller, and every such read emits exactly one `audit.admin_scope_used`. `ScopeAdmin`/`ScopeConsoleFleet` are global binary fan-in grants (D-307), so an admin fanning across a named tenant's users/sessions gains nothing it was not already authorized to read. A single own-other-session read stays un-gated (FilterFromWire does not elevate it), so the everyday Console Sessions / Playground history flow is unaffected.
+
+**HA-21 (session-less fan-in) closed by the same fix.** HA-21 is this bug seen on the SESSION axis: a widened admin `events.list` / `events.aggregate` with an elided `SessionIDs` (empty ⇒ "any session") was folded to the caller's own session and returned nothing. The `if !widened` guard leaves the session axis wildcard on the widened path, so a session-less admin read fans across ALL of the named tenant's sessions — the bus-level `ListWindow_Admin_FansInAcrossSessions` conformance row (green with `Filter{}` + `Admin:true`) is now reachable THROUGH the handler, which previously overwrote the empty session set before the driver call (HA-20 "leg 2": cover the Protocol METHOD, not just the bus interface — pinned by a handler-level fan-in-across-≥2-sessions test on both surfaces). There is no longer any "unservable scope returns empty success" case on the happy path (HA-21 defect 2, resolved by CONSTRUCTION, not by a new error): a widened read returns the fanned-in rows, and a non-admin cross-session / cross-tenant read is 403 at the gate BEFORE the fold. A genuinely-empty tenant simply yields zero rows — honest, not a masked narrowing.
+
+**Console consequence.** The dishonest own-scope fallback in `aggregateFilter` (dropping the foreign `tenant_ids`) is REMOVED. With the root fixed, a widened sparkline aggregate returns the real foreign-tenant rate that matches the fleet banner + the table; a genuinely-empty result renders an honest empty grid (the runtime decides emptiness, not the client).
+
+**Tests.** Handler-level, both surfaces: a widened admin `TenantIDs:[foreignTenant]` read with DISTINCT foreign principals returns that tenant's events (a caller-fold would return 0 — the prior fixtures masked the bug by reusing the caller's own user/session id in the foreign tenant); a non-admin naming a foreign tenant is 403; a non-admin own read folds to own scope; an elided-tenant widened read (foreign user) stays scoped to the caller's own tenant (the tenant carve-out); one `audit.admin_scope_used` per widened request.
+
+**Cross-references.** D-299 (elevation triggers; server-derived widening — authority from the verified ctx, never the body), D-284 (the name-to-widen admin selector the tenant carve-out mirrors), D-294 (events.list), D-305 (the aggregate fan-in substrate + pre-fold `widened`), D-306 (Phase 172 — this fix lands in its PR; the anchored grid). CLAUDE.md §6 (multi-isolation), §13 (silent-degradation forbidden). RFC §6.13, §5.2, §7.
 
 ---
 

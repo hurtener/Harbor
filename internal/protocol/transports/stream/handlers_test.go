@@ -180,6 +180,128 @@ func TestAggregateHandler_CrossTenantWithAdmin_PreFoldWidened_OneAudit_200(t *te
 	}
 }
 
+// TestAggregateHandler_WidenedForeignTenant_DistinctPrincipals_FansIn_200 is
+// the isolation-critical regression for the fold bug: a widened admin
+// aggregate naming ONLY a foreign tenant, with the user/session axes elided,
+// must FAN IN across that tenant's DISTINCT users/sessions — not be narrowed to
+// {t-foreign, caller-user, caller-session} → EMPTY. The prior widened fixture
+// masked the defect by reusing the caller's own user/session id in the foreign
+// tenant; this one uses distinct principals so a caller-fold returns 0 and the
+// test catches it. The tenant axis stays name-to-widen: the caller's OWN tenant
+// event is excluded because the filter named only t-foreign.
+func TestAggregateHandler_WidenedForeignTenant_DistinctPrincipals_FansIn_200(t *testing.T) {
+	h, bus := newAggregateHandlerTest(t)
+	publishAggAt(t, bus, "t-foreign", "u-x", "s-x", aggHandlerNow.Add(-5*time.Minute))
+	publishAggAt(t, bus, "t-foreign", "u-y", "s-y", aggHandlerNow.Add(-6*time.Minute))
+	// Caller's own tenant event — the filter names ONLY t-foreign, so an elided
+	// tenant would NOT reach here; this guards the tenant axis staying scoped.
+	publishAggAt(t, bus, aggCaller.TenantID, aggCaller.UserID, aggCaller.SessionID, aggHandlerNow.Add(-5*time.Minute))
+
+	body := `{"filter":{"tenant_ids":["t-foreign"]},"window":1800000000000,"bucket":60000000000}`
+	status, raw := doAggregate(t, h, body, &aggCaller, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, raw)
+	}
+	if got := sumAggRuntimeError(t, raw); got != 2 {
+		t.Fatalf("widened foreign-tenant aggregate counted %d, want 2 (distinct principals fanned in; a caller-fold would return 0)", got)
+	}
+	if got := aggHandlerAdminScopeUsed(t, bus); got != 1 {
+		t.Fatalf("widened aggregate emitted %d admin_scope_used, want exactly 1", got)
+	}
+}
+
+// TestAggregateHandler_AllEmptyAdmin_OwnScopeOnly pins THE load-bearing safety
+// property directly: an admin caller sending a COMPLETELY empty Filter{} (no
+// tenant/user/session/type) is treated as NON-widened — RequiresAdminScope is
+// false, so the full own triple is folded and the read scopes to the caller's
+// own (tenant,user,session) only. It must NOT fan across every tenant just
+// because the caller holds the admin scope, and it emits ZERO admin_scope_used.
+//
+// Mutation note: if a future change made an all-empty filter `widened`, the
+// un-folded wildcard path would read the WHOLE deployment on an empty body —
+// this test catches exactly that.
+func TestAggregateHandler_AllEmptyAdmin_OwnScopeOnly(t *testing.T) {
+	h, bus := newAggregateHandlerTest(t)
+	// The caller's own event.
+	publishAggAt(t, bus, aggCaller.TenantID, aggCaller.UserID, aggCaller.SessionID, aggHandlerNow.Add(-5*time.Minute))
+	// A foreign tenant's event — must NOT be read (tenant isolation).
+	publishAggAt(t, bus, "t-foreign", "u-foreign", "s-foreign", aggHandlerNow.Add(-6*time.Minute))
+	// A SIBLING user + session INSIDE the caller's own tenant — must NOT be
+	// read either. This is the load-bearing leg: the user/session fold is the
+	// axis gated by `!widened`, so if an all-empty filter ever became widened,
+	// these sibling rows would leak while the tenant fold still hid t-foreign.
+	// Seeding them here makes the mutation observable.
+	publishAggAt(t, bus, aggCaller.TenantID, "u-sibling", "s-sibling", aggHandlerNow.Add(-7*time.Minute))
+
+	// Empty filter, but the caller DOES hold the admin scope.
+	body := `{"window":1800000000000,"bucket":60000000000}`
+	status, raw := doAggregate(t, h, body, &aggCaller, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, raw)
+	}
+	if got := sumAggRuntimeError(t, raw); got != 1 {
+		t.Fatalf("all-empty admin aggregate counted %d, want 1 (own triple only; a widened all-empty would leak the own-tenant sibling and every tenant)", got)
+	}
+	if got := aggHandlerAdminScopeUsed(t, bus); got != 0 {
+		t.Fatalf("all-empty admin aggregate emitted %d admin_scope_used, want 0 (non-widened own read)", got)
+	}
+}
+
+// TestAggregateHandler_WidenedSessionLess_FansInAcrossSessions_200 pins HA-21
+// through the Protocol METHOD (HA-20 leg 2 — cover the handler, not only the
+// bus interface): a session-less admin aggregate (a foreign tenant named, the
+// SessionIDs axis elided) must fan in across ALL of that tenant's sessions, NOT
+// be re-narrowed to the caller's own session by the handler fold. The bus-level
+// conformance row (Admin fan-in with an empty session set) passed green, but
+// the shipped handler overwrote the empty SessionIDs before the call, so the
+// pinned fan-in was unreachable through the Protocol. This test guards the
+// handler can never silently re-narrow the session axis again.
+func TestAggregateHandler_WidenedSessionLess_FansInAcrossSessions_200(t *testing.T) {
+	h, bus := newAggregateHandlerTest(t)
+	// One foreign tenant, one user, THREE distinct sessions — a pure
+	// session-axis fan-in.
+	publishAggAt(t, bus, "t-fleet", "u-1", "s-1", aggHandlerNow.Add(-5*time.Minute))
+	publishAggAt(t, bus, "t-fleet", "u-1", "s-2", aggHandlerNow.Add(-6*time.Minute))
+	publishAggAt(t, bus, "t-fleet", "u-1", "s-3", aggHandlerNow.Add(-7*time.Minute))
+
+	body := `{"filter":{"tenant_ids":["t-fleet"]},"window":1800000000000,"bucket":60000000000}`
+	status, raw := doAggregate(t, h, body, &aggCaller, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, raw)
+	}
+	// All THREE sessions counted — a session-fold would narrow to the caller's
+	// own session (s-agg, absent in t-fleet) → 0.
+	if got := sumAggRuntimeError(t, raw); got != 3 {
+		t.Fatalf("session-less widened aggregate counted %d, want 3 (fan-in across 3 sessions; a session-fold would return 0)", got)
+	}
+}
+
+// TestAggregateHandler_ElidedTenantStaysOwnScope_200 proves the tenant axis is
+// name-to-widen (D-284 parity): even a widened read (here widened by a foreign
+// USER, tenant elided) does NOT fan across every tenant — the elided tenant
+// folds to the caller's own, so a foreign tenant's same-user events are
+// excluded. Only the caller-tenant's foreign-user events (fanned via the
+// un-folded user/session axes) are counted.
+func TestAggregateHandler_ElidedTenantStaysOwnScope_200(t *testing.T) {
+	h, bus := newAggregateHandlerTest(t)
+	// Caller-tenant, a DIFFERENT user — should be counted (user axis wildcarded).
+	publishAggAt(t, bus, aggCaller.TenantID, "u-foreign", "s-foreign", aggHandlerNow.Add(-5*time.Minute))
+	// A DIFFERENT tenant, same foreign user — must NOT be counted (elided tenant
+	// folded to the caller's own; the tenant axis never wildcards on an elided
+	// request).
+	publishAggAt(t, bus, "t-elsewhere", "u-foreign", "s-elsewhere", aggHandlerNow.Add(-5*time.Minute))
+
+	// Naming a foreign USER (not tenant) makes the read widened; tenant is elided.
+	body := `{"filter":{"user_ids":["u-foreign"]},"window":1800000000000,"bucket":60000000000}`
+	status, raw := doAggregate(t, h, body, &aggCaller, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, raw)
+	}
+	if got := sumAggRuntimeError(t, raw); got != 1 {
+		t.Fatalf("elided-tenant widened aggregate counted %d, want 1 (own tenant only; an elided tenant must NOT fan across all tenants)", got)
+	}
+}
+
 // TestAggregateHandler_CrossTenantWithoutScope_403 — a cross-tenant filter
 // without the elevated scope is rejected 403 (never counted, never a 500).
 func TestAggregateHandler_CrossTenantWithoutScope_403(t *testing.T) {
