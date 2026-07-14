@@ -2581,7 +2581,8 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `surface` | `string` |  |
-| `oldest_retained_at` | `time.Time` | optional (`omitempty`) |
+| `scope` | `string` | optional (`omitempty`) |
+| `oldest_retained_at` | `*time.Time` | optional (`omitempty`) |
 
 ## RunOverrides
 

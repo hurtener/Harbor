@@ -90,6 +90,17 @@ Three things to read and act on:
 - `capabilities` — the advertised Protocol surfaces. Shape your UI on this list: a runtime that doesn't advertise `topology_snapshot` gets the topology panel disabled, not a crash. A method outside the Runtime's registry returns the canonical `404 {"code": "unknown_method"}` envelope — treat it (and 405 / 501) as "not served here, degrade", the same SKIP posture Harbor's own smoke scripts encode.
 - `wire_surface_digest` — an opaque, stable `sha256:` fingerprint of the Runtime's canonical wire surface (the Protocol version + method / error / capability / wire-type *names*; it deliberately excludes field shapes and event-type names). Stamp the digest your client was built against into the build, then compare it here at attach: equal ⇒ same surface; different ⇒ surface drift, surface it loudly; absent/empty ⇒ the Runtime predates digest support (an informational note, never a drift alarm). It is a coarse name-level early-warning, not a substitute for the field-level checks a client that vendors the wire manifest runs at build time.
 
+### 2a. Retention horizons — how far back this Runtime actually holds data
+
+`runtime.health` (POST `/v1/control/runtime.health`) carries, alongside the per-subsystem readiness rollup, an additive `retention[]` block: one **observed** oldest-retained instant per durable surface (`events`, `tasks`, `sessions`). Read it before a windowed history/enumeration read so a merged "last N days" fleet view can mark "this runtime retains only back to X" instead of implying a complete window.
+
+Each entry carries a **`scope`** marker — `runtime` (identity-free, the whole retained set), `tenant`, or `session` — that makes an absent timestamp representable:
+
+- `scope:"runtime"` + no `oldest_retained_at` ⇒ a *trustworthy empty* — the runtime genuinely retains nothing on that surface.
+- `scope:"session"` / `scope:"tenant"` + no `oldest_retained_at` ⇒ the runtime-wide truth is simply *not observable at your scope*; do not read it as empty. Mark the window's completeness unverifiable.
+
+The `events` horizon is always `scope:"runtime"`. For an ordinary caller the `tasks` horizon is `scope:"session"` and the `sessions` horizon is `scope:"tenant"`. A caller carrying a verified `admin` **or** `console:fleet` scope (derived server-side from the session, never the request body) reads the `tasks` and `sessions` horizons at `scope:"runtime"` too — the fleet-observe path a `svc:` coordinator uses to observe all three. That widened read emits one `audit.admin_scope_used` per request. No new method or capability — it rides `runtime.health`.
+
 ## 3. Starting a task — the chat-message equivalent
 
 ```bash

@@ -183,10 +183,10 @@ func seedWaveV113(t *testing.T, bus events.EventBus, id identity.Identity, n int
 // same RetentionProvider that feeds runtime.health.
 func eventsHorizon(t *testing.T, bus events.EventBus, id identity.Identity) time.Time {
 	t.Helper()
-	horizons := runtimeposture.RetentionProvider(bus, nil, nil)(context.Background(), id)
+	horizons := runtimeposture.RetentionProvider(bus, nil, nil)(context.Background(), id, false)
 	for _, h := range horizons {
-		if h.Surface == "events" {
-			return h.OldestRetainedAt
+		if h.Surface == "events" && h.OldestRetainedAt != nil {
+			return *h.OldestRetainedAt
 		}
 	}
 	t.Fatalf("no events retention horizon reported (%+v)", horizons)
@@ -321,11 +321,11 @@ func TestE2E_WaveV113_ComposeConcurrency(t *testing.T) {
 				if len(page.Events) == 0 {
 					continue
 				}
-				horizons := runtimeposture.RetentionProvider(stack.bus, nil, nil)(context.Background(), id)
+				horizons := runtimeposture.RetentionProvider(stack.bus, nil, nil)(context.Background(), id, false)
 				var horizon time.Time
 				for _, h := range horizons {
-					if h.Surface == "events" {
-						horizon = h.OldestRetainedAt
+					if h.Surface == "events" && h.OldestRetainedAt != nil {
+						horizon = *h.OldestRetainedAt
 					}
 				}
 				if !page.Events[0].OccurredAt.Equal(horizon) {
