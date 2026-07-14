@@ -94,11 +94,15 @@ func mapTaskError(method string, err error) *protoerrors.Error {
 // Protocol surface owns its own error-code contract (CLAUDE.md §8)
 // without coupling to the sessions package.
 var (
-	// ErrSessionReopenAfterClose — `start` named a session id whose
-	// record is Closed (GC-reaped or operator-closed). Reopening is
-	// forbidden (RFC §6.9); the client must pick a new session id for a
-	// new conversation. Maps to CodeInvalidRequest.
-	ErrSessionReopenAfterClose = stderrors.New("protocol: session reopen-after-close forbidden")
+	// ErrSessionReopenAfterErase — `start` named a session id that was
+	// permanently deleted by `sessions.delete` (right-to-erasure). An erased
+	// session is terminal — its data is gone — so `start` fails loud rather
+	// than silently minting a fresh empty session (RFC §6.9 amended / §7). A
+	// closed (but not erased) session, by contrast, RE-ACTIVATES on `start`.
+	// Maps to the dedicated machine-branchable CodeSessionErased (HTTP 409)
+	// so a consumer-chat client can route "this conversation was deleted —
+	// start a new one" off the stable Code.
+	ErrSessionReopenAfterErase = stderrors.New("protocol: session reopen-after-erase forbidden")
 	// ErrSessionIDReuse — `start` named a session id already opened under
 	// a different (tenant, user). Cross-principal session-id reuse is
 	// rejected. Maps to CodeInvalidRequest.
@@ -119,9 +123,9 @@ func mapSessionEnsureError(method string, err error) *protoerrors.Error {
 		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
 			"method %q: identity scope incomplete", method)
 
-	case stderrors.Is(err, ErrSessionReopenAfterClose):
-		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
-			"method %q: session is closed and cannot be reopened — start a new conversation with a fresh session id", method)
+	case stderrors.Is(err, ErrSessionReopenAfterErase):
+		return protoerrors.Newf(protoerrors.CodeSessionErased,
+			"method %q: session was permanently deleted and cannot be reopened — start a new conversation with a fresh session id", method)
 
 	case stderrors.Is(err, ErrSessionIDReuse):
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,

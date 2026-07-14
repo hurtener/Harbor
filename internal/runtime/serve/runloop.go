@@ -237,6 +237,13 @@ type RunLoopDriverOptions struct {
 	// when no yaml server is declared.
 	BootDeclaredMCP map[string]struct{}
 
+	// OAuthProviderReconciler drives the run-start provider-reconcile leg: it
+	// makes the reconciling owner's installed OAuth providers match the current
+	// active revision (a rollback past an install uninstalls+closes; a rollback
+	// of a removal re-installs). OPTIONAL — nil means no provider reconcile.
+	// Owner-scoped exactly like the connection reconcile.
+	OAuthProviderReconciler projection.OAuthProviderReconciler
+
 	// namingDefault is the static `runtime.naming` fleet-default auto-naming
 	// policy; the driver resolves the effective policy per run (agent-config
 	// over this yaml over off). Opt-in, default off.
@@ -334,8 +341,9 @@ type RunLoopDriver struct {
 	// connectionDetacher + bootDeclaredMCP drive the run-start reconcile
 	// detach leg (see the opts godoc). connectionDetacher is nil when the MCP
 	// registry / catalog are absent (no reconcile).
-	connectionDetacher projection.ConnectionDetacher
-	bootDeclaredMCP    map[string]struct{}
+	connectionDetacher      projection.ConnectionDetacher
+	bootDeclaredMCP         map[string]struct{}
+	oauthProviderReconciler projection.OAuthProviderReconciler
 
 	// session auto-naming wiring: the static fleet-default policy, the
 	// session-registry titler seam, and the run's wrapped LLM client. All
@@ -411,21 +419,22 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		grantedScopes:   append([]string(nil), opts.GrantedScopes...),
 		artifactStore:   opts.ArtifactStore,
 		// disposition policy passthrough.
-		dispositionPolicy:  opts.DispositionPolicy,
-		tenantOverrides:    opts.TenantOverrides,
-		sessionOverrides:   opts.SessionOverrides,
-		agentConfig:        opts.AgentConfig,
-		agentConfigID:      opts.AgentConfigID,
-		sessionOverlay:     opts.SessionOverlay,
-		runCompletionHook:  opts.RunCompletionHook,
-		connectionDetacher: opts.ConnectionDetacher,
-		bootDeclaredMCP:    opts.BootDeclaredMCP,
-		namingDefault:      opts.NamingDefault,
-		sessionTitler:      opts.SessionTitler,
-		namingLLM:          opts.NamingLLM,
-		trajectories:       make(map[tasks.TaskID]*trackedTrajectory),
-		tokenBudget:        opts.TokenBudget,
-		compression:        opts.Compression,
+		dispositionPolicy:       opts.DispositionPolicy,
+		tenantOverrides:         opts.TenantOverrides,
+		sessionOverrides:        opts.SessionOverrides,
+		agentConfig:             opts.AgentConfig,
+		agentConfigID:           opts.AgentConfigID,
+		sessionOverlay:          opts.SessionOverlay,
+		runCompletionHook:       opts.RunCompletionHook,
+		connectionDetacher:      opts.ConnectionDetacher,
+		bootDeclaredMCP:         opts.BootDeclaredMCP,
+		oauthProviderReconciler: opts.OAuthProviderReconciler,
+		namingDefault:           opts.NamingDefault,
+		sessionTitler:           opts.SessionTitler,
+		namingLLM:               opts.NamingLLM,
+		trajectories:            make(map[tasks.TaskID]*trackedTrajectory),
+		tokenBudget:             opts.TokenBudget,
+		compression:             opts.Compression,
 	}, nil
 }
 
@@ -741,6 +750,22 @@ func (d *RunLoopDriver) projectNaming(ctx context.Context, q identity.Quadruple,
 // close. Shared verbatim with the devstack twin via the projection package
 // (CLAUDE.md §17.6).
 func (d *RunLoopDriver) reconcileConnections(ctx context.Context, q identity.Quadruple) {
+	// The PROVIDER-reconcile leg runs independently of the connection detacher:
+	// make the reconciling owner's installed OAuth providers match the current
+	// active revision (a rollback past an install uninstalls+closes; a rollback
+	// of a removal re-installs). Owner-scoped, so a run for owner A never
+	// closes tenant-B's provider. A reconcile error is logged LOUD but does not
+	// fail the run.
+	if d.oauthProviderReconciler != nil {
+		changed, perr := projection.ReconcileOAuthProviders(ctx, d.agentConfig, d.agentConfigID, q, d.oauthProviderReconciler)
+		if perr != nil {
+			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start OAuth-provider reconcile failed",
+				slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", perr.Error()))
+		} else if changed > 0 {
+			d.logger.InfoContext(ctx, "RunLoopDriver: run-start OAuth-provider reconcile applied",
+				slog.String("agent_id", d.agentConfigID), slog.Int("changed", changed))
+		}
+	}
 	if d.connectionDetacher == nil {
 		return
 	}

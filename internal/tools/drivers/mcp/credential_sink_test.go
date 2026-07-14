@@ -25,7 +25,7 @@ func TestResolveOAuthBinding_RefusesUnlistedDownstreamHost(t *testing.T) {
 	t.Run("unlisted host refused", func(t *testing.T) {
 		_, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", URL: "https://evil.example.test", OAuthProvider: "listed",
-		}, TransportStreamableHTTP, providers)
+		}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for unlisted downstream host, got %v", err)
 		}
@@ -34,7 +34,7 @@ func TestResolveOAuthBinding_RefusesUnlistedDownstreamHost(t *testing.T) {
 	t.Run("listed host passes", func(t *testing.T) {
 		got, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", URL: "https://graph.example.test", OAuthProvider: "listed",
-		}, TransportStreamableHTTP, providers)
+		}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err != nil || got == nil {
 			t.Fatalf("listed host must resolve, got (%v, %v)", got, err)
 		}
@@ -43,7 +43,7 @@ func TestResolveOAuthBinding_RefusesUnlistedDownstreamHost(t *testing.T) {
 	t.Run("default-port equivalence", func(t *testing.T) {
 		got, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", URL: "https://graph.example.test:443", OAuthProvider: "listed",
-		}, TransportStreamableHTTP, providers)
+		}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err != nil || got == nil {
 			t.Fatalf("host:443 must match the bare host (default-port equivalence), got (%v, %v)", got, err)
 		}
@@ -52,7 +52,7 @@ func TestResolveOAuthBinding_RefusesUnlistedDownstreamHost(t *testing.T) {
 	t.Run("empty allow-list on bound provider refused fail-closed", func(t *testing.T) {
 		_, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", URL: "https://graph.example.test", OAuthProvider: "empty",
-		}, TransportStreamableHTTP, providers)
+		}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for empty allow-list on a bound provider, got %v", err)
 		}

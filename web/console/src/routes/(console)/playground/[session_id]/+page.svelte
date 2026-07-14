@@ -1260,12 +1260,21 @@
       ];
     } catch (err) {
       const e = toError(err);
+      // A closed session RE-ACTIVATES transparently on send (D-312) — no
+      // special handling needed. An ERASED session is terminal: the runtime
+      // returns the machine-branchable `session_erased` code (never the
+      // advisory message), so route the operator to start a fresh
+      // conversation rather than showing a raw error.
+      const text =
+        e.code === 'session_erased'
+          ? 'This conversation was permanently deleted and cannot be reopened — start a new one.'
+          : `Send failed — ${e.code}: ${e.message}`;
       messages = [
         ...messages,
         {
           id: `m-${Date.now()}-sys`,
           role: 'system',
-          text: `Send failed — ${e.code}: ${e.message}`,
+          text,
           at: new Date().toISOString()
         }
       ];

@@ -121,19 +121,30 @@ func TestRegistry_Open_DuplicateOpenSameTriple_Rejected(t *testing.T) {
 	}
 }
 
-func TestRegistry_Open_AfterClose_Rejected(t *testing.T) {
+func TestRegistry_Open_AfterClose_Reopens(t *testing.T) {
 	t.Parallel()
 	reg, _ := testWiring(t)
 	id := ident("t1", "u1", "s1")
-	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
+	first, err := reg.Open(ctxFor(id), id.SessionID, id)
+	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if err := reg.Close(ctxFor(id), id.SessionID, "test"); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	_, err := reg.Open(ctxFor(id), id.SessionID, id)
-	if !errors.Is(err, sessions.ErrReopenAfterClose) {
-		t.Fatalf("err=%v, want ErrReopenAfterClose", err)
+	// RFC §6.9 amended (D-312): Open on a closed record RE-ACTIVATES it.
+	reopened, err := reg.Open(ctxFor(id), id.SessionID, id)
+	if err != nil {
+		t.Fatalf("Open after Close: err=%v, want reopen", err)
+	}
+	if reopened.Closed {
+		t.Errorf("reopened session still Closed")
+	}
+	if !reopened.OpenedAt.Equal(first.OpenedAt) {
+		t.Errorf("OpenedAt changed on reopen: first=%v reopened=%v", first.OpenedAt, reopened.OpenedAt)
+	}
+	if reopened.LastReopenedAt.IsZero() {
+		t.Errorf("LastReopenedAt not stamped on reopen")
 	}
 }
 
@@ -200,8 +211,8 @@ func TestRegistry_Touch_OnClosed_Rejected(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	err := reg.Touch(ctxFor(id), id.SessionID)
-	if !errors.Is(err, sessions.ErrReopenAfterClose) {
-		t.Fatalf("err=%v, want ErrReopenAfterClose", err)
+	if !errors.Is(err, sessions.ErrSessionClosed) {
+		t.Fatalf("err=%v, want ErrSessionClosed", err)
 	}
 }
 

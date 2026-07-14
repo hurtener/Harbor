@@ -264,6 +264,52 @@ type ConnectionsSection struct {
 	Servers []MCPConnectionDescriptor `json:"servers,omitempty"`
 }
 
+// OAuthProviderDescriptor is the ZERO-URL, Protocol-installed OAuth provider
+// descriptor recorded in a config revision so the provider is part of the
+// agent's versioned desired state (diff / rollback). It carries NO URL of any
+// kind, NO env-var name, and NO literal secret: the credential-plane invariant
+// is that no admin-writable field may determine where a credential is
+// sent, so every credential-sink-determining value (the token endpoint, the
+// credential-pull endpoint, the allowed downstream hosts, the audience, and the
+// scope ceiling) is pinned at boot on the NAMED credential broker (the boot broker's
+// broker list) the descriptor references by non-secret NAME. The wire struct
+// exposes NO field that is a URL or an env-var name; a decode carrying
+// `token_url` / `auth_url` / `client_id_env` / `client_secret_env` / `remote`
+// is rejected BY NAME (DisallowUnknownFields — the field cannot exist).
+type OAuthProviderDescriptor struct {
+	// Name is the unique provider name (the binding a connection's
+	// oauth_provider references). Required.
+	Name string `json:"name"`
+	// Driver is the OAuth flow driver — validated to be exactly
+	// "tokenexchange" (the only writable driver; the non-interactive PULL
+	// exchange). Required.
+	Driver string `json:"driver"`
+	// CredentialSource is the credential-source seam — validated to be exactly
+	// "remote" (broker-pull). An empty value is a LOUD reject (in config
+	// "" means the `env` source, which this shape forbids). Required.
+	CredentialSource string `json:"credential_source"`
+	// CredentialBroker names a boot-declared credential broker that
+	// pins every credential sink. Required; an unknown name fails loud.
+	CredentialBroker string `json:"credential_broker"`
+	// Scopes is the requested OAuth scope subset. NON-SECRET. Clamped to the
+	// broker's boot scope ceiling at build time — a scope outside the ceiling is
+	// dropped, never honoured (an installed descriptor can never widen scope).
+	// Optional.
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// OAuthProvidersSection is the Protocol-installed OAuth-provider section of the
+// config envelope: the set of ZERO-URL provider descriptors an admin has
+// installed over the control plane. Declared as its own section so an install /
+// uninstall REPLACES only this section, preserving every sibling (the
+// section-merge invariant).
+type OAuthProvidersSection struct {
+	// Providers is the set of installed provider descriptors, keyed by Name.
+	// Canonicalised sorted-by-name with a name-unique invariant so a
+	// re-ordering does not perturb the content hash.
+	Providers []OAuthProviderDescriptor `json:"providers,omitempty"`
+}
+
 // RunCompletionHook is the durable, versioned run-completion hook
 // configuration in a config revision: the catalog tool the run transcript is
 // dispatched to at the run loop's terminal boundary, plus an optional
@@ -337,13 +383,14 @@ type NamingSection struct {
 // is an optional pointer so later consumers extend the envelope without a
 // schema break; only Skills is wired in the first wave.
 type ConfigPayload struct {
-	PromptLayers *PromptLayers       `json:"prompt_layers,omitempty"`
-	ToolExposure *ToolExposure       `json:"tool_exposure,omitempty"`
-	Skills       *SkillsSelection    `json:"skills,omitempty"`
-	Connections  *ConnectionsSection `json:"connections,omitempty"`
-	LLMParams    *LLMParams          `json:"llm_params,omitempty"`
-	Hooks        *HooksSection       `json:"hooks,omitempty"`
-	Naming       *NamingSection      `json:"naming,omitempty"`
+	PromptLayers   *PromptLayers          `json:"prompt_layers,omitempty"`
+	ToolExposure   *ToolExposure          `json:"tool_exposure,omitempty"`
+	Skills         *SkillsSelection       `json:"skills,omitempty"`
+	Connections    *ConnectionsSection    `json:"connections,omitempty"`
+	OAuthProviders *OAuthProvidersSection `json:"oauth_providers,omitempty"`
+	LLMParams      *LLMParams             `json:"llm_params,omitempty"`
+	Hooks          *HooksSection          `json:"hooks,omitempty"`
+	Naming         *NamingSection         `json:"naming,omitempty"`
 }
 
 // Revision is an immutable, content-addressed agent-config record with a
@@ -398,6 +445,9 @@ type Diff struct {
 	// Connections is the structured set-diff of the runtime-added MCP
 	// connection descriptors (by name).
 	Connections ConnectionsDiff
+	// OAuthProviders is the structured set-diff of the Protocol-installed
+	// OAuth-provider descriptors (by name).
+	OAuthProviders OAuthProvidersDiff
 	// LLMParams is the per-field delta of the per-agent LLM-parameter
 	// section (model / temperature / max-tokens / reasoning-effort).
 	LLMParams LLMParamsDiff
@@ -473,6 +523,12 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		servers := normalizeConnections(p.Connections.Servers)
 		if len(servers) > 0 {
 			out.Connections = &ConnectionsSection{Servers: servers}
+		}
+	}
+	if p.OAuthProviders != nil {
+		providers := normalizeOAuthProviders(p.OAuthProviders.Providers)
+		if len(providers) > 0 {
+			out.OAuthProviders = &OAuthProvidersSection{Providers: providers}
 		}
 	}
 	if p.LLMParams != nil {
@@ -612,6 +668,44 @@ func normalizeConnections(in []MCPConnectionDescriptor) []MCPConnectionDescripto
 	}
 	sort.Strings(names)
 	out := make([]MCPConnectionDescriptor, 0, len(names))
+	for _, n := range names {
+		out = append(out, byName[n])
+	}
+	return out
+}
+
+// normalizeOAuthProviders returns a name-unique, sorted-by-name copy of the
+// installed provider descriptors so a re-ordering or a re-install of the same
+// name does not perturb the content hash. The LAST descriptor for a given name
+// wins (a re-install replaces a prior descriptor of the same name). Scopes are
+// sorted+deduplicated. A nil input returns nil; an empty result returns nil so
+// an all-empty section drops out of the canonical form.
+func normalizeOAuthProviders(in []OAuthProviderDescriptor) []OAuthProviderDescriptor {
+	if len(in) == 0 {
+		return nil
+	}
+	byName := make(map[string]OAuthProviderDescriptor, len(in))
+	names := make([]string, 0, len(in))
+	for _, d := range in {
+		if strings.TrimSpace(d.Name) == "" {
+			continue
+		}
+		if _, seen := byName[d.Name]; !seen {
+			names = append(names, d.Name)
+		}
+		byName[d.Name] = OAuthProviderDescriptor{
+			Name:             d.Name,
+			Driver:           d.Driver,
+			CredentialSource: d.CredentialSource,
+			CredentialBroker: d.CredentialBroker,
+			Scopes:           sortDedup(d.Scopes),
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	out := make([]OAuthProviderDescriptor, 0, len(names))
 	for _, n := range names {
 		out = append(out, byName[n])
 	}
@@ -782,6 +876,17 @@ func (p ConfigPayload) ConnectionDescriptors() []MCPConnectionDescriptor {
 		return nil
 	}
 	return p.Connections.Servers
+}
+
+// OAuthProviderDescriptors returns the installed OAuth-provider descriptors
+// from a payload, or nil when the payload pins no OAuth-providers section. A
+// convenience for the install/uninstall consumer, the reconcile leg, and the
+// diff.
+func (p ConfigPayload) OAuthProviderDescriptors() []OAuthProviderDescriptor {
+	if p.OAuthProviders == nil {
+		return nil
+	}
+	return p.OAuthProviders.Providers
 }
 
 // BasePrompt returns the agent's base prompt layer from a payload and
@@ -1238,6 +1343,42 @@ func (d ConnectionsDiff) Changed() bool { return len(d.Added) > 0 || len(d.Remov
 func DiffConnections(from, to ConfigPayload) ConnectionsDiff {
 	added, removed := setDiff(connectionNames(from.ConnectionDescriptors()), connectionNames(to.ConnectionDescriptors()))
 	return ConnectionsDiff{Added: added, Removed: removed}
+}
+
+// OAuthProvidersDiff is the structured set-diff of the Protocol-installed
+// OAuth-provider descriptors across two revisions, by name. Deterministic:
+// every slice is sorted.
+type OAuthProvidersDiff struct {
+	// Added are the provider names present in the to-revision but not the
+	// from-revision.
+	Added []string
+	// Removed are the provider names present in the from-revision but not the
+	// to-revision.
+	Removed []string
+}
+
+// Changed reports whether the installed-provider set differs between the two
+// revisions.
+func (d OAuthProvidersDiff) Changed() bool { return len(d.Added) > 0 || len(d.Removed) > 0 }
+
+// DiffOAuthProviders computes the structured set-diff (by name) of two
+// installed-provider states. Exported so the diff is one canonical
+// implementation shared by the driver and tests.
+func DiffOAuthProviders(from, to ConfigPayload) OAuthProvidersDiff {
+	added, removed := setDiff(oauthProviderNames(from.OAuthProviderDescriptors()), oauthProviderNames(to.OAuthProviderDescriptors()))
+	return OAuthProvidersDiff{Added: added, Removed: removed}
+}
+
+// oauthProviderNames projects a descriptor slice onto its name set.
+func oauthProviderNames(in []OAuthProviderDescriptor) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, d := range in {
+		out = append(out, d.Name)
+	}
+	return out
 }
 
 // connectionNames projects a descriptor slice onto its name set.

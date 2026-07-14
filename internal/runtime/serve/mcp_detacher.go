@@ -61,6 +61,22 @@ func BootDeclaredMCPServerNames(cfg *config.Config) []string {
 	return out
 }
 
+// BootDeclaredOAuthProviderNames returns the names of every OAuth provider
+// declared in the boot yaml (`tools.oauth_providers[].name`) — the set the
+// set/remove_oauth_provider verbs reject (boot wins; edit yaml + restart).
+func BootDeclaredOAuthProviderNames(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	out := make([]string, 0, len(cfg.Tools.OAuthProviders))
+	for _, p := range cfg.Tools.OAuthProviders {
+		if p.Name != "" {
+			out = append(out, p.Name)
+		}
+	}
+	return out
+}
+
 // BootDeclaredMCPServerSet returns the boot-declared MCP server names as a set
 // for the run-start reconcile's O(1) skip check.
 func BootDeclaredMCPServerSet(cfg *config.Config) map[string]struct{} {

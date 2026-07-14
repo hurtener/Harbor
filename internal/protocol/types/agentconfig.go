@@ -137,6 +137,55 @@ type AgentConfigConnections struct {
 	Servers []AgentConfigMCPConnectionDescriptor `json:"servers,omitempty"`
 }
 
+// AgentConfigOAuthProviderDescriptor is the wire projection of one
+// Protocol-installed OAuth provider — the ZERO-URL descriptor only. It carries
+// NO URL of any kind, NO env-var name, and NO literal secret: the
+// credential-plane invariant pins every credential-sink-determining
+// value (token endpoint, credential-pull endpoint, allowed downstream hosts,
+// audience, scope ceiling) at boot on the NAMED credential broker the
+// descriptor references by non-secret name. Because the forbidden fields
+// (`token_url`, `auth_url`, `client_id_env`, `client_secret_env`, `remote`) are
+// simply NOT on this struct, a `DisallowUnknownFields` decode rejects any of
+// them BY NAME (`json: unknown field "client_secret_env"`) — a loud reject with
+// no decoy fields (the field cannot exist).
+type AgentConfigOAuthProviderDescriptor struct {
+	// Name is the unique provider name (a connection's oauth_provider binding
+	// references it). Required.
+	Name string `json:"name"`
+	// Driver is the OAuth flow driver — validated to be exactly "tokenexchange"
+	// (the only writable driver; the non-interactive PULL exchange). Required.
+	Driver string `json:"driver"`
+	// CredentialSource is the credential-source seam — validated to be exactly
+	// "remote" (broker-pull). An empty value is a LOUD reject. Required.
+	CredentialSource string `json:"credential_source"`
+	// CredentialBroker names a boot-declared credential broker that pins every
+	// credential sink. Required; an unknown name fails loud. NON-SECRET.
+	CredentialBroker string `json:"credential_broker"`
+	// Scopes is the requested OAuth scope subset. NON-SECRET; clamped to the
+	// broker's boot scope ceiling at build time. Optional.
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// AgentConfigOAuthProviders is the wire projection of the Protocol-installed
+// OAuth-provider section of the config envelope — the set of ZERO-URL provider
+// descriptors recorded in a revision (part of the agent's versioned desired
+// state for diff / rollback).
+type AgentConfigOAuthProviders struct {
+	// Providers is the set of installed provider descriptors.
+	Providers []AgentConfigOAuthProviderDescriptor `json:"providers,omitempty"`
+}
+
+// AgentConfigOAuthProvidersDiff is the wire projection of the structured
+// installed-provider set-diff (by name) across two revisions.
+type AgentConfigOAuthProvidersDiff struct {
+	// Added are the provider names present in the to-revision but not the
+	// from-revision.
+	Added []string `json:"added,omitempty"`
+	// Removed are the provider names present in the from-revision but not the
+	// to-revision.
+	Removed []string `json:"removed,omitempty"`
+}
+
 // AgentConfigRunCompletionHook is the wire projection of an agent's durable
 // run-completion hook in a config revision: the catalog tool the run
 // transcript is dispatched to at the run loop's terminal boundary, plus an
@@ -211,6 +260,9 @@ type AgentConfigPayload struct {
 	// Connections, when non-nil, pins the agent's runtime-added MCP
 	// connection descriptors (non-secret) for the revision.
 	Connections *AgentConfigConnections `json:"connections,omitempty"`
+	// OAuthProviders, when non-nil, pins the agent's Protocol-installed
+	// (zero-URL) OAuth provider descriptors for the revision.
+	OAuthProviders *AgentConfigOAuthProviders `json:"oauth_providers,omitempty"`
 	// LLMParams, when non-nil, pins the agent's per-agent LLM-parameter
 	// section (model / temperature / max-tokens / reasoning-effort) for the
 	// revision.
@@ -400,15 +452,16 @@ type AgentConfigNamingDiff struct {
 // the prompt-layer text delta, the per-agent LLM-parameter delta, the
 // run-lifecycle-hook delta, and the session auto-naming policy delta.
 type AgentConfigDiff struct {
-	FromRevisionID string                      `json:"from_revision_id"`
-	ToRevisionID   string                      `json:"to_revision_id"`
-	Skills         AgentConfigSkillsDiff       `json:"skills"`
-	ToolExposure   AgentConfigToolExposureDiff `json:"tool_exposure"`
-	PromptLayers   AgentConfigPromptLayersDiff `json:"prompt_layers"`
-	Connections    AgentConfigConnectionsDiff  `json:"connections"`
-	LLMParams      AgentConfigLLMParamsDiff    `json:"llm_params"`
-	Hooks          AgentConfigHooksDiff        `json:"hooks"`
-	Naming         AgentConfigNamingDiff       `json:"naming"`
+	FromRevisionID string                        `json:"from_revision_id"`
+	ToRevisionID   string                        `json:"to_revision_id"`
+	Skills         AgentConfigSkillsDiff         `json:"skills"`
+	ToolExposure   AgentConfigToolExposureDiff   `json:"tool_exposure"`
+	PromptLayers   AgentConfigPromptLayersDiff   `json:"prompt_layers"`
+	Connections    AgentConfigConnectionsDiff    `json:"connections"`
+	OAuthProviders AgentConfigOAuthProvidersDiff `json:"oauth_providers"`
+	LLMParams      AgentConfigLLMParamsDiff      `json:"llm_params"`
+	Hooks          AgentConfigHooksDiff          `json:"hooks"`
+	Naming         AgentConfigNamingDiff         `json:"naming"`
 }
 
 // AgentConfigGetRequest is the `agent_config.get` request — read the
@@ -664,6 +717,67 @@ type AgentConfigSetMCPDiscoveryOriginsResponse struct {
 	// registry (true on every served success; false only degrades to the
 	// revisioned write when no live registry applier is wired on this runtime).
 	AppliedLive     bool   `json:"applied_live"`
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// AgentConfigSetOAuthProviderRequest is the admin-scoped
+// `agent_config.set_oauth_provider` request — install (upsert) a ZERO-URL,
+// broker-pull OAuth provider onto the agent-config revision spine. The
+// descriptor carries `{name, driver:"tokenexchange", credential_source:"remote",
+// credential_broker, scopes?}` — NO URL, NO env-var name, NO secret. The runtime
+// records a new revision (carrying every sibling section forward) AND installs
+// the provider live into the owner-tagged provider set so the next MCP attach
+// bound to it injects the exchanged bearer. Every credential sink (the token
+// endpoint, the credential-pull endpoint, the allowed downstream hosts, the
+// audience, and the scope ceiling) is pinned at boot on the named broker; a
+// write carrying a URL or env-var name is rejected BY NAME
+// (DisallowUnknownFields). Admin-only; server-derived authority (never the body).
+type AgentConfigSetOAuthProviderRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Provider is the ZERO-URL descriptor to install.
+	Provider AgentConfigOAuthProviderDescriptor `json:"provider"`
+}
+
+// AgentConfigSetOAuthProviderResponse is the `agent_config.set_oauth_provider`
+// response — the recorded revision and the installed provider name.
+type AgentConfigSetOAuthProviderResponse struct {
+	// Revision is the recorded config revision carrying the installed provider.
+	Revision AgentConfigRevisionView `json:"revision"`
+	// Name is the installed provider name (echoed).
+	Name            string `json:"name"`
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// AgentConfigRemoveOAuthProviderRequest is the admin-scoped
+// `agent_config.remove_oauth_provider` request — uninstall a Protocol-installed
+// OAuth provider by name. The runtime records a new revision dropping the named
+// descriptor (carrying every sibling forward) AND uninstalls the provider live,
+// which CLOSES it — so a still-bound connection's next call fails LOUD rather
+// than degrading to an unauthenticated dial. Deliberately breaking; the break is
+// confined to the owning owner by the owner-scoped run-start reconcile. An
+// unknown name and a boot-declared name each fail loud with a distinct typed
+// error. Admin-only; server-derived authority (never the body).
+type AgentConfigRemoveOAuthProviderRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Name is the installed provider name to uninstall.
+	Name string `json:"name"`
+}
+
+// AgentConfigRemoveOAuthProviderResponse is the
+// `agent_config.remove_oauth_provider` response — the recorded revision, the
+// removed provider name, and whether the live uninstall took effect.
+type AgentConfigRemoveOAuthProviderResponse struct {
+	// Revision is the recorded config revision whose oauth-providers section
+	// dropped the named descriptor.
+	Revision AgentConfigRevisionView `json:"revision"`
+	// Name is the removed provider name (echoed).
+	Name string `json:"name"`
+	// Uninstalled reports whether the provider was uninstalled live (true on
+	// every served success; false only degrades to the revisioned write when no
+	// live provider installer is wired on this runtime).
+	Uninstalled     bool   `json:"uninstalled"`
 	ProtocolVersion string `json:"protocol_version"`
 }
 

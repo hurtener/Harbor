@@ -45,6 +45,19 @@ const erasureAuditSession = "<erasure-audit>"
 // StateStore.DeleteScope clear.
 const erasureLedgerKindPrefix = "session.erasure.pending."
 
+// erasureTombstoneKindPrefix namespaces the durable, content-free erasure
+// TOMBSTONE records. Unlike the pending ledger (deleted on erasure success),
+// the tombstone is TERMINAL — written once per converged erasure and never
+// removed — so reopen has an O(1) fail-closed point-Load to reject a
+// reopen-after-erase even after the erasure fully converged and the pending
+// ledger is gone. Keyed per session id under the
+// actor's observability scope (the SAME scope as the ledger + the
+// session.erased record-of-fact — it survives the erased triple's
+// DeleteScope). Content-free: session id + timestamp + deletion counts, the
+// same shape the already-retained session.erased event carries, adding no new
+// retained information about deleted data (RFC §7 right-to-erasure).
+const erasureTombstoneKindPrefix = "session.erasure.tombstone."
+
 // CascadeEraser performs the ordered, fail-loud, idempotent session
 // erasure cascade behind `sessions.delete`: it refuses fail-loud on a
 // running task, then deletes the session's scoped Artifacts, Memory, and
@@ -299,6 +312,12 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 //     stamp (the session's OpenedAt) is verified: a leftover ledger from
 //     an abandoned prior lifecycle of a reused session id is discarded
 //     with a loud Warn so counts never inflate across a reuse boundary.
+//     1a. erase-intent checkpoint: persist the ledger (empty-but-stamped, or
+//     the accumulated counts on a retry) through the registry's r.mu BEFORE
+//     the fence, so isErased reports true from the first destructive instant
+//     and a concurrent reopen cannot re-activate the record and lift the
+//     fence in the gap before the first destructive checkpoint (the
+//     fence-lift race; see the inline note).
 //  2. fence: mark the triple erased on the event bus, BEFORE any
 //     destructive step. A present-but-failing Fence capability fails the
 //     WHOLE erasure loud here — nothing has been touched yet, so this is
@@ -381,6 +400,39 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	}
 	ledger.SessionOpenedAt = stamp
 
+	// 1a. Erase-INTENT checkpoint — persist the ledger (empty-but-stamped on a
+	//     fresh attempt, or the accumulated counts on a mid-cascade retry)
+	//     BEFORE the fence, so isErased reports true from the first destructive
+	//     instant. This closes a right-to-erasure fence-lift race: without it,
+	//     the window between fenceSession (step 2) and the FIRST destructive
+	//     checkpoint (step 3, after the artifacts sweep) leaves the record
+	//     present-and-Closed with NO ledger and NO tombstone — so a concurrent
+	//     reopen's isErased read returns false, the reopen re-activates the
+	//     record AND calls unfenceSession, LIFTING the fence the eraser just
+	//     set, with no re-fence on any legal reopen path. The erasure still
+	//     CONVERGES to erased (DeleteScope removes the record; a later reopen is
+	//     terminal via the tombstone), but a not-yet-registered async task's
+	//     post-sweep events would be retained under the just-erased triple —
+	//     the exact leak the fence exists to close.
+	//
+	//     The save is serialized under the registry's r.mu (mirroring
+	//     deleteScopeSerialized) so it orders against a concurrent reopen's
+	//     r.mu-held load→isErased→re-activate critical section: a reopen either
+	//     observes this ledger (and fails loud ErrReopenAfterErase, never
+	//     unfencing), OR completes its re-activation fully before this save — in
+	//     which case fenceSession below (which runs after this serialized save)
+	//     RE-ESTABLISHES the fence the reopen lifted. Either way the fence is
+	//     intact once Erase proceeds. Lock ordering is unchanged: the eraser
+	//     holds its striped per-session lock OUTSIDE r.mu (striped → r.mu), the
+	//     same order deleteScopeSerialized uses.
+	//
+	//     Write-happens-before ordering is preserved and even strengthened: this
+	//     is now the EARLIEST durable erasure record; the terminal
+	//     tombstone-before-deleteLedger ordering (completeErasure) is unchanged.
+	if err := e.saveLedgerSerialized(ctx, id, ledger); err != nil {
+		return zero, fmt.Errorf("sessions: erase intent checkpoint: %w", err)
+	}
+
 	// 2. Fence the session on the event bus BEFORE the sweep. The
 	//     running-task probe cannot see a task that the asynchronous
 	//     `control.start` path has not yet registered, so a task can still be
@@ -457,11 +509,14 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 // `session.erased` payload from the durably checkpointed ledger counts,
 // publishes it UNLESS a record for this session+lifecycle already
 // exists in the observability scope's retained history (the idempotent
-// re-emit guard, recordAlreadyEmitted), and — only once the record
-// durably exists — removes the ledger checkpoint. Reached either fresh
-// (from Erase's step 6, right after DeleteScope) or via a converging
-// retry (Erase's pre-flight found the session already gone but a ledger
-// checkpoint still pending).
+// re-emit guard, recordAlreadyEmitted), writes the durable, terminal
+// erasure TOMBSTONE (UNCONDITIONAL — outside the re-emit guard —
+// success-critical, and strictly BEFORE the ledger cleanup so reopen's
+// isErased guard never sees a gap), and — only once the
+// record + tombstone durably exist — removes the ledger checkpoint.
+// Reached either fresh (from Erase's step 6, right after DeleteScope) or
+// via a converging retry (Erase's pre-flight found the session already
+// gone but a ledger checkpoint still pending).
 func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
 	if err := e.registry.clearErased(ctx, id); err != nil {
@@ -480,15 +535,37 @@ func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identit
 			return zero, err
 		}
 	}
-	// The record-of-fact is durably published at this point — the
-	// invariant this cascade defends is already satisfied. A failure
-	// removing the now-superfluous ledger checkpoint is logged loudly
-	// rather than failing an already-successful erasure: the only
-	// residual effect is a stray durable ledger record (harmless) and,
-	// on an implausible further invocation for this already-erased
-	// session id, a duplicate emit — never a lost record (CLAUDE.md §13
-	// concerns itself with losing the record, not an over-cautious
-	// extra one).
+
+	// Write the durable erasure TOMBSTONE — UNCONDITIONAL per terminal
+	// completeErasure invocation, OUTSIDE the recordAlreadyEmitted emit-skip
+	// guard above. If it were co-located inside the
+	// !recordAlreadyEmitted block, a converging retry where a prior attempt
+	// emitted the event but died before the tombstone write would see
+	// recordAlreadyEmitted==true → skip tombstone → deleteLedger → leave
+	// NEITHER ledger nor tombstone → a reopen-after-erase would then silently
+	// resurrect the id. The Save is idempotent (overwrite) and SUCCESS-CRITICAL:
+	// it runs BEFORE deleteLedger (write-happens-before-delete — at every
+	// instant isErased == ledger∨tombstone with no gap), and a failed Save
+	// fails the erasure loud (wrapped ErrErasureRecordFailed) and MUST NOT
+	// proceed to deleteLedger, so a tombstone-fails + ledger-deleted interleave
+	// can never open a converged-erasure resurrection gap.
+	if err := e.saveTombstone(ctx, id, resp); err != nil {
+		e.logger.ErrorContext(ctx, "sessions: erasure tombstone write failed — erasure fails loud; the pending ledger is retained so a re-invoke converges",
+			slog.String("session_id", id.SessionID),
+			slog.String("tenant_id", id.TenantID),
+			slog.String("user_id", id.UserID),
+			slog.String("error", err.Error()))
+		return zero, fmt.Errorf("sessions: erase tombstone: %w: %w", ErrErasureRecordFailed, err)
+	}
+
+	// The record-of-fact AND the terminal tombstone are durably persisted at
+	// this point — the invariant this cascade defends is already satisfied. A
+	// failure removing the now-superfluous ledger checkpoint is logged loudly
+	// rather than failing an already-successful erasure: isErased still reads
+	// the tombstone, so the only residual effect is a stray durable ledger
+	// record (harmless) — never a lost record or a reopenable erased id
+	// (CLAUDE.md §13 concerns itself with losing the record, not an
+	// over-cautious extra one).
 	if err := e.deleteLedger(ctx, id); err != nil {
 		e.logger.WarnContext(ctx, "sessions: erasure ledger checkpoint cleanup failed after a successful record-of-fact emit — a stray durable record may remain",
 			slog.String("session_id", id.SessionID),
@@ -697,10 +774,111 @@ func (e *CascadeEraser) saveLedger(ctx context.Context, id identity.Identity, le
 	})
 }
 
+// saveLedgerSerialized persists the ledger checkpoint through the registry's
+// r.mu (via saveScopeSerialized), mirroring deleteScopeSerialized. It is used
+// for the erase-INTENT checkpoint that must serialize against a concurrent
+// reopen's r.mu-held isErased read so the fence-lift race is closed (see
+// Erase step 1a). Byte-for-byte identical to saveLedger except for the
+// serialized Save call.
+func (e *CascadeEraser) saveLedgerSerialized(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) error {
+	bytes, err := json.Marshal(ledger)
+	if err != nil {
+		return fmt.Errorf("marshal erasure ledger: %w", err)
+	}
+	return e.registry.saveScopeSerialized(ctx, e.state, state.StateRecord{
+		ID:       state.NewEventID(),
+		Identity: ledgerScope(id),
+		Kind:     ledgerKind(id.SessionID),
+		Bytes:    bytes,
+	})
+}
+
 // deleteLedger removes the erasure-ledger checkpoint for id's session.
 // Idempotent (state.StateStore.Delete on an absent key is a no-op).
 func (e *CascadeEraser) deleteLedger(ctx context.Context, id identity.Identity) error {
 	return e.state.Delete(ctx, ledgerScope(id), ledgerKind(id.SessionID))
+}
+
+// erasureTombstoneRecord is the durable, content-free TERMINAL marker a
+// converged erasure leaves so reopen can fail loud (ErrReopenAfterErase) even
+// after the pending ledger and the session.lifecycle record are both gone. It
+// carries the same non-sensitive shape as SessionErasedPayload (session id +
+// counts + timestamp) — NO user content — so it adds no new retained
+// information about deleted data beyond what the already-retained
+// session.erased record-of-fact holds.
+type erasureTombstoneRecord struct {
+	SessionID           string `json:"session_id"`
+	StateRecordsDeleted int    `json:"state_records_deleted"`
+	ArtifactsDeleted    int    `json:"artifacts_deleted"`
+	MemoryPurged        bool   `json:"memory_purged"`
+	ErasedAt            int64  `json:"erased_at"`
+}
+
+// tombstoneKind returns the StateStore Kind the erasure tombstone for
+// sessionID is keyed under. Namespaced per session id, under the same
+// observability scope (ledgerScope) as the pending ledger.
+func tombstoneKind(sessionID string) string {
+	return erasureTombstoneKindPrefix + sessionID
+}
+
+// saveTombstone durably persists the terminal erasure tombstone for id's
+// session. Idempotent (overwrites the (Identity, Kind) slot on a re-invoke).
+// A fresh EventID per call — a new logical version of the slot, not a retried
+// same-EventID write. Called from completeErasure BEFORE deleteLedger, and its
+// failure fails the erasure loud (never proceeding to deleteLedger).
+func (e *CascadeEraser) saveTombstone(ctx context.Context, id identity.Identity, resp prototypes.SessionsDeleteResponse) error {
+	rec := erasureTombstoneRecord{
+		SessionID:           id.SessionID,
+		StateRecordsDeleted: resp.StateRecordsDeleted,
+		ArtifactsDeleted:    resp.ArtifactsDeleted,
+		MemoryPurged:        resp.MemoryPurged,
+		ErasedAt:            e.clock.Now().UnixNano(),
+	}
+	bytes, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshal erasure tombstone: %w", err)
+	}
+	return e.state.Save(ctx, state.StateRecord{
+		ID:       state.NewEventID(),
+		Identity: ledgerScope(id),
+		Kind:     tombstoneKind(id.SessionID),
+		Bytes:    bytes,
+	})
+}
+
+// isErased is the reopen-facing terminality guard: it reports whether
+// the session named by ident is (being) erased, so Open / EnsureOpen can fail
+// loud with ErrReopenAfterErase rather than reviving deleted data or minting a
+// fresh empty session on a converged erasure. It is an O(1) point-Load of the
+// pending erasure LEDGER (an in-flight / interrupted erasure) OR the terminal
+// TOMBSTONE (a converged erasure) — never a bounded history scan.
+//
+// It FAILS CLOSED: it returns (false, nil) ONLY when BOTH Loads return
+// state.ErrNotFound; any other (non-NotFound) Load error propagates, and the
+// caller then mints/re-activates NOTHING (mirroring loadLedger). A fail-OPEN
+// collapse to "not erased" on a transient StateStore fault would permit
+// resurrection, which is exactly the direction the erasure contract forbids.
+//
+// Called under the registry's r.mu (Open holds it), so it serialises against
+// the erasure cascade's r.mu-held record clear (deleteScopeSerialized) and
+// catalog clear (clearErased). The tombstone is written by completeErasure
+// strictly BEFORE the pending ledger is deleted, so at every instant
+// isErased == (ledger present) ∨ (tombstone present) with no gap.
+func (r *Registry) isErased(ctx context.Context, ident identity.Identity) (bool, error) {
+	scope := ledgerScope(ident)
+	// Pending ledger (in-flight / interrupted erasure).
+	if _, err := r.store.Load(ctx, scope, ledgerKind(ident.SessionID)); err == nil {
+		return true, nil
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return false, fmt.Errorf("sessions: isErased ledger load: %w", err)
+	}
+	// Terminal tombstone (converged erasure).
+	if _, err := r.store.Load(ctx, scope, tombstoneKind(ident.SessionID)); err == nil {
+		return true, nil
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return false, fmt.Errorf("sessions: isErased tombstone load: %w", err)
+	}
+	return false, nil
 }
 
 // erasureDedupeScanLimit bounds the recordAlreadyEmitted history scan:

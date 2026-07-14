@@ -104,6 +104,17 @@ function fakeClient(overrides: Record<string, unknown> = {}): ProtocolClient {
 			name: 'srv',
 			protocol_version: '0.1.0'
 		})),
+		setOAuthProvider: vi.fn(async () => ({
+			revision: ACTIVE_REVISION,
+			name: 'm365',
+			protocol_version: '0.1.0'
+		})),
+		removeOAuthProvider: vi.fn(async () => ({
+			revision: ACTIVE_REVISION,
+			name: 'm365',
+			uninstalled: true,
+			protocol_version: '0.1.0'
+		})),
 		...overrides
 	};
 	const events = { subscribeURL: vi.fn(() => 'http://127.0.0.1:18080/v1/events') };
@@ -275,6 +286,81 @@ describe('AgentConfigPanelState — admin-scope gate', () => {
 		const state = new AgentConfigPanelState();
 		await state.load(fakeClient());
 		expect(state.hasAdminScope).toBe(true);
+	});
+});
+
+describe('AgentConfigPanelState — Protocol-installed OAuth providers (169 / D-303)', () => {
+	it('addConnection threads oauth_provider into the descriptor (fixes the silent drop)', async () => {
+		seedConnection('admin');
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.connName = 'graph';
+		state.connTransport = 'http';
+		state.connUrl = 'https://graph.microsoft.com/mcp';
+		state.connOAuthProvider = 'm365';
+		await state.addConnection();
+		const call = ac(client).addMcpConnection.mock.calls[0];
+		// call = [agentId, descriptor, headers]
+		expect(call[1].oauth_provider).toBe('m365');
+	});
+
+	it('addConnection omits oauth_provider when none is selected', async () => {
+		seedConnection('admin');
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.connName = 'graph';
+		state.connTransport = 'http';
+		state.connUrl = 'https://graph.microsoft.com/mcp';
+		await state.addConnection();
+		const call = ac(client).addMcpConnection.mock.calls[0];
+		expect(call[1].oauth_provider).toBeUndefined();
+	});
+
+	it('installProvider sends the ZERO-URL descriptor (driver/source pinned)', async () => {
+		seedConnection('admin');
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.provName = 'm365';
+		state.provBroker = 'm365-broker';
+		state.provScopes = 'mail.read  mail.send';
+		await state.installProvider();
+		const call = ac(client).setOAuthProvider.mock.calls[0];
+		// call = [agentId, descriptor]
+		expect(call[1]).toEqual({
+			name: 'm365',
+			driver: 'tokenexchange',
+			credential_source: 'remote',
+			credential_broker: 'm365-broker',
+			scopes: ['mail.read', 'mail.send']
+		});
+		// No URL / env / secret field ever leaves the client.
+		expect(Object.keys(call[1])).not.toContain('token_url');
+		expect(Object.keys(call[1])).not.toContain('client_secret_env');
+	});
+
+	it('removeProvider calls remove_oauth_provider', async () => {
+		seedConnection('admin');
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.removeProvider('m365');
+		expect(ac(client).removeOAuthProvider).toHaveBeenCalledWith(DEFAULT_AGENT_ID, 'm365');
+	});
+
+	it('non-admin install/remove no-op', async () => {
+		seedConnection('viewer');
+		const client = fakeClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.provName = 'm365';
+		state.provBroker = 'b';
+		await state.installProvider();
+		await state.removeProvider('m365');
+		expect(ac(client).setOAuthProvider).not.toHaveBeenCalled();
+		expect(ac(client).removeOAuthProvider).not.toHaveBeenCalled();
 	});
 });
 

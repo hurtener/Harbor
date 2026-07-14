@@ -40,6 +40,7 @@ import type {
 	AgentConfigSkillInput,
 	AgentConfigDiff,
 	AgentConfigMCPConnectionDescriptor,
+	AgentConfigOAuthProviderDescriptor,
 	AgentConfigLLMParams,
 	AgentConfigPayload
 } from '$lib/protocol/agentconfig.js';
@@ -271,6 +272,11 @@ export class AgentConfigPanelState {
 	connTransport = $state<'stdio' | 'http'>('stdio');
 	connCommand = $state<string>('');
 	connUrl = $state<string>('');
+	/** The installed OAuth provider NAME to bind on this http connection (the
+	 * SELECT value; '' leaves the connection on its static headers). Threaded
+	 * into the add-connection descriptor — fixing the silent drop this field
+	 * previously suffered (D-062 consumer, D-303). */
+	connOAuthProvider = $state<string>('');
 	/** Secret auth headers, entered as `Key: value` lines; NEVER rendered
 	 * back after submit (the header value is write-only). */
 	connHeaders = $state<string>('');
@@ -919,7 +925,15 @@ export class AgentConfigPanelState {
 							.map((s) => s.trim())
 							.filter((s) => s.length > 0)
 					: undefined,
-			url: this.connTransport === 'http' ? this.connUrl.trim() || undefined : undefined
+			url: this.connTransport === 'http' ? this.connUrl.trim() || undefined : undefined,
+			// Thread the selected installed OAuth provider binding into the
+			// descriptor (http only; empty leaves the static headers). This closes
+			// the silent drop — the wire already carried oauth_provider end to end;
+			// the Console had been building the descriptor without it (D-062/D-303).
+			oauth_provider:
+				this.connTransport === 'http' && this.connOAuthProvider.trim() !== ''
+					? this.connOAuthProvider.trim()
+					: undefined
 		};
 		const headers = this.parseHeaders();
 		try {
@@ -1026,6 +1040,96 @@ export class AgentConfigPanelState {
 			this.removeError = describeError(e);
 		} finally {
 			this.removeBusy = '';
+		}
+	}
+
+	/* ================================================================ */
+	/* Protocol-installed OAuth providers (169 / D-303)                 */
+	/* The ZERO-URL install/uninstall card, single-homed here beside    */
+	/* diff/rollback. NEVER renders a URL or secret (there is none).     */
+	/* ================================================================ */
+
+	/** Install form: provider name + boot-declared credential broker name + a
+	 * space/comma-separated scope subset. NO URL / env / secret field — the
+	 * descriptor is zero-URL by construction (D-300). */
+	provName = $state<string>('');
+	provBroker = $state<string>('');
+	provScopes = $state<string>('');
+	provBusy = $state<boolean>(false);
+	provError = $state<PageError | null>(null);
+	/** The provider name whose uninstall is in flight (''=none). */
+	provRemoveBusy = $state<string>('');
+	provRemoveError = $state<PageError | null>(null);
+
+	/** The active revision's Protocol-installed OAuth providers (card rows + the
+	 * Add-connection binding SELECT feed). */
+	get installedProviders(): AgentConfigOAuthProviderDescriptor[] {
+		return this.activePayload().oauth_providers?.providers ?? [];
+	}
+
+	/** The installed provider NAMES — the option set for the Add-connection
+	 * binding SELECT. */
+	get installedProviderNames(): string[] {
+		return this.installedProviders.map((p) => p.name);
+	}
+
+	/** Installs (upserts) a ZERO-URL, broker-pull OAuth provider
+	 * (`agent_config.set_oauth_provider`). driver / credential_source are pinned
+	 * to the only installable shape; the broker pins every credential sink.
+	 * Admin-gated. */
+	async installProvider(): Promise<void> {
+		if (this.#client === null || !this.hasAdminScope) return;
+		if (this.provBusy) return;
+		if (this.provName.trim() === '') {
+			this.provError = { code: 'invalid_input', message: 'A provider name is required.' };
+			return;
+		}
+		if (this.provBroker.trim() === '') {
+			this.provError = { code: 'invalid_input', message: 'A credential broker name is required.' };
+			return;
+		}
+		this.provBusy = true;
+		this.provError = null;
+		const scopes = this.provScopes
+			.split(/[\s,]+/)
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+		const descriptor: AgentConfigOAuthProviderDescriptor = {
+			name: this.provName.trim(),
+			driver: 'tokenexchange',
+			credential_source: 'remote',
+			credential_broker: this.provBroker.trim(),
+			scopes: scopes.length > 0 ? scopes : undefined
+		};
+		try {
+			await this.#client.agentConfig.setOAuthProvider(this.agentId, descriptor);
+			this.provName = '';
+			this.provBroker = '';
+			this.provScopes = '';
+			await this.reloadRevisions();
+		} catch (e) {
+			this.provError = describeError(e);
+		} finally {
+			this.provBusy = false;
+		}
+	}
+
+	/** Uninstalls a Protocol-installed OAuth provider
+	 * (`agent_config.remove_oauth_provider`). CLOSES the provider — bound
+	 * connections' calls fail until they are removed or re-added (stated in the
+	 * confirm copy). Admin-gated. */
+	async removeProvider(name: string): Promise<void> {
+		if (this.#client === null || !this.hasAdminScope) return;
+		if (this.provRemoveBusy !== '') return;
+		this.provRemoveBusy = name;
+		this.provRemoveError = null;
+		try {
+			await this.#client.agentConfig.removeOAuthProvider(this.agentId, name);
+			await this.reloadRevisions();
+		} catch (e) {
+			this.provRemoveError = describeError(e);
+		} finally {
+			this.provRemoveBusy = '';
 		}
 	}
 }

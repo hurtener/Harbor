@@ -70,8 +70,8 @@ func TestRegistry_Interleave_CloseVsSetTitle_ClosedSurvives(t *testing.T) {
 		}
 		// The session never reappears open: Touch (open-only) is refused,
 		// and the open-only listing does not show it.
-		if err := reg.Touch(ctxFor(id), id.SessionID); !errors.Is(err, sessions.ErrReopenAfterClose) {
-			t.Fatalf("iter %d: Touch on closed session = %v, want ErrReopenAfterClose", i, err)
+		if err := reg.Touch(ctxFor(id), id.SessionID); !errors.Is(err, sessions.ErrSessionClosed) {
+			t.Fatalf("iter %d: Touch on closed session = %v, want ErrSessionClosed", i, err)
 		}
 		snaps, err := reg.ListSnapshots(ctxFor(id), sessions.SessionListFilter{
 			TenantIDs: []string{id.TenantID}, UserIDs: []string{id.UserID},
