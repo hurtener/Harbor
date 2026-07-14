@@ -526,7 +526,12 @@ func (d *Discoverer) resolvePin(ctx context.Context, serverURL string) ([]net.IP
 	if res == nil {
 		res = net.DefaultResolver
 	}
-	addrs, err := res.LookupIPAddr(ctx, u.Hostname())
+	// Bound the pin lookup by its own timeout (the per-fetch timeout is applied
+	// later in fetchHop; without this a slow DNS answer for the operator-declared
+	// host would stall the walk to the caller's ctx deadline).
+	lookupCtx, cancel := context.WithTimeout(ctx, d.perFetchTimeout)
+	defer cancel()
+	addrs, err := res.LookupIPAddr(lookupCtx, u.Hostname())
 	if err != nil {
 		return nil, port
 	}
@@ -614,6 +619,15 @@ func (d *Discoverer) validateHop(target string, step discoveryStep, serverOrigin
 	// target still returns NotHTTPS (the https check protected against plaintext
 	// CREDENTIAL leakage, and a credential-free metadata hop to the same
 	// operator-declared target has none to leak).
+	//
+	// Intentional widening (recorded, not a leak): because the string-layer
+	// extension is same-origin-only and the dial-time pin governs only PRIVATE
+	// dials (a public resolved IP passes the dial gate unconditionally), a
+	// same-origin plain-HTTP protected-resource hop to a PUBLIC operator-declared
+	// server now COMPLETES where it was previously NotHTTPS. This is safe by the
+	// same argument: discovery carries zero credentials, the response is
+	// report-only, and any advertised authorization server still halts at
+	// needs_allowance. It is not gated further by design.
 	sameOriginPRHop := sameOrigin && step == StepProtectedResource
 	if u.Scheme != "https" && !loopback && !sameOriginPRHop {
 		return ReasonNotHTTPS, "non-loopback discovery target must use https", false

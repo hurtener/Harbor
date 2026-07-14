@@ -742,6 +742,33 @@ func TestDiscoverer_AuthServerHopToPinnedIP_StillRefused(t *testing.T) {
 	}
 }
 
+// Intentional widening (recorded, not a leak): the string-layer https extension
+// is same-origin-only and the dial pin governs only PRIVATE dials (a public IP
+// passes evalDialGate unconditionally), so a same-origin plain-HTTP protected-
+// resource hop to a PUBLIC operator-declared server now COMPLETES where it was
+// previously ReasonNotHTTPS. Proven at BOTH gate layers (string + dial) — the
+// two gates a walk composes — without network egress: safe because discovery
+// carries zero credentials, the response is report-only (D-297), and any
+// advertised AS still halts at needs_allowance.
+func TestDiscoverer_SameOriginPublicPlainHTTP_Completes(t *testing.T) {
+	d := NewDiscoverer()
+	const serverOrigin = "http://public.example.com" // public, plain-HTTP, same-origin
+
+	// String layer: no ReasonNotHTTPS for the same-origin protected-resource hop.
+	if reason, _, ok := d.validateHop(serverOrigin+prWellKnown, StepProtectedResource, serverOrigin, map[string]bool{}); !ok {
+		t.Fatalf("same-origin public plain-HTTP PR hop should pass the string layer, got %q", reason)
+	}
+	// Dial layer: a public resolved IP passes unconditionally (the pin governs
+	// only private dials) — even for the protected-resource pin, and even nil.
+	prPin := &dialPin{step: StepProtectedResource, sameOrigin: true, pinnedIPs: []net.IP{ip("93.184.216.34")}, pinnedPort: "80"}
+	if err := evalDialGate("93.184.216.34", "80", false, prPin); err != nil {
+		t.Fatalf("public IP dial for the same-origin PR hop should be permitted, got %v", err)
+	}
+	if err := evalDialGate("93.184.216.34", "80", false, nil); err != nil {
+		t.Fatalf("public IP dial should be permitted even with no pin, got %v", err)
+	}
+}
+
 // The WARN-1 https extension is PR-step-only at the STRING layer: a same-origin
 // protected-resource plain-HTTP hop to the pinned target passes NotHTTPS...
 func TestDiscoverer_ValidateHop_SameOriginPlainHTTPProtectedResource_Passes(t *testing.T) {
