@@ -23,11 +23,48 @@ Two versions move independently in Harbor (RFC §5.3):
 92k–92q MCP-OAuth band; identity-scoped `StateStore` enumeration to bound the
 user-scope revision scan — issue
 [#396](https://github.com/hurtener/Harbor/issues/396); and the shared
-chat-module extraction to `web/shared/chat/` — the D-091 follow-on. A
-`HARBOR_LIVE_LLM`-gated smoke now guards Anthropic reasoning-chunk surfacing;
-the `internal/runtime/dispatch` parallel-cancel test flakes under full-suite
-`-race` CPU oversubscription — issue
-[#480](https://github.com/hurtener/Harbor/issues/480).)
+chat-module extraction to `web/shared/chat/` — the D-091 follow-on. New this
+wave: hardening the Protocol-installed OAuth provider's `Uninstall(owner)` blast
+radius — issue [#507](https://github.com/hurtener/Harbor/issues/507); the tools
+Annotator's read-side metrics path may grow a cache off the durable bus if the
+per-projection events scan proves expensive (D-314), and its `DisplayModes`
+reader awaits per-MIME MCP negotiation. A `HARBOR_LIVE_LLM`-gated smoke guards
+Anthropic reasoning-chunk surfacing; the `internal/runtime/dispatch`
+parallel-cancel test flakes under full-suite `-race` CPU oversubscription —
+issue [#480](https://github.com/hurtener/Harbor/issues/480).)
+
+## [1.14.0] — 2026-07-14
+
+The credential-plane + Protocol-edge-honesty release. Two arcs land together.
+
+**The credential plane gets an invariant, and MCP OAuth becomes
+Protocol-drivable.** An adversarial review of the v1.14 credential surface found
+three exfiltration paths in *shipped* Harbor and generalized the rule that closes
+them: no admin-writable field may determine where a credential is sent — every
+credential sink (token endpoint, allowed downstream hosts, token audience, scope
+ceiling) is now boot-declared. On top of that hardened edge, an operator can now
+grant an MCP server's OAuth-discovery origins live, install a zero-URL broker-pull
+OAuth provider over the Protocol, and bind it to a connection — the discovery
+walker shipped in v1.13 is now reachable on the ordinary self-hosted (localhost /
+compose / private-VPC) posture it could never complete against before.
+
+**The Protocol read edge stops lying.** A recurring silent-absence defect class —
+a surface that declares a wire field, ships a facet/sort/aggregate over it, never
+populates it, and returns believable-but-false emptiness — is closed across
+`events.aggregate`, `sessions.list`/`inspect`, `runtime.health` retention, and the
+tools catalog, and a build-time projection-completeness gate now makes the class
+mechanically un-reintroducible. `events.aggregate` works on the durable driver for
+the first time (it 500'd on every call), gains an addressable/cacheable bucket
+grid and opt-in per-tenant attribution, and widened admin reads finally fan in
+across the axes they were authorized to read instead of folding to an empty
+own-scope result.
+
+Nearly all additive: the Harbor Protocol holds at `0.1.0` — three new methods, one
+new event, one new error code (`session_erased`), and a handful of optional wire
+fields, none of them a break. The one wire *removal* — a structurally-dead memory
+TTL facet that was always empty — is a deliberate within-`0.1.0` removal justified
+under RFC §8 (no live consumer). Thirteen phases plus a checkpoint audit; fifteen
+new decisions (D-300…D-314).
 
 ### Security
 
@@ -49,6 +86,148 @@ the `internal/runtime/dispatch` parallel-cancel test flakes under full-suite
   provider name and intersects requested scopes. The
   `mcp.servers.set_raw_html_trust` audit ordering is corrected to a
   genuinely fail-closed (apply-then-emit-then-compensate) posture.
+- **MCP OAuth discovery now works on private networks without weakening the
+  SSRF posture (D-304).** The v1.13 discovery walker had two SSRF guards that
+  *disagreed*: the per-hop policy permitted a same-origin protected-resource
+  fetch, but the dial-time backstop unconditionally refused every private/loopback
+  IP with no production override — so discovery could never complete against an
+  MCP server on `localhost`, a compose network, or a private VPC (the ordinary
+  self-hosted posture), dying one hop before the operator could even be asked to
+  grant an origin. The dial backstop is aligned to the per-hop policy, relaxed for
+  **exactly** the same-origin protected-resource hop and pinned to the
+  connection's operator-declared dial target (resolved IP set + port) — the
+  DNS-rebinding vector stays closed by pinning to the *resolved IP*, not the origin
+  string, and plain-HTTP is permitted only to that pinned same-origin target
+  (compose/k8s service names). Cross-origin and authorization-server hops keep the
+  full private-IP refusal; there is **no** production private-network knob.
+- **Run-start connection reconcile is owner-scoped in a shared runtime
+  (D-301).** In a deployment running one runtime for many tenants, a run-start
+  reconcile enumerated the process-global MCP registry and could detach
+  boot-declared servers or *another* owner's runtime-added connections. Runtime-
+  added connections and Protocol-installed providers now carry an owner tag
+  `(tenant, agent)`, and a reconcile only ever touches its own owner's runtime-
+  adds. The owner tag is a reconcile-*view* filter, never an isolation principal
+  or a storage `WHERE` key (the boundary stays `(tenant, user, session)`); the
+  shared catalog, bare-name resolution, and dispatch model are unchanged (extends
+  D-287, does not reverse it). The bounded honesty this states plainly: a shared
+  runtime does **not** claim hard cross-tenant isolation of runtime-added tool
+  *dispatch* — a name collision fails loud, and a deployment needing hard isolation
+  runs one-runtime-per-tenant.
+
+### Added
+
+- **`agent_config.set_mcp_discovery_origins` — live MCP OAuth discovery-origin
+  grant (D-302).** The per-connection origins that the discovery walker's
+  cross-origin authorization-server hop needs were reachable only as a
+  restart-required yaml field, unusable to a Protocol-driven console. One narrow
+  admin verb now writes them (full replace) as revisioned agent-config state —
+  diffable, rollback-able — *and* applies them live to the process-global registry.
+  Revoke is symmetric and live (dropping an origin refuses the next hop and prunes
+  the recorded requirement's entries from that origin); rollback / `set_revision`
+  take effect through the owner-scoped run-start reconcile. A granted origin is
+  still refused at dial if it resolves private/loopback (D-304). Server-derived
+  admin authority, no new scope. The Console `/mcp-connections` `needs_allowance`
+  affordance deep-links to the `/agent-config` editor.
+- **Protocol-installable OAuth providers, zero-URL broker-pull shape (D-303).**
+  `agent_config.set_oauth_provider` (upsert + live install) and
+  `agent_config.remove_oauth_provider` (drop + live uninstall) let an admin manage
+  OAuth providers over the Protocol without a restart. Honoring D-300, the writable
+  descriptor carries **zero URLs** — `{name, credential_broker, scopes?}`; the
+  token endpoint, allowed downstream hosts, and audience/scope ceiling are all
+  pinned at boot on a named credential broker the descriptor references by name
+  (a `client_secret_env`/`token_url`/`remote` field is rejected *by name* via
+  strict decoding). Uninstall closes the provider and fails its bound calls loud;
+  rollback past an install runs the same uninstall through the owner-scoped
+  reconcile (safe cross-tenant only because of D-301). The Console Add-connection
+  card gains an `oauth_provider` select from the installed set, closing a silent
+  binding drop.
+- **`events.aggregate` addressable bucket grid — the `anchor` field (D-306).**
+  The aggregator laid its bucket boundaries from the wall-clock instant of the
+  call, so a `bucket_start` was never re-requestable and no consumer could cache a
+  bucket. An optional `anchor` (a `*time.Time`; absent ⇒ today's clock-anchored
+  behavior) floors boundaries onto the fixed grid `anchor + k·bucket`; passing the
+  Unix epoch yields a globally shared grid, so two calls at two instants with the
+  same anchor/window/bucket share boundary instants and a cold N-bucket backfill
+  becomes one cacheable call.
+- **`events.aggregate` per-tenant attribution — the `by_tenant` flag (D-307).**
+  An aggregate bucket was a bag of scalars with no tenant attribution, so an
+  admin-widened count could not be verified against the `tenant_ids` the caller
+  asked for. Opt-in `by_tenant` returns `counts_by_tenant` (tenant → event_type →
+  count) alongside the totals, **only** for admin-/`console:fleet`-widened reads
+  (server-derived), scoped by construction to the authorized tenant set
+  (`Σ counts_by_tenant == counts`). Existing callers see byte-identical responses.
+- **Session reopen — a closed conversation resumes with its history intact
+  (D-312).** RFC §6.9's "reopen-after-close is forbidden" is amended: a `start` /
+  `EnsureOpen` on a session whose record is closed or GC-reaped now re-activates it
+  in place — the immutable identity and `OpenedAt` are preserved, a
+  `LastReopenedAt` is stamped (and the GC hard cap now measures from it, so an old
+  conversation stays resumable), and because close/GC never reaped the durable
+  events/state/memory, the conversation resumes with its full history. A new
+  content-free `session.reopened` event fires. The one terminal exception is an
+  **erased** session: reopen fails loud with a new machine-branchable
+  `session_erased` code (HTTP 409), gated fail-closed on both the closed-record and
+  fresh-create paths against a durable erasure tombstone — a deleted conversation
+  is never silently resurrected. The Console Playground/Sessions pages resume a
+  closed session and branch on `session_erased` for the deleted-conversation path.
+- **Tools facets and aggregates carry real per-tool data (D-314).** The catalog
+  projector read OAuth status, approval policy, last-used, error-rate, and
+  content-size through an `Annotator` seam that shipped with *no* production
+  implementation — so in prod `filter.oauth_statuses` / `filter.approval_policies`,
+  the version search axis, and the catalog aggregates all operated over structural
+  defaults (D-313 honestly gated them behind a capability toggle in the interim).
+  A production `Annotator` is now assembled and wired, reading identity-scoped raw
+  data from the owning subsystems (OAuth from `tools/auth`, policy from
+  `tools/approval`, metrics/last-used/content-stats from the events stream). This
+  also lights up the previously-inert admin write path: `tools.set_approval_policy`
+  and `tools.revoke_oauth` now persist (routed back through the owning subsystems
+  with audit, never a Console shadow store). `DisplayModes` reads honestly empty
+  pending per-MIME MCP negotiation.
+
+### Fixed
+
+- **`events.aggregate` returned HTTP 500 on the durable driver, on every call
+  (HA-18/HA-20, D-305).** The aggregator replayed through a per-session path with
+  a session-less admin filter that the durable driver correctly refuses — so the
+  method worked in dev (in-memory) and 500'd in prod. It now reads through the same
+  cross-session windowed fan-in substrate `events.list` uses; a window too wide to
+  count within the memory bound returns the partial buckets with an additive
+  `truncated` flag (uniformly on both drivers), never a status-code fork. The
+  events-driver conformance matrix that let this ship — it never exercised the
+  session-less admin read and never covered `events.aggregate` at all — gains a
+  driver-parametrized aggregate scenario and a four-method parity leg, plus a
+  build gate that fails if any registered driver has no conformance run wired.
+- **Widened admin reads folded away the axes they were authorized to read
+  (D-308/HA-21).** Both `events.aggregate` and `events.list` unconditionally
+  folded every elided identity axis onto the caller's own triple — so a real
+  admin/`console:fleet` read naming `tenant_ids:[T2]` with elided user/session
+  narrowed to the caller's own (empty) scope, authorizing and auditing a fan-in the
+  fold immediately defeated (a silently-blank Console fleet sparkline). The fold is
+  now asymmetric: a widened, scope-gated, audited read leaves the elided
+  user/session axes wildcard and fans in; only a non-widened own-scope read folds.
+  The tenant axis stays name-to-widen (D-284 parity). This also closes the
+  session-less fan-in case (HA-21).
+- **`sessions.list` / `sessions.inspect` counters were declared but never
+  assigned (HA-22, D-309).** Eight `SessionRow` fields — cost, tokens, task/event
+  counts, failed-task and pending-intervention flags, agent id/name — shipped on
+  the wire permanently zero, while the Service ran facets, a sort, and a keyset
+  cursor over them: "sessions over $5" returned empty on a fleet full of them, and
+  "most expensive first" silently degraded to an id tiebreak. The six numeric
+  counters are now populated at the source through a read-time `Enricher` seam
+  (identity-scoped, no shadow store), with an honest `counters_partial` marker when
+  a bounded scan truncates — never a plausible-but-low number. The two agent fields
+  (no single-valued session→agent binding exists in V1) take the class rule
+  instead: representable absence, and `filter.agent_ids` over the unpopulated
+  binding loud-rejects rather than returning a false-empty page.
+- **`runtime.health` retention horizons were invisible to the one caller that
+  observes the fleet (HA-23, D-310).** The `tasks` and `sessions` retention
+  horizons were measured at the caller's own triple/tenant scope, so a fleet
+  coordinator polling under a service identity (owning no sessions/tasks) received
+  only the `events` horizon and silently under-trusted its windowed view. A
+  verified admin/`console:fleet` caller now reads both horizons at runtime-wide
+  scope (server-derived), and each horizon carries a `scope` marker so an
+  unobservable scope is distinguishable from a genuinely empty surface — the
+  consumer degrades honestly instead of trusting an absent horizon as
+  runtime-wide truth.
 
 ### Changed
 
@@ -64,6 +243,19 @@ the `internal/runtime/dispatch` parallel-cancel test flakes under full-suite
   credential sinks (token endpoint + allowed downstream hosts + broker
   credential env); it is additive and the inline `oauth_providers[].remote`
   block stays valid. See `examples/dev.yaml` and `docs/CONFIG.md`.
+- **A build-time projection-completeness gate, plus one dead memory wire field
+  removed (D-311, D-313).** The silent-absence class is now closed mechanically: a
+  registry-gated gate (`internal/protocol/projectioncheck`) fails the build when a
+  filtered/sorted/aggregated wire field is never assigned by its production
+  projector (never-assigned) *or* when the production constructor never wires the
+  seam that populates it (never-wired), and asserts every projection surface is
+  registered. Fixing the surfaces it caught, the structurally-dead memory
+  `has_ttl_expiring` filter and **both** `expiring_in_1h` aggregate fields
+  (`MemoryAggregates`, `MemoryHealthAggregate`) are **removed** from the wire —
+  V1 memory has no TTL, so these were always empty. This is a within-`0.1.0` wire
+  removal taken under an explicit RFC §8 exemption (always-empty fields, no live
+  consumer), not a silent drop. A client reading either field should stop; no
+  replacement is needed.
 
 ## [1.13.1] — 2026-07-13
 
