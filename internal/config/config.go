@@ -1197,8 +1197,36 @@ type ToolOAuthCredentialBrokerConfig struct {
 	// where its tokens may be injected).
 	AllowedDownstreamHosts []string `yaml:"allowed_downstream_hosts"`
 	// AuthTokenEnv names the env var holding the runtime's own broker
-	// credential (§7 rule 2 — never hardcoded). Required non-empty.
+	// credential (§7 rule 2 — never hardcoded). Required non-empty. It is the
+	// `Authorization: Bearer` the runtime presents to CredentialURL when it
+	// pulls the org client credential the exchange POSTs to TokenURL.
 	AuthTokenEnv string `yaml:"auth_token_env"`
+	// CredentialURL is the boot-pinned coordinator credential endpoint the
+	// runtime pulls its OWN org client credential (client_id / client_secret)
+	// from — the `remote` credential-source PULL URL for a
+	// Protocol-installed broker-pull provider. It is a credential-sink-adjacent
+	// value (it authenticates with AuthTokenEnv and yields the org secret the
+	// exchange POSTs), so it is BOOT-PINNED, config/file-only, never
+	// wire-writable (the credential-plane invariant). Required (https,
+	// or a loopback host for the dev/fixture case) for any broker referenced by
+	// a Protocol-installed provider — validated loud when the broker is resolved
+	// at install time. Distinct from TokenURL: CredentialURL is the GET the
+	// runtime pulls its client credential from; TokenURL is the POST the
+	// exchange sends it to.
+	CredentialURL string `yaml:"credential_url,omitempty"`
+	// Audience is the boot-pinned token-audience ceiling for the exchanged
+	// downstream token — the authority for the exchanged token's audience,
+	// decoupled from the caller-chosen provider name (closing the
+	// audience-picking lever). Empty preserves the legacy
+	// audience-from-name behaviour. Boot-pinned, never wire-writable.
+	Audience string `yaml:"audience,omitempty"`
+	// ScopeCeiling is the boot-pinned scope ceiling for the exchanged token.
+	// When non-empty the SCOPES an installed descriptor requests are
+	// INTERSECTED against it — a requested scope outside the ceiling is dropped,
+	// never honoured (so an installed descriptor can never widen scope past the
+	// boot ceiling). Empty preserves the legacy pass-through. Boot-pinned,
+	// never wire-writable.
+	ScopeCeiling []string `yaml:"scope_ceiling,omitempty"`
 	// CacheTTL caps the in-memory serve horizon for a brokered token.
 	// Optional; zero = driver default.
 	CacheTTL time.Duration `yaml:"cache_ttl,omitempty"`

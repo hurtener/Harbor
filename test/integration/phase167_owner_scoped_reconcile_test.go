@@ -89,7 +89,7 @@ func newOwnerHarness(t *testing.T, binPath string) *ownerHarness {
 	// One REAL attacher/detacher shared by every owner — the owner tag is
 	// stamped per-add from the request identity, not per-attacher.
 	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
-		identity.Identity{TenantID: "boot", UserID: "boot", SessionID: "boot"}, nil)
+		identity.Identity{TenantID: "boot", UserID: "boot", SessionID: "boot"}, nil, nil)
 	detacher := serve.NewMCPConnectionDetacher(cat, mcpReg, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),

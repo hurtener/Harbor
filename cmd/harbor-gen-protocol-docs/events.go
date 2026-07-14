@@ -95,6 +95,8 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	agentcfg.EventTypeMCPConnectionAuthRequired: {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.MCPConnectionLifecyclePayload{})}},
 	agentcfg.EventTypeMCPConnectionRemoved:      {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.MCPConnectionRemovedPayload{})}},
 	agentcfg.EventTypeMCPDiscoveryOriginsSet:    {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.MCPDiscoveryOriginsSetPayload{})}},
+	agentcfg.EventTypeOAuthProviderInstalled:    {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.OAuthProviderSetPayload{})}},
+	agentcfg.EventTypeOAuthProviderRemoved:      {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.OAuthProviderSetPayload{})}},
 
 	// --- Dev-draft lifecycle (harbor dev's dynamic agent scaffolding).
 	devdraft.EventTypeDraftCreated:   {Payloads: []reflect.Type{reflect.TypeOf(devdraft.DraftCreatedPayload{})}},

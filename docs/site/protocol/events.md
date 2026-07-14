@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 129 canonical event types a Harbor Runtime can publish, read from the live
+The 131 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -133,6 +133,32 @@ Payload `AgentRestartedPayload` — safe payload (delivered typed, verbatim).
 | `VersionHash` | `string` |  |
 | `VersionHashChanged` | `bool` |  |
 | `RestartedAt` | `int64` |  |
+
+## `agent_config.oauth_provider.installed`
+
+Payload `OAuthProviderSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ProviderName` | `string` |  |
+| `CredentialBroker` | `string` |  |
+| `RevisionID` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `agent_config.oauth_provider.removed`
+
+Payload `OAuthProviderSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ProviderName` | `string` |  |
+| `CredentialBroker` | `string` |  |
+| `RevisionID` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
 
 ## `artifacts.deleted`
 

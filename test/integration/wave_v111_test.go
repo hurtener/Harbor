@@ -140,7 +140,7 @@ func waveV111DevStack(t *testing.T, binPath string, override planner.Planner) *d
 func waveV111ConnService(t *testing.T, stack *devstack.DevStack, binPath string) (*agentcfgprotocol.Service, projection.ConnectionDetacher) {
 	t.Helper()
 	dev := identity.Identity{TenantID: devstack.DefaultDevTenant, UserID: devstack.DefaultDevUser, SessionID: devstack.DefaultDevSession}
-	attacher := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, stack.Bus, nil, dev, stack.OAuthProviders)
+	attacher := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, stack.Bus, nil, dev, stack.OAuthProviders, nil)
 	t.Cleanup(func() { _ = attacher.Close(context.Background()) })
 	detacher := serve.NewMCPConnectionDetacher(stack.Catalog, stack.MCPRegistry, nil)
 

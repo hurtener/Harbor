@@ -438,7 +438,7 @@ func TestMCPConnectionAttacher_Attach_FailsFastAndDrains(t *testing.T) {
 	cat := tools.NewCatalog()
 	registry := mcpdrv.NewRegistry()
 	a := NewMCPConnectionAttacher(cat, registry, bus, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil)
+		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -475,7 +475,7 @@ func TestMCPConnectionAttacher_MissingOwner_FailsClosed(t *testing.T) {
 	cat := tools.NewCatalog()
 	registry := mcpdrv.NewRegistry()
 	a := NewMCPConnectionAttacher(cat, registry, bus, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil)
+		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil)
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 
 	cases := []struct {

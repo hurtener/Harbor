@@ -407,11 +407,24 @@ tools:
   # Additive — the inline `oauth_providers[].remote` block above stays
   # valid. Config/file-only, restart-required (NOT a Protocol surface).
   #
+  # A broker referenced by a Protocol-installed provider
+  # (`agent_config.set_oauth_provider`, Phase 169 / D-303) pins EVERY
+  # credential sink at boot; the wire descriptor names only the broker +
+  # a scope subset. `credential_url` is the D-271 `remote` credential-pull
+  # endpoint (where the runtime pulls its org client_id/secret, authenticated
+  # by `auth_token_env`); `token_url` is the RFC-8693 exchange endpoint.
+  # `audience` is pinned server-side; `scope_ceiling` clamps the descriptor's
+  # requested scopes. Declaring any broker requires `oauth_token_kek_env`
+  # (an installed provider shares the boot token store).
+  #
   # oauth_credential_brokers:
   #   - name: m365-broker
-  #     token_url: https://broker.example.com/oauth2/token
-  #     allowed_downstream_hosts: ["graph.microsoft.com"]  # required, non-empty
-  #     auth_token_env: HARBOR_M365_BROKER_TOKEN           # runtime's broker credential
+  #     token_url: https://broker.example.com/oauth2/token   # RFC-8693 exchange sink
+  #     credential_url: https://broker.example.com/credential # D-271 remote pull (Phase 169)
+  #     allowed_downstream_hosts: ["graph.microsoft.com"]    # required, non-empty
+  #     auth_token_env: HARBOR_M365_BROKER_TOKEN             # runtime's broker credential
+  #     audience: https://graph.microsoft.com                # optional, pinned
+  #     scope_ceiling: ["mail.read", "mail.send"]            # optional, clamps installed scopes
   #     cache_ttl: 5m    # optional
   #     timeout: 10s     # optional
 

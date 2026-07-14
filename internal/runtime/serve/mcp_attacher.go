@@ -54,8 +54,14 @@ type MCPConnectionAttacher struct {
 	defaultIdentity identity.Identity
 	// oauthProviders is the declared OAuth-provider registry a runtime-added
 	// connection's `oauth_provider` binding resolves against (mcpdrv.Attach
-	// does the resolution + fail-loud). Set once at construction.
+	// does the resolution + fail-loud). Set once at construction. Superseded by
+	// oauthProviderSet when non-nil (kept for the fallback / callback path).
 	oauthProviders map[string]toolauth.OAuthProvider
+	// oauthProviderSet is the runtime provider SET (boot seed + owner-tagged
+	// Protocol-installed providers) a runtime-added connection's binding
+	// resolves against, so an installed provider is bindable. Takes precedence
+	// over oauthProviders. Set once at construction.
+	oauthProviderSet toolauth.ProviderSet
 
 	mu      sync.Mutex
 	closers []func(context.Context) error
@@ -63,15 +69,17 @@ type MCPConnectionAttacher struct {
 
 // NewMCPConnectionAttacher builds the production attacher. catalog,
 // registry, and bus are mandatory (mcpdrv.Attach validates them too).
-// oauthProviders may be nil when no provider is declared.
-func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider) *MCPConnectionAttacher {
+// oauthProviders may be nil when no provider is declared; oauthProviderSet, when
+// non-nil, is the runtime set (boot seed + installs) resolution consults first.
+func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider, oauthProviderSet toolauth.ProviderSet) *MCPConnectionAttacher {
 	return &MCPConnectionAttacher{
-		catalog:         catalog,
-		registry:        registry,
-		bus:             bus,
-		logger:          logger,
-		defaultIdentity: defaultIdentity,
-		oauthProviders:  oauthProviders,
+		catalog:          catalog,
+		registry:         registry,
+		bus:              bus,
+		logger:           logger,
+		defaultIdentity:  defaultIdentity,
+		oauthProviders:   oauthProviders,
+		oauthProviderSet: oauthProviderSet,
 	}
 }
 
@@ -120,14 +128,15 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 
 	var local []func(context.Context) error
 	err := mcpdrv.Attach(ctx, ms, mcpdrv.AttachDeps{
-		Catalog:         a.catalog,
-		Registry:        a.registry,
-		Bus:             a.bus,
-		Logger:          a.logger,
-		DefaultIdentity: a.defaultIdentity,
-		Closers:         &local,
-		OAuthProviders:  a.oauthProviders,
-		Owner:           owner,
+		Catalog:          a.catalog,
+		Registry:         a.registry,
+		Bus:              a.bus,
+		Logger:           a.logger,
+		DefaultIdentity:  a.defaultIdentity,
+		Closers:          &local,
+		OAuthProviders:   a.oauthProviders,
+		OAuthProviderSet: a.oauthProviderSet,
+		Owner:            owner,
 	})
 	// Merge whatever closers Attach appended (a successful Connect appends the
 	// provider's Close even if a later step failed — drain it on teardown).

@@ -24,8 +24,10 @@ package auth
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
@@ -111,6 +113,136 @@ func BuildProviders(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps)
 		providers[p.Name] = prov
 	}
 	return providers, nil
+}
+
+// TokenExchangeDriverName is the driver name a Protocol-installed provider
+// descriptor MUST declare (the only writable driver — the non-interactive PULL
+// exchange). Mirrors the tokenexchange driver's self-registration name
+// without importing the driver package here.
+const TokenExchangeDriverName = "tokenexchange"
+
+// ProviderBuilder constructs Protocol-installed broker-pull provider instances
+// at runtime from a boot-declared named credential broker plus a wire
+// descriptor's non-secret scope subset. Every credential-sink-determining value
+// (the token endpoint, the credential-pull endpoint, the allowed downstream
+// hosts, the audience, and the scope ceiling) is read from the boot broker —
+// NONE from the descriptor — so no admin-writable field determines where a
+// credential is sent (the credential-plane invariant). It is built ONCE at boot
+// (the shared crypto chain constructed alongside BuildProviders) and is safe
+// for concurrent reuse (immutable after construction).
+type ProviderBuilder struct {
+	brokers     map[string]config.ToolOAuthCredentialBrokerConfig
+	factoryDeps FactoryDeps
+	bus         events.EventBus
+	redactor    audit.Redactor
+}
+
+// ProviderBuilder sentinel errors.
+var (
+	// ErrUnknownBroker — a descriptor's credential_broker resolves to no
+	// boot-declared broker. Loud, listing the declared broker names.
+	ErrUnknownBroker = errors.New("auth: credential_broker resolves to no boot-declared broker")
+	// ErrBrokerMissingCredentialURL — the resolved broker declares no
+	// credential_url, so an installed broker-pull provider has no boot-pinned
+	// endpoint to PULL its org client credential from. Fail loud (never a silent
+	// wire-supplied fallback).
+	ErrBrokerMissingCredentialURL = errors.New("auth: credential_broker declares no credential_url (a Protocol-installed broker-pull provider pulls its org client credential from the boot-pinned credential_url)")
+)
+
+// NewProviderBuilder builds the runtime provider builder from the boot config.
+// It constructs the shared crypto chain (KEK → sealer → token store) ONCE so an
+// installed provider shares the same token store as the boot providers, and
+// captures the boot broker set by name. When no broker is declared it returns a
+// builder whose Build fails loud with ErrUnknownBroker (nothing to resolve
+// against) — never a nil-panic. deps' four fields are mandatory when at least
+// one broker is declared.
+func NewProviderBuilder(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps) (*ProviderBuilder, error) {
+	brokers := make(map[string]config.ToolOAuthCredentialBrokerConfig, len(cfg.OAuthCredentialBrokers))
+	for _, b := range cfg.OAuthCredentialBrokers {
+		brokers[b.Name] = b
+	}
+	pb := &ProviderBuilder{brokers: brokers, bus: deps.Bus, redactor: deps.Redactor}
+	if len(brokers) == 0 {
+		return pb, nil
+	}
+	kek, err := resolveTokenKEK(cfg.OAuthTokenKEKEnv)
+	if err != nil {
+		return nil, err
+	}
+	sealer, err := NewAESGCMSealer(kek)
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: broker provider builder: sealer: %w", err)
+	}
+	tokenStore, err := NewTokenStore(deps.State, sealer)
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: broker provider builder: token store: %w", err)
+	}
+	pb.factoryDeps = FactoryDeps{
+		Store:       tokenStore,
+		Bus:         deps.Bus,
+		Redactor:    deps.Redactor,
+		Coordinator: deps.Coordinator,
+	}
+	return pb, nil
+}
+
+// BrokerNames returns the sorted boot-declared broker names (for a fail-loud
+// error message and the Console's broker picker feed).
+func (b *ProviderBuilder) BrokerNames() []string {
+	out := make([]string, 0, len(b.brokers))
+	for name := range b.brokers {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Build constructs a broker-pull provider instance named `name`, resolving
+// `brokerName` against the boot broker set and requesting `scopes` (clamped to
+// the broker's boot scope ceiling by the tokenexchange driver). An unknown
+// broker or a broker without a credential_url fails loud; the credential source
+// is the boot-pinned remote PULL. The descriptor NEVER contributes a
+// URL, an env-var name, or a secret — only the scope subset.
+func (b *ProviderBuilder) Build(ctx context.Context, name, brokerName string, scopes []string) (OAuthProvider, error) {
+	broker, ok := b.brokers[brokerName]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q (declared: %v)", ErrUnknownBroker, brokerName, b.BrokerNames())
+	}
+	if broker.CredentialURL == "" {
+		return nil, fmt.Errorf("%w: broker %q", ErrBrokerMissingCredentialURL, brokerName)
+	}
+	src, err := credsource.Resolve(credsource.SourceRemote, credsource.Config{
+		ProviderName: name,
+		Bus:          b.bus,
+		Redactor:     b.redactor,
+		Clock:        time.Now,
+		Remote: &credsource.RemoteConfig{
+			URL:          broker.CredentialURL,
+			AuthTokenEnv: broker.AuthTokenEnv,
+			CacheTTL:     broker.CacheTTL,
+			Timeout:      broker.Timeout,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: broker %q credential source: %w", brokerName, err)
+	}
+	if err := src.ValidateAtBoot(ctx); err != nil {
+		return nil, fmt.Errorf("tools/oauth: broker %q credential source: %w", brokerName, err)
+	}
+	pcfg := ProviderConfig{
+		Name:                   name,
+		CredentialSource:       src,
+		Scopes:                 append([]string(nil), scopes...),
+		TokenURL:               broker.TokenURL,
+		AllowedDownstreamHosts: append([]string(nil), broker.AllowedDownstreamHosts...),
+		Audience:               broker.Audience,
+		ScopeCeiling:           append([]string(nil), broker.ScopeCeiling...),
+	}
+	prov, err := Resolve(ctx, TokenExchangeDriverName, pcfg, b.factoryDeps)
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: install provider %q (broker=%q, driver=%q): %w", name, brokerName, TokenExchangeDriverName, err)
+	}
+	return prov, nil
 }
 
 // buildCredentialSource constructs the §4.4 credential source declared by

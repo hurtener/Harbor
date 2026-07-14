@@ -120,6 +120,7 @@ func (s *Service) RemoveMCPConnection(ctx context.Context, req prototypes.AgentC
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		payload.OAuthProviders = active.Payload.OAuthProviders
 		payload.ToolExposure = pruneExposureResidue(active.Payload.ToolExposure, name, remaining)
 	}
 	if len(remaining) > 0 {

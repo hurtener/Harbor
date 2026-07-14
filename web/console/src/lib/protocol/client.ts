@@ -71,6 +71,9 @@ import type {
 	AgentConfigAddMCPConnectionResponse,
 	AgentConfigRemoveMCPConnectionResponse,
 	AgentConfigSetMCPDiscoveryOriginsResponse,
+	AgentConfigOAuthProviderDescriptor,
+	AgentConfigSetOAuthProviderResponse,
+	AgentConfigRemoveOAuthProviderResponse,
 	AgentConfigSkillInput,
 	AgentConfigSkillsListResponse,
 	AgentConfigSkillsUpsertResponse,
@@ -1210,6 +1213,32 @@ export class AgentConfigNamespace {
 		return this.#t.request<AgentConfigSetMCPDiscoveryOriginsResponse>(
 			'/v1/agent_config/set_mcp_discovery_origins',
 			{ agent_id: agentId, name, allowed_origins: allowedOrigins },
+		);
+	}
+	/** `agent_config.set_oauth_provider` — install (upsert) a ZERO-URL, broker-pull
+	 * OAuth provider. The descriptor carries only {name, driver, credential_source,
+	 * credential_broker, scopes?}; a URL / env-var / secret field is rejected by the
+	 * wire edge. Records a revision AND installs the provider live. Admin-scoped. */
+	setOAuthProvider(
+		agentId: string,
+		provider: AgentConfigOAuthProviderDescriptor,
+	): Promise<AgentConfigSetOAuthProviderResponse> {
+		return this.#t.request<AgentConfigSetOAuthProviderResponse>(
+			'/v1/agent_config/set_oauth_provider',
+			{ agent_id: agentId, provider },
+		);
+	}
+	/** `agent_config.remove_oauth_provider` — uninstall a Protocol-installed OAuth
+	 * provider by name; records a revision AND uninstalls it live (CLOSING it, so a
+	 * still-bound connection's next call fails loud). Admin-scoped. An unknown or
+	 * boot-declared name fails loud with a distinct error. */
+	removeOAuthProvider(
+		agentId: string,
+		name: string,
+	): Promise<AgentConfigRemoveOAuthProviderResponse> {
+		return this.#t.request<AgentConfigRemoveOAuthProviderResponse>(
+			'/v1/agent_config/remove_oauth_provider',
+			{ agent_id: agentId, name },
 		);
 	}
 	/** `agent_config.skills.list` — list the agent's skills (metadata only). */

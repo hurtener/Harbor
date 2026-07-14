@@ -269,8 +269,16 @@ type Stack struct {
 	Coordinator    pauseresume.Coordinator
 	Gates          map[string]*toolapproval.ApprovalGate
 	OAuthProviders map[string]toolauth.OAuthProvider
-	MCPRegistry    *mcpdrv.Registry
-	Executor       steering.ToolExecutor
+	// OAuthProviderSet is the runtime provider SET (boot-seeded from
+	// OAuthProviders + owner-tagged Protocol-installed providers) the MCP attach
+	// path resolves a connection's `oauth_provider` binding against. Nil under
+	// SkipCatalog.
+	OAuthProviderSet toolauth.ProviderSet
+	// OAuthProviderBuilder builds Protocol-installed broker-pull providers from
+	// a boot credential broker at runtime. Nil under SkipCatalog.
+	OAuthProviderBuilder *toolauth.ProviderBuilder
+	MCPRegistry          *mcpdrv.Registry
+	Executor             steering.ToolExecutor
 
 	// MCPToolContext is the MCP Apps tool-context store the MCP providers
 	// capture through (input + lowered result behind a declared `ui://`
@@ -861,6 +869,25 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		providers[name] = p
 	}
 
+	// The runtime provider SET (boot-seeded from the constructed providers) the
+	// MCP attach path resolves against — so a Protocol-installed, owner-tagged
+	// provider is bindable alongside the boot providers (bare-name resolution,
+	// bare-name resolution). The provider BUILDER constructs Protocol-installed broker-pull
+	// providers from a boot credential broker; its crypto chain shares
+	// the same token store as the boot providers.
+	providerSet := toolauth.NewProviderSet(providers)
+	providerBuilder, pbErr := toolauth.NewProviderBuilder(ctx, buildCfg, toolauth.BuildDeps{
+		State:       stack.State,
+		Bus:         stack.Bus,
+		Redactor:    stack.Redactor,
+		Coordinator: coord,
+	})
+	if pbErr != nil {
+		return fmt.Errorf("tools/oauth: provider builder: %w", pbErr)
+	}
+	stack.OAuthProviderSet = providerSet
+	stack.OAuthProviderBuilder = providerBuilder
+
 	// the catalog wiring Builder: `tools.entries[]`
 	// auto-wraps matching descriptors with declared approval / OAuth
 	// middleware. An entry naming an unregistered tool fails the boot
@@ -937,8 +964,11 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			ToolContext:      toolCtxStore,
 			// per-identity southbound OAuth binding resolution
 			// (`oauth_provider` names a declared provider; fail loud on an
-			// unknown name).
-			OAuthProviders: providers,
+			// unknown name). The runtime provider SET takes precedence so a
+			// Protocol-installed provider is resolvable too (seeded from the same
+			// boot providers, so boot bindings still resolve).
+			OAuthProviders:   providers,
+			OAuthProviderSet: providerSet,
 		}); err != nil {
 			return fmt.Errorf("mcp[%s]: %w", ms.Name, err)
 		}

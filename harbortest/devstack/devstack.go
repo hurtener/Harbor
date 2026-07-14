@@ -418,6 +418,12 @@ type DevStack struct {
 	Coordinator    pauseresume.Coordinator
 	Gates          map[string]*toolapproval.ApprovalGate
 	OAuthProviders map[string]toolauth.OAuthProvider
+	// OAuthProviderSet + OAuthProviderBuilder back the Protocol-installed,
+	// zero-URL broker-pull provider (set_oauth_provider / remove_oauth_provider)
+	// — mirrored from the assembled core so integration tests exercise the same
+	// real install path. Nil when SkipCatalog is set.
+	OAuthProviderSet     toolauth.ProviderSet
+	OAuthProviderBuilder *toolauth.ProviderBuilder
 
 	// Phase 83g (D-150): the MCP Registry the dev stack populates
 	// from cfg.Tools.MCPServers. Nil when SkipCatalog is set or no
@@ -606,6 +612,8 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		if core.OAuthProviders != nil {
 			stack.OAuthProviders = core.OAuthProviders
 		}
+		stack.OAuthProviderSet = core.OAuthProviderSet
+		stack.OAuthProviderBuilder = core.OAuthProviderBuilder
 	}
 	if err != nil {
 		return stack, err
@@ -732,35 +740,42 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			if stack.Catalog != nil && stack.MCPRegistry != nil {
 				devDetacher = serve.NewMCPConnectionDetacher(stack.Catalog, stack.MCPRegistry, opts.Logger)
 			}
+			var devProviderReconciler projection.OAuthProviderReconciler
+			if stack.OAuthProviderSet != nil && stack.OAuthProviderBuilder != nil {
+				if concrete := serve.NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet); concrete != nil {
+					devProviderReconciler = concrete
+				}
+			}
 			driver, drvErr := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
-				Bus:                bus,
-				RunLoop:            stack.RunLoop,
-				Planner:            core.Planner,
-				Tasks:              taskReg,
-				Logger:             opts.Logger,
-				SessionOverrides:   runsStore,
-				Memory:             resolveMemoryStore(opts, stack),
-				MemoryRecall:       memory.RecallFromConfig(cfg.Memory),
-				SkillsDirectory:    skillsDir,
-				PlanningHints:      resolvePlanningHints(opts, cfg),
-				Catalog:            stack.Catalog,
-				Executor:           core.Executor,
-				MaxStepsRunLoop:    cfg.Planner.MaxSteps,
-				GrantedScopes:      append([]string(nil), cfg.Tools.GrantedScopes...),
-				ArtifactStore:      stack.Artifacts,
-				TokenBudget:        cfg.Planner.TokenBudget,
-				Compression:        core.Compression,
-				DispositionPolicy:  dispositionPolicy,
-				TenantOverrides:    tenantPolicy,
-				AgentConfig:        stack.AgentConfig,
-				AgentConfigID:      stack.AgentConfigID,
-				SessionOverlay:     stack.SessionOverlay,
-				RunCompletionHook:  projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
-				ConnectionDetacher: devDetacher,
-				BootDeclaredMCP:    serve.BootDeclaredMCPServerSet(cfg),
-				NamingDefault:      cfg.Runtime.Naming,
-				SessionTitler:      stack.Sessions,
-				NamingLLM:          stack.LLMClient,
+				Bus:                     bus,
+				RunLoop:                 stack.RunLoop,
+				Planner:                 core.Planner,
+				Tasks:                   taskReg,
+				Logger:                  opts.Logger,
+				SessionOverrides:        runsStore,
+				Memory:                  resolveMemoryStore(opts, stack),
+				MemoryRecall:            memory.RecallFromConfig(cfg.Memory),
+				SkillsDirectory:         skillsDir,
+				PlanningHints:           resolvePlanningHints(opts, cfg),
+				Catalog:                 stack.Catalog,
+				Executor:                core.Executor,
+				MaxStepsRunLoop:         cfg.Planner.MaxSteps,
+				GrantedScopes:           append([]string(nil), cfg.Tools.GrantedScopes...),
+				ArtifactStore:           stack.Artifacts,
+				TokenBudget:             cfg.Planner.TokenBudget,
+				Compression:             core.Compression,
+				DispositionPolicy:       dispositionPolicy,
+				TenantOverrides:         tenantPolicy,
+				AgentConfig:             stack.AgentConfig,
+				AgentConfigID:           stack.AgentConfigID,
+				SessionOverlay:          stack.SessionOverlay,
+				RunCompletionHook:       projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
+				ConnectionDetacher:      devDetacher,
+				BootDeclaredMCP:         serve.BootDeclaredMCPServerSet(cfg),
+				OAuthProviderReconciler: devProviderReconciler,
+				NamingDefault:           cfg.Runtime.Naming,
+				SessionTitler:           stack.Sessions,
+				NamingLLM:               stack.LLMClient,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -866,9 +881,17 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		var attacher agentcfgprotocol.ConnectionAttacher
 		if stack.Catalog != nil && stack.MCPRegistry != nil {
 			att := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, opts.Logger,
-				resolveDevIdentity(opts), stack.OAuthProviders)
+				resolveDevIdentity(opts), stack.OAuthProviders, stack.OAuthProviderSet)
 			stack.closeFns = append(stack.closeFns, att.Close)
 			attacher = att
+		}
+		// The Protocol-installed OAuth provider installer (set_oauth_provider /
+		// remove_oauth_provider + the run-start provider reconcile).
+		var oauthProviderInstaller agentcfgprotocol.ProviderInstaller
+		if stack.OAuthProviderSet != nil && stack.OAuthProviderBuilder != nil {
+			if concrete := serve.NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet); concrete != nil {
+				oauthProviderInstaller = concrete
+			}
 		}
 
 		// Single-homed Protocol surface construction + fan-out. The kit's
@@ -877,43 +900,45 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// agents / auth-rotate / governance-override / governance-key-rotate
 		// surfaces the mirror omitted.
 		built, bErr := serve.BuildMux(serve.MuxInput{
-			Cfg:                  cfg,
-			Surface:              stack.Surface,
-			Bus:                  bus,
-			Redactor:             stack.Audit,
-			Logger:               lg,
-			Metrics:              metricsReg,
-			LLMSnapshot:          llmPostureCfg,
-			Tasks:                stack.Tasks,
-			Sessions:             stack.Sessions,
-			Agents:               core.Agents,
-			Artifacts:            stack.Artifacts,
-			Memory:               stack.Memory,
-			Catalog:              stack.Catalog,
-			Coordinator:          stack.Coordinator,
-			MCPRegistry:          stack.MCPRegistry,
-			MCPToolContext:       stack.MCPToolContext,
-			State:                stack.State,
-			Skills:               stack.Skills,
-			AgentConfig:          stack.AgentConfig,
-			AgentConfigID:        stack.AgentConfigID,
-			SessionOverlay:       stack.SessionOverlay,
-			RunsStore:            runsStore,
-			RunLoopDriver:        stack.RunLoopDriver,
-			OAuthProviders:       stack.OAuthProviders,
-			TenantOverridePolicy: tenantPolicy,
-			KeyRotator:           core.KeyRotator,
-			ValidModels:          devstackValidModels(cfg),
-			MCPAttacher:          attacher,
-			MCPStdioAllowlist:    append([]string(nil), opts.MCPStdioAllowlist...),
-			BootDeclaredMCP:      serve.BootDeclaredMCPServerNames(cfg),
-			Validator:            stack.Validator,
-			AuthSurface:          rotateSurface,
-			DisplayName:          "harbor devstack",
-			InstanceID:           "harbor-devstack",
-			BuildVersion:         "devstack",
-			BuildCommit:          "devstack",
-			TopologyAvailable:    false,
+			Cfg:                    cfg,
+			Surface:                stack.Surface,
+			Bus:                    bus,
+			Redactor:               stack.Audit,
+			Logger:                 lg,
+			Metrics:                metricsReg,
+			LLMSnapshot:            llmPostureCfg,
+			Tasks:                  stack.Tasks,
+			Sessions:               stack.Sessions,
+			Agents:                 core.Agents,
+			Artifacts:              stack.Artifacts,
+			Memory:                 stack.Memory,
+			Catalog:                stack.Catalog,
+			Coordinator:            stack.Coordinator,
+			MCPRegistry:            stack.MCPRegistry,
+			MCPToolContext:         stack.MCPToolContext,
+			State:                  stack.State,
+			Skills:                 stack.Skills,
+			AgentConfig:            stack.AgentConfig,
+			AgentConfigID:          stack.AgentConfigID,
+			SessionOverlay:         stack.SessionOverlay,
+			RunsStore:              runsStore,
+			RunLoopDriver:          stack.RunLoopDriver,
+			OAuthProviders:         stack.OAuthProviders,
+			TenantOverridePolicy:   tenantPolicy,
+			KeyRotator:             core.KeyRotator,
+			ValidModels:            devstackValidModels(cfg),
+			MCPAttacher:            attacher,
+			MCPStdioAllowlist:      append([]string(nil), opts.MCPStdioAllowlist...),
+			BootDeclaredMCP:        serve.BootDeclaredMCPServerNames(cfg),
+			BootDeclaredOAuth:      serve.BootDeclaredOAuthProviderNames(cfg),
+			OAuthProviderInstaller: oauthProviderInstaller,
+			Validator:              stack.Validator,
+			AuthSurface:            rotateSurface,
+			DisplayName:            "harbor devstack",
+			InstanceID:             "harbor-devstack",
+			BuildVersion:           "devstack",
+			BuildCommit:            "devstack",
+			TopologyAvailable:      false,
 		})
 		if bErr != nil {
 			return stack, bErr

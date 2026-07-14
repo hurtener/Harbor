@@ -92,6 +92,30 @@ export interface AgentConfigConnections {
 	servers?: AgentConfigMCPConnectionDescriptor[];
 }
 
+/** A Protocol-installed OAuth provider — the ZERO-URL descriptor. It carries NO
+ * URL, NO env-var name, and NO secret: the credential-plane invariant pins every
+ * credential sink (token endpoint, credential-pull endpoint, allowed downstream
+ * hosts, audience, scope ceiling) at boot on the named credential broker the
+ * descriptor references by name. Mirrors
+ * `types.AgentConfigOAuthProviderDescriptor`. */
+export interface AgentConfigOAuthProviderDescriptor {
+	name: string;
+	/** Exactly "tokenexchange" (the only installable driver). */
+	driver: string;
+	/** Exactly "remote" (broker-pull). */
+	credential_source: string;
+	/** Boot-declared credential broker name (pins every sink). Non-secret. */
+	credential_broker: string;
+	/** Requested scope subset (clamped to the broker's boot scope ceiling). */
+	scopes?: string[];
+}
+
+/** The Protocol-installed OAuth-provider section of the config envelope. Mirrors
+ * `types.AgentConfigOAuthProviders`. */
+export interface AgentConfigOAuthProviders {
+	providers?: AgentConfigOAuthProviderDescriptor[];
+}
+
 /** An agent's durable run-completion hook — the catalog tool the run
  * transcript is dispatched to at the run loop's terminal boundary, plus an
  * optional dispatch timeout (milliseconds). Mirrors
@@ -131,6 +155,7 @@ export interface AgentConfigPayload {
 	skills?: AgentConfigSkillsSelection;
 	tool_exposure?: AgentConfigToolExposure;
 	connections?: AgentConfigConnections;
+	oauth_providers?: AgentConfigOAuthProviders;
 	llm_params?: AgentConfigLLMParams;
 	hooks?: AgentConfigHooks;
 	naming?: AgentConfigNaming;
@@ -188,6 +213,13 @@ export interface AgentConfigPromptLayersDiff {
 /** The structured runtime-added MCP-connection set-diff (by name) across two
  * revisions. Mirrors `types.AgentConfigConnectionsDiff`. */
 export interface AgentConfigConnectionsDiff {
+	added?: string[];
+	removed?: string[];
+}
+
+/** The structured Protocol-installed OAuth-provider set-diff (by name) across
+ * two revisions. Mirrors `types.AgentConfigOAuthProvidersDiff`. */
+export interface AgentConfigOAuthProvidersDiff {
 	added?: string[];
 	removed?: string[];
 }
@@ -261,6 +293,7 @@ export interface AgentConfigDiff {
 	tool_exposure: AgentConfigToolExposureDiff;
 	prompt_layers: AgentConfigPromptLayersDiff;
 	connections: AgentConfigConnectionsDiff;
+	oauth_providers: AgentConfigOAuthProvidersDiff;
 	llm_params: AgentConfigLLMParamsDiff;
 	hooks: AgentConfigHooksDiff;
 	naming: AgentConfigNamingDiff;
@@ -449,6 +482,45 @@ export interface AgentConfigSetMCPDiscoveryOriginsResponse {
 	granted?: string[];
 	revoked?: string[];
 	applied_live: boolean;
+	protocol_version: string;
+}
+
+/** `agent_config.set_oauth_provider` request — admin-scoped. Install (upsert) a
+ * ZERO-URL, broker-pull OAuth provider. The descriptor carries NO URL, NO env-var
+ * name, NO secret; a write carrying `token_url` / `auth_url` / `client_id_env` /
+ * `client_secret_env` / `remote` is rejected by name at the wire edge. Mirrors
+ * `types.AgentConfigSetOAuthProviderRequest`. */
+export interface AgentConfigSetOAuthProviderRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	provider: AgentConfigOAuthProviderDescriptor;
+}
+
+/** `agent_config.set_oauth_provider` response — the recorded revision and the
+ * installed provider name. Mirrors `types.AgentConfigSetOAuthProviderResponse`. */
+export interface AgentConfigSetOAuthProviderResponse {
+	revision: AgentConfigRevisionView;
+	name: string;
+	protocol_version: string;
+}
+
+/** `agent_config.remove_oauth_provider` request — admin-scoped. Uninstall a
+ * Protocol-installed OAuth provider by name; the live uninstall CLOSES it, so a
+ * still-bound connection's next call fails loud. Mirrors
+ * `types.AgentConfigRemoveOAuthProviderRequest`. */
+export interface AgentConfigRemoveOAuthProviderRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+}
+
+/** `agent_config.remove_oauth_provider` response — the recorded revision, the
+ * removed provider name, and whether the live uninstall took effect. Mirrors
+ * `types.AgentConfigRemoveOAuthProviderResponse`. */
+export interface AgentConfigRemoveOAuthProviderResponse {
+	revision: AgentConfigRevisionView;
+	name: string;
+	uninstalled: boolean;
 	protocol_version: string;
 }
 
