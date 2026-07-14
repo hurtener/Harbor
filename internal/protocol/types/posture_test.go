@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -81,6 +82,53 @@ func TestRuntimeHealth_JSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
+	}
+}
+
+func TestRetentionHorizon_JSONRoundTrip_ScopeAndOmittedTimestamp(t *testing.T) {
+	at := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	in := types.RuntimeHealth{
+		Subsystems: []types.SubsystemHealth{{Subsystem: "events", Status: types.HealthStatusReady}},
+		Retention: []types.RetentionHorizon{
+			// runtime-scope with a timestamp — a real horizon.
+			{Surface: "events", Scope: types.RetentionScopeRuntime, OldestRetainedAt: &at},
+			// runtime-scope, no timestamp — a trustworthy empty.
+			{Surface: "tasks", Scope: types.RetentionScopeRuntime},
+			// tenant-scope, no timestamp — unobservable at this scope.
+			{Surface: "sessions", Scope: types.RetentionScopeTenant},
+		},
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// The empty-timestamp entries omit oldest_retained_at but KEEP scope.
+	s := string(b)
+	if !strings.Contains(s, `"scope":"runtime"`) || !strings.Contains(s, `"scope":"tenant"`) {
+		t.Fatalf("marshaled JSON missing a scope marker: %s", s)
+	}
+	if strings.Count(s, "oldest_retained_at") != 1 {
+		t.Fatalf("want exactly one oldest_retained_at (only the non-empty entry): %s", s)
+	}
+	var out types.RuntimeHealth
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
+	}
+}
+
+func TestRetentionHorizon_AdditiveDecode_OldShapeIgnoresScope(t *testing.T) {
+	// An old-shape payload (no scope field) decodes cleanly; a new-shape
+	// payload's scope is simply read. Additive-field discipline.
+	old := `{"subsystems":[],"retention":[{"surface":"events","oldest_retained_at":"2026-07-01T00:00:00Z"}]}`
+	var h types.RuntimeHealth
+	if err := json.Unmarshal([]byte(old), &h); err != nil {
+		t.Fatalf("Unmarshal old shape: %v", err)
+	}
+	if len(h.Retention) != 1 || h.Retention[0].Scope != "" {
+		t.Fatalf("old-shape decode = %+v, want a single entry with empty scope", h.Retention)
 	}
 }
 

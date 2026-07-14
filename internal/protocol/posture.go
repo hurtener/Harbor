@@ -72,7 +72,7 @@ type PostureSurface struct {
 	build       types.RuntimeInfo
 	clock       func() time.Time
 	health      func(ctx context.Context) []types.SubsystemHealth
-	retention   func(ctx context.Context, ident identity.Identity) []types.RetentionHorizon
+	retention   func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
 	counters    func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
 	drivers     func() []types.SubsystemDriver
 	metrics     func(ctx context.Context) types.MetricsSnapshot
@@ -123,11 +123,18 @@ type PostureDeps struct {
 	// a nil seam omits the retention block (an older / headless wiring
 	// that surfaces no horizons), so existing callers are unaffected. The
 	// production mux wires it; the events horizon it carries is the fleet
-	// consumer's window-edge honesty signal. Read scope follows the
-	// Counters seam: the events horizon is runtime-wide (a bare
-	// timestamp), tasks/sessions are the oldest retained within the
-	// caller's scope.
-	Retention func(ctx context.Context, ident identity.Identity) []types.RetentionHorizon
+	// consumer's window-edge honesty signal.
+	//
+	// The `widened` argument is the SERVER-DERIVED elevation decision the
+	// surface computes from the caller's verified `auth.ScopeAdmin` /
+	// `auth.ScopeConsoleFleet` scope — NEVER a request-body value. When
+	// true, the seam reports the `tasks` / `sessions` horizons at
+	// RUNTIME-WIDE scope (the identity-free scope the events horizon
+	// already uses); when false, the ordinary per-session / per-tenant
+	// fold. Each returned entry carries a `scope` marker so a no-timestamp
+	// entry is distinguishable between "runtime retains nothing" and "not
+	// observable at your scope".
+	Retention func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
 	// Counters returns the low-cardinality live counters for the
 	// caller's identity scope. Mandatory.
 	Counters func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
@@ -350,11 +357,20 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 		}
 	}
 
+	// Fleet widening — SERVER-DERIVED from the verified scope set on ctx,
+	// NEVER from the request body. A caller carrying a
+	// verified `admin` OR `console:fleet` claim reads the runtime-wide
+	// `tasks` / `sessions` retention horizons on `runtime.health`. When no
+	// auth middleware ran (trust-based dev posture) there is no verified
+	// scope on ctx and `widened` is false — the ordinary per-session /
+	// per-tenant fold, a fail-closed control with no downgrade knob.
+	widened := auth.HasScope(ctx, auth.ScopeAdmin) || auth.HasScope(ctx, auth.ScopeConsoleFleet)
+
 	switch method {
 	case methods.MethodRuntimeInfo:
 		return s.handleInfo(), nil
 	case methods.MethodRuntimeHealth:
-		return s.handleHealth(ctx, id), nil
+		return s.handleHealth(ctx, method, id, actor, widened)
 	case methods.MethodRuntimeCounters:
 		return s.handleCounters(ctx, id), nil
 	case methods.MethodRuntimeDrivers:
@@ -406,18 +422,84 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 // plus the optional Retention seam. A nil Health return is normalised to
 // an empty slice so the wire shape is stable. The retention block is
 // additive: a nil Retention seam (or an empty return) simply omits it.
-func (s *PostureSurface) handleHealth(ctx context.Context, id identity.Identity) *types.RuntimeHealth {
+//
+// `widened` is the server-derived fleet-elevation decision — when true,
+// the Retention seam reports the `tasks` / `sessions` horizons at
+// runtime-wide scope, a fan-in that crosses the tenant boundary, so the
+// path emits EXACTLY ONE `audit.admin_scope_used` event (the
+// widened-fan-in pattern — distinct from the `posture_read_admin` shape
+// the governance/llm cross-tenant CONFIG reads use). The redactor pass
+// precedes the publish; an emit failure FAILS LOUD (CodeRuntimeError) —
+// the read already crossed the tenant boundary, so the operator MUST see
+// the audit. A non-widened read emits none.
+func (s *PostureSurface) handleHealth(
+	ctx context.Context,
+	method methods.Method,
+	id identity.Identity,
+	actor identity.Identity,
+	widened bool,
+) (*types.RuntimeHealth, error) {
 	subs := s.health(ctx)
 	if subs == nil {
 		subs = []types.SubsystemHealth{}
 	}
 	out := &types.RuntimeHealth{Subsystems: subs}
 	if s.retention != nil {
-		if horizons := s.retention(ctx, id); len(horizons) > 0 {
+		if horizons := s.retention(ctx, id, widened); len(horizons) > 0 {
 			out.Retention = horizons
 		}
 	}
-	return out
+	if widened {
+		if emitErr := s.emitAdminScopeUsed(ctx, method, actor); emitErr != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+				"method %q: runtime-wide retention fan-in succeeded but audit emit failed: %v",
+				string(method), emitErr)
+		}
+	}
+	return out, nil
+}
+
+// emitAdminScopeUsed publishes the `audit.admin_scope_used` event onto
+// the wired bus for a widened `runtime.health` retention fan-in. This is
+// the events-widened-read audit shape — a runtime-wide horizon fan-in is
+// a widened READ across tenants, NOT a cross-tenant
+// CONFIG read (which the governance/llm reads audit as
+// `*.posture_read_admin`). The audit-visible fields run through the wired
+// Redactor BEFORE the publish (CLAUDE.md §7 rule 6) even though
+// AdminScopeUsedPayload is a SafePayload by construction — the redactor
+// pass is mandatory regardless. The event is anchored on the ACTOR's
+// verified identity (the caller who performed the widened read). A failed
+// emit is returned to the caller, which fails the read loud.
+func (s *PostureSurface) emitAdminScopeUsed(
+	ctx context.Context,
+	method methods.Method,
+	actor identity.Identity,
+) error {
+	auditView := map[string]any{
+		"actor_tenant":  actor.TenantID,
+		"actor_user":    actor.UserID,
+		"actor_session": actor.SessionID,
+		"method":        string(method),
+	}
+	if _, err := s.redactor.Redact(ctx, auditView); err != nil {
+		// Fail loud — never emit unredacted (CLAUDE.md §13).
+		return fmt.Errorf("redactor refused admin_scope_used payload: %w", err)
+	}
+
+	ev := events.Event{
+		Type:       events.EventTypeAdminScopeUsed,
+		Identity:   identity.Quadruple{Identity: actor},
+		OccurredAt: s.clock(),
+		Payload: events.AdminScopeUsedPayload{
+			Tenant:  actor.TenantID,
+			User:    actor.UserID,
+			Session: actor.SessionID,
+		},
+	}
+	if err := s.bus.Publish(ctx, ev); err != nil {
+		return fmt.Errorf("publish %s: %w", ev.Type, err)
+	}
+	return nil
 }
 
 // handleCounters builds the runtime.counters response from the Counters

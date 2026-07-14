@@ -15,6 +15,79 @@ import (
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
+// TestOldestRetainedAt_RuntimeWideAcrossTenants pins the identity-free
+// runtime-wide retention reader (D-310): it reports the oldest OpenedAt
+// across EVERY tenant's sessions (open or closed-but-retained) — the
+// fleet-observe horizon — not a per-caller slice. Empty →
+// (zero,false,nil); after CloseRegistry → ErrRegistryClosed.
+func TestOldestRetainedAt_RuntimeWideAcrossTenants(t *testing.T) {
+	t.Parallel()
+
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	bus, err := inmem.New(config.EventsConfig{
+		MaxSubscribersPerSession: 8,
+		SubscriberBufferSize:     64,
+		IdleTimeout:              30 * time.Second,
+		DropWindow:               time.Second,
+		ReplayBufferSize:         128,
+	}, patterns.New())
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	defer bus.Close(context.Background())
+	defer store.Close(context.Background())
+
+	reg, err := sessions.New(store, config.SessionsConfig{}, bus)
+	if err != nil {
+		t.Fatalf("sessions.New: %v", err)
+	}
+
+	// Empty registry → not present.
+	if oldest, present, err := reg.OldestRetainedAt(context.Background()); err != nil || present || !oldest.IsZero() {
+		t.Fatalf("empty OldestRetainedAt = (%v, %v, %v), want (zero, false, nil)", oldest, present, err)
+	}
+
+	open := func(ident identity.Identity) {
+		ctx, _ := identity.With(context.Background(), ident)
+		if _, err := reg.Open(ctx, ident.SessionID, ident); err != nil {
+			t.Fatalf("Open %s: %v", ident.SessionID, err)
+		}
+	}
+	// Open a tenant-b session FIRST (oldest), then a tenant-a session.
+	firstIdent := identity.Identity{TenantID: "tenant-b", UserID: "u", SessionID: "s-first"}
+	open(firstIdent)
+	time.Sleep(2 * time.Millisecond)
+	open(identity.Identity{TenantID: "tenant-a", UserID: "u", SessionID: "s-second"})
+
+	// The runtime-wide oldest must equal the first-opened session's
+	// OpenedAt — across the tenant boundary, no identity filter.
+	firstSnaps, err := reg.ListSnapshots(context.Background(), sessions.SessionListFilter{
+		TenantIDs: []string{"tenant-b"}, UserIDs: []string{"u"}, SessionIDs: []string{"s-first"},
+	})
+	if err != nil || len(firstSnaps) != 1 {
+		t.Fatalf("ListSnapshots(s-first) = %+v, err=%v", firstSnaps, err)
+	}
+	wantOldest := firstSnaps[0].OpenedAt
+
+	oldest, present, err := reg.OldestRetainedAt(context.Background())
+	if err != nil || !present {
+		t.Fatalf("OldestRetainedAt = (%v, %v, %v), want a present horizon", oldest, present, err)
+	}
+	if !oldest.Equal(wantOldest.UTC()) {
+		t.Fatalf("runtime-wide oldest = %v, want %v (tenant-b's session, cross-tenant)", oldest, wantOldest.UTC())
+	}
+
+	if err := reg.CloseRegistry(context.Background()); err != nil {
+		t.Fatalf("CloseRegistry: %v", err)
+	}
+	if _, _, err := reg.OldestRetainedAt(context.Background()); err == nil {
+		t.Fatal("OldestRetainedAt after CloseRegistry: want ErrRegistryClosed, got nil")
+	}
+}
+
 // TestListSnapshots — Phase 72c (D-108) added the SessionLister
 // capability for `search.sessions`. The Registry must list both open
 // and closed sessions, filter by tenant/user/session ID inclusion,
