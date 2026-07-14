@@ -90,6 +90,20 @@ None.
   not just `tokenexchange`. An empty allow-list on a provider that any
   connection binds is a boot-validation error (fail-closed: a provider that can
   inject a bearer must say where).
+- **The boot credential-broker list — the config home for the pinned sinks
+  (closes WARN-C; the base Phase 169 references).** Config gains
+  `tools.oauth_credential_brokers[]` — a NAMED, boot-declared, config/file-only
+  list whose entry is `{name, token_url, allowed_downstream_hosts,
+  auth_token_env, cache_ttl?, timeout?}`. It is the boot home for the credential
+  SINKS Phase 169's zero-URL Protocol-installed provider references BY NAME: the
+  token endpoint and the allowed-downstream-host set live here, never on a
+  wire-writable descriptor. This belongs in THIS phase because it IS the
+  credential-sink hardening — the whole point of D-300 is that every sink is
+  boot-pinned. Boot validation: unique names; https `token_url` (or loopback);
+  a non-empty `allowed_downstream_hosts`; a non-empty `auth_token_env`. The
+  existing inline `oauth_providers[].remote` block stays valid
+  (backward-compatible; the D-285 credential-source seam is reached by name, not
+  forked). Config-only, restart-required — NOT a Protocol surface.
 - **Scope + audience ceiling (closes the audience-picking half of FAIL 2).**
   The token audience is NOT derived from the caller-chosen provider name: a
   boot-declared `Audience` (and `Scopes` ceiling) on the provider/broker is the
@@ -106,6 +120,21 @@ None.
   `remote.go:127-134` — a client carrying a `client_secret` must not replay it
   to a redirect target). A caller-supplied `deps.HTTPClient` is shallow-copied
   and re-hardened, never mutated in place (the `credsource/remote` pattern).
+- **Harden the MCP bearer client's redirects (closes WARN-D — the exchanged
+  downstream bearer can egress via a redirect).** The token-exchange fix above
+  protects the org's `client_secret`; a SEPARATE hole leaks the EXCHANGED
+  downstream token. `bearerInjectingTransport` re-injects
+  `Authorization: Bearer <exchanged>` on EVERY hop from inside the RoundTripper
+  (`internal/tools/drivers/mcp/transport_sse.go:100-111`), and the MCP bearer
+  client is built on `http.DefaultClient` / a bare `&http.Client{Transport: rt}`
+  with the DEFAULT redirect policy (`transport_sse.go:55-61`). Go's cross-host
+  header stripping does NOT help — the injection is in the RoundTripper, not
+  `req.Header` — so an allow-listed host that answers `302` sends the exchanged
+  bearer to an arbitrary redirect target. Fix: the MCP bearer client gets a
+  `CheckRedirect` that RE-VALIDATES the redirect target host against the bound
+  provider's `AllowedDownstreamHosts` (a redirect to an unlisted host is
+  refused with a typed sentinel — same discipline as the token-exchange client).
+  Named AC + test.
 - **Fix the audit-ordering lie (a WARN promoted to in-scope, §17.6).**
   `handleSetRawHTMLTrust` (`internal/protocol/mcp.go:843-875`) godoc claims "a
   failed audit emit fails the call closed — an un-auditable trust toggle is
@@ -159,6 +188,21 @@ None.
       caller-supplied client is shallow-copied and re-hardened, never mutated.
       Tests: `TestTokenExchange_HTTPClient_RefusesPrivateDial`,
       `TestTokenExchange_HTTPClient_RefusesRedirect`.
+- [ ] **The MCP bearer client re-validates redirect targets (WARN-D):** a
+      redirect to a host not in the bound provider's `AllowedDownstreamHosts` is
+      refused with a typed sentinel, so the exchanged downstream bearer
+      (`bearerInjectingTransport`, `transport_sse.go:100-111`) is never sent to
+      an arbitrary redirect target. Test:
+      `TestMCPBearerClient_RefusesRedirectToUnlistedHost` (an allow-listed host
+      that 302s to an unlisted host is refused).
+- [ ] `tools.oauth_credential_brokers[]` exists (boot-declared, config/file-only,
+      restart-required): `{name, token_url, allowed_downstream_hosts,
+      auth_token_env, cache_ttl?, timeout?}`; boot validation rejects duplicate
+      names, a non-https/non-loopback `token_url`, an empty
+      `allowed_downstream_hosts`, and an empty `auth_token_env`; documented in
+      `examples/`; the inline `oauth_providers[].remote` block still loads
+      (backward-compatible). This is the boot home Phase 169's zero-URL
+      descriptor references by name (WARN-C — both plans agree on what exists).
 - [ ] `handleSetRawHTMLTrust` is genuinely fail-closed: on audit-emit failure
       the trust toggle is NOT observably applied (emit-then-apply, or
       apply-then-emit-then-revert). The godoc is corrected to describe the
@@ -174,18 +218,27 @@ None.
 ## Files added or changed
 
 - `internal/config/config.go` — `ToolOAuthProviderConfig.AllowedDownstreamHosts`
-  (if not already boot-declarable) plus an `Audience` / `Scopes` ceiling surface;
-  `internal/config/validate.go` — the allow-list + ceiling validation
-  (fail-closed on an empty allow-list for a bindable provider).
+  (if not already boot-declarable) plus an `Audience` / `Scopes` ceiling surface,
+  and the new `ToolsConfig.OAuthCredentialBrokers []ToolOAuthCredentialBrokerConfig`
+  (`{name, token_url, allowed_downstream_hosts, auth_token_env, cache_ttl?,
+  timeout?}` — the boot home for the pinned sinks, WARN-C);
+  `internal/config/validate.go` — the allow-list + ceiling + broker validation
+  (fail-closed on an empty allow-list for a bindable provider; unique broker
+  names; https/loopback `token_url`; a non-empty broker
+  `allowed_downstream_hosts`; a non-empty `auth_token_env`).
 - `internal/tools/drivers/mcp/attach.go` — `resolveOAuthBinding` gains the
   downstream-host check (against the resolved provider's allow-list).
+- `internal/tools/drivers/mcp/transport_sse.go` — the MCP bearer client's
+  `CheckRedirect` re-validating the redirect target against
+  `AllowedDownstreamHosts` (WARN-D).
 - `internal/tools/auth/registry.go` (`ProviderConfig`) + the
   `internal/tools/auth/drivers/tokenexchange/tokenexchange.go` construction —
   the ceiling wiring + the hardened HTTP client (dial guard, no proxy, refuse
   redirects, shallow-copy a caller client).
 - `internal/protocol/mcp.go` — the `handleSetRawHTMLTrust` audit-ordering fix +
   corrected godoc.
-- `examples/` — the `allowed_downstream_hosts` + ceiling config block.
+- `examples/` — the `allowed_downstream_hosts` + ceiling + `oauth_credential_brokers`
+  config block.
 - `test/integration/phase166_credential_sink_test.go` (new).
 - `scripts/smoke/phase-166.sh` (new); `docs/plans/README.md`;
   `docs/decisions.md` (D-300); `docs/glossary.md`.
@@ -211,9 +264,14 @@ None.
   - Audience/scope ceiling: audience is the ceiling not the provider name;
     scope intersection drops out-of-ceiling scopes; no ceiling declared →
     documented legacy behaviour preserved (backward-compatible).
-  - Hardened HTTP client: private/loopback/IP-literal dial refused post-DNS;
-    proxy disabled; redirect refused with the typed sentinel; caller client
-    shallow-copied (the caller's instance is unmutated).
+  - Hardened token-exchange HTTP client: private/loopback/IP-literal dial
+    refused post-DNS; proxy disabled; redirect refused with the typed sentinel;
+    caller client shallow-copied (the caller's instance is unmutated).
+  - MCP bearer client (WARN-D): a redirect to an unlisted downstream host is
+    refused (the exchanged bearer never reaches an off-list host).
+  - Broker config (WARN-C): unique names; https/loopback `token_url`; non-empty
+    `allowed_downstream_hosts` + `auth_token_env`; the inline `remote` block
+    still loads.
   - Audit ordering: a forced emit failure leaves the trust flag unchanged; the
     godoc matches the code.
 - **Integration (`test/integration/phase166_credential_sink_test.go`) — binding

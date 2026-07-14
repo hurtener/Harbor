@@ -57,15 +57,20 @@ wave is built bottom-up so each phase stands on a hardened base:
   caller-chosen name); a hardened, redirect-refusing token-exchange client; and
   the `handleSetRawHTMLTrust` audit-ordering lie fixed (both write phases were
   about to copy it as their audit posture).
-- **167 (D-301) — identity-keyed MCP + provider registries.** Harbor is a
-  FRAMEWORK: downstream teams run one runtime per tenant OR one runtime serving
-  many. The process-global, name-keyed registries are a live cross-tenant bug;
-  this keys them by the identity triple, closes the two "process-global
-  enumeration" NOTEs the code already carries, and makes both topologies safe.
+- **167 (D-301) — owner-scoped reconcile for runtime-added entries.** Harbor is
+  a FRAMEWORK: downstream teams run one runtime per tenant OR one runtime
+  serving many. Boot infra stays PROCESS-GLOBAL (D-287 preserved); runtime-ADDED
+  connections + Protocol-installed providers carry an OWNER tag `(tenant,agent)`
+  used only for revision ownership + reconcile-VIEW scoping (a run-start
+  reconcile touches only its own owner's runtime-adds — never boot, never
+  another owner). NOT full-triple keying (which two reviews proved breaks the
+  common deployment, doesn't isolate, and reverses D-287). No false
+  isolation-of-dispatch claim; the two NOTEs are rewritten.
 - **168 (D-302) — the discovery-allowance write** (the first-cut 166), now
-  landing on the identity-keyed registry, with the false "shipped bug" defect
-  statement corrected to a wiring gap and a run-start allowance-reconcile leg so
-  rollback takes effect live.
+  landing on the process-global bare-name registry (D-287) + the owner-scoped
+  reconcile (167), with the false "shipped bug" defect statement corrected to a
+  wiring gap and a run-start allowance-reconcile leg so rollback takes effect
+  live.
 - **169 (D-303) — provider install + binding** (the first-cut 167, de-scoped),
   writable shape carrying ZERO URLs — the token endpoint and downstream-host set
   are pinned at boot on the named broker.
@@ -154,7 +159,7 @@ never collide in `docs/decisions.md`.
 | Phase | Title | Decision | Stage | Size |
 |-------|-------|----------|-------|------|
 | 166 | Credential-sink hardening (shipped-code) | D-300 | 1 | M |
-| 167 | Identity-keyed MCP + provider registries | D-301 | 2 | M/L |
+| 167 | Owner-scoped reconcile for runtime-added entries | D-301 | 2 | M |
 | 168 | Live MCP OAuth discovery-allowance write | D-302 | 3 | M/L |
 | 169 | Protocol-installed OAuth provider (zero-URL) + binding | D-303 | 4 | L |
 
@@ -173,22 +178,30 @@ refused at attach) under `-race`.
 
 ### Stage 2 — the safe base for writes (167) · Dep 166 · D-301
 
-Key `mcpdrv.Registry` and the provider set by the identity triple; thread
-identity through `AttachDeps` / `resolveOAuthBinding` / the reconcile seam; fail
-closed on missing identity (§6 rule 9); close the two NOTEs; single-tenant
-behaviour-identical. Mandatory N-tenant concurrent isolation test (§6 rule 10).
-No new Protocol surface. Gate: `scripts/smoke/phase-167.sh` (`unit-tests`,
-`OK ≥ 2`, incl. the NOTEs-removed static trip-wire) + the cross-tenant isolation
-integration test under `-race`.
+Boot infra stays process-global (D-287 preserved — do NOT key the boot registry
+or the bare-name catalog). Runtime-ADDED connections + Protocol-installed
+providers carry an OWNER tag `(tenant,agent)` used only for revision ownership +
+RECONCILE-VIEW scoping: a run-start reconcile touches only its own owner's
+runtime-adds. The two NOTEs are REWRITTEN (not deleted) to describe the
+deliberate process-global boot behaviour + the owner-scoped view. The wave
+claims NO hard cross-tenant isolation of runtime-added DISPATCH (a shared
+runtime trusts co-tenant admins; a name collision fails loud; hard isolation =
+one-runtime-per-tenant) — no false safety property (the prior draft's FAIL-A).
+Single-tenant behaviour-identical. No new Protocol surface. Gate:
+`scripts/smoke/phase-167.sh` (`unit-tests`, `OK ≥ 2`, incl. the corrected
+NOTE-mentions-owner-scoped static trip-wire) + the owner-scoped-reconcile +
+boot-visibility integration test under `-race`.
 
 ### Stage 3 — the allowance write (168) · Dep 167 · D-302
 
-The first-cut 166, landing on the identity-keyed registry. The descriptor gains
-the non-secret allowance; the wiring gap is closed end to end; ONE admin verb
+The first-cut 166, landing on the process-global bare-name registry (D-287) +
+the owner-scoped reconcile (167). The descriptor gains the non-secret allowance;
+the wiring gap is closed end to end; ONE admin verb
 `agent_config.set_mcp_discovery_origins` (FULL REPLACE) writes the revision AND
-applies live via a triple-keyed mutator; revoke is live+symmetric (fresh
+applies live via a bare-name mutator; revoke is live+symmetric (fresh
 requirement, pointer swap under the lock — WARN 10); rollback takes effect live
-via a run-start reconcile leg (FAIL 7); allowance ≠ SSRF bypass; audit via 166's
+via an OWNER-scoped run-start reconcile leg doing a FULL idempotent re-prune
+(FAIL 7 + WARN 11); allowance ≠ SSRF bypass; audit via 166's
 helper; Console consumer (single-homed write on `/agent-config`, deep-link from
 `/mcp-connections` resolving the connection→agent mapping — item 12; first caller
 for `remove_mcp_connection`). Gate: `scripts/smoke/phase-168.sh` (`live-server`,
@@ -200,10 +213,10 @@ regen.
 
 The first-cut 167, de-scoped. Writable descriptor carries ZERO URLs
 (`{name, credential_broker, scopes?}`); the sink is pinned on the named broker
-(166). `auth.ProviderSet` (new `providers.go`, identity-keyed, NOT the driver
-registry, NOT a §4.4 seam). Install + uninstall together; uninstall CLOSES the
-provider (bound call fails LOUD); rollback = same uninstall; cross-tenant-safe
-via 167. The binding half stops the Console drop. Gate:
+(166). `auth.ProviderSet` (new `providers.go`, bare-name resolution +
+owner-tagged reconcile, NOT the driver registry, NOT a §4.4 seam). Install +
+uninstall together; uninstall CLOSES the provider (bound call fails LOUD);
+rollback = same uninstall; owner-safe via 167's owner-scoped reconcile. The binding half stops the Console drop. Gate:
 `scripts/smoke/phase-169.sh` (`live-server`, `OK ≥ 3`, incl. a
 `token_url`/`client_secret_env`-rejection probe over the wire) + the integration
 test (install → bind → bearer on the wire → uninstall → loud failure → rollback;
@@ -220,10 +233,13 @@ structural, not a scheduling preference:
 
 - **166 first** — the hardened token-exchange edge + the audit-fail-closed
   helper are the base 168/169's audit ACs and 169's sink-pinning rely on.
-- **167 second** — the write phases MUST land on the identity-keyed registries,
-  or they amplify the process-global bug into a cross-tenant write / auth-outage
-  primitive. `lockAgent` gives zero cross-tenant protection (FAIL 5), so 168's
-  live write and 169's live uninstall are only safe once 167 keys the maps.
+- **167 second** — the write phases' RECONCILE legs must land on the
+  owner-scoped reconcile, or they amplify the process-global reconcile into a
+  cross-owner auth-outage primitive (a tenant-B run reconciling away tenant-A's
+  allowance / provider). `lockAgent` gives zero cross-tenant protection (FAIL 5)
+  — but the fix is owner-scoping the reconcile VIEW, NOT keying the registry
+  (D-287 preserved). 168's rollback re-prune and 169's uninstall/rollback are
+  only owner-safe once 167 lands.
 - **168 third, 169 fourth** — both touch `agentcfg.go`, the agent-config
   service, `methods.go`, `types/agentconfig.go`, the stream handler, the wire
   manifest, and `state.svelte.ts`; run in parallel they conflict everywhere and
@@ -236,7 +252,7 @@ buy nothing and cost a manifest conflict.
 
 **Primitive-with-consumer (§13 + D-062).** 166 ships the allow-list + hardened
 client WITH the tests that exercise the exfil paths end to end. 167 ships the
-keyed registries WITH the N-tenant isolation test. 168 ships the write WITH its
+owner-scoped reconcile WITH the boot-visibility + owner-scoped-reconcile test. 168 ships the write WITH its
 Console consumer (the `/agent-config` editor + the `/mcp-connections` deep-link)
 and gives `remove_mcp_connection` its first Svelte caller. 169 ships the
 `ProviderSet` primitive WITH two consumers: the install verbs and the Console
@@ -264,7 +280,9 @@ phases. **Do not scope any subsequent band until the audit PR merges.**
 2. **Live verification.** 166: drive a token-exchange against a fixture broker,
    confirm a binding to an unlisted downstream host is refused at attach and a
    redirecting broker never receives the `client_secret`. 167: boot two tenants,
-   add same-named connections + providers, confirm isolation by hand. 168:
+   add same-named connections + providers, confirm a boot server stays visible
+   to every session AND an owner-scoped reconcile never detaches another owner's
+   add (the bounded guarantee — NOT hard dispatch isolation) by hand. 168:
    against the real test agent + Console — add a connection, probe, SEE
    `needs_allowance` on `/mcp-connections`, follow the deep-link, grant on
    `/agent-config`, re-probe (AS hop populates), REVOKE (entries disappear,
@@ -315,7 +333,7 @@ binding layout is unchanged — no RFC layout PR.
 BINDING, not illustrative — e.g. 166's
 `TestResolveOAuthBinding_RefusesUnlistedDownstreamHost` +
 `TestTokenExchange_HTTPClient_RefusesRedirect`, 167's
-`TestRegistry_IdentityKeyed_NoCrossTenantOverwrite`, 168's
+`TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner`, 168's
 `TestReconcile_RollbackPastGrant_RevokesOriginLive`, 169's
 `TestSetOAuthProvider_RejectsSinkAndSecretFields`.
 
@@ -347,8 +365,9 @@ negotiable by the implementor; a deviation is an RFC PR.
    never the body. No new scope (D-284).
 5. **On the agent-config revision spine** — versioned, diffable, rollback-able,
    under `lockAgent`, siblings carried forward (D-283). And — new this wave — on
-   the IDENTITY-KEYED registries (167), because `lockAgent` alone gives zero
-   cross-tenant protection.
+   the OWNER-SCOPED reconcile (167), because `lockAgent` alone gives zero
+   cross-tenant protection and the write phases' reconcile legs must be
+   owner-scoped (the registry itself stays process-global bare-name — D-287).
 6. **A Console consumer in the SAME phase** (D-062 + §13) for 168 and 169.
 
 ---
@@ -358,9 +377,11 @@ negotiable by the implementor; a deviation is an RFC PR.
 Every FAIL/WARN/NIT is resolved in the plans; NONE is rejected. Summary:
 
 - **FAIL 1/2/3 (the three exfil sinks)** → Phase 166 (D-300).
-- **FAIL 4/5/6 (process-global registries; `lockAgent` zero protection;
-  reconcile-uninstall cross-tenant outage)** → Phase 167 (D-301); 168/169 depend
-  on it.
+- **FAIL 4/5/6 (process-global registry over-detach; `lockAgent` zero
+  cross-tenant protection; reconcile-uninstall cross-owner outage)** → Phase 167
+  (D-301) — via OWNER-scoped reconcile, NOT triple-keying (which two reviews
+  rejected: it breaks the `mcpDefault` deployment, doesn't isolate the bare-name
+  catalog, and reverses D-287). 168/169 depend on it.
 - **FAIL 7 (rollback has no live effect)** → Phase 168's run-start
   allowance-reconcile leg + AC + test.
 - **WARN 8 (false "shipped bug drops the field")** → restated as a §17.1 wiring
@@ -370,8 +391,24 @@ Every FAIL/WARN/NIT is resolved in the plans; NONE is rejected. Summary:
   named for instances, explicitly not the driver registry and not a driver seam.
 - **WARN 10 (revoke-prune pointer race)** → build a fresh requirement, swap under
   the lock; pinned in the `-race` test.
-- **WARN 11 (allowance-generation only in Risks)** → DELETED; the accepted
-  mid-walk self-healing race is documented with a bound.
+- **WARN 11 (allowance-generation only in Risks)** → DELETED; the mid-walk
+  self-heal is bounded by 168's FULL IDEMPOTENT run-start re-prune (re-derives
+  each connection's allowance from the current revision, not a delta) — pinned
+  by a named test.
+- **WARN-C (169 depended on a broker 166 never built)** → 166 now BUILDS the
+  boot `tools.oauth_credential_brokers[]` list (name + token_url +
+  allowed_downstream_hosts + auth_token_env); 169's zero-URL descriptor
+  references it by name. Both plans agree on what exists.
+- **WARN-D (the exchanged MCP bearer can egress via a redirect)** → 166 gives
+  the MCP bearer client a `CheckRedirect` re-validating the redirect target
+  against `AllowedDownstreamHosts` (the `bearerInjectingTransport` re-injects on
+  every hop, `transport_sse.go:100-111`, and the client was on the default
+  redirect policy). Named 166 AC.
+- **FAIL-A (167's false isolation claim) / FAIL-B (167's non-discriminating
+  test)** → 167 reframed to owner-scoped reconcile with the bounded guarantee
+  stated plainly; the test replaced by
+  `TestRegistry_BootServerVisibleToEverySession` +
+  `TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner`.
 - **WARN 12 (deep-link has no agent context)** → resolved (read connection→agent
   from the agent-config registry before rendering; boot-declared/unowned →
   honesty copy + vitest).
@@ -390,7 +427,7 @@ Every FAIL/WARN/NIT is resolved in the plans; NONE is rejected. Summary:
 analysis; the admin-gate-by-omission reading; the SSRF-verified allowance;
 refusing a general `update_mcp_connection` patch verb; folding
 `removeMcpConnection`'s first Svelte caller in; keeping uninstall BREAKING (now
-defensible because 167 keys the set). `SetRawHTMLTrust` is the right structural
+defensible because 167 owner-scopes the reconcile). `SetRawHTMLTrust` is the right structural
 template for the mutator — but its AUDIT ordering was a lie, fixed in 166.
 
 ---
@@ -403,12 +440,17 @@ template for the mutator — but its AUDIT ordering was a lie, fixed in 166.
 2. ~~Where does the token endpoint / downstream-host set live?~~ **Boot-declared
    on the named credential broker / the provider config**; the writable
    descriptor carries ZERO URLs (D-303).
-3. ~~Is the process-global registry acceptable for the single-tenant case?~~ **No
-   — Harbor is a framework supporting both topologies**, so the registries are
-   identity-keyed (D-301); single-tenant stays behaviour-identical.
+3. ~~Should the registries be identity-keyed by the triple?~~ **No** — two
+   reviews proved triple-keying breaks the `mcpDefault` boot deployment,
+   doesn't isolate the bare-name catalog, and reverses D-287. The fix is an
+   OWNER tag on runtime-adds for reconcile-view scoping only; boot infra stays
+   process-global (D-301 extends D-287). No hard dispatch-isolation claim in a
+   shared runtime.
 4. ~~A registry MUTATOR or a re-register for the live allowance?~~ **A mutator**
    (D-302) — a re-register tears down a working transport and can fail after a
-   widening edit. Now triple-keyed (D-301).
+   widening edit. The mutator is bare-name / process-global (D-287; the registry
+   is NOT re-keyed), identity-mandatory for auth; owner safety comes from the
+   owner-scoped reconcile (D-301), not from keying.
 5. ~~Does rollback take live effect?~~ **Yes** — a run-start allowance-reconcile
    leg (FAIL 7); a revisioned write with no live effect is the silent half-write
    this design rejects.

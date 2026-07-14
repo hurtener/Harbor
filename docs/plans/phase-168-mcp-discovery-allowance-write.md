@@ -2,9 +2,9 @@
 
 > Part of the v1.14 wave (`docs/plans/wave-v114-coordination.md`). Decision:
 > **D-302**. The discovery-allowance write half of HA-15, re-homed from the
-> original v1.14 Phase 166 after two adversarial reviews restructured the wave.
-> It lands ON the identity-keyed registries (Phase 167) and the credential-sink
-> hardening (Phase 166).
+> original v1.14 Phase 166 after the wave was restructured. It lands ON the
+> credential-sink hardening (166) and the owner-scoped reconcile (167); the MCP
+> registry stays process-global bare-name (D-287, preserved).
 
 ## Summary
 
@@ -20,22 +20,23 @@ see the honest restatement below). This phase makes the allowance a first-class,
 revisioned, diffable, rollback-able field on the agent-config connection
 descriptor; adds ONE narrow admin-gated Protocol verb
 (`agent_config.set_mcp_discovery_origins`) that writes it on the revision spine,
-applies it to the identity-keyed live registry (Phase 167), AND takes effect on
-rollback through a run-start reconcile leg; and ships the D-062 Console consumer
-that closes the see-it-here / fix-it-there gap between the MCP Connections page
-and the Agent Config page.
+applies it to the process-global live registry (D-287), AND takes effect on
+rollback through a run-start, OWNER-SCOPED allowance-reconcile leg (Phase 167);
+and ships the D-062 Console consumer that closes the see-it-here / fix-it-there
+gap between the MCP Connections page and the Agent Config page.
 
 ## RFC anchor
 
 - RFC §6.4 — the MCP southbound edge (the discovery walker's allowance input and
-  the identity-keyed registry that snapshots it).
+  the process-global registry that snapshots it).
 - RFC §6.16 — the agent-config control plane (the revision spine: versioned,
-  diffable, rollback-able).
+  diffable, rollback-able) + the owner-scoped reconcile leg.
 - RFC §5.2 — what the Protocol exposes (the admin write verb + the additive
   descriptor field).
 - RFC §6.15 — the audit posture (the admin-scope audit on the write, using the
   fail-closed ordering Phase 166 corrected).
-- RFC §7 — the Console lens (the two-page consumer).
+- RFC §7 — the Console lens (the two-page consumer) + the honest bounded-owner
+  posture.
 
 ## Briefs informing this phase
 
@@ -59,8 +60,8 @@ and the Agent Config page.
   discovery-driven. This phase does NOT add a second discovery chain — the
   walker (`internal/tools/auth/discovery.go`) and its per-hop SSRF guardrails
   are untouched; it feeds the walker's existing `DiscoveryInput.AllowedOrigins`
-  input (`discovery.go:167`) from a live, identity-keyed, revisioned source
-  instead of a boot-frozen one.
+  input (`discovery.go:167`) from a live, revisioned source instead of a
+  boot-frozen one.
 - **brief 11 §"MCP Connections view":** the MCP Connections page is the
   operator's connection lens. Held with a hard boundary: the page is where the
   operator SEES `needs_allowance`, but NOT where the write lives — the write is
@@ -82,8 +83,8 @@ shipped the add path, and neither joined them. The correction matters because
 the discredited "a regression test that fails against the pre-fix attacher"
 discriminator was unachievable (pre-fix there is no field to send); the real
 discriminator is a within-phase unit guard that the full descriptor →
-`AttachRequest` → `config.MCPServerConfig` → identity-keyed registry carry
-round-trips (see the acceptance criteria).
+`AttachRequest` → `config.MCPServerConfig` → registry carry round-trips (see the
+acceptance criteria).
 
 ## Goals
 
@@ -97,35 +98,43 @@ round-trips (see the acceptance criteria).
   and carry it in `MCPConnectionAttacher.Attach` into the
   `config.MCPServerConfig` it builds — so a runtime-added connection's discovery
   is no longer inert. The discriminator is a within-phase round-trip unit test
-  (descriptor → attach → the identity-keyed registry's `OAuthDiscoveryTarget`
-  returns the allowance), NOT a pre/post-attacher comparison.
+  (descriptor → attach → the registry's `OAuthDiscoveryTarget` returns the
+  allowance), NOT a pre/post-attacher comparison.
 - **Add ONE narrow admin write verb.** `agent_config.set_mcp_discovery_origins`
   — request `{agent_id, name, allowed_origins[]}`, FULL REPLACE (the only
   semantic that diffs and rolls back cleanly). It writes a new revision under
   `lockAgent` carrying every sibling section forward (the D-283 guard), AND
-  applies the set to the identity-keyed live MCP registry (Phase 167) so the
-  very next discovery uses it.
+  applies the set to the process-global live MCP registry (D-287) so the very
+  next discovery uses it.
 - **Make the write LIVE via a registry mutator, and make REVOKE live and
   symmetric (gap 3).** The registry gains `SetOAuthDiscoveryOrigins`, modelled
-  structurally on `SetRawHTMLTrust` — identity-mandatory (it takes the triple;
-  Phase 167 keyed the registry), mutex-guarded, returning the prior set. Revoke
-  is the load-bearing half: dropping an origin makes the next discovery refuse
-  that hop AND PRUNES the recorded `oauth_requirement`'s authorization-server
-  entries fetched from a revoked origin. **The prune builds a FRESH
-  `oauth_requirement` and swaps the stored pointer under `r.mu.Lock()`** — the
-  registry hands the requirement out by pointer (`registry.go:605`), so mutating
-  it in place is a data race (WARN 10); the swap is pinned in the concurrent
-  test.
-- **Rollback / `set_revision` take effect LIVE via a run-start reconcile leg
-  (FAIL 7).** A revisioned write with no live effect is the exact "changes the
-  revision and not the runtime" silent half-write this phase (and D-300) rejects
-  for a general patch verb — so it must not be reintroduced for rollback. A
-  run-start allowance reconcile leg (beside `ReconcileConnections`,
-  `internal/runtime/agentcfg/projection/projection.go:141`, now identity-scoped
-  by Phase 167) reconciles each connection's LIVE allowance against its active
-  revision at run start: a rollback past a grant REVOKES the origin live (and
-  prunes as above). AC + named test:
-  `TestReconcile_RollbackPastGrant_RevokesOriginLive`.
+  structurally on `SetRawHTMLTrust` — identity-mandatory (it takes the ctx and
+  runs `requireIdentity` for auth, NOT for keying: the registry stays
+  process-global bare-name, D-287), mutex-guarded, returning the prior set.
+  Revoke is the load-bearing half: dropping an origin makes the next discovery
+  refuse that hop AND PRUNES the recorded `oauth_requirement`'s
+  authorization-server entries fetched from a revoked origin. **The prune builds
+  a FRESH `oauth_requirement` and swaps the stored pointer under `r.mu.Lock()`**
+  — the registry hands the requirement out by pointer (`registry.go:605`), so
+  mutating it in place is a data race (WARN 10); the swap is pinned in the
+  concurrent test.
+- **Rollback / `set_revision` take effect LIVE via an owner-scoped run-start
+  reconcile leg (FAIL 7 + WARN 11).** A revisioned write with no live effect is
+  the exact "changes the revision and not the runtime" silent half-write this
+  phase (and D-300) rejects for a general patch verb — so it must not be
+  reintroduced for rollback. A run-start allowance-reconcile leg (beside
+  `ReconcileConnections`, `internal/runtime/agentcfg/projection/projection.go:141`,
+  OWNER-SCOPED by Phase 167 — it touches only the reconciling owner's
+  runtime-added connections, never boot servers, never another owner's adds)
+  reconciles each of the owner's connections' LIVE allowance against its active
+  revision. **The reconcile is a FULL IDEMPOTENT RE-PRUNE (WARN 11):** it
+  re-derives each connection's live allowance from the CURRENT revision and
+  re-prunes the recorded requirement against it — not merely a rollback-delta —
+  so a rollback past a grant REVOKES the origin live AND any stale requirement
+  record (e.g. from a revoke that landed mid-`Discover`) is corrected at the
+  next run start, bounding the accepted self-healing race. AC + named tests:
+  `TestReconcile_RollbackPastGrant_RevokesOriginLive`,
+  `TestReconcile_FullIdempotentReprune_HealsStaleRequirement`.
 - **Reuse the shipped origin validator (hard constraint 2).**
   `validateDiscoveryOrigin` (`internal/config/validate.go:2276-2301`) is
   EXPORTED as `config.ValidateDiscoveryOrigin` and the existing unexported
@@ -153,6 +162,10 @@ round-trips (see the acceptance criteria).
 
 - **No change to the discovery walker or its SSRF guardrails**
   (`internal/tools/auth/discovery.go` untouched).
+- **No identity-keying of the MCP registry or the catalog** — D-287's
+  process-global, bare-name model is preserved (Phase 167 scopes only the
+  reconcile VIEW by owner tag). This phase's mutator operates on the shared
+  registry.
 - **No general `update_mcp_connection` patch verb** — `url` / `command` /
   `transport` / `oauth_provider` are consumed at ATTACH time; patching them
   without a re-attach is a silent half-write. The allowance is the ONE field
@@ -161,10 +174,8 @@ round-trips (see the acceptance criteria).
   generation" to bound a revoke landing mid-`Discover`. Dropped (WARN 11): each
   `Discover` already reads a per-call SNAPSHOT copy of the origins via
   `OAuthDiscoveryTarget`, so a revoke mid-walk produces at most ONE stale
-  requirement record, which the next run-start reconcile prune corrects. The
-  accepted bound (a single stale record until the next reconcile) is documented
-  here rather than defended by a counter that would add concurrency surface for
-  a self-healing race.
+  requirement record, and the FULL IDEMPOTENT run-start re-prune (above) corrects
+  it — a bounded self-heal, not a counter.
 - **No OAuth-provider descriptor install** (Phase 169) and no OAuth flow
   execution / token custody (D-297 boundaries unchanged).
 - **No boot-declared (yaml) connection editing.** The verb governs revisioned
@@ -180,10 +191,9 @@ round-trips (see the acceptance criteria).
       `rebuild_completeness_test.go` reflection walk (D-283).
 - [ ] **Wiring-gap closure (§17.6), within-phase discriminator:** the field is
       carried descriptor → `AttachRequest` → `config.MCPServerConfig` → the
-      identity-keyed registry; a unit test adds a connection with an allowance
-      over the Protocol and asserts `OAuthDiscoveryTarget` (triple-scoped)
-      returns it. (No pre/post-attacher comparison — the field did not exist
-      pre-phase.)
+      registry; a unit test adds a connection with an allowance over the
+      Protocol and asserts `OAuthDiscoveryTarget` returns it. (No
+      pre/post-attacher comparison — the field did not exist pre-phase.)
 - [ ] `agent_config.set_mcp_discovery_origins` is registered in EVERY canonical
       home: `methods.go` const + `canonicalMethods` + `canonicalAgentConfigMethods`
       + `canonicalAgentConfigAdminMethods` (**and the prose counts at
@@ -204,10 +214,9 @@ round-trips (see the acceptance criteria).
 - [ ] **Allowance ≠ SSRF bypass:** a runtime-granted origin resolving to a
       private / loopback address is STILL refused at dial time.
       Test: `TestDiscovery_RuntimeGrantedOrigin_StillRefusesPrivateDial`.
-- [ ] **The write is LIVE and identity-scoped:** after a successful call,
-      `OAuthDiscoveryTarget` for that connection under the caller's triple
-      returns the new set without restart/re-attach, and a DIFFERENT tenant's
-      same-named connection is unaffected (relies on Phase 167 keying).
+- [ ] **The write is LIVE:** after a successful call, `OAuthDiscoveryTarget` for
+      that connection returns the new set without restart / re-attach, and the
+      next probe-triggered discovery walks the previously refused AS hop.
 - [ ] **REVOKE is LIVE and symmetric:** removing an origin (a) refuses the next
       discovery hop with `needs_allowance`, AND (b) prunes the recorded
       `oauth_requirement`'s AS entries fetched from the revoked origin — by
@@ -215,10 +224,13 @@ round-trips (see the acceptance criteria).
       in-place mutation of a handed-out pointer). Tests:
       `TestSetMCPDiscoveryOrigins_RevokePrunesRecordedRequirement`,
       `TestSetMCPDiscoveryOrigins_RevokePrune_NoPointerRace` (under `-race`).
-- [ ] **Rollback past a grant revokes the origin LIVE (FAIL 7):** rolling the
-      agent config back to a revision predating a grant revokes the origin on
-      the live registry through the run-start reconcile leg. Test:
-      `TestReconcile_RollbackPastGrant_RevokesOriginLive`.
+- [ ] **Rollback past a grant revokes the origin LIVE via a FULL idempotent
+      re-prune (FAIL 7 + WARN 11):** rolling the agent config back past a grant
+      revokes the origin on the live registry through the owner-scoped run-start
+      reconcile leg, which re-derives each connection's allowance from the
+      current revision and re-prunes (not a delta). Tests:
+      `TestReconcile_RollbackPastGrant_RevokesOriginLive`,
+      `TestReconcile_FullIdempotentReprune_HealsStaleRequirement`.
 - [ ] The write emits ONE admin-scope audit event and fails the CALL closed on
       emit failure with NO observable state change (Phase 166's corrected
       ordering). Test:
@@ -242,12 +254,14 @@ round-trips (see the acceptance criteria).
 - `internal/runtime/agentcfg/protocol/addconnection.go` — `AttachRequest` gains
   the field; `recordConnectionRevision` persists it.
 - `internal/runtime/agentcfg/protocol/setdiscoveryorigins.go` (new) — validate
-  → `lockAgent` → revision write → identity-keyed live registry apply →
-  revoke-prune → audit emit (fail-closed helper).
-- `internal/runtime/agentcfg/projection/projection.go` — the run-start allowance
-  reconcile leg (FAIL 7), identity-scoped (Phase 167).
+  → `lockAgent` → revision write → live registry apply → revoke-prune → audit
+  emit (fail-closed helper from Phase 166).
+- `internal/runtime/agentcfg/projection/projection.go` — the owner-scoped
+  run-start allowance-reconcile leg (FAIL 7 + WARN 11), riding Phase 167's
+  owner-scoped view.
 - `internal/tools/drivers/mcp/registry.go` — `SetOAuthDiscoveryOrigins`
-  (triple-keyed, Phase 167) + the fresh-requirement-swap prune (WARN 10).
+  (bare-name / process-global, D-287; identity-mandatory for auth) + the
+  fresh-requirement-swap prune (WARN 10).
 - `internal/protocol/methods/methods.go` — const + the three canonical sets +
   the prose counts.
 - `internal/protocol/types/agentconfig.go` — request/response types +
@@ -281,9 +295,10 @@ round-trips (see the acceptance criteria).
 // internal/config
 func ValidateDiscoveryOrigin(origin string) error  // exported; one implementation
 
-// internal/tools/drivers/mcp — triple-keyed (Phase 167), internally
-// synchronised (D-025); returns the prior set so the caller computes the
-// revoked delta. Illustrative:
+// internal/tools/drivers/mcp — bare-name / process-global (D-287; the registry
+// is NOT re-keyed), identity-mandatory for auth, internally synchronised
+// (D-025); returns the prior set so the caller computes the revoked delta.
+// Illustrative:
 //   func (r *Registry) SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error)
 ```
 
@@ -293,24 +308,25 @@ func ValidateDiscoveryOrigin(origin string) error  // exported; one implementati
   discriminator; the shared-validator origin table; the scope gate
   (no-scope / user-scope → `CodeScopeMismatch`); the typed-error table
   (unknown / boot-declared / stdio); audit fail-closed (no state change on emit
-  failure); revoke-prune builds a fresh requirement (no pointer mutation).
+  failure); revoke-prune builds a fresh requirement (no pointer mutation); the
+  full idempotent re-prune heals a stale requirement.
 - **Integration (`test/integration/phase168_discovery_allowance_test.go`) —
   binding per §17.1:** real drivers against Phase 164's spec-derived
   OAuth-challenging fixture — add-with-allowance → registry SEES it (the
   wiring-gap round trip); probe → the AS hop walks; `set_mcp_discovery_origins`
   revoking → next probe refuses AND the recorded requirement's AS entry is
   pruned (live, no restart); rollback past a grant → the origin is revoked live
-  (FAIL 7); **cross-tenant:** a second tenant's same-named connection is
-  unaffected by the first's grant/revoke (Phase 167 keying); identity
-  propagation + a cross-tenant write refusal; `-race`.
+  via the owner-scoped full re-prune (FAIL 7 + WARN 11); **owner scoping:** a
+  second owner's run-start reconcile leaves this owner's connection allowance
+  untouched (Phase 167); identity propagation + a cross-owner write refusal;
+  `-race`.
 - **Conformance (§17.8):** the fixture is Phase 164's committed RFC 9728 §3.2 +
   RFC 8414 §3.2 spec artifacts; any NEW fixture derives from the same artifacts
   / a captured transcript; a wrong-field mutation FAILS.
 - **Concurrency / leak:** N≥100 concurrent `SetOAuthDiscoveryOrigins` writes
   interleaved with `OAuthDiscoveryTarget` reads, `Discover` walks, AND
-  revoke-prunes against ONE shared identity-keyed `Registry` under `-race` — no
-  torn slice, no pointer race on the pruned requirement, no cross-tenant bleed,
-  no goroutine leak (D-025).
+  revoke-prunes against ONE shared `Registry` under `-race` — no torn slice, no
+  pointer race on the pruned requirement, no goroutine leak (D-025).
 
 ## Console consistency
 
@@ -335,12 +351,11 @@ on `/mcp-connections` (`McpDetailRail.svelte:296-344`, the status list at
 2. **`/mcp-connections` gets a DEEP-LINK, never a second write form.** **Item 12
    resolution:** the MCP Connections detail rail carries NO agent context today
    (grep-verified: `agentId` appears only under `routes/(console)/agent-config/`),
-   and — even with Phase 167 keying the runtime registry by identity — the
-   connection→AGENT mapping (which agent revision declares this connection) is
-   agent-config data, not registry data. So the deep-link handler reads the
-   connection→agent mapping from the agent-config registry BEFORE rendering the
-   link (`/agent-config?agent=<id>&connection=<name>&grant_origin=<origin>`); if
-   the connection is boot-declared or not owned by any revisioned agent, it
+   and the connection→AGENT mapping (which agent revision declares this
+   connection) is agent-config data, not registry data. So the deep-link handler
+   reads the connection→agent mapping from the agent-config registry BEFORE
+   rendering the link (`/agent-config?agent=<id>&connection=<name>&grant_origin=<origin>`);
+   if the connection is boot-declared or not owned by any revisioned agent, it
    renders the yaml-edit copy and NO link. A Console vitest covers "connection
    not owned by the selected agent → no link, honesty copy."
 3. **Boot-declared connections render "edit `harbor.yaml` and restart" copy and
@@ -373,10 +388,9 @@ SSRF/dial-guard leg:
 
 ## Dependencies
 
-- **167** (the identity-keyed registries this writes to — the write and revoke
-  must be triple-scoped, and `lockAgent` alone gives ZERO cross-tenant
-  protection since it shards on `(scope, tenant, agent)` while the live registry
-  is one map; Phase 167 closes that clobber — FAIL 5).
+- **167** (the owner-scoped reconcile leg this rides for rollback + the bounded
+  runtime-add posture; the write itself targets the process-global bare-name
+  registry — D-287 preserved).
 - **166** (the corrected fail-closed audit ordering this write copies).
 - **164** (D-297 — the walker + registry state + the `needs_allowance` status).
 - **92f** (the add verb + `ConnectionAttacher` seam whose wiring gap this
@@ -396,10 +410,18 @@ SSRF/dial-guard leg:
   origin normaliser (`discovery.go:337`) — one normaliser, port-normalised — and
   swaps a FRESH requirement pointer under the lock. Both are pinned (a
   port-differing origin test; the `-race` no-pointer-race test).
-- **The self-healing mid-walk race (accepted, WARN 11).** A revoke landing
-  mid-`Discover` yields at most one stale requirement record (the walk holds a
-  snapshot copy of the origins), corrected at the next run-start reconcile
-  prune. Documented bound; no generation counter.
+- **The self-healing mid-walk race, bounded by the FULL re-prune (WARN 11).** A
+  revoke landing mid-`Discover` yields at most one stale requirement record (the
+  walk holds a snapshot copy of the origins); the owner-scoped run-start
+  reconcile re-derives the allowance from the current revision and re-prunes
+  IDEMPOTENTLY, so the record is corrected at the next run start — a bounded
+  self-heal, pinned by `TestReconcile_FullIdempotentReprune_HealsStaleRequirement`.
+- **Shared-runtime name scope (inherited from 167).** In a shared runtime a
+  runtime-added connection name is deployment-global (a collision fails loud);
+  the allowance therefore targets a bare-name entry owned by exactly one owner,
+  and the owner-scoped reconcile ensures a run only re-prunes its own owner's
+  connections. This phase asserts NO hard cross-tenant isolation of dispatch
+  (167's bounded guarantee) — the Console copy says so.
 - **92m collision (WARN 13).** The parked 92m (`docs/plans/README.md:1349`)
   plans an optional agent-bound `OAuth` block on the SAME `add_mcp_connection`
   request — a second Protocol-writable auth affordance. §13 forbids two parallel
@@ -414,13 +436,14 @@ SSRF/dial-guard leg:
   origins the MCP OAuth-requirement discovery walker (D-297) may fetch
   cross-origin metadata from. Boot-declared in
   `mcp.servers[].oauth_discovery_allowed_origins` and — from this phase —
-  revisioned on the identity-keyed agent-config connection descriptor and
-  writable live over `agent_config.set_mcp_discovery_origins` (admin-only,
-  server-derived authority). An allow-LIST, never a network hole: a granted
-  origin is still refused at dial time if it resolves private/loopback (the
-  post-DNS backstop). Revoking an origin takes effect on the live connection
-  immediately, prunes the requirement data that origin produced, and — on
-  rollback — is revoked live through the run-start reconcile leg. RFC §6.4,
+  revisioned on the agent-config connection descriptor and writable live over
+  `agent_config.set_mcp_discovery_origins` (admin-only, server-derived
+  authority; the MCP registry stays process-global bare-name — D-287). An
+  allow-LIST, never a network hole: a granted origin is still refused at dial
+  time if it resolves private/loopback (the post-DNS backstop). Revoking an
+  origin takes effect on the live connection immediately, prunes the requirement
+  data that origin produced, and — on rollback — is revoked live through the
+  owner-scoped run-start reconcile leg's full idempotent re-prune. RFC §6.4,
   §6.16, D-297, D-302.
 
 ## Pre-merge checklist
@@ -430,18 +453,19 @@ SSRF/dial-guard leg:
 - [ ] `make check-mirror` passes
 - [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
 - [ ] Coverage on touched packages ≥ stated target
-- [ ] **If multi-isolation code paths changed: cross-tenant isolation test
-      passes** — a second tenant's same-named connection is unaffected by the
-      first's grant/revoke (Phase 167 keying)
+- [ ] **If multi-isolation code paths changed:** the owner-scoped reconcile leg
+      touches only the reconciling owner's connections (Phase 167); a second
+      owner's run leaves this owner's allowance untouched — pinned by an
+      integration leg. No false hard-isolation-of-dispatch claim (167's bounded
+      guarantee).
 - [ ] **Concurrent-reuse test passes** — N≥100 concurrent writes / reads /
-      walks / revoke-prunes against ONE shared identity-keyed `Registry` under
-      `-race`; no torn slice, no pointer race, no cross-tenant bleed, no
-      goroutine leak (D-025)
+      walks / revoke-prunes against ONE shared `Registry` under `-race`; no torn
+      slice, no pointer race, no goroutine leak (D-025)
 - [ ] **Integration test exists**
       (`test/integration/phase168_discovery_allowance_test.go`), wires real
       drivers end-to-end against the §17.8 spec-derived fixture, asserts
-      identity propagation + the rollback-live-revoke leg, covers ≥1 failure
-      mode, runs under `-race`
+      identity propagation + the rollback-live full-re-prune leg, covers ≥1
+      failure mode, runs under `-race`
 - [ ] Wire changes complete: `make protocol-ts-gen-check` +
       `make protocol-docs-gen-check` green with regenerated artifacts committed
       (D-223 / D-209); the `methods.go` prose counts updated (NIT 19);

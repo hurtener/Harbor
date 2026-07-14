@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: unit-tests
 #
-# Phase 167 — Identity-keyed MCP + provider registries (D-301).
+# Phase 167 — Owner-scoped reconcile for runtime-added connections + providers (D-301).
 #
 # Skeleton: the surface does not exist yet, so every assertion SKIPs.
 # The implementing PR replaces the `skip` with the real assertions.
@@ -35,13 +35,16 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 # ----------------------------------------------------------------------------
-# Phase 167 assertions (unit-tests — internal keying, no new Protocol surface):
+# Phase 167 assertions (unit-tests — owner-scoped reconcile, no new Protocol surface):
 #
-#   - go test -race the registry-keying + reconcile-scope packages
-#     (TestRegistry_IdentityKeyed_NoCrossTenantOverwrite,
-#      TestReconcile_ScopedToTriple_NeverDetachesOtherTenant).
-#   - Static: grep that the two "process-global enumeration" NOTEs are GONE from
-#     projection.go and mcp_detacher.go (the debt-closed trip-wire).
+#   - go test -race the owner-tag + owner-scoped-reconcile packages
+#     (TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner,
+#      TestRegistry_BootServerVisibleToEverySession).
+#   - Static: grep that the two reconcile NOTEs (projection.go, mcp_detacher.go)
+#     now describe the OWNER-SCOPED view (the corrected trip-wire — the design
+#     KEEPS a rewritten note about deliberate process-global boot behaviour, so
+#     the earlier "the NOTEs are GONE" assertion would INVERT; assert the note
+#     MENTIONS the owner-scoped reconcile instead).
 #
 # Done-definition: OK >= 2, FAIL = 0.
 

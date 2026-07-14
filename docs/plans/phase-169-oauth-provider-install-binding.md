@@ -3,8 +3,8 @@
 > Part of the v1.14 wave (`docs/plans/wave-v114-coordination.md`). Decision:
 > **D-303**. The provider-install half of HA-15, re-homed and DE-SCOPED from the
 > original v1.14 Phase 167 after two adversarial reviews restructured the wave.
-> It lands ON the credential-sink hardening (166) and the identity-keyed
-> registries (167), and after the discovery-allowance write (168).
+> It lands ON the credential-sink hardening (166) and the owner-scoped
+> reconcile (167), and after the discovery-allowance write (168).
 
 ## Summary
 
@@ -22,8 +22,9 @@ URLs**: the token endpoint AND the allowed-downstream-host set are pinned at
 boot on a named credential broker (Phase 166's `AllowedDownstreamHosts` + the
 boot broker's `token_url`). The writable descriptor is reduced to
 `{name, credential_broker, scopes?}` — the invariant becomes trivially testable
-("no field on the writable descriptor is a URL"). Backing it: an identity-keyed
-provider set (Phase 167) the MCP attach path consults; install and uninstall
+("no field on the writable descriptor is a URL"). Backing it: an owner-tagged
+provider set (process-global bare-name for RESOLUTION — D-287; owner-tagged only
+for RECONCILE scoping, Phase 167) the MCP attach path consults; install and uninstall
 ship together, uninstall CLOSES the provider so a bound connection's next call
 fails LOUD (verified end to end: `tokenexchange.go:360` → `mcp.go:1166-1182`).
 The binding half is genuinely small — the wire already carries `oauth_provider`;
@@ -103,20 +104,23 @@ dropping it.
   "client_secret_env"`) — a loud, field-naming reject with no decoy fields
   (resolving WARN 17's two options in favour of the strongest form: the field
   cannot exist).
-- **The named credential broker is the ONE sink authority (built in Phase 166,
-  extended here).** `tools.oauth_credential_brokers[]` (Phase 166 added the
-  broker's `token_url` + `AllowedDownstreamHosts` + `auth_token_env`; this phase
-  relies on it) is boot-declared, config/file-only, never Protocol-writable. An
-  installed provider references one by NAME; the broker pins the token endpoint,
-  the allowed downstream hosts, and the audience/scope ceiling. An unknown broker
-  name fails loud listing the declared set.
-- **The identity-keyed provider set (Phase 167 keyed the boot set; this phase
-  adds install/uninstall to it).** `auth.ProviderSet` — a NEW type in a NEW file
+- **The named credential broker is the ONE sink authority (built in Phase 166;
+  referenced here).** `tools.oauth_credential_brokers[]` — Phase 166 builds the
+  full boot list (`{name, token_url, allowed_downstream_hosts, auth_token_env,
+  cache_ttl?, timeout?}`, WARN-C); this phase adds NO config key, it only
+  references a broker by name. It is boot-declared, config/file-only, never
+  Protocol-writable. An installed provider references one by NAME; the broker
+  pins the token endpoint, the allowed downstream hosts, and the audience/scope
+  ceiling. An unknown broker name fails loud listing the declared set.
+- **The owner-tagged provider set (Phase 167 established the owner tag +
+  owner-scoped reconcile; this phase adds install/uninstall).** `auth.ProviderSet` — a NEW type in a NEW file
   `internal/tools/auth/providers.go` (NOT `registry.go`, which is the OAuth
   **driver** registry — WARN 9; a third `Install`/`Uninstall` type in that file
   guarantees driver-vs-instance confusion). It is one interface + one concrete,
-  internally-synchronised (D-025), identity-keyed (Phase 167), seeded at boot
-  from `BuildProviders`, consulted by the MCP ATTACH path. **It is NOT a §4.4
+  internally-synchronised (D-025), process-global bare-name for RESOLUTION
+  (D-287) with an OWNER tag on runtime-installed entries for reconcile scoping
+  (Phase 167), seeded at boot from `BuildProviders`, consulted by the MCP ATTACH
+  path. **It is NOT a §4.4
   driver seam** (WARN 20): §4.4 is interface + `drivers/<name>/` + factory +
   `internal/drivers/prod` blank-import; a provider SET holds instances, not
   drivers, so it has no `drivers/` dir and no `prod` registration — the plan
@@ -131,13 +135,16 @@ dropping it.
   (`OAuthProvider.Close`, verified `tokenexchange.go:360` → the bound
   connection's next call fails loud at `mcp.go:1166-1182`). Rollback past an
   install runs the SAME uninstall through the run-start reconcile seam
-  (`projection.go:141`, identity-scoped by Phase 167) — one mechanism, N
+  (`projection.go:141`, OWNER-scoped by Phase 167) — one mechanism, N
   triggers. **Uninstall is deliberately breaking** and defensible ONLY because
-  Phase 167 keys the set: a tenant B run reconciles only ITS OWN declared
-  providers against ITS OWN installed set, so B can never uninstall / close A's
-  provider (FAIL 6, closed by the dep on 167).
+  Phase 167 owner-scopes the reconcile: a tenant B run reconciles only ITS OWN
+  owner's installed providers, so B can never uninstall / close A's provider
+  (FAIL 6, closed by the dep on 167). In a shared runtime an installed provider
+  NAME is deployment-global (a collision fails loud — 167's bounded guarantee);
+  the phase claims NO hard cross-tenant isolation of dispatch.
 - **A boot-declared provider-name collision is refused** (boot wins; the Phase
-  156 precedent), scoped within the caller's triple (Phase 167).
+  156 precedent); a runtime-install name collision with another owner's install
+  in a shared runtime fails loud (167's bounded guarantee — no silent shadow).
 - **The BINDING half — honestly small.** `oauth_provider` is ALREADY
   Protocol-writable end to end; the Console `addConnection()`
   (`state.svelte.ts:912-923`) silently drops it. This phase adds an
@@ -190,7 +197,8 @@ dropping it.
       entry (within the caller's triple) is refused with a distinct typed error.
 - [ ] `auth.ProviderSet` (NEW `internal/tools/auth/providers.go` — NOT
       `registry.go`) exists: interface + one internally-synchronised concrete
-      (D-025), identity-keyed (Phase 167), seeded at boot from `BuildProviders`,
+      (D-025), process-global bare-name for resolution (D-287) with an owner tag
+      for reconcile scoping (Phase 167), seeded at boot from `BuildProviders`,
       consulted by the MCP attach path. It is NOT registered in
       `internal/drivers/prod` and has no `drivers/` dir (it holds instances, not
       drivers — WARN 20). Test: install → add connection bound to it → the bearer
@@ -199,7 +207,7 @@ dropping it.
       `remove_oauth_provider` writes the revision AND `Uninstall`s live, CLOSING
       the provider; a still-bound connection's next call fails LOUD (never an
       unauthenticated dial); and a tenant-B run's reconcile NEVER closes a
-      tenant-A provider (Phase 167 keying). Tests:
+      tenant-A provider (Phase 167 owner-scoping). Tests:
       `TestRemoveOAuthProvider_BoundConnectionFailsLoudNotUnauthenticated`,
       `TestReconcile_TenantBRun_NeverUninstallsTenantAProvider`.
 - [ ] Rollback past an install runs the SAME uninstall through the run-start
@@ -229,13 +237,14 @@ dropping it.
 
 ## Files added or changed
 
-- `internal/tools/auth/providers.go` (NEW) — the `ProviderSet` (identity-keyed;
-  install/uninstall/get/names). NOT in `registry.go` (WARN 9); no `drivers/prod`
-  registration (WARN 20).
+- `internal/tools/auth/providers.go` (NEW) — the `ProviderSet` (bare-name
+  resolution + owner-tagged install for reconcile scoping). NOT in `registry.go`
+  (WARN 9); no `drivers/prod` registration (WARN 20).
 - `internal/tools/auth/build_providers.go` — seed the `ProviderSet` at boot;
   resolve a provider's `credential_broker` name to its boot broker (Phase 166).
 - `internal/tools/drivers/mcp/attach.go` + `internal/runtime/serve/mcp_attacher.go`
-  — consult the identity-keyed `ProviderSet` (not a by-value map).
+  — consult the `ProviderSet` (bare-name resolution; owner-tagged reconcile) —
+  not a by-value map.
 - `internal/agentcfg/agentcfg.go` — the `OAuthProviders` `ConfigPayload` section
   plus the zero-URL `OAuthProviderDescriptor`;
   `internal/agentcfg/drivers/statestore/statestore.go` — its diff arm.
@@ -244,7 +253,7 @@ dropping it.
   `lockAgent` → revision write → live `Install` / `Uninstall` → audit
   (fail-closed helper from Phase 166).
 - `internal/runtime/agentcfg/projection/projection.go` — the provider reconcile
-  leg (rollback uninstalls through the same mechanism), identity-scoped.
+  leg (rollback uninstalls through the same mechanism), owner-scoped (Phase 167).
 - `internal/protocol/methods/methods.go` — the two method consts + the three
   canonical sets + the prose counts.
 - `internal/protocol/types/agentconfig.go` — the request/response types + the
@@ -283,14 +292,17 @@ dropping it.
 //     req  {agent_id, name}
 //     resp {revision, name, uninstalled bool}
 
-// internal/tools/auth — NEW providers.go. Identity-keyed (Phase 167),
-// internally synchronised (D-025). NOT the driver registry (registry.go);
-// NOT a §4.4 driver seam (holds instances, no drivers/prod registration).
+// internal/tools/auth — NEW providers.go. Process-global bare-name for
+// RESOLUTION (D-287); an OWNER tag on runtime-installed entries drives the
+// owner-scoped reconcile (Phase 167). Internally synchronised (D-025). NOT the
+// driver registry (registry.go); NOT a §4.4 driver seam (holds instances, no
+// drivers/prod registration). Owner = (tenant, agent) — a reconcile-view tag,
+// NOT an isolation key (§6).
 type ProviderSet interface {
-    Get(id identity.Identity, name string) (OAuthProvider, bool)
-    Names(id identity.Identity) []string
-    Install(id identity.Identity, name string, p OAuthProvider) error
-    Uninstall(ctx context.Context, id identity.Identity, name string) error
+    Get(name string) (OAuthProvider, bool)           // bare-name resolution (D-287)
+    InstalledFor(owner Owner) []string               // owner-scoped, for reconcile
+    Install(owner Owner, name string, p OAuthProvider) error
+    Uninstall(ctx context.Context, name string) error
 }
 ```
 
@@ -307,7 +319,7 @@ type ProviderSet interface {
 - **Integration (`test/integration/phase169_oauth_provider_install_test.go`) —
   binding per §17.1:** real drivers end to end — boot with a named credential
   broker (Phase 166) + a fixture coordinator + a fixture token endpoint;
-  `set_oauth_provider` → the identity-keyed set carries it; `add_mcp_connection`
+  `set_oauth_provider` → the owner-tagged set carries it; `add_mcp_connection`
   bound to it → the identity-stamped call carries `Authorization: Bearer
   <exchanged>` (the whole point, on the wire, and the downstream host is on the
   broker's allow-list per Phase 166); `remove_oauth_provider` → the bound
@@ -382,8 +394,8 @@ sink/secret-field-rejection leg:
 - **166** (the credential-sink hardening — the named broker carries the
   `token_url` + `AllowedDownstreamHosts` this phase relies on, so the descriptor
   needs no URL; and the corrected audit ordering).
-- **167** (the identity-keyed provider set — makes install/uninstall
-  cross-tenant-safe, FAIL 4/6).
+- **167** (the owner-tagged provider set + owner-scoped reconcile — makes
+  uninstall/rollback owner-safe, FAIL 6; the bounded runtime-add posture).
 - **168** (the v1.14 sibling that lands the `/agent-config` editor surface + the
   shared write patterns).
 - **142** (D-271 — the only driver the writable shape admits), **154** (D-285 —
@@ -410,8 +422,8 @@ sink/secret-field-rejection leg:
   in this PR (the earlier plan promised this and did not deliver it); D-303
   records the ruling.
 - **Uninstall's live effect is deliberately breaking** — correct (§13: no silent
-  degradation) and defensible ONLY because Phase 167 keys the set per triple, so
-  the break is confined to the owning tenant. Stated in the godoc, the Console
+  degradation) and defensible ONLY because Phase 167 owner-scopes the reconcile,
+  so the break is confined to the owning owner. Stated in the godoc, the Console
   copy, and the audit event. "Refuse to uninstall while bound" was rejected: it
   makes revoke un-exercisable exactly when a broker credential has leaked (the
   D-287 asymmetry in a new costume).
@@ -433,10 +445,11 @@ sink/secret-field-rejection leg:
   token endpoint, the allowed downstream hosts, and the audience/scope ceiling
   are all pinned at boot on the named credential broker (Phase 166). A write
   carrying any URL or env-var name is rejected by name. Installed providers live
-  in the identity-keyed `auth.ProviderSet` (Phase 167) the MCP attach path
-  consults; uninstalling CLOSES the provider, so a still-bound connection's next
-  call fails LOUD rather than degrading to an unauthenticated dial, and the break
-  is confined to the owning tenant by the identity keying. RFC §6.4, §6.16,
+  in the owner-tagged `auth.ProviderSet` (Phase 167; process-global bare-name
+  for resolution, D-287) the MCP attach path consults; uninstalling CLOSES the
+  provider, so a still-bound connection's next call fails LOUD rather than
+  degrading to an unauthenticated dial, and the break is confined to the owning
+  owner by the owner-scoped reconcile. RFC §6.4, §6.16,
   D-271, D-285, D-300, D-303.
 
 ## Pre-merge checklist
@@ -448,7 +461,8 @@ sink/secret-field-rejection leg:
 - [ ] Coverage on touched packages ≥ stated target
 - [ ] **If multi-isolation code paths changed: cross-tenant isolation test
       passes** — a tenant-B run never closes a tenant-A provider (Phase 167
-      keying); a cross-tenant write is refused
+      owner-scoping); a cross-owner write is refused; the bounded guarantee is
+      documented (no false hard-isolation-of-dispatch claim)
 - [ ] **Concurrent-reuse test passes** — N≥100 concurrent `Install` /
       `Uninstall` / `Get` across ≥2 tenants against ONE shared `ProviderSet`
       under `-race`; no torn map, no use-after-close, no cross-tenant bleed, no
