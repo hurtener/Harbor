@@ -1069,6 +1069,7 @@ export interface EventAggregateRequest {
 
 export interface EventAggregateResponse {
   buckets: EventBucket[];
+  truncated?: boolean;
   protocol_version: string;
 }
 

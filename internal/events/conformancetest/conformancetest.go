@@ -517,6 +517,84 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	// Aggregate — the time-bucketed count series (the `events.aggregate`
+	// Protocol method) built over each driver's bus. The aggregator sources
+	// its snapshot from the SAME HistoryReplayer windowed fan-in ListWindow
+	// uses, so it must fan in session-less on every driver (the hole that let
+	// the durable-500 bug ship: aggregate was never parametrized by driver).
+	// The scenario carries an explicit ISOLATION assertion — parity is not
+	// isolation; two drivers sharing a cross-tenant leak agree on the leaky
+	// answer.
+	t.Run("Aggregate_Admin_SessionLess_FansInAcrossSessions", func(t *testing.T) {
+		h := factory()
+		bus := h.NewBus(t)
+		clk := fixedConformanceClock{t: aggregateAnchor}
+		agg, err := events.NewAggregator(bus, events.WithAggregatorClock(clk))
+		if err != nil {
+			t.Fatalf("NewAggregator: %v", err)
+		}
+		// Multi-tenant fixture: 3 tenants × 2 users × 2 sessions × 1 event =
+		// 4 events per tenant, 12 total, all backdated into the window.
+		tenants := []string{"agg-tenant-A", "agg-tenant-B", "agg-tenant-C"}
+		perTenant := int64(4)
+		at := aggregateAnchor.Add(-10 * time.Minute)
+		for _, ten := range tenants {
+			for u := 1; u <= 2; u++ {
+				for s := 1; s <= 2; s++ {
+					publishAt(t, bus, identity.Quadruple{Identity: identity.Identity{
+						TenantID:  ten,
+						UserID:    fmt.Sprintf("%s-u%d", ten, u),
+						SessionID: fmt.Sprintf("%s-u%d-s%d", ten, u, s),
+					}}, at)
+				}
+			}
+		}
+
+		req := prototypes.EventAggregateRequest{Window: time.Hour, Bucket: time.Minute}
+
+		// Leg 1 — widened, empty filter → fan in across every session/tenant.
+		wide, err := agg.Aggregate(context.Background(), req, true)
+		if err != nil {
+			t.Fatalf("Aggregate(widened, empty): %v", err)
+		}
+		if got := sumRuntimeError(wide); got != perTenant*int64(len(tenants)) {
+			t.Fatalf("widened session-less aggregate saw %d events, want %d (fan-in across all sessions failed)", got, perTenant*int64(len(tenants)))
+		}
+
+		// Leg 2 — ISOLATION (widened, single tenant): a widened read naming
+		// ONLY tenant-B attributes to tenant-B and leaks neither A nor C.
+		bReq := prototypes.EventAggregateRequest{
+			Filter: prototypes.EventFilter{TenantIDs: []string{tenants[1]}},
+			Window: time.Hour, Bucket: time.Minute,
+		}
+		bOnly, err := agg.Aggregate(context.Background(), bReq, true)
+		if err != nil {
+			t.Fatalf("Aggregate(widened, tenant-B): %v", err)
+		}
+		if got := sumRuntimeError(bOnly); got != perTenant {
+			t.Fatalf("widened tenant-B aggregate saw %d events, want %d (cross-tenant leak or undercount)", got, perTenant)
+		}
+
+		// Leg 3 — ISOLATION (non-admin, own tuple): a non-admin read scoped
+		// to one session sees ONLY that session, not the tenant's other
+		// sessions/users, not other tenants.
+		ownReq := prototypes.EventAggregateRequest{
+			Filter: prototypes.EventFilter{
+				TenantIDs:  []string{tenants[0]},
+				UserIDs:    []string{tenants[0] + "-u1"},
+				SessionIDs: []string{tenants[0] + "-u1-s1"},
+			},
+			Window: time.Hour, Bucket: time.Minute,
+		}
+		own, err := agg.Aggregate(context.Background(), ownReq, false)
+		if err != nil {
+			t.Fatalf("Aggregate(non-admin, own tuple): %v", err)
+		}
+		if got := sumRuntimeError(own); got != 1 {
+			t.Fatalf("non-admin own-session aggregate saw %d events, want 1 (scoped to own tuple)", got)
+		}
+	})
+
 	t.Run("Fence_DropsLateEventsAndEmptiesHistory", func(t *testing.T) {
 		h := factory()
 		bus := h.NewBus(t)
@@ -671,6 +749,38 @@ func emptyTripleCases() []events.Filter {
 		{User: "U"},
 		{Session: "S"},
 	}
+}
+
+// aggregateAnchor is the fixed clock instant the aggregate conformance
+// scenario anchors its window on, so backdated fixture events fall in a
+// deterministic bucket range across every driver.
+var aggregateAnchor = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+// fixedConformanceClock returns a fixed instant from Now(), so the aggregate
+// conformance scenario's bucket arithmetic is driver-independent.
+type fixedConformanceClock struct{ t time.Time }
+
+func (f fixedConformanceClock) Now() time.Time { return f.t }
+
+// publishAt publishes one canonical (runtime.error) event for id backdated to
+// `at`, so the aggregator counts it into a known window slice.
+func publishAt(t *testing.T, bus events.EventBus, id identity.Quadruple, at time.Time) {
+	t.Helper()
+	ev := mkEvent(id, 1)
+	ev.OccurredAt = at.UTC()
+	if err := bus.Publish(context.Background(), ev); err != nil {
+		t.Fatalf("publishAt %+v: %v", id.Identity, err)
+	}
+}
+
+// sumRuntimeError totals the runtime.error counts across an aggregate
+// response's buckets — the fixture publishes only that event type.
+func sumRuntimeError(resp prototypes.EventAggregateResponse) int64 {
+	var total int64
+	for _, b := range resp.Buckets {
+		total += b.Counts[string(events.EventTypeRuntimeError)]
+	}
+	return total
 }
 
 // mkID builds a deterministic, seed-scoped identity quadruple.

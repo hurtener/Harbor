@@ -2576,6 +2576,11 @@
           "ref": "EventBucket"
         },
         {
+          "key": "truncated",
+          "type": "boolean",
+          "optional": true
+        },
+        {
           "key": "protocol_version",
           "type": "string"
         }

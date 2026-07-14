@@ -1286,6 +1286,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `buckets` | `[]types.EventBucket` — see [`EventBucket`](./types.md#eventbucket) |  |
+| `truncated` | `bool` | optional (`omitempty`) |
 | `protocol_version` | `string` |  |
 
 ## EventBucket

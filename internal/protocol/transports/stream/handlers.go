@@ -136,8 +136,16 @@ func (h *AggregateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// claim is rejected 403 with CodeIdentityScopeRequired — distinct
 	// from CodeIdentityRequired (no identity at all → 401) and
 	// CodeAuthRejected (token invalid → 401).
+	//
+	// widened is computed on the RAW, PRE-FOLD wire filter (byte-mirroring
+	// the events.list handler) and threaded verbatim into the aggregator as
+	// its fan-in authority. It MUST NOT be re-derived from the post-fold
+	// filter: a genuine cross-tenant read whose user/session fold to the
+	// caller carries a complete folded triple and would evaluate as
+	// non-widened, running un-audited AND un-fanned (the wrong intersection).
 	conv := events.FilterFromWire(req.Filter, id.TenantID, id.UserID, id.SessionID)
-	if conv.RequiresAdminScope {
+	widened := conv.RequiresAdminScope
+	if widened {
 		if !auth.HasScope(r.Context(), auth.ScopeAdmin) && !auth.HasScope(r.Context(), auth.ScopeConsoleFleet) {
 			writeAggregateError(w, protoerrors.CodeIdentityScopeRequired, http.StatusForbidden,
 				"cross-tenant aggregate requires a verified `admin` or `console:fleet` scope")
@@ -159,7 +167,7 @@ func (h *AggregateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		effReq.Filter.SessionIDs = []string{id.SessionID}
 	}
 
-	resp, err := h.aggregator.Aggregate(r.Context(), effReq)
+	resp, err := h.aggregator.Aggregate(r.Context(), effReq, widened)
 	if err != nil {
 		code, status, msg := classifyAggregateError(err)
 		writeAggregateError(w, code, status, msg)
@@ -187,6 +195,12 @@ func classifyAggregateError(err error) (protoerrors.Code, int, string) {
 	case errors.Is(err, events.ErrAggregateBadWindow):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"aggregate window/bucket invalid: " + err.Error()
+	case errors.Is(err, events.ErrIdentityScopeRequired):
+		// The windowed substrate fails closed on an empty-triple non-admin
+		// read. The handler folds the caller's triple before dispatch, so
+		// this is a defence-in-depth mapping (a 403, never a bare 500).
+		return protoerrors.CodeIdentityScopeRequired, http.StatusForbidden,
+			"aggregate requires a full identity triple or a verified admin scope"
 	case errors.Is(err, events.ErrReplayUnavailable):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			"event store does not support historical aggregation"

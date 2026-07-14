@@ -292,6 +292,13 @@ func eventCounters(ctx context.Context, agg *events.Aggregator, id identity.Quad
 	if agg == nil {
 		return 0, 0
 	}
+	// The tenant-scoped rejection/drop counters deliberately fan in across
+	// every user and session in the caller's OWN tenant (the filter names
+	// TenantIDs only — no user/session axis), so the aggregator runs as a
+	// widened read: it fans in across sessions and emits one
+	// audit.admin_scope_used per call. The memory List wire edge has already
+	// gated the admin scope claim before this counter runs.
+	const widened = true
 	resp, err := agg.Aggregate(ctx, prototypes.EventAggregateRequest{
 		Filter: prototypes.EventFilter{
 			EventTypes: []string{
@@ -302,7 +309,7 @@ func eventCounters(ctx context.Context, agg *events.Aggregator, id identity.Quad
 		},
 		Window: aggregateWindow,
 		Bucket: aggregateBucket,
-	})
+	}, widened)
 	if err != nil {
 		// Replay-unavailable / cancelled — the page-level counters
 		// degrade to 0; the live event stream is the real-time

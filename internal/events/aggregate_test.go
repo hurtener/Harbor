@@ -110,7 +110,7 @@ func TestAggregate_BucketArithmetic_DeterministicCounts(t *testing.T) {
 		},
 		Window: 1 * time.Hour,
 		Bucket: bucketWidth,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestAggregate_FilterRespected(t *testing.T) {
 		},
 		Window: 30 * time.Minute,
 		Bucket: 5 * time.Minute,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestAggregate_RejectsBadWindow(t *testing.T) {
 
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := agg.Aggregate(context.Background(), tc.req)
+			_, err := agg.Aggregate(context.Background(), tc.req, false)
 			if !errors.Is(err, events.ErrAggregateBadWindow) {
 				t.Fatalf("err = %v, want %v wrapped", err, events.ErrAggregateBadWindow)
 			}
@@ -239,7 +239,7 @@ func TestAggregate_HonoursCtxCancellation(t *testing.T) {
 		Window: time.Hour,
 		Bucket: time.Minute,
 		Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
-	})
+	}, false)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -273,7 +273,7 @@ func TestAggregate_EmptyWindow(t *testing.T) {
 		},
 		Window: time.Hour,
 		Bucket: time.Minute,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestAggregate_ConcurrentReuse(t *testing.T) {
 				},
 				Window: 30 * time.Minute,
 				Bucket: time.Minute,
-			})
+			}, false)
 			if err != nil {
 				t.Errorf("goroutine %d: Aggregate: %v", i, err)
 				failures.Add(1)
@@ -418,8 +418,298 @@ func TestAggregate_FailsLoudOnReplayUnavailable(t *testing.T) {
 		},
 		Window: time.Hour,
 		Bucket: time.Minute,
-	})
+	}, false)
 	if !errors.Is(err, events.ErrReplayUnavailable) {
 		t.Fatalf("err = %v, want ErrReplayUnavailable", err)
+	}
+}
+
+// boundedAggregatorTestBus builds a fresh inmem bus with a ring of exactly
+// `capacity` events so a test can force ring eviction below the aggregation
+// window (the honest inmem Truncated path).
+func boundedAggregatorTestBus(t *testing.T, capacity int) events.EventBus {
+	t.Helper()
+	cfg := config.EventsConfig{
+		Driver:                   "inmem",
+		MaxSubscribersPerSession: 16,
+		SubscriberBufferSize:     16,
+		IdleTimeout:              200 * time.Millisecond,
+		DropWindow:               50 * time.Millisecond,
+		ReplayBufferSize:         capacity,
+	}
+	bus, err := inmem.New(cfg, auditpatterns.New())
+	if err != nil {
+		t.Fatalf("inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	return bus
+}
+
+// aggregateAttributedAdminScopeUsed counts the audit.admin_scope_used
+// notices an aggregate against bus emitted. It reads the whole ring via an
+// admin Replay (which itself emits exactly one admin_scope_used, folded into
+// the snapshot) and subtracts that one, so the returned count is exactly the
+// number of notices the preceding aggregate produced. Requires a ring large
+// enough not to have evicted any notice.
+func aggregateAttributedAdminScopeUsed(t *testing.T, bus events.EventBus) int {
+	t.Helper()
+	rp, ok := bus.(events.Replayer)
+	if !ok {
+		t.Fatalf("bus %T does not implement events.Replayer", bus)
+	}
+	snap, err := rp.Replay(context.Background(), events.Cursor{Sequence: 0}, events.Filter{Admin: true})
+	if err != nil {
+		t.Fatalf("Replay(admin) to count notices: %v", err)
+	}
+	n := 0
+	for _, ev := range snap {
+		if ev.Type == events.EventTypeAdminScopeUsed {
+			n++
+		}
+	}
+	// Subtract the notice this Replay call itself emitted.
+	return n - 1
+}
+
+// TestAggregate_WidenedEmitsExactlyOneAdminScopeUsed — a widened (fleet)
+// aggregate issues ONE windowed fan-in read, so exactly one
+// audit.admin_scope_used is emitted per request (parity with events.list).
+func TestAggregate_WidenedEmitsExactlyOneAdminScopeUsed(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+
+	// Two sessions in two tenants — a genuine cross-session fixture.
+	publishEvent(t, bus, events.EventTypeRuntimeError, "t-A", "u-A", "s-A", windowStart.Add(5*time.Minute))
+	publishEvent(t, bus, events.EventTypeRuntimeError, "t-B", "u-B", "s-B", windowStart.Add(6*time.Minute))
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+
+	// widened=true, empty filter → fan in across every session.
+	resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Window: 30 * time.Minute,
+		Bucket: time.Minute,
+	}, true)
+	if err != nil {
+		t.Fatalf("Aggregate(widened): %v", err)
+	}
+	var total int64
+	for _, b := range resp.Buckets {
+		total += b.Counts["runtime.error"]
+	}
+	if total != 2 {
+		t.Fatalf("widened fan-in total = %d, want 2 (both sessions)", total)
+	}
+	if got := aggregateAttributedAdminScopeUsed(t, bus); got != 1 {
+		t.Fatalf("widened aggregate emitted %d admin_scope_used, want exactly 1", got)
+	}
+}
+
+// TestAggregate_NonAdminEmitsZeroAdminScopeUsed — a non-admin own-session
+// aggregate emits ZERO audit.admin_scope_used. This guards a REAL current
+// defect: the old hardcoded Filter{Admin:true} emitted one on EVERY aggregate
+// (including non-admin own-session reads) via the inmem Replay-admin path.
+func TestAggregate_NonAdminEmitsZeroAdminScopeUsed(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+	publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s1", windowStart.Add(5*time.Minute))
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	// widened=false, full triple → own-session read, no fan-in, no audit.
+	if _, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{
+			TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"},
+		},
+		Window: 30 * time.Minute,
+		Bucket: time.Minute,
+	}, false); err != nil {
+		t.Fatalf("Aggregate(non-admin): %v", err)
+	}
+	if got := aggregateAttributedAdminScopeUsed(t, bus); got != 0 {
+		t.Fatalf("non-admin own-session aggregate emitted %d admin_scope_used, want 0", got)
+	}
+}
+
+// TestAggregate_TruncatedUniform_RingEvictionAndBound — a window too wide to
+// observe fully returns PARTIAL buckets with Truncated=true, via BOTH honest
+// mechanisms uniformly: an inmem ring that evicted older events below the
+// window, and the single-read aggregation bound being hit. Never a 400.
+func TestAggregate_TruncatedUniform_RingEvictionAndBound(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+
+	t.Run("ring_eviction_below_window", func(t *testing.T) {
+		t.Parallel()
+		// Ring holds 4 events; publish 8 in the window → 4 evicted.
+		bus := boundedAggregatorTestBus(t, 4)
+		for i := range 8 {
+			publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s1",
+				windowStart.Add(time.Duration(i+1)*time.Minute))
+		}
+		agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+		if err != nil {
+			t.Fatalf("NewAggregator: %v", err)
+		}
+		resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+			Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
+			Window: 30 * time.Minute,
+			Bucket: time.Minute,
+		}, false)
+		if err != nil {
+			t.Fatalf("Aggregate: %v", err)
+		}
+		if !resp.Truncated {
+			t.Fatalf("ring evicted below the window but Truncated=false — partial counts must be flagged")
+		}
+	})
+
+	t.Run("scan_bound_hit", func(t *testing.T) {
+		t.Parallel()
+		bus := aggregatorTestBus(t) // large ring, no eviction
+		for i := range 6 {
+			publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s1",
+				windowStart.Add(time.Duration(i+1)*time.Minute))
+		}
+		// A bound of 3 matching events is below the 6 published → HasMore.
+		agg, err := events.NewAggregator(bus,
+			events.WithAggregatorClock(fixedAggregatorClock{t: now}),
+			events.WithAggregateScanBound(3))
+		if err != nil {
+			t.Fatalf("NewAggregator: %v", err)
+		}
+		resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+			Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
+			Window: 30 * time.Minute,
+			Bucket: time.Minute,
+		}, false)
+		if err != nil {
+			t.Fatalf("Aggregate: %v", err)
+		}
+		if !resp.Truncated {
+			t.Fatalf("scan bound hit but Truncated=false — partial counts must be flagged, never a 400")
+		}
+		// The partial buckets still carry the newest `bound` events.
+		var total int64
+		for _, b := range resp.Buckets {
+			total += b.Counts["runtime.error"]
+		}
+		if total != 3 {
+			t.Fatalf("bounded aggregate counted %d, want the newest 3 (partial)", total)
+		}
+	})
+}
+
+// TestAggregate_ExcludesBusInternalNotice — a published bus-internal
+// notice-TYPE event (audit.admin_scope_used) is EXCLUDED from the aggregate,
+// while real-event-type counts are unaffected. The prior Replay+MatchWire
+// substrate counted such notices into type buckets and self-polluted; the
+// windowed substrate excludes them (IsBusInternalNotice) — a latent-bug fix
+// adopted intentionally.
+func TestAggregate_ExcludesBusInternalNotice(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+
+	// A real event type — counted.
+	publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s1", windowStart.Add(5*time.Minute))
+	// A bus-internal NOTICE-type event backdated into the window — excluded.
+	noticeEv := events.Event{
+		Type: events.EventTypeAdminScopeUsed,
+		Identity: identity.Quadruple{Identity: identity.Identity{
+			TenantID: "t1", UserID: "u1", SessionID: "s1",
+		}},
+		OccurredAt: windowStart.Add(6 * time.Minute).UTC(),
+		Payload:    events.AdminScopeUsedPayload{Tenant: "t1", User: "u1", Session: "s1"},
+	}
+	if err := bus.Publish(context.Background(), noticeEv); err != nil {
+		t.Fatalf("publish notice-type event: %v", err)
+	}
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
+		Window: 30 * time.Minute,
+		Bucket: time.Minute,
+	}, false)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	var realTotal, noticeTotal int64
+	for _, b := range resp.Buckets {
+		realTotal += b.Counts["runtime.error"]
+		noticeTotal += b.Counts[string(events.EventTypeAdminScopeUsed)]
+	}
+	if realTotal != 1 {
+		t.Fatalf("real-event-type count = %d, want 1 (unaffected)", realTotal)
+	}
+	if noticeTotal != 0 {
+		t.Fatalf("bus-internal notice counted %d times, want 0 (excluded)", noticeTotal)
+	}
+}
+
+// TestAggregate_UntilClampedSubWindow_ThreadedOntoSubstrate — an Until-clamped
+// sub-window is enforced at the substrate (q.Filter.Until), not only by a
+// post-read guard. The fixture publishes events NEWER than the clamp's Until
+// so that, were the bound filled tail-first without threading Until, the
+// in-window matches would be crowded out. Threading Until makes the read
+// return exactly the in-sub-window events.
+func TestAggregate_UntilClampedSubWindow_ThreadedOntoSubstrate(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	// The request window is 3h. The filter clamps to the sub-window
+	// [now-2h, now-1h). Publish:
+	//   - 2 events INSIDE the sub-window (should be counted);
+	//   - 5 events NEWER than the sub-window's Until (in [now-1h, now),
+	//     should be excluded — they are the ones that would crowd a
+	//     tail-first bound read if Until were not threaded).
+	inWindowA := now.Add(-90 * time.Minute)
+	inWindowB := now.Add(-80 * time.Minute)
+	publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s1", inWindowA)
+	publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s1", inWindowB)
+	for i := range 5 {
+		publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s1",
+			now.Add(-time.Duration(50-i)*time.Minute)) // all newer than now-1h
+	}
+
+	agg, err := events.NewAggregator(bus,
+		events.WithAggregatorClock(fixedAggregatorClock{t: now}),
+		events.WithAggregateScanBound(3)) // small bound: newest-first would drop the sub-window matches
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{
+			TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"},
+			Since: now.Add(-2 * time.Hour),
+			Until: now.Add(-1 * time.Hour),
+		},
+		Window: 3 * time.Hour,
+		Bucket: 10 * time.Minute,
+	}, false)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	var total int64
+	for _, b := range resp.Buckets {
+		total += b.Counts["runtime.error"]
+	}
+	if total != 2 {
+		t.Fatalf("Until-clamped sub-window total = %d, want 2 (newer-than-Until events must be excluded at the substrate, not crowd the bound)", total)
 	}
 }

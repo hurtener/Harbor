@@ -178,6 +178,15 @@ export interface EventAggregateRequest {
 export interface EventAggregateResponse {
 	/** The per-bucket count series, oldest-first. */
 	buckets: EventBucket[];
+	/**
+	 * True when the counts are PARTIAL — the aggregation could not observe
+	 * every matching event in the window (a best-effort ring evicted older
+	 * events below the window, or a durable log held more matching events than
+	 * the single-read aggregation bound). Set uniformly across drivers; an
+	 * over-wide window is DATA (partial buckets flagged truncated), never a
+	 * request error. Absent/false ⇒ the counts are complete for the window.
+	 */
+	truncated?: boolean;
 	/** The Protocol version the Runtime answered under. */
 	protocol_version: string;
 }

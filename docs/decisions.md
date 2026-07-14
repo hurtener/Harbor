@@ -7887,7 +7887,7 @@ Forcing elevation on a single own-other-session read would break the single most
 
 **Date:** 2026-07-13
 
-**Status:** Pending (Phase 171, v1.14 Track B)
+**Status:** Shipped (Phase 171, v1.14 Track B)
 
 **Where it lives:** `docs/plans/phase-171-events-aggregate-durable-parity.md`; `internal/events/aggregate.go`, `internal/protocol/transports/stream/handlers.go`, `internal/events/conformancetest/`.
 

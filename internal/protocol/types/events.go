@@ -198,6 +198,18 @@ type EventAggregateResponse struct {
 	// bucket's [Start, End) span is exactly `Request.Bucket` wide; the
 	// last bucket's End equals the request's effective Now.
 	Buckets []EventBucket `json:"buckets"`
+	// Truncated is true when the counts are PARTIAL: the aggregation could
+	// not observe every matching event in the window. It is set UNIFORMLY
+	// across drivers — a best-effort ring that evicted older events below
+	// the requested window sets it, and a durable log whose window held more
+	// matching events than the single-read aggregation bound could count
+	// sets it too. It is the honest DATA signal that a driver difference
+	// (retention depth, an observed horizon) changed WHAT the method
+	// returns without ever changing WHETHER it works: an over-wide window is
+	// never a request error and never a silent undercount — it is partial
+	// buckets flagged truncated. False means the counts are complete for the
+	// window.
+	Truncated bool `json:"truncated,omitempty"`
 	// ProtocolVersion echoes the Protocol version the Runtime answered
 	// under so a client can detect a version skew (mirrors the
 	// ControlResponse / StartResponse shape).
