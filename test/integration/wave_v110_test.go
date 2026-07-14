@@ -721,8 +721,11 @@ func TestE2E_WaveV110_CancelledRun_HookResolvesBearerOnOAuthBoundMCP(t *testing.
 	t.Parallel()
 	ctx := context.Background()
 
-	env := newWaveV19Env(t)
 	hs, rec := waveV110MCPSink(t)
+	// The provider's downstream-sink allow-list must list the bound MCP
+	// connection's host (the credential-plane invariant); build the sink
+	// server first so its host is known at provider construction.
+	env := newWaveV19Env(t, hs.URL)
 	driverName, _ := registerWaveV110Driver()
 
 	cfg, err := config.Load(ctx, writeDevConfig(t))
@@ -731,12 +734,13 @@ func TestE2E_WaveV110_CancelledRun_HookResolvesBearerOnOAuthBoundMCP(t *testing.
 	}
 	cfg.LLM.Model = "test/model"
 	cfg.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{{
-		Name:            waveV19Provider,
-		Driver:          "tokenexchange",
-		ClientIDEnv:     "WAVE_V110_BROKER_CLIENT",
-		ClientSecretEnv: "WAVE_V110_BROKER_SECRET",
-		TokenURL:        env.broker.tokenURL(),
-		Extra:           map[string]string{"audience": waveV19Audience},
+		Name:                   waveV19Provider,
+		Driver:                 "tokenexchange",
+		ClientIDEnv:            "WAVE_V110_BROKER_CLIENT",
+		ClientSecretEnv:        "WAVE_V110_BROKER_SECRET",
+		TokenURL:               env.broker.tokenURL(),
+		Extra:                  map[string]string{"audience": waveV19Audience},
+		AllowedDownstreamHosts: []string{hs.URL},
 	}}
 	cfg.Tools.OAuthTokenKEKEnv = "WAVE_V110_OAUTH_KEK"
 	cfg.Tools.MCPServers = []config.MCPServerConfig{{

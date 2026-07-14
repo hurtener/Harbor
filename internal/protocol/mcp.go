@@ -841,9 +841,12 @@ func (s *MCPSurface) handleRevokeBinding(ctx context.Context, id identity.Identi
 }
 
 // handleSetRawHTMLTrust serves mcp.servers.set_raw_html_trust (admin
-// verb). On success it emits the `mcp.raw_html_trust_toggled` audit
-// event. A failed audit emit fails the call closed — an un-auditable
-// trust toggle is refused (CLAUDE.md §5, §7).
+// verb). It applies the trust toggle and emits the
+// `mcp.raw_html_trust_toggled` audit event as one genuinely fail-closed
+// unit: on audit-emit failure the toggle is COMPENSATED (reverted to its
+// prior value) so an un-auditable admin write is never left observably
+// applied (CLAUDE.md §5, §7 rule 6). This is the ONE admin-write audit
+// posture the sibling admin verbs reuse via [applyAdminWriteWithAudit].
 func (s *MCPSurface) handleSetRawHTMLTrust(ctx context.Context, id identity.Identity, _ bool, req any) (any, error) {
 	method := methods.MethodMCPServersSetRawHTMLTrust
 	r, ok := req.(*types.MCPServerSetRawHTMLTrustRequest)
@@ -859,21 +862,65 @@ func (s *MCPSurface) handleSetRawHTMLTrust(ctx context.Context, id identity.Iden
 	if perr != nil {
 		return nil, perr
 	}
-	if _, err := s.mcp.SetRawHTMLTrust(idCtx, r.Name, r.Trusted); err != nil {
-		return nil, mapMCPError(string(method), err)
+	applyErr, emitErr := applyAdminWriteWithAudit(
+		func() (revert func() error, err error) {
+			prev, setErr := s.mcp.SetRawHTMLTrust(idCtx, r.Name, r.Trusted)
+			if setErr != nil {
+				return nil, setErr
+			}
+			return func() error {
+				_, rerr := s.mcp.SetRawHTMLTrust(idCtx, r.Name, prev)
+				return rerr
+			}, nil
+		},
+		func() error { return s.emitRawHTMLTrustToggled(ctx, id, r.Name, r.Trusted) },
+	)
+	if applyErr != nil {
+		return nil, mapMCPError(string(method), applyErr)
 	}
-	// Emit the audit event BEFORE returning. A failed emit fails the
-	// call closed — an un-auditable trust toggle is never silently
-	// applied (CLAUDE.md §5 + §7 rule 6).
-	if err := s.emitRawHTMLTrustToggled(ctx, id, r.Name, r.Trusted); err != nil {
+	if emitErr != nil {
+		// emitErr is self-describing: it names either the reverted-not-applied
+		// case or the "state may be inconsistent" double-failure. Don't
+		// prepend a fixed "reverted" claim that the second case contradicts.
 		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
-			"method %q: trust toggle applied but audit emit failed: %v", string(method), err)
+			"method %q: %v", string(method), emitErr)
 	}
 	return &types.MCPServerSetRawHTMLTrustResponse{
 		Name:            r.Name,
 		Trusted:         r.Trusted,
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// applyAdminWriteWithAudit runs an admin-plane mutation and its audit emit
+// as a single fail-closed unit: it applies the mutation, then emits the
+// audit event; if the emit fails it COMPENSATES by reverting the mutation,
+// so an un-auditable admin write is never left observably applied
+// (CLAUDE.md §5, §7 rule 6). It is the ONE admin-write audit posture the
+// MCP admin verbs share.
+//
+// apply returns a revert closure (restoring the pre-write state) and an
+// apply error. The two returned errors are disjoint: a non-nil applyErr
+// means the mutation never happened (map it through the domain error
+// mapper); a non-nil emitErr means the mutation was applied then reverted
+// (surface it as an audit failure). When the compensating revert itself
+// fails, the emitErr wraps both so the operator sees the state may be
+// inconsistent.
+func applyAdminWriteWithAudit(apply func() (revert func() error, err error), emit func() error) (applyErr, emitErr error) {
+	revert, err := apply()
+	if err != nil {
+		return err, nil
+	}
+	if e := emit(); e != nil {
+		if revert != nil {
+			if rerr := revert(); rerr != nil {
+				return nil, fmt.Errorf("audit emit failed AND compensating revert failed (state may be inconsistent): %w",
+					stderrors.Join(e, rerr))
+			}
+		}
+		return nil, fmt.Errorf("audit emit failed (mutation reverted, not applied): %w", e)
+	}
+	return nil, nil
 }
 
 // emitRawHTMLTrustToggled publishes the `mcp.raw_html_trust_toggled`

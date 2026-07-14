@@ -114,6 +114,8 @@ tools:
 
 The planner discovers every MCP server's tools at boot — there's no per-server enable flag; listing the server registers its tools. Built-in tools live in the harbor binary — list `clock.now` to enable, omit to disable. MCP servers are external processes; see [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md) for the skill-vs-tool axis.
 
+> **Southbound OAuth binding — the credential-sink allow-list is mandatory (D-300).** When an `mcp_servers[]` connection sets `oauth_provider: <name>` (a per-identity bearer injected per call), the named `tools.oauth_providers[]` entry MUST declare a non-empty `allowed_downstream_hosts` that lists the connection's host — the credential-plane invariant is that no admin-writable field determines where a credential is sent, so the sink set is boot-pinned. A bound provider with no allow-list, or a connection host that isn't listed, fails at **boot** (not at first call). See `docs/CONFIG.md` › `tools.oauth_providers` and `tools.oauth_credential_brokers`.
+
 `runtime.hooks.run_completion.{tool, timeout}` names a catalog tool that receives every run's transcript at completion — see `docs/CONFIG.md` › Runtime. `runtime.naming.{auto, after_turns, repeat_every, max_repetitions, max_title_len, model}` is the opt-in, default-off **session auto-naming** fleet default: with it enabled, the runtime titles a session itself at each run's terminal boundary via one governed LLM call over a bounded transcript digest (`max_repetitions` is required `>= 1` whenever `repeat_every > 0` — no unlimited value). A per-agent agent-config `naming` section overrides this default; see `docs/CONFIG.md` › Runtime.
 
 ### `skills`

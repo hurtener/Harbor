@@ -1357,6 +1357,12 @@ func (c *Config) validateTools() error {
 	// also set `tools.oauth_token_kek_env`; the dev stack constructs a
 	// single AES-256-GCM Sealer over the named env var (§7).
 	oauthProviderNames := make(map[string]struct{}, len(c.Tools.OAuthProviders))
+	// oauthProviderAllowedHosts maps each provider name to its
+	// boot-declared downstream-sink allow-list (normalised), consulted by
+	// the MCP southbound cross-reference pass below to enforce the
+	// credential-plane invariant (no admin-writable field determines a
+	// credential sink) fail-closed.
+	oauthProviderAllowedHosts := make(map[string][]string, len(c.Tools.OAuthProviders))
 	for i, p := range c.Tools.OAuthProviders {
 		prefix := fmt.Sprintf("tools.oauth_providers[%d]", i)
 		if p.Name == "" {
@@ -1458,6 +1464,75 @@ func (c *Config) validateTools() error {
 			return fieldError(prefix+".token_url",
 				"must not be empty for driver \"tokenexchange\" (the credential broker's RFC-8693 token-exchange endpoint; auth_url / redirect_url are not used by this driver)")
 		}
+		// Downstream-sink allow-list entries (the credential-plane
+		// invariant). Each entry must be a well-formed host[:port]
+		// with a non-empty host; empty entries are a typo. Membership +
+		// the mandatory-non-empty-for-bindable rule is enforced in the MCP
+		// cross-reference pass below (which knows which providers a
+		// connection binds).
+		normHosts := make([]string, 0, len(p.AllowedDownstreamHosts))
+		for j, h := range p.AllowedDownstreamHosts {
+			nh := NormalizeDownstreamHost(h)
+			if nh == "" {
+				return fieldError(fmt.Sprintf("%s.allowed_downstream_hosts[%d]", prefix, j),
+					fmt.Sprintf("must be a non-empty host[:port], got %q", h))
+			}
+			normHosts = append(normHosts, nh)
+		}
+		oauthProviderAllowedHosts[p.Name] = normHosts
+	}
+	// `tools.oauth_credential_brokers[]` — the boot-declared, named
+	// credential SINKS (the config home a Protocol-installed zero-URL
+	// provider descriptor references by name). Validation: unique names; https (or
+	// loopback) token_url; a non-empty allowed_downstream_hosts; a
+	// non-empty auth_token_env; non-negative cache_ttl / timeout. The
+	// inline `oauth_providers[].remote` block stays valid — this list is
+	// additive.
+	brokerNames := make(map[string]struct{}, len(c.Tools.OAuthCredentialBrokers))
+	for i, b := range c.Tools.OAuthCredentialBrokers {
+		prefix := fmt.Sprintf("tools.oauth_credential_brokers[%d]", i)
+		if b.Name == "" {
+			return fieldError(prefix+".name", "must not be empty")
+		}
+		if _, dup := brokerNames[b.Name]; dup {
+			return fieldError(prefix+".name",
+				fmt.Sprintf("duplicate broker name %q (must be unique within tools.oauth_credential_brokers[])", b.Name))
+		}
+		brokerNames[b.Name] = struct{}{}
+		if b.TokenURL == "" {
+			return fieldError(prefix+".token_url", "must not be empty (the credential broker's RFC-8693 token-exchange endpoint — the pinned credential sink)")
+		}
+		u, err := url.Parse(b.TokenURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fieldError(prefix+".token_url",
+				fmt.Sprintf("must be a well-formed http(s) URL with a host, got %q", b.TokenURL))
+		}
+		// TLS mandatory off loopback — the POST carries the org's OAuth
+		// client_id / client_secret (§7).
+		if u.Scheme == "http" && !isLoopbackHostname(u.Hostname()) {
+			return fieldError(prefix+".token_url",
+				fmt.Sprintf("must be https for non-loopback hosts (the token POST carries client_id/client_secret; plaintext http is allowed only for 127.0.0.1 / ::1 / localhost), got %q", b.TokenURL))
+		}
+		if len(b.AllowedDownstreamHosts) == 0 {
+			return fieldError(prefix+".allowed_downstream_hosts",
+				"must declare at least one downstream host (a bearer-minting broker must say where its tokens may be injected — the credential-plane invariant; fail-closed)")
+		}
+		for j, h := range b.AllowedDownstreamHosts {
+			if NormalizeDownstreamHost(h) == "" {
+				return fieldError(fmt.Sprintf("%s.allowed_downstream_hosts[%d]", prefix, j),
+					fmt.Sprintf("must be a non-empty host[:port], got %q", h))
+			}
+		}
+		if b.AuthTokenEnv == "" {
+			return fieldError(prefix+".auth_token_env",
+				"must not be empty (env var name holding the runtime's broker credential; §7 rule 2 — never hardcoded)")
+		}
+		if b.CacheTTL < 0 {
+			return fieldError(prefix+".cache_ttl", "must be >= 0")
+		}
+		if b.Timeout < 0 {
+			return fieldError(prefix+".timeout", "must be >= 0")
+		}
 	}
 	if len(c.Tools.OAuthProviders) > 0 && c.Tools.OAuthTokenKEKEnv == "" {
 		return fieldError("tools.oauth_token_kek_env",
@@ -1497,6 +1572,23 @@ func (c *Config) validateTools() error {
 					return fieldError(prefix+".headers",
 						"must not carry a static \"Authorization\" header alongside oauth_provider (one auth mode per connection — the bearer is injected per-identity)")
 				}
+			}
+			// Downstream-sink allow-list enforcement (the credential-plane
+			// invariant). A provider that injects a bearer MUST
+			// declare its allowed downstream hosts — an empty allow-list on
+			// a bound provider is a fail-closed boot error. The connection's
+			// own host must be listed (normalised, default-port
+			// equivalence), so the bearer is never injected into an
+			// undeclared sink.
+			allowed := oauthProviderAllowedHosts[s.OAuthProvider]
+			if len(allowed) == 0 {
+				return fieldError(prefix+".oauth_provider",
+					fmt.Sprintf("provider %q declares no allowed_downstream_hosts, but this connection binds it — a bearer-injecting provider must declare its downstream sinks (add allowed_downstream_hosts to tools.oauth_providers[]; the credential-plane invariant is fail-closed)", s.OAuthProvider))
+			}
+			connHost := NormalizeDownstreamHost(s.URL)
+			if connHost == "" || !containsHost(allowed, connHost) {
+				return fieldError(prefix+".url",
+					fmt.Sprintf("connection host %q is not in provider %q's allowed_downstream_hosts %v — the bearer may only be injected into a boot-declared downstream sink", connHost, s.OAuthProvider, allowed))
 			}
 		}
 		for k := range s.MetaAnnotations {
@@ -2266,6 +2358,50 @@ func isLoopbackHostname(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// NormalizeDownstreamHost canonicalises a downstream-credential-sink host
+// for allow-list comparison. It accepts either a bare `host[:port]` (an
+// allow-list entry) or a full URL (a connection `url` — the scheme's
+// default port is folded so `https://example.com` and
+// `https://example.com:443` compare equal). The result is lowercased and a
+// well-known default port (`:80`, `:443`) is stripped. It is the ONE
+// normaliser both the config allow-list validation and the runtime
+// `resolveOAuthBinding` check use so the two never diverge.
+func NormalizeDownstreamHost(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	// A full URL (has a scheme) → take its host[:port]; a bare host[:port]
+	// is used as-is. url.Parse on a bare "host:port" mis-reads the host as
+	// a scheme, so only parse when a "//" or a scheme delimiter is present.
+	host := s
+	if strings.Contains(s, "://") {
+		if u, err := url.Parse(s); err == nil && u.Host != "" {
+			host = u.Host
+		}
+	}
+	host = strings.ToLower(host)
+	// Strip a well-known default port so default-port equivalence holds.
+	if h, port, err := net.SplitHostPort(host); err == nil {
+		if port == "80" || port == "443" {
+			return h
+		}
+		return net.JoinHostPort(h, port)
+	}
+	return host
+}
+
+// containsHost reports whether normalised host h is present in the
+// normalised allow-list.
+func containsHost(allow []string, h string) bool {
+	for _, a := range allow {
+		if a == h {
+			return true
+		}
+	}
+	return false
 }
 
 // validateDiscoveryOrigin checks that o is a well-formed OAuth-discovery

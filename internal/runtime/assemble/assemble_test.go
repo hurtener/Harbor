@@ -629,6 +629,7 @@ func (stub110dProvider) PendingFlow(string) (toolauth.PendingFlowInfo, bool) {
 func (stub110dProvider) DenyFlow(context.Context, string, string) error   { return nil }
 func (stub110dProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }
 func (stub110dProvider) Close(context.Context) error                      { return nil }
+func (stub110dProvider) AllowedDownstreamHosts() []string                 { return nil }
 
 // TestAssemble_InjectedOAuthProvider_OverridesCfgDeclaration — an
 // Options.OAuthProviders entry overrides the same-named cfg

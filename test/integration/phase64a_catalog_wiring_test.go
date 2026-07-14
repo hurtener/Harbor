@@ -135,6 +135,7 @@ func (s *phase64aStubProvider) PendingFlow(_ string) (auth.PendingFlowInfo, bool
 func (s *phase64aStubProvider) DenyFlow(_ context.Context, _, _ string) error        { return nil }
 func (s *phase64aStubProvider) Revoke(_ context.Context, _ tools.ToolSourceID) error { return nil }
 func (s *phase64aStubProvider) Close(_ context.Context) error                        { return nil }
+func (s *phase64aStubProvider) AllowedDownstreamHosts() []string                     { return nil }
 
 // buildPhase64aEnv wires the Phase 64a stack via the centralised
 // harbortest/devstack helper (D-094). The four test tools are

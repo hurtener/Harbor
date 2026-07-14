@@ -294,7 +294,7 @@ type waveV19Env struct {
 	coord    pauseresume.Coordinator
 }
 
-func newWaveV19Env(t *testing.T) *waveV19Env {
+func newWaveV19Env(t *testing.T, downstreamHosts ...string) *waveV19Env {
 	t.Helper()
 	broker := newWaveV19Broker(t)
 	red := patternsAudit.New()
@@ -334,11 +334,12 @@ func newWaveV19Env(t *testing.T) *waveV19Env {
 	store := &waveV19SpyStore{t: t, inner: innerStore}
 
 	prov, err := tokenexchange.New(auth.ProviderConfig{
-		Name:             waveV19Provider,
-		CredentialSource: credsource.Static(waveV19BrokerClient, waveV19BrokerSecret),
-		Scopes:           []string{"Report.Send"},
-		TokenURL:         broker.tokenURL(),
-		Extra:            map[string]string{"audience": waveV19Audience},
+		Name:                   waveV19Provider,
+		CredentialSource:       credsource.Static(waveV19BrokerClient, waveV19BrokerSecret),
+		Scopes:                 []string{"Report.Send"},
+		TokenURL:               broker.tokenURL(),
+		Extra:                  map[string]string{"audience": waveV19Audience},
+		AllowedDownstreamHosts: downstreamHosts,
 	}, auth.FactoryDeps{
 		Store: store, Bus: provBus, Redactor: red, Coordinator: coord,
 		// DisableKeepAlives so the broker's httptest connections don't

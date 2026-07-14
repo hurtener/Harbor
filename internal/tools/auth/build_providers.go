@@ -92,13 +92,16 @@ func BuildProviders(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps)
 			return nil, err
 		}
 		pcfg := ProviderConfig{
-			Name:             p.Name,
-			CredentialSource: src,
-			Scopes:           append([]string(nil), p.Scopes...),
-			AuthURL:          p.AuthURL,
-			TokenURL:         p.TokenURL,
-			RedirectURL:      p.RedirectURL,
-			Extra:            p.Extra,
+			Name:                   p.Name,
+			CredentialSource:       src,
+			Scopes:                 append([]string(nil), p.Scopes...),
+			AuthURL:                p.AuthURL,
+			TokenURL:               p.TokenURL,
+			RedirectURL:            p.RedirectURL,
+			Extra:                  p.Extra,
+			AllowedDownstreamHosts: append([]string(nil), p.AllowedDownstreamHosts...),
+			Audience:               p.Audience,
+			ScopeCeiling:           append([]string(nil), p.ScopeCeiling...),
 		}
 		prov, err := Resolve(ctx, p.Driver, pcfg, factoryDeps)
 		if err != nil {

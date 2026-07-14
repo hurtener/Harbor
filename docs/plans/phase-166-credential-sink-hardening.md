@@ -69,7 +69,27 @@ downstream phases were about to copy as their audit posture.
 
 ## Findings I'm departing from (if any)
 
-None.
+None from the briefs.
+
+**Implementation deviation (§4.3) — the hardened token-exchange client
+allows LOOPBACK.** D-300 point 3 / the goals list the dial guard as refusing
+"private-range / loopback / IP-literal" destinations, mirroring the
+discovery client. Once the code landed, that loopback refusal broke the
+real-boot-path fixtures (`TestE2E_Phase149`, the Phase 142 broker fixture)
+which run their credential broker on a loopback `httptest.Server` through the
+production path (`assemble.Assemble` → `BuildProviders` → nil `HTTPClient` →
+the hardened client), and — more importantly — it would break the legitimate
+production deployment where the credential broker is a **localhost sidecar**
+(a token-vault agent on `127.0.0.1`). The token endpoint here is
+BOOT-DECLARED / config-only (never wire-derived), so it is not the
+attacker-influenceable input the discovery client's loopback refusal defends
+against. The dial guard therefore refuses private-range / link-local / RFC1918
+/ unique-local space (the DNS-rebinding backstop stays) but ALLOWS loopback —
+exactly the carve-out the cited in-repo precedent `credsource/drivers/remote`
+already makes for its own bearer-carrying client (loopback `http` accepted).
+The AC test `TestTokenExchange_HTTPClient_RefusesPrivateDial` asserts refusal
+on a non-loopback RFC1918 address; a new `..._AllowsLoopback` pins the
+carve-out. This is a §17.6 fix of what the integration suite surfaced.
 
 ## Goals
 

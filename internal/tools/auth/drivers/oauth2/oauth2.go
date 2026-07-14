@@ -185,7 +185,12 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		return nil, fmt.Errorf("auth/oauth2: NewProvider (provider name=%q): %w", cfg.Name, err)
 	}
 
-	return &provider{name: cfg.Name, source: source, inner: inner}, nil
+	return &provider{
+		name:                   cfg.Name,
+		source:                 source,
+		inner:                  inner,
+		allowedDownstreamHosts: append([]string(nil), cfg.AllowedDownstreamHosts...),
+	}, nil
 }
 
 // provider wraps an `*auth.Provider` so every `Token` / `Revoke` call
@@ -203,6 +208,11 @@ type provider struct {
 	name   string
 	source tools.ToolSourceID
 	inner  auth.OAuthProvider
+	// allowedDownstreamHosts is the boot-declared sink allow-list for this
+	// provider's southbound binding — the hosts the interactive bearer may
+	// be injected into. Set once at construction; the MCP southbound
+	// binding refuses a connection host absent from it (fail-closed).
+	allowedDownstreamHosts []string
 }
 
 // Token implements OAuthProvider.Token.
@@ -261,4 +271,11 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 // Close implements OAuthProvider.Close.
 func (p *provider) Close(ctx context.Context) error {
 	return p.inner.Close(ctx)
+}
+
+// AllowedDownstreamHosts implements OAuthProvider — the boot-declared sink
+// allow-list for the interactive binding. A copy is returned so callers
+// cannot alias provider state.
+func (p *provider) AllowedDownstreamHosts() []string {
+	return append([]string(nil), p.allowedDownstreamHosts...)
 }

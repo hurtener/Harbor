@@ -235,7 +235,8 @@ func (s *wave11StubProvider) DenyFlow(_ context.Context, _, _ string) error { re
 
 func (s *wave11StubProvider) Revoke(_ context.Context, _ tools.ToolSourceID) error { return nil }
 
-func (s *wave11StubProvider) Close(_ context.Context) error { return nil }
+func (s *wave11StubProvider) Close(_ context.Context) error    { return nil }
+func (s *wave11StubProvider) AllowedDownstreamHosts() []string { return nil }
 
 // buildWave11Stack assembles the assembled dev-shaped stack with
 // `tools.entries[]` declaring at least one approval-gated tool, one

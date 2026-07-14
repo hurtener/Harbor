@@ -66,6 +66,25 @@ type ProviderConfig struct {
 	// Extra is the driver-specific extras map. Reserved for future
 	// drivers' per-flow knobs; unused by the V1 `oauth2` driver.
 	Extra map[string]string
+	// AllowedDownstreamHosts is the boot-declared, config/file-only set of
+	// downstream connection hosts (host[:port]) a southbound binding may
+	// inject this provider's credential into. The credential-plane
+	// invariant: no admin-writable field determines a credential sink, so
+	// this allow-list is fixed at construction. A bearer-injecting binding
+	// whose downstream host is absent is refused fail-closed. Every driver
+	// stores it and answers `OAuthProvider.AllowedDownstreamHosts`.
+	AllowedDownstreamHosts []string
+	// Audience is the boot-declared token-audience ceiling. When non-empty
+	// it is the authority for the exchanged token's audience — NOT the
+	// caller-chosen provider name — closing the audience-picking lever. An
+	// empty Audience preserves the legacy audience-from-name behaviour
+	// (backward-compatible; opt-in hardening).
+	Audience string
+	// ScopeCeiling is the boot-declared scope ceiling. When non-empty the
+	// requested scopes (`Scopes`) are INTERSECTED against it — a requested
+	// scope outside the ceiling is dropped, never honoured. An empty
+	// ceiling preserves the legacy pass-through behaviour.
+	ScopeCeiling []string
 }
 
 // FactoryDeps bundles the shared collaborators every OAuth provider

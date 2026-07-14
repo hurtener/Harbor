@@ -316,7 +316,35 @@ func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, provi
 	if !ok {
 		return nil, fmt.Errorf("%w: unknown provider %q (registered: %s)", ErrOAuthBinding, ms.OAuthProvider, registeredProviderNames(providers))
 	}
+	// Downstream-sink allow-list (the credential-plane invariant):
+	// the provider's boot-declared allow-list is the ONLY authority for
+	// where its credential may be injected. An empty allow-list on a
+	// bearer-injecting provider is refused fail-closed (a provider that can
+	// inject a bearer must declare where); a connection host absent from
+	// the list is refused — never a silent unauthenticated dial. Host
+	// comparison uses the ONE normaliser (config.NormalizeDownstreamHost),
+	// shared with config-time validation.
+	allowed := prov.AllowedDownstreamHosts()
+	if len(allowed) == 0 {
+		return nil, fmt.Errorf("%w: provider %q declares no allowed_downstream_hosts — a bearer-injecting provider must declare its downstream sinks (fail-closed; the credential-plane invariant)", ErrOAuthBinding, ms.OAuthProvider)
+	}
+	connHost := config.NormalizeDownstreamHost(ms.URL)
+	if connHost == "" || !hostAllowed(allowed, connHost) {
+		return nil, fmt.Errorf("%w: connection host %q is not in provider %q's allowed_downstream_hosts — the credential may only be injected into a boot-declared downstream sink", ErrOAuthBinding, connHost, ms.OAuthProvider)
+	}
 	return prov, nil
+}
+
+// hostAllowed reports whether the normalised connection host is present in
+// the provider's allow-list, normalising each list entry with the same
+// (single) normaliser config-time validation uses.
+func hostAllowed(allowList []string, normConnHost string) bool {
+	for _, h := range allowList {
+		if config.NormalizeDownstreamHost(h) == normConnHost {
+			return true
+		}
+	}
+	return false
 }
 
 // registeredProviderNames renders a deterministic, comma-separated list of

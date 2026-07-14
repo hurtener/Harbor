@@ -13,11 +13,12 @@ func withOAuthProvider(c *config.Config) {
 	c.Tools.OAuthTokenKEKEnv = "HARBOR_TOOL_OAUTH_KEK"
 	c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{
 		{
-			Name:            "m365-broker",
-			Driver:          "tokenexchange",
-			ClientIDEnv:     "M365_CLIENT_ID",
-			ClientSecretEnv: "M365_CLIENT_SECRET",
-			TokenURL:        "https://broker.example.test/token",
+			Name:                   "m365-broker",
+			Driver:                 "tokenexchange",
+			ClientIDEnv:            "M365_CLIENT_ID",
+			ClientSecretEnv:        "M365_CLIENT_SECRET",
+			TokenURL:               "https://broker.example.test/token",
+			AllowedDownstreamHosts: []string{"gcal.example.test"},
 		},
 	}
 }

@@ -29,6 +29,42 @@ the `internal/runtime/dispatch` parallel-cancel test flakes under full-suite
 `-race` CPU oversubscription — issue
 [#480](https://github.com/hurtener/Harbor/issues/480).)
 
+### Security
+
+- **Credential-sink hardening (D-300) — the v1.14 credential-plane
+  invariant: no admin-writable field may determine where a credential is
+  sent.** Three exfiltration paths reachable in shipped Harbor are closed
+  in-band: (1) a boot-declared `tools.oauth_providers[].allowed_downstream_hosts`
+  allow-list is now enforced in the MCP southbound binding
+  (`resolveOAuthBinding`) — a binding whose connection host is not listed is
+  refused fail-closed, covering both the `tokenexchange` and `oauth2`
+  drivers; (2) the token-exchange HTTP client (which POSTs the org's OAuth
+  `client_id`/`client_secret`) is hardened to refuse private-range/link-local
+  dials post-DNS (the DNS-rebinding backstop; loopback stays allowed for a
+  boot-declared localhost-sidecar broker), disable the proxy, and refuse
+  every redirect (Go replays the POST body on 307/308); (3) the MCP bearer client re-validates every
+  redirect target against the provider's allow-list so an exchanged
+  downstream bearer never egresses via a redirect. A boot-declared
+  audience/scope ceiling decouples the token audience from the caller-chosen
+  provider name and intersects requested scopes. The
+  `mcp.servers.set_raw_html_trust` audit ordering is corrected to a
+  genuinely fail-closed (apply-then-emit-then-compensate) posture.
+
+### Changed
+
+- **Migration — the downstream-host allow-list is MANDATORY for a bound
+  OAuth provider (D-300).** Any `tools.oauth_providers[]` entry that a
+  `tools.mcp_servers[]` connection binds via `oauth_provider` MUST now declare
+  a non-empty `allowed_downstream_hosts` that lists the connection's host
+  (default-port equivalence and case-insensitivity apply). A previously-valid
+  config that bound a provider without listing its downstream host now fails
+  at **boot** (not at first call), naming the missing field. Add
+  `allowed_downstream_hosts: ["<connection-host>"]` to the provider entry.
+  A new boot-declared `tools.oauth_credential_brokers[]` list pins named
+  credential sinks (token endpoint + allowed downstream hosts + broker
+  credential env); it is additive and the inline `oauth_providers[].remote`
+  block stays valid. See `examples/dev.yaml` and `docs/CONFIG.md`.
+
 ## [1.13.1] — 2026-07-13
 
 A scaffold patch release. Both bugs were reported by an external adopter

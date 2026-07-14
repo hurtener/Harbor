@@ -583,6 +583,19 @@ type OAuthProvider interface {
 	// Close releases provider resources (in-flight singleflights,
 	// HTTP client connections, cached metadata). Idempotent.
 	Close(ctx context.Context) error
+
+	// AllowedDownstreamHosts returns the boot-declared, config/file-only
+	// set of downstream connection hosts (host[:port]) this provider is
+	// permitted to inject a credential into. It is a credential-sink
+	// bound: the credential-plane invariant is that no admin-writable
+	// field determines where a credential is sent, so the sink allow-list
+	// is fixed at construction and read — never derived from a wire /
+	// runtime-add request. An empty result means the provider declares no
+	// allowed sink; a caller that injects a bearer (the MCP southbound
+	// binding) MUST refuse a binding whose downstream host is not listed,
+	// fail-closed. The returned slice is a copy — callers may retain it
+	// without aliasing provider state.
+	AllowedDownstreamHosts() []string
 }
 
 // wrap formats a sentinel error with %w plus a contextual detail

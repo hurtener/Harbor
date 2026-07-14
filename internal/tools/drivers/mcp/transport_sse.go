@@ -2,9 +2,13 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/hurtener/Harbor/internal/config"
 )
 
 // newSSETransport builds an mcpsdk.SSEClientTransport from cfg.
@@ -57,7 +61,46 @@ func buildHTTPClient(cfg Config) *http.Client {
 	if rt == base {
 		return http.DefaultClient
 	}
-	return &http.Client{Transport: rt}
+	client := &http.Client{Transport: rt}
+	// Redirect hardening for the bearer-injecting connection (the
+	// credential-plane invariant). bearerInjectingTransport
+	// re-injects `Authorization: Bearer <exchanged>` on EVERY hop from
+	// inside the RoundTripper, so Go's cross-host header stripping does NOT
+	// help — an allow-listed host that answers a 3xx would otherwise send
+	// the exchanged bearer to an arbitrary redirect target. Re-validate
+	// each redirect target host against the bound provider's boot-declared
+	// AllowedDownstreamHosts; a redirect to an unlisted host is refused
+	// with a typed sentinel, so the bearer never reaches an off-list host.
+	if cfg.OAuthProvider != nil {
+		client.CheckRedirect = redirectGuardFor(cfg.OAuthProvider.AllowedDownstreamHosts())
+	}
+	return client
+}
+
+// ErrRedirectToUnlistedHost is the typed sentinel the MCP bearer client
+// refuses a redirect with when the redirect target host is not in the bound
+// provider's downstream-sink allow-list. Callers compare with errors.Is.
+var ErrRedirectToUnlistedHost = errors.New("mcp: redirect target host is not in the bound provider's allowed_downstream_hosts")
+
+// redirectGuardFor builds an http.Client CheckRedirect that refuses any
+// redirect whose target host is not in allowList (normalised via the ONE
+// shared normaliser). An empty allow-list refuses every redirect — a
+// bearer-injecting connection with no declared sink must never follow a
+// redirect. A bounded redirect budget also caps chains.
+func redirectGuardFor(allowList []string) func(*http.Request, []*http.Request) error {
+	const maxRedirects = 5
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("%w: stopped after %d redirects", ErrRedirectToUnlistedHost, maxRedirects)
+		}
+		target := config.NormalizeDownstreamHost(req.URL.String())
+		for _, h := range allowList {
+			if config.NormalizeDownstreamHost(h) == target {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: %q", ErrRedirectToUnlistedHost, target)
+	}
 }
 
 // bearerCtxKey is the unexported key under which the per-call OAuth bearer is
