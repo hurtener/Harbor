@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 12 canonical Harbor Protocol error codes, generated from the single-source
+The 13 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -20,12 +20,13 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 | `auth_rejected` | 401 | A bearer token was present but failed verification: malformed, an algorithm outside the asymmetric allowlist, bad signature, expired / not-yet-valid, unknown `kid`, audience or issuer mismatch. | Only after obtaining a fresh valid token. |
 | `identity_required` | 401 | The request resolved no complete `(tenant, user, session)` identity scope — a missing bearer, a missing session (no `X-Harbor-Session` header and no default claim), or a body identity that contradicts the verified token. Identity is mandatory and fails closed. | No — attach a token / session first ([Auth & identity](./auth-and-identity.md)). |
 | `identity_scope_required` | 403 | The request is authenticated and identified, but the requested cross-tenant fan-in (e.g. `events.subscribe?admin=1`) or admin verb needs a verified `admin` / `console:fleet` scope claim the token does not carry. | No — re-authenticate with a scope-bearing token. |
-| `invalid_request` | 400 | The request was structurally malformed: undecodable JSON, a wrong wire shape for the method, a `start` on a closed session (reopen-after-close is forbidden). | No — fix the request shape first. |
+| `invalid_request` | 400 | The request was structurally malformed: undecodable JSON, a wrong wire shape for the method, an out-of-range field. | No — fix the request shape first. |
 | `not_found` | 404 | The request's target does not exist in the caller's scope: a steering control for a run with no live inbox (never started or already terminal), an unknown task / flow / artifact id. Cross-tenant existence is never revealed — a foreign id is indistinguishable from a missing one. | No — the target is gone or never existed for you. |
 | `payload_invalid` | 422 | A control payload violated an RFC §6.3 bound (depth > 6, > 64 keys, > 50 list items, a string > 4096 chars, > 16 KiB total) or carried an unsupported leaf type. | No — shrink / restructure the payload. |
 | `presign_unsupported` | 501 | An `artifacts.get_ref` request reached an ArtifactStore driver without presigned-URL support (in-mem / fs / sqlite / postgres blob drivers). The resolver fails loud instead of silently streaming bytes. | No — the configured driver cannot satisfy it; use a presign-capable store (S3 family) or download via the Console proxy. |
 | `request_too_large` | 413 | An `artifacts.put` body exceeded the configured `protocol.max_request_bytes` bound. The upload is refused loudly, never truncated. | No — shrink the payload or raise the operator-side bound. |
 | `runtime_error` | 500 | An unclassified runtime-side failure — the catch-all. Also used on the SSE surface for subscriber-limit (429) and bus-closed (503) conditions. | Yes, with backoff — the request shape is not the problem. |
 | `scope_mismatch` | 403 | The caller's steering scope claim is below the control method's RFC §6.3 minimum, or a cross-tenant steering / mutation was attempted without `admin`. | No — the operation needs a higher scope. |
+| `session_erased` | 409 | A `start` named a session id that was permanently deleted by `sessions.delete` (right-to-erasure). The session is terminal and cannot be reopened — its data is gone. A closed-but-not-erased session, by contrast, reopens normally on `start`. | No — the conversation was erased; start a new one with a fresh session id. |
 | `session_running` | 409 | A `sessions.delete` erasure was refused because the target session has a RUNNING task, mirroring the GC never-reap-running invariant. No store is touched on refusal — a session with in-flight work is durable execution state, not a cache entry. | Yes — re-issue after the session's task finishes (or cancel it first). |
 | `unknown_method` | 404 | The method name is not in the canonical registry ([methods.md](./methods.md)). | No — check the method name and this Runtime's advertised capabilities (`runtime.info`). |

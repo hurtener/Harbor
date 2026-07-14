@@ -94,6 +94,15 @@ func HTTPStatus(code protoerrors.Code) int {
 		// distinct from a 404 (the session does not exist) and a 400 (a
 		// malformed body).
 		return http.StatusConflict // 409
+	case protoerrors.CodeSessionErased:
+		// a `start` named a session id permanently deleted by
+		// `sessions.delete` (right-to-erasure). The request is well-formed
+		// and authorised, but the session is terminal — its data is gone and
+		// it can never be reopened. 409 Conflict — the same state-forbids
+		// posture as CodeSessionRunning; distinct from a 404 (a closed but
+		// reopenable session exists and resumes) and a 400 (a malformed
+		// body).
+		return http.StatusConflict // 409
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it

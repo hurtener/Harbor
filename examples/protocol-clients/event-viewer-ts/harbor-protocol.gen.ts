@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:411dd47f536ee99f3d2ef927e7fc6c8df507a2b5b3d375a34bc3302d85d0415f";
+export const WIRE_SURFACE_DIGEST = "sha256:3357c4cfec0d42276fb864de6982342b12bbeec046f1a8cee86bddeead24bec8";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -150,6 +150,7 @@ export type HarborErrorCode =
   | "request_too_large"
   | "runtime_error"
   | "scope_mismatch"
+  | "session_erased"
   | "session_running"
   | "unknown_method";
 
@@ -1942,6 +1943,7 @@ export interface ReadMCPResourceResponse {
 
 export interface RetentionHorizon {
   surface: string;
+  scope?: string;
   oldest_retained_at?: string;
 }
 

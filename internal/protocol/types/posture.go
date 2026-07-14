@@ -142,11 +142,51 @@ type RetentionHorizon struct {
 	// "events", "tasks", "sessions". The "events" entry also covers the
 	// conversation-history read, whose substrate IS the event log.
 	Surface string `json:"surface"`
+	// Scope names the identity scope this horizon was measured AT — one
+	// of "runtime" (identity-free, the whole retained set), "tenant" (the
+	// caller's tenant), or "session" (the caller's full triple). It makes
+	// the ABSENCE of a value representable: a consumer reading a
+	// no-timestamp entry distinguishes `scope:"runtime"` + no-timestamp
+	// ("the runtime retains nothing — a trustworthy empty") from
+	// `scope:"session"` / `scope:"tenant"` + no-timestamp ("nothing at
+	// YOUR scope — the runtime-wide truth is not observable here") and so
+	// degrades honestly (marks a fleet window's completeness unverifiable)
+	// rather than silently trusting a shorter or absent horizon as
+	// runtime-wide truth. The `events` horizon is always "runtime"; the
+	// `tasks` / `sessions` horizons are "session" / "tenant" for an
+	// ordinary caller and widen to "runtime" for a verified admin /
+	// console:fleet fleet-observe caller. Omitted (empty) for an
+	// older/headless wiring that does not stamp a scope.
+	Scope string `json:"scope,omitempty"`
 	// OldestRetainedAt is the RFC-3339 wall-clock time of the oldest row
-	// the surface currently retains. Zero/absent (the field is omitted)
-	// when the surface holds no rows yet — never a fabricated value.
-	OldestRetainedAt time.Time `json:"oldest_retained_at,omitempty"`
+	// the surface currently retains AT `Scope`. It is a pointer so a nil
+	// value is genuinely OMITTED from the JSON (a zero `time.Time` value
+	// would marshal as a real-looking "0001-01-01T00:00:00Z" and defeat
+	// the absence-representable contract). Nil/absent when the surface
+	// holds no rows at that scope — never a fabricated value. Read WITH
+	// `Scope`: an omitted timestamp is a true empty only when `Scope` is
+	// "runtime"; at "session" / "tenant" it means the runtime-wide horizon
+	// is simply not observable at the caller's scope.
+	OldestRetainedAt *time.Time `json:"oldest_retained_at,omitempty"`
 }
+
+// The canonical RetentionHorizon.Scope values. The set is closed: a
+// retention seam stamps one of exactly these three. "runtime" is the
+// identity-free whole-retained-set scope the events horizon always uses
+// (and the tasks/sessions horizons widen to for a verified fleet caller);
+// "tenant" and "session" are the ordinary-caller identity-scoped folds.
+const (
+	// RetentionScopeRuntime — the horizon was measured over the whole
+	// retained set, identity-free (a bare wall-clock instant, no
+	// per-tenant/per-session content).
+	RetentionScopeRuntime = "runtime"
+	// RetentionScopeTenant — the horizon was measured across the caller's
+	// tenant only.
+	RetentionScopeTenant = "tenant"
+	// RetentionScopeSession — the horizon was measured across the caller's
+	// full (tenant, user, session) triple only.
+	RetentionScopeSession = "session"
+)
 
 // RuntimeHealth is the runtime.health response: a per-subsystem
 // readiness rollup across the runtime's registered subsystems, plus the

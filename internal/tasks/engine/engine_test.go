@@ -104,6 +104,58 @@ func TestEngine_Conformance(t *testing.T) {
 	})
 }
 
+// TestEngine_OldestRetainedAt_RuntimeWideAcrossTenants pins the
+// identity-free runtime-wide retention reader (D-310): it reports the
+// oldest CreatedAt across EVERY tenant's tasks — the fleet-observe
+// horizon — not a per-caller slice. Empty → (zero,false,nil); after
+// Close → ErrRegistryClosed.
+func TestEngine_OldestRetainedAt_RuntimeWideAcrossTenants(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	quadA := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-a", UserID: "u", SessionID: "s1"}}
+	quadB := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-b", UserID: "u", SessionID: "s2"}}
+	seed := engine.Snapshot{Tasks: []engine.TaskRecord{
+		{Task: &tasks.Task{ID: "01A", Identity: quadA, Kind: tasks.KindBackground,
+			Status: tasks.StatusRunning, CreatedAt: base.Add(2 * time.Hour).UnixNano(), UpdatedAt: base.UnixNano()}},
+		{Task: &tasks.Task{ID: "01B", Identity: quadB, Kind: tasks.KindBackground,
+			Status: tasks.StatusRunning, CreatedAt: base.UnixNano(), UpdatedAt: base.UnixNano()}}, // oldest, other tenant
+	}}
+
+	bus := mkBus(t)
+	defer func() { _ = bus.Close(context.Background()) }()
+	eng, err := engine.New(bus, auditpatterns.New(), &memBackend{seed: seed})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+
+	oldest, present, err := eng.OldestRetainedAt(context.Background())
+	if err != nil || !present {
+		t.Fatalf("OldestRetainedAt = (%v, %v, %v), want a present horizon", oldest, present, err)
+	}
+	if !oldest.Equal(base) {
+		t.Fatalf("runtime-wide oldest = %v, want %v (tenant-b's task, cross-tenant)", oldest, base)
+	}
+
+	if err := eng.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, _, err := eng.OldestRetainedAt(context.Background()); err == nil {
+		t.Fatal("OldestRetainedAt after Close: want ErrRegistryClosed, got nil")
+	}
+}
+
+func TestEngine_OldestRetainedAt_Empty_NotPresent(t *testing.T) {
+	bus := mkBus(t)
+	defer func() { _ = bus.Close(context.Background()) }()
+	eng, err := engine.New(bus, auditpatterns.New(), &memBackend{})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	oldest, present, err := eng.OldestRetainedAt(context.Background())
+	if err != nil || present || !oldest.IsZero() {
+		t.Fatalf("empty OldestRetainedAt = (%v, %v, %v), want (zero, false, nil)", oldest, present, err)
+	}
+}
+
 func TestEngine_New_NilArgs_FailLoud(t *testing.T) {
 	bus := mkBus(t)
 	defer func() { _ = bus.Close(context.Background()) }()

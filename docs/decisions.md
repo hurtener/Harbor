@@ -8128,3 +8128,185 @@ A first-class "last agent bound to this session" read is a named follow-up.
 **Scope.** This decision is a SHARED reference for the class, not a single implementation. HA-22 / Phase 174 (D-309) is its first named instance on the sessions projection: the six numeric counters are populated at the source (option a), and the two agent fields — for which no populated value can be produced yet — take the rule directly (representable absence + loud rejection of a facet over the unpopulated field). The HA-23 / Phase 175 plan references this rule for its own leg. When option (a)-style population fully fills a field, the rule still governs the degenerate "enricher not wired" case (honest zeros + no facet-over-unpopulated).
 
 **Cross-references.** First instance: D-309 (Phase 174, HA-22 — the sessions-projection leg). Sibling class members: D-305 (events-driver conformance parity — a difference is DATA/a named sentinel, never a 500/status fork; HA-18/HA-20). Extends the honest-zero doctrine of the `tasks.Projector` enricher. Referenced-forward by the HA-23 / Phase 175 plan. CLAUDE.md §5 (fail loudly), §13 (silent degradation forbidden; honest zeros), §17.6 (fix what the test finds), §17.8 (a fixture that can't tell right-field from wrong-field is a rubber stamp).
+
+---
+
+## D-312 — A closed session (explicitly closed OR GC-reaped) MAY be reopened, re-activating the existing record in place with its durable history intact; an ERASED session is the one terminal exception (reopen fails loud). Supersedes RFC §6.9's original "reopen-after-close is forbidden — clients open a new session"
+
+**Date:** 2026-07-14
+
+**Status:** Pending (Phase 176, v1.14)
+
+**Where it lives:** `RFC-001-Harbor.md` §6.9 (amended); `docs/plans/phase-176-session-reopen.md`; `internal/sessions/registry.go`, `internal/sessions/sessions.go`, `internal/sessions/events.go`, `internal/sessions/erasure.go`, `internal/protocol/errors.go`, `internal/runtime/serve/session_ensurer.go`.
+
+**Context.** RFC §6.9 was Settled at "A session is open until explicitly closed or GC'd. **Reopen-after-close is forbidden.** Clients open a new session." The consumer-chat / white-label product model breaks that assumption: a conversation must be **always resumable** — a user returns days later and sends a new message on the SAME conversation. Reopen is CLEAN in Harbor's current code because close/GC reap the session RECORD, not the DATA: `Registry.Close` (`registry.go`) and the GC sweep (`gc.go`) mark the record `Closed=true` and drop it from the live `openSessions` map but do NOT delete the session's durable events / state / memory (the GC code explicitly guards against resurrecting the record, i.e. the stored data is deliberately left intact); the durable event log is "gap-free and **untrimmed** in V1" (`internal/events/drivers/durable/durable.go` — no retention knob, no TTL, no cap) and the StateStore has no retention sweep. The ONLY hard-delete is explicit erasure — Phase 130 `session.erase` (`internal/sessions/erasure.go`), own-session-only, audited, cascading to `StateStore.DeleteScope` + a durable erasure ledger. The four load-bearing session invariants (`sessions.go`): (1) identity captured IMMUTABLY on Open; (2) reopen-after-close FORBIDDEN — THIS is what changes; (3) cross-tenant SessionID reuse REJECTED (`ErrSessionIDReuse`); (4) GC never reaps a RUNNING task.
+
+**Decision.** Amend §6.9 invariant (2): `Open` / `EnsureOpen` / the `start` create-on-first-use seam on a session whose stored record is `Closed=true` (explicit close OR GC reap) **re-activates** it in place — clears `Closed` / `ClosedAt` / `ClosedReason`, preserves the IMMUTABLE identity AND `OpenedAt` (invariant 1; `OpenedAt` is also the erasure cascade's lifecycle discriminator and MUST NOT be mutated), stamps a new `LastReopenedAt`, refreshes `LastSeen`, re-adds the record to `openSessions` + the `(tenant, user)` discovery catalog, lifts the erasure fence, and emits a new content-free `session.reopened` lifecycle event — and because the durable events / state / memory were never reaped, the conversation resumes with its history INTACT. **GC hard-cap fix (FAIL-1, IN THIS PHASE not a follow-up):** the GC hard cap was measured from `OpenedAt` alone (`gc.go`), so a session opened >`HardCap` ago and reopened today would be re-reaped within one `SweepInterval` on every deployment (`HardCap<=0` restores the 720h default; no disable) — making "resume an old conversation forever" false. The hard cap is now measured from `max(OpenedAt, LastReopenedAt)`; the separate stamp is REQUIRED precisely because `OpenedAt` cannot be refreshed without corrupting erasure discrimination. The idle-TTL already resets via `LastSeen`. **The one terminal exception:** a session that went through `session.erase` MUST NOT be reopened — reopen fails loud with a new `ErrReopenAfterErase` sentinel, NEVER a silent empty-start (CLAUDE.md §5 fail-loud; §7 right-to-erasure — you do not resurrect data a user asked to be deleted). **This gate MUST fire on the not-found / fresh-create path, not only the closed-record branch (FAIL-2):** a fully-CONVERGED erase runs `deleteScopeSerialized → DeleteScope` which removes the `session.lifecycle` record entirely, so a subsequent reopen hits `state.ErrNotFound` and falls through to fresh-create — a naive implementation would mint a fresh empty session (a silent resurrection, failing the primary AC in the plain sequential case, not just under a race). `isErased(ctx, id)` therefore gates BOTH branches under the same `r.mu` hold, BEFORE minting. Terminality is detected against the erasure's observability-scope records via an O(1) point-`Load`: a pending erasure **ledger** (`erasureLedgerKindPrefix`, in-flight / interrupted erasure) OR a new durable, content-free **erasure tombstone** (`erasureTombstoneKindPrefix`, RETAINED — the sibling of the durable `session.erased` record-of-fact, carrying the SAME content-free shape so it adds no retained information about deleted data) — either blocks reopen. The tombstone is REQUIRED because the pending ledger is deleted on erasure success, so it alone cannot make a fully-converged erasure terminal. **Why a dedicated tombstone and not a scan of the existing `session.erased` event (WARN-2):** a terminality guard must FAIL CLOSED, but the event scan (`recordAlreadyEmitted`) cannot — it is capability-gated (optional `events.HistoryReplayer`, returns false when absent → fail-open), bounded (`erasureDedupeScanLimit=512`, a dedupe window not a guarantee), and future-retention-prunable (Phase 163 track); a StateStore point-`Load` is mandatory on all three drivers, fail-closed O(1), never pruned. The rejected alternative (a converged erasure frees the id and a reopen starts a FRESH empty session) makes the "erase → reopen fails loud" property unrepresentable and reads as a silent create where a loud terminal is expected. **Race-safety — the real ordering invariant (WARN-1):** reopen's `load-or-not-found → isErased → re-activate-or-mint → save` runs in one registry `r.mu` critical section, serializing against the erasure's `r.mu`-held `deleteScopeSerialized`/`clearErased`. The tombstone is NOT atomic with `DeleteScope` (it rides a DIFFERENT — observability — scope and is written in `completeErasure`) and does not need to be; the binding invariant is **write-happens-before-delete**: the tombstone `Save` completes BEFORE the pending ledger is deleted (`deleteLedger`), so at every instant `isErased == (ledger present) ∨ (tombstone present)` with NO gap, and a reopen at any interleave sees at least one. The tombstone write is SUCCESS-CRITICAL — a failed `Save` fails the erasure loud (wrapped like `ErrErasureRecordFailed`) and MUST NOT proceed to `deleteLedger`, else a `tombstone-fails` + `ledger-deleted` interleave opens a converged-erasure gap and permits resurrection. **The tombstone `Save` is also UNCONDITIONAL per terminal `completeErasure`, OUTSIDE the `recordAlreadyEmitted` emit-skip guard (WARN-B):** `completeErasure` skips `emitErased` when a prior attempt already published the record-of-fact, but the tombstone write must run regardless and be idempotent — a converging retry that emitted the event but died before the tombstone write would otherwise (if the `Save` were co-located inside the `!recordAlreadyEmitted` block) skip the tombstone, run `deleteLedger`, and leave neither marker → a later reopen silently resurrects. **`isErased` fails CLOSED (WARN-C):** it returns `(false, nil)` ONLY when BOTH the ledger and tombstone `Load`s return `state.ErrNotFound`; any other `Load` error propagates and reopen fails loud (mints nothing, re-activates nothing) — a fail-open collapse to "not erased" on a transient StateStore fault is the exact seam WARN-2 rejects the history-scan for, and the point-`Load` must not reintroduce it (mirrors `loadLedger`, `erasure.go:665-678`). **All §6 multi-isolation preserved:** reopen is identity-mandatory and identity-immutable (the caller's verified `(tenant, user)` must equal the stored record's captured identity, `ErrIdentityMismatch` otherwise); cross-tenant reuse of a session id is STILL `ErrSessionIDReuse` (invariant 3 unchanged — a reopen under a DIFFERENT tenant is reuse, not a reopen); no new identity-downgrade knob. The old blanket `ErrReopenAfterClose` (sessions pkg) is retired from the reopen path; `Touch` on a still-closed session keeps a loud read-only guard (renamed `ErrSessionClosed` — Touch is not a reopen entry). The protocol-side `ErrSessionReopenAfterClose` mapping is retired; the ensurer adapter maps `sessions.ErrReopenAfterErase` → `protocol.ErrSessionReopenAfterErase` → a NEW dedicated, MACHINE-BRANCHABLE wire code `CodeSessionErased` (`"session_erased"`, HTTP 409, added in `internal/protocol/errors/errors.go` — §8: codes added there and only there; NOT a `ProtocolVersion` break) rather than the retired reopen-after-close's `CodeInvalidRequest` (WARN-A): the originating pain is a consumer-chat product that must distinguish "this conversation was deleted — start a new one" from a genuinely-malformed `start`, and `errors/errors.go` forbids clients branching on the advisory `Message`, so a dedicated code is the only clean programmatic trigger. **Documented-surface prose fix (the re-review FAIL):** adding the code genuinely adds an `errors.md` row, so the D-209 regen runs and the SAME pass corrects now-false prose the lockstep gate could never catch (it keys rows on `errors.Codes()` presence, never on `When` prose) — the `CodeInvalidRequest` generator join (`cmd/harbor-gen-protocol-docs/errors.go`) no longer cites "a `start` on a closed session (reopen-after-close is forbidden)", and the hand-written choreography page `docs/site/protocol/auth-and-identity.md` is rewritten so a `start` on a closed session reopens and only an ERASED session is rejected `session_erased`. §13 same-wave consumer: the Console Playground / Sessions page resume a closed session (a `start` on a closed id now succeeds), refresh on `session.reopened`, and branch on `code == "session_erased"` for the deleted-conversation path.
+
+**Findings I'm departing from.** This decision is itself a departure from a prior Settled RFC decision (§6.9 invariant 2), which is why it is an RFC amendment + this decisions entry rather than a silent phase-plan choice (AGENTS.md §2 priority chain, §15). The other three §6.9 invariants are kept verbatim. The GC hard-cap fix (FAIL-1) and the not-found-path erased gate (FAIL-2) are IN-PHASE, not follow-ups — an earlier draft mis-scoped the hard cap as an out-of-scope open question and gated the erased check only on the closed-record branch; both were adversarial-review NO-GO FAILs and are corrected above. Two lesser limitations are acknowledged, not open questions: (a) the in-mem dev driver does not persist across restarts, so reopen on it re-activates the record shape without the durable history the durable driver preserves (the D-074-style honesty note) — durable is the real reopen target and the integration test proves the guarantee there; (b) the cross-tenant `ErrSessionIDReuse` rejection is enforced by the in-memory `idIndex`, which hydrates lazily per process, so the loud rejection is best-effort cross-process — but the underlying isolation is not (the StateStore record is full-triple-keyed, so a post-restart cross-tenant reuse of the same id string reads a different key, never leaks, never reopens the other tenant's session). Reopen adds no new exposure. The tombstone rides the pre-existing `<erasure-audit>` reserved-session sentinel (`erasure.go:31-38`), now slightly widened to a reopen terminality surface; the standing identity-charset-guard follow-up the erasure code already names covers it.
+
+**Protocol additions.** TWO additive wire surfaces, no method change, no request-shape change, `ProtocolVersion` stays 0.1.0: (1) a new canonical event `session.reopened` + `SessionReopenedPayload{SessionID, ReopenedAt, PriorClosedReason}` (SafePayload, mirroring `session.opened` / `.closed` / `.gc_reaped`); (2) a new canonical error code `CodeSessionErased` (`"session_erased"`, HTTP 409 — `errors/errors.go` constant + `canonicalCodes`, the `control.HTTPStatus` binding, the conformance `expectedHTTPStatus` + `errorCodeMatrix` (deferred live scenario, mirroring `CodeSessionRunning`) + the size-count `12 → 13`). The wire-surface digest covers error codes, so it changes (`runtime.info.wire_surface_digest`). Full D-223 lockstep — `make protocol-ts-gen` (`wire-manifest.gen.json` + digest), `make protocol-ts-types-gen` (the vendorable `examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts`), and the event/error join rows in `cmd/harbor-gen-protocol-docs` — + D-209 — `make protocol-docs-gen` regenerates BOTH `docs/site/protocol/events.md` and `errors.md` — all committed in the same PR. §18: the `session.reopened` event key + the `session_erased` code are added surfaces — any skill demonstrating the session lifecycle events or error handling refreshes in the same PR.
+
+**Cross-references.** D-130-era erasure (`session.erase` own-session-only cascade — the terminal exception + the ledger/tombstone scope reopen checks against), D-287 (the process-global session-catalog + registry serialization this reopen path shares `r.mu` with), D-254 (`state.history` windowed read — the read path a reopened conversation is reduced from, and the integration-test probe that proves history intact), D-288/D-289 (session title + auto-naming — reopen leaves the title untouched; a reopened session keeps its name), D-223 / D-209 (the lockstep for the new event), D-025 (the registry stays a concurrent-reuse artifact; the reopen-vs-erase race test). CLAUDE.md §6 (multi-isolation; identity mandatory + immutable), §5/§13 (fail-loud, no silent degradation — reopen of an erased session fails loud), §9 (persistence; the untrimmed durable log), §17.1 (real-driver integration test), §17.6 (fix across phase boundaries — the tombstone touches the Phase 155 cascade). RFC §6.9 (amended), §5.2, §6.13, §7, §4. Plan: `docs/plans/phase-176-session-reopen.md`.
+
+---
+
+## D-313 — The silent-absence class rule made mechanical: a registry-gated projection-completeness gate that fails the build when a filtered/sorted/aggregated wire field is never assigned by its projector (HA-24, extends D-311)
+
+**Date:** 2026-07-14
+
+**Context.** D-311 (Phase 174, HA-22) named the silent-absence class — a read
+surface declares a typed wire field, ships a facet/sort/aggregate over it, never
+populates it, and returns FALSE ABSENCE (an empty page / a fabricated zero) on a
+fleet full of matching data — and fixed its first instance (the sessions
+projection). A follow-up audit found the SAME shape on four more Protocol read
+surfaces, in two variants: **never-assigned** (the producer omits the field — the
+HA-22 shape) and **never-wired** (the populate path exists and is correct, but
+the production constructor never installs it, so a structural default ships in
+prod while a test double exercises the populated path). The four (verified
+against v1.13.1 source):
+
+- **tasks** (`tasks.list`): `TaskRow.HasPendingApproval` is READ by the list
+  filter (`internal/tasks/protocol/list.go`) but NEVER assigned by the sole
+  producer `projectRow` (`registry_projector.go`) → `has_pending_approval:true`
+  returns an empty page on a fleet with open gates (the sharp false-absence).
+  `TaskRow.BackgroundAcknowledged` is never assigned and no filter reads it
+  (fabricated-false only). ALSO the WIRED tasks `serve.Enricher`
+  (`internal/runtime/serve/enricher.go`) is a STUB — `ParentSession` returns a
+  zero `TaskParentSessionRef{}` and `Cost` a zero `TaskCostRollup` — so even the
+  surface Harbor got structurally right (the read-time seam D-311 held up as the
+  exemplar) ships zeros because its concrete is a stub.
+- **tools** (`tools.list`/`describe`/`metrics`/`content_stats`) — the never-wired
+  variant, CONFIRMED: the `CatalogProjector` reads OAuth/approval/last-used/
+  metrics/content-stats/display-modes through an optional `Annotator` seam
+  (`WithAnnotator`), but the production constructor (`internal/runtime/serve/mux.go`
+  `NewCatalogProjector`) supplies ONLY `WithLoadingResolver`; the sole `Annotator`
+  implementer is a `fakeAnnotator` test double (§17.8). So in prod
+  `filter.oauth_statuses` / `filter.approval_policies` / the `Name+" "+Version`
+  search axis / the catalog aggregates all operate over structural defaults.
+- **flows** (`flows.list`/`get`): `budgetConsumption`
+  (`internal/runtime/flow/protocol/catalog.go`) sums `RequestsUsed` +
+  `CostUSDUsed` but NEVER `TokensUsed` (a non-`omitempty` field) → the Budget
+  meter renders a fabricated "0 tokens used."
+- **memory** (`memory.list` + health): the producer
+  (`internal/memory/protocol/protocol.go`) never sets `AgentID` or `ExpiresAt`;
+  the ROW fields are honest-by-omission (omitempty), but `filter.agent_ids`,
+  `filter.has_ttl_expiring`, and the `expiring_in_1h` aggregate operate over
+  them. Key nuance: V1 memory has NO TTL (`ExpiresAt` "zero = no TTL," never
+  populated), so the TTL facet + aggregate are structurally dead.
+
+**Decision.** Close BOTH variants of the class AND make each mechanically
+catchable. (1) **The gate (the primitive) — TWO coverage halves, because the
+class has two variants and a single reflection probe closes only one.** A
+registry-gated projection-completeness check (`internal/protocol/projectioncheck`)
+where every projection surface self-registers a `ProjectionContract` — a probe
+that runs the PRODUCTION projector over a fully-populated record, the set of wire
+json-tags its filter/sort/aggregate layer reads, a reason-carrying
+honest-omission allow-list, and the name of a prod-wiring test. **Half A
+(never-assigned):** a build-time test reflects each probe and FAILS when a
+filtered/sorted/aggregated field is left at its zero value and not allow-listed;
+an empty-string allow-list reason is itself a FAILURE (anti-theater). **Half B
+(never-wired — the variant that motivated this band):** Half A cannot catch the
+tools bug — for a read-time-enriched field the probe wires its own populated fake
+and passes while production `mux.go` can omit the `WithX` wiring and ship false
+absence — so each `ProjectionContract` MUST register a prod-wiring test that
+exercises the projector as assembled through real `mux` wiring; a registered
+surface with no prod-wiring test, or a production assembly that omits its `WithX`,
+FAILS the build. A surface-coverage check asserts every known surface is
+registered (an unregistered surface fails the build), mirroring the events
+`RegisteredDrivers()`/conformance-parity gate (D-305). **The "mechanically
+impossible to reintroduce" claim is scoped precisely:** Half A closes
+never-assigned mechanically; Half B closes never-wired mechanically *for any
+surface that registers its mandatory prod-wiring test* (the coverage check forces
+registration). (2) **The consumers (§13):** tasks — populate `HasPendingApproval`
+at projection time from the approval/pause registry (option a), represent/populate
+`BackgroundAcknowledged`, un-stub the `serve.Enricher` parent-session card + cost
+rollup (cost coordinated with 174); flows — add `RunRecord.Tokens` (symmetric
+with `CostUSD`) and sum it into `TokensUsed`; memory — REMOVE the
+structurally-dead `has_ttl_expiring` facet plus BOTH `expiring_in_1h` fields
+(`MemoryAggregates` + `MemoryHealthAggregate`, neither `omitempty`) — a breaking
+wire-shape change whose RFC §8 deprecation-window requirement is met by explicit
+exemption (always-empty fields → no live consumer + the pre-GA `0.1.0`
+within-version-removal precedent, Phase 171), NOT by silence — and for
+`filter.agent_ids` the V1 mechanism is **loud-reject** (`CodeInvalidRequest`):
+`ConversationTurn` carries no producer identity, so V1 has no agent to populate
+from; populate is DEFERRED to a follow-up that adds producer identity to the turn
+record (the facet keeps its wire slot as a not-yet-wired field, unlike the removed
+TTL *design* absence); sessions — this phase ADDS the sessions registration
+(174 predates `projectioncheck` and cannot register into it), serialized after
+174 since it edits 174's `lister_projector.go`; tools — because assembling a
+production `Annotator` is substantial net-new work (no impl exists) it is split to
+D-314/Phase 178, so Phase 177 honestly GATES the annotator-backed surface behind
+ONE "annotator-wired" capability toggle: facet filters loud-reject when unwired,
+and the response-riding catalog aggregates carry an explicit `aggregates_partial`
+marker (Console renders "unavailable," NEVER a silent 0 — the fabricated zero the
+class kills), registered in the gate with a "178 pending" allow-list reason. The
+gate lands GREEN because every surface is populated, removed, or honestly gated
+(§13 primitive-with-consumer).
+
+**Scope.** HA-24. This is a BAND (D-313 + D-314): D-313 = the gate + tasks +
+flows + memory + tools-interim-gating (Phase 177); D-314 = the tools production
+`Annotator` (Phase 178) that flips the gated facets to real data + lights up the
+inert admin write path. The honest exclusions (NOT fixed — honest-by-omission):
+`FlowBudget.TokenCap` ("zero = no cap," omitempty), `MemoryItem.AgentID`/
+`.ExpiresAt` ROW fields (omitempty; the harm was only in the filters/aggregate
+over them), `TaskParentSessionRef.SessionID` (populated). The gate catches
+"declared-but-never-assigned filtered field," not "assigned with a wrong value"
+— deeper correctness stays the per-surface truthful-data tests.
+
+**Cross-references.** Extends D-311 (the class rule) and D-309 (Phase 174, the
+sessions instance the gate must also cover). Sibling class-closer shape: D-305
+(the events driver-registry conformance gate — a registered member without a
+conformance run fails the build; HA-20). Split consumer: D-314 (Phase 178, the
+tools annotator). CLAUDE.md §5 (fail loudly), §8 (wire single-source), §13
+(silent degradation forbidden; honest zeros; primitive-with-consumer),
+§17.1/§17.8 (integration + the fixture-richer-than-runtime double), §18 (skill
+hygiene). RFC §5.2, §6.1, §6.4, §6.6, §6.8, §7. Plan:
+`docs/plans/phase-177-projection-completeness-gate.md`.
+
+---
+
+## D-314 — The tools production Annotator: supply the missing concrete behind the shipped `Annotator` seam, flipping D-313's honestly-gated tools facets to real data and lighting up the inert admin write path
+
+**Date:** 2026-07-14
+
+**Context.** D-313 established that the tools catalog projector reads every
+per-tool annotation (OAuth/approval/last-used/metrics/content-stats/display-modes)
+through the optional `Annotator` seam, but no production `Annotator` is ever
+wired — `mux.go` supplies only `WithLoadingResolver`, and the sole implementer is
+the `fakeAnnotator` test double (§17.8). The seam shipped correctly; the concrete
+is missing. Assembling it is substantial net-new work (it aggregates from
+`tools/auth`, `tools/approval`, the events stream, and MCP DisplayMode
+negotiation), so D-313/Phase 177 honestly GATES the annotator-backed
+facets/search/aggregates pending this phase rather than shipping false absence.
+
+**Decision.** Assemble a production `Annotator` (a §4.4-shaped concrete behind
+the existing seam — no new interface) implementing the full interface plus the
+`ApprovalPolicySetter` / `OAuthRevoker` admin seams the projector already
+delegates to; wire it at `internal/runtime/serve/mux.go` via `WithAnnotator(...)`
+exactly as `WithLoadingResolver` is wired; flip the D-313 annotator-wired
+capability on so `filter.oauth_statuses` / `filter.approval_policies` / the
+version search axis / the catalog aggregates operate over real data; populate
+`Tool.Version` (or keep it honestly empty with a name-only search axis where a
+transport carries no version — representable absence, never a fabricated
+version); and light up the previously-inert admin write path
+(`tools.set_approval_policy` / `tools.revoke_oauth`, which returned
+`ErrAdminUnsupported` because no annotator implemented the setter/revoker),
+routing writes back through `tools/approval` / `tools/auth` with audit — never a
+Console shadow store (D-061). With the annotator wired, the D-313 gate now
+ENFORCES the tools annotator-backed fields (their honest-omission allow-list
+entries are removed).
+
+**Scope.** The tools leg of HA-24; the second member of the D-313 band. No new
+Protocol method, no `ProtocolVersion` bump — the tools wire fields are already
+declared (D-313 gated them, not removed them); the capability flips from unwired
+to wired (an advertised-set change). No new metrics store — metrics/last-used/
+content-stats derive read-time from the existing events stream.
+
+**Cross-references.** Consumer of D-313 (the gate + the annotator-wired
+capability it flips) and D-311 (the class rule). D-061 (no Console shadow store
+for runtime entities). CLAUDE.md §4.4 (interface + factory + registry; concrete
+behind a seam), §5 (fail loudly; no test-grade default on an operator seam), §7
+(admin writes audited + scope-gated), §13 (no stub as production default), §18
+(skill hygiene). RFC §5.2, §6.4, §6.15, §7. Plan:
+`docs/plans/phase-178-tools-annotator.md`.

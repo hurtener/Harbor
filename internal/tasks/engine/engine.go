@@ -491,6 +491,43 @@ func (e *Engine) ListTenant(_ context.Context, tenantID string, f tasks.TaskFilt
 	return out, nil
 }
 
+// OldestRetainedAt reports the OBSERVED oldest task-creation instant
+// across the WHOLE retained task set — every (tenant, user, session) in
+// this runtime — as the identity-free runtime-wide retention horizon a
+// fleet-observe caller reads on `runtime.health`. It is the runtime-wide
+// analogue of events.RetentionReporter, discovered by type assertion at
+// the posture wiring seam (no `Supports*` capability protocol — CLAUDE.md
+// §4.4). The returned instant carries no per-task content — only the bare
+// oldest CreatedAt — so it is safe to expose runtime-wide, never a
+// cross-tenant enumeration.
+//
+// Returns (zero, false, nil) when the engine retains no tasks (present is
+// false), and (zero, false, ErrRegistryClosed) after Close. The scan is
+// COMPLETE without a StateStore scan: both drivers hydrate their backend
+// into the in-memory `tasks` map on open, so the map holds every live
+// task in this process. The read is an O(N) oldest-head fold under the
+// RLock, never a wire-crossing enumeration.
+func (e *Engine) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
+	if e.closed.Load() {
+		return time.Time{}, false, tasks.ErrRegistryClosed
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	var oldest int64
+	for _, t := range e.tasks {
+		if t.CreatedAt == 0 {
+			continue
+		}
+		if oldest == 0 || t.CreatedAt < oldest {
+			oldest = t.CreatedAt
+		}
+	}
+	if oldest == 0 {
+		return time.Time{}, false, nil
+	}
+	return time.Unix(0, oldest).UTC(), true, nil
+}
+
 // copyTask returns a deep copy of t so a caller cannot mutate the
 // engine's live record (mirrors Get's copy discipline). The pointer
 // fields (Result / Error / ParentTaskID) are cloned; the immutable-slice

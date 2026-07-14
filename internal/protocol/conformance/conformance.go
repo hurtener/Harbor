@@ -463,6 +463,7 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodePresignUnsupported:    http.StatusNotImplemented,
 	protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
 	protoerrors.CodeSessionRunning:        http.StatusConflict,
+	protoerrors.CodeSessionErased:         http.StatusConflict,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -496,6 +497,13 @@ var errorCodeMatrix = []protoerrors.Code{
 	// the conformance-suite scenario lands when the Stack wires the
 	// Sessions eraser (same posture as the artifacts codes above).
 	protoerrors.CodeSessionRunning,
+	// sessions surface — `CodeSessionErased` (a `start` on a session id
+	// permanently deleted by `sessions.delete`; the session is terminal and
+	// cannot be reopened). Exercised end-to-end by the session-ensurer /
+	// sessions handler unit tests + the session-reopen integration test;
+	// the conformance-suite scenario lands when the Stack wires the
+	// reopen-capable SessionEnsurer (same posture as CodeSessionRunning).
+	protoerrors.CodeSessionErased,
 }
 
 // methodScopeFor returns the steering scope the suite uses when
