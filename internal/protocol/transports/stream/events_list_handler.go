@@ -174,18 +174,34 @@ func (h *EventsListHandler) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fold the caller's triple into any elided identity axis so the driver's
-	// per-event MatchWire enforces the caller's own tuple on the non-widened
-	// path (mirrors events.aggregate).
+	// Fold elided identity axes so the driver's per-event MatchWire enforces
+	// the intended scope. The fold is asymmetric by design, mirroring
+	// events.aggregate:
+	//
+	//   - Tenant is ALWAYS folded to the caller's own when elided —
+	//     name-to-widen parity with the tasks.list / agents.list fleet
+	//     selector (an empty tenant axis never fans across every tenant).
+	//   - User and Session fold to the caller's own ONLY on the NON-widened
+	//     path. On a widened read (cross-principal / multi-value, scope-gated
+	//     above, audited by the substrate) an elided user/session means "all
+	//     users / all sessions in the authorized tenant scope" — the fleet
+	//     fan-in the widened flag grants. Folding them narrowed a
+	//     TenantIDs:[T2] admin read to T2+caller-user+caller-session → EMPTY.
+	//
+	// A non-admin naming a foreign principal is rejected 403 above BEFORE this
+	// fold, so the un-folded user/session path is reachable only by a verified
+	// admin / console:fleet caller.
 	effFilter := req.Filter
 	if len(effFilter.TenantIDs) == 0 {
 		effFilter.TenantIDs = []string{verified.TenantID}
 	}
-	if len(effFilter.UserIDs) == 0 {
-		effFilter.UserIDs = []string{verified.UserID}
-	}
-	if len(effFilter.SessionIDs) == 0 {
-		effFilter.SessionIDs = []string{verified.SessionID}
+	if !widened {
+		if len(effFilter.UserIDs) == 0 {
+			effFilter.UserIDs = []string{verified.UserID}
+		}
+		if len(effFilter.SessionIDs) == 0 {
+			effFilter.SessionIDs = []string{verified.SessionID}
+		}
 	}
 
 	// Assert the bus implements the windowed-read capability. A bus without

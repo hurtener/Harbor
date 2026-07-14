@@ -1084,6 +1084,7 @@ export interface EventAggregateRequest {
   filter: EventFilter;
   window: number;
   bucket: number;
+  anchor?: string;
 }
 
 export interface EventAggregateResponse {
