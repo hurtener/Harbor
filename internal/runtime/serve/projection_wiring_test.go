@@ -25,16 +25,22 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // projWiringDeps bundles the real subsystem handles a projection prod-wiring
 // test drives through BuildMux.
 type projWiringDeps struct {
-	tasks tasks.TaskRegistry
-	sess  *sessions.Registry
-	coord pauseresume.Coordinator
-	in    MuxInput
+	tasks   tasks.TaskRegistry
+	sess    *sessions.Registry
+	coord   pauseresume.Coordinator
+	catalog tools.ToolCatalog
+	in      MuxInput
 }
+
+// projWiringToolName is the single tool the prod-wiring catalog registers so
+// the tools surface has a real row to project.
+const projWiringToolName = "probe_tool"
 
 // buildProjWiringMux assembles the SAME MuxInput cmd/harbor assembles (real
 // task registry + session registry + pause coordinator + event bus), with
@@ -72,6 +78,24 @@ func buildProjWiringMux(t *testing.T) projWiringDeps {
 	t.Cleanup(func() { _ = sessReg.CloseRegistry(context.Background()) })
 	coord := pauseresume.New()
 
+	// A real catalog with one tool so the tools surface has a row to project
+	// and the annotator wiring (WithAnnotator, gated on Catalog + State) fires.
+	cat := tools.NewCatalog()
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{
+			Name:        projWiringToolName,
+			Description: "prod-wiring probe tool",
+			Transport:   tools.TransportInProcess,
+			SideEffects: tools.SideEffectRead,
+			Loading:     tools.LoadingAlways,
+		},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("catalog.Register: %v", err)
+	}
+
 	in := MuxInput{
 		Cfg:          config.Defaults(),
 		Surface:      surface,
@@ -81,6 +105,7 @@ func buildProjWiringMux(t *testing.T) projWiringDeps {
 		Metrics:      metricsReg,
 		Tasks:        taskReg,
 		Sessions:     sessReg,
+		Catalog:      cat,
 		State:        st,
 		Coordinator:  coord,
 		Validator:    nil, // WithoutValidator: requests reach the handlers (identity via headers)
@@ -89,7 +114,7 @@ func buildProjWiringMux(t *testing.T) projWiringDeps {
 		BuildVersion: "test",
 		BuildCommit:  "test",
 	}
-	return projWiringDeps{tasks: taskReg, sess: sessReg, coord: coord, in: in}
+	return projWiringDeps{tasks: taskReg, sess: sessReg, coord: coord, catalog: cat, in: in}
 }
 
 // postMux issues an identity-headered POST through the mounted mux.
@@ -162,6 +187,57 @@ func TestProdWiring_TasksListThroughBuildMux(t *testing.T) {
 	if !resp.Rows[0].HasPendingApproval {
 		t.Fatal("has_pending_approval=false through the REAL BuildMux assembly — " +
 			"the WithApprovalChecker block is not wired (the never-wired variant this test exists to catch)")
+	}
+}
+
+// TestProdWiring_ToolsAnnotatorThroughBuildMux is the tools prod-wiring test
+// named by the projection-completeness contract (Half B — never-wired). It
+// drives `tools.list` with an annotator-backed OAuth-status facet through the
+// projector AS ASSEMBLED BY BuildMux (NOT a hand-mirrored replica of the
+// wiring). With the production Annotator wired (BuildMux's
+// `WithAnnotator(...)` block, gated on Catalog + State) the facet is ACCEPTED
+// (200) and the response-riding catalog aggregates are NOT marked partial; a
+// refactor that drops the WithAnnotator block leaves AnnotationsAvailable()==
+// false, so the Service LOUD-REJECTS the facet (invalid_request/400) and marks
+// the aggregates partial — this test then turns red, catching the never-wired
+// variant that MOTIVATED the whole HA-24 band (D-313 / D-314). Removing that
+// mux.go block and re-running this test MUST turn it red.
+func TestProdWiring_ToolsAnnotatorThroughBuildMux(t *testing.T) {
+	deps := buildProjWiringMux(t)
+	built, err := BuildMux(deps.in)
+	if err != nil {
+		t.Fatalf("BuildMux: %v", err)
+	}
+
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-tools"}
+
+	// (a) The annotator-backed OAuth facet is ACCEPTED through the REAL
+	// assembly — the flip from D-313's loud-reject. A dropped WithAnnotator
+	// regresses this to a 400.
+	code, body := postMux(t, built.Mux, "/v1/tools/list", id,
+		`{"filter":{"oauth_statuses":["Required"]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("tools.list oauth_statuses facet through BuildMux: status %d "+
+			"(want 200 — the annotator must be wired; a 400 means WithAnnotator is not installed, the never-wired variant this test exists to catch), body %s",
+			code, body)
+	}
+
+	// (b) The response-riding aggregates are REAL (not marked partial) with the
+	// annotator wired — the fabricated-zero the class kills is gone.
+	code, body = postMux(t, built.Mux, "/v1/tools/list", id, `{"filter":{}}`)
+	if code != http.StatusOK {
+		t.Fatalf("tools.list through BuildMux: status %d, body %s", code, body)
+	}
+	var resp prototypes.ToolListResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode tools.list response: %v (body %s)", err, body)
+	}
+	if resp.AggregatesPartial {
+		t.Fatal("aggregates_partial=true through the REAL BuildMux assembly — " +
+			"the WithAnnotator block is not wired (the never-wired variant this test exists to catch)")
+	}
+	if resp.Aggregates.Total != 1 {
+		t.Fatalf("Aggregates.Total = %d, want 1 (the one registered tool)", resp.Aggregates.Total)
 	}
 }
 

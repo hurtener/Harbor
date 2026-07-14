@@ -41,9 +41,12 @@ type CatalogProjector struct {
 	annotator Annotator
 	// adminMu guards the in-memory approval-policy overrides the
 	// default (annotator-less) admin path records. Production wiring
-	// supplies an Annotator whose SetApprovalPolicy persists; the
-	// in-memory map is the conservative fallback so the admin method is
-	// never a silent no-op.
+	// supplies an Annotator whose SetApprovalPolicy persists (identity-
+	// scoped); the in-memory map is the conservative fallback so the admin
+	// method is never a silent no-op when NO persisting annotator is wired.
+	// The map is keyed by the caller's identity triple + tool ID so the
+	// fallback is identity-scoped too — a set in session A never bleeds into
+	// session B's projection.
 	adminMu   sync.RWMutex
 	overrides map[string]prototypes.ToolApprovalPolicy
 	// loading is the optional agent-config loading-mode resolver
@@ -210,14 +213,20 @@ func (p *CatalogProjector) projectRow(ctx context.Context, id identity.Identity,
 		row.ApprovalPolicy = p.annotator.ApprovalPolicy(ctx, id, t.Name)
 		row.LastUsedAt = p.annotator.LastUsedAt(ctx, id, t.Name)
 	}
-	// In-memory admin override wins over the annotator value so a
-	// `tools.set_approval_policy` call without a persisting annotator
-	// is still observable on the next list — never a silent no-op.
-	p.adminMu.RLock()
-	if ov, ok := p.overrides[t.Name]; ok {
-		row.ApprovalPolicy = ov
+	// The in-memory admin override is the FALLBACK for a non-persisting
+	// annotator: a `tools.set_approval_policy` call is still observable on
+	// the next list — never a silent no-op. When a PERSISTING annotator is
+	// wired (the production path), it is the identity-scoped source of truth
+	// for ApprovalPolicy, so the in-memory map is neither read nor written —
+	// consulting it would re-introduce the cross-session bleed its
+	// non-persisting fallback is only tolerable for.
+	if !p.approvalPersists() {
+		p.adminMu.RLock()
+		if ov, ok := p.overrides[overrideKey(id, t.Name)]; ok {
+			row.ApprovalPolicy = ov
+		}
+		p.adminMu.RUnlock()
 	}
-	p.adminMu.RUnlock()
 	return row
 }
 
@@ -382,14 +391,31 @@ func (p *CatalogProjector) SetApprovalPolicy(ctx context.Context, id identity.Id
 		return fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
 	if setter, ok := p.annotator.(ApprovalPolicySetter); ok {
-		if err := setter.SetApprovalPolicy(ctx, id, toolID, policy); err != nil {
-			return err
-		}
+		// The persisting annotator is the identity-scoped source of truth;
+		// delegate ONLY. Writing the in-memory override too would leak across
+		// sessions (the map is a per-process fallback, the annotator is the
+		// durable, isolated store).
+		return setter.SetApprovalPolicy(ctx, id, toolID, policy)
 	}
 	p.adminMu.Lock()
-	p.overrides[toolID] = policy
+	p.overrides[overrideKey(id, toolID)] = policy
 	p.adminMu.Unlock()
 	return nil
+}
+
+// approvalPersists reports whether the wired annotator persists approval
+// policy (implements ApprovalPolicySetter). When true, the annotator is the
+// identity-scoped source of truth and the in-memory override map is bypassed.
+func (p *CatalogProjector) approvalPersists() bool {
+	_, ok := p.annotator.(ApprovalPolicySetter)
+	return ok
+}
+
+// overrideKey scopes an in-memory approval-policy override by the caller's
+// identity triple + tool ID so the non-persisting fallback never bleeds
+// across sessions.
+func overrideKey(id identity.Identity, toolID string) string {
+	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID + "\x00" + toolID
 }
 
 // RevokeOAuth implements OAuthRevoker. When the wired Annotator

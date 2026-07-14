@@ -5,18 +5,22 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
-// TestProdWiring_ToolsProjectorAnnotatorUnwiredIsHonest is the tools
-// prod-wiring test named by the projection-completeness contract (Half B).
-// It proves the V1 PRODUCTION build — a CatalogProjector with NO Annotator
-// wired (the concrete lands in Phase 178) — is honest: AnnotationsAvailable
-// reports false, the dedicated annotator-backed facet filters LOUD-REJECT,
-// and the response-riding aggregates carry the partial marker instead of a
-// fabricated 0 (D-313).
-func TestProdWiring_ToolsProjectorAnnotatorUnwiredIsHonest(t *testing.T) {
+// TestCatalogProjector_AnnotatorUnwiredIsHonest proves the honest-degradation
+// path a catalog stack that did NOT wire the Annotator still ships (a headless
+// read-only build): AnnotationsAvailable reports false, the dedicated
+// annotator-backed facet filters LOUD-REJECT, and the response-riding
+// aggregates carry the partial marker instead of a fabricated 0 (D-313). The
+// production build wires the annotator (internal/tools/annotate); the
+// BuildMux-driven Half-B prod-wiring test
+// (TestProdWiring_ToolsAnnotatorThroughBuildMux, in internal/runtime/serve)
+// proves a dropped WithAnnotator regresses to exactly this loud-reject, which
+// is why THAT test — not this one — is named by the projection contract.
+func TestCatalogProjector_AnnotatorUnwiredIsHonest(t *testing.T) {
 	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t))
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
@@ -59,5 +63,49 @@ func TestProdWiring_ToolsProjectorAnnotatorUnwiredIsHonest(t *testing.T) {
 	}
 	if resp.Aggregates.Active != 0 || resp.Aggregates.PendingApproval != 0 || resp.Aggregates.AwaitingOAuth != 0 {
 		t.Fatal("annotator-backed aggregates should be zeroed AND marked partial (Console renders 'unavailable'), never real-looking values")
+	}
+}
+
+// TestCatalogProjector_InMemoryOverride_IsSessionScoped guards the exact code
+// line that carried the shipped 177 cross-session bleed: the in-memory
+// approval-policy FALLBACK override (`overrideKey`, used when NO persisting
+// annotator is wired). A `tools.set_approval_policy` for session A must NOT be
+// observable in session B's projection (same tenant/user, different session).
+// The bug this pins was `overrides` keyed by tool ID alone; a regression back
+// to tool-ID-only keying makes this test fail. The persisting-annotator path
+// is covered separately (the integration test) — it BYPASSES this map, so this
+// bare-projector test is the only guard on the fallback line.
+func TestCatalogProjector_InMemoryOverride_IsSessionScoped(t *testing.T) {
+	// A BARE projector: no annotator wired, so SetApprovalPolicy records the
+	// in-memory fallback override (approvalPersists() == false).
+	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t))
+	if err != nil {
+		t.Fatalf("NewCatalogProjector: %v", err)
+	}
+	if proj.AnnotationsAvailable() {
+		t.Fatal("test setup wrong: annotator wired — this test must exercise the in-memory fallback")
+	}
+	ctx := context.Background()
+	idA := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-A"}
+	idB := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-B"}
+
+	if err := proj.SetApprovalPolicy(ctx, idA, "beta_http", prototypes.ToolApprovalGated); err != nil {
+		t.Fatalf("SetApprovalPolicy(session A): %v", err)
+	}
+	// Session A observes its own override (never a silent no-op).
+	rowA, err := proj.GetTool(ctx, idA, "beta_http")
+	if err != nil {
+		t.Fatalf("GetTool(session A): %v", err)
+	}
+	if rowA.ApprovalPolicy != prototypes.ToolApprovalGated {
+		t.Fatalf("session A ApprovalPolicy = %q, want gated (own override)", rowA.ApprovalPolicy)
+	}
+	// Session B must NOT see session A's override — it reads the default auto.
+	rowB, err := proj.GetTool(ctx, idB, "beta_http")
+	if err != nil {
+		t.Fatalf("GetTool(session B): %v", err)
+	}
+	if rowB.ApprovalPolicy != prototypes.ToolApprovalAuto {
+		t.Fatalf("session B ApprovalPolicy = %q, want auto — cross-session bleed via the in-memory override (the shipped 177 bug)", rowB.ApprovalPolicy)
 	}
 }
