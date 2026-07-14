@@ -59,8 +59,9 @@ func (r *Registry) startSweeper() {
 //     a session with a RUNNING task").
 //   - else if LastSeen + IdleTTL < clock.Now(): close with reason
 //     "gc:idle".
-//   - else if OpenedAt + HardCap < clock.Now(): close with reason
-//     "gc:hard_cap" (the hard cap wins over recent Touch).
+//   - else if max(OpenedAt, LastReopenedAt) + HardCap < clock.Now(): close
+//     with reason "gc:hard_cap" (the hard cap wins over recent Touch, but a
+//     reopen restarts the cap clock so a resumed conversation survives).
 //
 // Returns the number of sessions reaped and the first probe / close
 // error encountered (the sweep continues past errors so a single bad
@@ -122,8 +123,20 @@ func (r *Registry) GC(ctx context.Context, policy GCPolicy) (int, error) {
 				delete(r.openSessions, q.SessionID)
 				return errSkipSave
 			}
+			// The hard cap is measured from max(OpenedAt, LastReopenedAt), NOT
+			// OpenedAt alone: a conversation opened long ago
+			// and reopened today restarts its hard-cap clock from the reopen, so
+			// "resume an old conversation forever" holds — it is not re-reaped on
+			// the very next sweep. A never-reopened session has a zero
+			// LastReopenedAt, so hardCapAnchor == OpenedAt and the behaviour is
+			// unchanged. OpenedAt itself is never refreshed (erasure lifecycle
+			// discriminator).
+			hardCapAnchor := s.OpenedAt
+			if s.LastReopenedAt.After(hardCapAnchor) {
+				hardCapAnchor = s.LastReopenedAt
+			}
 			switch {
-			case !s.OpenedAt.IsZero() && now.Sub(s.OpenedAt) > policy.HardCap:
+			case !hardCapAnchor.IsZero() && now.Sub(hardCapAnchor) > policy.HardCap:
 				reason = "gc:hard_cap"
 			case !s.LastSeen.IsZero() && now.Sub(s.LastSeen) > policy.IdleTTL:
 				reason = "gc:idle"

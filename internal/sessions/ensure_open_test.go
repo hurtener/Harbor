@@ -98,23 +98,34 @@ func TestEnsureOpen_SecondTurnIsNoOp(t *testing.T) {
 	}
 }
 
-// TestEnsureOpen_ClosedSession_FailsLoud — a closed session is NOT
-// silently revived. EnsureOpen on a closed session id surfaces
-// ErrReopenAfterClose (RFC §6.9).
-func TestEnsureOpen_ClosedSession_FailsLoud(t *testing.T) {
+// TestEnsureOpen_ClosedSession_Reopens — a closed session is RE-ACTIVATED
+// (RFC §6.9 amended — D-312): EnsureOpen on a closed session id resumes it
+// in place, preserving the immutable identity and OpenedAt, clearing the
+// closed flags, and stamping LastReopenedAt.
+func TestEnsureOpen_ClosedSession_Reopens(t *testing.T) {
 	t.Parallel()
 	reg, _ := testWiring(t)
 	id := ident("t1", "u1", "conversation-A")
 
-	if _, err := reg.EnsureOpen(ctxFor(id), id); err != nil {
+	first, err := reg.EnsureOpen(ctxFor(id), id)
+	if err != nil {
 		t.Fatalf("EnsureOpen create: %v", err)
 	}
 	if err := reg.Close(ctxFor(id), id.SessionID, "test:explicit"); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	_, err := reg.EnsureOpen(ctxFor(id), id)
-	if !errors.Is(err, sessions.ErrReopenAfterClose) {
-		t.Fatalf("EnsureOpen on closed session: got %v, want ErrReopenAfterClose", err)
+	reopened, err := reg.EnsureOpen(ctxFor(id), id)
+	if err != nil {
+		t.Fatalf("EnsureOpen on closed session: got %v, want reopen", err)
+	}
+	if reopened.Closed {
+		t.Errorf("reopened session is still Closed")
+	}
+	if !reopened.OpenedAt.Equal(first.OpenedAt) {
+		t.Errorf("OpenedAt changed on reopen: first=%v reopened=%v", first.OpenedAt, reopened.OpenedAt)
+	}
+	if reopened.LastReopenedAt.IsZero() {
+		t.Errorf("LastReopenedAt was not stamped on reopen")
 	}
 }
 

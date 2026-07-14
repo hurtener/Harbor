@@ -121,6 +121,7 @@ export const EVENT_TYPES: readonly string[] = [
 	'session.touched',
 	'session.closed',
 	'session.gc_reaped',
+	'session.reopened',
 	'skill.upserted',
 	'skill.deleted',
 	'skill.pack_overwrite_refused',

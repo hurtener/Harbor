@@ -44,9 +44,11 @@ func (a *SessionEnsurerAdapter) EnsureSession(ctx context.Context, ident identit
 	_, err := a.reg.EnsureOpen(ctx, ident)
 	switch {
 	case err == nil:
+		// Fresh create OR a re-activated closed session (RFC §6.9 amended):
+		// EnsureOpen returns the resumed session, no error.
 		return nil
-	case errors.Is(err, sessions.ErrReopenAfterClose):
-		return fmt.Errorf("%w: %w", protocol.ErrSessionReopenAfterClose, err)
+	case errors.Is(err, sessions.ErrReopenAfterErase):
+		return fmt.Errorf("%w: %w", protocol.ErrSessionReopenAfterErase, err)
 	case errors.Is(err, sessions.ErrSessionIDReuse):
 		return fmt.Errorf("%w: %w", protocol.ErrSessionIDReuse, err)
 	case errors.Is(err, identity.ErrIdentityIncomplete):

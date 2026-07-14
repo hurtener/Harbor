@@ -519,15 +519,19 @@ func TestMCPConnectionDetacher_RealRegistry(t *testing.T) {
 	}
 }
 
-// TestSessionEnsurerAdapter_SentinelTranslation covers the reopen-after-close
-// sentinel translation (the registry sentinel maps onto the protocol-side
-// sentinel the surface's error mapper reads).
+// TestSessionEnsurerAdapter_SentinelTranslation covers the adapter's two
+// lifecycle outcomes after RFC §6.9 was amended (D-312): a closed session
+// RE-ACTIVATES on the next EnsureSession (no error), and an ERASED session
+// translates the registry's ErrReopenAfterErase onto the protocol-side
+// ErrSessionReopenAfterErase sentinel the surface's error mapper reads
+// (→ CodeSessionErased).
 func TestSessionEnsurerAdapter_SentinelTranslation(t *testing.T) {
-	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	ctxBg := context.Background()
+	st, err := state.Open(ctxBg, config.StateConfig{Driver: "inmem"})
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	t.Cleanup(func() { _ = st.Close(ctxBg) })
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
 	reg, err := sessions.New(st, config.SessionsConfig{
@@ -536,11 +540,11 @@ func TestSessionEnsurerAdapter_SentinelTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessions.New: %v", err)
 	}
-	t.Cleanup(func() { _ = reg.CloseRegistry(context.Background()) })
+	t.Cleanup(func() { _ = reg.CloseRegistry(ctxBg) })
 
 	ad := NewSessionEnsurerAdapter(reg)
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "sess-close-me"}
-	ctx, err := identity.With(context.Background(), id)
+	ctx, err := identity.With(ctxBg, id)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
@@ -550,9 +554,38 @@ func TestSessionEnsurerAdapter_SentinelTranslation(t *testing.T) {
 	if err := reg.Close(ctx, id.SessionID, "test close"); err != nil {
 		t.Fatalf("registry.Close: %v", err)
 	}
+	// Reopen-after-close now SUCCEEDS (RFC §6.9 amended — D-312): the adapter
+	// returns nil, and the surface proceeds to `start` on the resumed session.
+	if err := ad.EnsureSession(ctx, id); err != nil {
+		t.Fatalf("EnsureSession after close = %v, want reopen (nil)", err)
+	}
+
+	// Now erase the session and assert the adapter translates the terminal
+	// ErrReopenAfterErase onto the protocol sentinel.
+	mem, err := memory.Open(ctxBg, memory.ConfigSnapshot{
+		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
+	}, memory.Deps{State: st, Bus: bus})
+	if err != nil {
+		t.Fatalf("memory.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = mem.Close(ctxBg) })
+	arts, err := artifacts.Open(ctxBg, config.ArtifactsConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("artifacts.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = arts.Close(ctxBg) })
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: reg, State: st, Memory: mem, Artifacts: arts, Bus: bus, Redactor: red,
+	})
+	if err != nil {
+		t.Fatalf("NewCascadeEraser: %v", err)
+	}
+	if _, derr := eraser.Erase(ctx, id); derr != nil {
+		t.Fatalf("Erase: %v", derr)
+	}
 	err = ad.EnsureSession(ctx, id)
-	if !errors.Is(err, protocol.ErrSessionReopenAfterClose) {
-		t.Fatalf("EnsureSession after close = %v, want the protocol reopen-after-close sentinel", err)
+	if !errors.Is(err, protocol.ErrSessionReopenAfterErase) {
+		t.Fatalf("EnsureSession after erase = %v, want the protocol reopen-after-erase sentinel", err)
 	}
 }
 

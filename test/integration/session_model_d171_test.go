@@ -337,10 +337,11 @@ func TestE2E_D171_MultiSessionIsolation_NoCrossTalk(t *testing.T) {
 	}
 }
 
-// TestE2E_D171_ClosedSessionStart_FailsLoud — a `start` on a closed
-// session id is rejected (not silently revived). The client must pick a
-// fresh session id for a new conversation.
-func TestE2E_D171_ClosedSessionStart_FailsLoud(t *testing.T) {
+// TestE2E_D171_ClosedSessionStart_Reopens — a `start` on a CLOSED session
+// id RE-ACTIVATES it (RFC §6.9 amended — D-312): the conversation resumes
+// in place rather than being rejected. (Only an ERASED session is terminal
+// — that path is covered by TestE2E_SessionReopen_* and the phase-176 smoke.)
+func TestE2E_D171_ClosedSessionStart_Reopens(t *testing.T) {
 	priv, pub := loadES256Phase61(t)
 	dsn := filepath.Join(t.TempDir(), "state.sqlite")
 	st := newD171Stack(t, dsn, priv, pub)
@@ -365,16 +366,22 @@ func TestE2E_D171_ClosedSessionStart_FailsLoud(t *testing.T) {
 	}
 
 	// Now CLOSE session C directly via the registry (simulating a GC
-	// reap / operator close), then assert a NEW start on the closed id is
-	// rejected — never silently revived (RFC §6.9 + §13 fail-loud).
+	// reap / operator close), then assert a NEW start on the closed id
+	// SUCCEEDS — the session re-activates and the conversation resumes.
 	cID := identity.Identity{TenantID: "dev", UserID: "dev", SessionID: "C"}
 	cCtx, _ := identity.With(context.Background(), cID)
 	if err := st.reg.Close(cCtx, "C", "test:gc"); err != nil {
 		t.Fatalf("close C: %v", err)
 	}
 	status, body = d171Post(t, srv.URL, "/v1/control/start", "C",
-		`{"identity":{},"query":"revive attempt"}`, tok)
-	if status == http.StatusOK {
-		t.Fatalf("start on a CLOSED session must be rejected, got 200 (silent revive); body=%s", body)
+		`{"identity":{},"query":"resume after close"}`, tok)
+	if status != http.StatusOK {
+		t.Fatalf("start on a CLOSED session must REOPEN (D-312), got status=%d body=%s", status, body)
+	}
+	// The session is open again: it appears in the open-only listing.
+	_, body = d171Post(t, srv.URL, "/v1/sessions/list", "C", `{"filter":{}}`, tok)
+	ids := decodeSessionListIDs(t, body)
+	if !ids["C"] {
+		t.Fatalf("reopened session C missing from open listing: %s", body)
 	}
 }

@@ -246,6 +246,7 @@ export type HarborEventType =
   | "session.gc_reaped"
   | "session.naming_failed"
   | "session.opened"
+  | "session.reopened"
   | "session.title_changed"
   | "session.touched"
   | "skill.deleted"
