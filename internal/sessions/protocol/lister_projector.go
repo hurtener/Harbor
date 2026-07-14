@@ -24,24 +24,88 @@ import (
 // the gate is the Service's `ErrCrossTenantScope` check; this projector
 // only translates the gate decision into the filter shape.
 //
+// # Enrichment seam (CLAUDE.md §4.4)
+//
+// The SessionLister owns the lifecycle fields (status, timestamps, title,
+// identity); it does NOT model the per-session cost / token / task / event
+// counters or a session→agent binding. ListerProjector reads the counters
+// through the optional Enricher seam (enricher.go), mirroring the shipped
+// tasks.Projector enricher. When no Enricher is wired, the counters stay
+// ZERO — honest ("we don't have this data"), not silent degradation — and
+// the Service loud-rejects a facet/sort over them (WARN-3) so an unwired
+// build never returns a false-empty counter page.
+//
 // # Concurrent reuse
 //
 // A constructed *ListerProjector is immutable after NewListerProjector
 // and safe to share across N concurrent goroutines — it holds only the
-// SessionLister reference; every method's per-call state lives in the
-// call's arguments and locals.
+// SessionLister + optional Enricher references (both themselves safe for
+// concurrent reuse); every method's per-call state lives in the call's
+// arguments and locals.
 type ListerProjector struct {
-	lister sessions.SessionLister
+	lister   sessions.SessionLister
+	enricher Enricher
+}
+
+// ListerProjectorOption configures NewListerProjector.
+type ListerProjectorOption func(*ListerProjector)
+
+// WithEnricher wires the read-time counter-rollup backend. A nil enricher
+// is treated as "WithEnricher not supplied" — the projector ships honest
+// ZERO counters and reports CountersAvailable()==false, so the Service
+// loud-rejects a facet/sort over the counters rather than returning a
+// false-empty page (WARN-3).
+func WithEnricher(e Enricher) ListerProjectorOption {
+	return func(p *ListerProjector) {
+		if e != nil {
+			p.enricher = e
+		}
+	}
 }
 
 // NewListerProjector builds the V1 Projector over a SessionLister. The
 // lister is mandatory — a nil fails loud rather than building a
 // projector that nil-panics on the first request (CLAUDE.md §5).
-func NewListerProjector(lister sessions.SessionLister) (*ListerProjector, error) {
+func NewListerProjector(lister sessions.SessionLister, opts ...ListerProjectorOption) (*ListerProjector, error) {
 	if lister == nil {
 		return nil, fmt.Errorf("%w: SessionLister is nil", ErrMisconfigured)
 	}
-	return &ListerProjector{lister: lister}, nil
+	p := &ListerProjector{lister: lister}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
+}
+
+// CountersAvailable reports whether the projector populates the numeric /
+// boolean counters (cost / tokens / tasks / events / intervention /
+// failed-task) — i.e. whether an Enricher is wired. False on a partial
+// build: the Service then loud-rejects a facet / sort over those counters
+// rather than returning a false-empty page (WARN-3).
+func (p *ListerProjector) CountersAvailable() bool { return p.enricher != nil }
+
+// enrich overlays the enricher's counter rollup onto a projected row. A
+// nil enricher leaves the honest zeros in place (no overlay). It scopes the
+// enricher read to the ROW's own identity so an admin listing another
+// tenant's session reads exactly that session's counters (no cross-session
+// bleed).
+func (p *ListerProjector) enrich(ctx context.Context, snap sessions.SessionSnapshot, row *prototypes.SessionRow) {
+	if p.enricher == nil {
+		return
+	}
+	sid := identity.Identity{
+		TenantID:  snap.Identity.TenantID,
+		UserID:    snap.Identity.UserID,
+		SessionID: snap.Identity.SessionID,
+	}
+	c := p.enricher.Counters(ctx, sid, snap.ID)
+	row.TasksCount = c.TasksCount
+	row.EventsCount = c.EventsCount
+	row.TotalCostCents = c.TotalCostCents
+	row.TotalTokens = c.TotalTokens
+	row.HasPendingIntervention = c.HasPendingIntervention
+	row.HasFailedTask = c.HasFailedTask
+	row.CountersPartial = c.Partial
 }
 
 // ListSessions implements Projector.ListSessions. It builds the
@@ -75,7 +139,9 @@ func (p *ListerProjector) ListSessions(ctx context.Context, id identity.Identity
 	}
 	rows := make([]prototypes.SessionRow, 0, len(snaps))
 	for _, snap := range snaps {
-		rows = append(rows, projectRow(snap))
+		row := projectRow(snap)
+		p.enrich(ctx, snap, &row)
+		rows = append(rows, row)
 	}
 	return rows, nil
 }
@@ -110,8 +176,10 @@ func (p *ListerProjector) InspectSession(ctx context.Context, id identity.Identi
 	}
 	for _, snap := range snaps {
 		if snap.ID == sessionID {
+			row := projectRow(snap)
+			p.enrich(ctx, snap, &row)
 			return prototypes.SessionsInspectResponse{
-				Row:                 projectRow(snap),
+				Row:                 row,
 				RecentInterventions: []prototypes.InterventionSummary{},
 				RecentArtifacts:     []prototypes.ArtifactRefSummary{},
 			}, nil
@@ -121,16 +189,20 @@ func (p *ListerProjector) InspectSession(ctx context.Context, id identity.Identi
 }
 
 // projectRow maps a runtime SessionSnapshot onto the flat Protocol
-// SessionRow wire shape.
+// SessionRow wire shape — the LIFECYCLE fields the registry owns (status,
+// timestamps, title, identity).
 //
-// Cost / token / task / event counters and the agent binding are NOT
-// modelled on the Session record — the Sessions page surfaces
-// them from the live event stream (the `llm.cost.recorded` aggregation
-// the page spec §3 describes is Console-local). projectRow ships the
-// lifecycle fields the registry owns; the count fields are zero and the
-// Console enriches them from its event subscription. This keeps
-// `sessions.list` a pure registry projection (no shadow aggregation
-// store) and is a documented deviation.
+// The per-session cost / token / task / event counters are NOT on the
+// Session record; they are overlaid at read time by the Enricher seam (see
+// enrich). projectRow leaves them ZERO — an honest "not yet enriched"
+// default the overlay replaces with real values when an Enricher is wired.
+// The session→agent binding fields (AgentID / AgentName) stay NIL: no
+// single-valued session→agent binding exists in V1 (a session may run
+// several agents), so their absence is REPRESENTABLE (nil, omitted on the
+// wire) rather than a fabricated value — a `filter.agent_ids` facet over
+// them fails loud. projectRow NEVER assigns the counters or the agent
+// fields, so the projector-field-set pin test can hold it to exactly the
+// lifecycle field-set (§17.8).
 func projectRow(snap sessions.SessionSnapshot) prototypes.SessionRow {
 	status := prototypes.SessionStatusCompleted
 	switch {

@@ -111,7 +111,7 @@ test.describe('Console Sessions page', () => {
     await expect(page.locator(sessions.selectors.catalogRow).first()).toBeVisible();
   });
 
-  test('the catalog carries the lean registry-owned column set (no Cost — D-179)', async ({
+  test('the catalog carries the registry-owned column set + the truthful Cost column (D-309 extends D-179)', async ({
     page,
     runtime,
     helpers,
@@ -122,12 +122,14 @@ test.describe('Console Sessions page', () => {
     await sessions.goto();
     const rows = await page.locator(sessions.selectors.catalogRow).count();
     test.skip(rows === 0, 'no sessions seeded in the embedded runtime (§17.6)');
-    for (const header of ['Session', 'Status', 'Agent', 'Identity', 'Started', 'Last activity', 'Events', 'Duration']) {
+    // Cost is now a first-class column: the runtime populates a truthful
+    // per-session `total_cost_cents` (D-309 delivers the per-row cost
+    // aggregate wire D-179 deferred), so the "Most expensive" sort and the
+    // cost-above facet have a visible, non-authoritative-when-partial figure.
+    for (const header of ['Session', 'Status', 'Agent', 'Identity', 'Started', 'Last activity', 'Events', 'Cost', 'Duration']) {
       await expect(page.getByRole('columnheader', { name: header })).toBeVisible();
     }
-    // Cost lives in the detail Cost History tab (no per-session list
-    // aggregate wire — D-179); Priority never renders (D-065).
-    await expect(page.getByRole('columnheader', { name: 'Cost' })).toHaveCount(0);
+    // Priority never renders (D-065).
     await expect(page.getByRole('columnheader', { name: 'Priority' })).toHaveCount(0);
   });
 

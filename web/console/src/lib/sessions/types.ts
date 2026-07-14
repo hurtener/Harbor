@@ -68,8 +68,15 @@ export interface SessionsListRequest {
 export interface SessionRow {
   session_id: string;
   status: SessionStatus;
-  agent_id: string;
-  agent_name: string;
+  /**
+   * The registered agent id the session ran under. Nullable/absent by
+   * design (D-309): there is no single-valued session→agent binding in V1,
+   * so the field is omitted (representable absence, D-311) rather than
+   * fabricated. A `filter.agent_ids` facet over it fails loud.
+   */
+  agent_id?: string;
+  /** The agent display name; absent for the same reason as `agent_id`. */
+  agent_name?: string;
   user_id: string;
   tenant_id: string;
   started_at: string;
@@ -88,6 +95,15 @@ export interface SessionRow {
   title?: string;
   /** Who produced `title`: "manual" | "auto" | "" (unset). */
   title_source?: string;
+  /**
+   * The bounded per-session counter scan hit its bound (or a retention
+   * gap): `total_cost_cents` / `total_tokens` / `events_count` are then an
+   * HONEST LOWER BOUND, not exact (D-309 WARN-1 / D-311). Render the counts
+   * with a "≥" / lower-bound affordance; a `cost_desc` sort or
+   * `cost_above_cents` filter over a partial row is non-authoritative.
+   * Omitted (false) in the common case.
+   */
+  counters_partial?: boolean;
 }
 
 /** The `sessions.list` reply — a page of rows plus the opaque next cursor. */

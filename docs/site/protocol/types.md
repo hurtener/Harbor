@@ -2844,8 +2844,8 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `session_id` | `string` |  |
 | `status` | `types.SessionStatus` |  |
-| `agent_id` | `string` |  |
-| `agent_name` | `string` |  |
+| `agent_id` | `*string` | optional (`omitempty`) |
+| `agent_name` | `*string` | optional (`omitempty`) |
 | `user_id` | `string` |  |
 | `tenant_id` | `string` |  |
 | `started_at` | `time.Time` |  |
@@ -2860,6 +2860,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `title` | `string` | optional (`omitempty`) |
 | `title_source` | `string` | optional (`omitempty`) |
+| `counters_partial` | `bool` | optional (`omitempty`) |
 
 ## SessionsDeleteRequest
 

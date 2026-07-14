@@ -27,6 +27,10 @@ type sessionsFakeProjector struct {
 	rows []prototypes.SessionRow
 }
 
+// CountersAvailable reports the fake projector as counter-enriched so the
+// handler tests exercise the truthful facet/sort path (D-309).
+func (p *sessionsFakeProjector) CountersAvailable() bool { return true }
+
 func (p *sessionsFakeProjector) ListSessions(_ context.Context, id identity.Identity, f prototypes.SessionFilter, adminScoped bool) ([]prototypes.SessionRow, error) {
 	out := []prototypes.SessionRow{}
 	for _, r := range p.rows {
