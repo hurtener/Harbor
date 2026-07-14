@@ -62,15 +62,26 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
 
 - A closed session record (explicitly closed OR GC-reaped) is **re-activated** by
   `Open` / `EnsureOpen` (the `start` create-on-first-use seam): `Closed`,
-  `ClosedAt`, `ClosedReason` cleared; immutable identity preserved; `LastSeen`
-  refreshed to now; the record re-added to the live `openSessions` index and the
-  `(tenant, user)` discovery catalog. The durable events / state / memory that
-  were left intact at close are unchanged, so the conversation resumes with full
-  history.
+  `ClosedAt`, `ClosedReason` cleared; immutable identity AND `OpenedAt` preserved;
+  a new `LastReopenedAt` stamped; `LastSeen` refreshed to now; the record re-added
+  to the live `openSessions` index and the `(tenant, user)` discovery catalog. The
+  durable events / state / memory that were left intact at close are unchanged, so
+  the conversation resumes with full history.
+- **The GC hard cap does not defeat resume-forever.** The hard cap is measured
+  from `max(OpenedAt, LastReopenedAt)` (was `OpenedAt` alone), so a conversation
+  opened long ago and reopened today restarts its hard-cap clock from the reopen —
+  it is NOT re-reaped on the very next sweep. `OpenedAt` is deliberately NOT
+  refreshed (it is the erasure cascade's lifecycle discriminator); the separate
+  `LastReopenedAt` stamp is why the cap needs its own field. The idle-TTL clock
+  already resets via the refreshed `LastSeen`.
 - Reopen of an **erased** session is terminal and fails loud with
   `ErrReopenAfterErase` — never a silent empty-start (§5 fail-loud, §7
-  right-to-erasure). The check is race-safe against a concurrent / interrupted
-  erasure.
+  right-to-erasure) — **including after the erasure has fully CONVERGED and
+  removed the `session.lifecycle` record.** The erased check therefore gates BOTH
+  the closed-record branch AND the not-found / fresh-create fall-through of `Open`
+  (a converged erase leaves NO record, so a naive reopen would hit `ErrNotFound`
+  and mint a fresh empty session — a silent resurrection). The check is race-safe
+  against a concurrent / interrupted erasure.
 - Reopen preserves **all** of §6 multi-isolation: identity-mandatory,
   identity-immutable (`ErrIdentityMismatch` on a stored-vs-ctx identity mismatch),
   cross-tenant reuse still `ErrSessionIDReuse`. No new identity-downgrade knob.
@@ -82,9 +93,10 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
 
 ## Non-goals
 
-- No change to the GC sweep cadence or the idle-TTL policy. Reopen refreshes
-  `LastSeen`, which resets the idle-TTL clock naturally; the GC hard-cap
-  interaction is a documented open question (see Risks), not reworked here.
+- No change to the GC sweep cadence, the idle-TTL policy, or the hard-cap
+  *default*. The hard-cap *measurement* changes (from `OpenedAt` to
+  `max(OpenedAt, LastReopenedAt)`) — that is in scope (FAIL-1), not a follow-up —
+  but the 30-day default and the sweep interval are untouched.
 - No reopen of an ERASED session by any path — that stays terminal.
 - No new isolation principal. `agent_id` is not part of the tuple; reopen scopes
   by `(tenant, user, session)` exactly as every other session op.
@@ -107,21 +119,35 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   is re-activated identically; the prior `ClosedReason` is surfaced on the
   `session.reopened` event's `PriorClosedReason` field, then cleared on the
   record.
+- [ ] **Hard cap restarts from the reopen (FAIL-1):** the session record gains a
+  `LastReopenedAt` field (stamped on every reopen; `OpenedAt` untouched), and the
+  GC hard-cap check (`internal/sessions/gc.go`) measures age from
+  `max(OpenedAt, LastReopenedAt)` instead of `OpenedAt` alone. Test: open a
+  session with `OpenedAt` older than `HardCap`, close it, reopen it, run a GC
+  sweep, and assert it is NOT re-reaped (a session with only `OpenedAt` set and no
+  `LastReopenedAt` still hard-caps as before — no regression to never-reopened
+  sessions).
 - [ ] **History intact after reopen:** the session's durable event stream +
   StateStore records + memory are byte-unchanged across a close→reopen cycle —
   proven by a `state.history` (D-254) read-back that returns the same events
   before and after, and a memory read that returns the same entries.
-- [ ] **Reopen of an erased session fails loud:** a session that completed
-  `session.erase` (Phase 130) returns `ErrReopenAfterErase` from `Open` /
-  `EnsureOpen` — never a silent fresh empty session, never resurrected data. An
-  erasure that is IN-FLIGHT / interrupted (a pending erasure ledger present) also
-  returns `ErrReopenAfterErase`.
+- [ ] **Reopen of an erased session fails loud — including the CONVERGED case
+  (FAIL-2):** a session that FULLY COMPLETED `session.erase` (Phase 130) — so the
+  `session.lifecycle` record is GONE and `Open` hits `state.ErrNotFound` — returns
+  `ErrReopenAfterErase` from `Open` / `EnsureOpen`, NOT a fresh empty session.
+  The `isErased(ctx, id)` guard therefore fires on the **not-found / fresh-create
+  fall-through path** (before minting a new record) as well as on the
+  closed-record branch, under the same `r.mu` hold. An erasure that is IN-FLIGHT /
+  interrupted (a pending erasure ledger present, record possibly still there) also
+  returns `ErrReopenAfterErase`. The test MUST exercise the converged
+  (record-gone → tombstone) case explicitly, not only the in-flight-ledger case.
 - [ ] **Identity-mismatch reopen rejected:** a reopen whose ctx identity's
   `(tenant, user)` disagrees with the stored record returns `ErrIdentityMismatch`
   (defence-in-depth even though the StateStore load is triple-keyed).
 - [ ] **Cross-tenant reopen = `ErrSessionIDReuse`:** `SessionID=S` closed under
   tenant A, then `Open`ed under tenant B, returns `ErrSessionIDReuse` (the
-  existing `idIndex` guard), NOT a reopen and NOT an `ErrReopenAfterErase`.
+  existing in-memory `idIndex` guard — best-effort cross-process, see Risks), NOT
+  a reopen and NOT an `ErrReopenAfterErase`.
 - [ ] **`session.reopened` emitted:** a canonical, registered, content-free
   `SafePayload` event (`SessionReopenedPayload{SessionID, ReopenedAt,
   PriorClosedReason}`) is published under the session's own identity on every
@@ -133,17 +159,29 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   `SessionEnsurerAdapter` maps `sessions.ErrReopenAfterErase` →
   `protocol.ErrSessionReopenAfterErase` → `CodeInvalidRequest` (same wire code
   the retired reopen-after-close used — no new wire error CODE, no
-  `ProtocolVersion` bump). `Touch` on a still-closed session keeps a loud
-  read-only guard (renamed `ErrSessionClosed` — a caller must `start`/reopen
-  before touching; Touch is not a reopen entry point).
-- [ ] **Race-safe erased check:** reopen's `load record → check erased →
-  re-activate → save` runs inside one registry `r.mu` critical section, and the
-  erasure cascade's terminal-tombstone write is folded into the SAME
-  `r.mu`-serialized destructive step (mirroring the catalog erasure-vs-open
-  serialization, `internal/sessions/catalog.go:82-149`), so reopen sees EITHER
-  pre-erasure (re-activates) OR post-erasure (tombstone present →
-  `ErrReopenAfterErase`) — never a torn interleave that resurrects mid-deletion
-  data.
+  `ProtocolVersion` bump). `ErrSessionReopenAfterClose` /
+  `ErrSessionReopenAfterErase` are internal sentinels that map to an EXISTING
+  code; the generated `docs/site/protocol/errors.md` catalog is keyed by wire CODE
+  (`errors.Codes()`), not by sentinel name, so retiring one sentinel and adding
+  another changes NO `errors.md` row and needs no D-209 errors regen (verified: no
+  `errors.md` row references these sentinels). `Touch` on a still-closed session
+  keeps a loud read-only guard (renamed `ErrSessionClosed` — a caller must
+  `start`/reopen before touching; Touch is not a reopen entry point).
+- [ ] **Race-safe erased check — the real ordering invariant (WARN-1):** reopen's
+  `load record (or not-found) → isErased check → re-activate-or-mint → save` runs
+  inside one registry `r.mu` critical section, so it serializes against the
+  erasure cascade's `r.mu`-held `deleteScopeSerialized` (the record clear) and
+  `clearErased` (the index clear). The tombstone is NOT atomic with `DeleteScope`
+  — it rides a DIFFERENT (observability) scope and is written in `completeErasure`
+  — and does not need to be. The binding invariant is instead
+  **write-happens-before-delete**: the erasure writes the terminal tombstone
+  BEFORE it deletes the pending ledger (`deleteLedger`), so at every instant
+  `isErased == (pending ledger present) ∨ (tombstone present)` holds with NO gap —
+  a reopen at any interleave point sees at least one of the two and fails loud.
+  The tombstone write is SUCCESS-CRITICAL: a failed tombstone `Save` fails the
+  erasure loud (wrapped like `ErrErasureRecordFailed`) and MUST NOT proceed to
+  `deleteLedger` — otherwise a `tombstone-fails` + `ledger-deleted` interleave
+  would open a converged-erasure gap and permit resurrection.
 - [ ] **Full D-223 lockstep in the same PR** for the new `session.reopened`
   event: registered event type + `SessionReopenedPayload` in
   `internal/sessions/events.go`; the join row in
@@ -164,25 +202,36 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
 ## Files added or changed
 
 - `internal/sessions/sessions.go` — invariant-2 doc rewrite (reopen allowed;
-  erased terminal); new `ErrReopenAfterErase` sentinel; retire
-  `ErrReopenAfterClose` (or repurpose its Touch use as a renamed `ErrSessionClosed`
-  read-only guard).
-- `internal/sessions/registry.go` — `Open`: replace the `if stored.Closed { …
-  ErrReopenAfterClose }` branch with a re-activation branch (check erased →
-  `ErrReopenAfterErase`; else clear `Closed`/`ClosedAt`/`ClosedReason`, verify
-  `sameIdentity` → `ErrIdentityMismatch`, refresh `LastSeen`, re-add to
-  `openSessions` + catalog, `unfenceSession`, `save`, emit `session.reopened`);
-  `EnsureOpen` — the closed-record branch now returns the re-activated session
-  instead of `ErrReopenAfterClose`; `Touch` closed-guard renamed.
+  erased terminal incl. converged); new `Session.LastReopenedAt time.Time` field
+  (additive JSON, zero-valued on old records — no migration); new
+  `ErrReopenAfterErase` sentinel; retire `ErrReopenAfterClose` (repurpose its Touch
+  use as a renamed `ErrSessionClosed` read-only guard).
+- `internal/sessions/registry.go` — `Open`: (a) the `if stored.Closed { …
+  ErrReopenAfterClose }` branch becomes a re-activation branch (call
+  `isErased` → `ErrReopenAfterErase`; else verify `sameIdentity` →
+  `ErrIdentityMismatch`, clear `Closed`/`ClosedAt`/`ClosedReason`, stamp
+  `LastReopenedAt`, refresh `LastSeen`, keep `OpenedAt`, re-add to `openSessions` +
+  catalog, `unfenceSession`, `save`, emit `session.reopened`); (b) the not-found /
+  fresh-create fall-through (`registry.go:182`, after `state.ErrNotFound`) FIRST
+  calls `isErased` — a converged erasure left no record but a tombstone, so this
+  path must fail loud `ErrReopenAfterErase` before minting a fresh session — all
+  under the existing `r.mu` hold. `EnsureOpen` — the closed-record branch now
+  returns the re-activated session instead of `ErrReopenAfterClose`; `Touch`
+  closed-guard renamed.
+- `internal/sessions/gc.go` — the hard-cap check reads
+  `max(OpenedAt, LastReopenedAt)` instead of `OpenedAt` (FAIL-1); idle-TTL check
+  unchanged (already `LastSeen`-relative).
 - `internal/sessions/events.go` — `EventTypeSessionReopened` +
   `SessionReopenedPayload` (SafeSealed; session id + reopened-at + prior close
   reason), registered in `init()`.
 - `internal/sessions/erasure.go` — the terminal-tombstone write (a durable,
   content-free `erasureTombstoneKindPrefix` record under the actor's
-  observability scope — the SAME scope that survives `DeleteScope` — written as
-  part of `completeErasure`'s success criteria and retained; sibling of the
-  `session.erased` record-of-fact) and a reopen-facing `isErased(ctx, id)` helper
-  (checks the pending ledger OR the terminal tombstone).
+  observability scope — the SAME scope that survives `DeleteScope` — written in
+  `completeErasure` BEFORE `deleteLedger`, SUCCESS-CRITICAL (a failed `Save` fails
+  the erasure loud wrapped like `ErrErasureRecordFailed` and does NOT proceed to
+  `deleteLedger`); sibling of the `session.erased` record-of-fact) and a
+  reopen-facing `isErased(ctx, id)` helper (an O(1) point-`Load` of the pending
+  ledger OR the terminal tombstone — never a bounded history scan, see Risks).
 - `internal/protocol/errors.go` — retire `ErrSessionReopenAfterClose`, add
   `ErrSessionReopenAfterErase` (maps to `CodeInvalidRequest`) + its
   `mapSessionEnsureError` arm.
@@ -201,10 +250,14 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
 
 ## Public API surface
 
-- `sessions.ErrReopenAfterErase` (sentinel; reopen of an erased/erasing session).
+- `sessions.ErrReopenAfterErase` (sentinel; reopen of an erased/erasing session,
+  including a fully-converged erase).
+- `sessions.Session.LastReopenedAt time.Time` (additive record field; drives the
+  `max(OpenedAt, LastReopenedAt)` hard-cap measurement).
 - `sessions.Registry.Open` / `EnsureOpen` — behaviour change: a closed
   non-erased record re-activates and returns the session (was
-  `ErrReopenAfterClose`).
+  `ErrReopenAfterClose`); a converged-erased id fails loud on the fresh-create
+  path (was a silent fresh session).
 - Wire: `session.reopened` canonical event; `SessionReopenedPayload` fields
   (`session_id`, `reopened_at`, `prior_closed_reason`).
 - `protocol.ErrSessionReopenAfterErase` (maps to `CodeInvalidRequest`).
@@ -212,22 +265,31 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
 ## Test plan
 
 - **Unit:** reopen re-activation table (GC-closed / explicitly-closed → open,
-  same `OpenedAt`, refreshed `LastSeen`, re-indexed); erased-session reopen →
-  `ErrReopenAfterErase` (completed erasure via tombstone AND in-flight erasure via
-  pending ledger); identity-mismatch → `ErrIdentityMismatch`; cross-tenant →
-  `ErrSessionIDReuse`; `session.reopened` payload content-free assertion
-  (marshalled-bytes grep); `Touch`-on-closed keeps the loud guard.
+  SAME `OpenedAt`, stamped `LastReopenedAt`, refreshed `LastSeen`, re-indexed);
+  **hard-cap-restarts-from-reopen** (open with `OpenedAt` > `HardCap`, close,
+  reopen, GC sweep → NOT re-reaped; a never-reopened over-cap session still reaps
+  — no regression); **erased-session reopen → `ErrReopenAfterErase` on BOTH the
+  converged/record-gone path (via tombstone, the not-found fall-through) AND the
+  in-flight path (via pending ledger)**; identity-mismatch → `ErrIdentityMismatch`;
+  cross-tenant → `ErrSessionIDReuse`; `session.reopened` payload content-free
+  assertion (marshalled-bytes grep); `Touch`-on-closed keeps the loud guard;
+  erasure-side: a forced tombstone-`Save` failure fails the erasure loud and does
+  NOT delete the pending ledger (the write-before-delete success-critical
+  invariant).
 - **Integration (binding — §17.1; `Deps` names shipped subsystems):**
   `test/integration/session_reopen_test.go` — REAL drivers on the seam
   (`state/drivers/durable` + inmem, `events/drivers/durable`, `memory` real
   driver, the `CascadeEraser`): (1) open → emit turns/state → close (and a second
   case: GC reap) → `EnsureOpen` re-activates → a `state.history` read returns the
-  SAME events and memory returns the SAME entries (history intact); (2)
-  erase → reopen fails loud `ErrReopenAfterErase` (≥1 failure mode); (3)
-  cross-tenant reopen `ErrSessionIDReuse` + identity-mismatch `ErrIdentityMismatch`
-  rejection; identity propagation asserted through every layer; run under `-race`.
-  On the DURABLE driver specifically, prove history survives the reap→reopen (the
-  untrimmed-log guarantee).
+  SAME events and memory returns the SAME entries (history intact); (2) a
+  fully-CONVERGED `session.erase` (record gone) → reopen fails loud
+  `ErrReopenAfterErase`, NOT a fresh empty session — the primary AC, plain
+  sequential (≥1 failure mode); (3) cross-tenant reopen `ErrSessionIDReuse` +
+  identity-mismatch `ErrIdentityMismatch` rejection; (4) hard-cap-restarts: an
+  over-cap session reopened then GC-swept is NOT re-reaped. Identity propagation
+  asserted through every layer; run under `-race`. On the DURABLE driver
+  specifically, prove history survives the reap→reopen (the untrimmed-log
+  guarantee).
 - **Conformance:** N/A — no new persistence driver seam; sessions ride the
   StateStore typed-wrapper and the StateStore conformance suite is untouched. The
   erasure tombstone rides the existing `Save`/`Load`/`Delete` surface all drivers
@@ -237,8 +299,12 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   `-race`, distinct sessions show no cross-talk; the erasure-vs-reopen race
   (`reopen(S)` concurrent with `erase(S)`) resolves to EXACTLY one of
   {re-activated, `ErrReopenAfterErase`} with no resurrected-data outcome and no
-  torn record (pinned by a test verified to FAIL against a non-serialized draft,
-  run `-race -count=5`).
+  torn record — and the race harness MUST include the interleave where the erase
+  CONVERGES (record gone, tombstone written) before reopen's mint, asserting
+  `ErrReopenAfterErase` there (a race test that only hits the closed-record/ledger
+  window masks the not-found-path gap green — FAIL-2). Pinned by a test verified
+  to FAIL against a non-serialized / not-found-path-ungated draft, run
+  `-race -count=5`.
 
 ## Smoke script additions
 
@@ -268,34 +334,50 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
 
 ## Risks / open questions
 
-- **Terminality mechanism (THE reviewer scrutiny point — this changes a Settled
-  decision).** "Erased is terminal" must hold across a FULLY-CONVERGED erasure,
-  but the existing erasure **pending ledger** is deleted on erasure success
-  (`completeErasure` → `deleteLedger`), so a completed erasure leaves NO ledger to
-  key on. The pending ledger alone therefore only covers the IN-FLIGHT /
-  interrupted window (the actual resurrection-race window). To make the binding AC
-  "erase → reopen fails loud" hold after a converged erasure, this phase adds a
-  durable, content-free **erasure tombstone** (retained under the actor's
-  observability scope — the same scope that already carries the durable
-  `session.erased` record-of-fact and survives the erased triple's
-  `DeleteScope`). Reopen fails loud on EITHER a pending ledger OR a tombstone.
-  **The reviewer must confirm the tombstone honours right-to-erasure:** it does —
-  it carries the SAME content-free shape as the already-retained `session.erased`
-  event (session id + timestamp + deletion counts, zero user content), so it adds
-  no new retained information about a deleted user's data. The rejected
-  alternative — "a converged erasure frees the id, so a reopen of a
-  fully-erased id starts a FRESH empty session (no resurrection, GDPR-honest)" —
-  is arguably also defensible, but it makes the "erase → reopen fails loud" AC
-  unrepresentable and reads as a silent create where the operator expects a loud
-  terminal. The plan chooses the loud tombstone; flag for the §6 reviewer.
-- **GC hard-cap interaction.** The hard cap is measured from `OpenedAt` (30 days).
-  Reopen preserves `OpenedAt`, so a session opened >30 days ago, reaped by the
-  hard cap, then reopened, would be re-reaped on the next sweep — at odds with the
-  always-resumable consumer-chat goal. Reopen refreshes `LastSeen` (idle-TTL
-  resets cleanly), but the hard cap is not addressed here. Recommended follow-up:
-  evaluate the hard cap relative to `LastSeen` (or a `LastReopenedAt` stamp) for
-  reopened sessions, so an actively-resumed conversation is never hard-capped out
-  from under a live user. Named follow-up, not this phase.
+- **Terminality mechanism — SETTLED as fail-loud (the reviewer scrutiny point on
+  a Settled-decision amendment).** "Erased is terminal" must hold across a
+  FULLY-CONVERGED erasure, but the existing erasure **pending ledger** is deleted
+  on erasure success (`completeErasure` → `deleteLedger`), so a completed erasure
+  leaves NO ledger to key on. The pending ledger alone therefore only covers the
+  IN-FLIGHT / interrupted window. This phase adds a durable, content-free
+  **erasure tombstone** (retained under the actor's observability scope — the same
+  scope that carries the durable `session.erased` record-of-fact and survives the
+  erased triple's `DeleteScope`). Reopen fails loud on EITHER a pending ledger OR a
+  tombstone. **The tombstone honours right-to-erasure:** it carries the SAME
+  content-free shape as the already-retained `session.erased` event (session id +
+  timestamp + deletion counts, zero user content), adding no new retained
+  information about deleted data. The product call is SETTLED (not open): fail
+  loud (`ErrReopenAfterErase` → `CodeInvalidRequest`) over a silent fresh session —
+  reopen-after-erase is near-universally a stale-client mistake to surface; a
+  silent empty session is indistinguishable from data-loss ("where did my
+  conversation go?"); it matches §5/§13. A "this conversation was deleted — start
+  a new one" Console affordance builds ON TOP of the loud error, not in place of it.
+- **Why a dedicated tombstone rather than scanning the existing `session.erased`
+  event (WARN-2).** The durable `session.erased` record-of-fact is ALSO retained +
+  content-free (untrimmed in V1), and `recordAlreadyEmitted` already scans it — so
+  why not have reopen query THAT instead of a new record type? Because a
+  terminality guard must FAIL CLOSED, and the event scan cannot: (a) it is
+  **capability-gated** — the scan goes through the optional
+  `events.HistoryReplayer` seam, which returns `false` when the bus does not
+  implement it (a guard that silently returns "not erased" when a capability is
+  absent is fail-OPEN — a resurrection); (b) it is **bounded** — `recordAlreadyEmitted`
+  scans only `erasureDedupeScanLimit=512` recent events, a dedupe window, not a
+  terminality guarantee (an erasure older than the window would read as "not
+  erased"); (c) it is **future-retention-prunable** (the Phase 163 retention
+  track). A dedicated tombstone is a StateStore point-`Load` — mandatory on all
+  three drivers, fail-closed O(1), never pruned. The tombstone is the right call.
+- **GC hard-cap interaction — FIXED IN THIS PHASE (FAIL-1), not a follow-up.** The
+  hard cap was measured from `OpenedAt` alone, so a session opened >`HardCap` ago,
+  reopened today, would be re-reaped within one `SweepInterval` (~15 min) on EVERY
+  deployment (`HardCap<=0` restores the 720h default — there is no disable),
+  making "resume an old conversation forever" FALSE and causing Closed↔open
+  flicker on the Console. This phase adds a `Session.LastReopenedAt` stamp and
+  measures the hard cap from `max(OpenedAt, LastReopenedAt)`. `OpenedAt` is
+  deliberately NOT refreshed on reopen — it is the erasure cascade's lifecycle
+  discriminator (`erasureLedgerRecord.SessionOpenedAt`) and the idempotent
+  re-emit key; mutating it would corrupt erasure discrimination. That separation
+  is exactly why the cap needs its own field. Pinned by an AC + test
+  (reopen an over-cap session, sweep, assert not re-reaped).
 - **In-mem driver honesty (dev floor).** On the in-mem StateStore, a session's
   records live in bounded process memory and do not survive a restart; a reopen
   after a dev-server restart re-activates the record shape but the durable history
@@ -309,6 +391,28 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   (never-erased) id and an erased id never collide. A future "re-mint an erased id
   as a brand-new conversation" product need would require an explicit operator
   action (not a reopen) and a new decision.
+- **Cross-tenant reuse guard is best-effort cross-PROCESS (NIT-2).** Invariant 3
+  (`ErrSessionIDReuse`) is enforced by the in-memory `idIndex` map, which a fresh
+  process hydrates lazily (only for the `(tenant, user)` a request touches, via
+  the discovery catalog). So immediately after a restart, before the colliding
+  tenant's catalog is hydrated, a cross-tenant reuse of the SAME session-id string
+  is not caught by `idIndex` — but it is STILL isolation-SAFE: the StateStore
+  record is keyed by the full triple, so tenant B loads/writes a DIFFERENT key and
+  never sees tenant A's data (no leak, no reopen of A's session). The limitation is
+  only that the loud `ErrSessionIDReuse` rejection is best-effort across a process
+  boundary; the isolation guarantee is not. Reopen introduces no new exposure here —
+  it inherits the existing guard unchanged. Stated so a reviewer does not read
+  "reuse rejected" as a cross-process guarantee.
+- **Tombstone inherits the `<erasure-audit>` sentinel charset aliasing (NIT-4).**
+  The tombstone rides the same reserved observability session id
+  (`erasureAuditSession = "<erasure-audit>"`, `internal/sessions/erasure.go:31-38`)
+  the ledger + `session.erased` record-of-fact already use, which rests on the
+  standing assumption that upstream token/session-header validation rejects a
+  caller-supplied session id equal to the angle-bracket sentinel. This is
+  PRE-EXISTING, now slightly widened (the sentinel scope is additionally a reopen
+  terminality surface). No new mitigation is added here; the possible
+  identity-layer charset guard is the same cross-cutting follow-up the erasure
+  code already names, acknowledged rather than silently inherited.
 
 ## Glossary additions
 
