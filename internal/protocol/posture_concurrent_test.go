@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -127,6 +128,90 @@ func TestConcurrentReuse_PostureSurface(t *testing.T) {
 
 	// No goroutine leak: the baseline is restored once every Dispatch
 	// has returned.
+	time.Sleep(50 * time.Millisecond)
+	if after := runtime.NumGoroutine(); after > baseline+5 {
+		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
+	}
+}
+
+// TestConcurrentReuse_PostureHealth_WidenNoCrossTalk pins D-310's
+// concurrent-reuse invariant on the widened `runtime.health` path: N≥10
+// goroutines mixing elevated (admin / console:fleet) and ordinary callers
+// run against ONE shared PostureSurface under -race. An ordinary caller
+// must NEVER observe a widened (runtime-scope) tasks horizon, and an
+// elevated caller must ALWAYS observe one — no widening state bleeds
+// across concurrent reads (Dispatch derives `widened` from each call's
+// ctx, never from the surface). No goroutine leak after teardown.
+func TestConcurrentReuse_PostureHealth_WidenNoCrossTalk(t *testing.T) {
+	const n = 120 // ≥10 per §17.3; ≥100 keeps parity with the D-025 leg
+
+	at := time.Unix(1_747_000_000, 0).UTC()
+	deps := basePostureDeps(t)
+	deps.Retention = func(_ context.Context, _ identity.Identity, widened bool) []types.RetentionHorizon {
+		scope := types.RetentionScopeSession
+		if widened {
+			scope = types.RetentionScopeRuntime
+		}
+		return []types.RetentionHorizon{{Surface: "tasks", Scope: scope, OldestRetainedAt: &at}}
+	}
+	s, err := protocol.NewPostureSurface(deps)
+	if err != nil {
+		t.Fatalf("NewPostureSurface: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			verified := identity.Identity{
+				TenantID:  fmt.Sprintf("tenant-%d", i),
+				UserID:    fmt.Sprintf("user-%d", i),
+				SessionID: fmt.Sprintf("session-%d", i),
+			}
+			ctx := mustCtx(t, verified)
+			elevated := i%2 == 0
+			if elevated {
+				ctx = auth.WithScopes(ctx, []auth.Scope{auth.ScopeConsoleFleet})
+			}
+			req := &types.RuntimeInfoRequest{Identity: types.IdentityScope{
+				Tenant: verified.TenantID, User: verified.UserID, Session: verified.SessionID,
+			}}
+			out, derr := s.Dispatch(ctx, methods.MethodRuntimeHealth, req)
+			if derr != nil {
+				errs <- fmt.Errorf("goroutine-%d: %w", i, derr)
+				return
+			}
+			h := out.(*types.RuntimeHealth)
+			var got string
+			for _, r := range h.Retention {
+				if r.Surface == "tasks" {
+					got = r.Scope
+				}
+			}
+			want := types.RetentionScopeSession
+			if elevated {
+				want = types.RetentionScopeRuntime
+			}
+			if got != want {
+				errs <- fmt.Errorf("goroutine-%d (elevated=%v): tasks scope = %q, want %q — widen bleed",
+					i, elevated, got, want)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
 	time.Sleep(50 * time.Millisecond)
 	if after := runtime.NumGoroutine(); after > baseline+5 {
 		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)

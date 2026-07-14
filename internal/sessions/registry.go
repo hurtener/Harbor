@@ -986,6 +986,65 @@ func (r *Registry) ListSnapshots(ctx context.Context, f SessionListFilter) ([]Se
 	return out, nil
 }
 
+// OldestRetainedAt reports the OBSERVED oldest session-open instant
+// across the WHOLE retained session set — every (tenant, user, session)
+// this registry has seen (open OR closed-but-retained) — as the
+// identity-free runtime-wide retention horizon a fleet-observe caller
+// reads on `runtime.health`. It is the runtime-wide analogue of
+// events.RetentionReporter, discovered by type assertion at the posture
+// wiring seam (no `Supports*` capability protocol — CLAUDE.md §4.4). The
+// returned instant carries no per-session content — only the bare oldest
+// OpenedAt — so it is safe to expose runtime-wide, never a cross-tenant
+// enumeration.
+//
+// "Oldest RETAINED", not "oldest ever": the registry's idle GC reaps old
+// sessions, so the horizon tracks what is still held. Returns
+// (zero, false, nil) when the registry retains no sessions (present is
+// false), and (zero, false, ErrRegistryClosed) after CloseRegistry.
+//
+// The catalog scanned is the in-memory `idIndex` (every SessionID Opened
+// during this process's lifetime); a session created by a PRIOR process
+// whose (tenant, user) has not been hydrated is not counted — the same
+// documented lazy-hydration gap ListSnapshots carries for an unscoped
+// fleet read (a store-level List is post-V1). A per-session load error
+// is skipped rather than failing the whole horizon (best-effort
+// observability, never a load-bearing path).
+func (r *Registry) OldestRetainedAt(ctx context.Context) (time.Time, bool, error) {
+	if r.closed.Load() {
+		return time.Time{}, false, ErrRegistryClosed
+	}
+
+	r.mu.Lock()
+	idents := make([]identity.Identity, 0, len(r.idIndex))
+	for _, ident := range r.idIndex {
+		idents = append(idents, ident)
+	}
+	r.mu.Unlock()
+
+	var oldest time.Time
+	for _, ident := range idents {
+		if err := ctx.Err(); err != nil {
+			return time.Time{}, false, err
+		}
+		stored, err := r.loadSession(ctx, ident)
+		if err != nil {
+			// A record may have been deleted out-of-band; skip it rather
+			// than failing the whole horizon read.
+			continue
+		}
+		if stored.OpenedAt.IsZero() {
+			continue
+		}
+		if oldest.IsZero() || stored.OpenedAt.Before(oldest) {
+			oldest = stored.OpenedAt
+		}
+	}
+	if oldest.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return oldest.UTC(), true, nil
+}
+
 // stringSet is a small inclusion-filter helper for ListSnapshots. An
 // empty set matches everything; a non-empty set matches members only.
 type stringSet map[string]struct{}

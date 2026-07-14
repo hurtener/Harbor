@@ -67,8 +67,21 @@ export interface RetentionHorizon {
 	/** The durable surface — `events`, `tasks`, or `sessions`. */
 	surface: string;
 	/**
-	 * RFC-3339 wall-clock time of the oldest retained row. Absent when
-	 * the surface holds no rows yet — never a fabricated value.
+	 * The identity scope this horizon was measured at — `runtime`
+	 * (identity-free, the whole retained set), `tenant`, or `session`. It
+	 * makes an absent timestamp representable: `scope:"runtime"` +
+	 * no-timestamp is a trustworthy empty ("the runtime retains nothing"),
+	 * while `scope:"session"`/`"tenant"` + no-timestamp means the
+	 * runtime-wide truth is simply not observable at the caller's scope.
+	 * The `events` horizon is always `runtime`; the `tasks`/`sessions`
+	 * horizons widen to `runtime` for a verified admin/console:fleet
+	 * fleet-observe caller. Absent for an older/headless wiring.
+	 */
+	scope?: string;
+	/**
+	 * RFC-3339 wall-clock time of the oldest retained row at `scope`.
+	 * Absent when the surface holds no rows at that scope — never a
+	 * fabricated value. Read WITH `scope`.
 	 */
 	oldest_retained_at?: string;
 }
