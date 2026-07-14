@@ -7,6 +7,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -74,16 +75,19 @@ func BootDeclaredMCPServerSet(cfg *config.Config) map[string]struct{} {
 	return set
 }
 
-// AttachedSources returns the source ids currently live in the MCP registry.
-// NOTE: Registry.SourceIDs is a PROCESS-GLOBAL enumeration — correct for the
-// single-agent dev wiring, but the future multi-agent attach leg must scope
-// the attached set to the reconciling agent (see the
-// projection.ConnectionDetacher interface doc).
-func (d *MCPConnectionDetacher) AttachedSources(_ context.Context) []string {
+// AttachedSources returns the reconciling OWNER's runtime-added source ids —
+// the owner-scoped reconcile VIEW (Registry.RuntimeAddedSources), NOT the
+// process-global Registry.SourceIDs enumeration. Boot-declared servers stay
+// untagged and every OTHER owner's runtime-adds carry a different owner tag, so
+// neither appears in the view: one owner's run-start reconcile can never detach
+// a boot server or another owner's connection. The registry + catalog stay
+// process-global and deployment-shared (resolution + dispatch by bare name);
+// only the reconcile VIEW is owner-scoped.
+func (d *MCPConnectionDetacher) AttachedSources(_ context.Context, owner toolauth.Owner) []string {
 	if d.registry == nil {
 		return nil
 	}
-	return d.registry.SourceIDs()
+	return d.registry.RuntimeAddedSources(owner)
 }
 
 // Detach deregisters the source's tools from the catalog (when the catalog

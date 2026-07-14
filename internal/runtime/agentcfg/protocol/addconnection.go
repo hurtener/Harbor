@@ -72,6 +72,12 @@ type AttachRequest struct {
 	// Identity is the verified caller triple (the attach runs under it; the
 	// driver stamps it on transport-side events).
 	Identity identity.Identity
+	// AgentID is the agent whose config revision owns this runtime-added
+	// connection. With Identity.TenantID it forms the (tenant, agent)
+	// reconcile-view owner tag the attacher stamps on the registry entry so a
+	// run-start reconcile scopes to its own owner. Registration metadata, never
+	// an isolation key.
+	AgentID string
 	// Name is the unique MCP source id.
 	Name string
 	// Transport is "stdio" or "http".
@@ -180,6 +186,7 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 	// are NOT carried into the revision / diff / events below.
 	attachErr := s.attacher.Attach(ctx, AttachRequest{
 		Identity:        id,
+		AgentID:         req.AgentID,
 		Name:            desc.Name,
 		Transport:       desc.Transport,
 		Command:         append([]string(nil), desc.Command...),
