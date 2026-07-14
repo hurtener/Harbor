@@ -955,7 +955,7 @@ type SessionRegistry interface {
 **Settled session-lifetime invariants:**
 
 - A session is open until explicitly closed or GC'd.
-- **Reopen-after-close is forbidden.** Clients open a new session.
+- **A closed session — explicitly closed OR GC-reaped — MAY be reopened (amended — D-312; supersedes the original "Reopen-after-close is forbidden. Clients open a new session.").** Reopen re-activates the *existing* record in place: it clears `Closed` / `ClosedAt` / `ClosedReason`, preserves the immutable identity triple, refreshes `LastSeen`, and emits a `session.reopened` lifecycle event. The conversation resumes with its history **intact**, because closing/GC reaps the live session *record*, never the stored *data*: the durable event log is gap-free and **untrimmed** in V1 (no TTL, no cap), and the StateStore / MemoryStore hold the session's scoped records until an explicit erase. The **one terminal exception**: a session that went through `session.erase` (§7 right-to-erasure) MUST NOT be reopened — reopen fails loud (`ErrReopenAfterErase`), never a silent empty-start; you do not resurrect data a user asked to be deleted. Reopen is identity-mandatory and identity-immutable — the caller's verified `(tenant, user)` must equal the stored record's captured identity (`ErrIdentityMismatch` otherwise), and cross-tenant reuse of a session id remains rejected by the invariant below (a reopen attempt under a *different* tenant is `ErrSessionIDReuse`, not a reopen).
 - The identity triple is captured on `Open` and **immutable** for the session's lifetime; reusing a session ID across tenants/users is rejected.
 - `Touch` updates `LastSeen`; GC sweeps idle sessions per policy and **never** reaps a session with a `RUNNING` task.
 
