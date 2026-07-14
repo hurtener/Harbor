@@ -240,6 +240,16 @@ type MCPConnectionDescriptor struct {
 	// identity-stamped per-call RPC (the deployment's attribution
 	// vocabulary). Reserved / spec-prefixed keys are rejected at attach.
 	MetaAnnotations map[string]string `json:"meta_annotations,omitempty"`
+	// OAuthDiscoveryAllowedOrigins is the explicit per-connection cross-origin
+	// allow-list of public https origins the MCP OAuth-requirement discovery
+	// walker may fetch authorization-server metadata from. NON-SECRET (an origin
+	// allow-list, never a secret) — it rides the revision spine (versioned /
+	// diffable / rollback-able) and is writable live over
+	// `agent_config.set_mcp_discovery_origins`. Empty leaves the
+	// authorization-server hop needs-allowance (partial discovery), never a
+	// network hole: a granted origin is still refused at dial time if it
+	// resolves private / loopback. Set only for the http transport.
+	OAuthDiscoveryAllowedOrigins []string `json:"oauth_discovery_allowed_origins,omitempty"`
 }
 
 // ConnectionsSection is the runtime-added MCP-connection section of the
@@ -588,12 +598,13 @@ func normalizeConnections(in []MCPConnectionDescriptor) []MCPConnectionDescripto
 			names = append(names, d.Name)
 		}
 		byName[d.Name] = MCPConnectionDescriptor{
-			Name:            d.Name,
-			Transport:       d.Transport,
-			Command:         append([]string(nil), d.Command...),
-			URL:             d.URL,
-			OAuthProvider:   d.OAuthProvider,
-			MetaAnnotations: cloneStringMap(d.MetaAnnotations),
+			Name:                         d.Name,
+			Transport:                    d.Transport,
+			Command:                      append([]string(nil), d.Command...),
+			URL:                          d.URL,
+			OAuthProvider:                d.OAuthProvider,
+			MetaAnnotations:              cloneStringMap(d.MetaAnnotations),
+			OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
 		}
 	}
 	if len(names) == 0 {

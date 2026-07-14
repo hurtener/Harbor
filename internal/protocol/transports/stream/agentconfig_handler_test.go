@@ -65,6 +65,24 @@ func TestAgentConfigHandler_AdminRoute_UserTokenRejected(t *testing.T) {
 	}
 }
 
+// TestSetMCPDiscoveryOrigins_RejectsNonAdminScope proves the discovery-allowance
+// write route is admin-gated by inheriting the handler's default arm: a
+// valid-identity-but-no-scope caller AND an agent_config:user-scoped caller are
+// both rejected with CodeScopeMismatch BEFORE dispatch.
+func TestSetMCPDiscoveryOrigins_RejectsNonAdminScope(t *testing.T) {
+	h := sessionHandler(t)
+	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `","name":"srv","allowed_origins":["https://as.example.net"]}`
+	for _, scopes := range [][]auth.Scope{{}, {auth.ScopeAgentConfigUser}} {
+		code, resp := acReq(t, h, "set_mcp_discovery_origins", body, acID(), scopes)
+		if code != http.StatusForbidden {
+			t.Fatalf("non-admin caller (scopes=%v) should be 403; got %d body=%s", scopes, code, resp)
+		}
+		if c := errCode(t, resp); c != protoerrors.CodeScopeMismatch {
+			t.Fatalf("non-admin error code = %s, want %s", c, protoerrors.CodeScopeMismatch)
+		}
+	}
+}
+
 // TestAgentConfigHandler_UserRoute_IncompleteTriple401 proves a user route
 // still fails closed (401) on a missing identity, even with the user scope.
 func TestAgentConfigHandler_UserRoute_IncompleteTriple401(t *testing.T) {

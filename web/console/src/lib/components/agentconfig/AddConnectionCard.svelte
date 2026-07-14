@@ -140,6 +140,73 @@
       </p>
     {/if}
   </form>
+
+  <!-- The runtime-added connections editor: per-connection OAuth-discovery
+       allow-list (grant/revoke — set_mcp_discovery_origins) + removal
+       (remove_mcp_connection). The write is single-homed here beside
+       diff/rollback; the MCP Connections page deep-links to it (D-302). -->
+  {#if panel.activeConnections.length > 0}
+    <div class="conn-list" data-testid="agentcfg-conn-list">
+      <p class="field-label">Runtime-added connections</p>
+      {#each panel.activeConnections as conn (conn.name)}
+        <div class="conn-row" data-testid="agentcfg-conn-row-{conn.name}">
+          <div class="conn-head">
+            <span class="conn-name">{conn.name}</span>
+            <span class="conn-meta">{conn.transport}{conn.url ? ` · ${conn.url}` : ''}</span>
+            <button
+              type="button"
+              class="danger"
+              data-testid="agentcfg-conn-remove-{conn.name}"
+              disabled={!panel.hasAdminScope || panel.removeBusy !== ''}
+              title={panel.hasAdminScope
+                ? 'Remove this runtime-added connection (records a revision; detaches next run)'
+                : 'Removing a connection requires the admin scope claim'}
+              onclick={() => void panel.removeConnection(conn.name)}
+            >
+              {panel.removeBusy === conn.name ? 'Removing…' : 'Remove'}
+            </button>
+          </div>
+          {#if conn.transport === 'http'}
+            <label class="field field-wide">
+              <span class="field-label">OAuth-discovery allowed origins (one per line)</span>
+              <textarea
+                rows="2"
+                data-testid="agentcfg-conn-origins-{conn.name}"
+                placeholder="https://auth.example.com"
+                value={panel.discoveryInputFor(conn)}
+                disabled={!panel.hasAdminScope}
+                oninput={(e) => (panel.discoveryDraft[conn.name] = e.currentTarget.value)}
+              ></textarea>
+            </label>
+            <div class="actions">
+              <button
+                type="button"
+                class="primary"
+                data-testid="agentcfg-conn-origins-save-{conn.name}"
+                disabled={!panel.hasAdminScope || panel.discoveryBusy !== ''}
+                title={panel.hasAdminScope
+                  ? 'Full-replace this connection’s discovery allow-list (applies live)'
+                  : 'Editing discovery origins requires the admin scope claim'}
+                onclick={() => void panel.setDiscoveryOrigins(conn.name)}
+              >
+                {panel.discoveryBusy === conn.name ? 'Saving…' : 'Save origins'}
+              </button>
+            </div>
+          {/if}
+        </div>
+      {/each}
+      {#if panel.discoveryError}
+        <p class="form-error" data-testid="agentcfg-conn-origins-error">
+          {panel.discoveryError.code}: {panel.discoveryError.message}
+        </p>
+      {/if}
+      {#if panel.removeError}
+        <p class="form-error" data-testid="agentcfg-conn-remove-error">
+          {panel.removeError.code}: {panel.removeError.message}
+        </p>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -230,5 +297,50 @@
     margin: var(--space-0);
     font-size: var(--text-xs);
     color: var(--color-danger);
+  }
+  .conn-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    border-top: var(--border-hairline);
+    padding-top: var(--space-2);
+  }
+  .conn-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2);
+  }
+  .conn-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .conn-name {
+    font-weight: var(--font-weight-medium);
+  }
+  .conn-meta {
+    flex: 1;
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .danger {
+    padding: var(--space-1) var(--space-3);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    background: var(--color-surface);
+    color: var(--color-danger);
+    border-color: var(--color-danger);
+  }
+  .danger:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 </style>

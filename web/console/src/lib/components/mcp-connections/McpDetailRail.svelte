@@ -340,6 +340,24 @@
             {/each}
           </ul>
         {/if}
+        <!-- See-it-here / fix-it-there: the allowance WRITE is single-homed on
+             the Agent Config page (beside diff/rollback). This page only
+             deep-links to it — never a second write form (D-302 / D-062). -->
+        {#if req.status.some((s) => !s.ok && s.reason === 'needs_allowance')}
+          <p class="muted oauth-req-caveat" data-testid="oauth-requirement-allowance-hint">
+            An authorization-server origin needs an allowance grant. Discovery
+            origins are edited on the agent’s configuration (beside diff /
+            rollback), not here. A boot-declared (yaml) server is edited in
+            <code>harbor.yaml</code> and applied by a restart.
+            <a
+              class="allowance-link"
+              href={`/agent-config?connection=${encodeURIComponent(srv.name)}&grant_origin=${encodeURIComponent(req.status.find((s) => !s.ok && s.reason === 'needs_allowance')?.target ?? '')}`}
+              data-testid="oauth-requirement-grant-link"
+            >
+              Grant on Agent Config →
+            </a>
+          </p>
+        {/if}
       </section>
     {/if}
 

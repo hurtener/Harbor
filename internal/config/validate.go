@@ -2404,12 +2404,22 @@ func containsHost(allow []string, h string) bool {
 	return false
 }
 
-// validateDiscoveryOrigin checks that o is a well-formed OAuth-discovery
+// validateDiscoveryOrigin is the unexported boot-config caller of
+// [ValidateDiscoveryOrigin] — one implementation, two call sites (boot
+// validation + the Protocol discovery-allowance write).
+func validateDiscoveryOrigin(o string) error {
+	return ValidateDiscoveryOrigin(o)
+}
+
+// ValidateDiscoveryOrigin checks that o is a well-formed OAuth-discovery
 // cross-origin allowance: an https origin of the form scheme://host[:port]
 // with no path, query, or fragment. It is intentionally permissive on
 // host shape — the runtime enforces the private-range / IP-literal refusal at
-// fetch time; this catches only the operator format typo pre-boot.
-func validateDiscoveryOrigin(o string) error {
+// fetch time; this catches only the operator format typo pre-boot. It is the
+// SINGLE origin validator shared by boot-config validation and the
+// `agent_config.set_mcp_discovery_origins` Protocol write, so the two call
+// sites can never drift (CLAUDE.md §17.6).
+func ValidateDiscoveryOrigin(o string) error {
 	trimmed := strings.TrimSpace(o)
 	if trimmed == "" {
 		return errors.New("origin must not be empty")

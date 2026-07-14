@@ -87,6 +87,15 @@ const (
 	// close. Carries the agent id, the removed server id, the recording
 	// revision id, and the author identity — never a secret.
 	EventTypeMCPConnectionRemoved events.EventType = "mcp.connection.removed"
+
+	// EventTypeMCPDiscoveryOriginsSet — emitted when an admin FULL-REPLACES a
+	// runtime-added MCP connection's OAuth-discovery cross-origin allow-list
+	// (agent_config.set_mcp_discovery_origins). Carries the agent id, the
+	// connection id, the recording revision id, and the granted / revoked origin
+	// deltas — all NON-SECRET (public https origins are an allow-list, never a
+	// credential). This is the admin-scope audit event the write emits as one
+	// fail-closed unit with the mutation (CLAUDE.md §7).
+	EventTypeMCPDiscoveryOriginsSet events.EventType = "mcp.connection.discovery_origins_set"
 )
 
 func init() {
@@ -100,6 +109,7 @@ func init() {
 		EventTypeMCPConnectionFailed,
 		EventTypeMCPConnectionAuthRequired,
 		EventTypeMCPConnectionRemoved,
+		EventTypeMCPDiscoveryOriginsSet,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -196,6 +206,29 @@ type MCPConnectionRemovedPayload struct {
 	// RevisionID is the revision that dropped the descriptor + pruned residue.
 	RevisionID string
 	// OccurredAt is the removal instant.
+	OccurredAt time.Time
+}
+
+// MCPDiscoveryOriginsSetPayload is the typed payload for
+// EventTypeMCPDiscoveryOriginsSet. SafePayload — every field is
+// operator-visible audit metadata; the origin deltas are PUBLIC https origins
+// (an allow-list), never a secret.
+type MCPDiscoveryOriginsSetPayload struct {
+	events.SafeSealed
+	// Author is the identity that performed the write.
+	Author identity.Quadruple
+	// AgentID is the agent whose connection allow-list changed (a registration
+	// identity, NOT an isolation principal).
+	AgentID string
+	// ServerID is the MCP source id whose allow-list was replaced.
+	ServerID string
+	// RevisionID is the revision that recorded the new allow-list.
+	RevisionID string
+	// Granted is the set of origins newly present versus the prior live set.
+	Granted []string
+	// Revoked is the set of origins dropped versus the prior live set.
+	Revoked []string
+	// OccurredAt is the write instant.
 	OccurredAt time.Time
 }
 

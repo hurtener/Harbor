@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 113 canonical Harbor Protocol methods, generated from the single-source registry
+The 114 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -220,6 +220,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agent_config.session.skills.list` | `POST /v1/agent_config/session/skills/list` | agent config — session | [`AgentConfigSessionSkillsListRequest`](./types.md#agentconfigsessionskillslistrequest) | [`AgentConfigSessionSkillsListResponse`](./types.md#agentconfigsessionskillslistresponse) | read-only; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.session.skills.upsert` | `POST /v1/agent_config/session/skills/upsert` | agent config — session | [`AgentConfigSessionSkillsUpsertRequest`](./types.md#agentconfigsessionskillsupsertrequest) | [`AgentConfigSessionSkillsUpsertResponse`](./types.md#agentconfigsessionskillsupsertresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.set_llm_params` | `POST /v1/agent_config/set_llm_params` | agent config — admin | [`AgentConfigSetLLMParamsRequest`](./types.md#agentconfigsetllmparamsrequest) | [`AgentConfigSetLLMParamsResponse`](./types.md#agentconfigsetllmparamsresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.set_mcp_discovery_origins` | `POST /v1/agent_config/set_mcp_discovery_origins` | agent config — admin | [`AgentConfigSetMCPDiscoveryOriginsRequest`](./types.md#agentconfigsetmcpdiscoveryoriginsrequest) | [`AgentConfigSetMCPDiscoveryOriginsResponse`](./types.md#agentconfigsetmcpdiscoveryoriginsresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.set_prompt_layers` | `POST /v1/agent_config/set_prompt_layers` | agent config — admin | [`AgentConfigSetPromptLayersRequest`](./types.md#agentconfigsetpromptlayersrequest) | [`AgentConfigSetPromptLayersResponse`](./types.md#agentconfigsetpromptlayersresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.set_revision` | `POST /v1/agent_config/set_revision` | agent config — admin | [`AgentConfigSetRevisionRequest`](./types.md#agentconfigsetrevisionrequest) | [`AgentConfigSetRevisionResponse`](./types.md#agentconfigsetrevisionresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.set_tool_exposure` | `POST /v1/agent_config/set_tool_exposure` | agent config — admin | [`AgentConfigSetToolExposureRequest`](./types.md#agentconfigsettoolexposurerequest) | [`AgentConfigSetToolExposureResponse`](./types.md#agentconfigsettoolexposureresponse) | mutating; requires the verified `admin` scope claim |

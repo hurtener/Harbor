@@ -90,6 +90,19 @@ func (d *MCPConnectionDetacher) AttachedSources(_ context.Context, owner toolaut
 	return d.registry.RuntimeAddedSources(owner)
 }
 
+// SetOAuthDiscoveryOrigins re-applies a runtime-added connection's
+// OAuth-discovery cross-origin allow-list to the live registry — the run-start
+// allowance-reconcile leg's live effect (the rollback path for the
+// discovery-allowance write). It delegates to the process-global bare-name
+// registry (identity-mandatory for authorization). Satisfies
+// projection.DiscoveryOriginReconciler alongside AttachedSources.
+func (d *MCPConnectionDetacher) SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error) {
+	if d.registry == nil {
+		return nil, nil
+	}
+	return d.registry.SetOAuthDiscoveryOrigins(ctx, name, origins)
+}
+
 // Detach deregisters the source's tools from the catalog (when the catalog
 // supports source deregistration — the optional CatalogSourceDeregisterer
 // companion) and from the MCP registry, closing its transport gracefully. An

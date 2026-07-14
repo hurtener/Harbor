@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/adminwrite"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -892,35 +893,13 @@ func (s *MCPSurface) handleSetRawHTMLTrust(ctx context.Context, id identity.Iden
 	}, nil
 }
 
-// applyAdminWriteWithAudit runs an admin-plane mutation and its audit emit
-// as a single fail-closed unit: it applies the mutation, then emits the
-// audit event; if the emit fails it COMPENSATES by reverting the mutation,
-// so an un-auditable admin write is never left observably applied
-// (CLAUDE.md §5, §7 rule 6). It is the ONE admin-write audit posture the
-// MCP admin verbs share.
-//
-// apply returns a revert closure (restoring the pre-write state) and an
-// apply error. The two returned errors are disjoint: a non-nil applyErr
-// means the mutation never happened (map it through the domain error
-// mapper); a non-nil emitErr means the mutation was applied then reverted
-// (surface it as an audit failure). When the compensating revert itself
-// fails, the emitErr wraps both so the operator sees the state may be
-// inconsistent.
+// applyAdminWriteWithAudit runs an admin-plane mutation and its audit emit as
+// a single fail-closed unit — the MCP admin verbs' thin alias for the shared
+// [adminwrite.Apply] posture (one implementation, reused by both the MCP admin
+// verbs and the agent-config discovery-allowance write; CLAUDE.md §5, §7 rule
+// 6). See [adminwrite.Apply] for the emit/compensate contract.
 func applyAdminWriteWithAudit(apply func() (revert func() error, err error), emit func() error) (applyErr, emitErr error) {
-	revert, err := apply()
-	if err != nil {
-		return err, nil
-	}
-	if e := emit(); e != nil {
-		if revert != nil {
-			if rerr := revert(); rerr != nil {
-				return nil, fmt.Errorf("audit emit failed AND compensating revert failed (state may be inconsistent): %w",
-					stderrors.Join(e, rerr))
-			}
-		}
-		return nil, fmt.Errorf("audit emit failed (mutation reverted, not applied): %w", e)
-	}
-	return nil, nil
+	return adminwrite.Apply(apply, emit)
 }
 
 // emitRawHTMLTrustToggled publishes the `mcp.raw_html_trust_toggled`
