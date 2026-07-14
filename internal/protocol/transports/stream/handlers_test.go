@@ -180,6 +180,77 @@ func TestAggregateHandler_CrossTenantWithAdmin_PreFoldWidened_OneAudit_200(t *te
 	}
 }
 
+// TestAggregateHandler_ByTenant_WidenedAttributesThroughHandler_200 pins the
+// per-tenant attribution pass-through THROUGH the Protocol method: a widened
+// admin read with by_tenant:true returns counts_by_tenant keyed by the named
+// tenants, each reconciling with the bucket totals (Σ == counts), and no tenant
+// outside the named set. Proves the handler threads the body's ByTenant flag
+// onto the aggregator alongside the server-derived widened decision.
+func TestAggregateHandler_ByTenant_WidenedAttributesThroughHandler_200(t *testing.T) {
+	h, bus := newAggregateHandlerTest(t)
+	// Two named tenants, distinct principals; a third unnamed tenant must not leak.
+	publishAggAt(t, bus, "t-alpha", "a-u1", "a-s1", aggHandlerNow.Add(-5*time.Minute))
+	publishAggAt(t, bus, "t-alpha", "a-u2", "a-s2", aggHandlerNow.Add(-6*time.Minute))
+	publishAggAt(t, bus, "t-beta", "b-u1", "b-s1", aggHandlerNow.Add(-7*time.Minute))
+	publishAggAt(t, bus, "t-gamma", "g-u1", "g-s1", aggHandlerNow.Add(-5*time.Minute))
+
+	body := `{"filter":{"tenant_ids":["t-alpha","t-beta"]},"window":1800000000000,"bucket":60000000000,"by_tenant":true}`
+	status, raw := doAggregate(t, h, body, &aggCaller, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, raw)
+	}
+	var resp prototypes.EventAggregateResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, raw)
+	}
+	keys := map[string]int64{}
+	for _, b := range resp.Buckets {
+		perType := map[string]int64{}
+		for tenant, byType := range b.CountsByTenant {
+			for typ, n := range byType {
+				keys[tenant] += n
+				perType[typ] += n
+			}
+		}
+		// Σ CountsByTenant == Counts per bucket.
+		for typ, want := range b.Counts {
+			if perType[typ] != want {
+				t.Fatalf("bucket type %q: Σ=%d want Counts=%d", typ, perType[typ], want)
+			}
+		}
+	}
+	if keys["t-alpha"] != 2 || keys["t-beta"] != 1 {
+		t.Fatalf("attribution totals = %v, want t-alpha:2 t-beta:1", keys)
+	}
+	if _, leaked := keys["t-gamma"]; leaked {
+		t.Fatalf("attribution leaked t-gamma outside the named set")
+	}
+}
+
+// TestAggregateHandler_ByTenant_NonWidenedIgnored_200 pins the fail-closed
+// property through the handler: a non-widened (own-scope) read with
+// by_tenant:true carries NO counts_by_tenant — an unelevated caller gains no
+// attribution, and the flag never elevates the read.
+func TestAggregateHandler_ByTenant_NonWidenedIgnored_200(t *testing.T) {
+	h, bus := newAggregateHandlerTest(t)
+	publishAggAt(t, bus, aggCaller.TenantID, aggCaller.UserID, aggCaller.SessionID, aggHandlerNow.Add(-5*time.Minute))
+
+	body := `{"window":1800000000000,"bucket":60000000000,"by_tenant":true}`
+	status, raw := doAggregate(t, h, body, &aggCaller, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, raw)
+	}
+	var resp prototypes.EventAggregateResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, raw)
+	}
+	for _, b := range resp.Buckets {
+		if len(b.CountsByTenant) != 0 {
+			t.Fatalf("non-widened by_tenant carried attribution %v, want none (fail-closed)", b.CountsByTenant)
+		}
+	}
+}
+
 // TestAggregateHandler_WidenedForeignTenant_DistinctPrincipals_FansIn_200 is
 // the isolation-critical regression for the fold bug: a widened admin
 // aggregate naming ONLY a foreign tenant, with the user/session axes elided,

@@ -593,6 +593,77 @@ func Run(t *testing.T, factory Factory) {
 		if got := sumRuntimeError(own); got != 1 {
 			t.Fatalf("non-admin own-session aggregate saw %d events, want 1 (scoped to own tuple)", got)
 		}
+
+		// Leg 4 — ATTRIBUTION (widened, ByTenant): the same widened,
+		// empty-filter fan-in with per-tenant attribution splits the totals
+		// across exactly the fixture's tenants, each tenant reconciles to
+		// perTenant, and every bucket satisfies
+		// Σ_tenant CountsByTenant[tenant][type] == Counts[type]. This runs on
+		// EVERY driver the matrix parametrizes, so inmem and durable must
+		// agree on the attribution (the same parity the fan-in leg pins).
+		attrReq := prototypes.EventAggregateRequest{Window: time.Hour, Bucket: time.Minute, ByTenant: true}
+		attr, err := agg.Aggregate(context.Background(), attrReq, true)
+		if err != nil {
+			t.Fatalf("Aggregate(widened, ByTenant): %v", err)
+		}
+		attrKeys := map[string]struct{}{}
+		for _, b := range attr.Buckets {
+			// Per-bucket Σ invariant.
+			perType := map[string]int64{}
+			for tenant, byType := range b.CountsByTenant {
+				attrKeys[tenant] = struct{}{}
+				for typ, n := range byType {
+					perType[typ] += n
+				}
+			}
+			for typ, want := range b.Counts {
+				if perType[typ] != want {
+					t.Fatalf("attribution Σ mismatch: bucket type %q Σ=%d want Counts=%d", typ, perType[typ], want)
+				}
+			}
+		}
+		if len(attrKeys) != len(tenants) {
+			t.Fatalf("attribution tenant keys = %v, want the %d fixture tenants", attrKeys, len(tenants))
+		}
+		for _, ten := range tenants {
+			var total int64
+			for _, b := range attr.Buckets {
+				total += b.CountsByTenant[ten][string(events.EventTypeRuntimeError)]
+			}
+			if total != perTenant {
+				t.Fatalf("attribution for %s = %d, want %d", ten, total, perTenant)
+			}
+		}
+
+		// Leg 5 — ATTRIBUTION IS OPT-IN + FAIL-CLOSED: the same widened read
+		// WITHOUT ByTenant carries no attribution, and a NON-widened read WITH
+		// ByTenant is ignored (no attribution) — an unelevated caller gains
+		// nothing it could not already read.
+		noFlag, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{Window: time.Hour, Bucket: time.Minute}, true)
+		if err != nil {
+			t.Fatalf("Aggregate(widened, no ByTenant): %v", err)
+		}
+		for _, b := range noFlag.Buckets {
+			if len(b.CountsByTenant) != 0 {
+				t.Fatalf("widened read without ByTenant carried attribution %v, want none", b.CountsByTenant)
+			}
+		}
+		ownAttr, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+			Filter: prototypes.EventFilter{
+				TenantIDs:  []string{tenants[0]},
+				UserIDs:    []string{tenants[0] + "-u1"},
+				SessionIDs: []string{tenants[0] + "-u1-s1"},
+			},
+			Window: time.Hour, Bucket: time.Minute, ByTenant: true,
+		}, false)
+		if err != nil {
+			t.Fatalf("Aggregate(non-admin, ByTenant): %v", err)
+		}
+		for _, b := range ownAttr.Buckets {
+			if len(b.CountsByTenant) != 0 {
+				t.Fatalf("non-widened ByTenant read carried attribution %v, want none (fail-closed)", b.CountsByTenant)
+			}
+		}
 	})
 
 	t.Run("Fence_DropsLateEventsAndEmptiesHistory", func(t *testing.T) {

@@ -187,6 +187,12 @@ func (h *AggregateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// effReq carries the body's opt-in ByTenant flag verbatim; the
+	// aggregator honours per-tenant attribution ONLY when that flag rides
+	// the server-derived `widened` authority computed above (never the
+	// body). An unelevated ByTenant request is therefore ignored, not
+	// elevated — and a non-admin naming a foreign/multi tenant was already
+	// rejected 403 at the widening gate above, before attribution.
 	resp, err := h.aggregator.Aggregate(r.Context(), effReq, widened)
 	if err != nil {
 		code, status, msg := classifyAggregateError(err)

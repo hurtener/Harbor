@@ -185,6 +185,18 @@ func NewAggregator(bus EventBus, opts ...AggregatorOption) (*Aggregator, error) 
 // reads RequiresAdminScope, gates on auth.HasScope). By the time
 // Aggregate runs, the request is authorised.
 //
+// Per-tenant attribution (req.ByTenant) is HONOURED ONLY when the read is
+// also widened — the two together gate `EventBucket.CountsByTenant`, a
+// re-projection of each bucket's Counts by the counted events' existing
+// tenant identity. It is computed in the SAME pass that fills Counts, over
+// the SAME already-authorised matched events, so it never widens the read
+// and per bucket `Σ_tenant CountsByTenant[tenant][type] == Counts[type]`
+// holds by construction. On a non-widened read ByTenant is ignored (nil
+// CountsByTenant) so an unelevated caller gains attribution for nothing it
+// could not already read, and the response stays byte-identical to a
+// request that never opted in (CLAUDE.md §6 defence-in-depth, §13
+// fail-closed).
+//
 // The aggregator respects ctx — ctx.Err() is checked before any
 // expensive work and before each bucket fill. A long aggregate against
 // a high-cardinality bus that is cancelled by the caller returns
@@ -306,6 +318,13 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 		return prototypes.EventAggregateResponse{}, fmt.Errorf("events: aggregate windowed read: %w", err)
 	}
 
+	// Per-tenant attribution is a second accumulator over the SAME matched
+	// events, gated on BOTH the opt-in flag AND the server-derived widened
+	// authority. On a non-widened read the flag is ignored (no attribution
+	// map is ever allocated), so the response is byte-identical to a request
+	// that never opted in — an unelevated caller gains nothing.
+	attribute := req.ByTenant && widened
+
 	for _, ev := range page.Events {
 		if err := ctx.Err(); err != nil {
 			return prototypes.EventAggregateResponse{}, err
@@ -320,7 +339,27 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 		if idx < 0 || idx >= bucketCount {
 			continue
 		}
-		buckets[idx].Counts[string(ev.Type)]++
+		typ := string(ev.Type)
+		buckets[idx].Counts[typ]++
+		if attribute {
+			// Re-project the same increment onto the event's existing tenant.
+			// The outer map is allocated lazily so empty buckets omit the
+			// field (nothing to attribute). Because this counts the identical
+			// matched event that just bumped Counts, the per-bucket invariant
+			// Σ_tenant CountsByTenant[tenant][type] == Counts[type] holds by
+			// construction — attribution is a pure re-projection, never a
+			// second, looser read path.
+			tid := ev.Identity.TenantID
+			if buckets[idx].CountsByTenant == nil {
+				buckets[idx].CountsByTenant = make(map[string]map[string]int64)
+			}
+			byType := buckets[idx].CountsByTenant[tid]
+			if byType == nil {
+				byType = make(map[string]int64)
+				buckets[idx].CountsByTenant[tid] = byType
+			}
+			byType[typ]++
+		}
 	}
 
 	return prototypes.EventAggregateResponse{

@@ -18,6 +18,7 @@ import type { EventFilter, TimeWindow } from '$lib/protocol/events.js';
 import { EPOCH_ANCHOR, WINDOW_SPEC } from '$lib/protocol/events.js';
 import type { EventsNamespace } from '$lib/protocol/client.js';
 import { projectBuckets, type SparklineSeries } from './sparkline.js';
+import { projectTenantAttribution, type TenantAttribution } from './attribution.js';
 import type { ProtocolError } from '$lib/protocol/errors.js';
 
 /** The four-state status the sparkline's nested `<PageState>` reads. */
@@ -33,6 +34,14 @@ export type AggregateStatus = 'loading' | 'error' | 'ready';
 export class EventsAggregator {
 	/** The projected stacked-area series the sparkline renders. */
 	series = $state<SparklineSeries>({ columns: [], eventTypes: [], peak: 0 });
+	/**
+	 * The per-tenant attribution breakdown, or null when the read was not
+	 * admin-widened / attribution was not requested (nothing to attribute).
+	 * Populated only on a cross-tenant (fleet) read that opted in — it lets
+	 * the operator independently verify the tenant boundary the runtime
+	 * enforced (the defence-in-depth an aggregate otherwise lacks).
+	 */
+	attribution = $state<TenantAttribution | null>(null);
 	/** The fetch status. */
 	status = $state<AggregateStatus>('loading');
 	/** The thrown error — populated only in the `error` status. */
@@ -42,6 +51,13 @@ export class EventsAggregator {
 
 	readonly #ns: EventsNamespace;
 	#filter: EventFilter = {};
+	/**
+	 * Whether to request per-tenant attribution. Set by the page ONLY when
+	 * the active read is cross-tenant (widened); the runtime honours it only
+	 * under a verified admin/console:fleet scope and ignores it otherwise, so
+	 * this is a display opt-in, never an authority escalation.
+	 */
+	#byTenant = false;
 
 	constructor(ns: EventsNamespace) {
 		this.#ns = ns;
@@ -53,10 +69,22 @@ export class EventsAggregator {
 		void this.refresh();
 	}
 
-	/** Sets the event predicate and re-fetches. */
-	setFilter(f: EventFilter): void {
+	/**
+	 * Sets the event predicate and re-fetches. `byTenant` opts in to
+	 * per-tenant attribution — the page passes `true` on a cross-tenant
+	 * (fleet) read so the operator can verify the tenant breakdown; the
+	 * runtime ignores it on a non-widened read (fail-closed).
+	 */
+	setFilter(f: EventFilter, byTenant = false): void {
 		this.#filter = f;
+		this.#byTenant = byTenant;
 		void this.refresh();
+	}
+
+	/** The entitled tenants the operator asked for — the aggregate filter's
+	 * `tenant_ids`, used to flag any returned tenant outside the set. */
+	get #entitled(): readonly string[] {
+		return this.#filter.tenant_ids ?? [];
 	}
 
 	/**
@@ -78,12 +106,19 @@ export class EventsAggregator {
 				// on the next poll instead of re-deriving the whole series
 				// (D-306). Absent this, two polls a few seconds apart return two
 				// different boundary sets and nothing caches.
-				anchor: EPOCH_ANCHOR
+				anchor: EPOCH_ANCHOR,
+				// Opt in to per-tenant attribution on a cross-tenant read. The
+				// runtime returns counts_by_tenant ONLY under a verified
+				// admin/console:fleet scope; on any other read the flag is
+				// ignored (fail-closed) and the projection below is null.
+				by_tenant: this.#byTenant
 			});
 			this.series = projectBuckets(resp.buckets);
+			this.attribution = projectTenantAttribution(resp.buckets, this.#entitled);
 			this.status = 'ready';
 		} catch (e) {
 			this.series = { columns: [], eventTypes: [], peak: 0 };
+			this.attribution = null;
 			this.error = describeAggregateError(e);
 			this.status = 'error';
 		}
