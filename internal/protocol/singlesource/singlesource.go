@@ -144,6 +144,8 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.add_mcp_connection":        {},
 	"agent_config.remove_mcp_connection":     {},
 	"agent_config.set_mcp_discovery_origins": {},
+	"agent_config.set_oauth_provider":        {},
+	"agent_config.remove_oauth_provider":     {},
 	// Session-user safe subset (the non-admin lower tier).
 	"agent_config.session.set_user_prompt":     {},
 	"agent_config.session.set_source_disables": {},
@@ -363,6 +365,13 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigRemoveMCPConnectionResponse":    "types",
 	"AgentConfigSetMCPDiscoveryOriginsRequest":  "types",
 	"AgentConfigSetMCPDiscoveryOriginsResponse": "types",
+	"AgentConfigOAuthProviderDescriptor":        "types",
+	"AgentConfigOAuthProviders":                 "types",
+	"AgentConfigOAuthProvidersDiff":             "types",
+	"AgentConfigSetOAuthProviderRequest":        "types",
+	"AgentConfigSetOAuthProviderResponse":       "types",
+	"AgentConfigRemoveOAuthProviderRequest":     "types",
+	"AgentConfigRemoveOAuthProviderResponse":    "types",
 	// Session-user safe subset (the non-admin lower tier).
 	"AgentConfigSessionOverlay":                   "types",
 	"AgentConfigSessionSetUserPromptRequest":      "types",

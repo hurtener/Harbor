@@ -347,6 +347,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		payload.OAuthProviders = active.Payload.OAuthProviders
 	}
 	servers = append(servers, desc)
 	payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}

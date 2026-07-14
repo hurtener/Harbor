@@ -282,19 +282,19 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 	providers := map[string]auth.OAuthProvider{"m365": prov}
 
 	t.Run("unbound", func(t *testing.T) {
-		got, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x"}, TransportStreamableHTTP, providers)
+		got, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x"}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err != nil || got != nil {
 			t.Fatalf("unbound: got (%v, %v)", got, err)
 		}
 	})
 	t.Run("resolves", func(t *testing.T) {
-		got, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", URL: "https://mcp.example.test", OAuthProvider: "m365"}, TransportStreamableHTTP, providers)
+		got, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", URL: "https://mcp.example.test", OAuthProvider: "m365"}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err != nil || got == nil {
 			t.Fatalf("resolves: got (%v, %v)", got, err)
 		}
 	})
 	t.Run("unknown provider lists registered", func(t *testing.T) {
-		_, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", URL: "https://mcp.example.test", OAuthProvider: "nope"}, TransportStreamableHTTP, providers)
+		_, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", URL: "https://mcp.example.test", OAuthProvider: "nope"}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding, got %v", err)
 		}
@@ -303,7 +303,7 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 		}
 	})
 	t.Run("stdio binding rejected", func(t *testing.T) {
-		_, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", OAuthProvider: "m365"}, TransportStdio, providers)
+		_, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", OAuthProvider: "m365"}, TransportStdio, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for stdio, got %v", err)
 		}
@@ -314,7 +314,7 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 		// reach any wire. Must fail exactly like explicit stdio.
 		_, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", Command: []string{"/bin/echo"}, OAuthProvider: "m365",
-		}, TransportAuto, providers)
+		}, TransportAuto, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for auto+command-only binding, got %v", err)
 		}
@@ -323,7 +323,7 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 		_, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", URL: "https://mcp.example.test", OAuthProvider: "m365",
 			Headers: map[string]string{"AUTHORIZATION": "Bearer static"},
-		}, TransportStreamableHTTP, providers)
+		}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for static Authorization, got %v", err)
 		}
@@ -331,7 +331,7 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 	t.Run("reserved annotation key rejected", func(t *testing.T) {
 		_, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", MetaAnnotations: map[string]string{"tenant": "x"},
-		}, TransportStreamableHTTP, providers)
+		}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for reserved annotation, got %v", err)
 		}
@@ -339,7 +339,7 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 	t.Run("spec-prefixed annotation key rejected", func(t *testing.T) {
 		_, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", MetaAnnotations: map[string]string{"io.modelcontextprotocol/x": "y"},
-		}, TransportStreamableHTTP, providers)
+		}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for spec-prefixed annotation, got %v", err)
 		}
@@ -347,7 +347,7 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 	t.Run("empty annotation key rejected", func(t *testing.T) {
 		_, err := resolveOAuthBinding(config.MCPServerConfig{
 			Name: "x", MetaAnnotations: map[string]string{"  ": "y"},
-		}, TransportStreamableHTTP, providers)
+		}, TransportStreamableHTTP, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for empty annotation key, got %v", err)
 		}

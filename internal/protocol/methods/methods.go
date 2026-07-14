@@ -389,6 +389,31 @@ const (
 	// wire-transport route is `POST /v1/agent_config/set_mcp_discovery_origins`.
 	MethodAgentConfigSetMCPDiscoveryOrigins Method = "agent_config.set_mcp_discovery_origins"
 
+	// MethodAgentConfigSetOAuthProvider — admin verb: installs (upserts) a
+	// ZERO-URL, broker-pull OAuth provider onto the agent-config revision spine
+	// AND into the live owner-tagged provider set so the next MCP attach bound to
+	// it injects the exchanged bearer. The writable descriptor carries only
+	// `{name, driver:"tokenexchange", credential_source:"remote",
+	// credential_broker, scopes?}` — NO URL, NO env-var name, NO secret; every
+	// credential sink is pinned at boot on the named credential broker (a write
+	// carrying `token_url` / `auth_url` / `client_id_env` / `client_secret_env` /
+	// `remote` is rejected BY NAME via DisallowUnknownFields). A name colliding
+	// with a boot-declared provider is refused (boot wins). Identity-mandatory;
+	// requires the `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/set_oauth_provider`.
+	MethodAgentConfigSetOAuthProvider Method = "agent_config.set_oauth_provider"
+
+	// MethodAgentConfigRemoveOAuthProvider — admin verb: uninstalls a
+	// Protocol-installed OAuth provider by name as a NEW revision AND uninstalls
+	// it live, which CLOSES the provider — so a still-bound connection's next
+	// call fails LOUD rather than degrading to an unauthenticated dial
+	// (deliberately breaking; the break is confined to the owning owner by the
+	// owner-scoped run-start reconcile). An unknown name and a boot-declared name
+	// each fail loud with a distinct typed error. Identity-mandatory; requires
+	// the `auth.ScopeAdmin` claim. The wire-transport route is
+	// `POST /v1/agent_config/remove_oauth_provider`.
+	MethodAgentConfigRemoveOAuthProvider Method = "agent_config.remove_oauth_provider"
+
 	// MethodAgentConfigSessionSetUserPrompt — session-safe verb (the
 	// non-admin lower tier): a session-scoped end user sets a user
 	// prompt layer that composes ABOVE the operator base (it can extend the
@@ -988,6 +1013,8 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigAddMCPConnection:         {},
 	MethodAgentConfigRemoveMCPConnection:      {},
 	MethodAgentConfigSetMCPDiscoveryOrigins:   {},
+	MethodAgentConfigSetOAuthProvider:         {},
+	MethodAgentConfigRemoveOAuthProvider:      {},
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
 	MethodAgentConfigSessionSkillsList:        {},
@@ -1232,14 +1259,15 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the twenty-four
+// canonicalAgentConfigMethods is the closed set of the twenty-six
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
 // (set_tool_exposure), the layered-prompt verb (set_prompt_layers), the
 // per-agent LLM-params verb (set_llm_params), the add-connection verb
 // (add_mcp_connection), the remove-connection verb (remove_mcp_connection),
-// the discovery-allowance write (set_mcp_discovery_origins),
+// the discovery-allowance write (set_mcp_discovery_origins), the OAuth-provider
+// install / uninstall verbs (set_oauth_provider / remove_oauth_provider),
 // the five session safe-subset verbs, and the five user-tier verbs
 // (user.get / user.set_revision / user.list_revisions / user.diff /
 // user.rollback). IsAgentConfigMethod is O(1); the agent-config wire handler
@@ -1259,6 +1287,8 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigAddMCPConnection:       {},
 	MethodAgentConfigRemoveMCPConnection:    {},
 	MethodAgentConfigSetMCPDiscoveryOrigins: {},
+	MethodAgentConfigSetOAuthProvider:       {},
+	MethodAgentConfigRemoveOAuthProvider:    {},
 	// Session-user safe subset (the non-admin lower tier).
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
@@ -1322,9 +1352,11 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigAddMCPConnection:       {},
 	MethodAgentConfigRemoveMCPConnection:    {},
 	MethodAgentConfigSetMCPDiscoveryOrigins: {},
+	MethodAgentConfigSetOAuthProvider:       {},
+	MethodAgentConfigRemoveOAuthProvider:    {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the twenty-four
+// IsAgentConfigMethod reports whether m is one of the twenty-six
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

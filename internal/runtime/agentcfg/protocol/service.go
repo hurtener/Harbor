@@ -177,6 +177,23 @@ type Service struct {
 	// this package depends only on the interface. The registry stays
 	// process-global bare-name (never re-keyed by identity).
 	discoveryApplier DiscoveryOriginApplier
+	// providerInstaller installs / uninstalls a Protocol-installed, zero-URL
+	// OAuth provider live into the owner-tagged provider set for
+	// `agent_config.set_oauth_provider` / `remove_oauth_provider` (and the
+	// run-start provider reconcile). Optional — nil ⇒ the two verbs return
+	// ErrProviderInstallUnavailable (→ 501 at the wire edge). The concrete
+	// (which imports the auth package + resolves the boot credential broker) is
+	// injected at the cmd/harbor + devstack boundary; this package depends only
+	// on the interface. Owner-tagged for reconcile scoping; resolution stays
+	// process-global bare-name.
+	providerInstaller ProviderInstaller
+	// bootDeclaredOAuthProviders is the set of OAuth provider names declared in
+	// the boot yaml (`tools.oauth_providers[].name`). set_oauth_provider /
+	// remove_oauth_provider reject a name in this set with a DISTINCT loud error:
+	// the verbs govern revisioned installed-provider state only, so a
+	// boot-declared provider is edited in yaml + restart (boot wins). Populated
+	// at the cmd/harbor + devstack boundary from the loaded config.
+	bootDeclaredOAuthProviders map[string]struct{}
 	// coordinator is the unified pause/resume primitive an auth-required
 	// attach parks on. Optional — nil ⇒ an auth-required attach fails loud
 	// with ErrCoordinatorUnavailable rather than silently dropping the auth
@@ -359,6 +376,41 @@ func WithDiscoveryOriginApplier(a DiscoveryOriginApplier) Option {
 		if a != nil {
 			s.discoveryApplier = a
 		}
+	}
+}
+
+// WithProviderInstaller wires the concrete that installs / uninstalls a
+// Protocol-installed, zero-URL OAuth provider live into the owner-tagged
+// provider set for `agent_config.set_oauth_provider` / `remove_oauth_provider`
+// (and the run-start provider reconcile). A nil installer leaves the two verbs
+// returning ErrProviderInstallUnavailable (→ 501). The concrete (which imports
+// the auth package + resolves the boot credential broker) is injected at the
+// cmd/harbor + devstack boundary; this package depends only on the interface.
+func WithProviderInstaller(a ProviderInstaller) Option {
+	return func(s *Service) {
+		if a != nil {
+			s.providerInstaller = a
+		}
+	}
+}
+
+// WithBootDeclaredOAuthProviders sets the set of OAuth provider names declared
+// in the boot yaml. set_oauth_provider / remove_oauth_provider reject a name in
+// this set with ErrBootDeclaredProvider (boot wins; edit yaml + restart). An
+// empty / nil list leaves every unknown name a plain not-found (for remove) or
+// installable (for set). Injected at the cmd/harbor + devstack boundary.
+func WithBootDeclaredOAuthProviders(names []string) Option {
+	return func(s *Service) {
+		if len(names) == 0 {
+			return
+		}
+		set := make(map[string]struct{}, len(names))
+		for _, n := range names {
+			if n != "" {
+				set[n] = struct{}{}
+			}
+		}
+		s.bootDeclaredOAuthProviders = set
 	}
 }
 
@@ -756,6 +808,11 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			Servers: connectionsToWire(p.Connections.Servers),
 		}
 	}
+	if p.OAuthProviders != nil {
+		out.OAuthProviders = &prototypes.AgentConfigOAuthProviders{
+			Providers: oauthProvidersToWire(p.OAuthProviders.Providers),
+		}
+	}
 	if p.LLMParams != nil {
 		out.LLMParams = &prototypes.AgentConfigLLMParams{
 			Model:           copyStringPtr(p.LLMParams.Model),
@@ -840,6 +897,44 @@ func connectionsToDomain(in []prototypes.AgentConfigMCPConnectionDescriptor) []a
 	return out
 }
 
+// oauthProvidersToWire projects domain installed-provider descriptors onto the
+// zero-URL wire shape (defensive copies; no shared backing slices).
+func oauthProvidersToWire(in []agentcfg.OAuthProviderDescriptor) []prototypes.AgentConfigOAuthProviderDescriptor {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]prototypes.AgentConfigOAuthProviderDescriptor, 0, len(in))
+	for _, d := range in {
+		out = append(out, prototypes.AgentConfigOAuthProviderDescriptor{
+			Name:             d.Name,
+			Driver:           d.Driver,
+			CredentialSource: d.CredentialSource,
+			CredentialBroker: d.CredentialBroker,
+			Scopes:           append([]string(nil), d.Scopes...),
+		})
+	}
+	return out
+}
+
+// oauthProvidersToDomain projects zero-URL wire descriptors onto the domain
+// shape (defensive copies; no shared backing slices).
+func oauthProvidersToDomain(in []prototypes.AgentConfigOAuthProviderDescriptor) []agentcfg.OAuthProviderDescriptor {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]agentcfg.OAuthProviderDescriptor, 0, len(in))
+	for _, d := range in {
+		out = append(out, agentcfg.OAuthProviderDescriptor{
+			Name:             d.Name,
+			Driver:           d.Driver,
+			CredentialSource: d.CredentialSource,
+			CredentialBroker: d.CredentialBroker,
+			Scopes:           append([]string(nil), d.Scopes...),
+		})
+	}
+	return out
+}
+
 // payloadToDomain projects a wire envelope onto the domain ConfigPayload.
 func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 	var out agentcfg.ConfigPayload
@@ -863,6 +958,11 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 	if p.Connections != nil {
 		out.Connections = &agentcfg.ConnectionsSection{
 			Servers: connectionsToDomain(p.Connections.Servers),
+		}
+	}
+	if p.OAuthProviders != nil {
+		out.OAuthProviders = &agentcfg.OAuthProvidersSection{
+			Providers: oauthProvidersToDomain(p.OAuthProviders.Providers),
 		}
 	}
 	if p.LLMParams != nil {
@@ -924,6 +1024,10 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 		Connections: prototypes.AgentConfigConnectionsDiff{
 			Added:   append([]string(nil), d.Connections.Added...),
 			Removed: append([]string(nil), d.Connections.Removed...),
+		},
+		OAuthProviders: prototypes.AgentConfigOAuthProvidersDiff{
+			Added:   append([]string(nil), d.OAuthProviders.Added...),
+			Removed: append([]string(nil), d.OAuthProviders.Removed...),
 		},
 		LLMParams: prototypes.AgentConfigLLMParamsDiff{
 			ModelChanged: d.LLMParams.ModelChanged,

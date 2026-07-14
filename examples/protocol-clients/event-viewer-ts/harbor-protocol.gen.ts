@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:12e26762ea88bcc049de845fb1077583472ea62557720998c0db7a622e69c70d";
+export const WIRE_SURFACE_DIGEST = "sha256:411dd47f536ee99f3d2ef927e7fc6c8df507a2b5b3d375a34bc3302d85d0415f";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -26,6 +26,7 @@ export type HarborMethod =
   | "agent_config.get"
   | "agent_config.list_revisions"
   | "agent_config.remove_mcp_connection"
+  | "agent_config.remove_oauth_provider"
   | "agent_config.rollback"
   | "agent_config.session.set_source_disables"
   | "agent_config.session.set_user_prompt"
@@ -34,6 +35,7 @@ export type HarborMethod =
   | "agent_config.session.skills.upsert"
   | "agent_config.set_llm_params"
   | "agent_config.set_mcp_discovery_origins"
+  | "agent_config.set_oauth_provider"
   | "agent_config.set_prompt_layers"
   | "agent_config.set_revision"
   | "agent_config.set_tool_exposure"
@@ -163,6 +165,8 @@ export type HarborEventType =
   | "agent.registered"
   | "agent.restart_requested"
   | "agent.restarted"
+  | "agent_config.oauth_provider.installed"
+  | "agent_config.oauth_provider.removed"
   | "artifacts.deleted"
   | "artifacts.uploaded"
   | "audit.admin_scope_used"
@@ -348,6 +352,7 @@ export interface AgentConfigDiff {
   tool_exposure: AgentConfigToolExposureDiff;
   prompt_layers: AgentConfigPromptLayersDiff;
   connections: AgentConfigConnectionsDiff;
+  oauth_providers: AgentConfigOAuthProvidersDiff;
   llm_params: AgentConfigLLMParamsDiff;
   hooks: AgentConfigHooksDiff;
   naming: AgentConfigNamingDiff;
@@ -471,11 +476,29 @@ export interface AgentConfigNamingDiff {
   model_to?: string;
 }
 
+export interface AgentConfigOAuthProviderDescriptor {
+  name: string;
+  driver: string;
+  credential_source: string;
+  credential_broker: string;
+  scopes?: string[];
+}
+
+export interface AgentConfigOAuthProviders {
+  providers?: AgentConfigOAuthProviderDescriptor[];
+}
+
+export interface AgentConfigOAuthProvidersDiff {
+  added?: string[];
+  removed?: string[];
+}
+
 export interface AgentConfigPayload {
   prompt_layers?: AgentConfigPromptLayers;
   skills?: AgentConfigSkillsSelection;
   tool_exposure?: AgentConfigToolExposure;
   connections?: AgentConfigConnections;
+  oauth_providers?: AgentConfigOAuthProviders;
   llm_params?: AgentConfigLLMParams;
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
@@ -504,6 +527,19 @@ export interface AgentConfigRemoveMCPConnectionRequest {
 export interface AgentConfigRemoveMCPConnectionResponse {
   revision: AgentConfigRevisionView;
   name: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigRemoveOAuthProviderRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  name: string;
+}
+
+export interface AgentConfigRemoveOAuthProviderResponse {
+  revision: AgentConfigRevisionView;
+  name: string;
+  uninstalled: boolean;
   protocol_version: string;
 }
 
@@ -620,6 +656,18 @@ export interface AgentConfigSetMCPDiscoveryOriginsResponse {
   granted?: string[];
   revoked?: string[];
   applied_live: boolean;
+  protocol_version: string;
+}
+
+export interface AgentConfigSetOAuthProviderRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  provider: AgentConfigOAuthProviderDescriptor;
+}
+
+export interface AgentConfigSetOAuthProviderResponse {
+  revision: AgentConfigRevisionView;
+  name: string;
   protocol_version: string;
 }
 

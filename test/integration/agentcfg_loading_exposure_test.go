@@ -112,7 +112,7 @@ func newLEHarness(t *testing.T, stdioAllowlist []string) *leHarness {
 
 	mcpReg := mcpdrv.NewRegistry()
 	coord := pauseresume.New(pauseresume.WithBus(bus))
-	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil, leID(leTenant), nil)
+	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil, leID(leTenant), nil, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithConnectionAttacher(attacher),

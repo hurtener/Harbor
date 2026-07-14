@@ -86,6 +86,46 @@ type AttachDeps struct {
 	// valid when no connection binds a provider. The driver depends ONLY on
 	// the `auth.OAuthProvider` interface — no concrete driver import (§13).
 	OAuthProviders map[string]auth.OAuthProvider
+	// OAuthProviderSet is the runtime provider SET a RUNTIME-ADDED connection's
+	// `oauth_provider` binding resolves against, so a Protocol-installed
+	// (owner-tagged) provider is bindable in addition to the boot map. When set
+	// it TAKES PRECEDENCE over OAuthProviders (the set is seeded from the same
+	// boot map at assembly, so boot providers stay resolvable). Optional — nil
+	// leaves resolution on the OAuthProviders map (the boot catalog path). The
+	// driver depends only on the narrow resolver interface (bare-name Get +
+	// Names for the fail-loud message) — no concrete import.
+	OAuthProviderSet OAuthProviderResolver
+}
+
+// OAuthProviderResolver is the narrow bare-name resolution seam Attach uses to
+// resolve a connection's `oauth_provider` binding — satisfied by
+// `auth.ProviderSet` (the runtime provider set) and by the boot map adapter.
+// Bare-name resolution across every session; Names feeds the fail-loud "registered: …"
+// message.
+type OAuthProviderResolver interface {
+	// Get resolves a provider by bare name; the bool reports presence.
+	Get(name string) (auth.OAuthProvider, bool)
+	// Names returns every resolvable provider name, sorted, for a fail-loud
+	// error message.
+	Names() []string
+}
+
+// mapProviderResolver adapts a boot provider map to the OAuthProviderResolver
+// seam so the boot path and the runtime-set path share one resolveOAuthBinding.
+type mapProviderResolver map[string]auth.OAuthProvider
+
+func (m mapProviderResolver) Get(name string) (auth.OAuthProvider, bool) {
+	p, ok := m[name]
+	return p, ok
+}
+
+func (m mapProviderResolver) Names() []string {
+	out := make([]string, 0, len(m))
+	for name := range m {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Attach wires one configured MCP server (config.MCPServerConfig) into
@@ -123,7 +163,14 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	// boot gate). An unknown name / stdio binding / static-Authorization
 	// conflict / reserved annotation key fails the attach loud (§13), never a
 	// silent unauthenticated attach.
-	oauthProvider, bindErr := resolveOAuthBinding(ms, mode, deps.OAuthProviders)
+	// Prefer the runtime provider SET (owner-tagged installs + boot seed) when
+	// wired; fall back to the boot map. The set is seeded from the same boot map
+	// at assembly, so a boot provider stays resolvable either way.
+	var resolver OAuthProviderResolver = deps.OAuthProviderSet
+	if resolver == nil {
+		resolver = mapProviderResolver(deps.OAuthProviders)
+	}
+	oauthProvider, bindErr := resolveOAuthBinding(ms, mode, resolver)
 	if bindErr != nil {
 		return fmt.Errorf("mcp server %q: %w", ms.Name, bindErr)
 	}
@@ -295,7 +342,7 @@ var ErrOAuthBinding = errors.New("mcp: invalid oauth_provider binding")
 // name against the declared registry and re-enforces the binding rules
 // (mirroring config-time validation for the runtime-add path). Returns the
 // resolved provider (nil when the connection binds none) or a loud error.
-func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, providers map[string]auth.OAuthProvider) (auth.OAuthProvider, error) {
+func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, providers OAuthProviderResolver) (auth.OAuthProvider, error) {
 	// Reserved / spec-prefixed annotation keys are re-checked here so a
 	// runtime-added connection cannot smuggle an identity-shadowing key.
 	for k := range ms.MetaAnnotations {
@@ -322,9 +369,9 @@ func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, provi
 			return nil, fmt.Errorf("%w: static Authorization header conflicts with oauth_provider (one auth mode per connection)", ErrOAuthBinding)
 		}
 	}
-	prov, ok := providers[ms.OAuthProvider]
+	prov, ok := providers.Get(ms.OAuthProvider)
 	if !ok {
-		return nil, fmt.Errorf("%w: unknown provider %q (registered: %s)", ErrOAuthBinding, ms.OAuthProvider, registeredProviderNames(providers))
+		return nil, fmt.Errorf("%w: unknown provider %q (registered: %s)", ErrOAuthBinding, ms.OAuthProvider, strings.Join(providers.Names(), ","))
 	}
 	// Downstream-sink allow-list (the credential-plane invariant):
 	// the provider's boot-declared allow-list is the ONLY authority for
@@ -355,20 +402,6 @@ func hostAllowed(allowList []string, normConnHost string) bool {
 		}
 	}
 	return false
-}
-
-// registeredProviderNames renders a deterministic, comma-separated list of
-// the registered OAuth provider names for a fail-loud error message.
-func registeredProviderNames(providers map[string]auth.OAuthProvider) string {
-	if len(providers) == 0 {
-		return "(none)"
-	}
-	names := make([]string, 0, len(providers))
-	for n := range providers {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return strings.Join(names, ",")
 }
 
 // cloneHeaderMap returns a defensive copy of m so the Provider's

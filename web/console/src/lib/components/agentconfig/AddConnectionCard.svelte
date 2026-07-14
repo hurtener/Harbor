@@ -94,6 +94,22 @@
             disabled={!panel.hasAdminScope}
           />
         </label>
+        <!-- The binding SELECT: pick an installed OAuth provider so this
+             connection's identity-stamped calls carry the exchanged bearer.
+             Threading it into the descriptor fixes the silent drop (D-062). -->
+        <label class="field field-wide">
+          <span class="field-label">OAuth provider (optional)</span>
+          <select
+            data-testid="agentcfg-conn-oauth-provider"
+            bind:value={panel.connOAuthProvider}
+            disabled={!panel.hasAdminScope}
+          >
+            <option value="">— none (static headers) —</option>
+            {#each panel.installedProviderNames as name (name)}
+              <option value={name}>{name}</option>
+            {/each}
+          </select>
+        </label>
       {/if}
       <label class="field field-wide">
         <span class="field-label">Secret headers (Key: value, one per line)</span>
@@ -207,6 +223,101 @@
       {/if}
     </div>
   {/if}
+
+  <!-- Protocol-installed OAuth providers (169 / D-303). ZERO-URL install:
+       the descriptor names a boot-declared credential broker that pins every
+       credential sink; there is NO URL or secret field to render. Uninstall
+       CLOSES the provider — bound connections' calls fail until they are
+       removed or re-added. -->
+  <div class="provider-section" data-testid="agentcfg-provider-section">
+    <p class="field-label">Protocol-installed OAuth providers</p>
+    <p class="note">
+      A zero-URL, broker-pull provider: the named credential broker (boot-declared)
+      pins the token endpoint, the allowed downstream hosts, the audience, and the
+      scope ceiling. No URL or secret is stored here.
+    </p>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Provider name</span>
+        <input
+          type="text"
+          data-testid="agentcfg-provider-name"
+          bind:value={panel.provName}
+          disabled={!panel.hasAdminScope}
+        />
+      </label>
+      <label class="field">
+        <span class="field-label">Credential broker</span>
+        <input
+          type="text"
+          data-testid="agentcfg-provider-broker"
+          placeholder="m365-broker"
+          bind:value={panel.provBroker}
+          disabled={!panel.hasAdminScope}
+        />
+      </label>
+      <label class="field field-wide">
+        <span class="field-label">Scopes (space or comma separated, optional)</span>
+        <input
+          type="text"
+          data-testid="agentcfg-provider-scopes"
+          placeholder="mail.read mail.send"
+          bind:value={panel.provScopes}
+          disabled={!panel.hasAdminScope}
+        />
+      </label>
+    </div>
+    <div class="actions">
+      <button
+        type="button"
+        class="primary"
+        data-testid="agentcfg-provider-install"
+        disabled={!panel.hasAdminScope || panel.provBusy}
+        title={panel.hasAdminScope
+          ? 'Install a zero-URL broker-pull OAuth provider'
+          : 'Installing a provider requires the admin scope claim'}
+        onclick={() => void panel.installProvider()}
+      >
+        {panel.provBusy ? 'Installing…' : 'Install provider'}
+      </button>
+    </div>
+    {#if panel.provError}
+      <p class="form-error" data-testid="agentcfg-provider-error">
+        {panel.provError.code}: {panel.provError.message}
+      </p>
+    {/if}
+    {#if panel.installedProviders.length > 0}
+      <div class="conn-list" data-testid="agentcfg-provider-list">
+        {#each panel.installedProviders as prov (prov.name)}
+          <div class="conn-row" data-testid="agentcfg-provider-row-{prov.name}">
+            <div class="conn-head">
+              <span class="conn-name">{prov.name}</span>
+              <span class="conn-meta"
+                >broker: {prov.credential_broker}{prov.scopes && prov.scopes.length > 0
+                  ? ` · scopes: ${prov.scopes.join(', ')}`
+                  : ''}</span
+              >
+              <button
+                type="button"
+                class="danger"
+                data-testid="agentcfg-provider-remove-{prov.name}"
+                disabled={!panel.hasAdminScope || panel.provRemoveBusy !== ''}
+                title="Uninstall closes the provider — bound connections' calls fail until they are removed or re-added"
+                onclick={() => void panel.removeProvider(prov.name)}
+              >
+                {panel.provRemoveBusy === prov.name ? 'Removing…' : 'Uninstall'}
+              </button>
+            </div>
+          </div>
+        {/each}
+        {#if panel.provRemoveError}
+          <p class="form-error" data-testid="agentcfg-provider-remove-error">
+            {panel.provRemoveError.code}: {panel.provRemoveError.message}
+          </p>
+        {/if}
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -220,6 +331,13 @@
     margin: var(--space-0);
     color: var(--color-text-muted);
     font-size: var(--text-xs);
+  }
+  .provider-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding-top: var(--space-3);
+    border-top: var(--border-hairline);
   }
   form {
     display: flex;

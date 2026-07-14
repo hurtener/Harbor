@@ -96,6 +96,24 @@ const (
 	// credential). This is the admin-scope audit event the write emits as one
 	// fail-closed unit with the mutation (CLAUDE.md §7).
 	EventTypeMCPDiscoveryOriginsSet events.EventType = "mcp.connection.discovery_origins_set"
+
+	// EventTypeOAuthProviderInstalled — emitted when an admin installs (upserts)
+	// a Protocol-installed OAuth provider (agent_config.set_oauth_provider): a
+	// new revision records the ZERO-URL descriptor AND the provider is installed
+	// live into the owner-tagged provider set. Carries the agent id, the provider
+	// name, the credential-broker name, the recording revision id, and the author
+	// identity — all NON-SECRET. NO URL, NO env-var name, NO secret is ever
+	// carried (there is none on the descriptor). Emitted as one fail-closed unit
+	// with the mutation (CLAUDE.md §7).
+	EventTypeOAuthProviderInstalled events.EventType = "agent_config.oauth_provider.installed"
+
+	// EventTypeOAuthProviderRemoved — emitted when an admin uninstalls a
+	// Protocol-installed OAuth provider (agent_config.remove_oauth_provider): a
+	// new revision drops the descriptor AND the provider is uninstalled live
+	// (CLOSED). Carries the agent id, the provider name, the recording revision
+	// id, and the author identity — all NON-SECRET. Emitted as one fail-closed
+	// unit with the mutation.
+	EventTypeOAuthProviderRemoved events.EventType = "agent_config.oauth_provider.removed"
 )
 
 func init() {
@@ -110,6 +128,8 @@ func init() {
 		EventTypeMCPConnectionAuthRequired,
 		EventTypeMCPConnectionRemoved,
 		EventTypeMCPDiscoveryOriginsSet,
+		EventTypeOAuthProviderInstalled,
+		EventTypeOAuthProviderRemoved,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -228,6 +248,29 @@ type MCPDiscoveryOriginsSetPayload struct {
 	Granted []string
 	// Revoked is the set of origins dropped versus the prior live set.
 	Revoked []string
+	// OccurredAt is the write instant.
+	OccurredAt time.Time
+}
+
+// OAuthProviderSetPayload is the typed payload for the Protocol-installed
+// OAuth-provider install / uninstall audit events. SafePayload — every field is
+// operator-visible audit metadata; NO URL, NO env-var name, NO secret is ever
+// carried (there is none on the zero-URL descriptor). The credential-broker name
+// is a non-secret boot reference.
+type OAuthProviderSetPayload struct {
+	events.SafeSealed
+	// Author is the identity that performed the install / uninstall.
+	Author identity.Quadruple
+	// AgentID is the agent whose installed-provider set changed (a registration
+	// identity, NOT an isolation principal).
+	AgentID string
+	// ProviderName is the installed / uninstalled provider name.
+	ProviderName string
+	// CredentialBroker is the boot-declared broker the installed provider
+	// references by name (empty on uninstall). NON-SECRET.
+	CredentialBroker string
+	// RevisionID is the recording revision id.
+	RevisionID string
 	// OccurredAt is the write instant.
 	OccurredAt time.Time
 }

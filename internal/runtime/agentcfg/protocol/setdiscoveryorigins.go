@@ -258,6 +258,7 @@ func (s *Service) rebuildWithDiscoveryOrigins(active agentcfg.Revision, hasActiv
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
+		payload.OAuthProviders = active.Payload.OAuthProviders
 	}
 	if len(servers) > 0 {
 		payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}

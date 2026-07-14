@@ -1527,6 +1527,28 @@ func (c *Config) validateTools() error {
 			return fieldError(prefix+".auth_token_env",
 				"must not be empty (env var name holding the runtime's broker credential; §7 rule 2 — never hardcoded)")
 		}
+		// CredentialURL is the boot-pinned coordinator credential-pull endpoint
+		// (the `remote` source URL a Protocol-installed broker-pull provider
+		// resolves its org client credential from). Optional at boot (a broker
+		// referenced by an install without it fails loud at install time), but a
+		// set value must be a well-formed http(s) URL with a host, and TLS is
+		// mandatory off loopback (the GET returns the org client_id/secret; §7).
+		if b.CredentialURL != "" {
+			cu, cerr := url.Parse(b.CredentialURL)
+			if cerr != nil || (cu.Scheme != "http" && cu.Scheme != "https") || cu.Host == "" {
+				return fieldError(prefix+".credential_url",
+					fmt.Sprintf("must be a well-formed http(s) URL with a host, got %q", b.CredentialURL))
+			}
+			if cu.Scheme == "http" && !isLoopbackHostname(cu.Hostname()) {
+				return fieldError(prefix+".credential_url",
+					fmt.Sprintf("must be https for non-loopback hosts (the pull returns the org client_id/client_secret; plaintext http is allowed only for 127.0.0.1 / ::1 / localhost), got %q", b.CredentialURL))
+			}
+		}
+		for j, sc := range b.ScopeCeiling {
+			if strings.TrimSpace(sc) == "" {
+				return fieldError(fmt.Sprintf("%s.scope_ceiling[%d]", prefix, j), "must be a non-empty scope string")
+			}
+		}
 		if b.CacheTTL < 0 {
 			return fieldError(prefix+".cache_ttl", "must be >= 0")
 		}
@@ -1534,9 +1556,9 @@ func (c *Config) validateTools() error {
 			return fieldError(prefix+".timeout", "must be >= 0")
 		}
 	}
-	if len(c.Tools.OAuthProviders) > 0 && c.Tools.OAuthTokenKEKEnv == "" {
+	if (len(c.Tools.OAuthProviders) > 0 || len(c.Tools.OAuthCredentialBrokers) > 0) && c.Tools.OAuthTokenKEKEnv == "" {
 		return fieldError("tools.oauth_token_kek_env",
-			"must not be empty when tools.oauth_providers[] is set (names env var holding the 32-byte hex KEK for AES-256-GCM token encryption at rest; §7 rule 2)")
+			"must not be empty when tools.oauth_providers[] or tools.oauth_credential_brokers[] is set (names env var holding the 32-byte hex KEK for AES-256-GCM token encryption at rest; a Protocol-installed broker-pull provider shares the same token store; §7 rule 2)")
 	}
 
 	// MCP southbound OAuth binding + `_meta` annotations. Validated in a
