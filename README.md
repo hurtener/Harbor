@@ -45,6 +45,16 @@ It ships two ways, and they are the same runtime:
   scaffolding, and the Console. CGo-free, no message broker to stand up;
   `harbor dev` boots the whole runtime on your laptop in under a second.
 
+External Go control-plane and UI clients use the curated
+[`sdk/protocolclient`](sdk/protocolclient/) facade. It provides one
+concurrent-safe authenticated REST/SSE client with typed Protocol errors,
+identity-aware token resolution, immutable session clones, strict bounded
+decoding, and resumable event cursors. Static tokens are principal-bound, so a
+multi-session client supplies a `TokenSource` that resolves credentials for the
+requested identity rather than reusing one session's JWT. The
+stock `inspect-events`, `inspect-runs`, and `inspect-topology` commands use the
+same implementation.
+
 ## Embed the runtime in your own program
 
 ```go
@@ -265,6 +275,11 @@ below — the repo stays the source of truth.
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history, Keep-a-Changelog format. |
 
 ## Status
+
+**Harbor v1.15 Phase 179: Shipped.** Harbor now has one reusable authenticated
+Go Protocol client with identity-aware token resolution, strict REST/SSE
+decoding, immutable session attachments, a curated public SDK facade, and the
+three shipped `inspect-*` commands as production consumers.
 
 **Harbor v1.12.** Sessions stop displaying as raw ids: a
 session now carries an optional **title** (`sessions.set_title`) that a

@@ -1361,6 +1361,18 @@ harbor version           Print version, build hash, supported Protocol version
   interventions, artifacts, events, Runtime posture, and controls exclusively
   through the authenticated Protocol. Git, repository trees, source editing,
   patches, shell/PTY execution, LSP, and worktrees are outside its scope.
+  The first release is a single-operator development surface: one TUI process
+  has exactly one active session at a time. It may switch sessions explicitly,
+  but it is not a multi-user/fleet dashboard. The active identity remains the
+  mandatory `(tenant, user, session)` triple and a switch reacquires credentials
+  for the selected session rather than rewriting request identity under an old
+  JWT. A lifetime-scoped token source is consulted before every REST request and
+  SSE connection so file/issuer rotation can keep a long-running terminal
+  attached; expiry still fails visibly when no replacement credential exists.
+  The client restores its last durable session reference on restart and reuses
+  that same session. If the record was closed/GC-reaped, the next submitted turn
+  reopens it through the canonical `start` → `session.reopened` path; an erased
+  session remains terminal and requires Start Fresh.
   Its binding minimum is OpenCode-level or better perceived terminal quality in
   hierarchy, composer editing, commands/dialogs, responsive behavior,
   streaming stability, accessibility, and lifecycle safety; the mechanical

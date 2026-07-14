@@ -276,9 +276,9 @@ func TestInspectTopology_ConnectFailed(t *testing.T) {
 	}
 }
 
-// TestFetchSSEUntilIdle_AborbsKeepalives asserts the fetcher does not
+// TestFetchTopologyEvents_AbsorbsKeepalives asserts the client does not
 // terminate on keepalive frames alone.
-func TestFetchSSEUntilIdle_AbsorbsKeepalives(t *testing.T) {
+func TestFetchTopologyEvents_AbsorbsKeepalives(t *testing.T) {
 	t.Parallel()
 	frames := []string{
 		`{"type":"tool.invoked","sequence":1,"run":"r1","payload":{"ToolName":"x"}}`,
@@ -312,29 +312,29 @@ func TestFetchSSEUntilIdle_AbsorbsKeepalives(t *testing.T) {
 	bind := strings.TrimPrefix(srv.URL, "http://")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	body, err := fetchSSEUntilIdle(ctx, sseFetchOpts{
+	events, err := fetchTopologyEvents(ctx, sseFetchOpts{
 		Bind:        bind,
 		Token:       "t",
 		RunID:       "r1",
 		IdleTimeout: 1 * time.Second,
 	})
 	if err != nil {
-		t.Fatalf("fetchSSEUntilIdle: %v", err)
+		t.Fatalf("fetchTopologyEvents: %v", err)
 	}
-	if !bytes.Contains(body, []byte(`planner.finish`)) {
-		t.Errorf("body missing planner.finish: %s", body)
+	if len(events) != 2 || events[1].Type != "planner.finish" {
+		t.Errorf("events missing planner.finish: %+v", events)
 	}
 }
 
-// TestFetchSSEUntilIdle_StatusError surfaces non-200.
-func TestFetchSSEUntilIdle_StatusError(t *testing.T) {
+// TestFetchTopologyEvents_StatusError surfaces non-200.
+func TestFetchTopologyEvents_StatusError(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
 	bind := strings.TrimPrefix(srv.URL, "http://")
-	_, err := fetchSSEUntilIdle(context.Background(), sseFetchOpts{
+	_, err := fetchTopologyEvents(context.Background(), sseFetchOpts{
 		Bind:        bind,
 		Token:       "t",
 		RunID:       "r1",

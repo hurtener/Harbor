@@ -13,8 +13,8 @@
 #      Harbor import is the internal aggregator (parity by init()
 #      transitivity), and it exports no identifiers.
 #   4. No-behavior guard: the facade declares no func bodies outside
-#      the enumerated two-func generic-forward allow-list
-#      (sdk/tools/inproc.RegisterFunc, sdk/assemble.RunTyped — D-273
+#      the enumerated forward allow-list
+#      (including sdk/tools/inproc.RegisterFunc, sdk/assemble.RunTyped — D-273
 #      amending D-205 item 1; Go cannot express a generic function as
 #      a var forward). FUNC-level: a third func anywhere under sdk/
 #      fails, including a second func/method appended inside an
@@ -85,7 +85,7 @@ else
     ok 'phase 112a: the public aggregator exports no identifiers'
 fi
 
-# --- 4. No-behavior guard: the enumerated two-func allow-list ---------------
+# --- 4. No-behavior guard: the enumerated forward allow-list ----------------
 
 # Scans the SHIPPED facade surface only: production .go files. `_test.go`
 # files are exempt — runnable godoc `Example_*` functions legitimately
@@ -102,7 +102,8 @@ fi
 # an allow-listed file fail — behavior cannot silently accrete.
 allowed_func_specs='sdk/tools/inproc/inproc.go|^func RegisterFunc\[|RegisterFunc|1
 sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped|1
-sdk/server/server.go|^func Open\(|Open|1'
+sdk/server/server.go|^func Open\(|Open|1
+sdk/protocolclient/protocolclient.go|^func New\(|Protocol client forwards|3'
 
 allowed_func_files=$(echo "${allowed_func_specs}" | cut -d'|' -f1)
 allowed_file_count=$(echo "${allowed_func_specs}" | grep -c '^')
@@ -136,6 +137,11 @@ while IFS='|' read -r f want_re want_name want_count; do
         fail "phase 112a: ${f} does NOT declare the enumerated forward ${want_name}"
     fi
 done <<< "${allowed_func_specs}"
+
+assert_grep_present '^func StaticToken\(' sdk/protocolclient/protocolclient.go \
+    'phase 112a: Protocol client facade forwards StaticToken'
+assert_grep_present '^func WithHTTPClient\(' sdk/protocolclient/protocolclient.go \
+    'phase 112a: Protocol client facade forwards WithHTTPClient'
 
 # --- 5. The integrity test slice passes under -race --------------------------
 

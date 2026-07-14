@@ -51,18 +51,19 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	protocolclient "github.com/hurtener/Harbor/internal/protocol/client"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
 // Stable CLI error codes for `harbor inspect-topology`. New codes
@@ -225,7 +226,7 @@ func runInspectTopology(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), idle+10*time.Second)
 	defer cancel()
 
-	body, fetchErr := fetchSSEUntilIdle(ctx, sseFetchOpts{
+	frames, fetchErr := fetchTopologyEvents(ctx, sseFetchOpts{
 		Bind:        bind,
 		Token:       token,
 		Tenant:      tenant,
@@ -236,17 +237,6 @@ func runInspectTopology(cmd *cobra.Command, args []string) error {
 	})
 	if fetchErr != nil {
 		return emitCLIError(cmd, fetchErrorToCLIError(fetchErr))
-	}
-
-	frames, _, parseErr := ParseSSEFrames(body, runID)
-	if parseErr != nil {
-		// A malformed SSE frame is a server bug, not a caller bug.
-		return emitCLIError(cmd, CLIError{
-			Subcommand: "inspect-topology",
-			Message:    fmt.Sprintf("parse SSE frames: %v", parseErr),
-			Code:       CodeInspectTopologyConnectFailed,
-			Hint:       "this usually indicates a Runtime version mismatch; check the server log",
-		})
 	}
 
 	if len(frames) == 0 {
@@ -371,8 +361,8 @@ type sseFetchOpts struct {
 	IdleTimeout time.Duration
 }
 
-// fetchSSEUntilIdle opens a GET /v1/events SSE stream against the
-// target Runtime and reads until either:
+// fetchTopologyEvents opens the reusable Protocol client's event stream and
+// reads until either:
 //   - the connection produced a `planner.finish` event whose Run
 //     matches RunID (run terminated cleanly), OR
 //   - no new event arrived for opts.IdleTimeout (run quiescent), OR
@@ -389,161 +379,52 @@ type sseFetchOpts struct {
 //   - fetchError{Kind: "status", Status: N} for non-200 responses
 //   - nil error on a clean read OR an idle-timeout (both are "we got
 //     what we could").
-func fetchSSEUntilIdle(ctx context.Context, opts sseFetchOpts) ([]byte, error) {
-	u := url.URL{Scheme: "http", Host: opts.Bind, Path: "/v1/events"}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+func fetchTopologyEvents(ctx context.Context, opts sseFetchOpts) ([]WireEventFrame, error) {
+	identity := prototypes.IdentityScope{
+		Tenant: opts.Tenant, User: opts.User, Session: opts.Session,
+	}
+	protocol, err := protocolclient.New(protocolclient.Connection{
+		BaseURL:  "http://" + opts.Bind,
+		Token:    protocolclient.StaticToken(opts.Token, identity),
+		Identity: identity,
+	})
 	if err != nil {
 		return nil, fetchError{Kind: "connect", Err: err}
 	}
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Authorization", "Bearer "+opts.Token)
-	// Last-Event-ID: 0 requests replay from the start of the run.
-	// The stream handler maps this to a Cursor{Sequence: 0}
-	// which the bus driver replays everything strictly greater than
-	// — i.e. the whole run.
-	req.Header.Set("Last-Event-ID", "0")
-	// Run filter is INTENTIONALLY NOT set via X-Harbor-Run. The
-	// SSE handler filters server-side by `Event.Identity.RunID`, which
-	// is EMPTY on the load-bearing `task.spawned` event (the `start`
-	// Protocol method dispatches `Quadruple{Identity: id}` — RunID is
-	// populated later by the per-task RunLoop driver from the TaskID).
-	// Setting the server-side filter would drop the spawn event from
-	// the stream, leaving the topology synthesiser with no Task node
-	// to render. The CLI filters client-side via `runIDFromFrame` in
-	// `ParseSSEFrames` (TaskID-payload fallback) — same projection
-	// the inspect-runs uses. Tracked: extend the
-	// stream to fall back to payload TaskID for task.spawned in a
-	// future PR; until then the CLI carries the projection.
-	if opts.Tenant != "" {
-		req.Header.Set("X-Harbor-Tenant", opts.Tenant)
-	}
-	if opts.User != "" {
-		req.Header.Set("X-Harbor-User", opts.User)
-	}
-	if opts.Session != "" {
-		req.Header.Set("X-Harbor-Session", opts.Session)
-	}
-
-	client := &http.Client{
-		// Do NOT set Timeout — SSE is long-lived. Cancellation is
-		// driven by ctx (which the caller's idle loop owns).
-	}
-	resp, err := client.Do(req)
+	stream, err := protocol.Subscribe(ctx, protocolclient.StreamOptions{LastEventID: "0"})
 	if err != nil {
+		var protocolErr *protocolclient.ProtocolError
+		if errors.As(err, &protocolErr) {
+			return nil, fetchError{Kind: "status", Status: protocolErr.Status, Body: protocolErr.Message}
+		}
 		return nil, fetchError{Kind: "connect", Err: err}
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = stream.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		// Drain a bounded prefix of the body so the error message
-		// can quote the server-side reason.
-		prefix := make([]byte, 256)
-		//nolint:errcheck // a short read (EOF/ErrUnexpectedEOF) is expected and fine — n bounds the slice below
-		n, _ := io.ReadFull(resp.Body, prefix)
-		return nil, fetchError{
-			Kind:   "status",
-			Status: resp.StatusCode,
-			Body:   string(prefix[:n]),
-		}
-	}
-
-	// Read the SSE body in idle-aware chunks.
-	return readSSEUntilIdle(ctx, resp.Body, opts.IdleTimeout, opts.RunID)
-}
-
-// readSSEUntilIdle reads chunks of body until either:
-//   - a planner.finish event arrives whose data line names runFilter,
-//   - no chunk arrived for idleTimeout,
-//   - ctx cancels.
-//
-// Returns the accumulated bytes; the caller's ParseSSEFrames does the
-// real parsing. The "is this the terminal event" check here is a
-// substring match against the chunk — defensive (we read full SSE
-// frames including terminating blank line, so the substring is
-// reliable for the canonical encoder shape).
-func readSSEUntilIdle(ctx context.Context, body io.Reader, idleTimeout time.Duration, runFilter string) ([]byte, error) {
-	br := bufio.NewReaderSize(body, 8192)
-	var accumulated bytes.Buffer
-	// chunkCh carries each accumulated SSE event (between blank-line
-	// separators). The reader goroutine pushes; the select loop pops
-	// with an idle timer.
-	chunkCh := make(chan []byte, 16)
-	errCh := make(chan error, 1)
-	readerCtx, cancelReader := context.WithCancel(ctx)
-	defer cancelReader()
-	go func() {
-		var frame bytes.Buffer
-		for {
-			if readerCtx.Err() != nil {
-				errCh <- readerCtx.Err()
-				return
-			}
-			line, err := br.ReadString('\n')
-			if len(line) > 0 {
-				frame.WriteString(line)
-				// SSE frames terminate on blank line.
-				if line == "\n" || line == "\r\n" {
-					out := make([]byte, frame.Len())
-					copy(out, frame.Bytes())
-					frame.Reset()
-					select {
-					case chunkCh <- out:
-					case <-readerCtx.Done():
-						errCh <- readerCtx.Err()
-						return
-					}
-				}
-			}
-			if err != nil {
-				if frame.Len() > 0 {
-					out := make([]byte, frame.Len())
-					copy(out, frame.Bytes())
-					select {
-					case chunkCh <- out:
-					case <-readerCtx.Done():
-					}
-				}
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	timer := time.NewTimer(idleTimeout)
-	defer timer.Stop()
-	finishSearch := []byte(`"type":"planner.finish"`)
-	runSearch := []byte(`"run":"` + runFilter + `"`)
-
+	var frames []WireEventFrame
 	for {
-		select {
-		case <-ctx.Done():
-			return accumulated.Bytes(), nil
-		case chunk := <-chunkCh:
-			accumulated.Write(chunk)
-			// Reset the idle timer on every chunk (keepalive or
-			// real frame). The keepalive frames are filtered out
-			// by ParseSSEFrames; here we treat any traffic as
-			// "stream is alive".
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+		recvCtx, cancel := context.WithTimeout(ctx, opts.IdleTimeout)
+		frame, recvErr := stream.Recv(recvCtx)
+		cancel()
+		if recvErr != nil {
+			if errors.Is(recvErr, io.EOF) || errors.Is(recvErr, context.DeadlineExceeded) || errors.Is(recvErr, context.Canceled) || errors.Is(recvErr, protocolclient.ErrStreamClosed) {
+				return frames, nil
 			}
-			timer.Reset(idleTimeout)
-			// Terminal-detection: planner.finish for our run.
-			if bytes.Contains(chunk, finishSearch) && (runFilter == "" || bytes.Contains(chunk, runSearch)) {
-				return accumulated.Bytes(), nil
-			}
-		case <-timer.C:
-			return accumulated.Bytes(), nil
-		case err := <-errCh:
-			// EOF / closed connection — return what we have.
-			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return accumulated.Bytes(), nil
-			}
-			return accumulated.Bytes(), nil
+			return frames, fetchError{Kind: "connect", Err: recvErr}
+		}
+		if len(frame.Data) == 0 {
+			continue
+		}
+		var event WireEventFrame
+		if err := json.Unmarshal(frame.Data, &event); err != nil {
+			return frames, fetchError{Kind: "connect", Err: fmt.Errorf("decode event: %w", err)}
+		}
+		if opts.RunID != "" && runIDFromFrame(event) != opts.RunID {
+			continue
+		}
+		frames = append(frames, event)
+		if event.Type == "planner.finish" {
+			return frames, nil
 		}
 	}
 }

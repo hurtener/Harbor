@@ -57,7 +57,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -68,6 +67,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	protocolclient "github.com/hurtener/Harbor/internal/protocol/client"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
 // Stable CLI error codes for the inspect subcommands. Each value is a
@@ -260,114 +262,13 @@ func (f inspectFilter) validate() error {
 	return nil
 }
 
-// applyHeaders writes the X-Harbor-* identity carrier headers
-// and the Bearer token to req. the auth.Middleware prefers the
-// ctx-attached verified identity (from the JWT claims) over the
-// carrier headers, but we send both so a Runtime booted with
-// `WithoutValidator()` (test-only escape hatch — see
-// internal/protocol/transports.WithoutValidator) still routes the
-// request.
-func (f inspectFilter) applyHeaders(req *http.Request, auth inspectAuth) {
-	req.Header.Set("Authorization", "Bearer "+auth.Token)
-	req.Header.Set("X-Harbor-Tenant", f.Tenant)
-	req.Header.Set("X-Harbor-User", f.User)
-	req.Header.Set("X-Harbor-Session", f.Sess)
-	if f.Run != "" {
-		req.Header.Set("X-Harbor-Run", f.Run)
-	}
-	for _, t := range f.Types {
-		if strings.TrimSpace(t) == "" {
-			continue
-		}
-		req.Header.Add("X-Harbor-Event-Type", t)
-	}
-	if f.Since != "" {
-		req.Header.Set("Last-Event-ID", f.Since)
-	}
-	req.Header.Set("Accept", "text/event-stream")
-}
-
-// sseFrame is one decoded SSE block: the `event:` type line + the
-// concatenated `data:` lines + the `id:` cursor. A `:` comment block
-// (keepalive, replay-gap announcement) decodes with Comment != "".
+// sseFrame is the rendering-side view of one frame decoded by the reusable
+// Protocol client.
 type sseFrame struct {
 	Event   string
 	ID      string
 	Data    string
 	Comment string
-}
-
-// readSSE pulls one SSE block off r. Returns io.EOF when the stream
-// ends. A nil frame + nil error means a blank input line (frame
-// boundary with no fields); the caller continues.
-//
-// SSE grammar (the parts we care about):
-//
-//	field: value\n         — one field line
-//	field:value\n          — leading-space-after-colon is optional
-//	\n                     — blank line: end-of-frame
-//	:comment-text\n        — comment line (whole line ignored EXCEPT
-//	                         when whole-frame is a single comment;
-//	                         we surface it so the caller sees keepalives /
-//	                         the replay-gap explicit comment)
-func readSSE(r *bufio.Reader) (*sseFrame, error) {
-	var frame sseFrame
-	var dataLines []string
-	hasContent := false
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			if err == io.EOF && hasContent {
-				// Tail-without-trailing-newline: surface what we
-				// gathered, then EOF on the next call.
-				if len(dataLines) > 0 {
-					frame.Data = strings.Join(dataLines, "\n")
-				}
-				return &frame, nil
-			}
-			return nil, err
-		}
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			if !hasContent {
-				// Lone blank line — skip; SSE allows leading blanks.
-				continue
-			}
-			if len(dataLines) > 0 {
-				frame.Data = strings.Join(dataLines, "\n")
-			}
-			return &frame, nil
-		}
-		hasContent = true
-		if strings.HasPrefix(line, ":") {
-			// Comment line. Surface only when no other fields were
-			// observed in this frame — keepalives + replay-gap markers
-			// always arrive as standalone comment frames.
-			frame.Comment = strings.TrimSpace(line[1:])
-			continue
-		}
-		idx := strings.IndexByte(line, ':')
-		if idx < 0 {
-			// "field" with no value is permitted by the SSE grammar;
-			// treat as `field: ""`.
-			continue
-		}
-		field := line[:idx]
-		value := line[idx+1:]
-		// Per spec, ONE leading space after the colon is stripped.
-		value = strings.TrimPrefix(value, " ")
-		switch field {
-		case "event":
-			frame.Event = value
-		case "id":
-			frame.ID = value
-		case "data":
-			dataLines = append(dataLines, value)
-		case "retry":
-			// We ignore retry directives in the CLI — the operator
-			// can re-invoke if the stream drops.
-		}
-	}
 }
 
 // inspectSSE opens an SSE connection against /v1/events and yields
@@ -387,54 +288,50 @@ func inspectSSE(
 	auth inspectAuth,
 	visit func(sseFrame) (bool, error),
 ) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return CLIError{Code: CodeStreamFailed, Message: fmt.Sprintf("build request: %v", err)}
+	baseURL := strings.TrimSuffix(endpoint, "/v1/events")
+	identity := prototypes.IdentityScope{
+		Tenant: filter.Tenant, User: filter.User, Session: filter.Sess,
 	}
-	filter.applyHeaders(req, auth)
-	resp, err := client.Do(req)
+	protocol, err := protocolclient.New(protocolclient.Connection{
+		BaseURL:  baseURL,
+		Token:    protocolclient.StaticToken(auth.Token, identity),
+		Identity: identity,
+	}, protocolclient.WithHTTPClient(client))
 	if err != nil {
-		return CLIError{
-			Code:    CodeStreamFailed,
-			Message: fmt.Sprintf("connect %s: %v", endpoint, err),
-			Hint:    "is `harbor dev` running on the --bind address?",
-		}
+		return CLIError{Code: CodeStreamFailed, Message: err.Error()}
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		//nolint:errcheck // best-effort bounded read of an error body; a read failure just yields an empty quote
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	stream, err := protocol.Subscribe(ctx, protocolclient.StreamOptions{
+		RunID: filter.Run, EventTypes: filter.Types, LastEventID: filter.Since,
+	})
+	if err != nil {
 		hint := ""
-		switch resp.StatusCode {
-		case http.StatusUnauthorized:
-			hint = "the Bearer token is missing or invalid; re-mint via `harbor dev` and refresh HARBOR_TOKEN / ~/.harbor/token"
-		case http.StatusForbidden:
-			hint = "the token's scope does not authorise the request — admin fan-in needs the admin / console:fleet scope"
+		var protocolErr *protocolclient.ProtocolError
+		if errors.As(err, &protocolErr) {
+			switch protocolErr.Status {
+			case http.StatusUnauthorized:
+				hint = "the Bearer token is missing or invalid; re-mint via `harbor dev` and refresh HARBOR_TOKEN / ~/.harbor/token"
+			case http.StatusForbidden:
+				hint = "the token's scope does not authorise the request — admin fan-in needs the admin / console:fleet scope"
+			}
 		}
 		return CLIError{
 			Code:    CodeStreamFailed,
-			Message: fmt.Sprintf("/v1/events returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body))),
+			Message: err.Error(),
 			Hint:    hint,
 		}
 	}
-	rd := bufio.NewReader(resp.Body)
+	defer func() { _ = stream.Close() }()
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-		frame, err := readSSE(rd)
+		frame, err := stream.Recv(ctx)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, protocolclient.ErrStreamClosed) {
 				return nil
 			}
 			return CLIError{Code: CodeStreamFailed, Message: fmt.Sprintf("read stream: %v", err)}
 		}
-		if frame == nil {
-			continue
-		}
-		stop, vErr := visit(*frame)
+		stop, vErr := visit(sseFrame{
+			Event: frame.Event, ID: frame.ID, Data: string(frame.Data), Comment: frame.Comment,
+		})
 		if vErr != nil {
 			return vErr
 		}

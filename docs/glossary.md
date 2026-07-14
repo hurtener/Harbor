@@ -437,7 +437,10 @@ Phase 183, D-319.
 **Go Protocol client** — Harbor's reusable, concurrent-safe REST/SSE client in
 `internal/protocol/client`, with the curated external facade
 `sdk/protocolclient`. It owns transport framing, typed Protocol errors, cursors,
-and session clones while callers own token discovery and reconnect policy.
+and session clones while callers own token discovery and reconnect policy. Its
+identity-aware token source resolves before every request/connection so a
+long-running caller can rotate credentials without the client caching or
+silently extending a JWT.
 Phase 179, D-315.
 
 **Golden file (CLI)** — the `cmd/harbor/testdata/golden/*.txt` files the cobra golden-file tests diff against (Phase 63). `TestRoot_Help_MatchesGolden` is the canonical diff site — it runs `harbor --help` through a fresh cobra root, captures stdout, and compares against `testdata/golden/help.txt`. The `-update` flag on the test (`go test -update ./cmd/harbor/...`) regenerates the golden in place — every future phase that adds a subcommand mutates the help golden in the same PR, so the help surface stays in sync with the command tree. brief 06 §6, D-084.

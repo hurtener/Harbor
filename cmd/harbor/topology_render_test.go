@@ -305,7 +305,7 @@ func TestBuildTopology_IdentityFromFirstFrame(t *testing.T) {
 // the task starts running (D-098). The CLI's run filter MUST therefore
 // resolve `task.spawned` via the payload's TaskID fallback. Before
 // the F1 fix the spawn event was dropped server-side (X-Harbor-Run
-// header) AND client-side (ParseSSEFrames filter on frame.Run only),
+// header) AND client-side (filtering on frame.Run only),
 // leaving the topology synthesiser with no Task node to render.
 func TestBuildTopology_SpawnWithEmptyRunID_FiltersOnPayloadTaskID(t *testing.T) {
 	t.Parallel()
@@ -313,16 +313,10 @@ func TestBuildTopology_SpawnWithEmptyRunID_FiltersOnPayloadTaskID(t *testing.T) 
 	// production). The payload's TaskID is the run identifier the
 	// per-task RunLoop driver will use; later events carry that as
 	// Identity.RunID.
-	raw := `data: {"type":"task.spawned","sequence":1,"tenant":"t","user":"u","session":"s","payload":{"TaskID":"task-A","Kind":"foreground"}}
-
-data: {"type":"tool.invoked","sequence":2,"tenant":"t","user":"u","session":"s","run":"task-A","payload":{"ToolName":"echo"}}
-
-data: {"type":"planner.finish","sequence":3,"tenant":"t","user":"u","session":"s","run":"task-A","payload":{"Reason":"goal"}}
-
-`
-	frames, _, err := ParseSSEFrames([]byte(raw), "task-A")
-	if err != nil {
-		t.Fatalf("ParseSSEFrames: %v", err)
+	frames := []WireEventFrame{
+		{Type: "task.spawned", Sequence: 1, Tenant: "t", User: "u", Session: "s", Payload: map[string]interface{}{"TaskID": "task-A", "Kind": "foreground"}},
+		{Type: "tool.invoked", Sequence: 2, Tenant: "t", User: "u", Session: "s", Run: "task-A", Payload: map[string]interface{}{"ToolName": "echo"}},
+		{Type: "planner.finish", Sequence: 3, Tenant: "t", User: "u", Session: "s", Run: "task-A", Payload: map[string]interface{}{"Reason": "goal"}},
 	}
 	if len(frames) != 3 {
 		t.Fatalf("expected 3 frames (spawn+invoked+finish); got %d — the spawn event was dropped, F1 regression", len(frames))
@@ -337,76 +331,6 @@ data: {"type":"planner.finish","sequence":3,"tenant":"t","user":"u","session":"s
 	}
 	if !hasTask {
 		t.Errorf("topology missing Task node for task-A — F1 regression: %+v", top.Nodes)
-	}
-}
-
-// TestParseSSEFrames_SingleFrame_RoundTrips asserts the parser
-// recovers a single canonical SSE frame.
-func TestParseSSEFrames_SingleFrame_RoundTrips(t *testing.T) {
-	t.Parallel()
-	raw := `event: tool.invoked
-id: 1
-data: {"type":"tool.invoked","sequence":1,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","run":"r1","payload":{"ToolName":"echo"}}
-
-`
-	frames, _, err := ParseSSEFrames([]byte(raw), "r1")
-	if err != nil {
-		t.Fatalf("ParseSSEFrames: %v", err)
-	}
-	if len(frames) != 1 {
-		t.Fatalf("expected 1 frame, got %d", len(frames))
-	}
-	if frames[0].Type != "tool.invoked" || frames[0].Run != "r1" {
-		t.Errorf("frame fields: %+v", frames[0])
-	}
-}
-
-// TestParseSSEFrames_SkipsKeepalives asserts `: keepalive` lines are
-// counted but not parsed as events.
-func TestParseSSEFrames_SkipsKeepalives(t *testing.T) {
-	t.Parallel()
-	raw := `: keepalive
-
-: keepalive
-
-event: planner.finish
-id: 2
-data: {"type":"planner.finish","sequence":2,"run":"r1","payload":{"Reason":"goal"}}
-
-`
-	frames, keepalives, err := ParseSSEFrames([]byte(raw), "r1")
-	if err != nil {
-		t.Fatalf("ParseSSEFrames: %v", err)
-	}
-	if keepalives < 2 {
-		t.Errorf("keepalives counted: got %d, want >= 2", keepalives)
-	}
-	if len(frames) != 1 {
-		t.Fatalf("expected 1 frame, got %d", len(frames))
-	}
-}
-
-// TestParseSSEFrames_RunFilter asserts run-filter narrows the slice.
-func TestParseSSEFrames_RunFilter(t *testing.T) {
-	t.Parallel()
-	raw := `event: tool.invoked
-id: 1
-data: {"type":"tool.invoked","sequence":1,"run":"r1","payload":{"ToolName":"echo"}}
-
-event: tool.invoked
-id: 2
-data: {"type":"tool.invoked","sequence":2,"run":"r2","payload":{"ToolName":"other"}}
-
-`
-	frames, _, err := ParseSSEFrames([]byte(raw), "r1")
-	if err != nil {
-		t.Fatalf("ParseSSEFrames: %v", err)
-	}
-	if len(frames) != 1 {
-		t.Fatalf("expected 1 frame after r1 filter, got %d", len(frames))
-	}
-	if frames[0].Run != "r1" {
-		t.Errorf("frame run: got %q, want r1", frames[0].Run)
 	}
 }
 
