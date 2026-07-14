@@ -13,9 +13,9 @@
 
 | Phase | Title | Decision | Size | Wire? |
 |-------|-------|----------|------|-------|
-| 171 | `events.aggregate` durable-driver parity + conformance-matrix closure (HA-18 + HA-20) | D-305 | L | none (zero-wire) |
-| 172 | `events.aggregate` origin-anchored (epoch-aligned) bucket grid (HA-16) | D-306 | S | additive field |
-| 173 | `events.aggregate` per-tenant attribution for admin-widened reads (HA-17) | D-307 | S | additive fields |
+| 171 | `events.aggregate` durable-driver parity + conformance-matrix closure (HA-18 + HA-20) | D-305 | L | one additive field (`Truncated`) |
+| 172 | `events.aggregate` origin-anchored (epoch-aligned) bucket grid (HA-16) | D-306 | S | additive field (`anchor`) |
+| 173 | `events.aggregate` per-tenant attribution for admin-widened reads (HA-17) | D-307 | S | additive fields (`by_tenant`, `counts_by_tenant`) |
 
 **The track's thesis (driver parity, §9/§11):** a Protocol method must work on EVERY
 registered driver. A driver difference may change WHAT a method returns (retention depth
@@ -31,11 +31,16 @@ mechanically impossible to reintroduce.
   session-less `Filter{Admin:true}` the durable driver correctly refuses; the fix moves
   the aggregator onto the same `HistoryReplayer` cross-session windowed fan-in
   `events.list` already uses, threading the handler's server-derived `widened` decision
-  and preserving exactly one `audit.admin_scope_used` per widened request. HA-20: the
-  events-driver conformance matrix gains a driver-parametrized `events.aggregate` leg
-  (four event-read methods run against every registered driver → same answer or same
-  named sentinel) plus a registry gate (a self-registered driver with no conformance run
-  fails the build). **Zero-wire** — a manifest diff is a red flag.
+  (computed on the RAW pre-fold filter) and preserving exactly one `audit.admin_scope_used`
+  per widened request. HA-20: the events-driver conformance matrix gains a
+  driver-parametrized `events.aggregate` leg (four event-read methods run against every
+  registered driver → same answer or same named sentinel, over a multi-tenant fixture with
+  an isolation assertion) plus a registry gate (blank-importing `internal/drivers/prod`; a
+  self-registered driver with no conformance run fails the build). **One additive wire
+  field** — `EventAggregateResponse.Truncated`, the DATA-not-500 partial signal: a window
+  too wide to count within the bound returns partial buckets with `truncated: true`
+  UNIFORMLY on both drivers, not a 400-on-durable / 200-on-inmem fork (the review's F1).
+  `ProtocolVersion` stays 0.1.0.
 - **172 (HA-16)** adds an optional origin/epoch anchor so aggregate buckets fall on a
   fixed, addressable grid; absent ⇒ today's clock-anchored behaviour. Additive wire field.
 - **173 (HA-17)** adds opt-in per-tenant attribution to admin-widened aggregates so the
@@ -52,14 +57,17 @@ attribution (173) matter. Concretely:
 
 - **Stage 1 (dispatch first):** 171 — the durable-parity fix + the conformance-matrix
   closure. Its deps (72a, 162, 124, 125) are all shipped, so it is buildable now.
-- **Stage 2 (after 171 merges):** 172 ∥ 173 — two parallel worktree agents. They both
-  touch `internal/events/aggregate.go` and `internal/protocol/types/events.go` (172 adds
-  `Anchor`; 173 adds `ByTenant` + `CountsByTenant`), so **the second-merged PR rebases
-  onto main and re-runs `make protocol-ts-gen` + `make protocol-docs-gen` before its
-  final push** — the committed manifest + generated reference must reflect both fields
-  (a stale regen is a silent lockstep break the gates only catch at CI). Both extend the
-  same `test/integration/events_aggregate_durable_test.go` — the second-merged agent
-  rebases that file too.
+- **Stage 2 (after 171 merges):** 172 ∥ 173 — two parallel worktree agents. All THREE
+  phases touch `internal/events/aggregate.go` and `internal/protocol/types/events.go` (171
+  adds `EventAggregateResponse.Truncated`; 172 adds request `Anchor`; 173 adds request
+  `ByTenant` + `EventBucket.CountsByTenant`) and the wire manifest — but 171 merges FIRST
+  (Stage 1), so 172/173 rebase onto its landed field. Between 172 and 173, **the
+  second-merged PR rebases onto main and re-runs `make protocol-ts-gen` +
+  `make protocol-docs-gen` before its final push** — the committed manifest + generated
+  reference must reflect all landed fields (a stale regen is a silent lockstep break the
+  gates only catch at CI). Both extend the same
+  `test/integration/events_aggregate_durable_test.go` — the second-merged agent rebases
+  that file too.
 
 Because 172 and 173 share two files, an equally valid option is to run them
 **sequentially** (172 then 173) to avoid the rebase dance. The coordinator decides at
@@ -70,11 +78,14 @@ operator before dispatching (§17.7 step 2).
 
 ## 3. Wire discipline
 
-- **171: NO wire change.** No new method, type, field, error, or event. The aggregator's
-  `widened` input is a Go parameter (or an internal, non-wire query field) — NEVER a wire
-  field (D-299: authority is never read from the request body). A diff under
-  `internal/protocol/types|methods` or `web/console/src/lib/protocol` is a red flag; the
-  smoke's static guard asserts it.
+- **171: ONE additive wire field** — `EventAggregateResponse.Truncated bool` (the
+  DATA-not-500 partial signal; the review's F1). No new method/error/event, no request-shape
+  change; `ProtocolVersion` stays 0.1.0; full D-223/D-209 lockstep + §18 SKILL.md. The
+  aggregator's `widened` input is a Go parameter (or an internal, non-wire query field) —
+  NEVER a wire field (D-299: authority is never read from the request body); it is computed
+  on the RAW pre-fold filter (byte-mirroring `events_list_handler.go:167-206`). A diff under
+  `internal/protocol/methods` (a new method) or any request-shape change is a red flag; the
+  smoke's static guard asserts the ONLY additive field is `Truncated`.
 - **172 / 173: additive wire fields**, `ProtocolVersion` stays 0.1.0. Full D-223 lockstep
   each: register the field in the `internal/protocol/types` single source, hand-mirror
   into the Console per-page wire module, `make protocol-ts-gen` (regenerate
@@ -90,11 +101,16 @@ operator before dispatching (§17.7 step 2).
 ## 4. Gates (per phase, binding)
 
 1. **Two adversarial reviews** — a read-only pass hunting the specific failure shapes each
-   plan's Risks section names (for 171: the audit-amplification trap on the widened path,
-   the aggregation-cap silent-undercount, and the registry-gate harness wiring the durable
-   StateStore for real; for 172: the grid-edge-vs-`now` semantics and absent-anchor golden
-   equivalence; for 173: the entitled-set guard + the `Σ by-tenant == total` reconciliation
-   as the verifiability property), then a second pass after the first fix round.
+   plan's Risks section names (for 171: the `truncated`-uniformity across drivers vs a
+   status fork, the `widened`-computed-on-RAW-pre-fold-filter under-audit trap, the
+   effective-window threaded onto the substrate query, the notice-type exclusion owned
+   old-vs-new, the multi-tenant conformance fixture with an isolation assertion, and the
+   registry-gate harness wiring the durable StateStore for real + blank-importing
+   `internal/drivers/prod`; for 172: the grid-edge-vs-`now` semantics, absent-anchor golden
+   equivalence, and the pointer-not-struct optionality; for 173: the concrete
+   attribution-key bound `⊆ authorized TenantIDs` + the `Σ by-tenant == total` reconciliation
+   as the verifiability property, and NO per-tenant entitlement mechanism), then a second
+   pass after the first fix round.
 2. **Live verification** — 171: boot with the durable events driver and confirm by hand
    that `events.aggregate` returns (not 500s) for a session-less admin request, and that a
    non-admin own-session aggregate emits NO `audit.admin_scope_used`. 172: two anchored
@@ -128,8 +144,10 @@ section of its already-authored plan file (the plans exist — the agent IMPLEME
 them); replaces its `scripts/smoke/phase-17N.sh` skeleton's `skip` with real assertions;
 keeps its pre-assigned `D-NNN` (D-305/306/307), updating its **Status**/**As-built** notes
 markdownlint-clean (blank lines around `---` and `## D-NNN`); handles the wire correctly
-(171 zero-wire — a manifest diff is a red flag; 172/173 additive with the FULL regen
-committed, second-merged rebases); and runs `make drift-audit` + `markdownlint-cli2` +
+(all three additive: 171 = `EventAggregateResponse.Truncated`, 172 = `anchor`, 173 =
+`by_tenant` + `counts_by_tenant`; each runs the FULL D-223 + D-209 regen and updates the
+`use-the-harbor-protocol` SKILL.md; the second-merged of 172/173 rebases); and runs
+`make drift-audit` + `markdownlint-cli2` +
 `make preflight` green before committing.
 
 **Godoc hygiene (§13/phase-102):** no `Phase NN`, inline `D-NNN`, `brief NN`, or wave-band
@@ -161,10 +179,14 @@ feature-named godoc, not "Phase 171 added this").
    SSE-reconnect path; the aggregator moves onto the `HistoryReplayer` windowed fan-in
    (the same substrate `events.list` uses). Making Replay fan in session-less would add a
    path with no live consumer (§13). D-305.
-2. ~~How is the widened aggregate's single audit preserved?~~ The aggregator issues ONE
-   windowed fan-in read (one `audit.admin_scope_used`) with a generous aggregation cap;
-   a window past the cap fails loud (`ErrAggregateWindowTooLarge`), never a silent
-   undercount. Paging-to-completion (N audits) is the rejected alternative. D-305.
+2. ~~How is the widened aggregate's single audit preserved, and what happens past the
+   count bound?~~ The aggregator issues ONE windowed fan-in read (one
+   `audit.admin_scope_used`) with a generous aggregation bound; a window past the bound
+   returns the PARTIAL buckets with the additive `EventAggregateResponse.Truncated = true`,
+   UNIFORMLY on both drivers — NOT a 400 (the earlier `ErrAggregateWindowTooLarge → 400`
+   was the review's F1 FAIL: it forked 400-on-durable / 200-on-inmem for the same request,
+   the exact whether-it-works divergence HA-20 kills). Paging-to-completion (N audits) is
+   the rejected alternative. D-305.
 3. ~~Anchor field vs `{since,until,bucket}` for HA-16?~~ **Anchor field** — smallest
    additive surface, composes with the existing `Window`/`Bucket`, does not duplicate the
    `Filter.Since/Until` clamp. D-306.

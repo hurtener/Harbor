@@ -5,7 +5,8 @@
 # closure (HA-18 + HA-20, D-305). The aggregator sources its snapshot from the
 # HistoryReplayer cross-session windowed fan-in (the same substrate events.list
 # uses), threading the handler's server-derived `widened` decision, so
-# events.aggregate returns on the durable driver instead of 500ing. ZERO-WIRE.
+# events.aggregate returns on the durable driver instead of 500ing. One additive
+# wire field (EventAggregateResponse.Truncated) — the DATA-not-500 partial signal.
 #
 # Live-server assertions (404/405/501 → SKIP per CLAUDE.md §4.2):
 #   1. The route POST /v1/events/aggregate is mounted (a no-bearer POST → 401,
@@ -17,9 +18,10 @@
 #      integration test test/integration/events_aggregate_durable_test.go.
 #   3. A cross-tenant aggregate body WITHOUT an elevated scope → 403
 #      CodeIdentityScopeRequired.
-# Static guards (always run, never skip): the ZERO-WIRE invariant — no new
-# events.aggregate wire field on internal/protocol/types/events.go; single-source
-# method string; no Console import in the stream package.
+# Static guards (always run, never skip): the additive-field invariant — the
+# aggregate surface added ONLY EventAggregateResponse.Truncated (no method/error/
+# event, no request-shape field) on internal/protocol/types/events.go; single-
+# source method string; no Console import in the stream package.
 #
 # Replace the `skip` below with the assertions above when the phase implements.
 

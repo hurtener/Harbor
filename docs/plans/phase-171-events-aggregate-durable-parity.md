@@ -89,19 +89,35 @@ every registered driver at all — the hole that let HA-18 ship green.
   driver that self-registers but cannot serve the session-less admin aggregate — or that
   serves a DIFFERENT answer than a sibling driver — fails the build.
 - The driver-parity thesis is encoded as an executable contract: a driver difference may
-  change WHAT a method returns (depth via `truncated`, observed horizon) but NEVER
-  WHETHER it works; differences are DATA / named sentinels, never a 500.
+  change WHAT a method returns (retention depth, an observed horizon) but NEVER WHETHER it
+  works; differences are DATA, never a 500 and never a status fork. Concretely: a window
+  too wide to count within the aggregation bound returns partial buckets with an additive
+  `truncated: true` UNIFORMLY on both drivers — NOT a 400 on durable (unbounded log) while
+  inmem (physically-bounded ring) returns 200 for the same request. This is the ONE
+  additive wire field 171 introduces (see D-223 lockstep below); it is what makes the
+  thesis implementable — a `truncated` flag is DATA, an `ErrAggregateWindowTooLarge → 400`
+  would re-introduce the exact whether-it-works fork HA-20 exists to kill.
 
 ## Non-goals
 
-- No change to bucket CONTENTS, redaction, retention horizons, bucket identity axes, or
-  scope rules. HA-18 is ONLY "return on the durable driver."
+- No change to redaction, retention horizons, bucket identity axes, or scope rules. HA-18
+  is fundamentally "return on the durable driver."
+- **Bucket contents change in exactly ONE honest way (own it, do not bury it):** the new
+  `HistoryReplayer` substrate EXCLUDES bus-internal notice types
+  (`IsBusInternalNotice` — `admin_scope_used`, `bus.dropped`, `audit.redaction_failed`,
+  `bus.subscription_idle_closed`; `filter.go:301`, `durable.go:1129`), whereas today's
+  `Replay(Filter{Admin:true})` + `MatchWire` path does NOT — so today's inmem aggregate
+  COUNTS those notices into type buckets and self-pollutes (every admin Replay emits an
+  `admin_scope_used` into the ring it then counts). Real-event-type counts are
+  byte-identical old-vs-new; the ONLY delta is those four notice types. This is a
+  latent-bug FIX, adopted intentionally (recorded in D-305), not silent normalization.
 - No change to `Replayer.Replay`'s per-session reconnect contract (its session-less admin
   refusal on durable stays — it is correct for the SSE path).
 - No epoch/origin bucket grid (that is Phase 172 / D-306) and no per-tenant attribution
-  (that is Phase 173 / D-307). This phase is zero-wire.
+  (that is Phase 173 / D-307). 171's only wire change is the additive
+  `EventAggregateResponse.Truncated` field.
 - No making inmem durable, and no normalizing retention depth across drivers — the
-  divergence stays honest DATA.
+  divergence stays honest DATA (surfaced via `truncated`).
 
 ## Acceptance criteria
 
@@ -115,75 +131,131 @@ every registered driver at all — the hole that let HA-18 ship green.
       substrate `events.list` uses), NOT via `Replayer.Replay`. A bus that does not
       implement `HistoryReplayer` yields `ErrReplayUnavailable` (loud; classified 500 as
       today — "no historical substrate"), never a silent empty series.
-- [ ] The handler threads its server-derived `widened` decision into the aggregator; a
-      non-admin own-session aggregate emits ZERO `audit.admin_scope_used` events; a
-      widened aggregate emits EXACTLY ONE per request.
-- [ ] A window whose matching-event count exceeds the aggregation cap fails loud with a
-      named sentinel (`ErrAggregateWindowTooLarge` → `CodeInvalidRequest` / 400,
-      "narrow the window"), NEVER a silent undercount (§13).
-- [ ] New conformance scenario `Aggregate_Admin_SessionLess_FansInAcrossSessions`: an
-      `events.Aggregator` built over each registered driver's bus fans in across sessions
-      for an empty-triple + admin request; counts match across drivers.
+- [ ] The handler computes `widened` on the RAW, PRE-FOLD wire filter and passes it
+      verbatim — byte-mirroring `events_list_handler.go:167-206`: `widened :=
+      conv.RequiresAdminScope` (from `FilterFromWire` on the pre-fold filter), then the
+      caller's triple is folded into elided axes, then the aggregator is called with
+      `Admin: widened`. It MUST NOT re-derive widening from the POST-fold filter (a
+      genuine cross-tenant read `{TenantIDs:[T2]}` with user/session folded to the caller
+      has a complete folded triple → would evaluate `widened=false` → run un-audited AND
+      un-fanned, returning the wrong intersection — worse than the over-audit this fixes).
+      (WARN-2.)
+- [ ] The aggregator threads the effective window onto the substrate query:
+      `q.Filter.Since = effectiveSince`, `q.Filter.Until = effectiveUntil` on the
+      `ListWindow`/fan-in call — NOT only the post-loop `windowStart/now` guard. Pinned by
+      a test with an `Until`-clamped sub-window ("2h–1h ago") whose newest matches at/above
+      the bound would otherwise be dropped as newer-than-`Until`. (W2.)
+- [ ] A non-admin own-session aggregate emits ZERO `audit.admin_scope_used` events; a
+      widened aggregate emits EXACTLY ONE per request. NOTE: the spurious emit fires TODAY
+      on inmem for every aggregate (`inmem.go:640` — the hardcoded `Filter{Admin:true}`),
+      so this regression test guards a REAL current defect. (NIT-3.)
+- [ ] A window too wide to count within the aggregation bound returns the partial buckets
+      WITH `EventAggregateResponse.Truncated = true`, UNIFORMLY on both drivers (inmem sets
+      it when its ring evicted below the requested window; durable sets it when the scan hit
+      the bound) — NEVER a 400, never a silent undercount (§13). There is NO
+      `ErrAggregateWindowTooLarge → 400` path. (F1.)
+- [ ] Bucket contents: real-event-type counts are byte-identical old-vs-new; a published
+      bus-internal notice-TYPE event (e.g. `admin_scope_used`) is EXCLUDED from the new
+      aggregate — pinned by a guarded old-vs-new-inmem unit test. (W1.)
+- [ ] New conformance scenario `Aggregate_Admin_SessionLess_FansInAcrossSessions` over a
+      MULTI-TENANT fixture (≥2 tenants × ≥2 users × ≥2 sessions — the harness already
+      seeds tenant A/B/C, `conformancetest.go:190-210`): an `events.Aggregator` built over
+      each registered driver's bus fans in across sessions for an empty-triple + admin
+      request; counts match across drivers AND the leg carries an explicit ISOLATION
+      assertion — a widened admin read attributes to the CORRECT tenants and a non-admin
+      read scopes to its own tuple (parity ≠ isolation; two drivers sharing a leak agree
+      on the leaky answer). (WARN-1.)
 - [ ] New method-parity conformance: `events.aggregate`, `events.list`,
       `events.subscribe`, and `state.history` run against every registered driver for the
       same request and return the same answer OR the same named-sentinel difference
-      (never a 500).
-- [ ] Registry gate: a test enumerates `events.RegisteredDrivers()` and fails the build
-      if any registered driver has no conformance run wired — a new events driver cannot
-      ship without proving parity.
+      (never a 500, never a status fork).
+- [ ] Registry gate: a test that BLANK-IMPORTS `internal/drivers/prod` (so
+      `events.RegisteredDrivers()` is actually complete, not just what the test binary
+      happened to import) enumerates the registered drivers and fails the build if any has
+      no conformance run wired — a new events driver cannot ship without proving parity.
+      (W3.)
 - [ ] Legitimate driver differences stay DATA: replay-disabled → `ErrReplayUnavailable`;
-      ring eviction → `truncated: true`; the `Replay` vs `ListWindow` session-less-admin
-      divergence is pinned as a uniform named contract. No difference surfaces as a 500.
-- [ ] `git diff` shows NO change under `internal/protocol/types/`,
-      `internal/protocol/methods/`, or `web/console/src/lib/protocol/` — this phase is
-      zero-wire (the manifest diff is a red flag).
+      retention depth / ring eviction → `truncated: true`; the `Replay` vs `ListWindow`
+      session-less-admin divergence pinned as a uniform named contract. No difference
+      surfaces as a 500 or a status-code fork.
+- [ ] Wire: the ONLY wire change is the additive `EventAggregateResponse.Truncated bool`;
+      no method/error/event, no request-shape change, `ProtocolVersion` stays 0.1.0. Full
+      D-223 lockstep + D-209 regen committed (enumerated below). No change under
+      `internal/protocol/methods/`.
 
 ## Files added or changed
 
 ```text
-internal/events/aggregate.go                         # source snapshot from HistoryReplayer fan-in; thread widened; cap sentinel
-internal/events/aggregate_test.go                    # durable-parity + widened-audit-once + cap unit tests
-internal/protocol/transports/stream/handlers.go      # AggregateHandler threads server-derived `widened` into Aggregate
-internal/protocol/transports/stream/handlers_test.go # non-admin no-audit / widened one-audit handler tests
-internal/events/conformancetest/conformancetest.go   # + Aggregate_Admin_SessionLess_FansInAcrossSessions; + method-parity legs; Harness gains an Aggregator+ArtifactStore seam
-internal/events/registryconformance_test.go          # NEW (or test/integration/): registry-parity gate over RegisteredDrivers()
-internal/events/drivers/inmem/conformance_test.go    # wire the new harness members
-internal/events/drivers/durable/conformance_test.go  # wire the new harness members (real StateStore at the seam)
-test/integration/events_aggregate_durable_test.go    # NEW: aggregate 200-not-500 on durable + identity propagation + failure mode
-scripts/smoke/phase-171.sh                           # live-server aggregate regression guard + zero-wire static guards
-docs/decisions.md                                    # D-305
-docs/glossary.md                                     # events-driver conformance parity
-docs/plans/README.md                                 # row + detail block (Pending)
+internal/protocol/types/events.go                    # + Truncated bool on EventAggregateResponse (the one additive field)
+internal/events/aggregate.go                          # source snapshot from HistoryReplayer fan-in; thread widened + effective window; set Truncated at the bound
+internal/events/aggregate_test.go                     # durable-parity + widened-audit-once + truncated-uniformity + notice-exclusion + Until-clamp unit tests
+internal/protocol/transports/stream/handlers.go       # AggregateHandler computes widened on the raw pre-fold filter; threads it into Aggregate
+internal/protocol/transports/stream/handlers_test.go  # non-admin no-audit / widened one-audit / pre-fold-widening handler tests
+internal/events/conformancetest/conformancetest.go    # + Aggregate_Admin_SessionLess (multi-tenant + isolation); + method-parity legs; Harness gains an Aggregator+ArtifactStore seam
+internal/events/registryconformance_test.go           # NEW: registry-parity gate, blank-imports internal/drivers/prod
+internal/events/drivers/inmem/conformance_test.go     # wire the new harness members
+internal/events/drivers/durable/conformance_test.go   # wire the new harness members (real StateStore at the seam)
+web/console/src/lib/protocol/events.ts (or protocol.ts) # mirror the additive Truncated field by hand (D-223)
+web/console/src/lib/protocol/wire-manifest.gen.json     # regenerated via `make protocol-ts-gen` (never hand-edited)
+docs/site/protocol/types.md                             # regenerated via `make protocol-docs-gen` (D-209)
+docs/skills/use-the-harbor-protocol/SKILL.md            # §18 — the aggregate RESPONSE wire shape gained a field
+test/integration/events_aggregate_durable_test.go     # NEW: aggregate 200-not-500 on durable + identity propagation + failure mode + truncated-at-bound
+scripts/smoke/phase-171.sh                            # live-server aggregate regression guard + truncated-uniformity assertion
+docs/decisions.md                                     # D-305
+docs/glossary.md                                      # events-driver conformance parity
+docs/plans/README.md                                  # row + detail block (Pending)
 ```
 
 ## Public API surface
 
-- No Protocol/wire surface change.
+- **Wire (additive):** `EventAggregateResponse.Truncated bool` (`json:"truncated,omitempty"`) —
+  the honest "the counts are partial" signal, uniform across drivers (ring eviction below
+  the window, or the scan hitting the aggregation bound). `ProtocolVersion` stays 0.1.0.
+  No request-shape change, no new method/error/event.
 - Go-internal: `events.Aggregator.Aggregate` gains a server-derived widening input
   (a Go parameter or an internal, non-wire query field — NEVER a wire field, per D-299).
   Signature shape (implementor finalizes): `Aggregate(ctx, req prototypes.EventAggregateRequest, widened bool) (prototypes.EventAggregateResponse, error)`.
-- Go-internal: a new sentinel `events.ErrAggregateWindowTooLarge`.
 - Go-internal (conformance): `conformancetest.Harness` gains the seam needed to build an
   `events.Aggregator` (and, for the method-parity legs, the `state.history`/`events.list`
   handler cores) over each driver's bus. `conformancetest.Run` gains the new scenarios.
+
+## D-223 lockstep touch points (the one additive response field)
+
+- No new method → `internal/protocol/methods/methods.go`'s three maps are NOT touched.
+- Register the additive `Truncated` field on the canonical `EventAggregateResponse` in the
+  `internal/protocol/types` single source.
+- Hand-mirror the field into the Console per-page wire module
+  (`web/console/src/lib/protocol/events.ts` + siblings) — no hand-rolled `fetch`.
+- Run `make protocol-ts-gen` → regenerate `wire-manifest.gen.json` (committed, never
+  hand-edited); `npm run lint` (the TS-source scan) passes.
+- Run `make protocol-docs-gen` → regenerate `docs/site/protocol/types.md` (D-209).
+- `make protocol-ts-gen-check` + `make protocol-docs-gen-check` gate before final push.
+- §18: `docs/skills/use-the-harbor-protocol/SKILL.md` — the aggregate response wire shape
+  gained a field.
 
 ## Test plan
 
 - **Unit:** aggregate.go — session-less admin fan-in returns non-empty over the durable
   substrate; non-admin scopes to own triple; the widened path emits one
-  `audit.admin_scope_used`; the non-admin path emits none; a window past the cap returns
-  `ErrAggregateWindowTooLarge`; `ErrReplayUnavailable` on a bus without `HistoryReplayer`.
+  `audit.admin_scope_used`, the non-admin path emits none (guarding the real inmem defect,
+  NIT-3); a window past the bound returns partial buckets with `Truncated=true` (never a
+  400), UNIFORMLY on inmem and durable (F1); a bus-internal notice-TYPE event is EXCLUDED
+  old-vs-new (W1); an `Until`-clamped sub-window at/above the bound is counted correctly
+  because `Since/Until` are threaded onto the substrate query (W2); `ErrReplayUnavailable`
+  on a bus without `HistoryReplayer`.
 - **Integration:** `test/integration/events_aggregate_durable_test.go` — real durable
   driver + REAL inmem StateStore at the seam (`§17.8`, mirroring the durable conformance
   harness). Assert: (1) `events.aggregate` returns 200 with a correct series where it
   previously 500'd; (2) identity propagates — a non-admin caller sees only its own tuple's
-  counts, a widened caller (verified scope) fans in across sessions; (3) ≥1 failure mode —
-  a cross-tenant filter WITHOUT the elevated scope is rejected (not counted). Under `-race`.
-- **Conformance:** `Aggregate_Admin_SessionLess_FansInAcrossSessions`; method-parity for
-  the four event-read methods across every registered driver; the `Replay` vs `ListWindow`
+  counts, a widened caller (verified scope) fans in across the correct tenants' sessions;
+  (3) ≥1 failure mode — a cross-tenant filter WITHOUT the elevated scope is rejected (not
+  counted); (4) a window past the bound returns `truncated=true` on durable. Under `-race`.
+- **Conformance:** `Aggregate_Admin_SessionLess_FansInAcrossSessions` over the multi-tenant
+  fixture (≥2×2×2) with an explicit isolation assertion (WARN-1); method-parity for the
+  four event-read methods across every registered driver; the `Replay` vs `ListWindow`
   session-less-admin divergence pinned as a uniform named contract; the retention-depth /
   `truncated` differences pinned as DATA. All run for inmem AND durable (durable with a
-  real StateStore).
+  real StateStore). Registry gate blank-imports `internal/drivers/prod` (W3).
 - **Concurrency / leak:** the aggregator remains a compiled reusable artifact (D-025); the
   existing `concurrent_test.go` N≥100 shared-instance `-race` run extends to cover the
   durable-substrate path.
@@ -199,10 +271,10 @@ docs/plans/README.md                                 # row + detail block (Pendi
      integration test, noted in-script).
   3. A cross-tenant aggregate body WITHOUT an elevated scope → 403
      `CodeIdentityScopeRequired`.
-  4. Static (always-run) guards: the zero-wire invariant — grep asserts no new
-     `events.aggregate` wire field appeared in `internal/protocol/types/events.go`
-     beyond the current shape; single-source method-string check; no Console import in the
-     stream package.
+  4. Static (always-run) guards: the additive-field invariant — grep asserts the aggregate
+     surface added ONLY `EventAggregateResponse.Truncated` (no method/error/event, no
+     request-shape field) in `internal/protocol/types/events.go`; single-source
+     method-string check; no Console import in the stream package.
 
 ## Coverage target
 
@@ -213,19 +285,29 @@ docs/plans/README.md                                 # row + detail block (Pendi
 
 - 72a (`events.aggregate` + the aggregator), 162 (`events.list` / the `HistoryReplayer`
   windowed fan-in this reuses; D-294), 124 (gap-free durable log), 125 (`state.history`
-  substrate; D-254). All shipped.
+  substrate; D-254), 118 (D-223 lockstep machinery, for the one additive `Truncated`
+  field). All shipped.
 
 ## Risks / open questions
 
-- **The aggregation cap.** Sourcing the whole window in one `ListWindow` call (one call ⇒
-  one audit ⇒ full-window correctness) requires a generous match cap; today's aggregator
-  already materializes the whole ring, so the memory profile is unchanged. A window
-  exceeding the cap fails loud (`ErrAggregateWindowTooLarge`) rather than silently
-  undercounting. **Rejected alternatives:** (a) page `ListWindow` to completion —
+- **The aggregation bound → `truncated`, not a 400 (F1, resolved).** Sourcing the whole
+  window in one `ListWindow` call (one call ⇒ one audit ⇒ full-window correctness) requires
+  a generous match bound; today's aggregator already materializes the whole ring, so the
+  memory profile is unchanged. A window exceeding the bound returns the partial buckets
+  with the additive `EventAggregateResponse.Truncated = true` — UNIFORMLY on both drivers,
+  never a 400. The earlier draft's `ErrAggregateWindowTooLarge → 400` was WRONG: because
+  `EventAggregateResponse` had no partial signal and 171 was declared zero-wire, the
+  over-bound case was forced to a 400 that fires on durable (unbounded log) but never on
+  inmem (physically-bounded ring) for the SAME request — the exact "a driver difference
+  changes WHETHER it works" fork HA-20 exists to kill, and the four-method parity contract
+  (same answer OR same named sentinel) cannot reconcile 200-vs-400. The fix is one additive
+  field; 171 is therefore NOT zero-wire (it runs the D-223/D-209 lockstep for the single
+  `Truncated` field). **Rejected alternatives:** (a) page `ListWindow` to completion —
   correct counts but emits N `audit.admin_scope_used` events per aggregate (a §6 audit
-  amplification); (b) add a dedicated unbounded scan member to `HistoryReplayer` — heavier
-  interface surface with the same memory profile as the cap approach. The single-call +
-  loud-cap design is the most faithful to the ask's "reuse the `ListWindow` path."
+  amplification); (b) a dedicated unbounded scan member on `HistoryReplayer` — heavier
+  interface surface, same memory profile; (c) record the bound as an accepted divergence in
+  D-305 — rejected because a status-code divergence is precisely the thesis violation, and
+  the additive `truncated` flag is the DATA-not-500 discipline the whole track rests on.
 - **Durable fleet candidate-gather is `O(events-below-cursor)`** (the HA-13 note recorded
   in D-294). Unchanged by this phase; the merged global-sequence index remains tracked
   separately.
@@ -254,5 +336,7 @@ docs/plans/README.md                                 # row + detail block (Pendi
       real drivers + a real StateStore, asserts identity propagation, covers ≥1 failure
       mode, runs under `-race` — §17.1
 - [ ] New vocabulary added to `docs/glossary.md`
-- [ ] Zero-wire verified: no diff under `internal/protocol/types|methods` or
-      `web/console/src/lib/protocol`
+- [ ] Wire change (the single additive `EventAggregateResponse.Truncated`): `make
+      protocol-ts-gen` + `make protocol-docs-gen` run, regenerated artifacts committed; the
+      two lockstep-check gates pass; `use-the-harbor-protocol` SKILL.md updated (§18); no
+      diff under `internal/protocol/methods` (no new method)

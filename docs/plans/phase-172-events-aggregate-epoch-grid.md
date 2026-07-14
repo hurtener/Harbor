@@ -60,9 +60,11 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `EventAggregateRequest` gains an optional anchor field (design: `Anchor time.Time`,
-      `json:"anchor,omitempty"`; the zero value ⇒ today's now-anchored grid). Passing the
-      Unix epoch (`1970-01-01T00:00:00Z`) yields a globally-shared grid.
+- [ ] `EventAggregateRequest` gains a TRULY-OPTIONAL anchor field. Design: `Anchor *time.Time`
+      (`json:"anchor,omitempty"`) — `omitempty` is a no-op on a `time.Time` STRUCT value (it
+      would always serialize the zero time and force a non-optional TS mirror), so a pointer
+      (or an int64 epoch) is required for real optionality (NIT). `nil` ⇒ today's now-anchored
+      grid. Passing the Unix epoch (`1970-01-01T00:00:00Z`) yields a globally-shared grid.
 - [ ] When the anchor is set, bucket boundaries are `anchor + k·Bucket` floored so the
       response covers the `Window`'s worth of buckets aligned to that grid; the existing
       `Window > 0`, `Bucket > 0`, `Window % Bucket == 0` validation is unchanged.
@@ -74,6 +76,10 @@ None.
       `Window % Bucket == 0`, but defensively) never yields a fractional trailing bucket.
 - [ ] Absent anchor: the response is byte-identical to the pre-172 behaviour (a golden
       test over a fixed clock).
+- [ ] The epoch anchor never WIDENS the read span beyond the requested `Window` (grid
+      boundaries only re-phase; the span extends by at most one bucket width at the edges)
+      and never surfaces a fenced/erased session's counts (the substrate's fence check is
+      upstream of bucketing) — pinned by a unit test. (NIT-5.)
 - [ ] Composes with 171: the anchored grid works on BOTH drivers over the durable-parity
       substrate; the integration test extends 171's to assert an anchored request returns
       an aligned series on durable.
@@ -82,7 +88,7 @@ None.
 ## Files added or changed
 
 ```text
-internal/protocol/types/events.go                    # + Anchor field on EventAggregateRequest (godoc: anchor semantics, epoch note)
+internal/protocol/types/events.go                    # + Anchor *time.Time on EventAggregateRequest (godoc: anchor semantics, epoch note, grid-edge note)
 internal/events/aggregate.go                          # floor windowStart/boundaries onto the anchor grid when set
 internal/events/aggregate_test.go                     # controllable-clock addressability + absent-anchor golden tests
 web/console/src/lib/protocol/events.ts (or protocol.ts) # mirror the new wire field by hand (D-223)
@@ -99,9 +105,10 @@ docs/plans/README.md                                   # row + detail block (Pen
 
 ## Public API surface
 
-- `EventAggregateRequest.Anchor time.Time` (`json:"anchor,omitempty"`) — additive,
-  optional; zero ⇒ unchanged clock-anchored behaviour. No response-shape change (the
-  existing `EventBucket.Start/End` become grid coordinates when the anchor is set).
+- `EventAggregateRequest.Anchor *time.Time` (`json:"anchor,omitempty"`) — additive, truly
+  optional (pointer, not a struct value — NIT); `nil` ⇒ unchanged clock-anchored behaviour.
+  No response-shape change (the existing `EventBucket.Start/End` become grid coordinates when
+  the anchor is set).
 - Go-internal: the aggregator's boundary computation floors onto the anchor grid.
 
 ## D-223 lockstep touch points (a wire-type field change)
@@ -122,7 +129,11 @@ docs/plans/README.md                                   # row + detail block (Pen
 ## Test plan
 
 - **Unit:** aggregate.go — anchored addressability across two clock instants; absent-anchor
-  golden equivalence; epoch anchor yields the globally-shared grid; validation unchanged.
+  golden equivalence; epoch anchor yields the globally-shared grid; validation unchanged; the
+  epoch anchor never WIDENS the read span beyond the requested `Window` (the grid only
+  re-phases boundaries; it does not extend `[effectiveSince, effectiveUntil)` by more than one
+  bucket width at the edges) and never surfaces a fenced/erased session's counts (the
+  `HistoryReplayer` substrate's fence check is upstream of bucketing) — NIT-5.
 - **Integration:** extend `test/integration/events_aggregate_durable_test.go` — an anchored
   request returns an aligned series on the durable driver (real StateStore); identity
   propagation unchanged; under `-race`.

@@ -72,10 +72,15 @@ None.
       tenant → event_type → count, `json:"counts_by_tenant,omitempty"`; the existing
       `Counts` totals are unchanged). Per-bucket so it composes with the time series and
       172's grid.
-- [ ] `CountsByTenant` is populated ONLY for tenants in the caller's entitled set. A
-      widened read that spans tenants T1,T2 for a caller entitled to both returns both; a
-      caller entitled to only T1 never sees T2 (the widened-read gate already enforced
-      this — attribution never widens it).
+- [ ] Concrete bound (NIT-4): the attribution keys are a SUBSET of the authorized
+      (named-or-folded) `Filter.TenantIDs`, and `Counts` (totals) and `CountsByTenant` are
+      scoped to the IDENTICAL set BY CONSTRUCTION (both computed from the same MatchWire
+      pass over the same authorized filter) — so `Σ CountsByTenant == Counts` holds. There
+      is NO per-tenant entitlement mechanism: `ScopeAdmin` / `ScopeConsoleFleet` are GLOBAL
+      binary fan-in grants; the request body SELECTS the tenants and the scope AUTHORIZES
+      the fan-in (no D-219 issue). A widened read naming `{T1,T2}` returns both; a request
+      naming only `{T1}` returns only T1 (it never asked for T2) — attribution re-projects
+      exactly the authorized filter, never widens it.
 - [ ] A non-admin (own-tenant, un-widened) read with `ByTenant` set returns at most the
       caller's OWN single tenant in `CountsByTenant` (no new information) — attribution is
       never a back-door to cross-tenant data.
