@@ -188,6 +188,92 @@ type Discoverer struct {
 	// TEST-ONLY (httptest fixtures bind loopback IP literals); production
 	// constructs a Discoverer without it, so the strict guardrail holds.
 	allowPrivate bool
+	// resolver resolves the operator-declared server host to its dial-target IP
+	// set (the same-origin dial pin) AND is the dialer's name resolver, so the
+	// pin and the dial agree on what a host resolves to. nil selects the OS
+	// resolver (the production path); a test may inject a fixture resolver.
+	resolver *net.Resolver
+}
+
+// dialPin describes the single hop a fetch context is dialing, so the dial-time
+// SSRF backstop can relax EXACTLY the same-origin protected-resource hop to the
+// connection's operator-declared dial target. It is per-run state carried on the
+// fetch ctx (never a field on the shared Discoverer) — the concurrent-reuse
+// contract keeps the compiled artifact immutable and pin-isolated across walks.
+type dialPin struct {
+	// step is the hop this fetch serves.
+	step discoveryStep
+	// sameOrigin reports whether the target origin equals the server origin.
+	sameOrigin bool
+	// pinnedIPs is the resolved IP set of the operator-declared server host,
+	// resolved ONCE at walk start (all A/AAAA records). A private resolved dial
+	// address is permitted only when it is a member of this set.
+	pinnedIPs []net.IP
+	// pinnedPort is the operator-declared server port. The dial port must match
+	// it: IP-set membership alone would let a same-origin 302 → {pinnedIP}:22 /
+	// :6379 through (intra-host port SSRF).
+	pinnedPort string
+}
+
+// dialPinCtxKey is the private ctx key the dial pin rides on.
+type dialPinCtxKey struct{}
+
+// withDialPin returns ctx carrying the per-fetch dial pin.
+func withDialPin(ctx context.Context, pin *dialPin) context.Context {
+	return context.WithValue(ctx, dialPinCtxKey{}, pin)
+}
+
+// dialPinFrom reads the per-fetch dial pin (nil when absent → fail closed).
+func dialPinFrom(ctx context.Context) *dialPin {
+	if pin, ok := ctx.Value(dialPinCtxKey{}).(*dialPin); ok {
+		return pin
+	}
+	return nil
+}
+
+// ipInSet reports whether ip is a member of set (net.IP.Equal handles the
+// v4-in-v6 representation mismatch).
+func ipInSet(ip net.IP, set []net.IP) bool {
+	for _, p := range set {
+		if p.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// evalDialGate is the dial-time SSRF decision, expressed on the RESOLVED
+// address (host = resolved IP, port), the test-only allowPrivate short-circuit,
+// and the per-fetch pin. It returns nil to permit the dial and a wrapped
+// ErrDiscoveryRefused to refuse. Order:
+//   - allowPrivate (test-only) → permit, unchanged.
+//   - resolved host is not an IP → refuse fail-closed (Control runs post-DNS).
+//   - public IP → permit (as today).
+//   - private IP AND the pin is the same-origin protected-resource hop AND the
+//     IP is a member of pinnedIPs AND the port equals pinnedPort → permit.
+//   - otherwise → refuse. Cross-origin and authorization-server hops therefore
+//     keep the full private-IP refusal; a missing pin fails closed.
+func evalDialGate(host, port string, allowPrivate bool, pin *dialPin) error {
+	if allowPrivate {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// Control runs post-resolution — a non-IP here is unexpected; refuse
+		// fail-closed rather than dialing blind.
+		return fmt.Errorf("%w: unresolved dial address %q", ErrDiscoveryRefused, host)
+	}
+	if !isPrivateIP(ip) {
+		return nil
+	}
+	if pin != nil &&
+		pin.step == StepProtectedResource &&
+		pin.sameOrigin &&
+		port == pin.pinnedPort &&
+		ipInSet(ip, pin.pinnedIPs) {
+		return nil
+	}
+	return fmt.Errorf("%w: dial to private/loopback address %s refused", ErrDiscoveryRefused, host)
 }
 
 // DiscovererOption configures a Discoverer at construction.
@@ -238,10 +324,31 @@ func WithPrivateNetworkAccessForTest() DiscovererOption {
 	}
 }
 
+// WithResolverForTest injects the name resolver used BOTH for the walk-start
+// dial-pin resolution and the dialer, so a fixture can map a service name to a
+// loopback address without touching the OS resolver.
+//
+// TEST-ONLY, mechanically enforced: it PANICS when invoked outside a test
+// binary. It does NOT relax any SSRF guardrail — the dial-time pin still refuses
+// any private resolved address that is not the pinned same-origin target — it
+// only redirects name resolution so the compose/k8s posture (a plain-HTTP
+// service name resolving to loopback) can be exercised on the production dial
+// path.
+func WithResolverForTest(r *net.Resolver) DiscovererOption {
+	return func(d *Discoverer) {
+		if !testing.Testing() {
+			panic("auth: WithResolverForTest must never be used outside a test binary")
+		}
+		d.resolver = r
+	}
+}
+
 // NewDiscoverer builds a Discoverer with strict SSRF defaults: 8 KiB body
 // cap, 5 s per-fetch timeout, at most 3 redirects, each redirect hop re-
 // validated, and a dial-time control that refuses private-range resolved
-// addresses (defence against DNS rebinding).
+// addresses (defence against DNS rebinding), relaxed for EXACTLY the
+// same-origin protected-resource hop pinned to the connection's declared
+// dial target.
 func NewDiscoverer(opts ...DiscovererOption) *Discoverer {
 	d := &Discoverer{
 		clock:           time.Now,
@@ -252,36 +359,34 @@ func NewDiscoverer(opts ...DiscovererOption) *Discoverer {
 	for _, opt := range opts {
 		opt(d)
 	}
-	// Control runs AFTER DNS resolution with the resolved ip:port — this is the
-	// load-bearing SSRF backstop (the DNS-rebinding defence). A pre-resolution
+	// ControlContext runs AFTER DNS resolution with the resolved ip:port — this
+	// is the load-bearing SSRF backstop (the DNS-rebinding defence) — AND
+	// receives the fetch ctx carrying the per-hop dial pin. A pre-resolution
 	// DialContext wrapper would see the hostname (net.ParseIP -> nil) and let a
-	// name that resolves to a private address slip through; Control sees the IP
-	// the connection is actually about to reach and fails closed.
+	// name that resolves to a private address slip through; ControlContext sees
+	// the IP the connection is actually about to reach and fails closed. It sees
+	// the resolved IP:port, NOT the hostname, so the pin gate is expressed on the
+	// resolved address (IP-set membership + port), never a hostname compare.
 	dialer := &net.Dialer{
-		Timeout: d.perFetchTimeout,
-		Control: func(_, address string, _ syscall.RawConn) error {
-			if d.allowPrivate {
-				return nil
-			}
-			host, _, splitErr := net.SplitHostPort(address)
+		Timeout:  d.perFetchTimeout,
+		Resolver: d.resolver, // nil → the OS resolver (production path)
+		ControlContext: func(ctx context.Context, _, address string, _ syscall.RawConn) error {
+			host, port, splitErr := net.SplitHostPort(address)
 			if splitErr != nil {
 				host = address
+				port = ""
 			}
-			ip := net.ParseIP(host)
-			if ip == nil {
-				// Control is invoked post-resolution — a non-IP here is
-				// unexpected; refuse fail-closed rather than dialing blind.
-				return fmt.Errorf("%w: unresolved dial address %q", ErrDiscoveryRefused, address)
-			}
-			if isPrivateIP(ip) {
-				return fmt.Errorf("%w: dial to private/loopback address %s refused", ErrDiscoveryRefused, host)
-			}
-			return nil
+			return evalDialGate(host, port, d.allowPrivate, dialPinFrom(ctx))
 		},
 	}
 	transport := &http.Transport{
 		Proxy:       nil, // never route discovery through a proxy
 		DialContext: dialer.DialContext,
+		// The fix enables private-address dials for the pinned same-origin hop;
+		// a pooled private connection reused on a LATER hop to the same host:port
+		// would skip ControlContext and bypass the step-gate. Disable reuse so
+		// every dial — including each redirect — re-enters the gate.
+		DisableKeepAlives: true,
 	}
 	d.httpClient = &http.Client{
 		Transport: transport,
@@ -336,8 +441,17 @@ func (d *Discoverer) Discover(ctx context.Context, in DiscoveryInput) OAuthRequi
 
 	allowed := normalizeOrigins(in.AllowedOrigins)
 
+	// Resolve the same-origin dial pin ONCE, from the TRUSTED operator-declared
+	// ServerURL — never the attacker-influenceable ResourceMetadataURL. The
+	// resolved IP set + port pin the ONLY private dial the walk may complete
+	// (the same-origin protected-resource hop); every other hop keeps the full
+	// private-IP refusal. Resolving once (not per hop) avoids a per-hop TOCTOU
+	// window; a resolution failure leaves the pin empty (fail closed — no
+	// private dial permitted, public targets still reachable).
+	pinnedIPs, pinnedPort := d.resolvePin(ctx, in.ServerURL)
+
 	// Hop 1 — RFC 9728 protected-resource metadata (same-origin default).
-	body, st := d.fetchHop(ctx, prURL, StepProtectedResource, serverOrigin, allowed)
+	body, st := d.fetchHop(ctx, prURL, StepProtectedResource, serverOrigin, allowed, pinnedIPs, pinnedPort)
 	req.Status = append(req.Status, st)
 	if !st.OK {
 		return req
@@ -366,7 +480,7 @@ func (d *Discoverer) Discover(ctx context.Context, in DiscoveryInput) OAuthRequi
 	}
 	for _, asURL := range servers {
 		asMetaURL := authServerMetadataURL(asURL)
-		asBody, asSt := d.fetchHop(ctx, asMetaURL, StepAuthorizationServer, serverOrigin, allowed)
+		asBody, asSt := d.fetchHop(ctx, asMetaURL, StepAuthorizationServer, serverOrigin, allowed, pinnedIPs, pinnedPort)
 		req.Status = append(req.Status, asSt)
 		if !asSt.OK {
 			continue
@@ -389,14 +503,63 @@ func (d *Discoverer) Discover(ctx context.Context, in DiscoveryInput) OAuthRequi
 	return req
 }
 
+// resolvePin resolves the operator-declared server URL to the same-origin dial
+// pin: its full resolved IP set (all A/AAAA records) and its port. The pin
+// source is the TRUSTED boot-config ServerURL, never the attacker-influenceable
+// metadata URL. A parse or resolution failure yields an empty IP set (fail
+// closed — no private dial is permitted, though public targets stay reachable).
+func (d *Discoverer) resolvePin(ctx context.Context, serverURL string) ([]net.IP, string) {
+	u, err := url.Parse(strings.TrimSpace(serverURL))
+	if err != nil || u.Host == "" {
+		return nil, ""
+	}
+	port := u.Port()
+	if port == "" {
+		switch u.Scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	res := d.resolver
+	if res == nil {
+		res = net.DefaultResolver
+	}
+	// Bound the pin lookup by its own timeout (the per-fetch timeout is applied
+	// later in fetchHop; without this a slow DNS answer for the operator-declared
+	// host would stall the walk to the caller's ctx deadline).
+	lookupCtx, cancel := context.WithTimeout(ctx, d.perFetchTimeout)
+	defer cancel()
+	addrs, err := res.LookupIPAddr(lookupCtx, u.Hostname())
+	if err != nil {
+		return nil, port
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		ips = append(ips, a.IP)
+	}
+	return ips, port
+}
+
 // fetchHop validates the target under the per-hop SSRF policy, fetches it with
-// no credentials, and returns the body + a typed status.
-func (d *Discoverer) fetchHop(ctx context.Context, target string, step discoveryStep, serverOrigin string, allowed map[string]bool) ([]byte, DiscoveryStepStatus) {
+// no credentials, and returns the body + a typed status. It attaches the
+// per-fetch dial pin (step + same-origin + the walk-start resolved pin) to the
+// fetch ctx so the dial-time backstop can relax EXACTLY the same-origin
+// protected-resource hop to the pinned target.
+func (d *Discoverer) fetchHop(ctx context.Context, target string, step discoveryStep, serverOrigin string, allowed map[string]bool, pinnedIPs []net.IP, pinnedPort string) ([]byte, DiscoveryStepStatus) {
 	if reason, detail, ok := d.validateHop(target, step, serverOrigin, allowed); !ok {
 		return nil, failStatus(step, target, reason, detail)
 	}
+	targetOrigin, _ := originOf(target) //nolint:errcheck // validateHop already accepted the origin
 	fetchCtx, cancel := context.WithTimeout(ctx, d.perFetchTimeout)
 	defer cancel()
+	fetchCtx = withDialPin(fetchCtx, &dialPin{
+		step:       step,
+		sameOrigin: targetOrigin == serverOrigin,
+		pinnedIPs:  pinnedIPs,
+		pinnedPort: pinnedPort,
+	})
 	httpReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, failStatus(step, target, ReasonFetchFailed, "build request failed")
@@ -447,8 +610,26 @@ func (d *Discoverer) validateHop(target string, step discoveryStep, serverOrigin
 	}
 
 	loopback := isLoopbackHost(host)
-	// https-only off loopback.
-	if u.Scheme != "https" && !loopback {
+	// https-only off loopback — EXTENDED to permit the same-origin protected-
+	// resource hop (compose/k8s plain-HTTP service names, which Harbor's MCP
+	// config allows). validateHop runs PRE-resolution, so this gates on the
+	// predicate it can evaluate — sameOrigin && the protected-resource step —
+	// NOT on the resolved-IP pin; the dial-time IP:port pin still governs the
+	// actual dial. A non-pinned / cross-origin / authorization-server plain-HTTP
+	// target still returns NotHTTPS (the https check protected against plaintext
+	// CREDENTIAL leakage, and a credential-free metadata hop to the same
+	// operator-declared target has none to leak).
+	//
+	// Intentional widening (recorded, not a leak): because the string-layer
+	// extension is same-origin-only and the dial-time pin governs only PRIVATE
+	// dials (a public resolved IP passes the dial gate unconditionally), a
+	// same-origin plain-HTTP protected-resource hop to a PUBLIC operator-declared
+	// server now COMPLETES where it was previously NotHTTPS. This is safe by the
+	// same argument: discovery carries zero credentials, the response is
+	// report-only, and any advertised authorization server still halts at
+	// needs_allowance. It is not gated further by design.
+	sameOriginPRHop := sameOrigin && step == StepProtectedResource
+	if u.Scheme != "https" && !loopback && !sameOriginPRHop {
 		return ReasonNotHTTPS, "non-loopback discovery target must use https", false
 	}
 	// For any cross-origin fetch, refuse IP-literal / private-range hosts.
