@@ -287,7 +287,14 @@ export class EventsPageState {
 		// widened (foreign-tenant) pin is preserved: the runtime fans it in
 		// across the named tenant's users/sessions (D-308), so the sparkline
 		// shows the real cross-tenant rate matching the banner + the table.
-		this.aggregator.setFilter(aggregateFilter(this.facets));
+		//
+		// On a cross-tenant (widened) read, opt in to per-tenant attribution
+		// so the operator can verify WHICH tenants contributed and self-check
+		// the returned set against its entitled tenants. The runtime honours
+		// the flag only under a verified admin/console:fleet scope and ignores
+		// it on a non-widened read, so it is a display opt-in, never an
+		// authority escalation.
+		this.aggregator.setFilter(aggregateFilter(this.facets), this.crossTenant);
 		// Re-drive the historical window read for the new filter (the window
 		// picker's `since` bound + identity axes flow through `compileFilter`
 		// inside #loadHistory). The live SSE tail above is untouched.

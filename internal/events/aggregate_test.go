@@ -2,6 +2,7 @@ package events_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"runtime"
 	"sync"
@@ -441,6 +442,240 @@ func TestAggregate_FilterRespected(t *testing.T) {
 	}
 }
 
+// sumByTenant returns the Σ over every bucket of CountsByTenant[tenant][type]
+// for one (tenant, type), plus the set of tenant keys that appeared anywhere.
+func sumByTenant(resp prototypes.EventAggregateResponse, tenant, typ string) int64 {
+	var total int64
+	for _, b := range resp.Buckets {
+		if byType, ok := b.CountsByTenant[tenant]; ok {
+			total += byType[typ]
+		}
+	}
+	return total
+}
+
+// attributionTenantKeys collects every tenant that appears in any bucket's
+// CountsByTenant across the response.
+func attributionTenantKeys(resp prototypes.EventAggregateResponse) map[string]struct{} {
+	keys := map[string]struct{}{}
+	for _, b := range resp.Buckets {
+		for tenant := range b.CountsByTenant {
+			keys[tenant] = struct{}{}
+		}
+	}
+	return keys
+}
+
+// assertSigmaInvariant pins the load-bearing property: per bucket,
+// Σ_tenant CountsByTenant[tenant][type] == Counts[type]. Proves attribution
+// is a pure re-projection of the same matched events, not a looser read path.
+func assertSigmaInvariant(t *testing.T, resp prototypes.EventAggregateResponse) {
+	t.Helper()
+	for i, b := range resp.Buckets {
+		perType := map[string]int64{}
+		for _, byType := range b.CountsByTenant {
+			for typ, n := range byType {
+				perType[typ] += n
+			}
+		}
+		// Every type in Counts reconciles.
+		for typ, want := range b.Counts {
+			if got := perType[typ]; got != want {
+				t.Fatalf("bucket %d type %q: Σ CountsByTenant = %d, want Counts = %d", i, typ, got, want)
+			}
+		}
+		// No type appears in attribution that is absent from Counts.
+		for typ, got := range perType {
+			if _, ok := b.Counts[typ]; !ok {
+				t.Fatalf("bucket %d type %q: attributed %d but absent from Counts", i, typ, got)
+			}
+		}
+	}
+}
+
+// TestAggregate_ByTenant_WidenedAttributesAndReconciles — a widened read with
+// ByTenant returns per-tenant attribution whose keys are a subset of the
+// authorized filter and whose per-bucket sums reconcile with the totals
+// (Σ CountsByTenant == Counts). The load-bearing acceptance criterion.
+func TestAggregate_ByTenant_WidenedAttributesAndReconciles(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+
+	// tenant-A: 3 runtime.error across distinct users/sessions; tenant-B: 2.
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-A", "a-u1", "a-u1-s1", windowStart.Add(2*time.Minute))
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-A", "a-u2", "a-u2-s1", windowStart.Add(3*time.Minute))
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-A", "a-u1", "a-u1-s2", windowStart.Add(12*time.Minute))
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-B", "b-u1", "b-u1-s1", windowStart.Add(2*time.Minute))
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-B", "b-u2", "b-u2-s1", windowStart.Add(20*time.Minute))
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+
+	// Widened read naming both tenants (empty user/session ⇒ fan in on the
+	// widened path). ByTenant opts in to attribution.
+	resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Filter:   prototypes.EventFilter{TenantIDs: []string{"tenant-A", "tenant-B"}},
+		Window:   30 * time.Minute,
+		Bucket:   5 * time.Minute,
+		ByTenant: true,
+	}, true)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+
+	// Per-tenant totals.
+	if got := sumByTenant(resp, "tenant-A", "runtime.error"); got != 3 {
+		t.Fatalf("tenant-A attribution = %d, want 3", got)
+	}
+	if got := sumByTenant(resp, "tenant-B", "runtime.error"); got != 2 {
+		t.Fatalf("tenant-B attribution = %d, want 2", got)
+	}
+
+	// Keys are a SUBSET of the authorized filter {tenant-A, tenant-B}.
+	keys := attributionTenantKeys(resp)
+	if len(keys) != 2 {
+		t.Fatalf("attribution tenant keys = %v, want exactly {tenant-A, tenant-B}", keys)
+	}
+	for k := range keys {
+		if k != "tenant-A" && k != "tenant-B" {
+			t.Fatalf("attribution leaked tenant %q outside the authorized set", k)
+		}
+	}
+
+	// Σ CountsByTenant == Counts per bucket — the verifiability invariant.
+	assertSigmaInvariant(t, resp)
+}
+
+// TestAggregate_ByTenant_EntitledSetIsolation — a widened read naming ONLY
+// tenant-A returns attribution for tenant-A alone; tenant-B never appears
+// even though its events exist on the bus (the request never asked for it).
+func TestAggregate_ByTenant_EntitledSetIsolation(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-A", "a-u1", "a-u1-s1", windowStart.Add(2*time.Minute))
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-B", "b-u1", "b-u1-s1", windowStart.Add(2*time.Minute))
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+
+	resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Filter:   prototypes.EventFilter{TenantIDs: []string{"tenant-A"}},
+		Window:   30 * time.Minute,
+		Bucket:   5 * time.Minute,
+		ByTenant: true,
+	}, true)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+
+	keys := attributionTenantKeys(resp)
+	if _, leaked := keys["tenant-B"]; leaked {
+		t.Fatalf("attribution leaked tenant-B outside the named authorized set {tenant-A}")
+	}
+	if got := sumByTenant(resp, "tenant-A", "runtime.error"); got != 1 {
+		t.Fatalf("tenant-A attribution = %d, want 1", got)
+	}
+	assertSigmaInvariant(t, resp)
+}
+
+// TestAggregate_ByTenant_IgnoredWhenNotWidened — ByTenant on a NON-widened
+// (own-scope) read is ignored: no CountsByTenant is populated, so an
+// unelevated caller gains attribution for nothing (fail-closed), and the
+// response is byte-identical to a request that never opted in. This bounds
+// attribution to "at most the caller's own single tenant" (here: zero keys).
+func TestAggregate_ByTenant_IgnoredWhenNotWidened(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-A", "u1", "s1", windowStart.Add(2*time.Minute))
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+
+	req := prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{
+			TenantIDs:  []string{"tenant-A"},
+			UserIDs:    []string{"u1"},
+			SessionIDs: []string{"s1"},
+		},
+		Window:   30 * time.Minute,
+		Bucket:   5 * time.Minute,
+		ByTenant: true,
+	}
+	// widened == false: the flag is ignored.
+	resp, err := agg.Aggregate(context.Background(), req, false)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if keys := attributionTenantKeys(resp); len(keys) != 0 {
+		t.Fatalf("non-widened ByTenant produced attribution %v, want none (fail-closed)", keys)
+	}
+
+	// Byte-identical to the same request WITHOUT ByTenant.
+	plain := req
+	plain.ByTenant = false
+	plainResp, err := agg.Aggregate(context.Background(), plain, false)
+	if err != nil {
+		t.Fatalf("Aggregate(plain): %v", err)
+	}
+	gotJSON, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal resp: %v", err)
+	}
+	wantJSON, err := json.Marshal(plainResp)
+	if err != nil {
+		t.Fatalf("marshal plainResp: %v", err)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("non-widened ByTenant response not byte-identical to plain:\n got=%s\nwant=%s", gotJSON, wantJSON)
+	}
+}
+
+// TestAggregate_ByTenant_OffWidened_NoAttribution — a widened read WITHOUT
+// ByTenant carries no attribution (the field is opt-in, not implied by the
+// widened authority).
+func TestAggregate_ByTenant_OffWidened_NoAttribution(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+	publishEvent(t, bus, events.EventTypeRuntimeError, "tenant-A", "u1", "s1", windowStart.Add(2*time.Minute))
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{TenantIDs: []string{"tenant-A"}},
+		Window: 30 * time.Minute,
+		Bucket: 5 * time.Minute,
+		// ByTenant unset.
+	}, true)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if keys := attributionTenantKeys(resp); len(keys) != 0 {
+		t.Fatalf("widened read without ByTenant produced attribution %v, want none", keys)
+	}
+}
+
 // TestAggregate_RejectsBadWindow — Window <= 0, Bucket <= 0, or
 // Window % Bucket != 0 all fail loud with ErrAggregateBadWindow.
 func TestAggregate_RejectsBadWindow(t *testing.T) {
@@ -538,11 +773,17 @@ func TestAggregate_EmptyWindow(t *testing.T) {
 
 // TestAggregate_ConcurrentReuse — D-025 binding test: N=100+
 // concurrent Aggregate calls against ONE shared Aggregator+bus, each
-// with a different filter, under -race. Asserts:
+// with a different filter, under -race. Half the goroutines exercise the
+// own-scope totals path (ByTenant off) and half exercise the widened
+// per-tenant ATTRIBUTION path (ByTenant on) so the lazily-allocated
+// CountsByTenant accumulator is covered under -race. Asserts:
 //
 //   - no data races (-race is the gate);
-//   - no context bleed (each goroutine's filter is preserved — verified
-//     by per-call tenant assertion);
+//   - no context bleed on the totals (each goroutine's filter is
+//     preserved — verified by per-call tenant assertion);
+//   - no context bleed on the ATTRIBUTION (each widened goroutine's
+//     CountsByTenant keys are EXACTLY its own filter's tenant — run A's
+//     tenant attribution never appears in run B's result);
 //   - baseline goroutine count restored after all calls return.
 func TestAggregate_ConcurrentReuse(t *testing.T) {
 	// NB: cannot run with t.Parallel — the baseline goroutine count
@@ -593,26 +834,59 @@ func TestAggregate_ConcurrentReuse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			sig := sigs[i%tenantCount]
-			resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
-				Filter: prototypes.EventFilter{
-					TenantIDs:  []string{sig.tenant},
-					UserIDs:    []string{"u"},
-					SessionIDs: []string{"s"},
-				},
-				Window: 30 * time.Minute,
-				Bucket: time.Minute,
-			}, false)
+			// Alternate: even goroutines take the own-scope totals path
+			// (ByTenant off, non-widened); odd goroutines take the widened
+			// per-tenant attribution path (ByTenant on) — the accumulator the
+			// new field adds. Both name a SINGLE tenant so each goroutine's
+			// expected total is its own signature (context-bleed probe).
+			byTenant := i%2 == 1
+			req := prototypes.EventAggregateRequest{
+				Filter:   prototypes.EventFilter{TenantIDs: []string{sig.tenant}},
+				Window:   30 * time.Minute,
+				Bucket:   time.Minute,
+				ByTenant: byTenant,
+			}
+			if !byTenant {
+				// Own-scope read folds user/session; name them explicitly so a
+				// non-widened read stays scoped to this tenant's single (u,s).
+				req.Filter.UserIDs = []string{"u"}
+				req.Filter.SessionIDs = []string{"s"}
+			}
+			// widened == byTenant: only the attribution path fans in (and only
+			// it may return CountsByTenant). A non-widened ByTenant would be
+			// ignored, defeating the coverage this test exists for.
+			resp, err := agg.Aggregate(context.Background(), req, byTenant)
 			if err != nil {
 				t.Errorf("goroutine %d: Aggregate: %v", i, err)
 				failures.Add(1)
 				return
 			}
 			var total int64
+			attrTotal := map[string]int64{}
 			for _, b := range resp.Buckets {
 				total += b.Counts["runtime.error"]
+				for tenant, byType := range b.CountsByTenant {
+					attrTotal[tenant] += byType["runtime.error"]
+				}
 			}
 			if total != sig.count {
 				t.Errorf("goroutine %d (%s): got total=%d, want %d — context bleed?", i, sig.tenant, total, sig.count)
+				failures.Add(1)
+			}
+			if byTenant {
+				// Context-bleed on attribution: EXACTLY this goroutine's own
+				// tenant, with the same count as the totals — no other
+				// goroutine's tenant may appear (run A never leaks into run B),
+				// and Σ CountsByTenant == Counts.
+				if len(attrTotal) != 1 || attrTotal[sig.tenant] != sig.count {
+					t.Errorf("goroutine %d (%s): attribution=%v, want exactly {%s:%d} — context bleed?",
+						i, sig.tenant, attrTotal, sig.tenant, sig.count)
+					failures.Add(1)
+				}
+			} else if len(attrTotal) != 0 {
+				// The non-widened path must never carry attribution.
+				t.Errorf("goroutine %d (%s): non-widened read carried attribution %v, want none",
+					i, sig.tenant, attrTotal)
 				failures.Add(1)
 			}
 		}()

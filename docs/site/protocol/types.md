@@ -1279,6 +1279,7 @@ Declared in `internal/protocol/types`.
 | `window` | `time.Duration` |  |
 | `bucket` | `time.Duration` |  |
 | `anchor` | `*time.Time` | optional (`omitempty`) |
+| `by_tenant` | `bool` | optional (`omitempty`) |
 
 ## EventAggregateResponse
 
@@ -1299,6 +1300,7 @@ Declared in `internal/protocol/types`.
 | `bucket_start` | `time.Time` |  |
 | `bucket_end` | `time.Time` |  |
 | `counts` | `map[string]int64` |  |
+| `counts_by_tenant` | `map[string]map[string]int64` | optional (`omitempty`) |
 
 ## EventFilter
 

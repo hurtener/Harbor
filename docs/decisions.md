@@ -8022,7 +8022,7 @@ Forcing elevation on a single own-other-session read would break the single most
 
 **Date:** 2026-07-13
 
-**Status:** Pending (Phase 173, v1.14 Track B)
+**Status:** Accepted (landed with Phase 173)
 
 **Where it lives:** `docs/plans/phase-173-events-aggregate-tenant-attribution.md`; `internal/protocol/types/events.go`, `internal/events/aggregate.go`, `internal/protocol/transports/stream/handlers.go`.
 

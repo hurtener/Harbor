@@ -157,6 +157,23 @@ export interface EventBucket {
 	bucket_end: string;
 	/** event-type → count of events in this bucket. */
 	counts: Record<string, number>;
+	/**
+	 * OPTIONAL per-tenant attribution of this bucket's `counts`: tenant →
+	 * event-type → count. Present ONLY when the request set `by_tenant`
+	 * AND the read was admin-widened (a verified `admin` / `console:fleet`
+	 * fan-in, derived server-side — never from the body). Absent on every
+	 * other read, so a client that does not opt in sees a byte-identical
+	 * response. Mirrors `types.EventBucket.CountsByTenant`.
+	 *
+	 * It is a pure re-projection of the SAME counted events by their tenant
+	 * identity: the keys are a subset of the tenants the caller asked for,
+	 * and per bucket `Σ_tenant counts_by_tenant[tenant][type] ==
+	 * counts[type]`. That reconciliation lets a widened operator
+	 * independently verify the tenant boundary the runtime enforced — the
+	 * defence-in-depth an aggregate otherwise lacks (a bag of scalars with
+	 * no per-row tenant to post-filter against).
+	 */
+	counts_by_tenant?: Record<string, Record<string, number>>;
 }
 
 /**
@@ -186,6 +203,18 @@ export interface EventAggregateRequest {
 	 * treat it as "up to this instant."
 	 */
 	anchor?: string;
+	/**
+	 * OPTIONAL: opt IN to per-tenant attribution on each bucket
+	 * ({@link EventBucket.counts_by_tenant}). HONOURED ONLY on an
+	 * admin-widened read (a verified `admin` / `console:fleet` fan-in,
+	 * derived server-side); on any other read it is IGNORED and the
+	 * response is byte-identical to a request that never set it
+	 * (fail-closed — the body flag never elevates a read, never widens
+	 * what is counted). Adds no identity axis and no payload — a count per
+	 * `(tenant, event_type)` is the whole surface. Mirrors
+	 * `types.EventAggregateRequest.ByTenant`.
+	 */
+	by_tenant?: boolean;
 }
 
 /**
