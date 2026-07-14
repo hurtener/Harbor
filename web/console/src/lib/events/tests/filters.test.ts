@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+	aggregateFilter,
 	compileFilter,
 	defaultFacetState,
 	isCrossTenant,
@@ -55,6 +56,50 @@ describe('events filters: compileFilter', () => {
 		const state: EventFacetState = { ...defaultFacetState(), window: '7d' };
 		const filter = compileFilter(state, new Date('2026-05-20T00:00:00Z'));
 		expect(filter.since).toBe('2026-05-13T00:00:00.000Z');
+	});
+});
+
+describe('events filters: aggregateFilter (D-306 grid, D-308 widened fan-in)', () => {
+	it('drops the window-derived since so the grid stays anchor-determined', () => {
+		const state: EventFacetState = { ...defaultFacetState(), window: '1h' };
+		const filter = aggregateFilter(state);
+		expect(filter.since).toBeUndefined();
+	});
+
+	it('keeps own-scope identity axes untouched', () => {
+		const state: EventFacetState = {
+			...defaultFacetState(),
+			tenant: 'tenant-own',
+			user: 'user-y',
+			session: 'sess-z'
+		};
+		const filter = aggregateFilter(state);
+		expect(filter.tenant_ids).toEqual(['tenant-own']);
+		expect(filter.user_ids).toEqual(['user-y']);
+		expect(filter.session_ids).toEqual(['sess-z']);
+	});
+
+	it('PRESERVES a foreign tenant pin with no user/session (the runtime fans it in, D-308)', () => {
+		const state: EventFacetState = { ...defaultFacetState(), tenant: 'tenant-other' };
+		const filter = aggregateFilter(state);
+		// No longer dropped: the widened, scope-gated, audited aggregate fans
+		// in across the named tenant's users/sessions server-side (D-308), so
+		// the sparkline shows the real cross-tenant rate — not an own-scope
+		// fallback and not a silently-blank grid.
+		expect(filter.tenant_ids).toEqual(['tenant-other']);
+		expect(filter.user_ids).toBeUndefined();
+		expect(filter.session_ids).toBeUndefined();
+	});
+
+	it('preserves a foreign tenant pin narrowed by a session too', () => {
+		const state: EventFacetState = {
+			...defaultFacetState(),
+			tenant: 'tenant-other',
+			session: 'sess-target'
+		};
+		const filter = aggregateFilter(state);
+		expect(filter.tenant_ids).toEqual(['tenant-other']);
+		expect(filter.session_ids).toEqual(['sess-target']);
 	});
 });
 

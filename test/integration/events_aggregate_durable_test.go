@@ -273,6 +273,92 @@ func TestE2E_AggregateDurable_OverBound_Truncated(t *testing.T) {
 	}
 }
 
+// TestE2E_AggregateDurable_EpochAnchor_AlignedSeries proves D-306's
+// origin-anchored grid works end-to-end on the DURABLE driver (real
+// StateStore at the seam, real wire transport + auth): an anchored
+// request returns a series whose bucket boundaries fall on the fixed
+// `epoch + k·Bucket` grid, and two requests at two clock instants share
+// bucket coordinates (addressability). The clock is fixed for the mux, so
+// the two-instant addressability leg is exercised at the aggregator seam
+// in the unit tests; here we assert the wire path returns a grid-aligned,
+// non-widened series on durable.
+func TestE2E_AggregateDurable_EpochAnchor_AlignedSeries(t *testing.T) {
+	deps := newAggregateDurableDeps(t)
+	defer deps.cleanup()
+	srv := httptest.NewServer(deps.mux)
+	defer srv.Close()
+
+	caller := identity.Identity{TenantID: "t-grid", UserID: "u-grid", SessionID: "s-grid"}
+	publishPhase72aEvent(t, deps.bus, caller.TenantID, caller.UserID, caller.SessionID, fixedNowPhase72a.Add(-5*time.Minute))
+	publishPhase72aEvent(t, deps.bus, caller.TenantID, caller.UserID, caller.SessionID, fixedNowPhase72a.Add(-6*time.Minute))
+
+	epoch := time.Unix(0, 0).UTC()
+	const window = 30 * time.Minute
+	const bucket = time.Minute
+	body, _ := json.Marshal(prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{
+			TenantIDs:  []string{caller.TenantID},
+			UserIDs:    []string{caller.UserID},
+			SessionIDs: []string{caller.SessionID},
+		},
+		Window: window,
+		Bucket: bucket,
+		Anchor: &epoch,
+	})
+	status, agg := doAggregateDurable(t, srv.URL, deps, caller, nil, body)
+	if status != http.StatusOK {
+		t.Fatalf("anchored aggregate on durable: status = %d, want 200", status)
+	}
+	if len(agg.Buckets) != int(window/bucket) {
+		t.Fatalf("anchored bucket count = %d, want %d", len(agg.Buckets), int(window/bucket))
+	}
+	// Every bucket boundary lies on the epoch grid.
+	for _, b := range agg.Buckets {
+		if b.Start.Sub(epoch)%bucket != 0 || b.End.Sub(epoch)%bucket != 0 {
+			t.Fatalf("durable anchored bucket [%v,%v) off the epoch grid", b.Start, b.End)
+		}
+	}
+	// The counts still land (grid re-phases boundaries, it does not drop data).
+	if got := sumRuntimeErrorDurable(agg); got != 2 {
+		t.Fatalf("anchored durable aggregate counted %d events, want 2", got)
+	}
+}
+
+// TestE2E_AggregateDurable_WidenedDistinctPrincipals_FansIn is the
+// isolation-critical end-to-end proof of the fold fix (D-308) on the REAL
+// durable driver: a widened admin aggregate naming ONLY a foreign tenant, with
+// user/session elided, fans in across that tenant's DISTINCT users/sessions —
+// NOT narrowed to tenant+caller-user+caller-session → EMPTY. Distinct
+// principals (not the caller's shared ids) so a caller-fold would return 0.
+func TestE2E_AggregateDurable_WidenedDistinctPrincipals_FansIn(t *testing.T) {
+	deps := newAggregateDurableDeps(t)
+	defer deps.cleanup()
+	srv := httptest.NewServer(deps.mux)
+	defer srv.Close()
+
+	caller := identity.Identity{TenantID: "t-caller", UserID: "u-caller", SessionID: "s-caller"}
+	// Foreign tenant, DISTINCT principals from the caller.
+	publishPhase72aEvent(t, deps.bus, "t-fleet", "u-a", "s-a", fixedNowPhase72a.Add(-5*time.Minute))
+	publishPhase72aEvent(t, deps.bus, "t-fleet", "u-b", "s-b", fixedNowPhase72a.Add(-6*time.Minute))
+	publishPhase72aEvent(t, deps.bus, "t-fleet", "u-c", "s-c", fixedNowPhase72a.Add(-7*time.Minute))
+	// Caller's own tenant event — the filter names ONLY t-fleet, must not count.
+	publishPhase72aEvent(t, deps.bus, caller.TenantID, caller.UserID, caller.SessionID, fixedNowPhase72a.Add(-5*time.Minute))
+
+	body, _ := json.Marshal(prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{TenantIDs: []string{"t-fleet"}},
+		Window: 30 * time.Minute,
+		Bucket: time.Minute,
+	})
+	status, agg := doAggregateDurable(t, srv.URL, deps, caller,
+		[]string{string(auth.ScopeAdmin)}, body)
+	if status != http.StatusOK {
+		t.Fatalf("widened distinct-principals aggregate on durable: status = %d, want 200", status)
+	}
+	if got := sumRuntimeErrorDurable(agg); got != 3 {
+		t.Fatalf("widened durable aggregate counted %d, want 3 (distinct principals fanned in; a caller-fold would return 0)", got)
+	}
+}
+
 func doAggregateDurable(t *testing.T, baseURL string, deps *aggregateDurableDeps, id identity.Identity, scopes []string, body []byte) (int, prototypes.EventAggregateResponse) {
 	t.Helper()
 	status, raw := doAggregateDurableRaw(t, baseURL, deps, id, scopes, body)
