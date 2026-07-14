@@ -210,6 +210,43 @@ func TestAggregateHandler_WidenedForeignTenant_DistinctPrincipals_FansIn_200(t *
 	}
 }
 
+// TestAggregateHandler_AllEmptyAdmin_OwnScopeOnly pins THE load-bearing safety
+// property directly: an admin caller sending a COMPLETELY empty Filter{} (no
+// tenant/user/session/type) is treated as NON-widened — RequiresAdminScope is
+// false, so the full own triple is folded and the read scopes to the caller's
+// own (tenant,user,session) only. It must NOT fan across every tenant just
+// because the caller holds the admin scope, and it emits ZERO admin_scope_used.
+//
+// Mutation note: if a future change made an all-empty filter `widened`, the
+// un-folded wildcard path would read the WHOLE deployment on an empty body —
+// this test catches exactly that.
+func TestAggregateHandler_AllEmptyAdmin_OwnScopeOnly(t *testing.T) {
+	h, bus := newAggregateHandlerTest(t)
+	// The caller's own event.
+	publishAggAt(t, bus, aggCaller.TenantID, aggCaller.UserID, aggCaller.SessionID, aggHandlerNow.Add(-5*time.Minute))
+	// A foreign tenant's event — must NOT be read (tenant isolation).
+	publishAggAt(t, bus, "t-foreign", "u-foreign", "s-foreign", aggHandlerNow.Add(-6*time.Minute))
+	// A SIBLING user + session INSIDE the caller's own tenant — must NOT be
+	// read either. This is the load-bearing leg: the user/session fold is the
+	// axis gated by `!widened`, so if an all-empty filter ever became widened,
+	// these sibling rows would leak while the tenant fold still hid t-foreign.
+	// Seeding them here makes the mutation observable.
+	publishAggAt(t, bus, aggCaller.TenantID, "u-sibling", "s-sibling", aggHandlerNow.Add(-7*time.Minute))
+
+	// Empty filter, but the caller DOES hold the admin scope.
+	body := `{"window":1800000000000,"bucket":60000000000}`
+	status, raw := doAggregate(t, h, body, &aggCaller, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, raw)
+	}
+	if got := sumAggRuntimeError(t, raw); got != 1 {
+		t.Fatalf("all-empty admin aggregate counted %d, want 1 (own triple only; a widened all-empty would leak the own-tenant sibling and every tenant)", got)
+	}
+	if got := aggHandlerAdminScopeUsed(t, bus); got != 0 {
+		t.Fatalf("all-empty admin aggregate emitted %d admin_scope_used, want 0 (non-widened own read)", got)
+	}
+}
+
 // TestAggregateHandler_WidenedSessionLess_FansInAcrossSessions_200 pins HA-21
 // through the Protocol METHOD (HA-20 leg 2 — cover the handler, not only the
 // bus interface): a session-less admin aggregate (a foreign tenant named, the

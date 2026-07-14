@@ -200,6 +200,48 @@ func TestEventsList_WidenedForeignTenant_DistinctPrincipals_FansIn(t *testing.T)
 	}
 }
 
+// TestEventsList_AllEmptyAdmin_OwnScopeOnly pins THE load-bearing safety
+// property directly: an admin caller sending a COMPLETELY empty Filter{} is
+// treated as NON-widened — the full own triple is folded and the read scopes to
+// the caller's own (tenant,user,session) only, never fanning across every
+// tenant just because the caller holds the admin scope.
+//
+// Mutation note: if a future change made an all-empty filter `widened`, the
+// un-folded wildcard path would read the WHOLE deployment on an empty body —
+// this test catches exactly that.
+func TestEventsList_AllEmptyAdmin_OwnScopeOnly(t *testing.T) {
+	h, bus := newEventsListHandler(t)
+	// The caller's own rows.
+	publishPlain(t, bus, evListID, 3)
+	// A foreign tenant's rows — must NOT be read (tenant isolation).
+	publishPlain(t, bus, identity.Identity{TenantID: "t-foreign", UserID: "u-foreign", SessionID: "s-foreign"}, 2)
+	// A SIBLING user + session INSIDE the caller's own tenant — must NOT be
+	// read either. The user/session fold is the axis gated by `!widened`, so if
+	// an all-empty filter ever became widened these sibling rows would leak
+	// while the tenant fold still hid t-foreign — seeding them makes the
+	// mutation observable.
+	publishPlain(t, bus, identity.Identity{TenantID: evListID.TenantID, UserID: "u-sibling", SessionID: "s-sibling"}, 4)
+
+	// Empty filter, but the caller DOES hold the admin scope.
+	status, resp := doEventsList(t, h.Handler(), `{}`, &evListID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, resp)
+	}
+	var got prototypes.EventsListResponse
+	if err := json.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Events) != 3 {
+		t.Fatalf("all-empty admin read returned %d events, want 3 (own triple only; a widened all-empty would leak the own-tenant sibling and every tenant)", len(got.Events))
+	}
+	for _, ev := range got.Events {
+		if ev.Tenant != evListID.TenantID || ev.User != evListID.UserID || ev.Session != evListID.SessionID {
+			t.Fatalf("all-empty admin read leaked %s/%s/%s, want only own %s/%s/%s",
+				ev.Tenant, ev.User, ev.Session, evListID.TenantID, evListID.UserID, evListID.SessionID)
+		}
+	}
+}
+
 // TestEventsList_WidenedSessionLess_FansInAcrossSessions pins HA-21 through the
 // events.list handler (HA-20 leg 2): a session-less admin read (a foreign
 // tenant named, the SessionIDs axis elided) fans in across ALL of that tenant's
