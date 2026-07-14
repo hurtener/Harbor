@@ -50,7 +50,6 @@ type reopenStack struct {
 	arts   artifacts.ArtifactStore
 	reg    *sessions.Registry
 	eraser *sessions.CascadeEraser
-	clock  *reopenClock
 }
 
 // reopenClock is a controllable clock for the GC hard-cap case.
