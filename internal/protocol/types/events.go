@@ -124,8 +124,8 @@ type EventsListResponse struct {
 }
 
 // EventBucket is a single time-bucketed count series — one stripe of the
-// per-event-type stacked-area sparkline the Events page renders (
-// ). Start (inclusive) and End (exclusive) are UTC; Counts is keyed
+// per-event-type stacked-area sparkline the Events page renders.
+// Start (inclusive) and End (exclusive) are UTC; Counts is keyed
 // by event-type string.
 //
 // Bucket boundaries are computed deterministically by the aggregator:
@@ -169,10 +169,10 @@ type EventAggregateRequest struct {
 	// decode's `DisallowUnknownFields` accepts the Console's standard
 	// payload shape (`Transport.request` auto-injects `identity` on
 	// every request body). Optional in the wire schema; ignored by the
-	// handler. a walkthrough fix — pre-fix the request was the
-	// only typed request shape on the Console-facing surface that
-	// REFUSED the identity envelope, breaking every Events page
-	// `events.aggregate` call cross-origin.
+	// handler. Before this field existed it was the only typed request
+	// shape on the Console-facing surface that REFUSED the identity
+	// envelope, breaking every Events page `events.aggregate` call
+	// cross-origin.
 	Identity IdentityScope `json:"identity,omitempty"`
 	// Filter narrows the events the aggregator counts. The empty filter
 	// (zero EventFilter) is interpreted as "every event in the caller's
@@ -200,8 +200,8 @@ type EventAggregateResponse struct {
 	Buckets []EventBucket `json:"buckets"`
 	// Truncated is true when the counts are PARTIAL: the aggregation could
 	// not observe every matching event in the window. It is set UNIFORMLY
-	// across drivers — a best-effort ring that evicted older events below
-	// the requested window sets it, and a durable log whose window held more
+	// across drivers — a best-effort ring that has evicted matching events
+	// (older matches may be lost) sets it, and a durable log whose window held more
 	// matching events than the single-read aggregation bound could count
 	// sets it too. It is the honest DATA signal that a driver difference
 	// (retention depth, an observed horizon) changed WHAT the method
