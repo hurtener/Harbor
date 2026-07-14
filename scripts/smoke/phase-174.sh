@@ -8,8 +8,10 @@
 # has_pending_intervention) were declared + wire-visible but never assigned, so
 # the runtime shipped facets / sort / cursor over permanent zeros. This smoke
 # asserts (a) a populated counter reaches the `sessions.list` wire once a run has
-# produced activity, and (b) a filter/sort/query over an UNPOPULATED agent field
-# fails LOUD (invalid_request), never a silent empty 200 page.
+# produced activity, and (b) a `filter.agent_ids` over an UNPOPULATED agent
+# binding fails LOUD (invalid_request), never a silent empty 200 page — while a
+# plain multi-field `query` search still returns 200 (WARN-4: the whole query is
+# never failed loud, so working session-id / user search is not broken).
 #
 # Until the surface lands the assertions SKIP on 404/405/501 so the script stays
 # green against a pre-174 build.
