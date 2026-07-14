@@ -7880,3 +7880,65 @@ Forcing elevation on a single own-other-session read would break the single most
 **Protocol additions.** None. No method, type, event, or `ProtocolVersion` change. The only code touch is a one-line godoc pointer in `internal/events/filter.go` replacing the "tracked at the wave checkpoint" punt with the settled ruling (the decision number is referenced as "the decisions log ruling", not inlined, per the §13 no-`D-NNN`-in-godoc hygiene rule).
 
 **Cross-references.** CLAUDE.md §6 (multi-isolation; §6.5 the clarified rule), §13 (no identity-downgrading knobs — this does not add one; it clarifies that same-principal own-session reads were never gated). RFC §6.13, §5.2, §7. Resolves the Phase 162 deferral in `internal/events/filter.go` (`docs/plans/phase-162-events-list-durable-read.md`).
+
+---
+
+## D-305 — `events.aggregate` reads through the `HistoryReplayer` cross-session windowed fan-in (the same substrate `events.list` uses), not the per-session `Replayer.Replay` path — closing HA-18 (durable 500) AND, in the same phase, the events-driver conformance-matrix hole that let it ship (HA-20)
+
+**Date:** 2026-07-13
+
+**Status:** Pending (Phase 171, v1.14 Track B)
+
+**Where it lives:** `docs/plans/phase-171-events-aggregate-durable-parity.md`; `internal/events/aggregate.go`, `internal/protocol/transports/stream/handlers.go`, `internal/events/conformancetest/`.
+
+**Context (HA-18).** `events.aggregate` returns HTTP 500 on the durable driver on every call. The aggregator replays through the per-session `Replayer.Replay` path with a session-less `Filter{Admin:true}` (`aggregate.go` — `busFilter := Filter{Admin: true}`, `Replay(Cursor{Sequence: 0}, busFilter)`); the durable driver correctly refuses a session-less admin replay (`ErrIdentityScopeRequired`, "durable replay requires a SessionID"), while the inmem driver honours `Admin:true` and fans in. So the method works in dev (inmem) and 500s in prod (durable). Meanwhile `events.list` ALREADY performs the session-less admin cross-session fan-in on durable successfully — `listWindowDurable` gathers every session head via the `StateStore.ListKind` maintenance scan and filters per event with `MatchWire`. The aggregator wants exactly that fan-in and already does its own per-event filtering.
+
+**Context (HA-20).** The events-driver conformance matrix (self-registering registry + a shared `conformancetest.Run` suite both drivers pass, durable wiring a real `StateStore`) never exercised the session-less admin read the aggregator depends on, and `events.aggregate` appears ZERO times in the suite. `ListWindow_Admin_FansInAcrossSessions` exists and is covered — which is why `events.list` works in prod and `events.aggregate` did not.
+
+**Decision.** (1) **HA-18 fix:** the aggregator sources its window snapshot from the `HistoryReplayer` cross-session windowed fan-in (the `ListWindow` family) — the SAME substrate `events.list` uses — instead of `Replayer.Replay`. It issues ONE windowed fan-in read over the effective `[since, until)` window (one read ⇒ exactly one `audit.admin_scope_used` on the widened path; a generous aggregation cap keeps memory equal to today's whole-ring materialization; a window past the cap fails loud with `ErrAggregateWindowTooLarge` → `CodeInvalidRequest`, never a silent undercount). The handler's server-derived `widened` decision (D-299 — cross-principal OR multi-value fan-in) is threaded into the aggregator as a Go-level input, NEVER a wire field (authority is never read from the request body, CLAUDE.md §6 item 5); this also fixes a latent audit-integrity bug where the hardcoded `Filter{Admin:true}` would emit `admin_scope_used` for a non-admin own-session aggregate. A bus without `HistoryReplayer` yields `ErrReplayUnavailable` (loud), never a silent empty series. `events.aggregate` and `events.list` now agree by construction on what a session-less admin read means. NO change to bucket contents, redaction, retention, bucket identity axes, or scope rules — the ask is ONLY "return on the durable driver." `Replayer.Replay` is UNCHANGED (its per-session SSE-reconnect contract, including its session-less-admin refusal on durable, is correct and stays). (2) **HA-20 closure:** the conformance suite gains a driver-parametrized aggregate scenario (`Aggregate_Admin_SessionLess_FansInAcrossSessions`) and a method-parity leg running `events.aggregate` / `events.list` / `events.subscribe` / `state.history` against every registered driver for the same request, asserting the same answer OR the same named-sentinel difference; a registry gate enumerates `events.RegisteredDrivers()` and fails the build if any registered driver has no conformance run wired. The driver-parity thesis is made executable: a driver difference may change WHAT a method returns (retention depth via `truncated`, an observed horizon) but NEVER WHETHER it works — differences stay DATA / named sentinels (`ErrReplayUnavailable`, `truncated`), never a 500 and never normalized away. Do NOT make inmem durable and do NOT normalize retention depth.
+
+**Findings I'm departing from.** The ask named the new scenario `Replay_Admin_SessionLess_FansInAcrossSessions`. After the fix the aggregator no longer depends on `Replayer.Replay` for the session-less read — it depends on the `HistoryReplayer` fan-in, whose session-less admin behaviour is already pinned (`ListWindow_Admin_FansInAcrossSessions`). Making `Replay` fan in session-less on durable would add a code path with no live consumer (Replay is the per-session reconnect path) — a §13 primitive-without-consumer smell. So the real matrix hole is one level up: `events.aggregate` is not parametrized by driver at all. The scenario lands as `Aggregate_Admin_SessionLess_FansInAcrossSessions` at the aggregate substrate plus the four-method parity leg; the `Replay` vs `ListWindow` session-less-admin divergence is additionally pinned as a uniform named contract so it is DATA, not a silent "whether it works" fork. Name + granularity change, not scope change.
+
+**Protocol additions.** None. Zero-wire (no method / type / field / error / event, no `ProtocolVersion` bump). A manifest diff is a red flag.
+
+**Cross-references.** D-294 (`events.list` / the `HistoryReplayer.ListWindow` fan-in this reuses; the durable head-scan), D-283 (fix-the-instance-AND-close-the-class-same-PR precedent), D-299 (the `widened` decision is server-derived; single own-session read is not elevation), D-254 (`state.history` / the `HistoryReplayer` seam), D-025 (the aggregator stays a concurrent-reuse artifact). CLAUDE.md §9/§11 (driver parity + shared conformance suite), §6 (multi-isolation; item 5 elevated scope server-derived), §13 (no silent degradation), §17.1/§17.8 (real-driver + real-StateStore integration test). RFC §6.13, §5.2, §6.5, §4, §7. Plan: `docs/plans/phase-171-events-aggregate-durable-parity.md`.
+
+---
+
+## D-306 — `events.aggregate` gains an optional origin/epoch anchor so bucket boundaries fall on a fixed, addressable grid; absent ⇒ today's clock-anchored behaviour
+
+**Date:** 2026-07-13
+
+**Status:** Pending (Phase 172, v1.14 Track B)
+
+**Where it lives:** `docs/plans/phase-172-events-aggregate-epoch-grid.md`; `internal/protocol/types/events.go`, `internal/events/aggregate.go`.
+
+**Context.** The aggregator lays its bucket grid from the wall-clock instant at handler entry (`windowStart := now.Add(-req.Window)`). `Window % Bucket == 0` constrains bucket-series LENGTH but never ORIGIN, so alignment onto a fixed grid is arithmetically unreachable: two calls at two instants return two different bucket-boundary sets, a `bucket_start` is not addressable twice, and no consumer can legally cache an aggregate bucket.
+
+**Decision.** Add an OPTIONAL anchor field to `EventAggregateRequest` (`Anchor time.Time`, `json:"anchor,omitempty"`; the zero value ⇒ today's now-anchored grid). When set, bucket boundaries are floored onto the grid `anchor + k·Bucket`, so the response covers the `Window`'s worth of buckets aligned to that grid; passing the Unix epoch yields a globally-shared grid. Two calls at two instants with the same anchor + window + bucket share boundary instants — a bucket is re-requestable and cacheable, and a cold N-bucket fill becomes ONE call whose buckets align to the next poll's grid. The chosen shape is the single additive `Anchor` field rather than explicit `{since, until, bucket}` boundaries because it is the smallest additive surface, composes with the existing `Window`/`Bucket` pair, and does not duplicate the request's `Filter.Since/Until` clamp. NOT part of the ask: no change to bucket contents, redaction, retention, or identity axes.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** `EventAggregateRequest.Anchor` (additive optional field; no new method; response shape unchanged — `EventBucket.Start/End` become grid coordinates when the anchor is set). `ProtocolVersion` stays 0.1.0 (additive). Full D-223 lockstep (`make protocol-ts-gen`, `wire-manifest.gen.json` regenerated) + D-209 (`make protocol-docs-gen`, `docs/site/protocol/types.md` regenerated) in the same PR; §18 `use-the-harbor-protocol` SKILL.md updated.
+
+**Cross-references.** D-305 (171 — the aggregate must work on the durable driver before its grid matters; 172 depends on it), D-223 (wire lockstep), D-209 (generated Protocol reference). CLAUDE.md §10 (additive/backward-compatible config discipline — no config field here), §18 (skill hygiene). RFC §6.13, §5.2, §7. Plan: `docs/plans/phase-172-events-aggregate-epoch-grid.md`.
+
+---
+
+## D-307 — `events.aggregate` carries opt-in per-tenant attribution for admin-widened reads, making the tenant boundary independently verifiable on aggregates the way it already is on rows
+
+**Date:** 2026-07-13
+
+**Status:** Pending (Phase 173, v1.14 Track B)
+
+**Where it lives:** `docs/plans/phase-173-events-aggregate-tenant-attribution.md`; `internal/protocol/types/events.go`, `internal/events/aggregate.go`, `internal/protocol/transports/stream/handlers.go`.
+
+**Context.** An aggregate bucket is a bag of scalars (`{"tool.invoked": 7}`) with NO tenant attribution. Unlike a row read (`sessions.list` / `tasks.list` / `events.list`), where every row carries its own tenant and a consumer post-filters the merged result against its entitled set, an aggregate consumer CANNOT verify an admin-widened count against the `Filter.TenantIDs` it asked for — for an aggregate the runtime's honouring of the filter IS the entire tenant boundary, a single point of enforcement with no downstream check.
+
+**Decision.** Add opt-in per-tenant attribution: a request flag (`ByTenant bool`, `json:"by_tenant,omitempty"`) and, on the response, `EventBucket.CountsByTenant map[string]map[string]int64` (tenant → event_type → count, `json:"counts_by_tenant,omitempty"`) alongside the existing `Counts` totals. Attribution is returned ONLY for admin-widened reads (the verified `admin` OR `console:fleet` scope set, derived server-side per D-299 — never the request body) AND ONLY for tenants the caller is already entitled to; an unelevated caller gains attribution for NOTHING it could not already read (a non-widened read yields at most the caller's own single tenant — no new information). The per-bucket invariant `Σ CountsByTenant[*][type] == Counts[type]` proves attribution is a pure re-projection of the already-authorized counts, not a second looser read path. Per-bucket (not a response rollup) so it composes with the time series and D-306's grid; a rollup is derivable by summing buckets. Existing callers (no flag) see byte-identical responses. This makes the isolation boundary independently verifiable on aggregates the way it already is on rows (§6 defence-in-depth). NOT part of the ask: no payloads and no new identity axes — a count per `(tenant, event_type)` suffices.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** `EventAggregateRequest.ByTenant` + `EventBucket.CountsByTenant` (additive optional fields; no new method). `ProtocolVersion` stays 0.1.0 (additive). Full D-223 lockstep + D-209 regen in the same PR; §18 `use-the-harbor-protocol` SKILL.md updated.
+
+**Cross-references.** D-305 (171 — the aggregate must work on the durable driver and carry the server-derived `widened` decision before attribution can ride it; 173 depends on it), D-306 (composes with the anchored grid — same response), D-299 (the elevated-scope selector; server-derived widening), D-284 (the admin-widened read pattern). CLAUDE.md §6 (multi-isolation; defence-in-depth), §13 (opt-in, additive; no identity-downgrading knob), §18 (skill hygiene). RFC §6.13, §5.2, §6.5, §4, §7. Plan: `docs/plans/phase-173-events-aggregate-tenant-attribution.md`.
