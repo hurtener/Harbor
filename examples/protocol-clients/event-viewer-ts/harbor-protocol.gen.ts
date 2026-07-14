@@ -1066,6 +1066,7 @@ export interface EventAggregateRequest {
   window: number;
   bucket: number;
   anchor?: string;
+  by_tenant?: boolean;
 }
 
 export interface EventAggregateResponse {
@@ -1078,6 +1079,7 @@ export interface EventBucket {
   bucket_start: string;
   bucket_end: string;
   counts: Record<string, number>;
+  counts_by_tenant?: Record<string, Record<string, number>>;
 }
 
 export interface EventFilter {

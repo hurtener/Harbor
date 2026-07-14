@@ -149,6 +149,29 @@ type EventBucket struct {
 	// An empty map means "no matching events in this window slice" —
 	// the bucket is still present so the rendering client sees the gap.
 	Counts map[string]int64 `json:"counts"`
+	// CountsByTenant is the OPTIONAL per-tenant attribution of this
+	// bucket's Counts: tenant → event-type → count. It is present ONLY
+	// when the request set ByTenant AND the read was admin-widened (a
+	// verified `admin` / `console:fleet` fan-in, derived server-side —
+	// never from the request body). Absent (nil, omitted) on every other
+	// read, so a caller that does not opt in sees a byte-identical
+	// response.
+	//
+	// It is a pure re-projection of the SAME counted events by their
+	// existing tenant identity — no new data path, no new identity axis.
+	// The keys are a SUBSET of the authorized (named-or-folded)
+	// Filter.TenantIDs; Counts (the totals) and CountsByTenant are scoped
+	// to the IDENTICAL authorized filter by construction (one pass over
+	// the same matched events), so per bucket
+	// `Σ_tenant CountsByTenant[tenant][type] == Counts[type]`. That
+	// reconciliation is what makes the tenant boundary independently
+	// verifiable on an aggregate the way it already is on a row read
+	// (every row carries its own tenant): the widened caller can check the
+	// attribution keys against the entitled set it asked for.
+	//
+	// Empty buckets (no matching events) omit the field even under an
+	// attribution request — there is nothing to attribute.
+	CountsByTenant map[string]map[string]int64 `json:"counts_by_tenant,omitempty"`
 }
 
 // EventAggregateRequest is the wire request for the `events.aggregate`
@@ -215,6 +238,22 @@ type EventAggregateRequest struct {
 	// grid re-phases the boundaries and never widens the read span by
 	// more than one Bucket at either edge. UTC.
 	Anchor *time.Time `json:"anchor,omitempty"`
+	// ByTenant opts IN to per-tenant attribution on each bucket
+	// (EventBucket.CountsByTenant). It is HONOURED ONLY on an
+	// admin-widened read (a verified `admin` / `console:fleet` cross-
+	// principal-or-multi-value fan-in, derived server-side); on any other
+	// read it is IGNORED and the response is byte-identical to a request
+	// that never set it (fail-closed — the body flag never elevates a
+	// read, and never widens what is counted).
+	//
+	// When honoured, each bucket carries CountsByTenant re-projecting that
+	// bucket's Counts by the counted events' existing tenant identity, so
+	// the widened caller can independently verify the tenant boundary the
+	// runtime enforced (the attribution keys must be a subset of the
+	// tenants it asked for, and they must sum back to the totals). It adds
+	// NO new identity axis and NO payload — a count per `(tenant,
+	// event_type)` is the whole surface. Absent/false ⇒ no attribution.
+	ByTenant bool `json:"by_tenant,omitempty"`
 }
 
 // EventAggregateResponse is the wire response for the `events.aggregate`

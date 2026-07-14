@@ -33,6 +33,7 @@
   import { DISCONNECTED_TOOLTIP } from '$lib/connection.js';
   import EventFilterChips from '$lib/components/events/EventFilterChips.svelte';
   import EventRateSparkline from '$lib/components/events/EventRateSparkline.svelte';
+  import EventTenantAttribution from '$lib/components/events/EventTenantAttribution.svelte';
   import EventDetailRail from '$lib/components/events/EventDetailRail.svelte';
   import PauseStreamToggle from '$lib/components/events/PauseStreamToggle.svelte';
   import ExportMenu from '$lib/components/events/ExportMenu.svelte';
@@ -244,6 +245,12 @@
             onpin={(type) => state.toggleType(type)}
           />
         </section>
+
+        <!-- Per-tenant attribution (D-307): on a cross-tenant widened read
+             the runtime returns counts_by_tenant, letting the operator verify
+             which tenants contributed. The component renders nothing when
+             attribution is absent (own-scope / non-widened reads). -->
+        <EventTenantAttribution attribution={state.aggregator.attribution} />
       {/if}
 
       <section class="panel card table-card">
