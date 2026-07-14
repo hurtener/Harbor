@@ -8082,33 +8082,54 @@ against v1.13.1 source):
   them. Key nuance: V1 memory has NO TTL (`ExpiresAt` "zero = no TTL," never
   populated), so the TTL facet + aggregate are structurally dead.
 
-**Decision.** Close the class on all four surfaces AND make its reintroduction
-mechanically impossible. (1) **The gate (the primitive):** a registry-gated
-projection-completeness check (`internal/protocol/projectioncheck`) where every
-projection surface self-registers a `ProjectionContract` — a probe that builds a
-fully-populated source record and runs the PRODUCTION projector, the set of wire
-json-tags its filter/sort/aggregate layer reads, and a reason-carrying
-honest-omission allow-list — and a build-time conformance test reflects each
-probe and FAILS when a filtered/sorted/aggregated field is left at its zero value
-and not allow-listed. A coverage half asserts every known surface is registered
-(a surface that ships unregistered fails the build), mirroring the events
-`RegisteredDrivers()`/conformance-parity gate (D-305). (2) **The consumers
-(§13):** tasks — populate `HasPendingApproval` at projection time from the
-approval/pause registry (option a), represent/populate `BackgroundAcknowledged`,
-un-stub the `serve.Enricher` parent-session card + cost rollup (cost coordinated
-with 174); flows — add `RunRecord.Tokens` (symmetric with `CostUSD`) and sum it
-into `TokensUsed`; memory — REMOVE the structurally-dead `has_ttl_expiring` facet
-plus the `expiring_in_1h` aggregate (option b — a facet that can never match is
-dead surface, a wire-shape removal under D-223/D-209 lockstep), and populate
-`AgentID`
-from the turn producer identity or loud-reject `filter.agent_ids` over an
-unpopulated field (D-311); tools — because assembling a production `Annotator`
-is substantial net-new work (no impl exists) it is split to D-314/Phase 178, so
-Phase 177 honestly GATES the annotator-backed facets/search/aggregates behind an
-"annotator-wired" capability (loud-reject/honest-partial when unwired, never a
-false-empty page or fabricated aggregate), registered in the gate with a
-"178 pending" allow-list reason. The gate lands GREEN because every surface is
-populated, removed, or honestly gated (§13 primitive-with-consumer).
+**Decision.** Close BOTH variants of the class AND make each mechanically
+catchable. (1) **The gate (the primitive) — TWO coverage halves, because the
+class has two variants and a single reflection probe closes only one.** A
+registry-gated projection-completeness check (`internal/protocol/projectioncheck`)
+where every projection surface self-registers a `ProjectionContract` — a probe
+that runs the PRODUCTION projector over a fully-populated record, the set of wire
+json-tags its filter/sort/aggregate layer reads, a reason-carrying
+honest-omission allow-list, and the name of a prod-wiring test. **Half A
+(never-assigned):** a build-time test reflects each probe and FAILS when a
+filtered/sorted/aggregated field is left at its zero value and not allow-listed;
+an empty-string allow-list reason is itself a FAILURE (anti-theater). **Half B
+(never-wired — the variant that motivated this band):** Half A cannot catch the
+tools bug — for a read-time-enriched field the probe wires its own populated fake
+and passes while production `mux.go` can omit the `WithX` wiring and ship false
+absence — so each `ProjectionContract` MUST register a prod-wiring test that
+exercises the projector as assembled through real `mux` wiring; a registered
+surface with no prod-wiring test, or a production assembly that omits its `WithX`,
+FAILS the build. A surface-coverage check asserts every known surface is
+registered (an unregistered surface fails the build), mirroring the events
+`RegisteredDrivers()`/conformance-parity gate (D-305). **The "mechanically
+impossible to reintroduce" claim is scoped precisely:** Half A closes
+never-assigned mechanically; Half B closes never-wired mechanically *for any
+surface that registers its mandatory prod-wiring test* (the coverage check forces
+registration). (2) **The consumers (§13):** tasks — populate `HasPendingApproval`
+at projection time from the approval/pause registry (option a), represent/populate
+`BackgroundAcknowledged`, un-stub the `serve.Enricher` parent-session card + cost
+rollup (cost coordinated with 174); flows — add `RunRecord.Tokens` (symmetric
+with `CostUSD`) and sum it into `TokensUsed`; memory — REMOVE the
+structurally-dead `has_ttl_expiring` facet plus BOTH `expiring_in_1h` fields
+(`MemoryAggregates` + `MemoryHealthAggregate`, neither `omitempty`) — a breaking
+wire-shape change whose RFC §8 deprecation-window requirement is met by explicit
+exemption (always-empty fields → no live consumer + the pre-GA `0.1.0`
+within-version-removal precedent, Phase 171), NOT by silence — and for
+`filter.agent_ids` the V1 mechanism is **loud-reject** (`CodeInvalidRequest`):
+`ConversationTurn` carries no producer identity, so V1 has no agent to populate
+from; populate is DEFERRED to a follow-up that adds producer identity to the turn
+record (the facet keeps its wire slot as a not-yet-wired field, unlike the removed
+TTL *design* absence); sessions — this phase ADDS the sessions registration
+(174 predates `projectioncheck` and cannot register into it), serialized after
+174 since it edits 174's `lister_projector.go`; tools — because assembling a
+production `Annotator` is substantial net-new work (no impl exists) it is split to
+D-314/Phase 178, so Phase 177 honestly GATES the annotator-backed surface behind
+ONE "annotator-wired" capability toggle: facet filters loud-reject when unwired,
+and the response-riding catalog aggregates carry an explicit `aggregates_partial`
+marker (Console renders "unavailable," NEVER a silent 0 — the fabricated zero the
+class kills), registered in the gate with a "178 pending" allow-list reason. The
+gate lands GREEN because every surface is populated, removed, or honestly gated
+(§13 primitive-with-consumer).
 
 **Scope.** HA-24. This is a BAND (D-313 + D-314): D-313 = the gate + tasks +
 flows + memory + tools-interim-gating (Phase 177); D-314 = the tools production

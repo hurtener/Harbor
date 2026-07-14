@@ -10,12 +10,17 @@ the same class on **three more populate-or-remove surfaces** (tasks, flows,
 memory), makes the one already-wired-but-stub enricher (the tasks `serve.Enricher`)
 tell the truth, honestly gates the fourth heavy surface (tools) until Phase 178
 wires its backend, and — the centrepiece — ships a **registry-gated
-projection-completeness gate** that FAILS THE BUILD when a wire field that is
-filtered / sorted / aggregated over is never assigned by its projector. The gate
-is the class-closer: after this phase, the defect is mechanically impossible to
-reintroduce on any projection surface (sessions, tasks, tools, flows, memory,
-and any future one). The gate is the primitive; the four surface fixes plus
-174's sessions fix are its consumers (§13), so it lands green.
+projection-completeness gate** with two coverage halves: one FAILS THE BUILD when
+a wire field that is filtered / sorted / aggregated over is never ASSIGNED by its
+projector (the **never-assigned** variant), and a second FAILS THE BUILD when a
+registered surface has no prod-WIRING test exercising its
+production-assembled projector through real `mux` wiring (the **never-wired**
+variant — a `WithX` enricher the production constructor forgets to install). The
+gate is the class-closer: after this phase, BOTH variants of the class D-311
+names are mechanically caught (the never-assigned variant by reflection over the
+probe, the never-wired variant by the mandatory prod-wiring test). The gate is
+the primitive; the four surface fixes plus 174's sessions fix are its consumers
+(§13), so it lands green.
 
 ## RFC anchor
 
@@ -70,15 +75,30 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
 
 ## Goals
 
-- **Ship the projection-completeness gate (the primitive).** A build-time,
-  registry-gated check that cross-references, for every projection surface, the
-  set of wire fields the filter / sort / aggregate layer OPERATES over against
-  the set of fields the production projector actually ASSIGNS. A filtered /
-  sorted / aggregated field that the projector leaves at its zero value (and is
-  not on an explicit, reason-carrying honest-omission allow-list) FAILS THE
-  BUILD. Every projection surface must be registered; a surface that ships
-  without registering cannot dodge the gate (the coverage half, mirroring the
-  events `RegisteredDrivers()` cross-check, D-305).
+- **Ship the projection-completeness gate (the primitive) — two coverage
+  halves.** A build-time, registry-gated check with two independent halves,
+  because the class has two variants (D-311/D-313) and a single reflection probe
+  closes only one:
+  - **Half A — never-assigned (reflection).** For every projection surface,
+    cross-reference the set of wire fields the filter / sort / aggregate layer
+    OPERATES over against the set the production projector actually ASSIGNS (via
+    a probe that runs the projector over a fully-populated source record). A
+    filtered / sorted / aggregated field the projector leaves at its zero value
+    (and not on an explicit, reason-carrying honest-omission allow-list) FAILS
+    THE BUILD.
+  - **Half B — never-wired (prod-wiring test, closes the variant that motivated
+    this band).** Half A cannot catch the never-wired variant: for a
+    read-time-enriched field (tasks `HasPendingApproval`, every tools annotator
+    field, the enricher cards), the probe wires its own populated fake and passes
+    while production `mux.go` can OMIT the `WithX` wiring and ship false absence —
+    the exact tools bug. So each `ProjectionContract` MUST ALSO register a
+    prod-WIRING test that exercises the surface's projector as assembled through
+    real `mux` wiring (not a test-supplied backend) and asserts the enriched
+    fields are populated; a registered surface with no prod-wiring test FAILS THE
+    BUILD. A forgotten `WithX` in `mux.go` then fails the gate.
+  - **Coverage of surfaces.** Every projection surface must be registered; a
+    surface that ships without registering cannot dodge either half (mirroring
+    the events `RegisteredDrivers()` cross-check, D-305).
 - **TASKS — close the sharp false-absence facet.** Populate
   `TaskRow.HasPendingApproval` at projection time from the approval/pause
   registry scoped to the task's run, so `filter.has_pending_approval=true`
@@ -93,17 +113,31 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
   `Tokens` field to `flow.RunRecord` (symmetric with the existing `CostUSD`),
   sum it into `FlowBudgetConsumption.TokensUsed`, and set it at every `RecordRun`
   call site. The Budget meter now renders real token consumption.
-- **MEMORY — remove the structurally-dead facet + aggregate; close the agent
-  facet.** V1 memory has no TTL (the producer never sets `ExpiresAt`, the type
-  documents "zero = no TTL"), so `filter.has_ttl_expiring` always returns an
-  empty page and the `expiring_in_1h` aggregate is always 0. REMOVE both (option
-  b — a facet that can never match is dead surface; a wire-shape change under
-  full lockstep). For `AgentID`: populate it from the memory turn's producer
-  identity when the record carries one, else loud-reject the `filter.agent_ids`
-  facet (representable absence + loud rejection over an unpopulated field, D-311)
-  rather than return a silent empty page. The `MemoryItem.AgentID` / `.ExpiresAt`
-  ROW fields stay `omitempty` and honest-by-omission — the harm was only in the
-  filters / aggregate over them.
+- **MEMORY — remove the structurally-dead facet + aggregate; loud-reject the
+  agent facet.** V1 memory has no TTL (the producer never sets `ExpiresAt`, the
+  type documents "zero = no TTL" — an RFC §6.6 *design* absence), so
+  `filter.has_ttl_expiring` always returns an empty page and the `expiring_in_1h`
+  aggregate is always 0. REMOVE both (option b — a facet that can never match is
+  dead surface). Note this touches `ExpiringIn1h` in TWO type sites —
+  `MemoryAggregates` (`internal/protocol/types/memory.go:217`) AND
+  `MemoryHealthAggregate` (`:346`), neither `omitempty` — plus the filter branch
+  and the two computers (list + health). It is a breaking wire-shape change; the
+  §8 deprecation-window exemption is claimed explicitly (Non-goals + Risks): the
+  fields were ALWAYS empty / always 0, so no live consumer can depend on a
+  meaningful value, and the pinned pre-GA `0.1.0` within-version-removal
+  precedent (Phase 171 dropped a fork) applies. For `AgentID`: the V1 mechanism
+  is **loud-reject** — `ConversationTurn` (`internal/protocol/types/memory.go`
+  turn record) carries NO producer / agent identity and the projection
+  (`internal/memory/protocol/protocol.go`) sets only the tenant/user/session
+  triple, so there is structurally NO agent to populate from in V1;
+  `filter.agent_ids` returns `CodeInvalidRequest` (representable absence + loud
+  rejection over an unpopulated field, D-311) rather than a silent empty page.
+  Populate is DEFERRED to a follow-up that adds a producer identity to
+  `ConversationTurn` — the facet keeps its wire slot precisely because agent
+  identity is a not-yet-wired field (unlike TTL, which is a design absence and is
+  removed). The `MemoryItem.AgentID` / `.ExpiresAt` ROW fields stay `omitempty`
+  and honest-by-omission — the harm was only in the filters / aggregate over
+  them.
 - **TASKS enricher — un-stub the wired-but-zero concrete.** The tasks `tasks.get`
   Enricher IS wired in production (`mux.go` `WithEnricher(NewEnricher)`), but its
   concrete `serve.Enricher` returns a zero `TaskParentSessionRef{}` (AgentName /
@@ -113,19 +147,41 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
   stream, coordinated with 174). This is display truthfulness, not a gate-triggering
   facet — but it is the sharpest illustration of the class (even the surface Harbor
   got STRUCTURALLY right ships zeros because the concrete is a stub).
-- **TOOLS — honest interim gating (the 178 hand-off).** No production `Annotator`
-  exists (the only implementer is the `fakeAnnotator` test double, §17.8), so in
-  production `OAuthStatus` / `ApprovalPolicy` / `LastUsedAt` / `Metrics` /
-  `ContentStats` / `DisplayModes` are all structural defaults while
-  `filter.oauth_statuses`, `filter.approval_policies`, the `Name+" "+Version`
-  search axis, and the `ToolAggregates` (Active / PendingApproval / AwaitingOAuth)
-  all operate over them. Gate those facets / search / aggregates behind an
-  "annotator-wired" capability: when unwired (production today), they loud-reject /
-  honest-partial instead of shipping a false-empty page or a fabricated aggregate
-  (D-311). Phase 178 wires the real annotator and flips them to truthful. This
-  keeps the gate green for tools without waiting on 178.
+- **TOOLS — honest interim gating (the 178 hand-off), one clean capability
+  toggle.** No production `Annotator` exists (the only implementer is the
+  `fakeAnnotator` test double, §17.8), so in production `OAuthStatus` /
+  `ApprovalPolicy` / `LastUsedAt` / `Metrics` / `ContentStats` / `DisplayModes`
+  are all structural defaults while `filter.oauth_statuses`,
+  `filter.approval_policies`, the `Name+" "+Version` search axis, and the
+  `ToolAggregates` (Active / PendingApproval / AwaitingOAuth) all operate over
+  them. Gate them behind a SINGLE "annotator-wired" capability toggle (so 178's
+  un-gate is one mechanical flip, not scattered edits), with the interim
+  behaviour differentiated by surface shape:
+  - **Dedicated facet filters** (`filter.oauth_statuses`,
+    `filter.approval_policies`, the version search axis) → **loud-reject**
+    (`CodeInvalidRequest`) when unwired. There is no row to return for a facet
+    that cannot be honoured.
+  - **Response-riding aggregates** (Active / PendingApproval / AwaitingOAuth on a
+    `tools.list` response, where the tool rows MUST still return) → an explicit
+    **`aggregates_partial` / unavailable marker**, NOT loud-reject and NOT a
+    silent 0. The Console renders "unavailable," never a real-looking zero. This
+    is aligned with 174's chosen `SessionRow.CountersPartial` mechanism — the
+    fabricated-zero this class exists to kill must not sneak back in as a lazy
+    "honest-partial" 0.
+
+  Phase 178 wires the real annotator, flips the one capability toggle, and both
+  behaviours become truthful. This keeps the gate green for tools without waiting
+  on 178.
+- **SESSIONS — register the 174 surface into the new gate.** Phase 174 predates
+  this phase and cannot register into a `projectioncheck` package that does not
+  yet exist, so this phase adds the sessions registration itself (a
+  `ProjectionContract` whose probe runs the production `projectRow` + `Enricher`
+  from `internal/sessions/protocol/`, plus the Half-B prod-wiring test). Without
+  this, the coverage half fails on its own most-important surface. This work
+  edits `internal/sessions/protocol/lister_projector.go` (which 174 also
+  touches), so it is explicitly serialized AFTER 174 (see Dependencies).
 - **Pin every projection fixture against its real producer (§17.8).** Extend the
-  §17.8 discipline (a fixture must never be richer than the runtime) to all four
+  §17.8 discipline (a fixture must never be richer than the runtime) to all five
   surfaces via the gate's probe, so a fixture that assigns a field the production
   projector cannot produce fails the build.
 
@@ -137,10 +193,16 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
   honestly in the interim.
 - **No new Protocol method, no `ProtocolVersion` bump.** The tasks / flows fixes
   populate already-declared fields (no wire-shape change). The memory removal
-  (`has_ttl_expiring` + `expiring_in_1h`) IS a wire-shape change — full
-  D-223/D-209 lockstep in the same PR, but it is a removal within the pinned
-  version, not a version bump. The `BackgroundAcknowledged` representation and the
-  "annotator-wired" capability string are additive.
+  (`has_ttl_expiring` + the two `expiring_in_1h` fields on `MemoryAggregates` AND
+  `MemoryHealthAggregate`) IS a breaking wire-shape change — full D-223/D-209
+  lockstep in the same PR. It is a removal within the pinned version, not a
+  version bump, and the RFC §8 deprecation-window requirement is met by explicit
+  exemption, NOT by silence (the §8 defect is an unannounced break, not a break):
+  the removed fields were ALWAYS empty / always 0 (a facet/aggregate over a field
+  V1 can never populate), so no live consumer can depend on a meaningful value,
+  and the pre-GA `0.1.0` within-version-removal precedent (Phase 171) applies.
+  The `BackgroundAcknowledged` representation, the "annotator-wired" capability
+  string, and the tools `aggregates_partial` marker are additive.
 - **No first-class session→agent or memory→agent binding link.** Where an agent
   identity is not modelled (memory records with no producer identity), the phase
   makes the absence honest and loud, never invents a binding.
@@ -150,8 +212,8 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
 
 ## Acceptance criteria
 
-- [ ] **The gate exists and bites.** A projection-completeness gate
-      (`internal/protocol/projectioncheck`, or the natural home) exposes a
+- [ ] **Gate Half A — never-assigned (reflection) bites.** A projection-completeness
+      gate (`internal/protocol/projectioncheck`, or the natural home) exposes a
       registry that each projection surface self-registers into with (a) a probe
       that builds a fully-populated source record and runs the production
       projector, (b) the set of wire field json-tags its filter / sort /
@@ -161,17 +223,41 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
       left at its zero value and not allow-listed. A **synthetic** projector that
       declares a filter over a deliberately-unassigned field makes the gate test
       FAIL (proving the gate is not vacuous).
-- [ ] **Coverage half.** Every projection surface known to the runtime
+- [ ] **Gate Half B — never-wired (prod-wiring) bites.** Each `ProjectionContract`
+      MUST register a prod-WIRING test that exercises its projector as assembled
+      through real `mux` wiring (not a test-supplied backend), asserting the
+      read-time-enriched fields (e.g. tasks `HasPendingApproval`, the enricher
+      cards) are populated; a registered surface with NO prod-wiring test FAILS
+      the build. A **synthetic** surface whose production assembly OMITS its
+      `WithX` enricher (so prod ships zeros while the reflection probe passes with
+      its own fake) makes the Half-B test FAIL — the tools never-wired bug is
+      caught by construction.
+- [ ] **Coverage of surfaces.** Every projection surface known to the runtime
       (sessions, tasks, tools, flows, memory) is registered; the gate asserts the
       registered set covers the known set (a new surface that ships without
       registering fails the build), mirroring `events.RegisteredDrivers()` /
       conformance parity (D-305).
-- [ ] **The honest-omission allow-list is real and reasoned.** `FlowBudget.TokenCap`
-      ("zero = no cap", omitempty), the `MemoryItem.AgentID` / `.ExpiresAt` ROW
-      fields (omitempty, honest-by-omission — no facet over them after this
-      phase), and the tools annotator-backed fields (gated behind the
-      annotator-wired capability, pending 178) each appear on the allow-list with
-      a one-line justification. No allow-list entry lacks a reason.
+- [ ] **SESSIONS registered by this phase.** Because 174 predates
+      `projectioncheck`, this phase adds the sessions `ProjectionContract`
+      (`internal/sessions/protocol/`) — a probe over the production `projectRow` +
+      `Enricher` AND a Half-B prod-wiring test asserting the production `mux`
+      installs the sessions `Enricher` — so the coverage half passes on the
+      sessions surface. This edit touches `lister_projector.go` (also touched by
+      174) and is serialized AFTER 174 lands.
+- [ ] **The honest-omission allow-list is real, reasoned, and minimal.** Only
+      fields that are genuinely operated-over AND legitimately left zero appear:
+      the tools annotator-backed fields (gated behind the annotator-wired
+      capability, pending 178) with a "178: annotator wiring pending" reason. A
+      field that is populated (`TaskParentSessionRef.SessionID`) or NOT in a
+      surface's `OperatedFields` (`FlowBudget.TokenCap`, the `MemoryItem.AgentID` /
+      `.ExpiresAt` ROW fields) needs NO allow-list entry and MUST NOT carry one —
+      every allow-list line is a real intentional absence, not bloat.
+- [ ] **The gate fails on an empty reason (anti-theater).** A test asserts the
+      gate test itself FAILS when a `ProjectionContract` carries an
+      honest-omission entry with an empty-string reason — the reason is
+      load-bearing (an unexplained allow-list entry is how a real false-absence
+      bug gets silenced), so an empty reason is a gate failure, matching the
+      glossary claim.
 - [ ] **TASKS `has_pending_approval` truthful.** With a task whose run holds an
       open approval gate, `tasks.list` returns a row with
       `has_pending_approval=true`, and `filter.has_pending_approval=true` narrows
@@ -186,31 +272,43 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
       with recorded runs returns a `FlowSummary` / `FlowDetail` whose
       `tokens_used` reflects the summed per-run tokens (not 0). `TokenCap` stays
       omitempty and is NOT touched (honest exclusion).
-- [ ] **MEMORY dead facet + aggregate removed.** `filter.has_ttl_expiring` and
-      the `expiring_in_1h` aggregate (list + health) are removed from the wire and
-      the filter/aggregate code; the removal is mirrored under D-223 lockstep and
-      the D-209 generated type/method reference is regenerated in the same PR. A
-      test asserts the surface no longer advertises a facet the runtime can never
-      satisfy.
-- [ ] **MEMORY `agent_ids` closed.** `filter.agent_ids` either narrows on a
-      populated `AgentID` (when the turn carries a producer identity) OR returns
-      `CodeInvalidRequest` (loud) when the agent field is structurally
-      unpopulated — never a silent empty page. The chosen mechanism is recorded
-      in D-313.
+- [ ] **MEMORY dead facet + aggregate removed (with §8 exemption stated).**
+      `filter.has_ttl_expiring` and BOTH `expiring_in_1h` fields —
+      `MemoryAggregates` (`memory.go:217`) AND `MemoryHealthAggregate` (`:346`) —
+      are removed from the wire, along with the filter branch and the two
+      computers (list + health); the removal is mirrored under D-223 lockstep and
+      the D-209 generated type/method reference is regenerated in the same PR. The
+      PR body and D-313 state the RFC §8 deprecation-window exemption explicitly
+      (always-empty field → no live consumer + the `0.1.0` within-version-removal
+      precedent, Phase 171). A test asserts the surface no longer advertises a
+      facet the runtime can never satisfy.
+- [ ] **MEMORY `agent_ids` loud-rejected (V1 mechanism).** `ConversationTurn`
+      carries no producer identity and the projection sets only the
+      tenant/user/session triple, so there is no agent to populate from in V1;
+      `filter.agent_ids` returns `CodeInvalidRequest` (loud), never a silent empty
+      page. Populate is DEFERRED to a follow-up that adds producer identity to
+      `ConversationTurn`; the facet keeps its wire slot (a not-yet-wired field,
+      unlike the removed TTL design absence). The mechanism + deferral are
+      recorded in D-313.
 - [ ] **TASKS enricher un-stubbed.** `serve.Enricher.ParentSession` returns a
       populated card (AgentName / Status from the session registry; StartedAt /
       LatestEventAt copied through), and `serve.Enricher.Cost` returns a real cost
       rollup (from the cost-event stream, coordinated with 174). A `tasks.get`
       over a task with a known parent session and recorded cost returns non-zero
       card fields and a non-zero rollup.
-- [ ] **TOOLS honestly gated.** With no annotator wired (production default), the
-      tools facets / search-on-version / annotator-backed aggregates
-      (`filter.oauth_statuses`, `filter.approval_policies`, the version search
-      axis, `Active` / `PendingApproval` / `AwaitingOAuth`) loud-reject or return
-      an honest-partial rather than a false-empty page / fabricated aggregate; a
-      test asserts an unwired build never returns a false-empty tools facet page.
-      The gate's tools registration allow-lists these fields with a "178: annotator
-      wiring pending" reason.
+- [ ] **TOOLS honestly gated behind one capability toggle.** With no annotator
+      wired (production default), a SINGLE "annotator-wired" capability toggle
+      gates the interim behaviour so 178's un-gate is one mechanical flip: the
+      **dedicated facet filters** (`filter.oauth_statuses`,
+      `filter.approval_policies`, the version search axis) **loud-reject**
+      (`CodeInvalidRequest`); the **response-riding aggregates**
+      (`Active` / `PendingApproval` / `AwaitingOAuth` on a `tools.list` response,
+      whose tool rows must still return) carry an explicit **`aggregates_partial`
+      / unavailable marker** (Console renders "unavailable"), NEVER a silent 0.
+      Tests assert an unwired build (a) loud-rejects the facets and (b) never
+      ships a real-looking zero aggregate — the marker is set. The gate's tools
+      registration allow-lists these fields with a "178: annotator wiring pending"
+      reason.
 - [ ] **Concurrent reuse.** The gate's probes are pure; every touched projector /
       enricher stays immutable-after-construction with per-call state in
       args/locals — a concurrent-reuse test (N≥100 invocations against one shared
@@ -236,12 +334,20 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
 - `internal/protocol/projectioncheck/projectioncheck.go` *(new)* — the
   projection-completeness registry: `Register(ProjectionContract)`, the
   `ProjectionContract` shape (surface name, probe func, filtered/sorted/aggregated
-  field set, honest-omission allow-list), and the cross-check helper. Self-registration
-  from each surface's init(), mirroring the §4.4 driver-registry pattern.
+  field set, honest-omission allow-list, prod-wiring-test presence flag), and the
+  cross-check helper. Self-registration from each surface's init(), mirroring the
+  §4.4 driver-registry pattern.
 - `internal/protocol/projectioncheck/projectioncheck_test.go` *(new)* — the
-  build-gating conformance test: ranges the registry, reflects each probe, fails
-  on a filtered-but-unassigned field; asserts the coverage half; a synthetic
-  violating projector fails the gate.
+  build-gating conformance test: Half A ranges the registry, reflects each probe,
+  fails on a filtered-but-unassigned field; Half B asserts every registered
+  surface declares a prod-wiring test; asserts the surface-coverage half; asserts
+  an empty honest-omission reason fails; synthetic violating surfaces (an
+  unassigned filtered field; a surface whose prod assembly omits `WithX`) fail the
+  gate.
+- `internal/sessions/protocol/lister_projector.go` — register the sessions
+  surface into projectioncheck (probe over the production `projectRow` +
+  `Enricher`); serialized AFTER 174 (which also edits this file). Includes the
+  Half-B prod-wiring test in the sessions package's `_test.go`.
 - `internal/tasks/protocol/registry_projector.go` — populate
   `HasPendingApproval` at projection time (via an approval-registry accessor
   threaded into the projector, list-side); populate/represent
@@ -259,17 +365,22 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
   branch and the `expiring_in_1h` aggregate; `agent_ids` populate-or-loud-reject;
   register the memory surface.
 - `internal/memory/protocol/health.go` — remove the `ExpiringIn1h` health counter.
-- `internal/memory/protocol/protocol.go` — populate `MemoryItem.AgentID` from the
-  turn producer identity when present.
+- `internal/memory/protocol/protocol.go` — register the memory surface; no
+  `AgentID` populate in V1 (the turn record carries no producer identity — see
+  `agent_ids` loud-reject).
 - `internal/protocol/types/memory.go` — remove `MemoryFilter.HasTTLExpiring` +
-  `MemoryAggregates.ExpiringIn1h` (wire-shape change, D-223/D-209 lockstep).
+  BOTH `expiring_in_1h` fields (`MemoryAggregates.ExpiringIn1h` `:217` AND
+  `MemoryHealthAggregate.ExpiringIn1h` `:346`) (breaking wire-shape change,
+  D-223/D-209 lockstep, §8 dead-facet exemption stated in the PR body).
 - `internal/protocol/types/tools.go` — the "annotator-wired" capability wiring
-  (via the capabilities single source) so the tools facets/search/aggregates are
-  gated; no field removed.
+  (via the capabilities single source; ONE toggle so 178's un-gate is mechanical),
+  plus the additive `aggregates_partial` marker on the tools-list response; no
+  field removed.
 - `internal/tools/protocol/filter.go` / `catalog_projector.go` — gate the
-  annotator-backed facets/search/aggregates behind the annotator-wired capability
-  (loud-reject/honest-partial when unwired); register the tools surface with the
-  gated fields on the allow-list.
+  annotator-backed surface behind the ONE annotator-wired capability toggle:
+  facet filters loud-reject when unwired; the response-riding aggregates set the
+  `aggregates_partial` marker (never a silent 0); register the tools surface with
+  the gated fields on the allow-list.
 - `docs/site/protocol/types.md` / `docs/site/protocol/methods.md` — D-209
   regenerated (`make protocol-docs-gen`) because the memory wire shape changes.
 - `web/console/src/lib/protocol/*` + `wire-manifest.gen.json` — D-223 lockstep for
@@ -278,7 +389,8 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
 - `internal/*/*_test.go` — truthful-facet, un-stub, removed-facet,
   concurrent-reuse, isolation tests; de-enriched fixtures pinned by the gate.
 - `test/integration/projection_completeness_test.go` *(new)* — real drivers
-  end-to-end (§17.1).
+  end-to-end (§17.1), incl. the Half-B prod-wiring assertions (a
+  production-assembled projector with a missing `WithX` fails).
 - `docs/skills/observe-with-the-console/SKILL.md` +
   `docs/skills/use-the-harbor-protocol/SKILL.md` — §18 same-PR skill update.
 - `scripts/smoke/phase-177.sh` *(new)*.
@@ -290,22 +402,32 @@ Phase 174 on the cost-rollup work (the tasks `serve.Enricher` cost stub overlaps
 
 // ProjectionContract is what one projection surface registers so the
 // completeness gate can prove it never filters/sorts/aggregates over a
-// field its projector leaves unassigned.
+// field its projector leaves unassigned (Half A) AND that its production
+// assembly actually wires the enricher the probe assumes (Half B).
 type ProjectionContract struct {
     // Surface is the projection surface name (e.g. "sessions", "tasks").
     Surface string
     // Probe builds a fully-populated source record, runs the PRODUCTION
     // projector, and returns the projected wire row as an `any` the gate
-    // reflects over. Pure — no shared state.
+    // reflects over (Half A — never-assigned). Pure — no shared state.
     Probe func() any
     // OperatedFields is the set of wire-row json tags the surface's
-    // filter / sort / aggregate layer reads.
+    // filter / sort / aggregate layer reads. ONLY tags that are both
+    // operated-over AND legitimately zero belong in HonestOmissions —
+    // a populated or non-operated field needs no omission entry.
     OperatedFields []string
     // HonestOmissions maps a json tag the projector legitimately leaves
-    // zero to the one-line reason it is honest (omitempty row field,
-    // capability-gated facet, "zero = no cap", etc.). Every entry MUST
-    // carry a reason.
+    // zero to the one-line reason it is honest (a capability-gated facet
+    // pending a later phase). Every entry MUST carry a NON-EMPTY reason —
+    // the gate FAILS on an empty-string reason (anti-theater).
     HonestOmissions map[string]string
+    // ProdWiringTest names the test that exercises this surface's
+    // projector as assembled through real `mux` wiring (Half B —
+    // never-wired). A contract with an empty ProdWiringTest FAILS the
+    // gate: a read-time-enriched surface whose probe uses a fake but whose
+    // mux.go omits the WithX enricher would otherwise pass Half A while
+    // shipping false absence in prod (the tools bug).
+    ProdWiringTest string
 }
 
 // Register installs a surface's contract. Surfaces self-register from
@@ -314,7 +436,7 @@ type ProjectionContract struct {
 func Register(c ProjectionContract)
 
 // RegisteredSurfaces returns the sorted registered surface names — the
-// gate cross-checks this against the known surface set (coverage half).
+// gate cross-checks this against the known surface set (surface coverage).
 func RegisteredSurfaces() []string
 
 // internal/runtime/flow — RunRecord gains:
@@ -336,10 +458,11 @@ makes them TRUTHFUL, it does not add page composition:
   flat 0.
 - **Memory page** — the dead `has_ttl_expiring` facet chip is removed (V1 has no
   TTL); no other change.
-- **Tools page** — the OAuth / approval facets + the catalog overview aggregates
-  are honestly gated behind the annotator-wired capability until Phase 178 lands
-  the backend; when unwired they render as "unavailable" / disabled rather than a
-  silently-empty result. (178 flips them to live.)
+- **Tools page** — the OAuth / approval facet chips are disabled (loud-reject on
+  submit) until Phase 178 lands the backend; the catalog overview aggregates
+  render "unavailable" off the `aggregates_partial` marker rather than a
+  silently-empty / real-looking-zero result. (178 flips the one capability toggle
+  and both go live.)
 
 All work stays on the shared `HarborClient` + `connection.ts`, tokens only,
 Svelte 5 runes (D-092). The memory wire removal + the capability string ride the
@@ -349,12 +472,15 @@ D-223 lockstep + D-209 regen in the same PR. Affected operator skills (§18):
 
 ## Test plan
 
-- **Unit:** the projectioncheck gate (probe reflection, coverage half, synthetic
-  violation fails); tasks `has_pending_approval` truthful narrowing +
+- **Unit:** the projectioncheck gate — Half A (probe reflection, unassigned-field
+  fails), Half B (a surface with no prod-wiring test fails; a synthetic
+  omitted-`WithX` assembly fails), surface-coverage, and an empty
+  honest-omission reason fails; tasks `has_pending_approval` truthful narrowing +
   `background_acknowledged` honesty; flows `tokens_used` summed; memory dead-facet
-  removed + `agent_ids` populate-or-loud-reject; the un-stubbed `serve.Enricher`
-  parent-session/cost; tools facets loud-reject/honest-partial when unwired;
-  de-enriched fixtures pinned by the gate (§17.8).
+  removed (both `expiring_in_1h` sites) + `agent_ids` loud-reject; the un-stubbed
+  `serve.Enricher` parent-session/cost; tools facet filters loud-reject +
+  aggregates set `aggregates_partial` (not a silent 0) when unwired; de-enriched
+  fixtures pinned by the gate (§17.8).
 - **Integration:** `test/integration/projection_completeness_test.go` — real
   drivers (events inmem + durable StateStore, real task/approval registry, real
   session registry): open an approval gate on a task and assert
@@ -394,9 +520,12 @@ D-223 lockstep + D-209 regen in the same PR. Affected operator skills (§18):
 
 ## Dependencies
 
-- 174 (HA-22 — the sessions instance + D-311; the gate MUST cover the sessions
-  surface 174 fixes, and the tasks enricher cost work coordinates with 174's
-  session-cost aggregation). Must land first.
+- 174 (HA-22 — the sessions instance + D-311). **Must land first** (the
+  coordinator serializes 174's plan PR ahead of 177 so the D-309/D-311
+  cross-refs resolve): the gate MUST cover the sessions surface 174 fixes, this
+  phase's sessions registration edits `internal/sessions/protocol/lister_projector.go`
+  which 174 also edits (serialize AFTER 174 to avoid a conflict), and the tasks
+  enricher cost work coordinates with 174's session-cost aggregation.
 - 08 (session registry), 54 (pause/approval registry), 60/72a (events substrate
   for cost), 73c/107a (tasks projection + enricher precedent), the flows catalog
   and memory projection surfaces. All shipped.
@@ -416,10 +545,18 @@ D-223 lockstep + D-209 regen in the same PR. Affected operator skills (§18):
   cardinality, the fallback is the D-311 capability-gate (advertise the facet only
   when the approval-registry accessor is wired, loud-reject otherwise) — the same
   ladder 174 uses (WARN-3). Recorded in D-313.
-- **Memory `agent_ids`: populate vs remove.** Whether the memory turn carries a
-  producer agent identity determines populate-vs-loud-reject. If no turn field
-  exists, the facet loud-rejects (representable absence) and a follow-up can add
-  the producer identity to the turn record. Flagged, not faked (§13).
+- **Memory `agent_ids`: loud-reject in V1, populate deferred.** `ConversationTurn`
+  carries no producer identity and the projection sets only the triple, so V1 has
+  no agent to populate from — the facet loud-rejects (representable absence,
+  D-311). Populate is a follow-up that adds producer identity to the turn record;
+  the facet keeps its wire slot (a not-yet-wired field). Not faked (§13).
+- **Memory facet removal is a breaking change — §8 exemption, not silence.**
+  Removing `has_ttl_expiring` + both `expiring_in_1h` fields is a breaking
+  wire-shape change; RFC §8's deprecation-window requirement is satisfied by
+  stating the exemption explicitly (the fields were always empty/0 → no live
+  consumer can depend on a value; the pre-GA `0.1.0` within-version-removal
+  precedent, Phase 171). The §8 defect the class guards against is an
+  *unannounced* break; the PR body + D-313 announce it.
 - **Flows `tokens_used` maturity.** `RunRecord.CostUSD` is itself written only by
   `cmd/harbor/devseed.go` today (the real flow engine does not yet call
   `RecordRun`); `Tokens` inherits exactly that maturity — it is truthful wherever
