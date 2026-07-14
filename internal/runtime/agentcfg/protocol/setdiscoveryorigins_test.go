@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -112,6 +113,56 @@ func TestSetMCPDiscoveryOrigins_WritesRevisionAppliesLive(t *testing.T) {
 	}
 	if len(bus.eventsOfType(agentcfg.EventTypeMCPDiscoveryOriginsSet)) != 1 {
 		t.Errorf("want exactly one discovery_origins_set audit event")
+	}
+}
+
+// notLiveApplier stands in for a connection that is declared in the revision but
+// not attached in the live registry — the applier returns ErrDiscoveryTargetNotLive
+// (what the real MCPConnectionAttacher translates the driver's ErrServerNotFound
+// into), and the setter must DEGRADE to a revision-only write.
+type notLiveApplier struct{ calls int }
+
+func (a *notLiveApplier) SetOAuthDiscoveryOrigins(_ context.Context, name string, _ []string) ([]string, error) {
+	a.calls++
+	return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrDiscoveryTargetNotLive, name)
+}
+
+func TestSetMCPDiscoveryOrigins_DegradesWhenConnectionNotLive(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	bus := newCollectingBus(t)
+	applier := &notLiveApplier{}
+	s, err := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithBus(bus),
+		agentcfgprotocol.WithDiscoveryOriginApplier(applier))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	seedDiscoveryRev(t, ctx, reg, "agent-d", agentcfg.MCPConnectionDescriptor{Name: "srv", Transport: agentcfg.MCPTransportHTTP, URL: "https://x.invalid/rpc"})
+
+	resp, err := s.SetMCPDiscoveryOrigins(ctx, discReq("agent-d", "srv", []string{"https://as.example.net"}))
+	if err != nil {
+		t.Fatalf("SetMCPDiscoveryOrigins degrade: unexpected error %v (a not-live connection must record the revision, not fail)", err)
+	}
+	if resp.AppliedLive {
+		t.Error("applied_live = true, want false for a not-live connection")
+	}
+	if len(resp.Granted) != 1 || resp.Granted[0] != "https://as.example.net" {
+		t.Errorf("granted = %v", resp.Granted)
+	}
+	// The revision MUST be recorded (not rolled back) so the run-start reconcile
+	// applies the allowance once the server comes online.
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, _, err := reg.Active(ctx, q, "agent-d", agentcfg.ConfigScopeAgent)
+	if err != nil {
+		t.Fatalf("active: %v", err)
+	}
+	descs := active.Payload.ConnectionDescriptors()
+	if len(descs) != 1 || len(descs[0].OAuthDiscoveryAllowedOrigins) != 1 || descs[0].OAuthDiscoveryAllowedOrigins[0] != "https://as.example.net" {
+		t.Fatalf("degrade did not record the allow-list in the revision: %#v", descs)
+	}
+	if len(bus.eventsOfType(agentcfg.EventTypeMCPDiscoveryOriginsSet)) != 1 {
+		t.Errorf("want exactly one discovery_origins_set audit event on a degraded write")
 	}
 }
 

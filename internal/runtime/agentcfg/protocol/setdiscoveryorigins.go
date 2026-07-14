@@ -78,6 +78,18 @@ type DiscoveryOriginApplier interface {
 // — refused, never stored (→ 400).
 var ErrDiscoveryOriginsNotHTTP = errors.New("agentcfg/protocol: connection is a stdio transport — OAuth-discovery origins apply only to http connections")
 
+// ErrDiscoveryTargetNotLive — the named connection EXISTS in the active
+// revision but is not attached in the live MCP registry (its server was never
+// reached, or it is awaiting the next run-start reconcile). The applier adapter
+// translates the driver's server-not-found into this sentinel so the setter can
+// DEGRADE — record the allowance in the revision with applied_live=false, so the
+// run-start allowance-reconcile applies it once the server comes online —
+// instead of failing the write and rolling the revision back. This matches the
+// nil-applier path (revision-only) and the sibling revision-only verbs. It is
+// DISTINCT from ErrConnectionNotFound (the connection is absent from the
+// revision entirely, which still fails loud).
+var ErrDiscoveryTargetNotLive = errors.New("agentcfg/protocol: connection not attached in the live MCP registry — allowance recorded in the revision, applied on next reconcile")
+
 // SetMCPDiscoveryOrigins FULL-REPLACES a runtime-added MCP connection's
 // OAuth-discovery cross-origin allow-list. See the file doc for the full
 // contract (revision + live apply + revoke-prune, the three distinct loud
@@ -148,6 +160,12 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 		rev      agentcfg.Revision
 		prevLive []string
 	)
+	// appliedLive reflects whether the allow-list actually reached the LIVE
+	// registry. It starts true when an applier is wired but degrades to false if
+	// the connection is in the revision yet not attached live (the reconcile will
+	// apply it) — so the revert path never tries to un-apply what was never
+	// applied, and the response tells the caller honestly.
+	appliedLive := s.discoveryApplier != nil
 	applyErr, emitErr := adminwrite.Apply(
 		func() (revert func() error, err error) {
 			written, recErr := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload)
@@ -157,15 +175,26 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 			rev = written
 			if s.discoveryApplier != nil {
 				live, setErr := s.discoveryApplier.SetOAuthDiscoveryOrigins(applyCtx, name, origins)
-				if setErr != nil {
-					// The live apply failed — roll the just-written revision back so
+				switch {
+				case setErr == nil:
+					prevLive = live
+				case errors.Is(setErr, ErrDiscoveryTargetNotLive):
+					// The connection is in the revision but not attached in the live
+					// registry (server unreachable, or awaiting the next run-start
+					// reconcile). Record the allowance in the revision — the reconcile
+					// applies it when the server comes online — instead of failing the
+					// write. Matches the nil-applier path; the delta is computed against
+					// the prior descriptor's revisioned allow-list.
+					appliedLive = false
+					prevLive = append([]string(nil), desc.OAuthDiscoveryAllowedOrigins...)
+				default:
+					// A real live apply failure — roll the just-written revision back so
 					// the call has NO observable effect, then return the apply error.
 					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); rbErr != nil {
 						return nil, fmt.Errorf("live allow-list apply failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(setErr, rbErr))
 					}
 					return nil, setErr
 				}
-				prevLive = live
 			} else {
 				// No live registry wired — the delta is computed against the prior
 				// descriptor's allow-list (the revisioned view).
@@ -173,7 +202,7 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 			}
 			revert = func() error {
 				var errs []error
-				if s.discoveryApplier != nil {
+				if appliedLive {
 					if _, e := s.discoveryApplier.SetOAuthDiscoveryOrigins(applyCtx, name, prevLive); e != nil {
 						errs = append(errs, e)
 					}
@@ -203,7 +232,7 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 		Name:            name,
 		Granted:         granted,
 		Revoked:         revoked,
-		AppliedLive:     s.discoveryApplier != nil,
+		AppliedLive:     appliedLive,
 		ProtocolVersion: prototypes.ProtocolVersion,
 	}, nil
 }
