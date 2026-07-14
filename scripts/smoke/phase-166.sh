@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
+# PREFLIGHT_REQUIRES: unit-tests
 #
-# Phase 166 — MCP OAuth discovery-allowance write (D-300).
+# Phase 166 — Credential-sink hardening (D-300) — shipped-code security fix.
 #
-# Skeleton: the surface does not exist yet, so every assertion below SKIPs.
+# Skeleton: the surface does not exist yet, so every assertion SKIPs.
 # The implementing PR replaces the `skip` with the real assertions.
 #
 # Conventions (AGENTS.md §4.2):
@@ -35,21 +35,16 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 # ----------------------------------------------------------------------------
-# Phase 166 assertions (live-server + a unit-tests companion leg):
+# Phase 166 assertions (unit-tests — this phase adds NO live Protocol surface):
 #
-#   - `agent_config.set_mcp_discovery_origins` is present on the booted method
-#     surface (404/405/501 -> SKIP keeps this green on pre-166 builds).
-#   - A grant against an UNKNOWN connection name returns the typed loud error
-#     (never a silent 200).
-#   - A call WITHOUT the admin scope is rejected with CodeScopeMismatch.
-#   - A malformed origin (http://, an origin with a path, an IP literal) is
-#     rejected with CodeInvalidRequest.
-#   - Static: the new method appears in wire-manifest.gen.json and in the
-#     regenerated docs/site/protocol/methods.md (the D-223 trip-wire).
-#   - `go test -race` the registry mutator + the discovery dial-guard packages
-#     (TestDiscovery_RuntimeGrantedOrigin_StillRefusesPrivateDial).
+#   - go test -race the resolveOAuthBinding downstream-host guard, the
+#     tokenexchange audience/scope ceiling + hardened-client tests
+#     (RefusesPrivateDial / RefusesRedirect), and the handleSetRawHTMLTrust
+#     audit-ordering fix (AuditEmitFailure_LeavesTrustUnchanged).
+#   - Static: grep that ToolOAuthProviderConfig carries AllowedDownstreamHosts
+#     and that the token-exchange client installs a CheckRedirect.
 #
-# Done-definition: OK >= 3, FAIL = 0.
+# Done-definition: OK >= 2, FAIL = 0.
 
 skip "phase 166: smoke skeleton — replace with real assertions when the phase implements its surface"
 

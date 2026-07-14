@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: unit-tests
+# PREFLIGHT_REQUIRES: live-server
 #
-# Phase 167 — Identity-keyed MCP + provider registries (D-301).
+# Phase 169 — Protocol-installed OAuth provider + binding (D-303).
 #
 # Skeleton: the surface does not exist yet, so every assertion SKIPs.
 # The implementing PR replaces the `skip` with the real assertions.
@@ -35,16 +35,21 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 # ----------------------------------------------------------------------------
-# Phase 167 assertions (unit-tests — internal keying, no new Protocol surface):
+# Phase 169 assertions (live-server + a unit-tests companion):
 #
-#   - go test -race the registry-keying + reconcile-scope packages
-#     (TestRegistry_IdentityKeyed_NoCrossTenantOverwrite,
-#      TestReconcile_ScopedToTriple_NeverDetachesOtherTenant).
-#   - Static: grep that the two "process-global enumeration" NOTEs are GONE from
-#     projection.go and mcp_detacher.go (the debt-closed trip-wire).
+#   - agent_config.set_oauth_provider + agent_config.remove_oauth_provider
+#     present on the booted method surface (404/405/501 -> SKIP on pre-169).
+#   - A set_oauth_provider carrying token_url (or client_secret_env) is REJECTED
+#     with a field-naming decode error — the security invariant, over the wire.
+#   - A write naming an UNKNOWN credential broker is rejected loudly.
+#   - A call WITHOUT admin scope -> CodeScopeMismatch.
+#   - Static: both methods in wire-manifest.gen.json + the regenerated
+#     docs/site/protocol/methods.md.
+#   - go test -race the internal/tools/auth ProviderSet + the sink/secret-field
+#     rejection package (TestSetOAuthProvider_RejectsSinkAndSecretFields).
 #
-# Done-definition: OK >= 2, FAIL = 0.
+# Done-definition: OK >= 3, FAIL = 0.
 
-skip "phase 167: smoke skeleton — replace with real assertions when the phase implements its surface"
+skip "phase 169: smoke skeleton — replace with real assertions when the phase implements its surface"
 
 smoke_summary

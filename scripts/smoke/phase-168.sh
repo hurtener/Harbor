@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: unit-tests
+# PREFLIGHT_REQUIRES: live-server
 #
-# Phase 167 — Identity-keyed MCP + provider registries (D-301).
+# Phase 168 — Live MCP OAuth discovery-allowance write (D-302).
 #
 # Skeleton: the surface does not exist yet, so every assertion SKIPs.
 # The implementing PR replaces the `skip` with the real assertions.
@@ -35,16 +35,19 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 # ----------------------------------------------------------------------------
-# Phase 167 assertions (unit-tests — internal keying, no new Protocol surface):
+# Phase 168 assertions (live-server + a unit-tests companion):
 #
-#   - go test -race the registry-keying + reconcile-scope packages
-#     (TestRegistry_IdentityKeyed_NoCrossTenantOverwrite,
-#      TestReconcile_ScopedToTriple_NeverDetachesOtherTenant).
-#   - Static: grep that the two "process-global enumeration" NOTEs are GONE from
-#     projection.go and mcp_detacher.go (the debt-closed trip-wire).
+#   - agent_config.set_mcp_discovery_origins present on the booted method
+#     surface (404/405/501 -> SKIP on pre-168 builds).
+#   - Grant against an UNKNOWN connection -> typed loud error.
+#   - Call WITHOUT admin scope -> CodeScopeMismatch.
+#   - Malformed origin (http://, path-bearing, IP literal) -> CodeInvalidRequest.
+#   - Static: the method appears in wire-manifest.gen.json + the regenerated
+#     docs/site/protocol/methods.md.
+#   - go test -race the registry mutator + the discovery dial-guard.
 #
-# Done-definition: OK >= 2, FAIL = 0.
+# Done-definition: OK >= 3, FAIL = 0.
 
-skip "phase 167: smoke skeleton — replace with real assertions when the phase implements its surface"
+skip "phase 168: smoke skeleton — replace with real assertions when the phase implements its surface"
 
 smoke_summary

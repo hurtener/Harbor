@@ -295,8 +295,10 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |163 | Windowed-reads honesty pair: `flows.runs.list` since/until + retention horizons as data (TWO bundled asks: (1) LOW — `FlowRunsListRequest` filters only by `flow_id`/`tenants`/`page`/`page_size` (`types/flows.go:303-320`), the one run-history read with no time bound though rows carry+sort by `StartedAt` (`:289-290`,`:323`); ADD optional `since`/`until` RFC-3339 inclusive-lower/exclusive-upper mirroring `TaskFilter.Since/Until` EXACTLY (`types/tasks.go:211-214`) — additive, absent ⇒ unbounded, bounds before pagination, `until<since` → 400, scope rules unchanged; consumer same phase: the flow detail page's run-history table (`flows/[flow_id]/+page.svelte:147`) gains a server-side date filter; (2) MEDIUM — retention horizons as Protocol DATA: additive `retention` block on `runtime.health` with per-surface OBSERVED `oldest_retained_at` for events/tasks/sessions — the ask's "surface the existing retention config" premise was FALSE against the tree (NO retention knob exists; the durable log is "gap-free and untrimmed in V1" `durable.go:776`; `EventsConfig` `config.go:814-823` carries none; inmem horizon = the `ReplayBufferSize` ring), so the honest v1 shape is the observed head timestamp (configured-retention field additive later IF a pruning knob ever ships); placement `runtime.health` (polled operational surface) over `runtime.info` (identity/build-shaped), with rationale; pairs with the at-read `truncated` flag (125 + 162); consumer: Events-page window-edge honesty banner ("retains only back to X") composing with 162; the counters/metrics TSDB re-recorded as decided-NO (snapshots stay now-only `posture.ts:41/:131`; trends derive from the durable log; metrics scrape out-of-band RFC §6.14) so it is not re-opened; full D-223/D-209 regen; D-295 + D-296) | internal/protocol + internal/events + web/console | §5.2, §6.1, §6.13, §6.14, §7 | 26a, 108p, 72f, 108h, 162, 118, 125 | 85% | Shipped |
 |164 | MCP OAuth requirement discovery, surfaced as data (a second consumer brokers downstream credentials centrally — the runtime PULLs at call time via `tokenexchange` (D-271) and never holds a credential; provisioning today needs a HAND-DECLARED provider descriptor, yet the MCP authorization spec (2025-06-18) makes servers ADVERTISE it: `401` + `WWW-Authenticate resource_metadata` → RFC 9728 protected-resource metadata → `authorization_servers[]` → RFC 8414/OIDC metadata (issuer, authorization/token endpoints, scopes, PKCE, optional RFC 7591 registration endpoint, RFC 8707 resource); DETECT at the MCP http(s) transport edge (net-new — no 401/WWW-Authenticate handling exists in the driver today, grep-verified) or on `mcp.servers.probe` (never a background crawler); DISCOVER via ONE chain walker composing the existing RFC 8414 `Provider.resolveEndpoints` (`provider.go:858`) — RFC 7591 `ensureClient` (`provider.go:924`) stays UNUSED, the registration endpoint is reported never invoked; SURFACE verbatim + provenance as an additive `oauth_requirement` on `MCPServerView` (`types/mcp_servers.go:51-79`), projected by list/get/probe; HARD boundaries: Harbor NEVER runs the flow / holds / refreshes tokens (custody stays consumer-side, D-271 stays PULL), discovered metadata is INERT UNTRUSTED data (report don't follow; a proposal an operator confirms, never auto-applied config); SSRF guardrails PER HOP (RFC 9728 hop = same-origin-as-server default + explicit origin allowance; the RFC 8414 authorization-server hop is inherently cross-origin so it ALWAYS requires the explicit allowance — most real discoveries need an operator grant, partial-surface without it; allowed cross-origin fetches also refuse private-range/IP-literal hosts; bounded redirects, timeout, size cap, https-only off-loopback, NO credentials — each negative-tested); §17.8 fixtures = RFC 9728 §3.2 + RFC 8414 §3.2 example documents committed as testdata (wrong-field mutation must fail); `mcp.servers.probe` triggers discovery (its `MCPProbeRow` return unchanged; requirement read via `get`/`list`); D-062 consumer same phase: the MCP Connections page (108m) renders the discovered requirement marked unverified; sibling reconciliation §13 (one mechanism, N consumers): the ready 85b + the parked 92p (reserved D-246) each reuse this single-homed discovery chain and add only their flow legs (Phase 148 precedent), pointer notes in both plan files (85b's this PR); no new method/event; full D-223/D-209 regen; D-297) | internal/tools/auth + internal/tools/drivers/mcp + internal/protocol + web/console | §6.4, §5.2, §6.15, §7 | 28, 30, 108m, 118 | 85% | Shipped |
 |165 | Structured reasoning-steps rehydration (Phase 161/D-293 rehydrates per-turn stats + FLAT reasoning text + tool-call badges on reopen, but the STRUCTURED reasoning steps — the ordered per-ReAct-step native thinking the live view renders as a `ReasoningAccordion`, interleaved in order with the tool calls each step preceded — do NOT survive reopen: the reopened message shows only 161's flat `reasoningText`, not ordered `reasoningSteps`; VERDICT ZERO-WIRE Console-only, verified live probe + code trace 2026-07-11: the live path's steps come from the tasks.get ENRICHER trajectory projection which is IN-MEMORY-ONLY (`internal/tasks/protocol/registry_projector.go:205` → `Enricher.Trajectory` reads `trajectoryFn(taskID)`, returning nil when the trajectory is "unavailable (evicted …)", `internal/runtime/serve/enricher.go:49-56`) — on reopen the task record survives but the trajectory projection does NOT (`tasks.get` carries no trajectory field once the in-memory trajectory is reaped), so the enricher can never serve a reopened run; the ONLY durable source is the event stream, which ALREADY carries `planner.decision` (one per trajectory step, ordered by `sequence`, each with `ReasoningTrace` + `DecisionKind` + `Tool`) + `tool.invoked/completed/failed`, all in `state.history` read-back (D-254) and already read by 161's reducer for the badges — it merely ignores the `ReasoningTrace` key; byte-equivalence by construction: `emitDecision(rc,final,resp.Reasoning)` (`react.go:720`) and `rc.OnReasoning(resp.Reasoning)` feed the SAME value into the event's `ReasoningTrace` and `trajectory.Step.ReasoningTrace` (`runloop.go:724-725/:921`), enricher projects it verbatim; redaction is a no-op (DecisionPayload is `SafeSealed` → the bus skips the redactor, `inmem.go:369-374` — persisted trace = raw, byte-identical to the enricher's); corrected source model: `reasoning_trace` is NOT a ReAct Thought scratchpad (the textual `Reasoning` action field was REMOVED, `decision.go:36-38`) — it is native `llm.CompleteResponse.Reasoning` bucketed per step; FIX (corrected index rule): `reduceHistoryTurns` folds `planner.decision.ReasoningTrace` into `HistoryTurn.reasoningSteps {index,reasoning_trace}` ONLY for step-appending `DecisionKind ∈ {CallTool,CallParallel,SpawnTask,AwaitTask}` (the runloop appends a `traj.Step` only in its switch `default` branch, `runloop.go:917-923`; `Finish`/`RequestPause` return without a step, `:795-798`, yet still emit a `planner.decision` — a reasoning-bearing `Finish` or mid-run `RequestPause` would phantom-add/shift steps), incrementing the per-run STEP ordinal only on those and emitting only non-empty, `hydratePastTurns` sets `message.reasoningSteps` (MessageBubble already prefers steps over flat text `:176-178` → `ReasoningAccordion`); empty-step run falls back to 161's `reasoningText` (no regression); acceptance centerpiece: reopen renders the ordered reasoning↔tool interleaving IDENTICAL to the live view; Console vitest (ordered reconstruction + byte-equivalence-vs-`parseReasoningSteps` + page-boundary no-dup/reorder) + rehydration regression; NON-goals: the flat `reasoningText` path (161 ships it), the Anthropic-native-thinking-empty question (RESOLVED, separate bifrost-layer), tasks.get/trajectory/enricher changes (reconstruct from history, not per-run tasks.get); ZERO wire — no method/type/event, no D-223/D-209 churn (zero-diff proven); D-298) | web/console (Console-only) | §6.13, §5.2, §7, §6.2 | 161, 125, 107a, 118 | Console vitest bar | Shipped |
-|166 | Live MCP OAuth discovery-allowance write (Phase 164/D-297 shipped MCP OAuth-requirement discovery, but its RFC 8414 authorization-server hop is inherently cross-origin and needs an explicit per-connection origin allowance that today exists ONLY as restart-required yaml — `mcp.servers[].oauth_discovery_allowed_origins`, `internal/config/config.go:1308` — so a Protocol-driven consumer that adds connections at runtime can never grant it; THREE gaps: (1) `agentcfg.MCPConnectionDescriptor` (`internal/agentcfg/agentcfg.go:220-243`) carries `OAuthProvider` but NOT the allowance, so it is not revisionable/diffable/rollbackable; (2) **A SHIPPED BUG fixed IN-BAND per §17.6** — `MCPConnectionAttacher.Attach` (`internal/runtime/serve/mcp_attacher.go:79-87`) builds a `config.MCPServerConfig` and DROPS `OAuthDiscoveryAllowedOrigins` while the rest of the chain is intact (`mcpdrv.Attach` copies it, `attach.go:189` → `Registry.Register` snapshots it, `registry.go:363` → `OAuthDiscoveryTarget` returns it, `:647-660`), so Phase 164's discovery is INERT for every runtime-added connection — its AS hop always reports `needs_allowance`; regression test fails without the carry; (3) `mcpdrv.Registry` has NO mutator for `serverEntry.oauthAllowedOrigins` (write-once at `registry.go:363`); FIX: the descriptor gains the non-secret field (spine for free — `SetRevision`/`Diff`/`Rollback`, D-283 rebuild-completeness guard satisfied), ONE narrow admin verb `agent_config.set_mcp_discovery_origins {agent_id,name,allowed_origins[]}` FULL-REPLACE writes the revision under `lockAgent` AND applies it live via a new `Registry.SetOAuthDiscoveryOrigins` mutator modelled on `SetRawHTMLTrust` (`registry.go:834-847` — mutex-guarded, identity-mandatory, returns prior; the audit-emit-and-FAIL-CLOSED posture sits at the SURFACE handler per `handleSetRawHTMLTrust`, `internal/protocol/mcp.go:843-872`, NOT in the setter); REVOKE is live and SYMMETRIC (the D-287 lesson — v1.11 shipped a detach-only reconcile and ate the asymmetry): dropping an origin makes the next discovery refuse that hop AND PRUNES the already-recorded `oauth_requirement`'s AS entries fetched from the revoked origin; NO general `update_mcp_connection` patch verb (`url`/`command`/`transport`/`oauth_provider` are consumed at ATTACH time — patching them without a re-attach is a silent half-write; the allowance is the ONE field re-read per `Discover` call, hence a narrow verb); origin validation REUSES the shipped `validateDiscoveryOrigin` (`internal/config/validate.go:2276-2301`), exported — one implementation, two call sites; SECURITY: allowance ≠ SSRF bypass — the walker's `net.Dialer.Control` guard (`internal/tools/auth/discovery.go:260-281`) runs PER-DIAL POST-DNS-RESOLUTION so a granted origin resolving private/loopback is STILL refused (named test); admin-gated by INHERITING the `AgentConfigHandler` `default:` arm (`agentconfig_handler.go:133-155` — a new route is admin-gated for free by not joining the session-safe `:224-230` / user `:238-244` exception maps); authority server-derived, never from the body (D-219); no new scope (D-284); D-062 consumer same phase, page split RESOLVED: the write is SINGLE-HOMED on `/agent-config` (where revisions/diff/rollback already render — a revisioned write without them beside it is dishonest) and `/mcp-connections`'s `needs_allowance` status (`McpDetailRail.svelte:336-342`) gains a DEEP-LINK, never a second write form (§13); the connections card becomes a real editor and gives Phase 156's caller-less `remove_mcp_connection` (`client.ts:1185-1196`, no Svelte caller — grep-verified) its FIRST caller; boot-declared connections render yaml-edit copy and NO link; §17.8 fixtures = Phase 164's committed RFC 9728 §3.2 + RFC 8414 §3.2 spec artifacts; full D-223/D-209 regen; `ProtocolVersion` unbumped; D-300) | internal/agentcfg + internal/runtime/agentcfg + internal/tools/drivers/mcp + internal/config + internal/protocol + web/console | §6.4, §6.16, §5.2, §6.15, §7 | 164, 92f, 156, 152, 92h, 92i, 108m, 118 | 85% | Pending |
-|167 | Protocol-installed OAuth provider (non-secret broker-pull shape) + the connection→provider binding (a runtime-added MCP connection can already NAME a provider — the non-secret `oauth_provider` binding rides `agentcfg.MCPConnectionDescriptor` (`agentcfg.go:234`) and `AttachRequest` (`addconnection.go:71-93`) — but the provider must already exist, and the provider LIST is built ONCE at boot by `auth.BuildProviders` into a plain `map[string]auth.OAuthProvider` handed BY VALUE into `mcpdrv.AttachDeps.OAuthProviders` (`attach.go:81`, consumed by `resolveOAuthBinding` `:119`) and `catalog.Deps` (`catalog.go:168-173`) — so a Protocol client can bind a provider it has no way to install; HARD CONSTRAINT: the Protocol-writable descriptor MUST NOT accept `client_id_env` / `client_secret_env` / `remote.auth_token_env` (`config.go:1086-1109`, `:1134-1154`) — those name ENV VARS OF THE RUNTIME PROCESS and, paired with a caller-supplied `token_url`, are an ENV-VAR EXFILTRATION PRIMITIVE (point the token endpoint at an attacker host, name any env var, receive its value in the token request); the writable shape is the NON-SECRET broker-pull form ONLY — `{name, driver:"tokenexchange", credential_source:"remote", credential_broker, token_url, auth_url?, scopes[]}` — and a write carrying any of the three is REJECTED with a typed loud error, never silently ignored, never stripped-and-accepted (named test); the process secret is reached BY NAME through a new boot-declared, config/file-only `tools.oauth_credential_brokers[]` list (the existing `ToolOAuthRemoteConfig` shape + a `name`) — the third instance of the name-indirection `mcp.servers[].oauth_provider` and `tools.entries[].oauth.provider` already use; the inline `oauth_providers[].remote` block stays valid (backward-compatible, D-285 not forked); env-named local-secret providers and the interactive `oauth2` driver stay CONFIG-ONLY (a departure from brief 09's operator-burden framing, taken knowingly — recorded in D-301); BACKING SEAM (the real work — Phase 92k, the reserved `auth.Provider` runtime-config seam, is PENDING/unshipped): a §4.4 `auth.ProviderRegistry` (interface + one internally-synchronised concrete, D-025) seeded at boot from `BuildProviders` and consulted by the MCP ATTACH path — the CATALOG builder deliberately keeps its boot map (`tools.entries[]` bindings are boot-declared/restart-required by design and the middleware wrapping is boot-ordered, D-292; a named boundary, not an omission); INSTALL AND UNINSTALL SHIP TOGETHER (the D-287 lesson): `agent_config.set_oauth_provider` (upsert) + `agent_config.remove_oauth_provider`, whose `Uninstall` CLOSES the live provider so a still-bound connection's next call FAILS LOUD — never an unauthenticated fallback dial (§13 no silent degradation; stated in the godoc AND the Console confirmation copy); rollback past an install runs the SAME uninstall through the run-start reconcile seam beside `ReconcileConnections` (`projection.go:141`) — one mechanism, N triggers; a boot-declared provider-name collision is refused (boot wins, the Phase 156 precedent); THE BINDING HALF IS HONESTLY SMALL — the wire already carries `oauth_provider` end to end; the Console SILENTLY DROPS it (`state.svelte.ts:912-923` builds the descriptor with only `{name,transport,command,url}`), so 167 stops dropping it (a SELECT populated from the installed provider list) and pins the round-trip; NO live binding patch (remove + re-add — the transport holds the provider reference from attach time); NO credential VALUE over the wire (D-271 PULL unchanged); NO provider auto-install from discovered metadata (D-297 report-don't-follow is absolute; the Console MAY pre-fill the install form, operator-confirmed — test-pinned negative); sentinel-redaction test proves no secret in any revision/diff/event/response; §17.8 fixtures derive from RFC 8693 / a captured coordinator transcript; full D-223/D-209 regen; `ProtocolVersion` unbumped; 92k sibling reconciliation pointer note (an unparked 92k REUSES this registry, never a second one); D-301) | internal/config + internal/tools/auth + internal/tools/drivers/mcp + internal/agentcfg + internal/runtime/agentcfg + internal/protocol + web/console | §6.4, §6.16, §5.2, §6.15, §7 | 142, 154, 148, 92f, 92h, 152, 166, 118 | 85% | Pending |
+|166 | Credential-sink hardening (shipped-code security fix, NO new Protocol surface; the base the v1.14 wave stands on). Two adversarial reviews of the first-cut v1.14 shape proved the "no env-var NAMES on the wire" rule a SYMPTOM rule and returned NO-GO; the generalized invariant (D-300) is **no admin-writable field may determine where a credential is sent**. Three exfil paths, all reachable in SHIPPED Harbor (92f add path + D-278 southbound binding), fixed IN-BAND (§17.6): (1) `token_url` on the writable descriptor is where `tokenexchange.go:582` POSTs the org's real `client_id`/`client_secret` — an admin naming a legitimate broker + an attacker `token_url` receives the secret; (2) the CONNECTION `url` is where the exchanged bearer is injected and `resolveOAuthBinding` (`attach.go:288-320`) constrains NO host, while the provider name is the default token audience (`tokenexchange.go:214-217`) so the caller picks audience+scopes; (3) the token-exchange client is a bare `&http.Client{Timeout:30s}` (`tokenexchange.go:242-245`) that FOLLOWS redirects (Go replays the body on 307/308, re-POSTing the `client_secret`). FIX: a boot-declared `ToolOAuthProviderConfig.AllowedDownstreamHosts` allow-list enforced in `resolveOAuthBinding` (fail-closed on empty for a bindable provider; covers the `oauth2` binding too); a boot audience/scope ceiling (audience NOT derived from the caller-chosen name; scopes intersected); the token-exchange client hardened to the discovery client's bar (`net.Dialer.Control` private/loopback refusal `discovery.go:260-281`, `Proxy:nil`, `CheckRedirect` refuse — the `credsource/remote` `remote.go:127-134` precedent); AND the audit-ordering LIE fixed — `handleSetRawHTMLTrust` (`mcp.go:843-875`) applies-then-emits while its godoc claims fail-closed, so 168/169's audit ACs would be unsatisfiable; corrected to a genuinely fail-closed ordering + a shared helper 168/169 reuse. No new method/type/event; config-schema + internal only; CHANGELOG migration note for the mandatory allow-list; D-300) | internal/tools/auth + internal/tools/drivers/mcp + internal/config + internal/protocol | §6.4, §6.15, §7 | 142, 148, 154, 28 | 85% | Pending |
+|167 | Identity-keyed MCP + provider registries (shipped-code correctness fix — Harbor is a FRAMEWORK supporting BOTH one-runtime-per-tenant AND one-runtime-many-tenants, so the process-global name-keyed registries ARE a live cross-tenant bug). `mcpdrv.Registry.servers` is a `map[string]*serverEntry` (`registry.go:273-275`, blind overwrite `:353`) and the provider set a by-value `map[string]auth.OAuthProvider` (`attach.go:288`), while authority is per-`(tenant,user,session)`: tenant B installing/adding a name A uses OVERWRITES A's entry; **`lockAgent` gives ZERO protection** — it shards on `(scope,tenant,agent)` (`service.go:lockOwner`) so two tenants take DIFFERENT locks then clobber the SAME `r.servers[name]`, and the revision spine renders a LIE about a security control; and tenant B merely STARTING A RUN reconciles B's empty declared set against the global live set and DETACHES A's servers. The code already concedes the debt — `projection.go:125-132` and `mcp_detacher.go:77-87` NOTE "process-global enumeration … the future multi-agent attach leg must scope the attached set per agent"; that note is now due. FIX: key both registries by the triple; thread identity through `AttachDeps`/`resolveOAuthBinding`/the reconcile seam; fail closed on missing identity (§6.9 rule 9); close the two NOTEs; single-tenant behaviour-identical (one bucket — §13 one mechanism both topologies); `agent_id` NOT added to the isolation key. Mandatory N-tenant concurrent isolation test (§6 rule 10). No new Protocol surface. Unblocks 168/169. D-301) | internal/tools/drivers/mcp + internal/tools/auth + internal/runtime/serve + internal/runtime/agentcfg + internal/mcpconsole | §6.4, §6.9, §6.16, §7 | 166, 28, 92f, 156, 92a | 85% | Pending |
+|168 | Live MCP OAuth discovery-allowance write (re-homed from the first-cut v1.14 Phase 166; lands ON the identity-keyed registry (167) + the sink hardening (166)). Phase 164/D-297 shipped MCP OAuth-requirement discovery, but its RFC 8414 authorization-server hop is inherently cross-origin and needs a per-connection origin allowance existing only as restart-required yaml (`config.go:1308`), unreachable to a Protocol consumer — and discovery is INERT for every runtime-added connection. **CORRECTION (was a false "shipped bug drops the field" claim):** nothing upstream CARRIES the allowance (`AttachRequest`, the descriptor, the wire type all lack it) — the mechanism is a §17.1 cross-package WIRING GAP (164 shipped the walker, 92f the add path, neither joined them); the discriminator is a within-phase round-trip guard, NOT a pre/post-attacher comparison (which was unachievable). FIX: the descriptor gains the non-secret `OAuthDiscoveryAllowedOrigins` (spine for free, D-283); the wiring is closed descriptor→`AttachRequest`→`config.MCPServerConfig`→the identity-keyed registry; ONE narrow admin verb `agent_config.set_mcp_discovery_origins` FULL-REPLACE writes the revision under `lockAgent` AND applies live via a triple-keyed `Registry.SetOAuthDiscoveryOrigins` mutator; REVOKE is live+symmetric (prunes the recorded `oauth_requirement`'s AS entries fetched from the revoked origin, building a FRESH requirement and swapping the pointer under the lock — the registry hands it out by pointer `registry.go:605`, WARN 10); ROLLBACK takes effect live via a run-start allowance-reconcile leg (FAIL 7 — no revision-vs-runtime half-write); NO allowance-generation counter (a mid-walk revoke self-heals at the next reconcile — accepted bound documented); allowance ≠ SSRF bypass (post-DNS dial guard still refuses a granted private/loopback origin, named test); shared `config.ValidateDiscoveryOrigin`; admin-gated by omission from the exception maps (D-219, D-284); audit via 166's corrected fail-closed helper; D-062 consumer — write single-homed on `/agent-config`, `/mcp-connections` deep-links (resolving connection→agent from the agent-config registry first; boot-declared/unowned → honesty copy, no link, item 12), and Phase 156's caller-less `remove_mcp_connection` gets its first Svelte caller; 92m collision RULED (its parallel add-request OAuth block must route through 169; pointer notes written into 92k/92m); §17.8 = 164's spec fixtures; full D-223/D-209 regen; D-302) | internal/agentcfg + internal/runtime/agentcfg + internal/tools/drivers/mcp + internal/config + internal/protocol + web/console | §6.4, §6.16, §5.2, §6.15, §7 | 167, 166, 164, 92f, 156, 152, 92h, 92i, 108m, 118 | 85% | Pending |
+|169 | Protocol-installed OAuth provider (ZERO-URL broker-pull shape) + the connection→provider binding (re-homed + DE-SCOPED from the first-cut v1.14 Phase 167; lands on 166 + 167). The binding is ALREADY Protocol-writable end to end; the provider must exist and the boot-built provider list is invisible to a Protocol client. **The writable descriptor carries ZERO URLs** — `{name, credential_broker, scopes?}` — honouring D-300's invariant (no admin-writable field determines a credential sink): the token endpoint, allowed downstream hosts, and audience/scope ceiling are pinned at boot on the named credential broker (166). A reflective test asserts NO field is a URL/env-var name, and `DisallowUnknownFields` rejects `token_url`/`auth_url`/`client_id_env`/`client_secret_env`/`remote` BY NAME (no decoy fields — the field cannot exist, resolving WARN 17); empty `credential_source` is a loud reject (WARN 16). Backing it: `auth.ProviderSet` — a NEW `providers.go` type (NOT `registry.go`, the OAuth DRIVER registry — WARN 9; NOT a §4.4 driver seam, it holds instances, no `drivers/prod` registration — WARN 20), identity-keyed (167), seeded from `BuildProviders`, consulted by the MCP attach path; the catalog builder keeps its boot map (D-292). INSTALL+UNINSTALL together: `agent_config.set_oauth_provider` (upsert+`Install`) + `agent_config.remove_oauth_provider` (drop+`Uninstall`→`Close`, verified `tokenexchange.go:360`→`mcp.go:1166-1182`), so a bound connection's next call fails LOUD; rollback runs the SAME uninstall through the reconcile seam; uninstall is deliberately breaking, defensible ONLY because 167 keys the set per triple (a tenant-B reconcile never closes tenant-A's provider — FAIL 6); boot-declared name collision refused within the triple. THE BINDING HALF is Console-only — the wire carries `oauth_provider`, the Console drops it (`state.svelte.ts:912-923`); 169 stops dropping it (a SELECT from the installed list) + pins the round-trip. NO credential VALUE over the wire (D-271 PULL); NO auto-install from discovered metadata (D-297); sentinel-redaction proves no secret/sink in any revision/diff/event/response; §17.8 = RFC 8693 / captured transcript; 92k/92m pointer notes written; full D-223/D-209 regen; departs from brief 09 (RFC 7591 / operator-burden) — recorded in D-303; D-303) | internal/tools/auth + internal/runtime/agentcfg + internal/agentcfg + internal/tools/drivers/mcp + internal/protocol + web/console | §6.4, §6.16, §5.2, §6.15, §7 | 166, 167, 168, 142, 154, 148, 92f, 92h, 152, 118 | 85% | Pending |
 
 V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j + 85m (MCP client/host compliance — the prioritised first post-V1 work; 85k is the separate Harbor agent-builder skills phase). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Per the MCP 2026-07-28 RC re-plan (2026-05-28) the 85-band re-shapes: 85a / 85b / 85f are ready now; 85d / 85m revisit after SDK-RC (≈ Aug 2026); 85g / 85j revisit after RC-final (2026-07-28); 85c / 85e / 85h / 85i are cut. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100. The next release tag is V1.1.x — both the hygiene + positioning + UX band (101–104 + 108) and the Playground-depth band (105 + 106 + 107 + 107a + 107c + 107d) roll up under it; the previously-sketched V1.2 / V1.3 splits collapse. Phases 105–107c ship with this release: Console first-attach UX (105), Playground real assistant response (106), the streaming completion pipeline (107), reasoning trace projection (107a), and native tool-calling + deferred tools/skills + search meta-tools (107c) — the four built-in `*_search`/`*_get` meta-tools plus the optional `declarative_action` escape-hatch tool preserving brief 07's prompt-engineered path for weaker models. The 107b streaming answer extractor was deliberately superseded by 107c (one cutover instead of stop-gap-then-replace); the file at `docs/plans/phase-107b-streaming-answer-extractor.md` is kept as historical context. Phase 107d (shipped) is the native-tool-calling follow-up that closes 107c's documented serialization carve-out: it wires the already-shipped `internal/runtime/parallel.Executor` (Phase 47 / D-056) into the dev `ToolExecutor`, flips the React planner to native `CallParallel` emission for N>1 tool-calls, and pins the `JoinKind`-collapses-to-`JoinAll`-on-native semantic (D-169). Phase 107e (pending) closes the last `ErrDecisionShapeUnsupported` carve-out the dev `ToolExecutor` carries: it wires `planner.SpawnTask` + `planner.AwaitTask` dispatch through the already-shipped `tasks.TaskRegistry` (Phase 47 / D-056) and teaches the per-task RunLoop driver to drive `KindBackground` tasks (closing the D-097 dead-task gap for the background kind), bounded by a new `planner.absolute_max_spawn_depth` recursion cap; on the synchronous V1.1.x runloop a retain-turn spawn blocks in-decision and a non-retain-turn spawn is joined by an explicit `AwaitTask` (eager push wake-on-resolution is a documented steering-runloop follow-up). SpawnTask + AwaitTask dispatch land together per §13 (D-170). Phase 108 starts a 14-round page-by-page visual-polish series (one phase per Console page, anchored to `docs/design/console/page-*.md` + `docs/design/console/CONVENTIONS.md`) and is the largest piece still pending under V1.1.x. Background context for the native-tool-calling cutover: research brief 15. **Immediately after Phase 108, the three-phase "MCP Apps host" wave 109a–c lands (D-172):** 109a (MCP Apps runtime + Protocol surface — `_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy), 109b (Console sandboxed-iframe host + the official `ext-apps` AppBridge in manual-handler mode + inline DisplayMode), 109c (fullscreen-tab + pip-split DisplayMode layout). This wave **deprecates and supersedes Phase 85g**, pulling MCP Apps forward from the post-V1 85-band: Apps is a stable independent extension (`io.modelcontextprotocol/ui`), not gated on the July RC, and ships an official host bridge that removes 85g's hand-rolled-bridge risk. The architectural invariant is D-173 — the AppBridge runs in manual-handler mode and every app→host call is Protocol-proxied through the Runtime, never a direct MCP connection, so an in-iframe app stays inside the `(tenant, user, session)` isolation boundary and the unified approval/OAuth gates. The 14-round page-polish series continues from the next free integer after the 109 band; the band precedes it in execution order, it does not displace it. **Live Runtime reframe (2026-06-01, D-177):** after 108d shipped the topology-first Live Runtime page, an operator review found it low-value and Playground-overlapping on the dominant planner/RunLoop runtime (no engine graph). Phase 108e supersedes the topology-first composition (D-126) with a single-runtime **capability-adaptive cockpit** — the runtime's advertised `runtime.info` capabilities compose the page (an always-present spine + capability-gated topology / health / cost panels), so it is full on a planner runtime and richer on engine/multi-agent shapes with no rebuild. Plan: `docs/plans/phase-108e-live-runtime-capability-cockpit.md`. **Protocol auth-hardening sequence (114–116, D-219):** a planning + adversarial review of the Protocol surface found a steering-control privilege escalation — `dispatchControl` derived caller scope + tenant from the request *body* instead of the verified context identity, so a caller could assert `scope:"admin"` in the body and the cross-tenant gate could never fire. Phase 114 (shipped) closes it: the control surface now reads authority from `identity.From(ctx)` + the JWT scope claims, fails closed when no verified identity is present, and a non-admin caller can steer only runs it owns (admin for cross-tenant). 114 is the prerequisite hardening for the lesser-privileged-token work: Phase 115 adds production JWKS verification + a `harbor serve` auth path (giving the inert `JWKSURL`/`JWKSFile` config fields a consumer), and Phase 116 introduces the non-admin session-scoped token contract — the consumer that makes 114's derivation load-bearing and the seam where the `session_user` tier becomes safe to grant. Independently, Phase 117 hardens the chat module's encapsulation boundary (D-091) so it renders self-contained — its own theming contract, font-family inheritance, and host/theme parameterization — with no Console look-and-feel leakage, and Phase 118 builds the long-tracked `protocol-ts-gen-check` gate as a field-level lockstep VERIFICATION of the hand-maintained per-page TS client against a committed, Go-generated wire manifest (`cmd/harbor-protocol-ts-lockstep`) — a D-093 deviation (D-223): the "generate" half (per-domain generated TS type modules) is a deferred future phase and the `cmd/harbor-gen-protocol-ts` name stays reserved for it.
 
@@ -3469,128 +3471,159 @@ per §17.8). Status: Shipped (V1.6).
 
 ---
 
-### Phase 166 — Live MCP OAuth discovery-allowance write
+### Phase 166 — Credential-sink hardening (shipped-code security fix)
 
-- **Subsystem:** internal/agentcfg (the descriptor field + diff arm),
-  internal/runtime/agentcfg (the service method + the attacher carry),
-  internal/tools/drivers/mcp (the registry mutator + the revoke prune),
-  internal/config (the exported origin validator), internal/protocol (the
-  method + wire types + route), web/console (the `/agent-config` connections
-  editor + the `/mcp-connections` deep-link).
-- **RFC:** §6.4 (the MCP southbound edge + the discovery walker's allowance
-  input), §6.16 (the agent-config control plane — the revision spine),
-  §5.2 (the new admin write verb), §6.15 (the admin-scope audit; fail-closed
-  on an un-auditable grant), §7 (the two-page Console lens).
-- **Deps:** 164 (D-297 — the discovery walker, the registry's
-  challenge/allowance state, the `needs_allowance` status this makes
-  actionable), 92f (the shipped `add_mcp_connection` verb + the
-  `ConnectionAttacher` seam whose bug this fixes), 156 (D-287 — the connections
-  diff arm, the boot-declared typed refusal, and the caller-less
-  `remove_mcp_connection` verb this gives its first Svelte caller), 152 (D-283 —
-  the rebuild-completeness guard the new field must satisfy), 92h + 92i (the
-  Console Agent Config panel + revision UX the editor lands in), 108m (the MCP
-  Connections page the deep-link leaves from), 118 (D-223).
-- **What it delivers:** the first half of HA-15 (an external white-label
-  implementor's ask). Phase 164 shipped MCP OAuth-requirement discovery, but its
-  RFC 8414 authorization-server hop is inherently cross-origin and requires an
-  explicit per-connection origin allowance that exists only as restart-required
-  yaml — unreachable to a Protocol-driven consumer. Three gaps close here.
-  (1) `agentcfg.MCPConnectionDescriptor` gains the non-secret
-  `OAuthDiscoveryAllowedOrigins`, so the allowance inherits the whole revision
-  spine (versioned / diffable / rollback-able) for free.
-  (2) **A shipped bug, fixed in-band per §17.6:**
-  `MCPConnectionAttacher.Attach` DROPS the field when building the
-  `config.MCPServerConfig`, while the rest of the chain is intact — so every
-  runtime-added connection's discovery is permanently stuck at
-  `needs_allowance` and Phase 164 is INERT for the control plane. A regression
-  test fails without the carry.
-  (3) `mcpdrv.Registry` gains `SetOAuthDiscoveryOrigins`, a mutex-guarded,
-  identity-mandatory mutator modelled on `SetRawHTMLTrust` (a re-register was
-  weighed and rejected: it tears down a working transport, kills in-flight
-  calls, and can FAIL — leaving the connection DOWN after a *widening* edit,
-  whereas the allowance is a pure per-call policy input the walker re-reads on
-  every `Discover`).
-  ONE narrow admin verb — `agent_config.set_mcp_discovery_origins`, FULL
-  REPLACE — writes the revision under `lockAgent` (siblings carried forward)
-  AND applies it live. **Revoke is live and symmetric** (the D-287 lesson):
-  it refuses the hop on the next discovery AND prunes the recorded
-  `oauth_requirement`'s authorization-server entries the withdrawn allowance
-  already produced. Security invariants are named tests, not prose: a granted
-  origin is STILL refused at dial time if it resolves private/loopback (the
-  post-DNS `net.Dialer.Control` guard — allowance ≠ SSRF bypass); every origin
-  runs the SHARED `validateDiscoveryOrigin` (exported — one implementation);
-  the route is admin-gated by inheriting the handler's `default:` arm and
-  authority is server-derived (D-219); an un-auditable grant fails the call
-  closed. No general `update_mcp_connection` patch verb — `url` / `command` /
-  `transport` / `oauth_provider` are consumed at ATTACH time, so patching them
-  without a re-attach is a silent half-write. D-062 consumer same phase, page
-  split resolved deliberately: the write is single-homed on `/agent-config`
-  (beside the diff/rollback affordances that make a revisioned write honest),
-  `/mcp-connections` gets a deep-link — never a second write form (§13) — and
-  the connections card becomes a real editor that finally drives Phase 156's
-  `remove_mcp_connection`. Full D-223/D-209 regen; `ProtocolVersion` unbumped.
-  See `docs/plans/phase-166-mcp-discovery-allowance-write.md`.
+- **Subsystem:** internal/tools/auth (the token-exchange driver + the provider
+  ceiling), internal/tools/drivers/mcp (`resolveOAuthBinding` downstream-host
+  guard), internal/config (the allow-list + ceiling), internal/protocol (the
+  `handleSetRawHTMLTrust` audit-ordering fix).
+- **RFC:** §6.4 (the tool-side OAuth seam being hardened), §6.15 (the audit
+  posture), §7 (no credential passthrough / no unbounded egress).
+- **Deps:** 142 (D-271 — the `tokenexchange` driver), 148 (D-278 — the
+  southbound binding whose sink this bounds), 154 (D-285 — the credential-source
+  seam whose `remote` redirect-refusal is the precedent), 28 (the MCP driver +
+  `resolveOAuthBinding`).
+- **What it delivers:** the base the v1.14 wave stands on. Two adversarial
+  reviews of the first-cut v1.14 shape returned NO-GO and proved the "no env-var
+  NAMES on the wire" rule a SYMPTOM rule; the generalized invariant (D-300) is
+  **no admin-writable field may determine where a credential is sent.** Three
+  exfil paths — all reachable in SHIPPED Harbor (92f's add path + D-278's
+  binding), none an HA-15 regression — are fixed in-band (§17.6): `token_url` is
+  where the org's `client_id`/`client_secret` are POSTed (`tokenexchange.go:582`);
+  the connection `url` is where the exchanged bearer is injected and
+  `resolveOAuthBinding` constrained no host, while the provider name was the
+  default audience; and the token-exchange client followed redirects, replaying
+  the `client_secret` form. The fix: a boot-declared `AllowedDownstreamHosts`
+  allow-list enforced in `resolveOAuthBinding` (fail-closed on empty for a
+  bindable provider; covers the interactive `oauth2` binding too); a boot
+  audience/scope ceiling (audience not derived from the caller-chosen name;
+  scopes intersected); the token-exchange client hardened to the discovery
+  client's bar (`net.Dialer.Control` private/loopback refusal, `Proxy: nil`,
+  refuse-redirects — the `credsource/remote` precedent); and the
+  `handleSetRawHTMLTrust` audit-ordering lie corrected to a genuinely fail-closed
+  ordering + a shared helper Phases 168/169 reuse. No new Protocol surface —
+  config-schema + internal only, with a CHANGELOG migration note for the
+  mandatory allow-list. See
+  `docs/plans/phase-166-credential-sink-hardening.md`.
 - **Decision:** D-300.
 - **Status:** Pending.
 
 ---
 
-### Phase 167 — Protocol-installed OAuth provider + the connection→provider binding
+### Phase 167 — Identity-keyed MCP + provider registries
 
-- **Subsystem:** internal/config (the boot-declared credential broker),
-  internal/tools/auth (the §4.4 `ProviderRegistry` seam), internal/tools/drivers/mcp
-  (the attach-path registry lookup), internal/agentcfg (the providers section),
-  internal/runtime/agentcfg (the two service methods + the reconcile leg),
-  internal/protocol (the methods + wire types + routes), web/console (the
-  provider card + the Add-connection binding SELECT).
-- **RFC:** §6.4 (the tool-side OAuth provider seam made runtime-registrable),
-  §6.16 (the revision spine), §5.2 (the two additive admin verbs), §6.15 (the
-  admin-scope audit; fail-closed), §7 (the Console lens).
-- **Deps:** 142 (D-271 — the `tokenexchange` PULL driver, the ONLY driver the
-  writable shape admits), 154 (D-285 — the credential-source seam the broker
-  binding reaches by name), 148 (D-278 — the southbound `oauth_provider`
-  binding this makes reachable), 92f (the add verb + attacher seam), 92h (the
-  Console panel), 152 (D-283), 166 (the v1.14 sibling: the `/agent-config`
-  editor surface + the shared write patterns), 118 (D-223). Related, NOT a dep:
-  the parked 92k (`auth.Provider` runtime config-registration seam) — see the
-  sibling reconciliation.
-- **What it delivers:** the second half of HA-15. A connection can already NAME
-  a provider (the binding rides the descriptor and `AttachRequest` end to end),
-  but the provider list is a boot-built map handed by value into the attach
-  path — so a Protocol client can bind a provider it has no way to install.
-  This phase makes the descriptor installable, in the NON-SECRET broker-pull
-  shape ONLY. **The binding security constraint is the design:** the writable
-  descriptor MUST NOT accept `client_id_env`, `client_secret_env`, or
-  `remote.auth_token_env` — those name environment variables of the runtime
-  process, and an `admin` caller able to write an env-var NAME plus a
-  `token_url` owns an env-var exfiltration primitive (point the token endpoint
-  at an attacker host, name any env var, receive its value in the token
-  request). A write carrying any of the three is REJECTED with a typed loud
-  error — never silently ignored, never stripped-and-accepted. The process
-  secret is reached BY NAME through a new boot-declared, config/file-only
-  `tools.oauth_credential_brokers[]` list (the existing `ToolOAuthRemoteConfig`
-  shape plus a `name`) — the same name-indirection `mcp.servers[].oauth_provider`
-  already uses; the inline `oauth_providers[].remote` block stays valid.
-  Env-named local-secret providers and the interactive `oauth2` driver stay
-  config-only — a knowing departure from brief 09's operator-burden framing,
-  recorded in D-301. Backing it (the real work, since the reserved 92k seam is
-  PENDING): a §4.4 `auth.ProviderRegistry` — interface + one
-  internally-synchronised concrete (D-025), seeded at boot from `BuildProviders`,
-  consulted by the MCP ATTACH path; the catalog builder deliberately keeps its
-  boot map (`tools.entries[]` bindings are boot-declared / restart-required by
-  design — a named boundary, not an omission). **Install and uninstall ship
-  together** (the D-287 lesson): `remove_oauth_provider` CLOSES the live
-  provider, so a still-bound connection's next call fails LOUD rather than
-  degrading to an unauthenticated dial (§13) — stated in the godoc and the
-  Console confirmation copy; rollback past an install runs the SAME uninstall
-  through the run-start reconcile seam (one mechanism, N triggers). The BINDING
-  half is honestly small: the wire already carries `oauth_provider`; the Console
-  silently DROPS it (`state.svelte.ts:912-923`) — this phase stops dropping it
-  and pins the round-trip. Sibling reconciliation (§13): an unparked 92k REUSES
-  this registry and adds only its per-source config leg — never a second
-  provider registry. Full D-223/D-209 regen; `ProtocolVersion` unbumped. See
-  `docs/plans/phase-167-oauth-provider-install-binding.md`.
+- **Subsystem:** internal/tools/drivers/mcp (the keyed `Registry`),
+  internal/tools/auth (the identity-scoped provider set), internal/runtime/serve
+  and internal/runtime/agentcfg (the scoped attacher/detacher/reconcile),
+  internal/mcpconsole (the accessor threading).
+- **RFC:** §6.4 (the registry), §6.9 (identity-mandatory, fail closed), §6.16
+  (the reconcile seam), §7 (the isolation the keying enforces).
+- **Deps:** 166 (the wave builds bottom-up), 28 (the MCP registry), 92f (the add
+  path), 156 (D-287 — the reconcile seam being scoped), 92a (the agent-config
+  registry).
+- **What it delivers:** the shipped-code correctness fix that makes both tenancy
+  topologies safe (one runtime per tenant OR one serving many). The MCP registry
+  and the OAuth-provider set are keyed by BARE NAME in process-global maps while
+  authority is per-`(tenant, user, session)`, so in the multi-tenant topology a
+  name collision is a live cross-tenant bug: tenant B overwrites A's entry; B's
+  removal closes A's; B merely starting a run reconciles its empty declared set
+  against the global live set and detaches A's servers. Crucially, `lockAgent`
+  gives ZERO protection — it shards on `(scope, tenant, agent)`, so two tenants
+  take different locks and then clobber the same `r.servers[name]`, and the
+  revision spine renders a LIE about a security control. The code already
+  concedes the debt in two "process-global enumeration … the future multi-agent
+  attach leg must scope the attached set per agent" NOTEs
+  (`projection.go:125-132`, `mcp_detacher.go:77-87`); that note is now due. This
+  phase keys both registries by the triple, threads identity through
+  `AttachDeps` / `resolveOAuthBinding` / the reconcile seam, fails closed on a
+  missing triple (§6 rule 9), closes the NOTEs, keeps the single-tenant topology
+  behaviour-identical (one bucket — §13 one mechanism, both topologies), and does
+  NOT add `agent_id` to the isolation key. Mandatory N-tenant concurrent
+  isolation test (§6 rule 10). No new Protocol surface; unblocks 168/169. See
+  `docs/plans/phase-167-identity-keyed-registries.md`.
 - **Decision:** D-301.
+- **Status:** Pending.
+
+---
+
+### Phase 168 — Live MCP OAuth discovery-allowance write
+
+- **Subsystem:** internal/agentcfg (the descriptor field + diff arm),
+  internal/runtime/agentcfg (the service method + the wiring carry + the
+  allowance reconcile leg), internal/tools/drivers/mcp (the triple-keyed mutator
+  plus the fresh-requirement prune), internal/config (the exported validator),
+  internal/protocol (the method + wire types + route), web/console (the
+  `/agent-config` editor + the `/mcp-connections` deep-link).
+- **RFC:** §6.4, §6.16, §5.2, §6.15, §7.
+- **Deps:** 167 (the identity-keyed registry this writes to — `lockAgent` alone
+  gives zero cross-tenant protection, FAIL 5), 166 (the corrected audit
+  ordering), 164 (D-297 — the walker + the `needs_allowance` status), 92f, 156
+  (D-287 — the diff arm, the boot-declared refusal, `remove_mcp_connection`),
+  152 (D-283), 92h + 92i, 108m, 118 (D-223).
+- **What it delivers:** the discovery-allowance write half of HA-15, re-homed
+  from the first-cut Phase 166. It makes the allowance a first-class,
+  revisioned, diffable, rollback-able descriptor field; adds ONE narrow admin
+  verb `agent_config.set_mcp_discovery_origins` (FULL REPLACE) that writes the
+  revision under `lockAgent` AND applies it to the identity-keyed live registry
+  via a triple-keyed `SetOAuthDiscoveryOrigins` mutator; makes REVOKE live and
+  symmetric (prunes the recorded `oauth_requirement`'s AS entries fetched from
+  the revoked origin, building a FRESH requirement and swapping the pointer under
+  the lock — WARN 10); makes ROLLBACK take effect live through a run-start
+  allowance-reconcile leg (FAIL 7 — no revision-vs-runtime half-write); reuses
+  the shared `ValidateDiscoveryOrigin`; keeps allowance ≠ SSRF bypass (the
+  post-DNS dial guard still refuses a granted private/loopback origin); is
+  admin-gated by omission from the exception maps (D-219). **Correction (WARN
+  8):** the first-cut "shipped bug drops the field" claim was false — nothing
+  upstream CARRIES the field (a §17.1 wiring gap); the discriminator is a
+  within-phase round-trip guard. Console (D-062): the write is single-homed on
+  `/agent-config`, `/mcp-connections` deep-links to it (resolving connection→agent
+  from the agent-config registry first — item 12), and Phase 156's caller-less
+  `remove_mcp_connection` gets its first Svelte caller. The 92m collision is
+  ruled (its parallel add-request OAuth block routes through 169; pointer notes
+  written into 92k/92m). Full D-223/D-209 regen; `ProtocolVersion` unbumped. See
+  `docs/plans/phase-168-mcp-discovery-allowance-write.md`.
+- **Decision:** D-302.
+- **Status:** Pending.
+
+---
+
+### Phase 169 — Protocol-installed OAuth provider (zero-URL) + the connection→provider binding
+
+- **Subsystem:** internal/tools/auth (the identity-keyed `ProviderSet`),
+  internal/runtime/agentcfg (the two service methods + the reconcile leg),
+  internal/agentcfg (the providers section), internal/tools/drivers/mcp (the
+  attach-path set lookup), internal/protocol (the methods + wire types + routes),
+  web/console (the provider card + the binding SELECT).
+- **RFC:** §6.4, §6.16, §5.2, §6.15, §7.
+- **Deps:** 166 (the named broker pins every sink so the descriptor needs no
+  URL; the corrected audit ordering), 167 (the identity-keyed provider set —
+  makes uninstall cross-tenant-safe, FAIL 4/6), 168 (the sibling editor surface),
+  142 (D-271), 154 (D-285), 148 (D-278), 92f, 92h, 152, 118. Related, NOT a dep:
+  the parked 92k.
+- **What it delivers:** the provider-install half of HA-15, de-scoped from the
+  first-cut Phase 167. The writable descriptor carries ZERO URLs —
+  `{name, credential_broker, scopes?}` — honouring D-300's invariant: the token
+  endpoint, allowed downstream hosts, and audience/scope ceiling are pinned at
+  boot on the named broker (166). A reflective test asserts no field is a
+  URL/env-var name, and `DisallowUnknownFields` rejects `token_url` / `auth_url`
+  / `client_id_env` / `client_secret_env` / `remote` by name (no decoy fields —
+  WARN 17); empty `credential_source` is a loud reject (WARN 16). Backing it:
+  `auth.ProviderSet` — a NEW `providers.go` type (NOT the OAuth driver registry
+  `registry.go` — WARN 9; NOT a §4.4 driver seam, it holds instances, no
+  `drivers/prod` registration — WARN 20), identity-keyed (167), consulted by the
+  MCP attach path; the catalog builder keeps its boot map (D-292). Install and
+  uninstall ship together (`set_oauth_provider` / `remove_oauth_provider`);
+  uninstall CLOSES the provider so a bound connection's next call fails LOUD
+  (verified `tokenexchange.go:360` → `mcp.go:1166-1182`); rollback runs the same
+  uninstall through the reconcile seam; the deliberately-breaking uninstall is
+  defensible ONLY because 167 keys the set per triple (a tenant-B reconcile never
+  closes tenant-A's provider — FAIL 6). The binding half is Console-only: the
+  wire already carries `oauth_provider`, the Console drops it
+  (`state.svelte.ts:912-923`) — 169 stops dropping it and pins the round-trip.
+  Departs from brief 09 (RFC 7591 / operator-burden) — recorded in D-303. 92k/92m
+  pointer notes written. Full D-223/D-209 regen; `ProtocolVersion` unbumped. See
+  `docs/plans/phase-169-oauth-provider-install-binding.md`.
+- **Decision:** D-303.
 - **Status:** Pending.
 
 ---
