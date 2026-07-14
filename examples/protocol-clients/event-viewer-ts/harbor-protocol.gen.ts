@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:1acc57a8a0a7550f43d51b15b17ef5eccd142de26dafb06c0f78d4c8a23f5766";
+export const WIRE_SURFACE_DIGEST = "sha256:c1e7f4dd7c6d4af1eee418855bc858f9ace9dcca3fdbbcb2028cce0e47cfa0fc";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -147,6 +147,7 @@ export type HarborErrorCode =
   | "request_too_large"
   | "runtime_error"
   | "scope_mismatch"
+  | "session_erased"
   | "session_running"
   | "unknown_method";
 

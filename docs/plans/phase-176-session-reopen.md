@@ -157,16 +157,31 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   `EnsureOpen` no longer return "reopen forbidden" for a closed non-erased
   record. The protocol-side `ErrSessionReopenAfterClose` mapping is retired; the
   `SessionEnsurerAdapter` maps `sessions.ErrReopenAfterErase` →
-  `protocol.ErrSessionReopenAfterErase` → `CodeInvalidRequest` (same wire code
-  the retired reopen-after-close used — no new wire error CODE, no
-  `ProtocolVersion` bump). `ErrSessionReopenAfterClose` /
-  `ErrSessionReopenAfterErase` are internal sentinels that map to an EXISTING
-  code; the generated `docs/site/protocol/errors.md` catalog is keyed by wire CODE
-  (`errors.Codes()`), not by sentinel name, so retiring one sentinel and adding
-  another changes NO `errors.md` row and needs no D-209 errors regen (verified: no
-  `errors.md` row references these sentinels). `Touch` on a still-closed session
+  `protocol.ErrSessionReopenAfterErase` → a NEW dedicated wire code
+  `CodeSessionErased` (`"session_erased"`, HTTP 409, in
+  `internal/protocol/errors/errors.go` — §8: codes are added there and only there;
+  a new additive code is NOT a `ProtocolVersion` break). It is MACHINE-BRANCHABLE
+  (WARN-A): a consumer-chat client switches on `code == "session_erased"` to route
+  the user to "this conversation was deleted — start a new one", which a shared
+  `CodeInvalidRequest` (advisory `Message` only — clients are forbidden from
+  branching on `Message`) could not support. `Touch` on a still-closed session
   keeps a loud read-only guard (renamed `ErrSessionClosed` — a caller must
   `start`/reopen before touching; Touch is not a reopen entry point).
+- [ ] **Documented-surface prose fixed (FAIL — no stale "reopen-after-close is
+  forbidden").** Adding `CodeSessionErased` genuinely adds an `errors.md` row, so
+  the D-209 regen runs and the same pass FIXES the now-false prose: the generator
+  join for `CodeInvalidRequest` (`cmd/harbor-gen-protocol-docs/errors.go`) no
+  longer cites "a `start` on a closed session (reopen-after-close is forbidden)",
+  the new `CodeSessionErased` row describes the reopen-after-ERASE terminal case,
+  and the hand-written choreography page
+  `docs/site/protocol/auth-and-identity.md` is rewritten (a `start` on a closed
+  session reopens; only an ERASED session is rejected `session_erased`). `make
+  protocol-docs-gen` + `make protocol-ts-gen` + `make protocol-ts-types-gen`
+  regenerate `errors.md`, `wire-manifest.gen.json`, and the vendorable
+  `harbor-protocol.gen.ts` (the wire-surface digest covers error codes — it
+  changes; the count goes 12 → 13). The lockstep gate keys `errors.md` rows on
+  `errors.Codes()` presence only, never on `When` prose, so the prose fix is a
+  human-review obligation this AC pins, not a mechanical catch.
 - [ ] **Race-safe erased check — the real ordering invariant (WARN-1):** reopen's
   `load record (or not-found) → isErased check → re-activate-or-mint → save` runs
   inside one registry `r.mu` critical section, so it serializes against the
@@ -182,13 +197,40 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   erasure loud (wrapped like `ErrErasureRecordFailed`) and MUST NOT proceed to
   `deleteLedger` — otherwise a `tombstone-fails` + `ledger-deleted` interleave
   would open a converged-erasure gap and permit resurrection.
-- [ ] **Full D-223 lockstep in the same PR** for the new `session.reopened`
-  event: registered event type + `SessionReopenedPayload` in
-  `internal/sessions/events.go`; the join row in
-  `cmd/harbor-gen-protocol-docs/events.go`; the TS mirror + regenerated
-  `wire-manifest.gen.json` via `make protocol-ts-gen`; regenerated
-  `docs/site/protocol/events.md` via `make protocol-docs-gen`. `ProtocolVersion`
-  unbumped (additive).
+- [ ] **Tombstone write is UNCONDITIONAL per terminal `completeErasure`, outside
+  the `recordAlreadyEmitted` emit-skip guard (WARN-B):** `completeErasure` skips
+  `emitErased` when `recordAlreadyEmitted` returns true (`erasure.go`), but the
+  tombstone `Save` MUST run on every `completeErasure` invocation that reaches the
+  terminal step, independent of that guard, and be idempotent (overwrite). A
+  converging retry where a prior attempt emitted the event but died before the
+  tombstone write would otherwise (if the `Save` were co-located inside the
+  `!recordAlreadyEmitted` block) see `recordAlreadyEmitted == true` → skip
+  tombstone → run `deleteLedger` → leave NEITHER ledger nor tombstone → a
+  reopen-after-erase then silently resurrects. Test: force
+  `recordAlreadyEmitted == true` and assert the tombstone is still written BEFORE
+  `deleteLedger`.
+- [ ] **`isErased` fails CLOSED on a transient Load error (WARN-C):** `isErased`
+  returns `(false, nil)` ONLY when BOTH the ledger `Load` AND the tombstone `Load`
+  return `state.ErrNotFound`; any other (non-NotFound) `Load` error propagates and
+  reopen fails loud — it never mints a fresh session and never re-activates on an
+  unverified erased-state read (mirroring `loadLedger`, `erasure.go:665-678`). A
+  fail-OPEN collapse to "not erased" on a transient StateStore fault is exactly
+  the seam WARN-2 rejects the history-scan for; the point-`Load` must not
+  reintroduce it. Test: a `Load` returning a non-NotFound error → reopen returns
+  that error, mints nothing.
+- [ ] **Full D-223 / D-209 lockstep in the same PR** for BOTH new wire surfaces
+  — the `session.reopened` event AND the `CodeSessionErased` error code:
+  registered event type + `SessionReopenedPayload` in
+  `internal/sessions/events.go`; the event join row in
+  `cmd/harbor-gen-protocol-docs/events.go`; the error code constant +
+  `canonicalCodes` entry in `internal/protocol/errors/errors.go`, its HTTP-409
+  binding in `internal/protocol/transports/control/status.go`, the conformance
+  `expectedHTTPStatus` + `errorCodeMatrix` entries + the size-count test
+  (`internal/protocol/conformance/`), and the `errors_test.go` / `status_test.go`
+  code-set tables. `make protocol-ts-gen` (manifest + digest), `make
+  protocol-ts-types-gen` (vendorable module), and `make protocol-docs-gen`
+  (`events.md` + `errors.md`) all regenerate and are committed.
+  `ProtocolVersion` unbumped (both additive).
 - [ ] **§13 Console consumer, same wave:** the Playground switcher offers a
   "Resume" affordance on a closed session that issues `start` on the closed id
   (now succeeding) and hydrates the history via the existing D-254 windowed read;
@@ -232,19 +274,43 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   `deleteLedger`); sibling of the `session.erased` record-of-fact) and a
   reopen-facing `isErased(ctx, id)` helper (an O(1) point-`Load` of the pending
   ledger OR the terminal tombstone — never a bounded history scan, see Risks).
+- `internal/protocol/errors/errors.go` — NEW canonical code `CodeSessionErased`
+  (`"session_erased"`) + `canonicalCodes` entry (§8: codes added here and only
+  here).
+- `internal/protocol/transports/control/status.go` — `CodeSessionErased` → HTTP
+  409 binding.
+- `internal/protocol/conformance/conformance.go` + `internal_test.go` —
+  `expectedHTTPStatus` + `errorCodeMatrix` (with the deferred-live-scenario
+  comment, mirroring `CodeSessionRunning`) + the size-count `12 → 13`.
+- `internal/protocol/errors/errors_test.go`,
+  `internal/protocol/transports/control/status_test.go` — the `wantCodes` / wire
+  / status-mapping code-set tables gain `CodeSessionErased`.
 - `internal/protocol/errors.go` — retire `ErrSessionReopenAfterClose`, add
-  `ErrSessionReopenAfterErase` (maps to `CodeInvalidRequest`) + its
+  `ErrSessionReopenAfterErase` (maps to `CodeSessionErased`) + its
   `mapSessionEnsureError` arm.
 - `internal/runtime/serve/session_ensurer.go` — translate
   `sessions.ErrReopenAfterErase` → `protocol.ErrSessionReopenAfterErase`; drop the
   reopen-after-close arm.
+- `internal/runtime/serve/coverage_test.go` — the
+  `TestSessionEnsurerAdapter_SentinelTranslation` case at `:522`/`:554` references
+  the retired `protocol.ErrSessionReopenAfterClose`; update it to the new
+  reopen-after-erase translation (NIT-1 — a compile-time reference that must move).
+- `cmd/harbor-gen-protocol-docs/errors.go` — the `CodeInvalidRequest` join no
+  longer cites the (now-removed) "reopen-after-close is forbidden"; new
+  `CodeSessionErased` join row (the FAIL prose fix).
 - `cmd/harbor-gen-protocol-docs/events.go` — `session.reopened` join row.
+- `docs/site/protocol/auth-and-identity.md` — hand-written choreography prose
+  rewritten: a `start` on a closed session reopens; only an ERASED session is
+  rejected `session_erased` (the FAIL prose fix).
 - `web/console/src/lib/protocol/*.ts`, `client.ts`, `wire-manifest.gen.json`
-  (regenerated) — the `SessionReopenedPayload` event type.
+  (regenerated — `session.reopened` event + `session_erased` code + new digest).
+- `examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts` (regenerated
+  vendorable module — the new code + digest; `make protocol-ts-types-gen`).
 - `web/console/src/routes/(console)/playground/[session_id]/+page.svelte`,
   `web/console/src/routes/(console)/sessions/+page.svelte` — resume affordance +
-  `session.reopened` list refresh.
-- `docs/site/protocol/events.md` (regenerated).
+  `session.reopened` list refresh; branch on `code == "session_erased"` for the
+  "conversation deleted — start fresh" path.
+- `docs/site/protocol/events.md`, `docs/site/protocol/errors.md` (regenerated).
 - `scripts/smoke/phase-176.sh`; `RFC-001-Harbor.md` §6.9 (amended in the plans
   PR); `docs/glossary.md`; `docs/decisions.md` (D-312).
 
@@ -260,7 +326,9 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   path (was a silent fresh session).
 - Wire: `session.reopened` canonical event; `SessionReopenedPayload` fields
   (`session_id`, `reopened_at`, `prior_closed_reason`).
-- `protocol.ErrSessionReopenAfterErase` (maps to `CodeInvalidRequest`).
+- Wire: `errors.CodeSessionErased` (`"session_erased"`, HTTP 409) — the
+  machine-branchable code for reopen-after-erase.
+- `protocol.ErrSessionReopenAfterErase` (maps to `CodeSessionErased`).
 
 ## Test plan
 
@@ -275,7 +343,10 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   assertion (marshalled-bytes grep); `Touch`-on-closed keeps the loud guard;
   erasure-side: a forced tombstone-`Save` failure fails the erasure loud and does
   NOT delete the pending ledger (the write-before-delete success-critical
-  invariant).
+  invariant); `recordAlreadyEmitted == true` STILL writes the tombstone before
+  `deleteLedger` (WARN-B — the unconditional-write case); `isErased` with a
+  non-NotFound `Load` error propagates and reopen mints nothing (WARN-C — fail
+  closed).
 - **Integration (binding — §17.1; `Deps` names shipped subsystems):**
   `test/integration/session_reopen_test.go` — REAL drivers on the seam
   (`state/drivers/durable` + inmem, `events/drivers/durable`, `memory` real
@@ -310,7 +381,7 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
 
 - live-server: `start` (control) on a session id that was previously closed →
   succeeds and a subsequent `state.history` returns the prior turns; `start` on a
-  session id that was erased → `CodeInvalidRequest` (reopen-after-erase);
+  session id that was erased → HTTP 409 `session_erased` (reopen-after-erase);
   cross-tenant start on a closed id → rejected. (404/405/501 → SKIP so the script
   coexists with pre-176 builds.)
 
@@ -403,6 +474,18 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   boundary; the isolation guarantee is not. Reopen introduces no new exposure here —
   it inherits the existing guard unchanged. Stated so a reviewer does not read
   "reuse rejected" as a cross-process guarantee.
+- **Serially-reopened sessions have intentionally-unbounded absolute lifetime
+  (NIT-2 — accepted V1 semantic, no knob).** Because the hard cap resets to
+  `max(OpenedAt, LastReopenedAt)` on each reopen, a conversation touched at least
+  once per hard-cap window never hard-caps — its absolute since-creation age is
+  unbounded by design (that is the whole point: resume forever). The idle-TTL
+  still collects genuinely abandoned sessions (no `LastSeen` refresh → reaped as
+  before), so there is no zombie accumulation. An operator with an
+  absolute-age compliance requirement (e.g. "no conversation older than N days,
+  regardless of activity") has no control lever in V1. This is INTENDED, stated so
+  it is a conscious acceptance rather than a silent gap; a since-creation
+  retention knob is a possible follow-up, deliberately not added (no new policy
+  surface this phase).
 - **Tombstone inherits the `<erasure-audit>` sentinel charset aliasing (NIT-4).**
   The tombstone rides the same reserved observability session id
   (`erasureAuditSession = "<erasure-audit>"`, `internal/sessions/erasure.go:31-38`)

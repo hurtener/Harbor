@@ -26,8 +26,12 @@ type errorEntry struct {
 // a row fails the build.
 var errorTable = map[protoerrors.Code]errorEntry{
 	protoerrors.CodeInvalidRequest: {
-		When:  "The request was structurally malformed: undecodable JSON, a wrong wire shape for the method, a `start` on a closed session (reopen-after-close is forbidden).",
+		When:  "The request was structurally malformed: undecodable JSON, a wrong wire shape for the method, an out-of-range field.",
 		Retry: "No — fix the request shape first.",
+	},
+	protoerrors.CodeSessionErased: {
+		When:  "A `start` named a session id that was permanently deleted by `sessions.delete` (right-to-erasure). The session is terminal and cannot be reopened — its data is gone. A closed-but-not-erased session, by contrast, reopens normally on `start`.",
+		Retry: "No — the conversation was erased; start a new one with a fresh session id.",
 	},
 	protoerrors.CodeIdentityRequired: {
 		When:  "The request resolved no complete `(tenant, user, session)` identity scope — a missing bearer, a missing session (no `X-Harbor-Session` header and no default claim), or a body identity that contradicts the verified token. Identity is mandatory and fails closed.",

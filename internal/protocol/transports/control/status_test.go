@@ -51,6 +51,7 @@ func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 		protoerrors.CodePresignUnsupported:    {},
 		protoerrors.CodeRequestTooLarge:       {},
 		protoerrors.CodeSessionRunning:        {},
+		protoerrors.CodeSessionErased:         {},
 	}
 	for code := range mapped {
 		if !protoerrors.IsValidCode(code) {

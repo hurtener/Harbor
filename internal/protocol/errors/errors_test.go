@@ -26,6 +26,7 @@ var wantCodes = []protoerrors.Code{
 	protoerrors.CodePresignUnsupported,
 	protoerrors.CodeRequestTooLarge,
 	protoerrors.CodeSessionRunning,
+	protoerrors.CodeSessionErased,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -45,6 +46,7 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 		protoerrors.CodePresignUnsupported:    "presign_unsupported",
 		protoerrors.CodeRequestTooLarge:       "request_too_large",
 		protoerrors.CodeSessionRunning:        "session_running",
+		protoerrors.CodeSessionErased:         "session_erased",
 	}
 	for code, want := range wire {
 		if string(code) != want {

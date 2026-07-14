@@ -35,8 +35,11 @@ Rules the Runtime enforces at the auth middleware, fail-closed:
 it — the Runtime materialises the session row on the first turn. There is no
 explicit "open session" call. A `start` on an already-open session is the
 normal second-and-later turn (not an error); a `start` on a **closed** session
-is rejected `invalid_request` — reopen-after-close is forbidden, start a new
-conversation instead.
+(explicitly closed or GC-reaped) **reopens** it — the conversation resumes with
+its history intact. The one exception is a session that was permanently deleted
+by `sessions.delete` (right-to-erasure): a `start` on an **erased** session id
+is rejected `session_erased` — the conversation is gone; start a new one with a
+fresh session id.
 
 Many sessions coexist under one token, fully isolated: every storage read and
 event delivery filters by the complete `(tenant, user, session)` triple. One
