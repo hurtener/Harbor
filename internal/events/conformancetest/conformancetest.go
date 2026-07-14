@@ -622,9 +622,21 @@ func Run(t *testing.T, factory Factory) {
 				}
 			}
 		}
-		if len(attrKeys) != len(tenants) {
-			t.Fatalf("attribution tenant keys = %v, want the %d fixture tenants", attrKeys, len(tenants))
+		// Keys are a SUBSET of the fixture tenants (no leak of a tenant the
+		// widened filter did not authorize). A subset check is more robust than
+		// exact cardinality — it does not assume every fixture tenant had an
+		// in-window event.
+		tenantSet := map[string]struct{}{}
+		for _, ten := range tenants {
+			tenantSet[ten] = struct{}{}
 		}
+		for k := range attrKeys {
+			if _, ok := tenantSet[k]; !ok {
+				t.Fatalf("attribution leaked tenant %q outside the authorized set %v", k, tenants)
+			}
+		}
+		// Every fixture tenant (each seeded with perTenant in-window events)
+		// reconciles to perTenant.
 		for _, ten := range tenants {
 			var total int64
 			for _, b := range attr.Buckets {

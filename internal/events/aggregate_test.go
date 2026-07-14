@@ -773,11 +773,17 @@ func TestAggregate_EmptyWindow(t *testing.T) {
 
 // TestAggregate_ConcurrentReuse — D-025 binding test: N=100+
 // concurrent Aggregate calls against ONE shared Aggregator+bus, each
-// with a different filter, under -race. Asserts:
+// with a different filter, under -race. Half the goroutines exercise the
+// own-scope totals path (ByTenant off) and half exercise the widened
+// per-tenant ATTRIBUTION path (ByTenant on) so the lazily-allocated
+// CountsByTenant accumulator is covered under -race. Asserts:
 //
 //   - no data races (-race is the gate);
-//   - no context bleed (each goroutine's filter is preserved — verified
-//     by per-call tenant assertion);
+//   - no context bleed on the totals (each goroutine's filter is
+//     preserved — verified by per-call tenant assertion);
+//   - no context bleed on the ATTRIBUTION (each widened goroutine's
+//     CountsByTenant keys are EXACTLY its own filter's tenant — run A's
+//     tenant attribution never appears in run B's result);
 //   - baseline goroutine count restored after all calls return.
 func TestAggregate_ConcurrentReuse(t *testing.T) {
 	// NB: cannot run with t.Parallel — the baseline goroutine count
@@ -828,26 +834,59 @@ func TestAggregate_ConcurrentReuse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			sig := sigs[i%tenantCount]
-			resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
-				Filter: prototypes.EventFilter{
-					TenantIDs:  []string{sig.tenant},
-					UserIDs:    []string{"u"},
-					SessionIDs: []string{"s"},
-				},
-				Window: 30 * time.Minute,
-				Bucket: time.Minute,
-			}, false)
+			// Alternate: even goroutines take the own-scope totals path
+			// (ByTenant off, non-widened); odd goroutines take the widened
+			// per-tenant attribution path (ByTenant on) — the accumulator the
+			// new field adds. Both name a SINGLE tenant so each goroutine's
+			// expected total is its own signature (context-bleed probe).
+			byTenant := i%2 == 1
+			req := prototypes.EventAggregateRequest{
+				Filter:   prototypes.EventFilter{TenantIDs: []string{sig.tenant}},
+				Window:   30 * time.Minute,
+				Bucket:   time.Minute,
+				ByTenant: byTenant,
+			}
+			if !byTenant {
+				// Own-scope read folds user/session; name them explicitly so a
+				// non-widened read stays scoped to this tenant's single (u,s).
+				req.Filter.UserIDs = []string{"u"}
+				req.Filter.SessionIDs = []string{"s"}
+			}
+			// widened == byTenant: only the attribution path fans in (and only
+			// it may return CountsByTenant). A non-widened ByTenant would be
+			// ignored, defeating the coverage this test exists for.
+			resp, err := agg.Aggregate(context.Background(), req, byTenant)
 			if err != nil {
 				t.Errorf("goroutine %d: Aggregate: %v", i, err)
 				failures.Add(1)
 				return
 			}
 			var total int64
+			attrTotal := map[string]int64{}
 			for _, b := range resp.Buckets {
 				total += b.Counts["runtime.error"]
+				for tenant, byType := range b.CountsByTenant {
+					attrTotal[tenant] += byType["runtime.error"]
+				}
 			}
 			if total != sig.count {
 				t.Errorf("goroutine %d (%s): got total=%d, want %d — context bleed?", i, sig.tenant, total, sig.count)
+				failures.Add(1)
+			}
+			if byTenant {
+				// Context-bleed on attribution: EXACTLY this goroutine's own
+				// tenant, with the same count as the totals — no other
+				// goroutine's tenant may appear (run A never leaks into run B),
+				// and Σ CountsByTenant == Counts.
+				if len(attrTotal) != 1 || attrTotal[sig.tenant] != sig.count {
+					t.Errorf("goroutine %d (%s): attribution=%v, want exactly {%s:%d} — context bleed?",
+						i, sig.tenant, attrTotal, sig.tenant, sig.count)
+					failures.Add(1)
+				}
+			} else if len(attrTotal) != 0 {
+				// The non-widened path must never carry attribution.
+				t.Errorf("goroutine %d (%s): non-widened read carried attribution %v, want none",
+					i, sig.tenant, attrTotal)
 				failures.Add(1)
 			}
 		}()
