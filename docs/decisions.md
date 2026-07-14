@@ -8002,7 +8002,7 @@ Forcing elevation on a single own-other-session read would break the single most
 
 **Date:** 2026-07-13
 
-**Status:** Pending (Phase 172, v1.14 Track B)
+**Status:** Shipped (Phase 172, v1.14 Track B)
 
 **Where it lives:** `docs/plans/phase-172-events-aggregate-epoch-grid.md`; `internal/protocol/types/events.go`, `internal/events/aggregate.go`.
 

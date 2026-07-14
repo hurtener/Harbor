@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+	aggregateFilter,
 	compileFilter,
 	defaultFacetState,
 	isCrossTenant,
@@ -55,6 +56,46 @@ describe('events filters: compileFilter', () => {
 		const state: EventFacetState = { ...defaultFacetState(), window: '7d' };
 		const filter = compileFilter(state, new Date('2026-05-20T00:00:00Z'));
 		expect(filter.since).toBe('2026-05-13T00:00:00.000Z');
+	});
+});
+
+describe('events filters: aggregateFilter (D-306 grid)', () => {
+	it('drops the window-derived since so the grid stays anchor-determined', () => {
+		const state: EventFacetState = { ...defaultFacetState(), window: '1h' };
+		const filter = aggregateFilter(state, 'tenant-own');
+		expect(filter.since).toBeUndefined();
+	});
+
+	it('keeps own-scope identity axes untouched', () => {
+		const state: EventFacetState = {
+			...defaultFacetState(),
+			tenant: 'tenant-own',
+			user: 'user-y',
+			session: 'sess-z'
+		};
+		const filter = aggregateFilter(state, 'tenant-own');
+		expect(filter.tenant_ids).toEqual(['tenant-own']);
+		expect(filter.user_ids).toEqual(['user-y']);
+		expect(filter.session_ids).toEqual(['sess-z']);
+	});
+
+	it('drops a foreign tenant pin when no user/session is pinned (own-scope fallback — no silently-blank grid)', () => {
+		const state: EventFacetState = { ...defaultFacetState(), tenant: 'tenant-other' };
+		const filter = aggregateFilter(state, 'tenant-own');
+		// Would otherwise fold empty user/session onto the caller and return
+		// an empty series — the fold-UX edge D-306 closes.
+		expect(filter.tenant_ids).toBeUndefined();
+	});
+
+	it('keeps a foreign tenant pin when a user OR session narrows it (a resolvable widened scope)', () => {
+		const state: EventFacetState = {
+			...defaultFacetState(),
+			tenant: 'tenant-other',
+			session: 'sess-target'
+		};
+		const filter = aggregateFilter(state, 'tenant-own');
+		expect(filter.tenant_ids).toEqual(['tenant-other']);
+		expect(filter.session_ids).toEqual(['sess-target']);
 	});
 });
 

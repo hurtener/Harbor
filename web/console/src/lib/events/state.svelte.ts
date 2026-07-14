@@ -18,12 +18,13 @@
 import { resolveConnection } from '$lib/connection.js';
 import { HarborClient } from '$lib/protocol/harbor.js';
 import type { ArtifactsNamespace } from '$lib/protocol/client.js';
-import type { Event, EventFilter } from '$lib/protocol/events.js';
+import type { Event } from '$lib/protocol/events.js';
 import type { PageStatus } from '$lib/components/ui/PageState.svelte';
 import { EventsSubscription, type EventSourceFactory } from './subscription.svelte.js';
 import { EventsAggregator } from './aggregate.svelte.js';
 import { EventsHistory, mergeEventRows } from './history.svelte.js';
 import {
+	aggregateFilter,
 	compileFilter,
 	defaultFacetState,
 	isCrossTenant,
@@ -264,7 +265,6 @@ export class EventsPageState {
 		if (this.subscription === null || this.aggregator === null) {
 			return;
 		}
-		const filter: EventFilter = compileFilter(this.facets);
 		// An empty type facet means "all types". The SSE transport needs a
 		// NAMED listener per subscribed type (the runtime emits `event:
 		// <type>` frames — subscription.svelte.ts); subscribing with an
@@ -283,7 +283,11 @@ export class EventsPageState {
 			session: this.facets.session ?? undefined
 		});
 		this.aggregator.window = this.facets.window;
-		this.aggregator.setFilter(filter);
+		// The sparkline aggregate uses the epoch-anchored grid (D-306) and
+		// the own-scope fold fallback — a widened aggregate naming only a
+		// foreign tenant would otherwise fold to an empty (silently blank)
+		// grid. The live SSE table above fans in via its own `admin` flag.
+		this.aggregator.setFilter(aggregateFilter(this.facets, this.#ownTenant));
 		// Re-drive the historical window read for the new filter (the window
 		// picker's `since` bound + identity axes flow through `compileFilter`
 		// inside #loadHistory). The live SSE tail above is untouched.

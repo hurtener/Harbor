@@ -153,10 +153,12 @@ type EventBucket struct {
 
 // EventAggregateRequest is the wire request for the `events.aggregate`
 // Protocol method. It returns a deterministic time series
-// of event-type counts over `Window`, bucketed by `Bucket`. The window
-// is anchored at the request's effective `Now` (the runtime's
-// monotonic clock at handler entry) — the response slice runs
-// [Now-Window, Now) bucketed at `Bucket` width.
+// of event-type counts over `Window`, bucketed by `Bucket`. By default
+// the window is anchored at the request's effective `Now` (the runtime's
+// clock at handler entry) — the response slice runs [Now-Window, Now)
+// bucketed at `Bucket` width. When the optional `Anchor` is set, the
+// grid is instead floored onto `Anchor + k·Bucket` (see the field), so a
+// `bucket_start` becomes a stable, addressable coordinate.
 //
 // The request body's `filter` is the EventFilter above; the same
 // identity-scope rules apply (a cross-tenant aggregate is gated on the
@@ -188,6 +190,31 @@ type EventAggregateRequest struct {
 	// is deterministic and a rendering client never sees a fractional
 	// trailing bucket.
 	Bucket time.Duration `json:"bucket"`
+	// Anchor is the OPTIONAL origin of the bucket grid. When nil (the
+	// default), the grid is anchored at the effective Now — the
+	// response covers [Now-Window, Now) and a `bucket_start` is NOT
+	// addressable twice (two calls at two instants return two boundary
+	// sets). When set, bucket boundaries are floored onto the fixed grid
+	// `Anchor + k·Bucket`: the response still covers a `Window`'s worth
+	// of buckets, but aligned to that grid, so two calls at two instants
+	// with the SAME Anchor + Window + Bucket share boundary instants — a
+	// `bucket_start` is a stable coordinate a consumer can cache and
+	// re-request, INCLUDING across a runtime restart and across two
+	// fleet runtimes (the boundary is a pure function of Anchor+Bucket,
+	// with no residual dependence on Now). Passing the Unix epoch
+	// (`1970-01-01T00:00:00Z`) yields a globally-shared grid.
+	//
+	// It is a POINTER (not a `time.Time` value) because `omitempty` is a
+	// no-op on a struct — a value type would always serialize the zero
+	// time and break the additive/optional contract and its TS mirror.
+	//
+	// Grid-edge note: with an Anchor, the LAST bucket's `bucket_end` is
+	// the grid boundary that covers Now — it is generally AFTER Now (by
+	// up to one Bucket width), not equal to it. A rendering client must
+	// therefore not treat the final bucket as "up to this instant"; the
+	// grid re-phases the boundaries and never widens the read span by
+	// more than one Bucket at either edge. UTC.
+	Anchor *time.Time `json:"anchor,omitempty"`
 }
 
 // EventAggregateResponse is the wire response for the `events.aggregate`
@@ -195,8 +222,11 @@ type EventAggregateRequest struct {
 // `len(Buckets) == Window/Bucket`.
 type EventAggregateResponse struct {
 	// Buckets is the per-bucket count series, oldest first. Each
-	// bucket's [Start, End) span is exactly `Request.Bucket` wide; the
-	// last bucket's End equals the request's effective Now.
+	// bucket's [Start, End) span is exactly `Request.Bucket` wide. When
+	// the request carried no `Anchor`, the last bucket's End equals the
+	// request's effective Now; when it carried an `Anchor`, the last
+	// bucket's End is the grid boundary covering Now (generally AFTER
+	// Now, by up to one Bucket — see EventAggregateRequest.Anchor).
 	Buckets []EventBucket `json:"buckets"`
 	// Truncated is true when the counts are PARTIAL: the aggregation could
 	// not observe every matching event in the window. It is set UNIFORMLY

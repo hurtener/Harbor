@@ -25,6 +25,26 @@ type realAggregatorClock struct{}
 
 func (realAggregatorClock) Now() time.Time { return time.Now().UTC() }
 
+// floorToGrid returns the start of the grid cell that contains t on the
+// fixed grid `anchor + k·bucket` (k integer). It is a pure function of
+// (t, anchor, bucket) — the same inputs always yield the same instant,
+// so two aggregate calls at two different clock instants that fall in
+// the same cell produce IDENTICAL bucket boundaries (addressability),
+// including across a runtime restart. bucket MUST be > 0 (the caller
+// validates Window/Bucket before reaching here).
+//
+// The division floors toward negative infinity (not toward zero, which
+// is Go's `/` default) so instants BEFORE the anchor still land on the
+// grid without an off-by-one cell at k transitions.
+func floorToGrid(t, anchor time.Time, bucket time.Duration) time.Time {
+	delta := t.Sub(anchor)
+	q := delta / bucket
+	if delta%bucket != 0 && (delta < 0) != (bucket < 0) {
+		q--
+	}
+	return anchor.Add(q * bucket)
+}
+
 // defaultAggregateScanBound is the number of matching events a single
 // aggregation read collects from the windowed substrate. It is generous
 // enough to keep the memory profile equal to materializing the whole
@@ -184,8 +204,31 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 	}
 
 	now := a.clock.Now().UTC()
-	windowStart := now.Add(-req.Window)
 	bucketCount := int(req.Window / req.Bucket)
+
+	// windowStart is the lower bound of the first bucket. Without an
+	// anchor it is Now-Window (the clock-anchored grid); with an anchor
+	// it is floored onto the fixed grid `anchor + k·Bucket` so a
+	// bucket_start is an addressable coordinate — a PURE function of
+	// (anchor, bucket) with no residual dependence on Now.
+	var windowStart time.Time
+	if req.Anchor != nil {
+		// The bucket that CONTAINS Now, floored onto the grid, is the
+		// LAST bucket; the series runs back bucketCount-1 buckets from
+		// there. The grid only re-phases the boundaries: the span stays
+		// exactly Window wide and each edge shifts by at most one Bucket
+		// relative to the clock-anchored [Now-Window, Now).
+		lastBucketStart := floorToGrid(now, req.Anchor.UTC(), req.Bucket)
+		windowStart = lastBucketStart.Add(-time.Duration(bucketCount-1) * req.Bucket)
+	} else {
+		windowStart = now.Add(-req.Window)
+	}
+	// windowEnd is the upper bound of the last bucket. Clock-anchored it
+	// equals Now; grid-anchored it is the grid boundary covering Now
+	// (generally just after Now). It replaces the bare `now` upper bound
+	// so the bucket-range clamp and the substrate read span both track
+	// the (possibly re-phased) grid, never the raw clock.
+	windowEnd := windowStart.Add(req.Window)
 
 	// Pre-allocate the buckets in chronological order. Every bucket is
 	// present even if empty so the rendering client sees a contiguous
@@ -200,15 +243,14 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 	}
 
 	// Apply the explicit time-window from the request's filter on top
-	// of the request's Window. If the wire filter named a tighter
-	// Since/Until, those take precedence (the aggregator returns
-	// counts strictly inside [max(filter.Since, windowStart),
-	// min(filter.Until, now))).
+	// of the grid. If the wire filter named a tighter Since/Until, those
+	// take precedence (the aggregator returns counts strictly inside
+	// [max(filter.Since, windowStart), min(filter.Until, windowEnd))).
 	effectiveSince := windowStart
 	if !req.Filter.Since.IsZero() && req.Filter.Since.After(effectiveSince) {
 		effectiveSince = req.Filter.Since
 	}
-	effectiveUntil := now
+	effectiveUntil := windowEnd
 	if !req.Filter.Until.IsZero() && req.Filter.Until.Before(effectiveUntil) {
 		effectiveUntil = req.Filter.Until
 	}
@@ -250,7 +292,7 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 		// The substrate already applied MatchWire (identity sets +
 		// since/until + type) and excluded bus-internal notices; the guard
 		// below is a defensive bucket-range clamp only.
-		if ev.OccurredAt.Before(windowStart) || !ev.OccurredAt.Before(now) {
+		if ev.OccurredAt.Before(windowStart) || !ev.OccurredAt.Before(windowEnd) {
 			continue
 		}
 		idx := int(ev.OccurredAt.Sub(windowStart) / req.Bucket)

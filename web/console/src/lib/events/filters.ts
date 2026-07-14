@@ -83,6 +83,36 @@ export function compileFilter(state: EventFacetState, now: Date = new Date()): E
 }
 
 /**
+ * Projects the facet state onto the `EventFilter` the SPARKLINE
+ * aggregate (`events.aggregate`) consumes — like {@link compileFilter}
+ * but shaped for the origin-anchored bucket grid (D-306):
+ *
+ *  - It drops the window-derived `since`. The aggregate's grid is fully
+ *    determined by `window` + `bucket` + the epoch `anchor`; a
+ *    `now`-relative `since` would clamp the oldest bucket onto a
+ *    non-grid instant and defeat the cacheable/addressable grid the
+ *    anchor buys. (The live table read still uses {@link compileFilter}
+ *    with its `since`.)
+ *  - It closes the fold-UX edge surfaced in the Phase 171 live-verify:
+ *    a widened aggregate that names ONLY a foreign `tenant_ids` has its
+ *    empty user/session axes folded onto the CALLER server-side and
+ *    returns an EMPTY series — a silently-blank grid. The wire has no
+ *    "all users/sessions in a tenant" token, so when the operator has
+ *    pinned a cross-tenant tenant WITHOUT also pinning a user or
+ *    session, the sparkline accepts OWN-SCOPE (it drops the foreign
+ *    tenant pin) rather than render blank. The live table's fleet
+ *    fan-in is unaffected — only the derived rate sparkline falls back.
+ */
+export function aggregateFilter(state: EventFacetState, ownTenant: string): EventFilter {
+	const filter = compileFilter(state);
+	delete filter.since;
+	if (isCrossTenant(state, ownTenant) && !state.user && !state.session) {
+		delete filter.tenant_ids;
+	}
+	return filter;
+}
+
+/**
  * True when the compiled filter requests cross-tenant fan-in — a
  * `tenant_ids` value other than the operator's own tenant. The page
  * uses this to surface the `audit.admin_scope_used` expectation and to
