@@ -35,6 +35,7 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 var errInjected = errors.New("runloop failure-injection sentinel")
@@ -518,7 +519,9 @@ func TestRunOne_MemoryWritebackError_RunStillCompletes(t *testing.T) {
 // staleSourceDetacher enumerates one stale attached source; Detach records it.
 type staleSourceDetacher struct{ detached atomic.Int32 }
 
-func (d *staleSourceDetacher) AttachedSources(context.Context) []string { return []string{"stale"} }
+func (d *staleSourceDetacher) AttachedSources(context.Context, toolauth.Owner) []string {
+	return []string{"stale"}
+}
 func (d *staleSourceDetacher) Detach(context.Context, string) error {
 	d.detached.Add(1)
 	return nil

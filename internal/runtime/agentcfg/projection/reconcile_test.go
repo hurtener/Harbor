@@ -13,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
+	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // reconcile_test.go — unit coverage for ReconcileConnections (the DETACH leg
@@ -33,7 +34,7 @@ func newFakeDetacher(attached ...string) *fakeDetacher {
 	return &fakeDetacher{attached: attached, detached: map[string]int{}}
 }
 
-func (f *fakeDetacher) AttachedSources(_ context.Context) []string {
+func (f *fakeDetacher) AttachedSources(_ context.Context, _ auth.Owner) []string {
 	return append([]string(nil), f.attached...)
 }
 
@@ -229,6 +230,88 @@ func TestReconcileConnections_RemoveUnderLoad_Stress(t *testing.T) {
 		}
 	}
 	assertGoroutineBaseline(t, base)
+}
+
+// ownerScopedDetacher models the real registry's owner-scoped reconcile view
+// (Registry.RuntimeAddedSources): AttachedSources returns ONLY the queried
+// owner's runtime-added sources — never a boot server, never another owner's.
+// It records the owner it was queried with and every Detach.
+type ownerScopedDetacher struct {
+	byOwner  map[auth.Owner][]string
+	mu       sync.Mutex
+	detached map[string]int
+	queried  []auth.Owner
+}
+
+func (d *ownerScopedDetacher) AttachedSources(_ context.Context, owner auth.Owner) []string {
+	d.mu.Lock()
+	d.queried = append(d.queried, owner)
+	d.mu.Unlock()
+	return append([]string(nil), d.byOwner[owner]...)
+}
+
+func (d *ownerScopedDetacher) Detach(_ context.Context, source string) error {
+	d.mu.Lock()
+	if d.detached == nil {
+		d.detached = map[string]int{}
+	}
+	d.detached[source]++
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *ownerScopedDetacher) detachedNames() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]string, 0, len(d.detached))
+	for k := range d.detached {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner proves a run-start
+// reconcile for owner A enumerates and detaches ONLY owner A's runtime-added
+// entries — never a boot server, never owner B's runtime-adds. The reconcile
+// derives the owner (tenant, agent) from the run's triple + agentID and queries
+// the owner-scoped view with exactly that owner.
+func TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	// Owner A (projTenant, projAgent) declares NOTHING → its runtime-add is
+	// undeclared and eligible for detach. Boot + owner B are in the fake under
+	// different owner keys, so A's owner-scoped view never returns them.
+	ownerA := auth.Owner{Tenant: projTenant, Agent: projAgent}
+	ownerB := auth.Owner{Tenant: "tenant-b", Agent: "agent-b"}
+	det := &ownerScopedDetacher{byOwner: map[auth.Owner][]string{
+		ownerA: {"a-runtime-add"},
+		ownerB: {"b-runtime-add"}, // another owner's add
+		{}:     {"boot-srv"},      // boot-declared, untagged
+	}}
+
+	n, err := projection.ReconcileConnections(ctx, reg, projAgent, projID(), det, nil)
+	if err != nil {
+		t.Fatalf("ReconcileConnections: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("detached count = %d, want 1 (only A's runtime-add)", n)
+	}
+	if got := det.detachedNames(); len(got) != 1 || got[0] != "a-runtime-add" {
+		t.Fatalf("detached = %v, want [a-runtime-add] (boot + owner B untouched)", got)
+	}
+	// The reconcile queried the view with owner A ONLY — never boot, never B.
+	det.mu.Lock()
+	queried := append([]auth.Owner(nil), det.queried...)
+	det.mu.Unlock()
+	for _, o := range queried {
+		if o != ownerA {
+			t.Fatalf("reconcile queried owner %+v, want only %+v", o, ownerA)
+		}
+	}
+	if len(queried) == 0 {
+		t.Fatal("reconcile never queried the owner-scoped view")
+	}
 }
 
 // assertGoroutineBaseline polls (bounded) until the goroutine count is back
