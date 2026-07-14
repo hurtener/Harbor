@@ -365,6 +365,42 @@ func TestAggregate_EpochAnchor_GridEdgesAndSpan(t *testing.T) {
 	}
 }
 
+// TestAggregate_Anchor_RejectsFarAnchor pins the grid overflow guard: an
+// Anchor astronomically far from Now fails loudly with ErrAggregateBadWindow
+// rather than silently producing a garbage grid from an overflowed
+// now.Sub(anchor) (CLAUDE.md §5). A near anchor (the epoch) is unaffected.
+func TestAggregate_Anchor_RejectsFarAnchor(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	req := prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
+		Window: time.Hour,
+		Bucket: time.Minute,
+	}
+
+	// Far future (~year 2500) → rejected.
+	far := time.Date(2500, 1, 1, 0, 0, 0, 0, time.UTC)
+	req.Anchor = ptrTime(far)
+	if _, err := agg.Aggregate(context.Background(), req, false); !errors.Is(err, events.ErrAggregateBadWindow) {
+		t.Fatalf("far-future anchor: err = %v, want ErrAggregateBadWindow", err)
+	}
+	// Far past (~year 1500) → rejected.
+	req.Anchor = ptrTime(time.Date(1500, 1, 1, 0, 0, 0, 0, time.UTC))
+	if _, err := agg.Aggregate(context.Background(), req, false); !errors.Is(err, events.ErrAggregateBadWindow) {
+		t.Fatalf("far-past anchor: err = %v, want ErrAggregateBadWindow", err)
+	}
+	// The epoch (~decades back) is well within the bound → accepted.
+	req.Anchor = ptrTime(unixEpoch)
+	if _, err := agg.Aggregate(context.Background(), req, false); err != nil {
+		t.Fatalf("epoch anchor unexpectedly rejected: %v", err)
+	}
+}
+
 // TestAggregate_FilterRespected — emitting events for two tenants and
 // filtering for one returns only that tenant's counts.
 func TestAggregate_FilterRespected(t *testing.T) {

@@ -54,6 +54,17 @@ func floorToGrid(t, anchor time.Time, bucket time.Duration) time.Time {
 // PARTIAL buckets with Truncated=true — DATA, never a request error.
 const defaultAggregateScanBound = 100_000
 
+// maxAnchorDistance bounds how far an origin-anchored grid's Anchor may sit
+// from the effective Now. `floorToGrid` computes `now.Sub(anchor)` as an
+// int64-nanosecond Duration; an Anchor astronomically far from Now would
+// overflow that subtraction and yield a garbage grid. A century in either
+// direction is far more than any real caller needs (the globally-shared Unix
+// epoch grid is ~decades back) and keeps every intermediate computation well
+// inside the int64-nanosecond range, so a farther Anchor fails loudly with
+// ErrAggregateBadWindow rather than silently producing nonsense boundaries
+// (CLAUDE.md §5 "fail loudly").
+const maxAnchorDistance = 100 * 365 * 24 * time.Hour
+
 // ErrAggregateBadWindow — the request's Window / Bucket pair was
 // structurally invalid: zero or negative Window, zero or negative
 // Bucket, or Bucket does not evenly divide Window. The aggregator
@@ -213,12 +224,22 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 	// (anchor, bucket) with no residual dependence on Now.
 	var windowStart time.Time
 	if req.Anchor != nil {
+		anchor := req.Anchor.UTC()
+		// Fail loudly on an Anchor so far from Now that the grid arithmetic
+		// (now.Sub(anchor), int64-nanosecond) would overflow into garbage
+		// boundaries rather than a garbage-without-error grid (CLAUDE.md §5).
+		// The bound compares instants (no subtraction), so the check itself
+		// cannot overflow.
+		if anchor.Before(now.Add(-maxAnchorDistance)) || anchor.After(now.Add(maxAnchorDistance)) {
+			return prototypes.EventAggregateResponse{}, fmt.Errorf(
+				"%w: anchor %s is more than %s from now", ErrAggregateBadWindow, anchor.Format(time.RFC3339), maxAnchorDistance)
+		}
 		// The bucket that CONTAINS Now, floored onto the grid, is the
 		// LAST bucket; the series runs back bucketCount-1 buckets from
 		// there. The grid only re-phases the boundaries: the span stays
 		// exactly Window wide and each edge shifts by at most one Bucket
 		// relative to the clock-anchored [Now-Window, Now).
-		lastBucketStart := floorToGrid(now, req.Anchor.UTC(), req.Bucket)
+		lastBucketStart := floorToGrid(now, anchor, req.Bucket)
 		windowStart = lastBucketStart.Add(-time.Duration(bucketCount-1) * req.Bucket)
 	} else {
 		windowStart = now.Add(-req.Window)

@@ -283,11 +283,11 @@ export class EventsPageState {
 			session: this.facets.session ?? undefined
 		});
 		this.aggregator.window = this.facets.window;
-		// The sparkline aggregate uses the epoch-anchored grid (D-306) and
-		// the own-scope fold fallback — a widened aggregate naming only a
-		// foreign tenant would otherwise fold to an empty (silently blank)
-		// grid. The live SSE table above fans in via its own `admin` flag.
-		this.aggregator.setFilter(aggregateFilter(this.facets, this.#ownTenant));
+		// The sparkline aggregate uses the epoch-anchored grid (D-306). A
+		// widened (foreign-tenant) pin is preserved: the runtime fans it in
+		// across the named tenant's users/sessions (D-308), so the sparkline
+		// shows the real cross-tenant rate matching the banner + the table.
+		this.aggregator.setFilter(aggregateFilter(this.facets));
 		// Re-drive the historical window read for the new filter (the window
 		// picker's `since` bound + identity axes flow through `compileFilter`
 		// inside #loadHistory). The live SSE tail above is untouched.

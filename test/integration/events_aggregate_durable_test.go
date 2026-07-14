@@ -324,6 +324,41 @@ func TestE2E_AggregateDurable_EpochAnchor_AlignedSeries(t *testing.T) {
 	}
 }
 
+// TestE2E_AggregateDurable_WidenedDistinctPrincipals_FansIn is the
+// isolation-critical end-to-end proof of the fold fix (D-308) on the REAL
+// durable driver: a widened admin aggregate naming ONLY a foreign tenant, with
+// user/session elided, fans in across that tenant's DISTINCT users/sessions —
+// NOT narrowed to tenant+caller-user+caller-session → EMPTY. Distinct
+// principals (not the caller's shared ids) so a caller-fold would return 0.
+func TestE2E_AggregateDurable_WidenedDistinctPrincipals_FansIn(t *testing.T) {
+	deps := newAggregateDurableDeps(t)
+	defer deps.cleanup()
+	srv := httptest.NewServer(deps.mux)
+	defer srv.Close()
+
+	caller := identity.Identity{TenantID: "t-caller", UserID: "u-caller", SessionID: "s-caller"}
+	// Foreign tenant, DISTINCT principals from the caller.
+	publishPhase72aEvent(t, deps.bus, "t-fleet", "u-a", "s-a", fixedNowPhase72a.Add(-5*time.Minute))
+	publishPhase72aEvent(t, deps.bus, "t-fleet", "u-b", "s-b", fixedNowPhase72a.Add(-6*time.Minute))
+	publishPhase72aEvent(t, deps.bus, "t-fleet", "u-c", "s-c", fixedNowPhase72a.Add(-7*time.Minute))
+	// Caller's own tenant event — the filter names ONLY t-fleet, must not count.
+	publishPhase72aEvent(t, deps.bus, caller.TenantID, caller.UserID, caller.SessionID, fixedNowPhase72a.Add(-5*time.Minute))
+
+	body, _ := json.Marshal(prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{TenantIDs: []string{"t-fleet"}},
+		Window: 30 * time.Minute,
+		Bucket: time.Minute,
+	})
+	status, agg := doAggregateDurable(t, srv.URL, deps, caller,
+		[]string{string(auth.ScopeAdmin)}, body)
+	if status != http.StatusOK {
+		t.Fatalf("widened distinct-principals aggregate on durable: status = %d, want 200", status)
+	}
+	if got := sumRuntimeErrorDurable(agg); got != 3 {
+		t.Fatalf("widened durable aggregate counted %d, want 3 (distinct principals fanned in; a caller-fold would return 0)", got)
+	}
+}
+
 func doAggregateDurable(t *testing.T, baseURL string, deps *aggregateDurableDeps, id identity.Identity, scopes []string, body []byte) (int, prototypes.EventAggregateResponse) {
 	t.Helper()
 	status, raw := doAggregateDurableRaw(t, baseURL, deps, id, scopes, body)

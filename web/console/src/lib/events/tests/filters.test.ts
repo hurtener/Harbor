@@ -59,10 +59,10 @@ describe('events filters: compileFilter', () => {
 	});
 });
 
-describe('events filters: aggregateFilter (D-306 grid)', () => {
+describe('events filters: aggregateFilter (D-306 grid, D-308 widened fan-in)', () => {
 	it('drops the window-derived since so the grid stays anchor-determined', () => {
 		const state: EventFacetState = { ...defaultFacetState(), window: '1h' };
-		const filter = aggregateFilter(state, 'tenant-own');
+		const filter = aggregateFilter(state);
 		expect(filter.since).toBeUndefined();
 	});
 
@@ -73,27 +73,31 @@ describe('events filters: aggregateFilter (D-306 grid)', () => {
 			user: 'user-y',
 			session: 'sess-z'
 		};
-		const filter = aggregateFilter(state, 'tenant-own');
+		const filter = aggregateFilter(state);
 		expect(filter.tenant_ids).toEqual(['tenant-own']);
 		expect(filter.user_ids).toEqual(['user-y']);
 		expect(filter.session_ids).toEqual(['sess-z']);
 	});
 
-	it('drops a foreign tenant pin when no user/session is pinned (own-scope fallback — no silently-blank grid)', () => {
+	it('PRESERVES a foreign tenant pin with no user/session (the runtime fans it in, D-308)', () => {
 		const state: EventFacetState = { ...defaultFacetState(), tenant: 'tenant-other' };
-		const filter = aggregateFilter(state, 'tenant-own');
-		// Would otherwise fold empty user/session onto the caller and return
-		// an empty series — the fold-UX edge D-306 closes.
-		expect(filter.tenant_ids).toBeUndefined();
+		const filter = aggregateFilter(state);
+		// No longer dropped: the widened, scope-gated, audited aggregate fans
+		// in across the named tenant's users/sessions server-side (D-308), so
+		// the sparkline shows the real cross-tenant rate — not an own-scope
+		// fallback and not a silently-blank grid.
+		expect(filter.tenant_ids).toEqual(['tenant-other']);
+		expect(filter.user_ids).toBeUndefined();
+		expect(filter.session_ids).toBeUndefined();
 	});
 
-	it('keeps a foreign tenant pin when a user OR session narrows it (a resolvable widened scope)', () => {
+	it('preserves a foreign tenant pin narrowed by a session too', () => {
 		const state: EventFacetState = {
 			...defaultFacetState(),
 			tenant: 'tenant-other',
 			session: 'sess-target'
 		};
-		const filter = aggregateFilter(state, 'tenant-own');
+		const filter = aggregateFilter(state);
 		expect(filter.tenant_ids).toEqual(['tenant-other']);
 		expect(filter.session_ids).toEqual(['sess-target']);
 	});
