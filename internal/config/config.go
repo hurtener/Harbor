@@ -898,6 +898,15 @@ type ToolsConfig struct {
 	OAuthProviders   []ToolOAuthProviderConfig `yaml:"oauth_providers,omitempty"`
 	OAuthTokenKEKEnv string                    `yaml:"oauth_token_kek_env,omitempty"`
 
+	// OAuthCredentialBrokers is the boot-declared list of NAMED credential
+	// sinks (token endpoint + allowed downstream hosts + broker
+	// credential env). It is the config home for the pinned sinks a
+	// Protocol-installed, zero-URL provider descriptor references by name
+	// — the credential-plane invariant keeps every sink-determining value
+	// boot-declared, config/file-only. Additive; the inline
+	// `oauth_providers[].remote` block stays valid. Restart-required.
+	OAuthCredentialBrokers []ToolOAuthCredentialBrokerConfig `yaml:"oauth_credential_brokers,omitempty"`
+
 	// BuiltIn lists opt-in tools shipped in the Harbor binary that the
 	// runtime should register against the catalog at boot. V1.1 ships
 	// two names: `clock.now` (current UTC time) and `text.echo` (echo
@@ -1106,6 +1115,89 @@ type ToolOAuthProviderConfig struct {
 	TokenURL    string                 `yaml:"token_url,omitempty"`
 	RedirectURL string                 `yaml:"redirect_url,omitempty"`
 	Extra       map[string]string      `yaml:"extra,omitempty"`
+
+	// AllowedDownstreamHosts is the boot-declared set of downstream
+	// connection hosts (host[:port]) a southbound MCP binding may inject
+	// this provider's credential into (the exchanged bearer for the
+	// `tokenexchange` driver; the interactive bearer for `oauth2`). It is
+	// the credential-sink allow-list: the credential-plane invariant is
+	// that no admin-writable field determines a credential sink, so the
+	// sink set is boot-declared and config/file-only. A binding whose MCP
+	// connection host is not listed is refused at attach, fail-closed —
+	// never a silent unauthenticated dial. Host comparison normalises
+	// host[:port] (default-port equivalence; case-insensitive) via
+	// [NormalizeDownstreamHost].
+	//
+	// MANDATORY (non-empty) for any provider a `tools.mcp_servers[]`
+	// connection binds: a provider that can inject a bearer must declare
+	// where. This is a behaviour change for an existing OAuth-bound
+	// connection that never listed its downstream host (see the CHANGELOG
+	// migration note) — the empty-list rejection surfaces at boot, not at
+	// first call. Restart-required.
+	AllowedDownstreamHosts []string `yaml:"allowed_downstream_hosts,omitempty"`
+
+	// Audience is the boot-declared token-audience ceiling for the
+	// `tokenexchange` driver. When non-empty it is the authority for the
+	// exchanged token's audience — decoupled from the caller-chosen
+	// provider name — closing the audience-picking lever. Empty preserves
+	// the legacy audience-from-name behaviour (opt-in hardening;
+	// backward-compatible). Ignored by the interactive `oauth2` driver.
+	// Restart-required.
+	Audience string `yaml:"audience,omitempty"`
+
+	// ScopeCeiling is the boot-declared scope ceiling for the
+	// `tokenexchange` driver. When non-empty the requested `Scopes` are
+	// INTERSECTED against it — a requested scope outside the ceiling is
+	// dropped, never honoured. Empty preserves the legacy pass-through.
+	// Ignored by the interactive `oauth2` driver. Restart-required.
+	ScopeCeiling []string `yaml:"scope_ceiling,omitempty"`
+}
+
+// ToolOAuthCredentialBrokerConfig declares one NAMED, boot-declared
+// credential broker — a pinned credential SINK the credential-plane
+// invariant (no admin-writable field determines a credential sink) keeps
+// off the wire. It is the boot home for the token endpoint + allowed
+// downstream hosts a Protocol-installed, zero-URL provider descriptor
+// references BY NAME: the sink-determining values live here, never on a
+// wire-writable descriptor.
+//
+// Config/file-only, restart-required — NOT a Protocol surface. The
+// existing inline `oauth_providers[].remote` block stays valid; this list
+// is additive.
+//
+// Layout in YAML:
+//
+//	tools:
+//	  oauth_credential_brokers:
+//	    - name: m365-broker
+//	      token_url: https://broker.example.com/oauth2/token
+//	      allowed_downstream_hosts: ["graph.microsoft.com"]
+//	      auth_token_env: HARBOR_M365_BROKER_TOKEN
+//	      cache_ttl: 5m       # optional
+//	      timeout: 10s        # optional
+type ToolOAuthCredentialBrokerConfig struct {
+	// Name is the operator-facing broker identifier (unique within the
+	// slice; referenced by name from a Protocol-installed provider
+	// descriptor). Required.
+	Name string `yaml:"name"`
+	// TokenURL is the broker's RFC-8693 token-exchange endpoint — the
+	// credential sink the org's client_id / client_secret are POSTed to.
+	// Required; must be https (or a loopback host for the dev/fixture
+	// case). Boot-pinned: never wire-writable.
+	TokenURL string `yaml:"token_url"`
+	// AllowedDownstreamHosts is the sink allow-list for the exchanged
+	// bearer. Required non-empty (a bearer-minting broker must declare
+	// where its tokens may be injected).
+	AllowedDownstreamHosts []string `yaml:"allowed_downstream_hosts"`
+	// AuthTokenEnv names the env var holding the runtime's own broker
+	// credential (§7 rule 2 — never hardcoded). Required non-empty.
+	AuthTokenEnv string `yaml:"auth_token_env"`
+	// CacheTTL caps the in-memory serve horizon for a brokered token.
+	// Optional; zero = driver default.
+	CacheTTL time.Duration `yaml:"cache_ttl,omitempty"`
+	// Timeout bounds a single broker exchange. Optional; zero = driver
+	// default.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
 }
 
 // ToolOAuthRemoteConfig declares the coordinator-served credential

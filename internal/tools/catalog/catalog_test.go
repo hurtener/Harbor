@@ -69,6 +69,7 @@ func (s *stubOAuthProvider) DenyFlow(_ context.Context, _, _ string) error { ret
 
 func (s *stubOAuthProvider) Revoke(_ context.Context, _ tools.ToolSourceID) error { return nil }
 func (s *stubOAuthProvider) Close(_ context.Context) error                        { return nil }
+func (s *stubOAuthProvider) AllowedDownstreamHosts() []string                     { return nil }
 
 // buildCatalogEnv builds the standard test environment: a real
 // in-memory ToolCatalog with two pre-registered tools, a real

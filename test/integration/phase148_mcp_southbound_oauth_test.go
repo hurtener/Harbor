@@ -156,7 +156,7 @@ type p148Env struct {
 // newP148ProviderAndBus builds the real tokenexchange provider against the
 // RFC-8693 broker fixture plus the shared inmem bus — the seam both the
 // direct-driver env and the devstack-attacher twin test construct from.
-func newP148ProviderAndBus(t *testing.T, broker *p142Broker) (auth.OAuthProvider, events.EventBus) {
+func newP148ProviderAndBus(t *testing.T, broker *p142Broker, downstreamHosts ...string) (auth.OAuthProvider, events.EventBus) {
 	t.Helper()
 	red := patternsAudit.New()
 	bus, err := eventsInmem.New(config.EventsConfig{
@@ -193,11 +193,12 @@ func newP148ProviderAndBus(t *testing.T, broker *p142Broker) (auth.OAuthProvider
 	coord := pauseresume.New()
 
 	prov, err := tokenexchange.New(auth.ProviderConfig{
-		Name:             p142Provider,
-		CredentialSource: credsource.Static(p142BrokerClient, p142BrokerSecret),
-		Scopes:           []string{"Mail.Read"},
-		TokenURL:         broker.tokenURL(),
-		Extra:            map[string]string{"audience": p142Audience},
+		Name:                   p142Provider,
+		CredentialSource:       credsource.Static(p142BrokerClient, p142BrokerSecret),
+		Scopes:                 []string{"Mail.Read"},
+		TokenURL:               broker.tokenURL(),
+		Extra:                  map[string]string{"audience": p142Audience},
+		AllowedDownstreamHosts: downstreamHosts,
 	}, auth.FactoryDeps{
 		Store:       store,
 		Bus:         bus,
@@ -216,7 +217,7 @@ func newP148Env(t *testing.T) *p148Env {
 	t.Helper()
 	broker := newP142Broker(t)
 	hs, rec := p148MCPServer(t)
-	prov, bus := newP148ProviderAndBus(t, broker)
+	prov, bus := newP148ProviderAndBus(t, broker, hs.URL)
 
 	p, err := mcpdrv.New(mcpdrv.Config{
 		Name:            "graph",
@@ -360,7 +361,7 @@ func TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection(t *testing.T) {
 	t.Parallel()
 	broker := newP142Broker(t)
 	hs, rec := p148MCPServer(t)
-	prov, bus := newP148ProviderAndBus(t, broker)
+	prov, bus := newP148ProviderAndBus(t, broker, hs.URL)
 
 	cat := tools.NewCatalog()
 	mcpReg := mcpdrv.NewRegistry()

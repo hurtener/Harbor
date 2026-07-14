@@ -238,7 +238,9 @@ tools:
   #     - name: enterprise-graph
   #       transport_mode: streamable_http  # or sse / auto — never stdio
   #       url: https://mcp.example.com/graph
-  #       oauth_provider: m365-broker    # names an oauth_providers[] entry
+  #       oauth_provider: m365-broker    # names an oauth_providers[] entry;
+  #         # the provider's allowed_downstream_hosts MUST list this
+  #         # connection's host (mcp.example.com) — D-300 fail-closed.
   #       meta_annotations:
   #         deployment: prod-eu
   #         fleet: harbor-west
@@ -307,6 +309,15 @@ tools:
   # non-empty. Generate via e.g. `openssl rand -hex 32`. NEVER commit
   # the literal KEK.
   #
+  # D-300 — credential-sink hardening. `allowed_downstream_hosts` is the
+  # boot-declared set of downstream connection hosts (host[:port]) a
+  # provider's credential may be injected into. MANDATORY for any provider
+  # a `tools.mcp_servers[]` connection binds — the credential-plane
+  # invariant is that no admin-writable field determines where a credential
+  # is sent, so the sink set is boot-pinned. A binding whose MCP connection
+  # host is not listed is refused at boot, fail-closed. Default-port
+  # equivalence holds (`api.github.com` ≡ `api.github.com:443`).
+  #
   # oauth_token_kek_env: HARBOR_OAUTH_TOKEN_KEK
   # oauth_providers:
   #   - name: github
@@ -317,6 +328,7 @@ tools:
   #     auth_url: https://github.com/login/oauth/authorize
   #     token_url: https://github.com/login/oauth/access_token
   #     redirect_url: https://your-deployment.example.com/oauth/callback
+  #     allowed_downstream_hosts: ["api.github.com"]   # D-300 sink allow-list
   #
   #   # The `tokenexchange` driver: pull-based external-credential
   #   # provisioning. Instead of the interactive authorization-code flow,
@@ -347,8 +359,11 @@ tools:
   #     client_secret_env: HARBOR_BROKER_CLIENT_SECRET
   #     scopes: ["Mail.Read", "Calendars.Read"]
   #     token_url: https://broker.example.com/oauth2/token
+  #     allowed_downstream_hosts: ["graph.microsoft.com"]  # D-300 sink allow-list (MANDATORY when bound)
+  #     # D-300 ceilings (optional hardening; boot-declared, never wire-derived):
+  #     audience: https://graph.microsoft.com   # authority for the exchanged token's audience
+  #     scope_ceiling: ["Mail.Read", "Calendars.Read"]  # requested scopes intersected against this
   #     extra:
-  #       audience: https://graph.microsoft.com
   #       cache_ttl_cap: 5m
   #
   #   # credential_source (D-285) — WHERE a provider's OWN client
@@ -377,13 +392,28 @@ tools:
   #     credential_source: remote
   #     scopes: ["Mail.Read", "Calendars.Read"]
   #     token_url: https://broker.example.com/oauth2/token
+  #     allowed_downstream_hosts: ["graph.microsoft.com"]  # D-300 sink allow-list
+  #     audience: https://graph.microsoft.com              # D-300 audience ceiling
   #     remote:
   #       url: https://coordinator.example.com/runtimes/self/broker-credential
   #       auth_token_env: HARBOR_COORDINATOR_TOKEN  # runtime's own service token
   #       cache_ttl: 5m    # optional; caps the in-memory serve horizon
   #       timeout: 10s     # optional; bounds a single fetch
-  #     extra:
-  #       audience: https://graph.microsoft.com
+
+  # D-300 — `oauth_credential_brokers[]`: boot-declared, NAMED credential
+  # SINKS. The config home for the pinned token endpoint + allowed
+  # downstream hosts a Protocol-installed, zero-URL provider descriptor
+  # references BY NAME (so no sink-determining value ever rides the wire).
+  # Additive — the inline `oauth_providers[].remote` block above stays
+  # valid. Config/file-only, restart-required (NOT a Protocol surface).
+  #
+  # oauth_credential_brokers:
+  #   - name: m365-broker
+  #     token_url: https://broker.example.com/oauth2/token
+  #     allowed_downstream_hosts: ["graph.microsoft.com"]  # required, non-empty
+  #     auth_token_env: HARBOR_M365_BROKER_TOKEN           # runtime's broker credential
+  #     cache_ttl: 5m    # optional
+  #     timeout: 10s     # optional
 
   # tools.entries[] — per-tool middleware bindings (approval / OAuth /
   # loading-mode), applied by name AFTER built-ins and http_manifests

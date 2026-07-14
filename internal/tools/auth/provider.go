@@ -736,6 +736,16 @@ func (p *Provider) Close(_ context.Context) error {
 	return nil
 }
 
+// AllowedDownstreamHosts implements OAuthProvider. The bare interactive
+// Provider carries no southbound-binding sink allow-list of its own — the
+// allow-list is a driver-boundary concern declared per operator-config
+// entry and carried by the wrapping driver (the `oauth2` / `tokenexchange`
+// drivers store it and answer here). A direct `*Provider` used as an
+// OAuthProvider therefore declares no allowed sink, so any southbound
+// binding against it is refused fail-closed until a driver supplies the
+// allow-list.
+func (p *Provider) AllowedDownstreamHosts() []string { return nil }
+
 // ConfigFor returns a copy of the OAuthConfig for source, or false
 // when no attachment is configured. Useful for transport drivers
 // that need to inspect the binding scope before invoking Token (e.g.

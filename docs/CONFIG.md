@@ -993,9 +993,31 @@ Operator-configured OAuth providers (D-095). Each entry needs `name`,
   - `client_id_env` / `client_secret_env` — name the env vars holding the
     runtime's OWN credential for authenticating to the broker.
   - `extra.audience` — the RFC-8693 audience. Optional; defaults to the
-    provider name.
+    provider name. Superseded by `audience` (the ceiling) when that is set.
   - `extra.cache_ttl_cap` — max in-memory cache lifetime (a Go duration,
     default `5m`; values below `30s` are rejected at boot).
+  - `audience` — the boot-declared token-audience **ceiling** (D-300).
+    When set it is the authority for the exchanged token's audience —
+    decoupled from the caller-chosen provider name. Optional; empty
+    preserves the legacy audience-from-name behaviour.
+  - `scope_ceiling` — the boot-declared **scope ceiling** (D-300). When
+    set, the requested `scopes` are INTERSECTED against it — a requested
+    scope outside the ceiling is dropped. Optional; empty preserves the
+    legacy pass-through.
+
+**Credential-sink allow-list — `allowed_downstream_hosts` (D-300).** Every
+provider a `tools.mcp_servers[]` connection binds MUST declare
+`allowed_downstream_hosts` — the boot-declared set of downstream connection
+hosts (`host[:port]`) the provider's credential may be injected into. The
+credential-plane invariant is that **no admin-writable field determines
+where a credential is sent**, so the sink set is boot-declared,
+config/file-only. A binding whose MCP connection host is not listed is
+refused at boot (and at runtime-add) fail-closed — never a silent
+unauthenticated dial. Host comparison folds the well-known default port
+(`https://host` ≡ `https://host:443`) and is case-insensitive. This is
+mandatory for a bindable provider (an empty allow-list on a bound provider
+is a boot error); it applies to BOTH the `oauth2` and `tokenexchange`
+drivers.
 
   Brokered tokens are TTL-cached **in memory only and never persisted**
   (`TokenStore.Put` is never called — the broker stays the single source
@@ -1068,6 +1090,30 @@ Each provider's OWN client credential resolves through the
   A push of the credential over the Protocol stays rejected as credential
   passthrough (D-271). See `examples/dev.yaml` for a fully-commented
   `remote` block.
+
+### tools.oauth_credential_brokers
+
+Boot-declared list of NAMED credential **sinks** (D-300) — the config home
+for the pinned token endpoints + allowed downstream hosts a
+Protocol-installed, zero-URL provider descriptor references **by name**. The
+credential-plane invariant keeps every sink-determining value boot-declared,
+config/file-only; this list is where those pinned sinks live. It is
+**additive** — the inline `oauth_providers[].remote` block stays valid — and
+restart-required (NOT a Protocol surface). Each entry:
+
+- `name` — operator-facing broker identifier. **Required**, unique within
+  the list; referenced by name from a provider descriptor.
+- `token_url` — the broker's RFC-8693 token-exchange endpoint (the pinned
+  credential sink the org's `client_id` / `client_secret` are POSTed to).
+  **Required**; must be `https` (or a loopback host for the dev/fixture
+  case). Boot-pinned — never wire-writable.
+- `allowed_downstream_hosts` — the sink allow-list for the exchanged
+  bearer. **Required, non-empty** (a bearer-minting broker must declare
+  where its tokens may be injected — fail-closed).
+- `auth_token_env` — names the env var holding the runtime's own broker
+  credential (§7 rule 2 — never hardcoded). **Required, non-empty.**
+- `cache_ttl` — optional; caps the in-memory serve horizon (Go duration).
+- `timeout` — optional; bounds a single broker exchange (Go duration).
 
 ### tools.oauth_token_kek_env
 

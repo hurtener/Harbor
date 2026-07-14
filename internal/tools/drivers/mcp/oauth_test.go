@@ -17,10 +17,11 @@ import (
 // + injection tests. Token returns a fixed token, or a configured error
 // (including a typed *auth.ErrAuthRequired) to exercise the fail-closed path.
 type stubOAuthProvider struct {
-	token   string
-	tokErr  error
-	calls   int
-	lastSrc tools.ToolSourceID
+	token        string
+	tokErr       error
+	calls        int
+	lastSrc      tools.ToolSourceID
+	allowedHosts []string
 }
 
 func (s *stubOAuthProvider) Token(_ context.Context, source tools.ToolSourceID) (auth.Token, error) {
@@ -45,6 +46,9 @@ func (s *stubOAuthProvider) Revoke(context.Context, tools.ToolSourceID) error {
 	return nil
 }
 func (s *stubOAuthProvider) Close(context.Context) error { return nil }
+func (s *stubOAuthProvider) AllowedDownstreamHosts() []string {
+	return append([]string(nil), s.allowedHosts...)
+}
 
 var _ auth.OAuthProvider = (*stubOAuthProvider)(nil)
 
@@ -274,7 +278,7 @@ func TestResolveBearerCtx_StashesBearer(t *testing.T) {
 
 // TestResolveOAuthBinding_Table covers the attach-time binding validation.
 func TestResolveOAuthBinding_Table(t *testing.T) {
-	prov := &stubOAuthProvider{token: "t"}
+	prov := &stubOAuthProvider{token: "t", allowedHosts: []string{"mcp.example.test"}}
 	providers := map[string]auth.OAuthProvider{"m365": prov}
 
 	t.Run("unbound", func(t *testing.T) {

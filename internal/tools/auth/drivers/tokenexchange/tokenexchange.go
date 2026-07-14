@@ -113,11 +113,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
@@ -213,10 +215,26 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 
 	source := tools.ToolSourceID(cfg.Name)
 
-	// audience defaults to the source ID; overridable via extra.
+	// Audience resolution, ceiling-first (the credential-plane invariant:
+	// the audience is boot-declared, never derived from the caller-chosen
+	// provider name). When a boot ceiling is declared it is the authority;
+	// otherwise the legacy behaviour is preserved (extra.audience override,
+	// else the source ID) so existing configs are byte-compatible.
 	audience := string(source)
 	if v := strings.TrimSpace(cfg.Extra["audience"]); v != "" {
 		audience = v
+	}
+	if v := strings.TrimSpace(cfg.Audience); v != "" {
+		audience = v
+	}
+
+	// Scope ceiling: when declared, the requested scopes are intersected
+	// against it (an out-of-ceiling scope is dropped, never honoured). No
+	// ceiling preserves the legacy pass-through of the requested scopes.
+	requestedScopes := append([]string(nil), cfg.Scopes...)
+	effectiveScopes := requestedScopes
+	if len(cfg.ScopeCeiling) > 0 {
+		effectiveScopes = intersectScopes(requestedScopes, cfg.ScopeCeiling)
 	}
 
 	cacheTTLCap := defaultCacheTTLCap
@@ -239,34 +257,151 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		brokerHost = u.Host
 	}
 
-	httpClient := deps.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
+	// The token-exchange POST carries the org's OAuth client_id /
+	// client_secret in its form body. Harden the client to the same bar as
+	// the discovery client and the credential-source fetch: refuse a
+	// private-range / loopback destination at dial time (post-DNS),
+	// disable the proxy, and REFUSE every redirect — Go replays the POST
+	// body on 307/308, so a redirecting token endpoint would re-POST the
+	// client_secret to the redirect target. A caller-supplied client is
+	// shallow-copied and re-hardened (redirect refusal), never mutated in
+	// place, mirroring the credsource/remote precedent.
+	clientTimeout := 30 * time.Second
+	httpClient := hardenTokenExchangeClient(deps.HTTPClient, clientTimeout)
 	clock := deps.Clock
 	if clock == nil {
 		clock = time.Now
 	}
 
 	return &provider{
-		name:        cfg.Name,
-		source:      source,
-		tokenURL:    cfg.TokenURL,
-		brokerHost:  brokerHost,
-		credSource:  cfg.CredentialSource,
-		scopes:      append([]string(nil), cfg.Scopes...),
-		audience:    audience,
-		cacheTTLCap: cacheTTLCap,
-		httpClient:  httpClient,
-		now:         clock,
-		bus:         deps.Bus,
-		redactor:    deps.Redactor,
-		coordinator: deps.Coordinator,
-		store:       deps.Store, // held to honour the FactoryDeps contract; Put is NEVER called
-		cache:       make(map[string]cachedToken),
-		gens:        make(map[string]uint64),
-		flight:      make(map[string]*exchangeCall),
+		name:                   cfg.Name,
+		source:                 source,
+		tokenURL:               cfg.TokenURL,
+		brokerHost:             brokerHost,
+		credSource:             cfg.CredentialSource,
+		scopes:                 effectiveScopes,
+		audience:               audience,
+		allowedDownstreamHosts: append([]string(nil), cfg.AllowedDownstreamHosts...),
+		cacheTTLCap:            cacheTTLCap,
+		httpClient:             httpClient,
+		now:                    clock,
+		bus:                    deps.Bus,
+		redactor:               deps.Redactor,
+		coordinator:            deps.Coordinator,
+		store:                  deps.Store, // held to honour the FactoryDeps contract; Put is NEVER called
+		cache:                  make(map[string]cachedToken),
+		gens:                   make(map[string]uint64),
+		flight:                 make(map[string]*exchangeCall),
 	}, nil
+}
+
+// ErrTokenEndpointRedirect is the typed sentinel the hardened
+// token-exchange client refuses a redirect with. The token-exchange POST
+// carries the org's client_id / client_secret; Go replays the request body
+// on a 307/308, so a redirecting token endpoint is a credential-exfil
+// fault, never a hop to follow. Wrapped under auth.ErrExchangeFailed so
+// callers observe the exchange as failed.
+var ErrTokenEndpointRedirect = errors.New("auth/tokenexchange: token endpoint attempted a redirect (the token POST carries client_id/client_secret; a redirecting endpoint is a fault, not a hop)")
+
+// ErrPrivateDialRefused is the typed sentinel the hardened client refuses a
+// private-range / link-local dial destination with (post-DNS) — the
+// DNS-rebinding backstop. Wrapped under auth.ErrExchangeFailed at the call
+// site. Loopback is deliberately NOT refused (see hardenTokenExchangeClient).
+var ErrPrivateDialRefused = errors.New("auth/tokenexchange: dial to a private/link-local address refused (the token POST carries client_id/client_secret)")
+
+// hardenTokenExchangeClient builds (or re-hardens) the HTTP client used for
+// the credential-bearing token-exchange POST. A nil supplied client yields
+// a fully hardened client: a dial-time control refusing private-range /
+// link-local resolved addresses (the DNS-rebinding backstop), no proxy, and
+// a redirect refusal. A supplied client (tests, custom embedders) is
+// shallow-copied and gets ONLY the redirect refusal — its transport / dial
+// path is preserved, exactly the credsource/remote posture (remote.go: a
+// caller client is cloned and only CheckRedirect is set).
+//
+// Loopback carve-out: unlike the discovery client (which fetches
+// attacker-influenceable metadata URLs and so refuses loopback too), the
+// token_url here is BOOT-DECLARED / config-only — never wire-derived — and a
+// broker on a localhost sidecar (a token-vault agent, a fixture) is a
+// legitimate deployment. So loopback is allowed, mirroring the
+// credsource/remote loopback carve-out for its own bearer-carrying client.
+// The DNS-rebinding threat this guard defends is a hostname resolving into
+// the RFC1918 / link-local space, which stays refused.
+func hardenTokenExchangeClient(supplied *http.Client, timeout time.Duration) *http.Client {
+	if supplied != nil {
+		clone := *supplied
+		clone.CheckRedirect = refuseTokenEndpointRedirect
+		return &clone
+	}
+	dialer := &net.Dialer{Timeout: timeout}
+	// Control runs AFTER DNS resolution with the resolved ip:port — the
+	// load-bearing backstop (mirrors discovery.go's post-resolution guard).
+	// A hostname that resolves into private / link-local space is refused
+	// here, fail-closed.
+	dialer.Control = func(_, address string, _ syscall.RawConn) error {
+		host, _, splitErr := net.SplitHostPort(address)
+		if splitErr != nil {
+			host = address
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("%w: unresolved dial address %q", ErrPrivateDialRefused, address)
+		}
+		if isBlockedDialIP(ip) {
+			return fmt.Errorf("%w: %s", ErrPrivateDialRefused, host)
+		}
+		return nil
+	}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:       nil, // never route the credential POST through a proxy
+			DialContext: dialer.DialContext,
+		},
+		CheckRedirect: refuseTokenEndpointRedirect,
+	}
+}
+
+// refuseTokenEndpointRedirect is the CheckRedirect hook: it refuses every
+// redirect so the credential-bearing POST body is never replayed to a
+// redirect target.
+func refuseTokenEndpointRedirect(_ *http.Request, _ []*http.Request) error {
+	return ErrTokenEndpointRedirect
+}
+
+// isBlockedDialIP reports whether ip is in a range the credential POST must
+// never reach: link-local, unique-local, RFC 1918 private, or the
+// unspecified address. Loopback is deliberately EXCLUDED (the boot-declared
+// broker on a localhost sidecar is a legitimate deployment — see
+// hardenTokenExchangeClient). The DNS-rebinding backstop this powers refuses
+// a hostname that resolves into the blocked space.
+func isBlockedDialIP(ip net.IP) bool {
+	return ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsPrivate() ||
+		ip.IsUnspecified()
+}
+
+// intersectScopes returns the requested scopes that also appear in the
+// ceiling, preserving the requested order and dropping duplicates. An
+// out-of-ceiling requested scope is dropped, never honoured.
+func intersectScopes(requested, ceiling []string) []string {
+	allow := make(map[string]struct{}, len(ceiling))
+	for _, s := range ceiling {
+		allow[s] = struct{}{}
+	}
+	var out []string
+	seen := make(map[string]struct{}, len(requested))
+	for _, s := range requested {
+		if _, ok := allow[s]; !ok {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 // provider is the concrete tokenexchange OAuthProvider.
@@ -285,15 +420,20 @@ type provider struct {
 	// (`client_id` / `client_secret`) — at boot for the env source,
 	// lazily at exchange time for the remote source. Never
 	// logged; the resolved values ride the broker request body only.
-	credSource  credsource.Source
-	scopes      []string
-	audience    string
-	cacheTTLCap time.Duration
-	httpClient  *http.Client
-	now         func() time.Time
-	bus         events.EventBus
-	redactor    audit.Redactor
-	coordinator pauseresume.Coordinator
+	credSource credsource.Source
+	scopes     []string
+	audience   string
+	// allowedDownstreamHosts is the boot-declared sink allow-list — the
+	// downstream connection hosts the exchanged bearer may be injected
+	// into. Set once at construction; the MCP southbound binding refuses a
+	// connection host absent from it (fail-closed).
+	allowedDownstreamHosts []string
+	cacheTTLCap            time.Duration
+	httpClient             *http.Client
+	now                    func() time.Time
+	bus                    events.EventBus
+	redactor               audit.Redactor
+	coordinator            pauseresume.Coordinator
 
 	// store is the shared TokenStore. Held only to honour the
 	// FactoryDeps mandatory-dep contract; brokered tokens live in the
@@ -775,6 +915,13 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 func (p *provider) Close(_ context.Context) error {
 	p.closed.Store(true)
 	return nil
+}
+
+// AllowedDownstreamHosts implements auth.OAuthProvider — the boot-declared
+// sink allow-list for the exchanged bearer. A copy is returned so callers
+// cannot alias provider state.
+func (p *provider) AllowedDownstreamHosts() []string {
+	return append([]string(nil), p.allowedDownstreamHosts...)
 }
 
 // identityFromCtx pulls the identity triple from ctx and fails closed

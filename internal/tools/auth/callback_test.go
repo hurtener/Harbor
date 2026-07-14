@@ -451,6 +451,7 @@ func (s *cbStubProvider) DenyFlow(context.Context, string, string) error {
 }
 func (s *cbStubProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }
 func (s *cbStubProvider) Close(context.Context) error                      { return nil }
+func (s *cbStubProvider) AllowedDownstreamHosts() []string                 { return nil }
 
 func cbStubInfo(t *testing.T) PendingFlowInfo {
 	t.Helper()

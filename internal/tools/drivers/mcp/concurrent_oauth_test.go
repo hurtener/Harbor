@@ -48,6 +48,7 @@ func (identityBearerProvider) PendingFlow(string) (auth.PendingFlowInfo, bool) {
 func (identityBearerProvider) DenyFlow(context.Context, string, string) error   { return nil }
 func (identityBearerProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }
 func (identityBearerProvider) Close(context.Context) error                      { return nil }
+func (identityBearerProvider) AllowedDownstreamHosts() []string                 { return nil }
 
 // bearerMetaAsserter wraps an MCP streamable-HTTP handler and, for every
 // tools/call POST, asserts the request's Authorization bearer matches the
