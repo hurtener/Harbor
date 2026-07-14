@@ -9,14 +9,17 @@ import (
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
-// TestProdWiring_ToolsProjectorAnnotatorUnwiredIsHonest is the tools
-// prod-wiring test named by the projection-completeness contract (Half B).
-// It proves the V1 PRODUCTION build — a CatalogProjector with NO Annotator
-// wired (the concrete lands in Phase 178) — is honest: AnnotationsAvailable
-// reports false, the dedicated annotator-backed facet filters LOUD-REJECT,
-// and the response-riding aggregates carry the partial marker instead of a
-// fabricated 0 (D-313).
-func TestProdWiring_ToolsProjectorAnnotatorUnwiredIsHonest(t *testing.T) {
+// TestCatalogProjector_AnnotatorUnwiredIsHonest proves the honest-degradation
+// path a catalog stack that did NOT wire the Annotator still ships (a headless
+// read-only build): AnnotationsAvailable reports false, the dedicated
+// annotator-backed facet filters LOUD-REJECT, and the response-riding
+// aggregates carry the partial marker instead of a fabricated 0 (D-313). The
+// production build wires the annotator (internal/tools/annotate); the
+// BuildMux-driven Half-B prod-wiring test
+// (TestProdWiring_ToolsAnnotatorThroughBuildMux, in internal/runtime/serve)
+// proves a dropped WithAnnotator regresses to exactly this loud-reject, which
+// is why THAT test — not this one — is named by the projection contract.
+func TestCatalogProjector_AnnotatorUnwiredIsHonest(t *testing.T) {
 	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t))
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)

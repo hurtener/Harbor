@@ -196,6 +196,17 @@ type PostureDeps struct {
 	// wiring decision. Optional — defaults false (a read-only or headless
 	// runtime that did not wire an eraser).
 	SessionLifecycleAvailable bool
+	// ToolAnnotationsAvailable indicates this Runtime wired the per-tool
+	// Annotator (OAuth binding status / approval policy / last-used /
+	// metrics / content-stats / display-modes) — when true,
+	// `runtime.info.capabilities` advertises `tool_annotations` so a Protocol
+	// client enables the Tools-page OAuth + approval facets and the catalog
+	// aggregates at attach time instead of discovering an `invalid_request`
+	// loud-reject at submit time. The facets / aggregates themselves stay
+	// gated by the Catalog projector's wired Annotator; this flag is the
+	// *advertised* projection of that wiring decision. Optional — defaults
+	// false (a catalog stack that did not wire the annotator).
+	ToolAnnotationsAvailable bool
 }
 
 // ErrPostureMisconfigured — NewPostureSurface was called with a missing
@@ -259,7 +270,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt:    bootedAt,
 		displayName: deps.DisplayName,
 		instanceID:  deps.InstanceID,
-		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.SessionLifecycleAvailable),
+		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable),
 	}, nil
 }
 
@@ -270,7 +281,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // in via the matching deps flag. Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, sessionLifecycleAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -284,6 +295,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, sessionLifecy
 	}
 	if sessionLifecycleAvailable {
 		caps = append(caps, types.CapSessionLifecycle)
+	}
+	if toolAnnotationsAvailable {
+		caps = append(caps, types.CapToolAnnotations)
 	}
 	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
 	return caps

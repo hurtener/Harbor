@@ -54,7 +54,7 @@ case "${PROBE:-000}" in
       ST=$(curl -s -o "${TMP}" -w '%{http_code}' --max-time 10 \
         -X POST -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \
         -H 'Content-Type: application/json' \
-        -d '{"filter":{"oauth_statuses":["required"]}}' "${TOOLS_URL}")
+        -d '{"filter":{"oauth_statuses":["Required"]}}' "${TOOLS_URL}")
       set -e
       if [ "${ST}" = "200" ]; then
         ok "phase 178: tools OAuth facet answered 200 (annotator wired)"

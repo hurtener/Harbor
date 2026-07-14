@@ -66,6 +66,8 @@ import (
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/annotate"
+	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
@@ -189,6 +191,15 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	sessionLifecycleAvailable := in.Sessions != nil && in.State != nil &&
 		in.Memory != nil && in.Artifacts != nil
 
+	// The per-tool annotator (OAuth / approval / metrics / content-stats /
+	// last-used) is wired when the catalog + its state-backed approval-policy
+	// store are present — the same condition that gates the capability
+	// advertisement so it is honest about the surface. A catalog without a
+	// StateStore (a headless read-only stack) leaves the annotator unwired and
+	// the tool-annotation facets loud-reject (the honest degradation), never a
+	// false-empty page.
+	toolAnnotationsAvailable := in.Catalog != nil && in.State != nil
+
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
 		Build: types.RuntimeInfo{
 			BuildVersion:       in.BuildVersion,
@@ -216,6 +227,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		TopologyAvailable:         in.TopologyAvailable,
 		AgentConfigAvailable:      in.AgentConfig != nil,
 		SessionLifecycleAvailable: sessionLifecycleAvailable,
+		ToolAnnotationsAvailable:  toolAnnotationsAvailable,
 	})
 	if err != nil {
 		return nil, wrapErr("posture surface", err)
@@ -289,6 +301,33 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		if in.AgentConfig != nil {
 			toolsProjectorOpts = append(toolsProjectorOpts,
 				toolsprotocol.WithLoadingResolver(projection.LoadingResolverAdapter{Registry: in.AgentConfig}))
+		}
+		// Assemble + wire the production per-tool Annotator (the one-line seam;
+		// the weight is the annotator's aggregation, not the wiring). It reads
+		// OAuth status from tools/auth, the approval posture from the
+		// state-backed approval-policy store, and metrics / last-used /
+		// content-stats read-time from the events stream. Wiring it flips
+		// AnnotationsAvailable() on, so the OAuth / approval facets, the version
+		// search axis, and the catalog aggregates operate over real data instead
+		// of loud-rejecting. The projection-completeness gate's Half-B prod-wiring
+		// test drives BuildMux and proves a dropped WithAnnotator ships false
+		// absence (the projection-completeness gate).
+		if toolAnnotationsAvailable {
+			policyStore, psErr := toolapproval.NewStatePolicyStore(in.State)
+			if psErr != nil {
+				return nil, wrapErr("tools/protocol approval-policy store", psErr)
+			}
+			annotator, aErr := annotate.NewAnnotator(annotate.Deps{
+				Catalog:             in.Catalog,
+				Approval:            policyStore,
+				Events:              bus,
+				OAuth:               annotate.NewProviderOAuthReader(in.OAuthProviders),
+				HeavyThresholdBytes: int64(cfg.Artifacts.HeavyOutputThresholdBytes),
+			})
+			if aErr != nil {
+				return nil, wrapErr("tools/protocol annotator", aErr)
+			}
+			toolsProjectorOpts = append(toolsProjectorOpts, toolsprotocol.WithAnnotator(annotator))
 		}
 		toolsProjector, pErr := toolsprotocol.NewCatalogProjector(in.Catalog, toolsProjectorOpts...)
 		if pErr != nil {

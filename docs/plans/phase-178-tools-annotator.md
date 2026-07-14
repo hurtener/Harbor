@@ -55,10 +55,45 @@ consumer that turns 177's honest gate into real answers on the tools surface.
 
 ## Findings I'm departing from (if any)
 
-None. This phase completes the tools leg of the HA-24 class (D-311 / D-313) by
-supplying the backend Phase 177 honestly gated. It builds strictly behind the
-already-shipped `Annotator` seam — no new interface, no wire-shape break beyond
-the Phase-177 capability flipping from unwired to wired.
+The phase builds strictly behind the already-shipped `Annotator` seam — no new
+interface, no wire-shape break beyond the Phase-177 capability flipping from
+unwired to wired. As shipped it carries these bounded deviations (§4.3), each an
+honest representable-absence, never a fabrication:
+
+- **Annotator package.** The production concrete lives in a NEW
+  `internal/tools/annotate` package rather than `internal/tools/protocol`, so it
+  can import `tools/auth` / `tools/approval` / `events` / MCP without those
+  imports reaching the projector's package. It satisfies the projector's
+  `Annotator` + `ApprovalPolicySetter` + `OAuthRevoker` seams structurally.
+- **`Tool.Version` stays honestly empty.** No V1 transport carries a tool version
+  — the runtime `tools.Tool` descriptor has no version field and the `Annotator`
+  seam surfaces none. The `Name+Version` free-text search axis is honestly
+  name-only (representable absence, never a fabricated version); its
+  honest-omission entry REMAINS in the projection contract so the gate keeps
+  enforcing the absence.
+- **Approval-policy persistence is a new store.** `tools/approval` had no per-tool
+  auto/gated/denied posture store (its decision engine answers per-invocation).
+  This phase adds a StateStore-backed `approval.PolicyStore` in that owning
+  subsystem — the persist path for `tools.set_approval_policy` and the read side
+  of the annotation. It is session-scoped (isolation-safe; a tenant-wide admin
+  posture is a future elevation).
+- **`DisplayModes` reads honestly empty.** V1 MCP negotiation advertises host
+  render-mode capabilities (a `[]string`), not the per-MIME→mode map the wire
+  field models. The map is honestly empty; the seam is retained for a future
+  per-MIME negotiation.
+- **`ContentStats` histogram is offload-only.** Tool lifecycle events are
+  content-free (name / transport / status / duration — never result bytes), so
+  the per-result size histogram is built from the `mcp.resource_offloaded`
+  records (the only per-result byte-size signal the runtime emits). Non-offloaded
+  results carry no size and are honestly absent from the histogram.
+- **The honest-degradation gate stays.** The projector keeps its
+  loud-reject-when-unwired behaviour (rather than deleting the gate) so a
+  headless / read-only catalog stack still degrades honestly; production wires the
+  annotator, so the gate no longer fires there.
+- **Cross-phase fix (§17.6).** The integration test surfaced a cross-session bleed
+  in the 177 projector's in-memory approval-override map (keyed by tool ID only).
+  Fixed in the same PR: the map is now identity-scoped AND bypassed entirely when a
+  persisting annotator is wired.
 
 ## Goals
 
