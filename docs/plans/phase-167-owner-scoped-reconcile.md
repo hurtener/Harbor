@@ -12,7 +12,7 @@ Harbor is a FRAMEWORK: a downstream team runs one runtime per tenant OR one
 runtime serving many. Boot-declared MCP servers attach ONCE under a single
 deployment identity (`mcpDefault`, `internal/runtime/assemble/assemble.go:929`)
 and their tools live in the process-global, bare-name tool catalog
-(`internal/tools/catalog/catalog.go` — `byName`, `Resolve(name)`, NOT
+(`internal/tools/catalog.go` — `byName`, `Resolve(name)`, NOT
 identity-filtered); reads and dispatch happen under many session triples. This
 is D-287's settled, PR-464-hardened model ("the catalog + MCP registry are
 shared across sessions … a refcount/drain protocol was considered and
@@ -166,9 +166,11 @@ isolation key).
 - `internal/tools/drivers/mcp/registry.go` — the owner tag on a runtime-added
   `serverEntry` (boot entries untagged); an owner-filtered `SourceIDs` /
   reconcile-view accessor (the bare-name read paths + dispatch are UNCHANGED).
-- `internal/tools/auth/providers.go` (Phase 169's `ProviderSet`) — the owner tag
-  on an installed provider + the owner-filtered enumeration (this phase
-  establishes the tag; 169 consumes it).
+- The `Owner` tag type this phase establishes is consumed by Phase 169's
+  `internal/tools/auth/providers.go` (`ProviderSet`) — that file is CREATED in
+  169, not here; this row is a forward reference so the tag's single consumer is
+  visible (§13). This phase defines the tag; 169 adds the owner-filtered
+  provider enumeration on top of it.
 - `internal/runtime/serve/mcp_attacher.go` — stamp the owner tag from
   `AttachRequest.Identity` at runtime-add attach.
 - `internal/runtime/serve/mcp_detacher.go` — `AttachedSources` scoped to the
