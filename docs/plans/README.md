@@ -309,6 +309,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |171 | `events.aggregate` durable-driver parity + conformance-matrix closure (HA-18 + HA-20, the D-283 pattern — fix the instance AND close the class same PR; v1.14 Track B). HA-18: `events.aggregate` 500s on the durable driver EVERY call — the aggregator replays via the per-session `Replayer.Replay` path with a session-less `Filter{Admin:true}` the durable driver correctly refuses (`ErrIdentityScopeRequired`, "durable replay requires a SessionID"), while inmem honours `Admin:true` and fans in, so it works in dev and 500s in prod; `events.list` ALREADY does the session-less admin fan-in on durable via `listWindowDurable` (the `ListKind` maintenance head-scan). FIX: source the window snapshot from the same `HistoryReplayer` cross-session fan-in (ONE read ⇒ ONE `audit.admin_scope_used` on the widened path; the effective `Since/Until` threaded onto the substrate query; a generous aggregation bound keeps memory equal to today's whole-ring materialization; a window past the bound returns PARTIAL buckets with the additive `EventAggregateResponse.Truncated = true` UNIFORMLY on both drivers, NEVER a 400 — the earlier `ErrAggregateWindowTooLarge → 400` was the review F1 FAIL: it forked 400-on-durable / 200-on-inmem for the same request, the whether-it-works divergence HA-20 kills), threading the handler's SERVER-DERIVED `widened` decision (D-299) computed on the RAW pre-fold filter as a Go input never a wire field (also fixes a latent audit-integrity bug: the hardcoded `Admin:true` emits `admin_scope_used` TODAY on inmem for EVERY aggregate incl. non-admin own-session reads, `inmem.go:640`); the new substrate also EXCLUDES bus-internal notice types the old `Replay`+`MatchWire` path counted (a latent-bug fix owned in D-305); aggregate + list now agree by construction; `Replayer.Replay` UNCHANGED (its per-session SSE-reconnect refusal is correct). HA-20: close the matrix hole — a driver-parametrized `Aggregate_Admin_SessionLess_FansInAcrossSessions` scenario over a MULTI-TENANT fixture (≥2×2×2) with an explicit ISOLATION assertion (parity ≠ isolation) + a four-method parity leg (`events.aggregate`/`events.list`/`events.subscribe`/`state.history` against every registered driver → same answer OR same named sentinel) + a registry gate that BLANK-IMPORTS `internal/drivers/prod` (a `RegisteredDrivers()` entry with no conformance run fails the build); the thesis made executable — a driver difference may change WHAT (depth via `truncated`, observed horizon) never WHETHER a method works, differences stay DATA/named sentinels (`ErrReplayUnavailable`, `truncated`) never a 500 never a status fork never normalized (do NOT make inmem durable, do NOT normalize retention); ONE additive wire field `EventAggregateResponse.Truncated` (`ProtocolVersion` stays 0.1.0; full D-223/D-209 lockstep + §18 SKILL.md); §17.1 integration test = 200-not-500 on durable over a real StateStore (§17.8) + identity propagation + ≥1 failure mode; D-305) | internal/events + internal/protocol/types + internal/protocol/transports/stream + web/console | §6.13, §5.2, §6.5, §4, §7 | 72a, 162, 124, 125, 118 | 85% | Shipped |
 |172 | `events.aggregate` origin-anchored (epoch-aligned) bucket grid (HA-16; v1.14 Track B). The aggregator lays its grid from the wall-clock instant at handler entry (`windowStart := now.Add(-req.Window)`); `Window % Bucket == 0` constrains bucket-series LENGTH but never ORIGIN, so two calls at two instants return two different boundary sets — a `bucket_start` is not addressable twice and no consumer can cache a bucket. ADD an OPTIONAL `anchor` on `EventAggregateRequest` (zero ⇒ today's clock-anchored grid); when set, boundaries floor onto `anchor + k·Bucket` so two calls with the same anchor+window+bucket share boundary instants (a bucket is re-requestable/cacheable) and a cold N-bucket fill is ONE call; the Unix epoch yields a globally-shared grid. Chosen over explicit `{since,until,bucket}` as the smallest additive surface composing with `Window`/`Bucket` and not duplicating the `Filter.Since/Until` clamp. NO change to bucket contents/redaction/retention/identity axes; `ProtocolVersion` stays 0.1.0 (additive); full D-223 lockstep + D-209 regen + §18 `use-the-harbor-protocol` SKILL.md same PR; D-306) | internal/protocol/types + internal/events + web/console | §6.13, §5.2, §7 | 171, 118 | 85% | Shipped |
 |173 | `events.aggregate` per-tenant attribution for admin-widened reads (HA-17; v1.14 Track B). An aggregate bucket is a bag of scalars (`{"tool.invoked":7}`) with NO tenant attribution, so — unlike a ROW read (`sessions.list`/`tasks.list`/`events.list`) where each row carries its tenant and a consumer post-filters the merged result against its entitled set — a consumer CANNOT verify an admin-widened count against the `Filter.TenantIDs` it asked for; for an aggregate the runtime's honouring of the filter IS the entire tenant boundary, a single point of enforcement with NO downstream check. ADD opt-in `by_tenant` → `EventBucket.CountsByTenant` (tenant → event_type → count) alongside the totals, returned ONLY for admin-widened reads (verified admin/console:fleet, server-derived per D-299); attribution keys ⊆ the authorized (named-or-folded) `Filter.TenantIDs`, with `Counts` and `CountsByTenant` scoped to the IDENTICAL set by construction (NO per-tenant entitlement mechanism — `ScopeAdmin`/`ScopeConsoleFleet` are GLOBAL binary fan-in grants: the body SELECTS tenants, the scope AUTHORIZES the fan-in; an unelevated caller gains attribution for NOTHING new); the per-bucket invariant `Σ counts_by_tenant == counts` proves it is a pure re-projection not a looser read path; per-bucket (not a response rollup) so it composes with the time series + 172's grid. Makes the isolation boundary independently verifiable on aggregates the way it already is on rows (§6 defence-in-depth); NO payloads/new identity axes; `ProtocolVersion` stays 0.1.0; full D-223 lockstep + D-209 regen + §18 SKILL.md same PR; D-307) | internal/protocol/types + internal/events + internal/protocol/transports/stream + web/console | §6.13, §5.2, §6.5, §4, §7 | 171, 172, 118 | 85% | Pending |
+|175 | Fleet-scoped retention horizons (HA-23 — the scope gap in the retention-horizon surface HA-14/D-296 shipped; v1.14 Track B). `runtime.health`'s `retention[]` block reports the three durable surfaces at THREE DIFFERENT scopes — `events` runtime-wide/identity-free (`RetentionReporter.OldestRetainedAt(ctx)`, CORRECT), `tasks` scoped to the caller's full TRIPLE (its session, via `TaskRegistry.List`), `sessions` scoped to the caller's TENANT (`SessionLister.ListSnapshots`) — and the provider OMITS an absent surface, so the SAME wire shape (no entry) means BOTH "surface retains nothing" AND "caller has nothing in scope," indistinguishable on the wire. The one caller that exists to observe the fleet — a coordinator polling under a dedicated `svc:` service identity that owns no sessions/tasks — therefore receives ONLY the `events` horizon; the `tasks`+`sessions` horizons are structurally empty and its cross-session windowed view silently undercounts (a session aged out of the sessions surface while its events remain → enumeration misses it → the correct "mark buckets incomplete when the sessions horizon < window" guard is INERT because the sessions horizon is unobservable at fleet scope). FIX (both): (1) a verified admin/`console:fleet` caller reads `tasks`+`sessions` at RUNTIME-WIDE scope (the same identity-free scope `events` already uses), server-derived from the verified session per D-299 (NEVER the request body), riding `runtime.health` (NO new method, NO new capability bit, NO ordinary-caller scope relaxation — that fold stays a fail-closed control); the runtime-wide read goes through an optional identity-free `OldestRetainedAt` reader on the tasks registry + session lister (mirroring `events.RetentionReporter`, type-asserted, NO `Supports*` ceremony); the widened path emits one fail-loud `admin_scope_used`. (2) absence made REPRESENTABLE — an additive `RetentionHorizon.scope` (`runtime`/`tenant`/`session`) + always-emit-for-the-three-known-surfaces so a consumer distinguishes "unobservable at your scope" from "surface retains nothing" and degrades honestly (the HA-18/20/21/22/23 through-line; D-311 class rule cross-ref). Composes with the D-308 events-fold work (Phase 172 — the `if !widened` guard on `events.list`+`events.aggregate` closing HA-16+HA-21): that work makes the session-less cross-session enumeration REACHABLE, this makes its completeness VERIFIABLE (orthogonal partner, not a hard dep). NO change to the `events` horizon/retention itself (Harbor has no retention knob)/redaction/counters+metrics TSDB (D-296 decided-NO); ONE additive wire field, `ProtocolVersion` stays 0.1.0; full D-223 lockstep + D-209 regen + §18 SKILL.md same PR; D-310) | internal/protocol/types + internal/protocol + internal/runtime/posture + internal/tasks + internal/sessions + web/console | §5.2, §5.5, §6.1, §6.13, §6.14, §6.16, §7 | 163, 118 | 85% | Pending |
 
 ---
 
@@ -3850,6 +3851,59 @@ per §17.8). Status: Shipped (V1.6).
   0.1.0; full D-223 lockstep + D-209 regen + §18 SKILL.md in the same PR. See
   `docs/plans/phase-173-events-aggregate-tenant-attribution.md`.
 - **Decision:** D-307.
+- **Status:** Pending.
+
+---
+
+### Phase 175 — Fleet-scoped retention horizons (HA-23)
+
+- **Subsystem:** internal/protocol/types (the additive `RetentionHorizon.scope`
+  field), internal/protocol (the `handleHealth` server-derived `widened`
+  decision + the widened-path audit), internal/runtime/posture (the
+  `RetentionProvider` scope-aware read), internal/tasks + internal/sessions (an
+  optional identity-free `OldestRetainedAt` reader), web/console (the fleet-lens
+  horizon).
+- **RFC:** §5.2, §5.5, §6.1, §6.13, §6.14, §6.16, §7.
+- **Deps:** 163 (HA-14 / D-296 — the retention block + `RetentionProvider` this
+  phase extends), 118 (D-223 lockstep). Composes with the D-308 events-fold work
+  (Phase 172 — the `if !widened` guard on `events.list`+`events.aggregate`
+  closing HA-16+HA-21; reachable vs verifiable — orthogonal, either order).
+- **What it delivers:** `runtime.health`'s `retention[]` block (HA-14/D-296)
+  builds its three horizons at three DIFFERENT scopes — `events` runtime-wide and
+  identity-free (correct, unchanged), `tasks` scoped to the caller's full triple
+  (its session), `sessions` scoped to the caller's tenant — and OMITS an absent
+  surface, so the same no-entry wire shape means BOTH "surface retains nothing"
+  AND "caller has nothing in scope." A fleet coordinator polling under a
+  dedicated `svc:` service identity (owns no sessions/tasks) therefore observes
+  ONLY the `events` horizon; the `tasks`+`sessions` horizons are structurally
+  unobservable at fleet scope — so a cross-session windowed view silently
+  undercounts (a session aged out of the sessions surface while its events remain
+  is missed by the enumeration, and the correct "mark buckets incomplete when the
+  sessions horizon < window" guard is inert because the sessions horizon can't be
+  read at fleet scope). This phase makes the `tasks`+`sessions` horizons
+  OBSERVABLE at runtime-wide scope to a verified admin / `console:fleet` caller
+  (server-derived from the verified session per D-299, NEVER the request body),
+  riding `runtime.health` — no new method, no new capability bit, no relaxation
+  of the ordinary caller's per-tenant/per-session fold (which stays a fail-closed
+  control). The runtime-wide read goes through an optional identity-free
+  `OldestRetainedAt` reader on the tasks registry + session lister (mirroring
+  `events.RetentionReporter`, discovered by type assertion — no `Supports*`
+  ceremony); the widened path emits one fail-loud `admin_scope_used`. Second, it
+  makes absence REPRESENTABLE: an additive `RetentionHorizon.scope`
+  (`runtime`/`tenant`/`session`) plus always-emitting an entry for the three
+  known surfaces, so a consumer distinguishes "unobservable at your scope" from
+  "surface retains nothing" and degrades honestly (the HA-18/20/21/22/23
+  through-line — never let an unobservable scope masquerade as an empty result;
+  the shared class rule is recorded at D-311 if the sibling HA-22 plan authored
+  it, else stated inline here). Composes with the D-308 events-fold work
+  (Phase 172, closing HA-16+HA-21): that work makes the session-less
+  cross-session enumeration REACHABLE, this makes its completeness VERIFIABLE.
+  No change to the `events` horizon, retention itself (Harbor has no retention
+  knob), redaction, or the D-296 decided-NO counters/metrics TSDB. One additive
+  wire field; `ProtocolVersion` stays 0.1.0; full D-223 lockstep + D-209 regen +
+  §18 SKILL.md in the same PR. See
+  `docs/plans/phase-175-fleet-retention-horizons.md`.
+- **Decision:** D-310.
 - **Status:** Pending.
 
 ---
