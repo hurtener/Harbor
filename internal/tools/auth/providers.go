@@ -188,7 +188,7 @@ func (s *providerSet) Install(owner Owner, name string, p OAuthProvider) error {
 	s.entries[name] = providerEntry{prov: p, owner: owner}
 	s.mu.Unlock()
 	if ok && existing.prov != nil {
-		_ = existing.prov.Close(context.Background()) //nolint:errcheck // idempotent close of the replaced instance; a close error must not fail the upsert.
+		_ = existing.prov.Close(context.Background())
 	}
 	return nil
 }

@@ -113,19 +113,19 @@ func TestProviderSet_ConcurrentReuse(t *testing.T) {
 	const workers = 128
 	owners := []Owner{{Tenant: "tA", Agent: "aA"}, {Tenant: "tB", Agent: "aB"}}
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			owner := owners[i%len(owners)]
 			name := fmt.Sprintf("prov-%d", i)
-			_ = set.Install(owner, name, &fakeProvider{name: name}) //nolint:errcheck // concurrency stress; success asserted below
+			_ = set.Install(owner, name, &fakeProvider{name: name})
 			if p, ok := set.Get(name); ok && p == nil {
 				t.Errorf("Get returned a nil provider with ok=true (torn state)")
 			}
 			_ = set.InstalledFor(owner)
 			_ = set.Names()
-			_ = set.Uninstall(context.Background(), name) //nolint:errcheck // concurrency stress
+			_ = set.Uninstall(context.Background(), name)
 		}(i)
 	}
 	wg.Wait()

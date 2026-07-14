@@ -166,7 +166,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	// Prefer the runtime provider SET (owner-tagged installs + boot seed) when
 	// wired; fall back to the boot map. The set is seeded from the same boot map
 	// at assembly, so a boot provider stays resolvable either way.
-	var resolver OAuthProviderResolver = deps.OAuthProviderSet
+	resolver := deps.OAuthProviderSet
 	if resolver == nil {
 		resolver = mapProviderResolver(deps.OAuthProviders)
 	}

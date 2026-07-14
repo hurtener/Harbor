@@ -20,7 +20,7 @@ func TestSetOAuthProviderWire_HasNoSinkField(t *testing.T) {
 	forbiddenSubstrings := []string{"url", "_env", "secret", "token_", "auth_", "remote", "client_id", "client_secret"}
 
 	rt := reflect.TypeOf(AgentConfigOAuthProviderDescriptor{})
-	for i := 0; i < rt.NumField(); i++ {
+	for i := range rt.NumField() {
 		tag := rt.Field(i).Tag.Get("json")
 		name := strings.Split(tag, ",")[0]
 		if _, ok := allowed[name]; !ok {

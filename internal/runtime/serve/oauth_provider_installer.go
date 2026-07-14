@@ -66,7 +66,7 @@ func (i *OAuthProviderInstaller) InstallProvider(ctx context.Context, tenant, ag
 	if err := i.set.Install(owner, desc.Name, prov); err != nil {
 		// A collision (boot / other-owner) — close the just-built, un-installed
 		// instance so it does not leak, then surface as a client error.
-		_ = prov.Close(ctx) //nolint:errcheck // best-effort cleanup of a rejected build; the install error is the loud signal.
+		_ = prov.Close(ctx)
 		return fmt.Errorf("%w: %w", agentcfgprotocol.ErrInvalidProvider, err)
 	}
 	return nil
