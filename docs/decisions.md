@@ -8310,3 +8310,152 @@ behind a seam), §5 (fail loudly; no test-grade default on an operator seam), §
 (admin writes audited + scope-gated), §13 (no stub as production default), §18
 (skill hygiene). RFC §5.2, §6.4, §6.15, §7. Plan:
 `docs/plans/phase-178-tools-annotator.md`.
+
+---
+
+## D-315 — Harbor has one reusable authenticated Go Protocol client; shipped inspect commands are its first consumers before the TUI
+
+**Date:** 2026-07-14
+
+**Context.** The stock `inspect-*` commands each depend on command-local REST/
+SSE machinery in `cmd/harbor/inspect_common.go`, while the native TUI needs the
+same authentication, typed errors, event framing, cursor, cancellation, and
+session-cloning behavior. Copying that code would create two Protocol clients
+inside one binary and guarantee reconnect/auth drift before scaffolded runtimes
+can consume either implementation.
+
+**Decision.** Phase 179 promotes one concurrent-safe implementation to
+`internal/protocol/client` and exposes a curated `sdk/protocolclient` facade.
+The client accepts an injected token source; environment/file discovery remains
+CLI policy. It implements a narrow typed method set for current consumers plus
+the generic JSON call core, not convenience wrappers for all canonical methods.
+`inspect-events`, `inspect-runs`, and `inspect-topology` convert in the same
+phase and their golden output remains stable. The conversion is the first
+consumer required by §13; Phase 180 is the second.
+
+**Cross-references.** D-075/D-079 (Protocol errors/auth), D-204 (curated SDK
+facade), D-223 (wire lockstep), D-025 (concurrent reuse). RFC §3.6, §5.1,
+§5.3–§5.5, §8. CLAUDE.md §5, §6, §8, §13, §17. Plan:
+`docs/plans/phase-179-go-protocol-client.md`.
+
+---
+
+## D-316 — The TUI conversation projection is a pure deterministic reducer over canonical snapshots and events, shared-fixture-gated against the Console
+
+**Date:** 2026-07-14
+
+**Context.** Harbor has no canonical ordered turn/part read model. The Console
+currently joins state history, task rows, pauses, and live events. A native TUI
+must not solve this with a private endpoint, but independently reimplementing
+the join without a shared gate would create cross-client ordering and replay
+drift.
+
+**Decision.** Phase 180 builds a rendering-independent pure Go reducer over the
+D-315 client shapes. It owns generation fences, sequence dedupe, snapshot
+reconciliation, missing-start lifecycle repair, tombstones, and explicit
+partiality. A language-neutral fixture corpus runs through both the Go reducer
+and Console reducer tests and compares normalized output. No Bubble Tea import,
+public SDK projection, or new Protocol method lands. Measured fixture drift is
+the trigger for a future transcript RFC, never permission for a private wire.
+
+**Cross-references.** D-002, D-025, D-061, D-209/D-223, D-310–D-314, D-315.
+RFC §3.1, §3.3, §4, §5. CLAUDE.md §1, §6, §8, §11, §13, §17. Plan:
+`docs/plans/phase-180-tui-projection-core.md`.
+
+---
+
+## D-317 — OpenCode-level or better perceived quality is the binding TUI floor; Bubble Tea v2 is the terminal stack and visual polish is not deferred
+
+**Date:** 2026-07-14
+
+**Context.** A three-phase decomposition hid the entire visual system,
+interaction framework, conversation workflow, and control plane inside one
+oversized implementation phase. That shape could pass functional tests while
+shipping a generic log viewer materially below the market reference.
+
+**Decision.** `docs/design/tui/CONVENTIONS.md` is binding. The minimum is
+OpenCode-level or better perceived execution in hierarchy, spacing, responsive
+behavior, composer editing, dialogs, commands, sticky streaming, themes,
+accessibility, feedback, and terminal lifecycle. Exact geometry includes the
+79/80 and 120/121 transitions and the ten-size golden matrix. Bubble Tea v2,
+Lip Gloss v2, selected Bubbles v2, and `charmbracelet/x/ansi` are the settled
+CGo-free stack; Glamour/Uniseg require measured need. Phase 181 ships the whole
+terminal foundation and PTY harness before feature breadth. A functional but
+visibly weaker result is release-blocking; “polish later” is not a deviation.
+
+**Cross-references.** D-002, D-025, D-091, D-315/D-316. RFC §3.1, §5.1,
+§5.4, §8, §10. CLAUDE.md §5, §11, §13, §17. Plan:
+`docs/plans/phase-181-tui-terminal-foundation.md`. Design authority:
+`docs/design/tui/CONVENTIONS.md`.
+
+---
+
+## D-318 — The first user-operable TUI phase ships the complete attach conversation/session experience, not a thin textarea-plus-log MVP
+
+**Date:** 2026-07-14
+
+**Context.** The quality reference derives much of its perceived depth from the
+composer, session navigation, scroll stability, commands, drafts, autocomplete,
+and reconnect behavior. Splitting these into optional later polish would leave
+the first usable Harbor TUI below the accepted floor.
+
+**Decision.** Phase 182 joins D-316 and D-317 into `harbor tui --attach` with
+full editor-quality composition, local history/stash, structured references,
+session search/switch/rename/resume/erase remediation, sticky streaming,
+semantic navigation, compact/native-scrollback mode, export, retry, and visible
+reconnect/partiality. Local persistence contains interaction state and
+references only, never Runtime entities or plaintext credentials. The phase is
+not complete without the applicable visual matrix and PTY keyboard walkthrough.
+
+**Cross-references.** D-061, D-312, D-315–D-317. RFC §3.1, §4, §5, §8.
+CLAUDE.md §6, §8, §13, §17, §18. Plan:
+`docs/plans/phase-182-tui-conversation-experience.md`.
+
+---
+
+## D-319 — Runtime control and inspection deepen the proven conversation TUI through generic renderers and canonical controls, without coding-agent scope
+
+**Date:** 2026-07-14
+
+**Context.** Harbor's terminal product must test and control more than a text
+turn, but adding every screen before conversation ergonomics are proven would
+mix visual foundation, reducer correctness, and control semantics into one
+unreviewable change.
+
+**Decision.** Phase 183 adds tasks, tools, artifacts, events, posture,
+interventions, controls, diagnostics, attention, and typed part/tool renderer
+registries to the proven attach TUI. Unknown shapes always have a generic safe
+fallback. Pause/approval/OAuth/input flows use the unified primitive; controls
+use the canonical taxonomy and verified scopes. Partial/bounded/unavailable data
+is labelled honestly. Git, repository, shell, editing, patch, LSP, worktree, and
+coding-specific renderer scope remains excluded.
+
+**Cross-references.** D-002, D-026, D-061, D-097, D-310–D-314, D-315–D-318.
+RFC §3.3, §4, §5, §6.3, §8. CLAUDE.md §6–§8, §13, §17. Plan:
+`docs/plans/phase-183-tui-runtime-control.md`.
+
+---
+
+## D-320 — Stock and scaffolded TUI co-launch waits on explicit readiness, preserves the full UI, and attaches through authenticated REST/SSE
+
+**Date:** 2026-07-14
+
+**Context.** `sdk/server.Handle` exposes `Serve`, `Close`, and `BindAddr`, but a
+co-launched terminal client needs a race-free bound-listener signal. Polling is
+not a lifecycle contract, and passing Runtime handles to the TUI would violate
+the client boundary. Distribution must also not substitute a reduced shell for
+the quality-gated attach application.
+
+**Decision.** Phase 184 adds explicit readiness to the served handle and
+`sdk/server`, promotes the complete runner through connection-only `sdk/tui`,
+and consumes both from `harbor serve --tui` and generated serving binaries'
+`--tui`. Every mode dials normal REST/SSE with an operator JWT; no anonymous
+loopback, signer, mock, private endpoint, or internal state adapter exists.
+Attach quit leaves the remote Runtime alive; explicit co-launch owns and drains
+its server. The wave-end PTY E2E asserts cross-mode frame equivalence as well as
+auth, identity, reconnect, controls, shutdown, and cleanup.
+
+**Cross-references.** D-291/D-292, D-315–D-319, D-025, D-002/D-061. RFC §3.1,
+§3.6, §5.1, §5.4–§5.6, §8. CLAUDE.md §1, §5, §7, §8, §13, §17. Plan:
+`docs/plans/phase-184-tui-runtime-distribution.md`. Wave:
+`docs/plans/wave-v115-tui-coordination.md`.
