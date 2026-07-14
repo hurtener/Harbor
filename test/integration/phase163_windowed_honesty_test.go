@@ -224,16 +224,23 @@ func TestE2E_Phase163_EventsRetentionHorizon_BothDrivers(t *testing.T) {
 				}
 			}
 
-			horizons := runtimeposture.RetentionProvider(bus, nil, nil)(t.Context(), id)
-			var got time.Time
+			horizons := runtimeposture.RetentionProvider(bus, nil, nil)(t.Context(), id, false)
+			var got *time.Time
+			var scope string
 			var found bool
 			for _, h := range horizons {
 				if h.Surface == "events" {
-					got, found = h.OldestRetainedAt, true
+					got, scope, found = h.OldestRetainedAt, h.Scope, true
 				}
 			}
 			if !found {
 				t.Fatalf("no events retention horizon reported (%+v)", horizons)
+			}
+			if scope != prototypes.RetentionScopeRuntime {
+				t.Fatalf("events scope = %q, want runtime", scope)
+			}
+			if got == nil {
+				t.Fatalf("events horizon timestamp omitted, want a value")
 			}
 			// Cross-check against the driver's own RetentionReporter read.
 			rr := bus.(events.RetentionReporter)
@@ -242,7 +249,7 @@ func TestE2E_Phase163_EventsRetentionHorizon_BothDrivers(t *testing.T) {
 				t.Fatalf("driver OldestRetainedAt: present=%v err=%v", present, err)
 			}
 			if !got.Equal(want) || !got.Equal(oldest) {
-				t.Fatalf("events horizon = %v, want oldest retained %v (driver %v)", got, oldest, want)
+				t.Fatalf("events horizon = %v, want oldest retained %v (driver %v)", *got, oldest, want)
 			}
 		})
 	}

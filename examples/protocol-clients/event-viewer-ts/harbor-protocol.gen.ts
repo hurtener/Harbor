@@ -1895,6 +1895,7 @@ export interface ReadMCPResourceResponse {
 
 export interface RetentionHorizon {
   surface: string;
+  scope?: string;
   oldest_retained_at?: string;
 }
 

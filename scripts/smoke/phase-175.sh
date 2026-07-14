@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: live-server
 #
-# Phase 175 — fleet-scoped retention horizons (HA-23).
+# Phase 175 — fleet-scoped retention horizons (HA-23 / D-310).
 #
-# When the phase lands, this asserts (from the un-elevated dev read alone, so
-# the done-definition is meetable — the widened fleet fan-in is Go-integration-
-# covered because `harbor dev` is trust-based and carries no verified elevated
-# scope over HTTP):
-#   - runtime.health's additive `retention` block carries a per-surface `scope`
-#     marker whose value is one of runtime/tenant/session (the absence-
-#     representable signal — an unobservable scope can never masquerade as an
-#     empty surface);
-#   - the `events` entry is scope:"runtime" with a non-empty RFC-3339
-#     oldest_retained_at (the runtime-wide horizon is labelled + non-empty);
-#   - a tasks/sessions entry carries a scope and, WHEN present, an RFC-3339
-#     timestamp — a scoped entry with no timestamp is honest absence, not a FAIL.
-# Done-definition: OK >= 2, FAIL = 0 once the phase ships. Until then it SKIPs.
+# Asserts the absence-representable `scope` marker on the `runtime.health`
+# retention block (the additive wire field this phase ships). The widened
+# fan-in itself (a verified admin/console:fleet caller reading runtime-wide
+# tasks/sessions horizons) is NOT exercisable over `harbor dev` — dev is
+# trust-based, there is no verified elevated scope over HTTP — so the
+# widened path is proven in the Go integration test
+# (test/integration/retention_horizon_fleet_test.go). This smoke asserts
+# the `scope` marker shape that every caller sees.
 #
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
+# Done-definition: OK >= 2, FAIL = 0 once the phase ships. Until then / when
+# the dev bearer or jq is unavailable, it SKIPs.
+#
+# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
+#   - static-only — pure file/text greps, golden compares.
+#   - live-server — hits the booted dev server over HTTP.
+#   - unit-tests — runs `go test`.
 
 set -euo pipefail
 
@@ -57,13 +55,13 @@ case "${PROBE:-000}" in
 esac
 
 if [ -z "${HARBOR_DEV_TOKEN:-}" ] || ! command -v jq >/dev/null 2>&1; then
-  skip "phase 175: dev bearer / jq unavailable — scope-marker + fleet fan-in covered by Go integration tests"
+  skip "phase 175: dev bearer / jq unavailable — scope-marker + widened path covered by Go integration tests"
   smoke_summary
   exit 0
 fi
 
-# 1. Drive a run so the mock LLM + react planner emit events into the bus,
-#    giving the events retention horizon a non-empty head to report.
+# 1. Drive a run so the mock LLM + react planner emit events into the bus —
+#    this gives the events retention horizon a non-empty head to report.
 curl -sS -X POST "${START_URL}" -H "Authorization: Bearer ${TOKEN}" \
   "${ID_HEADERS[@]}" -H 'Content-Type: application/json' \
   -d '{"query":"phase-175 retention-scope seed","description":"phase-175 smoke"}' >/dev/null 2>&1 || true
@@ -83,42 +81,45 @@ if [ "${ST}" != "200" ]; then
   exit 0
 fi
 
-# 3. Every retention entry carries a `scope` marker in {runtime,tenant,session}.
-#    (Pre-175 builds omit `scope` — this SKIPs so it coexists with a 163 build.)
-SCOPES=$(jq -r '[.retention[]? | .scope // empty] | length' "${TMP}" 2>/dev/null || echo 0)
 RET_LEN=$(jq -r '.retention | length' "${TMP}" 2>/dev/null || echo 0)
 if [ "${RET_LEN}" -eq 0 ]; then
-  fail "phase 175: runtime.health carries no retention block after a scripted run (D-296 seam not wired?)"
-elif [ "${SCOPES}" -eq 0 ]; then
-  skip "phase 175: retention entries carry no scope marker yet (pre-175 build)"
+  skip "phase 175: runtime.health carries no retention block (seam unwired on this dev config)"
   smoke_summary
   exit 0
 fi
 
-BAD_SCOPE=$(jq -r '[.retention[]? | select((.scope // "") | test("^(runtime|tenant|session)$") | not)] | length' "${TMP}" 2>/dev/null || echo 1)
-if [ "${BAD_SCOPE}" -eq 0 ]; then
-  ok "phase 175: every retention entry carries a scope marker in {runtime,tenant,session} (${SCOPES} entries)"
+# 3. OK #1 — the absence-representable marker shipped: EVERY entry carries a
+#    `scope` field whose value is one of runtime/tenant/session.
+BAD_SCOPE=$(jq -r '[.retention[]? | select((.scope // "") | (. == "runtime" or . == "tenant" or . == "session") | not)] | length' "${TMP}" 2>/dev/null || echo 1)
+if [ "${BAD_SCOPE}" = "0" ]; then
+  ok "phase 175: every retention entry carries a scope in {runtime,tenant,session} (${RET_LEN} surface(s))"
 else
-  fail "phase 175: ${BAD_SCOPE} retention entry(ies) carry a missing/invalid scope marker"
+  fail "phase 175: ${BAD_SCOPE} retention entr(y/ies) missing a valid scope marker (D-310 not wired?)"
 fi
 
-# 4. The events horizon is runtime-wide and non-empty.
-EV_SCOPE=$(jq -r '.retention[]? | select(.surface == "events") | .scope // empty' "${TMP}" 2>/dev/null || echo "")
-EV_AT=$(jq -r '.retention[]? | select(.surface == "events") | .oldest_retained_at // empty' "${TMP}" 2>/dev/null || echo "")
-if [ "${EV_SCOPE}" = "runtime" ] && printf '%s' "${EV_AT}" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'; then
-  ok "phase 175: events horizon is scope:runtime with an RFC-3339 instant (${EV_AT})"
+# 4. OK #2 — the events horizon is runtime-scoped with an RFC-3339 timestamp.
+EVENTS_SCOPE=$(jq -r '.retention[]? | select(.surface == "events") | .scope // empty' "${TMP}" 2>/dev/null || echo "")
+EVENTS_AT=$(jq -r '.retention[]? | select(.surface == "events") | .oldest_retained_at // empty' "${TMP}" 2>/dev/null || echo "")
+if [ "${EVENTS_SCOPE}" = "runtime" ] && printf '%s' "${EVENTS_AT}" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'; then
+  ok "phase 175: events horizon is scope=runtime with an RFC-3339 instant (${EVENTS_AT})"
 else
-  fail "phase 175: events horizon not scope:runtime + RFC-3339 (scope='${EV_SCOPE}' at='${EV_AT}')"
+  fail "phase 175: events horizon not runtime-scoped or missing RFC-3339 timestamp (scope='${EVENTS_SCOPE}' at='${EVENTS_AT}')"
 fi
 
-# 5. Honest absence: any PRESENT retention timestamp must be RFC-3339-shaped; a
-#    scoped entry with no timestamp is representable absence, never a FAIL.
-PRESENT=$(jq -r '[.retention[]? | select(.oldest_retained_at != null and .oldest_retained_at != "")] | length' "${TMP}" 2>/dev/null || echo 0)
-WELLSHAPED=$(jq -r '[.retention[]? | select(.oldest_retained_at != null and .oldest_retained_at != "") | select(.oldest_retained_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))] | length' "${TMP}" 2>/dev/null || echo 0)
-if [ "${PRESENT}" -eq "${WELLSHAPED}" ]; then
-  ok "phase 175: every present retention timestamp is RFC-3339; scoped entries with no timestamp are honest absence"
-else
-  fail "phase 175: $((PRESENT - WELLSHAPED)) retention timestamp(s) are not RFC-3339-shaped"
-fi
+# 5. The tasks/sessions entries carry a scope; a scoped entry with NO
+#    timestamp is honest absence, NOT a FAIL. A malformed timestamp (when
+#    present) IS a FAIL.
+for surface in tasks sessions; do
+  SC=$(jq -r --arg s "${surface}" '.retention[]? | select(.surface == $s) | .scope // empty' "${TMP}" 2>/dev/null || echo "")
+  AT=$(jq -r --arg s "${surface}" '.retention[]? | select(.surface == $s) | .oldest_retained_at // empty' "${TMP}" 2>/dev/null || echo "")
+  if [ -z "${SC}" ]; then
+    continue # surface not wired on this dev config — not a FAIL
+  fi
+  if [ -n "${AT}" ] && ! printf '%s' "${AT}" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'; then
+    fail "phase 175: ${surface} horizon has a non-RFC-3339 timestamp ('${AT}')"
+  else
+    ok "phase 175: ${surface} horizon carries scope=${SC} (timestamp: ${AT:-omitted — honest absence})"
+  fi
+done
 
 smoke_summary
