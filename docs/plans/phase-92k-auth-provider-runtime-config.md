@@ -1,5 +1,15 @@
 # Phase 92k — auth.Provider runtime config registration seam
 
+> **Sibling reconciliation note (added by the v1.14 wave, D-303).** Phase 169
+> ships `auth.ProviderSet` — the identity-keyed set of installed OAuth PROVIDER
+> INSTANCES the MCP attach path consults — plus the `agent_config.set_oauth_provider`
+> install verb. This phase's `RegisterConfig` seam registers a per-source
+> `OAuthConfig` for the INTERACTIVE flow; it is a distinct object, but adjacent
+> enough to collide. When 92k is unparked it MUST reuse Phase 169's `ProviderSet`
+> for the provider list and add only its per-source config-registration leg —
+> never a second provider registry (§13 one-mechanism, N-consumers; the Phase 148
+> precedent). See D-303.
+
 ## Summary
 
 The OAuth `auth.Provider`'s config set is immutable after construction
