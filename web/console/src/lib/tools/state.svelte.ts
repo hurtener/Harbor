@@ -118,6 +118,16 @@ export class ToolsPageState {
     return this.listResp?.aggregates ?? EMPTY_AGGREGATES;
   }
 
+  /**
+   * True when the annotator-backed aggregates (in-flight / pending-approval
+   * / awaiting-OAuth) are UNAVAILABLE because no per-tool annotator is wired
+   * (the concrete lands in Phase 178). The overview card renders those three
+   * as "unavailable" rather than a real-looking 0 (D-313).
+   */
+  get aggregatesPartial(): boolean {
+    return this.listResp?.aggregates_partial ?? false;
+  }
+
   /** The filtered-view total (for pagination). */
   get totalRows(): number {
     return this.listResp?.total_rows ?? 0;

@@ -274,7 +274,7 @@
     {:else}
       <section class="panel card idle-card" data-testid="tools-rail-idle">
         <h2 class="panel-title">Tool overview</h2>
-        <ToolOverviewCard aggregates={state.aggregates} {disconnected} />
+        <ToolOverviewCard aggregates={state.aggregates} partial={state.aggregatesPartial} {disconnected} />
         <p class="idle-hint">
           Click a tool to inspect its descriptor — schema, policy,
           statistics, content profile, provenance and run history.

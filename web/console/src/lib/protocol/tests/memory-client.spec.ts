@@ -43,7 +43,6 @@ describe('HarborClient memory namespace', () => {
 			total_rows: 0,
 			aggregates: {
 				total: 0,
-				expiring_in_1h: 0,
 				identity_rejected_24h: 0,
 				recovery_dropped_24h: 0
 			},
@@ -99,7 +98,6 @@ describe('HarborClient memory namespace', () => {
 		const healthResp: MemoryHealthResponse = {
 			aggregate: {
 				total: 7,
-				expiring_in_1h: 1,
 				identity_rejected_24h: 2,
 				recovery_dropped_24h: 0,
 				driver_by_scope: { session: 'inmem' }

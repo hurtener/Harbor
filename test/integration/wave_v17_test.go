@@ -549,14 +549,15 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 			t.Fatalf("runtime.info Capabilities %v must advertise BOTH agent_config AND session_lifecycle", info.Capabilities)
 		}
 		// The conformance universe is internally consistent: every
-		// advertised capability is canonical, and the canonical set is 7.
+		// advertised capability is canonical, and the canonical set is 8
+		// (Phase 177 / D-313 added tool_annotations — additive).
 		for _, c := range info.Capabilities {
 			if !prototypes.IsValidCapability(c) {
 				t.Errorf("advertised capability %q is not in the canonical universe", c)
 			}
 		}
-		if n := len(prototypes.Capabilities()); n != 7 {
-			t.Errorf("canonical capability universe has %d entries, want 7", n)
+		if n := len(prototypes.Capabilities()); n != 8 {
+			t.Errorf("canonical capability universe has %d entries, want 8", n)
 		}
 	})
 

@@ -169,9 +169,6 @@ type MemoryFilter struct {
 	Drivers []string `json:"drivers,omitempty"`
 	// Strategies narrows to a subset of the V1 MemoryStrategyName set.
 	Strategies []string `json:"strategies,omitempty"`
-	// HasTTLExpiring, when true, narrows to records whose ExpiresAt
-	// falls within (now, now+1h].
-	HasTTLExpiring bool `json:"has_ttl_expiring,omitempty"`
 	// ContentSearch is an optional substring matched against the
 	// post-redaction record value text. The match is runtime-side
 	// never a Console-side scan over an exported
@@ -212,9 +209,6 @@ type MemoryListRequest struct {
 type MemoryAggregates struct {
 	// Total is the total record count across the filtered set.
 	Total int64 `json:"total"`
-	// ExpiringIn1h is the count of records whose ExpiresAt falls
-	// within (now, now+1h].
-	ExpiringIn1h int64 `json:"expiring_in_1h"`
 	// IdentityRejected24h is the count of `memory.identity_rejected`
 	// events observed in the last 24 hours.
 	IdentityRejected24h int64 `json:"identity_rejected_24h"`
@@ -341,9 +335,6 @@ type MemoryHealthRequest struct {
 type MemoryHealthAggregate struct {
 	// Total is the total memory-record count for the caller's scope.
 	Total int64 `json:"total"`
-	// ExpiringIn1h is the count of records whose TTL expires within
-	// the next hour.
-	ExpiringIn1h int64 `json:"expiring_in_1h"`
 	// IdentityRejected24h is the count of `memory.identity_rejected`
 	// events observed in the last 24 hours.
 	IdentityRejected24h int64 `json:"identity_rejected_24h"`

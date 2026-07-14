@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:3357c4cfec0d42276fb864de6982342b12bbeec046f1a8cee86bddeead24bec8";
+export const WIRE_SURFACE_DIGEST = "sha256:22787e659d8cbaaad1f3828f0b55dff0c84e09f2663bef9fa8d540bdb051fcb3";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -1710,7 +1710,6 @@ export interface MCPToolPolicyView {
 
 export interface MemoryAggregates {
   total: number;
-  expiring_in_1h: number;
   identity_rejected_24h: number;
   recovery_dropped_24h: number;
 }
@@ -1742,7 +1741,6 @@ export interface MemoryFilter {
   scopes?: string[];
   drivers?: string[];
   strategies?: string[];
-  has_ttl_expiring?: boolean;
   content_search?: string;
 }
 
@@ -1758,7 +1756,6 @@ export interface MemoryGetResponse {
 
 export interface MemoryHealthAggregate {
   total: number;
-  expiring_in_1h: number;
   identity_rejected_24h: number;
   recovery_dropped_24h: number;
   driver_by_scope: Record<string, string>;
@@ -2323,7 +2320,7 @@ export interface TaskRow {
   duration_ms: number;
   error_class?: string;
   tool_count: number;
-  background_acknowledged: boolean;
+  background_acknowledged?: boolean;
   group_id?: string;
   progress?: number;
   tags?: string[];
@@ -2446,6 +2443,7 @@ export interface ToolListResponse {
   page_count: number;
   total_rows: number;
   aggregates: ToolAggregates;
+  aggregates_partial?: boolean;
 }
 
 export interface ToolManifest {

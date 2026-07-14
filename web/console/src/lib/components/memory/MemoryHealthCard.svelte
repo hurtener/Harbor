@@ -17,7 +17,6 @@
   {#if aggregate}
     <dl class="counters">
       <div><dt>Total records</dt><dd>{aggregate.total}</dd></div>
-      <div><dt>Expiring in 1h</dt><dd>{aggregate.expiring_in_1h}</dd></div>
       <div>
         <dt>Identity-rejected (24h)</dt>
         <dd class:warn={aggregate.identity_rejected_24h > 0}>

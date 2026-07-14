@@ -73,6 +73,14 @@ export interface ToolListResponse {
   page_count: number;
   total_rows: number;
   aggregates: ToolAggregates;
+  /**
+   * True when the annotator-backed catalog aggregates (active /
+   * pending_approval / awaiting_oauth) are UNAVAILABLE because no per-tool
+   * annotator is wired (the concrete lands in Phase 178). Only
+   * `aggregates.total` is authoritative — render the other three as
+   * "unavailable," never a real-looking 0 (D-313).
+   */
+  aggregates_partial?: boolean;
 }
 
 /** The full descriptor projection `tools.describe` returns. When the request

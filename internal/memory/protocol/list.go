@@ -11,11 +11,6 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// ttlExpiryWindow is the lookahead window the `HasTTLExpiring` facet
-// and the `ExpiringIn1h` aggregate counter key on — records whose TTL
-// expires within (now, now+1h].
-const ttlExpiryWindow = time.Hour
-
 // aggregateWindow is the lookback span the 24-hour `memory.*` event
 // counters derive over.
 const aggregateWindow = 24 * time.Hour
@@ -84,6 +79,21 @@ func List(ctx context.Context, deps ListDeps, req prototypes.MemoryListRequest, 
 	if err := validateFilterEnums(req.Filter); err != nil {
 		return prototypes.MemoryListResponse{}, err
 	}
+	// filter.agent_ids operates over an unpopulated producer identity: the
+	// ConversationTurn record carries NO agent/producer identity and the
+	// projection sets only the tenant/user/session triple, so there is
+	// structurally no agent to populate from in V1. Honouring the facet
+	// would return a silent empty page on a fleet full of records — the
+	// false-absence defect the projection-completeness gate closes. Loud-reject
+	// (representable absence + loud rejection over an unpopulated field, the
+	// silent-absence class rule); populate is deferred to a follow-up that
+	// adds producer identity to the turn record — the facet keeps its wire slot as a
+	// not-yet-wired field (unlike the removed TTL design absence).
+	if len(req.Filter.AgentIDs) > 0 {
+		return prototypes.MemoryListResponse{}, fmt.Errorf(
+			"%w: filter.agent_ids operates over an unpopulated producer identity "+
+				"(memory records carry no agent binding in V1) — this facet cannot be honoured", ErrInvalidFilter)
+	}
 
 	// Project the caller's per-identity snapshot into rows. The
 	// MemoryStore surface is per-identity; the snapshot is the
@@ -100,8 +110,7 @@ func List(ctx context.Context, deps ListDeps, req prototypes.MemoryListRequest, 
 		return prototypes.MemoryListResponse{}, err
 	}
 
-	now := time.Now().UTC()
-	filtered := applyFilter(rows, req.Filter, now)
+	filtered := applyFilter(rows, req.Filter)
 	sortByLastUpdatedDesc(filtered)
 
 	total := len(filtered)
@@ -116,7 +125,7 @@ func List(ctx context.Context, deps ListDeps, req prototypes.MemoryListRequest, 
 		pageCount = (total + pageSize - 1) / pageSize
 	}
 
-	aggs := computeAggregates(ctx, deps.Aggregator, filtered, id, now)
+	aggs := computeAggregates(ctx, deps.Aggregator, filtered, id)
 
 	return prototypes.MemoryListResponse{
 		Items:           items,
@@ -179,7 +188,7 @@ func validateFilterEnums(f prototypes.MemoryFilter) error {
 // applyFilter narrows the projected rows by every facet axis on the
 // filter. Each axis is an AND: a row survives only if it matches every
 // non-empty facet.
-func applyFilter(rows []projectedTurn, f prototypes.MemoryFilter, now time.Time) []projectedTurn {
+func applyFilter(rows []projectedTurn, f prototypes.MemoryFilter) []projectedTurn {
 	out := make([]projectedTurn, 0, len(rows))
 	for _, r := range rows {
 		if !matchStringSet(f.Scopes, r.item.Scope) {
@@ -200,12 +209,9 @@ func applyFilter(rows []projectedTurn, f prototypes.MemoryFilter, now time.Time)
 		if !matchStringSet(f.TenantIDs, r.item.Identity.Tenant) {
 			continue
 		}
-		if len(f.AgentIDs) > 0 && !matchStringSet(f.AgentIDs, r.item.AgentID) {
-			continue
-		}
-		if f.HasTTLExpiring && !ttlExpiringWithin(r.item.ExpiresAt, now, ttlExpiryWindow) {
-			continue
-		}
+		// filter.agent_ids is loud-rejected before projection (List) — it is
+		// never a post-projection facet here. filter.has_ttl_expiring was
+		// removed (V1 memory has no TTL — a structurally-dead facet).
 		if f.ContentSearch != "" && !containsFold(string(r.value), f.ContentSearch) {
 			continue
 		}
@@ -228,15 +234,6 @@ func matchStringSet(set []string, candidate string) bool {
 	return false
 }
 
-// ttlExpiringWithin reports whether expiresAt falls within (now,
-// now+window]. A zero ExpiresAt (no TTL) never matches.
-func ttlExpiringWithin(expiresAt, now time.Time, window time.Duration) bool {
-	if expiresAt.IsZero() {
-		return false
-	}
-	return expiresAt.After(now) && !expiresAt.After(now.Add(window))
-}
-
 // paginate slices the 1-based page out of rows. An out-of-range page
 // yields an empty slice (the response still carries the real
 // TotalRows / PageCount so the Console renders the correct pager).
@@ -252,20 +249,14 @@ func paginate(rows []projectedTurn, page, pageSize int) []projectedTurn {
 	return rows[start:end]
 }
 
-// computeAggregates builds the page-level counters. Total / ExpiringIn1h
-// derive from the in-hand filtered rows; the 24-hour event counters
-// derive from the events Aggregator (when wired).
-func computeAggregates(ctx context.Context, agg *events.Aggregator, rows []projectedTurn, id identity.Quadruple, now time.Time) prototypes.MemoryAggregates {
-	expiring := int64(0)
-	for _, r := range rows {
-		if ttlExpiringWithin(r.item.ExpiresAt, now, ttlExpiryWindow) {
-			expiring++
-		}
-	}
+// computeAggregates builds the page-level counters. Total derives from the
+// in-hand filtered rows; the 24-hour event counters derive from the events
+// Aggregator (when wired). The structurally-dead `expiring_in_1h` counter
+// was removed — V1 memory has no TTL, so it was always 0 (the projection-completeness gate).
+func computeAggregates(ctx context.Context, agg *events.Aggregator, rows []projectedTurn, id identity.Quadruple) prototypes.MemoryAggregates {
 	rejected, dropped := eventCounters(ctx, agg, id)
 	return prototypes.MemoryAggregates{
 		Total:               int64(len(rows)),
-		ExpiringIn1h:        expiring,
 		IdentityRejected24h: rejected,
 		RecoveryDropped24h:  dropped,
 	}

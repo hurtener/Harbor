@@ -3,7 +3,6 @@ package protocol
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -69,19 +68,11 @@ func Health(ctx context.Context, deps HealthDeps, id identity.Quadruple) (protot
 		return prototypes.MemoryHealthResponse{}, err
 	}
 
-	now := time.Now().UTC()
-	expiring := int64(0)
-	for _, r := range rows {
-		if ttlExpiringWithin(r.item.ExpiresAt, now, ttlExpiryWindow) {
-			expiring++
-		}
-	}
 	rejected, dropped := eventCounters(ctx, deps.Aggregator, id)
 
 	return prototypes.MemoryHealthResponse{
 		Aggregate: prototypes.MemoryHealthAggregate{
 			Total:               int64(len(rows)),
-			ExpiringIn1h:        expiring,
 			IdentityRejected24h: rejected,
 			RecoveryDropped24h:  dropped,
 			DriverByScope:       driverByScope(deps),

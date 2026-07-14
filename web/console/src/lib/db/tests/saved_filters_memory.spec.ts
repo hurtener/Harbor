@@ -29,14 +29,14 @@ describe('MemorySavedFilters: typed wrapper over saved_filters', () => {
 
     await wrap.put({
       id: 'sf-1',
-      name: 'Expiring soon',
-      filter: { has_ttl_expiring: true, scopes: ['session'] }
+      name: 'Session scope',
+      filter: { content_search: 'invoice', scopes: ['session'] }
     });
 
     const got = await wrap.get('sf-1');
     expect(got).not.toBeNull();
-    expect(got?.name).toBe('Expiring soon');
-    expect(got?.filter.has_ttl_expiring).toBe(true);
+    expect(got?.name).toBe('Session scope');
+    expect(got?.filter.content_search).toBe('invoice');
     expect(got?.filter.scopes).toEqual(['session']);
 
     const all = await wrap.list();

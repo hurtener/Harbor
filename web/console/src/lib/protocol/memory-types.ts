@@ -68,7 +68,6 @@ export interface MemoryFilter {
 	scopes?: string[];
 	drivers?: string[];
 	strategies?: string[];
-	has_ttl_expiring?: boolean;
 	content_search?: string;
 }
 
@@ -83,7 +82,6 @@ export interface MemoryListRequest {
 /** Page-level counters — mirrors `types.MemoryAggregates`. */
 export interface MemoryAggregates {
 	total: number;
-	expiring_in_1h: number;
 	identity_rejected_24h: number;
 	recovery_dropped_24h: number;
 }
@@ -140,7 +138,6 @@ export interface MemoryGetResponse {
 /** Aggregate health counters — mirrors `types.MemoryHealthAggregate`. */
 export interface MemoryHealthAggregate {
 	total: number;
-	expiring_in_1h: number;
 	identity_rejected_24h: number;
 	recovery_dropped_24h: number;
 	driver_by_scope: Record<string, string>;

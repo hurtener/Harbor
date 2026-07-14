@@ -107,6 +107,14 @@ type Projector interface {
 	// ToolContentStats returns the per-tool result-size histogram for
 	// toolID, or ErrToolNotFound.
 	ToolContentStats(ctx context.Context, id identity.Identity, toolID string) (prototypes.ToolContentStats, error)
+	// AnnotationsAvailable reports whether a per-tool Annotator is wired —
+	// the SINGLE "annotator-wired" capability toggle. False on the V1
+	// production build (no Annotator concrete exists until the tools annotator follow-up): the
+	// Service then loud-rejects the annotator-backed facet filters and marks
+	// the response-riding catalog aggregates partial (Console renders
+	// "unavailable," NEVER a silent 0 — the fabricated zero the silent-absence class
+	// kills).
+	AnnotationsAvailable() bool
 }
 
 // ApprovalPolicySetter is the optional admin backend the
@@ -236,6 +244,26 @@ func (s *Service) List(ctx context.Context, req prototypes.ToolListRequest) (pro
 		return prototypes.ToolListResponse{}, err
 	}
 
+	// Annotator-wired gate (the projection-completeness gate). With no Annotator wired (V1 production —
+	// the concrete lands in the tools annotator follow-up) the OAuth-status / approval-policy /
+	// last-used fields are structural defaults. A DEDICATED facet filter over
+	// them cannot be honoured, so loud-reject rather than return a false-empty
+	// page. The response-riding aggregates are handled below (an explicit
+	// partial marker, never a silent 0). Production ALWAYS wires the
+	// annotator once the tools annotator follow-up lands; until then this gate fires on every
+	// build.
+	annotated := s.projector.AnnotationsAvailable()
+	if !annotated {
+		if len(req.Filter.OAuthStatuses) > 0 {
+			return prototypes.ToolListResponse{}, fmt.Errorf(
+				"%w: filter.oauth_statuses requires the per-tool annotator, which is not wired on this runtime", ErrInvalidRequest)
+		}
+		if len(req.Filter.ApprovalPolicies) > 0 {
+			return prototypes.ToolListResponse{}, fmt.Errorf(
+				"%w: filter.approval_policies requires the per-tool annotator, which is not wired on this runtime", ErrInvalidRequest)
+		}
+	}
+
 	all, err := s.projector.ListTools(ctx, id)
 	if err != nil {
 		return prototypes.ToolListResponse{}, fmt.Errorf("tools/protocol: list: %w", err)
@@ -250,7 +278,21 @@ func (s *Service) List(ctx context.Context, req prototypes.ToolListRequest) (pro
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Name < filtered[j].Name })
 
-	aggregates := computeAggregates(filtered)
+	// The Active / PendingApproval / AwaitingOAuth aggregates ride the
+	// annotator-backed fields. When the annotator is unwired they are NOT
+	// real zeros — they are UNAVAILABLE. Compute Total (always real) but
+	// mark the response partial so the Console renders "unavailable" instead
+	// of a real-looking 0 (aligned with 174's SessionRow.CountersPartial —
+	// the fabricated zero this class kills must not sneak back as a lazy
+	// honest-partial 0). the tools annotator follow-up wires the annotator and both go live.
+	var aggregates prototypes.ToolAggregates
+	aggregatesPartial := false
+	if annotated {
+		aggregates = computeAggregates(filtered)
+	} else {
+		aggregates = prototypes.ToolAggregates{Total: int64(len(filtered))}
+		aggregatesPartial = true
+	}
 
 	totalRows := int64(len(filtered))
 	pageCount := 1
@@ -273,12 +315,13 @@ func (s *Service) List(ctx context.Context, req prototypes.ToolListRequest) (pro
 	}
 
 	return prototypes.ToolListResponse{
-		Tools:      rows,
-		Page:       page,
-		PageSize:   pageSize,
-		PageCount:  pageCount,
-		TotalRows:  totalRows,
-		Aggregates: aggregates,
+		Tools:             rows,
+		Page:              page,
+		PageSize:          pageSize,
+		PageCount:         pageCount,
+		TotalRows:         totalRows,
+		Aggregates:        aggregates,
+		AggregatesPartial: aggregatesPartial,
 	}, nil
 }
 

@@ -417,6 +417,20 @@ const (
 	// is backward-compatible (RFC §5.3 minor-class change) — no version
 	// bump.
 	CapSessionLifecycle Capability = "session_lifecycle"
+	// CapToolAnnotations — the per-tool annotation surface (OAuth binding
+	// status / approval policy / last-used / metrics / content-stats /
+	// display-modes) the Tools page's OAuth + approval facets and the
+	// catalog overview aggregates ride. Conditional: a runtime advertises it
+	// ONLY when a per-tool Annotator concrete is wired. The V1 build ships
+	// no Annotator (the concrete lands in the tools annotator follow-up), so no instance
+	// advertises it yet — a Console negotiates "are the tool OAuth/approval
+	// facets live?" via `VersionHandshake.Accepts(CapToolAnnotations)` and
+	// disables the facet chips until the runtime advertises it, rather than
+	// discovering an `invalid_request` loud-reject at submit time. This is
+	// the SINGLE annotator-wired toggle the tools annotator follow-up flips from unwired to
+	// advertised. Backward-compatible (RFC §5.3 minor-class addition) — no
+	// version bump.
+	CapToolAnnotations Capability = "tool_annotations"
 )
 
 // canonicalCapabilities is the registered set — the universe of
@@ -438,6 +452,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapStateSnapshots:   {},
 	CapAgentConfig:      {},
 	CapSessionLifecycle: {},
+	CapToolAnnotations:  {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

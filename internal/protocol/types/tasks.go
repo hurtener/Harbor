@@ -146,8 +146,13 @@ type TaskRow struct {
 	ToolCount int `json:"tool_count"`
 	// BackgroundAcknowledged latches true once a completed background
 	// task has been acknowledged (the `task.background_acknowledged`
-	// event).
-	BackgroundAcknowledged bool `json:"background_acknowledged"`
+	// event). No `tasks.list` facet operates over it, and the task
+	// registry record does not yet carry the latch, so it is represented
+	// honestly by omission (`omitempty`): a false value is elided from the
+	// wire rather than shipped as a fabricated-known `false` (the projection-completeness gate). When
+	// the latch lands on the record it populates here without a wire-shape
+	// break.
+	BackgroundAcknowledged bool `json:"background_acknowledged,omitempty"`
 	// GroupID is the TaskGroup the task is a member of ("" when the
 	// task is not a group member).
 	GroupID string `json:"group_id,omitempty"`

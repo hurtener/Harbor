@@ -2287,7 +2287,6 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `total` | `int64` |  |
-| `expiring_in_1h` | `int64` |  |
 | `identity_rejected_24h` | `int64` |  |
 | `recovery_dropped_24h` | `int64` |  |
 
@@ -2335,7 +2334,6 @@ Declared in `internal/protocol/types`.
 | `scopes` | `[]string` | optional (`omitempty`) |
 | `drivers` | `[]string` | optional (`omitempty`) |
 | `strategies` | `[]string` | optional (`omitempty`) |
-| `has_ttl_expiring` | `bool` | optional (`omitempty`) |
 | `content_search` | `string` | optional (`omitempty`) |
 
 ## MemoryGetRequest
@@ -2363,7 +2361,6 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `total` | `int64` |  |
-| `expiring_in_1h` | `int64` |  |
 | `identity_rejected_24h` | `int64` |  |
 | `recovery_dropped_24h` | `int64` |  |
 | `driver_by_scope` | `map[string]string` |  |
@@ -3220,7 +3217,7 @@ Declared in `internal/protocol/types`.
 | `duration_ms` | `int64` |  |
 | `error_class` | `string` | optional (`omitempty`) |
 | `tool_count` | `int` |  |
-| `background_acknowledged` | `bool` |  |
+| `background_acknowledged` | `bool` | optional (`omitempty`) |
 | `group_id` | `string` | optional (`omitempty`) |
 | `progress` | `*float64` | optional (`omitempty`) |
 | `tags` | `[]string` | optional (`omitempty`) |
@@ -3411,6 +3408,7 @@ Declared in `internal/protocol/types`.
 | `page_count` | `int` |  |
 | `total_rows` | `int64` |  |
 | `aggregates` | `types.ToolAggregates` — see [`ToolAggregates`](./types.md#toolaggregates) |  |
+| `aggregates_partial` | `bool` | optional (`omitempty`) |
 
 ## ToolManifest
 

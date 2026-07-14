@@ -251,7 +251,19 @@ type ToolListResponse struct {
 	// TotalRows is the total row count for the filtered view.
 	TotalRows int64 `json:"total_rows"`
 	// Aggregates carries the four catalog counters for the filtered view.
+	// Active / PendingApproval / AwaitingOAuth ride the per-tool annotator
+	// (OAuth / approval / last-used). When AggregatesPartial is true they
+	// are UNAVAILABLE, not zero — see AggregatesPartial.
 	Aggregates ToolAggregates `json:"aggregates"`
+	// AggregatesPartial reports that the annotator-backed catalog aggregates
+	// (Active / PendingApproval / AwaitingOAuth) are UNAVAILABLE because no
+	// per-tool annotator is wired on this runtime (the concrete lands in
+	// the tools annotator follow-up). Only `Aggregates.Total` is authoritative; the Console
+	// renders the other three as "unavailable," NEVER a real-looking 0 — the
+	// fabricated zero the silent-absence class kills (the projection-completeness gate). Additive and
+	// omitempty: a wired build (a wired build) omits it and ships real
+	// aggregates.
+	AggregatesPartial bool `json:"aggregates_partial,omitempty"`
 }
 
 // ToolGetRequest is the `tools.get` request body.

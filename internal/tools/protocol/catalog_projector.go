@@ -133,6 +133,16 @@ func NewCatalogProjector(catalog tools.ToolCatalog, opts ...CatalogProjectorOpti
 	return p, nil
 }
 
+// AnnotationsAvailable reports whether the projector has a per-tool
+// Annotator wired (OAuth / approval / last-used / metrics / content-stats /
+// display-modes). False on the V1 production build (no Annotator concrete
+// exists yet — that is the tools annotator follow-up). This is the SINGLE "annotator-wired"
+// capability toggle: the Service loud-rejects the annotator-backed facet
+// filters and marks the response-riding aggregates partial when it is false,
+// and the tools annotator follow-up's un-gate is one mechanical flip (wire the Annotator →
+// AnnotationsAvailable() returns true → the facets + aggregates go live).
+func (p *CatalogProjector) AnnotationsAvailable() bool { return p.annotator != nil }
+
 // transportOf maps the runtime tools.TransportKind onto the wire
 // ToolTransport enum.
 func transportOf(k tools.TransportKind) prototypes.ToolTransport {
