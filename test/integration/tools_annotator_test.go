@@ -213,6 +213,16 @@ func TestE2E_ToolsAnnotator_RealDrivers(t *testing.T) {
 	if len(reqList.Tools) != 1 || reqList.Tools[0].ID != "gh_tool" {
 		t.Fatalf("Required facet after revoke = %+v, want exactly gh_tool", reqList.Tools)
 	}
+	// A SECOND revoke of the now-unbound-but-CONFIGURED source reports
+	// RevokedCount 0 — no real binding remains to revoke, so the idempotent
+	// terminal delete is not over-counted as a revocation.
+	rev2, err := svc.RevokeOAuth(ctxA, prototypes.ToolRevokeOAuthRequest{Identity: scopeA, ID: "gh_tool"}, true)
+	if err != nil {
+		t.Fatalf("RevokeOAuth (second, unbound): %v", err)
+	}
+	if rev2.RevokedCount != 0 {
+		t.Fatalf("RevokedCount on an unbound-but-configured source = %d, want 0 (idempotent no-op, not an over-count)", rev2.RevokedCount)
+	}
 
 	// --- Approval-policy admin write round-trips ---------------------------
 	if _, err := svc.SetApprovalPolicy(ctxA, prototypes.ToolSetApprovalPolicyRequest{

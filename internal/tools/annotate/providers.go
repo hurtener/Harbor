@@ -87,12 +87,23 @@ func (r *ProviderOAuthReader) Revoke(ctx context.Context, id identity.Identity, 
 	var count int64
 	var firstErr error
 	for _, p := range r.providers {
+		// hadBinding gates the count: only a provider that held a REAL token
+		// (Bound / Expired) counts toward RevokedCount. A configured-but-
+		// unbound source has nothing to revoke — its terminal idempotent
+		// delete succeeds, but reporting it as a revocation would over-count a
+		// no-op. A provider that does not expose a status read is counted on a
+		// successful revoke (we cannot tell, and under-counting a real
+		// revocation is worse than over-counting an unknown one).
+		hadBinding := true
 		if bs, ok := p.(bindingStatuser); ok {
 			state, sErr := bs.BindingStatus(ctx, source)
-			if sErr == nil && state == auth.BindingNotConfigured {
-				// Not this provider's source — skip (Revoke would only
-				// return a config-invalid error).
-				continue
+			if sErr == nil {
+				if state == auth.BindingNotConfigured {
+					// Not this provider's source — skip (Revoke would only
+					// return a config-invalid error).
+					continue
+				}
+				hadBinding = state == auth.BindingBound || state == auth.BindingExpired
 			}
 		}
 		if rErr := p.Revoke(ctx, source); rErr != nil {
@@ -101,7 +112,9 @@ func (r *ProviderOAuthReader) Revoke(ctx context.Context, id identity.Identity, 
 			}
 			continue
 		}
-		count++
+		if hadBinding {
+			count++
+		}
 	}
 	return count, firstErr
 }

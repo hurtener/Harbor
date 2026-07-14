@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
@@ -62,5 +63,49 @@ func TestCatalogProjector_AnnotatorUnwiredIsHonest(t *testing.T) {
 	}
 	if resp.Aggregates.Active != 0 || resp.Aggregates.PendingApproval != 0 || resp.Aggregates.AwaitingOAuth != 0 {
 		t.Fatal("annotator-backed aggregates should be zeroed AND marked partial (Console renders 'unavailable'), never real-looking values")
+	}
+}
+
+// TestCatalogProjector_InMemoryOverride_IsSessionScoped guards the exact code
+// line that carried the shipped 177 cross-session bleed: the in-memory
+// approval-policy FALLBACK override (`overrideKey`, used when NO persisting
+// annotator is wired). A `tools.set_approval_policy` for session A must NOT be
+// observable in session B's projection (same tenant/user, different session).
+// The bug this pins was `overrides` keyed by tool ID alone; a regression back
+// to tool-ID-only keying makes this test fail. The persisting-annotator path
+// is covered separately (the integration test) — it BYPASSES this map, so this
+// bare-projector test is the only guard on the fallback line.
+func TestCatalogProjector_InMemoryOverride_IsSessionScoped(t *testing.T) {
+	// A BARE projector: no annotator wired, so SetApprovalPolicy records the
+	// in-memory fallback override (approvalPersists() == false).
+	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t))
+	if err != nil {
+		t.Fatalf("NewCatalogProjector: %v", err)
+	}
+	if proj.AnnotationsAvailable() {
+		t.Fatal("test setup wrong: annotator wired — this test must exercise the in-memory fallback")
+	}
+	ctx := context.Background()
+	idA := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-A"}
+	idB := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-B"}
+
+	if err := proj.SetApprovalPolicy(ctx, idA, "beta_http", prototypes.ToolApprovalGated); err != nil {
+		t.Fatalf("SetApprovalPolicy(session A): %v", err)
+	}
+	// Session A observes its own override (never a silent no-op).
+	rowA, err := proj.GetTool(ctx, idA, "beta_http")
+	if err != nil {
+		t.Fatalf("GetTool(session A): %v", err)
+	}
+	if rowA.ApprovalPolicy != prototypes.ToolApprovalGated {
+		t.Fatalf("session A ApprovalPolicy = %q, want gated (own override)", rowA.ApprovalPolicy)
+	}
+	// Session B must NOT see session A's override — it reads the default auto.
+	rowB, err := proj.GetTool(ctx, idB, "beta_http")
+	if err != nil {
+		t.Fatalf("GetTool(session B): %v", err)
+	}
+	if rowB.ApprovalPolicy != prototypes.ToolApprovalAuto {
+		t.Fatalf("session B ApprovalPolicy = %q, want auto — cross-session bleed via the in-memory override (the shipped 177 bug)", rowB.ApprovalPolicy)
 	}
 }
