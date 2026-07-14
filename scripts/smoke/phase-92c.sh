@@ -25,7 +25,7 @@ for m in MethodAgentConfigSkillsList MethodAgentConfigSkillsUpsert MethodAgentCo
 done
 
 # 2. The SkillsSelection payload section is on the config envelope.
-assert_grep_present 'Skills       \*SkillsSelection' \
+assert_grep_present 'Skills[[:space:]]+\*SkillsSelection' \
     internal/agentcfg/agentcfg.go \
     'phase 92c: ConfigPayload.Skills section present'
 assert_grep_present 'type SkillsSelection struct' \

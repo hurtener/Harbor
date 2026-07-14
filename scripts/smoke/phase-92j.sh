@@ -23,7 +23,7 @@ source "scripts/smoke/common.sh"
 assert_grep_present 'type LLMParams struct' \
     internal/agentcfg/agentcfg.go \
     'phase 92j: LLMParams section type present'
-assert_grep_present 'LLMParams    \*LLMParams' \
+assert_grep_present 'LLMParams[[:space:]]+\*LLMParams' \
     internal/agentcfg/agentcfg.go \
     'phase 92j: ConfigPayload carries the LLMParams section'
 assert_grep_present 'func DiffLLMParams' \
