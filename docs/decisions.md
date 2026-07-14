@@ -8403,9 +8403,16 @@ the first usable Harbor TUI below the accepted floor.
 full editor-quality composition, local history/stash, structured references,
 session search/switch/rename/resume/erase remediation, sticky streaming,
 semantic navigation, compact/native-scrollback mode, export, retry, and visible
-reconnect/partiality. Local persistence contains interaction state and
-references only, never Runtime entities or plaintext credentials. The phase is
-not complete without the applicable visual matrix and PTY keyboard walkthrough.
+reconnect/partiality. It is deliberately a single-operator, one-active-session
+terminal, not a multi-user or fleet view. Explicit session switching reacquires
+a JWT for the target triple. The lifetime-scoped token source is consulted for
+every request/reconnect, reloads rotated token-file credentials, and accepts a
+replacement in memory after visible auth expiry; it never extends or persists a
+signed token. Local persistence contains interaction state and the last durable
+session reference only, never Runtime rows or plaintext credentials. Restart
+reattaches that session; a closed durable session reopens on its next canonical
+`start`, while erased remains terminal. The phase is not complete without the
+applicable visual matrix and PTY keyboard walkthrough.
 
 **Cross-references.** D-061, D-312, D-315–D-317. RFC §3.1, §4, §5, §8.
 CLAUDE.md §6, §8, §13, §17, §18. Plan:

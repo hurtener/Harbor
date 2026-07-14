@@ -4,10 +4,8 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -155,87 +153,6 @@ func TestInspectFilter_Validate_RejectsIncompleteIdentity(t *testing.T) {
 	}
 }
 
-// TestInspectFilter_ApplyHeaders_WritesBearerAndIdentity — the headers
-// the SSE handler reads are present after applyHeaders runs.
-func TestInspectFilter_ApplyHeaders_WritesBearerAndIdentity(t *testing.T) {
-	f := inspectFilter{
-		Tenant: "t1", User: "u1", Sess: "s1", Run: "r1",
-		Types: []string{"task.spawned", "task.completed"},
-		Since: "42",
-	}
-	auth := inspectAuth{Token: "test-jwt"}
-	req, _ := http.NewRequest("GET", "http://localhost/v1/events", nil)
-	f.applyHeaders(req, auth)
-	if got := req.Header.Get("Authorization"); got != "Bearer test-jwt" {
-		t.Errorf("Authorization = %q", got)
-	}
-	if req.Header.Get("X-Harbor-Tenant") != "t1" {
-		t.Errorf("X-Harbor-Tenant missing")
-	}
-	if req.Header.Get("X-Harbor-User") != "u1" {
-		t.Errorf("X-Harbor-User missing")
-	}
-	if req.Header.Get("X-Harbor-Session") != "s1" {
-		t.Errorf("X-Harbor-Session missing")
-	}
-	if req.Header.Get("X-Harbor-Run") != "r1" {
-		t.Errorf("X-Harbor-Run missing")
-	}
-	if req.Header.Get("Last-Event-ID") != "42" {
-		t.Errorf("Last-Event-ID missing")
-	}
-	types := req.Header.Values("X-Harbor-Event-Type")
-	if len(types) != 2 || types[0] != "task.spawned" || types[1] != "task.completed" {
-		t.Errorf("X-Harbor-Event-Type = %v; want [task.spawned task.completed]", types)
-	}
-}
-
-// TestReadSSE_BasicFrame — one event-type/id/data/blank-line frame
-// decodes cleanly.
-func TestReadSSE_BasicFrame(t *testing.T) {
-	body := "event: task.spawned\nid: 1\ndata: {\"hello\":\"world\"}\n\n"
-	r := bufio.NewReader(strings.NewReader(body))
-	frame, err := readSSE(r)
-	if err != nil {
-		t.Fatalf("readSSE: %v", err)
-	}
-	if frame.Event != "task.spawned" {
-		t.Errorf("Event = %q", frame.Event)
-	}
-	if frame.ID != "1" {
-		t.Errorf("ID = %q", frame.ID)
-	}
-	if frame.Data != `{"hello":"world"}` {
-		t.Errorf("Data = %q", frame.Data)
-	}
-}
-
-// TestReadSSE_CommentFrame — `:keepalive` arrives as a comment-only
-// frame; we surface it so the caller can suppress / count separately.
-func TestReadSSE_CommentFrame(t *testing.T) {
-	body := ": keepalive\n\n"
-	r := bufio.NewReader(strings.NewReader(body))
-	frame, err := readSSE(r)
-	if err != nil {
-		t.Fatalf("readSSE: %v", err)
-	}
-	if frame.Comment != "keepalive" {
-		t.Errorf("Comment = %q", frame.Comment)
-	}
-	if frame.Event != "" || frame.Data != "" {
-		t.Errorf("non-comment fields populated unexpectedly")
-	}
-}
-
-// TestReadSSE_EOFReturnsError — clean end-of-stream surfaces io.EOF.
-func TestReadSSE_EOFReturnsError(t *testing.T) {
-	r := bufio.NewReader(strings.NewReader(""))
-	_, err := readSSE(r)
-	if !errors.Is(err, io.EOF) {
-		t.Errorf("err = %v; want io.EOF", err)
-	}
-}
-
 // TestInspectSSE_ContextCancellationStopsLoop — closing ctx propagates
 // to the http.Client and terminates the read loop cleanly.
 func TestInspectSSE_ContextCancellationStopsLoop(t *testing.T) {
@@ -283,6 +200,29 @@ func TestInspectSSE_ContextCancellationStopsLoop(t *testing.T) {
 	case <-got:
 	default:
 		t.Error("visitor never saw a frame")
+	}
+}
+
+func TestInspectSSE_CleanEOFStopsLoop(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: task.completed\ndata: {\"ok\":true}\n\n"))
+	}))
+	defer srv.Close()
+	visits := 0
+	err := inspectSSE(t.Context(), srv.Client(), srv.URL,
+		inspectFilter{Tenant: "t", User: "u", Sess: "s"},
+		inspectAuth{Token: "t"},
+		func(sseFrame) (bool, error) {
+			visits++
+			return false, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("inspectSSE clean EOF: %v", err)
+	}
+	if visits != 1 {
+		t.Fatalf("visits = %d, want 1", visits)
 	}
 }
 

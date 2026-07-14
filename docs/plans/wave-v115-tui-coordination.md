@@ -55,6 +55,8 @@ In scope:
 
 - sessions, turns, streaming, tasks, tools, interventions, artifacts, events,
   Runtime posture, controls, diagnostics, reconnect, and export;
+- one developer/operator and exactly one active session per TUI process, with
+  explicit stream-draining switches rather than simultaneous session tabs;
 - authenticated REST/SSE in every mode;
 - local drafts, prompt history, visual preferences, and references; and
 - terminal-safe lifecycle and responsive visual fidelity.
@@ -64,6 +66,7 @@ Explicitly excluded:
 - Git/VCS, repository tree, source editing, patches, shell execution, LSP,
   worktrees, and coding-specific tool renderers;
 - full Console/fleet-administration parity;
+- multi-user terminal operation or simultaneous multi-session dashboards;
 - Runtime-internal adapters, TUI-only endpoints, or a second event channel;
 - shadow storage for Runtime entities; and
 - `harbor dev` integration in this wave.
@@ -138,11 +141,20 @@ generated binary --tui ────┘      └─ projection core
 ```
 
 - The TUI is part of the CLI product, not a fifth Runtime layer.
+- One TUI process has one active session. Session selection is sequential and
+  each switch reacquires a credential for the target identity triple.
 - Co-launch is process orchestration; it still dials the bound listener.
 - Attach mode never owns its remote Runtime.
 - Explicit co-launch modes own and drain their server.
 - `sdk/tui` exposes connection options only.
-- Client-local persistence holds drafts/preferences/history/references only.
+- Client-local persistence holds drafts/preferences/history/references and the
+  last active session ID only; it never stores plaintext credentials or Runtime
+  rows.
+- The token source lives for the TUI lifetime and resolves before every request
+  and SSE reconnect. Rotated token files/replacement credentials keep the same
+  active session alive; expiry without replacement is visible, never silent.
+- Restart restores the last durable session and history. A closed session
+  reopens on the next canonical `start`; an erased session requires Start Fresh.
 
 ## 7. Protocol Honesty Requirements
 
@@ -180,8 +192,10 @@ Phase 184's real-driver PTY E2E proves:
 2. stock `serve --tui` readiness and REST/SSE-only access;
 3. generated `--with-server --with-tui` compiled-tool observation;
 4. loud missing/rejected authentication in every mode;
-5. cross-session identity isolation;
-6. close/reopen and erased-terminal behavior;
+5. cross-session identity isolation underneath a one-active-session TUI, with
+   stream drain and target-token reacquisition on switch;
+6. token rotation plus terminal restart, close/reopen, and erased-terminal
+   behavior;
 7. approval/rejection through the unified primitive;
 8. disconnect/replay with ordering or visible incompleteness;
 9. attach-vs-owned-server shutdown semantics;

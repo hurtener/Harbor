@@ -17,9 +17,7 @@
 #      reverse), and internal/runtime/flow no longer imports the inproc
 #      driver directly (the pre-existing §13 seam violation this phase
 #      closes) — it consumes the neutral schema package instead.
-#   5. The exact two-func facade allow-list (D-273 amending D-205 item
-#      1): sdk/tools/inproc.RegisterFunc + sdk/assemble.RunTyped are the
-#      ONLY func-bearing production files under sdk/.
+#   5. The exact facade forward allow-list (D-273 amending D-205 item 1).
 
 set -euo pipefail
 
@@ -95,7 +93,8 @@ assert_grep_present 'internal/tools/schema' \
 
 allowed_func_specs='sdk/tools/inproc/inproc.go|^func RegisterFunc\[|RegisterFunc|1
 sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped|1
-sdk/server/server.go|^func Open\(|Open|1'
+sdk/server/server.go|^func Open\(|Open|1
+sdk/protocolclient/protocolclient.go|^func New\(|Protocol client forwards|3'
 allowed_func_files=$(echo "${allowed_func_specs}" | cut -d'|' -f1)
 allowed_file_count=$(echo "${allowed_func_specs}" | grep -c '^')
 func_files=$(grep -lE '^func ' -r sdk/ --include='*.go' --exclude='*_test.go' | sed 's#^\./##' | sort -u) || func_files=""
@@ -114,6 +113,11 @@ while IFS='|' read -r f want_re want_name want_count; do
         phase144_single_func_ok=0
     fi
 done <<< "${allowed_func_specs}"
+
+assert_grep_present '^func StaticToken\(' sdk/protocolclient/protocolclient.go \
+    'phase 144: Protocol client facade forwards StaticToken'
+assert_grep_present '^func WithHTTPClient\(' sdk/protocolclient/protocolclient.go \
+    'phase 144: Protocol client facade forwards WithHTTPClient'
 if [ "${phase144_single_func_ok}" -eq 1 ]; then
     ok 'phase 144: each allow-listed file declares its enumerated func count — the generic forwards (func-level gate)'
 fi

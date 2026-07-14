@@ -43,6 +43,8 @@ None beyond the established browser-to-native rendering adaptation in Phase
 
 - Deliver a conversation workflow whose editing, navigation, streaming, and
   session handling meet or exceed the market reference.
+- Optimize for one developer/operator and one active session per terminal while
+  preserving Harbor's mandatory identity triple at every Protocol call.
 - Preserve local interaction state without shadowing Runtime entities.
 - Make all reconnect and erased/partial states understandable and recoverable.
 
@@ -56,10 +58,19 @@ None beyond the established browser-to-native rendering adaptation in Phase
 ## Acceptance criteria
 
 - [ ] `harbor tui --attach <url>` performs auth/version/capability negotiation
-      and opens the complete home/session flow.
-- [ ] Session picker supports list/search/switch/new/rename/delete, local quick
-      pins, closed-session Resume, erased-session Start Fresh, and stream-safe
-      switching.
+      and opens the complete home/session flow with exactly one active session.
+- [ ] Session picker supports list/search/switch/new/rename/delete, closed-session
+      Resume, erased-session Start Fresh, and stream-safe switching. It is a
+      single-operator selector, not a simultaneous multi-session dashboard;
+      switching tears down the old stream and reacquires a target-session JWT.
+- [ ] The lifetime-scoped token source resolves before every REST request and SSE
+      connection, reloads a rotated token file, and can accept an in-memory
+      replacement after visible `401` expiry without losing draft, session, or
+      replay cursor. It never silently extends or persists a signed JWT.
+- [ ] The last active session reference is restored on terminal restart. Durable
+      history rehydrates under that same ID; if closed/GC-reaped, the next turn
+      uses canonical `start` and observes `session.reopened`. Erased sessions do
+      not reopen and require explicit Start Fresh.
 - [ ] Composer supports multiline editing, selection, undo/redo, Emacs-style
       movement, bracketed paste, bounded history, draft stash, attachments,
       slash commands, and `@session/@task/@artifact/@tool` references.
@@ -73,12 +84,13 @@ None beyond the established browser-to-native rendering adaptation in Phase
       presented as server-accepted before dispatch.
 - [ ] Compact/native-scrollback mode, transcript copy/export, reasoning/detail
       toggles, timestamps, and retry remediation are keyboard-accessible.
-- [ ] Local persistence stores bounded drafts/history/preferences/references,
-      never Runtime rows or plaintext credentials.
+- [ ] Local persistence stores bounded drafts/history/preferences and the last
+      session reference, never Runtime rows or plaintext credentials.
 - [ ] Every applicable home/session/composer/dialog/stream state in the binding
       visual matrix has reviewed goldens and PTY key walkthroughs.
-- [ ] Auth expiry, disconnect, replay gap, closed/reopened, erased, resize while
-      editing, and quit-during-stream preserve text and restore the terminal.
+- [ ] Auth expiry/rotation, disconnect, replay gap, terminal restart,
+      closed/reopened, erased, resize while editing, and quit-during-stream
+      preserve text and restore the terminal.
 
 ## Files added or changed
 
@@ -99,14 +111,17 @@ None beyond the established browser-to-native rendering adaptation in Phase
 
 ## Test plan
 
-- **Unit:** composer editing/history/stash/autocomplete, session actions,
-  follow-up queue, transcript offsets/follow mode/export.
+- **Unit:** composer editing/history/stash/autocomplete, one-active-session
+  transitions, credential refresh/replacement, follow-up queue, transcript
+  offsets/follow mode/export.
 - **Integration:** real authenticated server; start/stream/reconcile, session
-  switch/reopen/erase, disconnect/replay, attachment reference.
+  switch with target JWT, token-file rotation, restart/reopen/erase,
+  disconnect/replay, attachment reference.
 - **Conformance:** conventions golden matrix for conversation workflows and
   shared projection fixtures.
-- **Concurrency / leak:** N≥100 session switches/reducer updates; PTY quit and
-  signal paths restore terminal and goroutine baseline.
+- **Concurrency / leak:** N≥100 reducer/credential-source updates against shared
+  immutable components; sequential active-session switches cancel and join the
+  prior stream; PTY quit and signal paths restore terminal and goroutine baseline.
 
 ## Smoke script additions
 
@@ -126,8 +141,10 @@ None beyond the established browser-to-native rendering adaptation in Phase
 
 ## Risks / open questions
 
-- Token identity/session switching must follow verified Protocol authority; the
-  client never trusts body identity over auth context.
+- Token identity/session switching follows verified Protocol authority; the
+  client never trusts body identity over auth context. A fixed token that expires
+  cannot self-renew, so absent file/issuer rotation the UI requests replacement
+  visibly and preserves local interaction state while disconnected.
 - Native terminal selection is emulator-dependent; explicit copy commands are
   the portable contract.
 
