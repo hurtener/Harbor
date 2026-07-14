@@ -311,6 +311,10 @@ Sessions page gain the reopen affordance as the same-wave §13 consumer.
   `session.reopened` list refresh; branch on `code == "session_erased"` for the
   "conversation deleted — start fresh" path.
 - `docs/site/protocol/events.md`, `docs/site/protocol/errors.md` (regenerated).
+- `docs/notes/session-model-contract.md` — the closed-session `start` contract
+  prose rewritten (a closed-session start REOPENS with history intact; only an
+  ERASED id is rejected `session_erased`). No CI gate lints `docs/notes/` prose,
+  so this is a same-PR human-review obligation, not a mechanical catch.
 - `scripts/smoke/phase-176.sh`; `RFC-001-Harbor.md` §6.9 (amended in the plans
   PR); `docs/glossary.md`; `docs/decisions.md` (D-312).
 
