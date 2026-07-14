@@ -941,4 +941,91 @@ export class AgentConfigPanelState {
 			this.addConnBusy = false;
 		}
 	}
+
+	/* ================================================================ */
+	/* Per-connection editor — discovery-origin allowance + removal      */
+	/* (D-302 / D-287: the write is single-homed here, beside diff/       */
+	/* rollback; /mcp-connections deep-links to it).                     */
+	/* ================================================================ */
+
+	/** Per-connection newline/space/comma-separated origins draft, keyed by
+	 * connection name. Undefined ⇒ the input renders the connection's current
+	 * allow-list. */
+	discoveryDraft = $state<Record<string, string>>({});
+	/** The connection name whose discovery-origins write is in flight (''=none). */
+	discoveryBusy = $state<string>('');
+	discoveryError = $state<PageError | null>(null);
+	/** The connection name whose removal is in flight (''=none). */
+	removeBusy = $state<string>('');
+	removeError = $state<PageError | null>(null);
+
+	/** The active revision's runtime-added MCP connections (the editor rows). */
+	get activeConnections(): AgentConfigMCPConnectionDescriptor[] {
+		return this.activePayload().connections?.servers ?? [];
+	}
+
+	/** The editor input value for a connection: the pending draft when the
+	 * operator has typed, else the connection's current allow-list joined. */
+	discoveryInputFor(conn: AgentConfigMCPConnectionDescriptor): string {
+		const draft = this.discoveryDraft[conn.name];
+		if (draft !== undefined) return draft;
+		return (conn.oauth_discovery_allowed_origins ?? []).join('\n');
+	}
+
+	/** Parses an origins draft (newline/comma/space-separated) into a deduped,
+	 * order-preserving list. */
+	private parseOrigins(raw: string): string[] {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const tok of raw.split(/[\s,]+/)) {
+			const o = tok.trim();
+			if (o === '' || seen.has(o)) continue;
+			seen.add(o);
+			out.push(o);
+		}
+		return out;
+	}
+
+	/** FULL-REPLACE writes a connection's OAuth-discovery allow-list
+	 * (`agent_config.set_mcp_discovery_origins`), then re-loads so the rendered
+	 * revision + diff/rollback reflect it. Admin-gated. */
+	async setDiscoveryOrigins(name: string): Promise<void> {
+		if (this.#client === null || !this.hasAdminScope) return;
+		if (this.discoveryBusy !== '') return;
+		this.discoveryBusy = name;
+		this.discoveryError = null;
+		try {
+			const conn = this.activeConnections.find((c) => c.name === name);
+			if (conn === undefined) {
+				this.discoveryError = { code: 'not_found', message: `Connection ${name} is not in the active revision.` };
+				return;
+			}
+			const origins = this.parseOrigins(this.discoveryInputFor(conn));
+			await this.#client.agentConfig.setMcpDiscoveryOrigins(this.agentId, name, origins);
+			delete this.discoveryDraft[name];
+			await this.reloadRevisions();
+		} catch (e) {
+			this.discoveryError = describeError(e);
+		} finally {
+			this.discoveryBusy = '';
+		}
+	}
+
+	/** Removes a runtime-added connection (`agent_config.remove_mcp_connection`)
+	 * — the first Console caller of the caller-less verb — then re-loads.
+	 * Admin-gated. */
+	async removeConnection(name: string): Promise<void> {
+		if (this.#client === null || !this.hasAdminScope) return;
+		if (this.removeBusy !== '') return;
+		this.removeBusy = name;
+		this.removeError = null;
+		try {
+			await this.#client.agentConfig.removeMcpConnection(this.agentId, name);
+			await this.reloadRevisions();
+		} catch (e) {
+			this.removeError = describeError(e);
+		} finally {
+			this.removeBusy = '';
+		}
+	}
 }

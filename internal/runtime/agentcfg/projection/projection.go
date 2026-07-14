@@ -195,6 +195,76 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 	return detached, errors.Join(errs...)
 }
 
+// DiscoveryOriginReconciler is the driver-agnostic seam the run-start
+// allowance-reconcile leg uses to re-apply each of the reconciling owner's
+// runtime-added connections' OAuth-discovery allow-list to the live MCP
+// registry. Like [ConnectionDetacher] it is owner-scoped: AttachedSources
+// returns ONLY the reconciling owner's runtime-adds (never boot servers, never
+// another owner's). The concrete (wired at the cmd/harbor + devstack boundary)
+// delegates to the process-global bare-name registry.
+type DiscoveryOriginReconciler interface {
+	// AttachedSources returns the reconciling owner's runtime-added source ids —
+	// the owner-scoped reconcile VIEW (identical to ConnectionDetacher's).
+	AttachedSources(ctx context.Context, owner auth.Owner) []string
+	// SetOAuthDiscoveryOrigins FULL-REPLACES the named connection's allow-list on
+	// the live registry (and prunes a now-unallowed recorded requirement),
+	// returning the prior set. Identity-mandatory for authorization.
+	SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error)
+}
+
+// ReconcileDiscoveryOrigins is the ALLOWANCE-RECONCILE leg of run-start
+// reconciliation — the rollback / set_revision path for the
+// OAuth-discovery cross-origin allow-list. For each of the reconciling OWNER's
+// runtime-added connections that the active revision still declares, it
+// re-derives the connection's declared allow-list from the CURRENT revision and
+// re-applies it to the live registry (a FULL IDEMPOTENT re-prune, not a
+// rollback-delta). So a rollback past a grant REVOKES the origin live (the
+// current revision no longer declares it), and any stale requirement record
+// (e.g. from a revoke that landed mid-Discover) is corrected at the next run
+// start — a bounded self-heal.
+//
+// It is owner-scoped exactly like [ReconcileConnections]: AttachedSources
+// returns only the reconciling owner's runtime-adds, so a run for owner A never
+// touches a boot server's or tenant-B's allow-list. A detach handled by
+// ReconcileConnections removes the source from the owner view, so a
+// no-longer-declared connection is not re-applied here (it is torn down there).
+//
+// A nil registry, an empty agentID, or a nil reconciler returns (0, nil) — the
+// backward-compatible "no reconcile" path. A registry read error is returned
+// wrapped in ErrReconcileRead (fail loud). Apply errors are joined and returned
+// (logged loud by the caller) but do not abort the sweep. Returns the number of
+// connections whose allow-list was re-applied.
+func ReconcileDiscoveryOrigins(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, reconciler DiscoveryOriginReconciler) (int, error) {
+	if reg == nil || agentID == "" || reconciler == nil {
+		return 0, nil
+	}
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return 0, fmt.Errorf("%w: agent %q: %w", ErrReconcileRead, agentID, err)
+	}
+	declared := make(map[string][]string)
+	if ok {
+		for _, d := range rev.Payload.ConnectionDescriptors() {
+			declared[d.Name] = append([]string(nil), d.OAuthDiscoveryAllowedOrigins...)
+		}
+	}
+	owner := auth.Owner{Tenant: id.TenantID, Agent: agentID}
+	var applied int
+	var errs []error
+	for _, src := range reconciler.AttachedSources(ctx, owner) {
+		origins, isDeclared := declared[src]
+		if !isDeclared {
+			continue // detach territory (ReconcileConnections) — not re-applied here.
+		}
+		if _, aerr := reconciler.SetOAuthDiscoveryOrigins(ctx, src, origins); aerr != nil {
+			errs = append(errs, fmt.Errorf("reapply allowance %q: %w", src, aerr))
+			continue
+		}
+		applied++
+	}
+	return applied, errors.Join(errs...)
+}
+
 // ActiveSkillViews applies an agent's active-config skills membership to the
 // run's skill-directory views at run start. It resolves the agent's active
 // revision once and, when the revision pins a skills section, keeps only the

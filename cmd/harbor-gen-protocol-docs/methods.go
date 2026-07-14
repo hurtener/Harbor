@@ -508,6 +508,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigRemoveMCPConnectionRequest", Response: "AgentConfigRemoveMCPConnectionResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigSetMCPDiscoveryOrigins: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetMCPDiscoveryOrigins),
+			Mutates: true,
+			Request: "AgentConfigSetMCPDiscoveryOriginsRequest", Response: "AgentConfigSetMCPDiscoveryOriginsResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigSessionSetUserPrompt: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSessionSetUserPrompt),
 			Mutates: true,

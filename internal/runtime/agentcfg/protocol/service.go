@@ -168,6 +168,15 @@ type Service struct {
 	// injected at the cmd/harbor + devstack boundary (the §4.4 boundary keeps
 	// the concrete MCP driver out of this package).
 	attacher ConnectionAttacher
+	// discoveryApplier applies a connection's OAuth-discovery cross-origin
+	// allow-list to the LIVE MCP registry for
+	// `agent_config.set_mcp_discovery_origins` (and the run-start
+	// allowance-reconcile). Optional — nil ⇒ the write records the revision but
+	// reports applied_live=false (no live registry wired). The concrete (which
+	// imports the MCP driver) is injected at the cmd/harbor + devstack boundary;
+	// this package depends only on the interface. The registry stays
+	// process-global bare-name (never re-keyed by identity).
+	discoveryApplier DiscoveryOriginApplier
 	// coordinator is the unified pause/resume primitive an auth-required
 	// attach parks on. Optional — nil ⇒ an auth-required attach fails loud
 	// with ErrCoordinatorUnavailable rather than silently dropping the auth
@@ -334,6 +343,21 @@ func WithConnectionAttacher(a ConnectionAttacher) Option {
 	return func(s *Service) {
 		if a != nil {
 			s.attacher = a
+		}
+	}
+}
+
+// WithDiscoveryOriginApplier wires the concrete that applies a connection's
+// OAuth-discovery cross-origin allow-list to the LIVE MCP registry for
+// `agent_config.set_mcp_discovery_origins` (and the run-start
+// allowance-reconcile). A nil applier leaves the write recording the revision
+// but reporting applied_live=false. The concrete (which imports the MCP driver)
+// is injected at the cmd/harbor + devstack boundary; this package depends only
+// on the interface.
+func WithDiscoveryOriginApplier(a DiscoveryOriginApplier) Option {
+	return func(s *Service) {
+		if a != nil {
+			s.discoveryApplier = a
 		}
 	}
 }

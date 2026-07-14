@@ -90,8 +90,8 @@ func rcAssertSeedComplete(t *testing.T, p agentcfg.ConfigPayload) {
 		if fv.IsNil() {
 			t.Fatalf("rebuild-completeness guard: ConfigPayload.%s is nil in the seed — a new section was "+
 				"added to agentcfg.ConfigPayload without extending rcSeed (rebuild_completeness_test.go). "+
-				"Populate it in rcSeed AND add its carry-forward to all six section-scoped setters "+
-				"(mcppolicy.go, addconnection.go, removeconnection.go, skills.go, promptlayers.go, llmparams.go) — see D-283.",
+				"Populate it in rcSeed AND add its carry-forward to all seven section-scoped setters "+
+				"(mcppolicy.go, addconnection.go, removeconnection.go, setdiscoveryorigins.go, skills.go, promptlayers.go, llmparams.go) — see D-283.",
 				field.Name)
 		}
 	}
@@ -243,6 +243,23 @@ func TestRebuildCompleteness_EverySetter_PreservesEverySibling(t *testing.T) {
 					LLMParams: prototypes.AgentConfigLLMParams{Temperature: f64(0.9)},
 				}); err != nil {
 					t.Fatalf("set_llm_params: %v", err)
+				}
+			},
+		},
+		{
+			// set_mcp_discovery_origins rebuilds ConfigPayload by hand
+			// (rebuildWithDiscoveryOrigins) to replace the named connection's
+			// allow-list — the same omission class the guard exists to close.
+			// No discoveryApplier is wired here, so the write is revision-only
+			// (applied_live=false); the rebuild carry-forward is what matters.
+			name:  "set_mcp_discovery_origins",
+			owned: "Connections",
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				if _, err := s.SetMCPDiscoveryOrigins(ctx, prototypes.AgentConfigSetMCPDiscoveryOriginsRequest{
+					Identity: scope(), AgentID: rcAgent, Name: "seed-conn",
+					AllowedOrigins: []string{"https://as.example.invalid"},
+				}); err != nil {
+					t.Fatalf("set_mcp_discovery_origins: %v", err)
 				}
 			},
 		},

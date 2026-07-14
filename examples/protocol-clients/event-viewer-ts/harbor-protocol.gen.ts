@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:c1e7f4dd7c6d4af1eee418855bc858f9ace9dcca3fdbbcb2028cce0e47cfa0fc";
+export const WIRE_SURFACE_DIGEST = "sha256:fafa7bc2e4ac71c29f54b9018ff78877b0c88ab0853000d3dd77cf2f5c02cbe4";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -33,6 +33,7 @@ export type HarborMethod =
   | "agent_config.session.skills.list"
   | "agent_config.session.skills.upsert"
   | "agent_config.set_llm_params"
+  | "agent_config.set_mcp_discovery_origins"
   | "agent_config.set_prompt_layers"
   | "agent_config.set_revision"
   | "agent_config.set_tool_exposure"
@@ -200,6 +201,7 @@ export type HarborEventType =
   | "mcp.app_available"
   | "mcp.connection.added"
   | "mcp.connection.auth_required"
+  | "mcp.connection.discovery_origins_set"
   | "mcp.connection.failed"
   | "mcp.connection.paused"
   | "mcp.connection.pending"
@@ -437,6 +439,7 @@ export interface AgentConfigMCPConnectionDescriptor {
   url?: string;
   oauth_provider?: string;
   meta_annotations?: Record<string, string>;
+  oauth_discovery_allowed_origins?: string[];
 }
 
 export interface AgentConfigNaming {
@@ -602,6 +605,22 @@ export interface AgentConfigSetLLMParamsRequest {
 
 export interface AgentConfigSetLLMParamsResponse {
   revision: AgentConfigRevisionView;
+  protocol_version: string;
+}
+
+export interface AgentConfigSetMCPDiscoveryOriginsRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  name: string;
+  allowed_origins: string[];
+}
+
+export interface AgentConfigSetMCPDiscoveryOriginsResponse {
+  revision: AgentConfigRevisionView;
+  name: string;
+  granted?: string[];
+  revoked?: string[];
+  applied_live: boolean;
   protocol_version: string;
 }
 

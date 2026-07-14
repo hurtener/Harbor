@@ -660,6 +660,21 @@ func originOf(raw string) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
+// OriginOf normalises a raw URL to its scheme://host origin (port-preserving,
+// path/query/fragment stripped), reporting ok=false when the input is
+// unparseable or missing a scheme/host. It is the exported form of the walker's
+// internal origin normaliser so an out-of-package consumer (the MCP registry's
+// discovery-allowance revoke-prune) can match an authorization-server entry's
+// provenance origin against a revoked allow-set using the SAME normalisation the
+// walk used — one normaliser, two call sites (CLAUDE.md §17.6).
+func OriginOf(raw string) (string, bool) {
+	o, err := originOf(raw)
+	if err != nil {
+		return "", false
+	}
+	return o, true
+}
+
 // normalizeOrigins builds a set of the allowed origins (best-effort — an
 // unparseable entry is dropped rather than failing the whole walk).
 func normalizeOrigins(list []string) map[string]bool {

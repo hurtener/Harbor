@@ -374,6 +374,21 @@ const (
 	// `POST /v1/agent_config/remove_mcp_connection`.
 	MethodAgentConfigRemoveMCPConnection Method = "agent_config.remove_mcp_connection"
 
+	// MethodAgentConfigSetMCPDiscoveryOrigins — admin verb: FULL-REPLACE writes
+	// a runtime-added MCP connection's OAuth-discovery cross-origin allow-list.
+	// It records a new revision (carrying every sibling section forward) AND
+	// applies the allow-list to the live MCP registry so the very next discovery
+	// uses it; a revoke also prunes the recorded requirement's now-unallowed
+	// authorization-server entries, and a rollback past a grant revokes the
+	// origin live via the owner-scoped run-start reconcile. Origins run the
+	// shared discovery-origin validator (https origin, no path/IP-literal). An
+	// unknown connection, a boot-declared (yaml) name, and a stdio connection
+	// each fail loud with a distinct typed error. The allowance is never an SSRF
+	// hole: a granted origin resolving private/loopback is still refused at dial.
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
+	// wire-transport route is `POST /v1/agent_config/set_mcp_discovery_origins`.
+	MethodAgentConfigSetMCPDiscoveryOrigins Method = "agent_config.set_mcp_discovery_origins"
+
 	// MethodAgentConfigSessionSetUserPrompt — session-safe verb (the
 	// non-admin lower tier): a session-scoped end user sets a user
 	// prompt layer that composes ABOVE the operator base (it can extend the
@@ -972,6 +987,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSetLLMParams:             {},
 	MethodAgentConfigAddMCPConnection:         {},
 	MethodAgentConfigRemoveMCPConnection:      {},
+	MethodAgentConfigSetMCPDiscoveryOrigins:   {},
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
 	MethodAgentConfigSessionSkillsList:        {},
@@ -1216,31 +1232,33 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the twenty-three
+// canonicalAgentConfigMethods is the closed set of the twenty-four
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
 // (set_tool_exposure), the layered-prompt verb (set_prompt_layers), the
 // per-agent LLM-params verb (set_llm_params), the add-connection verb
 // (add_mcp_connection), the remove-connection verb (remove_mcp_connection),
+// the discovery-allowance write (set_mcp_discovery_origins),
 // the five session safe-subset verbs, and the five user-tier verbs
 // (user.get / user.set_revision / user.list_revisions / user.diff /
 // user.rollback). IsAgentConfigMethod is O(1); the agent-config wire handler
 // branches on the trailing path segment to dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
-	MethodAgentConfigGet:                 {},
-	MethodAgentConfigSetRevision:         {},
-	MethodAgentConfigListRevisions:       {},
-	MethodAgentConfigDiff:                {},
-	MethodAgentConfigRollback:            {},
-	MethodAgentConfigSkillsList:          {},
-	MethodAgentConfigSkillsUpsert:        {},
-	MethodAgentConfigSkillsDelete:        {},
-	MethodAgentConfigSetToolExposure:     {},
-	MethodAgentConfigSetPromptLayers:     {},
-	MethodAgentConfigSetLLMParams:        {},
-	MethodAgentConfigAddMCPConnection:    {},
-	MethodAgentConfigRemoveMCPConnection: {},
+	MethodAgentConfigGet:                    {},
+	MethodAgentConfigSetRevision:            {},
+	MethodAgentConfigListRevisions:          {},
+	MethodAgentConfigDiff:                   {},
+	MethodAgentConfigRollback:               {},
+	MethodAgentConfigSkillsList:             {},
+	MethodAgentConfigSkillsUpsert:           {},
+	MethodAgentConfigSkillsDelete:           {},
+	MethodAgentConfigSetToolExposure:        {},
+	MethodAgentConfigSetPromptLayers:        {},
+	MethodAgentConfigSetLLMParams:           {},
+	MethodAgentConfigAddMCPConnection:       {},
+	MethodAgentConfigRemoveMCPConnection:    {},
+	MethodAgentConfigSetMCPDiscoveryOrigins: {},
 	// Session-user safe subset (the non-admin lower tier).
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
@@ -1294,18 +1312,19 @@ var canonicalAgentConfigSessionMethods = map[Method]struct{}{
 // also admin-gated at the wire handler (the whole family is admin-scoped),
 // but this set names the WRITES for callers that distinguish them.
 var canonicalAgentConfigAdminMethods = map[Method]struct{}{
-	MethodAgentConfigSetRevision:         {},
-	MethodAgentConfigRollback:            {},
-	MethodAgentConfigSkillsUpsert:        {},
-	MethodAgentConfigSkillsDelete:        {},
-	MethodAgentConfigSetToolExposure:     {},
-	MethodAgentConfigSetPromptLayers:     {},
-	MethodAgentConfigSetLLMParams:        {},
-	MethodAgentConfigAddMCPConnection:    {},
-	MethodAgentConfigRemoveMCPConnection: {},
+	MethodAgentConfigSetRevision:            {},
+	MethodAgentConfigRollback:               {},
+	MethodAgentConfigSkillsUpsert:           {},
+	MethodAgentConfigSkillsDelete:           {},
+	MethodAgentConfigSetToolExposure:        {},
+	MethodAgentConfigSetPromptLayers:        {},
+	MethodAgentConfigSetLLMParams:           {},
+	MethodAgentConfigAddMCPConnection:       {},
+	MethodAgentConfigRemoveMCPConnection:    {},
+	MethodAgentConfigSetMCPDiscoveryOrigins: {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the twenty-three
+// IsAgentConfigMethod reports whether m is one of the twenty-four
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

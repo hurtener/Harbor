@@ -118,6 +118,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigSetLLMParams,
 	methods.MethodAgentConfigAddMCPConnection,
 	methods.MethodAgentConfigRemoveMCPConnection,
+	methods.MethodAgentConfigSetMCPDiscoveryOrigins,
 	methods.MethodAgentConfigSessionSetUserPrompt,
 	methods.MethodAgentConfigSessionSetSourceDisables,
 	methods.MethodAgentConfigSessionSkillsList,
@@ -158,9 +159,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// list_revisions + diff + rollback) = 110,
 	// + Sessions-page erasure one (sessions.delete) = 111,
 	// + Sessions-page rename one (sessions.set_title, D-288) = 112,
-	// + events-read one (events.list, D-294) = 113.
-	if len(got) != 113 {
-		t.Fatalf("Methods() returned %d methods, want 113", len(got))
+	// + events-read one (events.list, D-294) = 113,
+	// + agent-config discovery-allowance write one
+	// (agent_config.set_mcp_discovery_origins) = 114.
+	if len(got) != 114 {
+		t.Fatalf("Methods() returned %d methods, want 114", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

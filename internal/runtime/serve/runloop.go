@@ -754,6 +754,24 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, q identity.Qua
 		d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP reconcile detached servers",
 			slog.String("agent_id", d.agentConfigID), slog.Int("detached", detached))
 	}
+	// The ALLOWANCE-reconcile leg: re-derive each still-declared runtime-added
+	// connection's OAuth-discovery allow-list from the current revision and
+	// re-apply it live (a full idempotent re-prune), so a rollback / set_revision
+	// past a grant revokes the origin on the live registry. Owner-scoped exactly
+	// like the detach leg. The detacher concrete satisfies the reconciler seam;
+	// a driver that does not is a no-op.
+	if rec, ok := d.connectionDetacher.(projection.DiscoveryOriginReconciler); ok {
+		applied, aerr := projection.ReconcileDiscoveryOrigins(ctx, d.agentConfig, d.agentConfigID, q, rec)
+		if aerr != nil {
+			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP discovery-allowance reconcile failed",
+				slog.String("agent_id", d.agentConfigID), slog.String("run_id", q.RunID), slog.String("err", aerr.Error()))
+			return
+		}
+		if applied > 0 {
+			d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP discovery-allowance reconcile re-applied",
+				slog.String("agent_id", d.agentConfigID), slog.Int("reapplied", applied))
+		}
+	}
 }
 
 func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {

@@ -104,6 +104,11 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		Headers:         req.Headers, // SECRET — used for the live transport, never persisted
 		OAuthProvider:   req.OAuthProvider,
 		MetaAnnotations: req.MetaAnnotations,
+		// Close the wiring gap: carry the non-secret discovery allow-list from the
+		// add request into the registry snapshot so the OAuth-requirement
+		// discovery walker's allowance input is no longer inert for a
+		// runtime-added connection (mcpdrv.Attach → Registry.Register reads it).
+		OAuthDiscoveryAllowedOrigins: append([]string(nil), req.OAuthDiscoveryAllowedOrigins...),
 	}
 
 	// Serialise adds: the per-add closer slice is merged into the master
@@ -134,6 +139,30 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		return err
 	}
 	return nil
+}
+
+// SetOAuthDiscoveryOrigins applies a runtime-added connection's
+// OAuth-discovery cross-origin allow-list to the LIVE MCP registry (the live
+// half of `agent_config.set_mcp_discovery_origins`), returning the prior set.
+// It satisfies the agent-config service's DiscoveryOriginApplier seam by
+// delegating to the process-global bare-name registry (identity-mandatory for
+// authorization; the registry is never re-keyed by identity). The revoke-prune
+// of any recorded requirement lives in the registry mutator.
+func (a *MCPConnectionAttacher) SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error) {
+	if a.registry == nil {
+		return nil, errors.New("serve: mcp attacher has no registry wired for discovery-origin apply")
+	}
+	prev, err = a.registry.SetOAuthDiscoveryOrigins(ctx, name, origins)
+	if errors.Is(err, mcpdrv.ErrServerNotFound) {
+		// The connection is declared in the revision but not attached in the live
+		// registry (unreachable server, or awaiting the next run-start reconcile).
+		// Translate to the service-layer sentinel so the setter degrades to a
+		// revision-only write (applied_live=false) instead of failing loud — the
+		// reconcile applies the allowance when the server comes online. Keeps this
+		// the ONLY place that imports the mcp driver's not-found sentinel.
+		return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrDiscoveryTargetNotLive, name)
+	}
+	return prev, err
 }
 
 // Close drains every runtime-added server's transport in reverse order. Wired

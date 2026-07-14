@@ -233,8 +233,11 @@ type serverEntry struct {
 	displayModes []string
 	contentShape []string
 	// oauthAllowedOrigins is the explicit per-connection cross-origin
-	// allowance list for OAuth-requirement discovery fetches. Static
-	// operator config, set at Register; read-only thereafter.
+	// allowance list for OAuth-requirement discovery fetches. Set at Register
+	// and re-written live by SetOAuthDiscoveryOrigins — internally
+	// synchronised (written only while r.mu is held for writing, read only
+	// while held for reading), so a live allowance write is race-free against
+	// a concurrent OAuthDiscoveryTarget read.
 	oauthAllowedOrigins []string
 	// owner is the (tenant, agent) reconcile-view tag for a runtime-added
 	// server. A zero owner marks a boot-declared server, which the
@@ -890,6 +893,77 @@ func (r *Registry) SetRawHTMLTrust(ctx context.Context, name string, trusted boo
 	e.stats.rawHTMLTrusted = trusted
 	r.mu.Unlock()
 	return prev, nil
+}
+
+// SetOAuthDiscoveryOrigins FULL-REPLACES a server's OAuth-discovery
+// cross-origin allowance list on the live registry and returns the prior set so
+// the caller can compute the granted / revoked delta. It is the live half of
+// the `agent_config.set_mcp_discovery_origins` write: the very next discovery
+// walk reads the new set via OAuthDiscoveryTarget, so a grant lets a previously
+// refused authorization-server hop through and a revoke refuses it.
+//
+// Revoke is symmetric: dropping an origin also PRUNES the recorded OAuth
+// requirement's authorization-server entries whose provenance origin
+// (SourceURL) is no longer allowed — by building a FRESH requirement and
+// swapping the stored pointer under the lock. The registry hands the
+// requirement out BY POINTER (GetServer returns it directly), so mutating the
+// pointee in place would be a data race against a concurrent reader; the swap
+// leaves any reader holding the prior (immutable) pointer with a consistent
+// value. Origin matching reuses the discovery walker's exported origin
+// normaliser (auth.OriginOf), so a port-differing origin never spuriously
+// matches.
+//
+// The registry stays PROCESS-GLOBAL bare-name — identity is mandatory for
+// AUTHORIZATION (a caller with no identity triple is refused), NOT for keying.
+// An unknown name returns ErrServerNotFound.
+func (r *Registry) SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error) {
+	if idErr := requireIdentity(ctx); idErr != nil {
+		return nil, idErr
+	}
+	e, eerr := r.entry(name)
+	if eerr != nil {
+		return nil, eerr
+	}
+	next := append([]string(nil), origins...)
+	r.mu.Lock()
+	prev = append([]string(nil), e.oauthAllowedOrigins...)
+	e.oauthAllowedOrigins = next
+	if e.stats.oauthRequirement != nil {
+		e.stats.oauthRequirement = pruneRequirementToAllowed(e.stats.oauthRequirement, next)
+	}
+	r.mu.Unlock()
+	return prev, nil
+}
+
+// pruneRequirementToAllowed returns req unchanged when every recorded
+// authorization-server entry's provenance origin is still in the allowed set,
+// or a FRESH requirement (a shallow copy with a filtered AuthorizationServers
+// slice) when one or more entries were fetched from a now-revoked origin. The
+// caller MUST swap the stored pointer under the registry lock — the returned
+// value is a new pointer so a concurrent reader holding the prior pointer keeps
+// a consistent, immutable snapshot (no in-place mutation of a handed-out
+// pointer). Origins are normalised with the walker's normaliser so a
+// port-differing origin does not spuriously survive.
+func pruneRequirementToAllowed(req *auth.OAuthRequirement, allowedOrigins []string) *auth.OAuthRequirement {
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if origin, ok := auth.OriginOf(o); ok {
+			allowed[origin] = true
+		}
+	}
+	kept := make([]auth.AuthorizationServerMeta, 0, len(req.AuthorizationServers))
+	for _, as := range req.AuthorizationServers {
+		origin, ok := auth.OriginOf(as.SourceURL)
+		if ok && allowed[origin] {
+			kept = append(kept, as)
+		}
+	}
+	if len(kept) == len(req.AuthorizationServers) {
+		return req // nothing revoked — keep the existing (immutable) pointer.
+	}
+	fresh := *req
+	fresh.AuthorizationServers = kept
+	return &fresh
 }
 
 // recordError bumps a server's error rate and flips it to the error
