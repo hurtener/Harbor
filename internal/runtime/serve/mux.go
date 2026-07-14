@@ -350,8 +350,24 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	if in.Tasks != nil {
 		var projectorOpts []tasksprotocol.RegistryProjectorOption
 		if in.RunLoopDriver != nil {
+			// The tasks.get parent-session card reads the session's status +
+			// timestamps from the session lister (the parent-session un-stub); a nil lister
+			// leaves the SessionID-only baseline.
+			var enricherOpts []EnricherOption
+			if in.Sessions != nil {
+				enricherOpts = append(enricherOpts, WithSessionLister(in.Sessions))
+			}
 			projectorOpts = append(projectorOpts,
-				tasksprotocol.WithEnricher(NewEnricher(in.RunLoopDriver.TrajectoryByTaskID)))
+				tasksprotocol.WithEnricher(NewEnricher(in.RunLoopDriver.TrajectoryByTaskID, enricherOpts...)))
+		}
+		// Wire the list-time approval-gate seam so `has_pending_approval`
+		// narrows to real open gates (the projection-completeness gate). Production ALWAYS wires it when
+		// a pause coordinator is present; the projection gate's Half-B
+		// prod-wiring test proves a forgotten WithApprovalChecker would ship a
+		// permanently-false facet.
+		if in.Coordinator != nil {
+			projectorOpts = append(projectorOpts,
+				tasksprotocol.WithApprovalChecker(NewApprovalChecker(in.Coordinator)))
 		}
 		tasksProjector, pErr := tasksprotocol.NewRegistryProjector(in.Tasks, projectorOpts...)
 		if pErr != nil {

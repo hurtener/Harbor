@@ -53,6 +53,11 @@ type RunRecord struct {
 	Duration time.Duration
 	// CostUSD is the run's recorded cost.
 	CostUSD float64
+	// Tokens is the run's recorded token consumption — symmetric with
+	// CostUSD. It is truthful wherever a run is recorded; the Console
+	// Flows-page Budget meter renders the summed per-run tokens. Zero when
+	// a run recorded no token usage.
+	Tokens int64
 	// ErrorClass is a short classification of a failure. Empty for a
 	// non-failed run.
 	ErrorClass string

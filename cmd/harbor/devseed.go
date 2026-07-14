@@ -337,6 +337,11 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 				Status:    "succeeded",
 				StartedAt: time.Now().Add(-time.Duration(run+1) * time.Hour),
 				Duration:  3 * time.Second,
+				CostUSD:   0.012,
+				// Tokens is seeded symmetrically with CostUSD so the Console
+				// Flows-page Budget meter renders real token consumption
+				// (the projection-completeness gate) instead of a flat 0.
+				Tokens: 1536,
 			}); err != nil {
 				return fmt.Errorf("devseed: record run for flow %q: %w", f.name, err)
 			}

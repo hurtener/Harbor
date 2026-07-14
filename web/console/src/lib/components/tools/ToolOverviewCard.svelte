@@ -8,16 +8,24 @@
 
   let {
     aggregates,
-    disconnected = false
+    disconnected = false,
+    partial = false
   }: {
     aggregates: ToolAggregates;
     /** When true, render `—` placeholders instead of raw zeros (Phase
         83r / N4). The disconnected state has no Runtime to source counts
         from; a numeric `0` would be a lie. */
     disconnected?: boolean;
+    /** When true (the `tools.list` response's `aggregates_partial`), the
+        annotator-backed counters (in-flight / pending-approval /
+        awaiting-OAuth) are UNAVAILABLE because no per-tool annotator is
+        wired (the concrete lands in Phase 178). Render "unavailable"
+        rather than a real-looking 0 (D-313). `total` stays authoritative. */
+    partial?: boolean;
   } = $props();
 
   const placeholder = '—';
+  const unavailable = 'unavailable';
 </script>
 
 <dl data-testid="tools-overview-card">
@@ -33,20 +41,20 @@
          ones). The aggregate actually counts currently in-flight tool
          invocations. Relabel to disambiguate. -->
     <dt>In-flight (now)</dt>
-    <dd data-testid="tools-overview-active">
-      {disconnected ? placeholder : aggregates.active}
+    <dd data-testid="tools-overview-active" class:muted={partial}>
+      {disconnected ? placeholder : partial ? unavailable : aggregates.active}
     </dd>
   </div>
   <div class="metric">
     <dt>Pending approval</dt>
-    <dd class:warn={!disconnected && aggregates.pending_approval > 0}>
-      {disconnected ? placeholder : aggregates.pending_approval}
+    <dd class:warn={!disconnected && !partial && aggregates.pending_approval > 0} class:muted={partial}>
+      {disconnected ? placeholder : partial ? unavailable : aggregates.pending_approval}
     </dd>
   </div>
   <div class="metric">
     <dt>Awaiting OAuth</dt>
-    <dd class:warn={!disconnected && aggregates.awaiting_oauth > 0}>
-      {disconnected ? placeholder : aggregates.awaiting_oauth}
+    <dd class:warn={!disconnected && !partial && aggregates.awaiting_oauth > 0} class:muted={partial}>
+      {disconnected ? placeholder : partial ? unavailable : aggregates.awaiting_oauth}
     </dd>
   </div>
 </dl>
@@ -78,5 +86,10 @@
 
   dd.warn {
     color: var(--color-warning);
+  }
+
+  dd.muted {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
   }
 </style>

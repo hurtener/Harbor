@@ -45,8 +45,30 @@ import (
 // the registry + enricher references. The registry is itself safe for concurrent reuse;
 // the projector adds no mutable state.
 type RegistryProjector struct {
-	registry tasks.TaskRegistry
-	enricher Enricher
+	registry  tasks.TaskRegistry
+	enricher  Enricher
+	approvals ApprovalChecker
+}
+
+// ApprovalChecker is the optional list-time seam RegistryProjector reads
+// the per-row `HasPendingApproval` facet from. The task-registry record is
+// a lifecycle record — it does NOT itself model "has an open approval
+// gate"; that derived signal is owned by the pause/approval registry one
+// package over (the tasks lifecycle-record model). Production wiring supplies an implementation
+// backed by the pause coordinator scoped to the task's run; tests and
+// partial builds run without one.
+//
+// A projector with no ApprovalChecker wired leaves `HasPendingApproval`
+// at its honest false — the projection-completeness gate's Half-B
+// prod-wiring test proves production ALWAYS wires it (a forgotten
+// `WithApprovalChecker` in mux.go would ship a permanently-false facet, the
+// exact never-wired variant the gate closes).
+type ApprovalChecker interface {
+	// HasPendingApproval reports whether the task's run (scoped to the
+	// task's own identity triple + run id) holds at least one open HITL /
+	// tool-approval gate. Identity-scoped: session A's open gate never
+	// bleeds into session B's row.
+	HasPendingApproval(ctx context.Context, taskIdentity identity.Identity, runID string) bool
 }
 
 // Enricher is the optional per-task enrichment backend
@@ -80,6 +102,19 @@ func WithEnricher(e Enricher) RegistryProjectorOption {
 	return func(p *RegistryProjector) {
 		if e != nil {
 			p.enricher = e
+		}
+	}
+}
+
+// WithApprovalChecker wires the list-time approval-gate seam the
+// `HasPendingApproval` facet reads from. A nil checker is treated as
+// "WithApprovalChecker not supplied" — the row's `HasPendingApproval` stays
+// at its honest false (the gate's Half-B prod-wiring test proves production
+// wires it).
+func WithApprovalChecker(c ApprovalChecker) RegistryProjectorOption {
+	return func(p *RegistryProjector) {
+		if c != nil {
+			p.approvals = c
 		}
 	}
 }
@@ -154,9 +189,24 @@ func (p *RegistryProjector) ListTasks(ctx context.Context, id identity.Identity)
 		if gid, ok := groupOf[task.ID]; ok {
 			row.GroupID = string(gid)
 		}
+		p.applyApproval(ctx, task, &row)
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+// applyApproval populates the row's `has_pending_approval` facet from the
+// approval seam, scoped to the task's OWN identity + run (never the
+// caller's) so an admin fan-in reads each row's real gate state and session
+// A's open gate never appears on session B's row. An unwired checker leaves
+// the honest false — the projection-completeness gate's Half-B prod-wiring
+// test proves production wires it. The list projector and the fleet
+// projector share this one assignment site.
+func (p *RegistryProjector) applyApproval(ctx context.Context, task *tasks.Task, row *prototypes.TaskRow) {
+	if p.approvals == nil {
+		return
+	}
+	row.HasPendingApproval = p.approvals.HasPendingApproval(ctx, task.Identity.Identity, task.Identity.RunID)
 }
 
 // GetTask returns the enriched detail for taskID. A task not visible to
@@ -199,6 +249,12 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 		}
 		if enriched.Status != "" {
 			detail.ParentSession.Status = enriched.Status
+		}
+		if !enriched.StartedAt.IsZero() {
+			detail.ParentSession.StartedAt = enriched.StartedAt
+		}
+		if !enriched.LatestEventAt.IsZero() {
+			detail.ParentSession.LatestEventAt = enriched.LatestEventAt
 		}
 		detail.Cost = p.enricher.Cost(ctx, id, taskID)
 		detail.PlannerSnapshot = p.enricher.PlannerSnapshot(ctx, id, taskID)

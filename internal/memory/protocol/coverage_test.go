@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -46,49 +47,22 @@ func TestHealth_NilStoreFailsLoud(t *testing.T) {
 	}
 }
 
-// TestList_AgentIDFacet — the AgentIDs facet narrows to a given agent.
-// Memory turns carry no agent_id in the V1 snapshot shape, so a
-// non-empty AgentIDs filter (naming any agent) matches no rows; the
-// empty filter matches every row. Pins the AgentIDs branch.
-func TestList_AgentIDFacet(t *testing.T) {
+// TestList_AgentIDFacetLoudRejects — the AgentIDs facet operates over an
+// unpopulated producer identity (a V1 memory turn carries no agent), so
+// naming it loud-rejects with ErrInvalidFilter rather than returning a
+// silent empty page (D-313). Pins the agent_ids loud-reject branch.
+func TestList_AgentIDFacetLoudRejects(t *testing.T) {
 	h := newMemHarness(t, memory.StrategyTruncation, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 3)
 
-	resp, err := memprotocol.List(context.Background(),
+	_, err := memprotocol.List(context.Background(),
 		memprotocol.ListDeps{Store: h.store, DriverName: "inmem"},
 		prototypes.MemoryListRequest{Filter: prototypes.MemoryFilter{
 			AgentIDs: []string{"agent-x"},
 		}}, id)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(resp.Items) != 0 {
-		t.Errorf("agent-id filter naming an absent agent returned %d, want 0", len(resp.Items))
-	}
-}
-
-// TestList_HasTTLExpiringFacet — the snapshot turns carry no TTL, so a
-// HasTTLExpiring filter matches no rows. Pins the TTL-expiring branch +
-// the ExpiringIn1h aggregate path.
-func TestList_HasTTLExpiringFacet(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
-	id := testIdentity()
-	seedTurns(t, h, id, 4)
-
-	resp, err := memprotocol.List(context.Background(),
-		memprotocol.ListDeps{Store: h.store, DriverName: "inmem"},
-		prototypes.MemoryListRequest{Filter: prototypes.MemoryFilter{
-			HasTTLExpiring: true,
-		}}, id)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(resp.Items) != 0 {
-		t.Errorf("has_ttl_expiring filter returned %d, want 0 (no TTLs in the fixture)", len(resp.Items))
-	}
-	if resp.Aggregates.ExpiringIn1h != 0 {
-		t.Errorf("ExpiringIn1h = %d, want 0", resp.Aggregates.ExpiringIn1h)
+	if !errors.Is(err, memprotocol.ErrInvalidFilter) {
+		t.Fatalf("agent_ids filter: err = %v, want ErrInvalidFilter (loud-reject, never a false-empty page)", err)
 	}
 }
 

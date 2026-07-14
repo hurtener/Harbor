@@ -77,6 +77,8 @@ Select a row and the page swaps into **detail mode** — same page, an in-page d
 
 When something goes wrong, start here. For the OTel span tree of a task, flip the trace overlay on in **Live Runtime**.
 
+The **"Has pending approval"** facet now narrows to REAL rows — the runtime populates `has_pending_approval` from the pause/approval registry scoped to each task's run (D-313), so filtering for it returns the tasks actually blocked on a HITL gate instead of an empty page. In the right-rail detail, the **Parent-Session** card renders the parent session's real status + start/last-activity timestamps (a fresh `serve.Enricher` read); the Agent line reads `—` where no single agent is bound (same honest-omission as Sessions), and the per-task Cost-breakdown rollup is still pending its backend (Phase 178).
+
 ### Agents — the registry
 
 The Agent Registry (RFC §6.16). Every agent registered with this Runtime, its `agent_id` (registration identity, NOT isolation identity — see CLAUDE.md §6 clarification), capabilities, last-seen, register/deregister events. Useful for multi-agent deployments where one Runtime hosts many agents; for a single-agent setup, you see one row.
@@ -88,6 +90,8 @@ Click an agent for its detail page, which carries the per-agent tabs: **Identity
 A registry view — every tool the runtime has loaded, with source (in-process / HTTP / MCP / A2A), spec, schema, cost classification. Click a tool → invocation history across tasks.
 
 When the planner "doesn't pick a tool" you expect, check here first — confirm the tool is registered + the spec/description matches what you intended.
+
+The catalog overview's **In-flight / Pending-approval / Awaiting-OAuth** counters render **"unavailable"** (not `0`) until the per-tool annotator backend ships (Phase 178) — an honest `aggregates_partial` marker rather than a fabricated zero (D-313). The OAuth-status and approval-policy facet chips are disabled for the same reason (a programmatic `filter.oauth_statuses` / `filter.approval_policies` call loud-rejects with `invalid_request` rather than lying with an empty page). The tool total, transport, scope, and reliability facets are real and work today.
 
 ### Events — the live stream
 
@@ -120,11 +124,11 @@ Covered in depth in [`drive-the-playground`](../drive-the-playground/SKILL.md). 
 
 ### Flows — the engine-graph catalog
 
-A searchable catalog of registered flows (`flows.list`) with a Flow Metrics card for the selected flow. A flow is a composable engine-graph DAG registered as a tool and invocable directly via `flows.run` — it is NOT planner-bound. The page is view-only; `Run flow` is the only mutating action and it's admin-gated.
+A searchable catalog of registered flows (`flows.list`) with a Flow Metrics card for the selected flow. A flow is a composable engine-graph DAG registered as a tool and invocable directly via `flows.run` — it is NOT planner-bound. The page is view-only; `Run flow` is the only mutating action and it's admin-gated. The Budget meter's **tokens** bar now renders real per-run token consumption (`tokens_used`, summed symmetrically with `cost_usd_used`) instead of a flat 0 (D-313).
 
 ### Memory — per-session inspection
 
-Pick a session → see the memory state the planner has access to. Useful when debugging "the agent should know X but it's behaving like it doesn't" — confirm X is actually in memory.
+Pick a session → see the memory state the planner has access to. Useful when debugging "the agent should know X but it's behaving like it doesn't" — confirm X is actually in memory. V1 memory has no TTL, so the old "expiring soon" TTL facet chip + the "Expiring in 1h" health counter are gone (they were structurally always empty — D-313); a programmatic `filter.agent_ids` loud-rejects with `invalid_request` because a V1 memory record carries no producer identity to filter on.
 
 ### MCP Connections — the southbound control plane
 

@@ -56,7 +56,7 @@ export interface TaskRow {
   duration_ms: number;
   error_class?: string;
   tool_count: number;
-  background_acknowledged: boolean;
+  background_acknowledged?: boolean;
   group_id?: string;
   /**
    * Phase 73h (D-128) — the planner-emitted numeric progress hint in

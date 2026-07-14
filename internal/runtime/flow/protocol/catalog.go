@@ -406,6 +406,11 @@ func budgetConsumption(runs []flow.RunRecord, since time.Time) prototypes.FlowBu
 		}
 		c.RequestsUsed += len(rec.NodeStates)
 		c.CostUSDUsed += rec.CostUSD
+		// tokens_used is summed symmetrically with cost_usd_used — the
+		// Budget meter renders real token consumption instead of a
+		// fabricated "0 tokens used" (the projection-completeness gate). It is truthful wherever a run
+		// is recorded with a Tokens value.
+		c.TokensUsed += rec.Tokens
 	}
 	return c
 }

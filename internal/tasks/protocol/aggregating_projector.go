@@ -51,7 +51,9 @@ func (p *RegistryProjector) ListTenantTasks(ctx context.Context, tenantIDs []str
 			return nil, fmt.Errorf("tasks/protocol: fleet list tenant %q: %w", tid, err)
 		}
 		for _, t := range fleet {
-			rows = append(rows, projectRow(t))
+			row := projectRow(t)
+			p.applyApproval(ctx, t, &row)
+			rows = append(rows, row)
 		}
 	}
 	return rows, nil

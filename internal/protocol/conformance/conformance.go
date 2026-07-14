@@ -1779,8 +1779,8 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 7 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 7 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot + CapStateSnapshots + CapAgentConfig + CapSessionLifecycle) at Protocol 0.1.0", len(caps))
+	if len(caps) != 8 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 8 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot + CapStateSnapshots + CapAgentConfig + CapSessionLifecycle + CapToolAnnotations) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:      {},
@@ -1790,6 +1790,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapStateSnapshots:   {},
 		types.CapAgentConfig:      {},
 		types.CapSessionLifecycle: {},
+		types.CapToolAnnotations:  {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {

@@ -365,9 +365,15 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapSessionLifecycle) {
 		t.Fatal("handshake.Accepts(CapSessionLifecycle) = false; the Phase 130 session-lifecycle surface must appear in the canonical capability set")
 	}
+	// Phase 177 (D-313) added the tool-annotations capability (the per-tool
+	// annotation surface the Tools OAuth/approval facets ride) — additive,
+	// no ProtocolVersion bump. A §17.6 paired update with this pin.
+	if !h.Accepts(types.CapToolAnnotations) {
+		t.Fatal("handshake.Accepts(CapToolAnnotations) = false; the Phase 177 tool-annotations surface must appear in the canonical capability set")
+	}
 	caps := h.Capabilities
-	if len(caps) != 7 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config, session_lifecycle}", caps)
+	if len(caps) != 8 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config, session_lifecycle, tool_annotations}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {
