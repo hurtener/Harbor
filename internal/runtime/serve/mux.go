@@ -369,7 +369,29 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	if in.Sessions != nil {
-		sessionsProjector, pErr := sessionsprotocol.NewListerProjector(in.Sessions)
+		var sessionProjectorOpts []sessionsprotocol.ListerProjectorOption
+		// Wire the read-time counter enricher whenever the aggregation deps
+		// are present (they are, in every non-headless assembly): the event
+		// substrate (cost / tokens / events), the task registry (tasks_count
+		// / has_failed_task), and the pause coordinator
+		// (has_pending_intervention). This is the WARN-3 "production ALWAYS
+		// wires it" path: with the enricher wired the cost / failed /
+		// intervention facets and the cost_desc sort operate on TRUTHFUL
+		// data. A build missing any dep leaves the enricher unwired, and the
+		// Service loud-rejects a counter facet/sort rather than lying.
+		if bus != nil && in.Tasks != nil && in.Coordinator != nil {
+			sessionEnricher, eErr := sessionsprotocol.NewCounterEnricher(sessionsprotocol.CounterEnricherDeps{
+				Bus:    bus,
+				Tasks:  in.Tasks,
+				Pauses: in.Coordinator,
+				Logger: logger,
+			})
+			if eErr != nil {
+				return nil, wrapErr("sessions/protocol counter enricher", eErr)
+			}
+			sessionProjectorOpts = append(sessionProjectorOpts, sessionsprotocol.WithEnricher(sessionEnricher))
+		}
+		sessionsProjector, pErr := sessionsprotocol.NewListerProjector(in.Sessions, sessionProjectorOpts...)
 		if pErr != nil {
 			return nil, wrapErr("sessions/protocol projector", pErr)
 		}

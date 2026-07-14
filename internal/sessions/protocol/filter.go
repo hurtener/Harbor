@@ -14,9 +14,9 @@ func filterMatches(f prototypes.SessionFilter, row prototypes.SessionRow) bool {
 	if len(f.Statuses) > 0 && !containsStatus(f.Statuses, row.Status) {
 		return false
 	}
-	if len(f.AgentIDs) > 0 && !containsString(f.AgentIDs, row.AgentID) {
-		return false
-	}
+	// f.AgentIDs is rejected loud at the Service edge (protocol.go — the
+	// session→agent binding is unpopulated in V1), so it never reaches
+	// filterMatches. No AgentID predicate here.
 	if len(f.UserIDs) > 0 && !containsString(f.UserIDs, row.UserID) {
 		return false
 	}
@@ -49,12 +49,25 @@ func filterMatches(f prototypes.SessionFilter, row prototypes.SessionRow) bool {
 // the query as a post-search refinement — the runtime forwards the
 // query to the `search.sessions` index first (forward-then-filter
 // resolution) and this predicate narrows the merged result-set.
+//
+// WARN-4: the agent sub-fields are nullable and unpopulated in V1. A nil
+// AgentID / AgentName honestly NEVER-matches the query term (nil is not a
+// substring of anything) — the whole query is NEVER failed loud for
+// touching them; it still matches the populated session_id / user_id so
+// working id / user search is preserved.
 func queryMatches(query string, row prototypes.SessionRow) bool {
 	q := strings.ToLower(query)
-	return strings.Contains(strings.ToLower(row.SessionID), q) ||
-		strings.Contains(strings.ToLower(row.AgentName), q) ||
-		strings.Contains(strings.ToLower(row.AgentID), q) ||
-		strings.Contains(strings.ToLower(row.UserID), q)
+	if strings.Contains(strings.ToLower(row.SessionID), q) ||
+		strings.Contains(strings.ToLower(row.UserID), q) {
+		return true
+	}
+	if row.AgentName != nil && strings.Contains(strings.ToLower(*row.AgentName), q) {
+		return true
+	}
+	if row.AgentID != nil && strings.Contains(strings.ToLower(*row.AgentID), q) {
+		return true
+	}
+	return false
 }
 
 func containsStatus(set []prototypes.SessionStatus, v prototypes.SessionStatus) bool {

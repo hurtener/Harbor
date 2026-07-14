@@ -126,7 +126,12 @@ type Window struct {
 type SessionFilter struct {
 	// Statuses restricts to sessions whose Status is in this set.
 	Statuses []SessionStatus `json:"statuses,omitempty"`
-	// AgentIDs restricts to sessions whose AgentID is in this set.
+	// AgentIDs restricts to sessions whose AgentID is in this set. The
+	// session→agent binding is unpopulated in V1 (see SessionRow.AgentID),
+	// so a non-empty AgentIDs facet fails loud with `invalid_request`
+	// rather than returning a silent empty page. The free-text Query axis is
+	// NOT rejected when it touches the agent sub-fields — it still matches
+	// the populated session_id / user_id.
 	AgentIDs []string `json:"agent_ids,omitempty"`
 	// UserIDs restricts to sessions whose UserID is in this set.
 	UserIDs []string `json:"user_ids,omitempty"`
@@ -183,11 +188,23 @@ type SessionRow struct {
 	SessionID string `json:"session_id"`
 	// Status is the session's lifecycle status.
 	Status SessionStatus `json:"status"`
-	// AgentID is the registered agent identifier the session ran under
-	// ("" when no agent is bound).
-	AgentID string `json:"agent_id"`
-	// AgentName is the planner-facing agent display name.
-	AgentName string `json:"agent_name"`
+	// AgentID is the registered agent identifier the session ran under.
+	//
+	// Nullable by design: there is NO single-valued session→agent binding
+	// today — the Agent Registry keys agents by the identity triple
+	// (agent_id is NOT an isolation principal, CLAUDE.md §6) and a session
+	// may run several agents over its life. The runtime cannot name one
+	// authoritative agent, so the field is `nil` (omitted on the wire) — a
+	// REPRESENTABLE absence ("we don't have this") that a consumer can tell
+	// apart from an empty-string agent id. A `filter.agent_ids` facet over
+	// this unpopulated binding fails loud with `invalid_request` rather than
+	// returning a silent empty page; the field is never fabricated into a
+	// believable-but-false value.
+	AgentID *string `json:"agent_id,omitempty"`
+	// AgentName is the planner-facing agent display name. Nullable for the
+	// same reason as AgentID — `nil` when no single agent binding is
+	// modelled, omitted on the wire.
+	AgentName *string `json:"agent_name,omitempty"`
 	// UserID is the user component of the session's identity triple.
 	UserID string `json:"user_id"`
 	// TenantID is the tenant component of the session's identity triple.
@@ -231,6 +248,15 @@ type SessionRow struct {
 	// "" when Title is unset. Additive field — omitted on the wire when
 	// empty.
 	TitleSource string `json:"title_source,omitempty"`
+	// CountersPartial reports that the bounded per-session scan that
+	// produced the cost / tokens / events counters hit its scan bound (or a
+	// retention gap): the counts are then an HONEST LOWER BOUND, not exact.
+	// A `cost_desc` sort or `cost_above_cents` filter over a partial row is
+	// non-authoritative — the runtime never silently mis-orders or excludes
+	// it; the consumer renders the counts with a "≥" / lower-bound
+	// affordance. Additive field — omitted on the wire when false (the
+	// common case: a session's events fit inside the scan bound).
+	CountersPartial bool `json:"counters_partial,omitempty"`
 }
 
 // SessionsListResponse is the `sessions.list` reply: a page of catalog

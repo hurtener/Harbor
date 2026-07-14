@@ -149,6 +149,24 @@ type Projector interface {
 	// InspectSession returns the full snapshot for sessionID, or
 	// ErrSessionNotFound. adminScoped widens the lookup across tenants.
 	InspectSession(ctx context.Context, id identity.Identity, sessionID string, adminScoped bool) (prototypes.SessionsInspectResponse, error)
+	// CountersAvailable reports whether the projector populates the
+	// numeric / boolean counters (cost / tokens / tasks / events /
+	// intervention / failed-task). False when no counter Enricher is wired:
+	// the Service then loud-rejects a facet / sort over those counters
+	// rather than returning a false-empty page (WARN-3).
+	CountersAvailable() bool
+}
+
+// requiresCounters reports whether the request's filter or sort operates
+// over the numeric / boolean SessionRow counters — the axes that are
+// permanently zero on a projector with no Enricher wired. When true and the
+// projector reports CountersAvailable()==false, the Service loud-rejects
+// rather than returning a false-empty / mis-ordered page (WARN-3).
+func requiresCounters(f prototypes.SessionFilter, srt prototypes.SessionSort) bool {
+	return f.CostAboveCents != nil ||
+		f.HasFailedTask != nil ||
+		f.HasIntervention != nil ||
+		srt == prototypes.SessionSortCostDesc
 }
 
 // Service implements the `sessions.*` Protocol methods. It is a
@@ -285,6 +303,21 @@ func (s *Service) List(ctx context.Context, req prototypes.SessionsListRequest, 
 			fmt.Errorf("%w: sessions.list filter names a tenant outside %q", ErrCrossTenantScope, id.TenantID)
 	}
 
+	// filter.agent_ids is the ONLY facet that keys SOLELY on an unpopulated
+	// agent field. There is no single-valued session→agent binding in V1
+	// (SessionRow.AgentID is nil), so honouring it would return a silent
+	// empty page on a fleet full of sessions — the false-absence defect this
+	// phase closes. Fail LOUD (WARN-4). The multi-field Query axis is NOT
+	// rejected here: it still matches the populated session_id / user_id
+	// (filter.go) and honestly never-matches the nil agent fields — an
+	// over-rejection of the whole query would break working id/user search,
+	// the inverse of a lying control and equally wrong.
+	if len(req.Filter.AgentIDs) > 0 {
+		return prototypes.SessionsListResponse{},
+			fmt.Errorf("%w: filter.agent_ids operates over an unpopulated session→agent binding "+
+				"(no single-valued agent is bound to a session in V1) — this facet cannot be honoured", ErrInvalidRequest)
+	}
+
 	limit := req.Limit
 	if limit == 0 {
 		limit = prototypes.DefaultSessionListLimit
@@ -301,6 +334,20 @@ func (s *Service) List(ctx context.Context, req prototypes.SessionsListRequest, 
 	if !prototypes.IsValidSessionSort(srt) {
 		return prototypes.SessionsListResponse{},
 			fmt.Errorf("%w: unknown sort %q", ErrInvalidRequest, srt)
+	}
+
+	// WARN-3: sessions runs SERVER-SIDE facets / sort over the counters
+	// (unlike tasks, which does not). On a projector with no Enricher wired
+	// the counters are permanently zero, so a numeric-counter facet /
+	// cost_desc sort would reproduce the original false-absence defect
+	// (cost_above_cents excludes every row; cost_desc degrades to the id
+	// tiebreak). Loud-reject rather than return a believable-but-false page.
+	// Production ALWAYS wires the enricher (internal/runtime/serve mux
+	// assembly), so this gate fires only on a partial / headless build.
+	if requiresCounters(req.Filter, srt) && !s.projector.CountersAvailable() {
+		return prototypes.SessionsListResponse{},
+			fmt.Errorf("%w: cost_above_cents / has_failed_task / has_intervention facets and the "+
+				"cost_desc sort require the session-counter enricher, which is not wired on this runtime", ErrInvalidRequest)
 	}
 
 	cursor, err := decodeCursor(req.Cursor)

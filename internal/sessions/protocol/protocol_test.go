@@ -21,7 +21,17 @@ import (
 type fakeProjector struct {
 	rows    []prototypes.SessionRow
 	listErr error
+	// noCounters simulates a projector with NO Enricher wired — the WARN-3
+	// partial-build posture. When true, CountersAvailable reports false and
+	// the Service loud-rejects a facet/sort over the counters (D-309).
+	noCounters bool
 }
+
+// CountersAvailable reports whether the fake projector "has an enricher".
+// Default (false noCounters) => true: the Service tests exercise truthful
+// cost/failed/intervention facets over rows this fake legitimately
+// populates (it stands in for a WIRED projector).
+func (f *fakeProjector) CountersAvailable() bool { return !f.noCounters }
 
 func (f *fakeProjector) ListSessions(_ context.Context, id identity.Identity, filter prototypes.SessionFilter, adminScoped bool) ([]prototypes.SessionRow, error) {
 	if f.listErr != nil {
@@ -66,15 +76,19 @@ func (f *fakeProjector) InspectSession(_ context.Context, id identity.Identity, 
 	return prototypes.SessionsInspectResponse{}, sessionsprotocol.ErrSessionNotFound
 }
 
-// sampleRows builds a deterministic two-tenant row set.
+// sampleRows builds a deterministic two-tenant row set. These rows stand
+// in for the output of a projector WITH an enricher wired: the counters
+// (cost / has_failed_task) are populated exactly as the runtime would
+// populate them at the source. The agent fields stay NIL — no
+// single-valued session→agent binding exists (D-309), so a fixture that
+// set them would be RICHER than the real producer (§17.8). The Service
+// applies its facets / sort over whatever the Projector returns.
 func sampleRows() []prototypes.SessionRow {
 	base := time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC)
-	mk := func(sid, tenant, agent string, n int, status prototypes.SessionStatus, cost int64, failed bool) prototypes.SessionRow {
+	mk := func(sid, tenant string, n int, status prototypes.SessionStatus, cost int64, failed bool) prototypes.SessionRow {
 		return prototypes.SessionRow{
 			SessionID:      sid,
 			Status:         status,
-			AgentID:        agent,
-			AgentName:      agent,
 			UserID:         "u1",
 			TenantID:       tenant,
 			StartedAt:      base.Add(time.Duration(n) * time.Minute),
@@ -86,10 +100,10 @@ func sampleRows() []prototypes.SessionRow {
 		}
 	}
 	return []prototypes.SessionRow{
-		mk("s-a1", "t1", "agent-a", 1, prototypes.SessionStatusRunning, 100, false),
-		mk("s-a2", "t1", "agent-b", 2, prototypes.SessionStatusFailed, 500, true),
-		mk("s-a3", "t1", "agent-a", 3, prototypes.SessionStatusCompleted, 50, false),
-		mk("s-b1", "t2", "agent-c", 4, prototypes.SessionStatusRunning, 900, false),
+		mk("s-a1", "t1", 1, prototypes.SessionStatusRunning, 100, false),
+		mk("s-a2", "t1", 2, prototypes.SessionStatusFailed, 500, true),
+		mk("s-a3", "t1", 3, prototypes.SessionStatusCompleted, 50, false),
+		mk("s-b1", "t2", 4, prototypes.SessionStatusRunning, 900, false),
 	}
 }
 
@@ -231,6 +245,111 @@ func TestList_SortCostDesc(t *testing.T) {
 		if resp.Rows[i-1].TotalCostCents < resp.Rows[i].TotalCostCents {
 			t.Fatalf("cost_desc sort not descending: %+v", resp.Rows)
 		}
+	}
+}
+
+func TestList_AgentIDsFilter_LoudReject(t *testing.T) {
+	t.Parallel()
+	svc := newService(t, sampleRows())
+	req := prototypes.SessionsListRequest{
+		Identity: t1Identity(),
+		Filter:   prototypes.SessionFilter{AgentIDs: []string{"agent-a"}},
+	}
+	_, err := svc.List(context.Background(), req, false)
+	if !errors.Is(err, sessionsprotocol.ErrInvalidRequest) {
+		t.Fatalf("filter.agent_ids over unpopulated binding error = %v, want ErrInvalidRequest (loud, D-309 WARN-4)", err)
+	}
+}
+
+func TestList_Query_MatchesSessionAndUser_NeverWholeReject(t *testing.T) {
+	t.Parallel()
+	svc := newService(t, sampleRows())
+	// A query that touches the (nil) agent sub-fields must NOT be failed
+	// loud as a whole — it still matches the populated session_id / user_id.
+	// "s-a2" is a session-id substring; the query must resolve to a 200.
+	req := prototypes.SessionsListRequest{
+		Identity: t1Identity(),
+		Filter:   prototypes.SessionFilter{Query: "s-a2"},
+	}
+	resp, err := svc.List(context.Background(), req, false)
+	if err != nil {
+		t.Fatalf("query over session_id must succeed, never whole-reject (WARN-4): %v", err)
+	}
+	if len(resp.Rows) != 1 || resp.Rows[0].SessionID != "s-a2" {
+		t.Fatalf("query=s-a2 matched %+v, want the single s-a2 row via session_id", resp.Rows)
+	}
+	// A query matching the user id also resolves (not agent).
+	respU, err := svc.List(context.Background(), prototypes.SessionsListRequest{
+		Identity: t1Identity(),
+		Filter:   prototypes.SessionFilter{Query: "u1"},
+	}, false)
+	if err != nil {
+		t.Fatalf("query over user_id must succeed: %v", err)
+	}
+	if len(respU.Rows) != 3 {
+		t.Fatalf("query=u1 matched %d rows, want 3 (all t1 rows via user_id)", len(respU.Rows))
+	}
+}
+
+func TestList_CounterFacets_UnwiredProjector_LoudReject(t *testing.T) {
+	t.Parallel()
+	// WARN-3: a projector with NO enricher wired must NOT return a
+	// false-empty counter page. Every numeric-counter facet / cost_desc sort
+	// loud-rejects rather than silently excluding/mis-ordering.
+	svc, err := sessionsprotocol.NewService(&fakeProjector{rows: sampleRows(), noCounters: true})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	above := int64(80)
+	yes := true
+	cases := map[string]prototypes.SessionsListRequest{
+		"cost_above_cents": {Identity: t1Identity(), Filter: prototypes.SessionFilter{CostAboveCents: &above}},
+		"has_failed_task":  {Identity: t1Identity(), Filter: prototypes.SessionFilter{HasFailedTask: &yes}},
+		"has_intervention": {Identity: t1Identity(), Filter: prototypes.SessionFilter{HasIntervention: &yes}},
+		"cost_desc_sort":   {Identity: t1Identity(), Sort: prototypes.SessionSortCostDesc},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			resp, err := svc.List(context.Background(), req, false)
+			if !errors.Is(err, sessionsprotocol.ErrInvalidRequest) {
+				t.Fatalf("%s over unwired counters returned (%d rows, err=%v), want ErrInvalidRequest — never a false-empty page (WARN-3)", name, len(resp.Rows), err)
+			}
+		})
+	}
+	// A non-counter query (status facet) still works on the unwired build —
+	// the gate is scoped to the counter axes only.
+	statusReq := prototypes.SessionsListRequest{
+		Identity: t1Identity(),
+		Filter:   prototypes.SessionFilter{Statuses: []prototypes.SessionStatus{prototypes.SessionStatusFailed}},
+	}
+	if _, err := svc.List(context.Background(), statusReq, false); err != nil {
+		t.Fatalf("status facet on unwired build must still work: %v", err)
+	}
+}
+
+func TestList_PartialRow_SurfacesHonestSignal_NotExcluded(t *testing.T) {
+	t.Parallel()
+	// A partial-counter row (CountersPartial=true) is a lower bound; the
+	// cost_above filter must still surface it (never silently exclude a row
+	// whose true cost is unknown-but-at-least-N) and carry the honest signal.
+	base := time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC)
+	rows := []prototypes.SessionRow{{
+		SessionID: "s-part", Status: prototypes.SessionStatusRunning, UserID: "u1", TenantID: "t1",
+		StartedAt: base, LastActivityAt: base.Add(time.Minute),
+		TotalCostCents: 1000, CountersPartial: true,
+		Identity: prototypes.IdentityScope{Tenant: "t1", User: "u1", Session: "s-part"},
+	}}
+	svc := newService(t, rows)
+	above := int64(80)
+	resp, err := svc.List(context.Background(), prototypes.SessionsListRequest{
+		Identity: t1Identity(), Filter: prototypes.SessionFilter{CostAboveCents: &above},
+	}, false)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(resp.Rows) != 1 || !resp.Rows[0].CountersPartial {
+		t.Fatalf("partial row must be surfaced with its honest CountersPartial signal, got %+v", resp.Rows)
 	}
 }
 

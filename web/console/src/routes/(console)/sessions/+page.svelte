@@ -20,9 +20,13 @@
   //   - saved filters  ← Console DB (local, D-061)
   //   - search         ← the `sessions.list` query field (→ `search.sessions`)
   //
-  // NO Cost column — per-session cost has no shipped aggregate wire
-  // (`events.aggregate` counts by type only); cost is surfaced in the
-  // detail's Cost History tab where it can be summed honestly (D-179).
+  // The "Most expensive" sort and the cost-above facet operate on the
+  // TRUTHFUL per-session `total_cost_cents` the runtime now populates at the
+  // source (D-309 — the V1.3 cost-aggregate wire D-179 deferred). A row
+  // whose `counters_partial` is set carries counts that are an honest lower
+  // bound (the per-session scan truncated) — the Events cell renders a "≥"
+  // affordance for it (D-311). The detail's Cost History tab (D-179) stays
+  // the per-event breakdown.
   //
   // Svelte 5 runes (D-092); design tokens only; HarborClient +
   // connection.ts only (CONVENTIONS.md §6).
@@ -379,9 +383,19 @@
     return (row as SessionRow).session_id;
   }
 
-  function eventsLabel(id: string): string {
-    const n = eventCounts.get(id);
-    return n === undefined ? '—' : String(n);
+  function eventsLabel(row: SessionRow): string {
+    // Prefer the truthful wire counter (D-309); fall back to the client
+    // enrichment map only when the wire reports zero (an older runtime or a
+    // not-yet-active session). A partial row is an HONEST LOWER BOUND — the
+    // "≥" prefix says so rather than presenting a believable exact number
+    // (D-311).
+    const wire = row.events_count;
+    if (wire > 0) {
+      return row.counters_partial ? `≥${wire}` : String(wire);
+    }
+    const n = eventCounts.get(row.session_id);
+    if (n === undefined) return '—';
+    return row.counters_partial ? `≥${n}` : String(n);
   }
 
   /** Active processing time (Σ run durations), formatted; "—" until enriched. */
@@ -605,7 +619,7 @@
             <td><IdentityCell identity={s.identity} /></td>
             <td>{formatRelative(s.started_at)}</td>
             <td>{formatRelative(s.last_activity_at)}</td>
-            <td class="numeric">{eventsLabel(s.session_id)}</td>
+            <td class="numeric">{eventsLabel(s)}</td>
             <td title="Active processing time — sum of run durations, not wall-clock">{durationLabel(s.session_id)}</td>
           {/snippet}
         </DataTable>
