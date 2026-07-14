@@ -374,6 +374,7 @@ func TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection(t *testing.T) {
 	// naming the registered providers.
 	err := attacher.Attach(context.Background(), agentcfgprotocol.AttachRequest{
 		Identity:      sysID,
+		AgentID:       "agent-p148", // the (tenant, agent) reconcile-view owner the attacher now requires
 		Name:          "badbind",
 		Transport:     agentcfg.MCPTransportHTTP,
 		URL:           hs.URL,
@@ -389,6 +390,7 @@ func TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection(t *testing.T) {
 	// Happy path: the runtime add carries the binding + annotations.
 	err = attacher.Attach(context.Background(), agentcfgprotocol.AttachRequest{
 		Identity:        sysID,
+		AgentID:         "agent-p148", // the (tenant, agent) reconcile-view owner the attacher now requires
 		Name:            "added",
 		Transport:       agentcfg.MCPTransportHTTP,
 		URL:             hs.URL,

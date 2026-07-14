@@ -152,6 +152,255 @@ func TestAggregate_BucketArithmetic_DeterministicCounts(t *testing.T) {
 	}
 }
 
+// ptrTime returns a pointer to t — the shape the optional Anchor field
+// takes on the wire (a *time.Time, never a value, so json:",omitempty"
+// is real; D-306).
+func ptrTime(t time.Time) *time.Time { return &t }
+
+// unixEpoch is the globally-shared grid origin — passing it as the
+// Anchor floors every bucket boundary onto `epoch + k·Bucket`, so two
+// fleet runtimes (or one runtime across a restart) agree on the exact
+// bucket instants.
+var unixEpoch = time.Unix(0, 0).UTC()
+
+// bucketStartSet projects a response's bucket_start instants to a set of
+// RFC3339Nano strings so two responses' grids can be compared for shared
+// coordinates.
+func bucketStartSet(resp prototypes.EventAggregateResponse) map[string]struct{} {
+	m := make(map[string]struct{}, len(resp.Buckets))
+	for _, b := range resp.Buckets {
+		m[b.Start.UTC().Format(time.RFC3339Nano)] = struct{}{}
+	}
+	return m
+}
+
+// TestAggregate_EpochAnchor_AddressableTwice pins the load-bearing D-306
+// criterion: two aggregate calls at two DIFFERENT clock instants, with
+// the SAME epoch anchor + window + bucket, return bucket series drawn
+// from the SAME grid (a bucket_start is addressable twice). The
+// clock-anchored (nil-anchor) control proves the property does NOT hold
+// without the anchor — the two grids share nothing.
+func TestAggregate_EpochAnchor_AddressableTwice(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+
+	// Two instants 4 minutes apart — inside the SAME 10-minute grid cell
+	// [12:00,12:10) when floored onto the epoch grid, so the anchored
+	// grids are IDENTICAL; but 4 minutes is NOT a bucket multiple, so the
+	// clock-anchored grids (windowStart = now-Window) share no boundary.
+	now1 := time.Date(2026, 1, 1, 12, 3, 0, 0, time.UTC)
+	now2 := time.Date(2026, 1, 1, 12, 7, 0, 0, time.UTC)
+	const window = time.Hour
+	const bucket = 10 * time.Minute
+
+	mkReq := func(anchor *time.Time) prototypes.EventAggregateRequest {
+		return prototypes.EventAggregateRequest{
+			Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
+			Window: window,
+			Bucket: bucket,
+			Anchor: anchor,
+		}
+	}
+
+	agg1, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now1}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	agg2, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now2}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+
+	// Anchored: the two grids must be IDENTICAL (same cell).
+	r1, err := agg1.Aggregate(context.Background(), mkReq(ptrTime(unixEpoch)), false)
+	if err != nil {
+		t.Fatalf("Aggregate(anchored, now1): %v", err)
+	}
+	r2, err := agg2.Aggregate(context.Background(), mkReq(ptrTime(unixEpoch)), false)
+	if err != nil {
+		t.Fatalf("Aggregate(anchored, now2): %v", err)
+	}
+	if len(r1.Buckets) != len(r2.Buckets) {
+		t.Fatalf("anchored bucket counts differ: %d vs %d", len(r1.Buckets), len(r2.Buckets))
+	}
+	shared := 0
+	set2 := bucketStartSet(r2)
+	for k := range bucketStartSet(r1) {
+		if _, ok := set2[k]; ok {
+			shared++
+		}
+	}
+	if shared == 0 {
+		t.Fatalf("anchored aggregate: two instants shared 0 bucket_start coordinates — not addressable")
+	}
+	// Every anchored bucket_start must lie ON the epoch grid.
+	for _, b := range r1.Buckets {
+		if d := b.Start.Sub(unixEpoch) % bucket; d != 0 {
+			t.Fatalf("anchored bucket_start %v is off the epoch grid (residue %v)", b.Start, d)
+		}
+	}
+
+	// Clock-anchored control: the two grids share NOTHING (a bucket is not
+	// addressable twice without the anchor — the exact defect D-306 closes).
+	c1, err := agg1.Aggregate(context.Background(), mkReq(nil), false)
+	if err != nil {
+		t.Fatalf("Aggregate(nil, now1): %v", err)
+	}
+	c2, err := agg2.Aggregate(context.Background(), mkReq(nil), false)
+	if err != nil {
+		t.Fatalf("Aggregate(nil, now2): %v", err)
+	}
+	cset2 := bucketStartSet(c2)
+	for k := range bucketStartSet(c1) {
+		if _, ok := cset2[k]; ok {
+			t.Fatalf("clock-anchored grids unexpectedly shared a bucket_start %q — control invalid", k)
+		}
+	}
+}
+
+// TestAggregate_AbsentAnchor_ByteIdenticalGolden pins that a nil Anchor
+// keeps the pre-D-306 clock-anchored behaviour EXACTLY: over a fixed
+// clock the grid runs [Now-Window, Now) with grid-aligned interior
+// boundaries. The golden guards against the anchor path silently
+// re-phasing the default.
+func TestAggregate_AbsentAnchor_ByteIdenticalGolden(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	const window = time.Hour
+	const bucket = 10 * time.Minute
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
+		Window: window,
+		Bucket: bucket,
+		// Anchor: nil
+	}, false)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if len(resp.Buckets) != 6 {
+		t.Fatalf("bucket count = %d, want 6", len(resp.Buckets))
+	}
+	wantStart := now.Add(-window)
+	for i, b := range resp.Buckets {
+		expStart := wantStart.Add(time.Duration(i) * bucket)
+		expEnd := wantStart.Add(time.Duration(i+1) * bucket)
+		if !b.Start.Equal(expStart) || !b.End.Equal(expEnd) {
+			t.Fatalf("bucket %d = [%v,%v), want [%v,%v)", i, b.Start, b.End, expStart, expEnd)
+		}
+	}
+	// The nil-anchor contract: the last bucket's End is exactly Now.
+	if !resp.Buckets[len(resp.Buckets)-1].End.Equal(now) {
+		t.Fatalf("nil-anchor last bucket End = %v, want Now=%v", resp.Buckets[len(resp.Buckets)-1].End, now)
+	}
+}
+
+// TestAggregate_EpochAnchor_GridEdgesAndSpan pins NIT-5: the epoch anchor
+// re-phases the grid but never WIDENS the read span beyond one bucket at
+// either edge — the last bucket's End is the grid boundary covering Now
+// (after Now, by at most one Bucket), the first bucket's Start is within
+// one Bucket of Now-Window — and it never surfaces a session outside the
+// filter (the substrate fence is upstream of bucketing, unaffected by the
+// anchor).
+func TestAggregate_EpochAnchor_GridEdgesAndSpan(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+	// A Now deliberately off any 10-minute grid boundary.
+	now := time.Date(2026, 1, 1, 12, 3, 30, 0, time.UTC)
+	windowStart := now.Add(-30 * time.Minute)
+	const window = time.Hour
+	const bucket = 10 * time.Minute
+
+	// In-filter event (counted) + a foreign session's event backdated into
+	// the same window (must NEVER be surfaced — fence is upstream).
+	publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s1", windowStart.Add(2*time.Minute))
+	publishEvent(t, bus, events.EventTypeRuntimeError, "t1", "u1", "s-foreign", windowStart.Add(3*time.Minute))
+
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	resp, err := agg.Aggregate(context.Background(), prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
+		Window: window,
+		Bucket: bucket,
+		Anchor: ptrTime(unixEpoch),
+	}, false)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+
+	first := resp.Buckets[0].Start
+	lastEnd := resp.Buckets[len(resp.Buckets)-1].End
+
+	// Grid alignment: both edges sit ON the epoch grid.
+	if first.Sub(unixEpoch)%bucket != 0 || lastEnd.Sub(unixEpoch)%bucket != 0 {
+		t.Fatalf("grid edges off the epoch grid: first=%v lastEnd=%v", first, lastEnd)
+	}
+	// Last bucket End covers Now: strictly after Now, by at most one Bucket.
+	if !lastEnd.After(now) || lastEnd.Sub(now) > bucket {
+		t.Fatalf("last bucket End = %v, want in (Now, Now+Bucket]=(%v,%v]", lastEnd, now, now.Add(bucket))
+	}
+	// Span not widened: first bucket Start is within one Bucket of Now-Window.
+	nominalStart := now.Add(-window)
+	if diff := first.Sub(nominalStart); diff < -bucket || diff > bucket {
+		t.Fatalf("first bucket Start = %v drifted %v from Now-Window=%v (must be within one Bucket)", first, diff, nominalStart)
+	}
+	// The span itself is exactly Window wide (grid re-phases; never widens).
+	if got := lastEnd.Sub(first); got != window {
+		t.Fatalf("anchored span = %v, want exactly Window=%v", got, window)
+	}
+	// Fence upstream: only the in-filter session is counted, never s-foreign.
+	var total int64
+	for _, b := range resp.Buckets {
+		total += b.Counts["runtime.error"]
+	}
+	if total != 1 {
+		t.Fatalf("anchored aggregate counted %d, want 1 (foreign session must be fenced upstream)", total)
+	}
+}
+
+// TestAggregate_Anchor_RejectsFarAnchor pins the grid overflow guard: an
+// Anchor astronomically far from Now fails loudly with ErrAggregateBadWindow
+// rather than silently producing a garbage grid from an overflowed
+// now.Sub(anchor) (CLAUDE.md §5). A near anchor (the epoch) is unaffected.
+func TestAggregate_Anchor_RejectsFarAnchor(t *testing.T) {
+	t.Parallel()
+	bus := aggregatorTestBus(t)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	agg, err := events.NewAggregator(bus, events.WithAggregatorClock(fixedAggregatorClock{t: now}))
+	if err != nil {
+		t.Fatalf("NewAggregator: %v", err)
+	}
+	req := prototypes.EventAggregateRequest{
+		Filter: prototypes.EventFilter{TenantIDs: []string{"t1"}, UserIDs: []string{"u1"}, SessionIDs: []string{"s1"}},
+		Window: time.Hour,
+		Bucket: time.Minute,
+	}
+
+	// Far future (~year 2500) → rejected.
+	far := time.Date(2500, 1, 1, 0, 0, 0, 0, time.UTC)
+	req.Anchor = ptrTime(far)
+	if _, err := agg.Aggregate(context.Background(), req, false); !errors.Is(err, events.ErrAggregateBadWindow) {
+		t.Fatalf("far-future anchor: err = %v, want ErrAggregateBadWindow", err)
+	}
+	// Far past (~year 1500) → rejected.
+	req.Anchor = ptrTime(time.Date(1500, 1, 1, 0, 0, 0, 0, time.UTC))
+	if _, err := agg.Aggregate(context.Background(), req, false); !errors.Is(err, events.ErrAggregateBadWindow) {
+		t.Fatalf("far-past anchor: err = %v, want ErrAggregateBadWindow", err)
+	}
+	// The epoch (~decades back) is well within the bound → accepted.
+	req.Anchor = ptrTime(unixEpoch)
+	if _, err := agg.Aggregate(context.Background(), req, false); err != nil {
+		t.Fatalf("epoch anchor unexpectedly rejected: %v", err)
+	}
+}
+
 // TestAggregate_FilterRespected — emitting events for two tenants and
 // filtering for one returns only that tenant's counts.
 func TestAggregate_FilterRespected(t *testing.T) {

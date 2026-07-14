@@ -3,28 +3,25 @@
 #
 # Phase 167 — Owner-scoped reconcile for runtime-added connections + providers (D-301).
 #
-# Skeleton: the surface does not exist yet, so every assertion SKIPs.
-# The implementing PR replaces the `skip` with the real assertions.
+# This phase adds NO live Protocol surface — it is an internal reconcile-view
+# scoping fix + the (tenant, agent) owner tag — so the smoke is static
+# trip-wires + the owner-tag / owner-scoped-reconcile unit + integration tests.
 #
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
+# What this asserts (each check SKIPs on a pre-167 build):
 #
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
+#   1. Static trip-wires:
+#      - the reconcile-view owner tag type exists (internal/tools/auth/owner.go);
+#      - the registry exposes the owner-scoped reconcile accessor
+#        RuntimeAddedSources (the bare-name read/dispatch paths stay unchanged);
+#      - the TWO in-code reconcile NOTEs are REWRITTEN (not deleted) to describe
+#        the OWNER-SCOPED view (projection.go + mcp_detacher.go) — the corrected
+#        trip-wire (inverts the earlier "the NOTEs are GONE" assertion).
+#   2. unit-tests: the owner-tag + owner-scoped-reconcile packages under -race
+#      (TestRegistry_BootServerVisibleToEverySession,
+#       TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner, + siblings).
+#   3. The §17.1 integration test (real drivers, two owners + a boot server).
 #
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# Done-definition: OK >= 2, FAIL = 0.
 
 set -euo pipefail
 
@@ -34,20 +31,67 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase 167 assertions (unit-tests — owner-scoped reconcile, no new Protocol surface):
-#
-#   - go test -race the owner-tag + owner-scoped-reconcile packages
-#     (TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner,
-#      TestRegistry_BootServerVisibleToEverySession).
-#   - Static: grep that the two reconcile NOTEs (projection.go, mcp_detacher.go)
-#     now describe the OWNER-SCOPED view (the corrected trip-wire — the design
-#     KEEPS a rewritten note about deliberate process-global boot behaviour, so
-#     the earlier "the NOTEs are GONE" assertion would INVERT; assert the note
-#     MENTIONS the owner-scoped reconcile instead).
-#
-# Done-definition: OK >= 2, FAIL = 0.
+assert_or_skip() {
+    local pattern="$1" file="$2" desc="$3"
+    if [ ! -f "${file}" ]; then
+        skip "${desc}: ${file} not found (Phase 167 not yet implemented)"
+        return
+    fi
+    if grep -qE "${pattern}" "${file}" 2>/dev/null; then
+        ok "${desc}"
+    else
+        skip "${desc}: pattern '${pattern}' absent (Phase 167 not yet implemented)"
+    fi
+}
 
-skip "phase 167: smoke skeleton — replace with real assertions when the phase implements its surface"
+# ----------------------------------------------------------------------------
+# 1. Static trip-wires.
+# ----------------------------------------------------------------------------
+
+assert_or_skip 'type Owner struct' \
+    "internal/tools/auth/owner.go" \
+    "static: the (tenant, agent) reconcile-view owner tag type exists"
+
+assert_or_skip 'func \(r \*Registry\) RuntimeAddedSources\(owner auth\.Owner\)' \
+    "internal/tools/drivers/mcp/registry.go" \
+    "static: the registry exposes the owner-scoped RuntimeAddedSources accessor"
+
+# The rewritten NOTEs — assert they MENTION the owner-scoped reconcile (they are
+# rewritten, NOT deleted). This inverts the discredited "the NOTEs are GONE"
+# trip-wire from the rejected full-triple-keying draft.
+assert_or_skip 'owner-scoped reconcile' \
+    "internal/runtime/agentcfg/projection/projection.go" \
+    "static: the projection reconcile NOTE describes the owner-scoped view (rewritten, not deleted)"
+
+assert_or_skip 'owner-scoped reconcile' \
+    "internal/runtime/serve/mcp_detacher.go" \
+    "static: the detacher AttachedSources NOTE describes the owner-scoped view (rewritten, not deleted)"
+
+# ----------------------------------------------------------------------------
+# 2. Unit tests — the owner-tag + owner-scoped-reconcile packages under -race.
+# ----------------------------------------------------------------------------
+
+if [ ! -f "internal/tools/drivers/mcp/owner_scoped_test.go" ]; then
+    skip "unit-tests: Phase 167 not yet implemented"
+elif go test -race -count=1 -timeout 240s \
+    -run 'TestRegistry_BootServerVisibleToEverySession|TestRegistry_RuntimeAdd|TestReconcile_OwnerScoped|TestReconcileConnections' \
+    ./internal/tools/drivers/mcp/... \
+    ./internal/runtime/agentcfg/projection/... >/dev/null 2>&1; then
+    ok "unit-tests: owner-tag + owner-scoped-reconcile packages pass under -race"
+else
+    fail "unit-tests: Phase 167 package tests failed (run: go test -race ./internal/tools/drivers/mcp/... ./internal/runtime/agentcfg/projection/...)"
+fi
+
+# ----------------------------------------------------------------------------
+# 3. §17.1 integration test (real drivers, two owners + a boot server).
+# ----------------------------------------------------------------------------
+
+if [ ! -f "test/integration/phase167_owner_scoped_reconcile_test.go" ]; then
+    skip "e2e: integration test absent (Phase 167 not yet implemented)"
+elif go test -race -count=1 -timeout 300s -run 'TestE2E_Phase167' ./test/integration/ >/dev/null 2>&1; then
+    ok "e2e: owner-scoped reconcile never detaches boot / other owner (real drivers)"
+else
+    fail "e2e: Phase 167 integration tests failed (run: go test -race -run TestE2E_Phase167 ./test/integration/)"
+fi
 
 smoke_summary

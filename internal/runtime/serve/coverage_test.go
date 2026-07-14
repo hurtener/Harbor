@@ -32,6 +32,7 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -83,7 +84,7 @@ func TestEnricher_ZeroValuesAndTrajectory(t *testing.T) {
 // short-circuits + the boot-declared helpers.
 func TestMCPConnectionDetacher_NilRegistry(t *testing.T) {
 	d := NewMCPConnectionDetacher(nil, nil, nil)
-	if got := d.AttachedSources(context.Background()); got != nil {
+	if got := d.AttachedSources(context.Background(), toolauth.Owner{Tenant: "t1", Agent: "agent-1"}); got != nil {
 		t.Errorf("AttachedSources with nil registry should be nil, got %v", got)
 	}
 	if err := d.Detach(context.Background(), "srv-x"); err != nil {
@@ -442,6 +443,11 @@ func TestMCPConnectionAttacher_Attach_FailsFastAndDrains(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := a.Attach(ctx, agentcfgprotocol.AttachRequest{
+		// A full (tenant, agent) owner so the attach reaches the DIAL — this
+		// test exercises the unreachable-endpoint classification, not the
+		// owner fail-closed guard (covered separately).
+		Identity:  identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
+		AgentID:   "agent-1",
 		Name:      "unreachable",
 		Transport: agentcfg.MCPTransportHTTP,
 		URL:       "http://127.0.0.1:1/mcp", // nothing listens on port 1
@@ -452,8 +458,50 @@ func TestMCPConnectionAttacher_Attach_FailsFastAndDrains(t *testing.T) {
 	if errors.Is(err, agentcfgprotocol.ErrAuthRequired) {
 		t.Errorf("a connection-refused dial must not classify as auth-required: %v", err)
 	}
+	if errors.Is(err, ErrRuntimeAddOwnerMissing) {
+		t.Errorf("a valid-owner attach must not trip the owner guard: %v", err)
+	}
 	if cErr := a.Close(ctx); cErr != nil {
 		t.Errorf("Close after a failed attach: %v", cErr)
+	}
+}
+
+// TestMCPConnectionAttacher_MissingOwner_FailsClosed covers the fail-closed
+// owner guard: a runtime add reaching the attacher without a full (tenant,
+// agent) owner is rejected loud (ErrRuntimeAddOwnerMissing) BEFORE any dial,
+// and nothing is registered.
+func TestMCPConnectionAttacher_MissingOwner_FailsClosed(t *testing.T) {
+	bus := mkDriverTestBus(t, auditpatterns.New())
+	cat := tools.NewCatalog()
+	registry := mcpdrv.NewRegistry()
+	a := NewMCPConnectionAttacher(cat, registry, bus, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil)
+	t.Cleanup(func() { _ = a.Close(context.Background()) })
+
+	cases := []struct {
+		name string
+		req  agentcfgprotocol.AttachRequest
+	}{
+		{"no agent", agentcfgprotocol.AttachRequest{
+			Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
+			Name:     "orphan", Transport: agentcfg.MCPTransportHTTP, URL: "http://127.0.0.1:1/mcp",
+		}},
+		{"no tenant", agentcfgprotocol.AttachRequest{
+			Identity: identity.Identity{UserID: "u", SessionID: "s"}, AgentID: "agent-1",
+			Name: "orphan", Transport: agentcfg.MCPTransportHTTP, URL: "http://127.0.0.1:1/mcp",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := a.Attach(context.Background(), tc.req)
+			if !errors.Is(err, ErrRuntimeAddOwnerMissing) {
+				t.Fatalf("Attach(%s) err = %v, want ErrRuntimeAddOwnerMissing", tc.name, err)
+			}
+		})
+	}
+	// Nothing was registered — the guard fired before any dial / registration.
+	if got := registry.SourceIDs(); len(got) != 0 {
+		t.Fatalf("registry has %v after fail-closed attaches, want empty", got)
 	}
 }
 
@@ -463,7 +511,7 @@ func TestMCPConnectionAttacher_Attach_FailsFastAndDrains(t *testing.T) {
 func TestMCPConnectionDetacher_RealRegistry(t *testing.T) {
 	registry := mcpdrv.NewRegistry()
 	d := NewMCPConnectionDetacher(tools.NewCatalog(), registry, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if got := d.AttachedSources(context.Background()); len(got) != 0 {
+	if got := d.AttachedSources(context.Background(), toolauth.Owner{Tenant: "t1", Agent: "agent-1"}); len(got) != 0 {
 		t.Errorf("AttachedSources on an empty registry = %v, want empty", got)
 	}
 	if err := d.Detach(context.Background(), "never-attached"); err != nil {

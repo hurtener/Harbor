@@ -1278,6 +1278,7 @@ Declared in `internal/protocol/types`.
 | `filter` | `types.EventFilter` — see [`EventFilter`](./types.md#eventfilter) |  |
 | `window` | `time.Duration` |  |
 | `bucket` | `time.Duration` |  |
+| `anchor` | `*time.Time` | optional (`omitempty`) |
 
 ## EventAggregateResponse
 

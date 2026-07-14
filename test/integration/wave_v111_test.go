@@ -89,6 +89,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -368,7 +369,7 @@ func TestE2E_WaveV111_DetachOnReconcile_AndReAdd(t *testing.T) {
 		t.Fatalf("remove_mcp_connection: %v", err)
 	}
 	// Still attached until reconcile (teardown is process-global, run-start).
-	if !waveV111SourcesContain(detacher.AttachedSources(ctx), connName) {
+	if !waveV111SourcesContain(detacher.AttachedSources(ctx, toolauth.Owner{Tenant: id.TenantID, Agent: agentID}), connName) {
 		t.Fatalf("connection detached before reconcile — teardown must be run-start, not on the remove verb")
 	}
 
@@ -397,7 +398,7 @@ func TestE2E_WaveV111_DetachOnReconcile_AndReAdd(t *testing.T) {
 	if _, still := stack.Catalog.Resolve(toolName); still {
 		t.Errorf("tool %q still resolvable on the catalog after reconcile detach", toolName)
 	}
-	if waveV111SourcesContain(detacher.AttachedSources(ctx), connName) {
+	if waveV111SourcesContain(detacher.AttachedSources(ctx, toolauth.Owner{Tenant: id.TenantID, Agent: agentID}), connName) {
 		t.Errorf("connection %q still attached in the MCP registry after reconcile detach", connName)
 	}
 

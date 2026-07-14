@@ -236,6 +236,12 @@ type serverEntry struct {
 	// allowance list for OAuth-requirement discovery fetches. Static
 	// operator config, set at Register; read-only thereafter.
 	oauthAllowedOrigins []string
+	// owner is the (tenant, agent) reconcile-view tag for a runtime-added
+	// server. A zero owner marks a boot-declared server, which the
+	// owner-scoped reconcile view never enumerates. Set at Register;
+	// read-only thereafter. It is a reconcile-view filter, NOT an isolation
+	// key — resolution and dispatch stay bare-name and process-global.
+	owner auth.Owner
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -324,6 +330,13 @@ type ServerRegistration struct {
 	// allowance list for OAuth-requirement discovery fetches. Empty
 	// leaves the authorization-server hop needs-allowance (partial discovery).
 	OAuthDiscoveryAllowedOrigins []string
+	// Owner is the (tenant, agent) reconcile-view tag for a RUNTIME-ADDED
+	// server. Boot-declared servers leave it zero (untagged) — the
+	// owner-scoped reconcile view never enumerates a zero-owner entry. The
+	// runtime-add attach path stamps a non-zero owner (fail-closed there when
+	// either component is missing); nothing about resolution or dispatch reads
+	// it (those stay bare-name and process-global).
+	Owner auth.Owner
 }
 
 // Register adds a server to the Registry. Re-registering the same name
@@ -361,6 +374,7 @@ func (r *Registry) Register(reg ServerRegistration) error {
 		displayModes:        reg.Provider.DisplayModes(),
 		contentShape:        append([]string(nil), reg.ContentShapes...),
 		oauthAllowedOrigins: append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
+		owner:               reg.Owner,
 		stats: serverStats{
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
@@ -400,8 +414,11 @@ func (r *Registry) Deregister(ctx context.Context, name string) error {
 }
 
 // SourceIDs returns the source ids of every currently-registered server —
-// the process-local enumeration the run-start reconciliation diffs against
-// the agent's declared connection set. Identity-free (a process-local read of
+// boot-declared AND runtime-added, across every owner. It is the PROCESS-GLOBAL
+// enumeration (the deployment-shared attached set), NOT the owner-scoped
+// reconcile view: the run-start reconcile uses [Registry.RuntimeAddedSources]
+// instead so one owner's reconcile never sees (and never detaches) a boot
+// server or another owner's runtime-add. Identity-free (a process-local read of
 // the attached set, not an identity-scoped projection like ListServers); the
 // result is a fresh sorted slice, safe to retain.
 func (r *Registry) SourceIDs() []string {
@@ -409,6 +426,35 @@ func (r *Registry) SourceIDs() []string {
 	out := make([]string, 0, len(r.servers))
 	for name := range r.servers {
 		out = append(out, name)
+	}
+	r.mu.RUnlock()
+	sort.Strings(out)
+	return out
+}
+
+// RuntimeAddedSources returns the source ids of the runtime-added servers whose
+// owner tag equals owner — the OWNER-SCOPED reconcile VIEW. Boot-declared
+// (zero-owner) servers and every OTHER owner's runtime-adds are excluded, so a
+// run-start reconcile for one owner enumerates only its own runtime-added set
+// and can never detach a boot server or another owner's connection. A zero
+// owner returns nil (a reconcile with no owner has nothing of its own to
+// reconcile — it never falls back to the whole registry). The result is a
+// fresh sorted slice, safe to retain.
+//
+// This is the ONLY owner-aware read on the Registry: the bare-name read /
+// dispatch paths (ListServers, GetServer, OAuthDiscoveryTarget, ReadResource)
+// stay process-global and untouched, so boot servers remain visible to every
+// session regardless of the reconciling owner.
+func (r *Registry) RuntimeAddedSources(owner auth.Owner) []string {
+	if owner.IsZero() {
+		return nil
+	}
+	r.mu.RLock()
+	out := make([]string, 0, len(r.servers))
+	for name, e := range r.servers {
+		if e.owner == owner {
+			out = append(out, name)
+		}
 	}
 	r.mu.RUnlock()
 	sort.Strings(out)

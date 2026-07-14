@@ -70,6 +70,13 @@ type AttachDeps struct {
 	// capturer leaves tool-context delivery unwired (the host read returns
 	// not-found). Optional.
 	ToolContext ToolContextCapturer
+	// Owner is the (tenant, agent) reconcile-view tag stamped on the
+	// registry entry for a RUNTIME-ADDED connection. The boot loader leaves it
+	// zero (boot-declared servers are untagged and never reconciled); the
+	// runtime-add attach path sets a non-zero owner so the run-start reconcile
+	// view scopes to it. It is a reconcile-view filter, never a dispatch or
+	// isolation key.
+	Owner auth.Owner
 	// OAuthProviders is the declared OAuth-provider registry (keyed by the
 	// non-secret provider NAME) Attach resolves a connection's
 	// `oauth_provider` binding against. Populated by the runtime assembler
@@ -187,6 +194,9 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		// discovery fetches. Empty leaves the authorization-server hop
 		// needs-allowance (partial discovery), never a network hole.
 		OAuthDiscoveryAllowedOrigins: append([]string(nil), ms.OAuthDiscoveryAllowedOrigins...),
+		// The reconcile-view owner tag — zero for boot-declared servers, a
+		// non-zero (tenant, agent) for a runtime-added connection.
+		Owner: deps.Owner,
 	}); regErr != nil {
 		return fmt.Errorf("registry.Register: %w", regErr)
 	}
