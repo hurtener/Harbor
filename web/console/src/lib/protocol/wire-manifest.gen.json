@@ -2569,6 +2569,11 @@
           "key": "anchor",
           "type": "string",
           "optional": true
+        },
+        {
+          "key": "by_tenant",
+          "type": "boolean",
+          "optional": true
         }
       ]
     },
@@ -2605,6 +2610,11 @@
         {
           "key": "counts",
           "type": "object"
+        },
+        {
+          "key": "counts_by_tenant",
+          "type": "object",
+          "optional": true
         }
       ]
     },

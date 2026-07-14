@@ -359,6 +359,140 @@ func TestE2E_AggregateDurable_WidenedDistinctPrincipals_FansIn(t *testing.T) {
 	}
 }
 
+// TestE2E_AggregateDurable_ByTenant_WidenedAttributesAndReconciles proves
+// per-tenant attribution end-to-end on the REAL durable driver behind the real
+// wire + auth surface: a widened admin ByTenant aggregate naming two tenants
+// (distinct principals, so a caller-fold would return 0) splits the totals
+// across exactly those tenants, each tenant's attribution reconciles with the
+// bucket totals (Σ CountsByTenant == Counts), and no tenant outside the named
+// authorized set appears.
+func TestE2E_AggregateDurable_ByTenant_WidenedAttributesAndReconciles(t *testing.T) {
+	deps := newAggregateDurableDeps(t)
+	defer deps.cleanup()
+	srv := httptest.NewServer(deps.mux)
+	defer srv.Close()
+
+	caller := identity.Identity{TenantID: "t-caller", UserID: "u-caller", SessionID: "s-caller"}
+	// t-alpha: 2 events across distinct principals; t-beta: 1.
+	publishPhase72aEvent(t, deps.bus, "t-alpha", "a-u1", "a-s1", fixedNowPhase72a.Add(-5*time.Minute))
+	publishPhase72aEvent(t, deps.bus, "t-alpha", "a-u2", "a-s2", fixedNowPhase72a.Add(-6*time.Minute))
+	publishPhase72aEvent(t, deps.bus, "t-beta", "b-u1", "b-s1", fixedNowPhase72a.Add(-7*time.Minute))
+	// A third tenant NOT in the filter — must never appear in attribution.
+	publishPhase72aEvent(t, deps.bus, "t-gamma", "g-u1", "g-s1", fixedNowPhase72a.Add(-5*time.Minute))
+
+	body, _ := json.Marshal(prototypes.EventAggregateRequest{
+		Filter:   prototypes.EventFilter{TenantIDs: []string{"t-alpha", "t-beta"}},
+		Window:   30 * time.Minute,
+		Bucket:   time.Minute,
+		ByTenant: true,
+	})
+	status, agg := doAggregateDurable(t, srv.URL, deps, caller,
+		[]string{string(auth.ScopeAdmin)}, body)
+	if status != http.StatusOK {
+		t.Fatalf("widened ByTenant aggregate on durable: status = %d, want 200", status)
+	}
+
+	// Per-tenant attribution.
+	if got := sumByTenantDurable(agg, "t-alpha"); got != 2 {
+		t.Fatalf("t-alpha attribution = %d, want 2", got)
+	}
+	if got := sumByTenantDurable(agg, "t-beta"); got != 1 {
+		t.Fatalf("t-beta attribution = %d, want 1", got)
+	}
+
+	// Keys are a SUBSET of the authorized filter {t-alpha, t-beta}: t-gamma
+	// exists on the bus but was never named, so it must not leak.
+	keys := map[string]struct{}{}
+	for _, b := range agg.Buckets {
+		for tenant := range b.CountsByTenant {
+			keys[tenant] = struct{}{}
+		}
+	}
+	if _, leaked := keys["t-gamma"]; leaked {
+		t.Fatalf("attribution leaked t-gamma outside the named authorized set")
+	}
+	if len(keys) != 2 {
+		t.Fatalf("attribution tenant keys = %v, want exactly {t-alpha, t-beta}", keys)
+	}
+
+	// Σ CountsByTenant[*][type] == Counts[type] per bucket.
+	for i, b := range agg.Buckets {
+		perType := map[string]int64{}
+		for _, byType := range b.CountsByTenant {
+			for typ, n := range byType {
+				perType[typ] += n
+			}
+		}
+		for typ, want := range b.Counts {
+			if perType[typ] != want {
+				t.Fatalf("bucket %d type %q: Σ CountsByTenant = %d, want Counts = %d", i, typ, perType[typ], want)
+			}
+		}
+	}
+}
+
+// TestE2E_AggregateDurable_ByTenant_NonAdmin_FailClosed is the ≥1-failure-mode
+// leg for attribution: an unelevated caller cannot gain per-tenant attribution.
+// A non-admin own-scope read with ByTenant set returns 200 but NO attribution
+// (the flag is ignored on the non-widened path), and a cross-tenant ByTenant
+// read without a scope claim is rejected 403 at the widening gate BEFORE any
+// attribution runs.
+func TestE2E_AggregateDurable_ByTenant_NonAdmin_FailClosed(t *testing.T) {
+	deps := newAggregateDurableDeps(t)
+	defer deps.cleanup()
+	srv := httptest.NewServer(deps.mux)
+	defer srv.Close()
+
+	caller := identity.Identity{TenantID: "t-own", UserID: "u-own", SessionID: "s-own"}
+	publishPhase72aEvent(t, deps.bus, caller.TenantID, caller.UserID, caller.SessionID, fixedNowPhase72a.Add(-5*time.Minute))
+
+	// Own-scope read with ByTenant — 200, no attribution (ignored, fail-closed).
+	ownBody, _ := json.Marshal(prototypes.EventAggregateRequest{
+		Filter:   prototypes.EventFilter{TenantIDs: []string{caller.TenantID}, UserIDs: []string{caller.UserID}, SessionIDs: []string{caller.SessionID}},
+		Window:   30 * time.Minute,
+		Bucket:   time.Minute,
+		ByTenant: true,
+	})
+	status, agg := doAggregateDurable(t, srv.URL, deps, caller, nil, ownBody)
+	if status != http.StatusOK {
+		t.Fatalf("non-admin own-scope ByTenant: status = %d, want 200", status)
+	}
+	for _, b := range agg.Buckets {
+		if len(b.CountsByTenant) != 0 {
+			t.Fatalf("non-widened ByTenant carried attribution %v, want none (fail-closed)", b.CountsByTenant)
+		}
+	}
+
+	// Cross-tenant ByTenant WITHOUT a scope claim — 403 at the widening gate.
+	crossBody, _ := json.Marshal(prototypes.EventAggregateRequest{
+		Filter:   prototypes.EventFilter{TenantIDs: []string{"t-other"}},
+		Window:   30 * time.Minute,
+		Bucket:   time.Minute,
+		ByTenant: true,
+	})
+	crossStatus, raw := doAggregateDurableRaw(t, srv.URL, deps, caller, nil, crossBody)
+	if crossStatus != http.StatusForbidden {
+		t.Fatalf("cross-tenant ByTenant without scope: status = %d, want 403; body=%s", crossStatus, raw)
+	}
+	var perr protoerrors.Error
+	if err := json.Unmarshal(raw, &perr); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if perr.Code != protoerrors.CodeIdentityScopeRequired {
+		t.Fatalf("cross-tenant ByTenant rejection code = %q, want %q", perr.Code, protoerrors.CodeIdentityScopeRequired)
+	}
+}
+
+// sumByTenantDurable totals the runtime.error attribution for one tenant across
+// all buckets — the fixture publishes only that event type.
+func sumByTenantDurable(resp prototypes.EventAggregateResponse, tenant string) int64 {
+	var total int64
+	for _, b := range resp.Buckets {
+		total += b.CountsByTenant[tenant][string(events.EventTypeRuntimeError)]
+	}
+	return total
+}
+
 func doAggregateDurable(t *testing.T, baseURL string, deps *aggregateDurableDeps, id identity.Identity, scopes []string, body []byte) (int, prototypes.EventAggregateResponse) {
 	t.Helper()
 	status, raw := doAggregateDurableRaw(t, baseURL, deps, id, scopes, body)

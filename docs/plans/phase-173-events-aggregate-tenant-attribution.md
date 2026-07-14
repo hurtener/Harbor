@@ -64,15 +64,15 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `EventAggregateRequest` gains an opt-in attribution flag (design:
+- [x] `EventAggregateRequest` gains an opt-in attribution flag (design:
       `ByTenant bool`, `json:"by_tenant,omitempty"`). Absent/false ⇒ no attribution;
       response byte-identical to pre-173.
-- [ ] The response carries per-tenant attribution when `ByTenant` is set AND the read is
+- [x] The response carries per-tenant attribution when `ByTenant` is set AND the read is
       admin-widened (design: `EventBucket.CountsByTenant map[string]map[string]int64`,
       tenant → event_type → count, `json:"counts_by_tenant,omitempty"`; the existing
       `Counts` totals are unchanged). Per-bucket so it composes with the time series and
       172's grid.
-- [ ] Concrete bound (NIT-4): the attribution keys are a SUBSET of the authorized
+- [x] Concrete bound (NIT-4): the attribution keys are a SUBSET of the authorized
       (named-or-folded) `Filter.TenantIDs`, and `Counts` (totals) and `CountsByTenant` are
       scoped to the IDENTICAL set BY CONSTRUCTION (both computed from the same MatchWire
       pass over the same authorized filter) — so `Σ CountsByTenant == Counts` holds. There
@@ -81,17 +81,17 @@ None.
       the fan-in (no D-219 issue). A widened read naming `{T1,T2}` returns both; a request
       naming only `{T1}` returns only T1 (it never asked for T2) — attribution re-projects
       exactly the authorized filter, never widens it.
-- [ ] A non-admin (own-tenant, un-widened) read with `ByTenant` set returns at most the
+- [x] A non-admin (own-tenant, un-widened) read with `ByTenant` set returns at most the
       caller's OWN single tenant in `CountsByTenant` (no new information) — attribution is
       never a back-door to cross-tenant data.
-- [ ] Authority is server-derived: the handler passes its verified `widened` decision
+- [x] Authority is server-derived: the handler passes its verified `widened` decision
       (171) into the aggregator; `ByTenant` alone (from the body) never elevates.
-- [ ] `Σ CountsByTenant[*][type] == Counts[type]` per bucket — the attribution reconciles
+- [x] `Σ CountsByTenant[*][type] == Counts[type]` per bucket — the attribution reconciles
       exactly with the totals (a unit invariant; the verifiability property).
-- [ ] Multi-isolation test: two tenants' events aggregated under a widened read attribute
+- [x] Multi-isolation test: two tenants' events aggregated under a widened read attribute
       to the correct tenants with no cross-talk; a caller entitled to one tenant sees only
       that tenant's attribution.
-- [ ] Full D-223 lockstep + D-209 regen committed in the same PR.
+- [x] Full D-223 lockstep + D-209 regen committed in the same PR.
 
 ## Files added or changed
 
@@ -189,17 +189,17 @@ docs/plans/README.md                                   # row + detail block (Pen
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references resolve
-- [ ] Coverage ≥ target
-- [ ] Multi-isolation: cross-tenant attribution isolation test passes (the entitled-set
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references resolve
+- [x] Coverage ≥ target
+- [x] Multi-isolation: cross-tenant attribution isolation test passes (the entitled-set
       guard + the `Σ == total` reconciliation)
-- [ ] Reusable-artifact concurrent-reuse test passes (attribution is per-request) — D-025
-- [ ] Integration test extended (widened attribution + cross-tenant isolation on durable),
+- [x] Reusable-artifact concurrent-reuse test passes (attribution is per-request) — D-025
+- [x] Integration test extended (widened attribution + cross-tenant isolation on durable),
       real drivers, `-race` — §17.1
-- [ ] Wire change: `make protocol-ts-gen` + `make protocol-docs-gen` run, regenerated
+- [x] Wire change: `make protocol-ts-gen` + `make protocol-docs-gen` run, regenerated
       artifacts committed; both lockstep-check gates pass; `use-the-harbor-protocol`
       SKILL.md updated (§18)
-- [ ] New vocabulary added to `docs/glossary.md`
+- [x] New vocabulary added to `docs/glossary.md`
