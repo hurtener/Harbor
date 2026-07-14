@@ -1,5 +1,17 @@
 # Phase 92m — add_mcp_connection OAuth config + InitiateFlow parking
 
+> **Sibling reconciliation note (added by the v1.14 wave, D-302/D-303).** This
+> phase plans an OPTIONAL agent-bound `OAuth` block on the SAME
+> `add_mcp_connection` request. The v1.14 wave lands the Protocol-writable
+> provider surface as Phase 169 (`agent_config.set_oauth_provider` install + the
+> connection→provider `oauth_provider` binding). §13 forbids two parallel
+> implementations of one feature: when 92m is unparked it MUST route through
+> Phase 169's install verb + the existing `oauth_provider` binding, NOT grow a
+> second Protocol-writable auth affordance on the add request. Any credential-
+> sink-determining field (token endpoint, downstream host, audience) stays
+> boot-declared on the named credential broker (D-300); no URL or env-var name
+> is admin-writable. See D-302 (the ruling) and D-303 (the provider surface).
+
 ## Summary
 
 Wires `agent_config.add_mcp_connection` into Harbor's existing agent-bound tool-side OAuth primitive. The request gains an OPTIONAL `OAuth` block; on a typed `ErrAuthRequired` from the attach, the service registers the server's `OAuthConfig` (the runtime config seam) and drives `InitiateFlow` on the unified pause/resume Coordinator — REPLACING the dead-end `parkForAuth` with a real, correlated OAuth-flow pause. The response carries the `authorize_url` + `pause_token` so an operator can complete consent out-of-band. See the wave decomposition `docs/plans/wave-mcp-oauth-decomposition.md` (§2, §3 "92m") for the end-state this phase delivers.
