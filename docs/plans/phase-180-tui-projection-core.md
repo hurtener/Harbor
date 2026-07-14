@@ -60,32 +60,33 @@ behavior without sharing Svelte implementation code.
 
 ## Acceptance criteria
 
-- [ ] `internal/tui/projection` is pure Go with no Bubble Tea/Lip Gloss import.
-- [ ] Hydration loads tail-first `state.history`, joins `tasks.list/get`,
+- [x] `internal/tui/projection` is pure Go with no Bubble Tea/Lip Gloss import.
+- [x] Hydration loads tail-first `state.history`, joins `tasks.list/get`,
       `sessions.inspect`, and `pause.list`, then establishes the live cursor
       without snapshot-over-live rollback.
-- [ ] Reducer ordering is deterministic by session/sequence and repairs terminal
+- [x] Reducer ordering is deterministic by session/sequence and repairs terminal
       lifecycle events whose opening event was retained away.
-- [ ] Duplicate/out-of-order events are idempotent; stale snapshot generations
+- [x] Duplicate/out-of-order events are idempotent; stale snapshot generations
       cannot resurrect deleted/resolved/terminal state.
-- [ ] `session.reopened` invalidates stale closed state; `session_erased` creates
+- [x] `session.reopened` invalidates stale closed state; `session_erased` creates
       a terminal tombstone that reconnect never retries as an ordinary session.
-- [ ] `counters_partial`, history/aggregate truncation, scoped retention,
+- [x] `counters_partial`, history/aggregate truncation, scoped retention,
       unavailable capabilities, and bounded tool analytics remain representable.
-- [ ] Unknown event/tool/result payloads become safe generic blocks and never
+- [x] Unknown event/tool/result payloads become safe generic blocks and never
       disappear or panic the reducer.
-- [ ] High-rate content/reasoning deltas expose a batchable update stream while
+- [x] High-rate content/reasoning deltas expose a batchable update stream while
       lifecycle/intervention changes remain immediate.
-- [ ] Language-neutral JSON fixtures cover all canonical block families and run
+- [x] Language-neutral JSON fixtures cover all canonical block families and run
       through both Go and Console reducer tests with equivalent normalized output.
-- [ ] N≥100 sessions reduce concurrently against shared immutable fixtures with
+- [x] N≥100 sessions reduce concurrently against shared immutable fixtures with
       no identity bleed, cancellation cross-talk, race, or goroutine leak.
 
 ## Files added or changed
 
 - `internal/tui/projection/`
 - `internal/tui/testdata/projection/`
-- `web/console/src/lib/chat/` reducer fixture adapter/tests
+- production Console history/live reducer contract tests and the concrete
+  `PauseToken` intervention-correlation correction those fixtures exposed
 - `test/integration/tui_projection_test.go`
 - `scripts/smoke/phase-180.sh`
 
@@ -151,13 +152,13 @@ surface; no public SDK projection is introduced.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session isolation test passes
-- [ ] Concurrent-reuse test passes with N≥100 under `-race`
-- [ ] Real-driver integration covers identity and ≥1 failure mode under `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session isolation test passes
+- [x] Concurrent-reuse test passes with N≥100 under `-race`
+- [x] Real-driver integration covers identity and ≥1 failure mode under `-race`
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A; no departure

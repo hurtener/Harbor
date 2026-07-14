@@ -276,6 +276,13 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.15 Phase 180: Shipped.** A pure Go conversation projection now
+hydrates and reconciles canonical history, task, session, pause, posture, and
+event state without terminal-framework coupling. It fails visibly on replay
+gaps, preserves retention/partiality signals, treats erasure as terminal, and
+shares production-path fixtures with the Console so both clients interpret the
+same wire events consistently.
+
 **Harbor v1.15 Phase 179: Shipped.** Harbor now has one reusable authenticated
 Go Protocol client with identity-aware token resolution, strict REST/SSE
 decoding, immutable session attachments, a curated public SDK facade, and the

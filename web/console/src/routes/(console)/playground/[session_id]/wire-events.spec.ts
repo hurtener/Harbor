@@ -210,6 +210,7 @@ describe('decodeIntervention', () => {
 		});
 		expect(decodeIntervention(f)).toEqual({
 			runID: 'RUN-A',
+			pauseToken: 'tok1',
 			reason: 'Approve call to youtube_delete — destructive',
 			source: 'tool.approval_requested'
 		});
@@ -223,6 +224,7 @@ describe('decodeIntervention', () => {
 		});
 		expect(decodeIntervention(f)).toEqual({
 			runID: 'RUN-B',
+			pauseToken: 't',
 			reason: 'Connect Google Drive',
 			source: 'tool.auth_required'
 		});
@@ -236,6 +238,7 @@ describe('decodeIntervention', () => {
 		});
 		expect(decodeIntervention(f)).toEqual({
 			runID: 'RUN-C',
+			pauseToken: 'tok',
 			reason: 'hitl_approval',
 			source: 'pause.requested'
 		});
@@ -253,15 +256,15 @@ describe('decodeIntervention', () => {
 });
 
 describe('decodeInterventionClear', () => {
-	it('reads the run id from a pause.resumed frame', () => {
-		expect(decodeInterventionClear(JSON.stringify({ type: 'pause.resumed', run: 'RUN-C', payload: {} }))).toBe(
-			'RUN-C'
+	it('reads the run id and pause token from a pause.resumed frame', () => {
+		expect(decodeInterventionClear(JSON.stringify({ type: 'pause.resumed', run: 'RUN-C', payload: { Token: 'p' } }))).toEqual(
+			{ runID: 'RUN-C', pauseToken: 'p' }
 		);
 	});
 
-	it('reads the run id from tool.approved / tool.rejected / tool.auth_completed', () => {
+	it('reads the PauseToken from tool.approved / tool.rejected / tool.auth_completed', () => {
 		for (const type of ['tool.approved', 'tool.rejected', 'tool.auth_completed']) {
-			expect(decodeInterventionClear(JSON.stringify({ type, run: 'RX', payload: {} }))).toBe('RX');
+			expect(decodeInterventionClear(JSON.stringify({ type, run: 'RX', payload: { PauseToken: 'px' } }))).toEqual({ runID: 'RX', pauseToken: 'px' });
 		}
 	});
 
