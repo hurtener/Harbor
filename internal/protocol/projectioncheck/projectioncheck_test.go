@@ -1,7 +1,12 @@
 package projectioncheck_test
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/protocol/projectioncheck"
@@ -65,6 +70,111 @@ func TestGate_HalfB_EveryContractNamesProdWiringTest(t *testing.T) {
 		if c.ProdWiringTest == "" {
 			t.Errorf("Half B FAIL: surface %q declares no prod-wiring test", c.Surface)
 		}
+	}
+}
+
+// testFuncDeclRE matches a top-level Go test-function declaration so the
+// name-resolution gate can prove a named prod-wiring test EXISTS.
+var testFuncDeclRE = regexp.MustCompile(`(?m)^func\s+(\w+)\s*\(`)
+
+// TestGate_HalfB_ProdWiringTestNamesResolve closes the NIT the wave-audit
+// found: ValidateContract only asserts ProdWiringTest is NON-EMPTY, so a
+// rename or delete of a named prod-wiring test leaves the contract green
+// while its Half-B coverage silently evaporates. This gate mechanically
+// resolves every registered ProdWiringTest name to a real `func <name>(`
+// declaration in some `_test.go` under the module — a stale/renamed name
+// fails the build here. (Existence, not invocation: whether the named test
+// still ASSERTS the wiring is the per-surface test's own job; this gate
+// guarantees the name is not a dangling reference.)
+func TestGate_HalfB_ProdWiringTestNamesResolve(t *testing.T) {
+	decls := testFuncDeclsInModule(t)
+	for _, c := range projectioncheck.Contracts() {
+		name := strings.TrimSpace(c.ProdWiringTest)
+		if name == "" {
+			continue // the non-empty rule is TestGate_HalfB_EveryContractNamesProdWiringTest
+		}
+		if !decls[name] {
+			t.Errorf("Half B FAIL: surface %q names prod-wiring test %q, but no `func %s(` "+
+				"declaration exists in any _test.go under the module — a renamed/deleted prod-wiring "+
+				"test leaves the contract green while its never-wired coverage evaporates", c.Surface, name, name)
+		}
+	}
+}
+
+// TestGate_HalfB_NameResolution_NonVacuous proves the name-resolution gate
+// BITES: a dangling prod-wiring-test name (one with no `func <name>(` in the
+// tree) is absent from the declaration set, so the gate would flag it. A gate
+// that cannot fail is a rubber stamp (§17.8).
+func TestGate_HalfB_NameResolution_NonVacuous(t *testing.T) {
+	decls := testFuncDeclsInModule(t)
+	const bogus = "TestProdWiring_DoesNotExist_ ThisNameIsNeverDeclared"
+	if decls[bogus] {
+		t.Fatalf("a name that is never declared resolved to a func — the gate cannot bite")
+	}
+	// A real prod-wiring test name DOES resolve (proving the walk works).
+	if !decls["TestProdWiring_TasksListThroughBuildMux"] {
+		t.Fatal("the tasks prod-wiring test did not resolve — the module walk is broken")
+	}
+}
+
+// testFuncDeclsInModule walks the module tree and returns the set of every
+// top-level function name declared in a `_test.go` file. It is used by the
+// Half-B name-resolution gate to prove each registered ProdWiringTest name
+// is a live reference.
+func testFuncDeclsInModule(t *testing.T) map[string]bool {
+	t.Helper()
+	root := moduleRoot(t)
+	decls := make(map[string]bool, 4096)
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// Skip vendored/VCS/build dirs — no Harbor test funcs live there.
+			switch d.Name() {
+			case ".git", "vendor", "node_modules":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		for _, m := range testFuncDeclRE.FindAllSubmatch(src, -1) {
+			decls[string(m[1])] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk module tree for test-func declarations: %v", err)
+	}
+	if len(decls) == 0 {
+		t.Fatal("no _test.go function declarations found under the module root — the name-resolution gate cannot run")
+	}
+	return decls
+}
+
+// moduleRoot walks up from the test's working directory to the directory
+// holding go.mod (the module root).
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("reached filesystem root without finding go.mod — cannot locate the module root")
+		}
+		dir = parent
 	}
 }
 

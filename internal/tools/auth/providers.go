@@ -71,6 +71,15 @@ type ProviderSet interface {
 	// boot-seeded (zero-owner) name is refused (ErrProviderBootProtected) — boot
 	// providers are edited in yaml + restart, never uninstalled over the control
 	// plane.
+	//
+	// Uninstall takes no Owner: owner-scoping is enforced by the CALLER. The
+	// sole caller, the `agent_config.remove_oauth_provider` handler, resolves
+	// the name within the caller's OWN active agent-config revision (under
+	// lockAgent) and only reaches Uninstall for a provider present in that
+	// owner's revision, so no caller can drop another owner's provider. A
+	// defense-in-depth `Uninstall(owner, name)` that re-checks the entry's owner
+	// at this boundary (mirroring Install's ErrProviderOwnerCollision) is a
+	// tracked follow-up (issue #507).
 	Uninstall(ctx context.Context, name string) error
 }
 
@@ -193,6 +202,10 @@ func (s *providerSet) Install(owner Owner, name string, p OAuthProvider) error {
 	return nil
 }
 
+// Uninstall implements ProviderSet.Uninstall. Owner-scoping is enforced by the
+// caller (the remove_oauth_provider handler resolves the name within the
+// caller's own agent-config revision); a defense-in-depth owner re-check at
+// this boundary is a tracked follow-up (issue #507).
 func (s *providerSet) Uninstall(ctx context.Context, name string) error {
 	s.mu.Lock()
 	e, ok := s.entries[name]
