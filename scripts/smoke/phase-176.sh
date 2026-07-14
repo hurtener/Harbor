@@ -47,7 +47,7 @@ assert_grep_present 'LastReopenedAt' "internal/sessions/gc.go" \
 # --- Static: the erasure tombstone (terminal, converged-erasure guard). ---
 assert_grep_present 'erasureTombstoneKindPrefix' "internal/sessions/erasure.go" \
   "phase 176: durable erasure tombstone (converged-erasure reopen guard)"
-assert_grep_present 'func (r \*Registry) isErased' "internal/sessions/erasure.go" \
+assert_grep_present 'func \(r \*Registry\) isErased' "internal/sessions/erasure.go" \
   "phase 176: isErased fail-closed reopen guard present"
 
 # --- Build/test gates: manifest + generated-docs lockstep + the tests. ---
