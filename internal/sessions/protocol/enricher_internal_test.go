@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"math"
 	"runtime"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/events/drivers/durable"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -240,8 +242,12 @@ func TestCounterEnricher_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	publishCost(t, bus, a, 1.00, 100) // sA: 100c / 100 tok / 1 event
 	publishCost(t, bus, b, 5.00, 500) // sB: 500c / 500 tok / 1 event
 
-	time.Sleep(50 * time.Millisecond)
-	baseline := runtime.NumGoroutine()
+	// Baseline the goroutine count once it has STABILISED (an eventually-
+	// style poll, not a fixed sleep-as-sync — §17.4): the enricher and its
+	// drivers spawn no per-call goroutines, but setup goroutines may still
+	// be settling. Publish is synchronous on the inmem bus, so the events
+	// are already retained — no wait for an async event is needed.
+	baseline := settledGoroutineCount()
 
 	const N = 200
 	var wg sync.WaitGroup
@@ -314,25 +320,96 @@ func TestProjectRow_FieldSetPin(t *testing.T) {
 
 func TestCostFromEvent_TypedAndRedactedMap(t *testing.T) {
 	t.Parallel()
+	// costFromEvent returns DOLLARS (unrounded) so the caller can sum before
+	// the single dollars→cents rounding (a per-event round would floor
+	// sub-cent per-call costs to 0 — FAIL-1).
 	// Typed SafePayload path (inmem live).
 	typed := events.Event{Payload: llm.CostRecordedPayload{
 		Cost:  llm.Cost{TotalCost: 1.23},
 		Usage: llm.Usage{TotalTokens: 42},
 	}}
-	if cents, tokens := costFromEvent(typed); cents != 123 || tokens != 42 {
-		t.Errorf("typed path: cents=%d tokens=%d, want 123/42", cents, tokens)
+	if d, tokens := costFromEvent(typed); math.Abs(d-1.23) > 1e-9 || tokens != 42 {
+		t.Errorf("typed path: dollars=%v tokens=%d, want 1.23/42", d, tokens)
 	}
 	// RedactedMap path (durable replay stores a generic JSON object).
 	redacted := events.Event{Payload: events.RedactedMap{Data: map[string]any{
 		"Cost":  map[string]any{"TotalCost": float64(2.50)},
 		"Usage": map[string]any{"TotalTokens": float64(300)},
 	}}}
-	if cents, tokens := costFromEvent(redacted); cents != 250 || tokens != 300 {
-		t.Errorf("redacted-map path: cents=%d tokens=%d, want 250/300", cents, tokens)
+	if d, tokens := costFromEvent(redacted); math.Abs(d-2.50) > 1e-9 || tokens != 300 {
+		t.Errorf("redacted-map path: dollars=%v tokens=%d, want 2.50/300", d, tokens)
 	}
 	// Unrecognised payload contributes zero (no fabricated cost).
-	if cents, tokens := costFromEvent(events.Event{}); cents != 0 || tokens != 0 {
-		t.Errorf("nil payload: cents=%d tokens=%d, want 0/0", cents, tokens)
+	if d, tokens := costFromEvent(events.Event{}); d != 0 || tokens != 0 {
+		t.Errorf("nil payload: dollars=%v tokens=%d, want 0/0", d, tokens)
+	}
+}
+
+// TestCounterEnricher_SubCentCosts_NotFlooredToZero is the FAIL-1 guard: a
+// session with many sub-cent per-call costs must sum to its true total, not
+// a believable-but-false EXACT zero (which cost_above / cost_desc would
+// then silently exclude / mis-rank — the false-absence this phase closes).
+func TestCounterEnricher_SubCentCosts_NotFlooredToZero(t *testing.T) {
+	t.Parallel()
+	bus := newReplayBus(t, 128)
+	reg := newTaskRegistry(t, bus)
+	enr := newEnricher(t, bus, reg, pauseresume.New())
+
+	target := sid("t1", "u1", "s1")
+	// 50 calls at $0.004 each = $0.20 = 20¢. A per-event round would floor
+	// each to 0 and report 0¢; the page-level sum must report 20¢.
+	for range 50 {
+		publishCost(t, bus, target, 0.004, 3)
+	}
+	c := enr.Counters(context.Background(), target, "s1")
+	if c.TotalCostCents != 20 {
+		t.Fatalf("TotalCostCents = %d, want 20 (50 × $0.004 summed before rounding) — sub-cent per-event rounding floored a real cost to a false zero (FAIL-1)", c.TotalCostCents)
+	}
+	if c.TotalTokens != 150 {
+		t.Errorf("TotalTokens = %d, want 150", c.TotalTokens)
+	}
+}
+
+// TestCounterEnricher_DurableReplay_RealEncoder is the WARN-2 guard: the
+// cost / tokens extraction on the DURABLE replay path (RedactedMap) is
+// driven through the REAL durable encoder (Publish → durable record store →
+// ListWindow → decode → costFromEvent), not a hand-authored map. A future
+// json tag on CostRecordedPayload / Cost / Usage that silently broke
+// costFromMap would surface here rather than shipping 0-cost on every
+// durable / SQLite / Postgres runtime.
+func TestCounterEnricher_DurableReplay_RealEncoder(t *testing.T) {
+	t.Parallel()
+	st, err := stateinmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatalf("state store: %v", err)
+	}
+	cfg := config.EventsConfig{
+		Driver:                   "durable",
+		MaxSubscribersPerSession: 16,
+		SubscriberBufferSize:     8,
+		DropWindow:               50 * time.Millisecond,
+		ReplayBufferSize:         0, // durable mode: ListWindow reads the log, not a ring
+	}
+	bus, err := durable.New(context.Background(), cfg, passRedactor{}, st)
+	if err != nil {
+		t.Fatalf("durable bus: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	reg := newTaskRegistry(t, bus)
+	enr := newEnricher(t, bus, reg, pauseresume.New())
+
+	target := sid("t1", "u1", "s1")
+	publishCost(t, bus, target, 1.50, 600) // 150c
+	publishCost(t, bus, target, 0.004, 4)  // sub-cent, exercises the sum on the durable path too
+
+	c := enr.Counters(context.Background(), target, "s1")
+	// $1.504 → 150¢ (0.4¢ rounds down). The point: the durable RedactedMap
+	// path reads real cost/tokens, not zeros.
+	if c.TotalCostCents != 150 {
+		t.Fatalf("durable-replay TotalCostCents = %d, want 150 — the real durable encoder round-trip must read cost, not zero (WARN-2)", c.TotalCostCents)
+	}
+	if c.TotalTokens != 604 {
+		t.Errorf("durable-replay TotalTokens = %d, want 604", c.TotalTokens)
 	}
 }
 
@@ -347,6 +424,25 @@ func TestDollarsToCents_RoundsAndClamps(t *testing.T) {
 	if got := dollarsToCents(0.01); got != 1 {
 		t.Errorf("0.01 → %d cents, want 1", got)
 	}
+}
+
+// settledGoroutineCount returns runtime.NumGoroutine once it has been
+// stable across consecutive short reads (or a bounded deadline elapses) —
+// an eventually-style stabilisation, NOT a fixed sleep used as a
+// synchronisation primitive (§17.4). Used to baseline the leak assertion
+// after setup goroutines have quiesced.
+func settledGoroutineCount() int {
+	deadline := time.Now().Add(2 * time.Second)
+	prev := runtime.NumGoroutine()
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		cur := runtime.NumGoroutine()
+		if cur == prev {
+			return cur
+		}
+		prev = cur
+	}
+	return prev
 }
 
 // spawnFailed spawns a task under id and transitions it to Failed.

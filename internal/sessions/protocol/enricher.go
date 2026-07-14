@@ -234,7 +234,11 @@ func (e *CounterEnricher) pendingIntervention(ctx context.Context, id identity.I
 	resp, err := e.pauses.List(idCtx, pauseresume.ListRequest{
 		Identity: id,
 		Filter: pauseresume.ListFilter{
-			States:     []pauseresume.State{pauseresume.StatusPaused},
+			States: []pauseresume.State{pauseresume.StatusPaused},
+			// Scope by the full triple (tenant is implied by Identity;
+			// UserIDs + SessionIDs mirror the events / tasks reads and
+			// CLAUDE.md §6 defence-in-depth — never scope by session alone).
+			UserIDs:    []string{id.UserID},
 			SessionIDs: []string{id.SessionID},
 		},
 		Page:     1,
@@ -290,14 +294,23 @@ func (e *CounterEnricher) eventCounters(ctx context.Context, id identity.Identit
 		}
 		return 0, 0, 0, true
 	}
+	// Accumulate cost as a float64 DOLLAR sum across the whole page and
+	// convert to cents ONCE after the loop. Per-call `llm.cost.recorded`
+	// costs are routinely sub-cent (e.g. $0.004), so rounding each event to
+	// whole cents before summing would floor every sub-cent call to 0 and
+	// report a believable-but-false EXACT zero on a session that really
+	// spent money — reintroducing the false-absence this phase closes. One
+	// rounding at the end preserves the true total.
+	var costDollars float64
 	for i := range page.Events {
 		ev := page.Events[i]
 		if ev.Type == llm.EventTypeCostRecorded {
-			c, t := costFromEvent(ev)
-			cents += c
+			d, t := costFromEvent(ev)
+			costDollars += d
 			tokens += t
 		}
 	}
+	cents = dollarsToCents(costDollars)
 	count = len(page.Events)
 	// HasMore: older matching events remain below the page (the scan hit
 	// e.scanBound). Truncated: a wrapped best-effort ring may have evicted
@@ -313,16 +326,19 @@ func (e *CounterEnricher) eventCounters(ctx context.Context, id identity.Identit
 	return cents, tokens, count, partial
 }
 
-// costFromEvent extracts (cents, tokens) from an `llm.cost.recorded` event,
-// handling both the typed SafePayload (inmem live — the payload passes
-// through unredacted) and the RedactedMap the durable substrate rehydrates
-// on replay (Payload stored as a generic JSON object). A payload that
-// matches neither shape contributes zero (honest — an unrecognised payload
-// is not a fabricated cost).
-func costFromEvent(ev events.Event) (cents, tokens int64) {
+// costFromEvent extracts (dollars, tokens) from an `llm.cost.recorded`
+// event, handling both the typed SafePayload (inmem live — the payload
+// passes through unredacted) and the RedactedMap the durable substrate
+// rehydrates on replay (Payload stored as a generic JSON object). Cost is
+// returned as a float64 DOLLAR amount — NOT pre-rounded to cents — so the
+// caller can sum across the page before the single dollars→cents rounding
+// (a per-event round would floor sub-cent per-call costs to 0). A payload
+// that matches neither shape contributes zero (honest — an unrecognised
+// payload is not a fabricated cost).
+func costFromEvent(ev events.Event) (dollars float64, tokens int64) {
 	switch p := ev.Payload.(type) {
 	case llm.CostRecordedPayload:
-		return dollarsToCents(p.Cost.TotalCost), int64(p.Usage.TotalTokens)
+		return p.Cost.TotalCost, int64(p.Usage.TotalTokens)
 	case events.RedactedMap:
 		return costFromMap(p.Data)
 	default:
@@ -330,13 +346,14 @@ func costFromEvent(ev events.Event) (cents, tokens int64) {
 	}
 }
 
-// costFromMap reads the cost / tokens from the JSON-shaped payload the
-// durable substrate stores. The keys mirror the exported field names of
-// llm.CostRecordedPayload (no json tags) → `Cost` / `Usage` objects.
-func costFromMap(m map[string]any) (cents, tokens int64) {
+// costFromMap reads the cost (as float64 dollars) / tokens from the
+// JSON-shaped payload the durable substrate stores. The keys mirror the
+// exported field names of llm.CostRecordedPayload (no json tags) → `Cost` /
+// `Usage` objects. Dollars are returned unrounded for page-level summation.
+func costFromMap(m map[string]any) (dollars float64, tokens int64) {
 	if c, ok := m["Cost"].(map[string]any); ok {
 		if tc, ok := c["TotalCost"].(float64); ok {
-			cents = dollarsToCents(tc)
+			dollars = tc
 		}
 	}
 	if u, ok := m["Usage"].(map[string]any); ok {
@@ -344,7 +361,7 @@ func costFromMap(m map[string]any) (cents, tokens int64) {
 			tokens = int64(tt)
 		}
 	}
-	return cents, tokens
+	return dollars, tokens
 }
 
 // dollarsToCents converts a USD dollar amount to whole cents, rounding to

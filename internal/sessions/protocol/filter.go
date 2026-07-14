@@ -35,7 +35,13 @@ func filterMatches(f prototypes.SessionFilter, row prototypes.SessionRow) bool {
 	if f.HasFailedTask != nil && row.HasFailedTask != *f.HasFailedTask {
 		return false
 	}
-	if f.CostAboveCents != nil && row.TotalCostCents <= *f.CostAboveCents {
+	if f.CostAboveCents != nil && row.TotalCostCents <= *f.CostAboveCents && !row.CountersPartial {
+		// A NON-partial row at or below the threshold is genuinely excluded.
+		// A PARTIAL row is a lower bound (CountersPartial): its TRUE cost may
+		// exceed the threshold, so it is NEVER silently excluded — it is
+		// returned carrying its CountersPartial flag so the consumer decides
+		// (honest-partial, WARN-3). This matches the SessionRow.CountersPartial
+		// contract that a filter never silently excludes a partial row.
 		return false
 	}
 	if q := strings.TrimSpace(f.Query); q != "" && !queryMatches(q, row) {

@@ -38,7 +38,7 @@
   import { DataTable, StatusChip, Pagination, PageState, SavedViewChips, type DataTableColumn, type PageStatus, type SavedView } from '$lib/components/ui/index.js';
   import SessionFacetChips from '$lib/components/sessions/SessionFacetChips.svelte';
   import IdentityCell from '$lib/components/sessions/IdentityCell.svelte';
-  import { formatDurationNS, formatRelative, shortSessionID, statusKind } from '$lib/sessions/format.js';
+  import { formatCostCents, formatDurationNS, formatRelative, shortSessionID, statusKind } from '$lib/sessions/format.js';
   import type { SessionFilter, SessionRow, SessionSort } from '$lib/sessions/types.js';
   import { MAX_SESSION_TITLE_LEN } from '$lib/sessions/types.js';
   import type { TaskRow } from '$lib/protocol/tasks.js';
@@ -376,6 +376,7 @@
     { key: 'started', label: 'Started' },
     { key: 'last_activity', label: 'Last activity' },
     { key: 'events', label: 'Events', numeric: true },
+    { key: 'cost', label: 'Cost', numeric: true },
     { key: 'duration', label: 'Duration' }
   ];
 
@@ -396,6 +397,17 @@
     const n = eventCounts.get(row.session_id);
     if (n === undefined) return '—';
     return row.counters_partial ? `≥${n}` : String(n);
+  }
+
+  /**
+   * Per-session cost, formatted with a "≥" prefix when the row's counters
+   * are a partial lower bound (WARN-1 / D-311 honest-partial): a cost_desc
+   * sort or cost-above filter over such a row is non-authoritative, so the
+   * figure is shown as "at least" rather than an exact amount.
+   */
+  function costLabel(row: SessionRow): string {
+    const formatted = formatCostCents(row.total_cost_cents);
+    return row.counters_partial ? `≥${formatted}` : formatted;
   }
 
   /** Active processing time (Σ run durations), formatted; "—" until enriched. */
@@ -620,6 +632,7 @@
             <td>{formatRelative(s.started_at)}</td>
             <td>{formatRelative(s.last_activity_at)}</td>
             <td class="numeric">{eventsLabel(s)}</td>
+            <td class="numeric" title={s.counters_partial ? 'Lower bound — the per-session scan was truncated; a cost sort/filter over this row is non-authoritative' : ''}>{costLabel(s)}</td>
             <td title="Active processing time — sum of run durations, not wall-clock">{durationLabel(s.session_id)}</td>
           {/snippet}
         </DataTable>

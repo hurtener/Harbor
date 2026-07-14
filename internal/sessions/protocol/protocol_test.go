@@ -328,18 +328,26 @@ func TestList_CounterFacets_UnwiredProjector_LoudReject(t *testing.T) {
 	}
 }
 
-func TestList_PartialRow_SurfacesHonestSignal_NotExcluded(t *testing.T) {
+func TestList_PartialRow_CostAbove_NeverSilentlyExcluded(t *testing.T) {
 	t.Parallel()
-	// A partial-counter row (CountersPartial=true) is a lower bound; the
-	// cost_above filter must still surface it (never silently exclude a row
-	// whose true cost is unknown-but-at-least-N) and carry the honest signal.
+	// WARN-3: a partial-counter row (CountersPartial=true) is a LOWER BOUND.
+	// cost_above must never silently exclude it even when its lower bound is
+	// AT OR BELOW the threshold — its true cost may exceed it. A NON-partial
+	// row at or below the threshold IS excluded (the contrast).
 	base := time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC)
-	rows := []prototypes.SessionRow{{
-		SessionID: "s-part", Status: prototypes.SessionStatusRunning, UserID: "u1", TenantID: "t1",
-		StartedAt: base, LastActivityAt: base.Add(time.Minute),
-		TotalCostCents: 1000, CountersPartial: true,
-		Identity: prototypes.IdentityScope{Tenant: "t1", User: "u1", Session: "s-part"},
-	}}
+	mk := func(sid string, cost int64, partial bool) prototypes.SessionRow {
+		return prototypes.SessionRow{
+			SessionID: sid, Status: prototypes.SessionStatusRunning, UserID: "u1", TenantID: "t1",
+			StartedAt: base, LastActivityAt: base.Add(time.Minute),
+			TotalCostCents: cost, CountersPartial: partial,
+			Identity: prototypes.IdentityScope{Tenant: "t1", User: "u1", Session: sid},
+		}
+	}
+	rows := []prototypes.SessionRow{
+		mk("s-partial-low", 50, true),  // partial, lower bound 50 <= 80 — ambiguous, must be KEPT
+		mk("s-exact-low", 50, false),   // exact 50 <= 80 — genuinely excluded
+		mk("s-exact-high", 500, false), // exact 500 > 80 — kept
+	}
 	svc := newService(t, rows)
 	above := int64(80)
 	resp, err := svc.List(context.Background(), prototypes.SessionsListRequest{
@@ -348,8 +356,18 @@ func TestList_PartialRow_SurfacesHonestSignal_NotExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(resp.Rows) != 1 || !resp.Rows[0].CountersPartial {
-		t.Fatalf("partial row must be surfaced with its honest CountersPartial signal, got %+v", resp.Rows)
+	got := map[string]bool{}
+	for _, r := range resp.Rows {
+		got[r.SessionID] = true
+	}
+	if !got["s-partial-low"] {
+		t.Error("partial row with lower bound <= threshold was silently EXCLUDED — WARN-3: a partial row is never silently excluded")
+	}
+	if got["s-exact-low"] {
+		t.Error("exact row at/below threshold must be excluded")
+	}
+	if !got["s-exact-high"] {
+		t.Error("exact row above threshold must be kept")
 	}
 }
 
