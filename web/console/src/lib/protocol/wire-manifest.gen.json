@@ -2564,6 +2564,11 @@
         {
           "key": "bucket",
           "type": "number"
+        },
+        {
+          "key": "anchor",
+          "type": "string",
+          "optional": true
         }
       ]
     },

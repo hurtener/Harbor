@@ -165,6 +165,121 @@ func TestEventsList_CrossTenantWithAdminScope_OK(t *testing.T) {
 	}
 }
 
+// TestEventsList_WidenedForeignTenant_DistinctPrincipals_FansIn is the
+// isolation-critical regression for the fold bug (mirrors events.aggregate): a
+// widened admin read naming ONLY a foreign tenant, with user/session elided,
+// must FAN IN across that tenant's DISTINCT users/sessions — not be narrowed to
+// {t-other, caller-user, caller-session} → EMPTY. The prior widened fixture
+// masked the defect by reusing the caller's own user/session id in the foreign
+// tenant; this one uses distinct principals so a caller-fold returns 0.
+func TestEventsList_WidenedForeignTenant_DistinctPrincipals_FansIn(t *testing.T) {
+	h, bus := newEventsListHandler(t)
+	foreignA := identity.Identity{TenantID: "t-other", UserID: "u-x", SessionID: "s-x"}
+	foreignB := identity.Identity{TenantID: "t-other", UserID: "u-y", SessionID: "s-y"}
+	publishPlain(t, bus, foreignA, 2)
+	publishPlain(t, bus, foreignB, 3)
+	// Caller's own tenant rows — the filter names ONLY t-other, must not appear.
+	publishPlain(t, bus, evListID, 4)
+
+	body := `{"filter":{"tenant_ids":["t-other"]}}`
+	status, resp := doEventsList(t, h.Handler(), body, &evListID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, resp)
+	}
+	var got prototypes.EventsListResponse
+	if err := json.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Events) != 5 {
+		t.Fatalf("widened foreign-tenant read returned %d events, want 5 (2+3 across distinct principals; a caller-fold would return 0)", len(got.Events))
+	}
+	for _, ev := range got.Events {
+		if ev.Tenant != "t-other" {
+			t.Fatalf("widened read leaked tenant %q, want only t-other", ev.Tenant)
+		}
+	}
+}
+
+// TestEventsList_AllEmptyAdmin_OwnScopeOnly pins THE load-bearing safety
+// property directly: an admin caller sending a COMPLETELY empty Filter{} is
+// treated as NON-widened — the full own triple is folded and the read scopes to
+// the caller's own (tenant,user,session) only, never fanning across every
+// tenant just because the caller holds the admin scope.
+//
+// Mutation note: if a future change made an all-empty filter `widened`, the
+// un-folded wildcard path would read the WHOLE deployment on an empty body —
+// this test catches exactly that.
+func TestEventsList_AllEmptyAdmin_OwnScopeOnly(t *testing.T) {
+	h, bus := newEventsListHandler(t)
+	// The caller's own rows.
+	publishPlain(t, bus, evListID, 3)
+	// A foreign tenant's rows — must NOT be read (tenant isolation).
+	publishPlain(t, bus, identity.Identity{TenantID: "t-foreign", UserID: "u-foreign", SessionID: "s-foreign"}, 2)
+	// A SIBLING user + session INSIDE the caller's own tenant — must NOT be
+	// read either. The user/session fold is the axis gated by `!widened`, so if
+	// an all-empty filter ever became widened these sibling rows would leak
+	// while the tenant fold still hid t-foreign — seeding them makes the
+	// mutation observable.
+	publishPlain(t, bus, identity.Identity{TenantID: evListID.TenantID, UserID: "u-sibling", SessionID: "s-sibling"}, 4)
+
+	// Empty filter, but the caller DOES hold the admin scope.
+	status, resp := doEventsList(t, h.Handler(), `{}`, &evListID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, resp)
+	}
+	var got prototypes.EventsListResponse
+	if err := json.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Events) != 3 {
+		t.Fatalf("all-empty admin read returned %d events, want 3 (own triple only; a widened all-empty would leak the own-tenant sibling and every tenant)", len(got.Events))
+	}
+	for _, ev := range got.Events {
+		if ev.Tenant != evListID.TenantID || ev.User != evListID.UserID || ev.Session != evListID.SessionID {
+			t.Fatalf("all-empty admin read leaked %s/%s/%s, want only own %s/%s/%s",
+				ev.Tenant, ev.User, ev.Session, evListID.TenantID, evListID.UserID, evListID.SessionID)
+		}
+	}
+}
+
+// TestEventsList_WidenedSessionLess_FansInAcrossSessions pins HA-21 through the
+// events.list handler (HA-20 leg 2): a session-less admin read (a foreign
+// tenant named, the SessionIDs axis elided) fans in across ALL of that tenant's
+// sessions. Asserts ≥2 DISTINCT sessions appear in the rows so the handler can
+// never silently re-narrow the session axis to the caller's own — the exact
+// re-narrowing the shipped fold performed before the fix.
+func TestEventsList_WidenedSessionLess_FansInAcrossSessions(t *testing.T) {
+	h, bus := newEventsListHandler(t)
+	// One foreign tenant, one user, THREE distinct sessions — a pure
+	// session-axis fan-in.
+	publishPlain(t, bus, identity.Identity{TenantID: "t-fleet", UserID: "u-1", SessionID: "s-1"}, 2)
+	publishPlain(t, bus, identity.Identity{TenantID: "t-fleet", UserID: "u-1", SessionID: "s-2"}, 2)
+	publishPlain(t, bus, identity.Identity{TenantID: "t-fleet", UserID: "u-1", SessionID: "s-3"}, 1)
+
+	body := `{"filter":{"tenant_ids":["t-fleet"]}}`
+	status, resp := doEventsList(t, h.Handler(), body, &evListID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, resp)
+	}
+	var got prototypes.EventsListResponse
+	if err := json.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Events) != 5 {
+		t.Fatalf("session-less widened read returned %d events, want 5 across 3 sessions (a session-fold would return 0)", len(got.Events))
+	}
+	sessions := map[string]bool{}
+	for _, ev := range got.Events {
+		if ev.Tenant != "t-fleet" {
+			t.Fatalf("session-less read leaked tenant %q, want only t-fleet", ev.Tenant)
+		}
+		sessions[ev.Session] = true
+	}
+	if len(sessions) < 2 {
+		t.Fatalf("session-less read surfaced %d distinct sessions, want ≥2 (the session axis fanned in)", len(sessions))
+	}
+}
+
 // TestEventsList_CrossUserSameTenantWithoutScope_403 pins the §6 cross-USER
 // disclosure gate: a NON-admin caller naming {own-tenant, foreign-user,
 // foreign-session} is REFUSED — not silently narrowed, and never handed

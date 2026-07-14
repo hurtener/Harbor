@@ -172,7 +172,29 @@ export interface EventAggregateRequest {
 	window: number;
 	/** The per-bucket width, in nanoseconds — must divide `window`. */
 	bucket: number;
+	/**
+	 * OPTIONAL origin of the bucket grid (RFC-3339 UTC). Absent ⇒ the
+	 * clock-anchored default (buckets run `[now-window, now)`, a
+	 * `bucket_start` is NOT addressable twice). Set ⇒ boundaries are
+	 * floored onto the fixed grid `anchor + k·bucket`, so two calls at
+	 * two instants with the same `anchor` + `window` + `bucket` share
+	 * bucket coordinates — a `bucket_start` is cacheable/re-requestable
+	 * (mirrors `types.EventAggregateRequest.Anchor`, D-306). Passing the
+	 * Unix epoch ({@link EPOCH_ANCHOR}) yields a globally-shared grid.
+	 * Grid-edge note: with an anchor the LAST bucket's `bucket_end` is
+	 * the grid boundary covering now — generally just AFTER now, never
+	 * treat it as "up to this instant."
+	 */
+	anchor?: string;
 }
+
+/**
+ * The Unix-epoch grid origin (`1970-01-01T00:00:00Z`). Passing it as
+ * {@link EventAggregateRequest.anchor} floors every bucket boundary onto
+ * `epoch + k·bucket`, giving a globally-shared, addressable grid the
+ * Events page can cache and stitch cold windows against (D-306).
+ */
+export const EPOCH_ANCHOR = new Date(0).toISOString();
 
 /** The wire response for `events.aggregate`. Mirrors `types.EventAggregateResponse`. */
 export interface EventAggregateResponse {
