@@ -3905,6 +3905,7 @@ per §17.8). Status: Shipped (V1.6).
   §18 SKILL.md in the same PR. See
   `docs/plans/phase-175-fleet-retention-horizons.md`.
 - **Decision:** D-310.
+
 ### Phase 176 — Session reopen: re-activate a closed session so a consumer chat resumes
 
 - **Subsystem:** internal/sessions (the reopen re-activation branch on
