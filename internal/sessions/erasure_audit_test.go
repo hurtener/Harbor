@@ -471,20 +471,29 @@ func TestCascadeEraser_ConcurrentSameSession_OneWins_NeverDoubleEvent(t *testing
 // Without the lifecycle stamp the leftover ledger would accumulate and
 // report ArtifactsDeleted=7; with it, the stale checkpoint is discarded
 // and the clean erasure reports exactly lifecycle 2's own count.
-func TestCascadeEraser_StaleLedger_SessionIDReuse_CountsOnlyNewLifecycle(t *testing.T) {
+// TestCascadeEraser_FailedErase_ReopenBlocked_ReinvokeConverges pins the
+// D-312 interaction with the erasure ledger: after an erasure whose
+// destructive steps succeeded but whose record-of-fact emit FAILED (a pending
+// ledger survives, NO tombstone yet), the ONLY correct recovery is to RE-INVOKE
+// Erase (convergence) — a reopen of the same id is TERMINAL (the pending ledger
+// makes isErased fire → ErrReopenAfterErase), NEVER a fresh reused lifecycle.
+// The converging re-invoke completes from the ledger's cumulative counts and
+// then writes the terminal tombstone. (Pre-D-312 this scenario reopened the id
+// as a brand-new lifecycle; the amended §6.9 forbids reusing an erased id.)
+func TestCascadeEraser_FailedErase_ReopenBlocked_ReinvokeConverges(t *testing.T) {
 	f := newErasureFixture(t, nil)
 	ctx := context.Background()
 	id := ident("t-reuse2", "u-reuse2", "s-reuse2")
 	ictx := ctxFor(id)
 
-	// --- lifecycle 1: 5 artifacts, destructive steps succeed, emit fails ---
+	// --- 5 artifacts, destructive steps succeed, the final emit fails ---
 	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
-		t.Fatalf("Open lifecycle 1: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	for i := range 5 {
 		if _, err := f.arts.PutBytes(ctx, scope, []byte(fmt.Sprintf("l1-blob-%d", i)), artifacts.PutOpts{Namespace: "test"}); err != nil {
-			t.Fatalf("PutBytes l1 %d: %v", i, err)
+			t.Fatalf("PutBytes %d: %v", i, err)
 		}
 	}
 	realFencer, ok := f.bus.(events.Fencer)
@@ -501,37 +510,38 @@ func TestCascadeEraser_StaleLedger_SessionIDReuse_CountsOnlyNewLifecycle(t *test
 		t.Fatalf("NewCascadeEraser: %v", err)
 	}
 	if _, ferr := failEraser.Erase(ctx, id); !errors.Is(ferr, sessions.ErrErasureRecordFailed) {
-		t.Fatalf("lifecycle 1 erase err=%v, want ErrErasureRecordFailed", ferr)
+		t.Fatalf("erase err=%v, want ErrErasureRecordFailed", ferr)
 	}
 
-	// --- lifecycle 2: reopen the SAME id, 2 artifacts, clean erase ---
-	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
-		t.Fatalf("Open lifecycle 2 (reused id): %v", err)
+	// Reopen the SAME id is TERMINAL — the pending ledger (in-flight /
+	// interrupted erasure) makes isErased fire even though the record is gone.
+	if _, oerr := f.reg.Open(ictx, id.SessionID, id); !errors.Is(oerr, sessions.ErrReopenAfterErase) {
+		t.Fatalf("reopen after failed erase = %v, want ErrReopenAfterErase", oerr)
 	}
-	for i := range 2 {
-		if _, err := f.arts.PutBytes(ctx, scope, []byte(fmt.Sprintf("l2-blob-%d", i)), artifacts.PutOpts{Namespace: "test"}); err != nil {
-			t.Fatalf("PutBytes l2 %d: %v", i, err)
-		}
-	}
+
+	// The correct recovery: RE-INVOKE Erase (fault cleared) → converges from
+	// the ledger's cumulative counts (5 artifacts), writes the tombstone.
 	resp, rerr := f.eraser.Erase(ctx, id)
 	if rerr != nil {
-		t.Fatalf("lifecycle 2 erase: %v", rerr)
+		t.Fatalf("converging re-invoke: %v", rerr)
 	}
-	if resp.ArtifactsDeleted != 2 {
-		t.Errorf("ArtifactsDeleted = %d, want 2 (lifecycle 2 only — the stale lifecycle-1 ledger must be discarded, not accumulated into 7)", resp.ArtifactsDeleted)
+	if resp.ArtifactsDeleted != 5 {
+		t.Errorf("ArtifactsDeleted = %d, want 5 (cumulative from the checkpointed ledger, not the converging attempt's own 0)", resp.ArtifactsDeleted)
 	}
 	if !resp.Deleted || !resp.MemoryPurged {
-		t.Errorf("lifecycle 2 response = %+v, want Deleted && MemoryPurged", resp)
+		t.Errorf("converged response = %+v, want Deleted && MemoryPurged", resp)
 	}
-	// Exactly one durable record — lifecycle 2's (lifecycle 1's was
-	// forfeited when its convergence was abandoned by the reopen).
+	// Exactly one durable record-of-fact for the erased lifecycle.
 	if count, _ := countSessionErasedEvents(t, f.bus, id.TenantID, id.UserID, id.SessionID); count != 1 {
-		t.Errorf("session.erased count = %d, want exactly 1 (lifecycle 2's record)", count)
+		t.Errorf("session.erased count = %d, want exactly 1", count)
 	}
-	// The stale ledger slot is gone (overwritten by lifecycle 2's
-	// checkpoints, then deleted on its clean completion).
+	// The pending ledger slot is gone (deleted on the clean convergence).
 	if _, lerr := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID); !errors.Is(lerr, state.ErrNotFound) {
-		t.Errorf("ledger checkpoint survived the clean lifecycle-2 erasure: err=%v", lerr)
+		t.Errorf("ledger checkpoint survived the converged erasure: err=%v", lerr)
+	}
+	// And the id stays terminal: reopen still fails loud (now via the tombstone).
+	if _, oerr := f.reg.Open(ictx, id.SessionID, id); !errors.Is(oerr, sessions.ErrReopenAfterErase) {
+		t.Fatalf("reopen after converged erase = %v, want ErrReopenAfterErase", oerr)
 	}
 }
 

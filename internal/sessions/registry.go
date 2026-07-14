@@ -67,8 +67,9 @@ type Registry struct {
 	mu sync.Mutex
 	// idIndex maps SessionID → (Tenant, User) of the most-recent
 	// session opened with that SessionID. Closed sessions are NOT
-	// removed (per RFC §6.9 the closed record is preserved; reopening
-	// the same SessionID is forbidden regardless of tenant).
+	// removed (the closed record is preserved so it can be RE-ACTIVATED on
+	// the next Open — RFC §6.9 amended); a cross-tenant reuse of the
+	// same SessionID string stays rejected (ErrSessionIDReuse) regardless.
 	idIndex map[string]identity.Identity
 	// openSessions is the list of currently-open session quadruples
 	// the GC sweeper iterates. Entries are removed on Close (operator
@@ -121,8 +122,13 @@ func New(store state.StateStore, cfg config.SessionsConfig, bus events.EventBus,
 }
 
 // Open creates a new session record, captures the identity triple
-// immutably, and emits session.opened. Cross-tenant SessionID reuse
-// and reopen-after-close are rejected; same-triple double-open is
+// immutably, and emits session.opened. A closed record is RE-ACTIVATED in
+// place (RFC §6.9 amended): its identity + OpenedAt are preserved,
+// the closed flags cleared, LastReopenedAt stamped, and a content-free
+// session.reopened emitted; an ERASED session instead fails loud with
+// ErrReopenAfterErase (the terminal exception, detected via the erasure
+// ledger/tombstone even after the record is gone). Cross-tenant SessionID
+// reuse is rejected with ErrSessionIDReuse; same-triple double-open is
 // rejected with ErrSessionAlreadyOpen.
 func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity) (*Session, error) {
 	if r.closed.Load() {
@@ -158,15 +164,67 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 			return nil, fmt.Errorf("sessions: Open unmarshal: %w", uerr)
 		}
 		if stored.Closed {
-			// Reopen-after-close: still record the catalog mapping so
-			// ListSnapshots surfaces the closed row (operators audit
-			// closed sessions). fix: P8 hydration gap — a
-			// reboot that finds an existing record in the StateStore
-			// previously returned the error without updating idIndex,
-			// leaving the Sessions page empty even when records exist.
+			// Reopen-after-close (RFC §6.9 amended): RE-ACTIVATE the
+			// closed record in place so the conversation resumes with its
+			// durable history intact (close/GC reap the record, not the data).
+			//
+			// The ONE terminal exception fires first: an ERASED session (a
+			// pending erasure ledger from an in-flight erase, OR a converged
+			// erasure's durable tombstone) fails loud rather than reviving
+			// deleted data. isErased runs under the r.mu Open already holds, so
+			// it serialises against the erasure cascade's r.mu-held record
+			// clear (deleteScopeSerialized) + catalog clear (clearErased).
+			erased, eerr := r.isErased(ctx, ident)
+			if eerr != nil {
+				return nil, eerr
+			}
+			if erased {
+				return nil, fmt.Errorf("%w: SessionID=%q", ErrReopenAfterErase, id)
+			}
+			// Defence-in-depth identity check — the StateStore load is already
+			// triple-keyed, so a mismatch here would be a driver bug, not a
+			// forgery path (mirrors Touch/Close).
+			if !sameIdentity(stored.Identity, ident) {
+				return nil, fmt.Errorf("%w: stored=(%s,%s,%s) ctx=(%s,%s,%s)",
+					ErrIdentityMismatch,
+					stored.Identity.TenantID, stored.Identity.UserID, stored.Identity.SessionID,
+					ident.TenantID, ident.UserID, ident.SessionID)
+			}
+			priorReason := stored.ClosedReason
+			now := r.clock.Now()
+			stored.Closed = false
+			stored.ClosedAt = time.Time{}
+			stored.ClosedReason = ""
+			stored.LastReopenedAt = now
+			stored.LastSeen = now
+			// OpenedAt is deliberately NOT refreshed — it is the erasure
+			// cascade's lifecycle discriminator; the separate LastReopenedAt
+			// stamp is what the GC hard cap measures max(OpenedAt, …) from.
+			if serr := r.save(ctx, stored); serr != nil {
+				return nil, serr
+			}
 			r.idIndex[id] = ident
-			return nil, fmt.Errorf("%w: SessionID=%q closed at %s reason=%q",
-				ErrReopenAfterClose, id, stored.ClosedAt.Format(time.RFC3339), stored.ClosedReason)
+			r.openSessions[id] = q
+			// Re-add to the (tenant, user) discovery catalog so a later process
+			// re-discovers the now-open session (mirrors the fresh-Open catalog
+			// write; a failure fails the reopen loud — §13).
+			if cerr := r.addToCatalog(ctx, ident.TenantID, ident.UserID, id); cerr != nil {
+				return nil, cerr
+			}
+			// Lift any erasure fence on the triple so the resumed session's
+			// events are retained normally (best-effort, mirrors fresh Open).
+			r.unfenceSession(ctx, ident)
+			r.publish(ctx, q, events.Event{
+				Type:     EventTypeSessionReopened,
+				Identity: q,
+				Payload: SessionReopenedPayload{
+					SessionID:         id,
+					ReopenedAt:        now.UnixNano(),
+					PriorClosedReason: priorReason,
+				},
+			})
+			cp := stored
+			return &cp, nil
 		}
 		// Open record already exists for this exact triple → already open.
 		// fix: hydrate idIndex + openSessions so the in-memory
@@ -178,6 +236,21 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 		r.openSessions[id] = q
 		return nil, fmt.Errorf("%w: SessionID=%q tenant=%q user=%q",
 			ErrSessionAlreadyOpen, id, ident.TenantID, ident.UserID)
+	}
+
+	// Not-found / fresh-create fall-through (err was state.ErrNotFound — the
+	// err==nil branch above always returns). A fully-CONVERGED erasure removed
+	// the session.lifecycle record, so a reopen of an erased id lands HERE, and
+	// naively minting a fresh session would SILENTLY RESURRECT it.
+	// Gate on the durable erasure tombstone BEFORE minting, under the same r.mu
+	// hold so it serialises against the erasure cascade's write-before-delete
+	// tombstone ordering.
+	erased, eerr := r.isErased(ctx, ident)
+	if eerr != nil {
+		return nil, eerr
+	}
+	if erased {
+		return nil, fmt.Errorf("%w: SessionID=%q", ErrReopenAfterErase, id)
 	}
 
 	now := r.clock.Now()
@@ -234,13 +307,15 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 //
 // Semantics:
 //
-//   - No record yet → Open it (create) and return the fresh session.
+//   - No record yet → Open it (create) and return the fresh session
+//     (UNLESS the id was erased — ErrReopenAfterErase, never a silent
+//     fresh empty session on a converged erasure).
 //   - Open record at this exact triple → no-op, return the existing
 //     session (a second turn in the same conversation is not an error).
-//   - Closed record at this triple → ErrReopenAfterClose (RFC §6.9: a
-//     GC-reaped or operator-closed session is read-only; a NEW
-//     conversation must pick a NEW session id). The caller maps this to
-//     a clear client error; it is never a silent revive.
+//   - Closed record at this triple → RE-ACTIVATE it in place and return
+//     the resumed session (RFC §6.9 amended: a GC-reaped or
+//     operator-closed session reopens with its durable history intact).
+//     An ERASED session is the terminal exception → ErrReopenAfterErase.
 //
 // EnsureOpen is identity-mandatory: an incomplete triple fails closed.
 // It is the seam the Protocol ControlSurface calls on `start` so the
@@ -263,6 +338,8 @@ func (r *Registry) EnsureOpen(ctx context.Context, ident identity.Identity) (*Se
 	s, err := r.Open(ctx, ident.SessionID, ident)
 	switch {
 	case err == nil:
+		// Fresh create OR a re-activated closed session (RFC §6.9 amended):
+		// Open returns the live/resumed session directly.
 		return s, nil
 	case errors.Is(err, ErrSessionAlreadyOpen):
 		// The exact triple is already open — return the live record. This
@@ -270,8 +347,9 @@ func (r *Registry) EnsureOpen(ctx context.Context, ident identity.Identity) (*Se
 		// conversation. Open already re-hydrated idIndex/openSessions.
 		return r.loadSession(ctx, ident)
 	default:
-		// ErrReopenAfterClose, ErrSessionIDReuse, store errors — surface
-		// loud. A closed session is NOT silently revived (RFC §6.9).
+		// ErrReopenAfterErase (the terminal exception), ErrSessionIDReuse,
+		// store errors — surface loud. An erased session is NEVER silently
+		// resurrected as a fresh empty one (RFC §6.9 amended / §7).
 		return nil, err
 	}
 }
@@ -297,9 +375,10 @@ func (r *Registry) Get(ctx context.Context, id string) (*Session, error) {
 
 // Touch updates LastSeen and re-saves. Identity-mandatory; ctx
 // Identity is compared against the stored Identity, mismatch returns
-// ErrIdentityMismatch. Touch on a Closed session returns
-// ErrReopenAfterClose (Closed records are read-only). The
-// load→mutate→save runs through mutateSession (one r.mu critical
+// ErrIdentityMismatch. Touch on a Closed session returns ErrSessionClosed
+// (Touch is a read-only refresh, NOT a reopen entry point — a caller must
+// go through Open / EnsureOpen / `start` to re-activate a closed session).
+// The load→mutate→save runs through mutateSession (one r.mu critical
 // section) so a concurrent Close / SetTitle / GC reap can never lose
 // this write — or have this write resurrect theirs.
 func (r *Registry) Touch(ctx context.Context, id string) error {
@@ -320,7 +399,7 @@ func (r *Registry) Touch(ctx context.Context, id string) error {
 		}
 		if stored.Closed {
 			return fmt.Errorf("%w: SessionID=%q closed at %s",
-				ErrReopenAfterClose, id, stored.ClosedAt.Format(time.RFC3339))
+				ErrSessionClosed, id, stored.ClosedAt.Format(time.RFC3339))
 		}
 		stored.LastSeen = now
 		return nil

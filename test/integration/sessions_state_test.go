@@ -27,8 +27,8 @@ import (
 //
 //   - Open emits session.opened on the bus with the correct identity.
 //   - Touch updates LastSeen and survives a Get round-trip.
-//   - Close emits session.closed; reopen-after-close returns
-//     ErrReopenAfterClose (the failure mode).
+//   - Close emits session.closed; reopen-after-close RE-ACTIVATES the
+//     session (RFC §6.9 amended — D-312), preserving OpenedAt.
 //   - All assertions hold under -race.
 func TestE2E_Phase08_SessionLifecycle_RoundTrip(t *testing.T) {
 	cfg := phase08Config()
@@ -66,6 +66,7 @@ func TestE2E_Phase08_SessionLifecycle_RoundTrip(t *testing.T) {
 			sessions.EventTypeSessionOpened,
 			sessions.EventTypeSessionTouched,
 			sessions.EventTypeSessionClosed,
+			sessions.EventTypeSessionReopened,
 		},
 	})
 	if err != nil {
@@ -114,10 +115,25 @@ func TestE2E_Phase08_SessionLifecycle_RoundTrip(t *testing.T) {
 		t.Fatalf("third event type=%v, want session.closed", got.Type)
 	}
 
-	// Failure mode: reopen-after-close.
-	_, err = reg.Open(ctx, id.SessionID, id)
-	if !errors.Is(err, sessions.ErrReopenAfterClose) {
-		t.Fatalf("Open after Close: err=%v, want ErrReopenAfterClose", err)
+	// Reopen-after-close now RE-ACTIVATES the session (RFC §6.9 amended —
+	// D-312): Open on the closed id resumes it in place with OpenedAt intact,
+	// and emits session.reopened.
+	reopened, err := reg.Open(ctx, id.SessionID, id)
+	if err != nil {
+		t.Fatalf("Open after Close: err=%v, want reopen", err)
+	}
+	if reopened.Closed {
+		t.Errorf("reopened session still Closed")
+	}
+	if !reopened.OpenedAt.Equal(s.OpenedAt) {
+		t.Errorf("OpenedAt changed on reopen: before=%v after=%v", s.OpenedAt, reopened.OpenedAt)
+	}
+	got = mustReceive(t, sub)
+	if got.Type != sessions.EventTypeSessionReopened {
+		t.Fatalf("fourth event type=%v, want session.reopened", got.Type)
+	}
+	if got.Identity.TenantID != id.TenantID || got.Identity.SessionID != id.SessionID {
+		t.Errorf("identity bleed on reopen event: %+v", got.Identity)
 	}
 }
 

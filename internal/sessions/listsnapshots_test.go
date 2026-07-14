@@ -207,9 +207,12 @@ func TestListSnapshots_HydratesIdIndexFromExistingStateRecord(t *testing.T) {
 }
 
 // TestListSnapshots_HydratesIdIndexFromClosedStateRecord — round-6 P8
-// fix, second branch. The Reopen-after-close path of Open() must also
-// populate idIndex so operators can audit closed sessions after a
-// reboot.
+// fix, second branch. A scoped ListSnapshots must hydrate a persisted
+// CLOSED session from the per-(tenant, user) discovery catalog after a
+// reboot (fresh idIndex) so operators can audit closed sessions — without
+// reopening it. (Post-D-312, Open on a closed record REOPENS it; the audit
+// path therefore reads through the scoped listing's catalog hydration, not
+// through Open.)
 func TestListSnapshots_HydratesIdIndexFromClosedStateRecord(t *testing.T) {
 	t.Parallel()
 
@@ -243,12 +246,14 @@ func TestListSnapshots_HydratesIdIndexFromClosedStateRecord(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reg2.CloseRegistry(context.Background()) })
 
-	if _, err := reg2.Open(ctx, ident.SessionID, ident); !errors.Is(err, sessions.ErrReopenAfterClose) {
-		t.Fatalf("reg2.Open err=%v, want ErrReopenAfterClose", err)
-	}
-
-	// Include closed so the audit view picks the row up.
-	out, err := reg2.ListSnapshots(context.Background(), sessions.SessionListFilter{IncludeClosed: true})
+	// A SCOPED listing (names the tenant + user) hydrates the closed row from
+	// the persisted discovery catalog — the fresh reg2 has an empty idIndex,
+	// so this proves the post-reboot audit path without reopening the session.
+	out, err := reg2.ListSnapshots(context.Background(), sessions.SessionListFilter{
+		TenantIDs:     []string{ident.TenantID},
+		UserIDs:       []string{ident.UserID},
+		IncludeClosed: true,
+	})
 	if err != nil {
 		t.Fatalf("reg2.ListSnapshots: %v", err)
 	}

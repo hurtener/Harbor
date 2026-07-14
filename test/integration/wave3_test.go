@@ -52,9 +52,9 @@ import (
 //
 // Failure modes covered:
 //
-//   - reopen-after-close — the second Open returns ErrReopenAfterClose
-//     (matches the per-phase test, but here it traverses the full
-//     registry → state → bus pipeline).
+//   - reopen-after-close — the second Open RE-ACTIVATES the session
+//     (RFC §6.9 amended — D-312; matches the per-phase test, but here it
+//     traverses the full registry → state → bus pipeline).
 //   - Replay rejects empty-triple non-admin filters (the same rule
 //     Subscribe enforces; the wave test pins the symmetry).
 func TestE2E_Wave3_FullSurface_Aliveness(t *testing.T) {
@@ -149,11 +149,13 @@ func TestE2E_Wave3_FullSurface_Aliveness(t *testing.T) {
 		t.Error("state.Load returned empty bytes")
 	}
 
-	// Failure mode 1 (Phase 08 path through the wave-3 wiring):
-	// reopen-after-close rejected.
-	_, err = reg.Open(ctx, id.SessionID, id)
-	if !errors.Is(err, sessions.ErrReopenAfterClose) {
-		t.Errorf("Open after Close: err=%v, want ErrReopenAfterClose", err)
+	// Behavior (Phase 08 path through the wave-3 wiring): reopen-after-close
+	// RE-ACTIVATES the session in place (RFC §6.9 amended — D-312).
+	reopened, err := reg.Open(ctx, id.SessionID, id)
+	if err != nil {
+		t.Errorf("Open after Close: err=%v, want reopen", err)
+	} else if reopened.Closed {
+		t.Errorf("reopened session still Closed")
 	}
 
 	// Failure mode 2 (Phase 06 path): Replay rejects empty-triple

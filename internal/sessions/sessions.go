@@ -20,7 +20,19 @@
 //  1. Identity captured immutably on Open — Touch / Close re-save
 //     the same identity from the existing record; mismatched ctx
 //     identity is rejected with ErrIdentityMismatch.
-//  2. Reopen-after-close forbidden — clients open a new SessionID.
+//  2. Reopen-after-close allowed (RFC §6.9 amended) — a closed
+//     session (explicitly closed OR GC-reaped) is RE-ACTIVATED in place
+//     on the next Open / EnsureOpen: the immutable identity and OpenedAt
+//     are preserved, Closed/ClosedAt/ClosedReason are cleared, a
+//     LastReopenedAt is stamped, and the durable history left intact at
+//     close resumes. The ONE terminal exception is an ERASED session
+//     (`sessions.delete`, right-to-erasure): reopen fails loud with
+//     ErrReopenAfterErase — never a silent empty-start — INCLUDING after
+//     the erasure has fully converged and removed the lifecycle record
+//     (the not-found / fresh-create path is gated by isErased against a
+//     durable erasure tombstone). A still-closed session read via Touch
+//     keeps a loud read-only guard (ErrSessionClosed — Touch is not a
+//     reopen entry point).
 //  3. Cross-tenant SessionID reuse rejected — `SessionID=S` opened
 //     under Tenant A then attempted under Tenant B returns
 //     ErrSessionIDReuse, even though the StateStore key (which
@@ -31,8 +43,8 @@
 //     default (returns false, nil) exists only for registries
 //     constructed without task awareness.
 //
-// Lifecycle events (`session.opened / .touched / .closed / .gc_reaped`)
-// land on the EventBus as `SafePayload` types — they're Harbor-internal
+// Lifecycle events (`session.opened / .touched / .closed / .gc_reaped /
+// .reopened`) land on the EventBus as `SafePayload` types — they're Harbor-internal
 // markers with no secret-shaped fields by construction (RFC §6.13).
 // Subscribers can extract typed fields directly, no redactor
 // walk in between.
@@ -79,10 +91,22 @@ type Session struct {
 	Closed       bool
 	ClosedAt     time.Time
 	ClosedReason string
-	Limits       SessionLimits
-	Context      map[string]any
-	Title        string
-	TitleSource  TitleSource
+	// LastReopenedAt is the timestamp of the most recent reopen (Open /
+	// EnsureOpen re-activating a Closed record). Zero on a session that was
+	// never reopened. Additive JSON field — an older persisted record decodes
+	// with it zero-valued, so no migration is needed. It exists as a SEPARATE
+	// stamp from OpenedAt because OpenedAt must NOT be refreshed on reopen:
+	// OpenedAt is the erasure cascade's lifecycle discriminator
+	// (erasureLedgerRecord.SessionOpenedAt) and mutating it would corrupt
+	// erasure reuse-boundary discrimination. The GC hard cap is measured from
+	// max(OpenedAt, LastReopenedAt), so a reopened conversation restarts its
+	// hard-cap clock from the reopen (resume-forever) without disturbing the
+	// erasure discriminator.
+	LastReopenedAt time.Time
+	Limits         SessionLimits
+	Context        map[string]any
+	Title          string
+	TitleSource    TitleSource
 	// TurnCount / AutoNameCount / LastAutoNamedTurn are the auto-naming
 	// counters. They are additive JSON fields: an older persisted record
 	// (written before auto-naming existed) decodes with all three
@@ -267,9 +291,11 @@ func (p GCPolicy) withDefaults() GCPolicy {
 type SessionRegistry interface {
 	Open(ctx context.Context, id string, ident identity.Identity) (*Session, error)
 	// EnsureOpen is the create-on-first-use entry point: it
-	// returns the live session for ident, creating it if absent and
-	// no-opping if already open. A closed session is NOT revived
-	// (ErrReopenAfterClose). See the concrete impl for full semantics.
+	// returns the live session for ident, creating it if absent,
+	// no-opping if already open, and RE-ACTIVATING it if closed (RFC §6.9
+	// amended). An ERASED session is the terminal exception:
+	// EnsureOpen fails loud with ErrReopenAfterErase. See the concrete impl
+	// for full semantics.
 	EnsureOpen(ctx context.Context, ident identity.Identity) (*Session, error)
 	Get(ctx context.Context, id string) (*Session, error)
 	Touch(ctx context.Context, id string) error
@@ -357,9 +383,21 @@ type SessionListFilter struct {
 
 // Sentinel errors. Callers compare via errors.Is.
 var (
-	// ErrReopenAfterClose — Open called for a SessionID whose existing
-	// record is Closed. Per RFC §6.9 ("Reopen-after-close is forbidden").
-	ErrReopenAfterClose = errors.New("sessions: reopen-after-close forbidden")
+	// ErrSessionClosed — Touch called on a SessionID whose record is
+	// Closed. Touch is a read-only refresh and is NOT a reopen entry point:
+	// a caller must go through Open / EnsureOpen (`start`) to re-activate a
+	// closed session (RFC §6.9 amended). Kept as a loud guard so a
+	// Touch on a closed record fails visibly rather than silently reviving.
+	ErrSessionClosed = errors.New("sessions: session is closed — reopen via start before touching")
+	// ErrReopenAfterErase — Open / EnsureOpen named a SessionID that was
+	// permanently deleted by `sessions.delete` (right-to-erasure). An erased
+	// session is the ONE terminal exception to reopen (RFC §6.9 amended /
+	// §7): its data is gone, so reopen fails loud rather than silently
+	// minting a fresh empty session. Detected via a durable erasure ledger
+	// (in-flight erasure) OR tombstone (converged erasure) — so it fires even
+	// after the erasure removed the lifecycle record. Callers map this to the
+	// machine-branchable CodeSessionErased wire code (HTTP 409).
+	ErrReopenAfterErase = errors.New("sessions: reopen-after-erase forbidden — the session was permanently deleted")
 	// ErrSessionIDReuse — Open called with a SessionID already opened
 	// under a different (tenant, user). Per RFC §6.9 ("reusing a session
 	// ID across tenants/users is rejected").
@@ -372,8 +410,8 @@ var (
 	// SessionID that has no record (or the record was Deleted).
 	ErrSessionNotFound = errors.New("sessions: session not found")
 	// ErrSessionAlreadyOpen — Open called twice with the same triple
-	// AND SessionID without an intervening Close. Distinct from
-	// ErrReopenAfterClose (which fires when Closed is true).
+	// AND SessionID without an intervening Close. Distinct from the reopen
+	// path (which re-activates when Closed is true).
 	ErrSessionAlreadyOpen = errors.New("sessions: session already open")
 	// ErrRegistryClosed — any operation called after CloseRegistry.
 	ErrRegistryClosed = errors.New("sessions: registry is closed")

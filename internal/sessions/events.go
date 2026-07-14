@@ -13,6 +13,15 @@ const (
 	EventTypeSessionTouched  events.EventType = "session.touched"
 	EventTypeSessionClosed   events.EventType = "session.closed"
 	EventTypeSessionGCReaped events.EventType = "session.gc_reaped"
+	// EventTypeSessionReopened marks a closed session being re-activated in
+	// place (RFC §6.9 amended): the next Open / EnsureOpen on a
+	// Closed record clears the closed flags, preserves the immutable identity
+	// and OpenedAt, and resumes the durable history. Content-free by
+	// construction — carries only the SessionID, the reopen timestamp, and
+	// the (operator/GC-set) prior close reason, NEVER user content or the
+	// resumed conversation body. Consumers refetch the projection / windowed
+	// history for the body.
+	EventTypeSessionReopened events.EventType = "session.reopened"
 	// EventTypeSessionErased marks a completed data-lifecycle erasure
 	// (`sessions.delete`). It is the ONLY durable trace of the erasure —
 	// a redacted, content-free record-of-fact emitted under the actor's
@@ -35,6 +44,7 @@ func init() {
 	events.RegisterEventType(EventTypeSessionTouched)
 	events.RegisterEventType(EventTypeSessionClosed)
 	events.RegisterEventType(EventTypeSessionGCReaped)
+	events.RegisterEventType(EventTypeSessionReopened)
 	events.RegisterEventType(EventTypeSessionErased)
 	events.RegisterEventType(EventTypeSessionTitleChanged)
 }
@@ -78,6 +88,29 @@ type SessionGCReapedPayload struct {
 	SessionID string
 	ReapedAt  int64 // unix nanoseconds
 	Reason    string
+}
+
+// SessionReopenedPayload reports a session being re-activated from a
+// Closed state (RFC §6.9 amended). Carries the SessionID, the
+// ReopenedAt timestamp, and the PriorClosedReason (the reason the session
+// had been closed with — "gc:idle" / "gc:hard_cap" for a GC reap, or the
+// operator-supplied Close reason). Content-free by construction: NO title,
+// NO user content, NO conversation body — the identity triple lives on the
+// Event itself. Consumers refetch the projection / windowed history
+// for the resumed conversation. SafePayload by construction.
+type SessionReopenedPayload struct {
+	events.SafeSealed
+	// SessionID is the session that was reopened.
+	SessionID string
+	// ReopenedAt is the reopen timestamp (unix nanoseconds).
+	ReopenedAt int64
+	// PriorClosedReason is the reason the session had been closed with
+	// before this reopen — a GC reason ("gc:idle" / "gc:hard_cap") or the
+	// operator-supplied Close reason. A bounded, closed-set-or-operator
+	// string, never user content (the Close reason is caller-controlled but
+	// MUST NOT carry secret-shaped material — the same contract
+	// SessionClosedPayload.Reason follows).
+	PriorClosedReason string
 }
 
 // SessionTitleChangedPayload reports a successful title change from EITHER

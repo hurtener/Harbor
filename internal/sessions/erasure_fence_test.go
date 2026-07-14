@@ -102,7 +102,15 @@ func TestCascadeEraser_FencesLateEvent_StateHistoryStaysEmpty(t *testing.T) {
 // brand-new session reuses an erased session id, so the new session retains
 // its events normally (a fence that outlived the erased session would
 // silently swallow the reused session's stream).
-func TestRegistry_Unfence_OnReusedSessionID(t *testing.T) {
+// TestRegistry_Erase_ReopenSameID_FailsLoud pins the D-312 terminal-exception
+// contract: an ERASED session id can NOT be reopened / reused via Open — it is
+// permanently burned. Reopen fails loud with ErrReopenAfterErase (detected via
+// the durable erasure tombstone), and the triple stays fenced so no late event
+// resurrects history under it. (Pre-D-312 this path allowed a reused session id
+// to re-open and lift the fence; the amended §6.9 makes erased ids terminal —
+// re-minting an erased id would require an explicit operator action + a new
+// decision, never a silent reopen.)
+func TestRegistry_Erase_ReopenSameID_FailsLoud(t *testing.T) {
 	f := newErasureFixture(t, nil)
 	ctx := context.Background()
 	id := ident("t-reuse", "u-reuse", "s-reuse")
@@ -118,34 +126,25 @@ func TestRegistry_Unfence_OnReusedSessionID(t *testing.T) {
 	hr := f.bus.(events.HistoryReplayer)
 	filter := historyFilter(id)
 
-	// Sanity: the triple is fenced — a late event is dropped and history is
-	// empty.
+	// The triple is fenced — a late event is dropped and history is empty.
 	if err := f.bus.Publish(ctx, lateTaskEvent(id, 1)); err != nil {
 		t.Fatalf("fenced publish should drop gracefully: %v", err)
 	}
 	if _, _, _, err := hr.Bounds(ctx, filter); !errors.Is(err, events.ErrNoHistory) {
-		t.Fatalf("between erase and reopen Bounds = %v, want ErrNoHistory", err)
+		t.Fatalf("post-erase Bounds = %v, want ErrNoHistory", err)
 	}
 
-	// Reopen a NEW session with the SAME id (a freshly-reused conversation
-	// id). Open lifts the fence before emitting session.opened.
-	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
-		t.Fatalf("reopen reused id: %v", err)
+	// Reopen the SAME id is TERMINAL — the erasure tombstone makes it fail
+	// loud rather than minting a fresh empty session (D-312 FAIL-2).
+	if _, err := f.reg.Open(ictx, id.SessionID, id); !errors.Is(err, sessions.ErrReopenAfterErase) {
+		t.Fatalf("reopen erased id = %v, want ErrReopenAfterErase", err)
 	}
-	// The new session retains its events again: state.history is non-empty.
-	if _, _, _, err := hr.Bounds(ctx, filter); err != nil {
-		t.Fatalf("post-reopen Bounds = %v, want history retained (fence lifted)", err)
-	}
-	// And a fresh event is now retained rather than dropped.
+	// The fence stays: a late event is still dropped, history still empty.
 	if err := f.bus.Publish(ctx, lateTaskEvent(id, 2)); err != nil {
-		t.Fatalf("post-reopen publish: %v", err)
+		t.Fatalf("post-erase fenced publish should drop gracefully: %v", err)
 	}
-	evs, err := hr.Window(ctx, 0, 100, filter)
-	if err != nil {
-		t.Fatalf("post-reopen Window: %v", err)
-	}
-	if len(evs) == 0 {
-		t.Fatalf("post-reopen Window returned 0 events, want the reused session's stream retained")
+	if _, _, _, err := hr.Bounds(ctx, filter); !errors.Is(err, events.ErrNoHistory) {
+		t.Fatalf("after blocked reopen Bounds = %v, want ErrNoHistory (fence intact)", err)
 	}
 }
 
