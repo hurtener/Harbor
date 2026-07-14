@@ -8035,3 +8035,144 @@ Forcing elevation on a single own-other-session read would break the single most
 **Protocol additions.** `EventAggregateRequest.ByTenant` + `EventBucket.CountsByTenant` (additive optional fields; no new method). `ProtocolVersion` stays 0.1.0 (additive). Full D-223 lockstep + D-209 regen in the same PR; §18 `use-the-harbor-protocol` SKILL.md updated.
 
 **Cross-references.** D-305 (171 — the aggregate must work on the durable driver and carry the server-derived `widened` decision before attribution can ride it; 173 depends on it), D-306 (composes with the anchored grid — same response), D-299 (the elevated-scope selector; server-derived widening), D-284 (the admin-widened read pattern). CLAUDE.md §6 (multi-isolation; defence-in-depth), §13 (opt-in, additive; no identity-downgrading knob), §18 (skill hygiene). RFC §6.13, §5.2, §6.5, §4, §7. Plan: `docs/plans/phase-173-events-aggregate-tenant-attribution.md`.
+
+---
+
+## D-313 — The silent-absence class rule made mechanical: a registry-gated projection-completeness gate that fails the build when a filtered/sorted/aggregated wire field is never assigned by its projector (HA-24, extends D-311)
+
+**Date:** 2026-07-14
+
+**Context.** D-311 (Phase 174, HA-22) named the silent-absence class — a read
+surface declares a typed wire field, ships a facet/sort/aggregate over it, never
+populates it, and returns FALSE ABSENCE (an empty page / a fabricated zero) on a
+fleet full of matching data — and fixed its first instance (the sessions
+projection). A follow-up audit found the SAME shape on four more Protocol read
+surfaces, in two variants: **never-assigned** (the producer omits the field — the
+HA-22 shape) and **never-wired** (the populate path exists and is correct, but
+the production constructor never installs it, so a structural default ships in
+prod while a test double exercises the populated path). The four (verified
+against v1.13.1 source):
+
+- **tasks** (`tasks.list`): `TaskRow.HasPendingApproval` is READ by the list
+  filter (`internal/tasks/protocol/list.go`) but NEVER assigned by the sole
+  producer `projectRow` (`registry_projector.go`) → `has_pending_approval:true`
+  returns an empty page on a fleet with open gates (the sharp false-absence).
+  `TaskRow.BackgroundAcknowledged` is never assigned and no filter reads it
+  (fabricated-false only). ALSO the WIRED tasks `serve.Enricher`
+  (`internal/runtime/serve/enricher.go`) is a STUB — `ParentSession` returns a
+  zero `TaskParentSessionRef{}` and `Cost` a zero `TaskCostRollup` — so even the
+  surface Harbor got structurally right (the read-time seam D-311 held up as the
+  exemplar) ships zeros because its concrete is a stub.
+- **tools** (`tools.list`/`describe`/`metrics`/`content_stats`) — the never-wired
+  variant, CONFIRMED: the `CatalogProjector` reads OAuth/approval/last-used/
+  metrics/content-stats/display-modes through an optional `Annotator` seam
+  (`WithAnnotator`), but the production constructor (`internal/runtime/serve/mux.go`
+  `NewCatalogProjector`) supplies ONLY `WithLoadingResolver`; the sole `Annotator`
+  implementer is a `fakeAnnotator` test double (§17.8). So in prod
+  `filter.oauth_statuses` / `filter.approval_policies` / the `Name+" "+Version`
+  search axis / the catalog aggregates all operate over structural defaults.
+- **flows** (`flows.list`/`get`): `budgetConsumption`
+  (`internal/runtime/flow/protocol/catalog.go`) sums `RequestsUsed` +
+  `CostUSDUsed` but NEVER `TokensUsed` (a non-`omitempty` field) → the Budget
+  meter renders a fabricated "0 tokens used."
+- **memory** (`memory.list` + health): the producer
+  (`internal/memory/protocol/protocol.go`) never sets `AgentID` or `ExpiresAt`;
+  the ROW fields are honest-by-omission (omitempty), but `filter.agent_ids`,
+  `filter.has_ttl_expiring`, and the `expiring_in_1h` aggregate operate over
+  them. Key nuance: V1 memory has NO TTL (`ExpiresAt` "zero = no TTL," never
+  populated), so the TTL facet + aggregate are structurally dead.
+
+**Decision.** Close the class on all four surfaces AND make its reintroduction
+mechanically impossible. (1) **The gate (the primitive):** a registry-gated
+projection-completeness check (`internal/protocol/projectioncheck`) where every
+projection surface self-registers a `ProjectionContract` — a probe that builds a
+fully-populated source record and runs the PRODUCTION projector, the set of wire
+json-tags its filter/sort/aggregate layer reads, and a reason-carrying
+honest-omission allow-list — and a build-time conformance test reflects each
+probe and FAILS when a filtered/sorted/aggregated field is left at its zero value
+and not allow-listed. A coverage half asserts every known surface is registered
+(a surface that ships unregistered fails the build), mirroring the events
+`RegisteredDrivers()`/conformance-parity gate (D-305). (2) **The consumers
+(§13):** tasks — populate `HasPendingApproval` at projection time from the
+approval/pause registry (option a), represent/populate `BackgroundAcknowledged`,
+un-stub the `serve.Enricher` parent-session card + cost rollup (cost coordinated
+with 174); flows — add `RunRecord.Tokens` (symmetric with `CostUSD`) and sum it
+into `TokensUsed`; memory — REMOVE the structurally-dead `has_ttl_expiring` facet
+plus the `expiring_in_1h` aggregate (option b — a facet that can never match is
+dead surface, a wire-shape removal under D-223/D-209 lockstep), and populate
+`AgentID`
+from the turn producer identity or loud-reject `filter.agent_ids` over an
+unpopulated field (D-311); tools — because assembling a production `Annotator`
+is substantial net-new work (no impl exists) it is split to D-314/Phase 178, so
+Phase 177 honestly GATES the annotator-backed facets/search/aggregates behind an
+"annotator-wired" capability (loud-reject/honest-partial when unwired, never a
+false-empty page or fabricated aggregate), registered in the gate with a
+"178 pending" allow-list reason. The gate lands GREEN because every surface is
+populated, removed, or honestly gated (§13 primitive-with-consumer).
+
+**Scope.** HA-24. This is a BAND (D-313 + D-314): D-313 = the gate + tasks +
+flows + memory + tools-interim-gating (Phase 177); D-314 = the tools production
+`Annotator` (Phase 178) that flips the gated facets to real data + lights up the
+inert admin write path. The honest exclusions (NOT fixed — honest-by-omission):
+`FlowBudget.TokenCap` ("zero = no cap," omitempty), `MemoryItem.AgentID`/
+`.ExpiresAt` ROW fields (omitempty; the harm was only in the filters/aggregate
+over them), `TaskParentSessionRef.SessionID` (populated). The gate catches
+"declared-but-never-assigned filtered field," not "assigned with a wrong value"
+— deeper correctness stays the per-surface truthful-data tests.
+
+**Cross-references.** Extends D-311 (the class rule) and D-309 (Phase 174, the
+sessions instance the gate must also cover). Sibling class-closer shape: D-305
+(the events driver-registry conformance gate — a registered member without a
+conformance run fails the build; HA-20). Split consumer: D-314 (Phase 178, the
+tools annotator). CLAUDE.md §5 (fail loudly), §8 (wire single-source), §13
+(silent degradation forbidden; honest zeros; primitive-with-consumer),
+§17.1/§17.8 (integration + the fixture-richer-than-runtime double), §18 (skill
+hygiene). RFC §5.2, §6.1, §6.4, §6.6, §6.8, §7. Plan:
+`docs/plans/phase-177-projection-completeness-gate.md`.
+
+---
+
+## D-314 — The tools production Annotator: supply the missing concrete behind the shipped `Annotator` seam, flipping D-313's honestly-gated tools facets to real data and lighting up the inert admin write path
+
+**Date:** 2026-07-14
+
+**Context.** D-313 established that the tools catalog projector reads every
+per-tool annotation (OAuth/approval/last-used/metrics/content-stats/display-modes)
+through the optional `Annotator` seam, but no production `Annotator` is ever
+wired — `mux.go` supplies only `WithLoadingResolver`, and the sole implementer is
+the `fakeAnnotator` test double (§17.8). The seam shipped correctly; the concrete
+is missing. Assembling it is substantial net-new work (it aggregates from
+`tools/auth`, `tools/approval`, the events stream, and MCP DisplayMode
+negotiation), so D-313/Phase 177 honestly GATES the annotator-backed
+facets/search/aggregates pending this phase rather than shipping false absence.
+
+**Decision.** Assemble a production `Annotator` (a §4.4-shaped concrete behind
+the existing seam — no new interface) implementing the full interface plus the
+`ApprovalPolicySetter` / `OAuthRevoker` admin seams the projector already
+delegates to; wire it at `internal/runtime/serve/mux.go` via `WithAnnotator(...)`
+exactly as `WithLoadingResolver` is wired; flip the D-313 annotator-wired
+capability on so `filter.oauth_statuses` / `filter.approval_policies` / the
+version search axis / the catalog aggregates operate over real data; populate
+`Tool.Version` (or keep it honestly empty with a name-only search axis where a
+transport carries no version — representable absence, never a fabricated
+version); and light up the previously-inert admin write path
+(`tools.set_approval_policy` / `tools.revoke_oauth`, which returned
+`ErrAdminUnsupported` because no annotator implemented the setter/revoker),
+routing writes back through `tools/approval` / `tools/auth` with audit — never a
+Console shadow store (D-061). With the annotator wired, the D-313 gate now
+ENFORCES the tools annotator-backed fields (their honest-omission allow-list
+entries are removed).
+
+**Scope.** The tools leg of HA-24; the second member of the D-313 band. No new
+Protocol method, no `ProtocolVersion` bump — the tools wire fields are already
+declared (D-313 gated them, not removed them); the capability flips from unwired
+to wired (an advertised-set change). No new metrics store — metrics/last-used/
+content-stats derive read-time from the existing events stream.
+
+**Cross-references.** Consumer of D-313 (the gate + the annotator-wired
+capability it flips) and D-311 (the class rule). D-061 (no Console shadow store
+for runtime entities). CLAUDE.md §4.4 (interface + factory + registry; concrete
+behind a seam), §5 (fail loudly; no test-grade default on an operator seam), §7
+(admin writes audited + scope-gated), §13 (no stub as production default), §18
+(skill hygiene). RFC §5.2, §6.4, §6.15, §7. Plan:
+`docs/plans/phase-178-tools-annotator.md`.
