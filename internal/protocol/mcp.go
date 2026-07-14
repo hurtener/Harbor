@@ -879,8 +879,11 @@ func (s *MCPSurface) handleSetRawHTMLTrust(ctx context.Context, id identity.Iden
 		return nil, mapMCPError(string(method), applyErr)
 	}
 	if emitErr != nil {
+		// emitErr is self-describing: it names either the reverted-not-applied
+		// case or the "state may be inconsistent" double-failure. Don't
+		// prepend a fixed "reverted" claim that the second case contradicts.
 		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
-			"method %q: audit emit failed; trust toggle reverted (not applied): %v", string(method), emitErr)
+			"method %q: %v", string(method), emitErr)
 	}
 	return &types.MCPServerSetRawHTMLTrustResponse{
 		Name:            r.Name,
@@ -915,7 +918,7 @@ func applyAdminWriteWithAudit(apply func() (revert func() error, err error), emi
 					stderrors.Join(e, rerr))
 			}
 		}
-		return nil, e
+		return nil, fmt.Errorf("audit emit failed (mutation reverted, not applied): %w", e)
 	}
 	return nil, nil
 }

@@ -96,7 +96,7 @@ func TestTokenExchange_HTTPClient_RefusesPrivateDial(t *testing.T) {
 
 	_, err = prov.Token(mkCtx(t, aliceID()), "")
 	if err == nil {
-		t.Fatal("Token succeeded against a loopback token endpoint — the hardened client must refuse the private dial")
+		t.Fatal("Token succeeded against an RFC1918 token endpoint — the hardened client must refuse the private dial")
 	}
 	if !errors.Is(err, tokenexchange.ErrPrivateDialRefused) {
 		t.Fatalf("want ErrPrivateDialRefused, got %v", err)

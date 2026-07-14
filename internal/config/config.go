@@ -905,6 +905,13 @@ type ToolsConfig struct {
 	// — the credential-plane invariant keeps every sink-determining value
 	// boot-declared, config/file-only. Additive; the inline
 	// `oauth_providers[].remote` block stays valid. Restart-required.
+	//
+	// This list is boot-validated but has no runtime consumer yet: the
+	// Protocol surface that resolves a provider descriptor's
+	// `credential_broker` against it lands alongside it in the same wave.
+	// Until then a declared broker is validated and inert (declaring one
+	// changes no behaviour); this is the sink home landing ahead of its
+	// consumer within the wave, not a dangling field.
 	OAuthCredentialBrokers []ToolOAuthCredentialBrokerConfig `yaml:"oauth_credential_brokers,omitempty"`
 
 	// BuiltIn lists opt-in tools shipped in the Harbor binary that the
