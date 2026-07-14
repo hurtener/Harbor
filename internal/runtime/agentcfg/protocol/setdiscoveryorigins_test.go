@@ -166,6 +166,43 @@ func TestSetMCPDiscoveryOrigins_DegradesWhenConnectionNotLive(t *testing.T) {
 	}
 }
 
+// erroringApplier returns an arbitrary (non-not-live) live-apply error — the
+// setter must roll the just-written revision back and surface the error loud,
+// NEVER degrade. Guards the switch's default arm against a future refactor that
+// might collapse it into the degrade arm.
+type erroringApplier struct{ boom error }
+
+func (a *erroringApplier) SetOAuthDiscoveryOrigins(context.Context, string, []string) ([]string, error) {
+	return nil, a.boom
+}
+
+func TestSetMCPDiscoveryOrigins_RealApplyFailureRollsBackLoud(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	boom := errors.New("live registry exploded")
+	s, err := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithBus(newCollectingBus(t)),
+		agentcfgprotocol.WithDiscoveryOriginApplier(&erroringApplier{boom: boom}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	seedDiscoveryRev(t, ctx, reg, "agent-d", agentcfg.MCPConnectionDescriptor{Name: "srv", Transport: agentcfg.MCPTransportHTTP, URL: "https://x.invalid/rpc", OAuthDiscoveryAllowedOrigins: []string{"https://as-initial.example.net"}})
+
+	if _, err := s.SetMCPDiscoveryOrigins(ctx, discReq("agent-d", "srv", []string{"https://as.example.net"})); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the live-apply error (a real failure must fail loud, not degrade)", err)
+	}
+	// The revision was rolled back — the descriptor keeps its pre-write allow-list.
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, _, aerr := reg.Active(ctx, q, "agent-d", agentcfg.ConfigScopeAgent)
+	if aerr != nil {
+		t.Fatalf("active: %v", aerr)
+	}
+	descs := active.Payload.ConnectionDescriptors()
+	if len(descs) != 1 || len(descs[0].OAuthDiscoveryAllowedOrigins) != 1 || descs[0].OAuthDiscoveryAllowedOrigins[0] != "https://as-initial.example.net" {
+		t.Fatalf("revision not rolled back after a real apply failure: %#v", descs)
+	}
+}
+
 func TestSetMCPDiscoveryOrigins_RejectsMalformedOrigin(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
