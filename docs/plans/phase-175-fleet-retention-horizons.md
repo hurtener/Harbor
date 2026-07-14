@@ -70,7 +70,15 @@ Closes HA-23: the retention-horizon block HA-14 (D-296) shipped on `runtime.heal
 <!-- Explicit out-of-scope items. -->
 - **No change to the `events` horizon** — it is already runtime-wide and correct
   (`events.RetentionReporter.OldestRetainedAt(ctx)`, identity-free). It gains
-  only the `scope:"runtime"` label; its value and read path are untouched.
+  only the `scope:"runtime"` label; its value and read path are untouched. Edge
+  case (implementer's expected behaviour): when the wired bus does NOT implement
+  `events.RetentionReporter`, the `events` surface OMITS its entry entirely —
+  it does NOT emit `scope:"runtime"` + no-timestamp. The reader seam being absent
+  is not the same as "the surface is observable and holds no rows," so it is
+  represented as no-entry, exactly as the tasks/sessions "store does not
+  implement the reader → contributes no entry" case (the honest absence). Both
+  V1 bus drivers implement the reader, so this is the headless/third-party-driver
+  path only.
 - **No retention/pruning knob.** Harbor has none — the durable event log is
   gap-free and untrimmed (`internal/events/drivers/durable/durable.go` godoc);
   the horizon stays OBSERVED, never a configured claim (D-296). This phase adds
@@ -85,8 +93,11 @@ Closes HA-23: the retention-horizon block HA-14 (D-296) shipped on `runtime.heal
   horizons; merging across runtimes stays coordinator-side (the D-284 posture).
 - **Does not, by itself, make the fleet window COMPLETE.** It makes the window's
   completeness VERIFIABLE. Reachability of the session-less cross-session
-  enumeration is HA-21's job (the events-fold work); this phase composes with it
-  — HA-21 makes the enumeration reachable, this makes its completeness checkable.
+  enumeration is delivered by the D-308 events-fold work (Phase 172 — the
+  `if !widened` guard on `events.list` + `events.aggregate`, which closes HA-16 +
+  HA-21); this phase composes with it — that work makes the enumeration
+  reachable, this makes its completeness checkable. Orthogonal composition
+  partner, not a hard build dependency.
 
 ## Acceptance criteria
 <!-- Required. Bulleted, testable. These are binding. -->
@@ -110,12 +121,17 @@ Closes HA-23: the retention-horizon block HA-14 (D-296) shipped on `runtime.heal
       scope — runtime-wide truth NOT observable here"). A nil retention seam
       still omits the whole block (older/headless wiring unaffected).
 - [ ] The widened path (a read where the server-derived elevated scope caused a
-      runtime-wide fan-in) emits exactly one `audit.admin_scope_used` event
-      through the wired Redactor + Bus, anchored on the ACTOR's verified
-      identity; the redactor pass precedes the publish; an emit failure FAILS
-      LOUD (`CodeRuntimeError`) — the read already crossed the tenant boundary,
-      so the operator MUST see the audit (the PostureSurface `*.posture_read_admin`
-      precedent). A non-widened read emits NO audit.
+      runtime-wide fan-in) emits EXACTLY ONE audit event, and that event is
+      `audit.admin_scope_used` (`events.EventTypeAdminScopeUsed`, the D-284/D-305
+      events-widened-fan-in pattern) — NOT the `posture_read_admin` name the
+      governance/llm `PostureSurface` reads use. This is a deliberate divergence
+      from the sibling posture reads: a runtime-wide horizon fan-in is a widened
+      READ across tenants (the `admin_scope_used` shape), not a cross-tenant
+      CONFIG read (the `*.posture_read_admin` shape). The event flows through the
+      wired Redactor + Bus, anchored on the ACTOR's verified identity; the
+      redactor pass precedes the publish; an emit failure FAILS LOUD
+      (`CodeRuntimeError`) — the read already crossed the tenant boundary, so the
+      operator MUST see the audit. A non-widened read emits NO audit.
 - [ ] The runtime-wide `tasks` / `sessions` horizon is read through an
       identity-free oldest-retained reader (mirroring `events.RetentionReporter`),
       discovered by type assertion at the posture wiring seam — NO `Supports*`
@@ -156,6 +172,10 @@ Closes HA-23: the retention-horizon block HA-14 (D-296) shipped on `runtime.heal
   type — no lockstep for these internal seams.)
 - `internal/protocol/methods/…` — none (no new method); the wire manifest regen
   reflects the `RetentionHorizon.Scope` field only.
+- `internal/protocol/singlesource/singlesource.go` — a no-op for this field-add
+  (`RetentionHorizon` is already registered in `CanonicalWireTypes`), listed for
+  completeness: the field-level lockstep gate re-derives the manifest from the
+  registered type, so no `singlesource` edit is needed — only the regen.
 - `web/console/src/lib/protocol/*.ts` + `web/console/src/lib/protocol/wire-manifest.gen.json`
   — hand-mirror the `scope` field + `make protocol-ts-gen` (D-223 lockstep).
 - `docs/site/protocol/types.md` — regenerated via `make protocol-docs-gen` (D-209).
@@ -244,9 +264,10 @@ the bus/tasks/sessions, POST `runtime.health` and assert —
 - 163 (HA-14 / D-296 — the retention block + `RetentionProvider` this phase
   extends).
 - 118 (D-223 — the wire-lockstep gate the additive `scope` field runs through).
-- Composes with the HA-21 events-fold work (makes the session-less cross-session
-  enumeration reachable); not a hard build dependency — the two are orthogonal
-  (reachable vs verifiable) and can land in either order.
+- Composes with the D-308 events-fold work (Phase 172 — the `if !widened` guard
+  on `events.list` + `events.aggregate` that closes HA-16 + HA-21, making the
+  session-less cross-session enumeration reachable); NOT a hard build dependency —
+  the two are orthogonal (reachable vs verifiable) and can land in either order.
 
 ## Risks / open questions
 <!-- Surface real risks. -->
