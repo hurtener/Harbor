@@ -25,6 +25,15 @@ type realAggregatorClock struct{}
 
 func (realAggregatorClock) Now() time.Time { return time.Now().UTC() }
 
+// defaultAggregateScanBound is the number of matching events a single
+// aggregation read collects from the windowed substrate. It is generous
+// enough to keep the memory profile equal to materializing the whole
+// replay ring (whose production default is an order of magnitude smaller),
+// while remaining bounded so an unbounded persisted log never forces an
+// unbounded scan. A window whose matching events exceed the bound returns
+// PARTIAL buckets with Truncated=true — DATA, never a request error.
+const defaultAggregateScanBound = 100_000
+
 // ErrAggregateBadWindow — the request's Window / Bucket pair was
 // structurally invalid: zero or negative Window, zero or negative
 // Bucket, or Bucket does not evenly divide Window. The aggregator
@@ -43,18 +52,21 @@ var ErrAggregateIdentityRequired = errors.New("events: aggregate filter must spe
 // sense: bus and clock are set once at construction and never
 // mutated; Aggregate() holds no per-request state on the Aggregator
 // (each request creates its own buckets slice). One Aggregator serves
-// N concurrent requests safely (concurrent_test.go pins it under
+// N concurrent requests safely (the concurrent-reuse test pins it under
 // -race).
 //
-// The aggregator consumes the bus's Replayer surface for the historical
-// snapshot — runtime-side aggregation ("events are
-// high-cardinality runtime-side; the runtime owns the index and
-// exposes a search method"). When the bus does not implement Replayer
-// (a forward-only driver), Aggregate returns ErrReplayUnavailable —
-// fail loudly, never an empty series that looks like "no events."
+// The aggregator sources its window snapshot from the bus's
+// HistoryReplayer cross-session windowed fan-in — the SAME substrate the
+// windowed raw-event read (`events.list`) uses — so an aggregate and a
+// list of the same window agree by construction on what a session-less
+// admin (fleet) read means. When the bus does not implement
+// HistoryReplayer (a forward-only driver, or one whose replay ring is
+// disabled), Aggregate returns ErrReplayUnavailable — fail loudly, never
+// an empty series that looks like "no events."
 type Aggregator struct {
-	bus   EventBus
-	clock AggregatorClock
+	bus       EventBus
+	clock     AggregatorClock
+	scanBound int
 }
 
 // AggregatorOption configures NewAggregator at construction.
@@ -70,6 +82,20 @@ func WithAggregatorClock(c AggregatorClock) AggregatorOption {
 	}
 }
 
+// WithAggregateScanBound overrides the single-read aggregation bound (the
+// number of matching events one Aggregate call collects from the windowed
+// substrate). Production callers do not use this — the default is sized to
+// match the whole-ring materialization; it exists so a test can drive the
+// over-bound Truncated path without publishing an impractically large
+// fixture. A non-positive value is ignored (the default stands).
+func WithAggregateScanBound(n int) AggregatorOption {
+	return func(a *Aggregator) {
+		if n > 0 {
+			a.scanBound = n
+		}
+	}
+}
+
 // NewAggregator builds the aggregator over a bus. bus is mandatory —
 // a nil fails loud rather than producing an aggregator that nil-panics
 // on the first request. The returned *Aggregator is immutable after
@@ -79,8 +105,9 @@ func NewAggregator(bus EventBus, opts ...AggregatorOption) (*Aggregator, error) 
 		return nil, fmt.Errorf("events: NewAggregator: bus is nil")
 	}
 	a := &Aggregator{
-		bus:   bus,
-		clock: realAggregatorClock{},
+		bus:       bus,
+		clock:     realAggregatorClock{},
+		scanBound: defaultAggregateScanBound,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -90,9 +117,9 @@ func NewAggregator(bus EventBus, opts ...AggregatorOption) (*Aggregator, error) 
 
 // Aggregate executes one aggregation request. The request's Window +
 // Bucket define a contiguous time series of buckets; the aggregator
-// snapshots the bus's ring (via Replayer) once, filters in Go using
-// MatchWire over the wire filter, and counts each matching event into
-// its bucket.
+// issues ONE windowed fan-in read over the effective [since, until)
+// window (via the bus's HistoryReplayer.ListWindow), then counts each
+// returned event into its bucket.
 //
 // Window MUST be > 0 AND Bucket MUST be > 0 AND Window % Bucket == 0,
 // else ErrAggregateBadWindow.
@@ -101,16 +128,37 @@ func NewAggregator(bus EventBus, opts ...AggregatorOption) (*Aggregator, error) 
 // first); empty buckets are present with an empty Counts map so the
 // rendering client sees a contiguous time axis.
 //
-// The aggregator respects ctx — ctx.Err() is checked before any
-// expensive work and before each bucket fill. A long aggregate against
-// a high-cardinality bus that is cancelled by the caller returns
-// ctx.Err() promptly.
+// authority (`widened`) is the server-derived cross-principal-OR-multi-value
+// fan-in decision the transport computed on the RAW, PRE-FOLD wire filter
+// (never read from the request body). It is passed straight through as the
+// substrate query's Admin flag: a widened read fans in across sessions and
+// emits exactly one audit.admin_scope_used; a non-widened read scopes to the
+// caller's own (handler-folded) triple and emits none. The runtime never
+// re-derives widening from the post-fold filter — a genuine cross-tenant read
+// whose other axes fold to the caller carries a complete triple and would be
+// mis-classified as non-widened, running un-audited and un-fanned.
+//
+// The window bounds are threaded onto the substrate query itself
+// (q.Filter.Since / q.Filter.Until), so an Until-clamped sub-window is
+// enforced by the driver's per-event predicate rather than only by a
+// post-read guard.
+//
+// A window with more matching events than the single-read aggregation bound
+// (or a best-effort ring that evicted older events below the requested
+// window) returns the PARTIAL buckets with Truncated=true — never a request
+// error, never a silent undercount (CLAUDE.md §13). A bus without
+// HistoryReplayer returns ErrReplayUnavailable — never a silent empty series.
 //
 // Aggregate does NOT enforce the cross-tenant scope claim — that is
 // the wire transport's job (the transport calls FilterFromWire,
 // reads RequiresAdminScope, gates on auth.HasScope). By the time
 // Aggregate runs, the request is authorised.
-func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregateRequest) (prototypes.EventAggregateResponse, error) {
+//
+// The aggregator respects ctx — ctx.Err() is checked before any
+// expensive work and before each bucket fill. A long aggregate against
+// a high-cardinality bus that is cancelled by the caller returns
+// ctx.Err() promptly.
+func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregateRequest, widened bool) (prototypes.EventAggregateResponse, error) {
 	if req.Window <= 0 {
 		return prototypes.EventAggregateResponse{}, fmt.Errorf("%w: Window=%v must be > 0", ErrAggregateBadWindow, req.Window)
 	}
@@ -125,11 +173,12 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 		return prototypes.EventAggregateResponse{}, err
 	}
 
-	// The aggregator consumes the bus's Replayer surface for the
-	// historical snapshot. A bus that does not implement Replayer (or
-	// whose ring is disabled) fails loud — never an empty series that
-	// looks like "no events."
-	replayer, ok := a.bus.(Replayer)
+	// The aggregator sources its snapshot from the bus's HistoryReplayer
+	// cross-session windowed fan-in — the same substrate the windowed
+	// raw-event read uses. A bus that does not implement it (or whose ring
+	// is disabled) fails loud downstream on the read — never an empty series
+	// that looks like "no events."
+	hr, ok := a.bus.(HistoryReplayer)
 	if !ok {
 		return prototypes.EventAggregateResponse{}, ErrReplayUnavailable
 	}
@@ -164,48 +213,43 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 		effectiveUntil = req.Filter.Until
 	}
 
-	// Snapshot from the bus. We pass an Admin: true bus-filter to get
-	// every retained event from the ring — the aggregator does its
-	// own per-event MatchWire filtering. The bus already validated
-	// the request's identity / scope upstream (in the transport).
-	//
-	// The Filter passed to Replay carries no triple because the
-	// aggregator's filter is enforced in MatchWire. Identity-source
-	// fail-loudness lives at the transport edge: by the time Aggregate
-	// runs, the request is identity-validated.
-	busFilter := Filter{Admin: true}
-	snapshot, err := replayer.Replay(ctx, Cursor{Sequence: 0}, busFilter)
-	if err != nil {
-		// ErrReplayUnavailable is the documented "this bus does not
-		// support replay" case — surface verbatim so the caller can
-		// branch on errors.Is.
-		if errors.Is(err, ErrReplayUnavailable) {
-			return prototypes.EventAggregateResponse{}, err
-		}
-		// ErrCursorTooOld with Cursor.Sequence==0 should not happen
-		// (the inmem driver explicitly bypasses the check for the
-		// from-beginning case); if it does, surface it.
-		return prototypes.EventAggregateResponse{}, fmt.Errorf("events: aggregate replay: %w", err)
-	}
-
-	// Mutate the wire filter's window bounds to the EFFECTIVE bounds so
-	// MatchWire enforces them per-event. The wire request value is a
-	// copy by value into req; we modify our local view.
+	// Thread the EFFECTIVE window bounds onto the substrate query so the
+	// driver's per-event MatchWire enforces them — NOT only a post-read
+	// guard. An Until-clamped sub-window whose newest global matches are all
+	// newer than Until must be excluded at the source, else the single read
+	// fills its bound with too-new events and undercounts the window.
 	effFilter := req.Filter
 	effFilter.Since = effectiveSince
 	effFilter.Until = effectiveUntil
 
-	for _, ev := range snapshot {
+	// One windowed fan-in read over the whole effective window: one read ⇒
+	// exactly one audit.admin_scope_used on the widened path. The read is
+	// tail-first (Before=0) with a generous bound; a window exceeding the
+	// bound comes back with HasMore=true, which the aggregator surfaces as
+	// Truncated (DATA, never a 400).
+	page, err := hr.ListWindow(ctx, EventListQuery{
+		Filter: effFilter,
+		Before: 0,
+		Limit:  a.scanBound,
+		Admin:  widened,
+	})
+	if err != nil {
+		// ErrReplayUnavailable is the documented "this bus does not
+		// support windowed history reads" case — surface verbatim so the
+		// caller can branch on errors.Is.
+		if errors.Is(err, ErrReplayUnavailable) {
+			return prototypes.EventAggregateResponse{}, err
+		}
+		return prototypes.EventAggregateResponse{}, fmt.Errorf("events: aggregate windowed read: %w", err)
+	}
+
+	for _, ev := range page.Events {
 		if err := ctx.Err(); err != nil {
 			return prototypes.EventAggregateResponse{}, err
 		}
-		if !MatchWire(ev, effFilter) {
-			continue
-		}
-		// Bucket index by elapsed-from-windowStart / bucketWidth. An
-		// event whose OccurredAt is before windowStart (caught by
-		// MatchWire above when Since==windowStart, but defensive here)
-		// is dropped; one at or after now is also dropped.
+		// The substrate already applied MatchWire (identity sets +
+		// since/until + type) and excluded bus-internal notices; the guard
+		// below is a defensive bucket-range clamp only.
 		if ev.OccurredAt.Before(windowStart) || !ev.OccurredAt.Before(now) {
 			continue
 		}
@@ -218,6 +262,7 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 
 	return prototypes.EventAggregateResponse{
 		Buckets:         buckets,
+		Truncated:       page.HasMore || page.Truncated,
 		ProtocolVersion: prototypes.ProtocolVersion,
 	}, nil
 }
