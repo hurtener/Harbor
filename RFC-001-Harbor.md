@@ -1346,6 +1346,8 @@ harbor validate          Validate config / skills / agent definitions without bo
 harbor inspect-events    Tail or filter the event bus of a running Runtime
 harbor inspect-runs      List recent runs; show a run's trajectory
 harbor inspect-topology  Render a run's node graph as ASCII
+harbor tui               Attach the native terminal test/control client to a Runtime
+harbor serve --tui       Serve the Protocol and co-launch that same terminal client
 harbor token keygen      Generate a signing keypair + public JWK Set (bring-your-own-issuer)
 harbor token mint        Mint a Harbor JWT signed with that key (no-IdP self-issuing on-ramp)
 harbor version           Print version, build hash, supported Protocol version
@@ -1354,6 +1356,21 @@ harbor version           Print version, build hash, supported Protocol version
 **Settled:**
 
 - All subcommands are Protocol clients of the Runtime; they use the same client SDK a third-party tool would.
+- `harbor tui --attach <url>` is the native terminal test/control client. It is
+  not a coding agent or IDE: it renders sessions, turns, tasks, tools,
+  interventions, artifacts, events, Runtime posture, and controls exclusively
+  through the authenticated Protocol. Git, repository trees, source editing,
+  patches, shell/PTY execution, LSP, and worktrees are outside its scope.
+  Its binding minimum is OpenCode-level or better perceived terminal quality in
+  hierarchy, composer editing, commands/dialogs, responsive behavior,
+  streaming stability, accessibility, and lifecycle safety; the mechanical
+  acceptance contract is `docs/design/tui/CONVENTIONS.md` (D-317).
+- `harbor serve --tui` is an opt-in co-launch convenience, not an internal
+  Runtime view. It waits for the ordinary authenticated listener, then dials it
+  through the same REST/SSE client as remote attach. A scaffolded serving binary
+  may expose the same opt-in through the curated `sdk/tui` facade. No mode gets
+  an anonymous loopback exception, dev signer, TUI-private endpoint, or direct
+  Runtime handle access.
 - `harbor dev` boots the Runtime headless on `127.0.0.1:<port>`, opens the Protocol, starts the embedded Console, watches the project directory for changes, hot-reloads on Go-source changes (graceful-stop in-flight runs first; configurable), and exposes a draft-save scratchpad endpoint for dynamic agent scaffolding.
 - The dynamic scaffolding flow: a developer iterates on an agent in the dev loop, saves drafts (project-local `.harbor/drafts/`), and only commits to a final scaffold when satisfied.
 - `deploy` and `package` subcommands are NOT V1. They land with Harbor Cloud's shape. (Resolves brief 06 Q-5.)
@@ -1406,6 +1423,7 @@ All three pass the same conformance suite. Designing the interface against three
 | ULID | `oklog/ulid` | Settled |
 | YAML | `goccy/go-yaml` | Settled |
 | CLI | `cobra` | Settled |
+| Native TUI | Bubble Tea v2 + Lip Gloss v2 + selected Bubbles v2 + `charmbracelet/x/ansi` | Settled — attach-first Protocol client; quality floor D-317 |
 | Console | SvelteKit + adapter-static + Skeleton | Settled |
 | Console MCP Apps host | `@modelcontextprotocol/ext-apps` + peer `@modelcontextprotocol/sdk` — the official framework-agnostic AppBridge for the sandboxed MCP Apps renderer (core + `app-bridge` entry points ONLY, never the `/react` entry, so not the forbidden React surface). Consumed in manual-handler mode (D-173). | Settled — see D-172/D-173 |
 | Protocol wire | SSE + REST (event stream + control surface) | Settled — Q-1 RESOLVED 2026-05-14 |

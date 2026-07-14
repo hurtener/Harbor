@@ -8,6 +8,11 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## A
 
+**Attach mode (Harbor TUI)** — the launch posture where `harbor tui --attach`
+connects to an already-running local or remote Runtime through the authenticated
+Harbor Protocol. The TUI does not own that Runtime; leaving the terminal client
+never stops the server. Phase 182, D-318.
+
 **Agent provenance** — the registration `agent_id` carried on the run's ctx (`tools.WithInvokingAgent` / `tools.InvokingAgentFrom`) and stamped into southbound MCP `_meta` for server-side attribution. Provenance only: `agent_id` is NOT an isolation principal (CLAUDE.md §6 clarifying note, D-059) — servers must not treat it as an isolation filter, and nothing Harbor-side keys storage, event filters, or token caches by it. Absence is valid (a bare embed run has no agent). Introduced in Phase 148 (D-278).
 
 **Agent-config capability** — the Protocol capability string `agent_config` (`types.CapAgentConfig`) that advertises the presence of the agent-config control plane (`agent_config.*`) on a runtime. A Protocol client negotiates the surface via `VersionHandshake.Accepts(CapAgentConfig)` / the `runtime.info` capability list instead of method-probing the verbs and catching a `501`/`404`. Advertised per-instance only when the agent-config surface is mounted (`PostureDeps.AgentConfigAvailable`, wired from the same boolean that gates `transports.WithAgentConfigService`); in the canonical capability universe unconditionally. Additive (no `ProtocolVersion` bump) — it shifts only the wire-surface digest. D-260.
@@ -167,6 +172,19 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **built-in tool** — a tool shipped in the Harbor binary that registers on demand by name via `tools.built_in: [name]` in `harbor.yaml`. Lives at `internal/tools/builtin/`. V1.1 ships two — `clock.now` (current UTC time as RFC 3339 + epoch ms) and `text.echo` (echo input verbatim) — both registered through `inproc.RegisterFunc`, indistinguishable to the planner from an operator's custom Go tool except by the opt-in path. The `internal/config` validator carries a mirror of `builtin.KnownNames()` per the §4.4 seam pattern (a `builtin_test.go::TestKnownNames_MirrorsConfigAllowlist` asserts no drift); a name not in the registry fails at `harbor validate` time. Phase 83n / D-153.
 
 ## C
+
+**Co-launched TUI** — the explicit `harbor serve --tui` or generated-binary
+`--tui` posture where one foreground command owns both an ordinary authenticated
+Protocol server and the native TUI client attached to its bound listener. It is
+process orchestration, not an internal Runtime view; leaving the TUI drains the
+server that command owns. Phase 184, D-320.
+
+**Conversation reducer (TUI)** — the pure, rendering-independent state machine
+that joins canonical state history, task snapshots, pause snapshots, and
+ordered live/replayed events into terminal conversation blocks. It applies
+sequence dedupe, snapshot-generation fences, lifecycle repair, and explicit
+partiality markers; it is not a second Runtime source of truth. Phase 180,
+D-316.
 
 **Config revision** — an immutable, content-addressed agent-config record in the **desired-state registry** (Phase 92a), carrying `{revision_id, parent_revision_id, content_hash, author, created_at, payload}`. Every edit to an agent's config (prompt layers, tool/MCP exposure, per-tool policy, skills membership) produces a new revision; the *active* config is a pointer to one revision; **rollback is a repoint** (it never mutates or deletes a revision); **diff** is a server-side compare of two revisions (text diff for prompt sections, structured set-diff for the structured sections). The parent pointer + content hash live inside the record bytes, never relying on the evictable StateStore `EventID` slot. D-234.
 
@@ -410,6 +428,18 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## G
 
+**Generic TUI renderer** — a typed block/tool renderer selected by canonical
+kind with a mandatory unknown-shape fallback. It may specialize Harbor task,
+tool, artifact, intervention, control, result, and error presentation, but it
+never assumes coding-tool names and never drops an unrecognized safe payload.
+Phase 183, D-319.
+
+**Go Protocol client** — Harbor's reusable, concurrent-safe REST/SSE client in
+`internal/protocol/client`, with the curated external facade
+`sdk/protocolclient`. It owns transport framing, typed Protocol errors, cursors,
+and session clones while callers own token discovery and reconnect policy.
+Phase 179, D-315.
+
 **Golden file (CLI)** — the `cmd/harbor/testdata/golden/*.txt` files the cobra golden-file tests diff against (Phase 63). `TestRoot_Help_MatchesGolden` is the canonical diff site — it runs `harbor --help` through a fresh cobra root, captures stdout, and compares against `testdata/golden/help.txt`. The `-update` flag on the test (`go test -update ./cmd/harbor/...`) regenerates the golden in place — every future phase that adds a subcommand mutates the help golden in the same PR, so the help surface stays in sync with the command tree. brief 06 §6, D-084.
 
 **Goroutine-leak conformance harness** — The Phase 77 master conformance suite (`test/integration/phase77_goroutine_leak_test.go`, `TestE2E_Phase77_GoroutineLeakConformance`). One table-driven test that, for every long-lived Runtime component (`Engine`, the inmem + durable `EventBus`, `sessions.Registry`, the inprocess `TaskRegistry` — anything built once that starts goroutines and exposes `Stop` / `Close` / `CloseRegistry`), records a baseline `runtime.NumGoroutine()`, runs N construct → exercise → teardown cycles against real drivers, and asserts the count returns to baseline via a bounded eventually-poll (never an instant snapshot). It generalises the per-package leak tests Phases 10/12/13/50/52 each shipped individually into one `-race` CI gate that runs on every PR. A future long-lived component is added as one new `leakCases` table row. RFC §3.5 + §5 Go conventions, AGENTS.md §11 + §17, D-135.
@@ -427,6 +457,13 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`GroupCompletion`** — typed wake-up payload delivered by `WatchGroup` (and as the `task.group_resolved` / `task.group_cancelled` bus-event payload). Carries the group's terminal status (`GroupCompleted` | `GroupCancelled`), resolve timestamp, cancel reason (when cancelled), and a `MemberOutcome` per group member. Heavy results MUST already be substituted with `ArtifactRef`s upstream (D-022, D-026); the payload is ref-shaped, not byte-bound. The same canonical shape across consumers (Console, durable-event-log, sidecar status emitters, planner runtime). RFC §6.8, Phase 21.
 
 ## H
+
+**Harbor TUI** — the native terminal test/control client for Harbor runtimes.
+It renders sessions, turns, tasks, tools, interventions, artifacts, events,
+Runtime posture, controls, and diagnostics exclusively through the
+authenticated Protocol. It is deliberately not a coding agent or IDE and does
+not include Git, repository, editor, patch, shell, LSP, or worktree features.
+Phases 180–184, D-316–D-320.
 
 **Historical event read (`events.list`)** — the durable, time-ranged, cross-session raw-event read (Phase 162 / D-294): the existing wire `EventFilter` (which already carries `since`/`until` and the type/session/run axes) plus a tail-first SEQUENCE-based paging cursor mirroring `state.history`'s `next_cursor`/`has_more` grammar, returning the SAME flat `StateEvent` rows the SSE and `state.history` already project — no new row shape, redaction and the D-026 by-reference discipline unchanged. The third leg of the events surface beside the forward-only live tail (`events.subscribe`) and the counts-only aggregate (`events.aggregate`); distinct from `search.events` (text search, not window enumeration). Scope: own verified triple for non-admin callers; fleet widening only via the verified admin claim derived server-side (never the request body), audited once per request. Served through the `HistoryReplayer` seam on both V1 event drivers — the durable log gives real windows, the inmem ring gives what it holds plus an honest `truncated` at the retention edge. RFC §6.13, §5.2, D-294.
 
@@ -453,6 +490,12 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **HTTP-manifest boot loader** — the assembly-owned boot path (Phase 149, D-279) that loads each `tools.http_manifests[]` UTCP-style manifest via the HTTP driver's `LoadManifest` + `RegisterManifest` and registers its tools on the runtime catalog by name — after built-ins, before `tools.entries[]` middleware applies, so by-name OAuth/approval bindings resolve against manifest tools. Fail-loud: a missing, unparseable, or path-unsafe manifest, or a tool-name collision, fails the boot naming the file and the config key; never a silent skip. Relative config entries resolve against the config file's directory under the §7 rule 5 Clean+prefix posture; boot-only (restart-required). RFC §6.4, AGENTS.md §7, §13.
 
 ## I
+
+**Intervention inbox (TUI)** — the terminal projection of identity-scoped
+pending pause/approval/OAuth/input-required records, ordered with live lifecycle
+events and resolved only through Harbor's unified pause/resume primitive. It
+handles expiry and resolution by another client without reopening stale state.
+Phase 183, D-319.
 
 **Identity triple** — `(tenant_id, user_id, session_id)`. Every layer carries this. The session is the innermost concurrency *boundary* — but within a session, multiple Runs may execute concurrently and require an additional identity dimension; see *Identity quadruple*. AGENTS.md §6 + RFC §4.
 
@@ -515,6 +558,11 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **KpiStrip** — the four-tile Playground header KPI strip (Tokens / Cost / p50 latency / Status) introduced in Phase 108 (D-167). Renders inline SVG sparklines and ceiling-percent indicators using the chip palette. Lives at `web/console/src/lib/components/playground/KpiStrip.svelte`.
 
 ## L
+
+**Local follow-up queue (TUI)** — bounded client-local prompt intent waiting for
+the active turn to finish. It is visibly local, ordered, cancellable, and never
+presented as Runtime-accepted work before `start` succeeds; it is not a durable
+server queue. Phase 182, D-318.
 
 **Layered system prompt** — the agent-config prompt model (Phase 92e): an operator-owned, versioned `Base` layer + an optional `User` layer composed ABOVE the base without mutating it. The composition order is the security boundary (D-235/D-236) — the user layer can extend guidance but cannot weaken or precede the operator base, enforced by the data model (distinct `Base`/`User` fields, `User` always appended). Resolved at run start (next-turn, D-025). Distinct from the per-run session `SystemPromptOverride` (one-shot full replace, 92b) and `ExtraInstructions` (additive, 92b); the documented precedence is base → user → tenant-additive → session-additive, with the session override replacing the whole spine for one message.
 
@@ -635,6 +683,12 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`MaxStepsExceededPayload`** — typed payload for the `planner.max_steps_exceeded` event (Phase 45). SafePayload (composes `events.SafeSealed`): `Identity` (the run's quadruple), `MaxSteps` (the configured cap), `StepsObserved` (the trajectory step count at the moment the breaker fired), `LastTool` (the most recently dispatched tool name, empty when the trajectory was empty), `OccurredAt`. RFC §6.2, D-051.
 
 ## O
+
+**Owned server (TUI)** — the Protocol server lifecycle created by an explicit
+TUI co-launch command. The foreground command waits for its readiness, runs the
+TUI as an ordinary client, and drains that server when the TUI exits. A server
+reached through standalone attach mode is never owned by the TUI. Phase 184,
+D-320.
 
 **OAuth requirement discovery (MCP)** — the report-only discovery leg on Harbor's MCP southbound edge (Phase 164 / D-297): when a connected MCP server presents the MCP authorization spec's challenge (`401` + `WWW-Authenticate: Bearer resource_metadata="…"`, 2025-06-18 spec) or an operator runs `mcp.servers.probe`, the runtime walks the metadata chain — RFC 9728 protected-resource metadata → `authorization_servers[]` → RFC 8414/OIDC metadata (issuer, authorization/token endpoints, scopes, PKCE support, optional RFC 7591 registration endpoint, RFC 8707 resource) — and surfaces it VERBATIM plus provenance (`discovered_at`, `source`, `source_url`) as the additive `oauth_requirement` field on `MCPServerView`. Inert untrusted data: Harbor reports, never follows — it never runs the OAuth flow, never holds or refreshes a token (custody stays consumer-side; the `tokenexchange` credential source stays PULL, D-271), and nothing auto-applies discovered endpoints to config. Discovery fetches are SSRF-bounded (same-origin-as-server default with explicit per-connection allowance, bounded redirects, timeout, size cap, https-only off-loopback, no credentials attached). One discovery mechanism shared with the flow-executing siblings — the ready Phase 85b (RFC 9728 discovery + the 401 step-up + flow execution) and the parked Phase 92p (reserved D-246) — which reuse this chain and add only their flow legs (the Phase 148 precedent). RFC §6.4, §5.2, D-297.
 
@@ -948,6 +1002,11 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## S
 
+**Snapshot generation fence (TUI)** — the monotonically ordered reconciliation
+marker that prevents an older in-flight snapshot from overwriting events or a
+newer snapshot already applied to the conversation projection. Phase 180,
+D-316.
+
 **Session erasure** — the operator/client-initiated, identity-scoped, own-session-only deletion of a whole session and its scoped data via the `sessions.delete` Protocol method (Phase 130, D-262). It runs the **erasure cascade** (see E) across the session's Artifacts, Memory, and State plus the SessionRegistry record, refusing fail-loud with a distinct `session_running` (409) when the target has a RUNNING task. Distinct from SessionManager GC (which only reaps *idle* sessions on its own schedule — RFC §6.9) and from `Registry.Close` (a `Closed=true` soft-close tombstone): session erasure hard-deletes the State/Memory/Artifact bytes, leaving only a redacted, content-free `session.erased` audit record in the compliance sink. A caller erases solely their own verified `(tenant, user, session)` — there is no admin / cross-tenant path. Gated by the negotiable `CapSessionLifecycle` capability. RFC §5.2 / §6.9 / §6.11 / §6.13 / §7, D-262.
 
 **sequence rehydration** — the construction-time recovery of the durable event bus's monotonic, gap-free sequence counter from the persisted per-session head records (Phase 124 / D-255). In durable mode `durable.New` runs the `StateStore.ListKind` maintenance scan over the `events.durable.head` prefix, decodes each head record, and floors `nextSeq` at the global maximum sequence across all sessions, so a Runtime rebuilt against the same StateStore issues sequences strictly greater than any pre-restart token — a client reconnecting at a high `Last-Event-ID` is never silently skipped by `Replay`. Fail-loud: a scan or decode error fails the boot rather than silently starting at 0 (CLAUDE.md §13). See also **Non-replayable sequence (Sequence 0)**. RFC §6.13, §6.11.
@@ -1144,6 +1203,18 @@ Additions to this set are RFC PRs.
 **`Subflow`** — Runtime primitive (Phase 14): `(nctx *NodeContext) CallSubflow(ctx, factory) (Envelope, error)`. Runs a child engine for one parent envelope, mirrors parent cancellation via a watcher goroutine, returns the first egress payload, then `Stop`s the child. RFC §6.1, brief 01 §4.
 
 ## T
+
+**Terminal design system** — the Harbor TUI's semantic token, spacing,
+responsive geometry, surface, typography, border, dialog, composer, and
+accessibility contract defined by `docs/design/tui/CONVENTIONS.md`. Components
+compose it rather than inventing local styles. Phase 181, D-317.
+
+**TUI quality floor** — the binding requirement that Harbor's native terminal
+client meet or exceed the perceived quality of the measured OpenCode reference
+in hierarchy, interaction, responsive behavior, streaming stability,
+accessibility, and terminal safety. It is enforced by reviewed goldens, keyboard
+walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
+181, D-317.
 
 **session-level override apply seam** — the run-start consume of a session's pending `runs.set_overrides` record (`runsprotocol.Store.Consume`, keyed by the identity triple), wired in Phase 92b (D-232). It is one-shot (consumed at the next run, then gone) and resolves ABOVE the tenant-default LLM overrides (session › tenant › config) into `RunContext.LLMOverrides`. `runs.set_overrides` carries the tenant default's field set plus the session-only `SystemPromptOverride` (a full system-prompt REPLACE, distinct from the tenant's additive `ExtraInstructions`); the session `Model` field is the session-level model swap. The runs `Store` is shared by the SET side (the `runs.set_overrides` Service) and the CONSUME side (the run-loop driver). Phase 92b, D-232.
 

@@ -54,10 +54,23 @@ When authoring a phase plan whose subsystem matches the left column, **read at l
 | Harbor Protocol (Console-decoupling, transport, versioning) | §5 | 06, **07** |
 | Console — observability + control plane UI | §7 | **06** (Playground anti-pattern) |
 | CLI — `harbor dev`, scaffolding, deployment | §8 | **06** |
+| Native Runtime TUI (Phases 179–184) | §5, §8 | **06**, 07, 11, 12 + `tui-investigation/` dossier |
 | Persistence triad — interfaces + conformance | §9 | **05** |
 | Identity & isolation contract | §4 | (cross-cutting; every brief touches identity) |
 
 Bold = primary brief for that subsystem. Non-bold = relevant context.
+
+## Exploratory dossiers
+
+These directories contain deeper investigations that are not yet numbered
+phase-planning briefs. They remain context, not settled design.
+
+- [`tui-investigation/`](tui-investigation/) — OpenCode TUI functionality,
+  exact visual grammar, Harbor Protocol capability mapping, Bubble Tea v2
+  feasibility, Harbor-native architecture options, and saturation findings
+  for a future generic Runtime test/control TUI. Coding-agent functionality is
+  explicitly deferred; the dossier authorizes no dependency, CLI, SDK, or
+  Protocol change.
 
 ## How briefs interact with the RFC and phase plans
 
