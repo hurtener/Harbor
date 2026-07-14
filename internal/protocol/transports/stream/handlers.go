@@ -153,18 +153,38 @@ func (h *AggregateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If the filter elided identity components AND the wire request did
-	// not name any explicit identity, fold the caller's triple into the
-	// filter so the aggregator's per-event MatchWire enforces it.
+	// Fold elided identity axes so the substrate's per-event MatchWire
+	// enforces the intended scope. The fold is asymmetric by design:
+	//
+	//   - Tenant is ALWAYS folded to the caller's own when elided. Widening
+	//     the tenant axis requires NAMING tenant(s) — an elided tenant means
+	//     own-tenant even for an admin. This is name-to-widen parity with the
+	//     tasks.list / agents.list fleet selector: an empty tenant axis never
+	//     silently fans across every tenant.
+	//   - User and Session fold to the caller's own ONLY on the NON-widened
+	//     (own-scope) path. On a widened read — already cross-principal or
+	//     multi-value, scope-gated above, and audited by the substrate — an
+	//     elided user/session legitimately means "all users / all sessions in
+	//     the authorized (named-or-own) tenant scope", which is the fleet
+	//     fan-in the widened flag authorizes. Folding them here (the prior
+	//     behaviour) narrowed a TenantIDs:[T2] admin read to
+	//     T2+caller-user+caller-session → EMPTY, defeating the very fan-in the
+	//     scope gate + audit already granted.
+	//
+	// A non-admin naming a foreign principal is rejected 403 at the gate
+	// above BEFORE reaching this fold, so the wildcard (un-folded) user/session
+	// path is reachable only by a verified admin / console:fleet caller.
 	effReq := req
 	if len(effReq.Filter.TenantIDs) == 0 {
 		effReq.Filter.TenantIDs = []string{id.TenantID}
 	}
-	if len(effReq.Filter.UserIDs) == 0 {
-		effReq.Filter.UserIDs = []string{id.UserID}
-	}
-	if len(effReq.Filter.SessionIDs) == 0 {
-		effReq.Filter.SessionIDs = []string{id.SessionID}
+	if !widened {
+		if len(effReq.Filter.UserIDs) == 0 {
+			effReq.Filter.UserIDs = []string{id.UserID}
+		}
+		if len(effReq.Filter.SessionIDs) == 0 {
+			effReq.Filter.SessionIDs = []string{id.SessionID}
+		}
 	}
 
 	resp, err := h.aggregator.Aggregate(r.Context(), effReq, widened)

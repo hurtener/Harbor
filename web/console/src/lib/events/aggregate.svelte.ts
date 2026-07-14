@@ -15,7 +15,7 @@
 // refreshing (page-events.md §12 risk note).
 
 import type { EventFilter, TimeWindow } from '$lib/protocol/events.js';
-import { WINDOW_SPEC } from '$lib/protocol/events.js';
+import { EPOCH_ANCHOR, WINDOW_SPEC } from '$lib/protocol/events.js';
 import type { EventsNamespace } from '$lib/protocol/client.js';
 import { projectBuckets, type SparklineSeries } from './sparkline.js';
 import type { ProtocolError } from '$lib/protocol/errors.js';
@@ -71,7 +71,14 @@ export class EventsAggregator {
 			const resp = await this.#ns.aggregate({
 				filter: this.#filter,
 				window: spec.windowNs,
-				bucket: spec.bucketNs
+				bucket: spec.bucketNs,
+				// Floor the grid onto the globally-shared epoch grid so every
+				// bucket_start is an addressable, cacheable coordinate the page
+				// can stitch cold windows against and re-request by coordinate
+				// on the next poll instead of re-deriving the whole series
+				// (D-306). Absent this, two polls a few seconds apart return two
+				// different boundary sets and nothing caches.
+				anchor: EPOCH_ANCHOR
 			});
 			this.series = projectBuckets(resp.buckets);
 			this.status = 'ready';
