@@ -310,6 +310,8 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |172 | `events.aggregate` origin-anchored (epoch-aligned) bucket grid (HA-16; v1.14 Track B). The aggregator lays its grid from the wall-clock instant at handler entry (`windowStart := now.Add(-req.Window)`); `Window % Bucket == 0` constrains bucket-series LENGTH but never ORIGIN, so two calls at two instants return two different boundary sets — a `bucket_start` is not addressable twice and no consumer can cache a bucket. ADD an OPTIONAL `anchor` on `EventAggregateRequest` (zero ⇒ today's clock-anchored grid); when set, boundaries floor onto `anchor + k·Bucket` so two calls with the same anchor+window+bucket share boundary instants (a bucket is re-requestable/cacheable) and a cold N-bucket fill is ONE call; the Unix epoch yields a globally-shared grid. Chosen over explicit `{since,until,bucket}` as the smallest additive surface composing with `Window`/`Bucket` and not duplicating the `Filter.Since/Until` clamp. NO change to bucket contents/redaction/retention/identity axes; `ProtocolVersion` stays 0.1.0 (additive); full D-223 lockstep + D-209 regen + §18 `use-the-harbor-protocol` SKILL.md same PR; D-306) | internal/protocol/types + internal/events + web/console | §6.13, §5.2, §7 | 171, 118 | 85% | Shipped |
 |173 | `events.aggregate` per-tenant attribution for admin-widened reads (HA-17; v1.14 Track B). An aggregate bucket is a bag of scalars (`{"tool.invoked":7}`) with NO tenant attribution, so — unlike a ROW read (`sessions.list`/`tasks.list`/`events.list`) where each row carries its tenant and a consumer post-filters the merged result against its entitled set — a consumer CANNOT verify an admin-widened count against the `Filter.TenantIDs` it asked for; for an aggregate the runtime's honouring of the filter IS the entire tenant boundary, a single point of enforcement with NO downstream check. ADD opt-in `by_tenant` → `EventBucket.CountsByTenant` (tenant → event_type → count) alongside the totals, returned ONLY for admin-widened reads (verified admin/console:fleet, server-derived per D-299); attribution keys ⊆ the authorized (named-or-folded) `Filter.TenantIDs`, with `Counts` and `CountsByTenant` scoped to the IDENTICAL set by construction (NO per-tenant entitlement mechanism — `ScopeAdmin`/`ScopeConsoleFleet` are GLOBAL binary fan-in grants: the body SELECTS tenants, the scope AUTHORIZES the fan-in; an unelevated caller gains attribution for NOTHING new); the per-bucket invariant `Σ counts_by_tenant == counts` proves it is a pure re-projection not a looser read path; per-bucket (not a response rollup) so it composes with the time series + 172's grid. Makes the isolation boundary independently verifiable on aggregates the way it already is on rows (§6 defence-in-depth); NO payloads/new identity axes; `ProtocolVersion` stays 0.1.0; full D-223 lockstep + D-209 regen + §18 SKILL.md same PR; D-307) | internal/protocol/types + internal/events + internal/protocol/transports/stream + web/console | §6.13, §5.2, §6.5, §4, §7 | 171, 172, 118 | 85% | Shipped |
 |175 | Fleet-scoped retention horizons (HA-23 — the scope gap in the retention-horizon surface HA-14/D-296 shipped; v1.14 Track B). `runtime.health`'s `retention[]` block reports the three durable surfaces at THREE DIFFERENT scopes — `events` runtime-wide/identity-free (`RetentionReporter.OldestRetainedAt(ctx)`, CORRECT), `tasks` scoped to the caller's full TRIPLE (its session, via `TaskRegistry.List`), `sessions` scoped to the caller's TENANT (`SessionLister.ListSnapshots`) — and the provider OMITS an absent surface, so the SAME wire shape (no entry) means BOTH "surface retains nothing" AND "caller has nothing in scope," indistinguishable on the wire. The one caller that exists to observe the fleet — a coordinator polling under a dedicated `svc:` service identity that owns no sessions/tasks — therefore receives ONLY the `events` horizon; the `tasks`+`sessions` horizons are structurally empty and its cross-session windowed view silently undercounts (a session aged out of the sessions surface while its events remain → enumeration misses it → the correct "mark buckets incomplete when the sessions horizon < window" guard is INERT because the sessions horizon is unobservable at fleet scope). FIX (both): (1) a verified admin/`console:fleet` caller reads `tasks`+`sessions` at RUNTIME-WIDE scope (the same identity-free scope `events` already uses), server-derived from the verified session per D-299 (NEVER the request body), riding `runtime.health` (NO new method, NO new capability bit, NO ordinary-caller scope relaxation — that fold stays a fail-closed control); the runtime-wide read goes through an optional identity-free `OldestRetainedAt` reader on the tasks registry + session lister (mirroring `events.RetentionReporter`, type-asserted, NO `Supports*` ceremony); the widened path emits one fail-loud `admin_scope_used`. (2) absence made REPRESENTABLE — an additive `RetentionHorizon.scope` (`runtime`/`tenant`/`session`) + always-emit-for-the-three-known-surfaces so a consumer distinguishes "unobservable at your scope" from "surface retains nothing" and degrades honestly (the HA-18/20/21/22/23 through-line; D-311 class rule cross-ref). Composes with the D-308 events-fold work (Phase 172 — the `if !widened` guard on `events.list`+`events.aggregate` closing HA-16+HA-21): that work makes the session-less cross-session enumeration REACHABLE, this makes its completeness VERIFIABLE (orthogonal partner, not a hard dep). NO change to the `events` horizon/retention itself (Harbor has no retention knob)/redaction/counters+metrics TSDB (D-296 decided-NO); ONE additive wire field, `ProtocolVersion` stays 0.1.0; full D-223 lockstep + D-209 regen + §18 SKILL.md same PR; D-310) | internal/protocol/types + internal/protocol + internal/runtime/posture + internal/tasks + internal/sessions + web/console | §5.2, §5.5, §6.1, §6.13, §6.14, §6.16, §7 | 163, 118 | 85% | Pending |
+|177 | Projection-completeness gate + the populate/remove surfaces (HA-24; v1.14; the CLASS that HA-22/174 is one instance of — declared-but-never-assigned wire fields with filters/aggregates over them (false absence), on THREE more surfaces + a mechanical class-closer. TASKS: `TaskRow.HasPendingApproval` is READ by the `tasks.list` filter (`list.go`) but NEVER assigned by the sole producer `projectRow` (`registry_projector.go`) → `has_pending_approval:true` returns an EMPTY page on a fleet with open gates (the sharp one) → populate at projection time from the approval/pause registry; `BackgroundAcknowledged` (no filter) → represent/populate; ALSO the WIRED tasks `serve.Enricher` (`enricher.go`) is a STUB — `ParentSession` returns a zero `TaskParentSessionRef{}`, `Cost` a zero `TaskCostRollup` — so even the surface Harbor got STRUCTURALLY right ships zeros → un-stub the parent-session card (session registry) + cost rollup (cost events, coordinated with 174). FLOWS: `budgetConsumption` (`catalog.go`) sets `RequestsUsed`+`CostUSDUsed` but NEVER `TokensUsed` (non-omitempty) → fabricated 0 on `FlowSummary`/`FlowDetail` → add `RunRecord.Tokens` (symmetric with `CostUSD`) + sum it. MEMORY: producer never sets `AgentID`/`ExpiresAt`; V1 memory has NO TTL (`ExpiresAt` zero=no TTL) → `filter.has_ttl_expiring` + BOTH `expiring_in_1h` fields (`MemoryAggregates` :217 AND `MemoryHealthAggregate` :346, neither omitempty) are STRUCTURALLY DEAD → REMOVE (breaking wire-shape change, D-223/D-209, RFC §8 exemption stated: always-empty → no live consumer + the 0.1.0 within-version precedent, 171); `filter.agent_ids` → V1 mechanism is LOUD-REJECT (`ConversationTurn` carries no producer identity, so nothing to populate from; populate deferred to a follow-up that adds it), never a false-empty page (D-311). SESSIONS: this phase ADDS the sessions registration (174 predates `projectioncheck`; serialized AFTER 174, edits its `lister_projector.go`). TOOLS: split to 178 — no production `Annotator` exists (only a `fakeAnnotator` test double, §17.8), so Phase 177 honestly GATES the annotator-backed surface behind ONE annotator-wired capability toggle: facet filters loud-reject when unwired; the response-riding catalog aggregates carry an explicit `aggregates_partial` marker (Console renders "unavailable," never a silent 0) pending 178. THE GATE (centerpiece, the class-closer) — TWO halves because the class has two variants: a registry-gated projection-completeness check (`internal/protocol/projectioncheck`) where every surface self-registers a `ProjectionContract` (probe + filtered/sorted/aggregated field-set + reason-carrying honest-omission allow-list + a prod-wiring-test name). HALF A (never-assigned): reflect each probe, FAIL when a filtered/sorted/aggregated field is left zero and not allow-listed (and on an empty allow-list reason). HALF B (never-wired — the variant that motivated this band): each surface MUST register a prod-wiring test exercising the projector as assembled through real `mux` wiring, so a forgotten `WithX` (passes Half A's fake-backed probe, ships zeros in prod — the tools bug) FAILS; a surface with no prod-wiring test FAILS. A surface-coverage check asserts every known surface is registered — mirroring the events `RegisteredDrivers()` conformance gate (D-305). Honest exclusions NOT allow-listed (populated or not operated-over, so no entry): `FlowBudget.TokenCap`, `MemoryItem.AgentID`/`.ExpiresAt` ROW fields, `TaskParentSessionRef.SessionID`. The gate is the primitive; the surface fixes + 174's session fix + the tools interim-gating are its consumers so it lands green (§13). No `ProtocolVersion` bump. D-313) | internal/protocol/projectioncheck + internal/tasks/protocol + internal/sessions/protocol + internal/runtime/serve + internal/runtime/flow + internal/memory/protocol + internal/protocol/types + web/console | §5.2, §6.1, §6.4, §6.6, §6.8, §7 | 174, 08, 54, 60, 73c, 107a | 90% | Pending |
+|178 | Tools production Annotator (HA-24; v1.14; the tools leg + second member of the D-313 band). The tools catalog projector reads OAuth/approval/last-used/metrics/content-stats/display-modes through the optional `Annotator` seam (`WithAnnotator`), but NO production `Annotator` is ever wired — `mux.go` `NewCatalogProjector` supplies ONLY `WithLoadingResolver`, and the sole implementer is a `fakeAnnotator` test double (§17.8) — so in prod `filter.oauth_statuses`/`filter.approval_policies`/the `Name+" "+Version` search axis/the catalog aggregates (`Active`/`PendingApproval`/`AwaitingOAuth`) all operate over structural defaults (never-wired variant, confirmed). ASSEMBLE a production `Annotator` (a §4.4-shaped concrete behind the shipped seam — no new interface) reading each annotation from its owning subsystem: OAuth from `tools/auth`, approval from `tools/approval`, last-used/metrics/content-stats read-time from the events stream, DisplayModes from MCP negotiation; WIRE it at `mux.go` via `WithAnnotator(...)` exactly as `WithLoadingResolver` (the one-line seam; the weight is the assembly); FLIP the Phase-177 annotator-wired capability on so the gated facets/search/aggregates go live; populate `Tool.Version` (or honestly-empty name-only search where a transport carries no version); and LIGHT UP the inert admin write path (`tools.set_approval_policy`/`tools.revoke_oauth`, which returned `ErrAdminUnsupported` because no annotator implemented the `ApprovalPolicySetter`/`OAuthRevoker` seams the projector already delegates to) — writes route back through `tools/approval`/`tools/auth` with audit, never a Console shadow store (D-061). With the annotator wired, the D-313 gate now ENFORCES the tools fields (their allow-list entries removed). No new Protocol method, no `ProtocolVersion` bump — the fields are already declared (177 gated them); the capability flips unwired→wired. D-314) | internal/tools/protocol + internal/runtime/serve + web/console | §5.2, §6.4, §6.15, §7 | 177, 28, 60 | 85% | Pending |
 
 ---
 
@@ -3904,6 +3906,95 @@ per §17.8). Status: Shipped (V1.6).
   §18 SKILL.md in the same PR. See
   `docs/plans/phase-175-fleet-retention-horizons.md`.
 - **Decision:** D-310.
+
+### Phase 177 — Projection-completeness gate + the populate/remove surfaces (HA-24)
+
+- **Subsystem:** internal/protocol/projectioncheck (the new gate + registry),
+  internal/tasks/protocol (`HasPendingApproval` / `BackgroundAcknowledged`),
+  internal/runtime/serve (the tasks `serve.Enricher` un-stub),
+  internal/runtime/flow + internal/runtime/flow/protocol (`RunRecord.Tokens` +
+  `TokensUsed`), internal/memory/protocol (dead TTL facet/aggregate removal +
+  `agent_ids` loud-reject), internal/sessions/protocol (register the 174 surface
+  into the gate — serialized after 174), internal/protocol/types (memory wire
+  removal), internal/tools/protocol (interim honest-gating), web/console.
+- **RFC:** §5.2, §6.1, §6.4, §6.6, §6.8, §7.
+- **Deps:** 174 (HA-22 — the sessions instance + D-311; the gate must cover the
+  sessions surface 174 fixes, and the tasks enricher cost work coordinates with
+  174's session-cost aggregation), 08, 54, 60/72a, 73c/107a. All shipped/landing
+  in the same wave.
+- **What it delivers:** HA-24 — the CLASS that HA-22/174 is one instance of, on
+  three more surfaces plus a mechanical class-closer. Declared-but-never-assigned
+  wire fields with filters/aggregates over them return FALSE ABSENCE. TASKS:
+  `TaskRow.HasPendingApproval` is read by the `tasks.list` filter but never
+  assigned by `projectRow`, so `has_pending_approval:true` returns an empty page
+  on a fleet with open gates — populated at projection time from the
+  approval/pause registry; `BackgroundAcknowledged` (no filter) represented; the
+  WIRED tasks `serve.Enricher` is a STUB returning a zero parent-session ref +
+  zero cost rollup (even the structurally-right surface ships zeros) — un-stubbed.
+  FLOWS: `budgetConsumption` never sums `TokensUsed` (a non-omitempty field) —
+  `RunRecord.Tokens` added (symmetric with `CostUSD`) and summed. MEMORY: V1 has
+  NO TTL, so `has_ttl_expiring` and BOTH `expiring_in_1h` fields (on
+  `MemoryAggregates` and `MemoryHealthAggregate`) are structurally dead — REMOVED
+  (breaking wire-shape change, D-223/D-209, RFC §8 exemption stated: always-empty
+  → no live consumer, plus the 0.1.0 within-version precedent); `agent_ids`
+  LOUD-REJECTS in V1
+  (`ConversationTurn` carries no producer identity; populate deferred to a
+  follow-up). SESSIONS: this phase adds the sessions registration (174 predates
+  `projectioncheck`; serialized after 174). TOOLS: split to 178 — no production
+  `Annotator` exists, so this phase honestly gates the annotator-backed surface
+  behind ONE capability toggle (facet filters loud-reject; catalog aggregates
+  carry an `aggregates_partial` marker, never a silent 0) pending 178. THE GATE
+  (the class-closer) — TWO halves: a registry-gated projection-completeness check
+  where every surface self-registers a `ProjectionContract` (probe +
+  filtered/sorted/aggregated field-set + reason-carrying honest-omission
+  allow-list + a prod-wiring-test name). Half A (never-assigned) reflects each
+  probe and FAILS on a filtered field left zero and not allow-listed (and on an
+  empty allow-list reason); Half B (never-wired — the variant that motivated the
+  band) requires each surface to register a prod-wiring test through real `mux`
+  wiring, so a forgotten `WithX` (passes Half A's fake-backed probe, ships zeros
+  in prod — the tools bug) FAILS. A surface-coverage check asserts every known
+  surface is registered — mirroring the events `RegisteredDrivers()` gate (D-305).
+  The gate is the primitive; the surface fixes + 174's session fix + the tools
+  interim-gating are its consumers so it lands green (§13). Fields that are
+  populated or not operated-over (`FlowBudget.TokenCap`, the
+  `MemoryItem.AgentID`/`.ExpiresAt` ROW fields, `TaskParentSessionRef.SessionID`)
+  need NO allow-list entry. No `ProtocolVersion` bump. See
+  `docs/plans/phase-177-projection-completeness-gate.md`.
+- **Decision:** D-313.
+- **Status:** Pending.
+
+---
+
+### Phase 178 — Tools production Annotator (HA-24)
+
+- **Subsystem:** internal/tools/protocol (the new production `Annotator` +
+  filter/projector un-gating), internal/runtime/serve (the `WithAnnotator`
+  wiring), web/console.
+- **RFC:** §5.2, §6.4, §6.15, §7.
+- **Deps:** 177 (D-313 — the projection-completeness gate + the annotator-wired
+  capability this phase flips on; the tools surface is registered by 177), 28
+  (MCP registry / DisplayMode negotiation), the `tools/auth` + `tools/approval`
+  subsystems, 60/72a (events read-side). All shipped.
+- **What it delivers:** the tools leg of HA-24 and the second member of the D-313
+  band. The tools catalog projector reads OAuth/approval/last-used/metrics/
+  content-stats/display-modes through the optional `Annotator` seam, but no
+  production `Annotator` is ever wired — `mux.go` supplies only
+  `WithLoadingResolver` and the sole implementer is a `fakeAnnotator` test double
+  (§17.8) — so in prod the tools facets/search/aggregates operate over structural
+  defaults (the never-wired variant). This phase assembles a production
+  `Annotator` (a §4.4-shaped concrete behind the shipped seam) reading each
+  annotation from its owning subsystem, wires it at `mux.go` via
+  `WithAnnotator(...)`, flips the Phase-177 annotator-wired capability on so the
+  gated facets go live, populates `Tool.Version`, and lights up the inert admin
+  write path (`tools.set_approval_policy` / `tools.revoke_oauth`, which returned
+  `ErrAdminUnsupported` because no annotator implemented the setter/revoker seams
+  the projector already delegates to) — writes route back through
+  `tools/approval` / `tools/auth` with audit, never a Console shadow store
+  (D-061). With the annotator wired, the D-313 gate now enforces the tools fields
+  (their allow-list entries removed). No new Protocol method, no `ProtocolVersion`
+  bump — the fields are already declared; the capability flips unwired→wired. See
+  `docs/plans/phase-178-tools-annotator.md`.
+- **Decision:** D-314.
 - **Status:** Pending.
 
 ---
