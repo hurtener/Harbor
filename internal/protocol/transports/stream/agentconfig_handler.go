@@ -182,6 +182,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveAddMCPConnection(w, r, body, wireID)
 	case "remove_mcp_connection":
 		h.serveRemoveMCPConnection(w, r, body, wireID)
+	case "set_mcp_discovery_origins":
+		h.serveSetMCPDiscoveryOrigins(w, r, body, wireID)
 	case "skills/list":
 		h.serveSkillsList(w, r, body, wireID)
 	case "skills/upsert":
@@ -408,6 +410,23 @@ func (h *AgentConfigHandler) serveRemoveMCPConnection(w http.ResponseWriter, r *
 	resp, err := h.service.RemoveMCPConnection(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigRemoveMCPConnection, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSetMCPDiscoveryOrigins(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSetMCPDiscoveryOriginsRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSetMCPDiscoveryOrigins) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SetMCPDiscoveryOrigins(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSetMCPDiscoveryOrigins, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -709,8 +728,14 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrBootDeclaredConnection):
-		// remove_mcp_connection named a boot-declared (yaml) server — a
-		// DISTINCT loud error (400): the verb governs revisioned state only.
+		// remove_mcp_connection / set_mcp_discovery_origins named a boot-declared
+		// (yaml) server — a DISTINCT loud error (400): the verb governs revisioned
+		// state only.
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrDiscoveryOriginsNotHTTP):
+		// set_mcp_discovery_origins named a stdio connection — no HTTP discovery
+		// walk, so an allow-list is meaningless (400).
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrUnknownModel),

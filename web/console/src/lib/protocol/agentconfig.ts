@@ -79,6 +79,11 @@ export interface AgentConfigMCPConnectionDescriptor {
 	oauth_provider?: string;
 	/** Non-secret operator key/values merged verbatim into the MCP `_meta`. */
 	meta_annotations?: Record<string, string>;
+	/** Non-secret per-connection cross-origin allow-list of public https origins
+	 * the OAuth-requirement discovery walker may fetch authorization-server
+	 * metadata from. Revisioned + writable live over
+	 * `agent_config.set_mcp_discovery_origins` (http transport only). */
+	oauth_discovery_allowed_origins?: string[];
 }
 
 /** The runtime-added MCP-connection section of the config envelope. Mirrors
@@ -419,6 +424,31 @@ export interface AgentConfigRemoveMCPConnectionRequest {
 export interface AgentConfigRemoveMCPConnectionResponse {
 	revision: AgentConfigRevisionView;
 	name: string;
+	protocol_version: string;
+}
+
+/** `agent_config.set_mcp_discovery_origins` request — admin-scoped. FULL-REPLACE
+ * writes a runtime-added MCP connection's OAuth-discovery cross-origin
+ * allow-list (records a revision AND applies it live). Origins are validated
+ * https origins (no path/IP-literal). An unknown name, a boot-declared (yaml)
+ * name, and a stdio connection each fail loud with a distinct typed error.
+ * Mirrors `types.AgentConfigSetMCPDiscoveryOriginsRequest`. */
+export interface AgentConfigSetMCPDiscoveryOriginsRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+	allowed_origins: string[];
+}
+
+/** `agent_config.set_mcp_discovery_origins` response — the recorded revision,
+ * the granted / revoked origin deltas, and whether the write applied to the live
+ * registry. Mirrors `types.AgentConfigSetMCPDiscoveryOriginsResponse`. */
+export interface AgentConfigSetMCPDiscoveryOriginsResponse {
+	revision: AgentConfigRevisionView;
+	name: string;
+	granted?: string[];
+	revoked?: string[];
+	applied_live: boolean;
 	protocol_version: string;
 }
 

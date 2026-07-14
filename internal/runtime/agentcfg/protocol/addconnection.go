@@ -96,6 +96,14 @@ type AttachRequest struct {
 	// MetaAnnotations is the non-secret operator `_meta` annotation set the
 	// attacher carries onto the live connection's per-call `_meta`.
 	MetaAnnotations map[string]string
+	// OAuthDiscoveryAllowedOrigins is the non-secret per-connection cross-origin
+	// allow-list for OAuth-requirement discovery fetches. The attacher carries
+	// it into the config.MCPServerConfig it builds so the live registry snapshots
+	// it (closing the wiring gap — the walker's allowance input now flows from
+	// the add request through to the registry, no longer inert for a
+	// runtime-added connection). Empty leaves the authorization-server hop
+	// needs-allowance.
+	OAuthDiscoveryAllowedOrigins []string
 }
 
 // ConnectionState is the explicit attach lifecycle state surfaced on the
@@ -185,15 +193,16 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 	// Drive the real attach. The headers flow to the transport ONLY — they
 	// are NOT carried into the revision / diff / events below.
 	attachErr := s.attacher.Attach(ctx, AttachRequest{
-		Identity:        id,
-		AgentID:         req.AgentID,
-		Name:            desc.Name,
-		Transport:       desc.Transport,
-		Command:         append([]string(nil), desc.Command...),
-		URL:             desc.URL,
-		Headers:         req.Headers,
-		OAuthProvider:   desc.OAuthProvider,
-		MetaAnnotations: cloneAnnotations(desc.MetaAnnotations),
+		Identity:                     id,
+		AgentID:                      req.AgentID,
+		Name:                         desc.Name,
+		Transport:                    desc.Transport,
+		Command:                      append([]string(nil), desc.Command...),
+		URL:                          desc.URL,
+		Headers:                      req.Headers,
+		OAuthProvider:                desc.OAuthProvider,
+		MetaAnnotations:              cloneAnnotations(desc.MetaAnnotations),
+		OAuthDiscoveryAllowedOrigins: append([]string(nil), desc.OAuthDiscoveryAllowedOrigins...),
 	})
 
 	switch {
@@ -281,6 +290,9 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 		if strings.TrimSpace(c.OAuthProvider) != "" {
 			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: stdio transport must not bind an oauth_provider (no HTTP request to inject Authorization into)", ErrInvalidConnection)
 		}
+		if len(c.OAuthDiscoveryAllowedOrigins) > 0 {
+			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: stdio transport must not carry oauth_discovery_allowed_origins (no HTTP discovery walk)", ErrInvalidConnection)
+		}
 		return agentcfg.MCPConnectionDescriptor{
 			Name:            name,
 			Transport:       transport,
@@ -294,12 +306,17 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 		if len(c.Command) > 0 {
 			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)
 		}
+		origins, oerr := normalizeDiscoveryOrigins(c.OAuthDiscoveryAllowedOrigins)
+		if oerr != nil {
+			return agentcfg.MCPConnectionDescriptor{}, oerr
+		}
 		return agentcfg.MCPConnectionDescriptor{
-			Name:            name,
-			Transport:       transport,
-			URL:             strings.TrimSpace(c.URL),
-			OAuthProvider:   strings.TrimSpace(c.OAuthProvider),
-			MetaAnnotations: cloneAnnotations(c.MetaAnnotations),
+			Name:                         name,
+			Transport:                    transport,
+			URL:                          strings.TrimSpace(c.URL),
+			OAuthProvider:                strings.TrimSpace(c.OAuthProvider),
+			MetaAnnotations:              cloneAnnotations(c.MetaAnnotations),
+			OAuthDiscoveryAllowedOrigins: origins,
 		}, nil
 	default:
 		return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: unknown transport %q (want stdio|http)", ErrInvalidConnection, c.Transport)
@@ -409,13 +426,44 @@ func lifecycleEventType(state ConnectionState) events.EventType {
 // descriptorToWire projects a domain descriptor onto the wire shape.
 func descriptorToWire(d agentcfg.MCPConnectionDescriptor) prototypes.AgentConfigMCPConnectionDescriptor {
 	return prototypes.AgentConfigMCPConnectionDescriptor{
-		Name:            d.Name,
-		Transport:       string(d.Transport),
-		Command:         append([]string(nil), d.Command...),
-		URL:             d.URL,
-		OAuthProvider:   d.OAuthProvider,
-		MetaAnnotations: cloneAnnotations(d.MetaAnnotations),
+		Name:                         d.Name,
+		Transport:                    string(d.Transport),
+		Command:                      append([]string(nil), d.Command...),
+		URL:                          d.URL,
+		OAuthProvider:                d.OAuthProvider,
+		MetaAnnotations:              cloneAnnotations(d.MetaAnnotations),
+		OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
 	}
+}
+
+// normalizeDiscoveryOrigins trims, de-duplicates, and validates a discovery
+// allow-list through the SHARED origin validator (config.ValidateDiscoveryOrigin
+// — one implementation, two call sites) so a malformed entry fails loud with a
+// typed ErrInvalidConnection naming the entry. The result is deterministically
+// ordered (input order, first occurrence) and never nil-vs-empty ambiguous: an
+// all-empty input returns nil. Shared by the add path and the
+// set_mcp_discovery_origins write.
+func normalizeDiscoveryOrigins(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	var out []string
+	for _, raw := range in {
+		o := strings.TrimSpace(raw)
+		if o == "" {
+			continue
+		}
+		if err := config.ValidateDiscoveryOrigin(o); err != nil {
+			return nil, fmt.Errorf("%w: oauth_discovery_allowed_origins entry %q: %s", ErrInvalidConnection, o, err.Error())
+		}
+		if _, dup := seen[o]; dup {
+			continue
+		}
+		seen[o] = struct{}{}
+		out = append(out, o)
+	}
+	return out, nil
 }
 
 // validateConnectionAnnotations rejects empty / reserved / spec-prefixed

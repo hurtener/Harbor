@@ -117,6 +117,15 @@ type AgentConfigMCPConnectionDescriptor struct {
 	// merged verbatim into the MCP `_meta` on every identity-stamped call.
 	// Reserved / spec-prefixed keys are rejected at attach.
 	MetaAnnotations map[string]string `json:"meta_annotations,omitempty"`
+	// OAuthDiscoveryAllowedOrigins is the explicit per-connection cross-origin
+	// allow-list of public https origins the OAuth-requirement discovery walker
+	// may fetch authorization-server metadata from. NON-SECRET (an origin
+	// allow-list) — revisioned + diffable + rollback-able, and writable live
+	// over `agent_config.set_mcp_discovery_origins`. Empty leaves the
+	// authorization-server hop needs-allowance (partial discovery), never a
+	// network hole (a granted origin is still refused at dial if it resolves
+	// private / loopback). Set only for the http transport.
+	OAuthDiscoveryAllowedOrigins []string `json:"oauth_discovery_allowed_origins,omitempty"`
 }
 
 // AgentConfigConnections is the wire projection of the runtime-added
@@ -614,6 +623,47 @@ type AgentConfigRemoveMCPConnectionResponse struct {
 	Revision AgentConfigRevisionView `json:"revision"`
 	// Name is the removed MCP source id (echoed for the caller's convenience).
 	Name            string `json:"name"`
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// AgentConfigSetMCPDiscoveryOriginsRequest is the admin-scoped
+// `agent_config.set_mcp_discovery_origins` request — a FULL-REPLACE write of a
+// runtime-added MCP connection's OAuth-discovery cross-origin allow-list. The
+// verb records a new revision carrying every sibling section forward AND applies
+// the allow-list to the live MCP registry so the very next discovery uses it
+// (and a revoke prunes the recorded requirement's now-unallowed
+// authorization-server entries). Origins are the SHARED origin validator's
+// shape (https scheme://host[:port], no path/query/fragment, no IP literal). An
+// unknown connection, a boot-declared (yaml) name, and a stdio-transport
+// connection each fail loud with a distinct typed error. Admin-only;
+// server-derived authority (never the body). Governs revisioned state only — a
+// boot-declared connection's allowance is edited in yaml + restart.
+type AgentConfigSetMCPDiscoveryOriginsRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Name is the runtime-added MCP source id whose allow-list is replaced.
+	Name string `json:"name"`
+	// AllowedOrigins is the FULL replacement allow-list (empty clears it).
+	AllowedOrigins []string `json:"allowed_origins"`
+}
+
+// AgentConfigSetMCPDiscoveryOriginsResponse is the
+// `agent_config.set_mcp_discovery_origins` response — the recorded revision, the
+// computed granted / revoked deltas (against the prior live allow-list), and
+// whether the write took effect on the live registry.
+type AgentConfigSetMCPDiscoveryOriginsResponse struct {
+	// Revision is the recorded config revision carrying the new allow-list.
+	Revision AgentConfigRevisionView `json:"revision"`
+	// Name is the connection whose allow-list was replaced (echoed).
+	Name string `json:"name"`
+	// Granted is the set of origins newly present versus the prior live set.
+	Granted []string `json:"granted,omitempty"`
+	// Revoked is the set of origins dropped versus the prior live set.
+	Revoked []string `json:"revoked,omitempty"`
+	// AppliedLive reports whether the allow-list was applied to the live MCP
+	// registry (true on every served success; false only degrades to the
+	// revisioned write when no live registry applier is wired on this runtime).
+	AppliedLive     bool   `json:"applied_live"`
 	ProtocolVersion string `json:"protocol_version"`
 }
 

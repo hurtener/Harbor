@@ -91,6 +91,19 @@ function fakeClient(overrides: Record<string, unknown> = {}): ProtocolClient {
 			reason: 'OAuth required',
 			protocol_version: '0.1.0'
 		})),
+		setMcpDiscoveryOrigins: vi.fn(async () => ({
+			revision: ACTIVE_REVISION,
+			name: 'srv',
+			granted: ['https://as.example.net'],
+			revoked: [],
+			applied_live: true,
+			protocol_version: '0.1.0'
+		})),
+		removeMcpConnection: vi.fn(async () => ({
+			revision: ACTIVE_REVISION,
+			name: 'srv',
+			protocol_version: '0.1.0'
+		})),
 		...overrides
 	};
 	const events = { subscribeURL: vi.fn(() => 'http://127.0.0.1:18080/v1/events') };
@@ -667,5 +680,94 @@ describe('AgentConfigPanelState — failed-write paths keep state (§13 no silen
 		expect(state.rollbackPreviewPhase).toBe('error');
 		expect(state.rollbackPreviewError?.message).toContain('diff-fail');
 		expect(ac(client).rollback).not.toHaveBeenCalled();
+	});
+});
+
+describe('AgentConfigPanelState — the per-connection discovery-origins editor (D-302)', () => {
+	const REV_WITH_CONN = {
+		revision_id: 'rev-c',
+		content_hash: 'hc',
+		created_at: '2026-07-10T10:00:00Z',
+		payload: {
+			connections: {
+				servers: [
+					{
+						name: 'srv',
+						transport: 'http',
+						url: 'https://mcp.example.com/rpc',
+						oauth_discovery_allowed_origins: ['https://a.example.net']
+					}
+				]
+			}
+		}
+	};
+
+	function connClient(overrides: Record<string, unknown> = {}): ProtocolClient {
+		return fakeClient({
+			get: vi.fn(async () => ({ revision: REV_WITH_CONN, set: true, protocol_version: '0.1.0' })),
+			listRevisions: vi.fn(async () => ({ revisions: [REV_WITH_CONN], protocol_version: '0.1.0' })),
+			...overrides
+		});
+	}
+
+	it('exposes the active connections + the current allow-list as the input default', async () => {
+		seedConnection();
+		const state = new AgentConfigPanelState();
+		await state.load(connClient());
+		expect(state.activeConnections.map((c) => c.name)).toEqual(['srv']);
+		expect(state.discoveryInputFor(state.activeConnections[0])).toBe('https://a.example.net');
+	});
+
+	it('setDiscoveryOrigins parses the draft, FULL-REPLACE writes, and reloads', async () => {
+		seedConnection();
+		const client = connClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		// The operator edits the draft (newline + comma separated, deduped).
+		state.discoveryDraft['srv'] = 'https://a.example.net\nhttps://b.example.net, https://b.example.net';
+		await state.setDiscoveryOrigins('srv');
+		expect(ac(client).setMcpDiscoveryOrigins).toHaveBeenCalledWith(DEFAULT_AGENT_ID, 'srv', [
+			'https://a.example.net',
+			'https://b.example.net'
+		]);
+		// A confirmed write clears the draft + reloads (get called again).
+		expect(state.discoveryDraft['srv']).toBeUndefined();
+		expect(ac(client).listRevisions).toHaveBeenCalledTimes(2);
+	});
+
+	it('removeConnection calls remove_mcp_connection (its first Console caller) + reloads', async () => {
+		seedConnection();
+		const client = connClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.removeConnection('srv');
+		expect(ac(client).removeMcpConnection).toHaveBeenCalledWith(DEFAULT_AGENT_ID, 'srv');
+		expect(ac(client).listRevisions).toHaveBeenCalledTimes(2);
+	});
+
+	it('the editor writes are admin-gated (no Protocol call without the admin claim)', async () => {
+		seedConnection('read'); // non-admin
+		const client = connClient();
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		await state.setDiscoveryOrigins('srv');
+		await state.removeConnection('srv');
+		expect(ac(client).setMcpDiscoveryOrigins).not.toHaveBeenCalled();
+		expect(ac(client).removeMcpConnection).not.toHaveBeenCalled();
+	});
+
+	it('surfaces a write failure without reloading (no silent drop)', async () => {
+		seedConnection();
+		const client = connClient({
+			setMcpDiscoveryOrigins: vi.fn(async () =>
+				Promise.reject(new ProtocolError('invalid_request', 'bad origin', 400))
+			)
+		});
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.discoveryDraft['srv'] = 'http://not-https';
+		await state.setDiscoveryOrigins('srv');
+		expect(state.discoveryError?.code).toBe('invalid_request');
+		expect(ac(client).listRevisions).toHaveBeenCalledTimes(1); // no reload on failure
 	});
 });

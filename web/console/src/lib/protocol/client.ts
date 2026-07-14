@@ -70,6 +70,7 @@ import type {
 	AgentConfigMCPConnectionDescriptor,
 	AgentConfigAddMCPConnectionResponse,
 	AgentConfigRemoveMCPConnectionResponse,
+	AgentConfigSetMCPDiscoveryOriginsResponse,
 	AgentConfigSkillInput,
 	AgentConfigSkillsListResponse,
 	AgentConfigSkillsUpsertResponse,
@@ -1194,6 +1195,21 @@ export class AgentConfigNamespace {
 		return this.#t.request<AgentConfigRemoveMCPConnectionResponse>(
 			'/v1/agent_config/remove_mcp_connection',
 			{ agent_id: agentId, name },
+		);
+	}
+	/** `agent_config.set_mcp_discovery_origins` — FULL-REPLACE a runtime-added MCP
+	 * connection's OAuth-discovery cross-origin allow-list. Records a revision AND
+	 * applies the allow-list to the live registry (a revoke prunes the recorded
+	 * requirement's now-unallowed authorization-server entries). Admin-scoped. An
+	 * unknown / boot-declared / stdio connection fails loud with a distinct error. */
+	setMcpDiscoveryOrigins(
+		agentId: string,
+		name: string,
+		allowedOrigins: string[],
+	): Promise<AgentConfigSetMCPDiscoveryOriginsResponse> {
+		return this.#t.request<AgentConfigSetMCPDiscoveryOriginsResponse>(
+			'/v1/agent_config/set_mcp_discovery_origins',
+			{ agent_id: agentId, name, allowed_origins: allowedOrigins },
 		);
 	}
 	/** `agent_config.skills.list` — list the agent's skills (metadata only). */

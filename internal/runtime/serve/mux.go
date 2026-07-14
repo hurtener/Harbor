@@ -503,6 +503,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		}
 		if in.MCPAttacher != nil {
 			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(in.MCPAttacher))
+			// The production attacher concrete also applies the OAuth-discovery
+			// allow-list live (the set_mcp_discovery_origins write path); wire it as
+			// the applier when the attacher satisfies the seam.
+			if applier, ok := in.MCPAttacher.(agentcfgprotocol.DiscoveryOriginApplier); ok {
+				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithDiscoveryOriginApplier(applier))
+			}
 		}
 		agentConfigService, acErr := agentcfgprotocol.NewService(in.AgentConfig, agentConfigOpts...)
 		if acErr != nil {
