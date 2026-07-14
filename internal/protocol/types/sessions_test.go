@@ -2,6 +2,7 @@ package types_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,8 +102,6 @@ func TestSessionsListResponse_TruncatedRoundTrip(t *testing.T) {
 		Rows: []types.SessionRow{{
 			SessionID:      "s1",
 			Status:         types.SessionStatusRunning,
-			AgentID:        "agent-a",
-			AgentName:      "Agent A",
 			UserID:         "u1",
 			TenantID:       "t1",
 			StartedAt:      time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC),
@@ -139,6 +138,47 @@ func TestSessionsListResponse_TruncatedRoundTrip(t *testing.T) {
 	// carve-out for the reader.
 	if out.Rows[0].SessionID != "s1" {
 		t.Errorf("SessionID round-trip: got %q", out.Rows[0].SessionID)
+	}
+}
+
+// TestSessionRow_AgentAbsence_Representable pins the D-309/D-311
+// representable-absence contract for the two agent fields: a nil AgentID /
+// AgentName is OMITTED on the wire (distinguishable from a present
+// empty-string agent id), and a non-nil binding round-trips as a value.
+func TestSessionRow_AgentAbsence_Representable(t *testing.T) {
+	t.Parallel()
+	// Nil agent binding — the V1 default. The keys must be ABSENT, not "".
+	row := types.SessionRow{SessionID: "s1", Status: types.SessionStatusRunning}
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if s := string(raw); strings.Contains(s, "agent_id") || strings.Contains(s, "agent_name") {
+		t.Fatalf("nil agent binding must be OMITTED on the wire (representable absence, D-311); got %s", s)
+	}
+	if strings.Contains(string(raw), "counters_partial") {
+		t.Fatalf("counters_partial=false must be omitted on the wire; got %s", raw)
+	}
+	// A non-nil binding round-trips as a value.
+	agent := "agent-a"
+	name := "Agent A"
+	row2 := types.SessionRow{SessionID: "s2", AgentID: &agent, AgentName: &name, CountersPartial: true}
+	raw2, err := json.Marshal(row2)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var out types.SessionRow
+	if err := json.Unmarshal(raw2, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if out.AgentID == nil || *out.AgentID != "agent-a" {
+		t.Errorf("AgentID round-trip: got %v, want agent-a", out.AgentID)
+	}
+	if out.AgentName == nil || *out.AgentName != "Agent A" {
+		t.Errorf("AgentName round-trip: got %v, want Agent A", out.AgentName)
+	}
+	if !out.CountersPartial {
+		t.Error("CountersPartial round-trip lost — the honest lower-bound marker must survive the wire (D-309 WARN-1)")
 	}
 }
 

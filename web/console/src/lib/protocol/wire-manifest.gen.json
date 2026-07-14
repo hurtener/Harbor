@@ -5735,11 +5735,13 @@
         },
         {
           "key": "agent_id",
-          "type": "string"
+          "type": "string",
+          "optional": true
         },
         {
           "key": "agent_name",
-          "type": "string"
+          "type": "string",
+          "optional": true
         },
         {
           "key": "user_id",
@@ -5798,6 +5800,11 @@
         {
           "key": "title_source",
           "type": "string",
+          "optional": true
+        },
+        {
+          "key": "counters_partial",
+          "type": "boolean",
           "optional": true
         }
       ]

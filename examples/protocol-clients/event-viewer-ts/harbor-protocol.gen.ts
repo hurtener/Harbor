@@ -2022,8 +2022,8 @@ export interface SessionFilter {
 export interface SessionRow {
   session_id: string;
   status: string;
-  agent_id: string;
-  agent_name: string;
+  agent_id?: string;
+  agent_name?: string;
   user_id: string;
   tenant_id: string;
   started_at: string;
@@ -2038,6 +2038,7 @@ export interface SessionRow {
   identity: IdentityScope;
   title?: string;
   title_source?: string;
+  counters_partial?: boolean;
 }
 
 export interface SessionsDeleteRequest {
