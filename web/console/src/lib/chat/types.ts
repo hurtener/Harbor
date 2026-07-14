@@ -216,7 +216,7 @@ export interface ChatProtocolClient {
 	 */
 	restartRun(): Promise<SendMessageResult>;
 	/** Approve a pending HITL intervention. Maps onto SHIPPED `approve`. */
-	approveIntervention(runID: string): Promise<void>;
+	approveIntervention(runID: string, pauseToken: string): Promise<void>;
 	/** Reject a pending HITL intervention. Maps onto SHIPPED `reject`. */
-	rejectIntervention(runID: string): Promise<void>;
+	rejectIntervention(runID: string, pauseToken: string): Promise<void>;
 }

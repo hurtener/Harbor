@@ -1,0 +1,129 @@
+[
+  {
+    "name": "captured-production-transcript",
+    "identity": {"tenant": "tenant-a", "user": "user-a", "session": "session-a"},
+    "generation": 1,
+    "captured_sequence": 13,
+    "history_truncated": true,
+    "history_has_more": false,
+    "session_status": "running",
+    "counters_partial": true,
+    "aggregate_truncated": true,
+    "tools_aggregates_partial": true,
+    "tool_analytics_bounded": true,
+    "unavailable_capabilities": ["topology", "model_catalog"],
+    "events": [
+      {"type":"task.started","sequence":1,"occurred_at":"2026-07-14T10:00:00Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"TaskID":"run-a","PriorState":"pending"}},
+      {"type":"llm.completion.chunk","sequence":2,"occurred_at":"2026-07-14T10:00:01Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"TaskID":"run-a","RunID":"run-a","Delta":"hello","Done":false,"Kind":"content"}},
+      {"type":"llm.completion.chunk","sequence":3,"occurred_at":"2026-07-14T10:00:02Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"TaskID":"run-a","RunID":"run-a","Delta":"think","Done":false,"Kind":"reasoning"}},
+      {"type":"tool.invoked","sequence":4,"occurred_at":"2026-07-14T10:00:03Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"ToolName":"weather","Transport":"inproc"}},
+      {"type":"tool.completed","sequence":5,"occurred_at":"2026-07-14T10:00:04Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"ToolName":"weather","Transport":"inproc","Attempts":1,"DurationMS":20}},
+      {"type":"tool.invoked","sequence":6,"occurred_at":"2026-07-14T10:00:05Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"ToolName":"weather","Transport":"inproc"}},
+      {"type":"tool.failed","sequence":7,"occurred_at":"2026-07-14T10:00:06Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"ToolName":"weather","Transport":"inproc","Attempts":1,"ErrorClass":"permanent","ErrorMessage":"redacted"}},
+      {"type":"tool.approval_requested","sequence":8,"occurred_at":"2026-07-14T10:00:07Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"Tool":"dangerous","PauseToken":"pause-approval","Reason":"policy","Tags":[]}},
+      {"type":"tool.auth_required","sequence":9,"occurred_at":"2026-07-14T10:00:08Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"Source":"mcp-weather","SourceName":"Weather MCP","BindingScope":"user","PauseToken":"pause-auth","Scopes":["read"]}},
+      {"type":"tool.rejected","sequence":10,"occurred_at":"2026-07-14T10:00:09Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"Tool":"dangerous","PauseToken":"pause-approval","Reason":"operator"}},
+      {"type":"tool.completed","sequence":11,"occurred_at":"2026-07-14T10:00:10Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"DurationMS":1}},
+      {"type":"future.event","sequence":12,"occurred_at":"2026-07-14T10:00:11Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"Secret":"never-copy","FutureField":42},"artifacts":[{"id":"artifact_abc","mime_type":"application/octet-stream","size_bytes":9000}]},
+      {"type":"task.completed","sequence":13,"occurred_at":"2026-07-14T10:00:12Z","tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a","payload":{"TaskID":"run-a"}}
+    ],
+    "tasks": [
+      {"id":"run-a","kind":"foreground","status":"complete","identity":{"tenant":"tenant-a","user":"user-a","session":"session-a"},"parent_session_id":"session-a","query":"what is the weather?","started_at":"2026-07-14T09:59:59Z","updated_at":"2026-07-14T10:00:12Z"}
+    ],
+    "task_details": [
+      {"task":{"id":"run-a"},"result_ref":{"id":"answer_abc","mime_type":"application/json","size_bytes":64,"filename":"answer.json"}}
+    ],
+    "pauses": [
+      {"token":"pause-auth","reason":"tool_auth_required","state":"paused","identity":{"tenant":"tenant-a","user":"user-a","session":"session-a","run":"run-a"},"paused_at":"2026-07-14T10:00:08Z"}
+    ],
+    "expected_conversation": [
+      {"run_id":"run-a","answer":"hello","reasoning":"think","terminal":true,"tools":[{"tool":"weather","status":"succeeded"},{"tool":"weather","status":"failed"}]}
+    ],
+    "expected": {
+      "session_status":"running",
+      "history_truncated":true,
+      "history_has_more":false,
+      "aggregate_truncated":true,
+      "counters_partial":true,
+      "tools_aggregates_partial":true,
+      "tool_analytics_bounded":true,
+      "unavailable_capabilities":["model_catalog","topology"],
+      "blocks":[
+        {"id":"task:run-a","kind":"task","run_id":"run-a","status":"completed","incomplete":false},
+        {"id":"text:run-a","kind":"text","run_id":"run-a","status":"","text":"hello","incomplete":false},
+        {"id":"reasoning:run-a","kind":"reasoning","run_id":"run-a","status":"","text":"think","incomplete":false},
+        {"id":"tool:run-a:4","kind":"tool","run_id":"run-a","status":"succeeded","tool":"weather","incomplete":false},
+        {"id":"tool:run-a:6","kind":"tool","run_id":"run-a","status":"failed","tool":"weather","incomplete":false},
+        {"id":"intervention:pause-auth","kind":"intervention","run_id":"run-a","status":"pending","text":"Connect Weather MCP","incomplete":false},
+        {"id":"event:11","kind":"event","run_id":"run-a","status":"","event_type":"tool.completed","payload_keys":["DurationMS"],"incomplete":true},
+        {"id":"event:12","kind":"event","run_id":"run-a","status":"","event_type":"future.event","payload_keys":["FutureField","Secret"],"artifact_ids":["artifact_abc"],"incomplete":true},
+        {"id":"user:run-a","kind":"user","run_id":"run-a","status":"","text":"what is the weather?","incomplete":false},
+        {"id":"result:run-a","kind":"result","run_id":"run-a","status":"","artifact_ids":["answer_abc"],"incomplete":false}
+      ]
+    }
+  },
+  {
+    "name": "retained-away-lifecycle-and-later-close",
+    "identity": {"tenant": "tenant-a", "user": "user-a", "session": "session-b"},
+    "generation": 2,
+    "captured_sequence": 14,
+    "history_truncated": false,
+    "history_has_more": true,
+    "session_status": "completed",
+    "events": [
+      {"type":"tool.failed","sequence":10,"occurred_at":"2026-07-14T11:00:00Z","tenant":"tenant-a","user":"user-a","session":"session-b","run":"run-b","payload":{"ToolName":"unknown-tool","Transport":"mcp","Attempts":1,"ErrorClass":"permanent","ErrorMessage":"redacted"}},
+      {"type":"task.failed","sequence":11,"occurred_at":"2026-07-14T11:00:01Z","tenant":"tenant-a","user":"user-a","session":"session-b","run":"run-b","payload":{"TaskID":"run-b","ErrorCode":"failed"}},
+      {"type":"session.closed","sequence":12,"occurred_at":"2026-07-14T11:00:02Z","tenant":"tenant-a","user":"user-a","session":"session-b","payload":{"SessionID":"session-b","ClosedAt":1,"Reason":"done"}},
+      {"type":"session.reopened","sequence":13,"occurred_at":"2026-07-14T11:00:03Z","tenant":"tenant-a","user":"user-a","session":"session-b","payload":{"SessionID":"session-b","ReopenedAt":2,"PriorClosedReason":"done"}},
+      {"type":"session.closed","sequence":14,"occurred_at":"2026-07-14T11:00:04Z","tenant":"tenant-a","user":"user-a","session":"session-b","payload":{"SessionID":"session-b","ClosedAt":3,"Reason":"done-again"}}
+    ],
+    "tasks": [],
+    "task_details": [],
+    "pauses": [],
+    "expected_conversation": [
+      {"run_id":"run-b","answer":"","reasoning":"","terminal":true,"tools":[{"tool":"unknown-tool","status":"failed"}]}
+    ],
+    "expected": {
+      "session_status":"completed",
+      "history_truncated":false,
+      "history_has_more":true,
+      "aggregate_truncated":false,
+      "counters_partial":false,
+      "tools_aggregates_partial":false,
+      "tool_analytics_bounded":false,
+      "unavailable_capabilities":[],
+      "blocks":[
+        {"id":"tool:run-b:10","kind":"tool","run_id":"run-b","status":"failed","tool":"unknown-tool","incomplete":true},
+        {"id":"task:run-b","kind":"task","run_id":"run-b","status":"failed","incomplete":true}
+      ]
+    }
+  },
+  {
+    "name": "terminal-erasure",
+    "identity": {"tenant": "tenant-a", "user": "user-a", "session": "session-c"},
+    "generation": 3,
+    "captured_sequence": 2,
+    "session_status": "running",
+    "events": [
+      {"type":"task.started","sequence":1,"occurred_at":"2026-07-14T12:00:00Z","tenant":"tenant-a","user":"user-a","session":"session-c","run":"run-c","payload":{"TaskID":"run-c"}},
+      {"type":"session.erased","sequence":2,"occurred_at":"2026-07-14T12:00:01Z","tenant":"tenant-a","user":"user-a","session":"session-c","payload":{"SessionID":"session-c","StateRecordsDeleted":4,"ArtifactsDeleted":1,"MemoryPurged":true,"ErasedAt":4}}
+    ],
+    "tasks": [],
+    "task_details": [],
+    "pauses": [],
+    "expected_conversation": null,
+    "expected": {
+      "session_status":"erased",
+      "history_truncated":false,
+      "history_has_more":false,
+      "aggregate_truncated":false,
+      "counters_partial":false,
+      "tools_aggregates_partial":false,
+      "tool_analytics_bounded":false,
+      "unavailable_capabilities":[],
+      "blocks":[
+        {"id":"session:erased","kind":"session","run_id":"","status":"erased","incomplete":false}
+      ]
+    }
+  }
+]
