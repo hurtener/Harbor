@@ -38,7 +38,13 @@ func init() {
 			}
 			return p.projectRow(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, t)
 		},
-		OperatedFields: []string{"scope", "transport", "reliability_tier", "oauth_status", "approval_policy", "last_used_at"},
+		// Every axis tools.list filter/search/aggregate operates over
+		// (filter.go). `name` + `version` are the free-text search axis;
+		// scope / transport / reliability_tier are always-assigned facets;
+		// oauth_status / approval_policy carry conservative non-zero defaults
+		// (the facet filters loud-reject when the annotator is unwired);
+		// last_used_at is the annotator-backed Active-aggregate field.
+		OperatedFields: []string{"name", "version", "scope", "transport", "reliability_tier", "oauth_status", "approval_policy", "last_used_at"},
 		HonestOmissions: map[string]string{
 			// last_used_at rides the annotator; the Active aggregate reads it.
 			// Zero until the tools annotator follow-up wires the Annotator — gated in the interim
@@ -46,6 +52,13 @@ func init() {
 			// silent 0. The facet filters over the sibling oauth_status /
 			// approval_policy loud-reject when unwired.
 			"last_used_at": "annotator wiring pending — Active aggregate rides it; gated by aggregates_partial + CapToolAnnotations until the annotator lands",
+			// version is part of the Name+Version free-text search axis but no
+			// tool carries a version in V1 (no runtime field populates it).
+			// Name search works today; version populates when the annotator
+			// lands. Over-rejecting the combined search would break working
+			// name search, so the search axis is not loud-rejected (unlike the
+			// dedicated oauth/approval facet filters).
+			"version": "no tool carries a version in V1; the Name half of the search axis works; version populates when the annotator lands",
 		},
 		ProdWiringTest: "TestProdWiring_ToolsProjectorAnnotatorUnwiredIsHonest",
 	})

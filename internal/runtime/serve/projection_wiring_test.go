@@ -2,115 +2,230 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/audit"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
-	"github.com/hurtener/Harbor/internal/events"
-	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/sessions"
-	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/state"
-	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
-// TestProdWiring_TasksProjectorInstallsApprovalChecker is the tasks
-// prod-wiring test named by the projection-completeness contract (Half B).
-// It proves the PRODUCTION serve.ApprovalChecker over a real pause
-// coordinator answers `has_pending_approval` truthfully — an open
-// ApprovalRequired gate on a session reads true; a bare session reads false;
-// a nil coordinator leaves the seam unwired (nil checker), so a forgotten
-// WithApprovalChecker in mux.go would ship a false absence the gate catches.
-func TestProdWiring_TasksProjectorInstallsApprovalChecker(t *testing.T) {
-	if NewApprovalChecker(nil) != nil {
-		t.Fatal("NewApprovalChecker(nil) must return nil (unwired seam)")
+// projWiringDeps bundles the real subsystem handles a projection prod-wiring
+// test drives through BuildMux.
+type projWiringDeps struct {
+	tasks tasks.TaskRegistry
+	sess  *sessions.Registry
+	coord pauseresume.Coordinator
+	in    MuxInput
+}
+
+// buildProjWiringMux assembles the SAME MuxInput cmd/harbor assembles (real
+// task registry + session registry + pause coordinator + event bus), with
+// Validator=nil (the test-kit WithoutValidator opt-out so requests reach the
+// handlers). The returned deps expose the registries + coordinator so the
+// test can seed real state that the mux-mounted Service must project.
+func buildProjWiringMux(t *testing.T) projWiringDeps {
+	t.Helper()
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	taskReg := mkDriverTestTaskRegistry(t, bus, red)
+	steerReg := steering.NewRegistry()
+	surface, err := protocol.NewControlSurface(taskReg, steerReg)
+	if err != nil {
+		t.Fatalf("NewControlSurface: %v", err)
 	}
+	metricsReg, metricsShutdown, err := telemetry.NewMetricsRegistry(
+		config.TelemetryConfig{ServiceName: "projwiring-test"},
+		telemetry.WithMetricReader(sdkmetric.NewManualReader()))
+	if err != nil {
+		t.Fatalf("NewMetricsRegistry: %v", err)
+	}
+	t.Cleanup(func() { _ = metricsShutdown(context.Background()) })
+	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	sessReg, err := sessions.New(st, config.SessionsConfig{
+		IdleTTL: 24 * time.Hour, HardCap: 720 * time.Hour, SweepInterval: 15 * time.Minute,
+	}, bus)
+	if err != nil {
+		t.Fatalf("sessions.New: %v", err)
+	}
+	t.Cleanup(func() { _ = sessReg.CloseRegistry(context.Background()) })
 	coord := pauseresume.New()
+
+	in := MuxInput{
+		Cfg:          config.Defaults(),
+		Surface:      surface,
+		Bus:          bus,
+		Redactor:     red,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Metrics:      metricsReg,
+		Tasks:        taskReg,
+		Sessions:     sessReg,
+		State:        st,
+		Coordinator:  coord,
+		Validator:    nil, // WithoutValidator: requests reach the handlers (identity via headers)
+		DisplayName:  "projwiring-test",
+		InstanceID:   "projwiring-test",
+		BuildVersion: "test",
+		BuildCommit:  "test",
+	}
+	return projWiringDeps{tasks: taskReg, sess: sessReg, coord: coord, in: in}
+}
+
+// postMux issues an identity-headered POST through the mounted mux.
+func postMux(t *testing.T, m *http.ServeMux, path string, id identity.Identity, body string) (int, []byte) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(stream.HeaderTenant, id.TenantID)
+	req.Header.Set(stream.HeaderUser, id.UserID)
+	req.Header.Set(stream.HeaderSession, id.SessionID)
+	rec := httptest.NewRecorder()
+	m.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.Bytes()
+}
+
+// TestProdWiring_TasksListThroughBuildMux is the tasks prod-wiring test named
+// by the projection-completeness contract (Half B — never-wired). It drives
+// `tasks.list` through the projector AS ASSEMBLED BY BuildMux (NOT a
+// hand-mirrored replica of the wiring) so a refactor that drops the
+// `WithApprovalChecker(NewApprovalChecker(in.Coordinator))` block from
+// BuildMux ships has_pending_approval=false on a gated fleet and FAILS this
+// test. Removing that mux.go block and re-running this test MUST turn it red.
+func TestProdWiring_TasksListThroughBuildMux(t *testing.T) {
+	deps := buildProjWiringMux(t)
+	built, err := BuildMux(deps.in)
+	if err != nil {
+		t.Fatalf("BuildMux: %v", err)
+	}
+
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-gated"}
+	// Spawn a run-ful task and open a REAL run-scoped approval gate on it.
 	ctx, err := identity.With(context.Background(), id)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	if _, err := coord.Request(ctx, pauseresume.PauseRequest{
+	h, err := deps.tasks.Spawn(ctx, tasks.SpawnRequest{
+		Identity:    identity.Quadruple{Identity: id, RunID: "run-1"},
+		Kind:        tasks.KindBackground,
+		Description: "gated task",
+		Query:       "q",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := deps.tasks.MarkRunning(ctx, h.ID); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	runCtx, err := identity.WithRun(context.Background(), id, "run-1")
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+	if _, err := deps.coord.Request(runCtx, pauseresume.PauseRequest{
 		Identity: id,
 		Reason:   pauseresume.ReasonApprovalRequired,
 	}); err != nil {
 		t.Fatalf("coord.Request: %v", err)
 	}
-	checker := NewApprovalChecker(coord)
-	if checker == nil {
-		t.Fatal("NewApprovalChecker(coord) returned nil")
+
+	code, body := postMux(t, built.Mux, "/v1/tasks/list", id, `{"filter":{}}`)
+	if code != http.StatusOK {
+		t.Fatalf("tasks.list through BuildMux: status %d, body %s", code, body)
 	}
-	if !checker.HasPendingApproval(context.Background(), id, "") {
-		t.Fatal("gated session: HasPendingApproval = false, want true")
+	var resp prototypes.TaskListResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode tasks.list response: %v (body %s)", err, body)
 	}
-	other := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-clean"}
-	if checker.HasPendingApproval(context.Background(), other, "") {
-		t.Fatal("clean session: HasPendingApproval = true, want false (isolation)")
+	if len(resp.Rows) != 1 {
+		t.Fatalf("tasks.list returned %d rows, want 1", len(resp.Rows))
+	}
+	if !resp.Rows[0].HasPendingApproval {
+		t.Fatal("has_pending_approval=false through the REAL BuildMux assembly — " +
+			"the WithApprovalChecker block is not wired (the never-wired variant this test exists to catch)")
 	}
 }
 
-// TestProdWiring_SessionsProjectorInstallsEnricher is the sessions
-// prod-wiring test named by the projection-completeness contract (Half B).
-// It proves the PRODUCTION sessions CounterEnricher assembled the way mux.go
-// assembles it (real event bus + task registry + pause coordinator) makes
-// the ListerProjector report CountersAvailable()==true, so the counter
-// facets operate on real data — and that a projector built WITHOUT the
-// enricher (a forgotten WithEnricher) reports false, the never-wired variant
-// the Service loud-rejects rather than shipping a false-empty counter page.
-func TestProdWiring_SessionsProjectorInstallsEnricher(t *testing.T) {
-	red, err := audit.Open(context.Background(), config.AuditConfig{})
-	if err != nil {
-		t.Fatalf("audit.Open: %v", err)
-	}
-	bus, err := events.Open(context.Background(), config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 64, SubscriberBufferSize: 512, IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 512}, red)
-	if err != nil {
-		t.Fatalf("events.Open: %v", err)
-	}
-	defer func() { _ = bus.Close(context.Background()) }()
-	store, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	defer func() { _ = store.Close(context.Background()) }()
-	taskReg, err := tasks.Open(context.Background(), tasks.Dependencies{
-		Store: store, Bus: bus, Redactor: red,
-		Cfg: config.TasksConfig{Driver: "inprocess"},
-	})
-	if err != nil {
-		t.Fatalf("tasks.Open: %v", err)
-	}
-	defer func() { _ = taskReg.Close(context.Background()) }()
-	sessReg, err := sessions.New(store, config.SessionsConfig{}, bus)
-	if err != nil {
-		t.Fatalf("sessions.New: %v", err)
-	}
+// TestApprovalChecker_RunlessTaskDoesNotInheritSiblingGate pins the FAIL-F1
+// guard directly: an open run-scoped approval gate in a session must NOT be
+// attributed to a run-less (RunID=="") sibling task in the same session. A
+// run-less task holds no run-scoped gate, so the honest answer is false —
+// without the guard the pause-list scan would fan across every gate in the
+// session and mis-attribute the sibling's gate.
+func TestApprovalChecker_RunlessTaskDoesNotInheritSiblingGate(t *testing.T) {
 	coord := pauseresume.New()
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	runCtx, err := identity.WithRun(context.Background(), id, "run-ful")
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+	if _, err := coord.Request(runCtx, pauseresume.PauseRequest{
+		Identity: id, Reason: pauseresume.ReasonApprovalRequired,
+	}); err != nil {
+		t.Fatalf("coord.Request: %v", err)
+	}
+	checker := NewApprovalChecker(coord)
+	// The run-ful task with the matching run reads true.
+	if !checker.HasPendingApproval(context.Background(), id, "run-ful") {
+		t.Fatal("run-ful gated task: HasPendingApproval = false, want true")
+	}
+	// A run-less sibling in the SAME session must read false (no inheritance).
+	if checker.HasPendingApproval(context.Background(), id, "") {
+		t.Fatal("run-less sibling inherited the run-ful task's gate — cross-task mis-attribution (FAIL-F1)")
+	}
+	// A different run in the same session also reads false (run isolation).
+	if checker.HasPendingApproval(context.Background(), id, "other-run") {
+		t.Fatal("a different run inherited the gate — run scoping is broken")
+	}
+}
 
-	// The exact CounterEnricher deps mux.go assembles.
-	enricher, err := sessionsprotocol.NewCounterEnricher(sessionsprotocol.CounterEnricherDeps{
-		Bus: bus, Tasks: taskReg, Pauses: coord,
-	})
+// TestProdWiring_SessionsListCounterFacetThroughBuildMux is the sessions
+// prod-wiring test named by the projection-completeness contract (Half B). It
+// drives `sessions.list` with a numeric-counter facet through the projector
+// AS ASSEMBLED BY BuildMux. With the CounterEnricher wired (BuildMux's
+// `bus != nil && Tasks != nil && Coordinator != nil` block) the facet is
+// ACCEPTED (200); a refactor that drops that WithEnricher block leaves
+// CountersAvailable()==false, so the Service loud-rejects the facet
+// (invalid_request/400) — this test then turns red, catching the never-wired
+// variant. (An unwired build returning a false-empty page is exactly the
+// defect the enricher fixed; the loud-reject is the honest degradation.)
+func TestProdWiring_SessionsListCounterFacetThroughBuildMux(t *testing.T) {
+	deps := buildProjWiringMux(t)
+	built, err := BuildMux(deps.in)
 	if err != nil {
-		t.Fatalf("NewCounterEnricher: %v", err)
+		t.Fatalf("BuildMux: %v", err)
 	}
-	wired, err := sessionsprotocol.NewListerProjector(sessReg, sessionsprotocol.WithEnricher(enricher))
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-1"}
+	// Seed a real session so the list has a row to project.
+	ctx, err := identity.With(context.Background(), id)
 	if err != nil {
-		t.Fatalf("NewListerProjector(wired): %v", err)
+		t.Fatalf("identity.With: %v", err)
 	}
-	if !wired.CountersAvailable() {
-		t.Fatal("prod-assembled sessions projector reports CountersAvailable()=false — a forgotten WithEnricher")
+	if _, err := deps.sess.Open(ctx, id.SessionID, id); err != nil {
+		t.Fatalf("sessions.Open: %v", err)
 	}
 
-	unwired, err := sessionsprotocol.NewListerProjector(sessReg)
-	if err != nil {
-		t.Fatalf("NewListerProjector(unwired): %v", err)
-	}
-	if unwired.CountersAvailable() {
-		t.Fatal("projector with no enricher reports CountersAvailable()=true — the never-wired variant would ship false absence")
+	code, body := postMux(t, built.Mux, "/v1/sessions/list", id, `{"filter":{"cost_above_cents":0}}`)
+	if code != http.StatusOK {
+		t.Fatalf("sessions.list cost_above_cents facet through BuildMux: status %d (want 200 — the counter enricher must be wired), body %s", code, body)
 	}
 }

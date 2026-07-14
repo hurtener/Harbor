@@ -29,33 +29,49 @@ func (probeApprovalChecker) HasPendingApproval(context.Context, identity.Identit
 func init() {
 	projectioncheck.Register(projectioncheck.ProjectionContract{
 		Surface: "tasks",
-		// Probe runs the PRODUCTION row projection (projectRow +
-		// applyApproval) over a fully-populated task with the approval seam
-		// wired, returning the projected TaskRow the gate reflects.
+		// Probe runs the PRODUCTION row projection (projectRow + applyGroup +
+		// applyApproval — the exact three assignment sites ListTasks uses)
+		// over a fully-populated FAILED + PARENTED + GROUPED task with the
+		// approval seam wired, so every CONDITIONALLY-assigned facet field
+		// (`error_class` only on a failed task, `parent_task_id` only on a
+		// child, `group_id` only on a group member) is actually exercised —
+		// a regression dropping any one of those assignments fails the gate.
 		Probe: func() any {
 			p := &RegistryProjector{approvals: probeApprovalChecker{}}
 			started := time.Unix(1_700_000_000, 0).UTC()
+			parent := tasks.TaskID("parent-task")
 			task := &tasks.Task{
 				ID: "probe-task",
 				Identity: identity.Quadruple{
 					Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
 					RunID:    "run-1",
 				},
-				Kind:      tasks.KindBackground,
-				Status:    tasks.StatusRunning,
-				Priority:  5,
-				CreatedAt: started.UnixNano(),
-				UpdatedAt: started.Add(time.Second).UnixNano(),
+				Kind:         tasks.KindBackground,
+				Status:       tasks.StatusFailed,
+				Priority:     5,
+				ParentTaskID: &parent,
+				Description:  "probe description",
+				Query:        "probe query",
+				Error:        &tasks.TaskError{Code: "probe_error_class"},
+				CreatedAt:    started.UnixNano(),
+				UpdatedAt:    started.Add(time.Second).UnixNano(),
 			}
 			row := projectRow(task)
+			applyGroup(&row, map[tasks.TaskID]tasks.TaskGroupID{task.ID: "probe-group"}, task.ID)
 			p.applyApproval(context.Background(), task, &row)
 			return row
 		},
-		// The facet / sort axes tasks.list operates over that a single
-		// populated fixture assigns. `has_pending_approval` is the
-		// enrichment-seam field this phase fixed; the rest are the
-		// always-assigned lifecycle axes the kanban filters/sorts on.
-		OperatedFields: []string{"has_pending_approval", "status", "kind", "started_at", "duration_ms"},
-		ProdWiringTest: "TestProdWiring_TasksProjectorInstallsApprovalChecker",
+		// Every facet / sort / search axis tasks.list operates over
+		// (list.go filterMatches). `has_pending_approval` is the
+		// enrichment-seam field this phase fixed; `error_class` /
+		// `parent_task_id` / `group_id` are the CONDITIONALLY-assigned axes
+		// (the regression-prone shape the gate exists to guard); the rest are
+		// always-assigned lifecycle / search / identity axes.
+		OperatedFields: []string{
+			"has_pending_approval", "status", "kind", "started_at", "duration_ms",
+			"error_class", "parent_task_id", "group_id", "identity",
+			"description", "query",
+		},
+		ProdWiringTest: "TestProdWiring_TasksListThroughBuildMux",
 	})
 }

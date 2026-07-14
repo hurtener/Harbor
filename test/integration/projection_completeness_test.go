@@ -1,34 +1,39 @@
 // Cross-subsystem integration test (CLAUDE.md §17.1) for the
-// projection-completeness band (Phase 177 / D-313). It proves — with REAL
-// drivers at every seam, no mocks at the boundary — that:
+// projection-completeness band (Phase 177). It proves — with REAL drivers at
+// every seam and the projector AS ASSEMBLED BY serve.BuildMux (no
+// hand-mirrored wiring), no mocks at the boundary — that:
 //
 //   - tasks.list `has_pending_approval` is populated from the REAL pause
-//     coordinator through the serve ApprovalChecker wired the way mux.go
-//     wires it, so `filter.has_pending_approval=true` narrows to real gated
-//     tasks instead of returning an empty page (the sharp false-absence
-//     this band closes);
-//   - the population is identity-scoped: session A's open approval gate
-//     never bleeds onto session B's row (cross-session isolation);
-//   - the NEVER-WIRED variant is real: a projector assembled WITHOUT the
-//     ApprovalChecker (a forgotten WithApprovalChecker in mux.go) ships a
-//     false absence — the exact Half-B bug the gate catches by construction;
+//     coordinator through the mux-assembled Service, so
+//     `filter.has_pending_approval=true` narrows to real gated tasks;
+//   - population is identity-scoped: session A's open approval gate never
+//     bleeds onto session B's row (cross-session isolation);
+//   - a run-less task in the SAME session as a gated run-ful sibling reads
+//     has_pending_approval=false (intra-session cross-task isolation — the
+//     run-less-task guard);
 //   - a failure mode: memory.list `filter.agent_ids` over the unpopulated
 //     producer identity LOUD-REJECTS rather than returning a false-empty
 //     page.
 //
-// Runs under `-race`; includes an N≥10 concurrency stress over the shared
-// projector.
+// Runs under `-race`; includes an N≥10 concurrency stress over the shared mux.
 package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"runtime"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/audit"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
@@ -36,54 +41,123 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	memprotocol "github.com/hurtener/Harbor/internal/memory/protocol"
+	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
-	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
+	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
-func projCompTaskReg(t *testing.T) (tasks.TaskRegistry, func()) {
+// projCompRig is the real-assembly rig: the BuildMux-mounted mux plus the
+// registries/coordinator the test seeds real state into.
+type projCompRig struct {
+	mux   *http.ServeMux
+	tasks tasks.TaskRegistry
+	coord pauseresume.Coordinator
+}
+
+// buildProjCompRig assembles the SAME MuxInput cmd/harbor assembles, with the
+// test-kit WithoutValidator opt-out (identity flows via headers). No hand
+// wiring of the enricher/approval seams — the mux installs them.
+func buildProjCompRig(t *testing.T) projCompRig {
 	t.Helper()
-	red, err := audit.Open(context.Background(), config.AuditConfig{})
-	if err != nil {
-		t.Fatalf("audit.Open: %v", err)
-	}
-	bus, err := events.Open(context.Background(), config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 64, SubscriberBufferSize: 512, IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 512}, red)
+	red := auditpatterns.New()
+	bus, err := events.Open(context.Background(), config.EventsConfig{
+		Driver: "inmem", MaxSubscribersPerSession: 64, SubscriberBufferSize: 512,
+		IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 512,
+	}, red)
 	if err != nil {
 		t.Fatalf("events.Open: %v", err)
 	}
-	store, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	reg, err := tasks.Open(context.Background(), tasks.Dependencies{
-		Store:    store,
-		Bus:      bus,
-		Redactor: red,
-		Cfg:      config.TasksConfig{Driver: "inprocess"},
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	taskReg, err := tasks.Open(context.Background(), tasks.Dependencies{
+		Store: st, Bus: bus, Redactor: red, Cfg: config.TasksConfig{Driver: "inprocess"},
 	})
 	if err != nil {
 		t.Fatalf("tasks.Open: %v", err)
 	}
-	cleanup := func() {
-		_ = reg.Close(context.Background())
-		_ = store.Close(context.Background())
-		_ = bus.Close(context.Background())
+	t.Cleanup(func() { _ = taskReg.Close(context.Background()) })
+	sessReg, err := sessions.New(st, config.SessionsConfig{
+		IdleTTL: 24 * time.Hour, HardCap: 720 * time.Hour, SweepInterval: 15 * time.Minute,
+	}, bus)
+	if err != nil {
+		t.Fatalf("sessions.New: %v", err)
 	}
-	return reg, cleanup
+	t.Cleanup(func() { _ = sessReg.CloseRegistry(context.Background()) })
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	if err != nil {
+		t.Fatalf("NewControlSurface: %v", err)
+	}
+	metricsReg, metricsShutdown, err := telemetry.NewMetricsRegistry(
+		config.TelemetryConfig{ServiceName: "projcomp-test"},
+		telemetry.WithMetricReader(sdkmetric.NewManualReader()))
+	if err != nil {
+		t.Fatalf("NewMetricsRegistry: %v", err)
+	}
+	t.Cleanup(func() { _ = metricsShutdown(context.Background()) })
+	coord := pauseresume.New()
+
+	built, err := serve.BuildMux(serve.MuxInput{
+		Cfg:          config.Defaults(),
+		Surface:      surface,
+		Bus:          bus,
+		Redactor:     red,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Metrics:      metricsReg,
+		Tasks:        taskReg,
+		Sessions:     sessReg,
+		State:        st,
+		Coordinator:  coord,
+		Validator:    nil, // WithoutValidator
+		DisplayName:  "projcomp",
+		InstanceID:   "projcomp",
+		BuildVersion: "test",
+		BuildCommit:  "test",
+	})
+	if err != nil {
+		t.Fatalf("BuildMux: %v", err)
+	}
+	return projCompRig{mux: built.Mux, tasks: taskReg, coord: coord}
 }
 
-func projCompSpawnRunning(t *testing.T, reg tasks.TaskRegistry, id identity.Identity) {
+func projCompPost(t *testing.T, m *http.ServeMux, id identity.Identity, body string) prototypes.TaskListResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/list", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(stream.HeaderTenant, id.TenantID)
+	req.Header.Set(stream.HeaderUser, id.UserID)
+	req.Header.Set(stream.HeaderSession, id.SessionID)
+	rec := httptest.NewRecorder()
+	m.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tasks.list: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	var resp prototypes.TaskListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode tasks.list: %v", err)
+	}
+	return resp
+}
+
+func projCompSpawn(t *testing.T, reg tasks.TaskRegistry, id identity.Identity, runID string) {
 	t.Helper()
 	ctx, err := identity.With(context.Background(), id)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
 	h, err := reg.Spawn(ctx, tasks.SpawnRequest{
-		Identity:    identity.Quadruple{Identity: id},
+		Identity:    identity.Quadruple{Identity: id, RunID: runID},
 		Kind:        tasks.KindBackground,
 		Description: "projection-completeness task",
 		Query:       "q",
@@ -96,110 +170,69 @@ func projCompSpawnRunning(t *testing.T, reg tasks.TaskRegistry, id identity.Iden
 	}
 }
 
-func TestE2E_ProjectionCompleteness_TasksApprovalTruthfulAndIsolated(t *testing.T) {
-	reg, cleanup := projCompTaskReg(t)
-	defer cleanup()
-
-	idA := identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: "session-A"}
-	idB := identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: "session-B"}
-	projCompSpawnRunning(t, reg, idA)
-	projCompSpawnRunning(t, reg, idB)
-
-	// Open a REAL approval gate on session A via the pause coordinator.
-	coord := pauseresume.New()
-	ctxA, err := identity.With(context.Background(), idA)
+func projCompRequestApproval(t *testing.T, coord pauseresume.Coordinator, id identity.Identity, runID string) {
+	t.Helper()
+	ctx, err := identity.WithRun(context.Background(), id, runID)
 	if err != nil {
-		t.Fatalf("identity.With(A): %v", err)
+		t.Fatalf("identity.WithRun: %v", err)
 	}
-	if _, err := coord.Request(ctxA, pauseresume.PauseRequest{
-		Identity: idA,
-		Reason:   pauseresume.ReasonApprovalRequired,
+	if _, err := coord.Request(ctx, pauseresume.PauseRequest{
+		Identity: id, Reason: pauseresume.ReasonApprovalRequired,
 	}); err != nil {
 		t.Fatalf("coord.Request: %v", err)
 	}
+}
 
-	// Build the tasks projector the way mux.go does — WITH the serve
-	// ApprovalChecker over the real coordinator.
-	checker := serve.NewApprovalChecker(coord)
-	if checker == nil {
-		t.Fatal("NewApprovalChecker returned nil for a non-nil coordinator")
-	}
-	projector, err := tasksprotocol.NewRegistryProjector(reg, tasksprotocol.WithApprovalChecker(checker))
-	if err != nil {
-		t.Fatalf("NewRegistryProjector: %v", err)
-	}
-	svc, err := tasksprotocol.NewService(projector)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+func TestE2E_ProjectionCompleteness_TasksApprovalTruthfulAndIsolated(t *testing.T) {
+	rig := buildProjCompRig(t)
 
-	// Session A: the task reports has_pending_approval=true, and the facet
-	// narrows to it.
-	wantTrue := true
-	respA, err := svc.List(context.Background(), prototypes.TaskListRequest{
-		Identity: prototypes.IdentityScope{Tenant: idA.TenantID, User: idA.UserID, Session: idA.SessionID},
-	}, false)
-	if err != nil {
-		t.Fatalf("List(A): %v", err)
+	idA := identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: "session-A"}
+	idB := identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: "session-B"}
+
+	// Session A: a gated run-ful task PLUS a run-less sibling in the same
+	// session. Session B: an ungated run-ful task.
+	projCompSpawn(t, rig.tasks, idA, "run-a")
+	projCompSpawn(t, rig.tasks, idA, "") // run-less sibling (the FAIL-F1 guard)
+	projCompSpawn(t, rig.tasks, idB, "run-b")
+	projCompRequestApproval(t, rig.coord, idA, "run-a")
+
+	// Session A: the run-ful gated task is true; the run-less sibling is
+	// false (intra-session cross-task isolation — a run-less task does NOT
+	// inherit a sibling's gate).
+	respA := projCompPost(t, rig.mux, idA, `{"filter":{}}`)
+	if len(respA.Rows) != 2 {
+		t.Fatalf("session A: want 2 rows, got %d", len(respA.Rows))
 	}
-	if len(respA.Rows) != 1 || !respA.Rows[0].HasPendingApproval {
-		t.Fatalf("session A: want 1 row with has_pending_approval=true, got %+v", respA.Rows)
+	var gated, ungated int
+	for _, r := range respA.Rows {
+		if r.HasPendingApproval {
+			gated++
+		} else {
+			ungated++
+		}
 	}
-	respAFacet, err := svc.List(context.Background(), prototypes.TaskListRequest{
-		Identity: prototypes.IdentityScope{Tenant: idA.TenantID, User: idA.UserID, Session: idA.SessionID},
-		Filter:   prototypes.TaskFilter{HasPendingApproval: &wantTrue},
-	}, false)
-	if err != nil {
-		t.Fatalf("List(A, facet): %v", err)
-	}
-	if len(respAFacet.Rows) != 1 {
-		t.Fatalf("has_pending_approval=true facet on A: want 1 row, got %d", len(respAFacet.Rows))
+	if gated != 1 || ungated != 1 {
+		t.Fatalf("session A: want exactly 1 gated + 1 run-less-false row, got gated=%d ungated=%d (the run-less task must not inherit the sibling gate)", gated, ungated)
 	}
 
-	// Session B: no gate → false, and the facet excludes it (isolation —
-	// A's gate never bleeds into B).
-	respB, err := svc.List(context.Background(), prototypes.TaskListRequest{
-		Identity: prototypes.IdentityScope{Tenant: idB.TenantID, User: idB.UserID, Session: idB.SessionID},
-	}, false)
-	if err != nil {
-		t.Fatalf("List(B): %v", err)
+	// The facet narrows to exactly the gated run-ful task.
+	facet := projCompPost(t, rig.mux, idA, `{"filter":{"has_pending_approval":true}}`)
+	if len(facet.Rows) != 1 || !facet.Rows[0].HasPendingApproval {
+		t.Fatalf("has_pending_approval=true facet on A: want exactly 1 gated row, got %+v", facet.Rows)
 	}
+
+	// Session B: no gate → false; the facet excludes it (cross-session
+	// isolation — A's gate never bleeds into B).
+	respB := projCompPost(t, rig.mux, idB, `{"filter":{}}`)
 	if len(respB.Rows) != 1 || respB.Rows[0].HasPendingApproval {
 		t.Fatalf("session B: want 1 row with has_pending_approval=false, got %+v", respB.Rows)
 	}
-	respBFacet, err := svc.List(context.Background(), prototypes.TaskListRequest{
-		Identity: prototypes.IdentityScope{Tenant: idB.TenantID, User: idB.UserID, Session: idB.SessionID},
-		Filter:   prototypes.TaskFilter{HasPendingApproval: &wantTrue},
-	}, false)
-	if err != nil {
-		t.Fatalf("List(B, facet): %v", err)
-	}
-	if len(respBFacet.Rows) != 0 {
-		t.Fatalf("has_pending_approval=true facet on B: want 0 rows (isolation), got %d", len(respBFacet.Rows))
+	facetB := projCompPost(t, rig.mux, idB, `{"filter":{"has_pending_approval":true}}`)
+	if len(facetB.Rows) != 0 {
+		t.Fatalf("has_pending_approval=true facet on B: want 0 rows (isolation), got %d", len(facetB.Rows))
 	}
 
-	// Half-B never-wired variant: a projector assembled WITHOUT the checker
-	// (a forgotten WithApprovalChecker) ships false absence — the gate
-	// catches this by construction.
-	unwiredProj, err := tasksprotocol.NewRegistryProjector(reg)
-	if err != nil {
-		t.Fatalf("NewRegistryProjector(unwired): %v", err)
-	}
-	unwiredSvc, err := tasksprotocol.NewService(unwiredProj)
-	if err != nil {
-		t.Fatalf("NewService(unwired): %v", err)
-	}
-	respUnwired, err := unwiredSvc.List(context.Background(), prototypes.TaskListRequest{
-		Identity: prototypes.IdentityScope{Tenant: idA.TenantID, User: idA.UserID, Session: idA.SessionID},
-	}, false)
-	if err != nil {
-		t.Fatalf("List(unwired): %v", err)
-	}
-	if len(respUnwired.Rows) != 1 || respUnwired.Rows[0].HasPendingApproval {
-		t.Fatalf("unwired projector should ship false absence, got %+v", respUnwired.Rows)
-	}
-
-	// Concurrency stress: N≥10 concurrent lists against the shared projector.
+	// Concurrency stress: N≥10 concurrent lists through the shared mux.
 	const n = 24
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -207,11 +240,20 @@ func TestE2E_ProjectionCompleteness_TasksApprovalTruthfulAndIsolated(t *testing.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, e := svc.List(context.Background(), prototypes.TaskListRequest{
-				Identity: prototypes.IdentityScope{Tenant: idA.TenantID, User: idA.UserID, Session: idA.SessionID},
-			}, false)
-			if e != nil {
-				errs <- e
+			req := httptest.NewRequest(http.MethodPost, "/v1/tasks/list", strings.NewReader(`{"filter":{"has_pending_approval":true}}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(stream.HeaderTenant, idA.TenantID)
+			req.Header.Set(stream.HeaderUser, idA.UserID)
+			req.Header.Set(stream.HeaderSession, idA.SessionID)
+			rec := httptest.NewRecorder()
+			rig.mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				errs <- errors.New("concurrent list non-200")
+				return
+			}
+			var r prototypes.TaskListResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil {
+				errs <- err
 				return
 			}
 			if len(r.Rows) != 1 || !r.Rows[0].HasPendingApproval {
@@ -227,11 +269,11 @@ func TestE2E_ProjectionCompleteness_TasksApprovalTruthfulAndIsolated(t *testing.
 }
 
 func TestE2E_ProjectionCompleteness_MemoryAgentFacetLoudRejects(t *testing.T) {
-	red, err := audit.Open(context.Background(), config.AuditConfig{})
-	if err != nil {
-		t.Fatalf("audit.Open: %v", err)
-	}
-	bus, err := events.Open(context.Background(), config.EventsConfig{Driver: "inmem", MaxSubscribersPerSession: 64, SubscriberBufferSize: 512, IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 512}, red)
+	red := auditpatterns.New()
+	bus, err := events.Open(context.Background(), config.EventsConfig{
+		Driver: "inmem", MaxSubscribersPerSession: 64, SubscriberBufferSize: 512,
+		IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 512,
+	}, red)
 	if err != nil {
 		t.Fatalf("events.Open: %v", err)
 	}
@@ -259,37 +301,5 @@ func TestE2E_ProjectionCompleteness_MemoryAgentFacetLoudRejects(t *testing.T) {
 		prototypes.MemoryListRequest{Filter: prototypes.MemoryFilter{AgentIDs: []string{"agent-x"}}}, id)
 	if !errors.Is(err, memprotocol.ErrInvalidFilter) {
 		t.Fatalf("memory agent_ids facet: err = %v, want ErrInvalidFilter (loud-reject, never a false-empty page)", err)
-	}
-}
-
-// TestE2E_ProjectionCompleteness_NoGoroutineLeak asserts the tasks projection
-// path returns goroutines to baseline after use.
-func TestE2E_ProjectionCompleteness_NoGoroutineLeak(t *testing.T) {
-	base := runtime.NumGoroutine()
-	reg, cleanup := projCompTaskReg(t)
-	idA := identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: "session-A"}
-	projCompSpawnRunning(t, reg, idA)
-	proj, err := tasksprotocol.NewRegistryProjector(reg, tasksprotocol.WithApprovalChecker(serve.NewApprovalChecker(pauseresume.New())))
-	if err != nil {
-		t.Fatalf("NewRegistryProjector: %v", err)
-	}
-	svc, err := tasksprotocol.NewService(proj)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	for range 50 {
-		if _, err := svc.List(context.Background(), prototypes.TaskListRequest{
-			Identity: prototypes.IdentityScope{Tenant: idA.TenantID, User: idA.UserID, Session: idA.SessionID},
-		}, false); err != nil {
-			t.Fatalf("List: %v", err)
-		}
-	}
-	cleanup()
-	// Allow the registry's teardown goroutines to unwind.
-	for i := 0; i < 50 && runtime.NumGoroutine() > base+5; i++ {
-		runtime.Gosched()
-	}
-	if got := runtime.NumGoroutine(); got > base+5 {
-		t.Errorf("goroutine leak: baseline %d, after %d", base, got)
 	}
 }

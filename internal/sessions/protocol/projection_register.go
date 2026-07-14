@@ -66,12 +66,14 @@ func init() {
 			return rows[0]
 		},
 		// The six false-absence counters the sessions facets/sort operate
-		// over, plus the two always-assigned sort-key timestamps.
+		// over, plus the always-assigned sort-key timestamps and the
+		// status / identity / user / tenant axes the filter narrows on.
 		OperatedFields: []string{
 			"tasks_count", "events_count", "total_cost_cents", "total_tokens",
 			"has_pending_intervention", "has_failed_task",
 			"started_at", "last_activity_at",
+			"status", "user_id", "tenant_id", "identity",
 		},
-		ProdWiringTest: "TestProdWiring_SessionsProjectorInstallsEnricher",
+		ProdWiringTest: "TestProdWiring_SessionsListCounterFacetThroughBuildMux",
 	})
 }

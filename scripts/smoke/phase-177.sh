@@ -114,7 +114,12 @@ case "${MPROBE:-000}" in
       if [ "${AST}" = "400" ]; then
         ok "phase 177: memory.list agent_ids over unpopulated field fails loud (400)"
       elif [ "${AST}" = "200" ]; then
-        skip "phase 177: memory agent_ids returned 200 — populated path (verify rows narrow), not the loud-reject path"
+        # V1 memory has NO producer-identity populate path — list.go ALWAYS
+        # returns ErrInvalidFilter for agent_ids. A 200 is therefore a
+        # REGRESSION (a false-empty page masquerading as success), NOT a
+        # populated path — fail loud, never SKIP (the smoke must guard the
+        # exact bug it exists for).
+        fail "phase 177: memory agent_ids returned 200 — V1 has no populate path, so a 200 is a false-absence regression (must loud-reject)"
       else
         skip "phase 177: memory agent_ids probe non-conclusive (${AST})"
       fi

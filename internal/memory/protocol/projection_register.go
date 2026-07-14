@@ -45,11 +45,13 @@ func init() {
 			}
 			return rows[0].item
 		},
-		// The three populated facets memory.list keys on after this phase.
+		// The facets memory.list keys on after this phase: scope / driver /
+		// strategy plus the identity axis (tenant/user/session narrowing).
 		// agent_ids loud-rejects (not an operated post-projection facet);
-		// has_ttl_expiring was removed. No honest-omission entry is needed —
-		// every surviving operated facet is populated.
-		OperatedFields: []string{"scope", "driver", "strategy"},
+		// has_ttl_expiring was removed; content_search matches the value
+		// bytes, not a row field. No honest-omission entry is needed — every
+		// surviving operated facet is populated.
+		OperatedFields: []string{"scope", "driver", "strategy", "identity"},
 		ProdWiringTest: "TestProdWiring_MemoryListRejectsAgentFacet",
 	})
 }

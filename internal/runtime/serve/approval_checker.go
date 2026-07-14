@@ -43,14 +43,24 @@ func (c *ApprovalChecker) HasPendingApproval(ctx context.Context, taskIdentity i
 	if err := identity.Validate(taskIdentity); err != nil {
 		return false
 	}
+	// A run-less task (RunID=="" — session-scoped background work not tied to
+	// a specific run, tasks.go validateIdentity) holds NO run-scoped approval
+	// gate, so the honest answer is false. Without this guard the pause-list
+	// scan below (which only narrows by RunIDs when the set is non-empty)
+	// would fan in across EVERY paused gate in the session and mis-attribute a
+	// SIBLING task's run gate to this run-less task — an intra-session
+	// cross-task false positive (cross-tenant / cross-session are prevented by
+	// the user/session narrowing, but a run-less task must not inherit a
+	// sibling's gate).
+	if runID == "" {
+		return false
+	}
 	filter := pauseresume.ListFilter{
 		States:     []pauseresume.State{pauseresume.StatusPaused},
 		Reasons:    []pauseresume.Reason{pauseresume.ReasonApprovalRequired},
 		UserIDs:    []string{taskIdentity.UserID},
 		SessionIDs: []string{taskIdentity.SessionID},
-	}
-	if runID != "" {
-		filter.RunIDs = []string{runID}
+		RunIDs:     []string{runID},
 	}
 	resp, err := c.pauses.List(ctx, pauseresume.ListRequest{
 		Identity: taskIdentity,

@@ -186,13 +186,23 @@ func (p *RegistryProjector) ListTasks(ctx context.Context, id identity.Identity)
 			return nil, fmt.Errorf("tasks/protocol: registry get %q: %w", sum.ID, terr)
 		}
 		row := projectRow(task)
-		if gid, ok := groupOf[task.ID]; ok {
-			row.GroupID = string(gid)
-		}
+		applyGroup(&row, groupOf, task.ID)
 		p.applyApproval(ctx, task, &row)
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+// applyGroup overlays the row's `group_id` from the task→group reverse
+// index (the conditionally-assigned Background-Jobs facet the `group_id`
+// filter narrows on). A task with no group membership keeps the honest ""
+// default. The list projector and the projection-completeness probe share
+// this one assignment site so the probe exercises the real overlay (a
+// regression that drops the overlay is caught).
+func applyGroup(row *prototypes.TaskRow, groupOf map[tasks.TaskID]tasks.TaskGroupID, taskID tasks.TaskID) {
+	if gid, ok := groupOf[taskID]; ok {
+		row.GroupID = string(gid)
+	}
 }
 
 // applyApproval populates the row's `has_pending_approval` facet from the
