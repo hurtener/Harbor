@@ -144,6 +144,19 @@ const (
 	// to HTTP 409 (Conflict) — the request is well-formed and authorised,
 	// but the session's current state forbids the operation.
 	CodeSessionRunning Code = "session_running"
+	// CodeSessionErased — sessions surface: a `start` named a session id
+	// that was permanently deleted by `sessions.delete` (right-to-erasure).
+	// The session is terminal — its data is gone and it can never be
+	// reopened — so `start` fails loud rather than silently minting a fresh
+	// empty session (RFC §6.9 amended / §7). A dedicated, machine-branchable
+	// code (NOT CodeInvalidRequest) so a consumer-chat client can
+	// distinguish "this conversation was deleted — start a new one" from a
+	// genuinely-malformed request and route the user accordingly. A closed
+	// (but not erased) session, by contrast, reopens normally on `start`.
+	// Maps to HTTP 409 (Conflict) — the request is well-formed and
+	// authorised, but the session's terminal state forbids the operation
+	// (the same posture as CodeSessionRunning).
+	CodeSessionErased Code = "session_erased"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -162,6 +175,7 @@ var canonicalCodes = map[Code]struct{}{
 	CodePresignUnsupported:    {},
 	CodeRequestTooLarge:       {},
 	CodeSessionRunning:        {},
+	CodeSessionErased:         {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

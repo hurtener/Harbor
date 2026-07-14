@@ -94,9 +94,13 @@ Content-Type: application/json
 - A `start` on an **already-open** session id is a no-op create (the
   second-and-later turns of a conversation) — it is **not** an error.
 - A `start` on a **closed** session id (one that was GC-reaped or
-  operator-closed) is rejected `invalid_request` (RFC §6.9:
-  reopen-after-close is forbidden). The Console must start a **new
-  conversation with a new session id** rather than reviving a closed one.
+  operator-closed) **reopens** it (RFC §6.9, amended — D-312): the
+  session record is re-activated in place and the conversation resumes
+  with its durable history intact. The one exception is an **erased**
+  session id (permanently deleted by `sessions.delete`, right-to-erasure):
+  a `start` on it is rejected `session_erased` (HTTP 409) — the
+  conversation is gone and cannot be revived; the Console must start a
+  **new conversation with a new session id**.
 
 `start` response (`200`):
 
