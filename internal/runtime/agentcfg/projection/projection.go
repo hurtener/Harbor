@@ -265,6 +265,92 @@ func ReconcileDiscoveryOrigins(ctx context.Context, reg agentcfg.Registry, agent
 	return applied, errors.Join(errs...)
 }
 
+// OAuthProviderReconciler is the driver-agnostic seam the run-start
+// provider-reconcile leg uses to make the reconciling owner's installed OAuth
+// providers match its current active revision on the live owner-tagged provider
+// set. Like [ConnectionDetacher] it is owner-scoped: InstalledFor returns ONLY
+// the reconciling owner's installed providers (never boot-seeded, never another
+// owner's). The concrete (wired at the cmd/harbor + devstack boundary) delegates
+// to the process-global bare-name provider set.
+type OAuthProviderReconciler interface {
+	// InstalledFor returns the reconciling owner's installed provider names —
+	// the owner-scoped reconcile VIEW.
+	InstalledFor(ctx context.Context, owner auth.Owner) []string
+	// InstallProvider installs (upserts) the descriptor owner-tagged (used when
+	// a rollback FORWARD re-declares a provider that is not currently installed).
+	// The (tenant, agentID) pair is the owner tuple (shared shape with the
+	// agent-config service's ProviderInstaller so one concrete satisfies both).
+	InstallProvider(ctx context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) error
+	// UninstallProvider removes the named provider from the owner-tagged set and
+	// CLOSES it (used when a rollback past an install no longer declares it).
+	UninstallProvider(ctx context.Context, name string) error
+}
+
+// ReconcileOAuthProviders is the PROVIDER-RECONCILE leg of run-start
+// reconciliation — the rollback / set_revision path for the Protocol-installed
+// OAuth providers. For the reconciling OWNER it makes the live owner-tagged
+// provider set match the CURRENT active revision's installed-provider section: a
+// declared provider not currently installed is installed; an installed provider
+// the current revision no longer declares is UNINSTALLED (and CLOSED). So a
+// rollback past an install REVOKES the provider live, and a rollback of a
+// removal re-installs it — one mechanism, N triggers (a full idempotent
+// reconcile, not a rollback-delta).
+//
+// It is owner-scoped exactly like [ReconcileConnections]: InstalledFor returns
+// only the reconciling owner's installed providers, so a run for owner A never
+// touches a boot-seeded provider's or tenant-B's install — the cross-tenant
+// uninstall/outage is closed by owner-scoping.
+//
+// A nil registry, an empty agentID, or a nil reconciler returns (0, nil). A
+// registry read error is returned wrapped in ErrReconcileRead (fail loud).
+// Apply errors are joined and returned (logged loud by the caller) but do not
+// abort the sweep. Returns the number of providers whose install state changed.
+func ReconcileOAuthProviders(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, reconciler OAuthProviderReconciler) (int, error) {
+	if reg == nil || agentID == "" || reconciler == nil {
+		return 0, nil
+	}
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return 0, fmt.Errorf("%w: agent %q: %w", ErrReconcileRead, agentID, err)
+	}
+	declared := make(map[string]agentcfg.OAuthProviderDescriptor)
+	if ok {
+		for _, d := range rev.Payload.OAuthProviderDescriptors() {
+			declared[d.Name] = d
+		}
+	}
+	owner := auth.Owner{Tenant: id.TenantID, Agent: agentID}
+	installed := make(map[string]struct{})
+	var changed int
+	var errs []error
+	// Uninstall any installed-for-owner provider the current revision no longer
+	// declares (rollback past an install).
+	for _, name := range reconciler.InstalledFor(ctx, owner) {
+		installed[name] = struct{}{}
+		if _, stillDeclared := declared[name]; stillDeclared {
+			continue
+		}
+		if uerr := reconciler.UninstallProvider(ctx, name); uerr != nil {
+			errs = append(errs, fmt.Errorf("uninstall provider %q: %w", name, uerr))
+			continue
+		}
+		changed++
+	}
+	// Install any declared provider not currently installed (rollback of a
+	// removal / a set_revision that re-declares it).
+	for name, desc := range declared {
+		if _, isInstalled := installed[name]; isInstalled {
+			continue
+		}
+		if ierr := reconciler.InstallProvider(ctx, owner.Tenant, owner.Agent, desc); ierr != nil {
+			errs = append(errs, fmt.Errorf("install provider %q: %w", name, ierr))
+			continue
+		}
+		changed++
+	}
+	return changed, errors.Join(errs...)
+}
+
 // ActiveSkillViews applies an agent's active-config skills membership to the
 // run's skill-directory views at run start. It resolves the agent's active
 // revision once and, when the revision pins a skills section, keeps only the

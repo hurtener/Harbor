@@ -125,6 +125,15 @@ type MuxInput struct {
 	MCPStdioAllowlist []string
 	BootDeclaredMCP   []string
 
+	// OAuthProviderInstaller backs agent_config.set_oauth_provider /
+	// remove_oauth_provider (the Protocol-installed, zero-URL broker-pull
+	// provider). Built caller-side; nil leaves the install verbs unwired (→ 501).
+	OAuthProviderInstaller agentcfgprotocol.ProviderInstaller
+	// BootDeclaredOAuth is the set of boot-declared OAuth provider names
+	// (tools.oauth_providers[].name); an install/uninstall of one of these is
+	// refused (boot wins).
+	BootDeclaredOAuth []string
+
 	// Auth. Validator nil mounts the transports WithoutValidator (the
 	// explicit test-kit opt-out); AuthSurface nil leaves auth.rotate_token
 	// un-mounted (the production posture — no in-runtime token issuer).
@@ -522,6 +531,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithSessionOverlay(in.SessionOverlay),
 			agentcfgprotocol.WithValidModels(in.ValidModels),
 			agentcfgprotocol.WithBootDeclaredMCPServers(append([]string(nil), in.BootDeclaredMCP...)),
+			agentcfgprotocol.WithBootDeclaredOAuthProviders(append([]string(nil), in.BootDeclaredOAuth...)),
 		}
 		if in.MCPAttacher != nil {
 			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(in.MCPAttacher))
@@ -531,6 +541,9 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			if applier, ok := in.MCPAttacher.(agentcfgprotocol.DiscoveryOriginApplier); ok {
 				agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithDiscoveryOriginApplier(applier))
 			}
+		}
+		if in.OAuthProviderInstaller != nil {
+			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithProviderInstaller(in.OAuthProviderInstaller))
 		}
 		agentConfigService, acErr := agentcfgprotocol.NewService(in.AgentConfig, agentConfigOpts...)
 		if acErr != nil {

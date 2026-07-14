@@ -176,26 +176,26 @@ dropping it.
 
 ## Acceptance criteria
 
-- [ ] The writable provider descriptor carries `{name, credential_broker,
+- [x] The writable provider descriptor carries `{name, credential_broker,
       scopes?}` (+ `driver` / `credential_source` validated to exactly
       `tokenexchange` / `remote`). A reflective test asserts the wire struct
       exposes NO URL-typed or env-var-name field ("no field on the writable
       descriptor is a URL"). Test: `TestSetOAuthProviderWire_HasNoSinkField`.
-- [ ] A write carrying `token_url`, `auth_url`, `client_id_env`,
+- [x] A write carrying `token_url`, `auth_url`, `client_id_env`,
       `client_secret_env`, or `remote` is REJECTED — a `DisallowUnknownFields`
       decode error NAMING the offending field (`unknown field "…"`), never
       silently ignored, never stripped-and-accepted; nothing is written to the
       revision. Test: `TestSetOAuthProvider_RejectsSinkAndSecretFields` (table
       over all five).
-- [ ] `credential_source` absent/empty is a LOUD reject (WARN 16 — in config,
+- [x] `credential_source` absent/empty is a LOUD reject (WARN 16 — in config,
       `""` means the `env` source, `config.go:1096-1101`, which this shape
       forbids). `driver` != `tokenexchange` and `credential_source` != `remote`
       are likewise rejected.
-- [ ] `credential_broker` resolves against the boot-declared broker set (Phase
+- [x] `credential_broker` resolves against the boot-declared broker set (Phase
       166); an unknown name fails loud listing the declared names.
-- [ ] A provider name colliding with a boot-declared `tools.oauth_providers[]`
+- [x] A provider name colliding with a boot-declared `tools.oauth_providers[]`
       entry (within the caller's triple) is refused with a distinct typed error.
-- [ ] `auth.ProviderSet` (NEW `internal/tools/auth/providers.go` — NOT
+- [x] `auth.ProviderSet` (NEW `internal/tools/auth/providers.go` — NOT
       `registry.go`) exists: interface + one internally-synchronised concrete
       (D-025), process-global bare-name for resolution (D-287) with an owner tag
       for reconcile scoping (Phase 167), seeded at boot from `BuildProviders`,
@@ -203,37 +203,37 @@ dropping it.
       `internal/drivers/prod` and has no `drivers/` dir (it holds instances, not
       drivers — WARN 20). Test: install → add connection bound to it → the bearer
       is injected on the identity-stamped call.
-- [ ] **INSTALL/UNINSTALL symmetry + cross-tenant safety (FAIL 6):**
+- [x] **INSTALL/UNINSTALL symmetry + cross-tenant safety (FAIL 6):**
       `remove_oauth_provider` writes the revision AND `Uninstall`s live, CLOSING
       the provider; a still-bound connection's next call fails LOUD (never an
       unauthenticated dial); and a tenant-B run's reconcile NEVER closes a
       tenant-A provider (Phase 167 owner-scoping). Tests:
       `TestRemoveOAuthProvider_BoundConnectionFailsLoudNotUnauthenticated`,
       `TestReconcile_TenantBRun_NeverUninstallsTenantAProvider`.
-- [ ] Rollback past an install runs the SAME uninstall through the run-start
+- [x] Rollback past an install runs the SAME uninstall through the run-start
       reconcile seam (one mechanism, §13). Test-pinned.
-- [ ] Both verbs are **admin-gated** (no-scope / `agent_config:user` →
+- [x] Both verbs are **admin-gated** (no-scope / `agent_config:user` →
       `CodeScopeMismatch`; authority server-derived, D-219), registered in every
       canonical home (+ the `methods.go` prose counts updated, NIT 19), and
       `make protocol-ts-gen` + `make protocol-docs-gen` re-run with regenerated
       artifacts committed (D-223 / D-209). `ProtocolVersion` unbumped.
-- [ ] Both verbs emit ONE admin-scope audit event each, failing the CALL closed
+- [x] Both verbs emit ONE admin-scope audit event each, failing the CALL closed
       on emit failure with NO observable state change (Phase 166's corrected
       ordering).
-- [ ] **No secret / no sink in any persisted artifact.** The revision, diff,
+- [x] **No secret / no sink in any persisted artifact.** The revision, diff,
       audit event, and Protocol response carry NO URL, NO env-var name, NO
       client secret, NO broker bearer. Sentinel-redaction test seeds a
       recognisable secret in the process env + the broker response and asserts it
       appears in NONE of them (§7).
-- [ ] **The binding no longer drops (D-062 consumer):** the Console
+- [x] **The binding no longer drops (D-062 consumer):** the Console
       Add-connection card carries an `oauth_provider` SELECT from the installed
       provider list; `addConnection()` threads it into the descriptor. A vitest
       asserts the field reaches the client call (the `state.svelte.ts:912-923`
       regression); a Go test pins the wire round-trip descriptor → attach →
       `resolveOAuthBinding` (which, per Phase 166, also enforces the downstream
       host).
-- [ ] `scripts/smoke/phase-169.sh` OK ≥ 3, FAIL = 0.
-- [ ] `-race` green; coverage ≥ the stated target on every touched Go package.
+- [x] `scripts/smoke/phase-169.sh` OK ≥ 3, FAIL = 0.
+- [x] `-race` green; coverage ≥ the stated target on every touched Go package.
 
 ## Files added or changed
 
@@ -454,38 +454,38 @@ sink/secret-field-rejection leg:
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] **If multi-isolation code paths changed: cross-tenant isolation test
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] **If multi-isolation code paths changed: cross-tenant isolation test
       passes** — a tenant-B run never closes a tenant-A provider (Phase 167
       owner-scoping); a cross-owner write is refused; the bounded guarantee is
       documented (no false hard-isolation-of-dispatch claim)
-- [ ] **Concurrent-reuse test passes** — N≥100 concurrent `Install` /
+- [x] **Concurrent-reuse test passes** — N≥100 concurrent `Install` /
       `Uninstall` / `Get` across ≥2 tenants against ONE shared `ProviderSet`
       under `-race`; no torn map, no use-after-close, no cross-tenant bleed, no
       goroutine leak (D-025)
-- [ ] **Integration test exists**
+- [x] **Integration test exists**
       (`test/integration/phase169_oauth_provider_install_test.go`), wires real
       drivers end-to-end (named broker + fixture coordinator + fixture token
       endpoint + real MCP transport), asserts identity propagation + the
       uninstall-fails-loud + cross-tenant-safety legs, covers ≥1 failure mode,
       runs under `-race`
-- [ ] §17.8: the token-exchange fixture derives from RFC 8693 / a captured
+- [x] §17.8: the token-exchange fixture derives from RFC 8693 / a captured
       transcript with a provenance comment; a wrong-field mutation FAILS
-- [ ] Wire changes complete: `make protocol-ts-gen-check` +
+- [x] Wire changes complete: `make protocol-ts-gen-check` +
       `make protocol-docs-gen-check` green with regenerated artifacts committed
       (D-223 / D-209); the `methods.go` prose counts updated (NIT 19);
       `ProtocolVersion` unbumped
-- [ ] Config schema: the named-broker `token_url`/`AllowedDownstreamHosts` land
+- [x] Config schema: the named-broker `token_url`/`AllowedDownstreamHosts` land
       in Phase 166; this phase adds no new config key beyond referencing them —
       `examples/` shows a Protocol-installed provider selecting a broker
-- [ ] The 92k / 92m pointer notes are written (WARN 13)
-- [ ] §18 skill hygiene: `docs/skills/use-the-harbor-protocol/SKILL.md`
+- [x] The 92k / 92m pointer notes are written (WARN 13)
+- [x] §18 skill hygiene: `docs/skills/use-the-harbor-protocol/SKILL.md`
       (`surface: protocol`) documents the new methods; `define-the-agent-yaml`
       (`surface: agent-yaml`) if the broker example changes — in the SAME PR
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry
       filed (D-303 records the ZERO-URL / RFC 7591 departure)

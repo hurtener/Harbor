@@ -84,6 +84,9 @@ func TestValidate_CredentialBrokers(t *testing.T) {
 		wantText string
 	}{
 		{"valid broker accepted", func(c *config.Config) {
+			// A Protocol-installed broker-pull provider shares the token store,
+			// so a declared broker requires the KEK env (Phase 169).
+			c.Tools.OAuthTokenKEKEnv = "HARBOR_TOOL_OAUTH_KEK"
 			c.Tools.OAuthCredentialBrokers = []config.ToolOAuthCredentialBrokerConfig{base()}
 		}, ""},
 		{"duplicate names rejected", func(c *config.Config) {
@@ -95,6 +98,7 @@ func TestValidate_CredentialBrokers(t *testing.T) {
 			c.Tools.OAuthCredentialBrokers = []config.ToolOAuthCredentialBrokerConfig{b}
 		}, "https"},
 		{"loopback http token_url accepted", func(c *config.Config) {
+			c.Tools.OAuthTokenKEKEnv = "HARBOR_TOOL_OAUTH_KEK"
 			b := base()
 			b.TokenURL = "http://127.0.0.1:8080/token"
 			c.Tools.OAuthCredentialBrokers = []config.ToolOAuthCredentialBrokerConfig{b}

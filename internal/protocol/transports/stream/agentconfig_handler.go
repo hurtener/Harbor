@@ -184,6 +184,10 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveRemoveMCPConnection(w, r, body, wireID)
 	case "set_mcp_discovery_origins":
 		h.serveSetMCPDiscoveryOrigins(w, r, body, wireID)
+	case "set_oauth_provider":
+		h.serveSetOAuthProvider(w, r, body, wireID)
+	case "remove_oauth_provider":
+		h.serveRemoveOAuthProvider(w, r, body, wireID)
 	case "skills/list":
 		h.serveSkillsList(w, r, body, wireID)
 	case "skills/upsert":
@@ -427,6 +431,40 @@ func (h *AgentConfigHandler) serveSetMCPDiscoveryOrigins(w http.ResponseWriter, 
 	resp, err := h.service.SetMCPDiscoveryOrigins(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigSetMCPDiscoveryOrigins, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSetOAuthProvider(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSetOAuthProviderRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSetOAuthProvider) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SetOAuthProvider(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSetOAuthProvider, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveRemoveOAuthProvider(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigRemoveOAuthProviderRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigRemoveOAuthProvider) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.RemoveOAuthProvider(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigRemoveOAuthProvider, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -714,6 +752,23 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrConnectionAttachUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": mcp connection attach is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrProviderInstallUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			m + ": oauth provider install is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrInvalidProvider),
+		errors.Is(err, agentcfgprotocol.ErrBootDeclaredProvider),
+		errors.Is(err, agentcfgprotocol.ErrProviderBrokerUnknown):
+		// A malformed / boot-colliding / unknown-broker install is a CLIENT
+		// error (a bad request body) — rejected loud BEFORE any observable state
+		// change. The installer wraps the auth-package errors (unknown broker,
+		// name collision) into these service sentinels.
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrProviderNotFound):
+		// remove_oauth_provider named a provider absent from the agent's
+		// revisioned installed set — a not-found (404).
+		return protoerrors.CodeNotFound, http.StatusNotFound,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrStdioNotAllowed):
 		// The most privileged action's fail-closed RCE gate — a stdio add of
 		// an un-allowlisted command is an authorization failure (CodeScopeMismatch).

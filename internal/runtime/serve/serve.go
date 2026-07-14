@@ -408,43 +408,57 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	var mcpDetacher projection.ConnectionDetacher
 	if toolCat != nil && mcpRegistry != nil {
 		attacher := NewMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.Logger,
-			opts.MCPDefaultIdentity, oauthProviders)
+			opts.MCPDefaultIdentity, oauthProviders, stack.OAuthProviderSet)
 		closers = append(closers, attacher.Close)
 		mcpAttacher = attacher
 		mcpDetacher = NewMCPConnectionDetacher(toolCat, mcpRegistry, opts.Logger)
 	}
 
+	// The Protocol-installed OAuth provider installer (set_oauth_provider /
+	// remove_oauth_provider + the run-start provider reconcile). Nil when no
+	// provider set / builder is wired (no catalog), leaving the verbs at 501.
+	var oauthProviderInstaller agentcfgprotocol.ProviderInstaller
+	var oauthProviderReconciler projection.OAuthProviderReconciler
+	if stack.OAuthProviderSet != nil && stack.OAuthProviderBuilder != nil {
+		concrete := NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet)
+		if concrete != nil {
+			oauthProviderInstaller = concrete
+			oauthProviderReconciler = concrete
+		}
+	}
+
 	runLoopDriver, err := NewRunLoopDriver(RunLoopDriverOptions{
-		Logger:             opts.Logger,
-		Bus:                bus,
-		RunLoop:            runLoop,
-		Planner:            plnr,
-		Tasks:              taskReg,
-		TaskKind:           tasks.KindForeground,
-		DriveBackground:    true,
-		Memory:             memStore,
-		MemoryRecall:       memory.RecallFromConfig(cfg.Memory),
-		SkillsDirectory:    skillsDir,
-		PlanningHints:      planner.HintsFromConfig(cfg.Planner.PlanningHints),
-		Catalog:            toolCat,
-		Executor:           stack.Executor,
-		MaxStepsRunLoop:    cfg.Planner.MaxSteps,
-		GrantedScopes:      append([]string(nil), cfg.Tools.GrantedScopes...),
-		ArtifactStore:      artStore,
-		TokenBudget:        cfg.Planner.TokenBudget,
-		Compression:        stack.Compression,
-		DispositionPolicy:  dispositionPolicy,
-		TenantOverrides:    tenantOverridePolicy,
-		SessionOverrides:   runsStore,
-		AgentConfig:        agentConfigRegistry,
-		AgentConfigID:      devAgentConfigID,
-		SessionOverlay:     sessionOverlayStore,
-		RunCompletionHook:  projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
-		ConnectionDetacher: mcpDetacher,
-		BootDeclaredMCP:    BootDeclaredMCPServerSet(cfg),
-		NamingDefault:      cfg.Runtime.Naming,
-		SessionTitler:      sessionRegistry,
-		NamingLLM:          stack.LLM,
+		Logger:                  opts.Logger,
+		Bus:                     bus,
+		RunLoop:                 runLoop,
+		Planner:                 plnr,
+		Tasks:                   taskReg,
+		TaskKind:                tasks.KindForeground,
+		DriveBackground:         true,
+		Memory:                  memStore,
+		MemoryRecall:            memory.RecallFromConfig(cfg.Memory),
+		SkillsDirectory:         skillsDir,
+		PlanningHints:           planner.HintsFromConfig(cfg.Planner.PlanningHints),
+		Catalog:                 toolCat,
+		Executor:                stack.Executor,
+		MaxStepsRunLoop:         cfg.Planner.MaxSteps,
+		GrantedScopes:           append([]string(nil), cfg.Tools.GrantedScopes...),
+		ArtifactStore:           artStore,
+		TokenBudget:             cfg.Planner.TokenBudget,
+		Compression:             stack.Compression,
+		DispositionPolicy:       dispositionPolicy,
+		TenantOverrides:         tenantOverridePolicy,
+		SessionOverrides:        runsStore,
+		AgentConfig:             agentConfigRegistry,
+		AgentConfigID:           devAgentConfigID,
+		SessionOverlay:          sessionOverlayStore,
+		RunCompletionHook:       projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
+		ConnectionDetacher:      mcpDetacher,
+		BootDeclaredMCP:         BootDeclaredMCPServerSet(cfg),
+		OAuthProviderReconciler: oauthProviderReconciler,
+		NamingDefault:           cfg.Runtime.Naming,
+		SessionTitler:           sessionRegistry,
+		NamingLLM:               stack.LLM,
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -475,43 +489,45 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	built, err := BuildMux(MuxInput{
-		Cfg:                  cfg,
-		Surface:              surface,
-		Bus:                  bus,
-		Redactor:             red,
-		Logger:               opts.Logger,
-		Metrics:              metricsReg,
-		LLMSnapshot:          llmCfg,
-		Tasks:                taskReg,
-		Sessions:             sessionRegistry,
-		Agents:               agentRegistry,
-		Artifacts:            artStore,
-		Memory:               memStore,
-		Catalog:              toolCat,
-		Coordinator:          coord,
-		MCPRegistry:          mcpRegistry,
-		MCPToolContext:       mcpToolContext,
-		State:                stack.State,
-		Skills:               skillStore,
-		AgentConfig:          agentConfigRegistry,
-		AgentConfigID:        devAgentConfigID,
-		SessionOverlay:       sessionOverlayStore,
-		RunsStore:            runsStore,
-		RunLoopDriver:        runLoopDriver,
-		OAuthProviders:       oauthProviders,
-		TenantOverridePolicy: tenantOverridePolicy,
-		KeyRotator:           stack.KeyRotator,
-		ValidModels:          validModels,
-		MCPAttacher:          mcpAttacher,
-		MCPStdioAllowlist:    MCPAddStdioAllowlist(cfg),
-		BootDeclaredMCP:      BootDeclaredMCPServerNames(cfg),
-		Validator:            validator,
-		AuthSurface:          authSurface,
-		DisplayName:          opts.DisplayName,
-		InstanceID:           opts.InstanceID,
-		BuildVersion:         opts.BuildVersion,
-		BuildCommit:          opts.BuildCommit,
-		TopologyAvailable:    false,
+		Cfg:                    cfg,
+		Surface:                surface,
+		Bus:                    bus,
+		Redactor:               red,
+		Logger:                 opts.Logger,
+		Metrics:                metricsReg,
+		LLMSnapshot:            llmCfg,
+		Tasks:                  taskReg,
+		Sessions:               sessionRegistry,
+		Agents:                 agentRegistry,
+		Artifacts:              artStore,
+		Memory:                 memStore,
+		Catalog:                toolCat,
+		Coordinator:            coord,
+		MCPRegistry:            mcpRegistry,
+		MCPToolContext:         mcpToolContext,
+		State:                  stack.State,
+		Skills:                 skillStore,
+		AgentConfig:            agentConfigRegistry,
+		AgentConfigID:          devAgentConfigID,
+		SessionOverlay:         sessionOverlayStore,
+		RunsStore:              runsStore,
+		RunLoopDriver:          runLoopDriver,
+		OAuthProviders:         oauthProviders,
+		TenantOverridePolicy:   tenantOverridePolicy,
+		KeyRotator:             stack.KeyRotator,
+		ValidModels:            validModels,
+		MCPAttacher:            mcpAttacher,
+		MCPStdioAllowlist:      MCPAddStdioAllowlist(cfg),
+		BootDeclaredMCP:        BootDeclaredMCPServerNames(cfg),
+		BootDeclaredOAuth:      BootDeclaredOAuthProviderNames(cfg),
+		OAuthProviderInstaller: oauthProviderInstaller,
+		Validator:              validator,
+		AuthSurface:            authSurface,
+		DisplayName:            opts.DisplayName,
+		InstanceID:             opts.InstanceID,
+		BuildVersion:           opts.BuildVersion,
+		BuildCommit:            opts.BuildCommit,
+		TopologyAvailable:      false,
 	})
 	if err != nil {
 		closeAll(ctx)

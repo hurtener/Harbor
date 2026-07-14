@@ -51,6 +51,9 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 		Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{
 			{Name: "seed-conn", Transport: agentcfg.MCPTransportHTTP, URL: "https://example.invalid/seed"},
 		}},
+		OAuthProviders: &agentcfg.OAuthProvidersSection{Providers: []agentcfg.OAuthProviderDescriptor{
+			{Name: "seed-provider", Driver: "tokenexchange", CredentialSource: "remote", CredentialBroker: "seed-broker", Scopes: []string{"seed.scope"}},
+		}},
 		LLMParams: &agentcfg.LLMParams{
 			Model:           strPtr("seed-model"),
 			Temperature:     f64(0.42),
@@ -260,6 +263,39 @@ func TestRebuildCompleteness_EverySetter_PreservesEverySibling(t *testing.T) {
 					AllowedOrigins: []string{"https://as.example.invalid"},
 				}); err != nil {
 					t.Fatalf("set_mcp_discovery_origins: %v", err)
+				}
+			},
+		},
+		{
+			// set_oauth_provider rebuilds ConfigPayload by hand
+			// (rebuildWithOAuthProvider) — the same omission class the guard closes.
+			name:  "set_oauth_provider",
+			owned: "OAuthProviders",
+			opts: func(_ *testing.T) []agentcfgprotocol.Option {
+				return []agentcfgprotocol.Option{agentcfgprotocol.WithProviderInstaller(newFakeInstaller())}
+			},
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				if _, err := s.SetOAuthProvider(ctx, prototypes.AgentConfigSetOAuthProviderRequest{
+					Identity: scope(), AgentID: rcAgent,
+					Provider: prototypes.AgentConfigOAuthProviderDescriptor{Name: "new-prov", Driver: "tokenexchange", CredentialSource: "remote", CredentialBroker: "seed-broker"},
+				}); err != nil {
+					t.Fatalf("set_oauth_provider: %v", err)
+				}
+			},
+		},
+		{
+			name:  "remove_oauth_provider",
+			owned: "OAuthProviders",
+			opts: func(_ *testing.T) []agentcfgprotocol.Option {
+				return []agentcfgprotocol.Option{agentcfgprotocol.WithProviderInstaller(newFakeInstaller())}
+			},
+			invoke: func(t *testing.T, ctx context.Context, s *agentcfgprotocol.Service) {
+				// The seed pins "seed-provider"; removing it owns the OAuthProviders
+				// section while every sibling must survive.
+				if _, err := s.RemoveOAuthProvider(ctx, prototypes.AgentConfigRemoveOAuthProviderRequest{
+					Identity: scope(), AgentID: rcAgent, Name: "seed-provider",
+				}); err != nil {
+					t.Fatalf("remove_oauth_provider: %v", err)
 				}
 			},
 		},

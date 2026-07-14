@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 317 canonical Harbor Protocol wire types, generated from the single-source
+The 324 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -111,6 +111,7 @@ Declared in `internal/protocol/types`.
 | `tool_exposure` | `types.AgentConfigToolExposureDiff` — see [`AgentConfigToolExposureDiff`](./types.md#agentconfigtoolexposurediff) |  |
 | `prompt_layers` | `types.AgentConfigPromptLayersDiff` — see [`AgentConfigPromptLayersDiff`](./types.md#agentconfigpromptlayersdiff) |  |
 | `connections` | `types.AgentConfigConnectionsDiff` — see [`AgentConfigConnectionsDiff`](./types.md#agentconfigconnectionsdiff) |  |
+| `oauth_providers` | `types.AgentConfigOAuthProvidersDiff` — see [`AgentConfigOAuthProvidersDiff`](./types.md#agentconfigoauthprovidersdiff) |  |
 | `llm_params` | `types.AgentConfigLLMParamsDiff` — see [`AgentConfigLLMParamsDiff`](./types.md#agentconfigllmparamsdiff) |  |
 | `hooks` | `types.AgentConfigHooksDiff` — see [`AgentConfigHooksDiff`](./types.md#agentconfighooksdiff) |  |
 | `naming` | `types.AgentConfigNamingDiff` — see [`AgentConfigNamingDiff`](./types.md#agentconfignamingdiff) |  |
@@ -289,6 +290,35 @@ Declared in `internal/protocol/types`.
 | `model_from` | `string` | optional (`omitempty`) |
 | `model_to` | `string` | optional (`omitempty`) |
 
+## AgentConfigOAuthProviderDescriptor
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `driver` | `string` |  |
+| `credential_source` | `string` |  |
+| `credential_broker` | `string` |  |
+| `scopes` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigOAuthProviders
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `providers` | `[]types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) | optional (`omitempty`) |
+
+## AgentConfigOAuthProvidersDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `added` | `[]string` | optional (`omitempty`) |
+| `removed` | `[]string` | optional (`omitempty`) |
+
 ## AgentConfigPayload
 
 Declared in `internal/protocol/types`.
@@ -299,6 +329,7 @@ Declared in `internal/protocol/types`.
 | `skills` | `*types.AgentConfigSkillsSelection` — see [`AgentConfigSkillsSelection`](./types.md#agentconfigskillsselection) | optional (`omitempty`) |
 | `tool_exposure` | `*types.AgentConfigToolExposure` — see [`AgentConfigToolExposure`](./types.md#agentconfigtoolexposure) | optional (`omitempty`) |
 | `connections` | `*types.AgentConfigConnections` — see [`AgentConfigConnections`](./types.md#agentconfigconnections) | optional (`omitempty`) |
+| `oauth_providers` | `*types.AgentConfigOAuthProviders` — see [`AgentConfigOAuthProviders`](./types.md#agentconfigoauthproviders) | optional (`omitempty`) |
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
@@ -343,6 +374,27 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `name` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigRemoveOAuthProviderRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+
+## AgentConfigRemoveOAuthProviderResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `name` | `string` |  |
+| `uninstalled` | `bool` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigRevisionView
@@ -535,6 +587,26 @@ Declared in `internal/protocol/types`.
 | `granted` | `[]string` | optional (`omitempty`) |
 | `revoked` | `[]string` | optional (`omitempty`) |
 | `applied_live` | `bool` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSetOAuthProviderRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `provider` | `types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) |  |
+
+## AgentConfigSetOAuthProviderResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `name` | `string` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigSetPromptLayersRequest
