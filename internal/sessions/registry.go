@@ -1148,6 +1148,23 @@ func (r *Registry) deleteScopeSerialized(ctx context.Context, store state.StateS
 	return store.DeleteScope(ctx, id)
 }
 
+// saveScopeSerialized persists a StateStore record while holding the SAME r.mu
+// the whole-record writers (mutateSession) and the reopen path (Open →
+// isErased) hold. The erasure cascade uses it for the erase-INTENT ledger
+// checkpoint (see CascadeEraser.saveLedgerSerialized): serializing that Save
+// against a concurrent reopen's r.mu-held load→isErased→re-activate section is
+// what closes the fence-lift race — the reopen either observes the intent
+// ledger and fails loud, or finishes re-activating before the Save lands (and
+// the eraser's fenceSession then re-establishes the lifted fence). Lock
+// ordering matches deleteScopeSerialized: the eraser holds its striped
+// per-session lock OUTSIDE r.mu (striped → r.mu), and no registry method
+// acquires the striped locks, so no cycle exists.
+func (r *Registry) saveScopeSerialized(ctx context.Context, store state.StateStore, rec state.StateRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return store.Save(ctx, rec)
+}
+
 // loadSession is the shared "fetch the session record by SessionID"
 // path. Identity is taken from ctx; the StateStore key uses the full
 // triple; cross-tenant access is prevented at the StateStore level.

@@ -562,10 +562,19 @@ type flakyLedgerStore struct {
 	loadFail        *atomic.Bool
 	deleteFail      *atomic.Bool
 	deleteScopeFail *atomic.Bool
+	// saveSkip, when non-nil, lets the first saveSkip ledger-kind Saves
+	// through before the saveFail toggle takes effect — used to target a
+	// LATER ledger checkpoint (e.g. the artifacts-step checkpoint) while
+	// letting the erase-INTENT checkpoint (the first ledger Save) land, so a
+	// test can exercise the artifacts-checkpoint residual gap specifically.
+	saveSkip *atomic.Int32
 }
 
 func (s *flakyLedgerStore) Save(ctx context.Context, r state.StateRecord) error {
 	if s.saveFail != nil && s.saveFail.Load() && strings.HasPrefix(r.Kind, erasureLedgerTestKindPrefix) {
+		if s.saveSkip != nil && s.saveSkip.Add(-1) >= 0 {
+			return s.StateStore.Save(ctx, r)
+		}
 		return errors.New("flaky state store: forced ledger save failure")
 	}
 	return s.StateStore.Save(ctx, r)
@@ -674,7 +683,13 @@ func TestCascadeEraser_LedgerSaveFailure_LoudAndRetrySafe(t *testing.T) {
 
 	var fail atomic.Bool
 	fail.Store(true)
-	flaky := &flakyLedgerStore{StateStore: f.store, saveFail: &fail}
+	// saveSkip=1 lets the erase-INTENT checkpoint (the first ledger Save, added
+	// to close the fence-lift race) land, and fails the NEXT ledger checkpoint
+	// (the artifacts step) — targeting the documented artifacts-checkpoint
+	// residual gap specifically, exactly as before the intent checkpoint existed.
+	var skip atomic.Int32
+	skip.Store(1)
+	flaky := &flakyLedgerStore{StateStore: f.store, saveFail: &fail, saveSkip: &skip}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Bus: f.bus,
 	})

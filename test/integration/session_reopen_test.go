@@ -22,7 +22,9 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -277,6 +279,76 @@ func TestE2E_SessionReopen_ConvergedErase_FailsLoud(t *testing.T) {
 	}
 	if _, eerr := st.reg.EnsureOpen(ictx, id); !errors.Is(eerr, sessions.ErrReopenAfterErase) {
 		t.Fatalf("EnsureOpen converged-erased = %v, want ErrReopenAfterErase", eerr)
+	}
+}
+
+// TestE2E_SessionReopen_ConcurrentReopenErase_Durable is the §17.3 durable-seam
+// concurrency stress for the reopen∥erase race (the unit-level D-025 stress runs
+// on the inmem fixture; this proves the same invariants against the real durable
+// event bus + sqlite state + real CascadeEraser). N concurrent (reopen ∥ erase)
+// pairs on distinct sessions resolve to cleanly erased with the erasure FENCE
+// INTACT — a straggler late event stays dropped under the erased triple, no
+// resurrected history. Under -race.
+func TestE2E_SessionReopen_ConcurrentReopenErase_Durable(t *testing.T) {
+	st := newReopenStack(t)
+	ctx := context.Background()
+	hr, ok := st.bus.(events.HistoryReplayer)
+	if !ok {
+		t.Fatal("durable bus is not a HistoryReplayer")
+	}
+	const n = 16
+	ids := make([]identity.Identity, n)
+	for i := range n {
+		id := identity.Identity{TenantID: "T", UserID: "U", SessionID: fmt.Sprintf("race-%d", i)}
+		ids[i] = id
+		if _, err := st.reg.Open(reopenCtx(id), id.SessionID, id); err != nil {
+			t.Fatalf("Open %d: %v", i, err)
+		}
+		if err := st.reg.Close(reopenCtx(id), id.SessionID, "race:pre"); err != nil {
+			t.Fatalf("Close %d: %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := range n {
+		id := ids[i]
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if _, oerr := st.reg.Open(reopenCtx(id), id.SessionID, id); oerr != nil && !errors.Is(oerr, sessions.ErrReopenAfterErase) {
+				t.Errorf("concurrent reopen %s = %v, want nil or ErrReopenAfterErase", id.SessionID, oerr)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, eerr := st.eraser.Erase(ctx, id); eerr != nil && !errors.Is(eerr, sessions.ErrSessionNotFound) {
+				t.Errorf("concurrent erase %s = %v", id.SessionID, eerr)
+			}
+		}()
+	}
+	wg.Wait()
+
+	for i := range n {
+		id := ids[i]
+		if _, lerr := st.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); !errors.Is(lerr, state.ErrNotFound) {
+			t.Fatalf("%s: lifecycle record survived the durable race: %v", id.SessionID, lerr)
+		}
+		if _, oerr := st.reg.Open(reopenCtx(id), id.SessionID, id); !errors.Is(oerr, sessions.ErrReopenAfterErase) {
+			t.Fatalf("%s: post-race reopen = %v, want ErrReopenAfterErase", id.SessionID, oerr)
+		}
+		// FENCE INTACT: a straggler late event stays dropped, history empty.
+		late := events.Event{
+			Type:     sessions.EventTypeSessionTouched,
+			Identity: identity.Quadruple{Identity: id},
+			Payload:  sessions.SessionTouchedPayload{SessionID: id.SessionID, LastSeen: 999},
+		}
+		if perr := st.bus.Publish(ctx, late); perr != nil {
+			t.Fatalf("%s: late fenced publish should drop gracefully: %v", id.SessionID, perr)
+		}
+		filter := events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
+		if _, _, _, herr := hr.Bounds(ctx, filter); !errors.Is(herr, events.ErrNoHistory) {
+			t.Fatalf("%s: FENCE LIFTED mid-erase on the durable seam (Bounds=%v, want ErrNoHistory)", id.SessionID, herr)
+		}
 	}
 }
 

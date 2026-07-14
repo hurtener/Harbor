@@ -129,16 +129,21 @@ if command -v curl >/dev/null 2>&1; then
           set -e
           case "${DST}" in
             200)
+              # Capture BOTH the status AND the body: a stray session_running
+              # 409 would false-pass a status-only check, so assert the
+              # machine-branchable JSON error code is session_erased (NIT-1).
               set +e
-              ERASED=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+              ERASED_BODY=$(curl -s -w '\n%{http_code}' --max-time 10 \
                 -X POST -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \
                 -H 'Content-Type: application/json' \
                 -d '{"query":"reopen after erase","description":"must be rejected"}' "${START_URL}")
               set -e
-              if [ "${ERASED}" = "409" ]; then
-                ok "phase 176: start on an ERASED session is rejected 409 (session_erased, reopen-after-erase)"
+              ERASED="${ERASED_BODY##*$'\n'}"
+              ERASED_JSON="${ERASED_BODY%$'\n'*}"
+              if [ "${ERASED}" = "409" ] && printf '%s' "${ERASED_JSON}" | grep -q '"session_erased"'; then
+                ok "phase 176: start on an ERASED session is rejected 409 with error.code=session_erased (reopen-after-erase)"
               else
-                fail "phase 176: start on an erased session expected 409 session_erased, got ${ERASED}"
+                fail "phase 176: start on an erased session expected 409 + error.code=session_erased, got status=${ERASED} body=${ERASED_JSON}"
               fi
               ;;
             404 | 409 | 501)

@@ -312,6 +312,12 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 //     stamp (the session's OpenedAt) is verified: a leftover ledger from
 //     an abandoned prior lifecycle of a reused session id is discarded
 //     with a loud Warn so counts never inflate across a reuse boundary.
+//     1a. erase-intent checkpoint: persist the ledger (empty-but-stamped, or
+//     the accumulated counts on a retry) through the registry's r.mu BEFORE
+//     the fence, so isErased reports true from the first destructive instant
+//     and a concurrent reopen cannot re-activate the record and lift the
+//     fence in the gap before the first destructive checkpoint (the
+//     fence-lift race; see the inline note).
 //  2. fence: mark the triple erased on the event bus, BEFORE any
 //     destructive step. A present-but-failing Fence capability fails the
 //     WHOLE erasure loud here — nothing has been touched yet, so this is
@@ -393,6 +399,39 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		ledger = erasureLedgerRecord{}
 	}
 	ledger.SessionOpenedAt = stamp
+
+	// 1a. Erase-INTENT checkpoint — persist the ledger (empty-but-stamped on a
+	//     fresh attempt, or the accumulated counts on a mid-cascade retry)
+	//     BEFORE the fence, so isErased reports true from the first destructive
+	//     instant. This closes a right-to-erasure fence-lift race: without it,
+	//     the window between fenceSession (step 2) and the FIRST destructive
+	//     checkpoint (step 3, after the artifacts sweep) leaves the record
+	//     present-and-Closed with NO ledger and NO tombstone — so a concurrent
+	//     reopen's isErased read returns false, the reopen re-activates the
+	//     record AND calls unfenceSession, LIFTING the fence the eraser just
+	//     set, with no re-fence on any legal reopen path. The erasure still
+	//     CONVERGES to erased (DeleteScope removes the record; a later reopen is
+	//     terminal via the tombstone), but a not-yet-registered async task's
+	//     post-sweep events would be retained under the just-erased triple —
+	//     the exact leak the fence exists to close.
+	//
+	//     The save is serialized under the registry's r.mu (mirroring
+	//     deleteScopeSerialized) so it orders against a concurrent reopen's
+	//     r.mu-held load→isErased→re-activate critical section: a reopen either
+	//     observes this ledger (and fails loud ErrReopenAfterErase, never
+	//     unfencing), OR completes its re-activation fully before this save — in
+	//     which case fenceSession below (which runs after this serialized save)
+	//     RE-ESTABLISHES the fence the reopen lifted. Either way the fence is
+	//     intact once Erase proceeds. Lock ordering is unchanged: the eraser
+	//     holds its striped per-session lock OUTSIDE r.mu (striped → r.mu), the
+	//     same order deleteScopeSerialized uses.
+	//
+	//     Write-happens-before ordering is preserved and even strengthened: this
+	//     is now the EARLIEST durable erasure record; the terminal
+	//     tombstone-before-deleteLedger ordering (completeErasure) is unchanged.
+	if err := e.saveLedgerSerialized(ctx, id, ledger); err != nil {
+		return zero, fmt.Errorf("sessions: erase intent checkpoint: %w", err)
+	}
 
 	// 2. Fence the session on the event bus BEFORE the sweep. The
 	//     running-task probe cannot see a task that the asynchronous
@@ -728,6 +767,25 @@ func (e *CascadeEraser) saveLedger(ctx context.Context, id identity.Identity, le
 		return fmt.Errorf("marshal erasure ledger: %w", err)
 	}
 	return e.state.Save(ctx, state.StateRecord{
+		ID:       state.NewEventID(),
+		Identity: ledgerScope(id),
+		Kind:     ledgerKind(id.SessionID),
+		Bytes:    bytes,
+	})
+}
+
+// saveLedgerSerialized persists the ledger checkpoint through the registry's
+// r.mu (via saveScopeSerialized), mirroring deleteScopeSerialized. It is used
+// for the erase-INTENT checkpoint that must serialize against a concurrent
+// reopen's r.mu-held isErased read so the fence-lift race is closed (see
+// Erase step 1a). Byte-for-byte identical to saveLedger except for the
+// serialized Save call.
+func (e *CascadeEraser) saveLedgerSerialized(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) error {
+	bytes, err := json.Marshal(ledger)
+	if err != nil {
+		return fmt.Errorf("marshal erasure ledger: %w", err)
+	}
+	return e.registry.saveScopeSerialized(ctx, e.state, state.StateRecord{
 		ID:       state.NewEventID(),
 		Identity: ledgerScope(id),
 		Kind:     ledgerKind(id.SessionID),

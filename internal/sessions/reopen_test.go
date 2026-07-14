@@ -540,4 +540,37 @@ func TestRegistry_Reopen_VsErase_Race(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+
+	// FENCE-INTACTNESS invariant (the right-to-erasure fence-lift race): after
+	// every reopen∥erase pair resolves, each session must be CLEANLY erased —
+	// the lifecycle record gone, reopen terminal via the tombstone, AND the
+	// erasure FENCE INTACT. The pre-fix bug: a reopen that raced the erase in
+	// the window between fenceSession and the first destructive checkpoint
+	// re-activated the closed record and called unfenceSession, LIFTING the
+	// fence with no re-fence — so a not-yet-registered straggler task's
+	// post-sweep events would be retained under the just-erased triple. Assert
+	// a straggler late event is still DROPPED (history empty) for every session.
+	hr, ok := f.bus.(events.HistoryReplayer)
+	if !ok {
+		t.Fatal("fixture bus is not a HistoryReplayer")
+	}
+	for i := range n {
+		id := ids[i]
+		// The erase always runs DeleteScope, so the record must be gone.
+		if _, lerr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); !errors.Is(lerr, state.ErrNotFound) {
+			t.Fatalf("%s: lifecycle record survived the race (want erased): %v", id.SessionID, lerr)
+		}
+		// Reopen is terminal via the tombstone (this Open hits the not-found
+		// path and returns before unfenceSession, so it does not lift the fence).
+		if _, oerr := f.reg.Open(ctxFor(id), id.SessionID, id); !errors.Is(oerr, sessions.ErrReopenAfterErase) {
+			t.Fatalf("%s: post-race reopen = %v, want ErrReopenAfterErase (tombstone)", id.SessionID, oerr)
+		}
+		// FENCE INTACT: a straggler late event is DROPPED, history stays empty.
+		if perr := f.bus.Publish(ctx, lateTaskEvent(id, 999)); perr != nil {
+			t.Fatalf("%s: late fenced publish should drop gracefully: %v", id.SessionID, perr)
+		}
+		if _, _, _, herr := hr.Bounds(ctx, historyFilter(id)); !errors.Is(herr, events.ErrNoHistory) {
+			t.Fatalf("%s: FENCE LIFTED mid-erase — a straggler event was retained under the erased triple (Bounds=%v, want ErrNoHistory)", id.SessionID, herr)
+		}
+	}
 }
