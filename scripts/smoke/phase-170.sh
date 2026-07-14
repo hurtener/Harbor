@@ -9,9 +9,12 @@
 #   - runs `go test -race` on internal/tools/auth (the discovery walker + the
 #     new same-origin dial-pin + DNS-rebinding tests) and the phase-170
 #     integration test;
-#   - greps that NO production code path sets `allowPrivate` outside the
-#     test-only WithPrivateNetworkAccessForTest option (the "no production
-#     private-network knob" invariant, mechanically guarded).
+#   - guards the "no production private-network knob" invariant: every
+#     `allowPrivate = true` assignment must live inside discovery.go (the
+#     test-only WithPrivateNetworkAccessForTest option body), and there must be
+#     exactly one. NOTE: a naive `grep -v WithPrivateNetworkAccessForTest`
+#     false-fails, because the assignment line (`d.allowPrivate = true`) does
+#     NOT contain the option name — scope by file + count instead.
 # The Console rendering of a discovered requirement reaching needs_allowance
 # against a private/self-hosted server is the wave's live-verification step,
 # not a smoke.
@@ -30,11 +33,14 @@ source "scripts/smoke/common.sh"
 # Phase 170 assertions land with the implementation PR. Planned shape:
 #
 #   go test -race ./internal/tools/auth/... \
-#     -run 'TestDiscoverer_SameOriginPrivateResourceHop_CompletesOnProductionPath|TestDiscoverer_SameOriginRebindToDifferentPrivateIP_StillRefused|TestDiscoverer_CrossOriginPrivateHop_StillRefused|TestDiscoverer_AuthServerHop_StillNeedsAllowance'
+#     -run 'TestDiscoverer_SameOriginPrivateResourceHop_CompletesOnProductionPath|TestDiscoverer_SameOriginRebindToDifferentPrivateIP_StillRefused|TestDiscoverer_SameOriginRedirectToDifferentPort_StillRefused|TestDiscoverer_AuthServerHopToPinnedIP_StillRefused|TestDiscoverer_CrossOriginPrivateHop_StillRefused|TestDiscoverer_NonPinnedPlainHTTP_StillNotHTTPS|TestDiscoverer_AuthServerHop_StillNeedsAllowance'
 #   go test -race ./test/integration/ -run 'Test.*Phase170'
-#   # invariant grep: allowPrivate is only ever set via the test-only option
-#   ! grep -RnE 'allowPrivate\s*=\s*true' internal/ --include='*.go' \
-#       | grep -v 'WithPrivateNetworkAccessForTest'
+#   # invariant: allowPrivate=true only ever set inside discovery.go's test-only
+#   # option body — scope by FILE + COUNT (a `grep -v <option-name>` false-fails
+#   # because the assignment line does not contain the option name).
+#   hits=$(grep -RnE 'allowPrivate[[:space:]]*=[[:space:]]*true' internal/ --include='*.go' || true)
+#   printf '%s\n' "$hits" | grep -v 'internal/tools/auth/discovery.go:' | grep -q . && exit 1  # any setter outside discovery.go
+#   [ "$(printf '%s\n' "$hits" | grep -c 'internal/tools/auth/discovery.go:')" = "1" ]         # exactly one, the option body
 # ----------------------------------------------------------------------------
 
 skip "phase 170: same-origin discovery-dial fix — smoke skeleton; real assertions land with the implementation PR"
