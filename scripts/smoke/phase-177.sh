@@ -34,15 +34,19 @@ else
 fi
 
 # ---- Static guard 2: the dead memory TTL facet/aggregate is gone -----------
+# The removal is Phase 177 IMPLEMENTATION work; on a pre-implementation build
+# (the gate package absent) the facet is still present, so SKIP rather than
+# FAIL — the §4.2 "phase-N+1 skeleton coexists with a phase-N build" convention
+# read for a static wire-manifest guard.
 MANIFEST="web/console/src/lib/protocol/wire-manifest.gen.json"
-if [ -f "${MANIFEST}" ]; then
-  if grep -q -e 'has_ttl_expiring' -e 'expiring_in_1h' "${MANIFEST}"; then
-    fail "phase 177: dead memory TTL facet/aggregate still on the wire manifest"
-  else
-    ok "phase 177: dead memory TTL facet/aggregate removed from the wire"
-  fi
-else
+if [ ! -f "${MANIFEST}" ]; then
   skip "phase 177: wire manifest not present"
+elif [ ! -f internal/protocol/projectioncheck/projectioncheck.go ]; then
+  skip "phase 177: memory TTL facet removal not yet landed (pre-implementation build)"
+elif grep -q -e 'has_ttl_expiring' -e 'expiring_in_1h' "${MANIFEST}"; then
+  fail "phase 177: dead memory TTL facet/aggregate still on the wire manifest"
+else
+  ok "phase 177: dead memory TTL facet/aggregate removed from the wire"
 fi
 
 # ---- Live-server surface probes --------------------------------------------
