@@ -233,10 +233,15 @@ validation imposes no https requirement). So two of the four postures HA-19
 names ("container-compose / private VPC") would stay INERT after the dial fix,
 and every loopback-bound fixture is exempt from this check — the suite would go
 green while compose/k8s stayed broken. **The fix EXTENDS the same-origin-pinned
-relaxation to this check too:** for the same-origin protected-resource hop to
-the pinned target (the identical `pinnedIPs`/`pinnedPort` predicate),
-plain-HTTP is permitted. A non-pinned or cross-origin plain-HTTP target still
-returns `ReasonNotHTTPS`.
+relaxation to this check too:** the extension gates on
+`sameOrigin && step == StepProtectedResource` — the predicate `validateHop` CAN
+evaluate at the string layer, since it runs PRE-resolution and cannot see
+resolved IPs. The resolved-IP:port pin (`pinnedIPs`/`pinnedPort`) is NOT
+consulted here — it stays enforced solely at `ControlContext` on the dial (do
+NOT resolve inside `validateHop` to chase the pin there — that would add a
+per-hop TOCTOU window). So a same-origin protected-resource hop over plain-HTTP
+is permitted at the string layer and then still governed by the dial pin; a
+non-pinned or cross-origin plain-HTTP target still returns `ReasonNotHTTPS`.
 
 *Why extend rather than narrow (the call).* Harbor is self-hosted-first and
 compose/k8s is THE deployment story, so relaxing only "loopback-HTTP +
@@ -323,6 +328,12 @@ is explicit rather than silently narrower than "rebinding is impossible."
   operator's OWN origin) is STILL refused — proving the relaxation is gated by
   `step == StepProtectedResource`, not merely by origin-difference. Named test:
   `TestDiscoverer_AuthServerHopToPinnedIP_StillRefused`.
+- [ ] **String-layer step-gate (the https extension):** a same-origin-by-string
+  authorization-server hop over plain-HTTP (attacker issuer = the operator's own
+  origin, with an allowance and a plaintext `ServerURL`) is STILL refused
+  `ReasonNotHTTPS` — proving the https relaxation is gated on
+  `step == StepProtectedResource` at the string layer, not on `sameOrigin`
+  alone. Named test: `TestDiscoverer_SameOriginStringASHopPlainHTTP_StillNotHTTPS`.
 - [ ] **DNS-rebinding crux:** a same-origin-by-string metadata URL / redirect
   whose host resolves to a DIFFERENT private IP than `pinnedIPs` is STILL
   refused. Named test:
@@ -365,10 +376,13 @@ is explicit rather than silently narrower than "rebinding is impossible."
   no token-custody surface is added (reviewer-verified + no new field on the
   custody boundary).
 - [ ] §17.1 integration test: against a spec-derived RFC 9728/8414 fixture
-  bound to loopback and reached via a same-origin hostname, the PRODUCTION-path
-  discoverer completes the protected-resource hop and reaches the AS hop's
-  `needs_allowance` — the self-hosted posture end-to-end — plus the rebind
-  refusal and the cross-origin refusal, under `-race`.
+  bound to loopback, the PRODUCTION-path discoverer completes the
+  protected-resource hop and reaches the AS hop's `needs_allowance` — the
+  self-hosted posture end-to-end — across BOTH production-path posture legs (an
+  IP-literal `ServerURL` and a plain-HTTP non-loopback service-name hostname that
+  resolves to the loopback fixture), plus the rebind refusal and the cross-origin
+  refusal, under `-race`. (The Test-plan section is the fuller spec for these
+  legs.)
 - [ ] Concurrent-reuse: N≥100 concurrent `Discover` calls against a single
   shared `Discoverer` — each pinning a DIFFERENT `ServerURL` — never bleed a
   pin across walks (a walk pinned to origin A must never permit a private dial
