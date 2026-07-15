@@ -1,30 +1,30 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection                          RUNTIME CONTEXT
-  terminal size 121x30 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only                                             RUNTIME CONTEXT
+  disconnected
                                                                                  Session
   ┃                                                                              01K0HARBORFIXTURE0000000000
   ┃  ×  Replay gap · authoritative reconciliation required                       one active session
   ┃
-                                                                                 Planner
-  ┃                                                                              ReAct · fixture
-  ┃  ◆  Inspecting Runtime posture                                               Task
-  ┃                                                                              inspect-runtime · running
-                                                                                 Tool
-  ┃                                                                              runtime.health · succeeded
-  ┃  ✓  Runtime health snapshot received                                         Intervention
-  ┃                                                                              1 pending · controls unavailable
-                                                                                 Artifact
-  ┃                                                                              report.json · 2.4 KB
-  ┃  !  Operator approval required                                               Stream
-  ┃                                                                              fixture · disconnected
-                                                                                 Versions
-                                                                                 Runtime 1.15 · Protocol 0.1
+                                                                                 Status
+  ┃                                                                              running
+  ┃  ◆  Inspecting Runtime posture                                               Transcript
+  ┃                                                                              3 blocks
+                                                                                 Stream
+  ┃                                                                              disconnected
+  ┃  ✓  Runtime health snapshot received
+  ┃
+
+  ┃
+  ┃  !  Operator approval required
+  ┃
+
+
 
 
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   ctrl+p Command palette   ctrl+x s Toggle runtime context

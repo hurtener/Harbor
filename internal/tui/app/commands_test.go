@@ -16,11 +16,14 @@ func TestRegistry_OneSourceDrivesEveryPresentationAndDisabledReasons(t *testing.
 		t.Fatalf("palette=%d help=%d footer=%d which=%d", len(palette), len(help), len(footer), len(which))
 	}
 	view, ok := r.Dispatch("enter", ctx)
-	if !ok || view.Enabled || !strings.Contains(view.DisabledReason, "later release") {
+	if !ok || view.Enabled || !strings.Contains(view.DisabledReason, "live authenticated") {
 		t.Fatalf("disabled dispatch=%#v %v", view, ok)
 	}
 	if _, err := NewRegistry(Command{ID: "x", Title: "x"}, Command{ID: "x", Title: "duplicate"}); err == nil {
 		t.Fatal("duplicate accepted")
+	}
+	if _, err := NewRegistry(Command{ID: "x", Title: "x", Bindings: []string{"ctrl+x", "x"}}, Command{ID: "y", Title: "y", Bindings: []string{"ctrl+x", "x"}}); err == nil {
+		t.Fatal("duplicate binding accepted")
 	}
 	if sequence, found := r.DispatchSequence([]string{"ctrl+x", "s"}, ctx); !found || sequence.Command.ID != "sidebar" {
 		t.Fatal("leader sequence did not dispatch")

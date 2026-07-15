@@ -1,0 +1,30 @@
+
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  live
+
+  ┃
+  ┃  ◆  Active stream · following newest output
+  ┃
+                        Start Fresh
+  ┃                    Search:
+  ┃  ×  Session eras
+  ┃
+                      ↑/↓ move · enter select · esc close
+  ┃
+  ┃  ◇  Summarize the deployment status.
+  ┃
+
+  ┃
+  ┃  ●  The deployment completed successfully.
+  ┃
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃  disabled
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

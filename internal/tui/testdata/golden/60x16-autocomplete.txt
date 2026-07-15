@@ -1,16 +1,16 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection
+  HARBOR  /  SESSION
+  One active session · Protocol-only
   ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ?  Keyboard help
   ┃  q  Quit
-  ┃  enter  Submit turn · unavailable: requires an attach
-  ┃  ctrl+x l  Switch session · unavailable: requires an
-  ┃  ctrl+x t  Switch theme
-  ┃  Ask Harbor about this runtime...
-  ┃
-  ┃  ReAct · default planner · idle
+  ┃  ctrl+x a  Attach file · unavailable: requires a live
+  ┃  ctrl+x k  Cancel queued follow-up · unavailable: no
+  ┃  ctrl+x e  Remove attachment · unavailable: no attach
+  ┃  ctrl+x p  Restore stashed draft
+  ┃  ctrl+x u  Retry attachment · unavailable: no attachm
+  ┃  ctrl+x j  Retry failed follow-up · unavailable: no l
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -31,6 +31,7 @@ That's the load-bearing path. Everything else is built around it.
 
 - [run-the-dev-loop](run-the-dev-loop/SKILL.md) — `harbor dev` + Console attach, single- or multi-process.
 - [drive-the-playground](drive-the-playground/SKILL.md) — chat, file uploads, multimodal dispatch, steering.
+- [drive-the-harbor-tui](drive-the-harbor-tui/SKILL.md) — attach the native REST/SSE conversation client.
 
 ### Observe + debug
 

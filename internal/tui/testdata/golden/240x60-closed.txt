@@ -1,48 +1,48 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection                                                                                                                                                 RUNTIME CONTEXT
-  terminal size 240x60 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only                                                                                                                                                                    RUNTIME CONTEXT
+  disconnected
                                                                                                                                                                                                         Session
   ┃                                                                                                                                                                                                     01K0HARBORFIXTURE0000000000
   ┃  ○  Session closed · resumable on a future turn                                                                                                                                                     one active session
   ┃
-                                                                                                                                                                                                        Planner
-  ┃                                                                                                                                                                                                     ReAct · fixture
-  ┃  ◆  Inspecting Runtime posture                                                                                                                                                                      Task
-  ┃                                                                                                                                                                                                     inspect-runtime · running
-                                                                                                                                                                                                        Tool
-  ┃                                                                                                                                                                                                     runtime.health · succeeded
-  ┃  ✓  Runtime health snapshot received                                                                                                                                                                Intervention
-  ┃                                                                                                                                                                                                     1 pending · controls unavailable
-                                                                                                                                                                                                        Artifact
-  ┃                                                                                                                                                                                                     report.json · 2.4 KB
-  ┃  !  Operator approval required                                                                                                                                                                      Stream
-  ┃                                                                                                                                                                                                     fixture · disconnected
-                                                                                                                                                                                                        Versions
-  ┃                                                        ┃                                                                                                                                            Runtime 1.15 · Protocol 0.1
-  ┃  ◇  Planner posture                                    ┃  ✓  Tool posture
-  ┃  ReAct · fixture · no live reasoning                   ┃  runtime.health · succeeded
-  ┃                                                        ┃
+                                                                                                                                                                                                        Status
+  ┃                                                                                                                                                                                                     running
+  ┃  ◆  Inspecting Runtime posture                                                                                                                                                                      Transcript
+  ┃                                                                                                                                                                                                     3 blocks
+                                                                                                                                                                                                        Stream
+  ┃                                                                                                                                                                                                     disconnected
+  ┃  ✓  Runtime health snapshot received
+  ┃
 
-  ┃                                                        ┃
-  ┃  !  Intervention posture                               ┃  ◇  Artifact posture
-  ┃  1 pending · controls unavailable                      ┃  report.json · 2.4 KB · reference only
-  ┃                                                        ┃
+  ┃
+  ┃  !  Operator approval required
+  ┃
 
-  ┃                                                        ┃
-  ┃  ◇  Identity scope                                     ┃  ✓  Session lifecycle
-  ┃  acme/operator/01K0… · one active session              ┃  running · durable reference retained
-  ┃                                                        ┃
 
-  ┃                                                        ┃
-  ┃  !  Projection honesty                                 ┃  ◇  Version posture
-  ┃  counters partial · analytics bounded                  ┃  Runtime 1.15 · Protocol 0.1
-  ┃                                                        ┃
 
-  ┃                                                        ┃
-  ┃  ✓  Recent event                                       ┃  ◇  Retention
-  ┃  tool.completed · sequence 42                          ┃  events · runtime scope · complete
-  ┃                                                        ┃
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -54,7 +54,7 @@
 
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -1,7 +1,7 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection
-  terminal size 72x20 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  disconnected
 
   ┃
   ┃  ◆  Inspecting Runtime posture
@@ -12,9 +12,9 @@
   ┃
 
 
-  ┃  Composer unavailable in terminal preview
+  ┃  Composer unavailable
   ┃
-  ┃  ReAct · default planner · disabled
+  ┃  disabled
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   ctrl+p Command palette   ctrl+x s Toggle runtime context

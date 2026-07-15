@@ -1,7 +1,7 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only f
-  terminal size 40x12 · fixture · disc
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  disconnected
 
   ! Approval required
   Approve/Reject unavailable

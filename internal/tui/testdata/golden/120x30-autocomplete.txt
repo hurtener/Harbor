@@ -1,7 +1,7 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection
-  terminal size 120x30 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  disconnected
 
   ┃
   ┃  ◆  Inspecting Runtime posture
@@ -12,19 +12,19 @@
   ┃
 
   ┃
-  ┃  !  Operator approval required
-  ┃
-
   ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ?  Keyboard help
   ┃  q  Quit
-  ┃  enter  Submit turn · unavailable: requires an attached Runtime (availabl
-  ┃  ctrl+x l  Switch session · unavailable: requires an attached Runtime (av
-  ┃  ctrl+x t  Switch theme
+  ┃  ctrl+x a  Attach file · unavailable: requires a live authenticated Runti
+  ┃  ctrl+x k  Cancel queued follow-up · unavailable: no local follow-up is q
+  ┃  ctrl+x e  Remove attachment · unavailable: no attachment is selected
+  ┃  ctrl+x p  Restore stashed draft
+  ┃  ctrl+x u  Retry attachment · unavailable: no attachment is selected
+  ┃  ctrl+x j  Retry failed follow-up · unavailable: no local follow-up is qu
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   ctrl+p Command palette   ctrl+x s Toggle runtime context

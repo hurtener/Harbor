@@ -1,5 +1,5 @@
 
-  HARBOR  /  SESSION FIXTURE
+  HARBOR  /  SESSION
 
      Commands
     Search:

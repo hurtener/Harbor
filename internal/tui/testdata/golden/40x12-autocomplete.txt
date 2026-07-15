@@ -1,12 +1,12 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only f
-  ┃  ctrl+p  Command palette         c
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ?  Keyboard help
   ┃  q  Quit
-  ┃  enter  Submit turn · unavailable
-  ┃  ctrl+x l  Switch session · unava
-  ┃  ctrl+x t  Switch theme
-  acme/operator/01K0HARBORFIXTURE0000
-  ctrl+p Command palette   ctrl+x s To
+  ┃  ctrl+x a  Attach file · unavaila
+  ┃  ctrl+x k  Cancel queued follow-u
+  ┃  ctrl+x e  Remove attachment · un
+  ┃  ctrl+x p  Restore stashed draft
+  ┃  ctrl+x u  Retry attachment · unao

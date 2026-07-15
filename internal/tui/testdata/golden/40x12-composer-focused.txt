@@ -1,12 +1,12 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only f
-  terminal size 40x12 · fixture · disc
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  disconnected
 
 
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · focuse
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000
   ctrl+p Command palette   ctrl+x s To

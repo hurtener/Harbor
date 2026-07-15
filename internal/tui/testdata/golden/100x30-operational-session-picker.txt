@@ -1,0 +1,30 @@
+
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  live
+
+  ┃
+  ┃  ◆  Active stream · following newest output
+  ┃
+                        Sessions
+  ┃                    Search:
+  ┃  ◇  Summarize th  ● Current session · running
+  ┃                     Incident review · completed · Resume on next canonical
+
+  ┃
+  ┃  ●  The deployme  ↑/↓ move · enter select · esc close
+  ┃
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃  focused
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

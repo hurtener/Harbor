@@ -194,7 +194,7 @@ func TestModel_InitSpinnerAndViewContracts(t *testing.T) {
 		t.Fatal("active spinner did not reschedule")
 	}
 	view := m.View()
-	if !view.AltScreen || !view.ReportFocus || view.WindowTitle != "Harbor fixture 80x24" || view.Cursor == nil {
+	if !view.AltScreen || !view.ReportFocus || view.WindowTitle != "Harbor" || view.Cursor == nil {
 		t.Fatalf("view contract=%#v", view)
 	}
 	m = m.WithState(State{Composer: ComposerDisabled, CursorHidden: true})
@@ -375,7 +375,7 @@ func TestCanvas_GraphemeRightEdgeAndOverlayPreserveCells(t *testing.T) {
 
 func TestProjectionClone_EmptyStillRendersHonestHome(t *testing.T) {
 	m := NewModel(40, 12, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, projection.Projection{}).WithState(State{Route: "home"})
-	if !strings.Contains(m.Frame(), "No Runtime") {
+	if !strings.Contains(m.Frame(), "Attach a Runtime") {
 		t.Fatal("empty home honesty missing")
 	}
 }

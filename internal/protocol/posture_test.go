@@ -667,13 +667,14 @@ func basePostureDeps(t *testing.T) protocol.PostureDeps {
 		Counters: func(context.Context, identity.Identity) types.RuntimeCounters {
 			return types.RuntimeCounters{}
 		},
-		Drivers:    func() []types.SubsystemDriver { return nil },
-		Metrics:    func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
-		Governance: newPostureGovernance(),
-		LLM:        newPostureLLM(),
-		Redactor:   patterns.New(),
-		Bus:        newPostureBus(t),
-		InstanceID: "inst-test-001",
+		Drivers:                 func() []types.SubsystemDriver { return nil },
+		Metrics:                 func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
+		Governance:              newPostureGovernance(),
+		LLM:                     newPostureLLM(),
+		Redactor:                patterns.New(),
+		Bus:                     newPostureBus(t),
+		InstanceID:              "inst-test-001",
+		StateSnapshotsAvailable: true,
 	}
 }
 
@@ -738,6 +739,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			InstanceID:                "inst-wired-001",
 			TopologyAvailable:         topology,
 			AgentConfigAvailable:      agentConfig,
+			StateSnapshotsAvailable:   true,
 			SessionLifecycleAvailable: sessionLifecycle,
 		}
 		s, err := protocol.NewPostureSurface(deps)
@@ -771,6 +773,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		want := []types.Capability{
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
+			types.CapStateSnapshots,
 			types.CapTaskControl,
 		}
 		if !reflect.DeepEqual(ri.Capabilities, want) {
@@ -789,6 +792,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		want := []types.Capability{
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
+			types.CapStateSnapshots,
 			types.CapTaskControl,
 			types.CapTopologySnapshot,
 		}
@@ -816,6 +820,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			types.CapAgentConfig,
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
+			types.CapStateSnapshots,
 			types.CapTaskControl,
 		}
 		if !reflect.DeepEqual(ri.Capabilities, want) {
@@ -842,6 +847,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
 			types.CapSessionLifecycle,
+			types.CapStateSnapshots,
 			types.CapTaskControl,
 		}
 		if !reflect.DeepEqual(ri.Capabilities, want) {
@@ -857,6 +863,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			types.CapEventsSubscribe,
 			types.CapRuntimePosture,
 			types.CapSessionLifecycle,
+			types.CapStateSnapshots,
 			types.CapTaskControl,
 			types.CapTopologySnapshot,
 		}

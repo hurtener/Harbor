@@ -38,7 +38,7 @@ const (
 
 var LayerOrder = [...]Layer{LayerBase, LayerSidebar, LayerAutocomplete, LayerToast, LayerModal, LayerStartup}
 
-// ComposerState selects a visual-only fixture composer posture.
+// ComposerState selects a composer posture.
 type ComposerState string
 
 const (
@@ -46,18 +46,26 @@ const (
 	ComposerFocused    ComposerState = "focused"
 	ComposerDisabled   ComposerState = "disabled"
 	ComposerRunning    ComposerState = "running"
-	ComposerRetry      ComposerState = "retry 2/3 · 4s"
+	ComposerRetry      ComposerState = "retry · submit again"
 	ComposerAttachment ComposerState = "attachment · report.pdf"
 )
 
-// State selects applicable fixture views without implementing Runtime workflows.
+// State selects shell view state.
 type State struct {
-	Route                                                                                string
-	Connection                                                                           string
-	Composer                                                                             ComposerState
-	SidebarOpen, AutocompleteOpen, ToastOpen, Startup, Active, CursorHidden              bool
-	Scrolled, ReplayGap, Dropped, Closed, Erased, Intervention, Unknown, Pasted, Focused bool
-	Toast                                                                                string
+	Route                                                                              string
+	Connection                                                                         string
+	Composer                                                                           ComposerState
+	ComposerText                                                                       string
+	ComposerCursor, SelectionStart, SelectionEnd                                       int
+	AutocompleteRows                                                                   []string
+	AutocompleteIndex                                                                  int
+	AttachmentReady, HasFollowUp                                                       bool
+	SelectedBlockID                                                                    string
+	Negotiated, TaskControl, SessionLifecycle, SessionScope                            bool
+	SidebarOpen, AutocompleteOpen, ToastOpen, Startup, Active, CursorHidden            bool
+	Scrolled, ReplayGap, Reconciliation, Dropped, Overflow, Truncated, CountersPartial bool
+	Closed, Erased, Intervention, Unknown, Incomplete, Pasted, Focused                 bool
+	Toast                                                                              string
 }
 
 type startupStage uint8
@@ -80,6 +88,9 @@ type StartupCompleteMsg struct{}
 // BackdropMsg reports a backdrop release and whether terminal text selection is active.
 type BackdropMsg struct{ TextSelectionActive bool }
 
+// CommandMsg asks the operational host to execute one registry command.
+type CommandMsg struct{ ID CommandID }
+
 // Model is a value-updated Bubble Tea shell. All constructor inputs are cloned.
 type Model struct {
 	width, height      int
@@ -96,11 +107,21 @@ type Model struct {
 	startupGeneration  uint64
 	startupMinimumDone bool
 	quit               bool
+	operational        bool
 }
 
-// NewModel constructs the fixture-backed terminal foundation.
+// NewModel constructs the detached terminal foundation.
 func NewModel(width, height int, theme ui.Theme, reducedMotion bool, p projection.Projection) Model {
-	return Model{width: max(1, width), height: max(1, height), theme: theme, reducedMotion: reducedMotion, registry: DefaultRegistry(), focus: NewFocusStack("composer"), projection: cloneProjection(p), state: State{Route: "session", Connection: "fixture · disconnected", Composer: ComposerIdle}, startup: startupWaiting}
+	return Model{width: max(1, width), height: max(1, height), theme: theme, reducedMotion: reducedMotion, registry: DefaultRegistry(), focus: NewFocusStack("composer"), projection: cloneProjection(p), state: State{Route: "session", Connection: "disconnected", Composer: ComposerIdle}, startup: startupWaiting}
+}
+
+// NewOperationalModel constructs a shell whose chrome is derived only from
+// canonical conversation/session projection and local interaction state.
+func NewOperationalModel(width, height int, theme ui.Theme, reducedMotion bool, p projection.Projection) Model {
+	m := NewModel(width, height, theme, reducedMotion, p)
+	m.operational = true
+	m.state.Connection = "connecting"
+	return m
 }
 
 // NewModelFromEnvironment compiles terminal capabilities before construction.
@@ -130,9 +151,25 @@ func (m Model) clone() Model {
 // Run mounts one model and waits for Bubble Tea terminal cleanup on every path.
 func Run(ctx context.Context, input io.Reader, output io.Writer, model tea.Model) error {
 	program := tea.NewProgram(model, tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output))
+	return runProgram(program)
+}
+
+// RunTerminal mounts a model on the process terminal using Bubble Tea's
+// default TTY discovery and raw-mode lifecycle.
+func RunTerminal(ctx context.Context, model tea.Model) error {
+	return runProgram(tea.NewProgram(model, tea.WithContext(ctx)))
+}
+
+func runProgram(program *tea.Program) error {
 	stopSignals := watchHostSignals(program)
 	defer stopSignals()
-	if _, err := program.Run(); err != nil {
+	model, err := program.Run()
+	if finalizer, ok := model.(interface{ Finalize() error }); ok {
+		if finalErr := finalizer.Finalize(); err == nil && finalErr != nil {
+			err = finalErr
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("tui terminal host: %w", err)
 	}
 	return nil
@@ -247,6 +284,9 @@ func canonicalKey(key string) string {
 	if key == "esc" {
 		return "escape"
 	}
+	if key == "space" {
+		return " "
+	}
 	return key
 }
 
@@ -281,7 +321,7 @@ func (m Model) updateModal(key string) (tea.Model, tea.Cmd) {
 		return m.activateModal(modal)
 	case "ctrl+enter":
 		if len(modal.ContextActions) > 0 {
-			if view, ok := m.registry.Command(modal.ContextActions[0], Context{}); ok && view.Enabled {
+			if view, ok := m.registry.Command(modal.ContextActions[0], m.commandContext()); ok && view.Enabled {
 				m.focus, _, _ = m.focus.Pop()
 				return m.execute(view)
 			}
@@ -311,7 +351,7 @@ func (m Model) activateModal(modal SelectModel) (tea.Model, tea.Cmd) {
 		m.focus, _, _ = m.focus.Pop()
 		return m, nil
 	}
-	view, ok := m.registry.Command(CommandID(item.ID), Context{})
+	view, ok := m.registry.Command(CommandID(item.ID), m.commandContext())
 	if !ok || !view.Enabled {
 		return m, nil
 	}
@@ -337,7 +377,7 @@ func (m Model) updateBase(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	strokes := append(append([]string(nil), m.sequence...), key)
-	view, exact, pending := m.registry.Prefix(strokes, Context{})
+	view, exact, pending := m.registry.Prefix(strokes, m.commandContext())
 	if exact {
 		m.clearSequence()
 		if view.Enabled {
@@ -353,7 +393,7 @@ func (m Model) updateBase(key string) (tea.Model, tea.Cmd) {
 	}
 	if len(m.sequence) > 0 {
 		m.clearSequence()
-		view, ok := m.registry.Dispatch(key, Context{})
+		view, ok := m.registry.Dispatch(key, m.commandContext())
 		if ok && view.Enabled {
 			return m.execute(view)
 		}
@@ -366,6 +406,13 @@ func (m Model) execute(view CommandView) (tea.Model, tea.Cmd) {
 	switch view.Command.ID {
 	case "palette":
 		m = m.OpenPalette()
+	case "help":
+		rows := m.registry.Help(m.commandContext())
+		items := make([]SelectItem, 0, len(rows))
+		for i, row := range rows {
+			items = append(items, SelectItem{ID: fmt.Sprintf("help-%d", i), Title: row})
+		}
+		m = m.WithModal(NewSelect("Keyboard help", items, m.focus.Focus()))
 	case "sidebar":
 		m.state.SidebarOpen = !m.state.SidebarOpen
 	case "theme":
@@ -373,6 +420,9 @@ func (m Model) execute(view CommandView) (tea.Model, tea.Cmd) {
 	case "quit":
 		m.quit = true
 		return m, tea.Quit
+	default:
+		id := view.Command.ID
+		return m, func() tea.Msg { return CommandMsg{ID: id} }
 	}
 	return m, nil
 }
@@ -380,7 +430,7 @@ func (m Model) execute(view CommandView) (tea.Model, tea.Cmd) {
 // OpenPalette opens the registry-backed modal.
 func (m Model) OpenPalette() Model {
 	m = m.clone()
-	views := m.registry.Palette(Context{})
+	views := m.registry.Palette(m.commandContext())
 	items := make([]SelectItem, 0, len(views))
 	for _, view := range views {
 		description := view.Command.Description
@@ -399,7 +449,7 @@ func (m Model) WithState(state State) Model {
 		m.state.Route = "session"
 	}
 	if state.Connection == "" {
-		m.state.Connection = "fixture · disconnected"
+		m.state.Connection = "disconnected"
 	}
 	if state.Composer == "" {
 		m.state.Composer = ComposerIdle
@@ -420,11 +470,36 @@ func (m Model) View() tea.View {
 	view := tea.NewView(m.render())
 	view.AltScreen = true
 	view.ReportFocus = true
-	view.WindowTitle = fmt.Sprintf("Harbor fixture %dx%d", m.width, m.height)
+	view.WindowTitle = "Harbor"
 	if !m.quit && !m.state.CursorHidden && m.state.Composer != ComposerDisabled {
-		view.Cursor = tea.NewCursor(min(4, m.width-1), max(0, m.height-6))
+		x, y := min(4, m.width-1), max(0, m.height-6)
+		if m.operational {
+			x, y = m.operationalCursor()
+		}
+		view.Cursor = tea.NewCursor(x, y)
 	}
 	return view
+}
+
+func (m Model) operationalCursor() (int, int) {
+	layout := m.Layout()
+	composerWidth, _ := ui.ComposerGeometry(layout, strings.Count(m.state.ComposerText, "\n")+1)
+	inner := max(1, min(composerWidth, layout.MainWidth-1)-3)
+	runes := []rune(m.state.ComposerText)
+	cursor := max(0, min(len(runes), m.state.ComposerCursor))
+	row, column := 0, 0
+	for _, r := range runes[:cursor] {
+		if r == '\n' || column+1 >= inner {
+			row++
+			column = 0
+			continue
+		}
+		column++
+	}
+	visibleRows := min(max(1, row+1), 6)
+	composerRows := visibleRows + 3
+	visibleRow := row - max(0, row-visibleRows+1)
+	return min(m.width-1, ui.OuterPadding+3+column), max(0, m.height-composerRows-1+visibleRow)
 }
 func (m Model) Frame() string { return m.render() }
 
@@ -466,14 +541,16 @@ func (m Model) render() string {
 func (m Model) renderBase(c *canvas) {
 	l := m.Layout()
 	c.fill(m.theme.Style(ui.RoleText, ptrRole(ui.RoleCanvas)))
-	title := "HARBOR  /  " + strings.ToUpper(m.state.Route) + " FIXTURE"
+	title := "HARBOR  /  " + strings.ToUpper(m.state.Route)
 	c.put(ui.OuterPadding, 1, title, m.theme.Style(ui.RolePrimary, nil).Bold(true))
-	c.put(ui.OuterPadding, 2, ui.PadRight("One active session · Protocol-only fixture projection", l.MainWidth), m.theme.Style(ui.RoleMuted, nil))
-	c.put(ui.OuterPadding, 3, ui.PadRight(fmt.Sprintf("terminal size %dx%d · %s", m.width, m.height, m.state.Connection), l.MainWidth), m.theme.Style(ui.RoleMuted, nil))
+	subtitle := "One active session · Protocol-only"
+	status := m.state.Connection
+	c.put(ui.OuterPadding, 2, ui.PadRight(subtitle, l.MainWidth), m.theme.Style(ui.RoleMuted, nil))
+	c.put(ui.OuterPadding, 3, ui.PadRight(status, l.MainWidth), m.theme.Style(ui.RoleMuted, nil))
 	y := 5
 	width := max(12, l.MainWidth-1)
 	if m.state.Route == "home" {
-		m.renderCard(c, y, width, ui.RoleInfo, "◇", "Terminal foundation ready", "No Runtime is attached; preview data is local and non-operational.")
+		m.renderCard(c, y, width, ui.RoleInfo, "◇", "Terminal foundation ready", "Attach a Runtime to begin.")
 		y += 4
 	} else {
 		compactNotice := false
@@ -484,7 +561,7 @@ func (m Model) renderBase(c *canvas) {
 				compactNotice = true
 			}
 		}
-		if m.state.Intervention {
+		if m.state.Intervention && !m.operational {
 			if m.height <= 12 {
 				c.put(ui.OuterPadding, 5, "! Approval required", m.theme.Style(ui.RoleWarning, nil).Bold(true))
 				c.put(ui.OuterPadding, 6, "Approve/Reject unavailable", m.theme.Style(ui.RoleWarning, nil))
@@ -513,29 +590,23 @@ func (m Model) renderBase(c *canvas) {
 			if label == "" {
 				label = block.Kind + " · " + block.Status
 			}
+			if block.ID != "" && block.ID == m.state.SelectedBlockID {
+				glyph = "●"
+			}
 			m.renderCard(c, y, width, role, glyph, label)
 			y += 4
 		}
 	}
-	if m.width >= 160 && y+10 < m.height-7 {
-		column := min(56, max(24, (l.MainWidth-5)/2))
-		m.renderCardAt(c, ui.OuterPadding, y, column, ui.RoleInfo, "◇", "Planner posture", "ReAct · fixture · no live reasoning")
-		m.renderCardAt(c, ui.OuterPadding+column+1, y, column, ui.RoleSuccess, "✓", "Tool posture", "runtime.health · succeeded")
-		m.renderCardAt(c, ui.OuterPadding, y+5, column, ui.RoleWarning, "!", "Intervention posture", "1 pending · controls unavailable")
-		m.renderCardAt(c, ui.OuterPadding+column+1, y+5, column, ui.RoleInfo, "◇", "Artifact posture", "report.json · 2.4 KB · reference only")
-		m.renderCardAt(c, ui.OuterPadding, y+10, column, ui.RoleInfo, "◇", "Identity scope", "acme/operator/01K0… · one active session")
-		m.renderCardAt(c, ui.OuterPadding+column+1, y+10, column, ui.RoleSuccess, "✓", "Session lifecycle", "running · durable reference retained")
-		m.renderCardAt(c, ui.OuterPadding, y+15, column, ui.RoleWarning, "!", "Projection honesty", "counters partial · analytics bounded")
-		m.renderCardAt(c, ui.OuterPadding+column+1, y+15, column, ui.RoleInfo, "◇", "Version posture", "Runtime 1.15 · Protocol 0.1")
-		m.renderCardAt(c, ui.OuterPadding, y+20, column, ui.RoleSuccess, "✓", "Recent event", "tool.completed · sequence 42")
-		m.renderCardAt(c, ui.OuterPadding+column+1, y+20, column, ui.RoleInfo, "◇", "Retention", "events · runtime scope · complete")
-	}
 	if m.height > 12 || !m.state.Intervention {
-		composerWidth, _ := ui.ComposerGeometry(l, 1)
-		composer := ui.Composer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection))
-		c.styledBlock(ui.OuterPadding, max(y, m.height-6), composer, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(ui.RolePrimary, nil))
+		composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
+		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText)
+		if m.operational {
+			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+		}
+		composerRows := strings.Count(composer, "\n") + 1
+		c.styledBlock(ui.OuterPadding, max(y, m.height-composerRows-1), composer, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(ui.RolePrimary, nil))
 	}
-	hints := strings.Join(m.registry.Footer(Context{}), "   ")
+	hints := strings.Join(m.registry.Footer(m.commandContext()), "   ")
 	c.put(ui.OuterPadding, m.height-1, ui.PadRight(hints, l.ContentWidth), m.theme.Style(ui.RoleMuted, nil))
 }
 
@@ -555,8 +626,23 @@ func (m Model) notices() []notice {
 	if m.state.ReplayGap {
 		out = append(out, notice{"×", "Replay gap · authoritative reconciliation required", ui.RoleError})
 	}
+	if m.state.Reconciliation {
+		out = append(out, notice{"!", "Authoritative reconciliation in progress", ui.RoleWarning})
+	}
 	if m.state.Dropped {
 		out = append(out, notice{"!", "Dropped event window · output may be incomplete", ui.RoleWarning})
+	}
+	if m.state.Overflow {
+		out = append(out, notice{"!", "Display updates coalesced · reconciling latest state", ui.RoleWarning})
+	}
+	if m.state.Truncated {
+		out = append(out, notice{"!", "History is truncated · earlier output is unavailable", ui.RoleWarning})
+	}
+	if m.state.CountersPartial {
+		out = append(out, notice{"!", "Session counters are partial", ui.RoleWarning})
+	}
+	if m.state.Incomplete {
+		out = append(out, notice{"!", "Some blocks are incomplete", ui.RoleWarning})
 	}
 	if m.state.Closed {
 		out = append(out, notice{"○", "Session closed · resumable on a future turn", ui.RoleInfo})
@@ -598,7 +684,14 @@ func (m Model) renderCardAt(c *canvas, x, y, width int, role ui.Role, glyph stri
 	c.styledBlock(x, y, card, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(role, nil))
 }
 func (m Model) renderIntervention(c *canvas, y, width int, horizontal bool) {
-	m.renderCard(c, y, width, ui.RoleWarning, "!", "Operator approval required", "Tool: fixture.health · no action is sent from this preview")
+	detail := "Canonical intervention is pending."
+	for _, block := range m.projection.Blocks {
+		if block.Kind == "intervention" && block.Text != "" {
+			detail = block.Text
+			break
+		}
+	}
+	m.renderCard(c, y, width, ui.RoleWarning, "!", "Operator approval required", detail)
 	if horizontal {
 		c.put(ui.OuterPadding+3, y+4, "[ Approve unavailable ]   [ Reject unavailable ]", m.theme.Style(ui.RoleWarning, nil).Bold(true))
 	} else {
@@ -618,7 +711,7 @@ func (m Model) renderSidebar(c *canvas) {
 	for y := range m.height {
 		c.put(x, y, ui.PadRight("", min(ui.SidebarWidth, m.width-x)), panel)
 	}
-	rows := []string{"RUNTIME CONTEXT", "", "Session", "01K0HARBORFIXTURE0000000000", "one active session", "", "Planner", "ReAct · fixture", "Task", "inspect-runtime · running", "Tool", "runtime.health · succeeded", "Intervention", "1 pending · controls unavailable", "Artifact", "report.json · 2.4 KB", "Stream", m.state.Connection, "Versions", "Runtime 1.15 · Protocol 0.1"}
+	rows := []string{"RUNTIME CONTEXT", "", "Session", m.projection.Identity.Session, "one active session", "", "Status", m.projection.SessionStatus, "Transcript", fmt.Sprintf("%d blocks", len(m.projection.Blocks)), "Stream", m.state.Connection}
 	for i, row := range rows {
 		if i+2 >= m.height {
 			break
@@ -635,11 +728,25 @@ func (m Model) renderAutocomplete(c *canvas) {
 	l := m.Layout()
 	w, _ := ui.ComposerGeometry(l, 1)
 	w = min(w, l.MainWidth-1)
+	if len(m.state.AutocompleteRows) > 0 {
+		rows := min(ui.AutocompleteRows, len(m.state.AutocompleteRows))
+		y := max(3, m.height-6-rows)
+		for i := range rows {
+			prefix := "┃  "
+			role := ui.RoleText
+			if i == m.state.AutocompleteIndex {
+				prefix = "┃  ● "
+				role = ui.RolePrimary
+			}
+			c.put(ui.OuterPadding, y+i, ui.PadRight(prefix+m.state.AutocompleteRows[i], w), m.theme.Style(role, ptrRole(ui.RoleElement)).Bold(i == m.state.AutocompleteIndex))
+		}
+		return
+	}
 	var views []CommandView
 	if len(m.sequence) > 0 {
-		views = m.registry.WhichKey(m.sequence[0], Context{})
+		views = m.registry.WhichKey(m.sequence[0], m.commandContext())
 	} else {
-		views = m.registry.Palette(Context{})
+		views = m.registry.Palette(m.commandContext())
 	}
 	rows := min(ui.AutocompleteRows, len(views))
 	y := max(3, m.height-6-rows)
@@ -703,8 +810,16 @@ func (m Model) renderModal(c *canvas, modal SelectModel) {
 
 func identityLabel(p projection.Projection) string {
 	if p.Identity.Tenant == "" {
-		return "fixture/preview/no-session"
+		return "not attached"
 	}
 	return p.Identity.Tenant + "/" + p.Identity.User + "/" + p.Identity.Session
+}
+func (m Model) commandContext() Context {
+	_, modal := m.focus.Top()
+	ctx := Context{ModalOpen: modal, Connected: m.state.Connection == "live", Erased: m.state.Erased, HasTranscript: len(m.projection.Blocks) > 0, HasAttachment: m.state.AttachmentReady, HasFollowUp: m.state.HasFollowUp, TaskControl: !m.operational, SessionLifecycle: !m.operational, SessionScope: true}
+	if m.state.Negotiated {
+		ctx.TaskControl, ctx.SessionLifecycle, ctx.SessionScope = m.state.TaskControl, m.state.SessionLifecycle, m.state.SessionScope
+	}
+	return ctx
 }
 func ptrRole(role ui.Role) *ui.Role { return &role }

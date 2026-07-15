@@ -1,0 +1,40 @@
+
+  HARBOR  /  SESSION                                                                                                           Search: deployment · 2 matches
+  One active session · Protocol-only                                                                                    RUNTIME CONTEXT
+  live
+                                                                                                                        Session
+  ┃                                                                                                                     session-alpha
+  ┃  ◆  Active stream · following newest output                                                                         one active session
+  ┃
+                                                                                                                        Status
+  ┃                                                                                                                     running
+  ┃  ↑  Scrolled away · new output will not move this view                                                              Transcript
+  ┃                                                                                                                     2 blocks
+                                                                                                                        Stream
+  ┃                                                                                                                     live
+  ┃  ◇  Summarize the deployment status.
+  ┃
+
+  ┃
+  ┃  ●  The deployment completed successfully.
+  ┃
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃  focused
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -57,38 +57,38 @@ None beyond the established browser-to-native rendering adaptation in Phase
 
 ## Acceptance criteria
 
-- [ ] `harbor tui --attach <url>` performs auth/version/capability negotiation
+- [x] `harbor tui --attach <url>` performs auth/version/capability negotiation
       and opens the complete home/session flow with exactly one active session.
-- [ ] Session picker supports list/search/switch/new/rename/delete, closed-session
+- [x] Session picker supports list/search/switch/new/rename/delete, closed-session
       Resume, erased-session Start Fresh, and stream-safe switching. It is a
       single-operator selector, not a simultaneous multi-session dashboard;
       switching tears down the old stream and reacquires a target-session JWT.
-- [ ] The lifetime-scoped token source resolves before every REST request and SSE
+- [x] The lifetime-scoped token source resolves before every REST request and SSE
       connection, reloads a rotated token file, and can accept an in-memory
       replacement after visible `401` expiry without losing draft, session, or
       replay cursor. It never silently extends or persists a signed JWT.
-- [ ] The last active session reference is restored on terminal restart. Durable
+- [x] The last active session reference is restored on terminal restart. Durable
       history rehydrates under that same ID; if closed/GC-reaped, the next turn
       uses canonical `start` and observes `session.reopened`. Erased sessions do
       not reopen and require explicit Start Fresh.
-- [ ] Composer supports multiline editing, selection, undo/redo, Emacs-style
+- [x] Composer supports multiline editing, selection, undo/redo, Emacs-style
       movement, bracketed paste, bounded history, draft stash, attachments,
       slash commands, and `@session/@task/@artifact/@tool` references.
-- [ ] Transcript renders user/answer/reasoning/task/tool/artifact/error/unknown
+- [x] Transcript renders user/answer/reasoning/task/tool/artifact/error/unknown
       blocks from the reducer with sticky-bottom behavior and semantic block
       navigation.
-- [ ] Active streaming does not flicker, move unrelated blocks, steal focus, or
+- [x] Active streaming does not flicker, move unrelated blocks, steal focus, or
       yank a scrolled-away viewport; text/reasoning batching meets the perceived
       latency floor in the conventions.
-- [ ] Follow-up intent is explicitly local, ordered, cancellable, and never
+- [x] Follow-up intent is explicitly local, ordered, cancellable, and never
       presented as server-accepted before dispatch.
-- [ ] Compact/native-scrollback mode, transcript copy/export, reasoning/detail
+- [x] Compact/native-scrollback mode, transcript copy/export, reasoning/detail
       toggles, timestamps, and retry remediation are keyboard-accessible.
-- [ ] Local persistence stores bounded drafts/history/preferences and the last
+- [x] Local persistence stores bounded drafts/history/preferences and the last
       session reference, never Runtime rows or plaintext credentials.
-- [ ] Every applicable home/session/composer/dialog/stream state in the binding
+- [x] Every applicable home/session/composer/dialog/stream state in the binding
       visual matrix has reviewed goldens and PTY key walkthroughs.
-- [ ] Auth expiry/rotation, disconnect, replay gap, terminal restart,
+- [x] Auth expiry/rotation, disconnect, replay gap, terminal restart,
       closed/reopened, erased, resize while editing, and quit-during-stream
       preserve text and restore the terminal.
 
@@ -155,13 +155,13 @@ None beyond the established browser-to-native rendering adaptation in Phase
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session isolation test passes
-- [ ] N≥100 concurrent projection/session updates pass under `-race`
-- [ ] Real authenticated PTY integration covers identity and failure modes
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session isolation test passes
+- [x] N≥100 concurrent projection/session updates pass under `-race`
+- [x] Real authenticated PTY integration covers identity and failure modes
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A; no departure

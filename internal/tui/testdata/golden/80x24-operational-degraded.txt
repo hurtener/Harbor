@@ -1,0 +1,24 @@
+
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  replaying
+
+  ┃
+  ┃  ×  Replay gap · authoritative reconciliation required
+  ┃
+
+  ┃
+  ┃  !  Authoritative reconciliation in progress
+  ┃
+
+  ┃
+  ┃  !  Display updates coalesced · reconciling latest state
+  ┃
+
+
+
+  ┃  Ask Harbor...
+  ┃  focused
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -1,16 +1,16 @@
 
   HARBOR  /  SESSI         Sidebar context visible
   One active sessi  RUNTIME CONTEXT
-  terminal size 60
+  disconnected
                     Session
   ┃                 01K0HARBORFIXTURE0000000000
   ┃  ◆  Inspecting  one active session
   ┃
-                    Planner
-                    ReAct · fixture
-  ┃  Ask Harbor ab  Task
-  ┃                 inspect-runtime · running
-  ┃  ReAct · defau  Tool
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  runtime.health · succeeded
-  acme/operator/01  Intervention
-  ctrl+p Command p  1 pending · controls unavailable
+                    Status
+                    running
+  ┃  Ask Harbor ab  Transcript
+  ┃                 3 blocks
+  ┃  idle           Stream
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  disconnected
+  acme/operator/01
+  ctrl+p Command p

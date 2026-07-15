@@ -55,6 +55,12 @@ requested identity rather than reusing one session's JWT. The
 stock `inspect-events`, `inspect-runs`, and `inspect-topology` commands use the
 same implementation.
 
+The native conversation client attaches through that same authenticated
+Protocol surface: `harbor tui --attach http://127.0.0.1:18080`. It keeps one
+active session per terminal, reloads rotated JWT files before every request and
+SSE reconnect, and persists only bounded local drafts/view preferences. See the
+[`drive-the-harbor-tui`](docs/skills/drive-the-harbor-tui/SKILL.md) skill.
+
 ## Embed the runtime in your own program
 
 ```go
@@ -276,11 +282,18 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.15 Phase 182: Shipped.** `harbor tui --attach <url>` is now the
+complete authenticated, Protocol-only conversation/session client: one active
+session, stream-safe switching, renewable token sources, durable reopen and
+erasure handling, editor-quality composition, semantic transcript navigation,
+ordered local follow-ups, export, and bounded local interaction preferences.
+
 **Harbor v1.15 Phase 181: Shipped.** Harbor now has a CGo-free Bubble Tea
 terminal foundation with semantic dark/light/degraded themes, grapheme-safe
 layout, one command and focus model, exact responsive geometry, deterministic
 motion, reviewed fixture-state captures, and PTY restoration gates. The command
-exists as an honest help-only preview; authenticated attachment lands next.
+now runs the authenticated Protocol-only conversation/session client described
+above; Phase 181's fixture shell remains test-only.
 
 **Harbor v1.15 Phase 180: Shipped.** A pure Go conversation projection now
 hydrates and reconciles canonical history, task, session, pause, posture, and
