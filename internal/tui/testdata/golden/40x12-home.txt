@@ -1,0 +1,12 @@
+
+  HARBOR  /  HOME FIXTURE
+  One active session · Protocol-only f
+  terminal size 40x12 · fixture · disc
+
+  ┃
+  ┃  ◇  Terminal foundation ready
+  ┃  No Runtime is attached; preview
+  ┃
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ctrl+p Command palette   ctrl+x s To

@@ -1,0 +1,12 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only f
+  terminal size 40x12 · fixture · disc
+  ? Unknown event · safe metadata-only
+
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  ReAct · default planner · idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000
+  ctrl+p Command palette   ctrl+x s To

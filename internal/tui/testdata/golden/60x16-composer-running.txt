@@ -1,0 +1,16 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only fixture projection
+  terminal size 60x16 · fixture · disconnected
+
+  ┃
+  ┃  ◆  Inspecting Runtime posture
+  ┃
+
+
+  ┃  Active fixture task · interrupt guidance visible
+  ┃
+  ┃  ReAct · default planner · running
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

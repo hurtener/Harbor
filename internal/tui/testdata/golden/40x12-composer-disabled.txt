@@ -1,0 +1,12 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only f
+  terminal size 40x12 · fixture · disc
+
+
+  ┃  Composer unavailable in terminal
+  ┃
+  ┃  ReAct · default planner · disabl
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000
+  ctrl+p Command palette   ctrl+x s To

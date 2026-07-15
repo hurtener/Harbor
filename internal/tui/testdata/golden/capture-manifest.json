@@ -1,0 +1,1126 @@
+{
+  "status": "orchestrator-reviewed",
+  "generated_on": "2026-07-14",
+  "review_date": "2026-07-14",
+  "review_scope": "Orchestrator inspected 40x12 modal/intervention, 79/80 stacked/horizontal actions, 120/121 overlay/joined sidebar, 240x60 session density, reconnect, unknown fallback, and monochrome intervention/replay-gap attributes against the binding measurements and accepted the Phase-181 foundation matrix.",
+  "reviewed": true,
+  "reproduce": "go test -race ./internal/tui/app -run TestCaptureMatrix -update-captures",
+  "terminal_profile": {
+    "COLORTERM": "truecolor",
+    "TERM": "xterm-256color",
+    "unicode_width": "github.com/charmbracelet/x/ansi v0.11.7"
+  },
+  "reference_measurements": {
+    "actions": "79 stacked; 80 horizontal",
+    "autocomplete_rows": 10,
+    "composer": "75 columns or 70% wide",
+    "dialogs": [
+      60,
+      88,
+      116
+    ],
+    "outer_padding_cells": 2,
+    "sidebar": "120 overlay; 121 joined",
+    "sidebar_columns": 42,
+    "source": "docs/research/tui-investigation/05-opencode-visual-grammar.md lines 25-48, 88-104, 184-263, 373-422",
+    "spinner_ms": [
+      80,
+      40
+    ]
+  },
+  "known_deviations": [
+    "Terminal scrims use semantic faint/dim styling because alpha compositing is unavailable.",
+    "Fixture controls are visibly unavailable and perform no Runtime operation.",
+    "PTY behavior varies by terminal; xterm-256color is the pinned capture profile."
+  ],
+  "candidates": [
+    {
+      "path": "100x30-active-stream.txt",
+      "sha256": "faead9835ba01d78139202b442574e07bb13819166442aae56529f1b765e81cd"
+    },
+    {
+      "path": "100x30-autocomplete.txt",
+      "sha256": "95d7288fba613fb65e05229f54d91e9cc430b34d9d73905aa04ba1d03ccb849d"
+    },
+    {
+      "path": "100x30-closed.txt",
+      "sha256": "a7ffb90ce7af9046505c55d2079d9cf6b6ab85f6155eb4674ecee6365bc9cd8c"
+    },
+    {
+      "path": "100x30-composer-attachment.txt",
+      "sha256": "436fcdb7c541bcec56e72d6cee69c51b4c973da800692a947f3bf1a724c7942e"
+    },
+    {
+      "path": "100x30-composer-disabled.txt",
+      "sha256": "8b58c32d4a0aa79fc3268f5faa79d9cc315bfa529ee5cb02610aacad4e83d3c4"
+    },
+    {
+      "path": "100x30-composer-focused.txt",
+      "sha256": "486bd8a09d6b5f41febbe8aa3b06e46618a44f5c75c1a66da58339dcf65758e3"
+    },
+    {
+      "path": "100x30-composer-retry.txt",
+      "sha256": "01cc3c7aaff0e12e53a82d8e1a14209c5860d30794f2470afadc0e0b69bbdc9d"
+    },
+    {
+      "path": "100x30-composer-running.txt",
+      "sha256": "41402e9c14e0ef6837998773446e9a3917066a0d400b8d5cf6f298fea3355255"
+    },
+    {
+      "path": "100x30-dropped-event.txt",
+      "sha256": "f989c01dfa073d7554e73982879210f9524612c86c3cb812808368f0bcc69d1a"
+    },
+    {
+      "path": "100x30-erased.txt",
+      "sha256": "16306722ae76983470db80214eeb921a4289d080fd7f281d00f0be3f67dee3c3"
+    },
+    {
+      "path": "100x30-focus-restore.txt",
+      "sha256": "dd77257f46327e14bc5beaab5319e7db5fcbc006685613d352e30f39a201b73a"
+    },
+    {
+      "path": "100x30-home.txt",
+      "sha256": "9a906622da1c041348684e721a91180ce61f432760dce80a3a6bf293adba5dd1"
+    },
+    {
+      "path": "100x30-intervention.txt",
+      "sha256": "aa165e92661c3a57b3b1617678779a99cd99cc8b5979c2a7ede28124f2d4e582"
+    },
+    {
+      "path": "100x30-modal-filter.txt",
+      "sha256": "f119dd8b2d62bdec50b33045aac375258e148c122fc7ec614d393e2ff5759207"
+    },
+    {
+      "path": "100x30-nested-modal.txt",
+      "sha256": "846ab7338c6324d54dad32d31fda8fb2f76f30fb8424a550647a18c9c7040e0a"
+    },
+    {
+      "path": "100x30-palette.txt",
+      "sha256": "2990e55e66bd2c7c3f28c54deea23db8d3a29fa8251c7254f87be86673a28826"
+    },
+    {
+      "path": "100x30-paste.txt",
+      "sha256": "1428d43b042e0c419a16ded4a40d5fce24027166b583f229e2bef209f9a09efb"
+    },
+    {
+      "path": "100x30-reconnect.txt",
+      "sha256": "c9b483861344e78eebaf98b2eec6692d52dea66c2c4f32a6f7131f7c31ecc54a"
+    },
+    {
+      "path": "100x30-reduced-motion.txt",
+      "sha256": "c633405cc5ec4e589114b31cae3cec12bffd5352b2400a5e25c4859db45625e8"
+    },
+    {
+      "path": "100x30-replay-gap.txt",
+      "sha256": "3d02c1312d72d47687306e13b6a4358e3e9d7d70e418a56dc8e08e93e5ca9dc7"
+    },
+    {
+      "path": "100x30-resize.txt",
+      "sha256": "d60a98f924da5bad432f8d374bd281cd7a66daac7addabdc0fc03b835efeaf63"
+    },
+    {
+      "path": "100x30-scrolled-away.txt",
+      "sha256": "5139f4f053aae76f27441ddf6c655fb20a0ea52c9e90c6a3ba1336dcc6c60b13"
+    },
+    {
+      "path": "100x30-session.txt",
+      "sha256": "390a7c86ac33485aa545cbc1bfc74810f553248f030143e23f2ef65c9329c037"
+    },
+    {
+      "path": "100x30-sidebar-overlay-or-joined.txt",
+      "sha256": "782e941bb7da96e2f0f5e8a2e5826cd79e1705658c0d322b5d386dd690eb43a4"
+    },
+    {
+      "path": "100x30-unknown-fallback.txt",
+      "sha256": "2a162d99a32e4360035fccbfa93779c2685fd6a953cac7d22d8861b3b51407a7"
+    },
+    {
+      "path": "100x30-which-key.txt",
+      "sha256": "11f9a2dbbda7617860fc14ed11ddea95571128e0274e1513d576325aed012d6b"
+    },
+    {
+      "path": "120x30-active-stream.txt",
+      "sha256": "e71f3b058eb454b769a9ed4d0b885e6c73f2da289a2b525a3117d1f1b19d2cf7"
+    },
+    {
+      "path": "120x30-autocomplete.txt",
+      "sha256": "437a3f0ddc4487b37d1e0ab4429633e373db190b19c9aa13d8d75e0b115e4109"
+    },
+    {
+      "path": "120x30-closed.txt",
+      "sha256": "78f26514e260c1bc59784ede30a902a94fef6c903c0851dbe39b6875697592ed"
+    },
+    {
+      "path": "120x30-composer-attachment.txt",
+      "sha256": "d5dff41777268b67ed6409d11832053a51af2998f674c384434414e8c0cdc493"
+    },
+    {
+      "path": "120x30-composer-disabled.txt",
+      "sha256": "98a33838138e387c1323e777893e7e5af417cd39cad58e9d617e8404255135c5"
+    },
+    {
+      "path": "120x30-composer-focused.txt",
+      "sha256": "6eb8e5b40576150e2406d54f6ab1cde08eb2873de514b6e044700f4ac135b31d"
+    },
+    {
+      "path": "120x30-composer-retry.txt",
+      "sha256": "929dc0c8c0980f06d4025272746d471a65150f313a331665f93828be0ba53583"
+    },
+    {
+      "path": "120x30-composer-running.txt",
+      "sha256": "b4d0b226a37cedc955071a28d632733da8da2f89a56c952ab835d497f00c0e40"
+    },
+    {
+      "path": "120x30-dropped-event.txt",
+      "sha256": "eaf3cf2ae7f1f4fb04d0c79db69453aa3143a5d485f82e547b7b6ba8fad164b1"
+    },
+    {
+      "path": "120x30-erased.txt",
+      "sha256": "3b114cdb36f57de705edbc79da35c469d892d387008bebe0620669cca17301f0"
+    },
+    {
+      "path": "120x30-focus-restore.txt",
+      "sha256": "0a4ef6771fc76bf2f2f6dfacf1a2c57a05b0d2de30724ba636a170e73d71dd7e"
+    },
+    {
+      "path": "120x30-home.txt",
+      "sha256": "ca3411b5b24b34e5edfcda3c46fccef245141cf1f4582c1d5f941cbfb62c1668"
+    },
+    {
+      "path": "120x30-intervention.txt",
+      "sha256": "bcdf3f736c312acd571b9eb33748adf182442b569730b36af73be8be516057f8"
+    },
+    {
+      "path": "120x30-modal-filter.txt",
+      "sha256": "44e575edfe580393cef160873c063ce7ac3d925075b3bf9dac43c19cfda45e91"
+    },
+    {
+      "path": "120x30-nested-modal.txt",
+      "sha256": "66e13f6a2979dfcb3e11dffbef72fbec81dafd3a6a58428b0afced7dfbe6c39d"
+    },
+    {
+      "path": "120x30-palette.txt",
+      "sha256": "ee100435638e2c05c1a367c244064262ef7ff0b1b95447cc6cde0da348a3a1fe"
+    },
+    {
+      "path": "120x30-paste.txt",
+      "sha256": "7d63904a1c61afadb146f5a52b33daca944275273dd5739e4196bd3cf729aae2"
+    },
+    {
+      "path": "120x30-reconnect.txt",
+      "sha256": "1e3b65f33cc5cd24cbaa7a23f4ed8460ea7b96c576776a9a4d112660f2dd24a5"
+    },
+    {
+      "path": "120x30-reduced-motion.txt",
+      "sha256": "8d83b49a1ccaa366b44bc49d054683e25e5691033b7d62cc98900538d3f6c5fa"
+    },
+    {
+      "path": "120x30-replay-gap.txt",
+      "sha256": "fba490d80b34093c19f8816a45366a6a3daa71117d70eec0422986a28595806b"
+    },
+    {
+      "path": "120x30-resize.txt",
+      "sha256": "44257484abadd986031e6357fce8457a8b92dbe4e09839fa57fa7da26c945b67"
+    },
+    {
+      "path": "120x30-scrolled-away.txt",
+      "sha256": "799caf43fc7762ff2fe829df43b6c65fc7375ed687f5039f6894ac85059ea6f0"
+    },
+    {
+      "path": "120x30-session.txt",
+      "sha256": "582243f5350b5032af6aebb1c269c90263429fdd5eefb1299e5cb2e60b873f59"
+    },
+    {
+      "path": "120x30-sidebar-overlay-or-joined.txt",
+      "sha256": "dd6859fa359f7ff9cfa1f51f6bdc056a1db8a4ae5f7fce37154f8c649801a10f"
+    },
+    {
+      "path": "120x30-unknown-fallback.txt",
+      "sha256": "ca1e40d5969448c071b19d5e62f51bb27a5770af96cd7cee2d6f8817075992ab"
+    },
+    {
+      "path": "120x30-which-key.txt",
+      "sha256": "a17e67f4b05469e60bc4a77b025f64d5e04edb87769675eb0300df668193ea37"
+    },
+    {
+      "path": "121x30-active-stream.txt",
+      "sha256": "77e5612fae4ee93bec26920e76bf8ebe4d40ea5488738fff1cf482c135a5f42d"
+    },
+    {
+      "path": "121x30-autocomplete.txt",
+      "sha256": "196b14ddc9af73696cc9e176baba27b9812da9728aca194cf0dc2c0b60340827"
+    },
+    {
+      "path": "121x30-closed.txt",
+      "sha256": "fd8fab773547257ec8928b1e2caabf8a6972bc9ffd47d36a08cb9dfa3ac731e2"
+    },
+    {
+      "path": "121x30-composer-attachment.txt",
+      "sha256": "1163452fe2202c3bdc36c3249e281b14d35e114c1a444fa456ad36cebdad1a3e"
+    },
+    {
+      "path": "121x30-composer-disabled.txt",
+      "sha256": "d21db33aa8474eb1a753d8345a9daff39cdc7754b9798390de26b13d822bee84"
+    },
+    {
+      "path": "121x30-composer-focused.txt",
+      "sha256": "fcd82749a4fb27b09285318f094432a11c2c54774cd8f44fe1ed2b605afb4d2b"
+    },
+    {
+      "path": "121x30-composer-retry.txt",
+      "sha256": "5f92ec0aa96eff6e7a41f3660ad6b5bcda43f27885fc2341d4c05fa371c42d8f"
+    },
+    {
+      "path": "121x30-composer-running.txt",
+      "sha256": "204bff9dbdfd6abc9cf9d504ef9d1d1f1b263dca3ffb5fa2c08a7a0f643a146b"
+    },
+    {
+      "path": "121x30-dropped-event.txt",
+      "sha256": "134746ec110a89181465e61773e70b8df08acdec4d7c41ee4f908fd2249eac8f"
+    },
+    {
+      "path": "121x30-erased.txt",
+      "sha256": "3d02c025390286fff9915beace358a892bfd5c3fa5cb804a22d3aed8b8781bff"
+    },
+    {
+      "path": "121x30-focus-restore.txt",
+      "sha256": "e8a1d959316c7deefc3500024fe27d6ceded8ae1fe8b8e740d4742e7e2d0103f"
+    },
+    {
+      "path": "121x30-home.txt",
+      "sha256": "886fb77b35afa16a18ab5a0fd391774c4b9fdd31eab3573c8e91cf1a51e33ef2"
+    },
+    {
+      "path": "121x30-intervention.txt",
+      "sha256": "e3aa0d136bac25ecd6639e625a2bd5771922e4d310cf10882a35f74e586a575e"
+    },
+    {
+      "path": "121x30-modal-filter.txt",
+      "sha256": "ecd68349bb6f478ecc40b1f7cebb11d1b8f72189ba552b257450c48001100bef"
+    },
+    {
+      "path": "121x30-nested-modal.txt",
+      "sha256": "9598e03667a59c863d95e4b1d0a7cc62843bd4da6df130fe5afed18d89c8500b"
+    },
+    {
+      "path": "121x30-palette.txt",
+      "sha256": "6d4fba1c91bc4228711ca80ce2e582bd818c750ed6bbe2bf6829aa2337880c64"
+    },
+    {
+      "path": "121x30-paste.txt",
+      "sha256": "7ce5c7d5b276704037f81e947ac3c5e31c6f1a7cd587b7408f2a37e1fd14c32d"
+    },
+    {
+      "path": "121x30-reconnect.txt",
+      "sha256": "027579ca5a5a6defe1e53a74bfa065114712e14beff6d0273f321e21014c13c6"
+    },
+    {
+      "path": "121x30-reduced-motion.txt",
+      "sha256": "68cb948a3191930b3130945832596ad84d0ab93a09ee61f00b10a21939326866"
+    },
+    {
+      "path": "121x30-replay-gap.txt",
+      "sha256": "16ed11382f8b2856daac51f5a0c4db260e4037263016e24859195523d6646f4b"
+    },
+    {
+      "path": "121x30-resize.txt",
+      "sha256": "c8735c656dea0dbd8955fb60acc1f1259305fa5a324f3c782d7d0aba0efb8ad8"
+    },
+    {
+      "path": "121x30-scrolled-away.txt",
+      "sha256": "07ae6b9cd692aa56fc053d55a4bb6182a4e45e3986da7f9b41347497e0a05fac"
+    },
+    {
+      "path": "121x30-session.txt",
+      "sha256": "5085230ba767da2aeda8a22159250e6b68795b549c61a75495d55c165b8054eb"
+    },
+    {
+      "path": "121x30-sidebar-overlay-or-joined.txt",
+      "sha256": "5e226d5c137c6ffbf3b2904ca02eba82c5eedef62f76b16093be5f67cb05092d"
+    },
+    {
+      "path": "121x30-unknown-fallback.txt",
+      "sha256": "eedc307c3bbbdcd9131235aa40a7e64447e6acce957f5e09a1e51c76a1555221"
+    },
+    {
+      "path": "121x30-which-key.txt",
+      "sha256": "11bade189e37cb3360556be61d2c3aba86173de3abb5aedae0c25193d87a222a"
+    },
+    {
+      "path": "16-dark-intervention.ansi",
+      "sha256": "6a1929b12a5b4877ff4d8bdc616d9d47c46866e10348d8a46acae634c9a01ed1"
+    },
+    {
+      "path": "16-dark-replay-gap.ansi",
+      "sha256": "9f2f4ae2275b48afae1195b413d94ade401304fb2cb1fba48ddf7130c1bbfa7b"
+    },
+    {
+      "path": "160x40-active-stream.txt",
+      "sha256": "9773dbc2bd60e751b528cd18d7fc7403621dc8f060d05b41224c4c7f409b3dca"
+    },
+    {
+      "path": "160x40-autocomplete.txt",
+      "sha256": "2be4693069f73829ef19d7a2a7a794db09bbddf2f73f7aea649c0dac55263de6"
+    },
+    {
+      "path": "160x40-closed.txt",
+      "sha256": "fb217405f10bf61c7f3e91d987934b9b8a70a6f1e34190e8b5baab4a2257f878"
+    },
+    {
+      "path": "160x40-composer-attachment.txt",
+      "sha256": "db89d8d8d0d76890d773b72dd6b2e0e8b03801918b2801b6c94fb5cf5b51e0c2"
+    },
+    {
+      "path": "160x40-composer-disabled.txt",
+      "sha256": "a178c2f66a3bc8a8b0b761ab7963af62ebf9acdb2e4aa885594c7730c099b889"
+    },
+    {
+      "path": "160x40-composer-focused.txt",
+      "sha256": "406a0480c0f5042919db5e400ddb3bd9f98ccd8cf02c4c139c706c32869b1bb2"
+    },
+    {
+      "path": "160x40-composer-retry.txt",
+      "sha256": "7115055f0d279d565924ac0272b2a069526cc24d03ff500874d17686423c50c3"
+    },
+    {
+      "path": "160x40-composer-running.txt",
+      "sha256": "8734631183195f98ddfdd85e8526a3b0a042bf5d1b23d531e22b67ea436f89ae"
+    },
+    {
+      "path": "160x40-dropped-event.txt",
+      "sha256": "862a38fac8a9814b94b9384193decda4a1601098157d4b10614f8c5d54cf9306"
+    },
+    {
+      "path": "160x40-erased.txt",
+      "sha256": "c839b2a3da3a14181ca0e34564a6cbcd535379c56740fc05da4f81388a1b0c9a"
+    },
+    {
+      "path": "160x40-focus-restore.txt",
+      "sha256": "3f378154a761d266e4f65ad1d9c8dc0316d1281ebb20f4ba8376a90681e08579"
+    },
+    {
+      "path": "160x40-home.txt",
+      "sha256": "80bc0212abc124241d9a34c4b51229a3b1ce02bc9b03e6b808f9024e840911cf"
+    },
+    {
+      "path": "160x40-intervention.txt",
+      "sha256": "bdc66a8fe2ef66279170987522fe4a5c2272439249e5e7a16449cbb108d9c1e9"
+    },
+    {
+      "path": "160x40-modal-filter.txt",
+      "sha256": "2a39b05e3db71c762fa23c8cdf023d2a7e40e25088483500692260d265203cde"
+    },
+    {
+      "path": "160x40-nested-modal.txt",
+      "sha256": "82f33c1a88647a820061ac22149b86080e09d16de8950500c2a546cd91d9d946"
+    },
+    {
+      "path": "160x40-palette.txt",
+      "sha256": "0d065249ec9d2417283d28bdc81de5adfcf2048e1ed20e27301655fb1f826b78"
+    },
+    {
+      "path": "160x40-paste.txt",
+      "sha256": "0579bd4758fd6e108fbbecbb64ad06ff0295f3557ca456cb14628ec0da1dcc95"
+    },
+    {
+      "path": "160x40-reconnect.txt",
+      "sha256": "1390e056d3deea80c2fe2eca03779c80fc1df2b88a7747c29c8bc9b810d0eb6b"
+    },
+    {
+      "path": "160x40-reduced-motion.txt",
+      "sha256": "10668b53fe44fdc92392314cd2a3f70afc5d8b250b55dced0208066600554df5"
+    },
+    {
+      "path": "160x40-replay-gap.txt",
+      "sha256": "c8b80f768424c3a359f4abfbc0ee79834dcae1000366dfad6ce8a6f6e0abbd4a"
+    },
+    {
+      "path": "160x40-resize.txt",
+      "sha256": "c8999480943ba951428974d3adde4af8a49bf8f0761b1d77761060eea868fd60"
+    },
+    {
+      "path": "160x40-scrolled-away.txt",
+      "sha256": "4e0e089f9cba82046b801daa38c45ce47c952ba987fc26939fd2c1ece87dfafd"
+    },
+    {
+      "path": "160x40-session.txt",
+      "sha256": "afd93409d17d54c3adc19e3d9a468e866efdc0463343746eebeddea73532fc27"
+    },
+    {
+      "path": "160x40-sidebar-overlay-or-joined.txt",
+      "sha256": "0146796ed1a51104580ca9446a038995e6af48824e3081d5c4e26c05f55ab5fb"
+    },
+    {
+      "path": "160x40-unknown-fallback.txt",
+      "sha256": "11582eeb790e723090d0b9084d95101600635459627b096a542bce5235f18828"
+    },
+    {
+      "path": "160x40-which-key.txt",
+      "sha256": "baa4cf62c054f03d714cb3dd2fc726fcc775752147e25b7b5f315d2f92d4d9a6"
+    },
+    {
+      "path": "240x60-active-stream.txt",
+      "sha256": "b93bc7931a0208268faa2667c3cd40a5a9bc31936c389950297657d908c7bcad"
+    },
+    {
+      "path": "240x60-autocomplete.txt",
+      "sha256": "1d76a6b5d2df8bcb6bb41e4066c8ae48c15fff781c4cc1f3f574217032aebd66"
+    },
+    {
+      "path": "240x60-closed.txt",
+      "sha256": "4fbe2beb9cfa791b21a752703e29dfb7865fdd4ae8e4f88e275aaab9dce3d3f9"
+    },
+    {
+      "path": "240x60-composer-attachment.txt",
+      "sha256": "e2455b4a744acab3d32f255f4ad58114a291996102e6bee07d02b39f1d461f3b"
+    },
+    {
+      "path": "240x60-composer-disabled.txt",
+      "sha256": "922b38d27f316c5a6d5c9012b6222dd63d867955a7916c60e6f4e59686715d14"
+    },
+    {
+      "path": "240x60-composer-focused.txt",
+      "sha256": "42aa505daaf12766047c6fa486f96a50e5695eef1325742e923e9e3677c4db95"
+    },
+    {
+      "path": "240x60-composer-retry.txt",
+      "sha256": "ae25599f92959cdc7bbc6a1fddf99e3885eeeb3e60e7faa58cec727142ad6ca4"
+    },
+    {
+      "path": "240x60-composer-running.txt",
+      "sha256": "48d458ec1d21cf50e10beab88a06a60a6b4695ddea2b401f756bcbc08d5fb7c4"
+    },
+    {
+      "path": "240x60-dropped-event.txt",
+      "sha256": "f66d20f649c937a515122463f962ab0807ebfab336d1b81e4ee74fbf330df9c0"
+    },
+    {
+      "path": "240x60-erased.txt",
+      "sha256": "7076cdea06ac0f0e62e81e305bb60759191e1b130d2b3fb70b7d37d4715f9cac"
+    },
+    {
+      "path": "240x60-focus-restore.txt",
+      "sha256": "2220a97e82f268b8c3ffd9e39588292919b5b480fe02ad37d702616541c534a5"
+    },
+    {
+      "path": "240x60-home.txt",
+      "sha256": "00cf50cf3709c27ef6824010834dd05710595324e006901a4e437048cad7e7f5"
+    },
+    {
+      "path": "240x60-intervention.txt",
+      "sha256": "822f4227dcc7034801c9eafd14af0b1d92e3e75f93368f7565f1bb4c5705d46a"
+    },
+    {
+      "path": "240x60-modal-filter.txt",
+      "sha256": "a1d3a197da14f3bf38285abf885410f3bce19c9c59378e4b19020e610500c2b0"
+    },
+    {
+      "path": "240x60-nested-modal.txt",
+      "sha256": "9c5bcbabe77fcb624ec4f6636a31a91428285d6933c86b79e0e81f6966cbf75c"
+    },
+    {
+      "path": "240x60-palette.txt",
+      "sha256": "32d5dd34eb4364c7d46ef4c8eb8fa045518edc4c00d9f97bd31ae0ef112b760d"
+    },
+    {
+      "path": "240x60-paste.txt",
+      "sha256": "c33d3870fbaf89743762c4e7b17073c3a22eeac96bef420f86091a84c6d37779"
+    },
+    {
+      "path": "240x60-reconnect.txt",
+      "sha256": "ebff9200755c71c8509b06e6640b84f45777e5d8a0165d11bd2e3f94f528ee5b"
+    },
+    {
+      "path": "240x60-reduced-motion.txt",
+      "sha256": "200e35f5bc50f14b88d4ea5d1f9180504842944e5a0fe8dbb71b524807e5a099"
+    },
+    {
+      "path": "240x60-replay-gap.txt",
+      "sha256": "afd9c91665c0cba378cbcc9b139572b0c877d841e336ff9660b938ba5bc3c796"
+    },
+    {
+      "path": "240x60-resize.txt",
+      "sha256": "7e762961b3abaed2b2c4b476b802f9bbd1e21e06ad010309da217af0ac4cee97"
+    },
+    {
+      "path": "240x60-scrolled-away.txt",
+      "sha256": "ce61c1a6cfd6877b71dddd721cb5e38a5de413722d737e5a4ae52a5b1e7f2c70"
+    },
+    {
+      "path": "240x60-session.txt",
+      "sha256": "83b6b7f1c3119f96beefeb032dae115b1254cb22c4367d2074d719679c7cda46"
+    },
+    {
+      "path": "240x60-sidebar-overlay-or-joined.txt",
+      "sha256": "1298290fcbbc6d6962cc87446427a5eb8ec9965cb3b2e8b626f3ac525c612708"
+    },
+    {
+      "path": "240x60-unknown-fallback.txt",
+      "sha256": "8842bb38f7f06863948ffdad463cd68425ab2aab9fdd8227cc8c8509a679da43"
+    },
+    {
+      "path": "240x60-which-key.txt",
+      "sha256": "f5eb903a407c8c3ac5c5aa58e07a802fa5e645f12503f6d8c955dc922ba9838b"
+    },
+    {
+      "path": "256-dark-intervention.ansi",
+      "sha256": "2d2db0eecd8aceb39e225e76f0f4268b3bee046d700ca2b638278999d2130e00"
+    },
+    {
+      "path": "256-dark-replay-gap.ansi",
+      "sha256": "9f733a758d0f41d08a968d2327ad05275730a5929ff502295d54cd8087513e4c"
+    },
+    {
+      "path": "256-light-intervention.ansi",
+      "sha256": "a1a2c076d459655efebe38d50bf346f88a351d9382fef50faaf908722dc6c9c9"
+    },
+    {
+      "path": "256-light-replay-gap.ansi",
+      "sha256": "6c3ee3d8b89b37e08067f1d1f4590e596fbc97da28bdfe08ce9909a2f4f27e5a"
+    },
+    {
+      "path": "40x12-active-stream.txt",
+      "sha256": "7ffbecc7bbcd96e6a5935a997e44a7b149f3ae8064e0619c21128d1c42cefa0d"
+    },
+    {
+      "path": "40x12-autocomplete.txt",
+      "sha256": "3b9efb2ea20972110f7fdaf56fd2d9dc11478dc84c0fe74b0dc32e1522673675"
+    },
+    {
+      "path": "40x12-closed.txt",
+      "sha256": "17d6321990c43589e4642621a6cdd06a1b97fa06c64f9c233af52aa4dbfbe4cc"
+    },
+    {
+      "path": "40x12-composer-attachment.txt",
+      "sha256": "49257b6c9db29a3e4ec0e488e01c069566744a12e39a7b7444cc5ac56b581e89"
+    },
+    {
+      "path": "40x12-composer-disabled.txt",
+      "sha256": "ccbf81da44c45f784fc419289ac5f9281e4a96aa7eb44958457ed7f37e9c18ee"
+    },
+    {
+      "path": "40x12-composer-focused.txt",
+      "sha256": "e091f28b10c54f98b8683680827e5d0f258f331542d446d436d4a7f61680dc44"
+    },
+    {
+      "path": "40x12-composer-retry.txt",
+      "sha256": "83e13253b5a531807b7da38570adb5e856d2e3965b896d0444c5faf48e8ce96f"
+    },
+    {
+      "path": "40x12-composer-running.txt",
+      "sha256": "2287a9df1267ee5a96501a5ae8404e39989f8c5865df34a82aee5a35261f12d7"
+    },
+    {
+      "path": "40x12-dropped-event.txt",
+      "sha256": "04018db07291ac2805123eee338be7ff42a673d3306a9c0db5e709083d0ca1b0"
+    },
+    {
+      "path": "40x12-erased.txt",
+      "sha256": "12d7d0fed8d93bba582d2f9b56ef148e4cf0a9159f8f5775d81d6ed15aa8f2ba"
+    },
+    {
+      "path": "40x12-focus-restore.txt",
+      "sha256": "d9a51b7ceb6caea89e24373d2d30594307b0eeb18284664e6ffda3752f84f6ec"
+    },
+    {
+      "path": "40x12-home.txt",
+      "sha256": "1082ea20fb1d60f5e0ebc6040655eb4d9b7c7d1c3ad244a131c5eb6ea85aef85"
+    },
+    {
+      "path": "40x12-intervention.txt",
+      "sha256": "c19c0fbf6c7108c1a8c7ad56e67d364777cd0567c5d830a4d742b3269bdf6e4f"
+    },
+    {
+      "path": "40x12-modal-filter.txt",
+      "sha256": "302d9161f730c15e21cad0efaa8c11dcb63dbd76f99bd51a9bb9512719bcf7ce"
+    },
+    {
+      "path": "40x12-nested-modal.txt",
+      "sha256": "788b7b009bf805e4b0dba73acf8ed3c9ddf745556cdb8998e01ee5a80204434d"
+    },
+    {
+      "path": "40x12-palette.txt",
+      "sha256": "7bafad5a8ce89a6b99c1ceaf3b2a2087fddf52ba6d64a930bf9ed845d4afbc3f"
+    },
+    {
+      "path": "40x12-paste.txt",
+      "sha256": "4be92c54044dd6eb4f349fbed584bdb1082e00f5378d8619a7fdf27f68402623"
+    },
+    {
+      "path": "40x12-reconnect.txt",
+      "sha256": "764cb5f1d2ee63b79a43b9eb60730b9cc49ffcb32ee31fb5bbc4495d1d67d755"
+    },
+    {
+      "path": "40x12-reduced-motion.txt",
+      "sha256": "68701a8d1291e90d25c2f1293aab0a62eb032501bfce63c73c35fe7d9b4cc842"
+    },
+    {
+      "path": "40x12-replay-gap.txt",
+      "sha256": "1d1eb6989078484e6302dc8d2c6da290a17f7775a722680417808ee933f85c9a"
+    },
+    {
+      "path": "40x12-resize.txt",
+      "sha256": "2091eb98a589496c05828f80b3f742a2f818718e4a4de982376c514901f1eb44"
+    },
+    {
+      "path": "40x12-scrolled-away.txt",
+      "sha256": "372115dec9d57cd916b5502e402ded3a30bb764d365f2648d6b0bf8f576cae10"
+    },
+    {
+      "path": "40x12-session.txt",
+      "sha256": "2cc71463dce3430cfc3d75d700f8066292c36ab4141ebb033f065abe433851f1"
+    },
+    {
+      "path": "40x12-sidebar-overlay-or-joined.txt",
+      "sha256": "f505e39a5e3f01bba450fcd777290795c7e3ee9396129cdc0930676c9c94165c"
+    },
+    {
+      "path": "40x12-unknown-fallback.txt",
+      "sha256": "72d0613d813be497811e5778dda3ea47855df2fc88ac8e8e21a59d659b4a1998"
+    },
+    {
+      "path": "40x12-which-key.txt",
+      "sha256": "f60877b7e4d3a4c08ea1b7a8443bf0aee1f6cdcceeef563a910bc1b77db8ba24"
+    },
+    {
+      "path": "60x16-active-stream.txt",
+      "sha256": "be7157a359dc9142adcceb337531abc4375af42a4f6674795d6200c5fa6d8f87"
+    },
+    {
+      "path": "60x16-autocomplete.txt",
+      "sha256": "9e98a9fb834bbfa2bdd21e1524fdce00cf1247b27bed6857191e1836edb958ea"
+    },
+    {
+      "path": "60x16-closed.txt",
+      "sha256": "c78001af5c0cf6710fd52d7c020b4c8cc2c3f7f6cc82a1d240d5ee06f50f62c5"
+    },
+    {
+      "path": "60x16-composer-attachment.txt",
+      "sha256": "4a5a69ce2f1363138416643a0ebeb447973aa49ecf875392ed9292e0a413e0c6"
+    },
+    {
+      "path": "60x16-composer-disabled.txt",
+      "sha256": "8fb4d93dbf7e2769789dacefb7c26337f12f2b59509aaad05e5c05de2bb5790d"
+    },
+    {
+      "path": "60x16-composer-focused.txt",
+      "sha256": "1ad930fd87d6a66f004bfcc388c289133e5613292acca8ca714aa0fca86d8ea9"
+    },
+    {
+      "path": "60x16-composer-retry.txt",
+      "sha256": "debe913ec567a66146aadbec0a469e473d89ff60a224afbdec8875aa7604acbf"
+    },
+    {
+      "path": "60x16-composer-running.txt",
+      "sha256": "ac0a6f0fa40e9b0bf9df4c537845f36fb9d5a4814ffeb2efcce3e64691f063be"
+    },
+    {
+      "path": "60x16-dropped-event.txt",
+      "sha256": "b295c633eb161335536d1150e6353e192941412c4fba4115ff0f36168cc7e138"
+    },
+    {
+      "path": "60x16-erased.txt",
+      "sha256": "a84b9bdb6894b01edb59837b2df18159ac4bcf18311da1d3f8e9efbcc5e2e33b"
+    },
+    {
+      "path": "60x16-focus-restore.txt",
+      "sha256": "ab96f28797c921071d434bccda383d92842b949724f50058e6c2a2c5f24b6f0d"
+    },
+    {
+      "path": "60x16-home.txt",
+      "sha256": "c765c579686eddd8efa154fee0069d6a6870620568221db5cd8a14bb58d865b8"
+    },
+    {
+      "path": "60x16-intervention.txt",
+      "sha256": "010e429dadcbbba9fa0c933346a81d85eceb36f1cb2b5cf33f53f433b22f8760"
+    },
+    {
+      "path": "60x16-modal-filter.txt",
+      "sha256": "b2678ef4fb6c48d0b996bc2e1fba6d100b5b77da5747916c4905b0a6f4739099"
+    },
+    {
+      "path": "60x16-nested-modal.txt",
+      "sha256": "c56c29073d58006f8189fd092497a3a04a4c25a9659c30103ea3067b01bf06c5"
+    },
+    {
+      "path": "60x16-palette.txt",
+      "sha256": "e5be183a7a290bc0ba61786612918380caa2eb0156dfe9bf8382c1ca25a0ac24"
+    },
+    {
+      "path": "60x16-paste.txt",
+      "sha256": "4e3291b4832034dd682032d3970a3d9f2198d2a58e81476c316530a76c584b0f"
+    },
+    {
+      "path": "60x16-reconnect.txt",
+      "sha256": "0188c406e5c5a064758a81c33a043c672a6fd9540f399683bf8172aeefe0ac80"
+    },
+    {
+      "path": "60x16-reduced-motion.txt",
+      "sha256": "0189af9fcc3e3f4a81a1ac1abc5a2cec6f8cddfcef34075df8054df3466f7531"
+    },
+    {
+      "path": "60x16-replay-gap.txt",
+      "sha256": "380f74f4fccbfe62c228c7e042859bf232cacafff233f8fcd75dbb30375ef6ae"
+    },
+    {
+      "path": "60x16-resize.txt",
+      "sha256": "d615ff8b0a3605e58f52e235340a37df208e3f292bb9989fd76f8066313ecd10"
+    },
+    {
+      "path": "60x16-scrolled-away.txt",
+      "sha256": "fabd47092437764d8f9ea07bdd502c03c71e026646b8df9d37bdabab6e5425fe"
+    },
+    {
+      "path": "60x16-session.txt",
+      "sha256": "8afe4a47ee7dac15babd38c921174eb87b3cdad63769888fb7456a267ba4dd35"
+    },
+    {
+      "path": "60x16-sidebar-overlay-or-joined.txt",
+      "sha256": "8ea08ed8c1bc63806b3260f82e0c13f1d8b03843d461d7cee7373cd2578cbb37"
+    },
+    {
+      "path": "60x16-unknown-fallback.txt",
+      "sha256": "acfdf49a97dd9d1e501dfe53f2cb6b0fbfc1168855ffbb6b05fd8a520adc4ba2"
+    },
+    {
+      "path": "60x16-which-key.txt",
+      "sha256": "dcb642b6c3f12d6d1b76d36452800bdcd33623e0677c355b1a2d225377b87cc0"
+    },
+    {
+      "path": "72x20-active-stream.txt",
+      "sha256": "c16907b10e4a52f4ce4d9d3b2e34ffb6b0ad29bf30a555303153b063c5e3ae42"
+    },
+    {
+      "path": "72x20-autocomplete.txt",
+      "sha256": "c4116da26cd19cddae054d94df2e3a4fc4d67369de0f0e48fa1fe5f2de56ccef"
+    },
+    {
+      "path": "72x20-closed.txt",
+      "sha256": "4e250a18fef291a79f240cc00bf436ec7b58aacb981bc7f62e622fbaa0d8cb16"
+    },
+    {
+      "path": "72x20-composer-attachment.txt",
+      "sha256": "fc1086dc12ca8432da87fe73a134ac3458e5c2cd5c2f56a7e221a3639d90e13c"
+    },
+    {
+      "path": "72x20-composer-disabled.txt",
+      "sha256": "29db580dbcd7e26a9bc9df7eeebc2daa6651f30a75ff0b97222f33001c5affd6"
+    },
+    {
+      "path": "72x20-composer-focused.txt",
+      "sha256": "de7785f810ecd425711efbd0a2b3d672dd60570514033ef2ae6753de30dedd94"
+    },
+    {
+      "path": "72x20-composer-retry.txt",
+      "sha256": "7594e6c9cd4e9ca552d9887f8c0fc37fa56c54f1837fbe07fd4ae36da7bef5dc"
+    },
+    {
+      "path": "72x20-composer-running.txt",
+      "sha256": "dbdc00a6c4d7d46e669453e2c5162ab513a6a15a357a23a79ddabb0b21864a3f"
+    },
+    {
+      "path": "72x20-dropped-event.txt",
+      "sha256": "ab0aa48c11900cd8945a837dd2f0655a80a0344022f0636fc4380147180be7c7"
+    },
+    {
+      "path": "72x20-erased.txt",
+      "sha256": "c46ac44e0f51be06c25f24a97a2e4066e82ed59824a4f6e7d9bb58662e724773"
+    },
+    {
+      "path": "72x20-focus-restore.txt",
+      "sha256": "5b5f5484d5f7698bf3c8d3d137512a8e16baf3abf9d618a255a710dca85af587"
+    },
+    {
+      "path": "72x20-home.txt",
+      "sha256": "05eb353feed6c3cb3959972e6159010becf22dd4813e5f301d023e53098c05ad"
+    },
+    {
+      "path": "72x20-intervention.txt",
+      "sha256": "4479d494c6ff856755ec005bde10125cf670310b4cae846317f2654f019baf8e"
+    },
+    {
+      "path": "72x20-modal-filter.txt",
+      "sha256": "e5777d943ef970231709e54a1a67b743626988a2c03264e8c014781d6b8b7ad1"
+    },
+    {
+      "path": "72x20-nested-modal.txt",
+      "sha256": "08794179cef945c47a3d7dd9baf00d3ad8874bdce22b2b3262f7c07205106283"
+    },
+    {
+      "path": "72x20-palette.txt",
+      "sha256": "f72a1a5b64697e191e8b8e59dafd37e370fb6496e57f9f7feb8616163f1b8113"
+    },
+    {
+      "path": "72x20-paste.txt",
+      "sha256": "39ab79782b7b2b501158b872073ff197a36a71af3e7a21bd036de2ff791cca4e"
+    },
+    {
+      "path": "72x20-reconnect.txt",
+      "sha256": "55195d478dd61b8c946bc39144359dc0882f4bfafd9d049df1b41d8d1a6a9330"
+    },
+    {
+      "path": "72x20-reduced-motion.txt",
+      "sha256": "41fee0fbf62b96fd0621c14180d3a02b4c860ea70f4c46c3ce70431336e572b7"
+    },
+    {
+      "path": "72x20-replay-gap.txt",
+      "sha256": "acc7c4b5cd662315017cb32884ce227189fea265756f25ddbd2cba3f318e1a2a"
+    },
+    {
+      "path": "72x20-resize.txt",
+      "sha256": "6fc7053daf9b596c0900d2f942f25782fece465f91e58eb7060d878633180033"
+    },
+    {
+      "path": "72x20-scrolled-away.txt",
+      "sha256": "662dde3d57505062f4ba4401e1aeb426fb3df77ca7d1e02f2c72bf19e00486fa"
+    },
+    {
+      "path": "72x20-session.txt",
+      "sha256": "2601fce8d74047431cfda7adfa3fc15b3fddc03e8a7d2e0f2e29d61216c93232"
+    },
+    {
+      "path": "72x20-sidebar-overlay-or-joined.txt",
+      "sha256": "cbd6365d90df17b3ca271c74eb8ecb9ea7344ffe9ee7524a7f00756724b78e0b"
+    },
+    {
+      "path": "72x20-unknown-fallback.txt",
+      "sha256": "0199fb3437bb7f4ec357a64706e281182b9ab8dea634d94a6791adef69e7781f"
+    },
+    {
+      "path": "72x20-which-key.txt",
+      "sha256": "a287442845e959a57b5fe57be3dfc19e249edfbe0f0db88c286d4b9680f089ad"
+    },
+    {
+      "path": "79x24-active-stream.txt",
+      "sha256": "dcd78c49b910314f1abc2d426677f725442f99e6806ed74241b0defd502fbaed"
+    },
+    {
+      "path": "79x24-autocomplete.txt",
+      "sha256": "51ca5e02da19b71f4e524f59e2dc3a82298b01ad51723dff99122f36999e8412"
+    },
+    {
+      "path": "79x24-closed.txt",
+      "sha256": "c0bc78e130ab431d5466127a7077b8b74e26153355a325e84617f862b0eccd0c"
+    },
+    {
+      "path": "79x24-composer-attachment.txt",
+      "sha256": "0bd0d4dbd63d9603a27d03dfd97687a10566698305e2e9b81b4d1b36fbc818d1"
+    },
+    {
+      "path": "79x24-composer-disabled.txt",
+      "sha256": "fb05bca3b4b496b8717a15cb19c4a4dcef10cb58fc2b62bc9ac3df1d8b16d76d"
+    },
+    {
+      "path": "79x24-composer-focused.txt",
+      "sha256": "7ae85b6d382ff1cc59d3e7257097b08b7680bb41438fe5675689b1c00277857e"
+    },
+    {
+      "path": "79x24-composer-retry.txt",
+      "sha256": "2e3e0792755e9c6918d9ff4726a561066d75f062c9b95e73f021f883a87009ae"
+    },
+    {
+      "path": "79x24-composer-running.txt",
+      "sha256": "ab184f9444018de2808506a1f9478ef0c9bb5501fae0720ecda43b00b5305ad4"
+    },
+    {
+      "path": "79x24-dropped-event.txt",
+      "sha256": "c2f5eda7e9452074a9f7b8f5e6b8dc54cfd64cdeb8d36e7109a16d9a7f9fa01e"
+    },
+    {
+      "path": "79x24-erased.txt",
+      "sha256": "0910e40ee900cbc292a4ef5c0b450ef68de79ef2e478fd44eacf885da8bde01f"
+    },
+    {
+      "path": "79x24-focus-restore.txt",
+      "sha256": "046ff619755a3d6ac3eaa29f241c806ac3553d6bfc9564ea7c200d92bb965676"
+    },
+    {
+      "path": "79x24-home.txt",
+      "sha256": "a3a17c9f04591d14b8568e52f53b842a16800efb5c201fbb277fc27b2b07826d"
+    },
+    {
+      "path": "79x24-intervention.txt",
+      "sha256": "895633bde677673122f1dca19656437e653c022e03144ed86a4cc4a22511b6b6"
+    },
+    {
+      "path": "79x24-modal-filter.txt",
+      "sha256": "8c900fd314bc8f9a850550e9d4f931538e9aab815c32de2684ee53ef073ba435"
+    },
+    {
+      "path": "79x24-nested-modal.txt",
+      "sha256": "aa4ef2da30965dca5e4abe14d7e2015d3bf91f51bfe47b61ff621ad8b5d9746b"
+    },
+    {
+      "path": "79x24-palette.txt",
+      "sha256": "0e7dca5142e579d16f8033f553b2df4822ec891abae6f2b10dd3b940d5898b47"
+    },
+    {
+      "path": "79x24-paste.txt",
+      "sha256": "561cc64e3866b5e49b68e5ec106f8c60d3bbfc45129084bdf593e0b93b7f9802"
+    },
+    {
+      "path": "79x24-reconnect.txt",
+      "sha256": "cc2a250c3517260262c9b3007cc26a51f47c6e42f45290458de43c817bf8d58b"
+    },
+    {
+      "path": "79x24-reduced-motion.txt",
+      "sha256": "329cfac2ad5ba865be49a75af2e07e30da0d2953e0fda4fc3ff91cfa5a8ddc96"
+    },
+    {
+      "path": "79x24-replay-gap.txt",
+      "sha256": "d9ebb71a4a59d500201298b44503fe0d7e542c6faab044a1da80df07a2a3b07e"
+    },
+    {
+      "path": "79x24-resize.txt",
+      "sha256": "59e746e0ae3cc2f01f8e7949bab5e460c0522d9b1a9e99478edcf17209f601d2"
+    },
+    {
+      "path": "79x24-scrolled-away.txt",
+      "sha256": "ea0f25be41b5e5740fdae775b6b43b5512e487ac580adc961b9b35f72091842a"
+    },
+    {
+      "path": "79x24-session.txt",
+      "sha256": "d47aa866bbb8fb9a860f21cdfbd580b414fa4f395fcdc3668478589d9322b354"
+    },
+    {
+      "path": "79x24-sidebar-overlay-or-joined.txt",
+      "sha256": "286877558fa7ec3721349b2cb1112744969b59faaf9f81ea9afae274839fd392"
+    },
+    {
+      "path": "79x24-unknown-fallback.txt",
+      "sha256": "fab511035db2d5a0a13f385c09111f8817866009a6f63df6e40fc0b8c2c4aaae"
+    },
+    {
+      "path": "79x24-which-key.txt",
+      "sha256": "9ff5e4ef46207dc0d488ae384d18ce52260ac8283919b4d11971ea55ea5df4b9"
+    },
+    {
+      "path": "80x24-active-stream.txt",
+      "sha256": "c1243f3c83df02d45c76b0181b5a1a6114c7024ad2a83505ee6d4bb3b69462be"
+    },
+    {
+      "path": "80x24-autocomplete.txt",
+      "sha256": "e7fff600b62a45d65e97125e87e94357bad2bf75177f7cac3e884aee46c8c046"
+    },
+    {
+      "path": "80x24-closed.txt",
+      "sha256": "cdf745453bc5b57bc717ddf6b9545b7f538edcfe0bbb9fc7aac9b56bdbcdc561"
+    },
+    {
+      "path": "80x24-composer-attachment.txt",
+      "sha256": "20da7fc5e3c0b581b3b8d89b573a1dcf24a54639eaf1982a64381f70fea7934d"
+    },
+    {
+      "path": "80x24-composer-disabled.txt",
+      "sha256": "d4d2545c556c02890b29764a07723ae0a6b3f37259c525bdd98b992a18e809b4"
+    },
+    {
+      "path": "80x24-composer-focused.txt",
+      "sha256": "3dcf2100a32caf4b12a0fe89a7834f2b743841492302a90e14481372384f97e1"
+    },
+    {
+      "path": "80x24-composer-retry.txt",
+      "sha256": "c360aad5fa26317bff436957f786ccaebab26687a3feff0c1a89fe20e63c74ed"
+    },
+    {
+      "path": "80x24-composer-running.txt",
+      "sha256": "cfa55d736d3f75ce0c31125aba5999a56cacc17c9d377f67a1c3f560670b9af2"
+    },
+    {
+      "path": "80x24-dropped-event.txt",
+      "sha256": "f7317d1c71b5436500418027ac32862f0f094f454c82f2132b41f3a1ebaf0345"
+    },
+    {
+      "path": "80x24-erased.txt",
+      "sha256": "4ef4bae7a3f6d09ba96fad5d651c888e98471ef424d516a40d4be4036ff406f1"
+    },
+    {
+      "path": "80x24-focus-restore.txt",
+      "sha256": "eec6b515a86a053fcdaec1a3f8c574446212f7dadb068a9a1f236371b1bb6d31"
+    },
+    {
+      "path": "80x24-home.txt",
+      "sha256": "85750df7c823be800d57d38a520a9df84f0f23e04c55eea84a2b236d4f547c42"
+    },
+    {
+      "path": "80x24-intervention.txt",
+      "sha256": "563571b2dc2b07cda0c05c798e44c895326ce28bcd41dd2095bec47b5ff7505e"
+    },
+    {
+      "path": "80x24-modal-filter.txt",
+      "sha256": "a68b061dc0f4d19a8a5adda1d2c06e411dbed1a675861fa367379cc0e1f08528"
+    },
+    {
+      "path": "80x24-nested-modal.txt",
+      "sha256": "9a4794be8fecf8b3234e794e359830c3d8d91911c1e0aaa9a4e8573c00b5610e"
+    },
+    {
+      "path": "80x24-palette.txt",
+      "sha256": "96839b1463efa9d7036155d623211d73418f5b50a91c298c1b739255651ff54d"
+    },
+    {
+      "path": "80x24-paste.txt",
+      "sha256": "e34a2f52e4ca30ee23a2cedbc3c68b3d4ed5fcb64c7e80962e7347a691015af2"
+    },
+    {
+      "path": "80x24-reconnect.txt",
+      "sha256": "d21588e1d127c6174588221620b079dfa71f8c7d5131534eb7e0c7321d1ba3af"
+    },
+    {
+      "path": "80x24-reduced-motion.txt",
+      "sha256": "3857c03265ce42a5dedc23f5c8e6506acc0af088472295ae372975be813eea7f"
+    },
+    {
+      "path": "80x24-replay-gap.txt",
+      "sha256": "6e45efb4a48e7949fed1d5e4f1ff8da784d485d2fe5d56d26e6910f98185f289"
+    },
+    {
+      "path": "80x24-resize.txt",
+      "sha256": "77106ac0be54d9afceb011e0eb1aef48d93a382d11a5879fd3917f89303dd2ad"
+    },
+    {
+      "path": "80x24-scrolled-away.txt",
+      "sha256": "92544bf25b43f82ad2e9fb202d81c66517150bcb648ca7054fcaf27ad6fddb21"
+    },
+    {
+      "path": "80x24-session.txt",
+      "sha256": "f9697b4f188ed70475aa1e9efe0574bf05ac1c7e6b7e1b8ff94a6940d6fb114c"
+    },
+    {
+      "path": "80x24-sidebar-overlay-or-joined.txt",
+      "sha256": "82aa2941643b87e98cbec5f3128fae2ffc78c9a4efd84237e80edf0e9b5a6938"
+    },
+    {
+      "path": "80x24-unknown-fallback.txt",
+      "sha256": "fcbc05de350db38057efea57e7c00072720b26027c08e7708f7288a2ee6c04ff"
+    },
+    {
+      "path": "80x24-which-key.txt",
+      "sha256": "ff4fcb7191a6d5b07c145bd9817de32bbac39fc72aefc8d2e43e3ccec84c5d16"
+    },
+    {
+      "path": "mono-intervention.ansi",
+      "sha256": "97a47f78b9bdb69b48c088e3b14d7eff33d9d1463f524da90cc7ace5ada7a02d"
+    },
+    {
+      "path": "mono-replay-gap.ansi",
+      "sha256": "0c0fd27a0f740102d70da1baa8b683f622702f56edecce8a97da000ec716eb15"
+    },
+    {
+      "path": "truecolor-dark-intervention.ansi",
+      "sha256": "69ae0b84c18736757618044a266032d7561b35cc2b3bee29ebab193b15f8b005"
+    },
+    {
+      "path": "truecolor-dark-replay-gap.ansi",
+      "sha256": "af940a7d0b62fc63332f0529e4dfd04471019f2ce35a006318391bcd6ff6db12"
+    },
+    {
+      "path": "truecolor-light-intervention.ansi",
+      "sha256": "5db2eafb316068619059e7c45b6b379915bdf03acf66220bf7a30dcaf22fd9c5"
+    },
+    {
+      "path": "truecolor-light-replay-gap.ansi",
+      "sha256": "c18ae662410b0748ade2e9d1c3255b70ef48ebdda922a44ca79aaf98c4318028"
+    }
+  ]
+}

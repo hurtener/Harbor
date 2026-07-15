@@ -4,7 +4,7 @@ Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
   Production          serve, token
-  Run inspection      inspect-events, inspect-runs, inspect-topology
+  Run inspection      inspect-events, inspect-runs, inspect-topology, tui
   Build information   version
 
 Subcommands without a real implementation yet stub-fail with a
@@ -27,6 +27,7 @@ Available Commands:
   serve            serve the headless Runtime + Protocol surface behind a production JWKS verifier
   skill            manage the runtime skill catalog (import / rm)
   token            self-issue JWTs harbor serve verifies (bring-your-own-issuer)
+  tui              preview the native terminal client availability
   validate         validate config / skills / agent definitions without booting
   version          print harbor semver, protocol version, and build hash
 

@@ -1,0 +1,12 @@
+
+  HARBOR  /  SESSION FIXTURE
+
+     Commands
+    Search:
+   ● Command palette
+     Toggle runtime context
+     Keyboard help
+     Quit
+
+
+   ↑/↓ move · enter select · esc clos

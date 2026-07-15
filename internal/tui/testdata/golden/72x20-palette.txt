@@ -1,0 +1,20 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only fixture projection
+  terminal size 72x20 · fixture · disconnected
+
+  ┃
+  ┃  ◆    Commands
+  ┃      Search:
+        ● Command palette · Find an available action
+  ┃       Toggle runtime context · Show the fixed context sideba
+  ┃  ✓    Keyboard help · Show all reachable commands
+  ┃       Quit · Restore the terminal and exit
+          Submit turn · Unavailable: requires an attached Runtim
+          Switch session · Unavailable: requires an attached Run
+  ┃  A    Switch theme · Choose dark, light, or automatic mode
+  ┃
+  ┃  R
+  ╹▀▀▀  ↑/↓ move · enter select · esc close                       ▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

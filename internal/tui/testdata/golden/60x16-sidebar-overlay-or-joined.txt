@@ -1,0 +1,16 @@
+
+  HARBOR  /  SESSI         Sidebar context visible
+  One active sessi  RUNTIME CONTEXT
+  terminal size 60
+                    Session
+  ┃                 01K0HARBORFIXTURE0000000000
+  ┃  ◆  Inspecting  one active session
+  ┃
+                    Planner
+                    ReAct · fixture
+  ┃  Ask Harbor ab  Task
+  ┃                 inspect-runtime · running
+  ┃  ReAct · defau  Tool
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  runtime.health · succeeded
+  acme/operator/01  Intervention
+  ctrl+p Command p  1 pending · controls unavailable
