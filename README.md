@@ -276,6 +276,12 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.15 Phase 181: Shipped.** Harbor now has a CGo-free Bubble Tea
+terminal foundation with semantic dark/light/degraded themes, grapheme-safe
+layout, one command and focus model, exact responsive geometry, deterministic
+motion, reviewed fixture-state captures, and PTY restoration gates. The command
+exists as an honest help-only preview; authenticated attachment lands next.
+
 **Harbor v1.15 Phase 180: Shipped.** A pure Go conversation projection now
 hydrates and reconciles canonical history, task, session, pause, posture, and
 event state without terminal-framework coupling. It fails visibly on replay

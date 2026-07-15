@@ -1,0 +1,16 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only fixture projection
+  ┃  ctrl+p  Command palette
+  ┃  ctrl+x s  Toggle runtime context
+  ┃  ?  Keyboard help
+  ┃  q  Quit
+  ┃  enter  Submit turn · unavailable: requires an attach
+  ┃  ctrl+x l  Switch session · unavailable: requires an
+  ┃  ctrl+x t  Switch theme
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  ReAct · default planner · idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

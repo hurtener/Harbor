@@ -1,0 +1,24 @@
+
+  HARBOR  /  SESSION FIXTURE                   Resize applied
+  One active session · Protocol-only fixture projection
+  terminal size 80x24 · fixture · disconnected
+
+  ┃
+  ┃  ◆  Inspecting Runtime posture
+  ┃
+
+  ┃
+  ┃  ✓  Runtime health snapshot received
+  ┃
+
+  ┃
+  ┃  !  Operator approval required
+  ┃
+
+
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  ReAct · default planner · idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

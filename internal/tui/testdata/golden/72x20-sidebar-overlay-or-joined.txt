@@ -1,0 +1,20 @@
+
+  HARBOR  /  SESSION FIXTURE           Sidebar context visible
+  One active session · Protoco  RUNTIME CONTEXT
+  terminal size 72x20 · fixtur
+                                Session
+  ┃                             01K0HARBORFIXTURE0000000000
+  ┃  ◆  Inspecting Runtime pos  one active session
+  ┃
+                                Planner
+  ┃                             ReAct · fixture
+  ┃  ✓  Runtime health snapsho  Task
+  ┃                             inspect-runtime · running
+                                Tool
+                                runtime.health · succeeded
+  ┃  Ask Harbor about this run  Intervention
+  ┃                             1 pending · controls unavailable
+  ┃  ReAct · default planner ·  Artifact
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  report.json · 2.4 KB
+  acme/operator/01K0HARBORFIXT  Stream
+  ctrl+p Command palette   ctr  fixture · disconnected

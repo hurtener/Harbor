@@ -1,0 +1,30 @@
+[97;40m                                                                                                    [m
+[97;40m  [m[1;93mHARBOR  /  SESSION FIXTURE[m[97;40m                                                                        [m
+[97;40m  [m[90mOne active session · Protocol-only fixture projection                                           [m[97;40m  [m
+[97;40m  [m[90mterminal size 100x30 · fixture · disconnected                                                   [m[97;40m  [m
+[97;40m                                                                                                    [m
+[97;40m  [m[93m┃[m[97;40m                                                                                                 [m
+[97;40m  [m[93m┃[m[97;40m  !  Operator approval required                                                                  [m
+[97;40m  [m[93m┃[m[97;40m  Tool: fixture.health · no action is sent from this preview                                     [m
+[97;40m  [m[93m┃[m[97;40m                                                                                                 [m
+[97;40m     [m[1;93m[ Approve unavailable ]   [ Reject unavailable ][m[97;40m                                               [m
+[97;40m                                                                                                    [m
+[97;40m                                                                                                    [m
+[97;40m  [m[96m┃[m[97;40m                                                                                                 [m
+[97;40m  [m[96m┃[m[97;40m  ◆  Inspecting Runtime posture                                                                  [m
+[97;40m  [m[96m┃[m[97;40m                                                                                                 [m
+[97;40m                                                                                                    [m
+[97;40m  [m[92m┃[m[97;40m                                                                                                 [m
+[97;40m  [m[92m┃[m[97;40m  ✓  Runtime health snapshot received                                                            [m
+[97;40m  [m[92m┃[m[97;40m                                                                                                 [m
+[97;40m                                                                                                    [m
+[97;40m  [m[93m┃[m[97;40m                                                                                                 [m
+[97;40m  [m[93m┃[m[97;40m  !  Operator approval required                                                                  [m
+[97;40m  [m[93m┃[m[97;40m                                                                                                 [m
+[97;40m                                                                                                    [m
+[97;40m  [m[93m┃[m[97;40m  Ask Harbor about this runtime...                                                               [m
+[97;40m  [m[93m┃[m[97;40m                                                                                                 [m
+[97;40m  [m[93m┃[m[97;40m  ReAct · default planner · idle                                                                 [m
+[97;40m  [m[93m╹[m[97;40m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                       [m
+[97;40m  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands                                     [m
+[97;40m  [m[90mctrl+p Command palette   ctrl+x s Toggle runtime context                                        [m[97;40m  [m

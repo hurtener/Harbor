@@ -1,0 +1,20 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only fixture projection
+  terminal size 72x20 · fixture · disconnected
+
+  ┃
+  ┃  ◆  Inspecting Runtime posture
+  ┃  ctrl+p  Command palette
+  ┃  ctrl+x s  Toggle runtime context
+  ┃  ?  Keyboard help
+  ┃  q  Quit
+  ┃  enter  Submit turn · unavailable: requires an attached Runtime (
+  ┃  ctrl+x l  Switch session · unavailable: requires an attached Run
+  ┃  ctrl+x t  Switch theme
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  ReAct · default planner · idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

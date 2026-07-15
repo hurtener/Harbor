@@ -1,0 +1,30 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only fixture projection
+  terminal size 120x30 · fixture · disconnected
+
+  ┃
+  ┃  !  Operator approval required
+  ┃  Tool: fixture.health · no action is sent from this preview
+  ┃
+     [ Approve unavailable ]   [ Reject unavailable ]
+
+
+  ┃
+  ┃  ◆  Inspecting Runtime posture
+  ┃
+
+  ┃
+  ┃  ✓  Runtime health snapshot received
+  ┃
+
+  ┃
+  ┃  !  Operator approval required
+  ┃
+
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  ReAct · default planner · idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -1,0 +1,30 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only fixture projection                          RUNTIME CONTEXT
+  terminal size 121x30 · fixture · disconnected
+                                                                                 Session
+  ┃                                                                              01K0HARBORFIXTURE0000000000
+  ┃  ◆  Inspecting Runtime posture                                               one active session
+  ┃
+                                  Commands
+  ┃                              Search:                                                  ixture
+  ┃  ✓  Runtime health snapsho  ● Command palette · Find an available action
+  ┃                               Toggle runtime context · Show the fixed context sideba  untime · running
+                                  Keyboard help · Show all reachable commands
+  ┃                               Quit · Restore the terminal and exit                    ealth · succeeded
+  ┃  !  Operator approval requ    Submit turn · Unavailable: requires an attached Runtim  ion
+  ┃                               Switch session · Unavailable: requires an attached Run   · controls unavailable
+                                  Switch theme · Choose dark, light, or automatic mode
+                                                                                          on · 2.4 KB
+
+                                ↑/↓ move · enter select · esc close                        disconnected
+                                                                                 Versions
+                                                                                 Runtime 1.15 · Protocol 0.1
+
+
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  ReAct · default planner · idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

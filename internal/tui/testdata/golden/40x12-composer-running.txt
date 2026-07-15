@@ -1,0 +1,12 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only f
+  terminal size 40x12 · fixture · disc
+
+
+  ┃  Active fixture task · interrupt
+  ┃
+  ┃  ReAct · default planner · runnin
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000
+  ctrl+p Command palette   ctrl+x s To

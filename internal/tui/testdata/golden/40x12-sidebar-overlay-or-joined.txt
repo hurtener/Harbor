@@ -1,0 +1,12 @@
+
+       Sidebar context visible
+  RUNTIME CONTEXT
+
+  Session
+  01K0HARBORFIXTURE0000000000
+  one active session
+
+  Planner
+  ReAct · fixture
+  Task
+  inspect-runtime · running

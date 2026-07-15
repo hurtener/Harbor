@@ -1,0 +1,12 @@
+
+  HARBOR  /  SESSION FIXTURE
+  One active session · Protocol-only f
+  ┃  ctrl+p  Command palette         c
+  ┃  ctrl+x s  Toggle runtime context
+  ┃  ?  Keyboard help
+  ┃  q  Quit
+  ┃  enter  Submit turn · unavailable
+  ┃  ctrl+x l  Switch session · unava
+  ┃  ctrl+x t  Switch theme
+  acme/operator/01K0HARBORFIXTURE0000
+  ctrl+p Command palette   ctrl+x s To

@@ -1,0 +1,40 @@
+
+  HARBOR  /  HOME FIXTURE
+  One active session · Protocol-only fixture projection                                                                 RUNTIME CONTEXT
+  terminal size 160x40 · fixture · disconnected
+                                                                                                                        Session
+  ┃                                                                                                                     01K0HARBORFIXTURE0000000000
+  ┃  ◇  Terminal foundation ready                                                                                       one active session
+  ┃  No Runtime is attached; preview data is local and non-operational.
+  ┃                                                                                                                     Planner
+  ┃                                                      ┃                                                              ReAct · fixture
+  ┃  ◇  Planner posture                                  ┃  ✓  Tool posture                                             Task
+  ┃  ReAct · fixture · no live reasoning                 ┃  runtime.health · succeeded                                  inspect-runtime · running
+  ┃                                                      ┃                                                              Tool
+                                                                                                                        runtime.health · succeeded
+  ┃                                                      ┃                                                              Intervention
+  ┃  !  Intervention posture                             ┃  ◇  Artifact posture                                         1 pending · controls unavailable
+  ┃  1 pending · controls unavailable                    ┃  report.json · 2.4 KB · reference only                       Artifact
+  ┃                                                      ┃                                                              report.json · 2.4 KB
+                                                                                                                        Stream
+  ┃                                                      ┃                                                              fixture · disconnected
+  ┃  ◇  Identity scope                                   ┃  ✓  Session lifecycle                                        Versions
+  ┃  acme/operator/01K0… · one active session            ┃  running · durable reference retained                        Runtime 1.15 · Protocol 0.1
+  ┃                                                      ┃
+
+  ┃                                                      ┃
+  ┃  !  Projection honesty                               ┃  ◇  Version posture
+  ┃  counters partial · analytics bounded                ┃  Runtime 1.15 · Protocol 0.1
+  ┃                                                      ┃
+
+  ┃                                                      ┃
+  ┃  ✓  Recent event                                     ┃  ◇  Retention
+  ┃  tool.completed · sequence 42                        ┃  events · runtime scope · complete
+  ┃                                                      ┃
+
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  ReAct · default planner · idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context
