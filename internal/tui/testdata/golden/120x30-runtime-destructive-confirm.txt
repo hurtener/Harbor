@@ -1,0 +1,30 @@
+
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  live
+
+  ┃
+  ┃  ◆  Active stream · following newest output
+  ┃
+                                  Confirm Runtime action
+  ┃                              Search:
+  ┃  ◇  Summarize the deployme  ● Confirm Cancel task · tenant-a/operator/session-alpha
+  ┃                               Cancel
+
+  ┃
+  ┃  ●  The deployment complet  ↑/↓ move · enter select · esc close
+  ┃
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃  focused
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

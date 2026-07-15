@@ -21,12 +21,9 @@ assert_grep_present 'SidebarBreakpoint = 120' "internal/tui/ui/ui.go" "120/121 s
 assert_grep_present 'SidebarWidth = 42' "internal/tui/ui/ui.go" "fixed sidebar width is pinned"
 assert_grep_present 'LayerBase, LayerSidebar, LayerAutocomplete, LayerToast, LayerModal, LayerStartup' "internal/tui/app/model.go" "root layer order is pinned"
 
-assert_grep_present '"status": "orchestrator-reviewed"' \
+assert_grep_present '"phase_181": true' \
     "internal/tui/testdata/golden/capture-manifest.json" \
-    "capture manifest records completed orchestrator review"
-assert_grep_present '"reviewed": true' \
-    "internal/tui/testdata/golden/capture-manifest.json" \
-    "capture manifest review gate is explicit"
+    "phase 181 capture review remains recorded while later candidates await review"
 assert_grep_present 'TestCaptureMatrix_AllApplicableFoundationStates' \
     "internal/tui/app/golden_test.go" \
     "complete fixture-state capture matrix is mechanically generated"

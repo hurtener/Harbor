@@ -163,6 +163,28 @@ type Client interface {
 	Identity() types.IdentityScope
 }
 
+// RuntimeClient is the additive Runtime inspection/control client consumed by
+// the native TUI. Narrow projection consumers continue to depend on Client.
+type RuntimeClient interface {
+	Client
+	ArtifactsGetRef(context.Context, types.ArtifactsGetRefRequest) (types.ArtifactsGetRefResponse, error)
+	ArtifactsDelete(context.Context, types.ArtifactsDeleteRequest) (types.ArtifactsDeleteResponse, error)
+	ToolsList(context.Context, types.ToolListRequest) (types.ToolListResponse, error)
+	ToolsGet(context.Context, types.ToolGetRequest) (types.Tool, error)
+	ToolsDescribe(context.Context, types.ToolDescribeRequest) (types.ToolManifest, error)
+	ToolsMetrics(context.Context, types.ToolMetricsRequest) (types.ToolMetrics, error)
+	ToolsContentStats(context.Context, types.ToolContentStatsRequest) (types.ToolContentStats, error)
+	ToolsSetApprovalPolicy(context.Context, types.ToolSetApprovalPolicyRequest) (types.ToolSetApprovalPolicyResponse, error)
+	ToolsRevokeOAuth(context.Context, types.ToolRevokeOAuthRequest) (types.ToolRevokeOAuthResponse, error)
+	EventsList(context.Context, types.EventsListRequest) (types.EventsListResponse, error)
+	EventsAggregate(context.Context, types.EventAggregateRequest) (types.EventAggregateResponse, error)
+	RuntimeCounters(context.Context) (types.RuntimeCounters, error)
+	RuntimeDrivers(context.Context) (types.RuntimeDrivers, error)
+	MetricsSnapshot(context.Context) (types.MetricsSnapshot, error)
+	GovernancePosture(context.Context) (types.GovernancePostureResponse, error)
+	LLMPosture(context.Context) (types.LLMPostureResponse, error)
+}
+
 type client struct {
 	baseURL          *url.URL
 	token            TokenSource
@@ -338,6 +360,12 @@ func routeFor(method methods.Method) string {
 		suffix = name[dot+1:]
 	}
 	switch {
+	case method == methods.MethodEventsAggregate:
+		return "/v1/events/aggregate"
+	case method == methods.MethodEventsList:
+		return "/v1/events/list"
+	case methods.IsToolsMethod(method):
+		return "/v1/tools/" + suffix
 	case methods.IsTasksMethod(method):
 		return "/v1/tasks/" + suffix
 	case methods.IsSessionsMethod(method):
@@ -481,6 +509,131 @@ func (c *client) ArtifactsList(ctx context.Context, request types.ArtifactsListR
 	request.Scope.Session = identity.Session
 	var out types.ArtifactsListResponse
 	err := c.callMethod(ctx, methods.MethodArtifactsList, request, &out)
+	return out, err
+}
+
+// ArtifactsGetRef resolves a time-bounded artifact reference.
+func (c *client) ArtifactsGetRef(ctx context.Context, request types.ArtifactsGetRefRequest) (types.ArtifactsGetRefResponse, error) {
+	identity := c.scope()
+	request.Scope.Tenant, request.Scope.User, request.Scope.Session = identity.Tenant, identity.User, identity.Session
+	var out types.ArtifactsGetRefResponse
+	err := c.callMethod(ctx, methods.MethodArtifactsGetRef, request, &out)
+	return out, err
+}
+
+// ArtifactsDelete requests audited artifact eviction.
+func (c *client) ArtifactsDelete(ctx context.Context, request types.ArtifactsDeleteRequest) (types.ArtifactsDeleteResponse, error) {
+	identity := c.scope()
+	request.Scope.Tenant, request.Scope.User, request.Scope.Session = identity.Tenant, identity.User, identity.Session
+	var out types.ArtifactsDeleteResponse
+	err := c.callMethod(ctx, methods.MethodArtifactsDelete, request, &out)
+	return out, err
+}
+
+// ToolsList lists the identity-visible tool catalog.
+func (c *client) ToolsList(ctx context.Context, request types.ToolListRequest) (types.ToolListResponse, error) {
+	request.Identity = c.scope()
+	var out types.ToolListResponse
+	err := c.callMethod(ctx, methods.MethodToolsList, request, &out)
+	return out, err
+}
+
+// ToolsGet reads one compact tool projection.
+func (c *client) ToolsGet(ctx context.Context, request types.ToolGetRequest) (types.Tool, error) {
+	request.Identity = c.scope()
+	var out types.Tool
+	err := c.callMethod(ctx, methods.MethodToolsGet, request, &out)
+	return out, err
+}
+
+// ToolsDescribe reads one tool manifest and schema projection.
+func (c *client) ToolsDescribe(ctx context.Context, request types.ToolDescribeRequest) (types.ToolManifest, error) {
+	request.Identity = c.scope()
+	var out types.ToolManifest
+	err := c.callMethod(ctx, methods.MethodToolsDescribe, request, &out)
+	return out, err
+}
+
+// ToolsMetrics reads bounded, best-effort tool analytics.
+func (c *client) ToolsMetrics(ctx context.Context, request types.ToolMetricsRequest) (types.ToolMetrics, error) {
+	request.Identity = c.scope()
+	var out types.ToolMetrics
+	err := c.callMethod(ctx, methods.MethodToolsMetrics, request, &out)
+	return out, err
+}
+
+// ToolsContentStats reads bounded heavy-content posture.
+func (c *client) ToolsContentStats(ctx context.Context, request types.ToolContentStatsRequest) (types.ToolContentStats, error) {
+	request.Identity = c.scope()
+	var out types.ToolContentStats
+	err := c.callMethod(ctx, methods.MethodToolsContentStats, request, &out)
+	return out, err
+}
+
+// ToolsSetApprovalPolicy updates one tool's canonical policy.
+func (c *client) ToolsSetApprovalPolicy(ctx context.Context, request types.ToolSetApprovalPolicyRequest) (types.ToolSetApprovalPolicyResponse, error) {
+	request.Identity = c.scope()
+	var out types.ToolSetApprovalPolicyResponse
+	err := c.callMethod(ctx, methods.MethodToolsSetApprovalPolicy, request, &out)
+	return out, err
+}
+
+// ToolsRevokeOAuth revokes one tool's OAuth bindings.
+func (c *client) ToolsRevokeOAuth(ctx context.Context, request types.ToolRevokeOAuthRequest) (types.ToolRevokeOAuthResponse, error) {
+	request.Identity = c.scope()
+	var out types.ToolRevokeOAuthResponse
+	err := c.callMethod(ctx, methods.MethodToolsRevokeOAuth, request, &out)
+	return out, err
+}
+
+// EventsList reads a bounded retained event window.
+func (c *client) EventsList(ctx context.Context, request types.EventsListRequest) (types.EventsListResponse, error) {
+	request.Identity = c.scope()
+	var out types.EventsListResponse
+	err := c.callMethod(ctx, methods.MethodEventsList, request, &out)
+	return out, err
+}
+
+// EventsAggregate reads time-bucketed event counts.
+func (c *client) EventsAggregate(ctx context.Context, request types.EventAggregateRequest) (types.EventAggregateResponse, error) {
+	request.Identity = c.scope()
+	var out types.EventAggregateResponse
+	err := c.callMethod(ctx, methods.MethodEventsAggregate, request, &out)
+	return out, err
+}
+
+// RuntimeCounters reads low-cardinality live posture.
+func (c *client) RuntimeCounters(ctx context.Context) (types.RuntimeCounters, error) {
+	var out types.RuntimeCounters
+	err := c.callMethod(ctx, methods.MethodRuntimeCounters, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
+	return out, err
+}
+
+// RuntimeDrivers reads configured driver names without credentials.
+func (c *client) RuntimeDrivers(ctx context.Context) (types.RuntimeDrivers, error) {
+	var out types.RuntimeDrivers
+	err := c.callMethod(ctx, methods.MethodRuntimeDrivers, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
+	return out, err
+}
+
+// MetricsSnapshot reads the bounded Protocol metrics projection.
+func (c *client) MetricsSnapshot(ctx context.Context) (types.MetricsSnapshot, error) {
+	var out types.MetricsSnapshot
+	err := c.callMethod(ctx, methods.MethodMetricsSnapshot, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
+	return out, err
+}
+
+// GovernancePosture reads the caller's effective governance tier.
+func (c *client) GovernancePosture(ctx context.Context) (types.GovernancePostureResponse, error) {
+	var out types.GovernancePostureResponse
+	err := c.callMethod(ctx, methods.MethodGovernancePosture, types.GovernancePostureRequest{}, &out)
+	return out, err
+}
+
+// LLMPosture reads the bound provider posture.
+func (c *client) LLMPosture(ctx context.Context) (types.LLMPostureResponse, error) {
+	var out types.LLMPostureResponse
+	err := c.callMethod(ctx, methods.MethodLLMPosture, types.LLMPostureRequest{}, &out)
 	return out, err
 }
 

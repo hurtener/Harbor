@@ -42,8 +42,7 @@ assert_grep_present 'TestRuntimeModel_KeyDrivenSessionDialogsCallController' int
 assert_grep_present 'TestRuntimeModel_KeyDrivenComposerAutocompleteSearchAttachmentExportAndPrefs' internal/tui/app/live_test.go "phase 182: composer controls invoke operational workflows"
 assert_grep_present 'TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow' test/integration/tui_terminal_pty_test.go "phase 182: real PTY keyboard walkthrough"
 assert_grep_present 'startPTYCommand\(t, binary' test/integration/tui_terminal_pty_test.go "phase 182: PTY launches the built harbor tui command"
-assert_grep_present '"status": "orchestrator-reviewed"' internal/tui/testdata/golden/capture-manifest.json "phase 182: operational captures passed orchestrator review"
-assert_grep_present '"reviewed": true' internal/tui/testdata/golden/capture-manifest.json "phase 182: capture review gate is explicit"
+assert_grep_present '"phase_182": true' internal/tui/testdata/golden/capture-manifest.json "phase 182: prior operational capture review remains recorded"
 assert_grep_absent 'internal/runtime|web/console' internal/tui/conversation/controller.go "phase 182: no Runtime or Console dependency"
 assert_file docs/skills/drive-the-harbor-tui/SKILL.md "phase 182: operator TUI skill"
 

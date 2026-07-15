@@ -1,6 +1,6 @@
 ---
 name: drive-the-harbor-tui
-description: "Attach Harbor's native terminal conversation client to a running Runtime with authenticated REST/SSE. Use when testing sessions, streaming turns, token rotation, reconnect, local drafts, compact mode, or transcript export without opening the Console."
+description: "Attach Harbor's native terminal Runtime test/control client with authenticated REST/SSE. Use when testing sessions, tasks, tools, artifacts, events, posture, interventions, controls, reconnect, or transcript export without opening the Console."
 license: Apache-2.0
 metadata:
   framework: harbor
@@ -113,6 +113,51 @@ Session commands are keyboard-driven: `Ctrl+X L` searches/switches, `Ctrl+X N`
 starts fresh, `Ctrl+R` renames, and `Ctrl+X D` confirms canonical erasure.
 Closed/failed picker rows say that the next canonical turn resumes them. Missing
 Runtime capabilities or JWT scope disable the command with the exact reason.
+
+## 6. Runtime inspection and control
+
+The TUI remains a one-active-session surface. Runtime views never fan out into
+fleet or simultaneous-session panes:
+
+- `F2`: task lifecycle, parent/child tree, progress, groups, activity latency,
+  result/trajectory posture, and explicitly non-authoritative task cost.
+- `F3`: tool transport, schema, OAuth, approval, reliability, bounded metrics,
+  and heavy-content posture. Rich rows require `tool_annotations`; analytics
+  are labelled best-effort because the bounded scan has no completeness field.
+- `F4`: artifact metadata and references. Heavy bytes are never rendered
+  inline; preview depends on canonical `artifacts.get_ref` support.
+- `F5`: live/retained event diagnostics and aggregates, with truncation and
+  reconnect state visible.
+- `F6`: Runtime health, drivers, capabilities, identity, Protocol compatibility,
+  retention, governance, LLM, metrics, and stream posture.
+- `F7`: the unified intervention queue, correlated by opaque `PauseToken` even
+  when multiple interventions share one run.
+- `F8`: capability, retention, partiality, and typed Protocol failures.
+- `F9`: the one action matrix for task, intervention, tool, artifact, and
+  session controls.
+
+On list routes, `Up` / `Down` or `Ctrl+P` / `Ctrl+N` selects the exact row,
+`PageUp` / `PageDown` changes the bounded page, and `/` edits the route filter.
+The selected canonical ID or `PauseToken` is frozen into the confirmation; a
+generation, identity, or inspection-epoch change closes stale action dialogs.
+
+Every action row names its canonical method, required authority, target, and
+confirmation posture. Cancel, reject, OAuth revoke, artifact deletion, and
+session erasure require explicit destructive confirmation showing the active
+identity target. A successful control response means accepted for delivery;
+the TUI keeps a pending marker until `control.applied`, `control.rejected`, and
+the resulting task/pause snapshot reconcile. HTTP 401, 403, 404, 409, and 501
+remain visible with their canonical Protocol codes without changing a live
+transport to disconnected. JWT authority is server-enforced and shown as
+unknown until the server accepts or rejects the operation; capability
+advertisement is not presented as proof of authorization. Disabled actions
+stay in the matrix with an exact capability, lifecycle, or target reason.
+
+Available task controls are canonical `cancel`, `pause`, `resume`, `redirect`,
+`inject_context`, `user_message`, and `prioritize`. Interventions use only
+`approve`, `reject`, or `resume` with the selected `PauseToken`; OAuth and input
+requirements never bypass the unified pause primitive. There is no direct tool
+invoke command, model picker, fleet control, or speculative method.
 
 ## Common failures
 

@@ -12,8 +12,16 @@ import (
 
 	protocolclient "github.com/hurtener/Harbor/internal/protocol/client"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	tuiartifacts "github.com/hurtener/Harbor/internal/tui/artifacts"
+	tuievents "github.com/hurtener/Harbor/internal/tui/events"
+	"github.com/hurtener/Harbor/internal/tui/interventions"
+	"github.com/hurtener/Harbor/internal/tui/posture"
 	"github.com/hurtener/Harbor/internal/tui/projection"
+	"github.com/hurtener/Harbor/internal/tui/surface"
+	tuitasks "github.com/hurtener/Harbor/internal/tui/tasks"
+	tuitools "github.com/hurtener/Harbor/internal/tui/tools"
 )
 
 type candidateTokenSource struct {
@@ -61,20 +69,61 @@ type Update struct {
 
 // Controller owns exactly one active identity-scoped Protocol stream.
 type Controller struct {
-	mu           sync.Mutex
-	switchMu     sync.Mutex
-	baseURL      string
-	tokens       *LifetimeTokenSource
-	client       protocolclient.Client
-	stream       *protocolclient.EventStream
-	cancel       context.CancelFunc
-	done         chan struct{}
-	identity     types.IdentityScope
-	projection   projection.Projection
-	generation   uint64
-	capabilities map[types.Capability]bool
-	onUpdate     func(Update)
-	closed       bool
+	mu            sync.Mutex
+	switchMu      sync.Mutex
+	baseURL       string
+	tokens        *LifetimeTokenSource
+	client        protocolclient.RuntimeClient
+	stream        *protocolclient.EventStream
+	cancel        context.CancelFunc
+	done          chan struct{}
+	identity      types.IdentityScope
+	projection    projection.Projection
+	generation    uint64
+	inspectEpoch  uint64
+	capabilities  map[types.Capability]bool
+	interventions interventions.Inbox
+	onUpdate      func(Update)
+	closed        bool
+}
+
+// RuntimeData is the bounded canonical inspection state for the active session.
+// Errors is keyed by surface so partial availability never becomes a zero value.
+type RuntimeData struct {
+	Identity      types.IdentityScope
+	Generation    uint64
+	RequestEpoch  uint64
+	Stale         bool
+	Tasks         tuitasks.State
+	Tools         tuitools.State
+	Artifacts     tuiartifacts.State
+	Events        tuievents.State
+	Posture       posture.State
+	Interventions interventions.Inbox
+	Errors        map[string]string
+}
+
+// InspectionRequest fences one bounded screen refresh and carries exact
+// selections. The controller never silently substitutes index zero.
+type InspectionRequest struct {
+	Identity                    types.IdentityScope
+	Generation, RequestEpoch    uint64
+	TaskID, ToolID, ArtifactID  string
+	TaskFilter, ToolFilter      string
+	ArtifactFilter, EventFilter string
+	TaskPage, ToolPage          int
+	ArtifactPage, EventPage     int
+	TaskCursor                  types.TaskListCursor
+}
+
+// Mutation is one exact Protocol mutation request. App-level ActionIntent is
+// converted to this value only after stale-context validation.
+type Mutation struct {
+	Identity           types.IdentityScope
+	Method             methods.Method
+	RunID, PauseToken  string
+	ToolID, ArtifactID string
+	Payload            map[string]any
 }
 
 // NewController constructs a reusable attach controller.
@@ -88,7 +137,7 @@ func NewController(baseURL string, tokens *LifetimeTokenSource, identity types.I
 	if onUpdate == nil {
 		onUpdate = func(Update) {}
 	}
-	return &Controller{baseURL: baseURL, tokens: tokens, identity: identity, onUpdate: onUpdate, capabilities: map[types.Capability]bool{}}, nil
+	return &Controller{baseURL: baseURL, tokens: tokens, identity: identity, onUpdate: onUpdate, capabilities: map[types.Capability]bool{}, interventions: interventions.New()}, nil
 }
 
 // Attach negotiates and hydrates the initial session.
@@ -172,19 +221,26 @@ func (c *Controller) switchTo(ctx context.Context, target types.IdentityScope) e
 		return errors.New("tui: controller closed")
 	}
 	c.client, c.stream, c.cancel, c.done, c.identity, c.projection, c.capabilities, c.generation = client, stream, cancel, done, target, p, caps, generation
+	if scopeKey(oldIdentity) != scopeKey(target) {
+		c.interventions = interventions.New()
+	}
 	c.mu.Unlock()
 	c.publish(Update{Identity: target, Generation: generation, State: StateLive, Projection: p})
 	go c.readLoop(streamCtx, generation, target, client, stream, done)
 	return nil
 }
 
-func (c *Controller) prepareTarget(ctx context.Context, target types.IdentityScope, source protocolclient.TokenSource, generation uint64) (protocolclient.Client, types.RuntimeInfo, context.Context, context.CancelFunc, *protocolclient.EventStream, projection.Projection, uint64, error) {
+func (c *Controller) prepareTarget(ctx context.Context, target types.IdentityScope, source protocolclient.TokenSource, generation uint64) (protocolclient.RuntimeClient, types.RuntimeInfo, context.Context, context.CancelFunc, *protocolclient.EventStream, projection.Projection, uint64, error) {
 	if _, err := source.Token(ctx, target); err != nil {
 		return nil, types.RuntimeInfo{}, nil, nil, nil, projection.Projection{}, generation, err
 	}
-	client, err := protocolclient.New(protocolclient.Connection{BaseURL: c.baseURL, Token: source, Identity: target})
+	baseClient, err := protocolclient.New(protocolclient.Connection{BaseURL: c.baseURL, Token: source, Identity: target})
 	if err != nil {
 		return nil, types.RuntimeInfo{}, nil, nil, nil, projection.Projection{}, generation, err
+	}
+	client, ok := baseClient.(protocolclient.RuntimeClient)
+	if !ok {
+		return nil, types.RuntimeInfo{}, nil, nil, nil, projection.Projection{}, generation, errors.New("tui: Protocol client lacks Runtime inspection surface")
 	}
 	info, err := client.RuntimeInfo(ctx)
 	if err != nil {
@@ -373,6 +429,378 @@ func (c *Controller) Upload(ctx context.Context, name, mime string, body []byte)
 		return types.ArtifactsPutResponse{}, errors.New("tui: not attached")
 	}
 	return client.ArtifactsPut(ctx, types.ArtifactsPutRequest{Bytes: append([]byte(nil), body...), Opts: types.ArtifactsPutOpts{Filename: name, MimeType: mime, Source: types.ArtifactSourceUserUpload}})
+}
+
+// Inspect loads every Runtime-control screen through the authenticated client.
+// Individual unavailable surfaces are retained as explicit errors.
+func (c *Controller) Inspect(ctx context.Context, request InspectionRequest) RuntimeData {
+	c.mu.Lock()
+	client, capabilities, generation, identity, inbox := c.client, mapsClone(c.capabilities), c.generation, c.identity, c.interventions
+	if request.RequestEpoch < c.inspectEpoch {
+		c.mu.Unlock()
+		return RuntimeData{Identity: identity, Generation: generation, RequestEpoch: request.RequestEpoch, Stale: true, Errors: map[string]string{}}
+	}
+	c.inspectEpoch = request.RequestEpoch
+	c.mu.Unlock()
+	data := RuntimeData{Identity: identity, Generation: generation, RequestEpoch: request.RequestEpoch, Errors: map[string]string{}, Interventions: inbox}
+	data.Tasks.Surface = surface.State{Status: surface.Loading}
+	data.Tools.Surface = surface.State{Status: surface.Loading}
+	data.Artifacts.Surface = surface.State{Status: surface.Loading}
+	data.Events.Surface = surface.State{Status: surface.Loading}
+	data.Posture.Surfaces = map[string]surface.State{}
+	if request.Generation != 0 && (request.Generation != generation || scopeKey(request.Identity) != scopeKey(identity)) {
+		data.Stale = true
+		return data
+	}
+	if client == nil {
+		data.Errors["runtime"] = "not attached"
+		data.Tasks.Surface = surface.State{Status: surface.Unavailable, Reason: "not attached"}
+		data.Tools.Surface = data.Tasks.Surface
+		data.Artifacts.Surface = data.Tasks.Surface
+		data.Events.Surface = data.Tasks.Surface
+		return data
+	}
+	info, err := client.RuntimeInfo(ctx)
+	if err != nil {
+		data.Errors[string(methods.MethodRuntimeInfo)] = err.Error()
+		data.Posture.Surfaces[string(methods.MethodRuntimeInfo)] = errorSurface(err)
+	} else {
+		data.Posture.Info = info
+		data.Posture.Surfaces[string(methods.MethodRuntimeInfo)] = surface.State{Status: surface.Loaded}
+	}
+	health, err := client.RuntimeHealth(ctx)
+	if err != nil {
+		data.Errors[string(methods.MethodRuntimeHealth)] = err.Error()
+	} else {
+		data.Posture.Health = health
+	}
+	data.Posture.Surfaces[string(methods.MethodRuntimeHealth)] = stateFor(err)
+	counters, err := client.RuntimeCounters(ctx)
+	if err != nil {
+		data.Errors[string(methods.MethodRuntimeCounters)] = err.Error()
+	} else {
+		data.Posture.Counters = counters
+	}
+	data.Posture.Surfaces[string(methods.MethodRuntimeCounters)] = stateFor(err)
+	drivers, err := client.RuntimeDrivers(ctx)
+	if err != nil {
+		data.Errors[string(methods.MethodRuntimeDrivers)] = err.Error()
+	} else {
+		data.Posture.Drivers = drivers
+	}
+	data.Posture.Surfaces[string(methods.MethodRuntimeDrivers)] = stateFor(err)
+	metrics, err := client.MetricsSnapshot(ctx)
+	if err != nil {
+		data.Errors[string(methods.MethodMetricsSnapshot)] = err.Error()
+	} else {
+		data.Posture.Metrics = metrics
+	}
+	data.Posture.Surfaces[string(methods.MethodMetricsSnapshot)] = stateFor(err)
+	governance, err := client.GovernancePosture(ctx)
+	if err != nil {
+		data.Errors[string(methods.MethodGovernancePosture)] = err.Error()
+	} else {
+		data.Posture.Governance = governance
+	}
+	data.Posture.Surfaces[string(methods.MethodGovernancePosture)] = stateFor(err)
+	llm, err := client.LLMPosture(ctx)
+	if err != nil {
+		data.Errors[string(methods.MethodLLMPosture)] = err.Error()
+	} else {
+		data.Posture.LLM = llm
+	}
+	data.Posture.Surfaces[string(methods.MethodLLMPosture)] = stateFor(err)
+	taskPage := max(1, request.TaskPage)
+	taskRows, err := client.TasksList(ctx, types.TaskListRequest{PageSize: types.DefaultTaskListPageSize, Cursor: request.TaskCursor, Filter: types.TaskFilter{Search: request.TaskFilter}, IncludeStatusCounterStrip: true})
+	if err != nil {
+		data.Errors[string(methods.MethodTasksList)] = err.Error()
+		data.Tasks.Surface = errorSurface(err)
+	} else {
+		data.Tasks = tuitasks.Derive(taskRows, nil)
+		data.Tasks.Filter, data.Tasks.Page = request.TaskFilter, taskPage
+		if request.TaskID != "" {
+			detail, detailErr := client.TasksGet(ctx, types.TaskGetRequest{ID: request.TaskID})
+			if detailErr != nil {
+				data.Errors[string(methods.MethodTasksGet)] = detailErr.Error()
+				data.Tasks.Surface = surface.State{Status: surface.Partial, Reason: "selected task detail: " + detailErr.Error()}
+			} else {
+				data.Tasks = tuitasks.Derive(taskRows, &detail)
+				data.Tasks.Filter, data.Tasks.Page = request.TaskFilter, taskPage
+			}
+		}
+	}
+	toolPage := max(1, request.ToolPage)
+	toolRows, err := client.ToolsList(ctx, types.ToolListRequest{Page: toolPage, PageSize: types.DefaultToolListPageSize, Filter: types.ToolFilter{Search: request.ToolFilter}})
+	if err != nil {
+		data.Errors[string(methods.MethodToolsList)] = err.Error()
+		data.Tools.Surface = errorSurface(err)
+	} else {
+		data.Tools = tuitools.Derive(toolRows, capabilities[types.CapToolAnnotations])
+		data.Tools.Filter, data.Tools.Page = request.ToolFilter, toolPage
+		if request.ToolID != "" {
+			var selected types.Tool
+			for _, tool := range data.Tools.Rows {
+				if tool.ID == request.ToolID {
+					selected = tool
+					break
+				}
+			}
+			detail := tuitools.Detail{Tool: selected, BestEffort: true, Annotations: capabilities[types.CapToolAnnotations]}
+			if detail.Tool.ID == "" {
+				got, getErr := client.ToolsGet(ctx, types.ToolGetRequest{ID: request.ToolID})
+				if getErr != nil {
+					data.Errors[string(methods.MethodToolsGet)] = getErr.Error()
+					data.Tools.Surface = surface.State{Status: surface.Partial, Reason: getErr.Error()}
+				} else {
+					detail.Tool = got
+				}
+			}
+			if !detail.Annotations {
+				detail.Unavailable = "Runtime does not advertise tool_annotations; policy authority remains server-enforced and unknown"
+			} else {
+				manifest, manifestErr := client.ToolsDescribe(ctx, types.ToolDescribeRequest{ID: detail.Tool.ID})
+				metrics, metricsErr := client.ToolsMetrics(ctx, types.ToolMetricsRequest{ID: detail.Tool.ID, Window: types.ToolWindow1h})
+				content, contentErr := client.ToolsContentStats(ctx, types.ToolContentStatsRequest{ID: detail.Tool.ID})
+				for surface, detailErr := range map[methods.Method]error{methods.MethodToolsDescribe: manifestErr, methods.MethodToolsMetrics: metricsErr, methods.MethodToolsContentStats: contentErr} {
+					if detailErr != nil {
+						data.Errors[string(surface)] = detailErr.Error()
+					}
+				}
+				if manifestErr == nil {
+					detail.Manifest = &manifest
+				}
+				if metricsErr == nil {
+					detail.Metrics = &metrics
+				}
+				if contentErr == nil {
+					detail.Content = &content
+				}
+			}
+			data.Tools.Selected = &detail
+			data.Tools.SelectedID = request.ToolID
+		}
+	}
+	artifactRows, err := client.ArtifactsList(ctx, types.ArtifactsListRequest{Limit: types.DefaultArtifactsLimit})
+	if err != nil {
+		data.Errors[string(methods.MethodArtifactsList)] = err.Error()
+		data.Artifacts.Surface = errorSurface(err)
+	} else {
+		data.Artifacts = tuiartifacts.Derive(artifactRows)
+		data.Artifacts.Filter, data.Artifacts.Page = request.ArtifactFilter, max(1, request.ArtifactPage)
+		if request.ArtifactID != "" {
+			var row types.ArtifactRow
+			for _, candidate := range data.Artifacts.Rows {
+				if candidate.Ref.ID == request.ArtifactID {
+					row = candidate
+					break
+				}
+			}
+			preview := tuiartifacts.Preview{Ref: row.Ref}
+			if row.Ref.ID == "" {
+				preview.Ref.ID = request.ArtifactID
+				preview.Unavailable = "selected artifact is outside this retained page"
+			}
+			if !tuiartifacts.Previewable(row.Ref) {
+				preview.Unavailable = "terminal preview is unavailable for " + row.Ref.MimeType
+			} else {
+				ref, refErr := client.ArtifactsGetRef(ctx, types.ArtifactsGetRefRequest{ID: row.Ref.ID})
+				if refErr != nil {
+					preview.Unavailable = refErr.Error()
+					data.Errors[string(methods.MethodArtifactsGetRef)] = refErr.Error()
+				} else {
+					preview.URL = ref.PresignedURL
+				}
+			}
+			data.Artifacts.Selected = &preview
+			data.Artifacts.SelectedID = request.ArtifactID
+		}
+	}
+	eventRows, listErr := client.EventsList(ctx, types.EventsListRequest{Limit: types.DefaultEventsListLimit})
+	aggregateRows, aggregateErr := client.EventsAggregate(ctx, types.EventAggregateRequest{Window: time.Hour, Bucket: 5 * time.Minute})
+	if listErr != nil {
+		data.Errors[string(methods.MethodEventsList)] = listErr.Error()
+	}
+	if aggregateErr != nil {
+		data.Errors[string(methods.MethodEventsAggregate)] = aggregateErr.Error()
+	}
+	data.Events = tuievents.Derive(eventRows, aggregateRows)
+	data.Events.Filter, data.Events.Page = request.EventFilter, max(1, request.EventPage)
+	if listErr != nil && aggregateErr != nil {
+		data.Events.Surface = errorSurface(listErr)
+	} else if listErr != nil || aggregateErr != nil {
+		data.Events.Surface = surface.State{Status: surface.Partial, Reason: "one event projection failed"}
+	}
+	pauses, err := client.PauseList(ctx, types.PauseListRequest{Page: 1, PageSize: types.DefaultPauseListPageSize})
+	if err != nil {
+		data.Errors[string(methods.MethodPauseList)] = err.Error()
+		data.Interventions.Surface = errorSurface(err)
+	} else {
+		data.Interventions = data.Interventions.ReconcilePage(pauses, generation, time.Now())
+		c.mu.Lock()
+		if generation == c.generation && request.RequestEpoch == c.inspectEpoch && scopeKey(identity) == scopeKey(c.identity) {
+			c.interventions = data.Interventions
+		}
+		c.mu.Unlock()
+	}
+	c.mu.Lock()
+	data.Stale = generation != c.generation || request.RequestEpoch != c.inspectEpoch || scopeKey(identity) != scopeKey(c.identity)
+	c.mu.Unlock()
+	return data
+}
+
+func stateFor(err error) surface.State {
+	if err != nil {
+		return errorSurface(err)
+	}
+	return surface.State{Status: surface.Loaded}
+}
+
+func errorSurface(err error) surface.State {
+	var protocolErr *protocolclient.ProtocolError
+	if errors.As(err, &protocolErr) && (protocolErr.Status == 404 || protocolErr.Status == 501) {
+		return surface.State{Status: surface.Unavailable, Reason: err.Error()}
+	}
+	return surface.State{Status: surface.Failed, Reason: err.Error()}
+}
+
+// TaskDetail reads an authoritative task result and trajectory projection.
+func (c *Controller) TaskDetail(ctx context.Context, taskID string) (types.TaskDetail, error) {
+	c.mu.Lock()
+	client := c.client
+	c.mu.Unlock()
+	if client == nil {
+		return types.TaskDetail{}, errors.New("tui: not attached")
+	}
+	return client.TasksGet(ctx, types.TaskGetRequest{ID: taskID})
+}
+
+// ToolDetail reads schema, policy, OAuth, metrics, and content posture.
+func (c *Controller) ToolDetail(ctx context.Context, toolID string) (tuitools.Detail, error) {
+	c.mu.Lock()
+	client := c.client
+	annotations := c.capabilities[types.CapToolAnnotations]
+	c.mu.Unlock()
+	if client == nil {
+		return tuitools.Detail{}, errors.New("tui: not attached")
+	}
+	tool, err := client.ToolsGet(ctx, types.ToolGetRequest{ID: toolID})
+	if err != nil {
+		return tuitools.Detail{}, err
+	}
+	detail := tuitools.Detail{Tool: tool, BestEffort: true, Annotations: annotations}
+	if !annotations {
+		detail.Unavailable = "Runtime does not advertise tool_annotations"
+		return detail, nil
+	}
+	manifest, err := client.ToolsDescribe(ctx, types.ToolDescribeRequest{ID: toolID})
+	if err != nil {
+		return detail, err
+	}
+	metrics, err := client.ToolsMetrics(ctx, types.ToolMetricsRequest{ID: toolID, Window: types.ToolWindow1h})
+	if err != nil {
+		return detail, err
+	}
+	content, err := client.ToolsContentStats(ctx, types.ToolContentStatsRequest{ID: toolID})
+	if err != nil {
+		return detail, err
+	}
+	detail.Manifest, detail.Metrics, detail.Content = &manifest, &metrics, &content
+	return detail, nil
+}
+
+// Control submits one canonical steering action. The response only verifies
+// acceptance; the caller reconciles the effect from events and snapshots.
+func (c *Controller) Control(ctx context.Context, method methods.Method, runID, scope string, payload map[string]any) (types.ControlResponse, error) {
+	c.mu.Lock()
+	client := c.client
+	c.mu.Unlock()
+	if client == nil {
+		return types.ControlResponse{}, errors.New("tui: not attached")
+	}
+	return client.Control(ctx, method, types.ControlRequest{Identity: types.IdentityScope{Run: runID, Scope: scope}, Payload: cloneAnyMap(payload)})
+}
+
+// Execute is the single mutation boundary used by the TUI action matrix.
+// Authority is never inferred client-side; the authenticated server enforces it.
+func (c *Controller) Execute(ctx context.Context, mutation Mutation) error {
+	c.mu.Lock()
+	identity := c.identity
+	c.mu.Unlock()
+	if scopeKey(identity) != scopeKey(mutation.Identity) {
+		return errors.New("tui: stale mutation identity")
+	}
+	payload := cloneAnyMap(mutation.Payload)
+	if mutation.PauseToken != "" {
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		payload["token"] = mutation.PauseToken
+	}
+	switch mutation.Method {
+	case methods.MethodArtifactsDelete:
+		_, err := c.DeleteArtifact(ctx, mutation.ArtifactID)
+		return err
+	case methods.MethodToolsSetApprovalPolicy:
+		policy, ok := payload["policy"].(string)
+		if !ok {
+			return errors.New("tui: tool approval policy required")
+		}
+		_, err := c.SetToolApproval(ctx, mutation.ToolID, types.ToolApprovalPolicy(policy))
+		return err
+	case methods.MethodToolsRevokeOAuth:
+		_, err := c.RevokeToolOAuth(ctx, mutation.ToolID)
+		return err
+	case methods.MethodSessionsDelete:
+		_, err := c.Delete(ctx)
+		return err
+	default:
+		_, err := c.Control(ctx, mutation.Method, mutation.RunID, canonicalAuthority(mutation.Method), payload)
+		return err
+	}
+}
+
+func canonicalAuthority(method methods.Method) string {
+	switch method {
+	case methods.MethodInjectContext, methods.MethodUserMessage:
+		return "session_user"
+	case methods.MethodPrioritize:
+		return "admin"
+	default:
+		return "owner_user"
+	}
+}
+
+// DeleteArtifact requests canonical audited eviction.
+func (c *Controller) DeleteArtifact(ctx context.Context, id string) (types.ArtifactsDeleteResponse, error) {
+	c.mu.Lock()
+	client := c.client
+	c.mu.Unlock()
+	if client == nil {
+		return types.ArtifactsDeleteResponse{}, errors.New("tui: not attached")
+	}
+	return client.ArtifactsDelete(ctx, types.ArtifactsDeleteRequest{ID: id})
+}
+
+// SetToolApproval updates one canonical tool policy.
+func (c *Controller) SetToolApproval(ctx context.Context, id string, policy types.ToolApprovalPolicy) (types.ToolSetApprovalPolicyResponse, error) {
+	c.mu.Lock()
+	client := c.client
+	c.mu.Unlock()
+	if client == nil {
+		return types.ToolSetApprovalPolicyResponse{}, errors.New("tui: not attached")
+	}
+	return client.ToolsSetApprovalPolicy(ctx, types.ToolSetApprovalPolicyRequest{ID: id, Policy: policy})
+}
+
+// RevokeToolOAuth revokes canonical tool bindings.
+func (c *Controller) RevokeToolOAuth(ctx context.Context, id string) (types.ToolRevokeOAuthResponse, error) {
+	c.mu.Lock()
+	client := c.client
+	c.mu.Unlock()
+	if client == nil {
+		return types.ToolRevokeOAuthResponse{}, errors.New("tui: not attached")
+	}
+	return client.ToolsRevokeOAuth(ctx, types.ToolRevokeOAuthRequest{ID: id})
 }
 
 // ReplaceToken installs an in-memory credential and reattaches the active
@@ -570,6 +998,25 @@ func cloneStrings(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func mapsClone(in map[types.Capability]bool) map[types.Capability]bool {
+	out := make(map[types.Capability]bool, len(in))
+	for key, value := range in {
+		out[key] = value
 	}
 	return out
 }

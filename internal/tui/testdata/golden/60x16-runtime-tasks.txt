@@ -1,0 +1,15 @@
+
+  HARBOR  /  TASKS
+  One active session · Protocol-only
+  live
+
+   Exactly one active session · tenant-a/operator/sessio
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   TASK LIFECYCLE / TREE / PROGRESS / GROUP / ORPHAN / L
+   Filter:  · page 1
+     task-01  paused · foreground · progress indetermina
+   Cost: observed/non-authoritative; inspect canonical e
+
+
+
+

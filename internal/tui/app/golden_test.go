@@ -12,13 +12,21 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	tuiartifacts "github.com/hurtener/Harbor/internal/tui/artifacts"
 	"github.com/hurtener/Harbor/internal/tui/conversation"
+	tuievents "github.com/hurtener/Harbor/internal/tui/events"
+	"github.com/hurtener/Harbor/internal/tui/interventions"
+	"github.com/hurtener/Harbor/internal/tui/posture"
 	"github.com/hurtener/Harbor/internal/tui/projection"
+	tuitasks "github.com/hurtener/Harbor/internal/tui/tasks"
+	tuitools "github.com/hurtener/Harbor/internal/tui/tools"
 	"github.com/hurtener/Harbor/internal/tui/ui"
 )
 
@@ -42,6 +50,16 @@ func operationalScenarios() []operationalCaptureScenario {
 		controller := &recordingController{id: id, projection: p}
 		m := NewRuntimeModel(context.Background(), w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), controller, nil, RuntimeOptions{ReducedMotion: true, Fingerprint: "runtime-a"})
 		m.applyUpdate(conversation.Update{Identity: id, Generation: 1, State: conversation.StateLive, Projection: p})
+		pausedAt := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+		m.runtime = conversation.RuntimeData{
+			Tasks:         tuitasks.Derive(types.TaskListResponse{Rows: []types.TaskRow{{ID: "task-01", Kind: types.TaskKindForeground, Status: types.TaskStatusPaused, ParentSessionID: id.Session, Description: "Inspect deployment", GroupID: "group-a", DurationMS: 1250, HasPendingApproval: true}}, Aggregates: types.TaskListAggregates{Paused: 1}}, nil),
+			Tools:         tuitools.Derive(types.ToolListResponse{Tools: []types.Tool{{ID: "deploy-status", Transport: types.ToolTransportHTTP, OAuthStatus: types.ToolOAuthBound, ApprovalPolicy: types.ToolApprovalGated}}, Aggregates: types.ToolAggregates{Total: 1}}, true),
+			Artifacts:     tuiartifacts.Derive(types.ArtifactsListResponse{Rows: []types.ArtifactRow{{Ref: types.ArtifactRef{ID: "artifact-a", MimeType: "application/json", SizeBytes: 128}, Source: types.ArtifactSourceTool}}, TotalMatched: 1}),
+			Events:        tuievents.Derive(types.EventsListResponse{Events: []types.StateEvent{{Type: "future.runtime.notice", Sequence: 42, Tenant: id.Tenant, User: id.User, Session: id.Session, Run: "task-01"}}, HasMore: true}, types.EventAggregateResponse{Truncated: true}),
+			Posture:       posture.State{Info: types.RuntimeInfo{DisplayName: "Development Runtime", ProtocolVersion: types.ProtocolVersion, UptimeSeconds: 90, Capabilities: []types.Capability{types.CapTaskControl, types.CapToolAnnotations}}, Health: types.RuntimeHealth{Subsystems: []types.SubsystemHealth{{Subsystem: "events", Status: types.HealthStatusReady}}}, Drivers: types.RuntimeDrivers{Subsystems: []types.SubsystemDriver{{Subsystem: "state", Driver: "inmem", Mode: "embedded"}}}, Governance: types.GovernancePostureResponse{DefaultTier: "team", ResolvedTier: "team"}, LLM: types.LLMPostureResponse{Provider: "mock", Model: "fixture", MockMode: true}},
+			Interventions: interventions.New().Reconcile([]types.PauseSnapshot{{Token: "pause-token-a", Reason: "approval_required", State: types.PauseStatePaused, Identity: types.IdentityScope{Tenant: id.Tenant, User: id.User, Session: id.Session, Run: "task-01"}, PausedAt: pausedAt}}, 1),
+			Errors:        map[string]string{"topology.snapshot": "HTTP 501 capability unavailable"},
+		}
 		return m
 	}
 	return []operationalCaptureScenario{
@@ -96,6 +114,58 @@ func operationalScenarios() []operationalCaptureScenario {
 			m.shell.state.HasFollowUp = true
 			m.shell.state.ToastOpen = true
 			m.shell.state.Toast = "Follow-up failed · retry or discard"
+			return m
+		}},
+		{"runtime-tasks", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Route = "tasks"
+			m.syncRuntimeRoute()
+			return m
+		}},
+		{"runtime-tools", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Route = "tools"
+			m.syncRuntimeRoute()
+			return m
+		}},
+		{"runtime-artifacts", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Route = "artifacts"
+			m.syncRuntimeRoute()
+			return m
+		}},
+		{"runtime-events-partial", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Route = "events"
+			m.syncRuntimeRoute()
+			return m
+		}},
+		{"runtime-posture", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Route = "posture"
+			m.syncRuntimeRoute()
+			return m
+		}},
+		{"runtime-interventions", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Route = "interventions"
+			m.syncRuntimeRoute()
+			return m
+		}},
+		{"runtime-diagnostics", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Route = "diagnostics"
+			m.syncRuntimeRoute()
+			return m
+		}},
+		{"runtime-action-matrix", func(w, h int) RuntimeModel { m := base(w, h); next, _ := m.openActions(); return next.(RuntimeModel) }},
+		{"runtime-destructive-confirm", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			action := ActionSpec{ID: "task.cancel", Title: "Cancel task", Target: "run", Method: methods.MethodCancel, Confirmation: ConfirmDestructive}
+			m.activeAction = &action
+			intent, _ := m.buildIntent(action, "")
+			m.activeIntent = &intent
+			m.openActionConfirm(intent)
 			return m
 		}},
 	}
@@ -166,6 +236,7 @@ type captureManifest struct {
 	Reference       map[string]any    `json:"reference_measurements"`
 	Deviations      []string          `json:"known_deviations"`
 	Candidates      []captureEntry    `json:"candidates"`
+	PriorReviews    map[string]bool   `json:"prior_reviews,omitempty"`
 }
 
 func TestCaptureMatrix_AllApplicableFoundationStates(t *testing.T) {
@@ -237,7 +308,7 @@ func TestCaptureMatrix_AllApplicableFoundationStates(t *testing.T) {
 	}
 	if *updateCaptures {
 		sort.Slice(captures, func(i, j int) bool { return captures[i].Path < captures[j].Path })
-		manifest := captureManifest{Status: "candidate-generated-pending-orchestrator-review", GeneratedOn: "2026-07-15", ReviewDate: "", ReviewScope: "Phase-182 operational RuntimeModel candidates: live, degraded/reconciliation, session picker, reauthentication, and failed follow-up states; Phase-181 foundation fixtures remain in their own scenarios; orchestrator review pending.", Reviewed: false, Reproduce: "go test -race ./internal/tui/app -run TestCaptureMatrix -update-captures", TerminalProfile: map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor", "unicode_width": "github.com/charmbracelet/x/ansi v0.11.7"}, Reference: map[string]any{"source": "docs/research/tui-investigation/05-opencode-visual-grammar.md lines 25-48, 88-104, 184-263, 373-422", "outer_padding_cells": 2, "sidebar_columns": 42, "actions": "79 stacked; 80 horizontal", "sidebar": "120 overlay; 121 joined", "composer": "75 columns or 70% wide", "dialogs": []int{60, 88, 116}, "autocomplete_rows": 10, "spinner_ms": []int{80, 40}}, Deviations: []string{"Terminal scrims use semantic faint/dim styling because alpha compositing is unavailable.", "Operational captures use canonical test Protocol data through RuntimeModel; authenticated transport behavior is separately verified by the built-CLI PTY integration.", "PTY behavior varies by terminal; xterm-256color is the pinned capture profile."}, Candidates: captures}
+		manifest := captureManifest{Status: "candidate-generated-pending-orchestrator-review", GeneratedOn: "2026-07-15", ReviewDate: "", ReviewScope: "Phase 183 Runtime control candidates: task, tool, artifact, event, posture, intervention, diagnostics, action matrix, and destructive confirmation states across the binding size/color matrix; orchestrator review pending. Previously reviewed Phase 181-182 captures remain recorded under prior_reviews.", Reviewed: false, Reproduce: "go test -race ./internal/tui/app -run TestCaptureMatrix -update-captures", TerminalProfile: map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor", "unicode_width": "github.com/charmbracelet/x/ansi v0.11.7"}, Reference: map[string]any{"source": "docs/research/tui-investigation/05-opencode-visual-grammar.md lines 25-48, 88-104, 184-263, 373-422", "outer_padding_cells": 2, "sidebar_columns": 42, "actions": "79 stacked; 80 horizontal", "sidebar": "120 overlay; 121 joined", "composer": "75 columns or 70% wide", "dialogs": []int{60, 88, 116}, "autocomplete_rows": 10, "spinner_ms": []int{80, 40}}, Deviations: []string{"Terminal scrims use semantic faint/dim styling because alpha compositing is unavailable.", "Operational captures use canonical test Protocol data through RuntimeModel; authenticated transport behavior is separately verified by the built-CLI PTY integration.", "PTY behavior varies by terminal; xterm-256color is the pinned capture profile."}, Candidates: captures, PriorReviews: map[string]bool{"phase_181": true, "phase_182": true}}
 		data, err := json.MarshalIndent(manifest, "", "  ")
 		if err != nil {
 			t.Fatal(err)

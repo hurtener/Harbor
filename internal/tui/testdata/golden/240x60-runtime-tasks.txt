@@ -1,0 +1,59 @@
+
+  HARBOR  /  TASKS
+  One active session · Protocol-only                                                                                                                                                                    RUNTIME CONTEXT
+  live
+                                                                                                                                                                                                        Session
+   Exactly one active session · tenant-a/operator/session-alpha                                                                                                                                         session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                                                                                                  one active session
+   TASK LIFECYCLE / TREE / PROGRESS / GROUP / ORPHAN / LATENCY · loaded
+   Filter:  · page 1                                                                                                                                                                                    Health
+     task-01  paused · foreground · progress indeterminate · 1250ms · group group-a · activity latency unavailable                                                                                      warning · intervention required
+   Cost: observed/non-authoritative; inspect canonical events for completeness                                                                                                                          Status
+                                                                                                                                                                                                        running
+                                                                                                                                                                                                        Transcript
+                                                                                                                                                                                                        2 blocks
+                                                                                                                                                                                                        Stream
+                                                                                                                                                                                                        live
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
