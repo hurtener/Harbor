@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/tui/conversation"
+	"github.com/hurtener/Harbor/internal/tui/projection"
 	"github.com/hurtener/Harbor/internal/tui/ui"
 )
 
@@ -24,6 +28,77 @@ var goldenSizes = [][2]int{{40, 12}, {60, 16}, {72, 20}, {79, 24}, {80, 24}, {10
 type captureScenario struct {
 	name  string
 	build func(int, int) Model
+}
+
+type operationalCaptureScenario struct {
+	name  string
+	build func(int, int) RuntimeModel
+}
+
+func operationalScenarios() []operationalCaptureScenario {
+	base := func(w, h int) RuntimeModel {
+		id := types.IdentityScope{Tenant: "tenant-a", User: "operator", Session: "session-alpha"}
+		p := projection.Projection{Identity: id, Generation: 1, SessionStatus: string(types.SessionStatusRunning), Blocks: []projection.Block{{ID: "user-1", Kind: "user", Text: "Summarize the deployment status."}, {ID: "answer-1", Kind: "text", Status: "completed", Text: "The deployment completed successfully."}}}
+		controller := &recordingController{id: id, projection: p}
+		m := NewRuntimeModel(context.Background(), w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), controller, nil, RuntimeOptions{ReducedMotion: true, Fingerprint: "runtime-a"})
+		m.applyUpdate(conversation.Update{Identity: id, Generation: 1, State: conversation.StateLive, Projection: p})
+		return m
+	}
+	return []operationalCaptureScenario{
+		{"operational-live", base},
+		{"operational-degraded", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			p := m.transcript.Projection
+			p.HistoryTruncated, p.AggregateTruncated, p.CountersPartial, p.ReconciliationRequired = true, true, true, true
+			p.ReplayGap = &projection.ReplayGap{Reason: "stream_overlap", LastSequence: 41, SeenSequence: 44}
+			p.Blocks = append(p.Blocks, projection.Block{ID: "unknown-44", Kind: "event", EventType: "extension.notice", Incomplete: true})
+			m.applyUpdate(conversation.Update{Identity: p.Identity, Generation: 1, State: conversation.StateReplaying, Projection: p, Overflow: true})
+			return m
+		}},
+		{"operational-session-picker", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell = m.shell.WithModal(NewSelect("Sessions", []SelectItem{{ID: "session-alpha", Title: "Current session", Description: "running", Current: true}, {ID: "session-closed", Title: "Incident review", Description: "completed · Resume on next canonical start"}}, "composer"))
+			return m
+		}},
+		{"operational-reauth", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Connection = string(conversation.StateAuthExpired)
+			m.shell.state.Composer = ComposerDisabled
+			m.shell = m.shell.WithModal(NewSelect("Replace credential · memory only", nil, "composer"))
+			return m
+		}},
+		{"operational-start-fresh", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell.state.Erased = true
+			m.shell.state.Composer = ComposerDisabled
+			m.shell = m.shell.WithModal(NewSelect("Start Fresh", nil, "composer"))
+			return m
+		}},
+		{"operational-attachment", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.shell = m.shell.WithModal(NewSelect("Attach file · path|disposition", nil, "composer"))
+			return m
+		}},
+		{"operational-search", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.searchMode, m.searchQuery = true, "deployment"
+			m.transcript = m.transcript.Search(m.searchQuery)
+			m.shell.state.Scrolled = true
+			m.shell.state.ToastOpen = true
+			m.shell.state.Toast = "Search: deployment · 2 matches"
+			return m
+		}},
+		{"operational-followup-failed", func(w, h int) RuntimeModel {
+			m := base(w, h)
+			m.followups = m.followups.Enqueue("Continue with the rollback analysis.")
+			next, entry, _ := m.followups.Begin()
+			m.followups = next.Fail(entry.ID, fmt.Errorf("Runtime temporarily unavailable"))
+			m.shell.state.HasFollowUp = true
+			m.shell.state.ToastOpen = true
+			m.shell.state.Toast = "Follow-up failed · retry or discard"
+			return m
+		}},
+	}
 }
 
 func scenarios() []captureScenario {
@@ -126,6 +201,21 @@ func TestCaptureMatrix_AllApplicableFoundationStates(t *testing.T) {
 				captures = append(captures, captureEntry{Path: name, SHA256: hash(capture)})
 			})
 		}
+		for _, scenario := range operationalScenarios() {
+			name := fmt.Sprintf("%dx%d-%s.txt", size[0], size[1], scenario.name)
+			t.Run(name, func(t *testing.T) {
+				frame := ansi.Strip(scenario.build(size[0], size[1]).shell.Frame())
+				assertFrameGeometry(t, frame, size[0], size[1])
+				capture := normalizeCapture(frame)
+				if prior, exists := seen[hash(capture)]; exists {
+					t.Fatalf("scenario %s duplicates %s at %dx%d", scenario.name, prior, size[0], size[1])
+				}
+				seen[hash(capture)] = scenario.name
+				path := filepath.Join(dir, name)
+				compareOrWrite(t, path, capture)
+				captures = append(captures, captureEntry{Path: name, SHA256: hash(capture)})
+			})
+		}
 	}
 	profiles := []struct {
 		name  string
@@ -147,7 +237,7 @@ func TestCaptureMatrix_AllApplicableFoundationStates(t *testing.T) {
 	}
 	if *updateCaptures {
 		sort.Slice(captures, func(i, j int) bool { return captures[i].Path < captures[j].Path })
-		manifest := captureManifest{Status: "candidate-generated-pending-orchestrator-review", GeneratedOn: "2026-07-14", ReviewDate: "2026-07-14", ReviewScope: "Representative agent inspection: 40x12 modal/intervention, 79/80 actions, 120/121 sidebar, 240x60 density, and all styled profiles; final orchestrator review pending.", Reviewed: false, Reproduce: "go test -race ./internal/tui/app -run TestCaptureMatrix -update-captures", TerminalProfile: map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor", "unicode_width": "github.com/charmbracelet/x/ansi v0.11.7"}, Reference: map[string]any{"source": "docs/research/tui-investigation/05-opencode-visual-grammar.md lines 25-48, 88-104, 184-263, 373-422", "outer_padding_cells": 2, "sidebar_columns": 42, "actions": "79 stacked; 80 horizontal", "sidebar": "120 overlay; 121 joined", "composer": "75 columns or 70% wide", "dialogs": []int{60, 88, 116}, "autocomplete_rows": 10, "spinner_ms": []int{80, 40}}, Deviations: []string{"Terminal scrims use semantic faint/dim styling because alpha compositing is unavailable.", "Fixture controls are visibly unavailable and perform no Runtime operation.", "PTY behavior varies by terminal; xterm-256color is the pinned capture profile."}, Candidates: captures}
+		manifest := captureManifest{Status: "candidate-generated-pending-orchestrator-review", GeneratedOn: "2026-07-15", ReviewDate: "", ReviewScope: "Phase-182 operational RuntimeModel candidates: live, degraded/reconciliation, session picker, reauthentication, and failed follow-up states; Phase-181 foundation fixtures remain in their own scenarios; orchestrator review pending.", Reviewed: false, Reproduce: "go test -race ./internal/tui/app -run TestCaptureMatrix -update-captures", TerminalProfile: map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor", "unicode_width": "github.com/charmbracelet/x/ansi v0.11.7"}, Reference: map[string]any{"source": "docs/research/tui-investigation/05-opencode-visual-grammar.md lines 25-48, 88-104, 184-263, 373-422", "outer_padding_cells": 2, "sidebar_columns": 42, "actions": "79 stacked; 80 horizontal", "sidebar": "120 overlay; 121 joined", "composer": "75 columns or 70% wide", "dialogs": []int{60, 88, 116}, "autocomplete_rows": 10, "spinner_ms": []int{80, 40}}, Deviations: []string{"Terminal scrims use semantic faint/dim styling because alpha compositing is unavailable.", "Operational captures use canonical test Protocol data through RuntimeModel; authenticated transport behavior is separately verified by the built-CLI PTY integration.", "PTY behavior varies by terminal; xterm-256color is the pinned capture profile."}, Candidates: captures}
 		data, err := json.MarshalIndent(manifest, "", "  ")
 		if err != nil {
 			t.Fatal(err)

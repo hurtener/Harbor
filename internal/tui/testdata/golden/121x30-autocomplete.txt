@@ -1,30 +1,30 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection                          RUNTIME CONTEXT
-  terminal size 121x30 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only                                             RUNTIME CONTEXT
+  disconnected
                                                                                  Session
   ┃                                                                              01K0HARBORFIXTURE0000000000
   ┃  ◆  Inspecting Runtime posture                                               one active session
   ┃
-                                                                                 Planner
-  ┃                                                                              ReAct · fixture
-  ┃  ✓  Runtime health snapshot received                                         Task
-  ┃                                                                              inspect-runtime · running
-                                                                                 Tool
-  ┃                                                                              runtime.health · succeeded
-  ┃  !  Operator approval required                                               Intervention
-  ┃                                                                              1 pending · controls unavailable
-                                                                                 Artifact
-  ┃  ctrl+p  Command palette                                                     report.json · 2.4 KB
-  ┃  ctrl+x s  Toggle runtime context                                            Stream
-  ┃  ?  Keyboard help                                                            fixture · disconnected
-  ┃  q  Quit                                                                     Versions
-  ┃  enter  Submit turn · unavailable: requires an attached Runtime (availab     Runtime 1.15 · Protocol 0.1
-  ┃  ctrl+x l  Switch session · unavailable: requires an attached Runtime (a
-  ┃  ctrl+x t  Switch theme
+                                                                                 Status
+  ┃                                                                              running
+  ┃  ✓  Runtime health snapshot received                                         Transcript
+  ┃                                                                              3 blocks
+                                                                                 Stream
+  ┃                                                                              disconnected
+  ┃  ctrl+p  Command palette
+  ┃  ctrl+x s  Toggle runtime context
+  ┃  ?  Keyboard help
+  ┃  q  Quit
+  ┃  ctrl+x a  Attach file · unavailable: requires a live authenticated Runt
+  ┃  ctrl+x k  Cancel queued follow-up · unavailable: no local follow-up is
+  ┃  ctrl+x e  Remove attachment · unavailable: no attachment is selected
+  ┃  ctrl+x p  Restore stashed draft
+  ┃  ctrl+x u  Retry attachment · unavailable: no attachment is selected
+  ┃  ctrl+x j  Retry failed follow-up · unavailable: no local follow-up is q
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -8,6 +8,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -32,6 +33,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/state"
@@ -365,6 +367,25 @@ func TestBuildMux_OptionalSubsystemMatrix(t *testing.T) {
 		} {
 			if code := probeMux(built.Mux, path); code != http.StatusNotFound {
 				t.Errorf("%s with its handle nil = %d, want 404", path, code)
+			}
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/control/runtime.info", strings.NewReader(`{"identity":{"tenant":"t","user":"u","session":"s"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Harbor-Tenant", "t")
+		req.Header.Set("X-Harbor-User", "u")
+		req.Header.Set("X-Harbor-Session", "s")
+		rec := httptest.NewRecorder()
+		built.Mux.ServeHTTP(rec, req)
+		var info types.RuntimeInfo
+		if rec.Code != http.StatusOK {
+			t.Fatalf("runtime.info status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&info); err != nil {
+			t.Fatal(err)
+		}
+		for _, capability := range info.Capabilities {
+			if capability == types.CapStateSnapshots {
+				t.Fatal("stripped mux advertised state_snapshots without history/session/pause hydration surfaces")
 			}
 		}
 	})

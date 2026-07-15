@@ -1,0 +1,60 @@
+
+  HARBOR  /  SESSION
+  One active session · Protocol-only                                                                                                                                                                    RUNTIME CONTEXT
+  live
+                                                                                                                                                                                                        Session
+  ┃                                                                                                                                                                                                     session-alpha
+  ┃  ◆  Active stream · following newest output                                                                                                                                                         one active session
+  ┃
+                                                                                                                                                                                                        Status
+  ┃                                                                                                                                                                                                     running
+  ┃  ×  Session erased · terminal state, start fresh required                                                                                                                                           Transcript
+  ┃                                                                                                                                                                                                     2 blocks
+                                                                                                                                                                                                        Stream
+  ┃                                                                                                                                                                                                     live
+  ┃  ◇  Summarize the deployment status.
+  ┃
+                                                                                              Start Fresh
+  ┃                                                                                          Search:
+  ┃  ●  The deployment completed successfully.
+  ┃
+                                                                                            ↑/↓ move · enter select · esc close
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃  disabled
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -208,6 +208,7 @@ export default defineConfig({
           items: [
             { text: "run-the-dev-loop", link: "/skills/run-the-dev-loop/SKILL" },
             { text: "drive-the-playground", link: "/skills/drive-the-playground/SKILL" },
+            { text: "drive-the-harbor-tui", link: "/skills/drive-the-harbor-tui/SKILL" },
           ],
         },
         {

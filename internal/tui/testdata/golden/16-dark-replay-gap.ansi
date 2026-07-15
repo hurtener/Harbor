@@ -1,7 +1,7 @@
 [97;40m                                                                                                    [m
-[97;40m  [m[1;93mHARBOR  /  SESSION FIXTURE[m[97;40m                                                                        [m
-[97;40m  [m[90mOne active session · Protocol-only fixture projection                                           [m[97;40m  [m
-[97;40m  [m[90mterminal size 100x30 · fixture · disconnected                                                   [m[97;40m  [m
+[97;40m  [m[1;93mHARBOR  /  SESSION[m[97;40m                                                                                [m
+[97;40m  [m[90mOne active session · Protocol-only                                                              [m[97;40m  [m
+[97;40m  [m[90mdisconnected                                                                                    [m[97;40m  [m
 [97;40m                                                                                                    [m
 [97;40m  [m[91m┃[m[97;40m                                                                                                 [m
 [97;40m  [m[91m┃[m[97;40m  ×  Replay gap · authoritative reconciliation required                                          [m
@@ -24,7 +24,7 @@
 [97;40m                                                                                                    [m
 [97;40m  [m[93m┃[m[97;40m  Ask Harbor about this runtime...                                                               [m
 [97;40m  [m[93m┃[m[97;40m                                                                                                 [m
-[97;40m  [m[93m┃[m[97;40m  ReAct · default planner · idle                                                                 [m
+[97;40m  [m[93m┃[m[97;40m  idle                                                                                           [m
 [97;40m  [m[93m╹[m[97;40m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                       [m
 [97;40m  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands                                     [m
 [97;40m  [m[90mctrl+p Command palette   ctrl+x s Toggle runtime context                                        [m[97;40m  [m

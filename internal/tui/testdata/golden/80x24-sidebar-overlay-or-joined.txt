@@ -1,24 +1,24 @@
 
-  HARBOR  /  SESSION FIXTURE                   Sidebar context visible
-  One active session · Protocol-only f  RUNTIME CONTEXT
-  terminal size 80x24 · fixture · disc
+  HARBOR  /  SESSION                           Sidebar context visible
+  One active session · Protocol-only    RUNTIME CONTEXT
+  disconnected
                                         Session
   ┃                                     01K0HARBORFIXTURE0000000000
   ┃  ◆  Inspecting Runtime posture      one active session
   ┃
-                                        Planner
-  ┃                                     ReAct · fixture
-  ┃  ✓  Runtime health snapshot receiv  Task
-  ┃                                     inspect-runtime · running
-                                        Tool
-  ┃                                     runtime.health · succeeded
-  ┃  !  Operator approval required      Intervention
-  ┃                                     1 pending · controls unavailable
-                                        Artifact
-                                        report.json · 2.4 KB
-  ┃  Ask Harbor about this runtime...   Stream
-  ┃                                     fixture · disconnected
-  ┃  ReAct · default planner · idle     Versions
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  Runtime 1.15 · Protocol 0.1
+                                        Status
+  ┃                                     running
+  ┃  ✓  Runtime health snapshot receiv  Transcript
+  ┃                                     3 blocks
+                                        Stream
+  ┃                                     disconnected
+  ┃  !  Operator approval required
+  ┃
+
+
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE00000
   ctrl+p Command palette   ctrl+x s To

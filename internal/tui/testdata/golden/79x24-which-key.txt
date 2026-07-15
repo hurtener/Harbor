@@ -1,24 +1,24 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection
-  terminal size 79x24 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  disconnected
 
   ┃
   ┃  ◆  Inspecting Runtime posture
   ┃
-
-  ┃
-  ┃  ✓  Runtime health snapshot received
-  ┃
-
-  ┃
-  ┃  !  Operator approval required
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x t  Switch theme
-  ┃  ctrl+x l  Switch session · unavailable: requires an attached Runtime (a
+  ┃  ctrl+x l  Switch session · unavailable: requires a live authenticated R
+  ┃  ctrl+x n  Start Fresh · unavailable: requires a live authenticated Runt
+  ┃  ctrl+x d  Delete session · unavailable: requires a live authenticated R
+  ┃  ctrl+x i  Replace credential
+  ┃  ctrl+x f  Search transcript
+  ┃  ctrl+x x  Export transcript
+  ┃  ctrl+x r  Toggle reasoning
+  ┃  ctrl+x o  Toggle tool detail
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   ctrl+p Command palette   ctrl+x s Toggle runtime context

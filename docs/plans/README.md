@@ -320,7 +320,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |179 | Go Protocol client foundation: one authenticated REST/SSE client, curated `sdk/protocolclient` facade, and conversion of all shipped `inspect-*` commands as first consumers (D-315) | internal/protocol/client + sdk/protocolclient + cmd/harbor | §3.6, §5, §8 | 60, 61, 118, 159, 160 | 90% | Shipped (v1.15) |
 |180 | Pure TUI projection/reconciliation core: history/task/pause/event join, generation fences, replay/lifecycle repair, honest partiality, and language-neutral Console/TUI fixture parity (D-316) | internal/tui/projection + Console fixture tests | §3.1, §3.3, §4, §5 | 179, 124, 125, 161–165, 174–178 | 95% | Shipped (v1.15) |
 |181 | TUI terminal foundation: Bubble Tea shell, binding OpenCode-level quality floor, responsive design system, commands/dialogs/focus, themes/accessibility, full golden matrix, and PTY lifecycle (D-317) | internal/tui/app + internal/tui/ui | §3.1, §5, §8, §10 | 179, 180 | 90% | Shipped (v1.15) |
-|182 | Complete attach conversation/session experience: `harbor tui --attach`, editor-quality composer, sessions, streaming, semantic navigation, compact mode, export, reconnect, and local interaction state (D-318) | internal/tui + cmd/harbor | §3.1, §4, §5, §8 | 180, 181 | 85% | Pending (v1.15) |
+|182 | Complete attach conversation/session experience: `harbor tui --attach`, editor-quality composer, sessions, streaming, semantic navigation, compact mode, export, reconnect, and local interaction state (D-318) | internal/tui + cmd/harbor | §3.1, §4, §5, §8 | 180, 181 | 85% | Shipped (v1.15) |
 |183 | Runtime control and inspection: tasks, tools, artifacts, events, posture, interventions, canonical controls, diagnostics, attention, and generic renderer registries at the same quality floor (D-319) | internal/tui | §3.3, §4, §5, §6.3, §8 | 182, 72e/f/g, 73d/f/l, 162–163, 174–178 | 85% | Pending (v1.15) |
 |184 | Runtime distribution: explicit readiness, `harbor serve --tui`, curated `sdk/tui`, scaffolded serving-binary `--tui`, and cross-mode frame-equivalent wave PTY E2E (D-320) | internal/runtime/serve + sdk/server + sdk/tui + cmd/harbor + scaffold | §3.6, §5.6, §8 | 183, 159, 160 | 85% | Pending (v1.15) |
 
@@ -4112,7 +4112,7 @@ per §17.8). Status: Shipped (V1.6).
   of internal wire packages. See
   `docs/plans/phase-179-go-protocol-client.md`.
 - **Decision:** D-315.
-- **Status:** Pending (v1.15).
+- **Status:** Shipped (v1.15).
 
 ---
 

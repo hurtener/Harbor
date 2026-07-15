@@ -1,16 +1,16 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection
-  terminal size 60x16 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  disconnected
 
   ┃
   ┃  ◆  Inspecting Runtime posture
   ┃
 
 
-  ┃  Attachment staged locally · no upload performed
+  ┃  Attachment ready · disposition applied at send
   ┃
-  ┃  ReAct · default planner · attachment · report.pdf
+  ┃  attachment · report.pdf
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
   ctrl+p Command palette   ctrl+x s Toggle runtime context

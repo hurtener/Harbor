@@ -1,11 +1,11 @@
 
-  [1mHARBOR  /  SESSION FIXTURE[m
-  [2mOne active session · Protocol-only fixture projection                                           [m
-  [2mterminal size 100x30 · fixture · disconnected                                                   [m
+  [1mHARBOR  /  SESSION[m
+  [2mOne active session · Protocol-only                                                              [m
+  [2mdisconnected                                                                                    [m
 
   [4;4m┃[m
   [4;4m┃[m  !  Operator approval required
-  [4;4m┃[m  Tool: fixture.health · no action is sent from this preview
+  [4;4m┃[m  Operator approval required
   [4;4m┃[m
      [1;4;4m[[m[4m [m[1;4;4mA[m[1;4;4mp[m[1;4;4mp[m[1;4;4mr[m[1;4;4mo[m[1;4;4mv[m[1;4;4me[m[4m [m[1;4;4mu[m[1;4;4mn[m[1;4;4ma[m[1;4;4mv[m[1;4;4ma[m[1;4;4mi[m[1;4;4ml[m[1;4;4ma[m[1;4;4mb[m[1;4;4ml[m[1;4;4me[m[4m [m[1;4;4m][m[4m [m[4m [m[4m [m[1;4;4m[[m[4m [m[1;4;4mR[m[1;4;4me[m[1;4;4mj[m[1;4;4me[m[1;4;4mc[m[1;4;4mt[m[4m [m[1;4;4mu[m[1;4;4mn[m[1;4;4ma[m[1;4;4mv[m[1;4;4ma[m[1;4;4mi[m[1;4;4ml[m[1;4;4ma[m[1;4;4mb[m[1;4;4ml[m[1;4;4me[m[4m [m[1;4;4m][m
 
@@ -24,7 +24,7 @@
 
   [1m┃[m  Ask Harbor about this runtime...
   [1m┃[m
-  [1m┃[m  ReAct · default planner · idle
+  [1m┃[m  idle
   [1m╹[m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   [2mctrl+p Command palette   ctrl+x s Toggle runtime context                                        [m

@@ -1,6 +1,5 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection
+  HARBOR  /  SESSION
 
      Commands
     Search:
@@ -8,9 +7,10 @@
      Toggle runtime context · Show the fixed context side
      Keyboard help · Show all reachable commands
      Quit · Restore the terminal and exit
-     Submit turn · Unavailable: requires an attached Runt
-     Switch session · Unavailable: requires an attached R
-     Switch theme · Choose dark, light, or automatic mode
+     Attach file · Unavailable: requires a live authentic
+     Cancel queued follow-up · Unavailable: no local foll
+     Remove attachment · Unavailable: no attachment is se
+     Restore stashed draft · Pop the newest local draft
 
 
    ↑/↓ move · enter select · esc close

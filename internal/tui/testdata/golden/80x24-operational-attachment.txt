@@ -1,0 +1,24 @@
+
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  live
+
+  ┃
+  ┃  ◆  Ac
+  ┃           Attach file · path|disposition
+             Search:
+  ┃
+  ┃  ◇  Su
+  ┃         ↑/↓ move · enter select · esc close
+
+  ┃
+  ┃  ●  The deployment completed successfully.
+  ┃
+
+
+
+  ┃  Ask Harbor...
+  ┃  focused
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

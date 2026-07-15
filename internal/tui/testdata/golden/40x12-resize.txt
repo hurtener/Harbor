@@ -1,12 +1,12 @@
 
   HARB Resize applied
-  One active session · Protocol-only f
-  terminal size 40x12 · fixture · disc
+  One active session · Protocol-only
+  disconnected
 
 
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000
   ctrl+p Command palette   ctrl+x s To

@@ -1,30 +1,30 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection                          RUNTIME CONTEXT
-  terminal size 121x30 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only                                             RUNTIME CONTEXT
+  disconnected
                                                                                  Session
   ┃                                                                              01K0HARBORFIXTURE0000000000
   ┃  ◆  Inspecting Runtime posture                                               one active session
   ┃
-                                                                                 Planner
-  ┃                                                                              ReAct · fixture
-  ┃  ✓  Runtime health snapshot received                                         Task
-  ┃                                                                              inspect-runtime · running
-                                                                                 Tool
-  ┃                                                                              runtime.health · succeeded
-  ┃  !  Operator approval required                                               Intervention
-  ┃                                                                              1 pending · controls unavailable
-                                                                                 Artifact
-                                                                                 report.json · 2.4 KB
+                                                                                 Status
+  ┃                                                                              running
+  ┃  ✓  Runtime health snapshot received                                         Transcript
+  ┃                                                                              3 blocks
                                                                                  Stream
-                                                                                 fixture · disconnected
-                                                                                 Versions
-  ┃  ctrl+x s  Toggle runtime context                                            Runtime 1.15 · Protocol 0.1
+  ┃                                                                              disconnected
+  ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x t  Switch theme
-  ┃  ctrl+x l  Switch session · unavailable: requires an attached Runtime (a
+  ┃  ctrl+x l  Switch session · unavailable: requires a live authenticated R
+  ┃  ctrl+x n  Start Fresh · unavailable: requires a live authenticated Runt
+  ┃  ctrl+x d  Delete session · unavailable: requires a live authenticated R
+  ┃  ctrl+x i  Replace credential
+  ┃  ctrl+x f  Search transcript
+  ┃  ctrl+x x  Export transcript
+  ┃  ctrl+x r  Toggle reasoning
+  ┃  ctrl+x o  Toggle tool detail
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -1,0 +1,30 @@
+
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  authentication expired
+
+  ┃
+  ┃  ◆  Active stream · following newest output
+  ┃
+                                  Replace credential · memory only
+  ┃                              Search:
+  ┃  ◇  Summarize the deployme
+  ┃
+                                ↑/↓ move · enter select · esc close
+  ┃
+  ┃  ●  The deployment completed successfully.
+  ┃
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃  disabled
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ctrl+p Command palette   ctrl+x s Toggle runtime context

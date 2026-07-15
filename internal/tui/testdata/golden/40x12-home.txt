@@ -1,11 +1,11 @@
 
-  HARBOR  /  HOME FIXTURE
-  One active session · Protocol-only f
-  terminal size 40x12 · fixture · disc
+  HARBOR  /  HOME
+  One active session · Protocol-only
+  disconnected
 
   ┃
   ┃  ◇  Terminal foundation ready
-  ┃  No Runtime is attached; preview
+  ┃  Attach a Runtime to begin.
   ┃
   ┃  Ask Harbor about this runtime...
   ┃

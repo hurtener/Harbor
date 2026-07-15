@@ -1,7 +1,7 @@
 
-  [1mHARBOR  /  SESSION FIXTURE[m
-  [2mOne active session · Protocol-only fixture projection                                           [m
-  [2mterminal size 100x30 · fixture · disconnected                                                   [m
+  [1mHARBOR  /  SESSION[m
+  [2mOne active session · Protocol-only                                                              [m
+  [2mdisconnected                                                                                    [m
 
   [1;4;4m┃[m
   [1;4;4m┃[m  ×  Replay gap · authoritative reconciliation required
@@ -24,7 +24,7 @@
 
   [1m┃[m  Ask Harbor about this runtime...
   [1m┃[m
-  [1m┃[m  ReAct · default planner · idle
+  [1m┃[m  idle
   [1m╹[m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   [2mctrl+p Command palette   ctrl+x s Toggle runtime context                                        [m

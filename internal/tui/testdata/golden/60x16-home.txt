@@ -1,16 +1,16 @@
 
-  HARBOR  /  HOME FIXTURE
-  One active session · Protocol-only fixture projection
-  terminal size 60x16 · fixture · disconnected
+  HARBOR  /  HOME
+  One active session · Protocol-only
+  disconnected
 
   ┃
   ┃  ◇  Terminal foundation ready
-  ┃  No Runtime is attached; preview data is local and no
+  ┃  Attach a Runtime to begin.
   ┃
 
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -1,7 +1,7 @@
 
-  HARBOR  /  SESSION FIXTURE
-  One active session · Protocol-only fixture projection
-  terminal size 100x30 · fixture · disconnected
+  HARBOR  /  SESSION
+  One active session · Protocol-only
+  disconnected
 
   ┃
   ┃  ◆  Inspecting Runtime posture
@@ -12,19 +12,19 @@
   ┃                     Toggle runtime context · Show the fixed context sideba
                         Keyboard help · Show all reachable commands
   ┃                     Quit · Restore the terminal and exit
-  ┃  !  Operator app    Submit turn · Unavailable: requires an attached Runtim
-  ┃                     Switch session · Unavailable: requires an attached Run
-                        Switch theme · Choose dark, light, or automatic mode
+  ┃  !  Operator app    Attach file · Unavailable: requires a live authenticat
+  ┃                     Cancel queued follow-up · Unavailable: no local follow
+                        Remove attachment · Unavailable: no attachment is sele
+                        Restore stashed draft · Pop the newest local draft
 
 
                       ↑/↓ move · enter select · esc close
 
 
 
-
   ┃  Ask Harbor about this runtime...
   ┃
-  ┃  ReAct · default planner · idle
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
   ctrl+p Command palette   ctrl+x s Toggle runtime context

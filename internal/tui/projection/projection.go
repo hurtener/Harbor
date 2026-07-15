@@ -492,6 +492,9 @@ func HydrateClientWithOptions(ctx context.Context, c client.Client, generation, 
 		}
 		if len(pages) == 0 {
 			bundle.History = page
+			// The stream is already open. Fence hydration at the authoritative
+			// history tail so buffered overlap is deterministically de-duplicated.
+			bundle.CapturedSequence = page.TailSequence
 		}
 		bundle.History.Truncated = bundle.History.Truncated || page.Truncated
 		bundle.History.HasMore = page.HasMore
