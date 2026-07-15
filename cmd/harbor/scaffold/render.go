@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/format"
 	"io"
 	"io/fs"
 	"os"
@@ -50,6 +51,11 @@ type templateVars struct {
 	// declared, and the fan-out renderer emits `cmd/<Name>/main.go`.
 	// Templates reference it as {{.WithServer}}.
 	WithServer bool
+	// WithTUI is Options.WithTUI. When true the generated `cmd/<Name>/main.go`
+	// emits a `--tui` flag that co-launches the native terminal client via
+	// sdk/tui after the server is ready. Requires WithServer. Templates
+	// reference it as {{.WithTUI}}.
+	WithTUI bool
 	// HarborModuleVersion is the resolved `github.com/hurtener/Harbor`
 	// module version the generated `go.mod` requires. Always a
 	// proxy-resolvable release tag (see resolveModuleVersion), so the
@@ -120,6 +126,7 @@ func renderProject(name string, opts Options, absOut, upstreamPath string, upstr
 		GoPackageName:       strings.ReplaceAll(opts.Name, "-", "_"),
 		Template:            name,
 		WithServer:          opts.WithServer,
+		WithTUI:             opts.WithTUI,
 		HarborModuleVersion: resolveModuleVersion(opts.HarborVersion),
 	}
 	if upstreamCfg != nil {
@@ -266,8 +273,22 @@ func renderOneTemplate(embedPath, parseName, outRel, absOut string, vars any, pa
 	if err := t.Execute(&buf, vars); err != nil {
 		return "", "", fmt.Errorf("execute %s: %w", parseName, err)
 	}
+	rendered := buf.Bytes()
+	// Post-process .go outputs through gofmt so the scaffolded source is
+	// always gofmt-clean. Template conditionals ({{if .WithTUI}} blocks)
+	// can leave trailing whitespace or single-line braces that gofmt
+	// normalizes; without this pass a rendered scaffold can fail
+	// `gofmt -l` even when the template is hand-formatted.
+	if strings.HasSuffix(outRel, ".go") {
+		if formatted, fmtErr := format.Source(rendered); fmtErr == nil {
+			rendered = formatted
+		}
+		// A format error is non-fatal: the file still writes so a
+		// human can edit it. A gofmt failure on valid-but-unformatted
+		// Go is caught by the engine's own TestScaffold_RenderedGoFiles_GofmtClean.
+	}
 	//nolint:gosec // scaffolded project source files are intended to be world-readable (0o644); they carry no secrets
-	if err := os.WriteFile(destAbs, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(destAbs, rendered, 0o644); err != nil {
 		return "", "", fmt.Errorf("write %s: %w", destAbs, err)
 	}
 	return outRel, "", nil

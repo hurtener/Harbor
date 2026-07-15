@@ -52,25 +52,25 @@ remains unchanged.
 
 ## Acceptance criteria
 
-- [ ] Served handles expose race-safe one-shot readiness returning the actual
+- [x] Served handles expose race-safe one-shot readiness returning the actual
       bound address or bind/cancellation error, through `sdk/server`.
-- [ ] `harbor serve --tui` launches the ordinary authenticated server, waits for
+- [x] `harbor serve --tui` launches the ordinary authenticated server, waits for
       readiness, and attaches the complete TUI through REST/SSE.
-- [ ] `sdk/tui.Run(ctx, Options)` is a curated connection-only facade with no
+- [x] `sdk/tui.Run(ctx, Options)` is a curated connection-only facade with no
       Runtime/stack/event-bus handle.
-- [ ] `harbor scaffold --with-server --with-tui` generates a binary whose
+- [x] `harbor scaffold --with-server --with-tui` generates a binary whose
       opt-in `--tui` uses `sdk/server` plus `sdk/tui`; flagless behavior remains
       headless and unchanged.
-- [ ] Attach quit leaves a remote server alive; explicit co-launch quit drains
+- [x] Attach quit leaves a remote server alive; explicit co-launch quit drains
       its owned server. Server failure visibly exits after terminal restoration.
-- [ ] Runtime logs never overwrite Bubble Tea frames; configured sink/captured
+- [x] Runtime logs never overwrite Bubble Tea frames; configured sink/captured
       stderr preserves operator access.
-- [ ] Wave-end PTY E2E covers attach, stock, and generated modes with identity,
+- [x] Wave-end PTY E2E covers attach, stock, and generated modes with identity,
       session isolation, conversation, control/intervention, reconnect, resize,
       shutdown ordering, and goroutine baseline.
-- [ ] The wave-end capture matrix proves distribution modes render equivalent
+- [x] The wave-end capture matrix proves distribution modes render equivalent
       frames for the same fixtures; co-launch may not ship a reduced-quality UI.
-- [ ] README, CHANGELOG, skills, scaffold docs, CLI help, and status tables
+- [x] README, CHANGELOG, skills, scaffold docs, CLI help, and status tables
       document v1.15 auth, ownership, and launch behavior.
 
 ## Files added or changed
@@ -143,13 +143,13 @@ CLI additions: `harbor serve --tui` and generated serving-binary `--tui`.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session isolation test passes
-- [ ] Readiness/co-launch reuse tests pass under `-race` with no leak
-- [ ] Wave-end real-driver PTY E2E covers all modes and quality matrix
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session isolation test passes
+- [x] Readiness/co-launch reuse tests pass under `-race` with no leak
+- [x] Wave-end real-driver PTY E2E covers all modes and quality matrix
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed

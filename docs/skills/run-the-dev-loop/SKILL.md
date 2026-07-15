@@ -5,7 +5,7 @@ license: Apache-2.0
 metadata:
   framework: harbor
   surface: cli
-  verbs: "dev console"
+  verbs: "dev, console"
 ---
 
 # Run the Harbor dev loop

@@ -251,6 +251,39 @@ type Handle struct {
 	mu       sync.Mutex
 	bindAddr string
 	closeFns []func(context.Context) error
+
+	// readyOnce + readyCh implement race-safe one-shot readiness. Serve
+	// signals exactly once — on successful bind (carrying the OS-assigned
+	// address) or on bind/cancellation failure (carrying the error). The
+	// channel is CLOSED (broadcast) so every waiter — early or late —
+	// unblocks; the stored `ready` value carries the outcome. Close also
+	// fires a "closed before bind" signal so a waiter on a handle that
+	// never served returns promptly.
+	readyOnce sync.Once
+	readyCh   chan struct{}
+	ready     readiness
+}
+
+// readiness carries the one-shot bind outcome: either the actual bound
+// address (success) or the bind/cancellation error (failure). Exactly one
+// field is populated. Written exactly once (under mu) before readyCh is
+// closed; safe for any number of concurrent reads after the close barrier.
+type readiness struct {
+	addr string
+	err  error
+}
+
+// signalReady delivers the one-shot readiness outcome. Safe to call from
+// multiple paths (Serve success, Serve failure, Close) — sync.Once ensures
+// the first caller wins. The channel is closed (broadcast) so every
+// waiter — early or late — unblocks; the stored value carries the outcome.
+func (h *Handle) signalReady(r readiness) {
+	h.readyOnce.Do(func() {
+		h.mu.Lock()
+		h.ready = r
+		h.mu.Unlock()
+		close(h.readyCh)
+	})
 }
 
 // Boot reads the config, opens every subsystem, composes the Protocol
@@ -679,6 +712,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		label:           subcommandLabel,
 		devAllowMock:    opts.DevAllowMock,
 		closeFns:        closers,
+		readyCh:         make(chan struct{}),
 	}, nil
 }
 
@@ -700,12 +734,17 @@ func (h *Handle) Serve(ctx context.Context) error {
 
 	listener, err := net.Listen("tcp", h.server.Addr)
 	if err != nil {
+		h.signalReady(readiness{err: fmt.Errorf("listen %s: %w", h.server.Addr, err)})
 		return fmt.Errorf("listen %s: %w", h.server.Addr, err)
 	}
 	boundAddr := listener.Addr().String()
 	h.mu.Lock()
 	h.bindAddr = boundAddr
 	h.mu.Unlock()
+	// Signal readiness exactly once at the bind site — the race-safe
+	// one-shot contract a co-launched TUI (or any external caller) waits
+	// on through WaitReady. No polling, no second listener lifecycle.
+	h.signalReady(readiness{addr: boundAddr})
 	_, _ = fmt.Fprintf(h.stderr, "HARBOR_DEV_BOUND=%s\n", boundAddr)
 	h.logger.InfoContext(ctx, "harbor "+label+": listener bound", slog.String("bind", boundAddr))
 
@@ -779,15 +818,43 @@ func (h *Handle) Handler() http.Handler { return h.server.Handler }
 
 // Close runs every subsystem's Close in reverse dependency order. Idempotent:
 // the closer slice is drained exactly once; a second Close is a no-op.
+// Close also fires a "closed before bind" readiness signal so a WaitReady
+// waiter on a handle whose Serve never bound (or was cancelled before
+// binding) returns promptly instead of blocking until its own ctx expires.
 func (h *Handle) Close(ctx context.Context) {
 	h.mu.Lock()
 	closers := h.closeFns
 	h.closeFns = nil
 	h.mu.Unlock()
+	h.signalReady(readiness{err: errors.New("serve: handle closed")})
 	for i := len(closers) - 1; i >= 0; i-- {
 		if cErr := closers[i](ctx); cErr != nil && h.logger != nil {
 			h.logger.Warn("serve: error closing subsystem during drain",
 				slog.String("error", cErr.Error()))
 		}
+	}
+}
+
+// WaitReady blocks until the listener binds (returning the actual
+// OS-assigned address) or until the bind fails / ctx cancels (returning
+// the error). It is the race-safe one-shot readiness contract a
+// co-launched client (the TUI, an operator script, an embedder) waits on
+// before dialing the server — no polling, no second listener lifecycle.
+//
+// Safe to call from multiple goroutines before, during, or after Serve
+// binds: the first successful bind delivers the address to every waiter
+// through the buffered channel; a late caller after a successful bind
+// returns immediately. If Serve was never called or was cancelled before
+// binding, WaitReady blocks until ctx cancels (callers SHOULD scope their
+// wait with a deadline). Close fires a "closed before bind" signal so a
+// waiter on an abandoned handle returns promptly.
+func (h *Handle) WaitReady(ctx context.Context) (string, error) {
+	select {
+	case <-h.readyCh:
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.ready.addr, h.ready.err
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 }

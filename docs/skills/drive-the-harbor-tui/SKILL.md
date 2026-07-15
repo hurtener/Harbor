@@ -5,7 +5,7 @@ license: Apache-2.0
 metadata:
   framework: harbor
   surface: cli
-  verbs: "tui"
+  verbs: "tui, serve"
 ---
 
 # Drive the Harbor TUI
@@ -41,6 +41,32 @@ target credential, opens a provisional target stream, hydrates under an overlap
 fence, reconciles buffered frames, and then cancels and joins the old reader
 before committing the target generation.
 
+### Co-launch from `harbor serve --tui`
+
+The attach flow above requires a separately-started Runtime. For a production
+server (JWKS-verified JWT, no dev token), `harbor serve --tui` co-launches the
+TUI from the serve binary itself — one process, one terminal:
+
+```bash
+# The operator supplies the JWT (HARBOR_TOKEN or ~/.harbor/token).
+# serve verifies it against identity.jwks_url / jwks_file.
+export HARBOR_TOKEN='<your-signed-jwt>'
+harbor serve --config serve.yaml --bind 127.0.0.1:0 --tui
+```
+
+The serve binary boots the Runtime, waits for the listener to bind
+(`WaitReady`), then attaches the TUI through authenticated REST/SSE — the same
+Protocol-only path as `harbor tui --attach`. The TUI receives no Runtime
+handle. Quitting the TUI drains the owned server (co-launch quit drains;
+attach quit leaves the remote alive). Runtime logs go to a captured sink so
+Bubble Tea frames are never overwritten; on server failure the terminal is
+restored before the captured log is printed.
+
+A scaffolded serving binary (`harbor scaffold --with-server --with-tui`) gains
+the same `--tui` flag — the generated `cmd/<name>/main.go` calls `sdk/server`
+and `sdk/tui` after `WaitReady`. See
+[`scaffold-a-harbor-agent`](../scaffold-a-harbor-agent/SKILL.md) §6.
+
 ## 3. Rotate credentials
 
 The default token file is `~/.harbor/token`. It may contain one JWT or a JSON
@@ -66,19 +92,19 @@ complete authenticated attach join before committing it in memory; enter
 
 ## 4. Conversation keys
 
-- `Enter`: submit the current turn.
-- `Alt+Enter` or `Shift+Enter`: insert a newline.
-- `Ctrl+A` / `Ctrl+E`: line start/end; `Ctrl+B` / `Ctrl+F`: move left/right.
-- `Ctrl+_` / `Alt+_`: undo/redo.
-- `PageUp` / `PageDown` / `End`: scroll without losing sticky-bottom behavior.
-- `Alt+J` / `Alt+K`: next/previous semantic transcript block.
-- `Ctrl+X F`: filter/search transcript blocks; `Ctrl+X X`: export Markdown.
-- `Ctrl+X R` / `Ctrl+X O` / `Ctrl+X Y`: reasoning, tool detail, timestamps.
-- `Ctrl+X B` / `Ctrl+X P`: stash/restore the local draft.
-- `Ctrl+X A`: upload `path|disposition`; `Ctrl+X E` removes and `Ctrl+X U` retries.
-- `Ctrl+X C`: compact/native-scrollback mode; `Ctrl+X M`: reduced motion.
-- `Ctrl+P`: command palette; `Ctrl+X S`: context sidebar.
-- `/quit`, `Ctrl+C`, or `Ctrl+D`: persist interaction state, restore the terminal, and exit. A plain `q` remains composer text.
++ `Enter`: submit the current turn.
++ `Alt+Enter` or `Shift+Enter`: insert a newline.
++ `Ctrl+A` / `Ctrl+E`: line start/end; `Ctrl+B` / `Ctrl+F`: move left/right.
++ `Ctrl+_` / `Alt+_`: undo/redo.
++ `PageUp` / `PageDown` / `End`: scroll without losing sticky-bottom behavior.
++ `Alt+J` / `Alt+K`: next/previous semantic transcript block.
++ `Ctrl+X F`: filter/search transcript blocks; `Ctrl+X X`: export Markdown.
++ `Ctrl+X R` / `Ctrl+X O` / `Ctrl+X Y`: reasoning, tool detail, timestamps.
++ `Ctrl+X B` / `Ctrl+X P`: stash/restore the local draft.
++ `Ctrl+X A`: upload `path|disposition`; `Ctrl+X E` removes and `Ctrl+X U` retries.
++ `Ctrl+X C`: compact/native-scrollback mode; `Ctrl+X M`: reduced motion.
++ `Ctrl+P`: command palette; `Ctrl+X S`: context sidebar.
++ `/quit`, `Ctrl+C`, or `Ctrl+D`: persist interaction state, restore the terminal, and exit. A plain `q` remains composer text.
 
 Autocomplete is capped at ten rows and executes reachable slash commands; its
 structured references contain actual canonical IDs such as `@session:<id>`,
@@ -99,11 +125,11 @@ The last session reference and bounded interaction state are restored from
 fingerprint. The file contains drafts and view preferences only, never Runtime
 rows, transcript content, or credentials.
 
-- A closed durable session reopens on the next ordinary turn through canonical
++ A closed durable session reopens on the next ordinary turn through canonical
   `start`; wait for `session.reopened` before treating it as running.
-- An erased session is terminal. Choose Start Fresh; ordinary attach/reconnect
++ An erased session is terminal. Choose Start Fresh; ordinary attach/reconnect
   never retries the erased ID.
-- Replay gaps, retention truncation, partial counters, disconnects, and partial
++ Replay gaps, retention truncation, partial counters, disconnects, and partial
   blocks remain visibly labelled.
 
 Use `--compact` to keep committed output in native terminal scrollback rather
@@ -119,21 +145,21 @@ Runtime capabilities or JWT scope disable the command with the exact reason.
 The TUI remains a one-active-session surface. Runtime views never fan out into
 fleet or simultaneous-session panes:
 
-- `F2`: task lifecycle, parent/child tree, progress, groups, activity latency,
++ `F2`: task lifecycle, parent/child tree, progress, groups, activity latency,
   result/trajectory posture, and explicitly non-authoritative task cost.
-- `F3`: tool transport, schema, OAuth, approval, reliability, bounded metrics,
++ `F3`: tool transport, schema, OAuth, approval, reliability, bounded metrics,
   and heavy-content posture. Rich rows require `tool_annotations`; analytics
   are labelled best-effort because the bounded scan has no completeness field.
-- `F4`: artifact metadata and references. Heavy bytes are never rendered
++ `F4`: artifact metadata and references. Heavy bytes are never rendered
   inline; preview depends on canonical `artifacts.get_ref` support.
-- `F5`: live/retained event diagnostics and aggregates, with truncation and
++ `F5`: live/retained event diagnostics and aggregates, with truncation and
   reconnect state visible.
-- `F6`: Runtime health, drivers, capabilities, identity, Protocol compatibility,
++ `F6`: Runtime health, drivers, capabilities, identity, Protocol compatibility,
   retention, governance, LLM, metrics, and stream posture.
-- `F7`: the unified intervention queue, correlated by opaque `PauseToken` even
++ `F7`: the unified intervention queue, correlated by opaque `PauseToken` even
   when multiple interventions share one run.
-- `F8`: capability, retention, partiality, and typed Protocol failures.
-- `F9`: the one action matrix for task, intervention, tool, artifact, and
++ `F8`: capability, retention, partiality, and typed Protocol failures.
++ `F9`: the one action matrix for task, intervention, tool, artifact, and
   session controls.
 
 On list routes, `Up` / `Down` or `Ctrl+P` / `Ctrl+N` selects the exact row,
@@ -161,19 +187,19 @@ invoke command, model picker, fleet control, or speculative method.
 
 ## Common failures
 
-- **Authentication expired:** atomically replace the token file, or press
++ **Authentication expired:** atomically replace the token file, or press
   `Ctrl+X I` and paste a replacement JWT held in process memory only.
-- **Target session credential unavailable:** add the exact
++ **Target session credential unavailable:** add the exact
   `tenant/user/session` entry to the token-file JSON map.
-- **Malformed or unreadable local state:** fix or remove the named state file.
++ **Malformed or unreadable local state:** fix or remove the named state file.
   Harbor fails loudly rather than silently discarding drafts/preferences.
-- **Replay gap:** keep reading the visible partial output while the client
++ **Replay gap:** keep reading the visible partial output while the client
   performs an authoritative snapshot reconciliation.
 
 ## See also
 
-- [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) for starting the Runtime.
-- [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md) for building
++ [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) for starting the Runtime.
++ [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md) for building
   another REST/SSE client.
-- [`observe-with-the-console`](../observe-with-the-console/SKILL.md) for the
++ [`observe-with-the-console`](../observe-with-the-console/SKILL.md) for the
   browser control plane.

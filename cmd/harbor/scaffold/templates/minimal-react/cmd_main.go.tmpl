@@ -40,14 +40,24 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-
+	{{if .WithTUI}}
+	"bytes"
+	"errors"
+	"io"
+	"path/filepath"
+	"strings"
+	"time"
+	{{end}}
 	// Blank-import the production driver aggregator so every store /
 	// bus / LLM the runtime opens resolves its real driver.
 	_ "github.com/hurtener/Harbor/sdk/drivers/prod"
 
 	"github.com/hurtener/Harbor/sdk/config"
 	"github.com/hurtener/Harbor/sdk/server"
-
+	{{if .WithTUI}}
+	protocolclient "github.com/hurtener/Harbor/sdk/protocolclient"
+	tui "github.com/hurtener/Harbor/sdk/tui"
+	{{end}}
 	agent "github.com/example/{{.Name}}"
 )
 
@@ -70,7 +80,8 @@ func run() error {
 	configPath := flag.String("config", "harbor.yaml", "path to harbor.yaml")
 	port := flag.Int("port", 8686, "backstop port used only if the config carries no server.bind_addr (config loading defaults it, so --bind is the practical override)")
 	bind := flag.String("bind", "", "host:port to bind (overrides server.bind_addr; host:0 = ephemeral)")
-	flag.Parse()
+	{{if .WithTUI}}tuiFlag := flag.Bool("tui", false, "co-launch the native terminal client after readiness (attaches through authenticated REST/SSE; quit drains the server)")
+	{{end}}flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -94,20 +105,100 @@ func run() error {
 		cfg.Server.BindAddr = fmt.Sprintf("127.0.0.1:%d", *port)
 	}
 
+	{{if .WithTUI}}// Co-launch log separation: when --tui is set, Runtime stderr
+	// (HARBOR_DEV_BOUND, slog output, lifecycle banners) goes to a
+	// captured buffer, not the terminal. Bubble Tea owns stdout+stderr.
+	// The sink is forwarded into the serve band through
+	// server.Options.Stderr so every Runtime log line lands in the
+	// buffer. On failure the terminal is restored before the captured
+	// log is printed.
+	var logSink io.Writer = os.Stderr
+	var capturedLog *bytes.Buffer
+	if *tuiFlag {
+		capturedLog = &bytes.Buffer{}
+		logSink = capturedLog
+	}
+	{{end}}
 	h, err := server.Open(ctx, cfg, server.Options{
 		// RegisterTools registers this project's compiled tools at the
 		// pre-policy catalog seam, so each keeps its declared approval /
 		// OAuth / policy wrapping from tools.entries in harbor.yaml.
 		RegisterCatalog: agent.RegisterTools,
+		{{if .WithTUI}}Stderr: logSink,
+		{{end}}
 	})
 	if err != nil {
-		return fmt.Errorf("open server: %w", err)
+		{{if .WithTUI}}if *tuiFlag && capturedLog != nil {
+			fmt.Fprintln(os.Stderr, "--- Runtime log (captured during co-launch) ---")
+			os.Stderr.Write(capturedLog.Bytes())
+		}
+		{{end}}return fmt.Errorf("open server: %w", err)
 	}
 	defer func() { _ = h.Close(context.Background()) }()
 
-	// Serve blocks until ctx cancels (SIGINT / SIGTERM), then drains.
+	{{if .WithTUI}}if !*tuiFlag {
+		// Headless path: the original behavior, unchanged.
+		if err := h.Serve(ctx); err != nil {
+			return fmt.Errorf("serve: %w", err)
+		}
+		return nil
+	}
+
+	// Co-launch path (--tui): serve in a goroutine, wait for readiness,
+	// attach the TUI, and on TUI exit drain the owned server.
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- h.Serve(ctx) }()
+
+	readyCtx, readyCancel := context.WithTimeout(ctx, 30*time.Second)
+	boundAddr, err := h.WaitReady(readyCtx)
+	readyCancel()
+	if err != nil {
+		stop()
+		<-serveErrCh
+		fmt.Fprintln(os.Stderr, "--- Runtime log (captured during co-launch) ---")
+		if capturedLog != nil {
+			os.Stderr.Write(capturedLog.Bytes())
+		}
+		return fmt.Errorf("server readiness failed: %w", err)
+	}
+
+	// Resolve the operator token. No anonymous loopback, no automatic
+	// minting, no mock fallback.
+	token := os.Getenv("HARBOR_TOKEN")
+	if token == "" {
+		home, _ := os.UserHomeDir()
+		body, rErr := os.ReadFile(filepath.Join(home, ".harbor", "token"))
+		if rErr != nil {
+			stop()
+			<-serveErrCh
+			return fmt.Errorf("resolve token: set HARBOR_TOKEN or write ~/.harbor/token: %w", rErr)
+		}
+		token = strings.TrimSpace(string(body))
+	}
+	tokens := protocolclient.TokenSourceFunc(func(_ context.Context, _ protocolclient.IdentityScope) (string, error) {
+		return token, nil
+	})
+	baseURL := "http://" + boundAddr
+	tuiErr := tui.Run(ctx, tui.Options{BaseURL: baseURL, Token: tokens})
+
+	// Drain the owned server (co-launch quit drains its server).
+	stop()
+	serveErr := <-serveErrCh
+	if capturedLog != nil && capturedLog.Len() > 0 {
+		fmt.Fprintln(os.Stderr, "--- Runtime log (captured during co-launch) ---")
+		os.Stderr.Write(capturedLog.Bytes())
+	}
+	if tuiErr != nil {
+		return fmt.Errorf("tui: %w", tuiErr)
+	}
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+		return fmt.Errorf("co-launched server stopped: %w", serveErr)
+	}
+	return nil
+	{{else}}// Serve blocks until ctx cancels (SIGINT / SIGTERM), then drains.
 	if err := h.Serve(ctx); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
 	return nil
+	{{end}}
 }

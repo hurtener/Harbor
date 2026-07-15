@@ -117,6 +117,57 @@ func TestScaffold_WithServer_EmitsServerMainAndRegisterTools(t *testing.T) {
 	}
 }
 
+// TestScaffold_WithServerWithTUI_EmitsTUIFlag is the cmd-level pin for
+// AC4: --with-server --with-tui emits a generated main.go carrying the
+// --tui flag, sdk/tui, and WaitReady co-launch wiring.
+func TestScaffold_WithServerWithTUI_EmitsTUIFlag(t *testing.T) {
+	t.Parallel()
+	out := filepath.Join(t.TempDir(), "tui-agent")
+	root := NewRootCmd()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"scaffold", "--name", "tui-agent", "--output", out, "--with-server", "--with-tui"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("scaffold --with-server --with-tui: %v", err)
+	}
+	mainPath := filepath.Join(out, "cmd", "tui-agent", "main.go")
+	mainSrc, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("read generated main.go: %v", err)
+	}
+	for _, want := range []string{
+		`flag.Bool("tui"`,
+		`"github.com/hurtener/Harbor/sdk/tui"`,
+		`tui.Run(ctx, tui.Options{`,
+		`h.WaitReady(readyCtx)`,
+		`protocolclient "github.com/hurtener/Harbor/sdk/protocolclient"`,
+	} {
+		if !strings.Contains(string(mainSrc), want) {
+			t.Errorf("generated main.go missing %q", want)
+		}
+	}
+}
+
+// TestScaffold_WithTUIWithoutServer_FailsLoud proves --with-tui without
+// --with-server is rejected — the TUI co-launches from a generated
+// serving binary, so --with-server is required.
+func TestScaffold_WithTUIWithoutServer_FailsLoud(t *testing.T) {
+	t.Parallel()
+	out := filepath.Join(t.TempDir(), "tui-only")
+	root := NewRootCmd()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"scaffold", "--name", "tui-only", "--output", out, "--with-tui"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("--with-tui without --with-server must fail loud")
+	}
+	var cli CLIError
+	if !errors.As(err, &cli) || !strings.Contains(cli.Message, "--with-tui requires --with-server") {
+		t.Fatalf("expected --with-tui requires --with-server error, got %v", err)
+	}
+}
+
 // TestScaffold_DefaultOutput_HasNoServerSurface pins that the default
 // (flagless) scaffold is UNCHANGED by the --with-server addition: no
 // cmd/ tree, and agent.go does not import or reference the server

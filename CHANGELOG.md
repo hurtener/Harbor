@@ -17,6 +17,33 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added — v1.15.0 TUI distribution (Phase 184, D-320)
+
+- **`harbor serve --tui`** co-launches the native terminal client after the
+  server is ready. The TUI attaches through authenticated REST/SSE — it
+  receives no Runtime handle. The operator supplies the token
+  (`HARBOR_TOKEN` or `~/.harbor/token`); there is no anonymous loopback,
+  automatic token minting, or mock fallback. Quitting the TUI drains the
+  owned server. Runtime logs go to a captured sink so Bubble Tea frames
+  are never overwritten; on server failure the terminal is restored before
+  the captured log is printed.
+- **`sdk/tui.Run(ctx, Options)`** — a curated connection-only facade with
+  `BaseURL`, `Token protocolclient.TokenSource`, and `Session`. No
+  Runtime/stack/event-bus handle. The facade forwards to the shared
+  `internal/tui/entry` attach flow (`harbor tui --attach` and
+  `harbor serve --tui` share one implementation).
+- **`(*server.Handle).WaitReady(ctx) (string, error)`** — race-safe
+  one-shot readiness through `sdk/server`. Returns the actual bound
+  address or the bind/cancellation error. No polling, no second listener
+  lifecycle.
+- **`harbor scaffold --with-server --with-tui`** generates a binary whose
+  opt-in `--tui` flag co-launches the TUI via `sdk/server` + `sdk/tui`.
+  Flagless behavior remains headless and unchanged.
+- **Wave-end PTY E2E** (`test/integration/wave_v115_tui_test.go`) covers
+  standalone attach, stock co-launch, and generated co-launch with
+  identity propagation, session isolation, conversation, shutdown
+  ordering, goroutine baseline, and N≥10 concurrent cycles under `-race`.
+
 (Next up: the run-start connection reconcile landed DETACH-ONLY in v1.11
 (D-287) — only the attach / OAuth-resume leg of issue
 [#375](https://github.com/hurtener/Harbor/issues/375) remains parked with the

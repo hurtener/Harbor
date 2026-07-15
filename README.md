@@ -282,6 +282,28 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.15 Phase 184: Shipped.** The native TUI is now distributed
+through three modes: standalone attach (`harbor tui --attach`), stock
+co-launch (`harbor serve --tui`), and scaffolded co-launch (`harbor
+scaffold --with-server --with-tui`). Every mode attaches through
+authenticated REST/SSE — no Runtime handle, no anonymous loopback, no
+automatic token minting. Served handles expose race-safe one-shot
+readiness (`(*server.Handle).WaitReady`) through `sdk/server`; the
+connection-only `sdk/tui.Run(ctx, Options)` facade encapsulates the
+attach flow. Co-launch quit drains the owned server; attach quit leaves
+the remote alive. Runtime logs go to a captured sink in co-launch mode
+so Bubble Tea frames are never overwritten.
+
+**Harbor v1.15 Phase 183: Shipped.** The TUI now inspects and controls
+the Runtime at the same quality floor as the Console: task lifecycle
+and tree, tool transport and OAuth/approval posture, artifact metadata,
+live and retained event diagnostics, runtime health/drivers/capabilities,
+the unified intervention queue, capability/retention/partiality/typed
+Protocol failures, and one action matrix for task, intervention, tool,
+artifact, and session controls. Every canonical control is keyboard-
+driven; identity and capability gates are exact; destructive actions
+require explicit confirmation showing the active identity target.
+
 **Harbor v1.15 Phase 182: Shipped.** `harbor tui --attach <url>` is now the
 complete authenticated, Protocol-only conversation/session client: one active
 session, stream-safe switching, renewable token sources, durable reopen and
