@@ -1,0 +1,15 @@
+
+  HARBOR  /  POSTURE
+  One active session · Protocol-only
+  live
+
+   Exactly one active session · tenant-a/operator/sessio
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   RUNTIME Development Runtime · Protocol 0.1.0 · uptime
+   Capabilities: [task_control tool_annotations]
+   LLM: mock / fixture · mock=true
+   Governance: resolved=team default=team
+   Driver state: inmem embedded
+
+
+

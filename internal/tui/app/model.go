@@ -66,6 +66,8 @@ type State struct {
 	Scrolled, ReplayGap, Reconciliation, Dropped, Overflow, Truncated, CountersPartial bool
 	Closed, Erased, Intervention, Unknown, Incomplete, Pasted, Focused                 bool
 	Toast                                                                              string
+	DetailRows                                                                         []string
+	Health                                                                             string
 }
 
 type startupStage uint8
@@ -553,6 +555,16 @@ func (m Model) renderBase(c *canvas) {
 		m.renderCard(c, y, width, ui.RoleInfo, "◇", "Terminal foundation ready", "Attach a Runtime to begin.")
 		y += 4
 	} else {
+		if m.state.Route != "session" && len(m.state.DetailRows) > 0 {
+			for _, row := range m.state.DetailRows {
+				if y >= m.height-3 {
+					break
+				}
+				c.put(ui.OuterPadding+1, y, ui.Truncate(row, width-2), m.theme.Style(ui.RoleText, nil))
+				y++
+			}
+			return
+		}
 		compactNotice := false
 		if m.height <= 12 && !m.state.Intervention {
 			if notices := m.notices(); len(notices) > 0 {
@@ -711,7 +723,11 @@ func (m Model) renderSidebar(c *canvas) {
 	for y := range m.height {
 		c.put(x, y, ui.PadRight("", min(ui.SidebarWidth, m.width-x)), panel)
 	}
-	rows := []string{"RUNTIME CONTEXT", "", "Session", m.projection.Identity.Session, "one active session", "", "Status", m.projection.SessionStatus, "Transcript", fmt.Sprintf("%d blocks", len(m.projection.Blocks)), "Stream", m.state.Connection}
+	rows := []string{"RUNTIME CONTEXT", "", "Session", m.projection.Identity.Session, "one active session", ""}
+	if m.state.Health != "" {
+		rows = append(rows, "Health", m.state.Health)
+	}
+	rows = append(rows, "Status", m.projection.SessionStatus, "Transcript", fmt.Sprintf("%d blocks", len(m.projection.Blocks)), "Stream", m.state.Connection)
 	for i, row := range rows {
 		if i+2 >= m.height {
 			break

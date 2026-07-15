@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -9,15 +10,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	protocolclient "github.com/hurtener/Harbor/internal/protocol/client"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/tui/composer"
 	"github.com/hurtener/Harbor/internal/tui/conversation"
 	"github.com/hurtener/Harbor/internal/tui/projection"
+	"github.com/hurtener/Harbor/internal/tui/renderers"
 	"github.com/hurtener/Harbor/internal/tui/sessionpicker"
+	"github.com/hurtener/Harbor/internal/tui/surface"
 	"github.com/hurtener/Harbor/internal/tui/ui"
 )
 
@@ -33,6 +38,13 @@ type conversationController interface {
 	Identity() types.IdentityScope
 	Projection() projection.Projection
 	HasCapability(types.Capability) bool
+	Inspect(context.Context, conversation.InspectionRequest) conversation.RuntimeData
+	Execute(context.Context, conversation.Mutation) error
+	TaskDetail(context.Context, string) (types.TaskDetail, error)
+	Control(context.Context, methods.Method, string, string, map[string]any) (types.ControlResponse, error)
+	DeleteArtifact(context.Context, string) (types.ArtifactsDeleteResponse, error)
+	SetToolApproval(context.Context, string, types.ToolApprovalPolicy) (types.ToolSetApprovalPolicyResponse, error)
+	RevokeToolOAuth(context.Context, string) (types.ToolRevokeOAuthResponse, error)
 }
 
 type interactionStore interface {
@@ -82,6 +94,11 @@ type exportMsg struct {
 	err  error
 }
 type persistMsg struct{ err error }
+type inspectMsg struct{ data conversation.RuntimeData }
+type actionMsg struct {
+	intent ActionIntent
+	err    error
+}
 
 // RuntimeModel joins the terminal foundation to one Protocol-only conversation controller.
 type RuntimeModel struct {
@@ -104,6 +121,17 @@ type RuntimeModel struct {
 	followupSubmissions                map[string]composer.Submission
 	identity                           types.IdentityScope
 	generation                         uint64
+	inspectEpoch                       uint64
+	runtime                            conversation.RuntimeData
+	activeAction                       *ActionSpec
+	activeIntent                       *ActionIntent
+	actionInput                        string
+	selectedTask, selectedTool         string
+	selectedArtifact, selectedPause    string
+	routeFilter                        bool
+	pending                            map[string]ActionIntent
+	taskCursors                        map[int]types.TaskListCursor
+	renderers                          renderers.Registry
 }
 
 // NewRuntimeModel constructs the operational one-active-session application.
@@ -111,7 +139,7 @@ func NewRuntimeModel(ctx context.Context, width, height int, theme ui.Theme, con
 	id := controller.Identity()
 	shell := NewOperationalModel(width, height, theme, options.ReducedMotion, projection.Projection{}).WithState(State{Route: "session", Connection: "connecting", Composer: ComposerFocused, SidebarOpen: options.State.SidebarOpen})
 	editor := composer.New().RestoreLocal(options.State.History, options.State.Stash).SetText(options.State.Draft)
-	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, collapsedReasoning: stringSet(options.State.CollapsedReasoning), collapsedTools: stringSet(options.State.CollapsedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id}
+	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, collapsedReasoning: stringSet(options.State.CollapsedReasoning), collapsedTools: stringSet(options.State.CollapsedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id, renderers: renderers.Builtins(), pending: map[string]ActionIntent{}, taskCursors: map[int]types.TaskListCursor{1: {}}}
 	m.syncComposer()
 	m.syncAccess()
 	return m
@@ -140,12 +168,45 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setError(msg.err)
 		}
+		return m, m.inspectCmd()
+	case inspectMsg:
+		if msg.data.Stale || msg.data.RequestEpoch != m.inspectEpoch || msg.data.Generation != m.generation || runtimeScopeKey(msg.data.Identity) != runtimeScopeKey(m.identity) {
+			m.closeInspectionModals()
+			return m, nil
+		}
+		if m.activeIntent != nil && m.activeIntent.RequestEpoch != msg.data.RequestEpoch {
+			m.closeInspectionModals()
+		}
+		m.runtime = msg.data
+		if msg.data.Tasks.NextCursor.NextPageToken != "" {
+			m.taskCursors[msg.data.Tasks.Page+1] = msg.data.Tasks.NextCursor
+		}
+		m.initializeSelections()
+		m.reconcilePending()
+		m.syncRuntimeRoute()
 		return m, nil
+	case actionMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+		} else {
+			m.shell.state.ToastOpen = true
+			m.pending[intentKey(msg.intent)] = msg.intent
+			m.shell.state.Toast = string(msg.intent.Method) + " accepted · pending canonical reconciliation"
+		}
+		m.activeAction = nil
+		m.activeIntent = nil
+		m.actionInput = ""
+		m.closeModal()
+		return m, m.refreshAffected()
 	case updateMsg:
 		if !m.applyUpdate(msg.update) {
 			return m, m.waitUpdate()
 		}
-		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp())
+		var inspect tea.Cmd
+		if len(m.pending) > 0 {
+			inspect = m.inspectCmd()
+		}
+		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp(), inspect)
 	case CommandMsg:
 		return m.runCommand(msg.ID)
 	case sessionsMsg:
@@ -259,6 +320,9 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := canonicalKey(msg.String())
+	if m.routeFilter {
+		return m.updateRouteFilter(key)
+	}
 	if m.searchMode {
 		return m.updateSearch(key)
 	}
@@ -267,6 +331,28 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if key == "ctrl+c" || key == "ctrl+d" {
 		return m, tea.Quit
+	}
+	if m.shell.state.Route != "session" {
+		switch key {
+		case "up", "ctrl+p":
+			m.moveRouteSelection(-1)
+			m.syncRuntimeRoute()
+			return m, m.inspectCmd()
+		case "down", "ctrl+n":
+			m.moveRouteSelection(1)
+			m.syncRuntimeRoute()
+			return m, m.inspectCmd()
+		case "pgup":
+			m.pageRoute(-1)
+			return m, m.inspectCmd()
+		case "pgdown":
+			m.pageRoute(1)
+			return m, m.inspectCmd()
+		case "/":
+			m.routeFilter = true
+			m.shell.state.ToastOpen, m.shell.state.Toast = true, "Filter: "+m.currentRouteFilter()
+			return m, nil
+		}
 	}
 	if len(m.shell.sequence) > 0 {
 		return m.forward(msg)
@@ -376,6 +462,12 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch id {
+	case "route-session", "route-tasks", "route-tools", "route-artifacts", "route-events", "route-posture", "route-interventions", "route-diagnostics":
+		m.shell.state.Route = strings.TrimPrefix(string(id), "route-")
+		m.syncRuntimeRoute()
+		return m, m.inspectCmd()
+	case "actions":
+		return m.openActions()
 	case "submit":
 		submission, err := m.editor.PrepareSubmission()
 		if err != nil {
@@ -420,8 +512,7 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "session-delete":
 		m.targetSession = m.controller.Identity().Session
-		m.openDeleteConfirm()
-		return m, nil
+		return m.beginSessionDelete()
 	case "reauthenticate":
 		m.shell = m.shell.WithModal(NewSelect("Replace credential · memory only", nil, "composer"))
 		return m, nil
@@ -525,6 +616,54 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 		return m.forward(original)
 	}
 	switch modal.Title {
+	case "Runtime actions":
+		if key == "enter" {
+			rows := modal.Visible()
+			if len(rows) == 0 {
+				return m, nil
+			}
+			id := rows[min(modal.Current, len(rows)-1)].ID
+			for _, action := range m.availableActions() {
+				if action.ID != id {
+					continue
+				}
+				if action.DisabledReason != "" {
+					m.shell.state.ToastOpen = true
+					m.shell.state.Toast = "Unavailable: " + action.DisabledReason
+					return m, nil
+				}
+				m.activeAction = &action
+				if action.Method == methods.MethodRedirect || action.Method == methods.MethodInjectContext || action.Method == methods.MethodUserMessage || action.Method == methods.MethodPrioritize || action.Method == methods.MethodToolsSetApprovalPolicy || action.Method == methods.MethodReject || action.ID == "intervention.oauth" || action.ID == "intervention.input" {
+					m.shell = m.shell.WithModal(NewSelect("Action input · "+action.Title, nil, "modal"))
+					return m, nil
+				}
+				if action.Confirmation != ConfirmNone {
+					intent, err := m.buildIntent(action, "")
+					if err != nil {
+						m.setError(err)
+						return m, nil
+					}
+					m.activeIntent = &intent
+					m.openActionConfirm(intent)
+					return m, nil
+				}
+				return m.executeActionSpec(action, "")
+			}
+		}
+	case "Confirm Runtime action":
+		if key == "enter" && m.activeIntent != nil {
+			rows := modal.Visible()
+			if len(rows) == 0 {
+				return m, nil
+			}
+			if rows[min(modal.Current, len(rows)-1)].ID == "confirm" {
+				return m.executeIntent(*m.activeIntent)
+			}
+			m.activeAction = nil
+			m.activeIntent = nil
+			m.closeModal()
+			return m, nil
+		}
 	case "Sessions":
 		if key == "enter" {
 			rows := modal.Visible()
@@ -543,8 +682,13 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 		}
 		if key == "ctrl+d" {
 			if session, ok := selectedModalID(modal); ok {
+				if session != m.identity.Session {
+					m.shell.state.ToastOpen, m.shell.state.Toast = true, "Unavailable: attach the target session before destructive deletion"
+					return m, nil
+				}
 				m.targetSession = session
-				m.openDeleteConfirm()
+				m.closeModal()
+				return m.beginSessionDelete()
 			}
 			return m, nil
 		}
@@ -582,27 +726,6 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 				return renamedMsg{title: title, err: err}
 			}
 		}
-	case "Delete session":
-		if key == "enter" {
-			rows := modal.Visible()
-			if len(rows) == 0 {
-				return m, nil
-			}
-			if rows[min(modal.Current, len(rows)-1)].ID == "cancel" {
-				m.closeModal()
-				return m, nil
-			}
-			target := m.targetSession
-			return m, func() tea.Msg {
-				if target != m.controller.Identity().Session {
-					if err := m.controller.Switch(m.ctx, types.IdentityScope{Tenant: m.controller.Identity().Tenant, User: m.controller.Identity().User, Session: target}); err != nil {
-						return deletedMsg{err}
-					}
-				}
-				_, err := m.controller.Delete(m.ctx)
-				return deletedMsg{err}
-			}
-		}
 	case "Attach file · path|disposition":
 		if key == "enter" {
 			return m.beginUpload(modal.Query)
@@ -615,7 +738,526 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 			}
 		}
 	}
+	if strings.HasPrefix(modal.Title, "Action input · ") && key == "enter" && m.activeAction != nil {
+		action := *m.activeAction
+		value := strings.TrimSpace(modal.Query)
+		if value == "" {
+			m.setError(errors.New("action input required"))
+			return m, nil
+		}
+		if action.Confirmation != ConfirmNone {
+			m.actionInput = value
+			intent, err := m.buildIntent(action, value)
+			if err != nil {
+				m.setError(err)
+				return m, nil
+			}
+			m.activeIntent = &intent
+			m.openActionConfirm(intent)
+			return m, nil
+		}
+		return m.executeActionSpec(action, value)
+	}
 	return m.forward(original)
+}
+
+func (m *RuntimeModel) inspectCmd() tea.Cmd {
+	m.inspectEpoch++
+	request := conversation.InspectionRequest{Identity: m.identity, Generation: m.generation, RequestEpoch: m.inspectEpoch, TaskID: m.selectedTask, ToolID: m.selectedTool, ArtifactID: m.selectedArtifact, TaskFilter: m.runtime.Tasks.Filter, ToolFilter: m.runtime.Tools.Filter, ArtifactFilter: m.runtime.Artifacts.Filter, EventFilter: m.runtime.Events.Filter, TaskPage: m.runtime.Tasks.Page, ToolPage: m.runtime.Tools.Page, ArtifactPage: m.runtime.Artifacts.Page, EventPage: m.runtime.Events.Page, TaskCursor: m.taskCursors[max(1, m.runtime.Tasks.Page)]}
+	return func() tea.Msg { return inspectMsg{data: m.controller.Inspect(m.ctx, request)} }
+}
+
+func (m RuntimeModel) beginSessionDelete() (tea.Model, tea.Cmd) {
+	for _, action := range ActionMatrix() {
+		if action.ID != "session.delete" {
+			continue
+		}
+		intent, err := m.buildIntent(action, "")
+		if err != nil {
+			m.setError(err)
+			return m, nil
+		}
+		m.activeAction, m.activeIntent = &action, &intent
+		m.openActionConfirm(intent)
+		return m, nil
+	}
+	m.setError(errors.New("session delete action unavailable"))
+	return m, nil
+}
+
+func (m *RuntimeModel) initializeSelections() {
+	containsTask := false
+	for _, row := range m.runtime.Tasks.Rows {
+		containsTask = containsTask || row.ID == m.selectedTask
+	}
+	if !containsTask {
+		m.selectedTask = ""
+	}
+	if m.selectedTask == "" && len(m.runtime.Tasks.Rows) > 0 {
+		m.selectedTask = m.runtime.Tasks.Rows[0].ID
+	}
+	containsTool := false
+	for _, row := range m.runtime.Tools.Rows {
+		containsTool = containsTool || row.ID == m.selectedTool
+	}
+	if !containsTool {
+		m.selectedTool = ""
+	}
+	if m.selectedTool == "" && len(m.runtime.Tools.Rows) > 0 {
+		m.selectedTool = m.runtime.Tools.Rows[0].ID
+	}
+	containsArtifact := false
+	for _, row := range m.runtime.Artifacts.Rows {
+		containsArtifact = containsArtifact || row.Ref.ID == m.selectedArtifact
+	}
+	if !containsArtifact {
+		m.selectedArtifact = ""
+	}
+	if m.selectedArtifact == "" && len(m.runtime.Artifacts.Rows) > 0 {
+		m.selectedArtifact = m.runtime.Artifacts.Rows[0].Ref.ID
+	}
+	selectedActive := false
+	for _, item := range m.runtime.Interventions.Items() {
+		if item.Token == m.selectedPause {
+			selectedActive = true
+			break
+		}
+	}
+	if selectedActive {
+		m.runtime.Interventions = m.runtime.Interventions.Select(m.selectedPause)
+	} else if selected, ok := m.runtime.Interventions.Selected(); ok && selected.Status == string(types.PauseStatePaused) {
+		m.selectedPause = selected.Token
+	} else if rows := m.runtime.Interventions.Items(); len(rows) > 0 {
+		m.selectedPause = rows[0].Token
+		m.runtime.Interventions = m.runtime.Interventions.Select(m.selectedPause)
+	} else {
+		m.selectedPause = ""
+	}
+}
+
+func (m *RuntimeModel) moveRouteSelection(delta int) {
+	switch m.shell.state.Route {
+	case "tasks":
+		ids := make([]string, 0, len(m.runtime.Tasks.Visible()))
+		for _, row := range m.runtime.Tasks.Visible() {
+			ids = append(ids, row.ID)
+		}
+		m.selectedTask = moveID(ids, m.selectedTask, delta)
+	case "tools":
+		ids := make([]string, 0, len(m.runtime.Tools.Visible()))
+		for _, row := range m.runtime.Tools.Visible() {
+			ids = append(ids, row.ID)
+		}
+		m.selectedTool = moveID(ids, m.selectedTool, delta)
+	case "artifacts":
+		ids := make([]string, 0, len(m.runtime.Artifacts.Visible()))
+		for _, row := range m.runtime.Artifacts.Visible() {
+			ids = append(ids, row.Ref.ID)
+		}
+		m.selectedArtifact = moveID(ids, m.selectedArtifact, delta)
+	case "events":
+		rows := m.runtime.Events.Visible()
+		ids := make([]string, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, fmt.Sprint(row.Sequence))
+		}
+		selected := moveID(ids, fmt.Sprint(m.runtime.Events.SelectedSequence), delta)
+		if _, err := fmt.Sscan(selected, &m.runtime.Events.SelectedSequence); err != nil {
+			m.shell.state.ToastOpen, m.shell.state.Toast = true, "invalid event selection"
+		}
+	case "interventions":
+		rows := m.runtime.Interventions.History()
+		ids := make([]string, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, row.Token)
+		}
+		m.selectedPause = moveID(ids, m.selectedPause, delta)
+		m.runtime.Interventions = m.runtime.Interventions.Select(m.selectedPause)
+	}
+}
+
+func moveID(ids []string, selected string, delta int) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	index := 0
+	for i, id := range ids {
+		if id == selected {
+			index = i
+			break
+		}
+	}
+	index = (index + delta%len(ids) + len(ids)) % len(ids)
+	return ids[index]
+}
+
+func (m *RuntimeModel) pageRoute(delta int) {
+	switch m.shell.state.Route {
+	case "tasks":
+		target := max(1, m.runtime.Tasks.Page+delta)
+		if _, ok := m.taskCursors[target]; ok {
+			m.runtime.Tasks.Page, m.selectedTask = target, ""
+		}
+	case "tools":
+		m.runtime.Tools.Page = max(1, m.runtime.Tools.Page+delta)
+	case "artifacts":
+		m.runtime.Artifacts.Page = max(1, m.runtime.Artifacts.Page+delta)
+	case "events":
+		m.runtime.Events.Page = max(1, m.runtime.Events.Page+delta)
+	}
+}
+
+func (m RuntimeModel) currentRouteFilter() string {
+	switch m.shell.state.Route {
+	case "tasks":
+		return m.runtime.Tasks.Filter
+	case "tools":
+		return m.runtime.Tools.Filter
+	case "artifacts":
+		return m.runtime.Artifacts.Filter
+	case "events":
+		return m.runtime.Events.Filter
+	}
+	return ""
+}
+
+func (m RuntimeModel) updateRouteFilter(key string) (tea.Model, tea.Cmd) {
+	value := m.currentRouteFilter()
+	switch key {
+	case "escape":
+		m.routeFilter = false
+		return m, nil
+	case "enter":
+		m.routeFilter = false
+		return m, m.inspectCmd()
+	case "backspace":
+		if value != "" {
+			runes := []rune(value)
+			value = string(runes[:len(runes)-1])
+		}
+	default:
+		if len([]rune(key)) == 1 {
+			value += key
+		}
+	}
+	switch m.shell.state.Route {
+	case "tasks":
+		m.runtime.Tasks.Filter = value
+		m.runtime.Tasks.Page = 1
+		m.taskCursors = map[int]types.TaskListCursor{1: {}}
+	case "tools":
+		m.runtime.Tools.Filter = value
+		m.runtime.Tools.Page = 1
+	case "artifacts":
+		m.runtime.Artifacts.Filter = value
+		m.runtime.Artifacts.Page = 1
+	case "events":
+		m.runtime.Events.Filter = value
+		m.runtime.Events.Page = 1
+	}
+	m.shell.state.ToastOpen, m.shell.state.Toast = true, "Filter: "+value
+	m.syncRuntimeRoute()
+	return m, nil
+}
+
+func intentKey(intent ActionIntent) string {
+	return string(intent.Method) + "/" + intent.RunID + "/" + intent.PauseToken + "/" + intent.ToolID + "/" + intent.ArtifactID + "/" + intent.SessionID
+}
+
+func (m *RuntimeModel) reconcilePending() {
+	for key, intent := range m.pending {
+		reconciled := false
+		for _, event := range m.runtime.Events.Rows {
+			if event.Run == intent.RunID && (event.Type == "control.applied" || event.Type == "control.rejected" || event.Type == "pause.resumed") {
+				reconciled = true
+				break
+			}
+		}
+		if intent.Method == methods.MethodArtifactsDelete {
+			reconciled = true
+			for _, row := range m.runtime.Artifacts.Rows {
+				if row.Ref.ID == intent.ArtifactID {
+					reconciled = false
+				}
+			}
+		}
+		if intent.Method == methods.MethodResume || intent.Method == methods.MethodApprove || intent.Method == methods.MethodReject {
+			reconciled = true
+			for _, item := range m.runtime.Interventions.Items() {
+				if item.Token == intent.PauseToken {
+					reconciled = false
+				}
+			}
+		}
+		if intent.Method == methods.MethodToolsSetApprovalPolicy {
+			want, _ := intent.Payload()["policy"].(string) //nolint:errcheck // acknowledged typed-map lookup; absence handled by empty-string compare below
+			for _, tool := range m.runtime.Tools.Rows {
+				if tool.ID == intent.ToolID && string(tool.ApprovalPolicy) == want {
+					reconciled = true
+				}
+			}
+		}
+		if reconciled {
+			delete(m.pending, key)
+		}
+	}
+}
+
+func (m *RuntimeModel) closeInspectionModals() {
+	if modal, ok := m.shell.focus.Top(); ok && (modal.Title == "Runtime actions" || modal.Title == "Confirm Runtime action" || strings.HasPrefix(modal.Title, "Action input")) {
+		m.closeModal()
+		m.activeAction, m.activeIntent, m.actionInput = nil, nil, ""
+	}
+}
+
+func (m *RuntimeModel) refreshAffected() tea.Cmd {
+	return m.inspectCmd()
+}
+
+func (m RuntimeModel) openActions() (tea.Model, tea.Cmd) {
+	actions := m.availableActions()
+	items := make([]SelectItem, 0, len(actions))
+	for _, action := range actions {
+		items = append(items, SelectItem{ID: action.ID, Category: action.Target, Title: action.Title, Description: actionDescription(action)})
+	}
+	m.shell = m.shell.WithModal(NewSelect("Runtime actions", items, "composer"))
+	return m, nil
+}
+
+func (m RuntimeModel) availableActions() []ActionSpec {
+	caps := map[types.Capability]bool{types.CapTaskControl: m.controller.HasCapability(types.CapTaskControl), types.CapToolAnnotations: m.controller.HasCapability(types.CapToolAnnotations), types.CapSessionLifecycle: m.controller.HasCapability(types.CapSessionLifecycle)}
+	var task *types.TaskRow
+	interventionKind, token, toolID, artifactID := "", "", "", ""
+	for _, row := range m.runtime.Tasks.Rows {
+		if row.ID == m.selectedTask {
+			selected := row
+			task = &selected
+			break
+		}
+	}
+	if selected, ok := m.runtime.Interventions.Selected(); ok && selected.Token == m.selectedPause && selected.Status == string(types.PauseStatePaused) {
+		token, interventionKind = selected.Token, string(selected.Kind)
+	}
+	toolID, artifactID = m.selectedTool, m.selectedArtifact
+	return resolveActions(caps, task, interventionKind, token, toolID, artifactID)
+}
+
+func (m *RuntimeModel) openActionConfirm(intent ActionIntent) {
+	target := runtimeScopeKey(intent.Identity) + " · run " + intent.RunID + " · PauseToken " + intent.PauseToken + " · tool " + intent.ToolID + " · artifact " + intent.ArtifactID
+	description := target + " · authority " + intent.RequiredAuthority + " · input " + intent.Input + " · " + string(intent.Confirmation)
+	m.shell = m.shell.WithModal(NewSelect("Confirm Runtime action", []SelectItem{{ID: "confirm", Title: "Confirm " + intent.Title, Description: description}, {ID: "cancel", Title: "Cancel"}}, "modal"))
+}
+
+func (m RuntimeModel) executeActionSpec(action ActionSpec, input string) (tea.Model, tea.Cmd) {
+	intent, err := m.buildIntent(action, input)
+	if err != nil {
+		m.setError(err)
+		return m, nil
+	}
+	return m.executeIntent(intent)
+}
+
+func (m RuntimeModel) buildIntent(action ActionSpec, input string) (ActionIntent, error) {
+	runID, token, toolID, artifactID := m.actionTargets(action)
+	payload := map[string]any{}
+	if token != "" {
+		payload["token"] = token
+	}
+	switch action.Method {
+	case methods.MethodRedirect:
+		payload["goal"] = input
+	case methods.MethodInjectContext:
+		payload["note"] = input
+	case methods.MethodUserMessage:
+		payload["message"] = input
+	case methods.MethodPrioritize:
+		var priority int
+		if _, err := fmt.Sscan(input, &priority); err != nil {
+			return ActionIntent{}, errors.New("priority must be an integer")
+		}
+		payload["priority"] = priority
+	case methods.MethodApprove:
+		payload["approved_by"] = "tui operator"
+	case methods.MethodReject:
+		payload["rejected_by"] = "tui operator"
+		if input != "" {
+			payload["reason"] = input
+		}
+	}
+	if action.ID == "intervention.oauth" {
+		payload["oauth_input"] = input
+	}
+	if action.ID == "intervention.input" {
+		payload["input"] = input
+	}
+	if action.Method == methods.MethodToolsSetApprovalPolicy {
+		policy := types.ToolApprovalPolicy(input)
+		if !types.IsValidToolApprovalPolicy(policy) {
+			return ActionIntent{}, errors.New("policy must be auto, gated, or denied")
+		}
+		payload["policy"] = string(policy)
+	}
+	frozen, err := freezePayload(payload)
+	if err != nil {
+		return ActionIntent{}, err
+	}
+	identity := m.identity
+	return ActionIntent{ActionID: action.ID, Title: action.Title, RequiredAuthority: action.Scope, Identity: identity, Generation: m.generation, RequestEpoch: m.inspectEpoch, Method: action.Method, RunID: runID, PauseToken: token, ToolID: toolID, ArtifactID: artifactID, SessionID: identity.Session, Input: input, Confirmation: action.Confirmation, payload: frozen}, nil
+}
+
+func (m RuntimeModel) executeIntent(intent ActionIntent) (tea.Model, tea.Cmd) {
+	if intent.Generation != m.generation || intent.RequestEpoch != m.inspectEpoch || runtimeScopeKey(intent.Identity) != runtimeScopeKey(m.identity) {
+		m.setError(errStaleActionIntent)
+		m.activeAction, m.activeIntent = nil, nil
+		m.closeInspectionModals()
+		return m, nil
+	}
+	return m, func() tea.Msg {
+		err := m.controller.Execute(m.ctx, conversation.Mutation{Identity: intent.Identity, Method: intent.Method, RunID: intent.RunID, PauseToken: intent.PauseToken, ToolID: intent.ToolID, ArtifactID: intent.ArtifactID, Payload: intent.Payload()})
+		return actionMsg{intent: intent, err: err}
+	}
+}
+
+func (m RuntimeModel) actionTargets(action ActionSpec) (runID, token, toolID, artifactID string) {
+	if strings.HasPrefix(action.ID, "task.") || action.Method == methods.MethodCancel || action.Method == methods.MethodPause || action.Method == methods.MethodRedirect || action.Method == methods.MethodInjectContext || action.Method == methods.MethodUserMessage || action.Method == methods.MethodPrioritize {
+		runID = m.selectedTask
+	}
+	if strings.HasPrefix(action.ID, "intervention.") || action.ID == "task.resume" || action.Method == methods.MethodResume || action.Method == methods.MethodApprove || action.Method == methods.MethodReject {
+		if selected, ok := m.runtime.Interventions.Selected(); ok && selected.Token == m.selectedPause {
+			token, runID = selected.Token, selected.RunID
+		}
+	}
+	toolID, artifactID = m.selectedTool, m.selectedArtifact
+	return runID, token, toolID, artifactID
+}
+
+func (m *RuntimeModel) syncRuntimeRoute() {
+	if m.shell.state.Route == "session" {
+		return
+	}
+	rows := []string{"Exactly one active session · " + renderers.SafeText(runtimeScopeKey(m.identity)), "↑/↓ select · PgUp/PgDn page · / filter · F9 actions"}
+	switch m.shell.state.Route {
+	case "tasks":
+		rows = append(rows, "TASK LIFECYCLE / TREE / PROGRESS / GROUP / ORPHAN / LATENCY · "+m.runtime.Tasks.Surface.Label(), "Filter: "+renderers.SafeText(m.runtime.Tasks.Filter)+fmt.Sprintf(" · page %d", m.runtime.Tasks.Page))
+		known := map[string]bool{}
+		for _, task := range m.runtime.Tasks.Rows {
+			known[task.ID] = true
+		}
+		for _, task := range m.runtime.Tasks.Visible() {
+			marker, indent, orphan := "  ", "", ""
+			if task.ID == m.selectedTask {
+				marker = "● "
+			}
+			if task.ParentTaskID != "" {
+				indent = "  └ "
+				if !known[task.ParentTaskID] {
+					orphan = " · orphan parent unavailable"
+				}
+			}
+			rows = append(rows, marker+indent+renderers.SafeText(task.ID)+"  "+renderers.SafeText(m.runtime.Tasks.Summary(task))+orphan)
+		}
+		rows = append(rows, "Cost: observed/non-authoritative; inspect canonical events for completeness")
+		if detail := m.runtime.Tasks.Selected; detail != nil {
+			rows = append(rows, fmt.Sprintf("DETAIL %s · result_ref=%t · inline=%t · trajectory=%t · parent=%s", detail.Task.ID, detail.ResultRef != nil, detail.ResultInline != "", detail.Trajectory != nil, detail.ParentSession.SessionID))
+		}
+	case "tools":
+		rows = append(rows, "TOOLS · schema / transport / OAuth / approval / metrics / content · "+m.runtime.Tools.Surface.Label(), "Filter: "+renderers.SafeText(m.runtime.Tools.Filter)+fmt.Sprintf(" · page %d", m.runtime.Tools.Page))
+		if !m.controller.HasCapability(types.CapToolAnnotations) {
+			rows = append(rows, "Unavailable: Runtime does not advertise tool_annotations")
+		}
+		for _, tool := range m.runtime.Tools.Visible() {
+			marker := "  "
+			if tool.ID == m.selectedTool {
+				marker = "● "
+			}
+			rows = append(rows, renderers.SafeText(fmt.Sprintf("%s%s  %s · OAuth %s · approval %s", marker, tool.ID, tool.Transport, tool.OAuthStatus, tool.ApprovalPolicy)))
+		}
+		rows = append(rows, "Analytics: bounded best-effort; absence is not zero")
+		if detail := m.runtime.Tools.Selected; detail != nil {
+			block := m.renderers.Render(renderers.Value{Kind: "tool", ID: detail.Tool.ID, Title: detail.Tool.Name, Status: string(detail.Tool.OAuthStatus), Payload: map[string]any{"schema_manifest": detail.Manifest, "bounded_metrics": detail.Metrics, "content_posture": detail.Content, "unavailable": detail.Unavailable}})
+			rows = append(rows, "DETAIL "+block.Title+" · "+block.Summary)
+		}
+	case "artifacts":
+		rows = append(rows, "ARTIFACT REFERENCES · metadata only; heavy content stays by reference · "+m.runtime.Artifacts.Surface.Label(), "Filter: "+renderers.SafeText(m.runtime.Artifacts.Filter)+fmt.Sprintf(" · page %d", m.runtime.Artifacts.Page))
+		for _, artifact := range m.runtime.Artifacts.Visible() {
+			marker := "  "
+			if artifact.Ref.ID == m.selectedArtifact {
+				marker = "● "
+			}
+			rows = append(rows, renderers.SafeText(fmt.Sprintf("%s%s  %s · %d bytes · %s", marker, artifact.Ref.ID, artifact.Ref.MimeType, artifact.Ref.SizeBytes, artifact.Source)))
+		}
+		if preview := m.runtime.Artifacts.Selected; preview != nil {
+			status := preview.URL
+			if preview.Unavailable != "" {
+				status = "Unavailable: " + preview.Unavailable
+			}
+			rows = append(rows, "PREVIEW "+preview.Ref.ID+" · "+status)
+		}
+	case "events":
+		rows = append(rows, "EVENT STREAM / AGGREGATE · filter / raw safe payload / export · "+m.runtime.Events.Surface.Label(), "Filter: "+renderers.SafeText(m.runtime.Events.Filter)+fmt.Sprintf(" · page %d", m.runtime.Events.Page))
+		for _, event := range m.runtime.Events.Visible() {
+			block := m.renderers.Render(renderers.Value{Kind: "event", ID: fmt.Sprint(event.Sequence), Title: event.Type, Status: event.Run, Payload: event.Payload})
+			marker := "  "
+			if event.Sequence == m.runtime.Events.SelectedSequence {
+				marker = "● "
+			}
+			rows = append(rows, renderers.SafeText(fmt.Sprintf("%s#%d  %s · run %s · raw %s", marker, event.Sequence, event.Type, event.Run, block.Summary)))
+		}
+		if m.runtime.Events.Truncated {
+			rows = append(rows, "Partial: retained event window or aggregate is truncated")
+		}
+	case "posture":
+		p := m.runtime.Posture
+		rows = append(rows, fmt.Sprintf("RUNTIME %s · Protocol %s · uptime %ds", p.Info.DisplayName, p.Info.ProtocolVersion, p.Info.UptimeSeconds), "Capabilities: "+fmt.Sprint(p.Info.Capabilities), fmt.Sprintf("LLM: %s / %s · mock=%t", p.LLM.Provider, p.LLM.Model, p.LLM.MockMode), fmt.Sprintf("Governance: resolved=%s default=%s", p.Governance.ResolvedTier, p.Governance.DefaultTier))
+		for _, driver := range p.Drivers.Subsystems {
+			rows = append(rows, renderers.SafeText("Driver "+driver.Subsystem+": "+driver.Driver+" "+driver.Mode))
+		}
+		for _, name := range sortedSurfaceKeys(p.Surfaces) {
+			rows = append(rows, "Surface "+renderers.SafeText(name)+": "+renderers.SafeText(p.Surfaces[name].Label()))
+		}
+	case "interventions":
+		rows = append(rows, "INTERVENTION INBOX · retained by PauseToken · approval / OAuth / input / expiry / resolved")
+		for _, item := range m.runtime.Interventions.History() {
+			marker := "  "
+			if item.Token == m.selectedPause {
+				marker = "● "
+			}
+			rows = append(rows, renderers.SafeText(fmt.Sprintf("%s%s  %s %s · %s · run %s", marker, item.Token, item.Status, item.Resolution, item.Kind, item.RunID)))
+		}
+		if len(m.runtime.Interventions.History()) == 0 {
+			if m.runtime.Interventions.Surface.Ready() {
+				rows = append(rows, "No interventions in the canonical retained window")
+			} else {
+				rows = append(rows, "Interventions "+m.runtime.Interventions.Surface.Label()+"; emptiness unknown")
+			}
+		}
+	case "diagnostics":
+		rows = append(rows, "DIAGNOSTICS · stream / retention / capability / partiality")
+		errorKeys := make([]string, 0, len(m.runtime.Errors))
+		for name := range m.runtime.Errors {
+			errorKeys = append(errorKeys, name)
+		}
+		sort.Strings(errorKeys)
+		for _, name := range errorKeys {
+			rows = append(rows, renderers.SafeText("Unavailable "+name+": "+m.runtime.Errors[name]))
+		}
+		for _, horizon := range m.runtime.Posture.Health.Retention {
+			value := "no rows at caller-visible scope"
+			if horizon.OldestRetainedAt != nil {
+				value = horizon.OldestRetainedAt.Format(time.RFC3339)
+			}
+			rows = append(rows, "Retention "+horizon.Surface+" ["+horizon.Scope+"]: "+value)
+		}
+	}
+	if len(m.pending) > 0 {
+		rows = append(rows, fmt.Sprintf("Pending canonical reconciliation: %d mutation(s)", len(m.pending)))
+	}
+	if len(rows) == 1 {
+		rows = append(rows, "No canonical rows available; this is not a zero")
+	}
+	m.shell.state.DetailRows = rows
+	level, health := m.runtime.Posture.Attention(m.shell.state.Connection, len(m.runtime.Interventions.Items()), int(m.runtime.Tasks.Aggregates.Failed))
+	m.shell.state.Health = level + " · " + health
 }
 
 func (m *RuntimeModel) openSessions(query string) (tea.Model, tea.Cmd) {
@@ -661,9 +1303,6 @@ func (m RuntimeModel) switchSession(session string) (tea.Model, tea.Cmd) {
 	id := m.controller.Identity()
 	id.Session = session
 	return m, func() tea.Msg { err := m.controller.Switch(m.ctx, id); return switchedMsg{session, err} }
-}
-func (m *RuntimeModel) openDeleteConfirm() {
-	m.shell = m.shell.WithModal(NewSelect("Delete session", []SelectItem{{ID: "delete", Title: "Erase permanently", Description: "canonical sessions.delete"}, {ID: "cancel", Title: "Cancel"}}, "modal"))
 }
 func (m *RuntimeModel) closeModal() { m.shell.focus = NewFocusStack("composer") }
 
@@ -841,6 +1480,10 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 		return false
 	}
 	if update.Generation > m.generation {
+		if m.generation != 0 {
+			m.closeInspectionModals()
+			m.inspectEpoch++
+		}
 		m.generation = update.Generation
 		m.identity = update.Identity
 	}
@@ -1015,6 +1658,9 @@ func honestErrorState(err error) string {
 		if protocolErr.Status == 403 {
 			return "authorization denied · 403"
 		}
+		if protocolErr.Status == 404 || protocolErr.Status == 409 || protocolErr.Status == 501 {
+			return ""
+		}
 		return string(conversation.StateDisconnected)
 	}
 	return ""
@@ -1105,6 +1751,8 @@ func (m RuntimeModel) exportCmd() tea.Cmd {
 		path = "harbor-" + m.controller.Identity().Session + ".md"
 	}
 	view := m.transcript
+	eventExport := m.shell.state.Route == "events"
+	events := append([]types.StateEvent(nil), m.runtime.Events.Visible()...)
 	return func() tea.Msg {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return exportMsg{path, fmt.Errorf("%w: %w", conversation.ErrExportWrite, err)}
@@ -1113,7 +1761,14 @@ func (m RuntimeModel) exportCmd() tea.Cmd {
 		if err != nil {
 			return exportMsg{path, fmt.Errorf("%w: %w", conversation.ErrExportWrite, err)}
 		}
-		writeErr := view.Export(file, conversation.ExportOptions{Reasoning: true, Tools: true, Metadata: true})
+		var writeErr error
+		if eventExport {
+			encoder := json.NewEncoder(file)
+			encoder.SetIndent("", "  ")
+			writeErr = encoder.Encode(renderers.Normalize(events))
+		} else {
+			writeErr = view.Export(file, conversation.ExportOptions{Reasoning: true, Tools: true, Metadata: true})
+		}
 		closeErr := file.Close()
 		if writeErr == nil {
 			writeErr = closeErr
@@ -1182,4 +1837,13 @@ func setStrings(values map[string]bool) []string {
 
 func runtimeScopeKey(id types.IdentityScope) string {
 	return id.Tenant + "/" + id.User + "/" + id.Session
+}
+
+func sortedSurfaceKeys(values map[string]surface.State) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }

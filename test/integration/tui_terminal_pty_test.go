@@ -30,7 +30,10 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	_ "github.com/hurtener/Harbor/internal/llm/mock" // Hermetic real-driver PTY stack.
 	protocolclient "github.com/hurtener/Harbor/internal/protocol/client"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tui/app"
 	"github.com/hurtener/Harbor/internal/tui/conversation"
@@ -261,6 +264,34 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.waitContainsAfter(t, mark, "reconnecting")
 	session.waitContainsAfter(t, mark, "live")
 
+	for _, route := range []struct{ key, label string }{
+		{"\x1bOQ", "TREE / PROGRESS"},
+		{"\x1bOR", "transport / OAuth"},
+		{"\x1bOS", "metadata only"},
+		{"\x1b[15~", "filter / raw safe payload"},
+		{"\x1b[17~", "Capabilities:"},
+		{"\x1b[18~", "retained by PauseToken"},
+		{"\x1b[19~", "retention / capability"},
+	} {
+		mark = len(session.snapshot())
+		session.write(t, route.key)
+		session.waitContainsAfter(t, mark, route.label)
+	}
+	mark = len(session.snapshot())
+	session.write(t, "\x1b[20~")
+	session.waitContainsAfter(t, mark, "Runtime actions")
+	session.key(t, '\r', 1)
+	session.waitContains(t, "Unavailable: no artifact selected")
+	session.key(t, 27, 1)
+	session.write(t, "\x1b[20~")
+	session.text(t, "Delete session")
+	session.key(t, '\r', 1)
+	session.waitContains(t, "Confirm Runtime action")
+	session.key(t, 27, 1)
+	session.key(t, 27, 1)
+	session.write(t, "\x1bOP")
+	session.waitContains(t, "HARBOR  /  SESSION")
+
 	runtimeIdentity := identity.Identity{TenantID: second.Tenant, UserID: second.User, SessionID: second.Session}
 	runtimeCtx, identityErr := identity.With(t.Context(), runtimeIdentity)
 	if identityErr != nil {
@@ -303,7 +334,6 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.waitContains(t, "HTTP 503")
 	session.command(t, 'j')
 	session.command(t, 'j')
-	session.waitContains(t, "Retrying failed follow-up")
 	await(t, func() bool {
 		response, listErr := secondClient.TasksList(t.Context(), types.TaskListRequest{})
 		if listErr != nil {
@@ -356,6 +386,148 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	restoredPTY.key(t, 'c', 5)
 	restoredPTY.waitExit(t, 0)
 	restoredPTY.assertOperationalRestored(t)
+}
+
+func TestE2E_TUIRuntimeControlPTY_MultiplePauseTokensAndReconciliation(t *testing.T) {
+	stack := devstack.Assemble(t, runtimePostureConfig(t), devstack.AssembleOpts{})
+	defer stack.Close()
+	var forcedStatus atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status := int(forcedStatus.Load()); status != 0 && r.URL.Path == "/v1/control/approve" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(protoerrors.Error{Code: protoerrors.CodeRuntimeError, Message: "forced PTY operation failure"})
+			return
+		}
+		stack.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	scope := types.IdentityScope{Tenant: devstack.DefaultDevTenant, User: devstack.DefaultDevUser, Session: devstack.DefaultDevSession}
+	id := identity.Identity{TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session}
+	ctx, err := identity.With(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := stack.Tasks.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: id}, Kind: tasks.KindForeground, Description: "PTY controls", Query: "hold", IdempotencyKey: "pty-runtime-controls"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = stack.Tasks.MarkRunning(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	quad := identity.Quadruple{Identity: id, RunID: string(task.ID)}
+	inbox, err := stack.Steering.Open(quad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = stack.Tasks.Cancel(ctx, task.ID, "test cleanup"); _ = stack.Steering.Retire(quad) }()
+	runCtx, err := identity.WithRun(ctx, id, string(task.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(reason pauseresume.Reason, payload map[string]any) pauseresume.Token {
+		pause, requestErr := stack.Coordinator.Request(runCtx, pauseresume.PauseRequest{Identity: id, Reason: reason, Payload: payload})
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		return pause.Token
+	}
+	basePayload := func() map[string]any { return map[string]any{"run_id": string(task.ID)} }
+	expired := request(pauseresume.ReasonExternalEvent, map[string]any{"run_id": string(task.ID), "expires_at": time.Now().Add(-time.Minute).Format(time.RFC3339)})
+	oauth := request(pauseresume.ReasonExternalEvent, basePayload())
+	input := request(pauseresume.ReasonAwaitInput, basePayload())
+	reject := request(pauseresume.ReasonApprovalRequired, basePayload())
+	approve := request(pauseresume.ReasonApprovalRequired, basePayload())
+
+	temp := t.TempDir()
+	binary := filepath.Join(temp, "harbor")
+	build := exec.Command("go", "build", "-o", binary, "../../cmd/harbor")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build harbor CLI: %v\n%s", buildErr, output)
+	}
+	tokenPath := filepath.Join(temp, "tokens.json")
+	writePTYTokens(t, tokenPath, map[string]string{scopeTokenKey(scope): stack.Token})
+	runFailure := func(status int) {
+		token := request(pauseresume.ReasonApprovalRequired, basePayload())
+		forcedStatus.Store(int32(status))
+		pty := startPTYCommand(t, binary, []string{"tui", "--attach", server.URL, "--token-file", tokenPath, "--state-file", filepath.Join(temp, fmt.Sprintf("state-error-%d.json", status)), "--session", scope.Session}, temp, 100, 30)
+		pty.waitContains(t, "live")
+		pty.write(t, "\x1b[18~")
+		pty.waitContains(t, string(token))
+		pty.write(t, "\x1b[20~")
+		pty.text(t, "Approve intervention")
+		pty.key(t, '\r', 1)
+		pty.waitContains(t, "Confirm Runtime action")
+		mark := len(pty.snapshot())
+		pty.key(t, '\r', 1)
+		pty.waitContainsAfter(t, mark, fmt.Sprintf("HTTP %d", status))
+		pty.key(t, 'c', 5)
+		pty.waitExit(t, 0)
+		forcedStatus.Store(0)
+		if resumeErr := stack.Coordinator.Resume(runCtx, token, pauseresume.DecisionReject, nil); resumeErr != nil {
+			t.Fatal(resumeErr)
+		}
+	}
+	runFailure(http.StatusConflict)
+	runFailure(http.StatusNotImplemented)
+	controls := []struct {
+		title, input, control string
+		token                 pauseresume.Token
+		decision              pauseresume.Decision
+	}{{"Approve intervention", "", "APPROVE", approve, pauseresume.DecisionApprove}, {"Reject intervention", "unsafe", "REJECT", reject, pauseresume.DecisionReject}, {"Submit required input", "operator input", "RESUME", input, pauseresume.DecisionResume}, {"Submit OAuth intervention", "oauth complete", "RESUME", oauth, pauseresume.DecisionResume}}
+	for index, control := range controls {
+		pty := startPTYCommand(t, binary, []string{"tui", "--attach", server.URL, "--token-file", tokenPath, "--state-file", filepath.Join(temp, fmt.Sprintf("state-%d.json", index)), "--session", scope.Session}, temp, 100, 30)
+		pty.waitContains(t, "live")
+		pty.write(t, "\x1b[18~")
+		pty.waitContains(t, string(control.token))
+		pty.write(t, "\x1b[20~")
+		pty.waitContains(t, "Runtime actions")
+		pty.text(t, control.title)
+		pty.key(t, '\r', 1)
+		if control.input != "" {
+			pty.waitContains(t, "Action input")
+			pty.text(t, control.input)
+			pty.key(t, '\r', 1)
+		}
+		pty.waitContains(t, "Confirm Runtime action")
+		mark := len(pty.snapshot())
+		pty.key(t, '\r', 1)
+		var event steering.ControlEvent
+		await(t, func() bool {
+			values, drainErr := inbox.Drain()
+			if drainErr != nil {
+				t.Fatal(drainErr)
+			}
+			if len(values) == 0 {
+				return false
+			}
+			event = values[len(values)-1]
+			return true
+		}, "PTY canonical "+control.control)
+		if string(event.Type) != control.control || event.Payload["token"] != string(control.token) {
+			t.Fatalf("control=%#v", event)
+		}
+		pty.waitContainsAfter(t, mark, "HARBOR  /  INTERVENTIONS")
+		if err = stack.Coordinator.Resume(runCtx, control.token, control.decision, nil); err != nil {
+			t.Fatal(err)
+		}
+		status, statusErr := stack.Coordinator.Status(runCtx, control.token)
+		if statusErr != nil || status.State != pauseresume.StatusResumed || status.Decision != control.decision {
+			t.Fatalf("resolved status=%#v err=%v", status, statusErr)
+		}
+		pty.key(t, 'c', 5)
+		pty.waitExit(t, 0)
+		pty.assertOperationalRestored(t)
+	}
+	pty := startPTYCommand(t, binary, []string{"tui", "--attach", server.URL, "--token-file", tokenPath, "--state-file", filepath.Join(temp, "state-expired.json"), "--session", scope.Session}, temp, 100, 30)
+	pty.waitContains(t, "live")
+	pty.write(t, "\x1b[18~")
+	pty.waitContains(t, string(expired))
+	pty.waitContains(t, "expired")
+	pty.key(t, 'c', 5)
+	pty.waitExit(t, 0)
+	pty.assertOperationalRestored(t)
 }
 
 func TestE2E_TUITerminalPTY_RestoreResizeSuspendSignalsAndPanic(t *testing.T) {

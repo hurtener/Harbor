@@ -4163,7 +4163,7 @@ per §17.8). Status: Shipped (V1.6).
   interaction state. Every applicable convention frame and PTY walkthrough is
   required. See `docs/plans/phase-182-tui-conversation-experience.md`.
 - **Decision:** D-318.
-- **Status:** Pending (v1.15).
+- **Status:** Shipped (v1.15).
 
 ---
 

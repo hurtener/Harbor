@@ -37,6 +37,58 @@ func testClient(t *testing.T, server *httptest.Server, opts ...Option) Client {
 	return client
 }
 
+func TestRuntimeClient_ConcurrentInspectionActionsAndCancellationIsolation(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/control/runtime.counters" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("X-Harbor-Session") != "session" {
+			t.Errorf("identity bleed: %q", r.Header.Get("X-Harbor-Session"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"events_per_second":1,"tasks_running":2,"background_jobs_active":0,"mcp_connections_healthy":0,"sessions_active":1,"snapshot_at":42}`))
+	}))
+	defer server.Close()
+	client, ok := testClient(t, server).(RuntimeClient)
+	if !ok {
+		t.Fatal("New client does not implement RuntimeClient")
+	}
+	var wait sync.WaitGroup
+	for n := range 128 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			ctx := t.Context()
+			if n%7 == 0 {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			response, err := client.RuntimeCounters(ctx)
+			if n%7 == 0 {
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("cancel %d: %v", n, err)
+				}
+				return
+			}
+			if err != nil || response.SnapshotAt != 42 || response.TasksRunning != 2 {
+				t.Errorf("request %d: %#v %v", n, response, err)
+			}
+		}()
+	}
+	wait.Wait()
+	server.CloseClientConnections()
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+8 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := runtime.NumGoroutine(); got > baseline+8 {
+		t.Fatalf("goroutine leak: baseline=%d got=%d", baseline, got)
+	}
+}
+
 func TestClient_RuntimeInfo_ValidatesHandshakeAndHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/control/runtime.info" {

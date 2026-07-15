@@ -1,0 +1,19 @@
+
+  HARBOR  /  EVENTS
+  One active session · Protocol-only
+  live
+
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   EVENT STREAM / AGGREGATE · filter / raw safe payload / export · p
+   Filter:  · page 1
+   #42 future.runtime.notice · run task-01 · raw metadata unavailabl
+   Partial: retained event window or aggregate is truncated
+
+
+
+
+
+
+
+
