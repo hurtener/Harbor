@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,10 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	protocolclient "github.com/hurtener/Harbor/internal/protocol/client"
-	"github.com/hurtener/Harbor/internal/tui/app"
 	"github.com/hurtener/Harbor/internal/tui/conversation"
-	"github.com/hurtener/Harbor/internal/tui/ui"
+	"github.com/hurtener/Harbor/internal/tui/entry"
 )
 
 const (
@@ -66,6 +65,7 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return emitCLIError(cmd, tuiCLIError(err))
 	}
+	compactSet := cmd.Flags().Changed(flagTUICompact)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return emitCLIError(cmd, tuiCLIError(err))
@@ -76,69 +76,32 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 	if statePath == "" {
 		statePath = filepath.Join(home, ".harbor", "tui-state.json")
 	}
-	auth, sourcePath, err := resolveTUIAuth(tokenPath, cmd.Flags().Changed(flagTUITokenFile), session)
-	if err != nil {
-		return emitCLIError(cmd, tuiCLIError(err))
-	}
-	initialToken, err := resolveTUIInitialToken(auth.Token, session)
-	if err != nil {
-		return emitCLIError(cmd, tuiCLIError(err))
-	}
-	claims, err := conversation.ParseToken(initialToken, now())
-	if err != nil {
-		return emitCLIError(cmd, tuiCLIError(err))
-	}
-	identity := claims.Identity
-	if strings.TrimSpace(session) != "" {
-		identity.Session = strings.TrimSpace(session)
-	}
-	tokens := conversation.NewTokenSource(sourcePath, initialToken)
-	probe, err := protocolclient.New(protocolclient.Connection{BaseURL: base, Token: tokens, Identity: identity})
-	if err != nil {
-		return emitCLIError(cmd, tuiCLIError(err))
-	}
-	info, err := probe.RuntimeInfo(cmd.Context())
-	if err != nil {
-		return emitCLIError(cmd, tuiCLIError(err))
-	}
-	store := conversation.NewStore(statePath)
-	fingerprint := info.InstanceID + "@" + info.WireSurfaceDigest
-	if restored, loadErr := store.LastSession(identity.Tenant, identity.User, fingerprint); loadErr != nil {
-		return emitCLIError(cmd, tuiCLIError(loadErr))
-	} else if session == "" && restored != "" {
-		identity.Session = restored
-	}
-	interaction, _, err := store.Load(identity, fingerprint)
-	if err != nil {
-		return emitCLIError(cmd, tuiCLIError(err))
-	}
-	if cmd.Flags().Changed(flagTUICompact) {
-		interaction.Compact = compact
-	}
-	theme := ui.CompileTheme(ui.EnvironmentFrom(os.LookupEnv))
-	if interaction.Theme == string(ui.ModeLight) {
-		theme = ui.NewTheme(ui.ModeLight, theme.Profile())
-	}
-	if interaction.Theme == string(ui.ModeDark) {
-		theme = ui.NewTheme(ui.ModeDark, theme.Profile())
-	}
-	updates := conversation.NewNotifier(64)
-	controller, err := conversation.NewController(base, tokens, identity, func(update conversation.Update) {
-		updates.Notify(update)
-	})
-	if err != nil {
-		return emitCLIError(cmd, tuiCLIError(err))
-	}
-	defer func() { _ = controller.Close() }()
-	defer updates.Close()
-	exportPath := filepath.Join(filepath.Dir(statePath), "exports", identity.Session+".md")
-	model := app.NewRuntimeModel(cmd.Context(), 80, 24, theme, controller, updates, app.RuntimeOptions{Compact: interaction.Compact, ReducedMotion: interaction.ReducedMotion, Fingerprint: fingerprint, ExportPath: exportPath, State: interaction, Store: &store})
+	explicit := cmd.Flags().Changed(flagTUITokenFile)
 	input, output := cmd.InOrStdin(), cmd.OutOrStdout()
-	if _, injectedInput := input.(interface{ Len() int }); injectedInput {
-		err = app.Run(cmd.Context(), input, output, model)
-	} else {
-		err = app.Run(cmd.Context(), os.Stdin, os.Stdout, model)
+	if _, injectedInput := input.(interface{ Len() int }); !injectedInput {
+		input, output = os.Stdin, os.Stdout
 	}
+	err = entry.Run(cmd.Context(), entry.Options{
+		BaseURL:    base,
+		Session:    session,
+		Compact:    compact,
+		CompactSet: compactSet,
+		StateFile:  statePath,
+		Input:      input,
+		Output:     output,
+		Now:        now,
+		TokenResolver: func(ctx context.Context, requestedSession string) (string, string, error) {
+			auth, sourcePath, aerr := resolveTUIAuth(tokenPath, explicit, requestedSession)
+			if aerr != nil {
+				return "", "", aerr
+			}
+			initialToken, ierr := resolveTUIInitialToken(auth.Token, requestedSession)
+			if ierr != nil {
+				return "", "", ierr
+			}
+			return initialToken, sourcePath, nil
+		},
+	})
 	if err != nil {
 		return emitCLIError(cmd, tuiCLIError(err))
 	}

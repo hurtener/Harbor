@@ -110,6 +110,26 @@ func writeServeBootJWKS(t *testing.T, pub *rsa.PublicKey, kid string) string {
 // the validator directly, bypassing bootDevStack), so a future refactor
 // could regress a gate undetected. HARBOR_DEV_SEED_FIXTURES is set to prove
 // the runtime-fixture seeder stays gated on a production boot.
+// TestServeCmd_HelpDocumentsTUIFlag proves the --tui flag is present
+// and documented in `harbor serve --help` — the operator-facing surface
+// for co-launching the native terminal client.
+func TestServeCmd_HelpDocumentsTUIFlag(t *testing.T) {
+	stdout, stderr, err := runRoot(t, []string{"serve", "--help"})
+	if err != nil || stderr != "" {
+		t.Fatalf("help err=%v stderr=%q", err, stderr)
+	}
+	for _, text := range []string{"--tui", "co-launch", "authenticated REST/SSE"} {
+		if !strings.Contains(stdout, text) {
+			t.Errorf("serve --help missing %q:\n%s", text, stdout)
+		}
+	}
+	root := NewRootCmd()
+	cmd, _, findErr := root.Find([]string{"serve"})
+	if findErr != nil || cmd.Flags().Lookup("tui") == nil {
+		t.Fatalf("serve --tui flag missing: %v", findErr)
+	}
+}
+
 func TestBootDevStack_ServeProductionBoot_GatesDevSurfacesAndVerifiesJWKS(t *testing.T) {
 	const kid = "serve-boot-test-rsa"
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)

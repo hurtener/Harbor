@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime/debug"
 
@@ -69,6 +70,12 @@ func (h *Handle) Close(ctx context.Context) error {
 // address. Safe to call while Serve runs.
 func (h *Handle) BindAddr() string { return h.h.BindAddr() }
 
+// WaitReady blocks until the listener binds (returning the actual
+// OS-assigned address) or until the bind fails / ctx cancels. It is the
+// race-safe one-shot readiness contract a co-launched client waits on
+// before dialing. See serve.Handle.WaitReady for the full contract.
+func (h *Handle) WaitReady(ctx context.Context) (string, error) { return h.h.WaitReady(ctx) }
+
 // Open composes the production Protocol server from cfg (or, when cfg is
 // nil, from the configuration loaded at configPath) and returns a Handle
 // whose Serve binds the listener. registerCatalog, when non-nil, is the
@@ -82,7 +89,23 @@ func (h *Handle) BindAddr() string { return h.h.BindAddr() }
 // unreachable provider, or a missing LLM provider fails Open non-zero —
 // never a server that starts and rejects every request. On any boot
 // failure the already-opened subsystems are drained before Open returns.
+//
+// Open writes Runtime lifecycle banners (HARBOR_DEV_BOUND, CORS-wildcard
+// warning, pprof banner) to os.Stderr. Callers that need to redirect
+// this output (e.g. a co-launch binary that captures stderr so Bubble Tea
+// frames are never overwritten) should call OpenWithStderr instead.
 func Open(ctx context.Context, cfg *config.Config, configPath string, registerCatalog func(catalog tools.ToolCatalog) error) (*Handle, error) {
+	return OpenWithStderr(ctx, cfg, configPath, os.Stderr, registerCatalog)
+}
+
+// OpenWithStderr is Open with an explicit stderr sink. A nil stderr
+// defaults to os.Stderr. The stderr writer receives the HARBOR_DEV_BOUND
+// line, the CORS-wildcard warning, and the pprof debug banner — the
+// same surfaces `harbor serve`'s co-launch path redirects to a captured
+// buffer so the terminal stays clean for Bubble Tea. The slog logger
+// the serve band builds also writes to this sink when the caller does
+// not inject its own logger.
+func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, stderr io.Writer, registerCatalog func(catalog tools.ToolCatalog) error) (*Handle, error) {
 	if cfg == nil {
 		if configPath == "" {
 			return nil, ErrConfigRequired
@@ -92,6 +115,9 @@ func Open(ctx context.Context, cfg *config.Config, configPath string, registerCa
 			return nil, fmt.Errorf("config: %w", err)
 		}
 		cfg = loaded
+	}
+	if stderr == nil {
+		stderr = os.Stderr
 	}
 
 	version, commit := buildIdentity()
@@ -110,7 +136,7 @@ func Open(ctx context.Context, cfg *config.Config, configPath string, registerCa
 		InstanceID:           serve.InstanceID("harbor-server"),
 		BuildVersion:         version,
 		BuildCommit:          commit,
-		Stderr:               os.Stderr,
+		Stderr:               stderr,
 		// No LLM-snapshot builder is injected → the default production
 		// projection applies; a missing real provider fails loud at
 		// driver construction.

@@ -77,6 +77,12 @@ type Options struct {
 	// generated `agent.go` gains a `RegisterTools` seam the main.go
 	// passes to `server.Open`.
 	WithServer bool
+	// WithTUI opts into making the generated binary's `--tui` flag
+	// co-launch the native terminal client via `sdk/tui` after the
+	// server is ready (sdk/server.WaitReady). Requires WithServer. The
+	// generated main.go emits a `--tui` flag; flagless behavior stays
+	// headless and unchanged. Purely additive.
+	WithTUI bool
 	// HarborVersion is the scaffolding binary's own release version
 	// (`vX.Y.Z`), used as the `require github.com/hurtener/Harbor`
 	// version in the generated `go.mod` so the project builds straight

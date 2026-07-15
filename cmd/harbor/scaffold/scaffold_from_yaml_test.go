@@ -103,7 +103,10 @@ func TestScaffold_FromConfig_GeneratesCustomToolStubs(t *testing.T) {
 		t.Fatalf("copied yaml does not contain weather.lookup; got:\n%s", string(copied))
 	}
 	// The generated tool body must mention the typed Input/Output
-	// struct fields (deterministic field order by JSON name).
+	// struct fields (deterministic field order by JSON name). The
+	// render pipeline runs format.Source (gofmt) on every .go output,
+	// so struct field types are tab-aligned — match on the field name
+	// + type + json tag with flexible whitespace.
 	stub, err := os.ReadFile(filepath.Join(out, "tools/weather_lookup.go"))
 	if err != nil {
 		t.Fatalf("read tool stub: %v", err)
@@ -112,13 +115,19 @@ func TestScaffold_FromConfig_GeneratesCustomToolStubs(t *testing.T) {
 	for _, expect := range []string{
 		"type WeatherLookupInput struct",
 		"type WeatherLookupOutput struct",
-		`City string ` + "`json:\"city\"`",
-		`Units string ` + "`json:\"units\"`",
-		`TempC float64 ` + "`json:\"temp_c\"`",
-		`Summary string ` + "`json:\"summary\"`",
+		`City` + " " + "string" + " " + "`json:\"city\"`",
+		`Units` + " " + "string" + " " + "`json:\"units\"`",
+		`TempC` + " " + "float64" + " " + "`json:\"temp_c\"`",
+		`Summary` + " " + "string" + " " + "`json:\"summary\"`",
 		"func WeatherLookup(ctx context.Context",
 	} {
-		if !strings.Contains(stubBody, expect) {
+		// Collapse runs of whitespace in both the expected and actual
+		// bodies so gofmt's tab-alignment does not break the substring
+		// match (e.g. `City  string` vs `City string`).
+		normalize := func(s string) string {
+			return strings.Join(strings.Fields(s), " ")
+		}
+		if !strings.Contains(normalize(stubBody), normalize(expect)) {
 			t.Errorf("tools/weather_lookup.go missing %q; got:\n%s", expect, stubBody)
 		}
 	}

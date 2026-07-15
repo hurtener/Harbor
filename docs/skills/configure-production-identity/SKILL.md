@@ -5,7 +5,7 @@ license: Apache-2.0
 metadata:
   framework: harbor
   surface: protocol
-  verbs: "serve, token"
+  verbs: "serve, token, tui"
 ---
 
 # Configure production identity
@@ -234,6 +234,27 @@ harbor token mint --key ./identity/private.pem \
    every method — the same wire [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md)
    walks. A complete, SDK-free worked OIDC client ships under
    `examples/protocol-clients/`, doing exactly this flow against `serve`.
+
+### Co-launch the TUI from `harbor serve --tui`
+
+The native terminal client can co-launch from the serve binary itself — one
+process, one terminal, no separate `harbor tui --attach` step. The serve
+posture is unchanged: the TUI attaches through authenticated REST/SSE using the
+operator's JWT, receives no Runtime handle, and quitting drains the owned
+server.
+
+```bash
+export HARBOR_TOKEN='<your-signed-jwt>'
+harbor serve --config serve.yaml --bind 127.0.0.1:0 --tui
+```
+
+The same token + `iss`/`aud` exact-match contract above applies: `serve`
+verifies the JWT against your JWKS, the TUI resolves it from `HARBOR_TOKEN` or
+`~/.harbor/token`, and every REST request + SSE reconnect re-reads the
+credential. Runtime logs go to a captured sink so Bubble Tea frames are never
+overwritten. See [`drive-the-harbor-tui`](../drive-the-harbor-tui/SKILL.md)
+§2 "Co-launch from `harbor serve --tui`" for the keyboard surface and the
+co-launch lifecycle.
 
 ## Common failure modes
 

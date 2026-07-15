@@ -12,8 +12,10 @@
 package scaffold
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +97,72 @@ func TestScaffold_WithServer_EmitsServerMain(t *testing.T) {
 	if !strings.Contains(string(agentSrc), "func RegisterTools(cat tools.ToolCatalog) error") {
 		t.Error("agent.go must declare RegisterTools under --with-server")
 	}
+}
+
+// TestScaffold_WithServer_WithTUI_EmitsTUIFlag proves the opt-in
+// scaffold co-launch: --with-server --with-tui emits cmd/<name>/main.go
+// with a `--tui` flag that co-launches the TUI through sdk/tui after
+// the server is ready. The flagless path stays headless and unchanged.
+func TestScaffold_WithServer_WithTUI_EmitsTUIFlag(t *testing.T) {
+	t.Parallel()
+	out := filepath.Join(t.TempDir(), "tui-agent")
+	result, err := Scaffold(Options{Name: "tui-agent", OutputDir: out, WithServer: true, WithTUI: true})
+	if err != nil {
+		t.Fatalf("Scaffold --with-server --with-tui: %v", err)
+	}
+	mainRel := filepath.Join("cmd", "tui-agent", "main.go")
+	found := false
+	for _, f := range result.Files {
+		if f == mainRel {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("result.Files missing %q; got %v", mainRel, result.Files)
+	}
+	mainSrc, err := os.ReadFile(filepath.Join(out, mainRel))
+	if err != nil {
+		t.Fatalf("read generated main.go: %v", err)
+	}
+	for _, want := range []string{
+		`tuiFlag := flag.Bool("tui"`,
+		`"github.com/hurtener/Harbor/sdk/tui"`,
+		`tui.Run(ctx, tui.Options{`,
+		`h.WaitReady(readyCtx)`,
+		`protocolclient "github.com/hurtener/Harbor/sdk/protocolclient"`,
+	} {
+		if !strings.Contains(string(mainSrc), want) {
+			t.Errorf("generated main.go missing %q", want)
+		}
+	}
+}
+
+// TestScaffold_WithServer_WithoutTUI_NoTUIReferences proves the default
+// --with-server scaffold (no --with-tui) does NOT emit TUI references —
+// the flagless behavior remains headless and unchanged.
+func TestScaffold_WithServer_WithoutTUI_NoTUIReferences(t *testing.T) {
+	t.Parallel()
+	out := filepath.Join(t.TempDir(), "headless-agent")
+	result, err := Scaffold(Options{Name: "headless-agent", OutputDir: out, WithServer: true})
+	if err != nil {
+		t.Fatalf("Scaffold --with-server: %v", err)
+	}
+	mainRel := filepath.Join("cmd", "headless-agent", "main.go")
+	mainSrc, err := os.ReadFile(filepath.Join(out, mainRel))
+	if err != nil {
+		t.Fatalf("read generated main.go: %v", err)
+	}
+	for _, forbidden := range []string{
+		`tuiFlag := flag.Bool("tui"`,
+		`"github.com/hurtener/Harbor/sdk/tui"`,
+		`tui.Run(`,
+		`h.WaitReady(`,
+	} {
+		if strings.Contains(string(mainSrc), forbidden) {
+			t.Errorf("generated main.go (without --with-tui) contains forbidden TUI reference %q", forbidden)
+		}
+	}
+	_ = result // result.Files verified by the sibling --with-server test
 }
 
 // TestScaffold_DefaultTemplate_IsMinimalReact pins the
@@ -318,5 +386,54 @@ func TestScaffold_CleansUpOnRenderFailure(t *testing.T) {
 	// On success, the dir must exist.
 	if _, err := os.Stat(out); err != nil {
 		t.Errorf("happy-path output dir missing: %v", err)
+	}
+}
+
+// TestScaffold_RenderedGoFiles_GofmtClean is the H1 gate: every .go
+// file the scaffold renders MUST be gofmt-clean. Template
+// conditionals ({{if .WithTUI}} blocks) can leave trailing whitespace
+// or single-line braces; the render pipeline's format.Source pass
+// normalizes them. This test re-runs gofmt on every rendered .go file
+// and asserts byte-identity, catching a template regression that
+// slips past the render-time pass.
+func TestScaffold_RenderedGoFiles_GofmtClean(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		withServer bool
+		withTUI    bool
+	}{
+		{"default", false, false},
+		{"with_server", true, false},
+		{"with_server_with_tui", true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := filepath.Join(t.TempDir(), "gofmt-"+tc.name)
+			result, err := Scaffold(Options{Name: "gofmt-agent", OutputDir: out, WithServer: tc.withServer, WithTUI: tc.withTUI})
+			if err != nil {
+				t.Fatalf("Scaffold: unexpected error: %v", err)
+			}
+			for _, rel := range result.Files {
+				if !strings.HasSuffix(rel, ".go") {
+					continue
+				}
+				path := filepath.Join(out, rel)
+				src, rErr := os.ReadFile(path)
+				if rErr != nil {
+					t.Errorf("read %s: %v", rel, rErr)
+					continue
+				}
+				formatted, fmtErr := format.Source(src)
+				if fmtErr != nil {
+					t.Errorf("gofmt failed on %s: %v", rel, fmtErr)
+					continue
+				}
+				if !bytes.Equal(src, formatted) {
+					t.Errorf("%s is not gofmt-clean (run `gofmt -w %s` to see the diff)", rel, path)
+				}
+			}
+		})
 	}
 }
