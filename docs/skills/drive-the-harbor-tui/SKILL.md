@@ -113,13 +113,15 @@ complete authenticated attach join before committing it in memory; enter
 + `Alt+Enter` or `Shift+Enter`: insert a newline.
 + `Ctrl+A` / `Ctrl+E`: line start/end; `Ctrl+B` / `Ctrl+F`: move left/right.
 + `Ctrl+_` / `Alt+_`: undo/redo.
-+ `PageUp` / `PageDown` / `End`: scroll without losing sticky-bottom behavior.
++ Scrolling is the terminal's own: completed turns live in native scrollback,
+  so use the terminal's scroll, selection, and copy directly.
 + `Alt+J` / `Alt+K`: next/previous semantic transcript block.
 + `Ctrl+X F`: filter/search transcript blocks; `Ctrl+X X`: export Markdown.
-+ `Ctrl+X R` / `Ctrl+X O` / `Ctrl+X Y`: reasoning, tool detail, timestamps.
++ `Ctrl+X Y`: timestamps.
 + `Ctrl+X B` / `Ctrl+X P`: stash/restore the local draft.
 + `Ctrl+X A`: upload `path|disposition`; `Ctrl+X E` removes and `Ctrl+X U` retries.
-+ `Ctrl+X C`: compact/native-scrollback mode; `Ctrl+X M`: reduced motion.
++ `Ctrl+X R` / `Ctrl+X O`: print the newest thought / tool detail expanded into
+  scrollback (they flush collapsed by default); `Ctrl+X M`: reduced motion.
 + `Ctrl+P`: command palette; `Ctrl+X S`: context sidebar.
 + `/quit`, `Ctrl+C`, or `Ctrl+D`: persist interaction state, restore the terminal, and exit. A plain `q` remains composer text.
 
@@ -149,8 +151,11 @@ rows, transcript content, or credentials.
 + Replay gaps, retention truncation, partial counters, disconnects, and partial
   blocks remain visibly labelled.
 
-Use `--compact` to keep committed output in native terminal scrollback rather
-than the alternate screen.
+The conversation always renders inline in the terminal's normal buffer:
+completed turns flow into native scrollback (select, copy, and scroll with the
+terminal itself), and only the live streaming region and composer are managed.
+The Runtime inspection routes (`F2`–`F9`) use the alternate screen. The
+`--compact` flag is deprecated and has no effect.
 
 Session commands are keyboard-driven: `Ctrl+X L` searches/switches, `Ctrl+X N`
 starts fresh, `Ctrl+R` renames, and `Ctrl+X D` confirms canonical erasure.

@@ -267,9 +267,13 @@ func (m Model) composerStatus() string {
 	}
 	// Idle: report what an operator actually needs — the model and how much of
 	// its context this session has consumed — not the internal composer enum.
-	switch m.state.Composer {
-	case ComposerDisabled, ComposerRetry, ComposerAttachment:
-		return string(m.state.Composer)
+	// Actionable postures still speak for themselves; they are set dynamically
+	// ("attachment · report.pdf"), so match by prefix, not constant.
+	posture := string(m.state.Composer)
+	for _, actionable := range []string{"disabled", "retry", "attachment"} {
+		if strings.HasPrefix(posture, actionable) {
+			return posture
+		}
 	}
 	parts := make([]string, 0, 2)
 	if m.state.Model != "" {

@@ -86,6 +86,52 @@ func (c *canvas) styledBlock(x, y int, block string, body, rule lipgloss.Style) 
 		c.put(x, y+i, line, body)
 	}
 }
+
+// rowsTrimmed serializes each row with trailing unstyled blanks removed, for
+// content that flows into the terminal's normal buffer: full-width padded rows
+// would pollute native selection and copy with trailing spaces.
+func (c canvas) rowsTrimmed() []string {
+	blankKey := styleKey(lipgloss.NewStyle())
+	rows := make([]string, c.height)
+	for y := range c.rows {
+		end := 0
+		for x := 0; x < c.width; x++ {
+			entry := c.rows[y][x]
+			if entry.continuation {
+				continue
+			}
+			if entry.text != " " || entry.key != blankKey {
+				end = x + 1
+			}
+		}
+		var b strings.Builder
+		var last lipgloss.Style
+		lastKey := ""
+		var run strings.Builder
+		flush := func() {
+			if run.Len() > 0 {
+				b.WriteString(last.Render(run.String()))
+				run.Reset()
+			}
+		}
+		for x := 0; x < end; x++ {
+			entry := c.rows[y][x]
+			if entry.continuation {
+				continue
+			}
+			if entry.key != lastKey {
+				flush()
+				last = entry.style
+				lastKey = entry.key
+			}
+			run.WriteString(entry.text)
+		}
+		flush()
+		rows[y] = b.String()
+	}
+	return rows
+}
+
 func (c canvas) string() string {
 	rows := make([]string, c.height)
 	for y := range c.rows {

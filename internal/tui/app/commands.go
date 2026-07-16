@@ -159,7 +159,6 @@ func DefaultRegistry() Registry {
 		Command{ID: "reasoning", Title: "Toggle reasoning", Description: "Collapse or expand reasoning blocks", Category: "Transcript", Bindings: []string{"ctrl+x", "r"}, Enabled: hasTranscript},
 		Command{ID: "tool-detail", Title: "Toggle tool detail", Description: "Collapse or expand tool blocks", Category: "Transcript", Bindings: []string{"ctrl+x", "o"}, Enabled: hasTranscript},
 		Command{ID: "timestamps", Title: "Toggle timestamps", Description: "Show or hide transcript timestamps", Category: "Transcript", Bindings: []string{"ctrl+x", "y"}, Enabled: hasTranscript},
-		Command{ID: "compact", Title: "Toggle compact mode", Description: "Use native terminal scrollback", Category: "View", Bindings: []string{"ctrl+x", "c"}},
 		Command{ID: "reduced-motion", Title: "Toggle reduced motion", Description: "Disable or enable terminal animation", Category: "View", Bindings: []string{"ctrl+x", "m"}},
 		Command{ID: "stash", Title: "Stash draft", Description: "Store the draft locally", Category: "Composer", Bindings: []string{"ctrl+x", "b"}},
 		Command{ID: "stash-pop", Title: "Restore stashed draft", Description: "Pop the newest local draft", Category: "Composer", Bindings: []string{"ctrl+x", "p"}},

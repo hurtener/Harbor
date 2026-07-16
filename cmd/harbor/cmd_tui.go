@@ -37,7 +37,7 @@ the token file. Signed tokens are never extended or written to local state.`, Ar
 	cmd.Flags().String(flagTUISession, "", "authorized session to restore or select")
 	cmd.Flags().String(flagTUITokenFile, "", "rotating JWT file (default ~/.harbor/token)")
 	cmd.Flags().String(flagTUIStateFile, "", "local interaction-state file (default ~/.harbor/tui-state.json)")
-	cmd.Flags().Bool(flagTUICompact, false, "use compact transcript presentation")
+	cmd.Flags().Bool(flagTUICompact, false, "deprecated: the conversation always renders inline in native terminal scrollback; accepted for compatibility, has no effect")
 	return cmd
 }
 

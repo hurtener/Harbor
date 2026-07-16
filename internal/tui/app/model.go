@@ -52,14 +52,18 @@ const (
 
 // State selects shell view state.
 type State struct {
-	Route                                                                              string
-	Connection                                                                         string
-	Composer                                                                           ComposerState
-	ComposerText                                                                       string
-	ComposerCursor, SelectionStart, SelectionEnd                                       int
-	AutocompleteRows                                                                   []string
-	AutocompleteIndex                                                                  int
-	AttachmentReady, HasFollowUp                                                       bool
+	Route                                        string
+	Connection                                   string
+	Composer                                     ComposerState
+	ComposerText                                 string
+	ComposerCursor, SelectionStart, SelectionEnd int
+	AutocompleteRows                             []string
+	AutocompleteIndex                            int
+	AttachmentReady, HasFollowUp                 bool
+	// HasTranscript marks that the full conversation projection has blocks even
+	// when the shell's windowed copy is empty (the host filters and windows what
+	// the shell renders, but transcript commands operate on the whole thing).
+	HasTranscript                                                                      bool
 	SelectedBlockID                                                                    string
 	Negotiated, TaskControl, SessionLifecycle, SessionScope                            bool
 	SidebarOpen, AutocompleteOpen, ToastOpen, Startup, Active, CursorHidden            bool
@@ -417,6 +421,16 @@ func (m Model) updateBase(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// A held modifier is tolerated on chord continuations: operators routinely
+	// keep ctrl down through a ctrl+x leader, so ctrl+x ctrl+r means ctrl+x r
+	// unless an explicit ctrl-binding exists for the continuation.
+	if len(m.sequence) > 0 {
+		if bare, found := strings.CutPrefix(key, "ctrl+"); found && len([]rune(bare)) == 1 {
+			if _, exact, pending := m.registry.Prefix(append(append([]string(nil), m.sequence...), key), m.commandContext()); !exact && !pending {
+				key = bare
+			}
+		}
+	}
 	strokes := append(append([]string(nil), m.sequence...), key)
 	view, exact, pending := m.registry.Prefix(strokes, m.commandContext())
 	if exact {
@@ -424,6 +438,10 @@ func (m Model) updateBase(key string) (tea.Model, tea.Cmd) {
 		if view.Enabled {
 			return m.execute(view)
 		}
+		// Disabled commands explain why — a silently-dead chord is
+		// indistinguishable from a broken keyboard.
+		m.state.ToastOpen = true
+		m.state.Toast = "Unavailable: " + view.DisabledReason
 		return m, nil
 	}
 	if pending {
@@ -924,7 +942,7 @@ func identityLabel(p projection.Projection) string {
 }
 func (m Model) commandContext() Context {
 	_, modal := m.focus.Top()
-	ctx := Context{ModalOpen: modal, Connected: m.state.Connection == "live", Erased: m.state.Erased, HasTranscript: len(m.projection.Blocks) > 0, HasAttachment: m.state.AttachmentReady, HasFollowUp: m.state.HasFollowUp, TaskControl: !m.operational, SessionLifecycle: !m.operational, SessionScope: true}
+	ctx := Context{ModalOpen: modal, Connected: m.state.Connection == "live", Erased: m.state.Erased, HasTranscript: len(m.projection.Blocks) > 0 || m.state.HasTranscript, HasAttachment: m.state.AttachmentReady, HasFollowUp: m.state.HasFollowUp, TaskControl: !m.operational, SessionLifecycle: !m.operational, SessionScope: true}
 	if m.state.Negotiated {
 		ctx.TaskControl, ctx.SessionLifecycle, ctx.SessionScope = m.state.TaskControl, m.state.SessionLifecycle, m.state.SessionScope
 	}

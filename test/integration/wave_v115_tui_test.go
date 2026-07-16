@@ -483,8 +483,9 @@ func testWaveV115AttachMode(t *testing.T) {
 		[]string{"tui", "--attach", baseURL, "--token-file", tokenPath, "--state-file", statePath, "--session", scope.Session},
 		tempDir, 80, 24)
 
-	// Alt-screen enter — the TUI enters the alternate buffer.
-	session.waitContains(t, "\x1b[?1049h")
+	// The conversation renders inline in the terminal's normal buffer (no
+	// alternate screen); the composer painting is the "TUI is up" signal.
+	session.waitContains(t, "Ask Harbor")
 
 	// The TUI connects and reaches the live state.
 	session.waitContains(t, "live")
@@ -555,8 +556,8 @@ func testWaveV115StockCoLaunch(t *testing.T) {
 		tempDir, 80, 24,
 		[]string{"HARBOR_TOKEN=" + token, "OPENROUTER_API_KEY=" + apiKey})
 
-	// Alt-screen enter.
-	session.waitContains(t, "\x1b[?1049h")
+	// Inline conversation surface: the composer paints in the normal buffer.
+	session.waitContains(t, "Ask Harbor")
 
 	// The TUI reaches the live state.
 	session.waitContains(t, "live")
@@ -625,8 +626,8 @@ func testWaveV115GeneratedCoLaunch(t *testing.T) {
 		genDir, 80, 24,
 		[]string{"HARBOR_TOKEN=" + token, "OPENROUTER_API_KEY=" + apiKey})
 
-	// Alt-screen enter.
-	session.waitContains(t, "\x1b[?1049h")
+	// Inline conversation surface: the composer paints in the normal buffer.
+	session.waitContains(t, "Ask Harbor")
 
 	// The TUI reaches the live state.
 	session.waitContains(t, "live")
@@ -763,7 +764,7 @@ func testWaveV115CaptureEquivalence(t *testing.T) {
 	// Capture a frame from a PTY session in a given mode.
 	captureFrame := func(args []string, workdir string, extraEnv []string) string {
 		session := waveV115StartPTYCommand(t, binary, args, workdir, 80, 24, extraEnv)
-		session.waitContains(t, "\x1b[?1049h")
+		session.waitContains(t, "Ask Harbor")
 		session.waitContains(t, "live")
 		// Give the renderer a moment to stabilize.
 		time.Sleep(200 * time.Millisecond)
