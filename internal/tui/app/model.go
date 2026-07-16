@@ -69,6 +69,10 @@ type State struct {
 	Toast                                                                              string
 	DetailRows                                                                         []string
 	Health                                                                             string
+	// TurnStatus is the canonical per-turn anchor (model · Runtime-reported
+	// duration) shown under a finished answer. Empty when there is nothing
+	// honest to report.
+	TurnStatus string
 }
 
 type startupStage uint8
@@ -551,7 +555,12 @@ func (m Model) render() string {
 
 func (m Model) renderBase(c *canvas) {
 	l := m.Layout()
-	c.fill(m.theme.Style(ui.RoleText, ptrRole(ui.RoleCanvas)))
+	// The canvas is transparent: it carries no background of its own so the
+	// operator's terminal theme shows through, exactly like the surrounding
+	// shell. Painting a near-black canvas fought the terminal's own background
+	// and left every unbackgrounded text run as a visible band. Discrete
+	// surfaces (the user turn, the composer) still own a panel fill.
+	c.fill(m.theme.Style(ui.RoleText, nil))
 	width := max(12, l.MainWidth-1)
 
 	// The bottom-anchored composer is placed first so the transcript region and

@@ -10,7 +10,7 @@
 
 
 
-     ·  extension.notice
+     The deployment completed successfully.
   ×  Replay gap · authoritative reconciliation required
 
   ┃  Ask Harbor...

@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
@@ -95,9 +94,37 @@ func (m Model) layoutAssistant(b projection.Block, width int) laidBlock {
 	}
 	if b.Incomplete {
 		ops = append(ops, drawOp{dx: proseIndent, dy: h, text: "▌", style: m.theme.Style(ui.RoleMuted, nil).Faint(true)})
+		return laidBlock{height: h + 1, ops: ops}
+	}
+	// The per-turn anchor sits under the finished answer: which model ran and
+	// how long the Runtime says it took. It replaces the raw lifecycle/audit
+	// lines that used to interleave with the conversation.
+	if status := m.turnStatusFor(b); status != "" {
+		ops = append(ops,
+			drawOp{dx: proseIndent, dy: h, text: "▣", style: m.theme.Style(ui.RoleAccent, nil)},
+			drawOp{dx: proseIndent + 2, dy: h, text: ui.Truncate(status, max(1, width-proseIndent-2)), style: m.theme.Style(ui.RoleMuted, nil)},
+		)
 		h++
 	}
 	return laidBlock{height: h, ops: ops}
+}
+
+// turnStatusFor returns the turn anchor for the newest answer only, so a long
+// transcript is not littered with one status line per historical block.
+func (m Model) turnStatusFor(b projection.Block) string {
+	if m.state.TurnStatus == "" {
+		return ""
+	}
+	for i := len(m.projection.Blocks) - 1; i >= 0; i-- {
+		if k := m.projection.Blocks[i].Kind; k != "text" {
+			continue
+		}
+		if m.projection.Blocks[i].ID == b.ID {
+			return m.state.TurnStatus
+		}
+		return ""
+	}
+	return ""
 }
 
 // layoutReasoning renders thinking as a muted, subordinate section with a
@@ -108,9 +135,6 @@ func (m Model) layoutReasoning(b projection.Block, width int) laidBlock {
 	if b.Incomplete {
 		header = "Thinking"
 		glyph = "⋯"
-	}
-	if d := reasoningDuration(b); d != "" {
-		header += " · " + d
 	}
 	ops := []drawOp{{dx: 0, dy: 0, text: glyph + "  " + header, style: m.theme.Style(ui.RoleWarning, nil).Faint(true)}}
 	body, bh := m.proseOps(b.Text, width, reasoningIndent, 1, ui.RoleMuted)
@@ -222,9 +246,11 @@ func (m Model) proseOps(text string, width, indent, dy0 int, role ui.Role) ([]dr
 }
 
 // composerStatus is the composer's status row. While a turn is in flight it
-// reports live progress (spinner, elapsed, and the interrupt affordance) so the
-// surface never looks dead between submit and first token. Reduced motion keeps
-// a stable semantic fallback with no animation or ticking elapsed.
+// reports progress and the interrupt affordance so the surface never looks dead
+// between submit and first token. It deliberately carries NO elapsed time: the
+// only honest duration is the Runtime's own (rendered on the turn-status line
+// once the run is terminal), and a local clock would count the operator's
+// typing. Reduced motion keeps a stable fallback with no animation.
 func (m Model) composerStatus() string {
 	if !m.hasActiveTurn() {
 		return string(m.state.Composer)
@@ -232,47 +258,15 @@ func (m Model) composerStatus() string {
 	if m.reducedMotion {
 		return "Working · esc interrupt"
 	}
-	frame := spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)]
-	label := frame + " Working"
-	if elapsed := m.activeElapsed(); elapsed != "" {
-		label += " · " + elapsed
-	}
-	return label + " · esc interrupt"
+	return spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)] + " Working · esc interrupt"
 }
 
-// hasActiveTurn reports whether a turn is streaming or otherwise in flight.
+// hasActiveTurn reports whether a turn is genuinely in flight. It keys on the
+// composer posture, which the host drives from the canonical run lifecycle —
+// never on "some block is incomplete", because metadata-only fallback blocks
+// are incomplete by construction and would pin this on forever.
 func (m Model) hasActiveTurn() bool {
-	if m.state.Composer == ComposerRunning || m.state.Active {
-		return true
-	}
-	for _, b := range m.projection.Blocks {
-		if b.Incomplete && (b.Kind == "text" || b.Kind == "reasoning" || b.Kind == "tool") {
-			return true
-		}
-	}
-	return false
-}
-
-// activeElapsed reports how long the in-flight turn has been running, from the
-// oldest still-incomplete block of the newest run.
-func (m Model) activeElapsed() string {
-	start := time.Time{}
-	for _, b := range m.projection.Blocks {
-		if !b.Incomplete || b.At.IsZero() {
-			continue
-		}
-		if start.IsZero() || b.At.Before(start) {
-			start = b.At
-		}
-	}
-	if start.IsZero() {
-		return ""
-	}
-	secs := time.Since(start).Seconds()
-	if secs < 0 || secs > 86400 {
-		return ""
-	}
-	return fmt.Sprintf("%.1fs", secs)
+	return m.state.Composer == ComposerRunning || m.state.Active
 }
 
 func (m Model) dim(text string, role ui.Role) string {
@@ -346,15 +340,6 @@ func lifecycleGlyph(status string) (string, ui.Role) {
 	default:
 		return "·", ui.RoleMuted
 	}
-}
-
-func reasoningDuration(b projection.Block) string {
-	if b.At.IsZero() {
-		return ""
-	}
-	// A completed reasoning block without an end timestamp cannot show a
-	// duration honestly yet; the per-turn status work threads CompletedAt.
-	return ""
 }
 
 func firstLine(s string) string {

@@ -107,6 +107,10 @@ type Block struct {
 	PayloadKeys []string                 `json:"payload_keys,omitempty"`
 	Artifacts   []types.StateArtifactRef `json:"artifacts,omitempty"`
 	Incomplete  bool                     `json:"incomplete,omitempty"`
+	// DurationMS is the canonical wall-clock time the Runtime reports for the
+	// run (TaskRow.StartedAt → UpdatedAt). It is authoritative: the client never
+	// derives elapsed time from local wall-clock reads.
+	DurationMS int64 `json:"duration_ms,omitempty"`
 }
 
 // ChangeSet tells a renderer whether it may coalesce this update. Content and
@@ -579,9 +583,14 @@ func mergeTasks(p *Projection, rows []types.TaskRow, details []types.TaskDetail,
 		id := "task:" + row.ID
 		idx := blockIndex(p.Blocks, id)
 		if idx < 0 {
-			p.Blocks = append(p.Blocks, Block{ID: id, Kind: "task", RunID: row.ID, At: row.StartedAt, Status: string(row.Status)})
-		} else if !liveAfterSnapshot && !terminalStatus(p.Blocks[idx].Status) {
-			p.Blocks[idx].Status = string(row.Status)
+			p.Blocks = append(p.Blocks, Block{ID: id, Kind: "task", RunID: row.ID, At: row.StartedAt, Status: string(row.Status), DurationMS: row.DurationMS})
+		} else {
+			if row.DurationMS > 0 {
+				p.Blocks[idx].DurationMS = row.DurationMS
+			}
+			if !liveAfterSnapshot && !terminalStatus(p.Blocks[idx].Status) {
+				p.Blocks[idx].Status = string(row.Status)
+			}
 		}
 		if detail, ok := detailByID[row.ID]; ok && detail.ResultRef != nil {
 			artifact := types.StateArtifactRef{ID: detail.ResultRef.ID, MimeType: detail.ResultRef.MimeType, SizeBytes: detail.ResultRef.SizeBytes, Filename: detail.ResultRef.Filename, SHA256: detail.ResultRef.SHA256}

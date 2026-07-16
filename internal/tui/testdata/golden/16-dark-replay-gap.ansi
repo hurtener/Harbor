@@ -1,30 +1,30 @@
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m                                                                                                    [m
-[97;40m     [m[2;96m◆  Inspecting Runtime posture[m[97;40m                                                                  [m
-[97;40m                                                                                                    [m
-[97;40m     [m[92m✓  runtime.health  Runtime health snapshot received[m[97;40m                                            [m
-[97;40m                                                                                                    [m
-[97;40m  [m[93;40m┃[m[97;40m  [m[93;40m!  Operator approval required[m[97;40m                                                                  [m
-[97;40m  [m[93;40m┃[m[97;40m  [m[93;40mOperator approval required[m[97;40m                                                                     [m
-[97;40m  [m[91m×  Replay gap · authoritative reconciliation required[m[97;40m                                             [m
-[97;40m                                                                                                    [m
-[97;40m  [m[93m┃[m[97;40m  Ask Harbor about this runtime...                                                               [m
-[97;40m  [m[93m┃[m[97;40m                                                                                                 [m
-[97;40m  [m[93m┃[m[97;40m  idle                                                                                           [m
-[97;40m  [m[93m╹[m[97;40m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                       [m
-[97;40m  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands                                     [m
-[97;40m  [m[90mdisconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context[m[97;40m                       [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m                                                                                                    [m
+[97m     [m[2;96m◆  Inspecting Runtime posture[m[97m                                                                  [m
+[97m                                                                                                    [m
+[97m     [m[92m✓  runtime.health  Runtime health snapshot received[m[97m                                            [m
+[97m                                                                                                    [m
+[97m  [m[93;40m┃[m[97;40m  [m[93;40m!  Operator approval required[m[97;40m                                                               [m[97m   [m
+[97m  [m[93;40m┃[m[97;40m  [m[93;40mOperator approval required[m[97;40m                                                                  [m[97m   [m
+[97m  [m[91m×  Replay gap · authoritative reconciliation required[m[97m                                             [m
+[97m                                                                                                    [m
+[97m  [m[93m┃[m[97;40m  Ask Harbor about this runtime...                                        [m[97m                       [m
+[97m  [m[93m┃[m[97;40m                                                                          [m[97m                       [m
+[97m  [m[93m┃[m[97;40m  idle                                                                    [m[97m                       [m
+[97m  [m[93m╹[m[97;40m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[m[97m                       [m
+[97m  [m[97;40macme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands              [m[97m                       [m
+[97m  [m[90mdisconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context[m[97m                       [m

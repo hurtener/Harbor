@@ -9,7 +9,7 @@
                                                                                                                       running
 
                                                                                                                       Transcript
-                                                                                                                      3 blocks
+                                                                                                                      2 blocks
 
                                                                                                                       Stream
                                                                                                                       replaying
@@ -26,11 +26,11 @@
 
 
 
+
+
   ┃  Summarize the deployment status.
 
      The deployment completed successfully.
-
-     ·  extension.notice
   ×  Replay gap · authoritative reconciliation required
 
   ┃  Ask Harbor...

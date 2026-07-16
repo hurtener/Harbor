@@ -774,6 +774,34 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 	return m.forward(original)
 }
 
+// turnStatus renders the per-turn anchor under a finished answer — the model
+// that ran and how long the Runtime says it took. The duration is canonical
+// (TaskRow.StartedAt → UpdatedAt, carried on the task block); the client never
+// derives it from a local clock, so it reports agent time, not the operator's
+// typing time. An empty string means there is nothing honest to report yet.
+func (m RuntimeModel) turnStatus() string {
+	duration := int64(0)
+	for _, block := range m.transcript.Projection.Blocks {
+		if block.Kind != "task" || !terminalTurnStatus(block.Status) {
+			continue
+		}
+		duration = block.DurationMS
+	}
+	if duration <= 0 {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if model := strings.TrimSpace(m.runtime.Posture.LLM.Model); model != "" {
+		parts = append(parts, model)
+	}
+	parts = append(parts, fmt.Sprintf("%.1fs", float64(duration)/1000))
+	return strings.Join(parts, "  ·  ")
+}
+
+func terminalTurnStatus(status string) bool {
+	return status == "completed" || status == "succeeded" || status == "failed" || status == "cancelled"
+}
+
 // activeRunID returns the run of the newest still-streaming block, if any.
 func (m RuntimeModel) activeRunID() (string, bool) {
 	blocks := m.transcript.Projection.Blocks
@@ -1565,12 +1593,23 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 	m.shell.state.CountersPartial = update.Projection.CountersPartial
 	m.shell.state.AggregatesPartial = update.Projection.ToolsAggregatesPartial
 	m.shell.state.AnalyticsBounded = update.Projection.ToolAnalyticsBounded
+	// The conversation surface reports on the conversation. Runtime internals
+	// (audit, cost, planner decisions) arrive as metadata-only fallback blocks
+	// that are incomplete by construction — deriving "unknown"/"incomplete" from
+	// them lit both banners permanently on a healthy session. Those events stay
+	// honestly visible on the events + diagnostics routes.
 	m.shell.state.Unknown, m.shell.state.Incomplete, m.shell.state.Intervention = false, false, false
 	for _, block := range update.Projection.Blocks {
-		m.shell.state.Unknown = m.shell.state.Unknown || block.Kind == "event"
+		if block.Kind == "intervention" && block.Status == "pending" {
+			m.shell.state.Intervention = true
+		}
+		if !conversational(block.Kind) {
+			continue
+		}
+		m.shell.state.Unknown = m.shell.state.Unknown || (block.Kind == "tool" && block.Tool == "")
 		m.shell.state.Incomplete = m.shell.state.Incomplete || block.Incomplete
-		m.shell.state.Intervention = m.shell.state.Intervention || block.Kind == "intervention" && block.Status == "pending"
 	}
+	m.shell.state.TurnStatus = m.turnStatus()
 	switch update.State {
 	case conversation.StateLive:
 		m.shell.state.Active = true
@@ -1642,6 +1681,9 @@ func (m *RuntimeModel) syncProjection() {
 		selectedID = p.Blocks[min(max(0, m.transcript.Selected), len(p.Blocks)-1)].ID
 	}
 	for index, block := range p.Blocks {
+		if !conversational(block.Kind) {
+			continue
+		}
 		if m.transcript.Query != "" && !matches[index] {
 			continue
 		}
@@ -1777,11 +1819,30 @@ func (m RuntimeModel) hasActiveWork() bool {
 	return m.projectionActive() || m.shell.state.Composer == ComposerRunning
 }
 
+// projectionActive reports whether a turn is genuinely in flight. Only the
+// canonical run lifecycle counts: metadata-only fallback events are marked
+// incomplete by construction (they carry no completion of their own) and must
+// never make a finished turn look like it is still working.
 func (m RuntimeModel) projectionActive() bool {
 	for _, block := range m.transcript.Projection.Blocks {
+		if block.Kind == "event" || block.Kind == "user" {
+			continue
+		}
 		if block.Status == "pending" || block.Status == "running" || block.Status == "started" {
 			return true
 		}
+	}
+	return false
+}
+
+// conversational reports whether a block belongs on the conversation surface.
+// Runtime internals — audit records, cost accounting, planner decisions,
+// session/task lifecycle — are diagnostics, not chat: they stay available on
+// the events and diagnostics routes instead of interleaving with the answer.
+func conversational(kind string) bool {
+	switch kind {
+	case "user", "text", "reasoning", "tool", "intervention":
+		return true
 	}
 	return false
 }
