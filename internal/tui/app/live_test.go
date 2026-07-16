@@ -207,6 +207,81 @@ func leader(t *testing.T, m RuntimeModel, key rune) RuntimeModel {
 	return drive(t, m, keyMsg(key, 0))
 }
 
+func TestApplyUpdate_HonestyStateMapping(t *testing.T) {
+	id := types.IdentityScope{Tenant: "t", User: "u", Session: "s"}
+	base := projection.Projection{Identity: id, LastSequence: 5}
+
+	failed := base
+	failed.SessionStatus = string(types.SessionStatusFailed)
+	completed := base
+	completed.SessionStatus = string(types.SessionStatusCompleted)
+	dropped := base
+	dropped.ReplayGap = &projection.ReplayGap{Reason: "live_journal_overflow", LastSequence: 5}
+	gap := base
+	gap.ReplayGap = &projection.ReplayGap{Reason: "unseen_out_of_order", LastSequence: 5, SeenSequence: 3}
+	partial := base
+	partial.HistoryTruncated, partial.AggregateTruncated = true, true
+	partial.CountersPartial, partial.ToolsAggregatesPartial, partial.ToolAnalyticsBounded = true, true, true
+
+	cases := []struct {
+		name   string
+		p      projection.Projection
+		assert func(*testing.T, State)
+	}{
+		{"failed-is-not-closed", failed, func(t *testing.T, s State) {
+			if s.Closed || !s.Failed {
+				t.Fatalf("failed session must set Failed, not Closed: closed=%v failed=%v", s.Closed, s.Failed)
+			}
+		}},
+		{"completed-is-closed-not-failed", completed, func(t *testing.T, s State) {
+			if !s.Closed || s.Failed {
+				t.Fatalf("completed session must set Closed, not Failed: closed=%v failed=%v", s.Closed, s.Failed)
+			}
+		}},
+		{"overflow-drop-is-dropped-not-replaygap", dropped, func(t *testing.T, s State) {
+			if !s.Dropped || s.ReplayGap {
+				t.Fatalf("event-window drop must set Dropped, not ReplayGap: dropped=%v replaygap=%v", s.Dropped, s.ReplayGap)
+			}
+		}},
+		{"ordering-gap-is-replaygap-not-dropped", gap, func(t *testing.T, s State) {
+			if s.Dropped || !s.ReplayGap {
+				t.Fatalf("ordering gap must set ReplayGap, not Dropped: dropped=%v replaygap=%v", s.Dropped, s.ReplayGap)
+			}
+		}},
+		{"partiality-kinds-are-distinct", partial, func(t *testing.T, s State) {
+			if !s.Truncated || !s.AggregateTruncated || !s.CountersPartial || !s.AggregatesPartial || !s.AnalyticsBounded {
+				t.Fatalf("each partiality kind must stay distinct: %+v", s)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			controller := &recordingController{id: id, projection: tc.p}
+			m := NewRuntimeModel(t.Context(), 100, 30, ui.NewTheme(ui.ModeDark, ui.ProfileMono), controller, conversation.ChannelSource(make(chan conversation.Update, 4)), RuntimeOptions{Fingerprint: "runtime"})
+			m.applyUpdate(conversation.Update{Identity: id, Generation: 1, State: conversation.StateLive, Projection: tc.p})
+			tc.assert(t, m.shell.state)
+		})
+	}
+}
+
+func TestApplyUpdate_DoesNotRegressToOlderProjection(t *testing.T) {
+	id := types.IdentityScope{Tenant: "t", User: "u", Session: "s"}
+	controller := &recordingController{id: id}
+	m := NewRuntimeModel(t.Context(), 100, 30, ui.NewTheme(ui.ModeDark, ui.ProfileMono), controller, conversation.ChannelSource(make(chan conversation.Update, 4)), RuntimeOptions{Fingerprint: "runtime"})
+
+	newer := projection.Projection{Identity: id, LastSequence: 10, Blocks: []projection.Block{{ID: "tool", Kind: "tool", Tool: "lookup", Status: "completed"}}}
+	older := projection.Projection{Identity: id, LastSequence: 7, Blocks: []projection.Block{{ID: "tool", Kind: "tool", Tool: "lookup", Status: "running"}}}
+	m.applyUpdate(conversation.Update{Identity: id, Generation: 1, State: conversation.StateLive, Projection: newer})
+	m.applyUpdate(conversation.Update{Identity: id, Generation: 1, State: conversation.StateLive, Projection: older})
+
+	if got := m.transcript.Projection.LastSequence; got != 10 {
+		t.Fatalf("stale projection at seq 7 must not replace the seq-10 frame; got seq %d", got)
+	}
+	if status := m.transcript.Projection.Blocks[0].Status; status != "completed" {
+		t.Fatalf("completed tool must not regress to %q from a stale frame", status)
+	}
+}
+
 func runtimeModelForTest(t *testing.T, compact bool) RuntimeModel {
 	t.Helper()
 	id := types.IdentityScope{Tenant: "t", User: "u", Session: "s"}

@@ -1,19 +1,19 @@
 
   HARBOR  /  DIAGNOSTICS
-  One active session · Protocol-only                                                                                    RUNTIME CONTEXT
+  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
   live
-                                                                                                                        Session
-   Exactly one active session · tenant-a/operator/session-alpha                                                         session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                  one active session
+                                                                                                                      Session
+   Exactly one active session · tenant-a/operator/session-alpha                                                       session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                one active session
    DIAGNOSTICS · stream / retention / capability / partiality
-   Unavailable topology.snapshot: HTTP 501 capability unavailable                                                       Health
-                                                                                                                        warning · intervention required
-                                                                                                                        Status
-                                                                                                                        running
-                                                                                                                        Transcript
-                                                                                                                        2 blocks
-                                                                                                                        Stream
-                                                                                                                        live
+   Unavailable topology.snapshot: HTTP 501 capability unavailable                                                     Health
+                                                                                                                      warning · intervention required
+                                                                                                                      Status
+                                                                                                                      running
+                                                                                                                      Transcript
+                                                                                                                      2 blocks
+                                                                                                                      Stream
+                                                                                                                      live
 
 
 

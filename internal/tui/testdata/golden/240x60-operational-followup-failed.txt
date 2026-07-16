@@ -1,17 +1,17 @@
 
   HARBOR  /  SESSION                                                                                                                                                                                           Follow-up failed · retry or dis
-  One active session · Protocol-only                                                                                                                                                                    RUNTIME CONTEXT
+  One active session · Protocol-only                                                                                                                                                                  RUNTIME CONTEXT
   live
-                                                                                                                                                                                                        Session
-  ┃                                                                                                                                                                                                     session-alpha
-  ┃  ◆  Active stream · following newest output                                                                                                                                                         one active session
+                                                                                                                                                                                                      Session
+  ┃                                                                                                                                                                                                   session-alpha
+  ┃  ◆  Active stream · following newest output                                                                                                                                                       one active session
   ┃
-                                                                                                                                                                                                        Status
-  ┃                                                                                                                                                                                                     running
-  ┃  ◇  Summarize the deployment status.                                                                                                                                                                Transcript
-  ┃                                                                                                                                                                                                     2 blocks
-                                                                                                                                                                                                        Stream
-  ┃                                                                                                                                                                                                     live
+                                                                                                                                                                                                      Status
+  ┃                                                                                                                                                                                                   running
+  ┃  ◇  Summarize the deployment status.                                                                                                                                                              Transcript
+  ┃                                                                                                                                                                                                   2 blocks
+                                                                                                                                                                                                      Stream
+  ┃                                                                                                                                                                                                   live
   ┃  ●  The deployment completed successfully.
   ┃
 

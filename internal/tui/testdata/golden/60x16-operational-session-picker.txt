@@ -3,13 +3,13 @@
   One active session · Protocol-only
   live
 
-     Sessions
-    Search:
-   ● Current session · running
-     Incident review · completed · Resume on next canonic
+      Sessions
+     Search:
+    ● Current session · running
+      Incident review · completed · Resume on next canon
 
 
-   ↑/↓ move · enter select · esc close
+    ↑/↓ move · enter select · esc close
   ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands

@@ -1,12 +1,12 @@
 
   HARBOR  /  SESSION
 
-     Commands
-    Search:
-   ● Command palette
-     Toggle runtime context
-     Keyboard help
-     Quit
+      Commands
+     Search:
+    ● Command palette
+      Toggle runtime context
+      Keyboard help
+      Quit
 
 
-   ↑/↓ move · enter select · esc clos
+    ↑/↓ move · enter select · esc cl

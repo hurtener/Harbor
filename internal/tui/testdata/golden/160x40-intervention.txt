@@ -1,17 +1,17 @@
 
   HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                    RUNTIME CONTEXT
+  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
   disconnected
-                                                                                                                        Session
-  ┃                                                                                                                     01K0HARBORFIXTURE0000000000
-  ┃  !  Operator approval required                                                                                      one active session
+                                                                                                                      Session
+  ┃                                                                                                                   01K0HARBORFIXTURE0000000000
+  ┃  !  Operator approval required                                                                                    one active session
   ┃  Operator approval required
-  ┃                                                                                                                     Status
-     [ Approve unavailable ]   [ Reject unavailable ]                                                                   running
-                                                                                                                        Transcript
-                                                                                                                        3 blocks
-  ┃                                                                                                                     Stream
-  ┃  ◆  Inspecting Runtime posture                                                                                      disconnected
+  ┃                                                                                                                   Status
+     [ Approve unavailable ]   [ Reject unavailable ]                                                                 running
+                                                                                                                      Transcript
+                                                                                                                      3 blocks
+  ┃                                                                                                                   Stream
+  ┃  ◆  Inspecting Runtime posture                                                                                    disconnected
   ┃
 
   ┃

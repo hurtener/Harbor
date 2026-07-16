@@ -1,12 +1,12 @@
 
   HARBOR  /  SESSION
 
-     Themes
-    Search:
-   ● Dark
-     Light
+      Themes
+     Search:
+    ● Dark
+      Light
 
 
 
 
-   ↑/↓ move · enter select · esc clos
+    ↑/↓ move · enter select · esc cl

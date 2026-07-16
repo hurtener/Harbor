@@ -1,17 +1,17 @@
 
   HARBOR  /  SESSION
-  One active session · Protocol-only                                             RUNTIME CONTEXT
+  One active session · Protocol-only                                           RUNTIME CONTEXT
   disconnected
-                                                                                 Session
-  ┃                                                                              01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime posture                                               one active session
+                                                                               Session
+  ┃                                                                            01K0HARBORFIXTURE0000000000
+  ┃  ◆  Inspecting Runtime posture                                             one active session
   ┃
                                   Themes
   ┃                              Search:
-  ┃  ✓  Runtime health snapsho  ● Dark                                                    t
+  ┃  ✓  Runtime health snapsho  ● Dark
   ┃                               Light
 
-  ┃                                                                                       ted
+  ┃                                                                                       d
   ┃  !  Operator approval requ  ↑/↓ move · enter select · esc close
   ┃
 

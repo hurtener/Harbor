@@ -4,11 +4,11 @@
   live
 
   ┃
-  ┃  ◆  Active stream · following newest output
+  ┃  ↑  Scrolled away · new output will not move this view
   ┃
 
   ┃
-  ┃  ↑  Scrolled away · new output will not move this view
+  ┃  ◆  Active stream · following newest output
   ┃
 
 

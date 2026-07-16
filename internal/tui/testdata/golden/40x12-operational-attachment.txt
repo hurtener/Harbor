@@ -1,12 +1,12 @@
 
   HARBOR  /  SESSION
 
-     Attach file · path|disposition
-    Search:
+      Attach file · path|disposition
+     Search:
 
 
 
 
 
 
-   ↑/↓ move · enter select · esc clos
+    ↑/↓ move · enter select · esc cl

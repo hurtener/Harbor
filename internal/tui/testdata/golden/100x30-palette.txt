@@ -6,19 +6,19 @@
   ┃
   ┃  ◆  Inspecting Runtime posture
   ┃
-                        Commands
-  ┃                    Search:
-  ┃  ✓  Runtime heal  ● Command palette · Find an available action
-  ┃                     Toggle runtime context · Show the fixed context sideba
-                        Keyboard help · Show all reachable commands
-  ┃                     Quit · Restore the terminal and exit
-  ┃  !  Operator app    Attach file · Unavailable: requires a live authenticat
-  ┃                     Cancel queued follow-up · Unavailable: no local follow
-                        Remove attachment · Unavailable: no attachment is sele
-                        Restore stashed draft · Pop the newest local draft
+          Commands
+  ┃      Search:
+  ┃  ✓  ● Command palette · Find an available action
+  ┃       Toggle runtime context · Show the fixed context sidebar
+          Keyboard help · Show all reachable commands
+  ┃       Quit · Restore the terminal and exit
+  ┃  !    Attach file · Unavailable: requires a live authenticated Runtime attachment
+  ┃       Cancel queued follow-up · Unavailable: no local follow-up is queued
+          Remove attachment · Unavailable: no attachment is selected
+          Restore stashed draft · Pop the newest local draft
 
 
-                      ↑/↓ move · enter select · esc close
+        ↑/↓ move · enter select · esc close
 
 
 

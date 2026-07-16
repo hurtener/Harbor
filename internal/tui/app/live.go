@@ -1385,9 +1385,9 @@ func (m RuntimeModel) updateSearch(key string) (tea.Model, tea.Cmd) {
 			m.searchQuery = string(r[:len(r)-1])
 		}
 	case "up", "ctrl+p":
-		m.transcript = m.transcript.Jump(-1)
+		m.transcript = m.transcript.NextMatch(-1)
 	case "down", "ctrl+n":
-		m.transcript = m.transcript.Jump(1)
+		m.transcript = m.transcript.NextMatch(1)
 	default:
 		if len([]rune(key)) == 1 {
 			m.searchQuery += key
@@ -1498,13 +1498,9 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 		m.lastProjectionSequence = update.Projection.LastSequence
 		m.transcript = m.transcript.Replace(update.Projection)
 		if m.restoreScrollID != "" {
-			for i, block := range m.transcript.Projection.Blocks {
-				if block.ID == m.restoreScrollID {
-					m.transcript.Selected = i
-					m.transcript.Follow = i == len(m.transcript.Projection.Blocks)-1
-					break
-				}
-			}
+			// Restore through the ID-anchored setter so the semantic anchor
+			// (selectedID) is set, not just the positional index.
+			m.transcript = m.transcript.SelectByID(m.restoreScrollID)
 			m.restoreScrollID = ""
 		}
 		m.syncProjection()

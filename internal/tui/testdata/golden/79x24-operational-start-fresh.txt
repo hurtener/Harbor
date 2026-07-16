@@ -4,11 +4,11 @@
   live
 
   ┃
-  ┃  ◆  A
+  ┃  ×  S
   ┃          Start Fresh
             Search:
   ┃
-  ┃  ×  S
+  ┃  ◆  A
   ┃        ↑/↓ move · enter select · esc close
 
   ┃

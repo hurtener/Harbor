@@ -1,17 +1,17 @@
 
   HARBOR  /  SESSION                                                                    Sidebar context visible
-  One active session · Protocol-only                                             RUNTIME CONTEXT
+  One active session · Protocol-only                                           RUNTIME CONTEXT
   disconnected
-                                                                                 Session
-  ┃                                                                              01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime posture                                               one active session
+                                                                               Session
+  ┃                                                                            01K0HARBORFIXTURE0000000000
+  ┃  ◆  Inspecting Runtime posture                                             one active session
   ┃
-                                                                                 Status
-  ┃                                                                              running
-  ┃  ✓  Runtime health snapshot received                                         Transcript
-  ┃                                                                              3 blocks
-                                                                                 Stream
-  ┃                                                                              disconnected
+                                                                               Status
+  ┃                                                                            running
+  ┃  ✓  Runtime health snapshot received                                       Transcript
+  ┃                                                                            3 blocks
+                                                                               Stream
+  ┃                                                                            disconnected
   ┃  !  Operator approval required
   ┃
 

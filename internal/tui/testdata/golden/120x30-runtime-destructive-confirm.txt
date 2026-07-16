@@ -5,14 +5,14 @@
 
   ┃
   ┃  ◆  Active stream · following newest output
-  ┃
-                                  Confirm Runtime action
-  ┃                              Search:
-  ┃  ◇  Summarize the deployme  ● Confirm Cancel task · tenant-a/operator/session-alpha
-  ┃                               Cancel
 
-  ┃
-  ┃  ●  The deployment complet  ↑/↓ move · enter select · esc close
+      Confirm Runtime action
+     Search:
+    ● Confirm Cancel task · tenant-a/operator/session-alpha · run  · PauseToken  · tool  · artifact  · authority  ·
+      Cancel
+
+
+    ↑/↓ move · enter select · esc close
   ┃
 
 

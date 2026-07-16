@@ -4,11 +4,11 @@
   live
 
   ┃
-  ┃  ◆  Active stream · following newest output
+  ┃  ×  Session erased · terminal state, start fresh required
   ┃
                         Start Fresh
   ┃                    Search:
-  ┃  ×  Session eras
+  ┃  ◆  Active strea
   ┃
                       ↑/↓ move · enter select · esc close
   ┃

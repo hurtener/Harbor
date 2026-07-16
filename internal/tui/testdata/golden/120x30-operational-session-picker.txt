@@ -6,13 +6,13 @@
   ┃
   ┃  ◆  Active stream · following newest output
   ┃
-                                  Sessions
-  ┃                              Search:
-  ┃  ◇  Summarize the deployme  ● Current session · running
-  ┃                               Incident review · completed · Resume on next canonical
+                    Sessions
+  ┃                Search:
+  ┃  ◇  Summariz  ● Current session · running
+  ┃                 Incident review · completed · Resume on next canonical start
 
   ┃
-  ┃  ●  The deployment complet  ↑/↓ move · enter select · esc close
+  ┃  ●  The depl  ↑/↓ move · enter select · esc close
   ┃
 
 

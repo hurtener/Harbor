@@ -8,9 +8,9 @@
   ┃  ctrl+x a  Attach file · unavailable: requires a live
   ┃  ctrl+x k  Cancel queued follow-up · unavailable: no
   ┃  ctrl+x e  Remove attachment · unavailable: no attach
-  ┃  ctrl+x p  Restore stashed draft
-  ┃  ctrl+x u  Retry attachment · unavailable: no attachm
-  ┃  ctrl+x j  Retry failed follow-up · unavailable: no l
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
   ctrl+p Command palette   ctrl+x s Toggle runtime context

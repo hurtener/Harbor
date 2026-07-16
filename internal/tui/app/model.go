@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -569,7 +570,7 @@ func (m Model) renderBase(c *canvas) {
 		compactNotice := false
 		if m.height <= 12 && !m.state.Intervention {
 			if notices := m.notices(); len(notices) > 0 {
-				notice := notices[0]
+				notice := mostSevere(notices)
 				c.put(ui.OuterPadding, 4, ui.Truncate(notice.glyph+" "+notice.text, l.MainWidth), m.theme.Style(notice.role, nil))
 				compactNotice = true
 			}
@@ -628,6 +629,32 @@ type notice struct {
 	role        ui.Role
 }
 
+// noticeSeverity orders honesty notices so the single compact-mode slot surfaces
+// the most consequential state (error before warning before info), never hiding
+// a failed/erased/dropped state behind a benign "active stream" line.
+func noticeSeverity(role ui.Role) int {
+	switch role {
+	case ui.RoleError:
+		return 3
+	case ui.RoleWarning:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// mostSevere returns the highest-severity notice, preserving declaration order
+// among equals (first wins).
+func mostSevere(notices []notice) notice {
+	top := notices[0]
+	for _, n := range notices[1:] {
+		if noticeSeverity(n.role) > noticeSeverity(top.role) {
+			top = n
+		}
+	}
+	return top
+}
+
 func (m Model) notices() []notice {
 	var out []notice
 	if m.state.Active {
@@ -684,6 +711,10 @@ func (m Model) notices() []notice {
 	if m.state.Focused {
 		out = append(out, notice{"●", "Composer focus restored", ui.RoleSuccess})
 	}
+	// Order by severity so that when vertical space is scarce the most
+	// consequential honesty state (failed/erased/dropped) renders first and is
+	// never crowded out by a benign info line (§9). Stable within a severity.
+	sort.SliceStable(out, func(i, j int) bool { return noticeSeverity(out[i].role) > noticeSeverity(out[j].role) })
 	return out
 }
 func semantic(status string) (string, ui.Role) {
