@@ -66,6 +66,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -74,12 +75,15 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
+	sdkprotocolclient "github.com/hurtener/Harbor/sdk/protocolclient"
+	tui "github.com/hurtener/Harbor/sdk/tui"
 )
 
 // Stable CLI error codes for `harbor dev`. New codes ADD entries to
@@ -103,6 +107,7 @@ const (
 	flagDevConfig      = "config"
 	flagDevPort        = "port"
 	flagDevNoHotReload = "no-hot-reload"
+	flagDevTUI         = "tui"
 )
 
 // EnvDevAllowMock is the env var name that unlocks the dev-only mock
@@ -171,6 +176,7 @@ Examples:
 	// "dev-only escape hatch — explicit, never the default" surface
 	// applied in reverse: operators OPT OUT of a sensible default.
 	cmd.Flags().Bool(flagDevNoHotReload, false, "disable the fsnotify-driven hot-reload watcher (overrides cli.dev_hot_reload.enabled)")
+	cmd.Flags().Bool(flagDevTUI, false, "co-launch the native terminal client in this process after readiness, using the ephemeral dev token (one command, one terminal; disables hot-reload)")
 	return cmd
 }
 
@@ -186,6 +192,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	cfgPath, _ := cmd.Flags().GetString(flagDevConfig)        //nolint:errcheck // flag statically registered; lookup cannot fail
 	port, _ := cmd.Flags().GetInt(flagDevPort)                //nolint:errcheck // flag statically registered; lookup cannot fail
 	noHotReload, _ := cmd.Flags().GetBool(flagDevNoHotReload) //nolint:errcheck // flag statically registered; lookup cannot fail
+	withTUI, _ := cmd.Flags().GetBool(flagDevTUI)             //nolint:errcheck // flag statically registered; lookup cannot fail
 	bindAddrOverride := os.Getenv("HARBOR_BIND")
 	if bindAddrOverride != "" {
 		if p, ok := parsePortFromBind(bindAddrOverride); ok {
@@ -194,9 +201,20 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	}
 	allowMock := os.Getenv(EnvDevAllowMock) == "1"
 
-	// Boot logger — text handler on stderr so a dev operator's terminal
-	// shows readable lines.
-	logger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{
+	// Co-launch log separation (mirrors serve --tui): when --tui is set the
+	// Bubble Tea program owns stdout+stderr, so Runtime logs and the dev-token
+	// line go to a captured buffer, printed only if boot/readiness fails (after
+	// the terminal is restored).
+	var logSink = cmd.ErrOrStderr()
+	var capturedLog *bytes.Buffer
+	if withTUI {
+		capturedLog = &bytes.Buffer{}
+		logSink = capturedLog
+	}
+
+	// Boot logger — text handler so a dev operator's terminal shows readable
+	// lines (captured buffer in --tui mode).
+	logger := slog.New(slog.NewTextHandler(logSink, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 
@@ -207,7 +225,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	// (when the env var fired) and capture the boot-time mock flag for the
 	// llm.posture surface. The mock driver itself is blank-imported at
 	// compile time via devmock.go; this is the runtime surfacing.
-	registerMockIfDevAllowMock(allowMock, cmd.ErrOrStderr())
+	registerMockIfDevAllowMock(allowMock, logSink)
 
 	comp, err := newDevComposition(devCompositionOptions{
 		allowMock:    allowMock,
@@ -216,11 +234,22 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return emitCLIError(cmd, bootErrorToCLIError("dev", err))
 	}
-	bootOpts := comp.serveOptions(cfgPath, port, bindAddrOverride, "dev", logger, cmd.ErrOrStderr())
+	bootOpts := comp.serveOptions(cfgPath, port, bindAddrOverride, "dev", logger, logSink)
 
 	stack, err := serve.Boot(ctx, bootOpts)
 	if err != nil {
+		if withTUI {
+			restoreTerminalAndPrintLog(capturedLog)
+		}
 		return emitCLIError(cmd, bootErrorToCLIError("dev", err))
+	}
+
+	// Co-launch path (--tui): one process, one terminal, zero config — boot the
+	// dev Runtime, wait for readiness, and attach the TUI with the ephemeral
+	// dev token. The TUI stays a pure Protocol client (loopback REST/SSE, no
+	// Runtime handle); hot-reload is disabled in this mode.
+	if withTUI {
+		return coLaunchDevTUI(cmd, comp, stack, ctx, stop, capturedLog)
 	}
 
 	// Mint + print the ephemeral dev token so an operator can curl the
@@ -299,6 +328,73 @@ func runDev(cmd *cobra.Command, _ []string) error {
 			Message:    fmt.Sprintf("dev server stopped: %v", err),
 			Code:       CodeBootInternal,
 			Hint:       "check the server log lines above for the originating subsystem; pass --no-hot-reload to disable the watcher",
+		})
+	}
+	return nil
+}
+
+// coLaunchDevTUI serves the booted dev stack in a goroutine, waits for the
+// listener to bind, mints the ephemeral dev token in memory, and attaches the
+// native TUI through authenticated loopback REST/SSE — one process, one
+// terminal. On TUI exit it drains the owned server. The token is never printed
+// (Bubble Tea owns the terminal) or written to disk; it carries the same
+// dev/dev identity + scopes the printed dev token would. Mirrors the
+// `serve --tui` co-launch, but self-mints the token instead of demanding one.
+func coLaunchDevTUI(cmd *cobra.Command, comp *devComposition, stack *serve.Handle, ctx context.Context, stop context.CancelFunc, capturedLog *bytes.Buffer) error {
+	defer stack.Close(context.Background())
+
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- stack.Serve(ctx) }()
+
+	readyCtx, readyCancel := context.WithTimeout(ctx, 30*time.Second)
+	boundAddr, err := stack.WaitReady(readyCtx)
+	readyCancel()
+	if err != nil {
+		stop()
+		<-serveErrCh
+		restoreTerminalAndPrintLog(capturedLog)
+		return emitCLIError(cmd, CLIError{
+			Subcommand: "dev",
+			Message:    fmt.Sprintf("server readiness failed: %v", err),
+			Code:       CodeBindInvalid,
+			Hint:       "check the bind address, port availability, and the captured server log above",
+		})
+	}
+
+	token, err := comp.signer.SignDevToken(time.Now(), DevTenant, DevUser, DevSession, []string{"admin", "console:fleet"})
+	if err != nil {
+		stop()
+		<-serveErrCh
+		restoreTerminalAndPrintLog(capturedLog)
+		return emitCLIError(cmd, CLIError{
+			Subcommand: "dev",
+			Message:    fmt.Sprintf("dev token: %v", err),
+			Code:       CodeBootInternal,
+			Hint:       "this is an internal signing failure; re-run `harbor dev --tui`",
+		})
+	}
+
+	baseURL := "http://" + boundAddr
+	tokens := sdkprotocolclient.TokenSourceFunc(func(_ context.Context, _ sdkprotocolclient.IdentityScope) (string, error) {
+		return token, nil
+	})
+
+	tuiErr := tui.Run(ctx, tui.Options{BaseURL: baseURL, Token: tokens})
+
+	// Drain the owned server on TUI exit.
+	stop()
+	serveErr := <-serveErrCh
+	restoreTerminalAndPrintLog(capturedLog)
+
+	if tuiErr != nil {
+		return emitCLIError(cmd, tuiCLIError(tuiErr))
+	}
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+		return emitCLIError(cmd, CLIError{
+			Subcommand: "dev",
+			Message:    fmt.Sprintf("co-launched dev server stopped with error: %v", serveErr),
+			Code:       CodeBootInternal,
+			Hint:       "check the captured server log above for the originating subsystem",
 		})
 	}
 	return nil

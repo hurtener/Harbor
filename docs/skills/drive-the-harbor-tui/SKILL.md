@@ -14,6 +14,23 @@ metadata:
 the Runtime, import Runtime internals, call a private endpoint, or depend on the
 Console.
 
+## 0. One command (local dev)
+
+For the local agent-development loop, co-launch the Runtime and the TUI in a
+single process and terminal with the ephemeral dev token — zero config, no
+token copy:
+
+```bash
+harbor dev --tui
+```
+
+`harbor dev --tui` boots the dev Runtime, waits for readiness, mints the dev
+token in memory, and attaches the native TUI over authenticated loopback
+REST/SSE. The TUI stays a pure Protocol client (no Runtime handle). Quitting the
+TUI drains the owned Runtime and restores the terminal. Hot-reload is disabled
+in this mode; use the two-process flow below (§1–§2) when you want the fsnotify
+watcher, or to attach a TUI to a Runtime running elsewhere.
+
 ## 1. Start a Runtime
 
 ```bash
