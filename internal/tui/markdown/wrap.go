@@ -6,6 +6,16 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// Style merge keys for cells whose style is not derived from an inline run.
+// Cells sharing a key are coalesced into a single span.
+const (
+	keySpace    = "sp"
+	keyCode     = "code"
+	keyMarker   = "marker"
+	keyQuoteBar = "quotebar"
+	keyRule     = "rule"
+)
+
 // splitWords groups cells into words, dropping the whitespace that separates
 // them. Whitespace inside an inline code span is preserved so the code run
 // stays a single unbreakable, contiguously-backgrounded word.
@@ -13,7 +23,7 @@ func splitWords(cells []cell) [][]cell {
 	var words [][]cell
 	var cur []cell
 	for _, c := range cells {
-		if c.text == " " && c.key != "code" {
+		if c.text == " " && c.key != keyCode {
 			if len(cur) > 0 {
 				words = append(words, cur)
 				cur = nil
@@ -64,7 +74,7 @@ func wrapWords(words [][]cell, width int) [][]cell {
 			continue
 		}
 		if len(cur) > 0 {
-			cur = append(cur, spaceCell())
+			cur = append(cur, separatorCell(cur[len(cur)-1]))
 			curW++
 		}
 		cur = append(cur, w...)
@@ -95,23 +105,36 @@ func hardSplit(w []cell, width int) [][]cell {
 	return chunks
 }
 
-// renderCells styles a line's cells, coalescing runs of identical style into a
-// single lipgloss render, and returns the string plus its visible width.
-func renderCells(cells []cell) (string, int) {
-	var b strings.Builder
-	vis := 0
+// coalesce merges consecutive cells sharing a style key into spans of plain
+// text. It is the one place cells become output, so the span renderer and the
+// string renderer cannot disagree about styling or width.
+func coalesce(cells []cell) []Span {
+	var spans []Span
 	for i := 0; i < len(cells); {
 		j := i + 1
 		for j < len(cells) && cells[j].key == cells[i].key {
 			j++
 		}
-		var seg strings.Builder
+		var b strings.Builder
+		w := 0
 		for k := i; k < j; k++ {
-			seg.WriteString(cells[k].text)
-			vis += cells[k].width
+			b.WriteString(cells[k].text)
+			w += cells[k].width
 		}
-		b.WriteString(cells[i].style.Render(seg.String()))
+		spans = append(spans, Span{Text: b.String(), Style: cells[i].style, Width: w})
 		i = j
+	}
+	return spans
+}
+
+// renderCells styles a line's cells into one escape-carrying string and returns
+// it together with its visible width.
+func renderCells(cells []cell) (string, int) {
+	var b strings.Builder
+	vis := 0
+	for _, s := range coalesce(cells) {
+		b.WriteString(s.Style.Render(s.Text))
+		vis += s.Width
 	}
 	return b.String(), vis
 }
@@ -125,7 +148,19 @@ func clustersWidth(cells []cell) int {
 	return w
 }
 
-// spaceCell is the unstyled separator inserted between wrapped words.
+// separatorCell is the space inserted between two wrapped words. It adopts the
+// preceding cell's style so the gap coalesces into the neighbouring span
+// instead of fragmenting the line — a foreground-only style is invisible on
+// whitespace. A code span is the exception: it carries a background, which must
+// not bleed across the gap, so the separator falls back to a plain space.
+func separatorCell(prev cell) cell {
+	if prev.key == keyCode || prev.key == "" {
+		return spaceCell()
+	}
+	return cell{text: " ", width: 1, key: prev.key, style: prev.style}
+}
+
+// spaceCell is the unstyled separator used where no style may be inherited.
 func spaceCell() cell {
-	return cell{text: " ", width: 1, key: "sp", style: lipgloss.NewStyle()}
+	return cell{text: " ", width: 1, key: keySpace, style: lipgloss.NewStyle()}
 }

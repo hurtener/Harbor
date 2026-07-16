@@ -188,7 +188,7 @@ func layoutInline(theme ui.Theme, runs []run, base ui.Role, forceBold bool) []ce
 func runStyle(theme ui.Theme, r run, base ui.Role, forceBold bool) (lipgloss.Style, string) {
 	if r.code {
 		bg := ui.RoleElement
-		return theme.Style(ui.RoleMuted, &bg), "code"
+		return theme.Style(ui.RoleMuted, &bg), keyCode
 	}
 	role := base
 	if r.link {
