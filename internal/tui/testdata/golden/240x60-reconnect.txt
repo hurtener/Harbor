@@ -8,11 +8,10 @@
                                                                                                                                                                                                       Status
                                                                                                                                                                                                       running
 
-                                                                                                                                                                                                      Transcript
-                                                                                                                                                                                                      3 blocks
 
-                                                                                                                                                                                                      Stream
-                                                                                                                                                                                                      retrying · attempt 2 in 4s
+
+
+
 
 
 
@@ -47,7 +46,8 @@
 
      ◆  Inspecting Runtime posture
 
-     ✓  runtime.health  Runtime health snapshot received
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

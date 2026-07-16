@@ -127,33 +127,39 @@ func (m Model) turnStatusFor(b projection.Block) string {
 	return ""
 }
 
-// layoutReasoning renders thinking as a muted, subordinate section with a
-// distinct header, clearly below the answer in the visual hierarchy.
+// layoutReasoning renders thinking as a muted, subordinate section, collapsed by
+// default: the header alone says the agent reasoned, and the body opens on
+// demand (ctrl+x r). The host blanks the body of a collapsed block, so an empty
+// body here means "collapsed", not "no reasoning".
 func (m Model) layoutReasoning(b projection.Block, width int) laidBlock {
-	header := "Thought"
-	glyph := "─"
+	body, bh := m.proseOps(b.Text, width, reasoningIndent, 1, ui.RoleMuted)
+	header, glyph := "Thought", "▸"
 	if b.Incomplete {
-		header = "Thinking"
-		glyph = "⋯"
+		header, glyph = "Thinking", "⋯"
+	}
+	if bh > 0 {
+		glyph = "▾"
 	}
 	ops := []drawOp{{dx: 0, dy: 0, text: glyph + "  " + header, style: m.theme.Style(ui.RoleWarning, nil).Faint(true)}}
-	body, bh := m.proseOps(b.Text, width, reasoningIndent, 1, ui.RoleMuted)
 	return laidBlock{height: 1 + bh, ops: append(ops, body...)}
 }
 
-// layoutTool renders a tool call/result as one compact status line.
+// layoutTool renders a tool call collapsed by default: one compact line naming
+// the tool and its outcome, with the result body opening on demand (ctrl+x o).
+// The host blanks the body of a collapsed block.
 func (m Model) layoutTool(b projection.Block, width int) laidBlock {
 	name := b.Tool
 	if name == "" {
 		name = "tool"
 	}
 	glyph, role := lifecycleGlyph(b.Status)
-	label := fmt.Sprintf("%s %s", name, strings.TrimSpace(b.Status))
-	if b.Text != "" {
-		label = fmt.Sprintf("%s  %s", name, firstLine(b.Text))
+	summary := strings.TrimSpace(b.Status)
+	if summary == "" {
+		summary = "called"
 	}
-	line := ui.Truncate(glyph+"  "+label, width-proseIndent)
-	return laidBlock{height: 1, ops: []drawOp{{dx: proseIndent, dy: 0, text: line, style: m.theme.Style(role, nil)}}}
+	ops := []drawOp{{dx: proseIndent, dy: 0, text: ui.Truncate(fmt.Sprintf("%s  %s  %s", glyph, name, summary), width-proseIndent), style: m.theme.Style(role, nil)}}
+	body, bh := m.proseOps(b.Text, width, reasoningIndent, 1, ui.RoleMuted)
+	return laidBlock{height: 1 + bh, ops: append(ops, body...)}
 }
 
 // layoutLifecycle renders a task/session/result block as one muted line.
@@ -261,12 +267,13 @@ func (m Model) composerStatus() string {
 	return spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)] + " Working · esc interrupt"
 }
 
-// hasActiveTurn reports whether a turn is genuinely in flight. It keys on the
-// composer posture, which the host drives from the canonical run lifecycle —
-// never on "some block is incomplete", because metadata-only fallback blocks
-// are incomplete by construction and would pin this on forever.
+// hasActiveTurn reports whether a turn is genuinely in flight. It keys ONLY on
+// the composer posture, which the host drives from the canonical run lifecycle.
+// It deliberately ignores state.Active — that means "the stream is live", which
+// is the normal idle condition, and folding it in here reported "Working"
+// permanently on a connected session.
 func (m Model) hasActiveTurn() bool {
-	return m.state.Composer == ComposerRunning || m.state.Active
+	return m.state.Composer == ComposerRunning
 }
 
 func (m Model) dim(text string, role ui.Role) string {

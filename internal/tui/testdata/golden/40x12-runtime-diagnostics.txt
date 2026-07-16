@@ -6,7 +6,7 @@
    DIAGNOSTICS · stream / retention
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·
   live   ·   ctrl+p Command palette

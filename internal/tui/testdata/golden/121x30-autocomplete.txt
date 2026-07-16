@@ -8,11 +8,11 @@
                                                                                Status
                                                                                running
 
-                                                                               Transcript
-                                                                               3 blocks
 
-                                                                               Stream
-  ┃  ctrl+p  Command palette                                                   disconnected
+
+
+
+  ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x ?  Keyboard help
   ┃  q  Quit

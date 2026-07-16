@@ -14,7 +14,7 @@
      The deployment completed successfully.
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  disabled
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
   authentication expired   ·   ctrl+p Command palette   ctrl+x s Toggl

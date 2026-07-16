@@ -8,11 +8,11 @@
                                                                                                                       Status
                                                                                                                       running
 
-                                                                                                                      Transcript
-                                                      Commands                                                        3 blocks
+
+                                                      Commands
                                                      Search: theme
-                                                    ● Switch theme · Choose dark, light, or automatic mode            Stream
-                                                                                                                      disconnected
+                                                    ● Switch theme · Choose dark, light, or automatic mode
+
 
                                                     ↑/↓ move · enter select · esc close
 
@@ -24,10 +24,10 @@
 
 
 
-
      ◆  Inspecting Runtime posture
 
-     ✓  runtime.health  Runtime health snapshot received
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

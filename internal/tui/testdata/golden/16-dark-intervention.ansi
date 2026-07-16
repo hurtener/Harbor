@@ -12,10 +12,10 @@
 [97m                                                                                                    [m
 [97m                                                                                                    [m
 [97m                                                                                                    [m
-[97m                                                                                                    [m
 [97m     [m[2;96m◆  Inspecting Runtime posture[m[97m                                                                  [m
 [97m                                                                                                    [m
-[97m     [m[92m✓  runtime.health  Runtime health snapshot received[m[97m                                            [m
+[97m     [m[92m✓  runtime.health  succeeded[m[97m                                                                   [m
+[97m  [m     [90mRuntime health snapshot received[m[97m                                                             [m
 [97m                                                                                                    [m
 [97m  [m[93;40m┃[m[97;40m  [m[93;40m!  Operator approval required[m[97;40m                                                               [m[97m   [m
 [97m  [m[93;40m┃[m[97;40m  [m[93;40mOperator approval required[m[97;40m                                                                  [m[97m   [m

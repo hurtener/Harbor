@@ -12,12 +12,12 @@
 
 
                                 ↑/↓ move · enter select · esc close
-                                                                               disconnected
 
 
      ◆  Inspecting Runtime posture
 
-     ✓  runtime.health  Runtime health snapshot received
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

@@ -8,11 +8,11 @@
                                                                                Status
                                                                                running
 
-                                                                               Transcript
-                                    Harbor                                     3 blocks
 
-                          Attach a Runtime to begin.                           Stream
-                                                                               disconnected
+                                    Harbor
+
+                          Attach a Runtime to begin.
+
 
 
 

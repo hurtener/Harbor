@@ -8,11 +8,11 @@
                                                                                                                       Status
                                                                                                                       running
 
-                                                                                                                            ript
-                                        Commands                                                                            ks
+
+                                        Commands
                                        Search:
                                       ● Command palette · Find an available action
-                                        Toggle runtime context · Show the fixed context sidebar                             nected
+                                        Toggle runtime context · Show the fixed context sidebar
                                         Keyboard help · Show all reachable commands
                                         Quit · Restore the terminal and exit
                                         Attach file · Unavailable: requires a live authenticated Runtime attachment
@@ -24,10 +24,10 @@
                                       ↑/↓ move · enter select · esc close
 
 
-
      ◆  Inspecting Runtime posture
 
-     ✓  runtime.health  Runtime health snapshot received
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

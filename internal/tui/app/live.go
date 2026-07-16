@@ -8,6 +8,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -64,7 +65,17 @@ type updateMsg struct{ update conversation.Update }
 type submitMsg struct{ err error }
 type submissionResultMsg struct {
 	submission composer.Submission
+	taskID     string
 	err        error
+}
+
+// localTurn echoes the operator's own accepted prompt until the canonical user
+// block for that run arrives. The Runtime's task lifecycle events are sealed and
+// carry no prompt text — the text reaches the client only on a tasks snapshot —
+// so without this the operator cannot see their own message on a live turn.
+type localTurn struct {
+	runID, text string
+	at          time.Time
 }
 type followupMsg struct {
 	id  string
@@ -102,37 +113,38 @@ type actionMsg struct {
 
 // RuntimeModel joins the terminal foundation to one Protocol-only conversation controller.
 type RuntimeModel struct {
-	shell                              Model
-	controller                         conversationController
-	editor                             composer.Editor
-	transcript                         conversation.Transcript
-	picker                             sessionpicker.Model
-	updates                            conversation.UpdateSource
-	ctx                                context.Context
-	compact, searchMode                bool
-	searchQuery                        string
-	autocompleteIndex                  int
-	collapsedReasoning, collapsedTools map[string]bool
-	targetSession                      string
-	store                              interactionStore
-	fingerprint, exportPath            string
-	restoreScrollID                    string
-	followups                          conversation.Queue
-	followupSubmissions                map[string]composer.Submission
-	identity                           types.IdentityScope
-	generation                         uint64
-	lastProjectionSequence             uint64
-	inspectEpoch                       uint64
-	runtime                            conversation.RuntimeData
-	activeAction                       *ActionSpec
-	activeIntent                       *ActionIntent
-	actionInput                        string
-	selectedTask, selectedTool         string
-	selectedArtifact, selectedPause    string
-	routeFilter                        bool
-	pending                            map[string]ActionIntent
-	taskCursors                        map[int]types.TaskListCursor
-	renderers                          renderers.Registry
+	shell                            Model
+	controller                       conversationController
+	editor                           composer.Editor
+	transcript                       conversation.Transcript
+	picker                           sessionpicker.Model
+	updates                          conversation.UpdateSource
+	ctx                              context.Context
+	compact, searchMode              bool
+	searchQuery                      string
+	autocompleteIndex                int
+	expandedReasoning, expandedTools map[string]bool
+	targetSession                    string
+	store                            interactionStore
+	fingerprint, exportPath          string
+	restoreScrollID                  string
+	followups                        conversation.Queue
+	followupSubmissions              map[string]composer.Submission
+	identity                         types.IdentityScope
+	localTurns                       []localTurn
+	generation                       uint64
+	lastProjectionSequence           uint64
+	inspectEpoch                     uint64
+	runtime                          conversation.RuntimeData
+	activeAction                     *ActionSpec
+	activeIntent                     *ActionIntent
+	actionInput                      string
+	selectedTask, selectedTool       string
+	selectedArtifact, selectedPause  string
+	routeFilter                      bool
+	pending                          map[string]ActionIntent
+	taskCursors                      map[int]types.TaskListCursor
+	renderers                        renderers.Registry
 }
 
 // NewRuntimeModel constructs the operational one-active-session application.
@@ -140,14 +152,18 @@ func NewRuntimeModel(ctx context.Context, width, height int, theme ui.Theme, con
 	id := controller.Identity()
 	shell := NewOperationalModel(width, height, theme, options.ReducedMotion, projection.Projection{}).WithState(State{Route: "session", Connection: "connecting", Composer: ComposerFocused, SidebarOpen: options.State.SidebarOpen})
 	editor := composer.New().RestoreLocal(options.State.History, options.State.Stash).SetText(options.State.Draft)
-	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, collapsedReasoning: stringSet(options.State.CollapsedReasoning), collapsedTools: stringSet(options.State.CollapsedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id, renderers: renderers.Builtins(), pending: map[string]ActionIntent{}, taskCursors: map[int]types.TaskListCursor{1: {}}}
+	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, expandedReasoning: stringSet(options.State.ExpandedReasoning), expandedTools: stringSet(options.State.ExpandedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id, renderers: renderers.Builtins(), pending: map[string]ActionIntent{}, taskCursors: map[int]types.TaskListCursor{1: {}}}
 	m.syncComposer()
 	m.syncAccess()
 	return m
 }
 
 func (m RuntimeModel) Init() tea.Cmd {
-	return tea.Batch(func() tea.Msg { return attachMsg{m.controller.Attach(m.ctx)} }, m.waitUpdate())
+	// The shell's own Init drives the spinner tick, startup staging and the
+	// terminal-background query. Without it the operational TUI never asks the
+	// terminal what its background actually is, so a light terminal keeps the
+	// dark palette.
+	return tea.Batch(m.shell.Init(), func() tea.Msg { return attachMsg{m.controller.Attach(m.ctx)} }, m.waitUpdate())
 }
 func (m RuntimeModel) waitUpdate() tea.Cmd {
 	return func() tea.Msg {
@@ -269,6 +285,12 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.editor = m.editor.CommitSubmission(msg.submission)
 			m.shell.state.Composer = ComposerRunning
+			// The Runtime accepted the turn, so echo the operator's own prompt
+			// immediately: the canonical text only arrives on a later snapshot.
+			if msg.taskID != "" {
+				m.localTurns = append(m.localTurns, localTurn{runID: msg.taskID, text: msg.submission.Text, at: time.Now()})
+			}
+			m.syncProjection()
 			m.shell.state.ToastOpen = true
 			m.shell.state.Toast = "Turn accepted by Runtime"
 		}
@@ -321,6 +343,10 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := canonicalKey(msg.String())
+	// Toasts are transient acknowledgements, not state: the operator's next
+	// keystroke dismisses the previous one. Without this they pile up and linger
+	// over the canvas long after the thing they reported.
+	m.shell.state.ToastOpen, m.shell.state.Toast = false, ""
 	if m.routeFilter {
 		return m.updateRouteFilter(key)
 	}
@@ -502,8 +528,8 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 		m.shell.state.Composer = ComposerRunning
 		m.syncComposer()
 		return m, func() tea.Msg {
-			_, startErr := m.controller.Start(m.ctx, submission.Text, attachmentIDs(submission.Attachments), attachmentDispositions(submission.Attachments))
-			return submissionResultMsg{submission: submission, err: startErr}
+			response, startErr := m.controller.Start(m.ctx, submission.Text, attachmentIDs(submission.Attachments), attachmentDispositions(submission.Attachments))
+			return submissionResultMsg{submission: submission, taskID: response.TaskID, err: startErr}
 		}
 	case "help":
 		rows := m.shell.registry.Help(m.shell.commandContext())
@@ -538,11 +564,11 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 	case "export":
 		return m, m.exportCmd()
 	case "reasoning":
-		m.toggleSelected(m.collapsedReasoning, "reasoning")
+		m.toggleSelected(m.expandedReasoning, "reasoning")
 		m.syncProjection()
 		return m, m.requestPersist()
 	case "tool-detail":
-		m.toggleSelected(m.collapsedTools, "tool")
+		m.toggleSelected(m.expandedTools, "tool")
 		m.syncProjection()
 		return m, m.requestPersist()
 	case "timestamps":
@@ -1610,6 +1636,7 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 		m.shell.state.Incomplete = m.shell.state.Incomplete || block.Incomplete
 	}
 	m.shell.state.TurnStatus = m.turnStatus()
+	m.shell.state.Model = strings.TrimSpace(m.runtime.Posture.LLM.Model)
 	switch update.State {
 	case conversation.StateLive:
 		m.shell.state.Active = true
@@ -1667,8 +1694,40 @@ func (m *RuntimeModel) syncComposer() {
 		}
 	}
 }
+
+// withLocalTurns echoes each accepted-but-not-yet-hydrated prompt as its own
+// user block, using the same ID the canonical snapshot will use ("user:<run>"),
+// so the canonical block simply supersedes the echo with no duplicate and no
+// flicker. Echoes whose canonical block has arrived are dropped.
+func (m *RuntimeModel) withLocalTurns(blocks []projection.Block) []projection.Block {
+	if len(m.localTurns) == 0 {
+		return blocks
+	}
+	out := append([]projection.Block(nil), blocks...)
+	kept := m.localTurns[:0]
+	for _, turn := range m.localTurns {
+		id := "user:" + turn.runID
+		if slices.IndexFunc(out, func(b projection.Block) bool { return b.ID == id }) >= 0 {
+			continue // canonical user block hydrated; the echo has served its purpose
+		}
+		kept = append(kept, turn)
+		block := projection.Block{ID: id, Kind: "user", RunID: turn.runID, At: turn.at, Text: turn.text}
+		insert := len(out)
+		for i, b := range out {
+			if b.RunID == turn.runID {
+				insert = i
+				break
+			}
+		}
+		out = append(out[:insert], append([]projection.Block{block}, out[insert:]...)...)
+	}
+	m.localTurns = kept
+	return out
+}
+
 func (m *RuntimeModel) syncProjection() {
 	p := m.transcript.Projection
+	p.Blocks = m.withLocalTurns(p.Blocks)
 	filtered := make([]projection.Block, 0, len(p.Blocks))
 	matches := map[int]bool{}
 	if m.transcript.Query != "" {
@@ -1687,11 +1746,15 @@ func (m *RuntimeModel) syncProjection() {
 		if m.transcript.Query != "" && !matches[index] {
 			continue
 		}
-		if block.Kind == "reasoning" && m.collapsedReasoning[block.ID] {
-			continue
+		// Reasoning and tool detail are collapsed by default (the operator opens
+		// what they care about). A collapsed block keeps its summary header and
+		// drops only its body — it never vanishes, which would hide that the
+		// agent reasoned or called a tool at all.
+		if block.Kind == "reasoning" && !m.expandedReasoning[block.ID] {
+			block.Text = ""
 		}
-		if block.Kind == "tool" && m.collapsedTools[block.ID] {
-			continue
+		if block.Kind == "tool" && !m.expandedTools[block.ID] {
+			block.Text = ""
 		}
 		if m.transcript.ShowTimestamps && !block.At.IsZero() {
 			block.Text += " · " + block.At.Format("15:04:05")
@@ -1804,7 +1867,7 @@ func (m RuntimeModel) interactionState() conversation.InteractionState {
 	if len(m.transcript.Projection.Blocks) > 0 {
 		scroll = m.transcript.Projection.Blocks[min(max(0, m.transcript.Selected), len(m.transcript.Projection.Blocks)-1)].ID
 	}
-	return conversation.InteractionState{Identity: id, RuntimeFingerprint: m.fingerprint, Draft: m.editor.Text(), History: m.editor.HistoryEntries(), Stash: m.editor.StashEntries(), ScrollBlockID: scroll, CollapsedReasoning: setStrings(m.collapsedReasoning), CollapsedTools: setStrings(m.collapsedTools), SidebarWidth: ui.SidebarWidth, SidebarOpen: m.shell.state.SidebarOpen, Theme: theme, ReducedMotion: m.shell.reducedMotion, Compact: m.compact}
+	return conversation.InteractionState{Identity: id, RuntimeFingerprint: m.fingerprint, Draft: m.editor.Text(), History: m.editor.HistoryEntries(), Stash: m.editor.StashEntries(), ScrollBlockID: scroll, ExpandedReasoning: setStrings(m.expandedReasoning), ExpandedTools: setStrings(m.expandedTools), SidebarWidth: ui.SidebarWidth, SidebarOpen: m.shell.state.SidebarOpen, Theme: theme, ReducedMotion: m.shell.reducedMotion, Compact: m.compact}
 }
 
 func (m *RuntimeModel) syncAccess() {

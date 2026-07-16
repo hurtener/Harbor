@@ -1,6 +1,6 @@
 
 
-
+     ◆  Inspecting Runtime posture
   ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x ?  Keyboard help

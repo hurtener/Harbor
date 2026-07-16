@@ -8,11 +8,11 @@
                                                                                Status
                                                                                running
 
-                                                                               Transcript
-                                                                               3 blocks
 
-                                                                               Stream
-  ┃  ctrl+x ?  Keyboard help                                                   disconnected
+
+
+
+  ┃  ctrl+x ?  Keyboard help
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x t  Switch theme
   ┃  ctrl+x l  Switch session · unavailable: requires a live authenticated R

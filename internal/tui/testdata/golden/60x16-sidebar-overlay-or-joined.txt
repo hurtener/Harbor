@@ -1,16 +1,16 @@
 
                            Sidebar context visible
-                    RUNTIME CONTEXT
-     ◆  Inspecting
-                    Session
-     ✓  runtime.he  01K0HARBORFIXTURE0000000000
+     ◆  Inspecting  RUNTIME CONTEXT
+
+     ✓  runtime.he  Session
+       Runtime hea  01K0HARBORFIXTURE0000000000
 
   ┃  !  Operator a  Status
   ┃  Operator appr  running
 
-  ┃  Ask Harbor ab  Transcript
-  ┃                 3 blocks
+  ┃  Ask Harbor ab
+  ┃
   ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  Stream
-  acme/operator/01  disconnected
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01
   disconnected   ·

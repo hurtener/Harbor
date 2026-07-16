@@ -6,7 +6,7 @@
   ↑  Scrolled away · new output conti
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·
   live   ·   ctrl+p Command palette

@@ -4,10 +4,10 @@
 
 
 
-          Commands
-     ◆   Search: theme
-        ● Switch theme · Choose dark, light, or automatic mode
-     ✓
+     ◆    Commands
+         Search: theme
+     ✓  ● Switch theme · Choose dark, light, or automatic mode
+
 
   ┃  !  ↑/↓ move · enter select · esc close
   ┃  Operator approval required

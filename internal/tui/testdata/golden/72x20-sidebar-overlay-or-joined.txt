@@ -4,15 +4,15 @@
 
                                 Session
                                 01K0HARBORFIXTURE0000000000
+     ◆  Inspecting Runtime pos
+                                Status
+     ✓  runtime.health  succee  running
+       Runtime health snapshot
 
-     ◆  Inspecting Runtime pos  Status
-                                running
-     ✓  runtime.health  Runtim
-                                Transcript
-  ┃  !  Operator approval requ  3 blocks
+  ┃  !  Operator approval requ
   ┃  Operator approval require
-                                Stream
-  ┃  Ask Harbor about this run  disconnected
+
+  ┃  Ask Harbor about this run
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀

@@ -1,8 +1,8 @@
 
 
-     ◆  Inspecting Runtime posture
-
-     ✓  runtime.health  Runtime healt
+     ✓  runtime.health  succeeded
+       Runtime health snapshot
+       received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

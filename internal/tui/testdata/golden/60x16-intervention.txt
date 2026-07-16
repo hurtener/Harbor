@@ -1,6 +1,6 @@
 
 
-     ✓  runtime.health  Runtime health snapshot received
+
 
   ┃  !  Operator approval required
   ┃  Operator approval required

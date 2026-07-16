@@ -1,6 +1,6 @@
 
 
-
+     ◆  Inspecting Runtime posture
   ┃  ctrl+x ?  Keyboard help
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x t  Switch theme

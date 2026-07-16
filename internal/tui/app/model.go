@@ -73,6 +73,9 @@ type State struct {
 	// duration) shown under a finished answer. Empty when there is nothing
 	// honest to report.
 	TurnStatus string
+	// Model is the Runtime's reported LLM model. Empty when the Runtime has not
+	// advertised one — never guessed.
+	Model string
 }
 
 type startupStage uint8
@@ -115,6 +118,9 @@ type Model struct {
 	startupMinimumDone bool
 	quit               bool
 	operational        bool
+	// themeLocked marks an explicit operator theme choice, which the terminal's
+	// reported background must not override.
+	themeLocked bool
 }
 
 // NewModel constructs the detached terminal foundation.
@@ -182,7 +188,27 @@ func runProgram(program *tea.Program) error {
 	return nil
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(m.startupDelayCmd(), m.spinnerCmd()) }
+func (m Model) Init() tea.Cmd {
+	// Ask the terminal what its background actually is. Environment sniffing
+	// (COLORFGBG) is absent on most terminals, so without this a light terminal
+	// gets the dark palette and every panel surface fights the background.
+	return tea.Batch(m.startupDelayCmd(), m.spinnerCmd(), tea.RequestBackgroundColor)
+}
+
+// WithTerminalBackground re-compiles the palette for the terminal's real
+// background, preserving the operator's explicit theme override.
+func (m Model) WithTerminalBackground(dark bool) Model {
+	mode := ui.ModeLight
+	if dark {
+		mode = ui.ModeDark
+	}
+	if m.themeLocked || m.theme.Mode() == mode {
+		return m
+	}
+	m = m.clone()
+	m.theme = ui.NewTheme(mode, m.theme.Profile())
+	return m
+}
 func (m Model) startupDelayCmd() tea.Cmd {
 	if m.startup != startupWaiting {
 		return nil
@@ -264,13 +290,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.Composer = ComposerFocused
 		m.state.ComposerText += msg.Content
 		return m, nil
+	case tea.BackgroundColorMsg:
+		return m.WithTerminalBackground(msg.IsDark()), nil
 	case tea.FocusMsg:
-		// Transient feedback belongs in the toast layer — it fades — rather than
-		// occupying the canvas as a permanent notice.
+		// Regaining terminal focus is not news: it announces nothing and the
+		// composer is visibly focused already.
 		m.state.Focused = true
 		m.state.Composer = ComposerFocused
-		m.state.ToastOpen = true
-		m.state.Toast = "Composer focus restored"
 		return m, nil
 	case tea.BlurMsg:
 		m.state.Focused = false
@@ -742,11 +768,14 @@ func (m Model) renderSidebar(c *canvas) {
 		}
 		rows = append(rows, sideRow{label, ui.RoleMuted, false}, sideRow{value, ui.RoleText, false}, sideRow{"", ui.RoleMuted, false})
 	}
+	// Only rows an operator can act on. Block counts and the stream state carry
+	// no decision value (the stream already lives in the footer), so they are
+	// not here. Cost / tokens / context need the tasks.get rollup wired through
+	// on this route; they are omitted rather than shown as a fake zero.
 	pair("Session", m.projection.Identity.Session)
-	pair("Health", m.state.Health)
+	pair("Model", m.state.Model)
 	pair("Status", m.projection.SessionStatus)
-	pair("Transcript", fmt.Sprintf("%d blocks", len(m.projection.Blocks)))
-	pair("Stream", m.state.Connection)
+	pair("Health", m.state.Health)
 	interior := max(1, min(ui.SidebarWidth, m.width-x)-4)
 	for i, row := range rows {
 		if i+2 >= m.height {

@@ -8,11 +8,11 @@
                                                                                                                                                                                                       Status
                                                                                                                                                                                                       running
 
-                                                                                                                                                                                                      Transcript
-                                                                                                                                                                                                      2 blocks
 
-                                                                                                                                                                                                      Stream
-                                                                                                                                                                                                      live
+
+
+
+
 
                                                                   Confirm Runtime action
                                                                  Search:
@@ -54,7 +54,7 @@
      The deployment completed successfully.
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

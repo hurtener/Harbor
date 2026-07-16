@@ -8,10 +8,10 @@
              Themes
             Search:
            ● Dark
-             Light
-     ◆  I
+     ◆  I    Light
 
-     ✓  r  ↑/↓ move · enter select · esc close
+     ✓  r
+       Ru  ↑/↓ move · enter select · esc close
 
   ┃  !  Operator approval required
   ┃  Operator approval required

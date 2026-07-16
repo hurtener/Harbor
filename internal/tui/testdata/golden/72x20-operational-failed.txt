@@ -14,7 +14,7 @@
   ×  Session failed · terminal error state, not resumable
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

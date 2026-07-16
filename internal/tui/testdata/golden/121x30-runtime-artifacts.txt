@@ -5,17 +5,17 @@
    ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                         Session
    ARTIFACT REFERENCES · metadata only; heavy content stays by reference ·     session-alpha
    Filter:  · page 1
-   artifact-a application/json · 128 bytes · tool                              Health
-                                                                               warning · intervention required
-
-                                                                               Status
+   artifact-a application/json · 128 bytes · tool                              Status
                                                                                running
 
-                                                                               Transcript
-                                                                               2 blocks
+                                                                               Health
+                                                                               warning · intervention required
 
-                                                                               Stream
-                                                                               live
+
+
+
+
+
 
 
 
@@ -24,7 +24,7 @@
 
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

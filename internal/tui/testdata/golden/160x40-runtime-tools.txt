@@ -5,17 +5,17 @@
    ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                Session
    TOOLS · schema / transport / OAuth / approval / metrics / content · loaded                                         session-alpha
    Filter:  · page 1
-   deploy-status HTTP · OAuth Bound · approval gated                                                                  Health
-   Analytics: bounded best-effort; absence is not zero                                                                warning · intervention required
+   deploy-status HTTP · OAuth Bound · approval gated                                                                  Status
+   Analytics: bounded best-effort; absence is not zero                                                                running
 
-                                                                                                                      Status
-                                                                                                                      running
+                                                                                                                      Health
+                                                                                                                      warning · intervention required
 
-                                                                                                                      Transcript
-                                                                                                                      2 blocks
 
-                                                                                                                      Stream
-                                                                                                                      live
+
+
+
+
 
 
 
@@ -34,7 +34,7 @@
 
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

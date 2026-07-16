@@ -8,11 +8,11 @@
                                                                                                                       Status
                                                                                                                       running
 
-                                                                                                                      Transcript
-                                                      Themes                                                          3 blocks
+
+                                                      Themes
                                                      Search:
-                                                    ● Dark                                                            Stream
-                                                      Light                                                           disconnected
+                                                    ● Dark
+                                                      Light
 
 
                                                     ↑/↓ move · enter select · esc close
@@ -24,10 +24,10 @@
 
 
 
-
      ◆  Inspecting Runtime posture
 
-     ✓  runtime.health  Runtime health snapshot received
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

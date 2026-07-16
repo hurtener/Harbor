@@ -5,17 +5,17 @@
    ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                Session
    TASK LIFECYCLE / TREE / PROGRESS / GROUP / ORPHAN / LATENCY · loaded                                               session-alpha
    Filter:  · page 1
-     task-01  paused · foreground · progress indeterminate · 1250ms · group group-a · activity latency unavailable    Health
-   Cost: observed/non-authoritative; inspect canonical events for completeness                                        warning · intervention required
+     task-01  paused · foreground · progress indeterminate · 1250ms · group group-a · activity latency unavailable    Status
+   Cost: observed/non-authoritative; inspect canonical events for completeness                                        running
 
-                                                                                                                      Status
-                                                                                                                      running
+                                                                                                                      Health
+                                                                                                                      warning · intervention required
 
-                                                                                                                      Transcript
-                                                                                                                      2 blocks
 
-                                                                                                                      Stream
-                                                                                                                      live
+
+
+
+
 
 
 
@@ -34,7 +34,7 @@
 
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

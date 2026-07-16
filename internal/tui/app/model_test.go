@@ -215,8 +215,11 @@ func TestModel_InputPasteResizeFocusAndVisibleBreakpoints(t *testing.T) {
 	m = baseModel()
 	next, _ = m.Update(tea.FocusMsg{})
 	m = next.(Model)
-	if !strings.Contains(m.Frame(), "focus restored") {
-		t.Fatalf("focus feedback missing: %s", ansi.Strip(m.Frame()))
+	// Regaining terminal focus restores composer focus. It deliberately
+	// announces nothing: the composer is visibly focused, and a banner for it
+	// was canvas noise that outlived the event.
+	if !m.state.Focused || m.state.Composer != ComposerFocused {
+		t.Fatalf("focus not restored: %+v", m.state)
 	}
 	next, _ = m.Update(tea.WindowSizeMsg{Width: 79, Height: 24})
 	m79 := next.(Model).WithState(State{Intervention: true})

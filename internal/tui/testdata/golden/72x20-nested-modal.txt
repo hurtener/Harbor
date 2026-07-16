@@ -4,10 +4,10 @@
 
 
 
-          Themes
-     ◆   Search:
-        ● Dark
-     ✓    Light
+     ◆    Themes
+         Search:
+     ✓  ● Dark
+          Light
 
   ┃  !
   ┃  O  ↑/↓ move · enter select · esc close

@@ -8,11 +8,11 @@
                                                                                                                                                                                                       Status
                                                                                                                                                                                                       running
 
-                                                                                                                                                                                                      Transcript
-                                                                                                                                                                                                      3 blocks
 
-                                                                                                                                                                                                      Stream
-                                                                                                                                                                                                      disconnected
+
+
+
+
 
 
 

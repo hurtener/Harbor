@@ -8,13 +8,13 @@
                                                                                Status
                                                                                running
 
-                                                                               Transcript
-                                                                               4 blocks
 
-                                                                               Stream
-     ◆  Inspecting Runtime posture                                             disconnected
 
-     ✓  runtime.health  Runtime health snapshot received
+
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

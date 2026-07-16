@@ -5,17 +5,17 @@
    ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                                                                                                Session
    RUNTIME Development Runtime · Protocol 0.1.0 · uptime 90s                                                                                                                                          session-alpha
    Capabilities: [task_control tool_annotations]
-   LLM: mock / fixture · mock=true                                                                                                                                                                    Health
-   Governance: resolved=team default=team                                                                                                                                                             warning · intervention required
+   LLM: mock / fixture · mock=true                                                                                                                                                                    Status
+   Governance: resolved=team default=team                                                                                                                                                             running
    Driver state: inmem embedded
-                                                                                                                                                                                                      Status
-                                                                                                                                                                                                      running
+                                                                                                                                                                                                      Health
+                                                                                                                                                                                                      warning · intervention required
 
-                                                                                                                                                                                                      Transcript
-                                                                                                                                                                                                      2 blocks
 
-                                                                                                                                                                                                      Stream
-                                                                                                                                                                                                      live
+
+
+
+
 
 
 
@@ -54,7 +54,7 @@
 
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -4,10 +4,10 @@
 
 
 
-          Commands
-     ◆   Search:
-        ● Command palette · Find an available action
-     ✓    Toggle runtime context · Show the fixed context sideba
+     ◆    Commands
+         Search:
+     ✓  ● Command palette · Find an available action
+          Toggle runtime context · Show the fixed context sideba
           Keyboard help · Show all reachable commands
   ┃  !    Quit · Restore the terminal and exit
   ┃  O    Attach file · Unavailable: requires a live authenticat

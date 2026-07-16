@@ -12,12 +12,12 @@
                                   Light
 
 
-                                ↑/↓ move · enter select · esc close                       d
-
+                                ↑/↓ move · enter select · esc close
 
      ◆  Inspecting Runtime posture
 
-     ✓  runtime.health  Runtime health snapshot received
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

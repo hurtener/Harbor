@@ -8,11 +8,11 @@
                                                                                                                                                                                                       Status
                                                                                                                                                                                                       running
 
-                                                                                                                                                                                                      Transcript
-                                                                                                                                                                                                      2 blocks
 
-                                                                                                                                                                                                      Stream
-                                                                                                                                                                                                      live
+
+
+
+
 
                                                                                               Start Fresh
                                                                                              Search:
@@ -54,7 +54,7 @@
   ×  Session erased · terminal, Start Fresh required
 
   ┃  Ask Harbor...
-  ┃  Working · esc interrupt
+  ┃  disabled
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

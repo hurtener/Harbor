@@ -8,10 +8,10 @@
               Commands
              Search: theme
             ● Switch theme · Choose dark, light, or automatic mode
-
      ◆  In
-            ↑/↓ move · enter select · esc close
-     ✓  runtime.health  Runtime health snapshot received
+
+     ✓  ru  ↑/↓ move · enter select · esc close
+       Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required

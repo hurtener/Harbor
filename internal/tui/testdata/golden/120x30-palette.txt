@@ -14,10 +14,10 @@
                     Quit · Restore the terminal and exit
                     Attach file · Unavailable: requires a live authenticated Runtime attachment
                     Cancel queued follow-up · Unavailable: no local follow-up is queued
-                    Remove attachment · Unavailable: no attachment is selected
-     ◆  Inspecti    Restore stashed draft · Pop the newest local draft
-
+     ◆  Inspecti    Remove attachment · Unavailable: no attachment is selected
+                    Restore stashed draft · Pop the newest local draft
      ✓  runtime.
+       Runtime h
                   ↑/↓ move · enter select · esc close
   ┃  !  Operator approval required
   ┃  Operator approval required
