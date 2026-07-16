@@ -133,6 +133,7 @@ type RuntimeModel struct {
 	identity                         types.IdentityScope
 	localTurns                       []localTurn
 	flushed, anchored                map[string]bool
+	tookOver                         bool
 	generation                       uint64
 	lastProjectionSequence           uint64
 	inspectEpoch                     uint64
@@ -334,6 +335,27 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshAutocomplete()
 		m.syncComposer()
 		return m, m.requestPersist()
+	case tea.WindowSizeMsg:
+		next, cmd := m.forward(message)
+		runtime, ok := next.(RuntimeModel)
+		if !ok {
+			return next, cmd
+		}
+		if !runtime.tookOver {
+			// Claim the viewport on launch, the way a terminal-native agent
+			// does: scroll whatever the shell had on screen into scrollback,
+			// clear, and open with the wordmark — the app owns what is visible,
+			// while the operator's history stays reachable above.
+			runtime.tookOver = true
+			push := strings.Repeat("\n", max(0, msg.Height-2))
+			banner := runtime.welcomeBanner()
+			cmd = tea.Batch(cmd, tea.Sequence(
+				tea.Println(push),
+				func() tea.Msg { return tea.ClearScreen() },
+				tea.Println(banner),
+			))
+		}
+		return runtime, cmd
 	case tea.KeyPressMsg:
 		return m.updateKey(msg)
 	}

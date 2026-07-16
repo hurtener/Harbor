@@ -187,6 +187,16 @@ func (m RuntimeModel) latestBodyUnit(kind string) (string, bool) {
 	return "", false
 }
 
+// welcomeBanner opens the session the way the empty alternate screen used to:
+// the wordmark plus a quiet identity line, printed once into scrollback when
+// the app claims the viewport.
+func (m RuntimeModel) welcomeBanner() string {
+	pad := strings.Repeat(" ", ui.OuterPadding)
+	title := m.shell.theme.Style(ui.RolePrimary, nil).Bold(true).Render("Harbor")
+	sub := m.shell.theme.Style(ui.RoleMuted, nil).Render("session " + m.identity.Session + "  ·  ask anything to begin")
+	return pad + title + "\n" + pad + sub + "\n"
+}
+
 // inlineView assembles the managed live region: streaming tail, chrome, and
 // composer. It returns the content plus the composer cursor position relative
 // to the region's first row.
