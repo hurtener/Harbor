@@ -441,7 +441,11 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "alt+shift+f":
 		m.editor = m.editor.MoveWord(1, true)
 	default:
-		if len([]rune(key)) != 1 || key == "?" {
+		// Composer allowlist: any single printable rune ALWAYS inserts into the
+		// draft, so characters that happen to be command keys (like "?") are
+		// typed, not intercepted. Only named/modified keys and active leader
+		// sequences forward to the command layer.
+		if len([]rune(key)) != 1 {
 			return m.forward(msg)
 		}
 		m.editor = m.editor.Insert(key)

@@ -545,72 +545,11 @@ func (m Model) render() string {
 func (m Model) renderBase(c *canvas) {
 	l := m.Layout()
 	c.fill(m.theme.Style(ui.RoleText, ptrRole(ui.RoleCanvas)))
-	title := "HARBOR  /  " + strings.ToUpper(m.state.Route)
-	c.put(ui.OuterPadding, 1, title, m.theme.Style(ui.RolePrimary, nil).Bold(true))
-	subtitle := "One active session · Protocol-only"
-	status := m.state.Connection
-	c.put(ui.OuterPadding, 2, ui.PadRight(subtitle, l.MainWidth), m.theme.Style(ui.RoleMuted, nil))
-	c.put(ui.OuterPadding, 3, ui.PadRight(status, l.MainWidth), m.theme.Style(ui.RoleMuted, nil))
-	y := 5
 	width := max(12, l.MainWidth-1)
-	if m.state.Route == "home" {
-		m.renderCard(c, y, width, ui.RoleInfo, "◇", "Terminal foundation ready", "Attach a Runtime to begin.")
-		y += 4
-	} else {
-		if m.state.Route != "session" && len(m.state.DetailRows) > 0 {
-			for _, row := range m.state.DetailRows {
-				if y >= m.height-3 {
-					break
-				}
-				c.put(ui.OuterPadding+1, y, ui.Truncate(row, width-2), m.theme.Style(ui.RoleText, nil))
-				y++
-			}
-			return
-		}
-		compactNotice := false
-		if m.height <= 12 && !m.state.Intervention {
-			if notices := m.notices(); len(notices) > 0 {
-				notice := mostSevere(notices)
-				c.put(ui.OuterPadding, 4, ui.Truncate(notice.glyph+" "+notice.text, l.MainWidth), m.theme.Style(notice.role, nil))
-				compactNotice = true
-			}
-		}
-		if m.state.Intervention && !m.operational {
-			if m.height <= 12 {
-				c.put(ui.OuterPadding, 5, "! Approval required", m.theme.Style(ui.RoleWarning, nil).Bold(true))
-				c.put(ui.OuterPadding, 6, "Approve/Reject unavailable", m.theme.Style(ui.RoleWarning, nil))
-				y = 7
-			} else {
-				m.renderIntervention(c, y, width, l.HorizontalActions)
-				y += 7
-			}
-		}
-		for _, notice := range m.notices() {
-			if compactNotice {
-				break
-			}
-			if y >= m.height-9 {
-				break
-			}
-			m.renderCard(c, y, width, notice.role, notice.glyph, notice.text)
-			y += 4
-		}
-		for _, block := range m.projection.Blocks {
-			if y >= m.height-9 {
-				break
-			}
-			glyph, role := semantic(block.Status)
-			label := strings.TrimSpace(block.Text)
-			if label == "" {
-				label = block.Kind + " · " + block.Status
-			}
-			if block.ID != "" && block.ID == m.state.SelectedBlockID {
-				glyph = "●"
-			}
-			m.renderCard(c, y, width, role, glyph, label)
-			y += 4
-		}
-	}
+
+	// The bottom-anchored composer is placed first so the transcript region and
+	// the single chrome status strip can sit above it.
+	composerTop := m.height
 	if m.height > 12 || !m.state.Intervention {
 		composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
 		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText)
@@ -618,11 +557,96 @@ func (m Model) renderBase(c *canvas) {
 			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
 		}
 		composerRows := strings.Count(composer, "\n") + 1
-		c.styledBlock(ui.OuterPadding, max(y, m.height-composerRows-1), composer, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(ui.RolePrimary, nil))
+		composerTop = max(4, m.height-composerRows-1)
+		c.styledBlock(ui.OuterPadding, composerTop, composer, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(ui.RolePrimary, nil))
 	}
-	hints := strings.Join(m.registry.Footer(m.commandContext()), "   ")
-	c.put(ui.OuterPadding, m.height-1, ui.PadRight(hints, l.ContentWidth), m.theme.Style(ui.RoleMuted, nil))
+
+	// Runtime inspection routes keep their detail-row rendering.
+	if m.state.Route != "session" && m.state.Route != "home" && len(m.state.DetailRows) > 0 {
+		c.put(ui.OuterPadding, 1, strings.ToUpper(m.state.Route), m.theme.Style(ui.RoleMuted, nil).Bold(true))
+		y := 3
+		for _, row := range m.state.DetailRows {
+			if y >= composerTop-1 {
+				break
+			}
+			c.put(ui.OuterPadding+1, y, ui.Truncate(row, width-2), m.theme.Style(ui.RoleText, nil))
+			y++
+		}
+		m.renderFooter(c, l)
+		return
+	}
+
+	// Session / home conversation surface.
+	contentTop := 2
+	regionBottom := composerTop - 1
+	if strip, role, ok := m.statusStrip(); ok && regionBottom >= contentTop {
+		c.put(ui.OuterPadding, regionBottom, ui.Truncate(strip, width), m.theme.Style(role, nil))
+		regionBottom--
+	}
+	if len(m.projection.Blocks) == 0 {
+		m.renderEmptyState(c, contentTop, regionBottom, width)
+	} else {
+		m.renderTranscript(c, contentTop, regionBottom, width)
+	}
+	m.renderFooter(c, l)
 }
+
+// statusStrip returns the single most-consequential lifecycle/honesty line to
+// pin just above the composer as chrome (never a screen-dominating card).
+// Info-level stream state is folded into the footer instead.
+func (m Model) statusStrip() (string, ui.Role, bool) {
+	switch {
+	case m.state.Erased:
+		return "✗  Session erased · Start Fresh required", ui.RoleError, true
+	case m.state.Failed:
+		return "✗  Session failed · terminal error state, not resumable", ui.RoleError, true
+	case m.state.Intervention:
+		return "!  Operator approval required", ui.RoleWarning, true
+	case m.state.Dropped:
+		return "!  Dropped event window · output may be incomplete", ui.RoleWarning, true
+	case m.state.ReplayGap:
+		return "!  Replay gap · reconciling authoritative state", ui.RoleWarning, true
+	case m.state.Truncated:
+		return "!  Earlier transcript truncated", ui.RoleMuted, true
+	}
+	return "", ui.RoleMuted, false
+}
+
+// renderEmptyState draws a calm, centered mark and prompt when there is no
+// transcript yet, instead of stacking notice cards over an empty canvas.
+func (m Model) renderEmptyState(c *canvas, top, bottom, width int) {
+	if bottom-1 < top {
+		return
+	}
+	hint := "Ask anything to begin."
+	if m.state.Route == "home" {
+		hint = "Attach a Runtime to begin."
+	}
+	mark := "Harbor"
+	midY := (top + bottom) / 2
+	markX := ui.OuterPadding + max(0, (width-ui.Width(mark))/2)
+	hintX := ui.OuterPadding + max(0, (width-ui.Width(hint))/2)
+	c.put(markX, midY-1, mark, m.theme.Style(ui.RolePrimary, nil).Bold(true))
+	c.put(hintX, midY+1, hint, m.theme.Style(ui.RoleMuted, nil))
+}
+
+// renderFooter draws the bottom chrome line: identity + connection on the left,
+// key hints on the right.
+func (m Model) renderFooter(c *canvas, l ui.Layout) {
+	left := identityLabel(m.projection)
+	if m.state.Connection != "" {
+		left += "  ·  " + m.state.Connection
+	}
+	c.put(ui.OuterPadding, m.height-1, ui.Truncate(left, l.ContentWidth), m.theme.Style(ui.RoleMuted, nil))
+	hints := strings.Join(m.registry.Footer(m.commandContext()), "   ")
+	if hintWidth := ui.Width(hints); hintWidth > 0 {
+		rightX := ui.OuterPadding + max(ui.Width(left)+3, l.ContentWidth-hintWidth)
+		if rightX+hintWidth <= m.width {
+			c.put(rightX, m.height-1, hints, m.theme.Style(ui.RoleMuted, nil))
+		}
+	}
+}
+
 
 type notice struct {
 	glyph, text string

@@ -136,7 +136,7 @@ func DefaultRegistry() Registry {
 	}
 	registry, err := NewRegistry(
 		Command{ID: "palette", Title: "Command palette", Description: "Find an available action", Category: "Application", Bindings: []string{"ctrl+p"}, Suggested: true},
-		Command{ID: "help", Title: "Keyboard help", Description: "Show all reachable commands", Category: "Application", Bindings: []string{"?"}},
+		Command{ID: "help", Title: "Keyboard help", Description: "Show all reachable commands", Category: "Application", Bindings: []string{"ctrl+x", "?"}},
 		Command{ID: "sidebar", Title: "Toggle runtime context", Description: "Show the fixed context sidebar", Category: "View", Bindings: []string{"ctrl+x", "s"}, Suggested: true},
 		Command{ID: "theme", Title: "Switch theme", Description: "Choose dark, light, or automatic mode", Category: "View", Bindings: []string{"ctrl+x", "t"}},
 		Command{ID: "route-session", Title: "Conversation", Description: "Return to the active session conversation", Category: "Runtime", Bindings: []string{"f1"}, Enabled: connected},
