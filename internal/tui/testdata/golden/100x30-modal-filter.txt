@@ -1,30 +1,30 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
 
-  ┃
-  ┃  ◆  Inspecting Runtime posture
-  ┃
+
+
+
+
+
+
                         Commands
-  ┃                    Search: theme
-  ┃  ✓  Runtime heal  ● Switch theme · Choose dark, light, or automatic mode
-  ┃
+                       Search: theme
+                      ● Switch theme · Choose dark, light, or automatic mode
 
-  ┃                   ↑/↓ move · enter select · esc close
+
+                      ↑/↓ move · enter select · esc close
+
+
+
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  Runtime health snapshot received
+
   ┃  !  Operator approval required
-  ┃
-
-
-
-
-
-
-
+  ┃  Operator approval required
 
   ┃  Ask Harbor about this runtime...
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

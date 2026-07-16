@@ -1,17 +1,19 @@
 
-  HARBOR  /  ARTIFACTS
-  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
-  live
-                                                                                                                      Session
-   Exactly one active session · tenant-a/operator/session-alpha                                                       session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                one active session
-   ARTIFACT REFERENCES · metadata only; heavy content stays by reference · loaded
-   Filter:  · page 1                                                                                                  Health
-   artifact-a application/json · 128 bytes · tool                                                                     warning · intervention required
+  ARTIFACTS
+                                                                                                                      RUNTIME CONTEXT
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                Session
+   ARTIFACT REFERENCES · metadata only; heavy content stays by reference · loaded                                     session-alpha
+   Filter:  · page 1
+   artifact-a application/json · 128 bytes · tool                                                                     Health
+                                                                                                                      warning · intervention required
+
                                                                                                                       Status
                                                                                                                       running
+
                                                                                                                       Transcript
                                                                                                                       2 blocks
+
                                                                                                                       Stream
                                                                                                                       live
 
@@ -31,9 +33,8 @@
 
 
 
-
-
-
-
-
-
+  ┃  Ask Harbor...
+  ┃  Working · esc interrupt
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

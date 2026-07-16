@@ -1,7 +1,5 @@
 
-  HARBOR  /  POSTURE
-  One active session · Protocol-only
-  live
+  POSTURE
 
    Exactly one active session · tenant-a/operator/sessio
    ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
@@ -11,5 +9,8 @@
    Governance: resolved=team default=team
    Driver state: inmem embedded
 
-
-
+  ┃  Ask Harbor...
+  ┃  Working · esc interrupt
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runt

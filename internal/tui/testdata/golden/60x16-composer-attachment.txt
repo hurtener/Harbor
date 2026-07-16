@@ -1,16 +1,16 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
 
-  ┃
-  ┃  ◆  Inspecting Runtime posture
-  ┃
 
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  Runtime health snapshot received
+
+  ┃  !  Operator approval required
+  ┃  Operator approval required
 
   ┃  Attachment ready · disposition applied at send
   ┃
   ┃  attachment · report.pdf
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Tog

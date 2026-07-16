@@ -1,19 +1,19 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
-  disconnected
+
+                                                                                                                      RUNTIME CONTEXT
+
                                                                                                                       Session
-  ┃                                                                                                                   01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime posture                                                                                    one active session
-  ┃
+                                                                                                                      01K0HARBORFIXTURE0000000000
+
                                                                                                                       Status
-  ┃                                                                                                                   running
-  ┃  ✓  Runtime health snapshot rece                                                                                        ript
-  ┃                                     Commands                                                                            ks
+                                                                                                                      running
+
+                                                                                                                            ript
+                                        Commands                                                                            ks
                                        Search:
-  ┃                                   ● Command palette · Find an available action                                          nected
-  ┃  !  Operator approval required      Toggle runtime context · Show the fixed context sidebar
-  ┃                                     Keyboard help · Show all reachable commands
+                                      ● Command palette · Find an available action
+                                        Toggle runtime context · Show the fixed context sidebar                             nected
+                                        Keyboard help · Show all reachable commands
                                         Quit · Restore the terminal and exit
                                         Attach file · Unavailable: requires a live authenticated Runtime attachment
                                         Cancel queued follow-up · Unavailable: no local follow-up is queued
@@ -25,16 +25,16 @@
 
 
 
+     ◆  Inspecting Runtime posture
 
+     ✓  runtime.health  Runtime health snapshot received
 
-
-
-
-
+  ┃  !  Operator approval required
+  ┃  Operator approval required
 
   ┃  Ask Harbor about this runtime...
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

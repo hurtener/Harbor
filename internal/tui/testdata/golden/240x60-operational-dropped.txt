@@ -1,19 +1,18 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                                                                                                  RUNTIME CONTEXT
-  replaying
+
+                                                                                                                                                                                                      RUNTIME CONTEXT
+
                                                                                                                                                                                                       Session
-  ┃                                                                                                                                                                                                   session-alpha
-  ┃  !  Dropped event window · output may be incomplete                                                                                                                                               one active session
-  ┃
+                                                                                                                                                                                                      session-alpha
+
                                                                                                                                                                                                       Status
-  ┃                                                                                                                                                                                                   running
-  ┃  ◇  Summarize the deployment status.                                                                                                                                                              Transcript
-  ┃                                                                                                                                                                                                   2 blocks
+                                                                                                                                                                                                      running
+
+                                                                                                                                                                                                      Transcript
+                                                                                                                                                                                                      2 blocks
+
                                                                                                                                                                                                       Stream
-  ┃                                                                                                                                                                                                   replaying
-  ┃  ●  The deployment completed successfully.
-  ┃
+                                                                                                                                                                                                      replaying
 
 
 
@@ -49,12 +48,13 @@
 
 
 
+  ┃  Summarize the deployment status.
 
-
-
+     The deployment completed successfully.
+  !  Dropped event window · output may be incomplete
 
   ┃  Ask Harbor...
   ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  replaying   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

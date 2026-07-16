@@ -143,7 +143,10 @@ func (m Model) layoutLifecycle(b projection.Block, width int) laidBlock {
 	return laidBlock{height: 1, ops: []drawOp{{dx: proseIndent, dy: 0, text: line, style: m.theme.Style(role, nil).Faint(true)}}}
 }
 
-// layoutInterventionBlock renders a pending intervention as a warning callout.
+// layoutInterventionBlock renders a pending intervention as a warning callout —
+// the one non-user block that stays boxed, because it blocks the run and must
+// not read as ordinary output. Its actions obey the responsive contract (§4):
+// stacked below 80 columns, horizontal at 80 and above.
 func (m Model) layoutInterventionBlock(b projection.Block, width int) laidBlock {
 	warn := ui.RoleWarning
 	panel := ui.RolePanel
@@ -151,10 +154,10 @@ func (m Model) layoutInterventionBlock(b projection.Block, width int) laidBlock 
 	if detail == "" {
 		detail = "Operator approval required."
 	}
-	lines := wrapPlain(detail, width-proseIndent-1)
+	lines := append([]string{"!  Operator approval required"}, wrapPlain(detail, width-proseIndent-1)...)
 	bar := m.theme.Style(warn, &panel)
 	body := m.theme.Style(ui.RoleWarning, &panel)
-	ops := make([]drawOp, 0, len(lines)*3)
+	ops := make([]drawOp, 0, len(lines)*3+2)
 	for i, line := range lines {
 		ops = append(ops,
 			drawOp{dy: i, fillBG: &panel},
@@ -165,14 +168,30 @@ func (m Model) layoutInterventionBlock(b projection.Block, width int) laidBlock 
 	return laidBlock{height: len(lines), ops: ops}
 }
 
-// layoutEvent renders a canonical event only when it carries readable content;
-// empty metadata-only fallback events are suppressed to keep the canvas calm.
+// interventionActions returns the approval affordances as chrome rows, obeying
+// the responsive contract (§4): stacked below 80 columns, horizontal at 80 and
+// above. They live beside the status strip rather than inside the block, so the
+// block says what needs approval and the chrome says what you can do.
+func (m Model) interventionActions() []string {
+	if m.Layout().HorizontalActions {
+		return []string{"[ Approve unavailable ]   [ Reject unavailable ]"}
+	}
+	return []string{"[ Approve unavailable ]", "[ Reject unavailable ]"}
+}
+
+// layoutEvent renders a canonical event as one quiet dim line. Unknown and
+// metadata-only fallback events stay visible (§6 requires every unknown event
+// render through a safe fallback) but cost a single line rather than a card, so
+// they never dominate the canvas. Only a wholly empty block renders nothing.
 func (m Model) layoutEvent(b projection.Block, width int) laidBlock {
 	text := strings.TrimSpace(b.Text)
 	if text == "" {
+		text = strings.TrimSpace(b.EventType)
+	}
+	if text == "" {
 		return laidBlock{}
 	}
-	line := ui.Truncate("· "+text, width-proseIndent)
+	line := ui.Truncate("·  "+text, width-proseIndent)
 	return laidBlock{height: 1, ops: []drawOp{{dx: proseIndent, dy: 0, text: line, style: m.theme.Style(ui.RoleMuted, nil).Faint(true)}}}
 }
 
@@ -223,7 +242,7 @@ func (m Model) composerStatus() string {
 
 // hasActiveTurn reports whether a turn is streaming or otherwise in flight.
 func (m Model) hasActiveTurn() bool {
-	if m.state.Composer == ComposerRunning {
+	if m.state.Composer == ComposerRunning || m.state.Active {
 		return true
 	}
 	for _, b := range m.projection.Blocks {
@@ -256,7 +275,9 @@ func (m Model) activeElapsed() string {
 	return fmt.Sprintf("%.1fs", secs)
 }
 
-func (m Model) dim(text string, role ui.Role) string { return m.theme.Style(role, nil).Faint(true).Render(text) }
+func (m Model) dim(text string, role ui.Role) string {
+	return m.theme.Style(role, nil).Faint(true).Render(text)
+}
 
 // placeBlock draws a laid-out block at (x, y).
 func (m Model) placeBlock(c *canvas, x, y, width int, lb laidBlock) {
@@ -309,17 +330,19 @@ func (m Model) renderTranscript(c *canvas, top, bottom, width int) {
 	}
 }
 
-// lifecycleGlyph maps a status to a calm glyph + semantic role.
+// lifecycleGlyph maps a status to a semantic glyph + role. The glyph vocabulary
+// is the contract that carries state meaning without colour (§8 monochrome), so
+// it stays stable: ✓ success, × failure, ! attention, ◆ in-flight.
 func lifecycleGlyph(status string) (string, ui.Role) {
 	switch status {
 	case "completed", "succeeded":
 		return "✓", ui.RoleSuccess
 	case "failed", "erased":
-		return "✗", ui.RoleError
+		return "×", ui.RoleError
 	case "pending", "paused":
-		return "◔", ui.RoleWarning
+		return "!", ui.RoleWarning
 	case "running", "started":
-		return "▸", ui.RoleInfo
+		return "◆", ui.RoleInfo
 	default:
 		return "·", ui.RoleMuted
 	}

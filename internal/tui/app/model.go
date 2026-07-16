@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -254,12 +253,20 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.Toast = "Terminal resumed"
 		return m, nil
 	case tea.PasteMsg:
+		// The pasted draft itself is the feedback — it lands in the composer
+		// rather than announcing itself in a banner. (The operational host
+		// routes paste through the editor and syncs the same field.)
 		m.state.Pasted = true
 		m.state.Composer = ComposerFocused
+		m.state.ComposerText += msg.Content
 		return m, nil
 	case tea.FocusMsg:
+		// Transient feedback belongs in the toast layer — it fades — rather than
+		// occupying the canvas as a permanent notice.
 		m.state.Focused = true
 		m.state.Composer = ComposerFocused
+		m.state.ToastOpen = true
+		m.state.Toast = "Composer focus restored"
 		return m, nil
 	case tea.BlurMsg:
 		m.state.Focused = false
@@ -553,9 +560,15 @@ func (m Model) renderBase(c *canvas) {
 	if m.height > 12 || !m.state.Intervention {
 		composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
 		status := m.composerStatus()
-		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), status, identityLabel(m.projection), m.state.ComposerText)
+		// The composer's metadata row is where identity lives (§9) — adjacent to
+		// the input. The footer carries key hints only and the status strip owns
+		// stream state, so the triple is never printed twice and a non-live
+		// connection is never truncated away on a narrow terminal.
+		meta := identityLabel(m.projection)
+		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), status, meta, m.state.ComposerText)
 		if m.operational {
-			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), status, identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), status, meta, m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+
 		}
 		composerRows := strings.Count(composer, "\n") + 1
 		composerTop = max(4, m.height-composerRows-1)
@@ -577,14 +590,25 @@ func (m Model) renderBase(c *canvas) {
 		return
 	}
 
-	// Session / home conversation surface.
+	// Session / home conversation surface. One blank row separates the newest
+	// block from the composer so streamed output never abuts the input.
 	contentTop := 2
-	regionBottom := composerTop - 1
+	regionBottom := composerTop - 2
 	if strip, role, ok := m.statusStrip(); ok && regionBottom >= contentTop {
 		c.put(ui.OuterPadding, regionBottom, ui.Truncate(strip, width), m.theme.Style(role, nil))
 		regionBottom--
 	}
-	if len(m.projection.Blocks) == 0 {
+	// A blocked run also shows what the operator can do about it.
+	if m.state.Intervention {
+		actions := m.interventionActions()
+		for i := len(actions) - 1; i >= 0 && regionBottom >= contentTop; i-- {
+			c.put(ui.OuterPadding+proseIndent, regionBottom, ui.Truncate(actions[i], width-proseIndent), m.theme.Style(ui.RoleWarning, nil).Bold(true))
+			regionBottom--
+		}
+	}
+	// Home is the pre-attach surface: it never shows a transcript, only the
+	// invitation to attach a Runtime.
+	if len(m.projection.Blocks) == 0 || m.state.Route == "home" {
 		m.renderEmptyState(c, contentTop, regionBottom, width)
 	} else {
 		m.renderTranscript(c, contentTop, regionBottom, width)
@@ -592,23 +616,51 @@ func (m Model) renderBase(c *canvas) {
 	m.renderFooter(c, l)
 }
 
-// statusStrip returns the single most-consequential lifecycle/honesty line to
-// pin just above the composer as chrome (never a screen-dominating card).
-// Info-level stream state is folded into the footer instead.
+// statusStrip returns the single most-consequential honesty/lifecycle line to
+// pin just above the composer as chrome. Every §9 state stays reachable and
+// distinct, but only the most severe one is shown at a time — one quiet line
+// instead of a stack of screen-dominating cards. An ordinary live, complete,
+// following stream shows nothing at all.
 func (m Model) statusStrip() (string, ui.Role, bool) {
 	switch {
+	// Terminal session states.
 	case m.state.Erased:
-		return "✗  Session erased · Start Fresh required", ui.RoleError, true
+		return "×  Session erased · terminal, Start Fresh required", ui.RoleError, true
 	case m.state.Failed:
-		return "✗  Session failed · terminal error state, not resumable", ui.RoleError, true
+		return "×  Session failed · terminal error state, not resumable", ui.RoleError, true
+	case m.state.ReplayGap:
+		return "×  Replay gap · authoritative reconciliation required", ui.RoleError, true
+	// Blocking / attention.
 	case m.state.Intervention:
 		return "!  Operator approval required", ui.RoleWarning, true
 	case m.state.Dropped:
 		return "!  Dropped event window · output may be incomplete", ui.RoleWarning, true
-	case m.state.ReplayGap:
-		return "!  Replay gap · reconciling authoritative state", ui.RoleWarning, true
+	case m.state.Reconciliation:
+		return "!  Authoritative reconciliation in progress", ui.RoleWarning, true
+	// Partiality — each kind stays distinguishable (§9).
+	case m.state.Incomplete:
+		return "!  Some blocks are incomplete", ui.RoleWarning, true
+	case m.state.Unknown:
+		return "?  Unknown event · safe metadata-only fallback", ui.RoleWarning, true
+	case m.state.Overflow:
+		return "!  Display updates coalesced · showing latest state", ui.RoleMuted, true
 	case m.state.Truncated:
-		return "!  Earlier transcript truncated", ui.RoleMuted, true
+		return "!  History truncated · earlier transcript unavailable", ui.RoleMuted, true
+	case m.state.AggregateTruncated:
+		return "!  Aggregate window truncated · totals cover a bounded slice", ui.RoleMuted, true
+	case m.state.CountersPartial:
+		return "!  Session counters are partial · exact totals unavailable", ui.RoleMuted, true
+	case m.state.AggregatesPartial:
+		return "!  Tool aggregates are partial", ui.RoleMuted, true
+	case m.state.AnalyticsBounded:
+		return "!  Tool analytics are bounded best-effort · absence is not zero", ui.RoleMuted, true
+	// Non-terminal informational states.
+	case m.state.Closed:
+		return "○  Session completed · resumable on a future turn", ui.RoleInfo, true
+	case m.state.Scrolled:
+		// A scrolled reader is never yanked (§6): say so, rather than letting
+		// new output look stalled.
+		return "↑  Scrolled away · new output continues below", ui.RoleMuted, true
 	}
 	return "", ui.RoleMuted, false
 }
@@ -631,23 +683,23 @@ func (m Model) renderEmptyState(c *canvas, top, bottom, width int) {
 	c.put(hintX, midY+1, hint, m.theme.Style(ui.RoleMuted, nil))
 }
 
-// renderFooter draws the bottom chrome line: identity + connection on the left,
-// key hints on the right.
+// renderFooter draws the bottom chrome line: the stream lifecycle first (it is
+// an honesty state and must survive truncation on a narrow terminal), then the
+// reachable key hints. Identity lives on the composer's metadata row, so the
+// triple is never printed twice.
 func (m Model) renderFooter(c *canvas, l ui.Layout) {
-	left := identityLabel(m.projection)
+	parts := make([]string, 0, 2)
 	if m.state.Connection != "" {
-		left += "  ·  " + m.state.Connection
+		parts = append(parts, m.state.Connection)
 	}
-	c.put(ui.OuterPadding, m.height-1, ui.Truncate(left, l.ContentWidth), m.theme.Style(ui.RoleMuted, nil))
-	hints := strings.Join(m.registry.Footer(m.commandContext()), "   ")
-	if hintWidth := ui.Width(hints); hintWidth > 0 {
-		rightX := ui.OuterPadding + max(ui.Width(left)+3, l.ContentWidth-hintWidth)
-		if rightX+hintWidth <= m.width {
-			c.put(rightX, m.height-1, hints, m.theme.Style(ui.RoleMuted, nil))
-		}
+	if hints := strings.Join(m.registry.Footer(m.commandContext()), "   "); hints != "" {
+		parts = append(parts, hints)
 	}
+	if len(parts) == 0 {
+		return
+	}
+	c.put(ui.OuterPadding, m.height-1, ui.Truncate(strings.Join(parts, "   ·   "), l.ContentWidth), m.theme.Style(ui.RoleMuted, nil))
 }
-
 
 func (m Model) renderSidebar(c *canvas) {
 	l := m.Layout()

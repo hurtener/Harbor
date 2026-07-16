@@ -1,20 +1,20 @@
 
-  HARBOR  /  SESSION                   Sidebar context visible
-  One active session · Protoco  RUNTIME CONTEXT
-  disconnected
+                                       Sidebar context visible
+                                RUNTIME CONTEXT
+
                                 Session
-  ┃                             01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime pos  one active session
-  ┃
-                                Status
-  ┃                             running
-  ┃  ✓  Runtime health snapsho  Transcript
-  ┃                             3 blocks
+                                01K0HARBORFIXTURE0000000000
+
+     ◆  Inspecting Runtime pos  Status
+                                running
+     ✓  runtime.health  Runtim
+                                Transcript
+  ┃  !  Operator approval requ  3 blocks
+  ┃  Operator approval require
                                 Stream
-                                disconnected
-  ┃  Ask Harbor about this run
+  ┃  Ask Harbor about this run  disconnected
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXT
-  ctrl+p Command palette   ctr
+  disconnected   ·   ctrl+p Co

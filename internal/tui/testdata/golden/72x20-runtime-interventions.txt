@@ -1,7 +1,5 @@
 
-  HARBOR  /  INTERVENTIONS
-  One active session · Protocol-only
-  live
+  INTERVENTIONS
 
    Exactly one active session · tenant-a/operator/session-alpha
    ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
@@ -15,5 +13,8 @@
 
 
 
-
-
+  ┃  Ask Harbor...
+  ┃  Working · esc interrupt
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

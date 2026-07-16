@@ -1,17 +1,17 @@
 
-  HARBOR  /  HOME
-  One active session · Protocol-only
-  disconnected
-
-  ┃
-  ┃  ◇  Terminal foundation ready
-  ┃  Attach a Runtime to begin.
-  ┃
 
 
 
 
 
+
+
+
+
+
+                                              Harbor
+
+                                    Attach a Runtime to begin.
 
 
 
@@ -27,4 +27,4 @@
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

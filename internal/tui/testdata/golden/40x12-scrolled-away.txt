@@ -1,12 +1,12 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
-  ↑ Scrolled away · new output will no
+
+  ┃  !  Operator approval required
+  ┃  Operator approval required
+  ↑  Scrolled away · new output conti
 
   ┃  Ask Harbor about this runtime...
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000
-  ctrl+p Command palette   ctrl+x s To
+  disconnected   ·   ctrl+p Command pa

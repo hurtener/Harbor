@@ -1,30 +1,30 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                           RUNTIME CONTEXT
-  replaying
+
+                                                                               RUNTIME CONTEXT
+
                                                                                Session
-  ┃                                                                            session-alpha
-  ┃  ×  Replay gap · authoritative reconciliation required                     one active session
-  ┃
+                                                                               session-alpha
+
                                                                                Status
-  ┃                                                                            running
-  ┃  !  Authoritative reconciliation in progress                               Transcript
-  ┃                                                                            3 blocks
+                                                                               running
+
+                                                                               Transcript
+                                                                               3 blocks
+
                                                                                Stream
-  ┃                                                                            replaying
-  ┃  !  Display updates coalesced · reconciling latest state
-  ┃
-
-  ┃
-  ┃  !  History is truncated · earlier transcript output is unavailable
-  ┃
+                                                                               replaying
 
 
 
+  ┃  Summarize the deployment status.
 
+     The deployment completed successfully.
+
+     ·  extension.notice
+  ×  Replay gap · authoritative reconciliation required
 
   ┃  Ask Harbor...
   ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  replaying   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

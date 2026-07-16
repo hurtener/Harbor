@@ -1,11 +1,12 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
 
-  ┃
-  ┃  ◆  Inspecting Runtime posture
-  ┃
+
+
+
+
+
+
+  ┃  ctrl+x ?  Keyboard help
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x t  Switch theme
   ┃  ctrl+x l  Switch session · unavailable: requires a live authenticated R
@@ -15,10 +16,9 @@
   ┃  ctrl+x f  Search transcript
   ┃  ctrl+x x  Export transcript
   ┃  ctrl+x r  Toggle reasoning
-  ┃  ctrl+x o  Toggle tool detail
   ┃  Ask Harbor about this runtime...
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

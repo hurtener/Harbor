@@ -1,19 +1,19 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
-  disconnected
+
+                                                                                                                      RUNTIME CONTEXT
+
                                                                                                                       Session
-  ┃                                                                                                                   01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime posture                                                                                    one active session
-  ┃
+                                                                                                                      01K0HARBORFIXTURE0000000000
+
                                                                                                                       Status
-  ┃                                                                                                                   running
-  ┃  ✓  Runtime health snapshot received                                                                              Transcript
-  ┃                                                   Themes                                                          3 blocks
-                                                     Search:                                                          Stream
-  ┃                                                 ● Dark                                                            disconnected
-  ┃  !  Operator approval required                    Light
-  ┃
+                                                                                                                      running
+
+                                                                                                                      Transcript
+                                                      Themes                                                          3 blocks
+                                                     Search:
+                                                    ● Dark                                                            Stream
+                                                      Light                                                           disconnected
+
 
                                                     ↑/↓ move · enter select · esc close
 
@@ -25,16 +25,16 @@
 
 
 
+     ◆  Inspecting Runtime posture
 
+     ✓  runtime.health  Runtime health snapshot received
 
-
-
-
-
+  ┃  !  Operator approval required
+  ┃  Operator approval required
 
   ┃  Ask Harbor about this runtime...
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

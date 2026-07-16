@@ -1,20 +1,20 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
 
-  ┃
-  ┃  ×  Replay gap · authoritative reconciliation required
-  ┃
 
-  ┃
-  ┃  ◆  Inspecting Runtime posture
-  ┃
 
+
+
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  Runtime health snapshot received
+
+  ┃  !  Operator approval required
+  ┃  Operator approval required
+  ×  Replay gap · authoritative reconciliation required
 
   ┃  Ask Harbor about this runtime...
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime

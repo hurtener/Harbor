@@ -207,7 +207,9 @@ func TestModel_InputPasteResizeFocusAndVisibleBreakpoints(t *testing.T) {
 	m := baseModel()
 	next, _ := m.Update(tea.PasteMsg{Content: "一\ne\u0301\n👩‍👩‍👧‍👦"})
 	m = next.(Model)
-	if !m.state.Pasted || !strings.Contains(m.Frame(), "Bracketed paste") {
+	// The pasted draft lands in the composer and IS the feedback — a wide CJK
+	// grapheme surviving into the frame also pins the width handling.
+	if !m.state.Pasted || !strings.Contains(m.Frame(), "一") {
 		t.Fatal("paste state missing")
 	}
 	m = baseModel()
@@ -334,10 +336,21 @@ func TestModel_StyledProfilesAndMonochromeSemantics(t *testing.T) {
 			t.Fatalf("profile %d/%d missing exact sequence %q", theme.Profile(), theme.Mode(), profile.sequence)
 		}
 	}
-	mono := NewModel(100, 30, profiles[5].theme, true, FixtureProjection()).WithState(State{Intervention: true, ReplayGap: true}).Frame()
-	for _, glyph := range []string{"✓", "!", "×"} {
-		if !strings.Contains(mono, glyph) {
-			t.Fatalf("mono missing semantic glyph %q", glyph)
+	// Monochrome must carry state meaning by glyph alone. Only the most severe
+	// honesty line shows at a time (chrome, not a stack of cards), so each state
+	// is asserted in the frame that actually surfaces it.
+	for _, tc := range []struct {
+		state State
+		glyph string
+	}{
+		{State{Intervention: true}, "!"},
+		{State{ReplayGap: true}, "×"},
+		{State{Closed: true}, "○"},
+		{State{}, "✓"},
+	} {
+		mono := NewModel(100, 30, profiles[5].theme, true, FixtureProjection()).WithState(tc.state).Frame()
+		if !strings.Contains(mono, tc.glyph) {
+			t.Fatalf("mono missing semantic glyph %q for state %+v", tc.glyph, tc.state)
 		}
 	}
 }

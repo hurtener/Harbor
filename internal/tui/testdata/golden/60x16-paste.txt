@@ -1,16 +1,16 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
-
-  ┃
-  ┃  ▣  Bracketed paste · 3 lines captured locally
-  ┃
 
 
-  ┃  Ask Harbor about this runtime...  █
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  Runtime health snapshot received
+
+  ┃  !  Operator approval required
+  ┃  Operator approval required
+
+  ┃  one ↵ two ↵ threeone ↵ two ↵ three █
   ┃
   ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Tog

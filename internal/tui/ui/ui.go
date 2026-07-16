@@ -190,6 +190,12 @@ type Cluster struct {
 
 // Clusters splits plain text using x/ansi's grapheme-aware truncation. It
 // deliberately shares the same width authority as every layout operation.
+//
+// The input MUST be plain text. On styled input ansi.Truncate returns a
+// re-terminated string that is not a prefix of the source, so the scan could
+// never advance; the prefix guard below consumes the remainder in one cluster
+// instead of looping forever. Callers rendering styled content keep text and
+// style separate (the canvas takes plain text plus one style per write).
 func Clusters(value string) []Cluster {
 	clusters := make([]Cluster, 0, len(value))
 	for value != "" {
@@ -197,7 +203,7 @@ func Clusters(value string) []Cluster {
 		for cells := 1; cells <= 2 && cluster == ""; cells++ {
 			cluster = ansi.Truncate(value, cells, "")
 		}
-		if cluster == "" {
+		if cluster == "" || !strings.HasPrefix(value, cluster) {
 			cluster = value
 		}
 		width := Width(cluster)

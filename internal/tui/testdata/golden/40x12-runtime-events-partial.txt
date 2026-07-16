@@ -1,11 +1,12 @@
 
-  HARBOR  /  EVENTS
-  One active session · Protocol-only
-  live
+  EVENTS
 
    Exactly one active session · tena
    ↑/↓ select · PgUp/PgDn page · / f
    EVENT STREAM / AGGREGATE · filter
-   Filter:  · page 1
 
-
+  ┃  Ask Harbor...
+  ┃  Working · esc interrupt
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·
+  live   ·   ctrl+p Command palette

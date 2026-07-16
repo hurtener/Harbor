@@ -1,20 +1,20 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
 
-  ┃
-  ┃  ◆    Commands
-  ┃      Search:
+
+
+
+
+          Commands
+     ◆   Search:
         ● Command palette · Find an available action
-  ┃       Toggle runtime context · Show the fixed context sideba
-  ┃  ✓    Keyboard help · Show all reachable commands
-  ┃       Quit · Restore the terminal and exit
-          Attach file · Unavailable: requires a live authenticat
+     ✓    Toggle runtime context · Show the fixed context sideba
+          Keyboard help · Show all reachable commands
+  ┃  !    Quit · Restore the terminal and exit
+  ┃  O    Attach file · Unavailable: requires a live authenticat
           Cancel queued follow-up · Unavailable: no local follow
   ┃  A    Remove attachment · Unavailable: no attachment is sele
   ┃       Restore stashed draft · Pop the newest local draft
   ┃  i
   ╹▀▀▀                                                            ▀▀▀
   acme  ↑/↓ move · enter select · esc close
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime

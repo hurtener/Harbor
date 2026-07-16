@@ -1,17 +1,19 @@
 
-  HARBOR  /  INTERVENTIONS
-  One active session · Protocol-only                                                                                                                                                                  RUNTIME CONTEXT
-  live
-                                                                                                                                                                                                      Session
-   Exactly one active session · tenant-a/operator/session-alpha                                                                                                                                       session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                                                                                                one active session
-   INTERVENTION INBOX · retained by PauseToken · approval / OAuth / input / expiry / resolved
-   pause-token-a paused · approval required · run task-01                                                                                                                                             Health
+  INTERVENTIONS
+                                                                                                                                                                                                      RUNTIME CONTEXT
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                                                                                                Session
+   INTERVENTION INBOX · retained by PauseToken · approval / OAuth / input / expiry / resolved                                                                                                         session-alpha
+   pause-token-a paused · approval required · run task-01
+                                                                                                                                                                                                      Health
                                                                                                                                                                                                       warning · intervention required
+
                                                                                                                                                                                                       Status
                                                                                                                                                                                                       running
+
                                                                                                                                                                                                       Transcript
                                                                                                                                                                                                       2 blocks
+
                                                                                                                                                                                                       Stream
                                                                                                                                                                                                       live
 
@@ -51,9 +53,8 @@
 
 
 
-
-
-
-
-
-
+  ┃  Ask Harbor...
+  ┃  Working · esc interrupt
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

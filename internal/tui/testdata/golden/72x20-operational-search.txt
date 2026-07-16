@@ -1,20 +1,20 @@
 
-  HARBOR  /  SESSION                   Search: deployment · 2 matches
-  One active session · Protocol-only
-  live
-
-  ┃
-  ┃  ↑  Scrolled away · new output will not move this view
-  ┃
-
-  ┃
-  ┃  ◆  Active stream · following newest output
-  ┃
+                                       Search: deployment · 2 matches
 
 
+
+
+
+
+
+
+
+
+     The deployment completed successfully.
+  ↑  Scrolled away · new output continues below
 
   ┃  Ask Harbor...
-  ┃  focused
+  ┃  Working · esc interrupt
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

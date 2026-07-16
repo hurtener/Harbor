@@ -1,18 +1,18 @@
 
-  HARBOR  /  HOME
-  One active session · Protocol-only                                           RUNTIME CONTEXT
-  disconnected
-                                                                               Session
-  ┃                                                                            01K0HARBORFIXTURE0000000000
-  ┃  ◇  Terminal foundation ready                                              one active session
-  ┃  Attach a Runtime to begin.
-  ┃                                                                            Status
-                                                                               running
-                                                                               Transcript
-                                                                               3 blocks
-                                                                               Stream
-                                                                               disconnected
 
+                                                                               RUNTIME CONTEXT
+
+                                                                               Session
+                                                                               01K0HARBORFIXTURE0000000000
+
+                                                                               Status
+                                                                               running
+
+                                                                               Transcript
+                                    Harbor                                     3 blocks
+
+                          Attach a Runtime to begin.                           Stream
+                                                                               disconnected
 
 
 
@@ -27,4 +27,4 @@
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

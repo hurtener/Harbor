@@ -1,60 +1,60 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                                                                                                  RUNTIME CONTEXT
-  disconnected
+
+                                                                                                                                                                                                      RUNTIME CONTEXT
+
                                                                                                                                                                                                       Session
-  ┃                                                                                                                                                                                                   01K0HARBORFIXTURE0000000000
-  ┃  ◆  Active stream · following newest output                                                                                                                                                       one active session
-  ┃
+                                                                                                                                                                                                      01K0HARBORFIXTURE0000000000
+
                                                                                                                                                                                                       Status
-  ┃                                                                                                                                                                                                   running
-  ┃  ◆  Inspecting Runtime posture                                                                                                                                                                    Transcript
-  ┃                                                                                                                                                                                                   3 blocks
+                                                                                                                                                                                                      running
+
+                                                                                                                                                                                                      Transcript
+                                                                                                                                                                                                      4 blocks
+
                                                                                                                                                                                                       Stream
-  ┃                                                                                                                                                                                                   disconnected
-  ┃  ✓  Runtime health snapshot received
-  ┃
+                                                                                                                                                                                                      disconnected
 
-  ┃
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  Runtime health snapshot received
+
   ┃  !  Operator approval required
+  ┃  Operator approval required
+
+     Streaming the answer
+     ▌
+
+  ┃  Ask Harbor about this runtime...
   ┃
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  ┃  Active work in progress
-  ┃
-  ┃  running
+  ┃  Working · esc interrupt
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context
