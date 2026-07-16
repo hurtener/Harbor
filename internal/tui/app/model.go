@@ -552,9 +552,10 @@ func (m Model) renderBase(c *canvas) {
 	composerTop := m.height
 	if m.height > 12 || !m.state.Intervention {
 		composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
-		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText)
+		status := m.composerStatus()
+		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), status, identityLabel(m.projection), m.state.ComposerText)
 		if m.operational {
-			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), status, identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
 		}
 		composerRows := strings.Count(composer, "\n") + 1
 		composerTop = max(4, m.height-composerRows-1)
@@ -648,138 +649,6 @@ func (m Model) renderFooter(c *canvas, l ui.Layout) {
 }
 
 
-type notice struct {
-	glyph, text string
-	role        ui.Role
-}
-
-// noticeSeverity orders honesty notices so the single compact-mode slot surfaces
-// the most consequential state (error before warning before info), never hiding
-// a failed/erased/dropped state behind a benign "active stream" line.
-func noticeSeverity(role ui.Role) int {
-	switch role {
-	case ui.RoleError:
-		return 3
-	case ui.RoleWarning:
-		return 2
-	default:
-		return 1
-	}
-}
-
-// mostSevere returns the highest-severity notice, preserving declaration order
-// among equals (first wins).
-func mostSevere(notices []notice) notice {
-	top := notices[0]
-	for _, n := range notices[1:] {
-		if noticeSeverity(n.role) > noticeSeverity(top.role) {
-			top = n
-		}
-	}
-	return top
-}
-
-func (m Model) notices() []notice {
-	var out []notice
-	if m.state.Active {
-		out = append(out, notice{"◆", "Active stream · following newest output", ui.RoleInfo})
-	}
-	if m.state.Scrolled {
-		out = append(out, notice{"↑", "Scrolled away · new output will not move this view", ui.RoleWarning})
-	}
-	if m.state.ReplayGap {
-		out = append(out, notice{"×", "Replay gap · authoritative reconciliation required", ui.RoleError})
-	}
-	if m.state.Reconciliation {
-		out = append(out, notice{"!", "Authoritative reconciliation in progress", ui.RoleWarning})
-	}
-	if m.state.Dropped {
-		out = append(out, notice{"!", "Dropped event window · output may be incomplete", ui.RoleWarning})
-	}
-	if m.state.Overflow {
-		out = append(out, notice{"!", "Display updates coalesced · reconciling latest state", ui.RoleWarning})
-	}
-	if m.state.Truncated {
-		out = append(out, notice{"!", "History is truncated · earlier transcript output is unavailable", ui.RoleWarning})
-	}
-	if m.state.AggregateTruncated {
-		out = append(out, notice{"!", "Aggregate window truncated · totals cover a bounded slice, not all history", ui.RoleWarning})
-	}
-	if m.state.CountersPartial {
-		out = append(out, notice{"!", "Session counters are partial · exact totals unavailable", ui.RoleWarning})
-	}
-	if m.state.AggregatesPartial {
-		out = append(out, notice{"!", "Tool aggregates are partial · some tool rollups are incomplete", ui.RoleWarning})
-	}
-	if m.state.AnalyticsBounded {
-		out = append(out, notice{"!", "Tool analytics are bounded best-effort · absence is not zero", ui.RoleWarning})
-	}
-	if m.state.Incomplete {
-		out = append(out, notice{"!", "Some blocks are incomplete", ui.RoleWarning})
-	}
-	if m.state.Closed {
-		out = append(out, notice{"○", "Session completed · resumable on a future turn", ui.RoleInfo})
-	}
-	if m.state.Failed {
-		out = append(out, notice{"×", "Session failed · terminal error state, not resumable", ui.RoleError})
-	}
-	if m.state.Erased {
-		out = append(out, notice{"×", "Session erased · terminal state, start fresh required", ui.RoleError})
-	}
-	if m.state.Unknown {
-		out = append(out, notice{"?", "Unknown event · safe metadata-only fallback", ui.RoleWarning})
-	}
-	if m.state.Pasted {
-		out = append(out, notice{"▣", "Bracketed paste · 3 lines captured locally", ui.RoleInfo})
-	}
-	if m.state.Focused {
-		out = append(out, notice{"●", "Composer focus restored", ui.RoleSuccess})
-	}
-	// Order by severity so that when vertical space is scarce the most
-	// consequential honesty state (failed/erased/dropped) renders first and is
-	// never crowded out by a benign info line (§9). Stable within a severity.
-	sort.SliceStable(out, func(i, j int) bool { return noticeSeverity(out[i].role) > noticeSeverity(out[j].role) })
-	return out
-}
-func semantic(status string) (string, ui.Role) {
-	switch status {
-	case "completed", "succeeded":
-		return "✓", ui.RoleSuccess
-	case "failed", "erased":
-		return "×", ui.RoleError
-	case "pending":
-		return "!", ui.RoleWarning
-	case "running", "started":
-		return "◆", ui.RoleInfo
-	default:
-		return "◇", ui.RoleInfo
-	}
-}
-func (m Model) renderCard(c *canvas, y, width int, role ui.Role, glyph string, lines ...string) {
-	m.renderCardAt(c, ui.OuterPadding, y, width, role, glyph, lines...)
-}
-func (m Model) renderCardAt(c *canvas, x, y, width int, role ui.Role, glyph string, lines ...string) {
-	payload := append([]string{glyph + "  " + lines[0]}, lines[1:]...)
-	card := ui.HeavyCard(m.theme, role, width, payload...)
-	c.styledBlock(x, y, card, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(role, nil))
-}
-func (m Model) renderIntervention(c *canvas, y, width int, horizontal bool) {
-	detail := "Canonical intervention is pending."
-	for _, block := range m.projection.Blocks {
-		if block.Kind == "intervention" && block.Text != "" {
-			detail = block.Text
-			break
-		}
-	}
-	m.renderCard(c, y, width, ui.RoleWarning, "!", "Operator approval required", detail)
-	if horizontal {
-		c.put(ui.OuterPadding+3, y+4, "[ Approve unavailable ]   [ Reject unavailable ]", m.theme.Style(ui.RoleWarning, nil).Bold(true))
-	} else {
-		c.put(ui.OuterPadding+3, y+4, "[ Approve unavailable ]", m.theme.Style(ui.RoleWarning, nil).Bold(true))
-		c.put(ui.OuterPadding+3, y+5, "[ Reject unavailable ]", m.theme.Style(ui.RoleWarning, nil).Bold(true))
-	}
-}
-
 func (m Model) renderSidebar(c *canvas) {
 	l := m.Layout()
 	// In joined layout the sidebar occupies the slot Measure reserved inside the
@@ -797,20 +666,35 @@ func (m Model) renderSidebar(c *canvas) {
 	for y := range m.height {
 		c.put(x, y, ui.PadRight("", min(ui.SidebarWidth, m.width-x)), panel)
 	}
-	rows := []string{"RUNTIME CONTEXT", "", "Session", m.projection.Identity.Session, "one active session", ""}
-	if m.state.Health != "" {
-		rows = append(rows, "Health", m.state.Health)
+	// Every write carries the panel background: text drawn without it falls back
+	// to the terminal default and tears ragged bands through the filled column.
+	// Labels stay muted, values bright — hierarchy by brightness, not by boxes.
+	type sideRow struct {
+		text string
+		role ui.Role
+		bold bool
 	}
-	rows = append(rows, "Status", m.projection.SessionStatus, "Transcript", fmt.Sprintf("%d blocks", len(m.projection.Blocks)), "Stream", m.state.Connection)
+	rows := []sideRow{{"RUNTIME CONTEXT", ui.RoleAccent, true}, {"", ui.RoleMuted, false}}
+	pair := func(label, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		rows = append(rows, sideRow{label, ui.RoleMuted, false}, sideRow{value, ui.RoleText, false}, sideRow{"", ui.RoleMuted, false})
+	}
+	pair("Session", m.projection.Identity.Session)
+	pair("Health", m.state.Health)
+	pair("Status", m.projection.SessionStatus)
+	pair("Transcript", fmt.Sprintf("%d blocks", len(m.projection.Blocks)))
+	pair("Stream", m.state.Connection)
+	interior := max(1, min(ui.SidebarWidth, m.width-x)-4)
 	for i, row := range rows {
 		if i+2 >= m.height {
 			break
 		}
-		role := ui.RoleText
-		if row == "RUNTIME CONTEXT" {
-			role = ui.RoleAccent
+		if row.text == "" {
+			continue
 		}
-		c.put(x+2, i+2, ui.Truncate(row, ui.SidebarWidth-4), m.theme.Style(role, nil).Bold(i == 0))
+		c.put(x+2, i+2, ui.Truncate(row.text, interior), m.theme.Style(row.role, ptrRole(ui.RolePanel)).Bold(row.bold))
 	}
 }
 

@@ -3,9 +3,12 @@ package app
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
 
+	"github.com/hurtener/Harbor/internal/tui/markdown"
 	"github.com/hurtener/Harbor/internal/tui/projection"
 	"github.com/hurtener/Harbor/internal/tui/ui"
 )
@@ -86,18 +89,15 @@ func (m Model) layoutUser(b projection.Block, width int, selected bool) laidBloc
 // layoutAssistant renders the answer as borderless flowing prose (markdown when
 // the source warrants it), indented under a 2-cell gutter, no box, no glyph.
 func (m Model) layoutAssistant(b projection.Block, width int) laidBlock {
-	lines := m.proseLines(b.Text, width-proseIndent, ui.RoleText)
-	if b.Incomplete && len(lines) > 0 {
-		lines = append(lines, m.dim("▌", ui.RoleMuted))
-	}
-	if len(lines) == 0 {
+	ops, h := m.proseOps(b.Text, width, proseIndent, 0, ui.RoleText)
+	if h == 0 {
 		return laidBlock{}
 	}
-	ops := make([]drawOp, 0, len(lines))
-	for i, styled := range lines {
-		ops = append(ops, drawOp{dx: proseIndent, dy: i, text: styled})
+	if b.Incomplete {
+		ops = append(ops, drawOp{dx: proseIndent, dy: h, text: "▌", style: m.theme.Style(ui.RoleMuted, nil).Faint(true)})
+		h++
 	}
-	return laidBlock{height: len(lines), ops: ops}
+	return laidBlock{height: h, ops: ops}
 }
 
 // layoutReasoning renders thinking as a muted, subordinate section with a
@@ -112,13 +112,9 @@ func (m Model) layoutReasoning(b projection.Block, width int) laidBlock {
 	if d := reasoningDuration(b); d != "" {
 		header += " · " + d
 	}
-	ops := []drawOp{{dx: 0, dy: 0, text: glyph + " " + header, style: m.theme.Style(ui.RoleWarning, nil).Faint(true)}}
-	h := 1
-	for _, styled := range m.proseLines(b.Text, width-reasoningIndent, ui.RoleMuted) {
-		ops = append(ops, drawOp{dx: reasoningIndent, dy: h, text: styled})
-		h++
-	}
-	return laidBlock{height: h, ops: ops}
+	ops := []drawOp{{dx: 0, dy: 0, text: glyph + "  " + header, style: m.theme.Style(ui.RoleWarning, nil).Faint(true)}}
+	body, bh := m.proseOps(b.Text, width, reasoningIndent, 1, ui.RoleMuted)
+	return laidBlock{height: 1 + bh, ops: append(ops, body...)}
 }
 
 // layoutTool renders a tool call/result as one compact status line.
@@ -180,19 +176,84 @@ func (m Model) layoutEvent(b projection.Block, width int) laidBlock {
 	return laidBlock{height: 1, ops: []drawOp{{dx: proseIndent, dy: 0, text: line, style: m.theme.Style(ui.RoleMuted, nil).Faint(true)}}}
 }
 
-// proseLines renders body text to styled, width-bounded lines. Markdown-capable
-// content routes through the markdown renderer; everything else is plain
-// grapheme-safe word wrap. Both keep earlier lines stable as text streams.
-func (m Model) proseLines(text string, width int, role ui.Role) []string {
+// proseOps lays body text out as canvas draw ops starting at row dy0, returning
+// the ops and the row count. The canvas is a cell grid that takes plain text
+// plus one style per write, so prose is emitted as styled spans — never as
+// pre-styled ANSI, which the cell splitter cannot consume.
+func (m Model) proseOps(text string, width, indent, dy0 int, role ui.Role) ([]drawOp, int) {
 	if strings.TrimSpace(text) == "" {
-		return nil
+		return nil, 0
 	}
-	style := m.theme.Style(role, nil)
-	out := make([]string, 0, 4)
-	for _, line := range wrapPlain(text, width) {
-		out = append(out, style.Render(line))
+	spans := markdown.RenderSpans(m.theme, text, width, role, indent)
+	ops := make([]drawOp, 0, len(spans))
+	for i, line := range spans {
+		dx := 0
+		for _, span := range line {
+			// Blank spans are skipped so the pre-filled canvas shows through
+			// (drawing them would repaint the background), unless the span owns
+			// a background of its own — a code block's fill is design, not
+			// incidental padding.
+			if strings.TrimSpace(span.Text) != "" || span.Style.GetBackground() != nil {
+				ops = append(ops, drawOp{dx: dx, dy: dy0 + i, text: span.Text, style: span.Style})
+			}
+			dx += span.Width
+		}
 	}
-	return out
+	return ops, len(spans)
+}
+
+// composerStatus is the composer's status row. While a turn is in flight it
+// reports live progress (spinner, elapsed, and the interrupt affordance) so the
+// surface never looks dead between submit and first token. Reduced motion keeps
+// a stable semantic fallback with no animation or ticking elapsed.
+func (m Model) composerStatus() string {
+	if !m.hasActiveTurn() {
+		return string(m.state.Composer)
+	}
+	if m.reducedMotion {
+		return "Working · esc interrupt"
+	}
+	frame := spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)]
+	label := frame + " Working"
+	if elapsed := m.activeElapsed(); elapsed != "" {
+		label += " · " + elapsed
+	}
+	return label + " · esc interrupt"
+}
+
+// hasActiveTurn reports whether a turn is streaming or otherwise in flight.
+func (m Model) hasActiveTurn() bool {
+	if m.state.Composer == ComposerRunning {
+		return true
+	}
+	for _, b := range m.projection.Blocks {
+		if b.Incomplete && (b.Kind == "text" || b.Kind == "reasoning" || b.Kind == "tool") {
+			return true
+		}
+	}
+	return false
+}
+
+// activeElapsed reports how long the in-flight turn has been running, from the
+// oldest still-incomplete block of the newest run.
+func (m Model) activeElapsed() string {
+	start := time.Time{}
+	for _, b := range m.projection.Blocks {
+		if !b.Incomplete || b.At.IsZero() {
+			continue
+		}
+		if start.IsZero() || b.At.Before(start) {
+			start = b.At
+		}
+	}
+	if start.IsZero() {
+		return ""
+	}
+	secs := time.Since(start).Seconds()
+	if secs < 0 || secs > 86400 {
+		return ""
+	}
+	return fmt.Sprintf("%.1fs", secs)
 }
 
 func (m Model) dim(text string, role ui.Role) string { return m.theme.Style(role, nil).Faint(true).Render(text) }

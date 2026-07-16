@@ -330,6 +330,14 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if modal, ok := m.shell.focus.Top(); ok {
 		return m.updateWorkflowModal(modal, key, msg)
 	}
+	// Escape interrupts the in-flight run rather than doing nothing. Ctrl+C
+	// stays an unconditional quit so the operator can always escape, even if a
+	// stream is misclassified as active.
+	if key == "escape" {
+		if runID, ok := m.activeRunID(); ok {
+			return m.cancelActiveRun(runID)
+		}
+	}
 	if key == "ctrl+c" || key == "ctrl+d" {
 		return m, tea.Quit
 	}
@@ -764,6 +772,28 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 		return m.executeActionSpec(action, value)
 	}
 	return m.forward(original)
+}
+
+// activeRunID returns the run of the newest still-streaming block, if any.
+func (m RuntimeModel) activeRunID() (string, bool) {
+	blocks := m.transcript.Projection.Blocks
+	for i := len(blocks) - 1; i >= 0; i-- {
+		if blocks[i].Incomplete && blocks[i].RunID != "" {
+			return blocks[i].RunID, true
+		}
+	}
+	return "", false
+}
+
+// cancelActiveRun issues the canonical cancel for the in-flight run. The result
+// stays a pending local intent until canonical reconciliation, like every other
+// control mutation.
+func (m RuntimeModel) cancelActiveRun(runID string) (tea.Model, tea.Cmd) {
+	intent := ActionIntent{ActionID: "task.cancel", Title: "Cancel run", Method: methods.MethodCancel, RunID: runID, Identity: m.identity, SessionID: m.identity.Session}
+	return m, func() tea.Msg {
+		err := m.controller.Execute(m.ctx, conversation.Mutation{Identity: m.identity, Method: methods.MethodCancel, RunID: runID})
+		return actionMsg{intent: intent, err: err}
+	}
 }
 
 func (m *RuntimeModel) inspectCmd() tea.Cmd {
