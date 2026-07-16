@@ -7,26 +7,92 @@
 // block. That keeps streamed assistant output flicker-free — the rendered
 // prefix of a document is stable as more text arrives.
 //
-// Every returned line is pre-styled (carries the theme's ANSI escapes), padded,
-// and wrapped so it occupies exactly the requested visible width. A caller
-// places each line directly onto a canvas without further measurement.
+// Two output shapes are offered over one shared layout pass, so they cannot
+// drift:
+//
+//   - RenderSpans returns plain text plus the style it renders under, for a
+//     cell-grid canvas that applies styling itself. This is the preferred API.
+//   - Render returns pre-styled, right-filled strings for callers that write
+//     escape sequences straight to a terminal.
+//
+// Both wrap on grapheme boundaries and route every width calculation through
+// the ui package, so east-asian text and emoji stay within budget.
 package markdown
 
 import (
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/hurtener/Harbor/internal/tui/ui"
 )
+
+// Span is a styled run of plain text within a rendered line.
+type Span struct {
+	// Text is plain text and never contains escape sequences.
+	Text string
+	// Style is the span's style, resolved from the theme.
+	Style lipgloss.Style
+	// Width is the span's visible cell count, equal to ui.Width(Text).
+	Width int
+}
+
+// RenderSpans renders markdown to wrapped lines of styled spans. Line i is
+// composed by drawing each span left-to-right, advancing x by Span.Width.
+// Spans include the leading indent as a plain span of spaces, so every line can
+// be placed at the same x origin. baseRole is the default text role (RoleText
+// for answers, RoleMuted for reasoning).
+//
+// Span text is always plain, so it is safe to hand to a cell-grid canvas that
+// re-splits text on grapheme clusters. The summed Span.Width of a line never
+// exceeds width, and lines are not right-filled with trailing padding — a blank
+// block separator is returned as a line with no spans. Code blocks and rules do
+// paint their full content width, because their background is part of the
+// design rather than incidental padding.
+func RenderSpans(theme ui.Theme, src string, width int, baseRole ui.Role, indent int) [][]Span {
+	lines := renderLines(theme, src, width, baseRole, indent)
+	if lines == nil {
+		return nil
+	}
+	out := make([][]Span, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, coalesce(l))
+	}
+	return out
+}
 
 // Render renders markdown source to a slice of already-styled terminal lines,
 // each fitting within width visible cells. baseRole is the default text role
 // (RoleText for answers, RoleMuted for reasoning). indent is a left pad in
 // cells applied to every line, continuation lines included.
 //
+// Unlike RenderSpans, every returned line is right-filled to exactly width
+// visible cells and carries ANSI escapes. Callers writing into a cell-grid
+// canvas want RenderSpans instead: styled strings cannot be re-split into
+// grapheme clusters safely.
+//
 // The parse is lenient: an unmatched inline delimiter or an unclosed fenced
 // code block renders as literal text until its closer arrives, guaranteeing
 // that earlier completed blocks never change as src grows.
 func Render(theme ui.Theme, src string, width int, baseRole ui.Role, indent int) []string {
+	lines := renderLines(theme, src, width, baseRole, indent)
+	if lines == nil {
+		return nil
+	}
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		styled, vis := renderCells(l)
+		if vis < width {
+			styled += strings.Repeat(" ", width-vis)
+		}
+		out = append(out, styled)
+	}
+	return out
+}
+
+// renderLines is the single layout pass behind both public renderers. It
+// returns one cell slice per output line, indent included, with a nil slice
+// standing in for the blank separator between blocks.
+func renderLines(theme ui.Theme, src string, width int, baseRole ui.Role, indent int) [][]cell {
 	if width <= 0 {
 		return nil
 	}
@@ -38,13 +104,27 @@ func Render(theme ui.Theme, src string, width int, baseRole ui.Role, indent int)
 	}
 	contentWidth := width - indent
 
-	blocks := parseBlocks(src)
-	var out []string
-	for _, b := range blocks {
+	var out [][]cell
+	for _, b := range parseBlocks(src) {
 		if len(out) > 0 {
-			out = append(out, blankLine(width))
+			out = append(out, nil) // blank separator between blocks
 		}
-		out = append(out, b.render(theme, contentWidth, baseRole, indent)...)
+		out = append(out, withIndent(indent, b.lines(theme, contentWidth, baseRole))...)
+	}
+	return out
+}
+
+// withIndent prepends a plain pad span of indent spaces to every line.
+func withIndent(indent int, lines [][]cell) [][]cell {
+	if indent <= 0 {
+		return lines
+	}
+	pad := cell{text: strings.Repeat(" ", indent), width: indent, key: keySpace, style: lipgloss.NewStyle()}
+	out := make([][]cell, len(lines))
+	for i, l := range lines {
+		row := make([]cell, 0, len(l)+1)
+		row = append(row, pad)
+		out[i] = append(row, l...)
 	}
 	return out
 }
@@ -165,128 +245,98 @@ func parseParagraph(lines []string, i int) (block, int) {
 	return block{kind: kindPara, text: strings.Join(parts, " ")}, i
 }
 
-// render turns one block into finished, indented, width-filled lines.
-func (b block) render(theme ui.Theme, contentWidth int, base ui.Role, indent int) []string {
+// lines lays one block out into per-line cell slices, without the indent.
+func (b block) lines(theme ui.Theme, contentWidth int, base ui.Role) [][]cell {
 	switch b.kind {
 	case kindHeading:
-		cells := layoutInline(theme, parseInline(b.text), ui.RolePrimary, true)
-		return renderCellLines(cells, contentWidth, indent)
+		return wrapWords(splitWords(layoutInline(theme, parseInline(b.text), ui.RolePrimary, true)), contentWidth)
 	case kindCode:
-		return renderCode(theme, b.code, contentWidth, indent)
+		return codeLines(theme, b.code, contentWidth)
 	case kindList:
-		return renderList(theme, b.items, contentWidth, base, indent)
+		return listLines(theme, b.items, contentWidth, base)
 	case kindQuote:
-		return renderQuote(theme, b.text, contentWidth, indent)
+		return quoteLines(theme, b.text, contentWidth)
 	case kindHR:
-		styled := theme.Style(ui.RoleMuted, nil).Render(strings.Repeat("─", contentWidth))
-		return []string{lineOut(indent, contentWidth, styled, contentWidth)}
+		rule := cell{
+			text:  strings.Repeat("─", contentWidth),
+			width: contentWidth,
+			key:   keyRule,
+			style: theme.Style(ui.RoleMuted, nil),
+		}
+		return [][]cell{{rule}}
 	default:
-		cells := layoutInline(theme, parseInline(b.text), base, false)
-		return renderCellLines(cells, contentWidth, indent)
+		return wrapWords(splitWords(layoutInline(theme, parseInline(b.text), base, false)), contentWidth)
 	}
 }
 
-// renderCellLines wraps inline cells to contentWidth and emits finished lines.
-func renderCellLines(cells []cell, contentWidth, indent int) []string {
-	wrapped := wrapWords(splitWords(cells), contentWidth)
-	out := make([]string, 0, len(wrapped))
-	for _, wl := range wrapped {
-		styled, vis := renderCells(wl)
-		out = append(out, lineOut(indent, contentWidth, styled, vis))
-	}
-	return out
-}
-
-// renderList emits one or more lines per item with a hanging continuation
-// indent aligned under the item text.
-func renderList(theme ui.Theme, items []listItem, contentWidth int, base ui.Role, indent int) []string {
-	var out []string
+// listLines lays out list items with a hanging continuation indent aligned
+// under the item text.
+func listLines(theme ui.Theme, items []listItem, contentWidth int, base ui.Role) [][]cell {
+	var out [][]cell
 	for _, it := range items {
 		mw := ui.Width(it.marker)
-		avail := contentWidth - mw
-		if avail < 1 {
-			avail = 1
-		}
+		avail := max(1, contentWidth-mw)
 		wrapped := wrapWords(splitWords(layoutInline(theme, parseInline(it.text), base, false)), avail)
-		if len(wrapped) == 0 {
-			wrapped = [][]cell{nil}
-		}
-		marker := theme.Style(ui.RoleAccent, nil).Render(it.marker)
+		marker := cell{text: it.marker, width: mw, key: keyMarker, style: theme.Style(ui.RoleAccent, nil)}
+		hang := cell{text: strings.Repeat(" ", mw), width: mw, key: keySpace, style: lipgloss.NewStyle()}
 		for idx, wl := range wrapped {
-			styled, vis := renderCells(wl)
 			prefix := marker
 			if idx > 0 {
-				prefix = strings.Repeat(" ", mw)
+				prefix = hang
 			}
-			out = append(out, lineOut(indent, contentWidth, prefix+styled, mw+vis))
+			out = append(out, append([]cell{prefix}, wl...))
 		}
 	}
 	return out
 }
 
-// renderQuote emits blockquote lines behind a muted left bar.
-func renderQuote(theme ui.Theme, text string, contentWidth, indent int) []string {
+// quoteLines lays out blockquote text behind a muted left bar.
+func quoteLines(theme ui.Theme, text string, contentWidth int) [][]cell {
 	const bar = "▏ "
 	bw := ui.Width(bar)
-	avail := contentWidth - bw
-	if avail < 1 {
-		avail = 1
-	}
-	barStyled := theme.Style(ui.RoleMuted, nil).Render(bar)
+	avail := max(1, contentWidth-bw)
+	barCell := cell{text: bar, width: bw, key: keyQuoteBar, style: theme.Style(ui.RoleMuted, nil)}
 	wrapped := wrapWords(splitWords(layoutInline(theme, parseInline(text), ui.RoleMuted, false)), avail)
-	if len(wrapped) == 0 {
-		wrapped = [][]cell{nil}
-	}
-	out := make([]string, 0, len(wrapped))
+	out := make([][]cell, 0, len(wrapped))
 	for _, wl := range wrapped {
-		styled, vis := renderCells(wl)
-		out = append(out, lineOut(indent, contentWidth, barStyled+styled, bw+vis))
+		out = append(out, append([]cell{barCell}, wl...))
 	}
 	return out
 }
 
-// renderCode emits verbatim code lines on an element background behind a muted
-// gutter. Code is never wrapped; over-wide lines are truncated with an ellipsis.
-func renderCode(theme ui.Theme, codeLines []string, contentWidth, indent int) []string {
+// codeLines lays out verbatim code on an element background behind a muted
+// gutter. Code is never wrapped; over-wide lines are truncated with an
+// ellipsis. The background deliberately fills the full content width.
+func codeLines(theme ui.Theme, code []string, contentWidth int) [][]cell {
 	bg := ui.RoleElement
+	style := theme.Style(ui.RoleMuted, &bg)
 	const gutter = "▏ "
 	gw := ui.Width(gutter)
 	avail := contentWidth - gw
-	gutterStyled := theme.Style(ui.RoleMuted, &bg).Render(gutter)
+	gutterCell := cell{text: gutter, width: gw, key: keyCode, style: style}
+	withGutter := true
 	if avail < 1 {
-		gutterStyled = ""
-		gw = 0
+		withGutter = false
 		avail = contentWidth
 	}
-	out := make([]string, 0, len(codeLines))
-	for _, raw := range codeLines {
-		code := strings.ReplaceAll(raw, "\t", "    ")
-		if ui.Width(code) > avail {
-			code = ui.Truncate(code, max(0, avail-1)) + "…"
+	out := make([][]cell, 0, len(code))
+	for _, raw := range code {
+		text := strings.ReplaceAll(raw, "\t", "    ")
+		if ui.Width(text) > avail {
+			text = ui.Truncate(text, max(0, avail-1)) + "…"
 		}
-		if vis := ui.Width(code); vis < avail {
-			code += strings.Repeat(" ", avail-vis)
+		if vis := ui.Width(text); vis < avail {
+			text += strings.Repeat(" ", avail-vis)
 		}
-		styled := theme.Style(ui.RoleMuted, &bg).Render(code)
-		out = append(out, lineOut(indent, contentWidth, gutterStyled+styled, gw+avail))
+		body := cell{text: text, width: avail, key: keyCode, style: style}
+		if withGutter {
+			out = append(out, []cell{gutterCell, body})
+			continue
+		}
+		out = append(out, []cell{body})
 	}
 	return out
 }
-
-// lineOut left-pads with indent spaces and right-fills styled content so the
-// finished line occupies exactly indent+contentWidth visible cells.
-func lineOut(indent, contentWidth int, styled string, vis int) string {
-	if vis < contentWidth {
-		styled += strings.Repeat(" ", contentWidth-vis)
-	}
-	if indent > 0 {
-		return strings.Repeat(" ", indent) + styled
-	}
-	return styled
-}
-
-// blankLine is a full-width spacer separating blocks.
-func blankLine(width int) string { return strings.Repeat(" ", width) }
 
 // isFence reports whether a trimmed line opens or closes a fenced code block.
 func isFence(t string) bool {
