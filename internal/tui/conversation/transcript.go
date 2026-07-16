@@ -16,6 +16,12 @@ var (
 )
 
 // Transcript tracks viewport behavior over the canonical projection.
+//
+// The viewport anchor is semantic, not positional: selectedID records the
+// stable projection.Block.ID the reader is looking at so a mid-list mutation
+// (a deleted pause/tool block) re-resolves Selected to the SAME block rather
+// than silently shifting a scrolled reader by one row. Selected remains the
+// derived render index; selectedID is the source of truth across Replace.
 type Transcript struct {
 	Projection                                        projection.Projection
 	Selected                                          int
@@ -24,25 +30,62 @@ type Transcript struct {
 	Query                                             string
 	Matches                                           []int
 	Compact, ShowReasoning, ShowTools, ShowTimestamps bool
+	selectedID                                        string
 }
 
 // NewTranscript starts at the semantic bottom.
 func NewTranscript(p projection.Projection) Transcript {
-	return Transcript{Projection: p, Selected: max(0, len(p.Blocks)-1), Follow: true, ShowReasoning: true, ShowTools: true}
+	t := Transcript{Projection: p, Selected: max(0, len(p.Blocks)-1), Follow: true, ShowReasoning: true, ShowTools: true}
+	return t.withSyncedID()
+}
+
+// SelectedID returns the stable projection block ID the viewport is anchored
+// to, or "" when the transcript is empty. The app layer persists this as the
+// restore ScrollBlockID.
+func (t Transcript) SelectedID() string { return t.selectedID }
+
+// SelectByID anchors the viewport to the block carrying id, disabling follow
+// (unless the block is the tail) so a restored reader is not yanked to the
+// bottom. A missing or unknown id is a no-op, preserving the current anchor.
+func (t Transcript) SelectByID(id string) Transcript {
+	if idx := indexOfBlockID(t.Projection.Blocks, id); idx >= 0 {
+		t.Selected = idx
+		t.Follow = idx == len(t.Projection.Blocks)-1
+		if t.Follow {
+			t.NewOutput = 0
+		}
+		return t.withSyncedID()
+	}
+	return t
 }
 
 // Replace applies a new projection without yanking a scrolled-away reader.
+//
+// A following transcript stays bottom-anchored. A scrolled reader keeps its
+// SEMANTIC offset: Selected re-resolves to the previously-anchored block ID in
+// the new slice regardless of whether the block count grew or shrank. When the
+// anchored block was deleted, selection falls back to the nearest surviving
+// neighbor (preferring the preceding block) instead of blindly keeping the old
+// index, which would point at a different block after a mid-list removal.
 func (t Transcript) Replace(p projection.Projection) Transcript {
-	old := len(t.Projection.Blocks)
-	t.Projection = p
-	if len(p.Blocks) > old {
-		if t.Follow {
-			t.Selected = max(0, len(p.Blocks)-1)
-			t.NewOutput = 0
-		} else {
-			t.NewOutput += len(p.Blocks) - old
-		}
+	old := t.Projection.Blocks
+	oldLen := len(old)
+	oldSelected := t.Selected
+	anchorID := ""
+	if oldSelected >= 0 && oldSelected < oldLen {
+		anchorID = old[oldSelected].ID
 	}
+	t.Projection = p
+	if t.Follow {
+		t.Selected = max(0, len(p.Blocks)-1)
+		t.NewOutput = 0
+	} else {
+		if len(p.Blocks) > oldLen {
+			t.NewOutput += len(p.Blocks) - oldLen
+		}
+		t.Selected = resolveAnchor(p.Blocks, old, anchorID, oldSelected)
+	}
+	t = t.withSyncedID()
 	return t.Search(t.Query)
 }
 
@@ -56,7 +99,7 @@ func (t Transcript) Scroll(delta int) Transcript {
 	if t.Follow {
 		t.NewOutput = 0
 	}
-	return t
+	return t.withSyncedID()
 }
 
 // Jump moves to the next/previous semantic block matching visible preferences.
@@ -69,7 +112,7 @@ func (t Transcript) Jump(direction int) Transcript {
 		if (b.Kind != "reasoning" || t.ShowReasoning) && (b.Kind != "tool" || t.ShowTools) {
 			t.Selected = i
 			t.Follow = i == len(t.Projection.Blocks)-1
-			return t
+			return t.withSyncedID()
 		}
 	}
 	return t
@@ -91,8 +134,91 @@ func (t Transcript) Search(query string) Transcript {
 	if len(t.Matches) > 0 {
 		t.Selected = t.Matches[0]
 		t.Follow = false
+		return t.withSyncedID()
 	}
 	return t
+}
+
+// NextMatch moves the selection to the next (direction > 0) or previous
+// (direction < 0) entry in Matches relative to the current Selected, clamping
+// at the ends like Jump (no wrap). It is a no-op when there is no active
+// search. Unlike Jump it walks the recorded match set rather than stepping
+// semantic blocks, so search traversal visits exactly the matched blocks.
+func (t Transcript) NextMatch(direction int) Transcript {
+	if direction == 0 || len(t.Matches) == 0 {
+		return t
+	}
+	target := -1
+	if direction > 0 {
+		for _, idx := range t.Matches {
+			if idx > t.Selected {
+				target = idx
+				break
+			}
+		}
+		if target < 0 {
+			target = t.Matches[len(t.Matches)-1]
+		}
+	} else {
+		for i := len(t.Matches) - 1; i >= 0; i-- {
+			if t.Matches[i] < t.Selected {
+				target = t.Matches[i]
+				break
+			}
+		}
+		if target < 0 {
+			target = t.Matches[0]
+		}
+	}
+	t.Selected = target
+	t.Follow = target == len(t.Projection.Blocks)-1
+	return t.withSyncedID()
+}
+
+// withSyncedID reconciles selectedID with the block currently at Selected.
+func (t Transcript) withSyncedID() Transcript {
+	if t.Selected >= 0 && t.Selected < len(t.Projection.Blocks) {
+		t.selectedID = t.Projection.Blocks[t.Selected].ID
+	} else {
+		t.selectedID = ""
+	}
+	return t
+}
+
+// resolveAnchor returns the index in newBlocks that preserves the reader's
+// semantic offset. It prefers the exact anchor block by ID; if that block was
+// deleted it falls back to the nearest surviving neighbor, scanning backward
+// (preceding blocks) before forward, and finally clamps the old index into the
+// new range.
+func resolveAnchor(newBlocks, oldBlocks []projection.Block, anchorID string, oldSelected int) int {
+	if idx := indexOfBlockID(newBlocks, anchorID); idx >= 0 {
+		return idx
+	}
+	for i := oldSelected - 1; i >= 0 && i < len(oldBlocks); i-- {
+		if idx := indexOfBlockID(newBlocks, oldBlocks[i].ID); idx >= 0 {
+			return idx
+		}
+	}
+	for i := oldSelected + 1; i < len(oldBlocks); i++ {
+		if idx := indexOfBlockID(newBlocks, oldBlocks[i].ID); idx >= 0 {
+			return idx
+		}
+	}
+	return max(0, min(len(newBlocks)-1, oldSelected))
+}
+
+// indexOfBlockID returns the index of the block carrying id, or -1. An empty id
+// never matches.
+func indexOfBlockID(blocks []projection.Block, id string) int {
+	if id == "" {
+		return -1
+	}
+	for i := range blocks {
+		if blocks[i].ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // ExportOptions independently selects detail without mutating display preferences.
