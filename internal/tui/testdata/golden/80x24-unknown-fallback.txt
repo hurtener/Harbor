@@ -1,11 +1,6 @@
 
-
-
-
-
-
-
-
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
      ◆  Inspecting Runtime posture
 
@@ -14,8 +9,13 @@
 
   ┃  !  Operator approval required
   ┃  Operator approval required
-  ?  Unknown event · safe metadata-only fallback
 
+
+
+
+
+
+  ?  Unknown event · safe metadata-only fallback
   ┃  Composer idle · attach a Runtime
   ┃
   ┃

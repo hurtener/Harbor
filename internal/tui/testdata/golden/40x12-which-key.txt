@@ -1,6 +1,6 @@
 
-
-
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
   ┃  ctrl+x ?  Keyboard help
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x t  Switch theme

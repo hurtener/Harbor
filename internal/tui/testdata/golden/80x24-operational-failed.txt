@@ -1,22 +1,22 @@
 
-
-
-
-
-
-
-
-
-
-
-
-
+  ▛▀▖  Harbor  ·  Development Runtime
+  ▙▄▘  fixture · session session-alpha
 
   ┃  Summarize the deployment status.
 
      The deployment completed successfully.
-  ×  Session failed · terminal error state, not resumable
 
+
+
+
+
+
+
+
+
+
+
+  ×  Session failed · terminal error state, not resumable
   ┃  Ask Harbor...
   ┃  fixture
   ╹──────────────────────────────────────────────────────────────────────────

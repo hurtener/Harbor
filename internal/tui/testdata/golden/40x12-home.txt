@@ -1,8 +1,8 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
 
-                Harbor
-
-      Attach a Runtime to begin.
+       Attach a Runtime to begin.
 
   ┃  Composer idle · attach a Runtime
   ┃

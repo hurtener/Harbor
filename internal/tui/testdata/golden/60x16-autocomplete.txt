@@ -1,6 +1,6 @@
 
-
-     ◆  Inspecting Runtime posture
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
   ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x ?  Keyboard help

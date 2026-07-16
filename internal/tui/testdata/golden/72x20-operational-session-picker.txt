@@ -1,17 +1,17 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
+  ┃  Summarize the deployment status.
 
-
-
-
-          Sessions
+     T    Sessions
          Search:
         ● Current session · running
           Incident review · completed · Resume on next canonical
 
 
         ↑/↓ move · enter select · esc close
-     The deployment completed successfully.
+
 
   ┃  Ask Harbor...
   ┃

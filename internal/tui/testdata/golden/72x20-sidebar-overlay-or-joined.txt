@@ -1,16 +1,16 @@
 
-                                       Sidebar context visible
-                                RUNTIME CONTEXT
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTU  RUNTIME CONTEXT
 
-                                Session
+     ◆  Inspecting Runtime pos  Session
                                 01K0HARBORFIXTURE0000000000
-     ◆  Inspecting Runtime pos
-                                Status
-     ✓  runtime.health  succee  running
-       Runtime health snapshot
-
+     ✓  runtime.health  succee
+       Runtime health snapshot  Status
+                                running
   ┃  !  Operator approval requ
   ┃  Operator approval require
+
+
 
   ┃  Composer idle · attach a
   ┃

@@ -56,8 +56,10 @@ type interactionStore interface {
 type RuntimeOptions struct {
 	Compact, ReducedMotion  bool
 	Fingerprint, ExportPath string
-	State                   conversation.InteractionState
-	Store                   interactionStore
+	// BaseURL is the attach target, shown on the session banner.
+	BaseURL string
+	State   conversation.InteractionState
+	Store   interactionStore
 }
 
 type attachMsg struct{ err error }
@@ -132,8 +134,6 @@ type RuntimeModel struct {
 	followupSubmissions              map[string]composer.Submission
 	identity                         types.IdentityScope
 	localTurns                       []localTurn
-	flushed, anchored                map[string]bool
-	tookOver                         bool
 	generation                       uint64
 	lastProjectionSequence           uint64
 	inspectEpoch                     uint64
@@ -154,7 +154,8 @@ func NewRuntimeModel(ctx context.Context, width, height int, theme ui.Theme, con
 	id := controller.Identity()
 	shell := NewOperationalModel(width, height, theme, options.ReducedMotion, projection.Projection{}).WithState(State{Route: "session", Connection: "connecting", Composer: ComposerFocused, SidebarOpen: options.State.SidebarOpen})
 	editor := composer.New().RestoreLocal(options.State.History, options.State.Stash).SetText(options.State.Draft)
-	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, expandedReasoning: stringSet(options.State.ExpandedReasoning), expandedTools: stringSet(options.State.ExpandedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id, renderers: renderers.Builtins(), pending: map[string]ActionIntent{}, taskCursors: map[int]types.TaskListCursor{1: {}}, flushed: map[string]bool{}, anchored: map[string]bool{}}
+	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, expandedReasoning: stringSet(options.State.ExpandedReasoning), expandedTools: stringSet(options.State.ExpandedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id, renderers: renderers.Builtins(), pending: map[string]ActionIntent{}, taskCursors: map[int]types.TaskListCursor{1: {}}}
+	m.shell.state.BaseURL = options.BaseURL
 	m.syncComposer()
 	m.syncAccess()
 	return m
@@ -225,7 +226,7 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.pending) > 0 {
 			inspect = m.inspectCmd()
 		}
-		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp(), inspect, m.flushCmd())
+		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp(), inspect)
 	case CommandMsg:
 		return m.runCommand(msg.ID)
 	case sessionsMsg:
@@ -295,7 +296,7 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncProjection()
 		}
 		m.syncComposer()
-		return m, tea.Batch(m.requestPersist(), m.flushCmd())
+		return m, m.requestPersist()
 	case followupMsg:
 		if msg.err != nil {
 			m.followups = m.followups.Fail(msg.id, msg.err)
@@ -335,27 +336,6 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshAutocomplete()
 		m.syncComposer()
 		return m, m.requestPersist()
-	case tea.WindowSizeMsg:
-		next, cmd := m.forward(message)
-		runtime, ok := next.(RuntimeModel)
-		if !ok {
-			return next, cmd
-		}
-		if !runtime.tookOver {
-			// Claim the viewport on launch, the way a terminal-native agent
-			// does: scroll whatever the shell had on screen into scrollback,
-			// clear, and open with the wordmark — the app owns what is visible,
-			// while the operator's history stays reachable above.
-			runtime.tookOver = true
-			push := strings.Repeat("\n", max(0, msg.Height-2))
-			banner := runtime.welcomeBanner()
-			cmd = tea.Batch(cmd, tea.Sequence(
-				tea.Println(push),
-				func() tea.Msg { return tea.ClearScreen() },
-				tea.Println(banner),
-			))
-		}
-		return runtime, cmd
 	case tea.KeyPressMsg:
 		return m.updateKey(msg)
 	}
@@ -470,23 +450,21 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down":
 		m.editor = m.editor.History(1)
 	case "pgup":
-		m.transcript = m.transcript.Scroll(-1)
-		m.syncProjection()
+		m.shell.scrollTranscript(-m.shell.transcriptPage())
 	case "pgdown":
-		m.transcript = m.transcript.Scroll(1)
-		m.syncProjection()
+		m.shell.scrollTranscript(m.shell.transcriptPage())
 	case "home":
-		m.transcript = m.transcript.Scroll(-len(m.transcript.Projection.Blocks))
-		m.syncProjection()
+		m.shell.scrollTranscriptTo(0)
 	case "end":
-		m.transcript = m.transcript.Scroll(len(m.transcript.Projection.Blocks))
-		m.syncProjection()
+		m.shell.scrollTranscriptTo(-1)
 	case "alt+j":
 		m.transcript = m.transcript.Jump(1)
 		m.syncProjection()
+		m.ensureSelectedVisible()
 	case "alt+k":
 		m.transcript = m.transcript.Jump(-1)
 		m.syncProjection()
+		m.ensureSelectedVisible()
 	case "shift+left":
 		m.editor = m.editor.Move(-1, true)
 	case "shift+right":
@@ -585,30 +563,9 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 	case "export":
 		return m, m.exportCmd()
 	case "reasoning":
-		// On the conversation surface scrollback is immutable, so "expand" means
-		// print the newest thought's body now. The toggle semantics remain for
-		// the full-screen inspector routes.
-		if m.shell.state.Route == "session" {
-			if unit, ok := m.latestBodyUnit("reasoning"); ok {
-				return m, tea.Println(unit)
-			}
-			m.shell.state.ToastOpen, m.shell.state.Toast = true, "No reasoning recorded yet"
-			return m, nil
-		}
-		m.toggleSelected(m.expandedReasoning, "reasoning")
-		m.syncProjection()
-		return m, m.requestPersist()
+		return m.toggleWithAnchor(m.expandedReasoning, "reasoning")
 	case "tool-detail":
-		if m.shell.state.Route == "session" {
-			if unit, ok := m.latestBodyUnit("tool"); ok {
-				return m, tea.Println(unit)
-			}
-			m.shell.state.ToastOpen, m.shell.state.Toast = true, "No tool detail recorded yet"
-			return m, nil
-		}
-		m.toggleSelected(m.expandedTools, "tool")
-		m.syncProjection()
-		return m, m.requestPersist()
+		return m.toggleWithAnchor(m.expandedTools, "tool")
 	case "timestamps":
 		m.transcript.ShowTimestamps = !m.transcript.ShowTimestamps
 		m.syncProjection()
@@ -1504,8 +1461,10 @@ func (m RuntimeModel) updateSearch(key string) (tea.Model, tea.Cmd) {
 		}
 	case "up", "ctrl+p":
 		m.transcript = m.transcript.NextMatch(-1)
+		m.ensureSelectedVisible()
 	case "down", "ctrl+n":
 		m.transcript = m.transcript.NextMatch(1)
+		m.ensureSelectedVisible()
 	default:
 		if len([]rune(key)) == 1 {
 			m.searchQuery += key
@@ -1671,6 +1630,8 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 	} else if model := strings.TrimSpace(m.runtime.Posture.LLM.Model); model != "" {
 		m.shell.state.Model = model
 	}
+	m.shell.state.Version = strings.TrimSpace(m.runtime.Posture.Info.BuildVersion)
+	m.shell.state.DisplayName = strings.TrimSpace(m.runtime.Posture.Info.DisplayName)
 	switch update.State {
 	case conversation.StateLive:
 		// A live stream ends startup. Without this the shell's startup staging
@@ -1799,26 +1760,37 @@ func (m *RuntimeModel) syncProjection() {
 		}
 		filtered = append(filtered, block)
 	}
-	capacity := max(1, (m.shell.height-14)/4)
-	selected := 0
-	for i, block := range filtered {
-		if block.ID == selectedID {
-			selected = i
-			break
-		}
-	}
-	start := max(0, selected-capacity+1)
-	if m.transcript.Follow {
-		start = max(0, len(filtered)-capacity)
-	}
-	end := min(len(filtered), start+capacity)
-	p.Blocks = append([]projection.Block(nil), filtered[start:end]...)
+	// The shell receives the full filtered conversation; the session surface
+	// windows it by LINES at render time (scroll state on the shell), so no
+	// block-count heuristic ever hides content.
+	p.Blocks = filtered
 	m.shell.projection = cloneProjection(p)
 	m.shell.state.HasTranscript = len(m.transcript.Projection.Blocks) > 0
 	m.shell.state.SelectedBlockID = selectedID
 	// The conversation lives in native scrollback: the terminal owns scrolling,
 	// new output prints directly, and a "scrolled away" banner or new-output
 	// counter would be noise about a pager that no longer exists.
+}
+
+// toggleWithAnchor flips a collapse view-mode while keeping the reader's view
+// anchored: block heights above the window change, so the topmost visible
+// block is captured before the reflow and restored after.
+func (m RuntimeModel) toggleWithAnchor(set map[string]bool, kind string) (tea.Model, tea.Cmd) {
+	id, delta, anchored := m.shell.scrollAnchor()
+	m.toggleSelected(set, kind)
+	m.syncProjection()
+	if anchored {
+		m.shell.restoreScrollAnchor(id, delta)
+	}
+	return m, m.requestPersist()
+}
+
+// ensureSelectedVisible scrolls the transcript window to the semantically
+// selected block after a jump or search-match move.
+func (m *RuntimeModel) ensureSelectedVisible() {
+	if id := m.transcript.SelectedID(); id != "" {
+		m.shell.ensureBlockVisible(id)
+	}
 }
 
 // toggleSelected expands or collapses every block of a kind at once: if any is
@@ -2011,27 +1983,8 @@ func (m RuntimeModel) exportCmd() tea.Cmd {
 	}
 }
 func (m RuntimeModel) View() tea.View {
-	title := "Harbor TUI · " + m.controller.Identity().Session
-	if m.shell.state.Route == "session" {
-		// The conversation lives in the terminal's normal buffer: completed
-		// blocks are printed into native scrollback and only the live region is
-		// managed, so selection, copy, and scrolling are the terminal's own.
-		content, cursorX, cursorY := m.inlineView()
-		view := tea.NewView(content)
-		view.AltScreen = false
-		view.ReportFocus = true
-		view.WindowTitle = title
-		if !m.shell.quit && !m.shell.state.CursorHidden && m.shell.state.Composer != ComposerDisabled {
-			if _, modal := m.shell.focus.Top(); !modal {
-				view.Cursor = tea.NewCursor(cursorX, cursorY)
-			}
-		}
-		return view
-	}
-	// Runtime inspection routes own the whole surface: alternate screen.
 	view := m.shell.View()
-	view.AltScreen = true
-	view.WindowTitle = title
+	view.WindowTitle = "Harbor TUI · " + m.controller.Identity().Session
 	return view
 }
 

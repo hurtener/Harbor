@@ -1,18 +1,18 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
+  ┃  Summarize the deployment status.
 
-
-
-
-          Start Fresh
+     T    Start Fresh
          Search:
 
 
         ↑/↓ move · enter select · esc close
 
-     The deployment completed successfully.
-  ×  Session erased · terminal, Start Fresh required
 
+
+  ×  Session erased · terminal, Start Fresh required
   ┃  Ask Harbor...
   ┃  disabled
   ╹──────────────────────────────────────────────────────────────────

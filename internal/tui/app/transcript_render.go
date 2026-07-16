@@ -336,46 +336,6 @@ func (m Model) placeBlock(c *canvas, x, y, width int, lb laidBlock) {
 	}
 }
 
-// renderTranscript lays out the windowed blocks and places the newest that fit
-// anchored to the bottom of the region [top, bottom], so streamed output is
-// always visible just above the composer and short transcripts sit calmly with
-// empty space above rather than pinned to the top.
-func (m Model) renderTranscript(c *canvas, top, bottom, width int) {
-	blocks := m.projection.Blocks
-	if len(blocks) == 0 || bottom < top {
-		return
-	}
-	laid := make([]laidBlock, len(blocks))
-	for i, b := range blocks {
-		laid[i] = m.layoutBlock(b, width, b.ID == m.state.SelectedBlockID)
-	}
-	avail := bottom - top + 1
-	start, used := 0, 0
-	for i := len(blocks) - 1; i >= 0; i-- {
-		h := laid[i].height
-		if h == 0 {
-			continue
-		}
-		step := h
-		if used > 0 {
-			step += blockGap
-		}
-		if used+step > avail && used > 0 {
-			start = i + 1
-			break
-		}
-		used += step
-	}
-	y := max(top, bottom+1-used)
-	for i := start; i < len(blocks); i++ {
-		if laid[i].height == 0 {
-			continue
-		}
-		m.placeBlock(c, ui.OuterPadding, y, width, laid[i])
-		y += laid[i].height + blockGap
-	}
-}
-
 // lifecycleGlyph maps a status to a semantic glyph + role. The glyph vocabulary
 // is the contract that carries state meaning without colour (§8 monochrome), so
 // it stays stable: ✓ success, × failure, ! attention, ◆ in-flight.

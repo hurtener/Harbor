@@ -87,6 +87,25 @@ func (c *canvas) styledBlock(x, y int, block string, body, rule lipgloss.Style) 
 	}
 }
 
+// blit copies every cell of src onto c at (x, y), clipping to c's bounds. It is
+// how a windowed region (the scrolled transcript) rendered into its own
+// sub-canvas lands on the screen canvas.
+func (c *canvas) blit(src canvas, x, y int) {
+	for sy := range src.rows {
+		dy := y + sy
+		if dy < 0 || dy >= c.height {
+			continue
+		}
+		for sx := range src.rows[sy] {
+			dx := x + sx
+			if dx < 0 || dx >= c.width {
+				continue
+			}
+			c.rows[dy][dx] = src.rows[sy][sx]
+		}
+	}
+}
+
 // rowsTrimmed serializes each row with trailing unstyled blanks removed, for
 // content that flows into the terminal's normal buffer: full-width padded rows
 // would pollute native selection and copy with trailing spaces.

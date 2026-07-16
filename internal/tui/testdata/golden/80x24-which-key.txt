@@ -1,11 +1,11 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
+     ◆  Inspecting Runtime posture
 
-
-
-
-
-
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
   ┃  ctrl+x ?  Keyboard help
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x t  Switch theme

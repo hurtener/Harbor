@@ -251,9 +251,11 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	// land. (The inline renderer shifts rows on close without re-emitting
 	// unchanged bytes, so there is nothing textual to wait for here.)
 	validReplacement := mintPTYToken(t, stack, second.Session)
-	mark = len(session.snapshot())
 	session.command(t, 'i')
-	session.waitContainsAfter(t, mark, "memory only")
+	// The reopened modal's title occupies the same cells as the one that just
+	// closed, so when frames coalesce the cell-diff renderer never re-emits it.
+	// Assert the reopen by its OUTCOME instead: the pasted replacement token is
+	// accepted through the modal and the stream returns to live.
 	session.write(t, "\x1b[200~"+validReplacement+"\x1b[201~")
 	mark = len(session.snapshot())
 	session.key(t, '\r', 1)
@@ -873,16 +875,10 @@ func (s *ptySession) assertRestored(t *testing.T) {
 func (s *ptySession) assertOperationalRestored(t *testing.T) {
 	t.Helper()
 	output := s.snapshot()
-	for _, sequence := range []string{"\x1b[?25h", "\x1b[?2004h", "\x1b[?2004l", "\x1b[?1004h", "\x1b[?1004l", "\x1b[>4;2m", "\x1b[>4m", "\x1b[=1;1u", "\x1b[=0;1u"} {
+	for _, sequence := range []string{"\x1b[?1049h", "\x1b[?25h", "\x1b[?1049l", "\x1b[?2004h", "\x1b[?2004l", "\x1b[?1004h", "\x1b[?1004l", "\x1b[>4;2m", "\x1b[>4m", "\x1b[=1;1u", "\x1b[=0;1u"} {
 		if !strings.Contains(output, sequence) {
 			t.Errorf("operational terminal sequence %q missing from %q", sequence, output)
 		}
-	}
-	// The conversation renders inline, so the alternate screen is entered only
-	// when a Runtime inspection route was visited — but entering it obliges
-	// restoring it.
-	if strings.Contains(output, "\x1b[?1049h") && !strings.Contains(output, "\x1b[?1049l") {
-		t.Errorf("alternate screen entered but never restored in %q", output)
 	}
 }
 

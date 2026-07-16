@@ -1,13 +1,13 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-
-     ✓  runtime.health  succeeded
        Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required
-  ○  Session completed · resumable on a future turn
 
+  ○  Session completed · resumable on a future turn
   ┃  Composer idle · attach a Runtime
   ┃
   ┃

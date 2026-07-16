@@ -1,6 +1,6 @@
 
-
-
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
 
       Start Fresh
@@ -8,7 +8,7 @@
 
 
     ↑/↓ move · enter select · esc close
-
+  ×  Session erased · terminal, Start Fresh required
   ┃  Ask Harbor...
   ┃  disabled
   ╹──────────────────────────────────────────────────────

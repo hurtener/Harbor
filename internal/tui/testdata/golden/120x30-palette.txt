@@ -1,26 +1,26 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
+     ◆  Inspecting Runtime posture
 
-
-
-
-
-
+     ✓  runtime.health  succeeded
+       Runtime h
                     Commands
-                   Search:
-                  ● Command palette · Find an available action
+  ┃  !  Operator   Search:
+  ┃  Operator ap  ● Command palette · Find an available action
                     Toggle runtime context · Show the fixed context sidebar
                     Keyboard help · Show all reachable commands
                     Quit · Restore the terminal and exit
                     Attach file · Unavailable: requires a live authenticated Runtime attachment
                     Cancel queued follow-up · Unavailable: no local follow-up is queued
-     ◆  Inspecti    Remove attachment · Unavailable: no attachment is selected
+                    Remove attachment · Unavailable: no attachment is selected
                     Restore stashed draft · Pop the newest local draft
-     ✓  runtime.
-       Runtime h
+
+
                   ↑/↓ move · enter select · esc close
-  ┃  !  Operator approval required
-  ┃  Operator approval required
+
+
 
   ┃  Composer idle · attach a Runtime
   ┃

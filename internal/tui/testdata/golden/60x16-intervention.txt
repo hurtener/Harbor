@@ -1,13 +1,13 @@
 
-
-
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
   ┃  !  Operator approval required
   ┃  Operator approval required
+
      [ Approve unavailable ]
      [ Reject unavailable ]
   !  Operator approval required
-
   ┃  Composer idle · attach a Runtime
   ┃
   ┃

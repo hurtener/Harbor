@@ -1,18 +1,18 @@
 
+  ▛▀▖  Harbor  ·  Development Runtime
+  ▙▄▘  fixture · session session-alpha
 
-
-
-
-
-
-
-
-
-
+  ┃  Summarize the deployment status.
 
      The deployment completed successfully.
-  !  Dropped event window · output may be incomplete
 
+
+
+
+
+
+
+  !  Dropped event window · output may be incomplete
   ┃  Ask Harbor...
   ┃  fixture
   ╹──────────────────────────────────────────────────────────────────

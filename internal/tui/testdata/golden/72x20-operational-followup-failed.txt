@@ -1,18 +1,18 @@
 
-                                       Follow-up failed · retry or dis
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
-
-
-
-
-
-
-
-
-
+  ┃  Summarize the deployment status.
 
      The deployment completed successfully.
 
+
+
+
+
+
+
+                                  Follow-up failed · retry or discard
   ┃  Ask Harbor...
   ┃
   ╹──────────────────────────────────────────────────────────────────

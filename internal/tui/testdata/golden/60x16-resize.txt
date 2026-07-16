@@ -1,13 +1,13 @@
 
-                           Resize applied
-     ◆  Inspecting Runtime posture
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-     ✓  runtime.health  succeeded
        Runtime health snapshot received
 
   ┃  !  Operator approval required
   ┃  Operator approval required
 
+                                           Resize applied
   ┃  Composer idle · attach a Runtime
   ┃
   ┃

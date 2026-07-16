@@ -1,10 +1,10 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
+  ┃  Summarize the deployment status.
 
-
-
-
-
+     The
              Runtime actions
             Search:
            ● Delete artifact · Unavailable: no artifact selected
@@ -13,9 +13,9 @@
              Submit OAuth intervention · Unavailable: no unresolved
              Reject intervention · Unavailable: no unresolved Pause
              Resume intervention · Unavailable: no unresolved Pause
-  ┃  Summ    Delete session · sessions.delete · capability session_
+             Delete session · sessions.delete · capability session_
              Cancel task · Unavailable: no active task target
-     The
+
 
   ┃  Ask   ↑/↓ move · enter select · esc close
   ┃

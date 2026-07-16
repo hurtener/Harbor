@@ -1,6 +1,6 @@
 
-
-
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
   ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x ?  Keyboard help

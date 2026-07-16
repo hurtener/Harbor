@@ -1,12 +1,12 @@
 
-                           Sidebar context visible
-     ◆  Inspecting  RUNTIME CONTEXT
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K  RUNTIME CONTEXT
 
-     ✓  runtime.he  Session
-       Runtime hea  01K0HARBORFIXTURE0000000000
-
-  ┃  !  Operator a  Status
-  ┃  Operator appr  running
+       Runtime hea  Session
+                    01K0HARBORFIXTURE0000000000
+  ┃  !  Operator a
+  ┃  Operator appr  Status
+                    running
 
   ┃  Composer idle
   ┃

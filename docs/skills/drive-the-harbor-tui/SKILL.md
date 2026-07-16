@@ -113,15 +113,16 @@ complete authenticated attach join before committing it in memory; enter
 + `Alt+Enter` or `Shift+Enter`: insert a newline.
 + `Ctrl+A` / `Ctrl+E`: line start/end; `Ctrl+B` / `Ctrl+F`: move left/right.
 + `Ctrl+_` / `Alt+_`: undo/redo.
-+ Scrolling is the terminal's own: completed turns live in native scrollback,
-  so use the terminal's scroll, selection, and copy directly.
++ `PageUp` / `PageDown` scroll the conversation by lines; `Home` / `End` jump to
+  the top / newest output (End re-engages tail-following). While scrolled away,
+  new output never moves your view.
 + `Alt+J` / `Alt+K`: next/previous semantic transcript block.
 + `Ctrl+X F`: filter/search transcript blocks; `Ctrl+X X`: export Markdown.
 + `Ctrl+X Y`: timestamps.
 + `Ctrl+X B` / `Ctrl+X P`: stash/restore the local draft.
 + `Ctrl+X A`: upload `path|disposition`; `Ctrl+X E` removes and `Ctrl+X U` retries.
-+ `Ctrl+X R` / `Ctrl+X O`: print the newest thought / tool detail expanded into
-  scrollback (they flush collapsed by default); `Ctrl+X M`: reduced motion.
++ `Ctrl+X R` / `Ctrl+X O`: expand or collapse all reasoning / tool detail
+  (collapsed by default); `Ctrl+X M`: reduced motion.
 + `Ctrl+P`: command palette; `Ctrl+X S`: context sidebar.
 + `/quit`, `Ctrl+C`, or `Ctrl+D`: persist interaction state, restore the terminal, and exit. A plain `q` remains composer text.
 
@@ -151,11 +152,11 @@ rows, transcript content, or credentials.
 + Replay gaps, retention truncation, partial counters, disconnects, and partial
   blocks remain visibly labelled.
 
-The conversation always renders inline in the terminal's normal buffer:
-completed turns flow into native scrollback (select, copy, and scroll with the
-terminal itself), and only the live streaming region and composer are managed.
-The Runtime inspection routes (`F2`–`F9`) use the alternate screen. The
-`--compact` flag is deprecated and has no effect.
+The TUI owns the whole terminal on the alternate screen: a persistent banner
+at the top (product, version, model, session, attach URL), the conversation
+flowing top-down beneath it, and the composer pinned at the bottom. Quitting
+restores the terminal exactly as it was. The `--compact` flag is deprecated
+and has no effect.
 
 Session commands are keyboard-driven: `Ctrl+X L` searches/switches, `Ctrl+X N`
 starts fresh, `Ctrl+R` renames, and `Ctrl+X D` confirms canonical erasure.

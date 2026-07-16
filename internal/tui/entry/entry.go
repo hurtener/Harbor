@@ -184,7 +184,7 @@ func Run(ctx context.Context, opts Options) error {
 	defer func() { _ = controller.Close() }()
 	defer updates.Close()
 	exportPath := filepath.Join(filepath.Dir(statePath), "exports", identity.Session+".md")
-	model := app.NewRuntimeModel(ctx, 80, 24, theme, controller, updates, app.RuntimeOptions{Compact: interaction.Compact, ReducedMotion: interaction.ReducedMotion, Fingerprint: fingerprint, ExportPath: exportPath, State: interaction, Store: &store})
+	model := app.NewRuntimeModel(ctx, 80, 24, theme, controller, updates, app.RuntimeOptions{Compact: interaction.Compact, ReducedMotion: interaction.ReducedMotion, Fingerprint: fingerprint, ExportPath: exportPath, BaseURL: opts.BaseURL, State: interaction, Store: &store})
 	// When the caller did not override the streams, mount on the process
 	// terminal so Bubble Tea performs its own TTY discovery. Handing it explicit
 	// os.Stdin/os.Stdout suppresses that: the alternate screen never learns the

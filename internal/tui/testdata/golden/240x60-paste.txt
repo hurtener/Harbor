@@ -1,56 +1,56 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000                                                                                                                                                            RUNTIME CONTEXT
 
-                                                                                                                                                                                                      RUNTIME CONTEXT
-
-                                                                                                                                                                                                      Session
+     ◆  Inspecting Runtime posture                                                                                                                                                                    Session
                                                                                                                                                                                                       01K0HARBORFIXTURE0000000000
-
-                                                                                                                                                                                                      Status
-                                                                                                                                                                                                      running
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-     ◆  Inspecting Runtime posture
-
      ✓  runtime.health  succeeded
-       Runtime health snapshot received
-
+       Runtime health snapshot received                                                                                                                                                               Status
+                                                                                                                                                                                                      running
   ┃  !  Operator approval required
   ┃  Operator approval required
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   ┃  one ↵ two ↵ threeone ↵ two ↵ three █
   ┃

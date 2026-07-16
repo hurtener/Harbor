@@ -1,10 +1,10 @@
 
-       Search: deployment · 2 matches
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
-     The deployment completed
-     successfully.
+
   ↑  Scrolled away · new output conti
-
+       Search: deployment · 2 matches
   ┃  Ask Harbor...
   ┃
   ╹──────────────────────────────────

@@ -1,10 +1,10 @@
 
-                                                                                                                               Search: deployment · 2 matches
-                                                                                                                      RUNTIME CONTEXT
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha                                                                                          RUNTIME CONTEXT
 
-                                                                                                                      Session
+  ┃  Summarize the deployment status.                                                                                 Session
                                                                                                                       session-alpha
-
+     The deployment completed successfully.
                                                                                                                       Status
                                                                                                                       running
 
@@ -28,11 +28,11 @@
 
 
 
-  ┃  Summarize the deployment status.
 
-     The deployment completed successfully.
+
+
   ↑  Scrolled away · new output continues below
-
+                                                                                     Search: deployment · 2 matches
   ┃  Ask Harbor...
   ┃
   ╹───────────────────────────────────────────────────────────────────────────────────────────────────────────────

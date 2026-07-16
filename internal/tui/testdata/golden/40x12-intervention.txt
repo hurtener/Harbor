@@ -1,12 +1,12 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
 
-     ✓  runtime.health  succeeded
-       Runtime health snapshot
        received
 
   ┃  !  Operator approval required
   ┃  Operator approval required
+
      [ Approve unavailable ]
      [ Reject unavailable ]
-  !  Operator approval required
   disconnected   ·   ctrl+p Command pa

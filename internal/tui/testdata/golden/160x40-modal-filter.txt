@@ -1,14 +1,14 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000                                                                            RUNTIME CONTEXT
 
-                                                                                                                      RUNTIME CONTEXT
-
-                                                                                                                      Session
+     ◆  Inspecting Runtime posture                                                                                    Session
                                                                                                                       01K0HARBORFIXTURE0000000000
-
-                                                                                                                      Status
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received                                                                               Status
                                                                                                                       running
-
-
+  ┃  !  Operator approval required
+  ┃  Operator approval required
                                                       Commands
                                                      Search: theme
                                                     ● Switch theme · Choose dark, light, or automatic mode
@@ -24,13 +24,13 @@
 
 
 
-     ◆  Inspecting Runtime posture
 
-     ✓  runtime.health  succeeded
-       Runtime health snapshot received
 
-  ┃  !  Operator approval required
-  ┃  Operator approval required
+
+
+
+
+
 
   ┃  Composer idle · attach a Runtime
   ┃

@@ -80,6 +80,10 @@ type State struct {
 	// Model is the Runtime's reported LLM model. Empty when the Runtime has not
 	// advertised one — never guessed.
 	Model string
+	// Version / DisplayName / BaseURL feed the session banner. Version and
+	// DisplayName come from the Runtime's advertised RuntimeInfo after the
+	// post-attach inspect; BaseURL is the attach target. Empty until reported.
+	Version, DisplayName, BaseURL string
 }
 
 type startupStage uint8
@@ -122,6 +126,10 @@ type Model struct {
 	startupMinimumDone bool
 	quit               bool
 	operational        bool
+	// scrollLine / followTail drive the session transcript window: line-granular
+	// scrolling that follows the tail until the operator scrolls away.
+	scrollLine int
+	followTail bool
 	// themeLocked marks an explicit operator theme choice, which the terminal's
 	// reported background must not override.
 	themeLocked bool
@@ -129,7 +137,7 @@ type Model struct {
 
 // NewModel constructs the detached terminal foundation.
 func NewModel(width, height int, theme ui.Theme, reducedMotion bool, p projection.Projection) Model {
-	return Model{width: max(1, width), height: max(1, height), theme: theme, reducedMotion: reducedMotion, registry: DefaultRegistry(), focus: NewFocusStack("composer"), projection: cloneProjection(p), state: State{Route: "session", Connection: "disconnected", Composer: ComposerIdle}, startup: startupWaiting}
+	return Model{width: max(1, width), height: max(1, height), theme: theme, reducedMotion: reducedMotion, registry: DefaultRegistry(), focus: NewFocusStack("composer"), projection: cloneProjection(p), state: State{Route: "session", Connection: "disconnected", Composer: ComposerIdle}, startup: startupWaiting, followTail: true}
 }
 
 // NewOperationalModel constructs a shell whose chrome is derived only from
@@ -240,8 +248,14 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	m = m.clone()
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
+		// Resize reflows every block, so re-anchor a scrolled-away reader to
+		// the block they were looking at; a following reader stays on the tail.
+		anchorID, anchorDelta, anchored := m.scrollAnchor()
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
+		if anchored {
+			m.restoreScrollAnchor(anchorID, anchorDelta)
+		}
 		return m, nil
 	case startupDelayMsg:
 		if msg.generation != m.startupGeneration || m.startup != startupWaiting {
@@ -577,7 +591,9 @@ func (m Model) render() string {
 				m.renderAutocomplete(&canvas)
 			}
 		case LayerToast:
-			if m.state.ToastOpen {
+			// The session surface renders its toast above the composer; the
+			// top-right overlay stays for the inspection routes.
+			if m.state.ToastOpen && m.state.Route != "session" && m.state.Route != "home" {
 				canvas.put(max(0, m.width-34), 1, ui.PadRight(" "+m.state.Toast+" ", min(32, m.width)), m.theme.Style(ui.RoleInfo, nil))
 			}
 		case LayerModal:
@@ -643,28 +659,37 @@ func (m Model) renderBase(c *canvas) {
 		return
 	}
 
-	// Session / home conversation surface. One blank row separates the newest
-	// block from the composer so streamed output never abuts the input.
-	contentTop := 2
-	regionBottom := composerTop - 2
-	if strip, role, ok := m.statusStrip(); ok && regionBottom >= contentTop {
-		c.put(ui.OuterPadding, regionBottom, ui.Truncate(strip, width), m.theme.Style(role, nil))
-		regionBottom--
+	// Session / home conversation surface: banner pinned at the top, transcript
+	// flowing top-down beneath it, chrome stacked upward from the composer.
+	m.renderBanner(c, width)
+	chromeRow := composerTop - 1
+	if m.state.ToastOpen && m.state.Toast != "" && chromeRow >= bannerHeight {
+		toast := ui.Truncate(m.state.Toast, width)
+		c.put(ui.OuterPadding+max(0, width-ui.Width(toast)), chromeRow, toast, m.theme.Style(ui.RoleInfo, nil))
+		chromeRow--
+	}
+	if strip, role, ok := m.statusStrip(); ok && chromeRow >= bannerHeight {
+		c.put(ui.OuterPadding, chromeRow, ui.Truncate(strip, width), m.theme.Style(role, nil))
+		chromeRow--
 	}
 	// A blocked run also shows what the operator can do about it.
 	if m.state.Intervention {
 		actions := m.interventionActions()
-		for i := len(actions) - 1; i >= 0 && regionBottom >= contentTop; i-- {
-			c.put(ui.OuterPadding+proseIndent, regionBottom, ui.Truncate(actions[i], width-proseIndent), m.theme.Style(ui.RoleWarning, nil).Bold(true))
-			regionBottom--
+		for i := len(actions) - 1; i >= 0 && chromeRow >= bannerHeight; i-- {
+			c.put(ui.OuterPadding+proseIndent, chromeRow, ui.Truncate(actions[i], width-proseIndent), m.theme.Style(ui.RoleWarning, nil).Bold(true))
+			chromeRow--
 		}
 	}
 	// Home is the pre-attach surface: it never shows a transcript, only the
 	// invitation to attach a Runtime.
 	if len(m.projection.Blocks) == 0 || m.state.Route == "home" {
-		m.renderEmptyState(c, contentTop, regionBottom, width)
+		hint := "Ask anything to begin."
+		if m.state.Route == "home" {
+			hint = "Attach a Runtime to begin."
+		}
+		c.put(ui.OuterPadding+5, bannerHeight, hint, m.theme.Style(ui.RoleMuted, nil))
 	} else {
-		m.renderTranscript(c, contentTop, regionBottom, width)
+		m.renderTranscriptWindow(c, bannerHeight, chromeRow-1, width)
 	}
 	m.renderFooter(c, l)
 }
@@ -716,24 +741,6 @@ func (m Model) statusStrip() (string, ui.Role, bool) {
 		return "↑  Scrolled away · new output continues below", ui.RoleMuted, true
 	}
 	return "", ui.RoleMuted, false
-}
-
-// renderEmptyState draws a calm, centered mark and prompt when there is no
-// transcript yet, instead of stacking notice cards over an empty canvas.
-func (m Model) renderEmptyState(c *canvas, top, bottom, width int) {
-	if bottom-1 < top {
-		return
-	}
-	hint := "Ask anything to begin."
-	if m.state.Route == "home" {
-		hint = "Attach a Runtime to begin."
-	}
-	mark := "Harbor"
-	midY := (top + bottom) / 2
-	markX := ui.OuterPadding + max(0, (width-ui.Width(mark))/2)
-	hintX := ui.OuterPadding + max(0, (width-ui.Width(hint))/2)
-	c.put(markX, midY-1, mark, m.theme.Style(ui.RolePrimary, nil).Bold(true))
-	c.put(hintX, midY+1, hint, m.theme.Style(ui.RoleMuted, nil))
 }
 
 // renderFooter draws the bottom chrome line: the stream lifecycle first (it is

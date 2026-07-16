@@ -1,12 +1,6 @@
 
-
-
-
-
-
-
-
-
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
      ◆  Inspecting Runtime posture
 
@@ -15,6 +9,12 @@
 
   ┃  !  Operator approval required
   ┃  Operator approval required
+
+
+
+
+
+
 
   ┃  one ↵ two ↵ threeone ↵ two ↵ three █
   ┃

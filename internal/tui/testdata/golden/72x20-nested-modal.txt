@@ -1,16 +1,16 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
+     ◆  Inspecting Runtime posture
 
-
-
-
-     ◆    Themes
+     ✓    Themes
          Search:
-     ✓  ● Dark
-          Light
+        ● Dark
+  ┃  !    Light
+  ┃  O
 
-  ┃  !
-  ┃  O  ↑/↓ move · enter select · esc close
+        ↑/↓ move · enter select · esc close
 
   ┃  Composer idle · attach a Runtime
   ┃

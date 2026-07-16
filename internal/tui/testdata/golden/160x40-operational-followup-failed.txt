@@ -1,10 +1,10 @@
 
-                                                                                                                               Follow-up failed · retry or dis
-                                                                                                                      RUNTIME CONTEXT
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha                                                                                          RUNTIME CONTEXT
 
-                                                                                                                      Session
+  ┃  Summarize the deployment status.                                                                                 Session
                                                                                                                       session-alpha
-
+     The deployment completed successfully.
                                                                                                                       Status
                                                                                                                       running
 
@@ -29,10 +29,10 @@
 
 
 
-  ┃  Summarize the deployment status.
 
-     The deployment completed successfully.
 
+
+                                                                                Follow-up failed · retry or discard
   ┃  Ask Harbor...
   ┃
   ╹───────────────────────────────────────────────────────────────────────────────────────────────────────────────

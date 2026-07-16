@@ -1,4 +1,8 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+       Attach a Runtime to begin.
 
 
 
@@ -8,10 +12,6 @@
 
 
 
-
-                                                        Harbor
-
-                                              Attach a Runtime to begin.
 
 
 

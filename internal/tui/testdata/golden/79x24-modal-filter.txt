@@ -1,20 +1,20 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
+     ◆  Inspecting Runtime posture
 
-
-
-
-
-             Commands
+     ✓  r
+       Ru    Commands
             Search: theme
-           ● Switch theme · Choose dark, light, or automatic mode
-     ◆  I
+  ┃  !  O  ● Switch theme · Choose dark, light, or automatic mode
+  ┃  Oper
 
-     ✓  r  ↑/↓ move · enter select · esc close
-       Runtime health snapshot received
+           ↑/↓ move · enter select · esc close
 
-  ┃  !  Operator approval required
-  ┃  Operator approval required
+
+
+
 
   ┃  Composer idle · attach a Runtime
   ┃

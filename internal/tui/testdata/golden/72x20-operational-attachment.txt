@@ -1,17 +1,17 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
+  ┃  Summarize the deployment status.
 
-
-
-
-          Attach file · path|disposition
+     T    Attach file · path|disposition
          Search:
 
 
         ↑/↓ move · enter select · esc close
 
 
-     The deployment completed successfully.
+
 
   ┃  Ask Harbor...
   ┃

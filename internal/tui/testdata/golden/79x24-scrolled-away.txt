@@ -1,11 +1,6 @@
 
-
-
-
-
-
-
-
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
      ◆  Inspecting Runtime posture
 
@@ -14,8 +9,13 @@
 
   ┃  !  Operator approval required
   ┃  Operator approval required
-  ↑  Scrolled away · new output continues below
 
+
+
+
+
+
+  ↑  Scrolled away · new output continues below
   ┃  Composer idle · attach a Runtime
   ┃
   ┃

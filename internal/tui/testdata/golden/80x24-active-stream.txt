@@ -1,9 +1,6 @@
 
-
-
-
-
-
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
      ◆  Inspecting Runtime posture
 
@@ -15,6 +12,9 @@
 
      Streaming the answer
      ▌
+
+
+
 
   ┃  Active work in progress
   ┃

@@ -1,10 +1,10 @@
 
+  ▛▀▖  Harbor  ·  Developm
+  ▙▄▘  fixture · session session-alph
 
-
-     The deployment completed
      successfully.
-  !  Dropped event window · output ma
 
+  !  Dropped event window · output ma
   ┃  Ask Harbor...
   ┃  fixture
   ╹──────────────────────────────────

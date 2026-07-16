@@ -1,26 +1,26 @@
 
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
+     ◆  Inspecting Runtime posture
 
-
-
-
-
-
+     ✓  runtime.health  succeeded
+       Runtime healt
                         Commands
-                       Search: theme
-                      ● Switch theme · Choose dark, light, or automatic mode
+  ┃  !  Operator app   Search: theme
+  ┃  Operator approv  ● Switch theme · Choose dark, light, or automatic mode
 
 
                       ↑/↓ move · enter select · esc close
 
 
-     ◆  Inspecting Runtime posture
 
-     ✓  runtime.health  succeeded
-       Runtime health snapshot received
 
-  ┃  !  Operator approval required
-  ┃  Operator approval required
+
+
+
+
+
 
   ┃  Composer idle · attach a Runtime
   ┃

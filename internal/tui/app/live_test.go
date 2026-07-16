@@ -703,8 +703,10 @@ func TestRuntimeModel_EditorNavigationUpdatesAndCompactView(t *testing.T) {
 	if m.shell.state.Composer != ComposerRetry {
 		t.Fatal("retry hidden")
 	}
-	if view := m.View(); view.AltScreen {
-		t.Fatal("compact uses alternate screen")
+	// The session surface owns the whole alternate screen (Claude-Code-style
+	// full takeover); the retired inline/compact mode rendered without it.
+	if view := m.View(); !view.AltScreen {
+		t.Fatal("session surface must own the alternate screen")
 	}
 }
 
