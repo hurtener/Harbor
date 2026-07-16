@@ -49,6 +49,9 @@ type Editor struct {
 	undo, redo        []snapshot
 	history, stash    []string
 	historyIndex      int
+	pendingDraft      []rune
+	coalescing        bool
+	coalesceAt        int
 	attachments       []Attachment
 	disabled, running bool
 	disabledReason    string
@@ -61,6 +64,7 @@ func New() Editor { return Editor{anchor: -1, historyIndex: -1} }
 
 func (e Editor) clone() Editor {
 	e.text = append([]rune(nil), e.text...)
+	e.pendingDraft = append([]rune(nil), e.pendingDraft...)
 	e.undo = cloneSnapshots(e.undo)
 	e.redo = cloneSnapshots(e.redo)
 	e.history = append([]string(nil), e.history...)
@@ -87,6 +91,19 @@ func (e *Editor) checkpoint() {
 	e.redo = nil
 }
 
+// resetHistoryNav abandons any in-progress history browsing so a stale parked
+// draft cannot resurrect after the content has been mutated by a real edit.
+func (e *Editor) resetHistoryNav() {
+	e.historyIndex = -1
+	e.pendingDraft = nil
+}
+
+// hasSelection reports whether a non-empty selection is active.
+func (e Editor) hasSelection() bool {
+	_, _, ok := e.Selection()
+	return ok
+}
+
 // Text returns the complete multiline draft.
 func (e Editor) Text() string { return string(e.text) }
 
@@ -111,6 +128,8 @@ func (e Editor) Selection() (int, int, bool) {
 func (e Editor) SetText(value string) Editor {
 	e = e.clone()
 	e.checkpoint()
+	e.resetHistoryNav()
+	e.coalescing = false
 	e.text = []rune(value)
 	e.cursor = len(e.text)
 	e.anchor = -1
@@ -118,14 +137,28 @@ func (e Editor) SetText(value string) Editor {
 }
 
 // Insert inserts text at the cursor, replacing a selection. Newlines are retained.
+//
+// Consecutive single-character non-whitespace insertions at the same position
+// coalesce into one undo group, so ordinary typing does not exhaust the bounded
+// undo budget one rune at a time.
 func (e Editor) Insert(value string) Editor {
 	e = e.clone()
-	e.checkpoint()
-	e.deleteSelection()
 	r := []rune(value)
+	coalesce := e.coalescing && e.coalesceAt == e.cursor && !e.hasSelection() &&
+		len(r) == 1 && !unicode.IsSpace(r[0])
+	if !coalesce {
+		e.checkpoint()
+	}
+	e.resetHistoryNav()
+	e.deleteSelection()
 	e.text = append(e.text[:e.cursor], append(r, e.text[e.cursor:]...)...)
 	e.cursor += len(r)
 	e.anchor = -1
+	if len(r) == 1 && !unicode.IsSpace(r[0]) {
+		e.coalescing, e.coalesceAt = true, e.cursor
+	} else {
+		e.coalescing = false
+	}
 	return e
 }
 
@@ -203,6 +236,8 @@ func (e Editor) Backspace() Editor {
 		return e
 	}
 	e.checkpoint()
+	e.resetHistoryNav()
+	e.coalescing = false
 	if e.deleteSelection() {
 		return e
 	}
@@ -227,6 +262,7 @@ func (e *Editor) deleteSelection() bool {
 // Undo restores the preceding edit snapshot.
 func (e Editor) Undo() Editor {
 	e = e.clone()
+	e.coalescing = false
 	if len(e.undo) == 0 {
 		return e
 	}
@@ -240,6 +276,7 @@ func (e Editor) Undo() Editor {
 // Redo reapplies an undone edit.
 func (e Editor) Redo() Editor {
 	e = e.clone()
+	e.coalescing = false
 	if len(e.redo) == 0 {
 		return e
 	}
@@ -275,8 +312,9 @@ func (e Editor) CommitSubmission(submission Submission) Editor {
 		e.history = appendBounded(e.history, submission.Text, MaxHistory)
 	}
 	if string(e.text) == submission.Text && attachmentsEqual(e.attachments, submission.Attachments) {
-		e.text, e.undo, e.redo, e.attachments = nil, nil, nil, nil
+		e.text, e.undo, e.redo, e.attachments, e.pendingDraft = nil, nil, nil, nil, nil
 		e.cursor, e.anchor, e.historyIndex = 0, -1, -1
+		e.coalescing = false
 	}
 	return e
 }
@@ -306,18 +344,25 @@ func (e Editor) SetRunning(running bool) Editor { e = e.clone(); e.running = run
 // Running reports follow-up queue posture.
 func (e Editor) Running() bool { return e.running }
 
-// History moves through bounded local prompt history while preserving the draft.
+// History moves through bounded local prompt history, parking the in-progress
+// working draft at the bottom of the stack so paging back down returns the user
+// to exactly what they were typing. The parked draft is captured the moment
+// browsing begins and is discarded once a real edit mutates the content.
 func (e Editor) History(direction int) Editor {
 	e = e.clone()
+	e.coalescing = false
 	if len(e.history) == 0 {
 		return e
 	}
 	if e.historyIndex < 0 {
+		// Entering history navigation: stash the live draft so it can be
+		// restored, and start just past the newest entry.
+		e.pendingDraft = append([]rune(nil), e.text...)
 		e.historyIndex = len(e.history)
 	}
 	e.historyIndex = max(0, min(len(e.history), e.historyIndex+direction))
 	if e.historyIndex == len(e.history) {
-		e.text = nil
+		e.text = append([]rune(nil), e.pendingDraft...)
 	} else {
 		e.text = []rune(e.history[e.historyIndex])
 	}
@@ -333,6 +378,8 @@ func (e Editor) Stash() Editor {
 		e.stash = appendBounded(e.stash, v, MaxStash)
 		e.text = nil
 		e.cursor = 0
+		e.resetHistoryNav()
+		e.coalescing = false
 	}
 	return e
 }
@@ -346,6 +393,8 @@ func (e Editor) PopStash() Editor {
 	e.text = []rune(e.stash[len(e.stash)-1])
 	e.stash = e.stash[:len(e.stash)-1]
 	e.cursor = len(e.text)
+	e.resetHistoryNav()
+	e.coalescing = false
 	return e
 }
 
@@ -371,6 +420,8 @@ func (e Editor) RestoreLocal(history, stash []string) Editor {
 	e.history = appendBoundedSlice(history, MaxHistory)
 	e.stash = appendBoundedSlice(stash, MaxStash)
 	e.historyIndex = -1
+	e.pendingDraft = nil
+	e.coalescing = false
 	return e
 }
 
