@@ -600,9 +600,9 @@ func (m Model) renderBase(c *canvas) {
 		// stream state, so the triple is never printed twice and a non-live
 		// connection is never truncated away on a narrow terminal.
 		meta := identityLabel(m.projection)
-		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), status, meta, m.state.ComposerText)
+		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), status, meta, m.state.ComposerText)
 		if m.operational {
-			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), status, meta, m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), status, meta, m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
 
 		}
 		composerRows := strings.Count(composer, "\n") + 1
@@ -794,9 +794,9 @@ func (m Model) renderSidebar(c *canvas) {
 func (m Model) composerTopRow() int {
 	l := m.Layout()
 	composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
-	composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText)
+	composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), m.composerStatus(), identityLabel(m.projection), m.state.ComposerText)
 	if m.operational {
-		composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+		composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), m.composerStatus(), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
 	}
 	composerRows := strings.Count(composer, "\n") + 1
 	return max(0, m.height-composerRows-1)

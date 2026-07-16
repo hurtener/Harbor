@@ -19,6 +19,6 @@
 
   ┃  Ask Harbor...
   ┃  disabled
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ╹──────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
   authentication expired   ·   ctrl+p Command palette   ctrl+x s Toggle runtim

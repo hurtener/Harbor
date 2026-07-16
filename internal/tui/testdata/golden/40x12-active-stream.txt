@@ -4,9 +4,9 @@
      Streaming the answer
      ▌
 
-  ┃  Ask Harbor about this runtime...
+  ┃  Active work in progress
   ┃
-  ┃  Working · esc interrupt
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃  ◆ Working  ·  esc interrupt
+  ╹──────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000
   disconnected   ·   ctrl+p Command pa

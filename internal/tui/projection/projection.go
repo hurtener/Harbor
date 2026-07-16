@@ -52,23 +52,27 @@ type SnapshotBundle struct {
 
 // Projection is a self-contained immutable value for one identity triple.
 type Projection struct {
-	Identity                types.IdentityScope `json:"identity"`
-	Generation              uint64              `json:"generation"`
-	LastSequence            uint64              `json:"last_sequence"`
-	Cursor                  string              `json:"cursor,omitempty"`
-	SessionStatus           string              `json:"session_status,omitempty"`
-	SessionErased           bool                `json:"session_erased,omitempty"`
-	HistoryTruncated        bool                `json:"history_truncated,omitempty"`
-	HistoryHasMore          bool                `json:"history_has_more,omitempty"`
-	AggregateTruncated      bool                `json:"aggregate_truncated,omitempty"`
-	CountersPartial         bool                `json:"counters_partial,omitempty"`
-	ToolsAggregatesPartial  bool                `json:"tools_aggregates_partial,omitempty"`
-	ToolAnalyticsBounded    bool                `json:"tool_analytics_bounded,omitempty"`
-	Retention               []Retention         `json:"retention,omitempty"`
-	UnavailableCapabilities []string            `json:"unavailable_capabilities,omitempty"`
-	Blocks                  []Block             `json:"blocks"`
-	ReconciliationRequired  bool                `json:"reconciliation_required,omitempty"`
-	ReplayGap               *ReplayGap          `json:"replay_gap,omitempty"`
+	Identity   types.IdentityScope `json:"identity"`
+	Generation uint64              `json:"generation"`
+	// Usage is the session's accumulated LLM usage, decoded from the canonical
+	// llm.cost.recorded stream (the same source the Console reads). It is the
+	// only honest place cost/tokens/context come from — never estimated.
+	Usage                   Usage       `json:"usage"`
+	LastSequence            uint64      `json:"last_sequence"`
+	Cursor                  string      `json:"cursor,omitempty"`
+	SessionStatus           string      `json:"session_status,omitempty"`
+	SessionErased           bool        `json:"session_erased,omitempty"`
+	HistoryTruncated        bool        `json:"history_truncated,omitempty"`
+	HistoryHasMore          bool        `json:"history_has_more,omitempty"`
+	AggregateTruncated      bool        `json:"aggregate_truncated,omitempty"`
+	CountersPartial         bool        `json:"counters_partial,omitempty"`
+	ToolsAggregatesPartial  bool        `json:"tools_aggregates_partial,omitempty"`
+	ToolAnalyticsBounded    bool        `json:"tool_analytics_bounded,omitempty"`
+	Retention               []Retention `json:"retention,omitempty"`
+	UnavailableCapabilities []string    `json:"unavailable_capabilities,omitempty"`
+	Blocks                  []Block     `json:"blocks"`
+	ReconciliationRequired  bool        `json:"reconciliation_required,omitempty"`
+	ReplayGap               *ReplayGap  `json:"replay_gap,omitempty"`
 	tombstones              map[string]uint64
 	seen                    map[uint64]struct{}
 	unsequenced             map[string]struct{}
@@ -93,6 +97,19 @@ type Retention struct {
 
 // Block is one normalized, safe conversation/runtime record. Text is bounded;
 // unknown payload values are never copied into generic blocks.
+// Usage is the canonical per-session LLM usage rollup accumulated from
+// llm.cost.recorded. ContextWindow is the active model's input-token window (0
+// when the Runtime has not advertised one — the caller must not invent a
+// denominator).
+type Usage struct {
+	Model         string  `json:"model,omitempty"`
+	TotalTokens   int64   `json:"total_tokens,omitempty"`
+	PromptTokens  int64   `json:"prompt_tokens,omitempty"`
+	OutputTokens  int64   `json:"output_tokens,omitempty"`
+	USD           float64 `json:"usd,omitempty"`
+	ContextWindow int64   `json:"context_window,omitempty"`
+}
+
 type Block struct {
 	ID          string                   `json:"id"`
 	Kind        string                   `json:"kind"`
@@ -293,6 +310,25 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 		appendDelta(&next, id, kind, runID, event, decoded.Delta)
 		immediate = false
 		blockIDs = append(blockIDs, id)
+	case "llm.cost.recorded":
+		// Canonical usage accounting. It is deliberately NOT a transcript block:
+		// it feeds the session's cost/token/context readout instead of
+		// interleaving accounting noise with the conversation.
+		var decoded costPayload
+		if !decodePayload(event.Payload, &decoded) {
+			return genericFallback(next, event, payload), ChangeSet{Changed: true, Immediate: true, BlockIDs: []string{genericEventID(event)}}, nil
+		}
+		if decoded.Model != "" {
+			next.Usage.Model = safeText(decoded.Model)
+		}
+		if decoded.ContextWindowTokens > 0 {
+			next.Usage.ContextWindow = decoded.ContextWindowTokens
+		}
+		next.Usage.TotalTokens += decoded.Usage.TotalTokens
+		next.Usage.PromptTokens += decoded.Usage.PromptTokens
+		next.Usage.OutputTokens += decoded.Usage.CompletionTokens
+		next.Usage.USD += decoded.Cost.TotalCost
+		return next, ChangeSet{Changed: true, Immediate: false}, nil
 	case "task.spawned", "task.started":
 		var decoded taskPayload
 		if !decodePayload(event.Payload, &decoded) || decoded.TaskID == "" {
@@ -806,6 +842,18 @@ type completionChunkPayload struct {
 	Kind   string
 }
 type taskPayload struct{ TaskID string }
+
+// costPayload mirrors the canonical llm.cost.recorded frame.
+type costPayload struct {
+	Model               string
+	ContextWindowTokens int64
+	Usage               struct {
+		TotalTokens      int64
+		PromptTokens     int64
+		CompletionTokens int64
+	}
+	Cost struct{ TotalCost float64 }
+}
 type toolPayload struct{ ToolName string }
 type pauseRequestedPayload struct {
 	Token  string

@@ -8,9 +8,9 @@
   ┃  Operator approval required
   ×  Session erased · terminal, Start Fresh required
 
-  ┃  Ask Harbor about this runtime...
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
+  ┃
+  ╹──────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
   disconnected   ·   ctrl+p Command palette   ctrl+x s Tog

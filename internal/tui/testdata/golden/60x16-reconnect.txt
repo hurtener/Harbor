@@ -8,9 +8,9 @@
   ┃  !  Operator approval required
   ┃  Operator approval required
 
-  ┃  Ask Harbor about this runtime...
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
+  ┃
+  ╹──────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
   retrying · attempt 2 in 4s   ·   ctrl+p Command palette

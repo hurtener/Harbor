@@ -258,13 +258,54 @@ func (m Model) proseOps(text string, width, indent, dy0 int, role ui.Role) ([]dr
 // once the run is terminal), and a local clock would count the operator's
 // typing. Reduced motion keeps a stable fallback with no animation.
 func (m Model) composerStatus() string {
-	if !m.hasActiveTurn() {
+	if m.hasActiveTurn() {
+		label := "◆ Working"
+		if !m.reducedMotion {
+			label = spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)] + " Working"
+		}
+		return label + "  ·  esc interrupt"
+	}
+	// Idle: report what an operator actually needs — the model and how much of
+	// its context this session has consumed — not the internal composer enum.
+	switch m.state.Composer {
+	case ComposerDisabled, ComposerRetry, ComposerAttachment:
 		return string(m.state.Composer)
 	}
-	if m.reducedMotion {
-		return "Working · esc interrupt"
+	parts := make([]string, 0, 2)
+	if m.state.Model != "" {
+		parts = append(parts, m.state.Model)
 	}
-	return spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)] + " Working · esc interrupt"
+	if usage := m.contextLabel(); usage != "" {
+		parts = append(parts, usage)
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+// contextLabel reports canonical context consumption, e.g.
+// "Context 17.4k/128k (14%)". It reports nothing when the Runtime has not
+// advertised a window — a denominator is never invented.
+func (m Model) contextLabel() string {
+	u := m.projection.Usage
+	if u.TotalTokens <= 0 {
+		return ""
+	}
+	if u.ContextWindow <= 0 {
+		return fmt.Sprintf("Context %s", compactTokens(u.TotalTokens))
+	}
+	percent := float64(u.PromptTokens) / float64(u.ContextWindow) * 100
+	return fmt.Sprintf("Context %s/%s (%.0f%%)", compactTokens(u.PromptTokens), compactTokens(u.ContextWindow), percent)
+}
+
+// compactTokens renders a token count the way an operator reads it: 17.4k.
+func compactTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // hasActiveTurn reports whether a turn is genuinely in flight. It keys ONLY on

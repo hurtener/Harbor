@@ -4,9 +4,9 @@
   ┃  Operator approval required
   ×  Replay gap · authoritative recon
 
-  ┃  Ask Harbor about this runtime...
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃
+  ╹──────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000
   disconnected   ·   ctrl+p Command pa

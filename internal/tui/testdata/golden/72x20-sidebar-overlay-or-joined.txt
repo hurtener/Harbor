@@ -12,9 +12,9 @@
   ┃  !  Operator approval requ
   ┃  Operator approval require
 
-  ┃  Ask Harbor about this run
+  ┃  Composer idle · attach a
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃
+  ╹───────────────────────────
   acme/operator/01K0HARBORFIXT
   disconnected   ·   ctrl+p Co

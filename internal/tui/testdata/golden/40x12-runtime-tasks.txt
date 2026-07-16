@@ -6,7 +6,7 @@
    TASK LIFECYCLE / TREE / PROGRESS
 
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
   live   ·   ctrl+p Command palette

@@ -14,7 +14,7 @@
      T    Resume intervention · Unavailable: no unresolved Pause
           Delete session · sessions.delete · capability session_
   ┃  A    Cancel task · Unavailable: no active task target
-  ┃  f
-  ╹▀▀▀                                                            ▀▀▀
+  ┃
+  ╹───                                                            ───
   tena  ↑/↓ move · enter select · esc close
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

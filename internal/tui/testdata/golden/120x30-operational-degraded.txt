@@ -24,7 +24,7 @@
   ×  Replay gap · authoritative reconciliation required
 
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ┃  fixture
+  ╹──────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
   replaying   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

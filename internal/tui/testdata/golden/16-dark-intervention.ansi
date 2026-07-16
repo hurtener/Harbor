@@ -22,9 +22,9 @@
 [97m     [m[1;93m[ Approve unavailable ]   [ Reject unavailable ][m[97m                                               [m
 [97m  [m[93m!  Operator approval required[m[97m                                                                     [m
 [97m                                                                                                    [m
-[97m  [m[93m┃[m[97;40m  Ask Harbor about this runtime...                                        [m[97m                       [m
+[97m  [m[93m┃[m[97;40m  Composer idle · attach a Runtime                                        [m[97m                       [m
 [97m  [m[93m┃[m[97;40m                                                                          [m[97m                       [m
-[97m  [m[93m┃[m[97;40m  idle                                                                    [m[97m                       [m
-[97m  [m[93m╹[m[97;40m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[m[97m                       [m
-[97m  [m[97;40macme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands              [m[97m                       [m
+[97m  [m[93m┃[m[97;40m                                                                          [m[97m                       [m
+[97m  [m[93m╹[m[97;40m──────────────────────────────────────────────────────────────────────────[m[97m                       [m
+[97m  [m[97;40macme/operator/01K0HARBORFIXTURE0000000000                                  [m[97m                       [m
 [97m  [m[90mdisconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context[m[97m                       [m

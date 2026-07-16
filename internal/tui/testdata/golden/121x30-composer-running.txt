@@ -22,9 +22,9 @@
   ┃  !  Operator approval required
   ┃  Operator approval required
 
-  ┃  Ask Harbor about this runtime...
+  ┃  Active work in progress
   ┃
-  ┃  ⣾  Working · esc interrupt
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
+  ┃  ⣾  Working  ·  esc interrupt
+  ╹─────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
   disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

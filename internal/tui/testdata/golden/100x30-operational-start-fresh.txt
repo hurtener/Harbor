@@ -25,6 +25,6 @@
 
   ┃  Ask Harbor...
   ┃  disabled
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
+  ╹──────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
   live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

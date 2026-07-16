@@ -4,9 +4,9 @@
   ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x ?  Keyboard help
-  ┃  Ask Harbor about this runtime...
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃
+  ╹──────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000
   disconnected   ·   ctrl+p Command pa

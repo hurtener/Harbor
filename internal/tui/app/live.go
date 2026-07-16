@@ -291,8 +291,6 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.localTurns = append(m.localTurns, localTurn{runID: msg.taskID, text: msg.submission.Text, at: time.Now()})
 			}
 			m.syncProjection()
-			m.shell.state.ToastOpen = true
-			m.shell.state.Toast = "Turn accepted by Runtime"
 		}
 		m.syncComposer()
 		return m, m.requestPersist()
@@ -1636,9 +1634,17 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 		m.shell.state.Incomplete = m.shell.state.Incomplete || block.Incomplete
 	}
 	m.shell.state.TurnStatus = m.turnStatus()
-	m.shell.state.Model = strings.TrimSpace(m.runtime.Posture.LLM.Model)
+	if model := strings.TrimSpace(update.Projection.Usage.Model); model != "" {
+		m.shell.state.Model = model
+	} else if model := strings.TrimSpace(m.runtime.Posture.LLM.Model); model != "" {
+		m.shell.state.Model = model
+	}
 	switch update.State {
 	case conversation.StateLive:
+		// A live stream ends startup. Without this the shell's startup staging
+		// (now driven from Init) would report "connecting" forever, even while
+		// the agent answers.
+		m.shell.startup = startupHidden
 		m.shell.state.Active = true
 		m.shell.state.Erased = false
 		if m.projectionActive() {
@@ -1783,22 +1789,27 @@ func (m *RuntimeModel) syncProjection() {
 		m.shell.state.Toast = fmt.Sprintf("%d new output blocks", m.transcript.NewOutput)
 	}
 }
+
+// toggleSelected expands or collapses every block of a kind at once: if any is
+// collapsed the toggle opens them all, otherwise it closes them all.
+//
+// It deliberately does NOT act on the selected block only. That required the
+// operator to first select the exact block, which is unreachable while reading
+// the newest output, so the toggle silently did nothing — or opened some
+// ancient block off-screen. "Show me the thinking" is a view mode, not a
+// per-block edit.
 func (m *RuntimeModel) toggleSelected(set map[string]bool, kind string) {
-	if len(m.transcript.Projection.Blocks) == 0 {
-		return
-	}
-	i := min(max(0, m.transcript.Selected), len(m.transcript.Projection.Blocks)-1)
-	block := m.transcript.Projection.Blocks[i]
-	if block.Kind != kind {
-		for _, candidate := range m.transcript.Projection.Blocks {
-			if candidate.Kind == kind {
-				block = candidate
-				break
-			}
+	ids := make([]string, 0, len(m.transcript.Projection.Blocks))
+	expand := false
+	for _, block := range m.transcript.Projection.Blocks {
+		if block.Kind != kind {
+			continue
 		}
+		ids = append(ids, block.ID)
+		expand = expand || !set[block.ID]
 	}
-	if block.Kind == kind {
-		set[block.ID] = !set[block.ID]
+	for _, id := range ids {
+		set[id] = expand
 	}
 }
 func (m *RuntimeModel) setError(err error) {

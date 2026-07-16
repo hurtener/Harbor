@@ -8,9 +8,9 @@
   ┃  !  Operator a  Status
   ┃  Operator appr  running
 
-  ┃  Ask Harbor ab
+  ┃  Composer idle
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃
+  ╹───────────────
   acme/operator/01
   disconnected   ·

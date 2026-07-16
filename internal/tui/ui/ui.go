@@ -281,30 +281,36 @@ func HeavyCard(theme Theme, role Role, width int, lines ...string) string {
 }
 
 // Composer renders the open-edge detached composer shell.
-func Composer(theme Theme, width int, state, identity string) string {
-	return ComposerWithText(theme, width, state, identity, "")
+func Composer(theme Theme, width int, posture, identity string) string {
+	return ComposerWithText(theme, width, posture, posture, identity, "")
 }
 
 // ComposerWithText renders the detached foundation composer.
-func ComposerWithText(theme Theme, width int, state, identity, draft string) string {
+func ComposerWithText(theme Theme, width int, posture, status, identity, draft string) string {
 	width = max(8, width)
 	inner := width - 3
 	role := RolePrimary
 	prompt := "Ask Harbor about this runtime..."
 	switch {
-	case strings.HasPrefix(state, "disabled"):
+	case strings.HasPrefix(posture, "idle"):
+		// Idle is the pre-attach posture: the composer is not accepting input
+		// yet. It reads as muted rather than relying on a trailing cursor glyph,
+		// which truncates away on a narrow terminal.
+		role = RoleMuted
+		prompt = "Composer idle · attach a Runtime"
+	case strings.HasPrefix(posture, "disabled"):
 		role = RoleMuted
 		prompt = "Composer unavailable"
-	case strings.HasPrefix(state, "running"):
+	case strings.HasPrefix(posture, "running"):
 		role = RoleWarning
 		prompt = "Active work in progress"
-	case strings.HasPrefix(state, "retry"):
+	case strings.HasPrefix(posture, "retry"):
 		role = RoleError
 		prompt = "Submission failed · retry available"
-	case strings.HasPrefix(state, "attachment"):
+	case strings.HasPrefix(posture, "attachment"):
 		role = RoleInfo
 		prompt = "Attachment ready · disposition applied at send"
-	case strings.HasPrefix(state, "focused"):
+	case strings.HasPrefix(posture, "focused"):
 		prompt = "Ask Harbor about this runtime...  █"
 	}
 	if draft != "" {
@@ -316,27 +322,27 @@ func ComposerWithText(theme Theme, width int, state, identity, draft string) str
 	rows := []string{
 		border + theme.Style(RoleMuted, &panel).Render("  "+PadRight(prompt, inner)),
 		border + theme.Style(RoleText, &panel).Render("  "+PadRight("", inner)),
-		border + theme.Style(RoleMuted, &panel).Render("  "+PadRight(state, inner)),
-		theme.Style(role, nil).Render("╹") + theme.Style(RoleBorder, nil).Render(strings.Repeat("▀", max(0, width-1))),
-		PadRight(identity+"  ·  ctrl+p commands", width),
+		border + theme.Style(RoleMuted, &panel).Render("  "+PadRight(status, inner)),
+		theme.Style(role, nil).Render("╹") + theme.Style(RoleBorder, nil).Faint(true).Render(strings.Repeat("─", max(0, width-1))),
+		theme.Style(RoleMuted, nil).Render(PadRight(identity, width)),
 	}
 	return strings.Join(rows, "\n")
 }
 
 // LiveComposer renders a wrapped operational draft with an exact cursor and
 // inverse-styled selection. It contains no fabricated Runtime metadata.
-func LiveComposer(theme Theme, width int, state, identity, draft string, cursor, selectionStart, selectionEnd int) string {
+func LiveComposer(theme Theme, width int, posture, status, identity, draft string, cursor, selectionStart, selectionEnd int) string {
 	width = max(8, width)
 	inner := width - 3
 	role := RolePrimary
 	switch {
-	case strings.HasPrefix(state, "disabled"):
+	case strings.HasPrefix(posture, "disabled"):
 		role = RoleMuted
-	case strings.HasPrefix(state, "running"):
+	case strings.HasPrefix(posture, "running"):
 		role = RoleWarning
-	case strings.HasPrefix(state, "retry"):
+	case strings.HasPrefix(posture, "retry"):
 		role = RoleError
-	case strings.HasPrefix(state, "attachment"):
+	case strings.HasPrefix(posture, "attachment"):
 		role = RoleInfo
 	}
 	runes := []rune(draft)
@@ -386,9 +392,9 @@ func LiveComposer(theme Theme, width int, state, identity, draft string, cursor,
 		rows = append(rows, border+theme.Style(RoleText, &panel).Render("  ")+value+theme.Style(RoleText, &panel).Render(PadRight("", max(0, inner-Width(value)))))
 	}
 	rows = append(rows,
-		border+theme.Style(RoleMuted, &panel).Render("  "+PadRight(state, inner)),
-		theme.Style(role, nil).Render("╹")+theme.Style(RoleBorder, nil).Render(strings.Repeat("▀", max(0, width-1))),
-		PadRight(identity+"  ·  ctrl+p commands", width),
+		border+theme.Style(RoleMuted, &panel).Render("  "+PadRight(status, inner)),
+		theme.Style(role, nil).Render("╹")+theme.Style(RoleBorder, nil).Faint(true).Render(strings.Repeat("─", max(0, width-1))),
+		theme.Style(RoleMuted, nil).Render(PadRight(identity, width)),
 	)
 	return strings.Join(rows, "\n")
 }

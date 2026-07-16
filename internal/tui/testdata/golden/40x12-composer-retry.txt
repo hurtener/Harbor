@@ -7,6 +7,6 @@
   ┃  Submission failed · retry availa
   ┃
   ┃  retry · submit again
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ╹──────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000
   disconnected   ·   ctrl+p Command pa

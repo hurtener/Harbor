@@ -6,7 +6,7 @@
   !  Dropped event window · output ma
 
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·
+  ┃  fixture
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
   replaying   ·   ctrl+p Command palet
