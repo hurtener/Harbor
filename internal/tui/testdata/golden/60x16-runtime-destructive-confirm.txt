@@ -3,13 +3,13 @@
   One active session · Protocol-only
   live
 
-     Confirm Runtime action
-    Search:
-   ● Confirm Cancel task · tenant-a/operator/session-alph
-     Cancel
+      Confirm Runtime action
+     Search:
+    ● Confirm Cancel task · tenant-a/operator/session-al
+      Cancel
 
 
-   ↑/↓ move · enter select · esc close
+    ↑/↓ move · enter select · esc close
   ┃  focused
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   tenant-a/operator/session-alpha  ·  ctrl+p commands

@@ -3,13 +3,13 @@
   One active session · Protocol-only
   disconnected
 
-     Themes
-    Search:
-   ● Dark
-     Light
+      Themes
+     Search:
+    ● Dark
+      Light
 
 
-   ↑/↓ move · enter select · esc close
+    ↑/↓ move · enter select · esc close
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co

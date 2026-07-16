@@ -1,17 +1,17 @@
 
   HARBOR  /  HOME
-  One active session · Protocol-only                                                                                    RUNTIME CONTEXT
+  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
   disconnected
-                                                                                                                        Session
-  ┃                                                                                                                     01K0HARBORFIXTURE0000000000
-  ┃  ◇  Terminal foundation ready                                                                                       one active session
+                                                                                                                      Session
+  ┃                                                                                                                   01K0HARBORFIXTURE0000000000
+  ┃  ◇  Terminal foundation ready                                                                                     one active session
   ┃  Attach a Runtime to begin.
-  ┃                                                                                                                     Status
-                                                                                                                        running
-                                                                                                                        Transcript
-                                                                                                                        3 blocks
-                                                                                                                        Stream
-                                                                                                                        disconnected
+  ┃                                                                                                                   Status
+                                                                                                                      running
+                                                                                                                      Transcript
+                                                                                                                      3 blocks
+                                                                                                                      Stream
+                                                                                                                      disconnected
 
 
 

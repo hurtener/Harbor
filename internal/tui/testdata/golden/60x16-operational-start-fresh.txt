@@ -3,11 +3,11 @@
   One active session · Protocol-only
   live
 
-     Start Fresh
-    Search:
+      Start Fresh
+     Search:
 
 
-   ↑/↓ move · enter select · esc close
+    ↑/↓ move · enter select · esc close
 
   ┃  Ask Harbor...
   ┃  disabled

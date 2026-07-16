@@ -1,12 +1,12 @@
 
   HARBOR  /  SESSION
 
-     Sessions
-    Search:
-   ● Current session
-     Incident review
+      Sessions
+     Search:
+    ● Current session
+      Incident review
 
 
 
 
-   ↑/↓ move · enter select · esc clos
+    ↑/↓ move · enter select · esc cl

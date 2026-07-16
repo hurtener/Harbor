@@ -1,12 +1,12 @@
 
   HARBOR  /  SESSION
 
-     Replace credential · memory only
-    Search:
+      Replace credential · memory on
+     Search:
 
 
 
 
 
 
-   ↑/↓ move · enter select · esc clos
+    ↑/↓ move · enter select · esc cl

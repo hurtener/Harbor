@@ -121,6 +121,7 @@ type RuntimeModel struct {
 	followupSubmissions                map[string]composer.Submission
 	identity                           types.IdentityScope
 	generation                         uint64
+	lastProjectionSequence             uint64
 	inspectEpoch                       uint64
 	runtime                            conversation.RuntimeData
 	activeAction                       *ActionSpec
@@ -1384,9 +1385,9 @@ func (m RuntimeModel) updateSearch(key string) (tea.Model, tea.Cmd) {
 			m.searchQuery = string(r[:len(r)-1])
 		}
 	case "up", "ctrl+p":
-		m.transcript = m.transcript.Jump(-1)
+		m.transcript = m.transcript.NextMatch(-1)
 	case "down", "ctrl+n":
-		m.transcript = m.transcript.Jump(1)
+		m.transcript = m.transcript.NextMatch(1)
 	default:
 		if len([]rune(key)) == 1 {
 			m.searchQuery += key
@@ -1486,28 +1487,50 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 		}
 		m.generation = update.Generation
 		m.identity = update.Identity
+		m.lastProjectionSequence = 0
 	}
 	m.shell.state.Connection = string(update.State)
-	if update.Projection.Identity.Session != "" {
+	// Never regress the transcript to an older cumulative projection. Cross-lane
+	// interleave (a critical lifecycle frame after a batched text delta) can
+	// otherwise deliver a stale snapshot and, e.g., redraw a completed tool as
+	// running. The notifier drops stale resident frames; this is defense in depth.
+	if update.Projection.Identity.Session != "" && update.Projection.LastSequence >= m.lastProjectionSequence {
+		m.lastProjectionSequence = update.Projection.LastSequence
 		m.transcript = m.transcript.Replace(update.Projection)
 		if m.restoreScrollID != "" {
-			for i, block := range m.transcript.Projection.Blocks {
-				if block.ID == m.restoreScrollID {
-					m.transcript.Selected = i
-					m.transcript.Follow = i == len(m.transcript.Projection.Blocks)-1
-					break
-				}
-			}
+			// Restore through the ID-anchored setter so the semantic anchor
+			// (selectedID) is set, not just the positional index.
+			m.transcript = m.transcript.SelectByID(m.restoreScrollID)
 			m.restoreScrollID = ""
 		}
 		m.syncProjection()
 	}
-	m.shell.state.Closed = update.Projection.SessionStatus == string(types.SessionStatusCompleted) || update.Projection.SessionStatus == string(types.SessionStatusFailed)
-	m.shell.state.ReplayGap = update.Projection.ReplayGap != nil
+	// A completed session is resumable on a future turn; a failed session is a
+	// terminal error state and must be visually distinct (§9 honesty states).
+	m.shell.state.Closed = update.Projection.SessionStatus == string(types.SessionStatusCompleted)
+	m.shell.state.Failed = update.Projection.SessionStatus == string(types.SessionStatusFailed)
+	// A genuine event-window drop (live-journal overflow / bus drop) is a
+	// distinct honesty state from an out-of-order replay gap. Route by reason so
+	// state.Dropped is reachable from real Runtime behavior, not dead code.
+	m.shell.state.Dropped = false
+	m.shell.state.ReplayGap = false
+	if gap := update.Projection.ReplayGap; gap != nil {
+		if strings.Contains(gap.Reason, "overflow") || strings.Contains(gap.Reason, "dropped") {
+			m.shell.state.Dropped = true
+		} else {
+			m.shell.state.ReplayGap = true
+		}
+	}
 	m.shell.state.Reconciliation = update.Projection.ReconciliationRequired
 	m.shell.state.Overflow = update.Overflow
-	m.shell.state.Truncated = update.Projection.HistoryTruncated || update.Projection.AggregateTruncated
-	m.shell.state.CountersPartial = update.Projection.CountersPartial || update.Projection.ToolsAggregatesPartial || update.Projection.ToolAnalyticsBounded
+	// Keep each partiality kind distinct on the primary surface (§9): history
+	// truncation, aggregate-window truncation, partial counters, partial tool
+	// aggregates, and bounded tool analytics each carry their own meaning.
+	m.shell.state.Truncated = update.Projection.HistoryTruncated
+	m.shell.state.AggregateTruncated = update.Projection.AggregateTruncated
+	m.shell.state.CountersPartial = update.Projection.CountersPartial
+	m.shell.state.AggregatesPartial = update.Projection.ToolsAggregatesPartial
+	m.shell.state.AnalyticsBounded = update.Projection.ToolAnalyticsBounded
 	m.shell.state.Unknown, m.shell.state.Incomplete, m.shell.state.Intervention = false, false, false
 	for _, block := range update.Projection.Blocks {
 		m.shell.state.Unknown = m.shell.state.Unknown || block.Kind == "event"

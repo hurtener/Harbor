@@ -1,24 +1,24 @@
 
   HARBOR  /  SESSION
-  One active session · Protocol-only                                             RUNTIME CONTEXT
+  One active session · Protocol-only                                           RUNTIME CONTEXT
   disconnected
-                                                                                 Session
-  ┃                                                                              01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime posture                                               one active session
+                                                                               Session
+  ┃                                                                            01K0HARBORFIXTURE0000000000
+  ┃  ◆  Inspecting Runtime posture                                             one active session
   ┃
-                                  Commands
-  ┃                              Search:
-  ┃  ✓  Runtime health snapsho  ● Command palette · Find an available action              t
-  ┃                               Toggle runtime context · Show the fixed context sideba
-                                  Keyboard help · Show all reachable commands
-  ┃                               Quit · Restore the terminal and exit                    ted
-  ┃  !  Operator approval requ    Attach file · Unavailable: requires a live authenticat
-  ┃                               Cancel queued follow-up · Unavailable: no local follow
-                                  Remove attachment · Unavailable: no attachment is sele
-                                  Restore stashed draft · Pop the newest local draft
+                    Commands
+  ┃                Search:
+  ┃  ✓  Runtime   ● Command palette · Find an available action
+  ┃                 Toggle runtime context · Show the fixed context sidebar
+                    Keyboard help · Show all reachable commands
+  ┃                 Quit · Restore the terminal and exit
+  ┃  !  Operator    Attach file · Unavailable: requires a live authenticated Runtime attachment
+  ┃                 Cancel queued follow-up · Unavailable: no local follow-up is queued
+                    Remove attachment · Unavailable: no attachment is selected
+                    Restore stashed draft · Pop the newest local draft
 
 
-                                ↑/↓ move · enter select · esc close
+                  ↑/↓ move · enter select · esc close
 
 
 

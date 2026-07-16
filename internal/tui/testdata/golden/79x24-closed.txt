@@ -4,7 +4,7 @@
   disconnected
 
   ┃
-  ┃  ○  Session closed · resumable on a future turn
+  ┃  ○  Session completed · resumable on a future turn
   ┃
 
   ┃

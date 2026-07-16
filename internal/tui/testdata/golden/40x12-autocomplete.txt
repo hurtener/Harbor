@@ -4,9 +4,9 @@
   ┃  ctrl+p  Command palette
   ┃  ctrl+x s  Toggle runtime context
   ┃  ?  Keyboard help
-  ┃  q  Quit
-  ┃  ctrl+x a  Attach file · unavaila
-  ┃  ctrl+x k  Cancel queued follow-u
-  ┃  ctrl+x e  Remove attachment · un
-  ┃  ctrl+x p  Restore stashed draft
-  ┃  ctrl+x u  Retry attachment · unao
+  ┃  Ask Harbor about this runtime...
+  ┃
+  ┃  idle
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  acme/operator/01K0HARBORFIXTURE0000
+  ctrl+p Command palette   ctrl+x s To

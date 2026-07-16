@@ -1,18 +1,18 @@
 
   HARBOR  /  SESSION
-  One active session · Protocol-only                                             RUNTIME CONTEXT
+  One active session · Protocol-only                                           RUNTIME CONTEXT
   live
-                                                                                 Session
-  ┃                                                                              session-alpha
-  ┃  ◆  Active stream · following newest output                                  one active session
+                                                                               Session
+  ┃                                                                            session-alpha
+  ┃  ◆  Active stream · following newest output                                one active session
   ┃
-                                  Sessions
-  ┃                              Search:
-  ┃  ◇  Summarize the deployme  ● Current session · running                               t
-  ┃                               Incident review · completed · Resume on next canonical
+                    Sessions
+  ┃                Search:
+  ┃  ◇  Summariz  ● Current session · running
+  ┃                 Incident review · completed · Resume on next canonical start
 
   ┃
-  ┃  ●  The deployment complet  ↑/↓ move · enter select · esc close
+  ┃  ●  The depl  ↑/↓ move · enter select · esc close
   ┃
 
 

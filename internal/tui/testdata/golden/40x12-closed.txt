@@ -2,7 +2,7 @@
   HARBOR  /  SESSION
   One active session · Protocol-only
   disconnected
-  ○ Session closed · resumable on a fu
+  ○ Session completed · resumable on a
 
   ┃  Ask Harbor about this runtime...
   ┃

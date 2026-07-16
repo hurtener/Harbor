@@ -3,12 +3,12 @@
   One active session · Protocol-only
   disconnected
 
-     Commands
-    Search: theme
-   ● Switch theme · Choose dark, light, or automatic mode
+      Commands
+     Search: theme
+    ● Switch theme · Choose dark, light, or automatic mo
 
 
-   ↑/↓ move · enter select · esc close
+    ↑/↓ move · enter select · esc close
   ┃
   ┃  idle
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀

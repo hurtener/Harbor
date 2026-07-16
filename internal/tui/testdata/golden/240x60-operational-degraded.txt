@@ -1,26 +1,30 @@
 
   HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                                                                                                    RUNTIME CONTEXT
+  One active session · Protocol-only                                                                                                                                                                  RUNTIME CONTEXT
   replaying
-                                                                                                                                                                                                        Session
-  ┃                                                                                                                                                                                                     session-alpha
-  ┃  ×  Replay gap · authoritative reconciliation required                                                                                                                                              one active session
+                                                                                                                                                                                                      Session
+  ┃                                                                                                                                                                                                   session-alpha
+  ┃  ×  Replay gap · authoritative reconciliation required                                                                                                                                            one active session
   ┃
-                                                                                                                                                                                                        Status
-  ┃                                                                                                                                                                                                     running
-  ┃  !  Authoritative reconciliation in progress                                                                                                                                                        Transcript
-  ┃                                                                                                                                                                                                     3 blocks
-                                                                                                                                                                                                        Stream
-  ┃                                                                                                                                                                                                     replaying
+                                                                                                                                                                                                      Status
+  ┃                                                                                                                                                                                                   running
+  ┃  !  Authoritative reconciliation in progress                                                                                                                                                      Transcript
+  ┃                                                                                                                                                                                                   3 blocks
+                                                                                                                                                                                                      Stream
+  ┃                                                                                                                                                                                                   replaying
   ┃  !  Display updates coalesced · reconciling latest state
   ┃
 
   ┃
-  ┃  !  History is truncated · earlier output is unavailable
+  ┃  !  History is truncated · earlier transcript output is unavailable
   ┃
 
   ┃
-  ┃  !  Session counters are partial
+  ┃  !  Aggregate window truncated · totals cover a bounded slice, not all history
+  ┃
+
+  ┃
+  ┃  !  Session counters are partial · exact totals unavailable
   ┃
 
   ┃
@@ -42,10 +46,6 @@
   ┃
   ┃  ●  event ·
   ┃
-
-
-
-
 
 
 

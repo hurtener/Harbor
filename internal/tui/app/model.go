@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -64,7 +65,8 @@ type State struct {
 	Negotiated, TaskControl, SessionLifecycle, SessionScope                            bool
 	SidebarOpen, AutocompleteOpen, ToastOpen, Startup, Active, CursorHidden            bool
 	Scrolled, ReplayGap, Reconciliation, Dropped, Overflow, Truncated, CountersPartial bool
-	Closed, Erased, Intervention, Unknown, Incomplete, Pasted, Focused                 bool
+	AggregateTruncated, AggregatesPartial, AnalyticsBounded                            bool
+	Closed, Failed, Erased, Intervention, Unknown, Incomplete, Pasted, Focused         bool
 	Toast                                                                              string
 	DetailRows                                                                         []string
 	Health                                                                             string
@@ -568,7 +570,7 @@ func (m Model) renderBase(c *canvas) {
 		compactNotice := false
 		if m.height <= 12 && !m.state.Intervention {
 			if notices := m.notices(); len(notices) > 0 {
-				notice := notices[0]
+				notice := mostSevere(notices)
 				c.put(ui.OuterPadding, 4, ui.Truncate(notice.glyph+" "+notice.text, l.MainWidth), m.theme.Style(notice.role, nil))
 				compactNotice = true
 			}
@@ -627,6 +629,32 @@ type notice struct {
 	role        ui.Role
 }
 
+// noticeSeverity orders honesty notices so the single compact-mode slot surfaces
+// the most consequential state (error before warning before info), never hiding
+// a failed/erased/dropped state behind a benign "active stream" line.
+func noticeSeverity(role ui.Role) int {
+	switch role {
+	case ui.RoleError:
+		return 3
+	case ui.RoleWarning:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// mostSevere returns the highest-severity notice, preserving declaration order
+// among equals (first wins).
+func mostSevere(notices []notice) notice {
+	top := notices[0]
+	for _, n := range notices[1:] {
+		if noticeSeverity(n.role) > noticeSeverity(top.role) {
+			top = n
+		}
+	}
+	return top
+}
+
 func (m Model) notices() []notice {
 	var out []notice
 	if m.state.Active {
@@ -648,16 +676,28 @@ func (m Model) notices() []notice {
 		out = append(out, notice{"!", "Display updates coalesced · reconciling latest state", ui.RoleWarning})
 	}
 	if m.state.Truncated {
-		out = append(out, notice{"!", "History is truncated · earlier output is unavailable", ui.RoleWarning})
+		out = append(out, notice{"!", "History is truncated · earlier transcript output is unavailable", ui.RoleWarning})
+	}
+	if m.state.AggregateTruncated {
+		out = append(out, notice{"!", "Aggregate window truncated · totals cover a bounded slice, not all history", ui.RoleWarning})
 	}
 	if m.state.CountersPartial {
-		out = append(out, notice{"!", "Session counters are partial", ui.RoleWarning})
+		out = append(out, notice{"!", "Session counters are partial · exact totals unavailable", ui.RoleWarning})
+	}
+	if m.state.AggregatesPartial {
+		out = append(out, notice{"!", "Tool aggregates are partial · some tool rollups are incomplete", ui.RoleWarning})
+	}
+	if m.state.AnalyticsBounded {
+		out = append(out, notice{"!", "Tool analytics are bounded best-effort · absence is not zero", ui.RoleWarning})
 	}
 	if m.state.Incomplete {
 		out = append(out, notice{"!", "Some blocks are incomplete", ui.RoleWarning})
 	}
 	if m.state.Closed {
-		out = append(out, notice{"○", "Session closed · resumable on a future turn", ui.RoleInfo})
+		out = append(out, notice{"○", "Session completed · resumable on a future turn", ui.RoleInfo})
+	}
+	if m.state.Failed {
+		out = append(out, notice{"×", "Session failed · terminal error state, not resumable", ui.RoleError})
 	}
 	if m.state.Erased {
 		out = append(out, notice{"×", "Session erased · terminal state, start fresh required", ui.RoleError})
@@ -671,6 +711,10 @@ func (m Model) notices() []notice {
 	if m.state.Focused {
 		out = append(out, notice{"●", "Composer focus restored", ui.RoleSuccess})
 	}
+	// Order by severity so that when vertical space is scarce the most
+	// consequential honesty state (failed/erased/dropped) renders first and is
+	// never crowded out by a benign info line (§9). Stable within a severity.
+	sort.SliceStable(out, func(i, j int) bool { return noticeSeverity(out[i].role) > noticeSeverity(out[j].role) })
 	return out
 }
 func semantic(status string) (string, ui.Role) {
@@ -714,7 +758,13 @@ func (m Model) renderIntervention(c *canvas, y, width int, horizontal bool) {
 
 func (m Model) renderSidebar(c *canvas) {
 	l := m.Layout()
+	// In joined layout the sidebar occupies the slot Measure reserved inside the
+	// content width, which preserves the mandated 2-cell right outer padding. An
+	// edge-anchored overlay (unjoined) needs no pad and stays flush right.
 	x := m.width - ui.SidebarWidth
+	if l.JoinedSidebar {
+		x = m.width - ui.OuterPadding - ui.SidebarWidth
+	}
 	if !l.JoinedSidebar {
 		c.dim(0, max(0, x), m.theme.Style(ui.RoleMuted, ptrRole(ui.RoleCanvas)).Faint(true))
 	}
@@ -740,13 +790,32 @@ func (m Model) renderSidebar(c *canvas) {
 	}
 }
 
+// composerTopRow returns the top screen row of the rendered composer, computed
+// the same way render() places it, so overlays can anchor above the true
+// composer height instead of a fixed magic offset.
+func (m Model) composerTopRow() int {
+	l := m.Layout()
+	composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
+	composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText)
+	if m.operational {
+		composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+	}
+	composerRows := strings.Count(composer, "\n") + 1
+	return max(0, m.height-composerRows-1)
+}
+
 func (m Model) renderAutocomplete(c *canvas) {
 	l := m.Layout()
 	w, _ := ui.ComposerGeometry(l, 1)
 	w = min(w, l.MainWidth-1)
+	// Anchor the popup directly above the composer, clamped to the space between
+	// the header (row 3) and the composer top so it can never cover the active
+	// input row on short terminals or a tall multi-line draft (§5).
+	composerTop := m.composerTopRow()
+	available := max(0, composerTop-3)
 	if len(m.state.AutocompleteRows) > 0 {
-		rows := min(ui.AutocompleteRows, len(m.state.AutocompleteRows))
-		y := max(3, m.height-6-rows)
+		rows := min(ui.AutocompleteRows, len(m.state.AutocompleteRows), available)
+		y := max(3, composerTop-rows)
 		for i := range rows {
 			prefix := "┃  "
 			role := ui.RoleText
@@ -764,8 +833,8 @@ func (m Model) renderAutocomplete(c *canvas) {
 	} else {
 		views = m.registry.Palette(m.commandContext())
 	}
-	rows := min(ui.AutocompleteRows, len(views))
-	y := max(3, m.height-6-rows)
+	rows := min(ui.AutocompleteRows, len(views), available)
+	y := max(3, composerTop-rows)
 	for i := range rows {
 		view := views[i]
 		label := strings.Join(view.Command.Bindings, " ") + "  " + view.Command.Title
@@ -776,9 +845,34 @@ func (m Model) renderAutocomplete(c *canvas) {
 	}
 }
 
+// dialogWidth selects a fixed dialog tier (60/88/116) large enough for the
+// modal's widest content, never exceeding what the terminal can fit (§3 dialog
+// width tiers). It only drops below the medium tier on a terminal too narrow to
+// hold it.
+func (m Model) dialogWidth(l ui.Layout, modal SelectModel) int {
+	content := ui.Width(modal.Title) + 6
+	for _, item := range modal.Visible() {
+		row := "● " + item.Title
+		if item.Description != "" {
+			row += " · " + item.Description
+		}
+		if cw := ui.Width(row) + 6; cw > content {
+			content = cw
+		}
+	}
+	maxFit := max(1, l.Width-2*ui.OuterPadding)
+	w := ui.DialogMedium
+	for _, tier := range []int{ui.DialogLarge, ui.DialogXLarge} {
+		if content > w && tier <= maxFit {
+			w = tier
+		}
+	}
+	return min(w, maxFit)
+}
+
 func (m Model) renderModal(c *canvas, modal SelectModel) {
 	l := m.Layout()
-	w := min(ui.DialogMedium, max(1, l.Width-2))
+	w := m.dialogWidth(l, modal)
 	maxHeight := max(3, l.Height-2)
 	availableRows := max(0, maxHeight-6)
 	modal.PageSize = min(max(1, modal.PageSize), max(1, availableRows))

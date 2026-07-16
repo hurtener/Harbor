@@ -2,7 +2,7 @@
   HARB Search: deployment · 2 matches
   One active session · Protocol-only
   live
-  ◆ Active stream · following newest o
+  ↑ Scrolled away · new output will no
 
 
   ┃  Ask Harbor...

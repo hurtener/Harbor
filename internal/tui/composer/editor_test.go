@@ -106,6 +106,100 @@ func TestEditor_AccessorsMovementAndNoopEdges(t *testing.T) {
 	}
 }
 
+func TestEditor_History_PreservesWorkingDraftAcrossBrowsing(t *testing.T) {
+	e := New()
+	for _, h := range []string{"alpha", "beta"} {
+		e = e.SetText(h)
+		var err error
+		if e, _, err = e.Submit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An unsent, in-progress working draft.
+	e = e.Insert("work in progress")
+	if e.Text() != "work in progress" {
+		t.Fatalf("draft=%q", e.Text())
+	}
+	// Browse up through history.
+	e = e.History(-1)
+	if e.Text() != "beta" {
+		t.Fatalf("up=%q", e.Text())
+	}
+	e = e.History(-1)
+	if e.Text() != "alpha" {
+		t.Fatalf("up2=%q", e.Text())
+	}
+	// Page back down: alpha -> beta -> the original working draft (not nil).
+	e = e.History(1)
+	if e.Text() != "beta" {
+		t.Fatalf("down=%q", e.Text())
+	}
+	e = e.History(1)
+	if e.Text() != "work in progress" {
+		t.Fatalf("restored draft=%q, want original working draft", e.Text())
+	}
+	if e.Cursor() != len([]rune("work in progress")) {
+		t.Fatalf("cursor=%d, want end of restored draft", e.Cursor())
+	}
+	if _, _, ok := e.Selection(); ok {
+		t.Fatal("anchor not reset on restored draft")
+	}
+}
+
+func TestEditor_History_RealEditClearsParkedDraft(t *testing.T) {
+	e := New().SetText("saved")
+	var err error
+	if e, _, err = e.Submit(); err != nil {
+		t.Fatal(err)
+	}
+	e = e.Insert("typing") // working draft
+	e = e.History(-1)      // browse to the sole history entry
+	if e.Text() != "saved" {
+		t.Fatalf("up=%q", e.Text())
+	}
+	e = e.Insert("X") // real edit while browsing must discard the parked draft
+	if e.Text() != "savedX" {
+		t.Fatalf("edit=%q", e.Text())
+	}
+	// Re-browsing must not resurrect the stale "typing" draft.
+	e = e.History(-1)
+	if e.Text() != "saved" {
+		t.Fatalf("re-up=%q", e.Text())
+	}
+	e = e.History(1)
+	if e.Text() == "typing" {
+		t.Fatal("stale parked draft resurrected after real edit")
+	}
+	if e.Text() != "savedX" {
+		t.Fatalf("parked draft=%q, want the post-edit content", e.Text())
+	}
+}
+
+func TestEditor_Insert_CoalescesTypingIntoOneUndoGroup(t *testing.T) {
+	e := New()
+	for _, r := range "hello" {
+		e = e.Insert(string(r))
+	}
+	if e.Text() != "hello" {
+		t.Fatalf("typed=%q", e.Text())
+	}
+	// A single undo must remove the whole coalesced typing run, not one rune.
+	e = e.Undo()
+	if e.Text() != "" {
+		t.Fatalf("coalesced undo=%q, want empty (whole run removed)", e.Text())
+	}
+
+	// Whitespace and non-typing edits break the coalescing run into groups.
+	e = New()
+	for _, r := range "ab cd" {
+		e = e.Insert(string(r))
+	}
+	e = e.Undo()
+	if e.Text() != "ab " {
+		t.Fatalf("whitespace-boundary undo=%q, want %q", e.Text(), "ab ")
+	}
+}
+
 func TestEditor_RestoreLocalBoundsHistoryAndStash(t *testing.T) {
 	history := make([]string, MaxHistory+5)
 	stash := make([]string, MaxStash+5)

@@ -6,19 +6,19 @@
   ┃
   ┃  ◆  Active stream · following newest output
   ┃
-                        Runtime actions
-  ┃                    Search:
-  ┃  ◇  Summarize th  ● Delete artifact · Unavailable: no artifact selected
-  ┃                     Approve intervention · Unavailable: no unresolved Paus
-                        Submit required input · Unavailable: no unresolved Pau
-  ┃                     Submit OAuth intervention · Unavailable: no unresolved
-  ┃  ●  The deployme    Reject intervention · Unavailable: no unresolved Pause
-  ┃                     Resume intervention · Unavailable: no unresolved Pause
-                        Delete session · sessions.delete · capability session_
-                        Cancel task · Unavailable: no active task target
+          Runtime actions
+  ┃      Search:
+  ┃  ◇  ● Delete artifact · Unavailable: no artifact selected
+  ┃       Approve intervention · Unavailable: no unresolved PauseToken target
+          Submit required input · Unavailable: no unresolved PauseToken target
+  ┃       Submit OAuth intervention · Unavailable: no unresolved PauseToken target
+  ┃  ●    Reject intervention · Unavailable: no unresolved PauseToken target
+  ┃       Resume intervention · Unavailable: no unresolved PauseToken target
+          Delete session · sessions.delete · capability session_lifecycle · scope verified o
+          Cancel task · Unavailable: no active task target
 
 
-                      ↑/↓ move · enter select · esc close
+        ↑/↓ move · enter select · esc close
 
 
 

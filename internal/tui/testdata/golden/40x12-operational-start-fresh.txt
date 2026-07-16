@@ -1,12 +1,12 @@
 
   HARBOR  /  SESSION
 
-     Start Fresh
-    Search:
+      Start Fresh
+     Search:
 
 
 
 
 
 
-   ↑/↓ move · enter select · esc clos
+    ↑/↓ move · enter select · esc cl

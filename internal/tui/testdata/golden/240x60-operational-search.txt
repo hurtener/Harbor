@@ -1,17 +1,17 @@
 
   HARBOR  /  SESSION                                                                                                                                                                                           Search: deployment · 2 matches
-  One active session · Protocol-only                                                                                                                                                                    RUNTIME CONTEXT
+  One active session · Protocol-only                                                                                                                                                                  RUNTIME CONTEXT
   live
-                                                                                                                                                                                                        Session
-  ┃                                                                                                                                                                                                     session-alpha
-  ┃  ◆  Active stream · following newest output                                                                                                                                                         one active session
+                                                                                                                                                                                                      Session
+  ┃                                                                                                                                                                                                   session-alpha
+  ┃  ↑  Scrolled away · new output will not move this view                                                                                                                                            one active session
   ┃
-                                                                                                                                                                                                        Status
-  ┃                                                                                                                                                                                                     running
-  ┃  ↑  Scrolled away · new output will not move this view                                                                                                                                              Transcript
-  ┃                                                                                                                                                                                                     2 blocks
-                                                                                                                                                                                                        Stream
-  ┃                                                                                                                                                                                                     live
+                                                                                                                                                                                                      Status
+  ┃                                                                                                                                                                                                   running
+  ┃  ◆  Active stream · following newest output                                                                                                                                                       Transcript
+  ┃                                                                                                                                                                                                   2 blocks
+                                                                                                                                                                                                      Stream
+  ┃                                                                                                                                                                                                   live
   ┃  ◇  Summarize the deployment status.
   ┃
 

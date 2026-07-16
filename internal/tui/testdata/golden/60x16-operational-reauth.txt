@@ -3,11 +3,11 @@
   One active session · Protocol-only
   authentication expired
 
-     Replace credential · memory only
-    Search:
+      Replace credential · memory only
+     Search:
 
 
-   ↑/↓ move · enter select · esc close
+    ↑/↓ move · enter select · esc close
 
   ┃  Ask Harbor...
   ┃  disabled

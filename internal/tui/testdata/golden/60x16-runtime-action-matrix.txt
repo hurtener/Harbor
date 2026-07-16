@@ -1,16 +1,16 @@
 
   HARBOR  /  SESSION
 
-     Runtime actions
-    Search:
-   ● Delete artifact · Unavailable: no artifact selected
-     Approve intervention · Unavailable: no unresolved Pa
-     Submit required input · Unavailable: no unresolved P
-     Submit OAuth intervention · Unavailable: no unresolv
-     Reject intervention · Unavailable: no unresolved Pau
-     Resume intervention · Unavailable: no unresolved Pau
-     Delete session · sessions.delete · capability sessio
-     Cancel task · Unavailable: no active task target
+      Runtime actions
+     Search:
+    ● Delete artifact · Unavailable: no artifact selecte
+      Approve intervention · Unavailable: no unresolved
+      Submit required input · Unavailable: no unresolved
+      Submit OAuth intervention · Unavailable: no unreso
+      Reject intervention · Unavailable: no unresolved P
+      Resume intervention · Unavailable: no unresolved P
+      Delete session · sessions.delete · capability sess
+      Cancel task · Unavailable: no active task target
 
 
-   ↑/↓ move · enter select · esc close
+    ↑/↓ move · enter select · esc close

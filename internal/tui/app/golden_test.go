@@ -73,6 +73,26 @@ func operationalScenarios() []operationalCaptureScenario {
 			m.applyUpdate(conversation.Update{Identity: p.Identity, Generation: 1, State: conversation.StateReplaying, Projection: p, Overflow: true})
 			return m
 		}},
+		{"operational-failed", func(w, h int) RuntimeModel {
+			// Drive a terminally-failed session through the real writer: it must
+			// render as a distinct, non-resumable error state (§9), not as a
+			// benign "completed · resumable".
+			m := base(w, h)
+			p := m.transcript.Projection
+			p.SessionStatus = string(types.SessionStatusFailed)
+			m.applyUpdate(conversation.Update{Identity: p.Identity, Generation: 1, State: conversation.StateLive, Projection: p})
+			return m
+		}},
+		{"operational-dropped", func(w, h int) RuntimeModel {
+			// A genuine event-window drop (live-journal overflow) must light the
+			// Dropped honesty state through the real writer — proving the state is
+			// reachable from Runtime behavior, not dead code.
+			m := base(w, h)
+			p := m.transcript.Projection
+			p.ReplayGap = &projection.ReplayGap{Reason: "live_journal_overflow", LastSequence: 44}
+			m.applyUpdate(conversation.Update{Identity: p.Identity, Generation: 1, State: conversation.StateReplaying, Projection: p})
+			return m
+		}},
 		{"operational-session-picker", func(w, h int) RuntimeModel {
 			m := base(w, h)
 			m.shell = m.shell.WithModal(NewSelect("Sessions", []SelectItem{{ID: "session-alpha", Title: "Current session", Description: "running", Current: true}, {ID: "session-closed", Title: "Incident review", Description: "completed · Resume on next canonical start"}}, "composer"))
