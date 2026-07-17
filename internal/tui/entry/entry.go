@@ -178,12 +178,17 @@ func Run(ctx context.Context, opts Options) error {
 		// is silently dropped.
 		interaction.Compact = opts.Compact
 	}
+	// A persisted theme is an explicit operator choice: apply it AND lock it
+	// so the terminal-background auto-detect cannot clobber it at startup.
 	theme := ui.CompileTheme(ui.EnvironmentFrom(os.LookupEnv))
+	themeLocked := false
 	if interaction.Theme == string(ui.ModeLight) {
 		theme = ui.NewTheme(ui.ModeLight, theme.Profile())
+		themeLocked = true
 	}
 	if interaction.Theme == string(ui.ModeDark) {
 		theme = ui.NewTheme(ui.ModeDark, theme.Profile())
+		themeLocked = true
 	}
 	updates := conversation.NewNotifier(64)
 	controller, err := conversation.NewController(opts.BaseURL, tokens, identity, func(update conversation.Update) {
@@ -195,7 +200,7 @@ func Run(ctx context.Context, opts Options) error {
 	defer func() { _ = controller.Close() }()
 	defer updates.Close()
 	exportPath := filepath.Join(filepath.Dir(statePath), "exports", identity.Session+".md")
-	model := app.NewRuntimeModel(ctx, 80, 24, theme, controller, updates, app.RuntimeOptions{Compact: interaction.Compact, ReducedMotion: interaction.ReducedMotion, Fingerprint: fingerprint, ExportPath: exportPath, BaseURL: opts.BaseURL, State: interaction, Store: &store})
+	model := app.NewRuntimeModel(ctx, 80, 24, theme, controller, updates, app.RuntimeOptions{Compact: interaction.Compact, ReducedMotion: interaction.ReducedMotion, ThemeLocked: themeLocked, Fingerprint: fingerprint, ExportPath: exportPath, BaseURL: opts.BaseURL, State: interaction, Store: &store})
 	// When the caller did not override the streams, mount on the process
 	// terminal: Bubble Tea's own input discovery falls back to /dev/tty when
 	// stdin is redirected, and alternate-scroll wheel reporting is enabled —

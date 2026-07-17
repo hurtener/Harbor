@@ -224,6 +224,7 @@ func (m *Model) scrollTranscriptIfOverflow(deltaLines int) bool {
 	}
 	m.scrollLine = max(0, min(maxScroll, current+deltaLines))
 	m.followTail = m.scrollLine >= maxScroll
+	m.state.Scrolled = !m.followTail
 	return true
 }
 
@@ -293,6 +294,7 @@ func (m *Model) scrollTranscript(deltaLines int) {
 	}
 	m.scrollLine = max(0, min(maxScroll, current+deltaLines))
 	m.followTail = m.scrollLine >= maxScroll
+	m.state.Scrolled = !m.followTail
 }
 
 // scrollTranscriptTo jumps to an absolute line (negative = tail).
@@ -303,10 +305,12 @@ func (m *Model) scrollTranscriptTo(line int) {
 	if line < 0 {
 		m.scrollLine = maxScroll
 		m.followTail = true
+		m.state.Scrolled = false
 		return
 	}
 	m.scrollLine = max(0, min(maxScroll, line))
 	m.followTail = m.scrollLine >= maxScroll
+	m.state.Scrolled = !m.followTail
 }
 
 // transcriptPage is the page size for PageUp/PageDown.

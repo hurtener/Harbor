@@ -441,8 +441,16 @@ func (m Model) activateModal(modal SelectModel) (tea.Model, tea.Cmd) {
 		switch item.ID {
 		case "light":
 			m.theme = ui.NewTheme(ui.ModeLight, m.theme.Profile())
+			m.themeLocked = true
 		case "dark":
 			m.theme = ui.NewTheme(ui.ModeDark, m.theme.Profile())
+			m.themeLocked = true
+		case "auto":
+			// Auto releases the explicit lock and re-asks the terminal for
+			// its real background.
+			m.themeLocked = false
+			m.focus, _, _ = m.focus.Pop()
+			return m, tea.RequestBackgroundColor
 		}
 		m.focus, _, _ = m.focus.Pop()
 		return m, nil
@@ -532,7 +540,7 @@ func (m Model) execute(view CommandView) (tea.Model, tea.Cmd) {
 	case "sidebar":
 		m.state.SidebarOpen = !m.state.SidebarOpen
 	case "theme":
-		m = m.WithModal(NewSelect("Themes", []SelectItem{{ID: "dark", Category: "Theme", Title: "Dark"}, {ID: "light", Category: "Theme", Title: "Light"}}, m.focus.Focus()))
+		m = m.WithModal(NewSelect("Themes", []SelectItem{{ID: "dark", Category: "Theme", Title: "Dark"}, {ID: "light", Category: "Theme", Title: "Light"}, {ID: "auto", Category: "Theme", Title: "Auto", Description: "follow the terminal background"}}, m.focus.Focus()))
 	case "quit":
 		m.quit = true
 		return m, tea.Quit

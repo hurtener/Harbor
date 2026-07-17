@@ -118,7 +118,10 @@ func (t Transcript) Jump(direction int) Transcript {
 	return t
 }
 
-// Search incrementally records deterministic block matches.
+// Search incrementally records deterministic block matches. Only
+// conversation-surface kinds participate: lifecycle and event fallbacks never
+// render on the chat surface, so a match there would select an invisible
+// block the view cannot scroll to.
 func (t Transcript) Search(query string) Transcript {
 	t.Query = query
 	t.Matches = nil
@@ -127,7 +130,12 @@ func (t Transcript) Search(query string) Transcript {
 		return t
 	}
 	for i, b := range t.Projection.Blocks {
-		if strings.Contains(strings.ToLower(b.Text+" "+b.Tool+" "+b.EventType+" "+b.Kind), q) {
+		switch b.Kind {
+		case "user", "text", "reasoning", "tool", "intervention":
+		default:
+			continue
+		}
+		if strings.Contains(strings.ToLower(b.Text+" "+b.Tool+" "+b.Kind), q) {
 			t.Matches = append(t.Matches, i)
 		}
 	}

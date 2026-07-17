@@ -41,6 +41,7 @@ type InteractionState struct {
 	SidebarOpen       bool      `json:"sidebar_open,omitempty"`
 	Theme             string    `json:"theme,omitempty"`
 	ReducedMotion     bool      `json:"reduced_motion,omitempty"`
+	ShowTimestamps    bool      `json:"show_timestamps,omitempty"`
 	Compact           bool      `json:"compact,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }

@@ -57,6 +57,9 @@ type interactionStore interface {
 // RuntimeOptions supplies local-only interaction state and output paths.
 type RuntimeOptions struct {
 	Compact, ReducedMotion  bool
+	// ThemeLocked marks the supplied theme as an explicit operator choice;
+	// terminal background auto-detection must not override it.
+	ThemeLocked             bool
 	Fingerprint, ExportPath string
 	// BaseURL is the attach target, shown on the session banner.
 	BaseURL string
@@ -168,6 +171,8 @@ func NewRuntimeModel(ctx context.Context, width, height int, theme ui.Theme, con
 	editor := composer.New().RestoreLocal(options.State.History, options.State.Stash).SetText(options.State.Draft)
 	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, expandedReasoning: stringSet(options.State.ExpandedReasoning), expandedTools: stringSet(options.State.ExpandedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id, renderers: renderers.Builtins(), pending: map[string]ActionIntent{}, taskCursors: map[int]types.TaskListCursor{1: {}}}
 	m.shell.state.BaseURL = options.BaseURL
+	m.shell.themeLocked = options.ThemeLocked
+	m.transcript.ShowTimestamps = options.State.ShowTimestamps
 	m.syncComposer()
 	m.syncAccess()
 	return m
@@ -462,8 +467,13 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.pageRoute(1)
 			return m, m.inspectCmd()
 		case "/":
-			m.routeFilter = true
-			m.shell.state.ToastOpen, m.shell.state.Toast = true, "Filter: "+m.currentRouteFilter()
+			// Only routes with a canonical filter enter filter mode; a dead
+			// prompt that swallows typing is worse than no prompt.
+			switch m.shell.state.Route {
+			case "tasks", "tools", "artifacts", "events":
+				m.routeFilter = true
+				m.shell.state.ToastOpen, m.shell.state.Toast = true, "Filter: "+m.currentRouteFilter()
+			}
 			return m, nil
 		}
 	}
@@ -1695,11 +1705,15 @@ func (m RuntimeModel) retryAttachment() (tea.Model, tea.Cmd) {
 func (m RuntimeModel) updateSearch(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "escape", "enter":
+		// Closing search ALWAYS clears the filter — a silently sticky filter
+		// looks like lost history. Enter keeps the reader parked on the match
+		// they navigated to; esc abandons the search entirely.
 		m.searchMode = false
-		if key == "escape" {
-			m.searchQuery = ""
-			m.transcript = m.transcript.Search("")
-			m.syncProjection()
+		m.searchQuery = ""
+		m.transcript = m.transcript.Search("")
+		m.syncProjection()
+		if key == "enter" {
+			m.ensureSelectedVisible()
 		}
 		m.shell.state.ToastOpen = true
 		m.shell.state.Toast = "Search closed"
@@ -1981,23 +1995,28 @@ func (m *RuntimeModel) withLocalTurns(blocks []projection.Block) []projection.Bl
 
 func (m *RuntimeModel) syncProjection() {
 	p := m.transcript.Projection
-	p.Blocks = m.withLocalTurns(p.Blocks)
-	filtered := make([]projection.Block, 0, len(p.Blocks))
-	matches := map[int]bool{}
+	// Matches are indices into the transcript's OWN block slice; resolve them
+	// to IDs BEFORE local-turn echoes shift positions, or the filter would
+	// alias onto neighbouring blocks.
+	matchedIDs := map[string]bool{}
 	if m.transcript.Query != "" {
 		for _, index := range m.transcript.Matches {
-			matches[index] = true
+			if index >= 0 && index < len(p.Blocks) {
+				matchedIDs[p.Blocks[index].ID] = true
+			}
 		}
 	}
+	p.Blocks = m.withLocalTurns(p.Blocks)
+	filtered := make([]projection.Block, 0, len(p.Blocks))
 	selectedID := ""
 	if len(p.Blocks) > 0 {
 		selectedID = p.Blocks[min(max(0, m.transcript.Selected), len(p.Blocks)-1)].ID
 	}
-	for index, block := range p.Blocks {
+	for _, block := range p.Blocks {
 		if !conversational(block.Kind) {
 			continue
 		}
-		if m.transcript.Query != "" && !matches[index] {
+		if m.transcript.Query != "" && !matchedIDs[block.ID] {
 			continue
 		}
 		// Reasoning and tool detail are collapsed by default (the operator opens
@@ -2010,7 +2029,9 @@ func (m *RuntimeModel) syncProjection() {
 		if block.Kind == "tool" && !m.expandedTools[block.ID] {
 			block.Text = ""
 		}
-		if m.transcript.ShowTimestamps && !block.At.IsZero() {
+		if m.transcript.ShowTimestamps && !block.At.IsZero() && block.Text != "" {
+			// Collapsed blocks keep only their summary header; a dangling
+			// timestamp on an emptied body reads as noise.
 			block.Text += " · " + block.At.Format("15:04:05")
 		}
 		filtered = append(filtered, block)
@@ -2131,12 +2152,18 @@ func (m RuntimeModel) Finalize() error {
 }
 func (m RuntimeModel) interactionState() conversation.InteractionState {
 	id := m.controller.Identity()
-	theme := string(m.shell.theme.Mode())
+	// The theme persists only as an EXPLICIT operator choice; while auto,
+	// the next launch re-detects the terminal background instead of pinning
+	// whatever mode detection happened to land on this time.
+	theme := ""
+	if m.shell.themeLocked {
+		theme = string(m.shell.theme.Mode())
+	}
 	scroll := ""
 	if len(m.transcript.Projection.Blocks) > 0 {
 		scroll = m.transcript.Projection.Blocks[min(max(0, m.transcript.Selected), len(m.transcript.Projection.Blocks)-1)].ID
 	}
-	return conversation.InteractionState{Identity: id, RuntimeFingerprint: m.fingerprint, Draft: m.editor.Text(), History: m.editor.HistoryEntries(), Stash: m.editor.StashEntries(), ScrollBlockID: scroll, ExpandedReasoning: setStrings(m.expandedReasoning), ExpandedTools: setStrings(m.expandedTools), SidebarWidth: ui.SidebarWidth, SidebarOpen: m.shell.state.SidebarOpen, Theme: theme, ReducedMotion: m.shell.reducedMotion, Compact: m.compact}
+	return conversation.InteractionState{Identity: id, RuntimeFingerprint: m.fingerprint, Draft: m.editor.Text(), History: m.editor.HistoryEntries(), Stash: m.editor.StashEntries(), ScrollBlockID: scroll, ExpandedReasoning: setStrings(m.expandedReasoning), ExpandedTools: setStrings(m.expandedTools), SidebarWidth: ui.SidebarWidth, SidebarOpen: m.shell.state.SidebarOpen, Theme: theme, ReducedMotion: m.shell.reducedMotion, ShowTimestamps: m.transcript.ShowTimestamps, Compact: m.compact}
 }
 
 func (m *RuntimeModel) syncAccess() {
