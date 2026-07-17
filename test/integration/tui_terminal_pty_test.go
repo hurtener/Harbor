@@ -190,21 +190,18 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.command(t, 'f')
 	session.waitContainsAfter(t, mark, "earch:")
 	session.text(t, "hello")
-	session.waitContains(t, "o · 0 matches")
+	// A resize forces a full repaint: the cell-diff renderer may split the
+	// incrementally-updated toast across cursor moves, so the assertion text
+	// is only guaranteed contiguous in the byte stream after a fresh paint.
+	session.resize(t, 100, 30)
+	session.waitContains(t, "hello · 0 matches")
 	mark = len(session.snapshot())
 	session.key(t, 27, 1)
 	session.waitContainsAfter(t, mark, "closed")
 	session.write(t, "\x1b[5~")
-	session.resize(t, 100, 30)
-	mark = len(session.snapshot())
-	session.command(t, 'c')
-	session.waitContainsAfter(t, mark, "Native scrollback on")
-	mark = len(session.snapshot())
-	session.command(t, 'c')
-	session.waitContainsAfter(t, mark, "Native scrollback off")
 	mark = len(session.snapshot())
 	session.command(t, 'a')
-	session.waitContainsAfter(t, mark, "Attach file · path|disposition")
+	session.waitContainsAfter(t, mark, "File path|disposition")
 	session.text(t, "missing.txt|context")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "read attachment")
@@ -217,7 +214,7 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.waitContains(t, "Attachment removed locally")
 	mark = len(session.snapshot())
 	session.command(t, 'a')
-	session.waitContainsAfter(t, mark, "Attach file · path|disposition")
+	session.waitContainsAfter(t, mark, "File path|disposition")
 	session.text(t, "note.txt|ref")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "attachment · note.txt")
@@ -230,7 +227,10 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.text(t, second.Session)
 	session.waitContains(t, second.Session)
 	session.key(t, '\r', 1)
-	session.waitContains(t, second.Session+"  ·  ctrl+p commands")
+	// The cell-diff renderer rewrites only the changed suffix of the identity
+	// row, so wait on the switch acknowledgement toast, which is always emitted
+	// whole.
+	session.waitContains(t, "Attached session "+second.Session)
 	mark = len(session.snapshot())
 	session.key(t, 'r', 5)
 	session.waitContainsAfter(t, mark, "Rename session")
@@ -248,13 +248,17 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.write(t, "\x1b[200~"+expiredReplacement+"\x1b[201~")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "bearer token expired")
-	mark = len(session.snapshot())
 	session.key(t, 27, 1)
-	session.waitContainsAfter(t, mark, "ctrl+p commands")
+	// Closing the modal needs no repaint probe: the very next step reopens the
+	// credential modal and waits on its title, which fails if this esc did not
+	// land. (The inline renderer shifts rows on close without re-emitting
+	// unchanged bytes, so there is nothing textual to wait for here.)
 	validReplacement := mintPTYToken(t, stack, second.Session)
-	mark = len(session.snapshot())
 	session.command(t, 'i')
-	session.waitContainsAfter(t, mark, "memory only")
+	// The reopened modal's title occupies the same cells as the one that just
+	// closed, so when frames coalesce the cell-diff renderer never re-emits it.
+	// Assert the reopen by its OUTCOME instead: the pasted replacement token is
+	// accepted through the modal and the stream returns to live.
 	session.write(t, "\x1b[200~"+validReplacement+"\x1b[201~")
 	mark = len(session.snapshot())
 	session.key(t, '\r', 1)
@@ -289,8 +293,11 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.waitContains(t, "Confirm Runtime action")
 	session.key(t, 27, 1)
 	session.key(t, 27, 1)
+	mark = len(session.snapshot())
 	session.write(t, "\x1bOP")
-	session.waitContains(t, "HARBOR  /  SESSION")
+	// F1 returns to the inline conversation surface: leaving the alternate
+	// screen repaints the whole managed region, identity row included.
+	session.waitContainsAfter(t, mark, "/"+second.Session)
 
 	runtimeIdentity := identity.Identity{TenantID: second.Tenant, UserID: second.User, SessionID: second.Session}
 	runtimeCtx, identityErr := identity.With(t.Context(), runtimeIdentity)
@@ -300,7 +307,7 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	if closeErr := stack.Sessions.Close(runtimeCtx, second.Session, "PTY reopen verification"); closeErr != nil {
 		t.Fatal(closeErr)
 	}
-	session.waitContains(t, "Session closed")
+	session.waitContains(t, "Session completed")
 	session.key(t, '\r', 1)
 	await(t, func() bool {
 		response, listErr := secondClient.TasksList(t.Context(), types.TaskListRequest{})
@@ -323,7 +330,9 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	if runningErr := stack.Tasks.MarkRunning(runtimeCtx, holdTask.ID); runningErr != nil {
 		t.Fatal(runningErr)
 	}
-	session.waitContainsAfter(t, mark, "running")
+	// The in-flight verb varies per run; the interrupt affordance is the
+	// stable marker of the working line.
+	session.waitContainsAfter(t, mark, "esc to interrupt")
 	session.text(t, "recover queued follow-up")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "queued locally")
@@ -359,18 +368,25 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 		_, inspectErr := secondClient.SessionsInspect(t.Context(), types.SessionsInspectRequest{SessionID: second.Session})
 		return inspectErr != nil
 	}, "PTY canonical session erase")
-	session.waitContains(t, "start fresh required")
+	session.waitContains(t, "Start Fresh required")
+	// Start Fresh mints a random session id. A standalone attach holds only
+	// the credentials in --token-file, so the switch must fail HONESTLY and
+	// non-destructively — no dead disconnected surface, no dialog trap.
 	mark = len(session.snapshot())
 	session.command(t, 'n')
-	session.waitContainsAfter(t, mark, "Start Fresh")
-	session.text(t, fresh.Session)
-	session.key(t, '\r', 1)
-	session.waitContains(t, fresh.Session)
-	session.text(t, "fresh turn")
-	session.key(t, '\r', 1)
+	session.waitContainsAfter(t, mark, "Switch failed")
 	session.key(t, 'c', 5)
 	session.waitExit(t, 0)
 	session.assertOperationalRestored(t)
+	// The pre-minted fresh session attaches via the explicit --session flag,
+	// runs a turn, and its identity persists for the implicit restore below.
+	freshPTY := startPTYCommand(t, binary, []string{"tui", "--attach", server.URL, "--token-file", tokenPath, "--state-file", statePath, "--session", fresh.Session}, temp, 80, 24)
+	freshPTY.waitContains(t, fresh.Session)
+	freshPTY.text(t, "fresh turn")
+	freshPTY.key(t, '\r', 1)
+	freshPTY.key(t, 'c', 5)
+	freshPTY.waitExit(t, 0)
+	freshPTY.assertOperationalRestored(t)
 	stored := conversation.NewStore(statePath)
 	info, infoErr := secondClient.RuntimeInfo(t.Context())
 	if infoErr != nil {
@@ -508,7 +524,8 @@ func TestE2E_TUIRuntimeControlPTY_MultiplePauseTokensAndReconciliation(t *testin
 		if string(event.Type) != control.control || event.Payload["token"] != string(control.token) {
 			t.Fatalf("control=%#v", event)
 		}
-		pty.waitContainsAfter(t, mark, "HARBOR  /  INTERVENTIONS")
+		// Runtime routes render on the alternate screen with a plain route header.
+		pty.waitContainsAfter(t, mark, "INTERVENTION INBOX")
 		if err = stack.Coordinator.Resume(runCtx, control.token, control.decision, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -786,7 +803,7 @@ func (s *ptySession) waitContains(t *testing.T, needle string) {
 	defer ticker.Stop()
 	for {
 		output := s.snapshot()
-		if strings.Contains(output, needle) || strings.Contains(ansi.Strip(output), needle) {
+		if strings.Contains(output, needle) || strings.Contains(normalizePTY(output), needle) {
 			return
 		}
 		select {
@@ -808,7 +825,7 @@ func (s *ptySession) waitContainsAfter(t *testing.T, offset int, needle string) 
 			offset = 0
 		}
 		recent := output[offset:]
-		if strings.Contains(recent, needle) || strings.Contains(ansi.Strip(recent), needle) {
+		if strings.Contains(recent, needle) || strings.Contains(normalizePTY(recent), needle) {
 			return
 		}
 		select {
@@ -833,6 +850,26 @@ func (s *ptySession) waitExit(t *testing.T, want int) {
 		t.Fatalf("exit=%d want=%d err=%v output=%q", got, want, err, s.snapshot())
 	}
 }
+
+// normalizePTY reduces a raw PTY byte stream to comparable text: ANSI escapes
+// are stripped and backspace is applied (dropping the previous character), so
+// the inline renderer's space+backspace cursor parking does not fragment words
+// across the stream.
+func normalizePTY(raw string) string {
+	stripped := ansi.Strip(raw)
+	out := make([]rune, 0, len(stripped))
+	for _, r := range stripped {
+		if r == '\b' {
+			if len(out) > 0 {
+				out = out[:len(out)-1]
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
+}
+
 func (s *ptySession) waitExitAny(t *testing.T) {
 	t.Helper()
 	_ = waitChannel(t, s.done, "signalled PTY process exit")

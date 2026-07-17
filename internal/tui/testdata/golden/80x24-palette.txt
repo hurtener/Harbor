@@ -1,24 +1,24 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-  ┃
-  ┃  ◆  In
-  ┃           Commands
+     ◆  Inspecting Runtime posture
+
+     ✓  ru
+       Run    Commands
              Search:
-  ┃         ● Command palette · Find an available action
-  ┃  ✓  Ru    Toggle runtime context · Show the fixed context sideba
-  ┃           Keyboard help · Show all reachable commands
+  ┃  !  Op  ● Command palette · Find an available action
+  ┃  Opera    Toggle runtime context · Show the fixed context sideba
+              Keyboard help · Show all reachable commands
               Quit · Restore the terminal and exit
-  ┃           Attach file · Unavailable: requires a live authenticat
-  ┃  !  Op    Cancel queued follow-up · Unavailable: no local follow
-  ┃           Remove attachment · Unavailable: no attachment is sele
+              Attach file · Unavailable: requires a live authenticat
+              Cancel queued follow-up · Unavailable: no local follow
+              Remove attachment · Unavailable: no attachment is sele
               Restore stashed draft · Pop the newest local draft
 
-  ┃  Ask H
+  ┃  Compo
   ┃         ↑/↓ move · enter select · esc close
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -1,24 +1,24 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  live
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
-  ┃
-  ┃  ◆  A
-  ┃          Runtime actions
+  ┃  Summarize the deployment status.
+
+     The
+             Runtime actions
             Search:
-  ┃        ● Delete artifact · Unavailable: no artifact selected
-  ┃  ◇  S    Approve intervention · Unavailable: no unresolved Paus
-  ┃          Submit required input · Unavailable: no unresolved Pau
+           ● Delete artifact · Unavailable: no artifact selected
+             Approve intervention · Unavailable: no unresolved Paus
+             Submit required input · Unavailable: no unresolved Pau
              Submit OAuth intervention · Unavailable: no unresolved
-  ┃          Reject intervention · Unavailable: no unresolved Pause
-  ┃  ●  T    Resume intervention · Unavailable: no unresolved Pause
-  ┃          Delete session · sessions.delete · capability session_
+             Reject intervention · Unavailable: no unresolved Pause
+             Resume intervention · Unavailable: no unresolved Pause
+             Delete session · sessions.delete · capability session_
              Cancel task · Unavailable: no active task target
 
 
   ┃  Ask   ↑/↓ move · enter select · esc close
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹─────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

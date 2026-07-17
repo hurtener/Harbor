@@ -1,23 +1,10 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
-  live
-                                                                                                                      Session
-  ┃                                                                                                                   session-alpha
-  ┃  ×  Session failed · terminal error state, not resumable                                                          one active session
-  ┃
-                                                                                                                      Status
-  ┃                                                                                                                   failed
-  ┃  ◆  Active stream · following newest output                                                                       Transcript
-  ┃                                                                                                                   2 blocks
-                                                                                                                      Stream
-  ┃                                                                                                                   live
-  ┃  ◇  Summarize the deployment status.
-  ┃
+  ▛▀▖  Harbor  ·  Development Runtime
+  ▙▄▘  fixture · session session-alpha
 
-  ┃
-  ┃  ●  The deployment completed successfully.
-  ┃
+  ┃  Summarize the deployment status.
+
+     The deployment completed successfully.
 
 
 
@@ -33,8 +20,21 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+  ×  Session failed · terminal error state, not resumable
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃  fixture
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

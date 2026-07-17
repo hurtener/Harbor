@@ -1,20 +1,20 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  replaying
+  ▛▀▖  Harbor  ·  Development Runtime
+  ▙▄▘  fixture · session session-alpha
 
-  ┃
-  ┃  !  Dropped event window · output may be incomplete
-  ┃
+  ┃  Summarize the deployment status.
 
-  ┃
-  ┃  ●  The deployment completed successfully.
-  ┃
+     The deployment completed successfully.
 
 
 
+
+
+
+
+  !  Dropped event window · output may be incomplete
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃  fixture
+  ╹──────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  replaying   ·   ctrl+p Command palette   ctrl+x s Toggle runtime con

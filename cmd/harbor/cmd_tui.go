@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,7 +38,7 @@ the token file. Signed tokens are never extended or written to local state.`, Ar
 	cmd.Flags().String(flagTUISession, "", "authorized session to restore or select")
 	cmd.Flags().String(flagTUITokenFile, "", "rotating JWT file (default ~/.harbor/token)")
 	cmd.Flags().String(flagTUIStateFile, "", "local interaction-state file (default ~/.harbor/tui-state.json)")
-	cmd.Flags().Bool(flagTUICompact, false, "use compact transcript presentation")
+	cmd.Flags().Bool(flagTUICompact, false, "deprecated: the conversation always renders inline in native terminal scrollback; accepted for compatibility, has no effect")
 	return cmd
 }
 
@@ -77,9 +78,26 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		statePath = filepath.Join(home, ".harbor", "tui-state.json")
 	}
 	explicit := cmd.Flags().Changed(flagTUITokenFile)
-	input, output := cmd.InOrStdin(), cmd.OutOrStdout()
-	if _, injectedInput := input.(interface{ Len() int }); !injectedInput {
-		input, output = os.Stdin, os.Stdout
+	// Streams stay nil in the normal case so the entry point mounts on the
+	// process terminal via Bubble Tea's own TTY discovery — the same path
+	// `serve --tui` and `dev --tui` take. Only streams genuinely overridden
+	// on the command (tests inject buffers via cmd.SetIn/cmd.SetOut) are
+	// passed through, which bypasses TTY discovery.
+	//
+	// Deliberate consequence: a REDIRECTED stdin is ignored on this path —
+	// discovery falls back to /dev/tty, so the keyboard is authoritative and
+	// `printf ... | harbor tui` does not drive the UI (script a PTY instead,
+	// as the integration harness does). With no controlling terminal at all
+	// the attach fails loudly rather than ghost-rendering into a pipe.
+	// Guard-rail for future tests: a test that reaches the program without
+	// overriding BOTH streams will grab the developer's real terminal.
+	var input io.Reader
+	var output io.Writer
+	if in := cmd.InOrStdin(); in != os.Stdin {
+		input = in
+	}
+	if out := cmd.OutOrStdout(); out != os.Stdout {
+		output = out
 	}
 	err = entry.Run(cmd.Context(), entry.Options{
 		BaseURL:    base,

@@ -1,12 +1,12 @@
 
-  HARB Follow-up failed · retry or dis
-  One active session · Protocol-only
-  live
-  ◆ Active stream · following newest o
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
+     successfully.
 
+  Follow-up failed · retry or discard
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·
-  ctrl+p Command palette   ctrl+x s To
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

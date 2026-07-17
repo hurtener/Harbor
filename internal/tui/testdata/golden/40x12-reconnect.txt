@@ -1,12 +1,12 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  retrying · attempt 2 in 4s
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
 
+  ┃  Operator approval required
 
-  ┃  Ask Harbor about this runtime...
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃
+  ╹──────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000
-  ctrl+p Command palette   ctrl+x s To
+  retrying · attempt 2 in 4s   ·   ctr

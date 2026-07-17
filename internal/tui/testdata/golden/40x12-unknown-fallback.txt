@@ -1,12 +1,12 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
-  ? Unknown event · safe metadata-only
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
 
-  ┃  Ask Harbor about this runtime...
+
+  ?  Unknown event · safe metadata-on
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃
+  ╹──────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000
-  ctrl+p Command palette   ctrl+x s To
+  disconnected   ·   ctrl+p Command pa

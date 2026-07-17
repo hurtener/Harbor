@@ -1,24 +1,24 @@
 
-  HARBOR  /  SESSION                           Sidebar context visible
-  One active session · Protocol-only    RUNTIME CONTEXT
-  disconnected
-                                        Session
-  ┃                                     01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime posture      one active session
-  ┃
-                                        Status
-  ┃                                     running
-  ┃  ✓  Runtime health snapshot receiv  Transcript
-  ┃                                     3 blocks
-                                        Stream
-  ┃                                     disconnected
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE000000  RUNTIME CONTEXT
+
+     ◆  Inspecting Runtime posture      Session
+                                        01K0HARBORFIXTURE0000000000
+     ✓  runtime.health  succeeded
+       Runtime health snapshot receive  Status
+                                        running
   ┃  !  Operator approval required
-  ┃
+  ┃  Operator approval required
 
 
-  ┃  Ask Harbor about this runtime...
+
+
+
+
+
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃
+  ╹───────────────────────────────────
   acme/operator/01K0HARBORFIXTURE00000
-  ctrl+p Command palette   ctrl+x s To
+  disconnected   ·   ctrl+p Command pa

@@ -1,11 +1,12 @@
 
-  HARBOR  /  TOOLS
-  One active session · Protocol-only
-  live
+  TOOLS
 
    Exactly one active session · tena
    ↑/↓ select · PgUp/PgDn page · / f
    TOOLS · schema / transport / OAut
-   Filter:  · page 1
 
-
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

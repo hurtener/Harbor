@@ -1,16 +1,16 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-  ┃
-  ┃  ×  Session erased · terminal state, start fresh requ
-  ┃
+       Runtime health snapshot received
 
+  ┃  !  Operator approval required
+  ┃  Operator approval required
 
-  ┃  Ask Harbor about this runtime...
+  ×  Session erased · terminal, Start Fresh required
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p co
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹──────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Tog

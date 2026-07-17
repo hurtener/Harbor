@@ -1,11 +1,12 @@
 
-  HARBOR  /  TASKS
-  One active session · Protocol-only
-  live
+  TASKS
 
    Exactly one active session · tena
    ↑/↓ select · PgUp/PgDn page · / f
    TASK LIFECYCLE / TREE / PROGRESS
-   Filter:  · page 1
 
-
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

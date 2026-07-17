@@ -1,16 +1,16 @@
 
-  HARBOR  /  SESSI         Sidebar context visible
-  One active sessi  RUNTIME CONTEXT
-  disconnected
-                    Session
-  ┃                 01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting  one active session
-  ┃
-                    Status
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K  RUNTIME CONTEXT
+
+       Runtime hea  Session
+                    01K0HARBORFIXTURE0000000000
+  ┃  !  Operator a
+  ┃  Operator appr  Status
                     running
-  ┃  Ask Harbor ab  Transcript
-  ┃                 3 blocks
-  ┃  idle           Stream
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  disconnected
+
+  ┃  Composer idle
+  ┃
+  ┃
+  ╹───────────────
   acme/operator/01
-  ctrl+p Command p
+  disconnected   ·

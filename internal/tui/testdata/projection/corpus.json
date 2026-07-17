@@ -50,8 +50,8 @@
       "unavailable_capabilities":["model_catalog","topology"],
       "blocks":[
         {"id":"task:run-a","kind":"task","run_id":"run-a","status":"completed","incomplete":false},
-        {"id":"text:run-a","kind":"text","run_id":"run-a","status":"","text":"hello","incomplete":false},
-        {"id":"reasoning:run-a","kind":"reasoning","run_id":"run-a","status":"","text":"think","incomplete":false},
+        {"id":"text:run-a:0","kind":"text","run_id":"run-a","status":"","text":"hello","incomplete":false},
+        {"id":"reasoning:run-a:0","kind":"reasoning","run_id":"run-a","status":"","text":"think","incomplete":false},
         {"id":"tool:run-a:4","kind":"tool","run_id":"run-a","status":"succeeded","tool":"weather","incomplete":false},
         {"id":"tool:run-a:6","kind":"tool","run_id":"run-a","status":"failed","tool":"weather","incomplete":false},
         {"id":"intervention:pause-auth","kind":"intervention","run_id":"run-a","status":"pending","text":"Connect Weather MCP","incomplete":false},

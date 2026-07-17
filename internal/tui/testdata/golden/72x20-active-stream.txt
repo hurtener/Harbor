@@ -1,20 +1,20 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-  ┃
-  ┃  ◆  Active stream · following newest output
-  ┃
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
 
-  ┃
-  ┃  ◆  Inspecting Runtime posture
-  ┃
+  ┃  !  Operator approval required
+  ┃  Operator approval required
 
+     Streaming the answer
+     ▌
 
+  ✻ Plotting… (esc to interrupt)
   ┃  Active work in progress
   ┃
-  ┃  running
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹──────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime

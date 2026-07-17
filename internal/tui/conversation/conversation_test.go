@@ -89,7 +89,7 @@ func TestStore_AtomicBoundedRestoreAndMalformedFailure(t *testing.T) {
 	at := time.Unix(2000, 0)
 	store.now = func() time.Time { return at }
 	id := types.IdentityScope{Tenant: "t", User: "u", Session: "s"}
-	want := InteractionState{Identity: id, RuntimeFingerprint: "runtime", Draft: "draft", History: []string{"old"}, Stash: []string{"saved"}, ScrollBlockID: "block", CollapsedTools: []string{"tool"}, SidebarWidth: 42, SidebarOpen: true, Theme: "dark", ReducedMotion: true}
+	want := InteractionState{Identity: id, RuntimeFingerprint: "runtime", Draft: "draft", History: []string{"old"}, Stash: []string{"saved"}, ScrollBlockID: "block", ExpandedTools: []string{"tool"}, SidebarWidth: 42, SidebarOpen: true, Theme: "dark", ReducedMotion: true}
 	if err := store.Save(want); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestStore_ExpiryEvictionAndValidationFailures(t *testing.T) {
 	if err := store.Save(InteractionState{Identity: id, RuntimeFingerprint: "r", History: []string{string(make([]byte, maxListBytes+1))}}); err == nil {
 		t.Fatal("oversize history saved")
 	}
-	if err := store.Save(InteractionState{Identity: id, RuntimeFingerprint: "r", CollapsedTools: make([]string, maxCollapsedIDs+1)}); err == nil {
+	if err := store.Save(InteractionState{Identity: id, RuntimeFingerprint: "r", ExpandedTools: make([]string, maxCollapsedIDs+1)}); err == nil {
 		t.Fatal("oversize collapsed state saved")
 	}
 	for i := range maxStateEntries + 10 {

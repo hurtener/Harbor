@@ -1,40 +1,40 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
-  retrying · attempt 2 in 4s
-                                                                                                                      Session
-  ┃                                                                                                                   01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime posture                                                                                    one active session
-  ┃
-                                                                                                                      Status
-  ┃                                                                                                                   running
-  ┃  ✓  Runtime health snapshot received                                                                              Transcript
-  ┃                                                                                                                   3 blocks
-                                                                                                                      Stream
-  ┃                                                                                                                   retrying · attempt 2 in 4s
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
+
   ┃  !  Operator approval required
+  ┃  Operator approval required
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃  Composer idle · attach a Runtime
   ┃
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  ┃  Ask Harbor about this runtime...
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  retrying · attempt 2 in 4s   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

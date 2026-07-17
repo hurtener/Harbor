@@ -136,7 +136,7 @@ func DefaultRegistry() Registry {
 	}
 	registry, err := NewRegistry(
 		Command{ID: "palette", Title: "Command palette", Description: "Find an available action", Category: "Application", Bindings: []string{"ctrl+p"}, Suggested: true},
-		Command{ID: "help", Title: "Keyboard help", Description: "Show all reachable commands", Category: "Application", Bindings: []string{"?"}},
+		Command{ID: "help", Title: "Keyboard help", Description: "Show all reachable commands", Category: "Application", Bindings: []string{"ctrl+x", "?"}},
 		Command{ID: "sidebar", Title: "Toggle runtime context", Description: "Show the fixed context sidebar", Category: "View", Bindings: []string{"ctrl+x", "s"}, Suggested: true},
 		Command{ID: "theme", Title: "Switch theme", Description: "Choose dark, light, or automatic mode", Category: "View", Bindings: []string{"ctrl+x", "t"}},
 		Command{ID: "route-session", Title: "Conversation", Description: "Return to the active session conversation", Category: "Runtime", Bindings: []string{"f1"}, Enabled: connected},
@@ -159,7 +159,6 @@ func DefaultRegistry() Registry {
 		Command{ID: "reasoning", Title: "Toggle reasoning", Description: "Collapse or expand reasoning blocks", Category: "Transcript", Bindings: []string{"ctrl+x", "r"}, Enabled: hasTranscript},
 		Command{ID: "tool-detail", Title: "Toggle tool detail", Description: "Collapse or expand tool blocks", Category: "Transcript", Bindings: []string{"ctrl+x", "o"}, Enabled: hasTranscript},
 		Command{ID: "timestamps", Title: "Toggle timestamps", Description: "Show or hide transcript timestamps", Category: "Transcript", Bindings: []string{"ctrl+x", "y"}, Enabled: hasTranscript},
-		Command{ID: "compact", Title: "Toggle compact mode", Description: "Use native terminal scrollback", Category: "View", Bindings: []string{"ctrl+x", "c"}},
 		Command{ID: "reduced-motion", Title: "Toggle reduced motion", Description: "Disable or enable terminal animation", Category: "View", Bindings: []string{"ctrl+x", "m"}},
 		Command{ID: "stash", Title: "Stash draft", Description: "Store the draft locally", Category: "Composer", Bindings: []string{"ctrl+x", "b"}},
 		Command{ID: "stash-pop", Title: "Restore stashed draft", Description: "Pop the newest local draft", Category: "Composer", Bindings: []string{"ctrl+x", "p"}},

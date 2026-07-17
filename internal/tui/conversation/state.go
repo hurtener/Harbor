@@ -32,14 +32,18 @@ type InteractionState struct {
 	History            []string            `json:"history,omitempty"`
 	Stash              []string            `json:"stash,omitempty"`
 	ScrollBlockID      string              `json:"scroll_block_id,omitempty"`
-	CollapsedReasoning []string            `json:"collapsed_reasoning,omitempty"`
-	CollapsedTools     []string            `json:"collapsed_tools,omitempty"`
-	SidebarWidth       int                 `json:"sidebar_width,omitempty"`
-	SidebarOpen        bool                `json:"sidebar_open,omitempty"`
-	Theme              string              `json:"theme,omitempty"`
-	ReducedMotion      bool                `json:"reduced_motion,omitempty"`
-	Compact            bool                `json:"compact,omitempty"`
-	UpdatedAt          time.Time           `json:"updated_at"`
+	// ExpandedReasoning / ExpandedTools hold the block IDs the operator has
+	// explicitly expanded. Reasoning and tool detail are COLLAPSED by default,
+	// so these record deliberate exceptions rather than the common case.
+	ExpandedReasoning []string  `json:"expanded_reasoning,omitempty"`
+	ExpandedTools     []string  `json:"expanded_tools,omitempty"`
+	SidebarWidth      int       `json:"sidebar_width,omitempty"`
+	SidebarOpen       bool      `json:"sidebar_open,omitempty"`
+	Theme             string    `json:"theme,omitempty"`
+	ReducedMotion     bool      `json:"reduced_motion,omitempty"`
+	ShowTimestamps    bool      `json:"show_timestamps,omitempty"`
+	Compact           bool      `json:"compact,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type stateFile struct {
@@ -145,7 +149,7 @@ func validateInteractionState(value InteractionState) error {
 	if len(value.History) > 50 || len(value.Stash) > 50 || stringsBytes(value.History) > maxListBytes || stringsBytes(value.Stash) > maxListBytes {
 		return errors.New("tui state: history or stash exceeds bound")
 	}
-	if len(value.CollapsedReasoning) > maxCollapsedIDs || len(value.CollapsedTools) > maxCollapsedIDs || stringsBytes(value.CollapsedReasoning) > maxListBytes || stringsBytes(value.CollapsedTools) > maxListBytes {
+	if len(value.ExpandedReasoning) > maxCollapsedIDs || len(value.ExpandedTools) > maxCollapsedIDs || stringsBytes(value.ExpandedReasoning) > maxListBytes || stringsBytes(value.ExpandedTools) > maxListBytes {
 		return errors.New("tui state: collapsed detail state exceeds bound")
 	}
 	if len(value.ScrollBlockID) > maxStateKeyBytes {

@@ -1,17 +1,8 @@
 
-  HARBOR  /  HOME
-  One active session · Protocol-only                                           RUNTIME CONTEXT
-  disconnected
-                                                                               Session
-  ┃                                                                            01K0HARBORFIXTURE0000000000
-  ┃  ◇  Terminal foundation ready                                              one active session
-  ┃  Attach a Runtime to begin.
-  ┃                                                                            Status
-                                                                               running
-                                                                               Transcript
-                                                                               3 blocks
-                                                                               Stream
-                                                                               disconnected
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+       Attach a Runtime to begin.
 
 
 
@@ -22,9 +13,18 @@
 
 
 
-  ┃  Ask Harbor about this runtime...
+
+
+
+
+
+
+
+
+
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

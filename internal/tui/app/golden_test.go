@@ -200,7 +200,7 @@ func scenarios() []captureScenario {
 	return []captureScenario{
 		state("home", State{Route: "home", Composer: ComposerIdle}), state("session", State{Route: "session", Composer: ComposerIdle}),
 		state("composer-focused", State{Composer: ComposerFocused}), state("composer-disabled", State{Composer: ComposerDisabled}), state("composer-running", State{Composer: ComposerRunning}), state("composer-retry", State{Composer: ComposerRetry}), state("composer-attachment", State{Composer: ComposerAttachment}),
-		state("active-stream", State{Active: true, Composer: ComposerRunning}), state("scrolled-away", State{Scrolled: true}), state("reconnect", State{Connection: "retrying · attempt 2 in 4s"}), state("replay-gap", State{ReplayGap: true}), state("dropped-event", State{Dropped: true}), state("closed", State{Closed: true}), state("erased", State{Erased: true}), state("intervention", State{Intervention: true}), state("unknown-fallback", State{Unknown: true}), state("sidebar-overlay-or-joined", State{SidebarOpen: true, ToastOpen: true, Toast: "Sidebar context visible"}), state("autocomplete", State{AutocompleteOpen: true}), state("reduced-motion", State{Startup: true}),
+		state("scrolled-away", State{Scrolled: true}), state("reconnect", State{Connection: "retrying · attempt 2 in 4s"}), state("replay-gap", State{ReplayGap: true}), state("dropped-event", State{Dropped: true}), state("closed", State{Closed: true}), state("erased", State{Erased: true}), state("intervention", State{Intervention: true}), state("unknown-fallback", State{Unknown: true}), state("sidebar-overlay-or-joined", State{SidebarOpen: true, ToastOpen: true, Toast: "Sidebar context visible"}), state("autocomplete", State{AutocompleteOpen: true}), state("reduced-motion", State{Startup: true}),
 		{"palette", func(w, h int) Model {
 			return NewModel(w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, FixtureProjection()).WithState(State{}).OpenPalette()
 		}},
@@ -221,8 +221,19 @@ func scenarios() []captureScenario {
 			m := NewModel(w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, FixtureProjection()).WithState(State{}).OpenPalette()
 			return m.WithModal(NewSelect("Themes", []SelectItem{{ID: "dark", Title: "Dark"}, {ID: "light", Title: "Light"}}, "modal"))
 		}},
+		// An active stream is a streaming block plus the working composer — the
+		// same visual the operator actually sees, not a banner. (It subsumes the
+		// former flag-only "active-stream" cell, which rendered identically to
+		// composer-running once honesty notices moved from cards to chrome.)
+		{"active-stream", func(w, h int) Model {
+			p := FixtureProjection()
+			p.Blocks = append(p.Blocks, projection.Block{ID: "streaming", Kind: "text", Text: "Streaming the answer", Incomplete: true})
+			return NewModel(w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, p).WithState(State{Active: true, Composer: ComposerRunning})
+		}},
+		// Paste is visible as the pasted draft in the composer, which is what a
+		// bracketed paste actually produces.
 		{"paste", func(w, h int) Model {
-			m := NewModel(w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, FixtureProjection()).WithState(State{})
+			m := NewModel(w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, FixtureProjection()).WithState(State{Pasted: true, Composer: ComposerFocused, ComposerText: "one\ntwo\nthree"})
 			next, _ := m.Update(tea.PasteMsg{Content: "one\ntwo\nthree"})
 			return next.(Model)
 		}},
@@ -231,8 +242,12 @@ func scenarios() []captureScenario {
 			next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 			return next.(Model)
 		}},
+		// Focus restoration after a modal closes has no frame of its own by
+		// design: the restored frame IS the focused composer. It is asserted
+		// behaviourally instead (see the focus-stack pop/restore tests), rather
+		// than by a "focus restored" banner, which was canvas noise.
 		{"focus-restore", func(w, h int) Model {
-			m := NewModel(w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, FixtureProjection()).WithState(State{}).OpenPalette()
+			m := NewModel(w, h, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, FixtureProjection()).WithState(State{ToastOpen: true, Toast: "Composer focus restored"}).OpenPalette()
 			next, _ := m.Update(keyMsg(tea.KeyEscape, 0))
 			m = next.(Model)
 			next, _ = m.Update(tea.FocusMsg{})

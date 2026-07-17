@@ -1,12 +1,12 @@
 
-  HARB Search: deployment · 2 matches
-  One active session · Protocol-only
-  live
-  ↑ Scrolled away · new output will no
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
 
+  ↑  Scrolled away · new output conti
+       Search: deployment · 2 matches
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·
-  ctrl+p Command palette   ctrl+x s To
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

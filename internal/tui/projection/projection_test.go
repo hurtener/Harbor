@@ -132,7 +132,7 @@ func TestReconcile_AuthoritativeSnapshotRepairsRemovalAndPreservesOnlyNewerLive(
 	if blockIndex(next.Blocks, "user:snapshot-away") >= 0 || blockIndex(next.Blocks, "task:snapshot-away") >= 0 || blockIndex(next.Blocks, "intervention:stale-pause") >= 0 {
 		t.Fatalf("stale snapshot-owned state survived: %#v", next.Blocks)
 	}
-	if blockIndex(next.Blocks, "text:live") < 0 || next.Blocks[blockIndex(next.Blocks, "task:live")].Status != "completed" {
+	if blockIndex(next.Blocks, "text:live:0") < 0 || next.Blocks[blockIndex(next.Blocks, "task:live")].Status != "completed" {
 		t.Fatalf("newer live mutations lost: %#v", next.Blocks)
 	}
 	refreshed, _, err := Reconcile(next, SnapshotBundle{Generation: 3, CapturedSequence: 12, Identity: id, Session: sessionSnapshot(id, types.SessionStatusCompleted)})
@@ -369,7 +369,7 @@ func TestReducer_LongUnicodeCanonicalContentIsLossless(t *testing.T) {
 	long := "航" + string(bytes.Repeat([]byte("a"), 4096)) + "終"
 	p, _ := (&Reducer{}).Hydrate(SnapshotBundle{Generation: 1, Identity: id, Tasks: types.TaskListResponse{Rows: []types.TaskRow{taskRow(id, "run", long, types.TaskStatusRunning)}}})
 	p, change, _ := (&Reducer{}).Apply(p, wireEvent(id, 1, "llm.completion.chunk", "run", map[string]any{"TaskID": "run", "Delta": long, "Kind": "content"}))
-	if !change.Batchable || p.Blocks[blockIndex(p.Blocks, "text:run")].Text != long || p.Blocks[blockIndex(p.Blocks, "user:run")].Text != long {
+	if !change.Batchable || p.Blocks[blockIndex(p.Blocks, "text:run:0")].Text != long || p.Blocks[blockIndex(p.Blocks, "user:run")].Text != long {
 		t.Fatal("canonical content was truncated")
 	}
 }
@@ -731,5 +731,72 @@ func TestFixtureCorpus_IsSequenceOrdered(t *testing.T) {
 		if !sort.SliceIsSorted(sequences, func(i, j int) bool { return sequences[i] < sequences[j] }) {
 			t.Fatalf("fixture %s not ordered", tc.Name)
 		}
+	}
+}
+
+// TestReducer_MultiStepStreamSegmentsMessagesInOrder pins the fix for the
+// out-of-order transcript bug: within one turn the agent streams a preamble,
+// reasons, calls a tool, then streams the final answer. Keying streaming blocks
+// per LLM step (segmented on the Done terminator) keeps every message and
+// reasoning segment a distinct block in arrival order — the preamble and the
+// final answer never merge into one block that anchors above the intervening
+// reasoning/tool blocks.
+func TestReducer_MultiStepStreamSegmentsMessagesInOrder(t *testing.T) {
+	id := testIdentity("multistep")
+	r := &Reducer{}
+	p, err := r.Hydrate(SnapshotBundle{Generation: 1, Identity: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := uint64(0)
+	apply := func(eventType string, payload map[string]any) {
+		seq++
+		p, _, err = r.Apply(p, wireEvent(id, seq, eventType, "run", payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	chunk := func(delta, kind string, done bool) {
+		apply("llm.completion.chunk", map[string]any{"TaskID": "run", "Delta": delta, "Kind": kind, "Done": done})
+	}
+
+	apply("task.started", map[string]any{"TaskID": "run"})
+	chunk("thinking about tools", "reasoning", false)
+	chunk("Let me check my tools.", "content", false)
+	chunk("", "content", true) // step 0 terminator
+	apply("tool.invoked", map[string]any{"ToolName": "catalog_search"})
+	apply("tool.completed", map[string]any{"ToolName": "catalog_search"})
+	chunk("planning the answer", "reasoning", false)
+	chunk("Here is what I can do.", "content", false)
+	chunk("", "content", true) // step 1 terminator
+
+	var order []string
+	for _, b := range p.Blocks {
+		switch b.Kind {
+		case "reasoning", "text", "tool":
+			order = append(order, b.Kind+":"+b.Text)
+		}
+	}
+	want := []string{
+		"reasoning:thinking about tools",
+		"text:Let me check my tools.",
+		"tool:",
+		"reasoning:planning the answer",
+		"text:Here is what I can do.",
+	}
+	if len(order) != len(want) {
+		t.Fatalf("block order = %#v, want %#v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("block[%d] = %q, want %q (full order %#v)", i, order[i], want[i], order)
+		}
+	}
+	// The two content messages must be SEPARATE blocks, never merged.
+	if idx := blockIndex(p.Blocks, "text:run:0"); idx < 0 || p.Blocks[idx].Text != "Let me check my tools." {
+		t.Fatalf("step-0 message block wrong: %#v", p.Blocks)
+	}
+	if idx := blockIndex(p.Blocks, "text:run:1"); idx < 0 || p.Blocks[idx].Text != "Here is what I can do." {
+		t.Fatalf("step-1 message block wrong: %#v", p.Blocks)
 	}
 }

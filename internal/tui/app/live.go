@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -53,10 +56,15 @@ type interactionStore interface {
 
 // RuntimeOptions supplies local-only interaction state and output paths.
 type RuntimeOptions struct {
-	Compact, ReducedMotion  bool
+	Compact, ReducedMotion bool
+	// ThemeLocked marks the supplied theme as an explicit operator choice;
+	// terminal background auto-detection must not override it.
+	ThemeLocked             bool
 	Fingerprint, ExportPath string
-	State                   conversation.InteractionState
-	Store                   interactionStore
+	// BaseURL is the attach target, shown on the session banner.
+	BaseURL string
+	State   conversation.InteractionState
+	Store   interactionStore
 }
 
 type attachMsg struct{ err error }
@@ -64,7 +72,17 @@ type updateMsg struct{ update conversation.Update }
 type submitMsg struct{ err error }
 type submissionResultMsg struct {
 	submission composer.Submission
+	taskID     string
 	err        error
+}
+
+// localTurn echoes the operator's own accepted prompt until the canonical user
+// block for that run arrives. The Runtime's task lifecycle events are sealed and
+// carry no prompt text — the text reaches the client only on a tasks snapshot —
+// so without this the operator cannot see their own message on a live turn.
+type localTurn struct {
+	runID, text string
+	at          time.Time
 }
 type followupMsg struct {
 	id  string
@@ -94,6 +112,15 @@ type exportMsg struct {
 	err  error
 }
 type persistMsg struct{ err error }
+
+// interruptTimeoutMsg disarms the double-esc run interrupt when the second
+// esc never arrives inside the window. The generation guards against a stale
+// tick disarming a newer arm.
+type interruptTimeoutMsg struct{ generation uint64 }
+
+// InterruptTimeout is how long the first esc keeps the run interrupt armed.
+const InterruptTimeout = 1500 * time.Millisecond
+
 type inspectMsg struct{ data conversation.RuntimeData }
 type actionMsg struct {
 	intent ActionIntent
@@ -102,37 +129,40 @@ type actionMsg struct {
 
 // RuntimeModel joins the terminal foundation to one Protocol-only conversation controller.
 type RuntimeModel struct {
-	shell                              Model
-	controller                         conversationController
-	editor                             composer.Editor
-	transcript                         conversation.Transcript
-	picker                             sessionpicker.Model
-	updates                            conversation.UpdateSource
-	ctx                                context.Context
-	compact, searchMode                bool
-	searchQuery                        string
-	autocompleteIndex                  int
-	collapsedReasoning, collapsedTools map[string]bool
-	targetSession                      string
-	store                              interactionStore
-	fingerprint, exportPath            string
-	restoreScrollID                    string
-	followups                          conversation.Queue
-	followupSubmissions                map[string]composer.Submission
-	identity                           types.IdentityScope
-	generation                         uint64
-	lastProjectionSequence             uint64
-	inspectEpoch                       uint64
-	runtime                            conversation.RuntimeData
-	activeAction                       *ActionSpec
-	activeIntent                       *ActionIntent
-	actionInput                        string
-	selectedTask, selectedTool         string
-	selectedArtifact, selectedPause    string
-	routeFilter                        bool
-	pending                            map[string]ActionIntent
-	taskCursors                        map[int]types.TaskListCursor
-	renderers                          renderers.Registry
+	shell                            Model
+	controller                       conversationController
+	editor                           composer.Editor
+	transcript                       conversation.Transcript
+	picker                           sessionpicker.Model
+	updates                          conversation.UpdateSource
+	ctx                              context.Context
+	compact, searchMode              bool
+	searchQuery                      string
+	autocompleteIndex                int
+	expandedReasoning, expandedTools map[string]bool
+	targetSession                    string
+	store                            interactionStore
+	fingerprint, exportPath          string
+	restoreScrollID                  string
+	followups                        conversation.Queue
+	followupSubmissions              map[string]composer.Submission
+	identity                         types.IdentityScope
+	localTurns                       []localTurn
+	generation                       uint64
+	lastProjectionSequence           uint64
+	inspectEpoch                     uint64
+	runtime                          conversation.RuntimeData
+	activeAction                     *ActionSpec
+	activeIntent                     *ActionIntent
+	actionInput                      string
+	selectedTask, selectedTool       string
+	selectedArtifact, selectedPause  string
+	routeFilter                      bool
+	interruptArmed                   bool
+	interruptGeneration              uint64
+	pending                          map[string]ActionIntent
+	taskCursors                      map[int]types.TaskListCursor
+	renderers                        renderers.Registry
 }
 
 // NewRuntimeModel constructs the operational one-active-session application.
@@ -140,14 +170,21 @@ func NewRuntimeModel(ctx context.Context, width, height int, theme ui.Theme, con
 	id := controller.Identity()
 	shell := NewOperationalModel(width, height, theme, options.ReducedMotion, projection.Projection{}).WithState(State{Route: "session", Connection: "connecting", Composer: ComposerFocused, SidebarOpen: options.State.SidebarOpen})
 	editor := composer.New().RestoreLocal(options.State.History, options.State.Stash).SetText(options.State.Draft)
-	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, collapsedReasoning: stringSet(options.State.CollapsedReasoning), collapsedTools: stringSet(options.State.CollapsedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id, renderers: renderers.Builtins(), pending: map[string]ActionIntent{}, taskCursors: map[int]types.TaskListCursor{1: {}}}
+	m := RuntimeModel{shell: shell, controller: controller, editor: editor, transcript: conversation.NewTranscript(projection.Projection{}), picker: sessionpicker.New(id, id.Session), updates: updates, ctx: ctx, compact: options.Compact, expandedReasoning: stringSet(options.State.ExpandedReasoning), expandedTools: stringSet(options.State.ExpandedTools), store: options.Store, fingerprint: options.Fingerprint, exportPath: options.ExportPath, restoreScrollID: options.State.ScrollBlockID, followupSubmissions: map[string]composer.Submission{}, identity: id, renderers: renderers.Builtins(), pending: map[string]ActionIntent{}, taskCursors: map[int]types.TaskListCursor{1: {}}}
+	m.shell.state.BaseURL = options.BaseURL
+	m.shell.themeLocked = options.ThemeLocked
+	m.transcript.ShowTimestamps = options.State.ShowTimestamps
 	m.syncComposer()
 	m.syncAccess()
 	return m
 }
 
 func (m RuntimeModel) Init() tea.Cmd {
-	return tea.Batch(func() tea.Msg { return attachMsg{m.controller.Attach(m.ctx)} }, m.waitUpdate())
+	// The shell's own Init drives the spinner tick, startup staging and the
+	// terminal-background query. Without it the operational TUI never asks the
+	// terminal what its background actually is, so a light terminal keeps the
+	// dark palette.
+	return tea.Batch(m.shell.Init(), func() tea.Msg { return attachMsg{m.controller.Attach(m.ctx)} }, m.waitUpdate())
 }
 func (m RuntimeModel) waitUpdate() tea.Cmd {
 	return func() tea.Msg {
@@ -200,6 +237,7 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.closeModal()
 		return m, m.refreshAffected()
 	case updateMsg:
+		wasActive := m.shell.state.Active
 		if !m.applyUpdate(msg.update) {
 			return m, m.waitUpdate()
 		}
@@ -207,14 +245,35 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.pending) > 0 {
 			inspect = m.inspectCmd()
 		}
-		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp(), inspect)
+		// The spinner tick chain dies while idle (spinnerCmd returns nil), so
+		// re-arm it when the stream becomes active — otherwise the working
+		// animation is frozen for every turn after the first idle period.
+		var tick tea.Cmd
+		if !wasActive && m.shell.state.Active {
+			tick = m.shell.spinnerCmd()
+		}
+		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp(), inspect, tick)
 	case CommandMsg:
-		return m.runCommand(msg.ID)
+		return m.dispatchCommand(msg.ID)
 	case sessionsMsg:
 		return m.applySessions(msg)
 	case switchedMsg:
 		if msg.err != nil {
-			m.setError(msg.err)
+			// A failed switch is non-destructive — the controller kept the
+			// previous session live — so report it without rerouting the
+			// CURRENT session's posture through the auth-expired mapping
+			// meant for its own credential. An open input dialog shows the
+			// failure inline; otherwise the dialog closes with a toast.
+			if modal, open := m.shell.focus.Top(); open && modal.IsInput() {
+				modal.ErrorText = msg.err.Error()
+				m.shell.focus = m.shell.focus.ReplaceTop(modal)
+				return m, m.requestPersist()
+			}
+			m.closeModal()
+			if !m.shell.state.ToastOpen {
+				m.shell.state.ToastOpen = true
+				m.shell.state.Toast = "Switch failed · still on " + m.controller.Identity().Session + " · " + msg.err.Error()
+			}
 		} else {
 			m.picker = m.picker.SetCurrent(msg.session)
 			m.closeModal()
@@ -224,6 +283,11 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.requestPersist()
 	case renamedMsg:
 		if msg.err != nil {
+			if modal, open := m.shell.focus.Top(); open && modal.IsInput() {
+				modal.ErrorText = msg.err.Error()
+				m.shell.focus = m.shell.focus.ReplaceTop(modal)
+				return m, nil
+			}
 			m.setError(msg.err)
 		} else {
 			m.closeModal()
@@ -269,11 +333,21 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.editor = m.editor.CommitSubmission(msg.submission)
 			m.shell.state.Composer = ComposerRunning
-			m.shell.state.ToastOpen = true
-			m.shell.state.Toast = "Turn accepted by Runtime"
+			// The Runtime accepted the turn, so echo the operator's own prompt
+			// immediately: the canonical text only arrives on a later snapshot.
+			if msg.taskID != "" {
+				m.localTurns = append(m.localTurns, localTurn{runID: msg.taskID, text: msg.submission.Text, at: time.Now()})
+			}
+			m.syncProjection()
 		}
 		m.syncComposer()
 		return m, m.requestPersist()
+	case interruptTimeoutMsg:
+		if msg.generation == m.interruptGeneration && m.interruptArmed {
+			m.interruptArmed = false
+			m.shell.state.InterruptArmed = false
+		}
+		return m, nil
 	case followupMsg:
 		if msg.err != nil {
 			m.followups = m.followups.Fail(msg.id, msg.err)
@@ -321,6 +395,27 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := canonicalKey(msg.String())
+	// Toasts are transient acknowledgements, not state: the operator's next
+	// keystroke dismisses the previous one. Without this they pile up and linger
+	// over the canvas long after the thing they reported.
+	m.shell.state.ToastOpen, m.shell.state.Toast = false, ""
+	// Ctrl+C is an unconditional quit from EVERY input mode — search, route
+	// filters, modals, mid-run — so the operator can always escape, even if a
+	// stream is misclassified as active. Ctrl+D quits everywhere except under
+	// a modal that binds it (the Sessions picker uses it for delete).
+	if key == "ctrl+c" {
+		return m, tea.Quit
+	}
+	if key == "ctrl+d" {
+		if _, open := m.shell.focus.Top(); !open {
+			return m, tea.Quit
+		}
+	}
+	// Any key that is not a second escape disarms a pending run interrupt.
+	if key != "escape" && m.interruptArmed {
+		m.interruptArmed = false
+		m.shell.state.InterruptArmed = false
+	}
 	if m.routeFilter {
 		return m.updateRouteFilter(key)
 	}
@@ -330,8 +425,31 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if modal, ok := m.shell.focus.Top(); ok {
 		return m.updateWorkflowModal(modal, key, msg)
 	}
-	if key == "ctrl+c" || key == "ctrl+d" {
-		return m, tea.Quit
+	// Escape resolves by precedence: dismiss the autocomplete popup, abort a
+	// pending leader chord, and only when nothing transient is open does it
+	// reach the run interrupt — which takes a deliberate double-esc, so a
+	// stray esc can never kill a run.
+	if key == "escape" {
+		if m.shell.state.AutocompleteOpen {
+			m.clearAutocomplete()
+			return m, nil
+		}
+		if len(m.shell.sequence) > 0 {
+			return m.forward(msg)
+		}
+		if runID, ok := m.activeRunID(); ok {
+			if m.interruptArmed {
+				m.interruptArmed = false
+				m.shell.state.InterruptArmed = false
+				return m.cancelActiveRun(runID)
+			}
+			m.interruptArmed = true
+			m.shell.state.InterruptArmed = true
+			m.interruptGeneration++
+			generation := m.interruptGeneration
+			return m, tea.Tick(InterruptTimeout, func(time.Time) tea.Msg { return interruptTimeoutMsg{generation: generation} })
+		}
+		return m, nil
 	}
 	if m.shell.state.Route != "session" {
 		switch key {
@@ -350,8 +468,13 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.pageRoute(1)
 			return m, m.inspectCmd()
 		case "/":
-			m.routeFilter = true
-			m.shell.state.ToastOpen, m.shell.state.Toast = true, "Filter: "+m.currentRouteFilter()
+			// Only routes with a canonical filter enter filter mode; a dead
+			// prompt that swallows typing is worse than no prompt.
+			switch m.shell.state.Route {
+			case "tasks", "tools", "artifacts", "events":
+				m.routeFilter = true
+				m.shell.state.ToastOpen, m.shell.state.Toast = true, "Filter: "+m.currentRouteFilter()
+			}
 			return m, nil
 		}
 	}
@@ -369,9 +492,15 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.moveAutocomplete(1)
 			return m, nil
 		case "enter":
+			// Execute the selected command only when the draft IS the command
+			// invocation; a /word mid-sentence completes as text instead.
 			if candidate, ok := m.editor.SelectedCandidate(); ok && candidate.Kind == "command" {
-				m.clearAutocomplete()
-				return m.runCommand(CommandID(strings.TrimPrefix(candidate.Value, "/")))
+				if _, rest, isSlash := slashCommand(m.editor.Text()); isSlash && rest == "" {
+					m.clearAutocomplete()
+					m.editor = m.editor.SetText("")
+					m.syncComposer()
+					return m.dispatchCommand(CommandID(strings.TrimPrefix(candidate.Value, "/")))
+				}
 			}
 			m.acceptCompletion()
 			m.clearAutocomplete()
@@ -382,9 +511,6 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.clearAutocomplete()
 			m.syncComposer()
 			return m, m.requestPersist()
-		case "escape":
-			m.clearAutocomplete()
-			return m, nil
 		}
 	}
 	switch key {
@@ -411,27 +537,40 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "alt+_":
 		m.editor = m.editor.Redo()
 	case "up":
+		// With an empty composer and an overflowing conversation, arrows scroll
+		// the transcript — this is also how the mouse wheel arrives (alternate
+		// scroll translates wheel to arrow keys without capturing the mouse, so
+		// native selection keeps working). History stays on ctrl+arrows and on
+		// plain arrows while drafting.
+		if m.editor.Text() == "" && m.shell.scrollTranscriptIfOverflow(-1) {
+			return m, nil
+		}
 		m.editor = m.editor.History(-1)
 	case "down":
+		if m.editor.Text() == "" && m.shell.scrollTranscriptIfOverflow(1) {
+			return m, nil
+		}
+		m.editor = m.editor.History(1)
+	case "ctrl+up":
+		m.editor = m.editor.History(-1)
+	case "ctrl+down":
 		m.editor = m.editor.History(1)
 	case "pgup":
-		m.transcript = m.transcript.Scroll(-1)
-		m.syncProjection()
+		m.shell.scrollTranscript(-m.shell.transcriptPage())
 	case "pgdown":
-		m.transcript = m.transcript.Scroll(1)
-		m.syncProjection()
+		m.shell.scrollTranscript(m.shell.transcriptPage())
 	case "home":
-		m.transcript = m.transcript.Scroll(-len(m.transcript.Projection.Blocks))
-		m.syncProjection()
+		m.shell.scrollTranscriptTo(0)
 	case "end":
-		m.transcript = m.transcript.Scroll(len(m.transcript.Projection.Blocks))
-		m.syncProjection()
+		m.shell.scrollTranscriptTo(-1)
 	case "alt+j":
 		m.transcript = m.transcript.Jump(1)
 		m.syncProjection()
+		m.ensureSelectedVisible()
 	case "alt+k":
 		m.transcript = m.transcript.Jump(-1)
 		m.syncProjection()
+		m.ensureSelectedVisible()
 	case "shift+left":
 		m.editor = m.editor.Move(-1, true)
 	case "shift+right":
@@ -441,7 +580,11 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "alt+shift+f":
 		m.editor = m.editor.MoveWord(1, true)
 	default:
-		if len([]rune(key)) != 1 || key == "?" {
+		// Composer allowlist: any single printable rune ALWAYS inserts into the
+		// draft, so characters that happen to be command keys (like "?") are
+		// typed, not intercepted. Only named/modified keys and active leader
+		// sequences forward to the command layer.
+		if len([]rune(key)) != 1 {
 			return m.forward(msg)
 		}
 		m.editor = m.editor.Insert(key)
@@ -449,6 +592,108 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.refreshAutocomplete()
 	m.syncComposer()
 	return m, m.requestPersist()
+}
+
+// dispatchCommand is the ONE entry point for command execution by ID —
+// autocomplete selection, the slash guard, and CommandMsg all land here.
+// Shell-owned surface commands (palette, help, sidebar, theme, quit) route to
+// the shell's executor; everything else stays on the runtime host. Without
+// this split-brain guard, shell-owned IDs reaching runCommand were silent
+// no-ops.
+func (m RuntimeModel) dispatchCommand(id CommandID) (tea.Model, tea.Cmd) {
+	switch id {
+	case "palette", "help", "sidebar", "theme", "quit":
+		view, ok := m.shell.registry.Command(id, m.shell.commandContext())
+		if !ok {
+			m.setError(fmt.Errorf("unknown command %q", id))
+			return m, nil
+		}
+		if !view.Enabled {
+			m.shell.state.ToastOpen = true
+			m.shell.state.Toast = "Unavailable: " + view.DisabledReason
+			return m, nil
+		}
+		next, cmd := m.shell.execute(view)
+		shell, isShell := next.(Model)
+		if !isShell {
+			m.shell.state.Connection = "failed · invalid shell model"
+			return m, tea.Quit
+		}
+		m.shell = shell
+		m.syncComposer()
+		return m, cmd
+	}
+	return m.runCommand(id)
+}
+
+// renameInput is the shared rename dialog — reachable from the command
+// registry and from the Sessions picker's ctrl+r.
+func renameInput(restoreFocus string) SelectModel {
+	return NewInput("Rename session", "New title", "e.g. checkout flow spike", false, requiredInput("a title"), restoreFocus)
+}
+
+// requiredInput builds the standard non-empty inline validator.
+func requiredInput(what string) func(string) error {
+	return func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return errors.New(what + " is required")
+		}
+		return nil
+	}
+}
+
+// actionInputSpec names what an action's free-text input MEANS — the label
+// and placeholder render in the input dialog, and the validator gates enter
+// inline. Reject's reason is genuinely optional, so it carries no validator.
+func actionInputSpec(action ActionSpec) (label, placeholder string, validate func(string) error) {
+	switch {
+	case action.Method == methods.MethodRedirect:
+		return "New goal", "rewrites the run's goal at the next boundary", requiredInput("a goal")
+	case action.Method == methods.MethodInjectContext:
+		return "Context note", "appended to the planner's next prompt", requiredInput("a note")
+	case action.Method == methods.MethodUserMessage:
+		return "Message", "delivered to the run as user input", requiredInput("a message")
+	case action.Method == methods.MethodPrioritize:
+		return "Priority", "integer · higher runs first", func(value string) error {
+			var priority int
+			if _, err := fmt.Sscan(strings.TrimSpace(value), &priority); err != nil {
+				return errors.New("priority must be an integer")
+			}
+			return nil
+		}
+	case action.Method == methods.MethodToolsSetApprovalPolicy:
+		return "Approval policy", "auto · gated · denied", func(value string) error {
+			if !types.IsValidToolApprovalPolicy(types.ToolApprovalPolicy(strings.TrimSpace(value))) {
+				return errors.New("policy must be auto, gated, or denied")
+			}
+			return nil
+		}
+	case action.Method == methods.MethodReject:
+		return "Rejection reason", "optional · recorded in the audit trail", nil
+	case action.ID == "intervention.oauth":
+		return "OAuth input", "authorization code or callback URL", requiredInput("the OAuth input")
+	case action.ID == "intervention.input":
+		return "Input response", "the input the paused run is waiting for", requiredInput("a response")
+	}
+	return "Input", "", requiredInput("a value")
+}
+
+// slashCommand parses a composer draft as a slash-command invocation: a first
+// word of the form /name. The remainder is returned so the caller can reject
+// arguments explicitly instead of leaking them to the model.
+func slashCommand(draft string) (name, rest string, ok bool) {
+	trimmed := strings.TrimSpace(draft)
+	if !strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "//") {
+		return "", "", false
+	}
+	body := strings.TrimPrefix(trimmed, "/")
+	if body == "" {
+		return "", "", false
+	}
+	if i := strings.IndexAny(body, " \n\t"); i >= 0 {
+		return body[:i], strings.TrimSpace(body[i:]), true
+	}
+	return body, "", true
 }
 
 func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
@@ -470,6 +715,24 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 	case "actions":
 		return m.openActions()
 	case "submit":
+		// Slash guard: a /command draft is an instruction to the TUI, never a
+		// chat message. This closes every path that lands text in the draft —
+		// tab-accepted completions, hand-typed commands, reopened history.
+		if name, rest, isSlash := slashCommand(m.editor.Text()); isSlash {
+			if _, known := m.shell.registry.Command(CommandID(name), m.shell.commandContext()); !known {
+				m.shell.state.ToastOpen = true
+				m.shell.state.Toast = "Unknown command /" + name + " · draft kept"
+				return m, nil
+			}
+			if rest != "" {
+				m.shell.state.ToastOpen = true
+				m.shell.state.Toast = "/" + name + " takes no arguments · draft kept"
+				return m, nil
+			}
+			m.editor = m.editor.SetText("")
+			m.syncComposer()
+			return m.dispatchCommand(CommandID(name))
+		}
 		submission, err := m.editor.PrepareSubmission()
 		if err != nil {
 			m.setError(err)
@@ -490,32 +753,29 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 		m.shell.state.Composer = ComposerRunning
 		m.syncComposer()
 		return m, func() tea.Msg {
-			_, startErr := m.controller.Start(m.ctx, submission.Text, attachmentIDs(submission.Attachments), attachmentDispositions(submission.Attachments))
-			return submissionResultMsg{submission: submission, err: startErr}
+			response, startErr := m.controller.Start(m.ctx, submission.Text, attachmentIDs(submission.Attachments), attachmentDispositions(submission.Attachments))
+			return submissionResultMsg{submission: submission, taskID: response.TaskID, err: startErr}
 		}
-	case "help":
-		rows := m.shell.registry.Help(m.shell.commandContext())
-		items := make([]SelectItem, 0, len(rows))
-		for i, row := range rows {
-			items = append(items, SelectItem{ID: fmt.Sprintf("help-%d", i), Title: row})
-		}
-		m.shell = m.shell.WithModal(NewSelect("Keyboard help", items, "composer"))
-		return m, nil
 	case "sessions":
 		return m.openSessions("")
 	case "session-new":
+		// Start Fresh means exactly that: mint a fresh session id and attach —
+		// no dialog, no free-text id to mistype. Naming stays on Rename,
+		// attaching to existing sessions stays on the Sessions picker.
 		m.targetSession = ""
-		m.shell = m.shell.WithModal(NewSelect("Start Fresh", nil, "composer"))
-		return m, nil
+		session := freshSessionID()
+		m.shell.state.ToastOpen = true
+		m.shell.state.Toast = "Starting fresh session " + session
+		return m.switchSession(session)
 	case "session-rename":
 		m.targetSession = m.controller.Identity().Session
-		m.shell = m.shell.WithModal(NewSelect("Rename session", nil, "composer"))
+		m.shell = m.shell.WithModal(renameInput("composer"))
 		return m, nil
 	case "session-delete":
 		m.targetSession = m.controller.Identity().Session
 		return m.beginSessionDelete()
 	case "reauthenticate":
-		m.shell = m.shell.WithModal(NewSelect("Replace credential · memory only", nil, "composer"))
+		m.shell = m.shell.WithModal(NewInput("Replace credential · memory only", "Bearer token (memory only)", "paste JWT · held in memory, never persisted", true, requiredInput("a bearer token"), "composer"))
 		return m, nil
 	case "search":
 		m.searchMode = true
@@ -526,25 +786,12 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 	case "export":
 		return m, m.exportCmd()
 	case "reasoning":
-		m.toggleSelected(m.collapsedReasoning, "reasoning")
-		m.syncProjection()
-		return m, m.requestPersist()
+		return m.toggleWithAnchor(m.expandedReasoning, "reasoning")
 	case "tool-detail":
-		m.toggleSelected(m.collapsedTools, "tool")
-		m.syncProjection()
-		return m, m.requestPersist()
+		return m.toggleWithAnchor(m.expandedTools, "tool")
 	case "timestamps":
 		m.transcript.ShowTimestamps = !m.transcript.ShowTimestamps
 		m.syncProjection()
-		return m, m.requestPersist()
-	case "compact":
-		m.compact = !m.compact
-		m.shell.state.ToastOpen = true
-		if m.compact {
-			m.shell.state.Toast = "Native scrollback on"
-		} else {
-			m.shell.state.Toast = "Native scrollback off"
-		}
 		return m, m.requestPersist()
 	case "reduced-motion":
 		m.shell.reducedMotion = !m.shell.reducedMotion
@@ -594,7 +841,7 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 		m.setError(errors.New("no failed follow-up to retry"))
 		return m, nil
 	case "attachment":
-		m.shell = m.shell.WithModal(NewSelect("Attach file · path|disposition", nil, "composer"))
+		m.shell = m.shell.WithModal(NewInput("Attach file", "File path|disposition", "./notes.md|attach (disposition optional, default ref)", false, requiredInput("a file path"), "composer"))
 		return m, nil
 	case "attachment-remove":
 		values := m.editor.Attachments()
@@ -613,8 +860,19 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 }
 
 func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, original tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if key == "escape" || key == "ctrl+c" {
+	// Esc closes the modal; ctrl+c/ctrl+d never reach here — they quit
+	// unconditionally at the top of updateKey.
+	if key == "escape" {
 		return m.forward(original)
+	}
+	// Input dialogs validate before any branch commits the value; a failure
+	// renders inline in the dialog (never a toast hidden behind it).
+	if key == "enter" && modal.IsInput() && modal.Validate != nil {
+		if err := modal.Validate(modal.Query); err != nil {
+			modal.ErrorText = err.Error()
+			m.shell.focus = m.shell.focus.ReplaceTop(modal)
+			return m, nil
+		}
 	}
 	switch modal.Title {
 	case "Runtime actions":
@@ -635,7 +893,8 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 				}
 				m.activeAction = &action
 				if action.Method == methods.MethodRedirect || action.Method == methods.MethodInjectContext || action.Method == methods.MethodUserMessage || action.Method == methods.MethodPrioritize || action.Method == methods.MethodToolsSetApprovalPolicy || action.Method == methods.MethodReject || action.ID == "intervention.oauth" || action.ID == "intervention.input" {
-					m.shell = m.shell.WithModal(NewSelect("Action input · "+action.Title, nil, "modal"))
+					label, placeholder, validate := actionInputSpec(action)
+					m.shell = m.shell.WithModal(NewInput("Action input · "+action.Title, label, placeholder, false, validate, "modal"))
 					return m, nil
 				}
 				if action.Confirmation != ConfirmNone {
@@ -677,7 +936,7 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 		if key == "ctrl+r" {
 			if session, ok := selectedModalID(modal); ok {
 				m.targetSession = session
-				m.shell = m.shell.WithModal(NewSelect("Rename session", nil, "modal"))
+				m.shell = m.shell.WithModal(renameInput("modal"))
 			}
 			return m, nil
 		}
@@ -704,15 +963,6 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 			return updated, updated.sessionSearchCmd(top.Query)
 		}
 		return updated, cmd
-	case "Start Fresh":
-		if key == "enter" {
-			session := strings.TrimSpace(modal.Query)
-			if session == "" {
-				m.setError(errors.New("session ID required"))
-				return m, nil
-			}
-			return m.switchSession(session)
-		}
 	case "Rename session":
 		if key == "enter" {
 			title := strings.TrimSpace(modal.Query)
@@ -727,7 +977,7 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 				return renamedMsg{title: title, err: err}
 			}
 		}
-	case "Attach file · path|disposition":
+	case "Attach file":
 		if key == "enter" {
 			return m.beginUpload(modal.Query)
 		}
@@ -741,11 +991,9 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 	}
 	if strings.HasPrefix(modal.Title, "Action input · ") && key == "enter" && m.activeAction != nil {
 		action := *m.activeAction
+		// Required-ness already ran through the dialog's inline validator;
+		// actions with optional input (reject reason) accept an empty value.
 		value := strings.TrimSpace(modal.Query)
-		if value == "" {
-			m.setError(errors.New("action input required"))
-			return m, nil
-		}
 		if action.Confirmation != ConfirmNone {
 			m.actionInput = value
 			intent, err := m.buildIntent(action, value)
@@ -760,6 +1008,66 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 		return m.executeActionSpec(action, value)
 	}
 	return m.forward(original)
+}
+
+// turnStatus renders the per-turn anchor under a finished answer — the model
+// that ran and how long the Runtime says it took. The duration is canonical
+// (TaskRow.StartedAt → UpdatedAt, carried on the task block); the client never
+// derives it from a local clock, so it reports agent time, not the operator's
+// typing time. An empty string means there is nothing honest to report yet.
+func (m RuntimeModel) turnStatus() string {
+	duration, runID := int64(0), ""
+	for _, block := range m.transcript.Projection.Blocks {
+		if block.Kind != "task" || !terminalTurnStatus(block.Status) {
+			continue
+		}
+		duration, runID = block.DurationMS, block.RunID
+	}
+	if duration <= 0 {
+		return ""
+	}
+	// The turn summary mirrors the playground's per-turn stats — canonical
+	// duration, per-run tokens and cost from llm.cost.recorded, and the model —
+	// fronted by the past tense of the verb the run worked under.
+	parts := []string{runVerb(runID)[1] + " for " + formatTurnDuration(duration)}
+	if usage, ok := m.transcript.Projection.RunUsage[runID]; ok && usage.TotalTokens > 0 {
+		parts = append(parts, formatTokens(usage.TotalTokens)+" tok")
+		if usage.USD > 0 {
+			parts = append(parts, fmt.Sprintf("$%.4f", usage.USD))
+		}
+	}
+	if model := strings.TrimSpace(m.shell.state.Model); model != "" {
+		parts = append(parts, model)
+	} else if model := strings.TrimSpace(m.runtime.Posture.LLM.Model); model != "" {
+		parts = append(parts, model)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func terminalTurnStatus(status string) bool {
+	return status == "completed" || status == "succeeded" || status == "failed" || status == "cancelled"
+}
+
+// activeRunID returns the run of the newest still-streaming block, if any.
+func (m RuntimeModel) activeRunID() (string, bool) {
+	blocks := m.transcript.Projection.Blocks
+	for i := len(blocks) - 1; i >= 0; i-- {
+		if blocks[i].Incomplete && blocks[i].RunID != "" {
+			return blocks[i].RunID, true
+		}
+	}
+	return "", false
+}
+
+// cancelActiveRun issues the canonical cancel for the in-flight run. The result
+// stays a pending local intent until canonical reconciliation, like every other
+// control mutation.
+func (m RuntimeModel) cancelActiveRun(runID string) (tea.Model, tea.Cmd) {
+	intent := ActionIntent{ActionID: "task.cancel", Title: "Cancel run", Method: methods.MethodCancel, RunID: runID, Identity: m.identity, SessionID: m.identity.Session}
+	return m, func() tea.Msg {
+		err := m.controller.Execute(m.ctx, conversation.Mutation{Identity: m.identity, Method: methods.MethodCancel, RunID: runID})
+		return actionMsg{intent: intent, err: err}
+	}
 }
 
 func (m *RuntimeModel) inspectCmd() tea.Cmd {
@@ -1036,6 +1344,14 @@ func (m RuntimeModel) availableActions() []ActionSpec {
 			break
 		}
 	}
+	if task == nil {
+		// The conversation surface never loads task rows; the active run is
+		// the implicit steering target so redirect/inject/interrupt work
+		// mid-run without a detour through the tasks route.
+		if runID, ok := m.activeRunID(); ok {
+			task = &types.TaskRow{ID: runID, Status: types.TaskStatusRunning}
+		}
+	}
 	if selected, ok := m.runtime.Interventions.Selected(); ok && selected.Token == m.selectedPause && selected.Status == string(types.PauseStatePaused) {
 		token, interventionKind = selected.Token, string(selected.Kind)
 	}
@@ -1122,6 +1438,14 @@ func (m RuntimeModel) executeIntent(intent ActionIntent) (tea.Model, tea.Cmd) {
 func (m RuntimeModel) actionTargets(action ActionSpec) (runID, token, toolID, artifactID string) {
 	if strings.HasPrefix(action.ID, "task.") || action.Method == methods.MethodCancel || action.Method == methods.MethodPause || action.Method == methods.MethodRedirect || action.Method == methods.MethodInjectContext || action.Method == methods.MethodUserMessage || action.Method == methods.MethodPrioritize {
 		runID = m.selectedTask
+		if runID == "" {
+			// Steering from the conversation surface: with no task row
+			// selected, the active run is the implicit target — the same
+			// resolution the esc interrupt uses.
+			if active, ok := m.activeRunID(); ok {
+				runID = active
+			}
+		}
 	}
 	if strings.HasPrefix(action.ID, "intervention.") || action.ID == "task.resume" || action.Method == methods.MethodResume || action.Method == methods.MethodApprove || action.Method == methods.MethodReject {
 		if selected, ok := m.runtime.Interventions.Selected(); ok && selected.Token == m.selectedPause {
@@ -1300,6 +1624,18 @@ func (m RuntimeModel) applySessions(msg sessionsMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// freshSessionID mints a short random id for Start Fresh sessions. The
+// operator renames it later if it matters; collision odds are irrelevant at
+// interactive scale and the runtime scopes it under the identity triple.
+func freshSessionID() string {
+	var raw [4]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("s-%d", time.Now().UnixNano())
+	}
+	return "s-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw[:]))
+}
+
 func (m RuntimeModel) switchSession(session string) (tea.Model, tea.Cmd) {
 	id := m.controller.Identity()
 	id.Session = session
@@ -1371,12 +1707,17 @@ func (m RuntimeModel) retryAttachment() (tea.Model, tea.Cmd) {
 func (m RuntimeModel) updateSearch(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "escape", "enter":
+		// Closing search ALWAYS clears the filter — a silently sticky filter
+		// looks like lost history. Enter keeps the reader parked on the match
+		// they navigated to; esc abandons the search entirely.
 		m.searchMode = false
-		if key == "escape" {
-			m.searchQuery = ""
-			m.transcript = m.transcript.Search("")
-			m.syncProjection()
+		m.searchQuery = ""
+		m.transcript = m.transcript.Search("")
+		m.syncProjection()
+		if key == "enter" {
+			m.ensureSelectedVisible()
 		}
+		m.shell.state.ToastOpen = true
 		m.shell.state.Toast = "Search closed"
 		return m, m.requestPersist()
 	case "backspace":
@@ -1386,8 +1727,10 @@ func (m RuntimeModel) updateSearch(key string) (tea.Model, tea.Cmd) {
 		}
 	case "up", "ctrl+p":
 		m.transcript = m.transcript.NextMatch(-1)
+		m.ensureSelectedVisible()
 	case "down", "ctrl+n":
 		m.transcript = m.transcript.NextMatch(1)
+		m.ensureSelectedVisible()
 	default:
 		if len([]rune(key)) == 1 {
 			m.searchQuery += key
@@ -1531,14 +1874,36 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 	m.shell.state.CountersPartial = update.Projection.CountersPartial
 	m.shell.state.AggregatesPartial = update.Projection.ToolsAggregatesPartial
 	m.shell.state.AnalyticsBounded = update.Projection.ToolAnalyticsBounded
+	// The conversation surface reports on the conversation. Runtime internals
+	// (audit, cost, planner decisions) arrive as metadata-only fallback blocks
+	// that are incomplete by construction — deriving "unknown"/"incomplete" from
+	// them lit both banners permanently on a healthy session. Those events stay
+	// honestly visible on the events + diagnostics routes.
 	m.shell.state.Unknown, m.shell.state.Incomplete, m.shell.state.Intervention = false, false, false
 	for _, block := range update.Projection.Blocks {
-		m.shell.state.Unknown = m.shell.state.Unknown || block.Kind == "event"
+		if block.Kind == "intervention" && block.Status == "pending" {
+			m.shell.state.Intervention = true
+		}
+		if !conversational(block.Kind) {
+			continue
+		}
+		m.shell.state.Unknown = m.shell.state.Unknown || (block.Kind == "tool" && block.Tool == "")
 		m.shell.state.Incomplete = m.shell.state.Incomplete || block.Incomplete
-		m.shell.state.Intervention = m.shell.state.Intervention || block.Kind == "intervention" && block.Status == "pending"
 	}
+	m.shell.state.TurnStatus = m.turnStatus()
+	if model := strings.TrimSpace(update.Projection.Usage.Model); model != "" {
+		m.shell.state.Model = model
+	} else if model := strings.TrimSpace(m.runtime.Posture.LLM.Model); model != "" {
+		m.shell.state.Model = model
+	}
+	m.shell.state.Version = strings.TrimSpace(m.runtime.Posture.Info.BuildVersion)
+	m.shell.state.DisplayName = strings.TrimSpace(m.runtime.Posture.Info.DisplayName)
 	switch update.State {
 	case conversation.StateLive:
+		// A live stream ends startup. Without this the shell's startup staging
+		// (now driven from Init) would report "connecting" forever, even while
+		// the agent answers.
+		m.shell.startup = startupHidden
 		m.shell.state.Active = true
 		m.shell.state.Erased = false
 		if m.projectionActive() {
@@ -1562,6 +1927,11 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 	if update.Err != nil {
 		m.shell.state.ToastOpen = true
 		m.shell.state.Toast = update.Err.Error()
+		if update.State == conversation.StateLive || update.State == conversation.StateErased {
+			// A live/erased posture carrying an error is a failed switch
+			// that rolled back — reassure the operator nothing was lost.
+			m.shell.state.Toast = "Switch failed · still on " + update.Identity.Session + " · " + update.Err.Error()
+		}
 	}
 	m.syncComposer()
 	m.syncAccess()
@@ -1594,72 +1964,133 @@ func (m *RuntimeModel) syncComposer() {
 		}
 	}
 }
+
+// withLocalTurns echoes each accepted-but-not-yet-hydrated prompt as its own
+// user block, using the same ID the canonical snapshot will use ("user:<run>"),
+// so the canonical block simply supersedes the echo with no duplicate and no
+// flicker. Echoes whose canonical block has arrived are dropped.
+func (m *RuntimeModel) withLocalTurns(blocks []projection.Block) []projection.Block {
+	if len(m.localTurns) == 0 {
+		return blocks
+	}
+	out := append([]projection.Block(nil), blocks...)
+	kept := m.localTurns[:0]
+	for _, turn := range m.localTurns {
+		id := "user:" + turn.runID
+		if slices.IndexFunc(out, func(b projection.Block) bool { return b.ID == id }) >= 0 {
+			continue // canonical user block hydrated; the echo has served its purpose
+		}
+		kept = append(kept, turn)
+		block := projection.Block{ID: id, Kind: "user", RunID: turn.runID, At: turn.at, Text: turn.text}
+		insert := len(out)
+		for i, b := range out {
+			if b.RunID == turn.runID {
+				insert = i
+				break
+			}
+		}
+		out = append(out[:insert], append([]projection.Block{block}, out[insert:]...)...)
+	}
+	m.localTurns = kept
+	return out
+}
+
 func (m *RuntimeModel) syncProjection() {
 	p := m.transcript.Projection
-	filtered := make([]projection.Block, 0, len(p.Blocks))
-	matches := map[int]bool{}
+	// Matches are indices into the transcript's OWN block slice; resolve them
+	// to IDs BEFORE local-turn echoes shift positions, or the filter would
+	// alias onto neighbouring blocks.
+	matchedIDs := map[string]bool{}
 	if m.transcript.Query != "" {
 		for _, index := range m.transcript.Matches {
-			matches[index] = true
+			if index >= 0 && index < len(p.Blocks) {
+				matchedIDs[p.Blocks[index].ID] = true
+			}
 		}
 	}
+	p.Blocks = m.withLocalTurns(p.Blocks)
+	filtered := make([]projection.Block, 0, len(p.Blocks))
 	selectedID := ""
 	if len(p.Blocks) > 0 {
 		selectedID = p.Blocks[min(max(0, m.transcript.Selected), len(p.Blocks)-1)].ID
 	}
-	for index, block := range p.Blocks {
-		if m.transcript.Query != "" && !matches[index] {
+	for _, block := range p.Blocks {
+		if !conversational(block.Kind) {
 			continue
 		}
-		if block.Kind == "reasoning" && m.collapsedReasoning[block.ID] {
+		if m.transcript.Query != "" && !matchedIDs[block.ID] {
 			continue
 		}
-		if block.Kind == "tool" && m.collapsedTools[block.ID] {
-			continue
+		// Reasoning and tool detail are collapsed by default (the operator opens
+		// what they care about). A collapsed block keeps its summary header and
+		// drops only its body — it never vanishes, which would hide that the
+		// agent reasoned or called a tool at all.
+		if block.Kind == "reasoning" && !m.expandedReasoning[block.ID] {
+			block.Text = ""
 		}
-		if m.transcript.ShowTimestamps && !block.At.IsZero() {
+		if block.Kind == "tool" && !m.expandedTools[block.ID] {
+			block.Text = ""
+		}
+		if m.transcript.ShowTimestamps && !block.At.IsZero() && block.Text != "" {
+			// Collapsed blocks keep only their summary header; a dangling
+			// timestamp on an emptied body reads as noise.
 			block.Text += " · " + block.At.Format("15:04:05")
 		}
 		filtered = append(filtered, block)
 	}
-	capacity := max(1, (m.shell.height-14)/4)
-	selected := 0
-	for i, block := range filtered {
-		if block.ID == selectedID {
-			selected = i
-			break
-		}
-	}
-	start := max(0, selected-capacity+1)
-	if m.transcript.Follow {
-		start = max(0, len(filtered)-capacity)
-	}
-	end := min(len(filtered), start+capacity)
-	p.Blocks = append([]projection.Block(nil), filtered[start:end]...)
+	// The shell receives the full filtered conversation; the session surface
+	// windows it by LINES at render time (scroll state on the shell), so no
+	// block-count heuristic ever hides content.
+	p.Blocks = filtered
 	m.shell.projection = cloneProjection(p)
+	m.shell.state.HasTranscript = len(m.transcript.Projection.Blocks) > 0
 	m.shell.state.SelectedBlockID = selectedID
-	m.shell.state.Scrolled = !m.transcript.Follow
-	if m.transcript.NewOutput > 0 {
-		m.shell.state.ToastOpen = true
-		m.shell.state.Toast = fmt.Sprintf("%d new output blocks", m.transcript.NewOutput)
+	// The conversation lives in native scrollback: the terminal owns scrolling,
+	// new output prints directly, and a "scrolled away" banner or new-output
+	// counter would be noise about a pager that no longer exists.
+}
+
+// toggleWithAnchor flips a collapse view-mode while keeping the reader's view
+// anchored: block heights above the window change, so the topmost visible
+// block is captured before the reflow and restored after.
+func (m RuntimeModel) toggleWithAnchor(set map[string]bool, kind string) (tea.Model, tea.Cmd) {
+	id, delta, anchored := m.shell.scrollAnchor()
+	m.toggleSelected(set, kind)
+	m.syncProjection()
+	if anchored {
+		m.shell.restoreScrollAnchor(id, delta)
+	}
+	return m, m.requestPersist()
+}
+
+// ensureSelectedVisible scrolls the transcript window to the semantically
+// selected block after a jump or search-match move.
+func (m *RuntimeModel) ensureSelectedVisible() {
+	if id := m.transcript.SelectedID(); id != "" {
+		m.shell.ensureBlockVisible(id)
 	}
 }
+
+// toggleSelected expands or collapses every block of a kind at once: if any is
+// collapsed the toggle opens them all, otherwise it closes them all.
+//
+// It deliberately does NOT act on the selected block only. That required the
+// operator to first select the exact block, which is unreachable while reading
+// the newest output, so the toggle silently did nothing — or opened some
+// ancient block off-screen. "Show me the thinking" is a view mode, not a
+// per-block edit.
 func (m *RuntimeModel) toggleSelected(set map[string]bool, kind string) {
-	if len(m.transcript.Projection.Blocks) == 0 {
-		return
-	}
-	i := min(max(0, m.transcript.Selected), len(m.transcript.Projection.Blocks)-1)
-	block := m.transcript.Projection.Blocks[i]
-	if block.Kind != kind {
-		for _, candidate := range m.transcript.Projection.Blocks {
-			if candidate.Kind == kind {
-				block = candidate
-				break
-			}
+	ids := make([]string, 0, len(m.transcript.Projection.Blocks))
+	expand := false
+	for _, block := range m.transcript.Projection.Blocks {
+		if block.Kind != kind {
+			continue
 		}
+		ids = append(ids, block.ID)
+		expand = expand || !set[block.ID]
 	}
-	if block.Kind == kind {
-		set[block.ID] = !set[block.ID]
+	for _, id := range ids {
+		set[id] = expand
 	}
 }
 func (m *RuntimeModel) setError(err error) {
@@ -1723,12 +2154,18 @@ func (m RuntimeModel) Finalize() error {
 }
 func (m RuntimeModel) interactionState() conversation.InteractionState {
 	id := m.controller.Identity()
-	theme := string(m.shell.theme.Mode())
+	// The theme persists only as an EXPLICIT operator choice; while auto,
+	// the next launch re-detects the terminal background instead of pinning
+	// whatever mode detection happened to land on this time.
+	theme := ""
+	if m.shell.themeLocked {
+		theme = string(m.shell.theme.Mode())
+	}
 	scroll := ""
 	if len(m.transcript.Projection.Blocks) > 0 {
 		scroll = m.transcript.Projection.Blocks[min(max(0, m.transcript.Selected), len(m.transcript.Projection.Blocks)-1)].ID
 	}
-	return conversation.InteractionState{Identity: id, RuntimeFingerprint: m.fingerprint, Draft: m.editor.Text(), History: m.editor.HistoryEntries(), Stash: m.editor.StashEntries(), ScrollBlockID: scroll, CollapsedReasoning: setStrings(m.collapsedReasoning), CollapsedTools: setStrings(m.collapsedTools), SidebarWidth: ui.SidebarWidth, SidebarOpen: m.shell.state.SidebarOpen, Theme: theme, ReducedMotion: m.shell.reducedMotion, Compact: m.compact}
+	return conversation.InteractionState{Identity: id, RuntimeFingerprint: m.fingerprint, Draft: m.editor.Text(), History: m.editor.HistoryEntries(), Stash: m.editor.StashEntries(), ScrollBlockID: scroll, ExpandedReasoning: setStrings(m.expandedReasoning), ExpandedTools: setStrings(m.expandedTools), SidebarWidth: ui.SidebarWidth, SidebarOpen: m.shell.state.SidebarOpen, Theme: theme, ReducedMotion: m.shell.reducedMotion, ShowTimestamps: m.transcript.ShowTimestamps, Compact: m.compact}
 }
 
 func (m *RuntimeModel) syncAccess() {
@@ -1743,11 +2180,41 @@ func (m RuntimeModel) hasActiveWork() bool {
 	return m.projectionActive() || m.shell.state.Composer == ComposerRunning
 }
 
+// projectionActive reports whether a turn is genuinely in flight. Only the
+// canonical run lifecycle counts: metadata-only fallback events are marked
+// incomplete by construction (they carry no completion of their own) and must
+// never make a finished turn look like it is still working.
 func (m RuntimeModel) projectionActive() bool {
 	for _, block := range m.transcript.Projection.Blocks {
-		if block.Status == "pending" || block.Status == "running" || block.Status == "started" {
+		switch block.Kind {
+		case "event", "user":
+			continue
+		case "text", "reasoning", "tool":
+			// A streaming conversational block is in-flight work even before any
+			// task lifecycle transition lands.
+			if block.Incomplete {
+				return true
+			}
+		}
+		switch block.Status {
+		// "spawned" matters: fast runs can finish streaming before a
+		// task.started transition ever arrives, and without it the composer
+		// flipped back to idle while the model was visibly thinking.
+		case "spawned", "pending", "running", "started":
 			return true
 		}
+	}
+	return false
+}
+
+// conversational reports whether a block belongs on the conversation surface.
+// Runtime internals — audit records, cost accounting, planner decisions,
+// session/task lifecycle — are diagnostics, not chat: they stay available on
+// the events and diagnostics routes instead of interleaving with the answer.
+func conversational(kind string) bool {
+	switch kind {
+	case "user", "text", "reasoning", "tool", "intervention":
+		return true
 	}
 	return false
 }
@@ -1801,7 +2268,6 @@ func (m RuntimeModel) exportCmd() tea.Cmd {
 }
 func (m RuntimeModel) View() tea.View {
 	view := m.shell.View()
-	view.AltScreen = !m.compact
 	view.WindowTitle = "Harbor TUI · " + m.controller.Identity().Session
 	return view
 }

@@ -1,24 +1,24 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  live
+  ▛▀▖  Harbor  ·  Development Runtime
+  ▙▄▘  fixture · session session-alpha
 
-  ┃
-  ┃  ×  Session failed · terminal error state, not resumable
-  ┃
+  ┃  Summarize the deployment status.
 
-  ┃
-  ┃  ◆  Active stream · following newest output
-  ┃
-
-  ┃
-  ┃  ◇  Summarize the deployment status.
-  ┃
+     The deployment completed successfully.
 
 
 
+
+
+
+
+
+
+
+
+  ×  Session failed · terminal error state, not resumable
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃  fixture
+  ╹──────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

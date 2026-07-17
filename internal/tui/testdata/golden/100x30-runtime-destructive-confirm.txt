@@ -1,19 +1,19 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  live
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
-  ┃
-  ┃  ◆  Active stream · following newest output
-  ┃
+  ┃  Summarize the deployment status.
+
+     The deployment completed successfully.
+
           Confirm Runtime action
-  ┃      Search:
-  ┃  ◇  ● Confirm Cancel task · tenant-a/operator/session-alpha · run  · PauseToken  · tool
-  ┃       Cancel
+         Search:
+        ● Confirm Cancel task · tenant-a/operator/session-alpha · run  · PauseToken  · tool
+          Cancel
 
-  ┃
-  ┃  ●  ↑/↓ move · enter select · esc close
-  ┃
+
+        ↑/↓ move · enter select · esc close
+
 
 
 
@@ -24,7 +24,7 @@
 
 
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

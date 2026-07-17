@@ -1,11 +1,12 @@
 
-  HARBOR  /  POSTURE
-  One active session · Protocol-only
-  live
+  POSTURE
 
    Exactly one active session · tena
    ↑/↓ select · PgUp/PgDn page · / f
    RUNTIME Development Runtime · Pro
-   Capabilities: [task_control tool_
 
-
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

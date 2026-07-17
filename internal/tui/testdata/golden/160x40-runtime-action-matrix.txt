@@ -1,19 +1,19 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
-  live
-                                                                                                                      Session
-  ┃                                                                                                                   session-alpha
-  ┃  ◆  Active stream · following newest output                                                                       one active session
-  ┃
-                                                                                                                      Status
-  ┃                                                                                                                   running
-  ┃  ◇  Summarize the
-  ┃                       Runtime actions
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+  ┃  Summarize the deployment status.
+
+     The deployment completed successfully.
+
+
+
+
+                          Runtime actions
                          Search:
-  ┃                     ● Delete artifact · Unavailable: no artifact selected
-  ┃  ●  The deployment    Approve intervention · Unavailable: no unresolved PauseToken target
-  ┃                       Submit required input · Unavailable: no unresolved PauseToken target
+                        ● Delete artifact · Unavailable: no artifact selected
+                          Approve intervention · Unavailable: no unresolved PauseToken target
+                          Submit required input · Unavailable: no unresolved PauseToken target
                           Submit OAuth intervention · Unavailable: no unresolved PauseToken target
                           Reject intervention · Unavailable: no unresolved PauseToken target
                           Resume intervention · Unavailable: no unresolved PauseToken target
@@ -34,7 +34,7 @@
 
 
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

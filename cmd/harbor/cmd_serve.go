@@ -194,7 +194,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		},
 		DisplayName:  "harbor serve",
 		InstanceID:   serve.InstanceID("harbor-serve"),
-		BuildVersion: HarborVersion,
+		BuildVersion: displayVersion(),
 		BuildCommit:  "dev",
 		// production demands a real LLM provider (allowMock=false): the gate
 		// fails loud on a missing provider.

@@ -1,12 +1,12 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  replaying
-  ! Dropped event window · output may
+  ▛▀▖  Harbor  ·  Devel
+  ▙▄▘  fixture · session session-alph
 
+     successfully.
 
+  !  Dropped event window · output ma
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·
-  ctrl+p Command palette   ctrl+x s To
+  ┃  fixture
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  replaying   ·   ctrl+p Command palet

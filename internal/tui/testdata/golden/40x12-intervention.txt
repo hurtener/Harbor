@@ -1,12 +1,12 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
 
-  ! Approval required
-  Approve/Reject unavailable
+       received
 
+  ┃  !  Operator approval required
+  ┃  Operator approval required
 
-
-
-  ctrl+p Command palette   ctrl+x s To
+     [ Approve unavailable ]
+     [ Reject unavailable ]
+  disconnected   ·   ctrl+p Command pa

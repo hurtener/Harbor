@@ -1,19 +1,19 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
-  disconnected
-                                                                                                                      Session
-  ┃                                                                                                                   01K0HARBORFIXTURE0000000000
-  ┃  ◆  Inspecting Runtime posture                                                                                    one active session
-  ┃
-                                                                                                                      Status
-  ┃                                                                                                                   running
-  ┃  ✓  Runtime health snapshot received                                                                              Transcript
-  ┃                                                   Themes                                                          3 blocks
-                                                     Search:                                                          Stream
-  ┃                                                 ● Dark                                                            disconnected
-  ┃  !  Operator approval required                    Light
-  ┃
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  succeeded
+       Runtime health snapshot received
+
+  ┃  !  Operator approval required
+  ┃  Operator approval required
+                                                      Themes
+                                                     Search:
+                                                    ● Dark
+                                                      Light
+
 
                                                     ↑/↓ move · enter select · esc close
 
@@ -32,9 +32,9 @@
 
 
 
-  ┃  Ask Harbor about this runtime...
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

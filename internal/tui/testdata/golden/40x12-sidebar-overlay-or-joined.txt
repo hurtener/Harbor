@@ -1,12 +1,11 @@
 
-       Sidebar context visible
+
   RUNTIME CONTEXT
 
   Session
   01K0HARBORFIXTURE0000000000
-  one active session
 
   Status
   running
-  Transcript
-  3 blocks
+
+

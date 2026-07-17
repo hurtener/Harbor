@@ -1,20 +1,20 @@
 
-  HARBOR  /  SESSION                   Follow-up failed · retry or dis
-  One active session · Protocol-only
-  live
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
-  ┃
-  ┃  ◆  Active stream · following newest output
-  ┃
+  ┃  Summarize the deployment status.
 
-  ┃
-  ┃  ●  The deployment completed successfully.
-  ┃
+     The deployment completed successfully.
 
 
 
+
+
+
+
+                                  Follow-up failed · retry or discard
   ┃  Ask Harbor...
-  ┃  focused
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹──────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

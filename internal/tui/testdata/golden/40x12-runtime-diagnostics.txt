@@ -1,11 +1,12 @@
 
-  HARBOR  /  DIAGNOSTICS
-  One active session · Protocol-only
-  live
+  DIAGNOSTICS
 
    Exactly one active session · tena
    ↑/↓ select · PgUp/PgDn page · / f
    DIAGNOSTICS · stream / retention
-   Unavailable topology.snapshot: HT
 
-
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

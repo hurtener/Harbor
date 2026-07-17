@@ -1,30 +1,30 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  live
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
 
-  ┃
-  ┃  ×  Session erased · terminal state, start fresh required
-  ┃
+  ┃  Summarize the deployment status.
+
+     The deployment completed successfully.
+
                                   Start Fresh
-  ┃                              Search:
-  ┃  ◆  Active stream · follow
-  ┃
+                                 Search:
+
+
                                 ↑/↓ move · enter select · esc close
-  ┃
-  ┃  ◇  Summarize the deployment status.
-  ┃
-
-  ┃
-  ┃  ●  The deployment completed successfully.
-  ┃
 
 
 
 
 
+
+
+
+
+
+
+  ×  Session erased · terminal, Start Fresh required
   ┃  Ask Harbor...
   ┃  disabled
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  tenant-a/operator/session-alpha  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

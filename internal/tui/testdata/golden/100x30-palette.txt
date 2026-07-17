@@ -1,19 +1,19 @@
 
-  HARBOR  /  SESSION
-  One active session · Protocol-only
-  disconnected
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-  ┃
-  ┃  ◆  Inspecting Runtime posture
-  ┃
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  succeeded
+
           Commands
-  ┃      Search:
-  ┃  ✓  ● Command palette · Find an available action
-  ┃       Toggle runtime context · Show the fixed context sidebar
+  ┃  !   Search:
+  ┃  O  ● Command palette · Find an available action
+          Toggle runtime context · Show the fixed context sidebar
           Keyboard help · Show all reachable commands
-  ┃       Quit · Restore the terminal and exit
-  ┃  !    Attach file · Unavailable: requires a live authenticated Runtime attachment
-  ┃       Cancel queued follow-up · Unavailable: no local follow-up is queued
+          Quit · Restore the terminal and exit
+          Attach file · Unavailable: requires a live authenticated Runtime attachment
+          Cancel queued follow-up · Unavailable: no local follow-up is queued
           Remove attachment · Unavailable: no attachment is selected
           Restore stashed draft · Pop the newest local draft
 
@@ -22,9 +22,9 @@
 
 
 
-  ┃  Ask Harbor about this runtime...
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  acme/operator/01K0HARBORFIXTURE0000000000  ·  ctrl+p commands
-  ctrl+p Command palette   ctrl+x s Toggle runtime context
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

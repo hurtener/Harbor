@@ -30,6 +30,7 @@ type LifetimeTokenSource struct {
 	path     string
 	fallback string
 	replaced map[string]string
+	mint     func(context.Context, types.IdentityScope) (string, error)
 	now      func() time.Time
 }
 
@@ -37,6 +38,19 @@ type LifetimeTokenSource struct {
 // one JWT or a JSON object keyed by tenant/user/session.
 func NewTokenSource(path, fallback string) *LifetimeTokenSource {
 	return &LifetimeTokenSource{path: path, fallback: strings.TrimSpace(fallback), replaced: map[string]string{}, now: time.Now}
+}
+
+// WithMinter installs a delegate consulted when the static material (override,
+// file, fallback) cannot cover the requested scope — an embedding host's
+// dynamic token source, or the dev server's per-session signer. Without a
+// minter the source is pinned to the sessions its static credentials name,
+// which makes switching to a fresh session impossible. Minted tokens pass the
+// same claims-vs-scope validation as every other path.
+func (s *LifetimeTokenSource) WithMinter(mint func(context.Context, types.IdentityScope) (string, error)) *LifetimeTokenSource {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mint = mint
+	return s
 }
 
 // Replace installs a process-memory credential for one complete target scope.
@@ -68,8 +82,28 @@ func (s *LifetimeTokenSource) Clear(scope types.IdentityScope) {
 	delete(s.replaced, scopeKey(scope))
 }
 
-// Token resolves anew before each REST call and SSE connection.
+// Token resolves anew before each REST call and SSE connection. Static
+// material resolves first; a configured minter is the last resort for scopes
+// it cannot cover.
 func (s *LifetimeTokenSource) Token(ctx context.Context, scope types.IdentityScope) (string, error) {
+	value, err := s.staticToken(ctx, scope)
+	if err == nil {
+		return value, nil
+	}
+	s.mu.RLock()
+	mint, now := s.mint, s.now
+	s.mu.RUnlock()
+	if mint == nil || ctx.Err() != nil {
+		return "", err
+	}
+	minted, mintErr := mint(ctx, scope)
+	if mintErr != nil {
+		return "", fmt.Errorf("%w: mint for %s: %w", ErrTokenUnavailable, scopeKey(scope), mintErr)
+	}
+	return validateTokenForScope(minted, scope, now())
+}
+
+func (s *LifetimeTokenSource) staticToken(ctx context.Context, scope types.IdentityScope) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

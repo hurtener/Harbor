@@ -17,7 +17,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-### Added — v1.15.0 TUI distribution (Phase 184, D-320)
+### Added — v1.15.0 TUI distribution (D-320)
 
 - **`harbor serve --tui`** co-launches the native terminal client after the
   server is ready. The TUI attaches through authenticated REST/SSE — it

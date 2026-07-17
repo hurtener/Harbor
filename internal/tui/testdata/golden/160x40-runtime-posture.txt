@@ -1,19 +1,13 @@
 
-  HARBOR  /  POSTURE
-  One active session · Protocol-only                                                                                  RUNTIME CONTEXT
-  live
-                                                                                                                      Session
-   Exactly one active session · tenant-a/operator/session-alpha                                                       session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                one active session
+  POSTURE
+
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
    RUNTIME Development Runtime · Protocol 0.1.0 · uptime 90s
-   Capabilities: [task_control tool_annotations]                                                                      Health
-   LLM: mock / fixture · mock=true                                                                                    warning · intervention required
-   Governance: resolved=team default=team                                                                             Status
-   Driver state: inmem embedded                                                                                       running
-                                                                                                                      Transcript
-                                                                                                                      2 blocks
-                                                                                                                      Stream
-                                                                                                                      live
+   Capabilities: [task_control tool_annotations]
+   LLM: mock / fixture · mock=true
+   Governance: resolved=team default=team
+   Driver state: inmem embedded
 
 
 
@@ -37,3 +31,10 @@
 
 
 
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -86,6 +86,26 @@ func (c *canvas) styledBlock(x, y int, block string, body, rule lipgloss.Style) 
 		c.put(x, y+i, line, body)
 	}
 }
+
+// blit copies every cell of src onto c at (x, y), clipping to c's bounds. It is
+// how a windowed region (the scrolled transcript) rendered into its own
+// sub-canvas lands on the screen canvas.
+func (c *canvas) blit(src canvas, x, y int) {
+	for sy := range src.rows {
+		dy := y + sy
+		if dy < 0 || dy >= c.height {
+			continue
+		}
+		for sx := range src.rows[sy] {
+			dx := x + sx
+			if dx < 0 || dx >= c.width {
+				continue
+			}
+			c.rows[dy][dx] = src.rows[sy][sx]
+		}
+	}
+}
+
 func (c canvas) string() string {
 	rows := make([]string, c.height)
 	for y := range c.rows {

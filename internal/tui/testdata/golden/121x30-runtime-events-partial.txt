@@ -1,19 +1,12 @@
 
-  HARBOR  /  EVENTS
-  One active session · Protocol-only                                           RUNTIME CONTEXT
-  live
-                                                                               Session
-   Exactly one active session · tenant-a/operator/session-alpha                session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                         one active session
+  EVENTS
+
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
    EVENT STREAM / AGGREGATE · filter / raw safe payload / export · partial
-   Filter:  · page 1                                                           Health
-   #42 future.runtime.notice · run task-01 · raw metadata unavailable          warning · intervention required
-   Partial: retained event window or aggregate is truncated                    Status
-                                                                               running
-                                                                               Transcript
-                                                                               2 blocks
-                                                                               Stream
-                                                                               live
+   Filter:  · page 1
+   #42 future.runtime.notice · run task-01 · raw metadata unavailable
+   Partial: retained event window or aggregate is truncated
 
 
 
@@ -27,3 +20,11 @@
 
 
 
+
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

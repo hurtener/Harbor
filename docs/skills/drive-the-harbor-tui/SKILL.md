@@ -14,6 +14,23 @@ metadata:
 the Runtime, import Runtime internals, call a private endpoint, or depend on the
 Console.
 
+## 0. One command (local dev)
+
+For the local agent-development loop, co-launch the Runtime and the TUI in a
+single process and terminal with the ephemeral dev token — zero config, no
+token copy:
+
+```bash
+harbor dev --tui
+```
+
+`harbor dev --tui` boots the dev Runtime, waits for readiness, mints the dev
+token in memory, and attaches the native TUI over authenticated loopback
+REST/SSE. The TUI stays a pure Protocol client (no Runtime handle). Quitting the
+TUI drains the owned Runtime and restores the terminal. Hot-reload is disabled
+in this mode; use the two-process flow below (§1–§2) when you want the fsnotify
+watcher, or to attach a TUI to a Runtime running elsewhere.
+
 ## 1. Start a Runtime
 
 ```bash
@@ -96,21 +113,45 @@ complete authenticated attach join before committing it in memory; enter
 + `Alt+Enter` or `Shift+Enter`: insert a newline.
 + `Ctrl+A` / `Ctrl+E`: line start/end; `Ctrl+B` / `Ctrl+F`: move left/right.
 + `Ctrl+_` / `Alt+_`: undo/redo.
-+ `PageUp` / `PageDown` / `End`: scroll without losing sticky-bottom behavior.
++ Scroll the conversation with the mouse wheel (alternate-scroll — the mouse is
+  never captured, so native text selection keeps working) or with arrows while
+  the composer is empty; `PageUp` / `PageDown` page, `Home` / `End` jump to the
+  top / newest output (End re-engages tail-following). While scrolled away, new
+  output never moves your view. Prompt history stays on `ctrl+↑` / `ctrl+↓`
+  (plain arrows still browse history while a draft is present or the
+  conversation fits on screen).
 + `Alt+J` / `Alt+K`: next/previous semantic transcript block.
-+ `Ctrl+X F`: filter/search transcript blocks; `Ctrl+X X`: export Markdown.
-+ `Ctrl+X R` / `Ctrl+X O` / `Ctrl+X Y`: reasoning, tool detail, timestamps.
++ `Esc` while a turn runs: press once to arm (`press esc again to interrupt`),
+  twice to cancel the in-flight run. With the autocomplete popup open or a
+  `Ctrl+X` chord pending, `Esc` dismisses those first — it never cancels a run
+  by accident.
++ `Ctrl+X F`: filter/search transcript blocks (matches conversation content
+  only). Closing search — `Enter` or `Esc` — always clears the filter; `Enter`
+  keeps you parked on the reached match. `Ctrl+X X`: export Markdown (on the
+  events route the export is the visible events as JSON).
++ `Ctrl+X Y`: timestamps (the preference persists across launches).
 + `Ctrl+X B` / `Ctrl+X P`: stash/restore the local draft.
 + `Ctrl+X A`: upload `path|disposition`; `Ctrl+X E` removes and `Ctrl+X U` retries.
-+ `Ctrl+X C`: compact/native-scrollback mode; `Ctrl+X M`: reduced motion.
++ `Ctrl+X R` / `Ctrl+X O`: expand or collapse all reasoning / tool detail
+  (collapsed by default); `Ctrl+X M`: reduced motion.
 + `Ctrl+P`: command palette; `Ctrl+X S`: context sidebar.
-+ `/quit`, `Ctrl+C`, or `Ctrl+D`: persist interaction state, restore the terminal, and exit. A plain `q` remains composer text.
++ `/quit`, `Ctrl+C`, or `Ctrl+D`: persist interaction state, restore the terminal, and exit. A plain `q` remains composer text. `Ctrl+C` quits unconditionally from every input mode — search, filters, dialogs, mid-run; `Ctrl+D` quits everywhere except under a dialog that binds it (the Sessions picker uses it for delete).
 
 Autocomplete is capped at ten rows and executes reachable slash commands; its
 structured references contain actual canonical IDs such as `@session:<id>`,
-`@task:<id>`, `@artifact:<id>`, and `@tool:<name>`. Attachments retain
-their upload lifecycle and optional Runtime disposition hint; a failed or
-uploading attachment disables submit with a reason.
+`@task:<id>`, `@artifact:<id>`, and `@tool:<name>`. A `/command` draft is
+always an instruction to the TUI, never chat: selecting a command with `Enter`
+runs it, `Tab` completes it into the draft and the next `Enter` still runs it,
+an unknown `/name` toasts `Unknown command` and keeps the draft, and arguments
+after a command name are rejected explicitly. A slash mid-sentence stays
+ordinary prose. Attachments retain their upload lifecycle and optional Runtime
+disposition hint; a failed or uploading attachment disables submit with a
+reason.
+
+Free-text dialogs (rename, attach path, credential, action input) caption what
+the value is, validate before committing (failures render inline in the
+dialog), and the credential dialog masks its echo — the token never renders in
+cleartext.
 
 While a task is active, another submitted turn is visibly queued as local-only
 intent. `Ctrl+X J` retries a failed follow-up and resumes ordered dispatch;
@@ -132,13 +173,29 @@ rows, transcript content, or credentials.
 + Replay gaps, retention truncation, partial counters, disconnects, and partial
   blocks remain visibly labelled.
 
-Use `--compact` to keep committed output in native terminal scrollback rather
-than the alternate screen.
+The TUI owns the whole terminal on the alternate screen: a persistent banner
+at the top (product, version, model, session, attach URL), the conversation
+flowing top-down beneath it, and the composer pinned at the bottom. The
+runtime-context sidebar is opt-in (`Ctrl+X S`) so the conversation keeps the
+full width — and clean native selection — until asked. Quitting restores the
+terminal exactly as it was. The `--compact` flag is deprecated
+and has no effect.
 
 Session commands are keyboard-driven: `Ctrl+X L` searches/switches, `Ctrl+X N`
 starts fresh, `Ctrl+R` renames, and `Ctrl+X D` confirms canonical erasure.
-Closed/failed picker rows say that the next canonical turn resumes them. Missing
-Runtime capabilities or JWT scope disable the command with the exact reason.
+Start Fresh is instant — it mints a short random session id and attaches, no
+dialog. Under `harbor dev --tui` the dev server signs per-session credentials
+in-process so fresh sessions authenticate immediately; a standalone
+`harbor tui --token-file` attach holds only the credentials in the file, so
+Start Fresh there fails honestly. A failed switch is always non-destructive:
+the previous session stays live and the toast reads `Switch failed · still on
+<session>`. Closed/failed picker rows say that the next canonical turn resumes
+them. Missing Runtime capabilities or JWT scope disable the command with the
+exact reason.
+
+Theme (`Ctrl+X T`) offers Dark, Light, and Auto. Picking Dark or Light is an
+explicit choice: it persists and terminal-background auto-detection never
+overrides it. Auto releases the choice and follows the terminal.
 
 ## 6. Runtime inspection and control
 
@@ -180,7 +237,10 @@ advertisement is not presented as proof of authorization. Disabled actions
 stay in the matrix with an exact capability, lifecycle, or target reason.
 
 Available task controls are canonical `cancel`, `pause`, `resume`, `redirect`,
-`inject_context`, `user_message`, and `prioritize`. Interventions use only
+`inject_context`, `user_message`, and `prioritize`. Steering works straight
+from the conversation surface: while a turn runs, `F9` targets the active run
+implicitly — no tasks-route selection needed (an explicit tasks-route
+selection still takes precedence). Interventions use only
 `approve`, `reject`, or `resume` with the selected `PauseToken`; OAuth and input
 requirements never bypass the unified pause primitive. There is no direct tool
 invoke command, model picker, fleet control, or speculative method.

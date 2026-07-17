@@ -1,7 +1,5 @@
 
-  HARBOR  /  EVENTS
-  One active session · Protocol-only
-  live
+  EVENTS
 
    Exactly one active session · tenant-a/operator/sessio
    ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
@@ -11,5 +9,8 @@
    Partial: retained event window or aggregate is trunca
 
 
-
-
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runt

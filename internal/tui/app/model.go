@@ -3,16 +3,18 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/term"
+
+	"github.com/hurtener/Harbor/internal/protocol/types"
 
 	"github.com/hurtener/Harbor/internal/tui/projection"
 	"github.com/hurtener/Harbor/internal/tui/ui"
@@ -53,23 +55,39 @@ const (
 
 // State selects shell view state.
 type State struct {
-	Route                                                                              string
-	Connection                                                                         string
-	Composer                                                                           ComposerState
-	ComposerText                                                                       string
-	ComposerCursor, SelectionStart, SelectionEnd                                       int
-	AutocompleteRows                                                                   []string
-	AutocompleteIndex                                                                  int
-	AttachmentReady, HasFollowUp                                                       bool
+	Route                                        string
+	Connection                                   string
+	Composer                                     ComposerState
+	ComposerText                                 string
+	ComposerCursor, SelectionStart, SelectionEnd int
+	AutocompleteRows                             []string
+	AutocompleteIndex                            int
+	AttachmentReady, HasFollowUp                 bool
+	// HasTranscript marks that the full conversation projection has blocks even
+	// when the shell's windowed copy is empty (the host filters and windows what
+	// the shell renders, but transcript commands operate on the whole thing).
+	HasTranscript                                                                      bool
 	SelectedBlockID                                                                    string
 	Negotiated, TaskControl, SessionLifecycle, SessionScope                            bool
 	SidebarOpen, AutocompleteOpen, ToastOpen, Startup, Active, CursorHidden            bool
+	InterruptArmed                                                                     bool
 	Scrolled, ReplayGap, Reconciliation, Dropped, Overflow, Truncated, CountersPartial bool
 	AggregateTruncated, AggregatesPartial, AnalyticsBounded                            bool
 	Closed, Failed, Erased, Intervention, Unknown, Incomplete, Pasted, Focused         bool
 	Toast                                                                              string
 	DetailRows                                                                         []string
 	Health                                                                             string
+	// TurnStatus is the canonical per-turn anchor (model · Runtime-reported
+	// duration) shown under a finished answer. Empty when there is nothing
+	// honest to report.
+	TurnStatus string
+	// Model is the Runtime's reported LLM model. Empty when the Runtime has not
+	// advertised one — never guessed.
+	Model string
+	// Version / DisplayName / BaseURL feed the session banner. Version and
+	// DisplayName come from the Runtime's advertised RuntimeInfo after the
+	// post-attach inspect; BaseURL is the attach target. Empty until reported.
+	Version, DisplayName, BaseURL string
 }
 
 type startupStage uint8
@@ -112,11 +130,22 @@ type Model struct {
 	startupMinimumDone bool
 	quit               bool
 	operational        bool
+	// scrollLine / followTail drive the session transcript window: line-granular
+	// scrolling that follows the tail until the operator scrolls away.
+	scrollLine int
+	followTail bool
+	// layoutCache memoizes per-block layouts (see layoutBlockCached). Shared
+	// across the model's value copies: the UI loop is single-goroutine and
+	// entries are idempotent.
+	layoutCache map[string]layoutCacheEntry
+	// themeLocked marks an explicit operator theme choice, which the terminal's
+	// reported background must not override.
+	themeLocked bool
 }
 
 // NewModel constructs the detached terminal foundation.
 func NewModel(width, height int, theme ui.Theme, reducedMotion bool, p projection.Projection) Model {
-	return Model{width: max(1, width), height: max(1, height), theme: theme, reducedMotion: reducedMotion, registry: DefaultRegistry(), focus: NewFocusStack("composer"), projection: cloneProjection(p), state: State{Route: "session", Connection: "disconnected", Composer: ComposerIdle}, startup: startupWaiting}
+	return Model{width: max(1, width), height: max(1, height), theme: theme, reducedMotion: reducedMotion, registry: DefaultRegistry(), focus: NewFocusStack("composer"), projection: cloneProjection(p), state: State{Route: "session", Connection: "disconnected", Composer: ComposerIdle}, startup: startupWaiting, followTail: true, layoutCache: map[string]layoutCacheEntry{}}
 }
 
 // NewOperationalModel constructs a shell whose chrome is derived only from
@@ -133,14 +162,29 @@ func NewModelFromEnvironment(width, height int, environment ui.Environment, redu
 	return NewModel(width, height, ui.CompileTheme(environment), reducedMotion, p)
 }
 
+// cloneProjection deep-copies the projection so no mutable state crosses the
+// model boundary. It is a structured copy, not a JSON round-trip: clone runs on
+// every update, and serializing a long conversation cost more per keystroke
+// than laying it out.
 func cloneProjection(p projection.Projection) projection.Projection {
-	data, err := json.Marshal(p)
-	if err != nil {
-		return projection.Projection{}
+	out := p
+	if p.Blocks != nil {
+		out.Blocks = make([]projection.Block, len(p.Blocks))
+		for i, b := range p.Blocks {
+			b.PayloadKeys = append([]string(nil), b.PayloadKeys...)
+			b.Artifacts = append([]types.StateArtifactRef(nil), b.Artifacts...)
+			out.Blocks[i] = b
+		}
 	}
-	var out projection.Projection
-	if json.Unmarshal(data, &out) != nil {
-		return projection.Projection{}
+	if p.RunUsage != nil {
+		out.RunUsage = make(map[string]projection.Usage, len(p.RunUsage))
+		for k, v := range p.RunUsage {
+			out.RunUsage[k] = v
+		}
+	}
+	if p.ReplayGap != nil {
+		gap := *p.ReplayGap
+		out.ReplayGap = &gap
 	}
 	return out
 }
@@ -159,8 +203,18 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, model tea.Model
 }
 
 // RunTerminal mounts a model on the process terminal using Bubble Tea's
-// default TTY discovery and raw-mode lifecycle.
+// default TTY discovery and raw-mode lifecycle. Alternate-scroll mode is
+// enabled for the program's lifetime so mouse-wheel motion arrives as arrow
+// keys on the alternate screen — scrolling works without ever capturing the
+// mouse, which keeps the terminal's native text selection intact.
 func RunTerminal(ctx context.Context, model tea.Model) error {
+	// Alternate-scroll only means anything on a real terminal; guarding the
+	// writes keeps escape bytes out of a piped stdout (logs, jq consumers)
+	// when the program is about to fail loudly anyway.
+	if term.IsTerminal(os.Stdout.Fd()) {
+		_, _ = os.Stdout.WriteString("\x1b[?1007h")
+		defer func() { _, _ = os.Stdout.WriteString("\x1b[?1007l") }()
+	}
 	return runProgram(tea.NewProgram(model, tea.WithContext(ctx)))
 }
 
@@ -179,7 +233,27 @@ func runProgram(program *tea.Program) error {
 	return nil
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(m.startupDelayCmd(), m.spinnerCmd()) }
+func (m Model) Init() tea.Cmd {
+	// Ask the terminal what its background actually is. Environment sniffing
+	// (COLORFGBG) is absent on most terminals, so without this a light terminal
+	// gets the dark palette and every panel surface fights the background.
+	return tea.Batch(m.startupDelayCmd(), m.spinnerCmd(), tea.RequestBackgroundColor)
+}
+
+// WithTerminalBackground re-compiles the palette for the terminal's real
+// background, preserving the operator's explicit theme override.
+func (m Model) WithTerminalBackground(dark bool) Model {
+	mode := ui.ModeLight
+	if dark {
+		mode = ui.ModeDark
+	}
+	if m.themeLocked || m.theme.Mode() == mode {
+		return m
+	}
+	m = m.clone()
+	m.theme = ui.NewTheme(mode, m.theme.Profile())
+	return m
+}
 func (m Model) startupDelayCmd() tea.Cmd {
 	if m.startup != startupWaiting {
 		return nil
@@ -207,8 +281,14 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	m = m.clone()
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
+		// Resize reflows every block, so re-anchor a scrolled-away reader to
+		// the block they were looking at; a following reader stays on the tail.
+		anchorID, anchorDelta, anchored := m.scrollAnchor()
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
+		if anchored {
+			m.restoreScrollAnchor(anchorID, anchorDelta)
+		}
 		return m, nil
 	case startupDelayMsg:
 		if msg.generation != m.startupGeneration || m.startup != startupWaiting {
@@ -254,10 +334,18 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.Toast = "Terminal resumed"
 		return m, nil
 	case tea.PasteMsg:
+		// The pasted draft itself is the feedback — it lands in the composer
+		// rather than announcing itself in a banner. (The operational host
+		// routes paste through the editor and syncs the same field.)
 		m.state.Pasted = true
 		m.state.Composer = ComposerFocused
+		m.state.ComposerText += msg.Content
 		return m, nil
+	case tea.BackgroundColorMsg:
+		return m.WithTerminalBackground(msg.IsDark()), nil
 	case tea.FocusMsg:
+		// Regaining terminal focus is not news: it announces nothing and the
+		// composer is visibly focused already.
 		m.state.Focused = true
 		m.state.Composer = ComposerFocused
 		return m, nil
@@ -297,7 +385,11 @@ func canonicalKey(key string) string {
 func (m Model) updateModal(key string) (tea.Model, tea.Cmd) {
 	modal, _ := m.focus.Top()
 	switch key {
-	case "escape", "ctrl+c":
+	case "ctrl+c":
+		// Ctrl+C stays an unconditional quit even under a modal — only esc
+		// closes; a trapped quit chord is indistinguishable from a hang.
+		return m, tea.Quit
+	case "escape":
 		m.focus, _, _ = m.focus.Pop()
 		return m, nil
 	case "up", "ctrl+p":
@@ -349,14 +441,28 @@ func (m Model) activateModal(modal SelectModel) (tea.Model, tea.Cmd) {
 		switch item.ID {
 		case "light":
 			m.theme = ui.NewTheme(ui.ModeLight, m.theme.Profile())
+			m.themeLocked = true
 		case "dark":
 			m.theme = ui.NewTheme(ui.ModeDark, m.theme.Profile())
+			m.themeLocked = true
+		case "auto":
+			// Auto releases the explicit lock and re-asks the terminal for
+			// its real background.
+			m.themeLocked = false
+			m.focus, _, _ = m.focus.Pop()
+			return m, tea.RequestBackgroundColor
 		}
 		m.focus, _, _ = m.focus.Pop()
 		return m, nil
 	}
 	view, ok := m.registry.Command(CommandID(item.ID), m.commandContext())
-	if !ok || !view.Enabled {
+	if !ok {
+		// Informational rows (keyboard help) have no command behind them;
+		// enter closes the dialog instead of silently doing nothing.
+		m.focus, _, _ = m.focus.Pop()
+		return m, nil
+	}
+	if !view.Enabled {
 		return m, nil
 	}
 	m.focus, _, _ = m.focus.Pop()
@@ -380,6 +486,16 @@ func (m Model) updateBase(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// A held modifier is tolerated on chord continuations: operators routinely
+	// keep ctrl down through a ctrl+x leader, so ctrl+x ctrl+r means ctrl+x r
+	// unless an explicit ctrl-binding exists for the continuation.
+	if len(m.sequence) > 0 {
+		if bare, found := strings.CutPrefix(key, "ctrl+"); found && len([]rune(bare)) == 1 {
+			if _, exact, pending := m.registry.Prefix(append(append([]string(nil), m.sequence...), key), m.commandContext()); !exact && !pending {
+				key = bare
+			}
+		}
+	}
 	strokes := append(append([]string(nil), m.sequence...), key)
 	view, exact, pending := m.registry.Prefix(strokes, m.commandContext())
 	if exact {
@@ -387,6 +503,10 @@ func (m Model) updateBase(key string) (tea.Model, tea.Cmd) {
 		if view.Enabled {
 			return m.execute(view)
 		}
+		// Disabled commands explain why — a silently-dead chord is
+		// indistinguishable from a broken keyboard.
+		m.state.ToastOpen = true
+		m.state.Toast = "Unavailable: " + view.DisabledReason
 		return m, nil
 	}
 	if pending {
@@ -420,7 +540,7 @@ func (m Model) execute(view CommandView) (tea.Model, tea.Cmd) {
 	case "sidebar":
 		m.state.SidebarOpen = !m.state.SidebarOpen
 	case "theme":
-		m = m.WithModal(NewSelect("Themes", []SelectItem{{ID: "dark", Category: "Theme", Title: "Dark"}, {ID: "light", Category: "Theme", Title: "Light"}}, m.focus.Focus()))
+		m = m.WithModal(NewSelect("Themes", []SelectItem{{ID: "dark", Category: "Theme", Title: "Dark"}, {ID: "light", Category: "Theme", Title: "Light"}, {ID: "auto", Category: "Theme", Title: "Auto", Description: "follow the terminal background"}}, m.focus.Focus()))
 	case "quit":
 		m.quit = true
 		return m, tea.Quit
@@ -487,8 +607,7 @@ func (m Model) View() tea.View {
 
 func (m Model) operationalCursor() (int, int) {
 	layout := m.Layout()
-	composerWidth, _ := ui.ComposerGeometry(layout, strings.Count(m.state.ComposerText, "\n")+1)
-	inner := max(1, min(composerWidth, layout.MainWidth-1)-3)
+	inner := max(1, m.sessionContentWidth(layout)-3)
 	runes := []rune(m.state.ComposerText)
 	cursor := max(0, min(len(runes), m.state.ComposerCursor))
 	row, column := 0, 0
@@ -514,7 +633,9 @@ func (m Model) render() string {
 		case LayerBase:
 			m.renderBase(&canvas)
 		case LayerSidebar:
-			if m.state.SidebarOpen || m.Layout().JoinedSidebar {
+			// The sidebar is strictly opt-in (ctrl+x s): the conversation keeps
+			// the full width — and clean native selection — until asked.
+			if m.state.SidebarOpen {
 				m.renderSidebar(&canvas)
 			}
 		case LayerAutocomplete:
@@ -522,7 +643,9 @@ func (m Model) render() string {
 				m.renderAutocomplete(&canvas)
 			}
 		case LayerToast:
-			if m.state.ToastOpen {
+			// The session surface renders its toast above the composer; the
+			// top-right overlay stays for the inspection routes.
+			if m.state.ToastOpen && m.state.Route != "session" && m.state.Route != "home" {
 				canvas.put(max(0, m.width-34), 1, ui.PadRight(" "+m.state.Toast+" ", min(32, m.width)), m.theme.Style(ui.RoleInfo, nil))
 			}
 		case LayerModal:
@@ -544,216 +667,157 @@ func (m Model) render() string {
 
 func (m Model) renderBase(c *canvas) {
 	l := m.Layout()
-	c.fill(m.theme.Style(ui.RoleText, ptrRole(ui.RoleCanvas)))
-	title := "HARBOR  /  " + strings.ToUpper(m.state.Route)
-	c.put(ui.OuterPadding, 1, title, m.theme.Style(ui.RolePrimary, nil).Bold(true))
-	subtitle := "One active session · Protocol-only"
-	status := m.state.Connection
-	c.put(ui.OuterPadding, 2, ui.PadRight(subtitle, l.MainWidth), m.theme.Style(ui.RoleMuted, nil))
-	c.put(ui.OuterPadding, 3, ui.PadRight(status, l.MainWidth), m.theme.Style(ui.RoleMuted, nil))
-	y := 5
-	width := max(12, l.MainWidth-1)
-	if m.state.Route == "home" {
-		m.renderCard(c, y, width, ui.RoleInfo, "◇", "Terminal foundation ready", "Attach a Runtime to begin.")
-		y += 4
-	} else {
-		if m.state.Route != "session" && len(m.state.DetailRows) > 0 {
-			for _, row := range m.state.DetailRows {
-				if y >= m.height-3 {
-					break
-				}
-				c.put(ui.OuterPadding+1, y, ui.Truncate(row, width-2), m.theme.Style(ui.RoleText, nil))
-				y++
-			}
-			return
-		}
-		compactNotice := false
-		if m.height <= 12 && !m.state.Intervention {
-			if notices := m.notices(); len(notices) > 0 {
-				notice := mostSevere(notices)
-				c.put(ui.OuterPadding, 4, ui.Truncate(notice.glyph+" "+notice.text, l.MainWidth), m.theme.Style(notice.role, nil))
-				compactNotice = true
-			}
-		}
-		if m.state.Intervention && !m.operational {
-			if m.height <= 12 {
-				c.put(ui.OuterPadding, 5, "! Approval required", m.theme.Style(ui.RoleWarning, nil).Bold(true))
-				c.put(ui.OuterPadding, 6, "Approve/Reject unavailable", m.theme.Style(ui.RoleWarning, nil))
-				y = 7
-			} else {
-				m.renderIntervention(c, y, width, l.HorizontalActions)
-				y += 7
-			}
-		}
-		for _, notice := range m.notices() {
-			if compactNotice {
-				break
-			}
-			if y >= m.height-9 {
-				break
-			}
-			m.renderCard(c, y, width, notice.role, notice.glyph, notice.text)
-			y += 4
-		}
-		for _, block := range m.projection.Blocks {
-			if y >= m.height-9 {
-				break
-			}
-			glyph, role := semantic(block.Status)
-			label := strings.TrimSpace(block.Text)
-			if label == "" {
-				label = block.Kind + " · " + block.Status
-			}
-			if block.ID != "" && block.ID == m.state.SelectedBlockID {
-				glyph = "●"
-			}
-			m.renderCard(c, y, width, role, glyph, label)
-			y += 4
-		}
-	}
+	// The canvas is transparent: it carries no background of its own so the
+	// operator's terminal theme shows through, exactly like the surrounding
+	// shell. Painting a near-black canvas fought the terminal's own background
+	// and left every unbackgrounded text run as a visible band. Discrete
+	// surfaces (the user turn, the composer) still own a panel fill.
+	c.fill(m.theme.Style(ui.RoleText, nil))
+	width := m.sessionContentWidth(l)
+
+	// The bottom-anchored composer is placed first so the transcript region and
+	// the single chrome status strip can sit above it.
+	composerTop := m.height
 	if m.height > 12 || !m.state.Intervention {
-		composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
-		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText)
+		// The composer spans the conversation's full width — a capped input
+		// with dead space beside it read as a layout bug on wide terminals.
+		composerWidth := width
+		status := m.composerStatus()
+		// The composer's metadata row is where identity lives (§9) — adjacent to
+		// the input. The footer carries key hints only and the status strip owns
+		// stream state, so the triple is never printed twice and a non-live
+		// connection is never truncated away on a narrow terminal.
+		meta := identityLabel(m.projection)
+		composer := ui.ComposerWithText(m.theme, composerWidth, string(m.state.Composer), status, meta, m.state.ComposerText)
 		if m.operational {
-			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+			composer = ui.LiveComposer(m.theme, composerWidth, string(m.state.Composer), status, meta, m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
 		}
 		composerRows := strings.Count(composer, "\n") + 1
-		c.styledBlock(ui.OuterPadding, max(y, m.height-composerRows-1), composer, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(ui.RolePrimary, nil))
+		composerTop = max(4, m.height-composerRows-1)
+		c.styledBlock(ui.OuterPadding, composerTop, composer, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(ui.RolePrimary, nil))
 	}
-	hints := strings.Join(m.registry.Footer(m.commandContext()), "   ")
-	c.put(ui.OuterPadding, m.height-1, ui.PadRight(hints, l.ContentWidth), m.theme.Style(ui.RoleMuted, nil))
-}
 
-type notice struct {
-	glyph, text string
-	role        ui.Role
-}
-
-// noticeSeverity orders honesty notices so the single compact-mode slot surfaces
-// the most consequential state (error before warning before info), never hiding
-// a failed/erased/dropped state behind a benign "active stream" line.
-func noticeSeverity(role ui.Role) int {
-	switch role {
-	case ui.RoleError:
-		return 3
-	case ui.RoleWarning:
-		return 2
-	default:
-		return 1
+	// Runtime inspection routes keep their detail-row rendering.
+	if m.state.Route != "session" && m.state.Route != "home" && len(m.state.DetailRows) > 0 {
+		c.put(ui.OuterPadding, 1, strings.ToUpper(m.state.Route), m.theme.Style(ui.RoleMuted, nil).Bold(true))
+		y := 3
+		for _, row := range m.state.DetailRows {
+			if y >= composerTop-1 {
+				break
+			}
+			c.put(ui.OuterPadding+1, y, ui.Truncate(row, width-2), m.theme.Style(ui.RoleText, nil))
+			y++
+		}
+		m.renderFooter(c, l)
+		return
 	}
-}
 
-// mostSevere returns the highest-severity notice, preserving declaration order
-// among equals (first wins).
-func mostSevere(notices []notice) notice {
-	top := notices[0]
-	for _, n := range notices[1:] {
-		if noticeSeverity(n.role) > noticeSeverity(top.role) {
-			top = n
+	// Session / home conversation surface: banner pinned at the top, transcript
+	// flowing top-down beneath it, chrome stacked upward from the composer.
+	m.renderBanner(c, width)
+	chromeRow := composerTop - 1
+	// The animated in-flight line sits directly above the composer while a
+	// turn runs (the composer's own status row keeps the context readout).
+	if working, ok := m.workingLine(); ok && chromeRow >= bannerHeight {
+		c.put(ui.OuterPadding, chromeRow, ui.Truncate(working, width), m.theme.Style(ui.RoleAccent, nil))
+		chromeRow--
+	}
+	if m.state.ToastOpen && m.state.Toast != "" && chromeRow >= bannerHeight {
+		toast := ui.Truncate(m.state.Toast, width)
+		c.put(ui.OuterPadding+max(0, width-ui.Width(toast)), chromeRow, toast, m.theme.Style(ui.RoleInfo, nil))
+		chromeRow--
+	}
+	if strip, role, ok := m.statusStrip(); ok && chromeRow >= bannerHeight {
+		c.put(ui.OuterPadding, chromeRow, ui.Truncate(strip, width), m.theme.Style(role, nil))
+		chromeRow--
+	}
+	// A blocked run also shows what the operator can do about it.
+	if m.state.Intervention {
+		actions := m.interventionActions()
+		for i := len(actions) - 1; i >= 0 && chromeRow >= bannerHeight; i-- {
+			c.put(ui.OuterPadding+proseIndent, chromeRow, ui.Truncate(actions[i], width-proseIndent), m.theme.Style(ui.RoleWarning, nil).Bold(true))
+			chromeRow--
 		}
 	}
-	return top
-}
-
-func (m Model) notices() []notice {
-	var out []notice
-	if m.state.Active {
-		out = append(out, notice{"◆", "Active stream · following newest output", ui.RoleInfo})
-	}
-	if m.state.Scrolled {
-		out = append(out, notice{"↑", "Scrolled away · new output will not move this view", ui.RoleWarning})
-	}
-	if m.state.ReplayGap {
-		out = append(out, notice{"×", "Replay gap · authoritative reconciliation required", ui.RoleError})
-	}
-	if m.state.Reconciliation {
-		out = append(out, notice{"!", "Authoritative reconciliation in progress", ui.RoleWarning})
-	}
-	if m.state.Dropped {
-		out = append(out, notice{"!", "Dropped event window · output may be incomplete", ui.RoleWarning})
-	}
-	if m.state.Overflow {
-		out = append(out, notice{"!", "Display updates coalesced · reconciling latest state", ui.RoleWarning})
-	}
-	if m.state.Truncated {
-		out = append(out, notice{"!", "History is truncated · earlier transcript output is unavailable", ui.RoleWarning})
-	}
-	if m.state.AggregateTruncated {
-		out = append(out, notice{"!", "Aggregate window truncated · totals cover a bounded slice, not all history", ui.RoleWarning})
-	}
-	if m.state.CountersPartial {
-		out = append(out, notice{"!", "Session counters are partial · exact totals unavailable", ui.RoleWarning})
-	}
-	if m.state.AggregatesPartial {
-		out = append(out, notice{"!", "Tool aggregates are partial · some tool rollups are incomplete", ui.RoleWarning})
-	}
-	if m.state.AnalyticsBounded {
-		out = append(out, notice{"!", "Tool analytics are bounded best-effort · absence is not zero", ui.RoleWarning})
-	}
-	if m.state.Incomplete {
-		out = append(out, notice{"!", "Some blocks are incomplete", ui.RoleWarning})
-	}
-	if m.state.Closed {
-		out = append(out, notice{"○", "Session completed · resumable on a future turn", ui.RoleInfo})
-	}
-	if m.state.Failed {
-		out = append(out, notice{"×", "Session failed · terminal error state, not resumable", ui.RoleError})
-	}
-	if m.state.Erased {
-		out = append(out, notice{"×", "Session erased · terminal state, start fresh required", ui.RoleError})
-	}
-	if m.state.Unknown {
-		out = append(out, notice{"?", "Unknown event · safe metadata-only fallback", ui.RoleWarning})
-	}
-	if m.state.Pasted {
-		out = append(out, notice{"▣", "Bracketed paste · 3 lines captured locally", ui.RoleInfo})
-	}
-	if m.state.Focused {
-		out = append(out, notice{"●", "Composer focus restored", ui.RoleSuccess})
-	}
-	// Order by severity so that when vertical space is scarce the most
-	// consequential honesty state (failed/erased/dropped) renders first and is
-	// never crowded out by a benign info line (§9). Stable within a severity.
-	sort.SliceStable(out, func(i, j int) bool { return noticeSeverity(out[i].role) > noticeSeverity(out[j].role) })
-	return out
-}
-func semantic(status string) (string, ui.Role) {
-	switch status {
-	case "completed", "succeeded":
-		return "✓", ui.RoleSuccess
-	case "failed", "erased":
-		return "×", ui.RoleError
-	case "pending":
-		return "!", ui.RoleWarning
-	case "running", "started":
-		return "◆", ui.RoleInfo
-	default:
-		return "◇", ui.RoleInfo
-	}
-}
-func (m Model) renderCard(c *canvas, y, width int, role ui.Role, glyph string, lines ...string) {
-	m.renderCardAt(c, ui.OuterPadding, y, width, role, glyph, lines...)
-}
-func (m Model) renderCardAt(c *canvas, x, y, width int, role ui.Role, glyph string, lines ...string) {
-	payload := append([]string{glyph + "  " + lines[0]}, lines[1:]...)
-	card := ui.HeavyCard(m.theme, role, width, payload...)
-	c.styledBlock(x, y, card, m.theme.Style(ui.RoleText, ptrRole(ui.RolePanel)), m.theme.Style(role, nil))
-}
-func (m Model) renderIntervention(c *canvas, y, width int, horizontal bool) {
-	detail := "Canonical intervention is pending."
-	for _, block := range m.projection.Blocks {
-		if block.Kind == "intervention" && block.Text != "" {
-			detail = block.Text
-			break
+	// Home is the pre-attach surface: it never shows a transcript, only the
+	// invitation to attach a Runtime.
+	if len(m.projection.Blocks) == 0 || m.state.Route == "home" {
+		hint := "Ask anything to begin."
+		if m.state.Route == "home" {
+			hint = "Attach a Runtime to begin."
 		}
-	}
-	m.renderCard(c, y, width, ui.RoleWarning, "!", "Operator approval required", detail)
-	if horizontal {
-		c.put(ui.OuterPadding+3, y+4, "[ Approve unavailable ]   [ Reject unavailable ]", m.theme.Style(ui.RoleWarning, nil).Bold(true))
+		c.put(ui.OuterPadding+5, bannerHeight, hint, m.theme.Style(ui.RoleMuted, nil))
 	} else {
-		c.put(ui.OuterPadding+3, y+4, "[ Approve unavailable ]", m.theme.Style(ui.RoleWarning, nil).Bold(true))
-		c.put(ui.OuterPadding+3, y+5, "[ Reject unavailable ]", m.theme.Style(ui.RoleWarning, nil).Bold(true))
+		m.renderTranscriptWindow(c, bannerHeight, chromeRow-1, width)
 	}
+	m.renderFooter(c, l)
+}
+
+// statusStrip returns the single most-consequential honesty/lifecycle line to
+// pin just above the composer as chrome. Every §9 state stays reachable and
+// distinct, but only the most severe one is shown at a time — one quiet line
+// instead of a stack of screen-dominating cards. An ordinary live, complete,
+// following stream shows nothing at all.
+func (m Model) statusStrip() (string, ui.Role, bool) {
+	switch {
+	// Terminal session states.
+	case m.state.Erased:
+		return "×  Session erased · terminal, Start Fresh required", ui.RoleError, true
+	case m.state.Failed:
+		return "×  Session failed · terminal error state, not resumable", ui.RoleError, true
+	case m.state.ReplayGap:
+		return "×  Replay gap · authoritative reconciliation required", ui.RoleError, true
+	// Blocking / attention.
+	case m.state.Intervention:
+		return "!  Operator approval required", ui.RoleWarning, true
+	case m.state.Dropped:
+		return "!  Dropped event window · output may be incomplete", ui.RoleWarning, true
+	case m.state.Reconciliation:
+		return "!  Authoritative reconciliation in progress", ui.RoleWarning, true
+	// Partiality — each kind stays distinguishable (§9).
+	case m.state.Incomplete:
+		return "!  Some blocks are incomplete", ui.RoleWarning, true
+	case m.state.Unknown:
+		return "?  Unknown event · safe metadata-only fallback", ui.RoleWarning, true
+	case m.state.Overflow:
+		return "!  Display updates coalesced · showing latest state", ui.RoleMuted, true
+	case m.state.Truncated:
+		return "!  History truncated · earlier transcript unavailable", ui.RoleMuted, true
+	case m.state.AggregateTruncated:
+		return "!  Aggregate window truncated · totals cover a bounded slice", ui.RoleMuted, true
+	case m.state.CountersPartial:
+		return "!  Session counters are partial · exact totals unavailable", ui.RoleMuted, true
+	case m.state.AggregatesPartial:
+		return "!  Tool aggregates are partial", ui.RoleMuted, true
+	case m.state.AnalyticsBounded:
+		return "!  Tool analytics are bounded best-effort · absence is not zero", ui.RoleMuted, true
+	// Non-terminal informational states.
+	case m.state.Closed:
+		return "○  Session completed · resumable on a future turn", ui.RoleInfo, true
+	case m.state.Scrolled:
+		// A scrolled reader is never yanked (§6): say so, rather than letting
+		// new output look stalled.
+		return "↑  Scrolled away · new output continues below", ui.RoleMuted, true
+	}
+	return "", ui.RoleMuted, false
+}
+
+// renderFooter draws the bottom chrome line: the stream lifecycle first (it is
+// an honesty state and must survive truncation on a narrow terminal), then the
+// reachable key hints. Identity lives on the composer's metadata row, so the
+// triple is never printed twice.
+func (m Model) renderFooter(c *canvas, l ui.Layout) {
+	parts := make([]string, 0, 2)
+	if m.state.Connection != "" {
+		parts = append(parts, m.state.Connection)
+	}
+	if hints := strings.Join(m.registry.Footer(m.commandContext()), "   "); hints != "" {
+		parts = append(parts, hints)
+	}
+	if len(parts) == 0 {
+		return
+	}
+	c.put(ui.OuterPadding, m.height-1, ui.Truncate(strings.Join(parts, "   ·   "), l.ContentWidth), m.theme.Style(ui.RoleMuted, nil))
 }
 
 func (m Model) renderSidebar(c *canvas) {
@@ -773,20 +837,38 @@ func (m Model) renderSidebar(c *canvas) {
 	for y := range m.height {
 		c.put(x, y, ui.PadRight("", min(ui.SidebarWidth, m.width-x)), panel)
 	}
-	rows := []string{"RUNTIME CONTEXT", "", "Session", m.projection.Identity.Session, "one active session", ""}
-	if m.state.Health != "" {
-		rows = append(rows, "Health", m.state.Health)
+	// Every write carries the panel background: text drawn without it falls back
+	// to the terminal default and tears ragged bands through the filled column.
+	// Labels stay muted, values bright — hierarchy by brightness, not by boxes.
+	type sideRow struct {
+		text string
+		role ui.Role
+		bold bool
 	}
-	rows = append(rows, "Status", m.projection.SessionStatus, "Transcript", fmt.Sprintf("%d blocks", len(m.projection.Blocks)), "Stream", m.state.Connection)
+	rows := []sideRow{{"RUNTIME CONTEXT", ui.RoleAccent, true}, {"", ui.RoleMuted, false}}
+	pair := func(label, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		rows = append(rows, sideRow{label, ui.RoleMuted, false}, sideRow{value, ui.RoleText, false}, sideRow{"", ui.RoleMuted, false})
+	}
+	// Only rows an operator can act on. Block counts and the stream state carry
+	// no decision value (the stream already lives in the footer), so they are
+	// not here. Cost / tokens / context need the tasks.get rollup wired through
+	// on this route; they are omitted rather than shown as a fake zero.
+	pair("Session", m.projection.Identity.Session)
+	pair("Model", m.state.Model)
+	pair("Status", m.projection.SessionStatus)
+	pair("Health", m.state.Health)
+	interior := max(1, min(ui.SidebarWidth, m.width-x)-4)
 	for i, row := range rows {
 		if i+2 >= m.height {
 			break
 		}
-		role := ui.RoleText
-		if row == "RUNTIME CONTEXT" {
-			role = ui.RoleAccent
+		if row.text == "" {
+			continue
 		}
-		c.put(x+2, i+2, ui.Truncate(row, ui.SidebarWidth-4), m.theme.Style(role, nil).Bold(i == 0))
+		c.put(x+2, i+2, ui.Truncate(row.text, interior), m.theme.Style(row.role, ptrRole(ui.RolePanel)).Bold(row.bold))
 	}
 }
 
@@ -795,10 +877,10 @@ func (m Model) renderSidebar(c *canvas) {
 // composer height instead of a fixed magic offset.
 func (m Model) composerTopRow() int {
 	l := m.Layout()
-	composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
-	composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText)
+	composerWidth := m.sessionContentWidth(l)
+	composer := ui.ComposerWithText(m.theme, composerWidth, string(m.state.Composer), m.composerStatus(), identityLabel(m.projection), m.state.ComposerText)
 	if m.operational {
-		composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+		composer = ui.LiveComposer(m.theme, composerWidth, string(m.state.Composer), m.composerStatus(), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
 	}
 	composerRows := strings.Count(composer, "\n") + 1
 	return max(0, m.height-composerRows-1)
@@ -806,8 +888,7 @@ func (m Model) composerTopRow() int {
 
 func (m Model) renderAutocomplete(c *canvas) {
 	l := m.Layout()
-	w, _ := ui.ComposerGeometry(l, 1)
-	w = min(w, l.MainWidth-1)
+	w := m.sessionContentWidth(l)
 	// Anchor the popup directly above the composer, clamped to the space between
 	// the header (row 3) and the composer top so it can never cover the active
 	// input row on short terminals or a tall multi-line draft (§5).
@@ -894,9 +975,30 @@ func (m Model) renderModal(c *canvas, modal SelectModel) {
 	}
 	c.put(left+min(4, max(1, w/8)), top+1, ui.Truncate(modal.Title, max(1, w-6)), m.theme.Style(ui.RolePrimary, nil).Bold(true))
 	if h > 5 {
-		c.put(left+3, top+2, ui.PadRight("Search: "+modal.Query, max(1, w-6)), m.theme.Style(ui.RoleMuted, nil))
+		// A pick list captions its fuzzy filter; an input dialog captions
+		// WHAT the typed value is — labeling a session id or a credential
+		// "Search:" misled operators into typing chat into it.
+		caption := "Search: " + modal.Query
+		style := m.theme.Style(ui.RoleMuted, nil)
+		if modal.IsInput() {
+			value := modal.Query
+			if modal.Masked {
+				value = strings.Repeat("•", utf8.RuneCountInString(value))
+			}
+			if value == "" && modal.Placeholder != "" {
+				caption = modal.Label + ": " + modal.Placeholder
+			} else {
+				caption = modal.Label + ": " + value
+				style = m.theme.Style(ui.RoleText, nil)
+			}
+		}
+		c.put(left+3, top+2, ui.PadRight(caption, max(1, w-6)), style)
 	}
 	listTop := top + 3
+	if modal.ErrorText != "" && listTop < top+h-2 {
+		c.put(left+3, listTop, ui.PadRight(ui.Truncate("✗ "+modal.ErrorText, max(1, w-6)), max(1, w-6)), m.theme.Style(ui.RoleError, nil))
+		listTop++
+	}
 	for i, item := range rows {
 		if listTop+i >= top+h-2 {
 			break
@@ -914,7 +1016,11 @@ func (m Model) renderModal(c *canvas, modal SelectModel) {
 		c.put(left+2, listTop+i, ui.PadRight(label, max(1, w-4)), m.theme.Style(role, ptrRole(ui.RoleElement)).Bold(i == modal.Current))
 	}
 	if h >= 4 {
-		c.put(left+2, top+h-1, ui.Truncate("↑/↓ move · enter select · esc close", max(1, w-4)), m.theme.Style(ui.RoleMuted, nil))
+		hint := "↑/↓ move · enter select · esc close"
+		if modal.IsInput() {
+			hint = "type value · enter confirm · esc cancel"
+		}
+		c.put(left+2, top+h-1, ui.Truncate(hint, max(1, w-4)), m.theme.Style(ui.RoleMuted, nil))
 	}
 }
 
@@ -926,7 +1032,7 @@ func identityLabel(p projection.Projection) string {
 }
 func (m Model) commandContext() Context {
 	_, modal := m.focus.Top()
-	ctx := Context{ModalOpen: modal, Connected: m.state.Connection == "live", Erased: m.state.Erased, HasTranscript: len(m.projection.Blocks) > 0, HasAttachment: m.state.AttachmentReady, HasFollowUp: m.state.HasFollowUp, TaskControl: !m.operational, SessionLifecycle: !m.operational, SessionScope: true}
+	ctx := Context{ModalOpen: modal, Connected: m.state.Connection == "live", Erased: m.state.Erased, HasTranscript: len(m.projection.Blocks) > 0 || m.state.HasTranscript, HasAttachment: m.state.AttachmentReady, HasFollowUp: m.state.HasFollowUp, TaskControl: !m.operational, SessionLifecycle: !m.operational, SessionScope: true}
 	if m.state.Negotiated {
 		ctx.TaskControl, ctx.SessionLifecycle, ctx.SessionScope = m.state.TaskControl, m.state.SessionLifecycle, m.state.SessionScope
 	}

@@ -1,12 +1,12 @@
 
-  HARB Resize applied
-  One active session · Protocol-only
-  disconnected
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
 
 
-  ┃  Ask Harbor about this runtime...
+                       Resize applied
+  ┃  Composer idle · attach a Runtime
   ┃
-  ┃  idle
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ┃
+  ╹──────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000
-  ctrl+p Command palette   ctrl+x s To
+  disconnected   ·   ctrl+p Command pa

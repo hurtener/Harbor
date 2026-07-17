@@ -91,10 +91,19 @@ func TestModel_ModalInputPrecedesBaseAndRestoresNestedFocus(t *testing.T) {
 		t.Fatalf("backspace query=%q", modal.Query)
 	}
 	m = m.WithModal(NewSelect("Nested", []SelectItem{{ID: "x", Title: "Nested row"}}, "modal"))
-	next, _ = m.Update(keyMsg('c', tea.ModCtrl))
+	// Ctrl+C quits unconditionally, even nested under modals; esc pops one
+	// modal at a time and restores the underlying focus.
+	next, quitCmd := m.Update(keyMsg('c', tea.ModCtrl))
+	m = next.(Model)
+	if quitCmd == nil {
+		t.Fatal("ctrl+c under a modal must quit unconditionally")
+	} else if _, isQuit := quitCmd().(tea.QuitMsg); !isQuit {
+		t.Fatal("ctrl+c under a modal must quit unconditionally")
+	}
+	next, _ = m.Update(keyMsg(tea.KeyEscape, 0))
 	m = next.(Model)
 	if top, _ := m.focus.Top(); top.Title != "Commands" {
-		t.Fatal("ctrl-c did not pop only top modal")
+		t.Fatal("escape did not pop only top modal")
 	}
 	next, _ = m.Update(keyMsg(tea.KeyEscape, 0))
 	m = next.(Model)
@@ -207,14 +216,19 @@ func TestModel_InputPasteResizeFocusAndVisibleBreakpoints(t *testing.T) {
 	m := baseModel()
 	next, _ := m.Update(tea.PasteMsg{Content: "一\ne\u0301\n👩‍👩‍👧‍👦"})
 	m = next.(Model)
-	if !m.state.Pasted || !strings.Contains(m.Frame(), "Bracketed paste") {
+	// The pasted draft lands in the composer and IS the feedback — a wide CJK
+	// grapheme surviving into the frame also pins the width handling.
+	if !m.state.Pasted || !strings.Contains(m.Frame(), "一") {
 		t.Fatal("paste state missing")
 	}
 	m = baseModel()
 	next, _ = m.Update(tea.FocusMsg{})
 	m = next.(Model)
-	if !strings.Contains(m.Frame(), "focus restored") {
-		t.Fatalf("focus feedback missing: %s", ansi.Strip(m.Frame()))
+	// Regaining terminal focus restores composer focus. It deliberately
+	// announces nothing: the composer is visibly focused, and a banner for it
+	// was canvas noise that outlived the event.
+	if !m.state.Focused || m.state.Composer != ComposerFocused {
+		t.Fatalf("focus not restored: %+v", m.state)
 	}
 	next, _ = m.Update(tea.WindowSizeMsg{Width: 79, Height: 24})
 	m79 := next.(Model).WithState(State{Intervention: true})
@@ -325,7 +339,7 @@ func TestModel_StyledProfilesAndMonochromeSemantics(t *testing.T) {
 	profiles := []struct {
 		theme    ui.Theme
 		sequence string
-	}{{ui.NewTheme(ui.ModeDark, ui.ProfileTrueColor), "\x1b[38;2;250;178;131m"}, {ui.NewTheme(ui.ModeLight, ui.ProfileTrueColor), "\x1b[38;2;59;125;216m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileANSI256), "\x1b[38;5;216m"}, {ui.NewTheme(ui.ModeLight, ui.ProfileANSI256), "\x1b[38;5;68m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileANSI16), "\x1b[93m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileMono), "\x1b[1m"}}
+	}{{ui.NewTheme(ui.ModeDark, ui.ProfileTrueColor), "\x1b[38;2;43;182;204m"}, {ui.NewTheme(ui.ModeLight, ui.ProfileTrueColor), "\x1b[38;2;14;124;143m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileANSI256), "\x1b[38;5;37m"}, {ui.NewTheme(ui.ModeLight, ui.ProfileANSI256), "\x1b[38;5;30m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileANSI16), "\x1b[96m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileMono), "\x1b[1m"}}
 	for _, profile := range profiles {
 		theme := profile.theme
 		frame := NewModel(100, 30, theme, true, FixtureProjection()).WithState(State{Intervention: true, ReplayGap: true}).Frame()
@@ -334,10 +348,21 @@ func TestModel_StyledProfilesAndMonochromeSemantics(t *testing.T) {
 			t.Fatalf("profile %d/%d missing exact sequence %q", theme.Profile(), theme.Mode(), profile.sequence)
 		}
 	}
-	mono := NewModel(100, 30, profiles[5].theme, true, FixtureProjection()).WithState(State{Intervention: true, ReplayGap: true}).Frame()
-	for _, glyph := range []string{"✓", "!", "×"} {
-		if !strings.Contains(mono, glyph) {
-			t.Fatalf("mono missing semantic glyph %q", glyph)
+	// Monochrome must carry state meaning by glyph alone. Only the most severe
+	// honesty line shows at a time (chrome, not a stack of cards), so each state
+	// is asserted in the frame that actually surfaces it.
+	for _, tc := range []struct {
+		state State
+		glyph string
+	}{
+		{State{Intervention: true}, "!"},
+		{State{ReplayGap: true}, "×"},
+		{State{Closed: true}, "○"},
+		{State{}, "✓"},
+	} {
+		mono := NewModel(100, 30, profiles[5].theme, true, FixtureProjection()).WithState(tc.state).Frame()
+		if !strings.Contains(mono, tc.glyph) {
+			t.Fatalf("mono missing semantic glyph %q for state %+v", tc.glyph, tc.state)
 		}
 	}
 }

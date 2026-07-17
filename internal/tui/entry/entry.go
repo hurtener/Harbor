@@ -61,9 +61,17 @@ type Options struct {
 	// interaction state. When false, the stored preference wins (the
 	// default for SDK callers that never pass a flag).
 	CompactSet bool
-	// Input / Output are the terminal streams. When nil, os.Stdin /
-	// os.Stdout are used (the co-launch and attach paths both want the
-	// process terminal).
+	// Input / Output are explicit stream overrides for tests and embedders.
+	// When BOTH are nil — the normal CLI, co-launch, and attach case — the
+	// entry point mounts on the process terminal: Bubble Tea performs its
+	// own input discovery (falling back to /dev/tty when stdin is not a
+	// terminal, so a redirected stdin is ignored and a caller with no
+	// controlling terminal fails loudly), and alternate-scroll wheel
+	// reporting is enabled for the program's lifetime. Setting either
+	// stream bypasses that discovery and drives the program over the
+	// supplied streams exactly (a nil counterpart falls back to the
+	// process stdio); window size is then whatever the supplied output
+	// reports — real for a terminal file, absent for a test buffer.
 	Input  io.Reader
 	Output io.Writer
 	// Now is the clock for token expiry checks. Defaults to time.Now.
@@ -121,7 +129,10 @@ func Run(ctx context.Context, opts Options) error {
 		if strings.TrimSpace(opts.Session) != "" {
 			identity.Session = strings.TrimSpace(opts.Session)
 		}
-		tokens = conversation.NewTokenSource("", token)
+		// Keep the host's dynamic source reachable as the minter: the first
+		// resolution above pins the STARTING identity, but session switches
+		// need credentials for scopes that one token does not cover.
+		tokens = conversation.NewTokenSource("", token).WithMinter(opts.Token.Token)
 	case opts.TokenResolver != nil:
 		token, sourcePath, err := opts.TokenResolver(ctx, opts.Session)
 		if err != nil {
@@ -167,12 +178,17 @@ func Run(ctx context.Context, opts Options) error {
 		// is silently dropped.
 		interaction.Compact = opts.Compact
 	}
+	// A persisted theme is an explicit operator choice: apply it AND lock it
+	// so the terminal-background auto-detect cannot clobber it at startup.
 	theme := ui.CompileTheme(ui.EnvironmentFrom(os.LookupEnv))
+	themeLocked := false
 	if interaction.Theme == string(ui.ModeLight) {
 		theme = ui.NewTheme(ui.ModeLight, theme.Profile())
+		themeLocked = true
 	}
 	if interaction.Theme == string(ui.ModeDark) {
 		theme = ui.NewTheme(ui.ModeDark, theme.Profile())
+		themeLocked = true
 	}
 	updates := conversation.NewNotifier(64)
 	controller, err := conversation.NewController(opts.BaseURL, tokens, identity, func(update conversation.Update) {
@@ -184,7 +200,17 @@ func Run(ctx context.Context, opts Options) error {
 	defer func() { _ = controller.Close() }()
 	defer updates.Close()
 	exportPath := filepath.Join(filepath.Dir(statePath), "exports", identity.Session+".md")
-	model := app.NewRuntimeModel(ctx, 80, 24, theme, controller, updates, app.RuntimeOptions{Compact: interaction.Compact, ReducedMotion: interaction.ReducedMotion, Fingerprint: fingerprint, ExportPath: exportPath, State: interaction, Store: &store})
+	model := app.NewRuntimeModel(ctx, 80, 24, theme, controller, updates, app.RuntimeOptions{Compact: interaction.Compact, ReducedMotion: interaction.ReducedMotion, ThemeLocked: themeLocked, Fingerprint: fingerprint, ExportPath: exportPath, BaseURL: opts.BaseURL, State: interaction, Store: &store})
+	// When the caller did not override the streams, mount on the process
+	// terminal: Bubble Tea's own input discovery falls back to /dev/tty when
+	// stdin is redirected, and alternate-scroll wheel reporting is enabled —
+	// neither happens when explicit streams are handed over.
+	if opts.Input == nil && opts.Output == nil {
+		if err := app.RunTerminal(ctx, model); err != nil {
+			return err
+		}
+		return nil
+	}
 	if err := app.Run(ctx, input, output, model); err != nil {
 		return err
 	}

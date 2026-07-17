@@ -52,28 +52,38 @@ type SnapshotBundle struct {
 
 // Projection is a self-contained immutable value for one identity triple.
 type Projection struct {
-	Identity                types.IdentityScope `json:"identity"`
-	Generation              uint64              `json:"generation"`
-	LastSequence            uint64              `json:"last_sequence"`
-	Cursor                  string              `json:"cursor,omitempty"`
-	SessionStatus           string              `json:"session_status,omitempty"`
-	SessionErased           bool                `json:"session_erased,omitempty"`
-	HistoryTruncated        bool                `json:"history_truncated,omitempty"`
-	HistoryHasMore          bool                `json:"history_has_more,omitempty"`
-	AggregateTruncated      bool                `json:"aggregate_truncated,omitempty"`
-	CountersPartial         bool                `json:"counters_partial,omitempty"`
-	ToolsAggregatesPartial  bool                `json:"tools_aggregates_partial,omitempty"`
-	ToolAnalyticsBounded    bool                `json:"tool_analytics_bounded,omitempty"`
-	Retention               []Retention         `json:"retention,omitempty"`
-	UnavailableCapabilities []string            `json:"unavailable_capabilities,omitempty"`
-	Blocks                  []Block             `json:"blocks"`
-	ReconciliationRequired  bool                `json:"reconciliation_required,omitempty"`
-	ReplayGap               *ReplayGap          `json:"replay_gap,omitempty"`
+	Identity   types.IdentityScope `json:"identity"`
+	Generation uint64              `json:"generation"`
+	// Usage is the session's accumulated LLM usage, decoded from the canonical
+	// llm.cost.recorded stream (the same source the Console reads). It is the
+	// only honest place cost/tokens/context come from — never estimated.
+	Usage Usage `json:"usage"`
+	// RunUsage is the same accounting attributed per run, for the per-turn
+	// summary line under each answer.
+	RunUsage                map[string]Usage `json:"run_usage,omitempty"`
+	LastSequence            uint64           `json:"last_sequence"`
+	Cursor                  string           `json:"cursor,omitempty"`
+	SessionStatus           string           `json:"session_status,omitempty"`
+	SessionErased           bool             `json:"session_erased,omitempty"`
+	HistoryTruncated        bool             `json:"history_truncated,omitempty"`
+	HistoryHasMore          bool             `json:"history_has_more,omitempty"`
+	AggregateTruncated      bool             `json:"aggregate_truncated,omitempty"`
+	CountersPartial         bool             `json:"counters_partial,omitempty"`
+	ToolsAggregatesPartial  bool             `json:"tools_aggregates_partial,omitempty"`
+	ToolAnalyticsBounded    bool             `json:"tool_analytics_bounded,omitempty"`
+	Retention               []Retention      `json:"retention,omitempty"`
+	UnavailableCapabilities []string         `json:"unavailable_capabilities,omitempty"`
+	Blocks                  []Block          `json:"blocks"`
+	ReconciliationRequired  bool             `json:"reconciliation_required,omitempty"`
+	ReplayGap               *ReplayGap       `json:"replay_gap,omitempty"`
 	tombstones              map[string]uint64
 	seen                    map[uint64]struct{}
 	unsequenced             map[string]struct{}
 	liveEvents              []WireEvent
 	sessionSequence         uint64
+	// streamStep counts completed LLM steps per run, so successive streaming
+	// messages/reasoning in one turn key to distinct blocks in arrival order.
+	streamStep map[string]int
 }
 
 // ReplayGap describes why an authoritative snapshot reconciliation is needed.
@@ -93,6 +103,19 @@ type Retention struct {
 
 // Block is one normalized, safe conversation/runtime record. Text is bounded;
 // unknown payload values are never copied into generic blocks.
+// Usage is the canonical per-session LLM usage rollup accumulated from
+// llm.cost.recorded. ContextWindow is the active model's input-token window (0
+// when the Runtime has not advertised one — the caller must not invent a
+// denominator).
+type Usage struct {
+	Model         string  `json:"model,omitempty"`
+	TotalTokens   int64   `json:"total_tokens,omitempty"`
+	PromptTokens  int64   `json:"prompt_tokens,omitempty"`
+	OutputTokens  int64   `json:"output_tokens,omitempty"`
+	USD           float64 `json:"usd,omitempty"`
+	ContextWindow int64   `json:"context_window,omitempty"`
+}
+
 type Block struct {
 	ID          string                   `json:"id"`
 	Kind        string                   `json:"kind"`
@@ -107,6 +130,10 @@ type Block struct {
 	PayloadKeys []string                 `json:"payload_keys,omitempty"`
 	Artifacts   []types.StateArtifactRef `json:"artifacts,omitempty"`
 	Incomplete  bool                     `json:"incomplete,omitempty"`
+	// DurationMS is the canonical wall-clock time the Runtime reports for the
+	// run (TaskRow.StartedAt → UpdatedAt). It is authoritative: the client never
+	// derives elapsed time from local wall-clock reads.
+	DurationMS int64 `json:"duration_ms,omitempty"`
 }
 
 // ChangeSet tells a renderer whether it may coalesce this update. Content and
@@ -285,10 +312,55 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 		if decoded.Kind == "reasoning" {
 			kind = "reasoning"
 		}
-		id := kind + ":" + runID
-		appendDelta(&next, id, kind, runID, event, decoded.Delta)
+		// Segment streaming per LLM step. A run's stream keys used to be a bare
+		// kind:runID, so a turn's preamble ("let me check…") and its post-tool
+		// answer merged into ONE text block anchored where it first appeared —
+		// which yanked the final answer above intervening reasoning/tool blocks
+		// and left them out of order. Keying by the step index (advanced on each
+		// Done terminator) gives every message its own block in arrival order.
+		step := next.streamStep[runID]
+		id := fmt.Sprintf("%s:%s:%d", kind, runID, step)
+		if decoded.Delta != "" {
+			appendDelta(&next, id, kind, runID, event, decoded.Delta)
+			blockIDs = append(blockIDs, id)
+		}
+		if decoded.Done {
+			if next.streamStep == nil {
+				next.streamStep = map[string]int{}
+			}
+			next.streamStep[runID] = step + 1
+		}
 		immediate = false
-		blockIDs = append(blockIDs, id)
+	case "llm.cost.recorded":
+		// Canonical usage accounting. It is deliberately NOT a transcript block:
+		// it feeds the session's cost/token/context readout instead of
+		// interleaving accounting noise with the conversation.
+		var decoded costPayload
+		if !decodePayload(event.Payload, &decoded) {
+			return genericFallback(next, event, payload), ChangeSet{Changed: true, Immediate: true, BlockIDs: []string{genericEventID(event)}}, nil
+		}
+		if decoded.Model != "" {
+			next.Usage.Model = safeText(decoded.Model)
+		}
+		if decoded.ContextWindowTokens > 0 {
+			next.Usage.ContextWindow = decoded.ContextWindowTokens
+		}
+		next.Usage.TotalTokens += decoded.Usage.TotalTokens
+		next.Usage.PromptTokens += decoded.Usage.PromptTokens
+		next.Usage.OutputTokens += decoded.Usage.CompletionTokens
+		next.Usage.USD += decoded.Cost.TotalCost
+		if event.Run != "" {
+			if next.RunUsage == nil {
+				next.RunUsage = map[string]Usage{}
+			}
+			run := next.RunUsage[event.Run]
+			run.TotalTokens += decoded.Usage.TotalTokens
+			run.PromptTokens += decoded.Usage.PromptTokens
+			run.OutputTokens += decoded.Usage.CompletionTokens
+			run.USD += decoded.Cost.TotalCost
+			next.RunUsage[event.Run] = run
+		}
+		return next, ChangeSet{Changed: true, Immediate: false}, nil
 	case "task.spawned", "task.started":
 		var decoded taskPayload
 		if !decodePayload(event.Payload, &decoded) || decoded.TaskID == "" {
@@ -579,9 +651,14 @@ func mergeTasks(p *Projection, rows []types.TaskRow, details []types.TaskDetail,
 		id := "task:" + row.ID
 		idx := blockIndex(p.Blocks, id)
 		if idx < 0 {
-			p.Blocks = append(p.Blocks, Block{ID: id, Kind: "task", RunID: row.ID, At: row.StartedAt, Status: string(row.Status)})
-		} else if !liveAfterSnapshot && !terminalStatus(p.Blocks[idx].Status) {
-			p.Blocks[idx].Status = string(row.Status)
+			p.Blocks = append(p.Blocks, Block{ID: id, Kind: "task", RunID: row.ID, At: row.StartedAt, Status: string(row.Status), DurationMS: row.DurationMS})
+		} else {
+			if row.DurationMS > 0 {
+				p.Blocks[idx].DurationMS = row.DurationMS
+			}
+			if !liveAfterSnapshot && !terminalStatus(p.Blocks[idx].Status) {
+				p.Blocks[idx].Status = string(row.Status)
+			}
 		}
 		if detail, ok := detailByID[row.ID]; ok && detail.ResultRef != nil {
 			artifact := types.StateArtifactRef{ID: detail.ResultRef.ID, MimeType: detail.ResultRef.MimeType, SizeBytes: detail.ResultRef.SizeBytes, Filename: detail.ResultRef.Filename, SHA256: detail.ResultRef.SHA256}
@@ -795,8 +872,24 @@ type completionChunkPayload struct {
 	TaskID string
 	Delta  string
 	Kind   string
+	// Done marks the terminator chunk of one LLM completion stream (one ReAct
+	// step). It is the boundary between a run's successive assistant messages
+	// and reasoning segments, so streaming blocks segment on it.
+	Done bool
 }
 type taskPayload struct{ TaskID string }
+
+// costPayload mirrors the canonical llm.cost.recorded frame.
+type costPayload struct {
+	Model               string
+	ContextWindowTokens int64
+	Usage               struct {
+		TotalTokens      int64
+		PromptTokens     int64
+		CompletionTokens int64
+	}
+	Cost struct{ TotalCost float64 }
+}
 type toolPayload struct{ ToolName string }
 type pauseRequestedPayload struct {
 	Token  string
@@ -926,6 +1019,12 @@ func cloneProjection(p Projection) Projection {
 	out.unsequenced = make(map[string]struct{}, len(p.unsequenced))
 	for key := range p.unsequenced {
 		out.unsequenced[key] = struct{}{}
+	}
+	if p.streamStep != nil {
+		out.streamStep = make(map[string]int, len(p.streamStep))
+		for key, value := range p.streamStep {
+			out.streamStep[key] = value
+		}
 	}
 	out.liveEvents = make([]WireEvent, len(p.liveEvents))
 	for i, event := range p.liveEvents {
