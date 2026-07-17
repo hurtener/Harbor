@@ -3,7 +3,7 @@
   ▙▄▘  session 01K0HARBORFIXTURE00000
 
 
-  ✻ Crunching… (esc to interrupt)
+  ✻ Plotting… (esc to interrupt)
   ┃  Active work in progress
   ┃
   ┃

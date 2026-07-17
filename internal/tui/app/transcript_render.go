@@ -97,35 +97,19 @@ func (m Model) layoutAssistant(b projection.Block, width int) laidBlock {
 		ops = append(ops, drawOp{dx: proseIndent, dy: h, text: "▌", style: m.theme.Style(ui.RoleMuted, nil).Faint(true)})
 		return laidBlock{height: h + 1, ops: ops}
 	}
-	// The per-turn anchor sits under the finished answer: which model ran and
-	// how long the Runtime says it took. It replaces the raw lifecycle/audit
-	// lines that used to interleave with the conversation.
-	if status := m.turnStatusFor(b); status != "" {
-		ops = append(ops,
-			drawOp{dx: proseIndent, dy: h, text: "▣", style: m.theme.Style(ui.RoleAccent, nil)},
-			drawOp{dx: proseIndent + 2, dy: h, text: ui.Truncate(status, max(1, width-proseIndent-2)), style: m.theme.Style(ui.RoleMuted, nil)},
-		)
-		h++
-	}
 	return laidBlock{height: h, ops: ops}
 }
 
-// turnStatusFor returns the turn anchor for the newest answer only, so a long
-// transcript is not littered with one status line per historical block.
-func (m Model) turnStatusFor(b projection.Block) string {
-	if m.state.TurnStatus == "" {
-		return ""
-	}
-	for i := len(m.projection.Blocks) - 1; i >= 0; i-- {
-		if k := m.projection.Blocks[i].Kind; k != "text" {
-			continue
-		}
-		if m.projection.Blocks[i].ID == b.ID {
-			return m.state.TurnStatus
-		}
-		return ""
-	}
-	return ""
+// withTurnAnchor appends the per-turn summary line ("✻ Charted for 13.6s ·
+// 17,893 tok · $0.0020 · model") under a finished answer. It is applied by the
+// transcript layout pass to the newest text block only, keeping layoutBlock a
+// pure function of the block itself — which is what makes it cacheable.
+func (m Model) withTurnAnchor(lb laidBlock, width int, status string) laidBlock {
+	ops := append(append([]drawOp(nil), lb.ops...),
+		drawOp{dx: proseIndent, dy: lb.height, text: "✻", style: m.theme.Style(ui.RoleAccent, nil)},
+		drawOp{dx: proseIndent + 2, dy: lb.height, text: ui.Truncate(status, max(1, width-proseIndent-2)), style: m.theme.Style(ui.RoleMuted, nil)},
+	)
+	return laidBlock{height: lb.height + 1, ops: ops}
 }
 
 // layoutReasoning renders thinking as a muted, subordinate section, collapsed by
@@ -284,14 +268,16 @@ func (m Model) composerStatus() string {
 // turn summary — one is picked deterministically per run so a turn keeps its
 // word from spinner to summary.
 var workingVerbs = [][2]string{
-	{"Combobulating", "Combobulated"},
-	{"Crunching", "Crunched"},
-	{"Percolating", "Percolated"},
-	{"Ruminating", "Ruminated"},
-	{"Noodling", "Noodled"},
-	{"Simmering", "Simmered"},
-	{"Mulling", "Mulled"},
-	{"Weaving", "Wove"},
+	{"Charting", "Charted"},
+	{"Plotting", "Plotted"},
+	{"Sounding", "Sounded"},
+	{"Navigating", "Navigated"},
+	{"Tacking", "Tacked"},
+	{"Trimming", "Trimmed"},
+	{"Hauling", "Hauled"},
+	{"Rigging", "Rigged"},
+	{"Steaming", "Steamed"},
+	{"Surveying", "Surveyed"},
 }
 
 func runVerb(runID string) [2]string {

@@ -459,14 +459,12 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// scroll translates wheel to arrow keys without capturing the mouse, so
 		// native selection keeps working). History stays on ctrl+arrows and on
 		// plain arrows while drafting.
-		if m.editor.Text() == "" && m.shell.transcriptOverflows() {
-			m.shell.scrollTranscript(-1)
+		if m.editor.Text() == "" && m.shell.scrollTranscriptIfOverflow(-1) {
 			return m, nil
 		}
 		m.editor = m.editor.History(-1)
 	case "down":
-		if m.editor.Text() == "" && m.shell.transcriptOverflows() {
-			m.shell.scrollTranscript(1)
+		if m.editor.Text() == "" && m.shell.scrollTranscriptIfOverflow(1) {
 			return m, nil
 		}
 		m.editor = m.editor.History(1)

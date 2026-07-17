@@ -15,9 +15,9 @@
   ┃  ctrl+x ?  Keyboard help
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x t  Switch theme
-  ┃  ctrl+x l  Switch session · unavailable: requires a live authenticated Ru
-  ┃  ctrl+x n  Start Fresh · unavailable: requires a live authenticated Runti
-  ┃  ctrl+x d  Delete session · unavailable: requires a live authenticated Ru
+  ┃  ctrl+x l  Switch session · unavailable: requires a live authenticated Runtime attachment
+  ┃  ctrl+x n  Start Fresh · unavailable: requires a live authenticated Runtime attachment
+  ┃  ctrl+x d  Delete session · unavailable: requires a live authenticated Runtime attachment
   ┃  ctrl+x i  Replace credential
   ┃  ctrl+x f  Search transcript
   ┃  ctrl+x x  Export transcript
@@ -25,6 +25,6 @@
   ┃  Composer idle · attach a Runtime
   ┃
   ┃
-  ╹──────────────────────────────────────────────────────────────────────────
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000000000
   disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

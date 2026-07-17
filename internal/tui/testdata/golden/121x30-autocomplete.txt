@@ -16,15 +16,15 @@
   ┃  ctrl+x s  Toggle runtime context
   ┃  ctrl+x ?  Keyboard help
   ┃  q  Quit
-  ┃  ctrl+x a  Attach file · unavailable: requires a live authenticated Runt
-  ┃  ctrl+x k  Cancel queued follow-up · unavailable: no local follow-up is
+  ┃  ctrl+x a  Attach file · unavailable: requires a live authenticated Runtime attachment
+  ┃  ctrl+x k  Cancel queued follow-up · unavailable: no local follow-up is queued
   ┃  ctrl+x e  Remove attachment · unavailable: no attachment is selected
   ┃  ctrl+x p  Restore stashed draft
   ┃  ctrl+x u  Retry attachment · unavailable: no attachment is selected
-  ┃  ctrl+x j  Retry failed follow-up · unavailable: no local follow-up is q
+  ┃  ctrl+x j  Retry failed follow-up · unavailable: no local follow-up is queued
   ┃  Composer idle · attach a Runtime
   ┃
   ┃
-  ╹─────────────────────────────────────────────────────────────────────────
+  ╹───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000000000
   disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

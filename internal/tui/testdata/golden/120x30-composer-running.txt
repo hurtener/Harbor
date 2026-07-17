@@ -21,10 +21,10 @@
 
 
 
-  ⣾  Crunching… (esc to interrupt)
+  ⣾  Plotting… (esc to interrupt)
   ┃  Active work in progress
   ┃
   ┃
-  ╹──────────────────────────────────────────────────────────────────────────
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000000000
   disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

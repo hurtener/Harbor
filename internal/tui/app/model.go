@@ -3,7 +3,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,8 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/hurtener/Harbor/internal/protocol/types"
 
 	"github.com/hurtener/Harbor/internal/tui/projection"
 	"github.com/hurtener/Harbor/internal/tui/ui"
@@ -131,6 +132,10 @@ type Model struct {
 	// scrolling that follows the tail until the operator scrolls away.
 	scrollLine int
 	followTail bool
+	// layoutCache memoizes per-block layouts (see layoutBlockCached). Shared
+	// across the model's value copies: the UI loop is single-goroutine and
+	// entries are idempotent.
+	layoutCache map[string]layoutCacheEntry
 	// themeLocked marks an explicit operator theme choice, which the terminal's
 	// reported background must not override.
 	themeLocked bool
@@ -138,7 +143,7 @@ type Model struct {
 
 // NewModel constructs the detached terminal foundation.
 func NewModel(width, height int, theme ui.Theme, reducedMotion bool, p projection.Projection) Model {
-	return Model{width: max(1, width), height: max(1, height), theme: theme, reducedMotion: reducedMotion, registry: DefaultRegistry(), focus: NewFocusStack("composer"), projection: cloneProjection(p), state: State{Route: "session", Connection: "disconnected", Composer: ComposerIdle}, startup: startupWaiting, followTail: true}
+	return Model{width: max(1, width), height: max(1, height), theme: theme, reducedMotion: reducedMotion, registry: DefaultRegistry(), focus: NewFocusStack("composer"), projection: cloneProjection(p), state: State{Route: "session", Connection: "disconnected", Composer: ComposerIdle}, startup: startupWaiting, followTail: true, layoutCache: map[string]layoutCacheEntry{}}
 }
 
 // NewOperationalModel constructs a shell whose chrome is derived only from
@@ -155,14 +160,29 @@ func NewModelFromEnvironment(width, height int, environment ui.Environment, redu
 	return NewModel(width, height, ui.CompileTheme(environment), reducedMotion, p)
 }
 
+// cloneProjection deep-copies the projection so no mutable state crosses the
+// model boundary. It is a structured copy, not a JSON round-trip: clone runs on
+// every update, and serializing a long conversation cost more per keystroke
+// than laying it out.
 func cloneProjection(p projection.Projection) projection.Projection {
-	data, err := json.Marshal(p)
-	if err != nil {
-		return projection.Projection{}
+	out := p
+	if p.Blocks != nil {
+		out.Blocks = make([]projection.Block, len(p.Blocks))
+		for i, b := range p.Blocks {
+			b.PayloadKeys = append([]string(nil), b.PayloadKeys...)
+			b.Artifacts = append([]types.StateArtifactRef(nil), b.Artifacts...)
+			out.Blocks[i] = b
+		}
 	}
-	var out projection.Projection
-	if json.Unmarshal(data, &out) != nil {
-		return projection.Projection{}
+	if p.RunUsage != nil {
+		out.RunUsage = make(map[string]projection.Usage, len(p.RunUsage))
+		for k, v := range p.RunUsage {
+			out.RunUsage[k] = v
+		}
+	}
+	if p.ReplayGap != nil {
+		gap := *p.ReplayGap
+		out.ReplayGap = &gap
 	}
 	return out
 }
@@ -562,8 +582,7 @@ func (m Model) View() tea.View {
 
 func (m Model) operationalCursor() (int, int) {
 	layout := m.Layout()
-	composerWidth, _ := ui.ComposerGeometry(layout, strings.Count(m.state.ComposerText, "\n")+1)
-	inner := max(1, min(composerWidth, layout.MainWidth-1)-3)
+	inner := max(1, m.sessionContentWidth(layout)-3)
 	runes := []rune(m.state.ComposerText)
 	cursor := max(0, min(len(runes), m.state.ComposerCursor))
 	row, column := 0, 0
@@ -635,17 +654,18 @@ func (m Model) renderBase(c *canvas) {
 	// the single chrome status strip can sit above it.
 	composerTop := m.height
 	if m.height > 12 || !m.state.Intervention {
-		composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
+		// The composer spans the conversation's full width — a capped input
+		// with dead space beside it read as a layout bug on wide terminals.
+		composerWidth := width
 		status := m.composerStatus()
 		// The composer's metadata row is where identity lives (§9) — adjacent to
 		// the input. The footer carries key hints only and the status strip owns
 		// stream state, so the triple is never printed twice and a non-live
 		// connection is never truncated away on a narrow terminal.
 		meta := identityLabel(m.projection)
-		composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), status, meta, m.state.ComposerText)
+		composer := ui.ComposerWithText(m.theme, composerWidth, string(m.state.Composer), status, meta, m.state.ComposerText)
 		if m.operational {
-			composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), status, meta, m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
-
+			composer = ui.LiveComposer(m.theme, composerWidth, string(m.state.Composer), status, meta, m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
 		}
 		composerRows := strings.Count(composer, "\n") + 1
 		composerTop = max(4, m.height-composerRows-1)
@@ -832,10 +852,10 @@ func (m Model) renderSidebar(c *canvas) {
 // composer height instead of a fixed magic offset.
 func (m Model) composerTopRow() int {
 	l := m.Layout()
-	composerWidth, _ := ui.ComposerGeometry(l, strings.Count(m.state.ComposerText, "\n")+1)
-	composer := ui.ComposerWithText(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), m.composerStatus(), identityLabel(m.projection), m.state.ComposerText)
+	composerWidth := m.sessionContentWidth(l)
+	composer := ui.ComposerWithText(m.theme, composerWidth, string(m.state.Composer), m.composerStatus(), identityLabel(m.projection), m.state.ComposerText)
 	if m.operational {
-		composer = ui.LiveComposer(m.theme, min(composerWidth, l.MainWidth-1), string(m.state.Composer), m.composerStatus(), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
+		composer = ui.LiveComposer(m.theme, composerWidth, string(m.state.Composer), m.composerStatus(), identityLabel(m.projection), m.state.ComposerText, m.state.ComposerCursor, m.state.SelectionStart, m.state.SelectionEnd)
 	}
 	composerRows := strings.Count(composer, "\n") + 1
 	return max(0, m.height-composerRows-1)
@@ -843,8 +863,7 @@ func (m Model) composerTopRow() int {
 
 func (m Model) renderAutocomplete(c *canvas) {
 	l := m.Layout()
-	w, _ := ui.ComposerGeometry(l, 1)
-	w = min(w, l.MainWidth-1)
+	w := m.sessionContentWidth(l)
 	// Anchor the popup directly above the composer, clamped to the space between
 	// the header (row 3) and the composer top so it can never cover the active
 	// input row on short terminals or a tall multi-line draft (§5).

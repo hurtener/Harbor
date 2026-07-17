@@ -7,7 +7,7 @@
      Streaming the answer
      ▌
 
-  ✻ Crunching… (esc to interrupt)
+  ✻ Plotting… (esc to interrupt)
   ┃  Active work in progress
   ┃
   ┃
