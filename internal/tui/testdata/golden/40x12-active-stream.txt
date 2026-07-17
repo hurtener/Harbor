@@ -2,11 +2,11 @@
   ▛▀▖  Harbor
   ▙▄▘  session 01K0HARBORFIXTURE00000
 
-     ▌
 
+  ✻ Crunching… (esc to interrupt)
   ┃  Active work in progress
   ┃
-  ┃  ◆ Working  ·  esc interrupt
+  ┃
   ╹──────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000
   disconnected   ·   ctrl+p Command pa

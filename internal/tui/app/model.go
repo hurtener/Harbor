@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -180,8 +181,13 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, model tea.Model
 }
 
 // RunTerminal mounts a model on the process terminal using Bubble Tea's
-// default TTY discovery and raw-mode lifecycle.
+// default TTY discovery and raw-mode lifecycle. Alternate-scroll mode is
+// enabled for the program's lifetime so mouse-wheel motion arrives as arrow
+// keys on the alternate screen — scrolling works without ever capturing the
+// mouse, which keeps the terminal's native text selection intact.
 func RunTerminal(ctx context.Context, model tea.Model) error {
+	_, _ = os.Stdout.WriteString("\x1b[?1007h")
+	defer func() { _, _ = os.Stdout.WriteString("\x1b[?1007l") }()
 	return runProgram(tea.NewProgram(model, tea.WithContext(ctx)))
 }
 
@@ -583,7 +589,9 @@ func (m Model) render() string {
 		case LayerBase:
 			m.renderBase(&canvas)
 		case LayerSidebar:
-			if m.state.SidebarOpen || m.Layout().JoinedSidebar {
+			// The sidebar is strictly opt-in (ctrl+x s): the conversation keeps
+			// the full width — and clean native selection — until asked.
+			if m.state.SidebarOpen {
 				m.renderSidebar(&canvas)
 			}
 		case LayerAutocomplete:
@@ -621,7 +629,7 @@ func (m Model) renderBase(c *canvas) {
 	// and left every unbackgrounded text run as a visible band. Discrete
 	// surfaces (the user turn, the composer) still own a panel fill.
 	c.fill(m.theme.Style(ui.RoleText, nil))
-	width := max(12, l.MainWidth-1)
+	width := m.sessionContentWidth(l)
 
 	// The bottom-anchored composer is placed first so the transcript region and
 	// the single chrome status strip can sit above it.
@@ -663,6 +671,12 @@ func (m Model) renderBase(c *canvas) {
 	// flowing top-down beneath it, chrome stacked upward from the composer.
 	m.renderBanner(c, width)
 	chromeRow := composerTop - 1
+	// The animated in-flight line sits directly above the composer while a
+	// turn runs (the composer's own status row keeps the context readout).
+	if working, ok := m.workingLine(); ok && chromeRow >= bannerHeight {
+		c.put(ui.OuterPadding, chromeRow, ui.Truncate(working, width), m.theme.Style(ui.RoleAccent, nil))
+		chromeRow--
+	}
 	if m.state.ToastOpen && m.state.Toast != "" && chromeRow >= bannerHeight {
 		toast := ui.Truncate(m.state.Toast, width)
 		c.put(ui.OuterPadding+max(0, width-ui.Width(toast)), chromeRow, toast, m.theme.Style(ui.RoleInfo, nil))

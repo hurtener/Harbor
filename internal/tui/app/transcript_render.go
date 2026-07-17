@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
@@ -258,17 +259,11 @@ func (m Model) proseOps(text string, width, indent, dy0 int, role ui.Role) ([]dr
 // once the run is terminal), and a local clock would count the operator's
 // typing. Reduced motion keeps a stable fallback with no animation.
 func (m Model) composerStatus() string {
-	if m.hasActiveTurn() {
-		label := "◆ Working"
-		if !m.reducedMotion {
-			label = spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)] + " Working"
-		}
-		return label + "  ·  esc interrupt"
-	}
-	// Idle: report what an operator actually needs — the model and how much of
-	// its context this session has consumed — not the internal composer enum.
-	// Actionable postures still speak for themselves; they are set dynamically
-	// ("attachment · report.pdf"), so match by prefix, not constant.
+	// The composer's status row is the permanent context readout: the model and
+	// how much of its window this session has consumed. It stays put during a
+	// run (the animated working line lives above the composer), so the operator
+	// never loses it mid-turn. Actionable postures still speak for themselves;
+	// they are set dynamically ("attachment · report.pdf"), so match by prefix.
 	posture := string(m.state.Composer)
 	for _, actionable := range []string{"disabled", "retry", "attachment"} {
 		if strings.HasPrefix(posture, actionable) {
@@ -283,6 +278,100 @@ func (m Model) composerStatus() string {
 		parts = append(parts, usage)
 	}
 	return strings.Join(parts, "  ·  ")
+}
+
+// workingVerbs are the in-flight labels, paired with their past tense for the
+// turn summary — one is picked deterministically per run so a turn keeps its
+// word from spinner to summary.
+var workingVerbs = [][2]string{
+	{"Combobulating", "Combobulated"},
+	{"Crunching", "Crunched"},
+	{"Percolating", "Percolated"},
+	{"Ruminating", "Ruminated"},
+	{"Noodling", "Noodled"},
+	{"Simmering", "Simmered"},
+	{"Mulling", "Mulled"},
+	{"Weaving", "Wove"},
+}
+
+func runVerb(runID string) [2]string {
+	sum := 0
+	for _, r := range runID {
+		sum += int(r)
+	}
+	return workingVerbs[sum%len(workingVerbs)]
+}
+
+// workingLine is the animated in-flight indicator rendered above the composer
+// while a turn runs: spinner, a per-run verb, the canonical elapsed (from the
+// task's Runtime-reported start — never a local guess of when work began), and
+// the interrupt affordance.
+func (m Model) workingLine() (string, bool) {
+	if !m.hasActiveTurn() {
+		return "", false
+	}
+	runID, startedAt := m.activeRun()
+	verb := runVerb(runID)[0]
+	glyph := "✻"
+	if !m.reducedMotion {
+		glyph = spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)]
+	}
+	label := glyph + " " + verb + "…"
+	if !startedAt.IsZero() {
+		if secs := time.Since(startedAt).Seconds(); secs >= 1 && secs < 86400 {
+			label += fmt.Sprintf(" (%s · esc to interrupt)", formatTurnDuration(int64(secs*1000)))
+			return label, true
+		}
+	}
+	return label + " (esc to interrupt)", true
+}
+
+// activeRun reports the in-flight run and its canonical start time (the task
+// block carries TaskRow.StartedAt).
+func (m Model) activeRun() (string, time.Time) {
+	for i := len(m.projection.Blocks) - 1; i >= 0; i-- {
+		b := m.projection.Blocks[i]
+		if b.Kind == "task" && !terminalTurnStatus(b.Status) {
+			return b.RunID, b.At
+		}
+	}
+	for i := len(m.projection.Blocks) - 1; i >= 0; i-- {
+		b := m.projection.Blocks[i]
+		if b.Incomplete && b.RunID != "" {
+			return b.RunID, b.At
+		}
+	}
+	return "", time.Time{}
+}
+
+// formatTurnDuration renders a duration the way an operator reads it: "13.6s"
+// under a minute, "1m 15s" beyond.
+func formatTurnDuration(ms int64) string {
+	secs := float64(ms) / 1000
+	if secs < 60 {
+		return fmt.Sprintf("%.1fs", secs)
+	}
+	return fmt.Sprintf("%dm %ds", int(secs)/60, int(secs)%60)
+}
+
+// formatTokens renders a token count with thousands separators.
+func formatTokens(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	head := len(s) % 3
+	if head > 0 {
+		b.WriteString(s[:head])
+	}
+	for i := head; i < len(s); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
 }
 
 // contextLabel reports canonical context consumption, e.g.

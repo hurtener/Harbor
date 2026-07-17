@@ -53,22 +53,31 @@ func TestConversationSurface_RuntimeInternalsNeverLeakIntoChat(t *testing.T) {
 	}
 }
 
-// TestComposerStatus_ReportsNoLocalElapsed pins that the working indicator never
-// derives a duration from a local clock: the only honest elapsed is the
-// Runtime's own (TaskRow.StartedAt → UpdatedAt), rendered on the turn anchor
-// once the run is terminal. A local timer would count the operator's typing.
-func TestComposerStatus_ReportsNoLocalElapsed(t *testing.T) {
-	p := projection.Projection{Blocks: []projection.Block{
-		{ID: "a1", Kind: "text", Text: "streaming", Incomplete: true, At: time.Now().Add(-90 * time.Second)},
-	}}
+// TestWorkingLine_CanonicalElapsedAndPersistentContext pins the in-flight
+// contract: the animated working line lives ABOVE the composer with the
+// interrupt affordance and an elapsed derived only from the task's canonical
+// Runtime-reported start, while the composer's own status row keeps the
+// context readout for the whole run — it never disappears mid-turn.
+func TestWorkingLine_CanonicalElapsedAndPersistentContext(t *testing.T) {
+	p := projection.Projection{
+		Usage: projection.Usage{Model: "model-x", TotalTokens: 1000, PromptTokens: 1000, ContextWindow: 100000},
+		Blocks: []projection.Block{
+			{ID: "text:r1", Kind: "text", Text: "streaming", RunID: "r1", Incomplete: true, At: time.Now()},
+			{ID: "task:r1", Kind: "task", Status: "running", RunID: "r1", At: time.Now().Add(-13 * time.Second)},
+		}}
 	m := NewOperationalModel(100, 24, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, p)
 	m.state.Composer = ComposerRunning
-	status := m.composerStatus()
-	if !strings.Contains(status, "Working") || !strings.Contains(status, "esc interrupt") {
-		t.Fatalf("working status missing progress/interrupt affordance: %q", status)
+	m.state.Model = "model-x"
+
+	line, ok := m.workingLine()
+	if !ok || !strings.Contains(line, "esc to interrupt") {
+		t.Fatalf("working line missing interrupt affordance: %q", line)
 	}
-	if strings.Contains(status, "90") || strings.Contains(status, "s ·") {
-		t.Fatalf("composer status must not report a locally-derived elapsed: %q", status)
+	if !strings.Contains(line, "13") {
+		t.Fatalf("working line must report the canonical task elapsed: %q", line)
+	}
+	if status := m.composerStatus(); !strings.Contains(status, "Context") {
+		t.Fatalf("context readout must stay on the composer during a run: %q", status)
 	}
 
 	// An incomplete metadata-only fallback block must never pin "Working" on.
@@ -78,5 +87,8 @@ func TestComposerStatus_ReportsNoLocalElapsed(t *testing.T) {
 	idle.state.Composer = ComposerFocused
 	if idle.hasActiveTurn() {
 		t.Error("a metadata-only fallback event must not make a finished turn look active")
+	}
+	if _, on := idle.workingLine(); on {
+		t.Error("working line must be absent while idle")
 	}
 }

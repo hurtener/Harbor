@@ -327,7 +327,9 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	if runningErr := stack.Tasks.MarkRunning(runtimeCtx, holdTask.ID); runningErr != nil {
 		t.Fatal(runningErr)
 	}
-	session.waitContainsAfter(t, mark, "Working")
+	// The in-flight verb varies per run; the interrupt affordance is the
+	// stable marker of the working line.
+	session.waitContainsAfter(t, mark, "esc to interrupt")
 	session.text(t, "recover queued follow-up")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "queued locally")

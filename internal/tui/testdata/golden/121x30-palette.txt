@@ -1,9 +1,9 @@
 
   ▛▀▖  Harbor
-  ▙▄▘  session 01K0HARBORFIXTURE0000000000                                     RUNTIME CONTEXT
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-     ◆  Inspecting Runtime posture                                             Session
-                                                                               01K0HARBORFIXTURE0000000000
+     ◆  Inspecting Runtime posture
+
      ✓  runtime.health  succeeded
        Runtime h
                     Commands

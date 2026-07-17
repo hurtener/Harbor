@@ -1,9 +1,9 @@
 
   ▛▀▖  Harbor
-  ▙▄▘  session session-alpha                                                   RUNTIME CONTEXT
+  ▙▄▘  session session-alpha
 
-  ┃  Summarize the deployment status.                                          Session
-                                                                               session-alpha
+  ┃  Summarize the deployment status.
+
      The deployment completed successfully.
 
                                   Replace credential · memory only
@@ -27,4 +27,4 @@
   ┃  disabled
   ╹─────────────────────────────────────────────────────────────────────────
   tenant-a/operator/session-alpha
-  authentication expired   ·   ctrl+p Command palette   ctrl+x s Toggle runti
+  authentication expired   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

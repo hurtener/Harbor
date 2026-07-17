@@ -219,6 +219,7 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.closeModal()
 		return m, m.refreshAffected()
 	case updateMsg:
+		wasActive := m.shell.state.Active
 		if !m.applyUpdate(msg.update) {
 			return m, m.waitUpdate()
 		}
@@ -226,7 +227,14 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.pending) > 0 {
 			inspect = m.inspectCmd()
 		}
-		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp(), inspect)
+		// The spinner tick chain dies while idle (spinnerCmd returns nil), so
+		// re-arm it when the stream becomes active — otherwise the working
+		// animation is frozen for every turn after the first idle period.
+		var tick tea.Cmd
+		if !wasActive && m.shell.state.Active {
+			tick = m.shell.spinnerCmd()
+		}
+		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp(), inspect, tick)
 	case CommandMsg:
 		return m.runCommand(msg.ID)
 	case sessionsMsg:
@@ -446,8 +454,25 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "alt+_":
 		m.editor = m.editor.Redo()
 	case "up":
+		// With an empty composer and an overflowing conversation, arrows scroll
+		// the transcript — this is also how the mouse wheel arrives (alternate
+		// scroll translates wheel to arrow keys without capturing the mouse, so
+		// native selection keeps working). History stays on ctrl+arrows and on
+		// plain arrows while drafting.
+		if m.editor.Text() == "" && m.shell.transcriptOverflows() {
+			m.shell.scrollTranscript(-1)
+			return m, nil
+		}
 		m.editor = m.editor.History(-1)
 	case "down":
+		if m.editor.Text() == "" && m.shell.transcriptOverflows() {
+			m.shell.scrollTranscript(1)
+			return m, nil
+		}
+		m.editor = m.editor.History(1)
+	case "ctrl+up":
+		m.editor = m.editor.History(-1)
+	case "ctrl+down":
 		m.editor = m.editor.History(1)
 	case "pgup":
 		m.shell.scrollTranscript(-m.shell.transcriptPage())
@@ -792,22 +817,32 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 // derives it from a local clock, so it reports agent time, not the operator's
 // typing time. An empty string means there is nothing honest to report yet.
 func (m RuntimeModel) turnStatus() string {
-	duration := int64(0)
+	duration, runID := int64(0), ""
 	for _, block := range m.transcript.Projection.Blocks {
 		if block.Kind != "task" || !terminalTurnStatus(block.Status) {
 			continue
 		}
-		duration = block.DurationMS
+		duration, runID = block.DurationMS, block.RunID
 	}
 	if duration <= 0 {
 		return ""
 	}
-	parts := make([]string, 0, 2)
-	if model := strings.TrimSpace(m.runtime.Posture.LLM.Model); model != "" {
+	// The turn summary mirrors the playground's per-turn stats — canonical
+	// duration, per-run tokens and cost from llm.cost.recorded, and the model —
+	// fronted by the past tense of the verb the run worked under.
+	parts := []string{runVerb(runID)[1] + " for " + formatTurnDuration(duration)}
+	if usage, ok := m.transcript.Projection.RunUsage[runID]; ok && usage.TotalTokens > 0 {
+		parts = append(parts, formatTokens(usage.TotalTokens)+" tok")
+		if usage.USD > 0 {
+			parts = append(parts, fmt.Sprintf("$%.4f", usage.USD))
+		}
+	}
+	if model := strings.TrimSpace(m.shell.state.Model); model != "" {
+		parts = append(parts, model)
+	} else if model := strings.TrimSpace(m.runtime.Posture.LLM.Model); model != "" {
 		parts = append(parts, model)
 	}
-	parts = append(parts, fmt.Sprintf("%.1fs", float64(duration)/1000))
-	return strings.Join(parts, "  ·  ")
+	return strings.Join(parts, " · ")
 }
 
 func terminalTurnStatus(status string) bool {

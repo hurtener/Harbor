@@ -1,15 +1,15 @@
 
   EVENTS
-                                                                                                                                                                                                      RUNTIME CONTEXT
-   Exactly one active session · tenant-a/operator/session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                                                                                                Session
-   EVENT STREAM / AGGREGATE · filter / raw safe payload / export · partial                                                                                                                            session-alpha
-   Filter:  · page 1
-   #42 future.runtime.notice · run task-01 · raw metadata unavailable                                                                                                                                 Status
-   Partial: retained event window or aggregate is truncated                                                                                                                                           running
 
-                                                                                                                                                                                                      Health
-                                                                                                                                                                                                      warning · intervention required
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   EVENT STREAM / AGGREGATE · filter / raw safe payload / export · partial
+   Filter:  · page 1
+   #42 future.runtime.notice · run task-01 · raw metadata unavailable
+   Partial: retained event window or aggregate is truncated
+
+
+
 
 
 

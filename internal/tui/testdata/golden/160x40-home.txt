@@ -1,12 +1,12 @@
 
   ▛▀▖  Harbor
-  ▙▄▘  session 01K0HARBORFIXTURE0000000000                                                                            RUNTIME CONTEXT
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-       Attach a Runtime to begin.                                                                                     Session
-                                                                                                                      01K0HARBORFIXTURE0000000000
+       Attach a Runtime to begin.
 
-                                                                                                                      Status
-                                                                                                                      running
+
+
+
 
 
 

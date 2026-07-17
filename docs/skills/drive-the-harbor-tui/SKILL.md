@@ -113,9 +113,13 @@ complete authenticated attach join before committing it in memory; enter
 + `Alt+Enter` or `Shift+Enter`: insert a newline.
 + `Ctrl+A` / `Ctrl+E`: line start/end; `Ctrl+B` / `Ctrl+F`: move left/right.
 + `Ctrl+_` / `Alt+_`: undo/redo.
-+ `PageUp` / `PageDown` scroll the conversation by lines; `Home` / `End` jump to
-  the top / newest output (End re-engages tail-following). While scrolled away,
-  new output never moves your view.
++ Scroll the conversation with the mouse wheel (alternate-scroll — the mouse is
+  never captured, so native text selection keeps working) or with arrows while
+  the composer is empty; `PageUp` / `PageDown` page, `Home` / `End` jump to the
+  top / newest output (End re-engages tail-following). While scrolled away, new
+  output never moves your view. Prompt history stays on `ctrl+↑` / `ctrl+↓`
+  (plain arrows still browse history while a draft is present or the
+  conversation fits on screen).
 + `Alt+J` / `Alt+K`: next/previous semantic transcript block.
 + `Ctrl+X F`: filter/search transcript blocks; `Ctrl+X X`: export Markdown.
 + `Ctrl+X Y`: timestamps.
@@ -154,8 +158,10 @@ rows, transcript content, or credentials.
 
 The TUI owns the whole terminal on the alternate screen: a persistent banner
 at the top (product, version, model, session, attach URL), the conversation
-flowing top-down beneath it, and the composer pinned at the bottom. Quitting
-restores the terminal exactly as it was. The `--compact` flag is deprecated
+flowing top-down beneath it, and the composer pinned at the bottom. The
+runtime-context sidebar is opt-in (`Ctrl+X S`) so the conversation keeps the
+full width — and clean native selection — until asked. Quitting restores the
+terminal exactly as it was. The `--compact` flag is deprecated
 and has no effect.
 
 Session commands are keyboard-driven: `Ctrl+X L` searches/switches, `Ctrl+X N`

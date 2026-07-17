@@ -11,10 +11,10 @@
   ┃  Operator approval required
 
 
-
+  ⣾  Crunching… (esc to interrupt)
   ┃  Active work in progress
   ┃
-  ┃  ⣾  Working  ·  esc interrupt
+  ┃
   ╹──────────────────────────────────────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000000000
   disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime

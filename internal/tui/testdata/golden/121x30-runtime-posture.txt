@@ -1,15 +1,15 @@
 
   POSTURE
-                                                                               RUNTIME CONTEXT
+
    Exactly one active session · tenant-a/operator/session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                         Session
-   RUNTIME Development Runtime · Protocol 0.1.0 · uptime 90s                   session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   RUNTIME Development Runtime · Protocol 0.1.0 · uptime 90s
    Capabilities: [task_control tool_annotations]
-   LLM: mock / fixture · mock=true                                             Status
-   Governance: resolved=team default=team                                      running
+   LLM: mock / fixture · mock=true
+   Governance: resolved=team default=team
    Driver state: inmem embedded
-                                                                               Health
-                                                                               warning · intervention required
+
+
 
 
 

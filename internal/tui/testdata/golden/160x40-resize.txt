@@ -1,12 +1,12 @@
 
   ▛▀▖  Harbor
-  ▙▄▘  session 01K0HARBORFIXTURE0000000000                                                                            RUNTIME CONTEXT
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-     ◆  Inspecting Runtime posture                                                                                    Session
-                                                                                                                      01K0HARBORFIXTURE0000000000
+     ◆  Inspecting Runtime posture
+
      ✓  runtime.health  succeeded
-       Runtime health snapshot received                                                                               Status
-                                                                                                                      running
+       Runtime health snapshot received
+
   ┃  !  Operator approval required
   ┃  Operator approval required
 
@@ -31,7 +31,7 @@
 
 
 
-                                                                                                     Resize applied
+                                                                                                                                               Resize applied
   ┃  Composer idle · attach a Runtime
   ┃
   ┃

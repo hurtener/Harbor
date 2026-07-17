@@ -1,15 +1,15 @@
 
   ARTIFACTS
-                                                                               RUNTIME CONTEXT
-   Exactly one active session · tenant-a/operator/session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                         Session
-   ARTIFACT REFERENCES · metadata only; heavy content stays by reference ·     session-alpha
-   Filter:  · page 1
-   artifact-a application/json · 128 bytes · tool                              Status
-                                                                               running
 
-                                                                               Health
-                                                                               warning · intervention required
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   ARTIFACT REFERENCES · metadata only; heavy content stays by reference · loaded
+   Filter:  · page 1
+   artifact-a application/json · 128 bytes · tool
+
+
+
+
 
 
 

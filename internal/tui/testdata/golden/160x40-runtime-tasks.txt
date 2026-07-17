@@ -1,15 +1,15 @@
 
   TASKS
-                                                                                                                      RUNTIME CONTEXT
-   Exactly one active session · tenant-a/operator/session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                Session
-   TASK LIFECYCLE / TREE / PROGRESS / GROUP / ORPHAN / LATENCY · loaded                                               session-alpha
-   Filter:  · page 1
-     task-01  paused · foreground · progress indeterminate · 1250ms · group group-a · activity latency unavailable    Status
-   Cost: observed/non-authoritative; inspect canonical events for completeness                                        running
 
-                                                                                                                      Health
-                                                                                                                      warning · intervention required
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   TASK LIFECYCLE / TREE / PROGRESS / GROUP / ORPHAN / LATENCY · loaded
+   Filter:  · page 1
+     task-01  paused · foreground · progress indeterminate · 1250ms · group group-a · activity latency unavailable
+   Cost: observed/non-authoritative; inspect canonical events for completeness
+
+
+
 
 
 

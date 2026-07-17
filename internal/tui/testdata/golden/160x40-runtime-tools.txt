@@ -1,15 +1,15 @@
 
   TOOLS
-                                                                                                                      RUNTIME CONTEXT
-   Exactly one active session · tenant-a/operator/session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                Session
-   TOOLS · schema / transport / OAuth / approval / metrics / content · loaded                                         session-alpha
-   Filter:  · page 1
-   deploy-status HTTP · OAuth Bound · approval gated                                                                  Status
-   Analytics: bounded best-effort; absence is not zero                                                                running
 
-                                                                                                                      Health
-                                                                                                                      warning · intervention required
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   TOOLS · schema / transport / OAuth / approval / metrics / content · loaded
+   Filter:  · page 1
+   deploy-status HTTP · OAuth Bound · approval gated
+   Analytics: bounded best-effort; absence is not zero
+
+
+
 
 
 

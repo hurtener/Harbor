@@ -57,22 +57,25 @@ type Projection struct {
 	// Usage is the session's accumulated LLM usage, decoded from the canonical
 	// llm.cost.recorded stream (the same source the Console reads). It is the
 	// only honest place cost/tokens/context come from — never estimated.
-	Usage                   Usage       `json:"usage"`
-	LastSequence            uint64      `json:"last_sequence"`
-	Cursor                  string      `json:"cursor,omitempty"`
-	SessionStatus           string      `json:"session_status,omitempty"`
-	SessionErased           bool        `json:"session_erased,omitempty"`
-	HistoryTruncated        bool        `json:"history_truncated,omitempty"`
-	HistoryHasMore          bool        `json:"history_has_more,omitempty"`
-	AggregateTruncated      bool        `json:"aggregate_truncated,omitempty"`
-	CountersPartial         bool        `json:"counters_partial,omitempty"`
-	ToolsAggregatesPartial  bool        `json:"tools_aggregates_partial,omitempty"`
-	ToolAnalyticsBounded    bool        `json:"tool_analytics_bounded,omitempty"`
-	Retention               []Retention `json:"retention,omitempty"`
-	UnavailableCapabilities []string    `json:"unavailable_capabilities,omitempty"`
-	Blocks                  []Block     `json:"blocks"`
-	ReconciliationRequired  bool        `json:"reconciliation_required,omitempty"`
-	ReplayGap               *ReplayGap  `json:"replay_gap,omitempty"`
+	Usage Usage `json:"usage"`
+	// RunUsage is the same accounting attributed per run, for the per-turn
+	// summary line under each answer.
+	RunUsage                map[string]Usage `json:"run_usage,omitempty"`
+	LastSequence            uint64           `json:"last_sequence"`
+	Cursor                  string           `json:"cursor,omitempty"`
+	SessionStatus           string           `json:"session_status,omitempty"`
+	SessionErased           bool             `json:"session_erased,omitempty"`
+	HistoryTruncated        bool             `json:"history_truncated,omitempty"`
+	HistoryHasMore          bool             `json:"history_has_more,omitempty"`
+	AggregateTruncated      bool             `json:"aggregate_truncated,omitempty"`
+	CountersPartial         bool             `json:"counters_partial,omitempty"`
+	ToolsAggregatesPartial  bool             `json:"tools_aggregates_partial,omitempty"`
+	ToolAnalyticsBounded    bool             `json:"tool_analytics_bounded,omitempty"`
+	Retention               []Retention      `json:"retention,omitempty"`
+	UnavailableCapabilities []string         `json:"unavailable_capabilities,omitempty"`
+	Blocks                  []Block          `json:"blocks"`
+	ReconciliationRequired  bool             `json:"reconciliation_required,omitempty"`
+	ReplayGap               *ReplayGap       `json:"replay_gap,omitempty"`
 	tombstones              map[string]uint64
 	seen                    map[uint64]struct{}
 	unsequenced             map[string]struct{}
@@ -328,6 +331,17 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 		next.Usage.PromptTokens += decoded.Usage.PromptTokens
 		next.Usage.OutputTokens += decoded.Usage.CompletionTokens
 		next.Usage.USD += decoded.Cost.TotalCost
+		if event.Run != "" {
+			if next.RunUsage == nil {
+				next.RunUsage = map[string]Usage{}
+			}
+			run := next.RunUsage[event.Run]
+			run.TotalTokens += decoded.Usage.TotalTokens
+			run.PromptTokens += decoded.Usage.PromptTokens
+			run.OutputTokens += decoded.Usage.CompletionTokens
+			run.USD += decoded.Cost.TotalCost
+			next.RunUsage[event.Run] = run
+		}
 		return next, ChangeSet{Changed: true, Immediate: false}, nil
 	case "task.spawned", "task.started":
 		var decoded taskPayload

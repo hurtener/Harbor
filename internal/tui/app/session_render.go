@@ -97,11 +97,26 @@ func (m Model) blockLineOffset(id string) (int, bool) {
 // width exactly as renderBase lays the session surface out, so scroll math and
 // rendering can never disagree.
 func (m Model) transcriptRegionHeight() (int, int) {
-	l := m.Layout()
-	width := max(12, l.MainWidth-1)
 	top, bottom := m.transcriptRegion()
-	_ = l
-	return max(0, bottom-top+1), width
+	return max(0, bottom-top+1), m.sessionContentWidth(m.Layout())
+}
+
+// sessionContentWidth is the conversation's content width: the full content
+// width normally, narrowed only while the operator has joined the sidebar into
+// the layout on a wide terminal.
+func (m Model) sessionContentWidth(l ui.Layout) int {
+	if m.state.SidebarOpen && l.JoinedSidebar {
+		return max(12, l.MainWidth-1)
+	}
+	return max(12, l.ContentWidth-1)
+}
+
+// transcriptOverflows reports whether the conversation is taller than its
+// window — the gate for arrow keys (and wheel-generated arrows) scrolling it.
+func (m Model) transcriptOverflows() bool {
+	viewH, width := m.transcriptRegionHeight()
+	_, _, total := m.layoutTranscript(width)
+	return total > viewH
 }
 
 // transcriptRegion returns the inclusive [top, bottom] rows of the transcript
@@ -109,6 +124,9 @@ func (m Model) transcriptRegionHeight() (int, int) {
 // chrome (toast, status strip, intervention actions, one separator row).
 func (m Model) transcriptRegion() (int, int) {
 	bottom := m.composerTopRow() - 2
+	if _, ok := m.workingLine(); ok {
+		bottom--
+	}
 	if m.state.ToastOpen && m.state.Toast != "" {
 		bottom--
 	}

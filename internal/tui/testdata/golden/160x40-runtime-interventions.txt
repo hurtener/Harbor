@@ -1,15 +1,15 @@
 
   INTERVENTIONS
-                                                                                                                      RUNTIME CONTEXT
-   Exactly one active session · tenant-a/operator/session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                                                                Session
-   INTERVENTION INBOX · retained by PauseToken · approval / OAuth / input / expiry / resolved                         session-alpha
-   pause-token-a paused · approval required · run task-01
-                                                                                                                      Status
-                                                                                                                      running
 
-                                                                                                                      Health
-                                                                                                                      warning · intervention required
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   INTERVENTION INBOX · retained by PauseToken · approval / OAuth / input / expiry / resolved
+   pause-token-a paused · approval required · run task-01
+
+
+
+
+
 
 
 

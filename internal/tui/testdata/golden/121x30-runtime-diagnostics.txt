@@ -1,15 +1,15 @@
 
   DIAGNOSTICS
-                                                                               RUNTIME CONTEXT
-   Exactly one active session · tenant-a/operator/session-alpha
-   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions                         Session
-   DIAGNOSTICS · stream / retention / capability / partiality                  session-alpha
-   Unavailable topology.snapshot: HTTP 501 capability unavailable
-                                                                               Status
-                                                                               running
 
-                                                                               Health
-                                                                               warning · intervention required
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   DIAGNOSTICS · stream / retention / capability / partiality
+   Unavailable topology.snapshot: HTTP 501 capability unavailable
+
+
+
+
+
 
 
 

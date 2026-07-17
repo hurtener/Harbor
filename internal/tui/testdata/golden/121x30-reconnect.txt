@@ -1,12 +1,12 @@
 
   ▛▀▖  Harbor
-  ▙▄▘  session 01K0HARBORFIXTURE0000000000                                     RUNTIME CONTEXT
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
 
-     ◆  Inspecting Runtime posture                                             Session
-                                                                               01K0HARBORFIXTURE0000000000
+     ◆  Inspecting Runtime posture
+
      ✓  runtime.health  succeeded
-       Runtime health snapshot received                                        Status
-                                                                               running
+       Runtime health snapshot received
+
   ┃  !  Operator approval required
   ┃  Operator approval required
 
@@ -27,4 +27,4 @@
   ┃
   ╹─────────────────────────────────────────────────────────────────────────
   acme/operator/01K0HARBORFIXTURE0000000000
-  retrying · attempt 2 in 4s   ·   ctrl+p Command palette   ctrl+x s Toggle r
+  retrying · attempt 2 in 4s   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

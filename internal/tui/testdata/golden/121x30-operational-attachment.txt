@@ -1,9 +1,9 @@
 
   ▛▀▖  Harbor
-  ▙▄▘  session session-alpha                                                   RUNTIME CONTEXT
+  ▙▄▘  session session-alpha
 
-  ┃  Summarize the deployment status.                                          Session
-                                                                               session-alpha
+  ┃  Summarize the deployment status.
+
      The deployment completed successfully.
 
                                   Attach file · path|disposition
