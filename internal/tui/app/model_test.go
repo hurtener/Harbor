@@ -330,7 +330,7 @@ func TestModel_StyledProfilesAndMonochromeSemantics(t *testing.T) {
 	profiles := []struct {
 		theme    ui.Theme
 		sequence string
-	}{{ui.NewTheme(ui.ModeDark, ui.ProfileTrueColor), "\x1b[38;2;250;178;131m"}, {ui.NewTheme(ui.ModeLight, ui.ProfileTrueColor), "\x1b[38;2;59;125;216m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileANSI256), "\x1b[38;5;216m"}, {ui.NewTheme(ui.ModeLight, ui.ProfileANSI256), "\x1b[38;5;68m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileANSI16), "\x1b[93m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileMono), "\x1b[1m"}}
+	}{{ui.NewTheme(ui.ModeDark, ui.ProfileTrueColor), "\x1b[38;2;43;182;204m"}, {ui.NewTheme(ui.ModeLight, ui.ProfileTrueColor), "\x1b[38;2;14;124;143m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileANSI256), "\x1b[38;5;37m"}, {ui.NewTheme(ui.ModeLight, ui.ProfileANSI256), "\x1b[38;5;30m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileANSI16), "\x1b[96m"}, {ui.NewTheme(ui.ModeDark, ui.ProfileMono), "\x1b[1m"}}
 	for _, profile := range profiles {
 		theme := profile.theme
 		frame := NewModel(100, 30, theme, true, FixtureProjection()).WithState(State{Intervention: true, ReplayGap: true}).Frame()

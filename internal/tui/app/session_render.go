@@ -23,7 +23,7 @@ const bannerHeight = 4
 // name, and one muted line of operational identity. Values the Runtime has not
 // reported yet are simply absent — never invented.
 func (m Model) renderBanner(c *canvas, width int) {
-	accent := m.theme.Style(ui.RoleAccent, nil)
+	markWidth := m.renderBrandMark(c, ui.OuterPadding, 1)
 	name := m.theme.Style(ui.RolePrimary, nil).Bold(true)
 	muted := m.theme.Style(ui.RoleMuted, nil)
 
@@ -31,11 +31,10 @@ func (m Model) renderBanner(c *canvas, width int) {
 	if m.state.DisplayName != "" && !strings.EqualFold(m.state.DisplayName, title) {
 		title += "  ·  " + m.state.DisplayName
 	}
-	c.put(ui.OuterPadding, 1, "▛▀▖", accent)
-	c.put(ui.OuterPadding, 2, "▙▄▘", accent)
-	c.put(ui.OuterPadding+5, 1, ui.Truncate(title, max(1, width-16)), name)
+	textX := ui.OuterPadding + markWidth + 2
+	c.put(textX, 1, ui.Truncate(title, max(1, width-markWidth-16)), name)
 	if m.state.Version != "" {
-		c.put(ui.OuterPadding+5+ui.Width(title)+2, 1, ui.Truncate(m.state.Version, 12), muted)
+		c.put(textX+ui.Width(title)+2, 1, ui.Truncate(m.state.Version, 14), muted)
 	}
 	meta := make([]string, 0, 3)
 	if m.state.Model != "" {
@@ -45,7 +44,42 @@ func (m Model) renderBanner(c *canvas, width int) {
 	if m.state.BaseURL != "" {
 		meta = append(meta, m.state.BaseURL)
 	}
-	c.put(ui.OuterPadding+5, 2, ui.Truncate(strings.Join(meta, " · "), max(1, width-5)), muted)
+	c.put(textX, 2, ui.Truncate(strings.Join(meta, " · "), max(1, width-markWidth-2)), muted)
+}
+
+// renderBrandMark draws the Harbor mark — the logo's lighthouse: teal signal
+// beam with the gold beacon, white tower, teal sea — as half-block pixel art
+// on color-capable terminals (each cell carries two vertical pixels via ▀/▄
+// with brand-role foreground/background). Sixteen-color and monochrome
+// terminals fall back to a plain block glyph in the accent role. Returns the
+// mark's width in cells.
+func (m Model) renderBrandMark(c *canvas, x, y int) int {
+	if m.theme.Profile() != ui.ProfileTrueColor && m.theme.Profile() != ui.ProfileANSI256 {
+		c.put(x, y, "▛▀▖", m.theme.Style(ui.RoleAccent, nil))
+		c.put(x, y+1, "▙▄▘", m.theme.Style(ui.RoleAccent, nil))
+		return 3
+	}
+	beam := ui.RoleBrandBeam
+	light := ui.RoleBrandLight
+	tower := ui.RoleBrandTower
+	sea := ui.RoleBrandSea
+	// Row 0: beam pixels above, tower cap below the center cells.
+	c.put(x+0, y, "▀", m.theme.Style(beam, nil))
+	c.put(x+1, y, "▀", m.theme.Style(beam, nil))
+	c.put(x+2, y, "▀", m.theme.Style(beam, &tower))
+	c.put(x+3, y, "▀", m.theme.Style(light, &tower))
+	c.put(x+4, y, "▀", m.theme.Style(beam, &tower))
+	c.put(x+5, y, "▀", m.theme.Style(beam, nil))
+	c.put(x+6, y, "▀", m.theme.Style(beam, nil))
+	// Row 1: tower pixels above, sea below across the full width.
+	c.put(x+0, y+1, "▄", m.theme.Style(sea, nil))
+	c.put(x+1, y+1, "▄", m.theme.Style(sea, nil))
+	c.put(x+2, y+1, "▀", m.theme.Style(tower, &sea))
+	c.put(x+3, y+1, "▀", m.theme.Style(tower, &sea))
+	c.put(x+4, y+1, "▀", m.theme.Style(tower, &sea))
+	c.put(x+5, y+1, "▄", m.theme.Style(sea, nil))
+	c.put(x+6, y+1, "▄", m.theme.Style(sea, nil))
+	return 7
 }
 
 // layoutCacheEntry memoizes one block's laid-out visual against a content

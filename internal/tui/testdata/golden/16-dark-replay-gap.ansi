@@ -1,8 +1,8 @@
 [97m                                                                                                    [m
-[97m  [m[95m▛▀▖[m[97m  [m[1;93mHarbor[m[97m                                                                                       [m
-[97m  [m[95m▙▄▘[m[97m  [m[90msession 01K0HARBORFIXTURE0000000000[m[97m                                                          [m
+[97m  [m[96m▛▀▖[m[97m  [m[1;96mHarbor[m[97m                                                                                       [m
+[97m  [m[96m▙▄▘[m[97m  [m[90msession 01K0HARBORFIXTURE0000000000[m[97m                                                          [m
 [97m                                                                                                    [m
-[97m  [m   [2;96m◆  Inspecting Runtime posture[m                                                               [97m   [m
+[97m  [m   [2;94m◆  Inspecting Runtime posture[m                                                               [97m   [m
 [97m  [m                                                                                               [97m   [m
 [97m  [m   [92m✓  runtime.health  succeeded[m                                                                [97m   [m
 [97m  [m     [90mRuntime health snapshot received[m                                                          [97m   [m
@@ -22,9 +22,9 @@
 [97m  [m                                                                                               [97m   [m
 [97m                                                                                                    [m
 [97m  [m[91m×  Replay gap · authoritative reconciliation required[m[97m                                             [m
-[97m  [m[93m┃[m[97;40m  Composer idle · attach a Runtime                                                            [m[97m   [m
-[97m  [m[93m┃[m[97;40m                                                                                              [m[97m   [m
-[97m  [m[93m┃[m[97;40m                                                                                              [m[97m   [m
-[97m  [m[93m╹[m[97;40m──────────────────────────────────────────────────────────────────────────────────────────────[m[97m   [m
+[97m  [m[96m┃[m[97;40m  Composer idle · attach a Runtime                                                            [m[97m   [m
+[97m  [m[96m┃[m[97;40m                                                                                              [m[97m   [m
+[97m  [m[96m┃[m[97;40m                                                                                              [m[97m   [m
+[97m  [m[96m╹[m[97;40m──────────────────────────────────────────────────────────────────────────────────────────────[m[97m   [m
 [97m  [m[97;40macme/operator/01K0HARBORFIXTURE0000000000                                                      [m[97m   [m
 [97m  [m[90mdisconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context[m[97m                       [m

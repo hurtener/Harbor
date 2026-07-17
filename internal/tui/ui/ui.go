@@ -65,13 +65,20 @@ const (
 	RolePanel
 	RoleElement
 	RoleBorder
+	// Brand roles carry the Harbor mark's palette — the lighthouse beam,
+	// beacon light, tower, and sea from the canonical logo — so even the
+	// pixel mark stays inside the semantic token system.
+	RoleBrandBeam
+	RoleBrandLight
+	RoleBrandTower
+	RoleBrandSea
 )
 
 // Theme is an immutable compiled semantic palette.
 type Theme struct {
 	profile Profile
 	mode    Mode
-	colors  [13]string
+	colors  [17]string
 }
 
 // Environment describes terminal capabilities used to compile a theme.
@@ -111,16 +118,20 @@ func CompileTheme(environment Environment) Theme {
 	return NewTheme(mode, ProfileANSI16)
 }
 
-var dark = [13]string{"#fab283", "#5c9cf5", "#9d7cd8", "#e06c75", "#f5a742", "#7fd88f", "#56b6c2", "#eeeeee", "#808080", "#0a0a0a", "#141414", "#1e1e1e", "#484848"}
-var light = [13]string{"#3b7dd8", "#7b5bb6", "#d68c27", "#d1383d", "#d68c27", "#3d9a57", "#318795", "#1a1a1a", "#8a8a8a", "#ffffff", "#fafafa", "#f5f5f5", "#b8b8b8"}
-var ansi256Dark = [13]string{"216", "75", "140", "168", "214", "114", "73", "255", "244", "232", "233", "234", "239"}
-var ansi256Light = [13]string{"68", "97", "172", "160", "172", "71", "66", "234", "245", "231", "255", "254", "250"}
-var ansi16Dark = [13]string{"11", "12", "13", "9", "11", "10", "14", "15", "8", "0", "0", "8", "8"}
-var ansi16Light = [13]string{"4", "5", "3", "1", "3", "2", "6", "0", "8", "15", "15", "7", "8"}
+// The core palette mirrors the Console's canonical tokens (tokens.css): the
+// brand teal accent, GitHub-dark surfaces, and the same status hues — one
+// Harbor look across both Protocol clients. The last four entries are the
+// logo's own colors for the brand mark.
+var dark = [17]string{"#2bb6cc", "#5c9cf5", "#48d6d2", "#f85149", "#d29922", "#3fb950", "#79c0ff", "#e6edf3", "#8b949e", "#0d1117", "#161b22", "#21262d", "#30363d", "#48d6d2", "#f4c76b", "#eafbfa", "#3de0db"}
+var light = [17]string{"#0e7c8f", "#3b7dd8", "#12a4b8", "#cf222e", "#9a6700", "#1a7f37", "#0969da", "#1a1a1a", "#6e7781", "#ffffff", "#f6f8fa", "#eef1f4", "#d0d7de", "#12a4b8", "#c99700", "#9fe7e4", "#1bb7c9"}
+var ansi256Dark = [17]string{"37", "75", "44", "203", "178", "114", "111", "255", "246", "233", "234", "235", "239", "44", "221", "195", "43"}
+var ansi256Light = [17]string{"30", "68", "31", "160", "136", "28", "26", "234", "243", "231", "255", "254", "250", "31", "178", "152", "37"}
+var ansi16Dark = [17]string{"14", "12", "14", "9", "11", "10", "12", "15", "8", "0", "0", "8", "8", "14", "11", "15", "14"}
+var ansi16Light = [17]string{"6", "4", "6", "1", "3", "2", "4", "0", "8", "15", "15", "7", "8", "6", "3", "7", "6"}
 
 // NewTheme compiles one terminal palette.
 func NewTheme(mode Mode, profile Profile) Theme {
-	var colors [13]string
+	var colors [17]string
 	switch profile {
 	case ProfileTrueColor:
 		colors = dark
@@ -138,7 +149,7 @@ func NewTheme(mode Mode, profile Profile) Theme {
 			colors = ansi16Light
 		}
 	case ProfileMono:
-		colors = [13]string{}
+		colors = [17]string{}
 	}
 	return Theme{profile: profile, mode: mode, colors: colors}
 }

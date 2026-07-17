@@ -576,11 +576,11 @@
     },
     {
       "path": "16-dark-intervention.ansi",
-      "sha256": "8a36d44ddc51c50f0f92cd986e4023ff94d17f50423e3a600b138e1beff893b5"
+      "sha256": "e874d2f34685e2e4ffc917265de4c9ea9396dfef04aaadd4f2a02d4bc53cb2f1"
     },
     {
       "path": "16-dark-replay-gap.ansi",
-      "sha256": "460ab8d40437ce18202afe572fb1ec6c6504f1e0b6ad8c2e3a907288a6c08204"
+      "sha256": "7646a2975f4704badd487b6463ad7a3eed16c4759622bbc384a79e12f37bd76a"
     },
     {
       "path": "160x40-active-stream.txt",
@@ -944,19 +944,19 @@
     },
     {
       "path": "256-dark-intervention.ansi",
-      "sha256": "92b461b97415a2cf8d43c4e158185d15ada4c3702a90a8a45e8b277a546e057b"
+      "sha256": "1cbae122d9a67ed3ef153916ba2010679327ee3be2252fa30f96883d56057036"
     },
     {
       "path": "256-dark-replay-gap.ansi",
-      "sha256": "ab01e23c684139bc4a6d4540153373421ada67e47c6b8fd3bd3923ec72703790"
+      "sha256": "63c418b48b9ba4aded5f99e4379b96cef1169d245ebc6e39b252eb2895d06882"
     },
     {
       "path": "256-light-intervention.ansi",
-      "sha256": "20c29871b48a9ca713896fdeb10f010b619aadeda7e7266adf3f51eb5ca027fb"
+      "sha256": "74da780dc82be127caa6b4944e57699b9bee5323847ef2c09774c354d36e7df1"
     },
     {
       "path": "256-light-replay-gap.ansi",
-      "sha256": "bfd4fd576d407c10336b46cb339215495c1d9a62a1462009c5f64dcae3a20e43"
+      "sha256": "220c52a9705f9180ef0cd40a5f22a134c9c0bb4bfdd07ce5af1f40452697fc20"
     },
     {
       "path": "40x12-active-stream.txt",
@@ -1024,15 +1024,15 @@
     },
     {
       "path": "40x12-operational-degraded.txt",
-      "sha256": "c3bf1c4c497c6e5ee18029a72c072cb604b92ab1f9092127f133c61c093407d5"
+      "sha256": "a37f3cdc1340dd484d8e251b88df2de314d5443219cebd007fc9e6912915e4fd"
     },
     {
       "path": "40x12-operational-dropped.txt",
-      "sha256": "66395d23de95c3dc310eda27edc39b52f6a031cad955ab759e5140136783c0d3"
+      "sha256": "91511d134427cdb783cd1b076822ebd0a69706965dd61d70b979a44ce91fcfff"
     },
     {
       "path": "40x12-operational-failed.txt",
-      "sha256": "1098549d4226c9873bc754b1d7d34f8c5be5531fac4d41718fa852b8bef47f0b"
+      "sha256": "9f4be0153549fbc0f28aef86794843f87c47fd863b0d761cfb246bfadcbbce2e"
     },
     {
       "path": "40x12-operational-followup-failed.txt",
@@ -1868,19 +1868,19 @@
     },
     {
       "path": "truecolor-dark-intervention.ansi",
-      "sha256": "510983a6454e09051312e6e94dd2bea3dc4f95fecdac23fc67e40b527737f5f6"
+      "sha256": "5ea01f4bfa653cef9c0d2b9b3ed13943c7eb945ee06bcbe447c3d73955a7c0dd"
     },
     {
       "path": "truecolor-dark-replay-gap.ansi",
-      "sha256": "9abd38604216ec53da930dc8918a9671a878c27cc4773c8c6d731bb0ad9b39e1"
+      "sha256": "967115fbef52e4e0ebd7585461e771df7833f932bf89b2c62ba05b07454b4a1b"
     },
     {
       "path": "truecolor-light-intervention.ansi",
-      "sha256": "9e453f7352f9a1f172f53a31fc7b0661f4316969aaf53d09645cab5a301c307e"
+      "sha256": "4645b217fffdfaaa2413c75af07016fcae01c9c70e3b82d1080861bfe582eadc"
     },
     {
       "path": "truecolor-light-replay-gap.ansi",
-      "sha256": "815b7e0e14d41df42703ef277364aa908c4d456074d139d7381ef489c159b7dd"
+      "sha256": "7a7e3c91e2ee17c6c268ecc3d8c1320de840b76eeda9b438624021f3abc352d4"
     }
   ],
   "prior_reviews": {
