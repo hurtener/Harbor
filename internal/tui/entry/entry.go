@@ -61,9 +61,17 @@ type Options struct {
 	// interaction state. When false, the stored preference wins (the
 	// default for SDK callers that never pass a flag).
 	CompactSet bool
-	// Input / Output are the terminal streams. When nil, os.Stdin /
-	// os.Stdout are used (the co-launch and attach paths both want the
-	// process terminal).
+	// Input / Output are explicit stream overrides for tests and embedders.
+	// When BOTH are nil — the normal CLI, co-launch, and attach case — the
+	// entry point mounts on the process terminal: Bubble Tea performs its
+	// own input discovery (falling back to /dev/tty when stdin is not a
+	// terminal, so a redirected stdin is ignored and a caller with no
+	// controlling terminal fails loudly), and alternate-scroll wheel
+	// reporting is enabled for the program's lifetime. Setting either
+	// stream bypasses that discovery and drives the program over the
+	// supplied streams exactly (a nil counterpart falls back to the
+	// process stdio); window size is then whatever the supplied output
+	// reports — real for a terminal file, absent for a test buffer.
 	Input  io.Reader
 	Output io.Writer
 	// Now is the clock for token expiry checks. Defaults to time.Now.
@@ -186,9 +194,9 @@ func Run(ctx context.Context, opts Options) error {
 	exportPath := filepath.Join(filepath.Dir(statePath), "exports", identity.Session+".md")
 	model := app.NewRuntimeModel(ctx, 80, 24, theme, controller, updates, app.RuntimeOptions{Compact: interaction.Compact, ReducedMotion: interaction.ReducedMotion, Fingerprint: fingerprint, ExportPath: exportPath, BaseURL: opts.BaseURL, State: interaction, Store: &store})
 	// When the caller did not override the streams, mount on the process
-	// terminal so Bubble Tea performs its own TTY discovery. Handing it explicit
-	// os.Stdin/os.Stdout suppresses that: the alternate screen never learns the
-	// real window size and frames leak into the terminal's scrollback.
+	// terminal: Bubble Tea's own input discovery falls back to /dev/tty when
+	// stdin is redirected, and alternate-scroll wheel reporting is enabled —
+	// neither happens when explicit streams are handed over.
 	if opts.Input == nil && opts.Output == nil {
 		if err := app.RunTerminal(ctx, model); err != nil {
 			return err

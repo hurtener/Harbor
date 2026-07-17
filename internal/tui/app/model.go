@@ -12,6 +12,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/hurtener/Harbor/internal/protocol/types"
 
@@ -206,8 +207,13 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, model tea.Model
 // keys on the alternate screen — scrolling works without ever capturing the
 // mouse, which keeps the terminal's native text selection intact.
 func RunTerminal(ctx context.Context, model tea.Model) error {
-	_, _ = os.Stdout.WriteString("\x1b[?1007h")
-	defer func() { _, _ = os.Stdout.WriteString("\x1b[?1007l") }()
+	// Alternate-scroll only means anything on a real terminal; guarding the
+	// writes keeps escape bytes out of a piped stdout (logs, jq consumers)
+	// when the program is about to fail loudly anyway.
+	if term.IsTerminal(os.Stdout.Fd()) {
+		_, _ = os.Stdout.WriteString("\x1b[?1007h")
+		defer func() { _, _ = os.Stdout.WriteString("\x1b[?1007l") }()
+	}
 	return runProgram(tea.NewProgram(model, tea.WithContext(ctx)))
 }
 

@@ -9,7 +9,10 @@
 //
 // # The boot stack
 //
-// The subcommand assembles, in dependency order:
+// Before anything else, the dev-only `./.env` auto-load runs (see
+// devenv.go — environment-wins, names-only stderr line, `--no-env-file`
+// opt-out) so `env.NAME` config references resolve without a manual
+// `source .env`. Then the subcommand assembles, in dependency order:
 //
 //  1. The config (default `harbor.yaml`, overridable via `--config`).
 //  2. The audit Redactor (`audit/drivers/patterns`).
@@ -107,6 +110,7 @@ const (
 	flagDevConfig      = "config"
 	flagDevPort        = "port"
 	flagDevNoHotReload = "no-hot-reload"
+	flagDevNoEnvFile   = "no-env-file"
 	flagDevTUI         = "tui"
 )
 
@@ -160,6 +164,12 @@ llm.api_key (or env.NAME) in production. The dev-only escape hatch
 ` + EnvDevAllowMock + `=1 unlocks the mock LLM driver for first-clone
 convenience; every boot prints a stderr banner when it fires.
 
+Before boot, harbor dev loads ./` + devEnvFile + ` (working directory only) into
+the process environment so env.NAME config references resolve without a
+manual source. Dev-only — harbor serve never reads it. Variables
+already set in the environment always win; the load prints a one-line
+names-only summary to stderr. Opt out with --` + flagDevNoEnvFile + `.
+
 Examples:
   harbor dev
   harbor dev --config ./my-agent/harbor.yaml --port 8080
@@ -176,6 +186,10 @@ Examples:
 	// "dev-only escape hatch — explicit, never the default" surface
 	// applied in reverse: operators OPT OUT of a sensible default.
 	cmd.Flags().Bool(flagDevNoHotReload, false, "disable the fsnotify-driven hot-reload watcher (overrides cli.dev_hot_reload.enabled)")
+	// operator-facing escape hatch for the dev-only ./.env auto-load
+	// (registered like --no-hot-reload: opt OUT of a sensible dev
+	// default; `harbor serve` never loads a .env at all).
+	cmd.Flags().Bool(flagDevNoEnvFile, false, "skip loading ./"+devEnvFile+" into the process environment before boot")
 	cmd.Flags().Bool(flagDevTUI, false, "co-launch the native terminal client in this process after readiness, using the ephemeral dev token (one command, one terminal; disables hot-reload)")
 	return cmd
 }
@@ -192,7 +206,25 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	cfgPath, _ := cmd.Flags().GetString(flagDevConfig)        //nolint:errcheck // flag statically registered; lookup cannot fail
 	port, _ := cmd.Flags().GetInt(flagDevPort)                //nolint:errcheck // flag statically registered; lookup cannot fail
 	noHotReload, _ := cmd.Flags().GetBool(flagDevNoHotReload) //nolint:errcheck // flag statically registered; lookup cannot fail
+	noEnvFile, _ := cmd.Flags().GetBool(flagDevNoEnvFile)     //nolint:errcheck // flag statically registered; lookup cannot fail
 	withTUI, _ := cmd.Flags().GetBool(flagDevTUI)             //nolint:errcheck // flag statically registered; lookup cannot fail
+
+	// Dev-only ./.env auto-load — BEFORE any env read, config load, or
+	// boot (both the plain and --tui paths run through here), so
+	// env.NAME config references and the dev env knobs below resolve
+	// against it. Environment always wins; a malformed file fails the
+	// boot loudly with file:line. `harbor serve` never does this.
+	if !noEnvFile {
+		if envErr := loadDevEnv(devEnvFile, cmd.ErrOrStderr()); envErr != nil {
+			return emitCLIError(cmd, CLIError{
+				Subcommand: "dev",
+				Message:    fmt.Sprintf("env file: %v", envErr),
+				Code:       CodeBootConfigInvalid,
+				Hint:       "fix the reported line in ./" + devEnvFile + ", or pass --" + flagDevNoEnvFile + " to skip dotenv loading",
+			})
+		}
+	}
+
 	bindAddrOverride := os.Getenv("HARBOR_BIND")
 	if bindAddrOverride != "" {
 		if p, ok := parsePortFromBind(bindAddrOverride); ok {
