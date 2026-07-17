@@ -172,18 +172,19 @@ func (c *Controller) switchTo(ctx context.Context, target types.IdentityScope) e
 		if cancel != nil {
 			cancel()
 		}
-		if oldCancel != nil {
-			oldCancel()
-		}
+		// The current session was never touched — the candidate failed
+		// BEFORE any teardown, so a failed switch must not kill the live
+		// stream. Republish the previous posture (with the error for the
+		// surface toast) and stay exactly where we were; the same commit
+		// ordering that guards the success path guards the failure path.
 		if oldStream != nil {
-			_ = oldStream.Close()
+			c.publish(Update{Identity: oldIdentity, Generation: oldGeneration, State: StateLive, Projection: oldProjection, Err: err})
+			return err
 		}
-		if oldDone != nil {
-			<-oldDone
+		if oldProjection.SessionErased {
+			c.publish(Update{Identity: oldIdentity, Generation: oldGeneration, State: StateErased, Projection: oldProjection, Err: err})
+			return err
 		}
-		c.mu.Lock()
-		c.cancel, c.stream, c.done = nil, nil, nil
-		c.mu.Unlock()
 		return c.failFor(oldIdentity, oldGeneration, oldProjection, err)
 	}
 

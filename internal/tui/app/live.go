@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -251,7 +253,21 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applySessions(msg)
 	case switchedMsg:
 		if msg.err != nil {
-			m.setError(msg.err)
+			// A failed switch is non-destructive — the controller kept the
+			// previous session live — so report it without rerouting the
+			// CURRENT session's posture through the auth-expired mapping
+			// meant for its own credential. An open input dialog shows the
+			// failure inline; otherwise the dialog closes with a toast.
+			if modal, open := m.shell.focus.Top(); open && modal.IsInput() {
+				modal.ErrorText = msg.err.Error()
+				m.shell.focus = m.shell.focus.ReplaceTop(modal)
+				return m, m.requestPersist()
+			}
+			m.closeModal()
+			if !m.shell.state.ToastOpen {
+				m.shell.state.ToastOpen = true
+				m.shell.state.Toast = "Switch failed · still on " + m.controller.Identity().Session + " · " + msg.err.Error()
+			}
 		} else {
 			m.picker = m.picker.SetCurrent(msg.session)
 			m.closeModal()
@@ -261,6 +277,11 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.requestPersist()
 	case renamedMsg:
 		if msg.err != nil {
+			if modal, open := m.shell.focus.Top(); open && modal.IsInput() {
+				modal.ErrorText = msg.err.Error()
+				m.shell.focus = m.shell.focus.ReplaceTop(modal)
+				return m, nil
+			}
 			m.setError(msg.err)
 		} else {
 			m.closeModal()
@@ -727,9 +748,14 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 	case "sessions":
 		return m.openSessions("")
 	case "session-new":
+		// Start Fresh means exactly that: mint a fresh session id and attach —
+		// no dialog, no free-text id to mistype. Naming stays on Rename,
+		// attaching to existing sessions stays on the Sessions picker.
 		m.targetSession = ""
-		m.shell = m.shell.WithModal(NewSelect("Start Fresh", nil, "composer"))
-		return m, nil
+		session := freshSessionID()
+		m.shell.state.ToastOpen = true
+		m.shell.state.Toast = "Starting fresh session " + session
+		return m.switchSession(session)
 	case "session-rename":
 		m.targetSession = m.controller.Identity().Session
 		m.shell = m.shell.WithModal(renameInput("composer"))
@@ -926,15 +952,6 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 			return updated, updated.sessionSearchCmd(top.Query)
 		}
 		return updated, cmd
-	case "Start Fresh":
-		if key == "enter" {
-			session := strings.TrimSpace(modal.Query)
-			if session == "" {
-				m.setError(errors.New("session ID required"))
-				return m, nil
-			}
-			return m.switchSession(session)
-		}
 	case "Rename session":
 		if key == "enter" {
 			title := strings.TrimSpace(modal.Query)
@@ -1316,6 +1333,14 @@ func (m RuntimeModel) availableActions() []ActionSpec {
 			break
 		}
 	}
+	if task == nil {
+		// The conversation surface never loads task rows; the active run is
+		// the implicit steering target so redirect/inject/interrupt work
+		// mid-run without a detour through the tasks route.
+		if runID, ok := m.activeRunID(); ok {
+			task = &types.TaskRow{ID: runID, Status: types.TaskStatusRunning}
+		}
+	}
 	if selected, ok := m.runtime.Interventions.Selected(); ok && selected.Token == m.selectedPause && selected.Status == string(types.PauseStatePaused) {
 		token, interventionKind = selected.Token, string(selected.Kind)
 	}
@@ -1402,6 +1427,14 @@ func (m RuntimeModel) executeIntent(intent ActionIntent) (tea.Model, tea.Cmd) {
 func (m RuntimeModel) actionTargets(action ActionSpec) (runID, token, toolID, artifactID string) {
 	if strings.HasPrefix(action.ID, "task.") || action.Method == methods.MethodCancel || action.Method == methods.MethodPause || action.Method == methods.MethodRedirect || action.Method == methods.MethodInjectContext || action.Method == methods.MethodUserMessage || action.Method == methods.MethodPrioritize {
 		runID = m.selectedTask
+		if runID == "" {
+			// Steering from the conversation surface: with no task row
+			// selected, the active run is the implicit target — the same
+			// resolution the esc interrupt uses.
+			if active, ok := m.activeRunID(); ok {
+				runID = active
+			}
+		}
 	}
 	if strings.HasPrefix(action.ID, "intervention.") || action.ID == "task.resume" || action.Method == methods.MethodResume || action.Method == methods.MethodApprove || action.Method == methods.MethodReject {
 		if selected, ok := m.runtime.Interventions.Selected(); ok && selected.Token == m.selectedPause {
@@ -1580,6 +1613,17 @@ func (m RuntimeModel) applySessions(msg sessionsMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+// freshSessionID mints a short random id for Start Fresh sessions. The
+// operator renames it later if it matters; collision odds are irrelevant at
+// interactive scale and the runtime scopes it under the identity triple.
+func freshSessionID() string {
+	var raw [4]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("s-%d", time.Now().UnixNano())
+	}
+	return "s-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw[:]))
+}
+
 func (m RuntimeModel) switchSession(session string) (tea.Model, tea.Cmd) {
 	id := m.controller.Identity()
 	id.Session = session
@@ -1867,6 +1911,11 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 	if update.Err != nil {
 		m.shell.state.ToastOpen = true
 		m.shell.state.Toast = update.Err.Error()
+		if update.State == conversation.StateLive || update.State == conversation.StateErased {
+			// A live/erased posture carrying an error is a failed switch
+			// that rolled back — reassure the operator nothing was lost.
+			m.shell.state.Toast = "Switch failed · still on " + update.Identity.Session + " · " + update.Err.Error()
+		}
 	}
 	m.syncComposer()
 	m.syncAccess()

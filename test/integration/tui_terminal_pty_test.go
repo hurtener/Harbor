@@ -198,7 +198,7 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.resize(t, 100, 30)
 	mark = len(session.snapshot())
 	session.command(t, 'a')
-	session.waitContainsAfter(t, mark, "Attach file · path|disposition")
+	session.waitContainsAfter(t, mark, "File path|disposition")
 	session.text(t, "missing.txt|context")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "read attachment")
@@ -211,7 +211,7 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.waitContains(t, "Attachment removed locally")
 	mark = len(session.snapshot())
 	session.command(t, 'a')
-	session.waitContainsAfter(t, mark, "Attach file · path|disposition")
+	session.waitContainsAfter(t, mark, "File path|disposition")
 	session.text(t, "note.txt|ref")
 	session.key(t, '\r', 1)
 	session.waitContains(t, "attachment · note.txt")
@@ -366,17 +366,24 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 		return inspectErr != nil
 	}, "PTY canonical session erase")
 	session.waitContains(t, "Start Fresh required")
+	// Start Fresh mints a random session id. A standalone attach holds only
+	// the credentials in --token-file, so the switch must fail HONESTLY and
+	// non-destructively — no dead disconnected surface, no dialog trap.
 	mark = len(session.snapshot())
 	session.command(t, 'n')
-	session.waitContainsAfter(t, mark, "Start Fresh")
-	session.text(t, fresh.Session)
-	session.key(t, '\r', 1)
-	session.waitContains(t, fresh.Session)
-	session.text(t, "fresh turn")
-	session.key(t, '\r', 1)
+	session.waitContainsAfter(t, mark, "Switch failed")
 	session.key(t, 'c', 5)
 	session.waitExit(t, 0)
 	session.assertOperationalRestored(t)
+	// The pre-minted fresh session attaches via the explicit --session flag,
+	// runs a turn, and its identity persists for the implicit restore below.
+	freshPTY := startPTYCommand(t, binary, []string{"tui", "--attach", server.URL, "--token-file", tokenPath, "--state-file", statePath, "--session", fresh.Session}, temp, 80, 24)
+	freshPTY.waitContains(t, fresh.Session)
+	freshPTY.text(t, "fresh turn")
+	freshPTY.key(t, '\r', 1)
+	freshPTY.key(t, 'c', 5)
+	freshPTY.waitExit(t, 0)
+	freshPTY.assertOperationalRestored(t)
 	stored := conversation.NewStore(statePath)
 	info, infoErr := secondClient.RuntimeInfo(t.Context())
 	if infoErr != nil {

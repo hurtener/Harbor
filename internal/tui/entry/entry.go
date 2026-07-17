@@ -129,7 +129,10 @@ func Run(ctx context.Context, opts Options) error {
 		if strings.TrimSpace(opts.Session) != "" {
 			identity.Session = strings.TrimSpace(opts.Session)
 		}
-		tokens = conversation.NewTokenSource("", token)
+		// Keep the host's dynamic source reachable as the minter: the first
+		// resolution above pins the STARTING identity, but session switches
+		// need credentials for scopes that one token does not cover.
+		tokens = conversation.NewTokenSource("", token).WithMinter(opts.Token.Token)
 	case opts.TokenResolver != nil:
 		token, sourcePath, err := opts.TokenResolver(ctx, opts.Session)
 		if err != nil {

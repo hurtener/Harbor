@@ -433,7 +433,7 @@ func TestController_CanonicalMutationFailuresStayExplicit(t *testing.T) {
 	}
 }
 
-func TestController_FailedSwitchRetainsOldTranscriptDisconnected(t *testing.T) {
+func TestController_FailedSwitchKeepsOldSessionLive(t *testing.T) {
 	f, server := newControllerFixture(t)
 	defer server.Close()
 	now := time.Now()
@@ -457,12 +457,15 @@ func TestController_FailedSwitchRetainsOldTranscriptDisconnected(t *testing.T) {
 	if err = controller.Switch(ctx, target); !errors.Is(err, ErrTokenUnavailable) {
 		t.Fatalf("failed switch=%v", err)
 	}
+	// A failed switch is non-destructive: the previous session republishes
+	// its LIVE posture (with the error attached for the surface toast)
+	// instead of being torn down into a disconnected dead-end.
 	var failure Update
-	for failure.State != StateDisconnected {
+	for failure.State != StateLive || failure.Err == nil {
 		select {
 		case failure = <-updates:
 		case <-ctx.Done():
-			t.Fatal("missing disconnected switch update")
+			t.Fatal("missing live posture republish after failed switch")
 		}
 	}
 	if scopeKey(failure.Identity) != scopeKey(oldID) || failure.Generation == 0 {
@@ -475,6 +478,9 @@ func TestController_FailedSwitchRetainsOldTranscriptDisconnected(t *testing.T) {
 	if !found || controller.Identity().Session != oldID.Session {
 		t.Fatalf("failed switch lost old transcript or identity: update=%#v identity=%#v", failure, controller.Identity())
 	}
+	// The old stream must still deliver events after the failed switch.
+	f.emit(oldID.Session, types.StateEvent{Type: "task.started", Sequence: 2, OccurredAt: now, Tenant: "t", User: "u", Session: oldID.Session, Payload: map[string]any{"TaskID": "still-alive"}})
+	awaitBlock(t, ctx, updates, "still-alive")
 }
 
 func TestController_ConcurrentSwitchReuseCancellationAndLeak(t *testing.T) {

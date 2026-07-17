@@ -407,8 +407,18 @@ func coLaunchDevTUI(cmd *cobra.Command, comp *devComposition, stack *serve.Handl
 	}
 
 	baseURL := "http://" + boundAddr
-	tokens := sdkprotocolclient.TokenSourceFunc(func(_ context.Context, _ sdkprotocolclient.IdentityScope) (string, error) {
-		return token, nil
+	// The base token pins the starting dev identity; any OTHER session under
+	// the dev tenant/user mints on demand so the terminal client can start
+	// fresh sessions and switch between them. The signer stays in-process —
+	// no credential ever leaves this command.
+	tokens := sdkprotocolclient.TokenSourceFunc(func(_ context.Context, scope sdkprotocolclient.IdentityScope) (string, error) {
+		if scope.Session == "" || scope == (sdkprotocolclient.IdentityScope{Tenant: DevTenant, User: DevUser, Session: DevSession}) {
+			return token, nil
+		}
+		if (scope.Tenant != "" && scope.Tenant != DevTenant) || (scope.User != "" && scope.User != DevUser) {
+			return "", fmt.Errorf("dev token source is scoped to %s/%s", DevTenant, DevUser)
+		}
+		return comp.signer.SignDevToken(time.Now(), DevTenant, DevUser, scope.Session, []string{"admin", "console:fleet"})
 	})
 
 	tuiErr := tui.Run(ctx, tui.Options{BaseURL: baseURL, Token: tokens})

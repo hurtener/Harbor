@@ -319,13 +319,20 @@ func TestRuntimeModel_KeyDrivenSessionDialogsCallController(t *testing.T) {
 		t.Fatalf("non-active delete was not rejected: calls=%v toast=%q", controller.calls, m.shell.state.Toast)
 	}
 	m = drive(t, m, keyMsg(tea.KeyEscape, 0))
+	// Start Fresh is instant: no dialog, a generated s-<random> id, straight
+	// to the controller switch.
 	m = leader(t, m, 'n')
-	for _, r := range "fresh" {
-		m = drive(t, m, keyMsg(r, 0))
+	fresh := ""
+	for _, call := range controller.calls {
+		if strings.HasPrefix(call, "switch:s-") {
+			fresh = strings.TrimPrefix(call, "switch:")
+		}
 	}
-	m = drive(t, m, keyMsg(tea.KeyEnter, 0))
-	if !containsCall(controller.calls, "switch:fresh") {
-		t.Fatalf("fresh calls=%v", controller.calls)
+	if fresh == "" {
+		t.Fatalf("session-new did not switch to a fresh generated id: calls=%v", controller.calls)
+	}
+	if _, open := m.shell.focus.Top(); open {
+		t.Fatal("session-new must not open a dialog")
 	}
 	if len(store.states) == 0 {
 		t.Fatal("session state was not persisted")
