@@ -312,13 +312,16 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 		if decoded.Kind == "reasoning" {
 			kind = "reasoning"
 		}
-		// Segment streaming per LLM step. A run's stream keys used to be a bare
-		// kind:runID, so a turn's preamble ("let me check…") and its post-tool
-		// answer merged into ONE text block anchored where it first appeared —
-		// which yanked the final answer above intervening reasoning/tool blocks
-		// and left them out of order. Keying by the step index (advanced on each
-		// Done terminator) gives every message its own block in arrival order.
-		step := next.streamStep[runID]
+		// Segment streaming per LLM step AND per kind. The stream keys used to
+		// be a bare kind:runID, so a turn's preamble ("let me check…") and its
+		// post-tool answer merged into ONE text block anchored where it first
+		// appeared — yanking the final answer above the intervening
+		// reasoning/tool blocks. Content and reasoning each carry their OWN Done
+		// terminator, so each advances its own step counter; a shared counter
+		// would let a reasoning terminator bump the content block index (and
+		// vice versa), scrambling which delta lands in which block.
+		stepKey := kind + ":" + runID
+		step := next.streamStep[stepKey]
 		id := fmt.Sprintf("%s:%s:%d", kind, runID, step)
 		if decoded.Delta != "" {
 			appendDelta(&next, id, kind, runID, event, decoded.Delta)
@@ -328,7 +331,7 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 			if next.streamStep == nil {
 				next.streamStep = map[string]int{}
 			}
-			next.streamStep[runID] = step + 1
+			next.streamStep[stepKey] = step + 1
 		}
 		immediate = false
 	case "llm.cost.recorded":

@@ -760,15 +760,20 @@ func TestReducer_MultiStepStreamSegmentsMessagesInOrder(t *testing.T) {
 		apply("llm.completion.chunk", map[string]any{"TaskID": "run", "Delta": delta, "Kind": kind, "Done": done})
 	}
 
+	// Realistic streaming: reasoning and content EACH terminate with their own
+	// Done chunk (empty delta), matching the canonical llm.completion.chunk
+	// stream (OnReasoning/OnContent are independent callbacks).
 	apply("task.started", map[string]any{"TaskID": "run"})
 	chunk("thinking about tools", "reasoning", false)
+	chunk("", "reasoning", true) // step-0 reasoning terminator
 	chunk("Let me check my tools.", "content", false)
-	chunk("", "content", true) // step 0 terminator
+	chunk("", "content", true) // step-0 content terminator
 	apply("tool.invoked", map[string]any{"ToolName": "catalog_search"})
 	apply("tool.completed", map[string]any{"ToolName": "catalog_search"})
 	chunk("planning the answer", "reasoning", false)
+	chunk("", "reasoning", true) // step-1 reasoning terminator
 	chunk("Here is what I can do.", "content", false)
-	chunk("", "content", true) // step 1 terminator
+	chunk("", "content", true) // step-1 content terminator
 
 	var order []string
 	for _, b := range p.Blocks {
