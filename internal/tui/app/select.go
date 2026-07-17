@@ -10,7 +10,11 @@ type SelectItem struct {
 }
 
 // SelectModel stores search, category, current row, paging, context, backdrop,
-// and focus restoration for every select-shaped dialog.
+// and focus restoration for every select-shaped dialog. A dialog with a
+// non-empty Label is a free-text INPUT dialog instead of a pick list: Query
+// holds the typed value, the caption names what the value is (never
+// "Search:"), Masked hides secret echo, and Validate gates enter with an
+// inline error.
 type SelectModel struct {
 	Title, Query, Category  string
 	Items                   []SelectItem
@@ -18,12 +22,28 @@ type SelectModel struct {
 	ContextActions          []CommandID
 	CloseOnBackdrop         bool
 	RestoreFocus            string
+	Label, Placeholder      string
+	ErrorText               string
+	Masked                  bool
+	Validate                func(string) error
 }
 
 // NewSelect creates a copied, focus-restoring select model.
 func NewSelect(title string, items []SelectItem, restoreFocus string) SelectModel {
 	return SelectModel{Title: title, Items: cloneItems(items), PageSize: 8, CloseOnBackdrop: true, RestoreFocus: restoreFocus}
 }
+
+// NewInput creates a free-text input dialog. The label names what the typed
+// value IS ("New title"), the placeholder shows its expected shape, masked
+// replaces the echo with dots for secrets, and validate (optional) runs on
+// enter — a failure renders inline in the dialog instead of committing.
+func NewInput(title, label, placeholder string, masked bool, validate func(string) error, restoreFocus string) SelectModel {
+	return SelectModel{Title: title, Label: label, Placeholder: placeholder, Masked: masked, Validate: validate, PageSize: 8, CloseOnBackdrop: true, RestoreFocus: restoreFocus}
+}
+
+// IsInput reports whether this dialog captures free text rather than
+// filtering a pick list.
+func (m SelectModel) IsInput() bool { return m.Label != "" }
 
 func cloneItems(items []SelectItem) []SelectItem {
 	out := append([]SelectItem(nil), items...)
@@ -72,9 +92,11 @@ func (m SelectModel) Move(delta int) SelectModel {
 	return m
 }
 
-// SetQuery resets paging and selection for a new filter.
+// SetQuery resets paging and selection for a new filter. Editing also clears
+// any inline validation error — the operator is already correcting it.
 func (m SelectModel) SetQuery(query string) SelectModel {
 	m.Query = query
+	m.ErrorText = ""
 	m.Page = 0
 	m.Current = 0
 	return m.Move(0)

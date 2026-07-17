@@ -594,6 +594,58 @@ func (m RuntimeModel) dispatchCommand(id CommandID) (tea.Model, tea.Cmd) {
 	return m.runCommand(id)
 }
 
+// renameInput is the shared rename dialog — reachable from the command
+// registry and from the Sessions picker's ctrl+r.
+func renameInput(restoreFocus string) SelectModel {
+	return NewInput("Rename session", "New title", "e.g. checkout flow spike", false, requiredInput("a title"), restoreFocus)
+}
+
+// requiredInput builds the standard non-empty inline validator.
+func requiredInput(what string) func(string) error {
+	return func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return errors.New(what + " is required")
+		}
+		return nil
+	}
+}
+
+// actionInputSpec names what an action's free-text input MEANS — the label
+// and placeholder render in the input dialog, and the validator gates enter
+// inline. Reject's reason is genuinely optional, so it carries no validator.
+func actionInputSpec(action ActionSpec) (label, placeholder string, validate func(string) error) {
+	switch {
+	case action.Method == methods.MethodRedirect:
+		return "New goal", "rewrites the run's goal at the next boundary", requiredInput("a goal")
+	case action.Method == methods.MethodInjectContext:
+		return "Context note", "appended to the planner's next prompt", requiredInput("a note")
+	case action.Method == methods.MethodUserMessage:
+		return "Message", "delivered to the run as user input", requiredInput("a message")
+	case action.Method == methods.MethodPrioritize:
+		return "Priority", "integer · higher runs first", func(value string) error {
+			var priority int
+			if _, err := fmt.Sscan(strings.TrimSpace(value), &priority); err != nil {
+				return errors.New("priority must be an integer")
+			}
+			return nil
+		}
+	case action.Method == methods.MethodToolsSetApprovalPolicy:
+		return "Approval policy", "auto · gated · denied", func(value string) error {
+			if !types.IsValidToolApprovalPolicy(types.ToolApprovalPolicy(strings.TrimSpace(value))) {
+				return errors.New("policy must be auto, gated, or denied")
+			}
+			return nil
+		}
+	case action.Method == methods.MethodReject:
+		return "Rejection reason", "optional · recorded in the audit trail", nil
+	case action.ID == "intervention.oauth":
+		return "OAuth input", "authorization code or callback URL", requiredInput("the OAuth input")
+	case action.ID == "intervention.input":
+		return "Input response", "the input the paused run is waiting for", requiredInput("a response")
+	}
+	return "Input", "", requiredInput("a value")
+}
+
 // slashCommand parses a composer draft as a slash-command invocation: a first
 // word of the form /name. The remainder is returned so the caller can reject
 // arguments explicitly instead of leaking them to the model.
@@ -680,13 +732,13 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "session-rename":
 		m.targetSession = m.controller.Identity().Session
-		m.shell = m.shell.WithModal(NewSelect("Rename session", nil, "composer"))
+		m.shell = m.shell.WithModal(renameInput("composer"))
 		return m, nil
 	case "session-delete":
 		m.targetSession = m.controller.Identity().Session
 		return m.beginSessionDelete()
 	case "reauthenticate":
-		m.shell = m.shell.WithModal(NewSelect("Replace credential · memory only", nil, "composer"))
+		m.shell = m.shell.WithModal(NewInput("Replace credential · memory only", "Bearer token (memory only)", "paste JWT · held in memory, never persisted", true, requiredInput("a bearer token"), "composer"))
 		return m, nil
 	case "search":
 		m.searchMode = true
@@ -752,7 +804,7 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 		m.setError(errors.New("no failed follow-up to retry"))
 		return m, nil
 	case "attachment":
-		m.shell = m.shell.WithModal(NewSelect("Attach file · path|disposition", nil, "composer"))
+		m.shell = m.shell.WithModal(NewInput("Attach file", "File path|disposition", "./notes.md|attach (disposition optional, default ref)", false, requiredInput("a file path"), "composer"))
 		return m, nil
 	case "attachment-remove":
 		values := m.editor.Attachments()
@@ -776,6 +828,15 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 	if key == "escape" {
 		return m.forward(original)
 	}
+	// Input dialogs validate before any branch commits the value; a failure
+	// renders inline in the dialog (never a toast hidden behind it).
+	if key == "enter" && modal.IsInput() && modal.Validate != nil {
+		if err := modal.Validate(modal.Query); err != nil {
+			modal.ErrorText = err.Error()
+			m.shell.focus = m.shell.focus.ReplaceTop(modal)
+			return m, nil
+		}
+	}
 	switch modal.Title {
 	case "Runtime actions":
 		if key == "enter" {
@@ -795,7 +856,8 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 				}
 				m.activeAction = &action
 				if action.Method == methods.MethodRedirect || action.Method == methods.MethodInjectContext || action.Method == methods.MethodUserMessage || action.Method == methods.MethodPrioritize || action.Method == methods.MethodToolsSetApprovalPolicy || action.Method == methods.MethodReject || action.ID == "intervention.oauth" || action.ID == "intervention.input" {
-					m.shell = m.shell.WithModal(NewSelect("Action input · "+action.Title, nil, "modal"))
+					label, placeholder, validate := actionInputSpec(action)
+					m.shell = m.shell.WithModal(NewInput("Action input · "+action.Title, label, placeholder, false, validate, "modal"))
 					return m, nil
 				}
 				if action.Confirmation != ConfirmNone {
@@ -837,7 +899,7 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 		if key == "ctrl+r" {
 			if session, ok := selectedModalID(modal); ok {
 				m.targetSession = session
-				m.shell = m.shell.WithModal(NewSelect("Rename session", nil, "modal"))
+				m.shell = m.shell.WithModal(renameInput("modal"))
 			}
 			return m, nil
 		}
@@ -887,7 +949,7 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 				return renamedMsg{title: title, err: err}
 			}
 		}
-	case "Attach file · path|disposition":
+	case "Attach file":
 		if key == "enter" {
 			return m.beginUpload(modal.Query)
 		}
@@ -901,11 +963,9 @@ func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, origina
 	}
 	if strings.HasPrefix(modal.Title, "Action input · ") && key == "enter" && m.activeAction != nil {
 		action := *m.activeAction
+		// Required-ness already ran through the dialog's inline validator;
+		// actions with optional input (reject reason) accept an empty value.
 		value := strings.TrimSpace(modal.Query)
-		if value == "" {
-			m.setError(errors.New("action input required"))
-			return m, nil
-		}
 		if action.Confirmation != ConfirmNone {
 			m.actionInput = value
 			intent, err := m.buildIntent(action, value)

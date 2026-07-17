@@ -448,7 +448,13 @@ func (m Model) activateModal(modal SelectModel) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	view, ok := m.registry.Command(CommandID(item.ID), m.commandContext())
-	if !ok || !view.Enabled {
+	if !ok {
+		// Informational rows (keyboard help) have no command behind them;
+		// enter closes the dialog instead of silently doing nothing.
+		m.focus, _, _ = m.focus.Pop()
+		return m, nil
+	}
+	if !view.Enabled {
 		return m, nil
 	}
 	m.focus, _, _ = m.focus.Pop()
@@ -961,9 +967,30 @@ func (m Model) renderModal(c *canvas, modal SelectModel) {
 	}
 	c.put(left+min(4, max(1, w/8)), top+1, ui.Truncate(modal.Title, max(1, w-6)), m.theme.Style(ui.RolePrimary, nil).Bold(true))
 	if h > 5 {
-		c.put(left+3, top+2, ui.PadRight("Search: "+modal.Query, max(1, w-6)), m.theme.Style(ui.RoleMuted, nil))
+		// A pick list captions its fuzzy filter; an input dialog captions
+		// WHAT the typed value is — labeling a session id or a credential
+		// "Search:" misled operators into typing chat into it.
+		caption := "Search: " + modal.Query
+		style := m.theme.Style(ui.RoleMuted, nil)
+		if modal.IsInput() {
+			value := modal.Query
+			if modal.Masked {
+				value = strings.Repeat("•", utf8.RuneCountInString(value))
+			}
+			if value == "" && modal.Placeholder != "" {
+				caption = modal.Label + ": " + modal.Placeholder
+			} else {
+				caption = modal.Label + ": " + value
+				style = m.theme.Style(ui.RoleText, nil)
+			}
+		}
+		c.put(left+3, top+2, ui.PadRight(caption, max(1, w-6)), style)
 	}
 	listTop := top + 3
+	if modal.ErrorText != "" && listTop < top+h-2 {
+		c.put(left+3, listTop, ui.PadRight(ui.Truncate("✗ "+modal.ErrorText, max(1, w-6)), max(1, w-6)), m.theme.Style(ui.RoleError, nil))
+		listTop++
+	}
 	for i, item := range rows {
 		if listTop+i >= top+h-2 {
 			break
@@ -981,7 +1008,11 @@ func (m Model) renderModal(c *canvas, modal SelectModel) {
 		c.put(left+2, listTop+i, ui.PadRight(label, max(1, w-4)), m.theme.Style(role, ptrRole(ui.RoleElement)).Bold(i == modal.Current))
 	}
 	if h >= 4 {
-		c.put(left+2, top+h-1, ui.Truncate("↑/↓ move · enter select · esc close", max(1, w-4)), m.theme.Style(ui.RoleMuted, nil))
+		hint := "↑/↓ move · enter select · esc close"
+		if modal.IsInput() {
+			hint = "type value · enter confirm · esc cancel"
+		}
+		c.put(left+2, top+h-1, ui.Truncate(hint, max(1, w-4)), m.theme.Style(ui.RoleMuted, nil))
 	}
 }
 
