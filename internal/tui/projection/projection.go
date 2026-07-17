@@ -81,6 +81,9 @@ type Projection struct {
 	unsequenced             map[string]struct{}
 	liveEvents              []WireEvent
 	sessionSequence         uint64
+	// streamStep counts completed LLM steps per run, so successive streaming
+	// messages/reasoning in one turn key to distinct blocks in arrival order.
+	streamStep map[string]int
 }
 
 // ReplayGap describes why an authoritative snapshot reconciliation is needed.
@@ -309,10 +312,25 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 		if decoded.Kind == "reasoning" {
 			kind = "reasoning"
 		}
-		id := kind + ":" + runID
-		appendDelta(&next, id, kind, runID, event, decoded.Delta)
+		// Segment streaming per LLM step. A run's stream keys used to be a bare
+		// kind:runID, so a turn's preamble ("let me check…") and its post-tool
+		// answer merged into ONE text block anchored where it first appeared —
+		// which yanked the final answer above intervening reasoning/tool blocks
+		// and left them out of order. Keying by the step index (advanced on each
+		// Done terminator) gives every message its own block in arrival order.
+		step := next.streamStep[runID]
+		id := fmt.Sprintf("%s:%s:%d", kind, runID, step)
+		if decoded.Delta != "" {
+			appendDelta(&next, id, kind, runID, event, decoded.Delta)
+			blockIDs = append(blockIDs, id)
+		}
+		if decoded.Done {
+			if next.streamStep == nil {
+				next.streamStep = map[string]int{}
+			}
+			next.streamStep[runID] = step + 1
+		}
 		immediate = false
-		blockIDs = append(blockIDs, id)
 	case "llm.cost.recorded":
 		// Canonical usage accounting. It is deliberately NOT a transcript block:
 		// it feeds the session's cost/token/context readout instead of
@@ -854,6 +872,10 @@ type completionChunkPayload struct {
 	TaskID string
 	Delta  string
 	Kind   string
+	// Done marks the terminator chunk of one LLM completion stream (one ReAct
+	// step). It is the boundary between a run's successive assistant messages
+	// and reasoning segments, so streaming blocks segment on it.
+	Done bool
 }
 type taskPayload struct{ TaskID string }
 
@@ -997,6 +1019,12 @@ func cloneProjection(p Projection) Projection {
 	out.unsequenced = make(map[string]struct{}, len(p.unsequenced))
 	for key := range p.unsequenced {
 		out.unsequenced[key] = struct{}{}
+	}
+	if p.streamStep != nil {
+		out.streamStep = make(map[string]int, len(p.streamStep))
+		for key, value := range p.streamStep {
+			out.streamStep[key] = value
+		}
 	}
 	out.liveEvents = make([]WireEvent, len(p.liveEvents))
 	for i, event := range p.liveEvents {
