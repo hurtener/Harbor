@@ -237,7 +237,7 @@ func validDevEnvKey(key string) bool {
 	if key == "" {
 		return false
 	}
-	for i := 0; i < len(key); i++ {
+	for i := range len(key) {
 		c := key[i]
 		switch {
 		case c == '_', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':

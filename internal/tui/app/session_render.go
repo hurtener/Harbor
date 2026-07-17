@@ -1,8 +1,8 @@
 package app
 
 import (
-	"encoding/binary"
 	"hash/fnv"
+	"strconv"
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/tui/projection"
@@ -102,8 +102,7 @@ func (m Model) blockSig(b projection.Block, width int, selected bool) uint64 {
 	_, _ = h.Write([]byte(b.Tool))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(b.Text))
-	var meta [8]byte
-	binary.LittleEndian.PutUint32(meta[:4], uint32(width))
+	_, _ = h.Write([]byte(strconv.Itoa(width)))
 	flags := byte(0)
 	if b.Incomplete {
 		flags |= 1
@@ -111,10 +110,7 @@ func (m Model) blockSig(b projection.Block, width int, selected bool) uint64 {
 	if selected {
 		flags |= 2
 	}
-	meta[4] = flags
-	meta[5] = byte(m.theme.Profile())
-	meta[6] = byte(m.theme.Mode())
-	_, _ = h.Write(meta[:7])
+	_, _ = h.Write([]byte{0, flags, byte(m.theme.Profile()), byte(m.theme.Mode())})
 	return h.Sum64()
 }
 

@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
 	"github.com/hurtener/Harbor/internal/tui/ui"
 )
 
@@ -368,7 +369,7 @@ func isHR(t string) bool {
 	if c != '-' && c != '*' && c != '_' {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] != c {
 			return false
 		}

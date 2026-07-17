@@ -53,10 +53,9 @@ func wrapWords(words [][]cell, width int) [][]cell {
 		if ww > width {
 			if len(cur) > 0 {
 				lines = append(lines, cur)
-				cur, curW = nil, 0
 			}
 			chunks := hardSplit(w, width)
-			for k := 0; k < len(chunks)-1; k++ {
+			for k := range len(chunks) - 1 {
 				lines = append(lines, chunks[k])
 			}
 			cur = append([]cell(nil), chunks[len(chunks)-1]...)
@@ -89,7 +88,7 @@ func wrapWords(words [][]cell, width int) [][]cell {
 // hardSplit breaks an over-wide word into chunks each within width.
 func hardSplit(w []cell, width int) [][]cell {
 	var chunks [][]cell
-	var cur []cell
+	cur := make([]cell, 0, len(w))
 	curW := 0
 	for _, c := range w {
 		if curW+c.width > width && len(cur) > 0 {

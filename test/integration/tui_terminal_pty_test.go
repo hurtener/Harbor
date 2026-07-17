@@ -190,12 +190,15 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.command(t, 'f')
 	session.waitContainsAfter(t, mark, "earch:")
 	session.text(t, "hello")
-	session.waitContains(t, "o · 0 matches")
+	// A resize forces a full repaint: the cell-diff renderer may split the
+	// incrementally-updated toast across cursor moves, so the assertion text
+	// is only guaranteed contiguous in the byte stream after a fresh paint.
+	session.resize(t, 100, 30)
+	session.waitContains(t, "hello · 0 matches")
 	mark = len(session.snapshot())
 	session.key(t, 27, 1)
 	session.waitContainsAfter(t, mark, "closed")
 	session.write(t, "\x1b[5~")
-	session.resize(t, 100, 30)
 	mark = len(session.snapshot())
 	session.command(t, 'a')
 	session.waitContainsAfter(t, mark, "File path|disposition")

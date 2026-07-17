@@ -17,7 +17,7 @@ import (
 func scrollTestModel(w, h, turns int) Model {
 	now := time.Now()
 	blocks := []projection.Block{}
-	for i := 0; i < turns; i++ {
+	for i := range turns {
 		blocks = append(blocks,
 			projection.Block{ID: fmt.Sprintf("user:%d", i), Kind: "user", Text: fmt.Sprintf("question number %d", i), At: now},
 			projection.Block{ID: fmt.Sprintf("text:%d", i), Kind: "text", Text: fmt.Sprintf("Answer %d.\n\nSecond paragraph %d.", i, i), At: now},

@@ -56,7 +56,7 @@ type interactionStore interface {
 
 // RuntimeOptions supplies local-only interaction state and output paths.
 type RuntimeOptions struct {
-	Compact, ReducedMotion  bool
+	Compact, ReducedMotion bool
 	// ThemeLocked marks the supplied theme as an explicit operator choice;
 	// terminal background auto-detection must not override it.
 	ThemeLocked             bool
@@ -120,6 +120,7 @@ type interruptTimeoutMsg struct{ generation uint64 }
 
 // InterruptTimeout is how long the first esc keeps the run interrupt armed.
 const InterruptTimeout = 1500 * time.Millisecond
+
 type inspectMsg struct{ data conversation.RuntimeData }
 type actionMsg struct {
 	intent ActionIntent
@@ -1623,6 +1624,7 @@ func (m RuntimeModel) applySessions(msg sessionsMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
 // freshSessionID mints a short random id for Start Fresh sessions. The
 // operator renames it later if it matters; collision odds are irrelevant at
 // interactive scale and the runtime scopes it under the identity triple.

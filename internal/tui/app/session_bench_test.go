@@ -16,7 +16,7 @@ import (
 func BenchmarkLayoutTranscript400(b *testing.B) {
 	now := time.Now()
 	blocks := []projection.Block{}
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		blocks = append(blocks,
 			projection.Block{ID: fmt.Sprintf("user:%d", i), Kind: "user", Text: fmt.Sprintf("question %d about a fairly long topic with details", i), At: now},
 			projection.Block{ID: fmt.Sprintf("text:%d", i), Kind: "text", Text: fmt.Sprintf("Answer %d with **bold** and `code`.\n\n- bullet one\n- bullet two\n\nA second paragraph with more prose to wrap across lines.", i), At: now},
@@ -26,7 +26,7 @@ func BenchmarkLayoutTranscript400(b *testing.B) {
 	m := NewOperationalModel(120, 40, ui.NewTheme(ui.ModeDark, ui.ProfileTrueColor), true, projection.Projection{Identity: id, Blocks: blocks})
 	m.state.Route = "session"
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _, _ = m.layoutTranscript(110)
 	}
 }

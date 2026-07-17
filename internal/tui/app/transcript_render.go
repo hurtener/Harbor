@@ -125,7 +125,8 @@ func (m Model) layoutReasoning(b projection.Block, width int) laidBlock {
 	if bh > 0 {
 		glyph = "▾"
 	}
-	ops := []drawOp{{dx: 0, dy: 0, text: glyph + "  " + header, style: m.theme.Style(ui.RoleWarning, nil).Faint(true)}}
+	ops := make([]drawOp, 0, 1+len(body))
+	ops = append(ops, drawOp{dx: 0, dy: 0, text: glyph + "  " + header, style: m.theme.Style(ui.RoleWarning, nil).Faint(true)})
 	return laidBlock{height: 1 + bh, ops: append(ops, body...)}
 }
 
@@ -142,8 +143,9 @@ func (m Model) layoutTool(b projection.Block, width int) laidBlock {
 	if summary == "" {
 		summary = "called"
 	}
-	ops := []drawOp{{dx: proseIndent, dy: 0, text: ui.Truncate(fmt.Sprintf("%s  %s  %s", glyph, name, summary), width-proseIndent), style: m.theme.Style(role, nil)}}
 	body, bh := m.proseOps(b.Text, width, reasoningIndent, 1, ui.RoleMuted)
+	ops := make([]drawOp, 0, 1+len(body))
+	ops = append(ops, drawOp{dx: proseIndent, dy: 0, text: ui.Truncate(fmt.Sprintf("%s  %s  %s", glyph, name, summary), width-proseIndent), style: m.theme.Style(role, nil)})
 	return laidBlock{height: 1 + bh, ops: append(ops, body...)}
 }
 
@@ -402,10 +404,6 @@ func (m Model) hasActiveTurn() bool {
 	return m.state.Composer == ComposerRunning
 }
 
-func (m Model) dim(text string, role ui.Role) string {
-	return m.theme.Style(role, nil).Faint(true).Render(text)
-}
-
 // placeBlock draws a laid-out block at (x, y).
 func (m Model) placeBlock(c *canvas, x, y, width int, lb laidBlock) {
 	for _, op := range lb.ops {
@@ -433,13 +431,6 @@ func lifecycleGlyph(status string) (string, ui.Role) {
 	default:
 		return "·", ui.RoleMuted
 	}
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return strings.TrimSpace(s)
 }
 
 // wrapPlain word-wraps text to width visible cells, grapheme-safe, preserving
