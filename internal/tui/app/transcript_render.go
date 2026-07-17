@@ -303,13 +303,19 @@ func (m Model) workingLine() (string, bool) {
 		glyph = spinner.Dot.Frames[m.spinner%len(spinner.Dot.Frames)]
 	}
 	label := glyph + " " + verb + "…"
+	// Interrupting takes a deliberate double-esc; once the first esc arms the
+	// window the hint flips so the operator knows the next esc is destructive.
+	hint := "esc to interrupt"
+	if m.state.InterruptArmed {
+		hint = "press esc again to interrupt"
+	}
 	if !startedAt.IsZero() {
 		if secs := time.Since(startedAt).Seconds(); secs >= 1 && secs < 86400 {
-			label += fmt.Sprintf(" (%s · esc to interrupt)", formatTurnDuration(int64(secs*1000)))
+			label += fmt.Sprintf(" (%s · %s)", formatTurnDuration(int64(secs*1000)), hint)
 			return label, true
 		}
 	}
-	return label + " (esc to interrupt)", true
+	return label + " (" + hint + ")", true
 }
 
 // activeRun reports the in-flight run and its canonical start time (the task

@@ -70,6 +70,7 @@ type State struct {
 	SelectedBlockID                                                                    string
 	Negotiated, TaskControl, SessionLifecycle, SessionScope                            bool
 	SidebarOpen, AutocompleteOpen, ToastOpen, Startup, Active, CursorHidden            bool
+	InterruptArmed                                                                     bool
 	Scrolled, ReplayGap, Reconciliation, Dropped, Overflow, Truncated, CountersPartial bool
 	AggregateTruncated, AggregatesPartial, AnalyticsBounded                            bool
 	Closed, Failed, Erased, Intervention, Unknown, Incomplete, Pasted, Focused         bool
@@ -384,7 +385,11 @@ func canonicalKey(key string) string {
 func (m Model) updateModal(key string) (tea.Model, tea.Cmd) {
 	modal, _ := m.focus.Top()
 	switch key {
-	case "escape", "ctrl+c":
+	case "ctrl+c":
+		// Ctrl+C stays an unconditional quit even under a modal — only esc
+		// closes; a trapped quit chord is indistinguishable from a hang.
+		return m, tea.Quit
+	case "escape":
 		m.focus, _, _ = m.focus.Pop()
 		return m, nil
 	case "up", "ctrl+p":

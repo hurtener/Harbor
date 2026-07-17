@@ -107,6 +107,14 @@ type exportMsg struct {
 	err  error
 }
 type persistMsg struct{ err error }
+
+// interruptTimeoutMsg disarms the double-esc run interrupt when the second
+// esc never arrives inside the window. The generation guards against a stale
+// tick disarming a newer arm.
+type interruptTimeoutMsg struct{ generation uint64 }
+
+// InterruptTimeout is how long the first esc keeps the run interrupt armed.
+const InterruptTimeout = 1500 * time.Millisecond
 type inspectMsg struct{ data conversation.RuntimeData }
 type actionMsg struct {
 	intent ActionIntent
@@ -144,6 +152,8 @@ type RuntimeModel struct {
 	selectedTask, selectedTool       string
 	selectedArtifact, selectedPause  string
 	routeFilter                      bool
+	interruptArmed                   bool
+	interruptGeneration              uint64
 	pending                          map[string]ActionIntent
 	taskCursors                      map[int]types.TaskListCursor
 	renderers                        renderers.Registry
@@ -236,7 +246,7 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.waitUpdate(), m.dispatchFollowUp(), inspect, tick)
 	case CommandMsg:
-		return m.runCommand(msg.ID)
+		return m.dispatchCommand(msg.ID)
 	case sessionsMsg:
 		return m.applySessions(msg)
 	case switchedMsg:
@@ -305,6 +315,12 @@ func (m RuntimeModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncComposer()
 		return m, m.requestPersist()
+	case interruptTimeoutMsg:
+		if msg.generation == m.interruptGeneration && m.interruptArmed {
+			m.interruptArmed = false
+			m.shell.state.InterruptArmed = false
+		}
+		return m, nil
 	case followupMsg:
 		if msg.err != nil {
 			m.followups = m.followups.Fail(msg.id, msg.err)
@@ -356,6 +372,23 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// keystroke dismisses the previous one. Without this they pile up and linger
 	// over the canvas long after the thing they reported.
 	m.shell.state.ToastOpen, m.shell.state.Toast = false, ""
+	// Ctrl+C is an unconditional quit from EVERY input mode — search, route
+	// filters, modals, mid-run — so the operator can always escape, even if a
+	// stream is misclassified as active. Ctrl+D quits everywhere except under
+	// a modal that binds it (the Sessions picker uses it for delete).
+	if key == "ctrl+c" {
+		return m, tea.Quit
+	}
+	if key == "ctrl+d" {
+		if _, open := m.shell.focus.Top(); !open {
+			return m, tea.Quit
+		}
+	}
+	// Any key that is not a second escape disarms a pending run interrupt.
+	if key != "escape" && m.interruptArmed {
+		m.interruptArmed = false
+		m.shell.state.InterruptArmed = false
+	}
 	if m.routeFilter {
 		return m.updateRouteFilter(key)
 	}
@@ -365,16 +398,31 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if modal, ok := m.shell.focus.Top(); ok {
 		return m.updateWorkflowModal(modal, key, msg)
 	}
-	// Escape interrupts the in-flight run rather than doing nothing. Ctrl+C
-	// stays an unconditional quit so the operator can always escape, even if a
-	// stream is misclassified as active.
+	// Escape resolves by precedence: dismiss the autocomplete popup, abort a
+	// pending leader chord, and only when nothing transient is open does it
+	// reach the run interrupt — which takes a deliberate double-esc, so a
+	// stray esc can never kill a run.
 	if key == "escape" {
-		if runID, ok := m.activeRunID(); ok {
-			return m.cancelActiveRun(runID)
+		if m.shell.state.AutocompleteOpen {
+			m.clearAutocomplete()
+			return m, nil
 		}
-	}
-	if key == "ctrl+c" || key == "ctrl+d" {
-		return m, tea.Quit
+		if len(m.shell.sequence) > 0 {
+			return m.forward(msg)
+		}
+		if runID, ok := m.activeRunID(); ok {
+			if m.interruptArmed {
+				m.interruptArmed = false
+				m.shell.state.InterruptArmed = false
+				return m.cancelActiveRun(runID)
+			}
+			m.interruptArmed = true
+			m.shell.state.InterruptArmed = true
+			m.interruptGeneration++
+			generation := m.interruptGeneration
+			return m, tea.Tick(InterruptTimeout, func(time.Time) tea.Msg { return interruptTimeoutMsg{generation: generation} })
+		}
+		return m, nil
 	}
 	if m.shell.state.Route != "session" {
 		switch key {
@@ -412,9 +460,15 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.moveAutocomplete(1)
 			return m, nil
 		case "enter":
+			// Execute the selected command only when the draft IS the command
+			// invocation; a /word mid-sentence completes as text instead.
 			if candidate, ok := m.editor.SelectedCandidate(); ok && candidate.Kind == "command" {
-				m.clearAutocomplete()
-				return m.runCommand(CommandID(strings.TrimPrefix(candidate.Value, "/")))
+				if _, rest, isSlash := slashCommand(m.editor.Text()); isSlash && rest == "" {
+					m.clearAutocomplete()
+					m.editor = m.editor.SetText("")
+					m.syncComposer()
+					return m.dispatchCommand(CommandID(strings.TrimPrefix(candidate.Value, "/")))
+				}
 			}
 			m.acceptCompletion()
 			m.clearAutocomplete()
@@ -425,9 +479,6 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.clearAutocomplete()
 			m.syncComposer()
 			return m, m.requestPersist()
-		case "escape":
-			m.clearAutocomplete()
-			return m, nil
 		}
 	}
 	switch key {
@@ -511,6 +562,56 @@ func (m RuntimeModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, m.requestPersist()
 }
 
+// dispatchCommand is the ONE entry point for command execution by ID —
+// autocomplete selection, the slash guard, and CommandMsg all land here.
+// Shell-owned surface commands (palette, help, sidebar, theme, quit) route to
+// the shell's executor; everything else stays on the runtime host. Without
+// this split-brain guard, shell-owned IDs reaching runCommand were silent
+// no-ops.
+func (m RuntimeModel) dispatchCommand(id CommandID) (tea.Model, tea.Cmd) {
+	switch id {
+	case "palette", "help", "sidebar", "theme", "quit":
+		view, ok := m.shell.registry.Command(id, m.shell.commandContext())
+		if !ok {
+			m.setError(fmt.Errorf("unknown command %q", id))
+			return m, nil
+		}
+		if !view.Enabled {
+			m.shell.state.ToastOpen = true
+			m.shell.state.Toast = "Unavailable: " + view.DisabledReason
+			return m, nil
+		}
+		next, cmd := m.shell.execute(view)
+		shell, isShell := next.(Model)
+		if !isShell {
+			m.shell.state.Connection = "failed · invalid shell model"
+			return m, tea.Quit
+		}
+		m.shell = shell
+		m.syncComposer()
+		return m, cmd
+	}
+	return m.runCommand(id)
+}
+
+// slashCommand parses a composer draft as a slash-command invocation: a first
+// word of the form /name. The remainder is returned so the caller can reject
+// arguments explicitly instead of leaking them to the model.
+func slashCommand(draft string) (name, rest string, ok bool) {
+	trimmed := strings.TrimSpace(draft)
+	if !strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "//") {
+		return "", "", false
+	}
+	body := strings.TrimPrefix(trimmed, "/")
+	if body == "" {
+		return "", "", false
+	}
+	if i := strings.IndexAny(body, " \n\t"); i >= 0 {
+		return body[:i], strings.TrimSpace(body[i:]), true
+	}
+	return body, "", true
+}
+
 func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 	view, ok := m.shell.registry.Command(id, m.shell.commandContext())
 	if !ok {
@@ -530,6 +631,24 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 	case "actions":
 		return m.openActions()
 	case "submit":
+		// Slash guard: a /command draft is an instruction to the TUI, never a
+		// chat message. This closes every path that lands text in the draft —
+		// tab-accepted completions, hand-typed commands, reopened history.
+		if name, rest, isSlash := slashCommand(m.editor.Text()); isSlash {
+			if _, known := m.shell.registry.Command(CommandID(name), m.shell.commandContext()); !known {
+				m.shell.state.ToastOpen = true
+				m.shell.state.Toast = "Unknown command /" + name + " · draft kept"
+				return m, nil
+			}
+			if rest != "" {
+				m.shell.state.ToastOpen = true
+				m.shell.state.Toast = "/" + name + " takes no arguments · draft kept"
+				return m, nil
+			}
+			m.editor = m.editor.SetText("")
+			m.syncComposer()
+			return m.dispatchCommand(CommandID(name))
+		}
 		submission, err := m.editor.PrepareSubmission()
 		if err != nil {
 			m.setError(err)
@@ -553,14 +672,6 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 			response, startErr := m.controller.Start(m.ctx, submission.Text, attachmentIDs(submission.Attachments), attachmentDispositions(submission.Attachments))
 			return submissionResultMsg{submission: submission, taskID: response.TaskID, err: startErr}
 		}
-	case "help":
-		rows := m.shell.registry.Help(m.shell.commandContext())
-		items := make([]SelectItem, 0, len(rows))
-		for i, row := range rows {
-			items = append(items, SelectItem{ID: fmt.Sprintf("help-%d", i), Title: row})
-		}
-		m.shell = m.shell.WithModal(NewSelect("Keyboard help", items, "composer"))
-		return m, nil
 	case "sessions":
 		return m.openSessions("")
 	case "session-new":
@@ -660,7 +771,9 @@ func (m RuntimeModel) runCommand(id CommandID) (tea.Model, tea.Cmd) {
 }
 
 func (m RuntimeModel) updateWorkflowModal(modal SelectModel, key string, original tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if key == "escape" || key == "ctrl+c" {
+	// Esc closes the modal; ctrl+c/ctrl+d never reach here — they quit
+	// unconditionally at the top of updateKey.
+	if key == "escape" {
 		return m.forward(original)
 	}
 	switch modal.Title {

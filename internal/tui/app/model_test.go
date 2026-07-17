@@ -91,10 +91,19 @@ func TestModel_ModalInputPrecedesBaseAndRestoresNestedFocus(t *testing.T) {
 		t.Fatalf("backspace query=%q", modal.Query)
 	}
 	m = m.WithModal(NewSelect("Nested", []SelectItem{{ID: "x", Title: "Nested row"}}, "modal"))
-	next, _ = m.Update(keyMsg('c', tea.ModCtrl))
+	// Ctrl+C quits unconditionally, even nested under modals; esc pops one
+	// modal at a time and restores the underlying focus.
+	next, quitCmd := m.Update(keyMsg('c', tea.ModCtrl))
+	m = next.(Model)
+	if quitCmd == nil {
+		t.Fatal("ctrl+c under a modal must quit unconditionally")
+	} else if _, isQuit := quitCmd().(tea.QuitMsg); !isQuit {
+		t.Fatal("ctrl+c under a modal must quit unconditionally")
+	}
+	next, _ = m.Update(keyMsg(tea.KeyEscape, 0))
 	m = next.(Model)
 	if top, _ := m.focus.Top(); top.Title != "Commands" {
-		t.Fatal("ctrl-c did not pop only top modal")
+		t.Fatal("escape did not pop only top modal")
 	}
 	next, _ = m.Update(keyMsg(tea.KeyEscape, 0))
 	m = next.(Model)
