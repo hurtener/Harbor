@@ -1,0 +1,12 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+     The deployment completed
+     successfully.
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

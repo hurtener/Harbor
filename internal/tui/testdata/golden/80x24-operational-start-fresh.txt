@@ -1,0 +1,24 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+  ┃  Summarize the deployment status.
+
+     The d
+              Start Fresh
+             Search:
+
+
+            ↑/↓ move · enter select · esc close
+
+
+
+
+
+
+  ×  Session erased · terminal, Start Fresh required
+  ┃  Ask Harbor...
+  ┃  disabled
+  ╹──────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

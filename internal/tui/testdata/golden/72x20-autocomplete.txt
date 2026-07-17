@@ -1,0 +1,20 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+  ┃  ctrl+p  Command palette
+  ┃  ctrl+x s  Toggle runtime context
+  ┃  ctrl+x ?  Keyboard help
+  ┃  q  Quit
+  ┃  ctrl+x a  Attach file · unavailable: requires a live authenticat
+  ┃  ctrl+x k  Cancel queued follow-up · unavailable: no local follow
+  ┃  ctrl+x e  Remove attachment · unavailable: no attachment is sele
+  ┃  ctrl+x p  Restore stashed draft
+  ┃  ctrl+x u  Retry attachment · unavailable: no attachment is selec
+  ┃  ctrl+x j  Retry failed follow-up · unavailable: no local follow-
+  ┃  Composer idle · attach a Runtime
+  ┃
+  ┃
+  ╹──────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime

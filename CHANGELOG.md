@@ -17,6 +17,110 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-07-17
+
+The native terminal client release. Harbor gains a first-party TUI — a pure
+Protocol client that attaches over authenticated REST/SSE and never holds a
+Runtime handle — and the distribution surfaces to launch it. On top of the
+foundational wave (the Go Protocol client, the typed projection reducer, the
+Bubble Tea terminal foundation, and the conversation / runtime-inspection /
+control surfaces), a deep level-up pass rebuilt the conversation to product
+quality: message hierarchy, a full-screen alternate-screen session surface with
+line-granular scrolling, honest chrome sourced from canonical events, a 76×
+faster layout path, and a correctness pass over the interactive command/modal/
+session workflows.
+
+The TUI reads only canonical Protocol events, state snapshots, topology,
+artifacts, traces, and metrics — never a Runtime internal — so the Harbor
+Protocol holds at `0.1.0` (no new methods, events, or breaks). Two operational
+decisions land: D-320 (TUI distribution) and D-321 (dev-only `.env` loading).
+
+### Added — the native terminal client (D-320, D-321)
+
+- **`harbor tui --attach`** — the native terminal client. A pure Protocol
+  client (no Runtime handle) carrying the full `(tenant, user, session)`
+  identity through authenticated REST/SSE, with the runtime routes
+  (tasks / tools / artifacts / events / posture / interventions / diagnostics)
+  behind F-keys and the F9 action matrix for canonical control
+  (cancel / pause / resume / redirect / inject / user-message / prioritize,
+  and intervention approve / reject / resume through the unified pause
+  primitive). TTY discovery falls back to `/dev/tty` when stdin is redirected.
+- **`harbor dev --tui`** co-launches the local Runtime + the terminal client in
+  one process, one terminal — the one-command dev loop. `harbor dev` also
+  loads a dev-only `./.env` at boot (D-321): a names-only stderr line,
+  environment-wins precedence, no secret ever echoed in an error, `--no-env-file`
+  to opt out.
+- **`harbor serve --tui`** co-launches the native terminal client after the
+  server is ready. The TUI attaches through authenticated REST/SSE — it
+  receives no Runtime handle. The operator supplies the token
+  (`HARBOR_TOKEN` or `~/.harbor/token`); there is no anonymous loopback,
+  automatic token minting, or mock fallback. Quitting the TUI drains the
+  owned server. Runtime logs go to a captured sink so Bubble Tea frames
+  are never overwritten; on server failure the terminal is restored before
+  the captured log is printed.
+- **`sdk/tui.Run(ctx, Options)`** — a curated connection-only facade with
+  `BaseURL`, `Token protocolclient.TokenSource`, and `Session`. No
+  Runtime/stack/event-bus handle. The facade forwards to the shared
+  `internal/tui/entry` attach flow (`harbor tui --attach` and
+  `harbor serve --tui` share one implementation).
+- **`(*server.Handle).WaitReady(ctx) (string, error)`** — race-safe
+  one-shot readiness through `sdk/server`. Returns the actual bound
+  address or the bind/cancellation error. No polling, no second listener
+  lifecycle.
+- **`harbor scaffold --with-server --with-tui`** generates a binary whose
+  opt-in `--tui` flag co-launches the TUI via `sdk/server` + `sdk/tui`.
+  Flagless behavior remains headless and unchanged.
+- **A dependency-free, streaming-stable markdown renderer**
+  (`internal/tui/markdown`) with a span API (`RenderSpans`) that emits plain
+  styled runs for the cell-grid canvas — deferred delimiter matching keeps a
+  mid-stream token from flickering formatting.
+- **The Harbor lighthouse mark and reconciled palette** in the session banner,
+  with a real version readout (`v1.15.0-dev` on un-stamped builds, never
+  `v0.0.0`).
+- **Wave-end PTY E2E** (`test/integration/wave_v115_tui_test.go`) covers
+  standalone attach, stock co-launch, and generated co-launch with
+  identity propagation, session isolation, conversation, shutdown
+  ordering, goroutine baseline, and N≥10 concurrent cycles under `-race`.
+
+### Changed — the conversation surface level-up
+
+- **Rebuilt around message hierarchy.** The session surface owns the whole
+  alternate screen — banner at the top, the conversation flowing top-down, the
+  composer pinned at the bottom — with line-granular scrolling that follows the
+  tail and never yanks the reader back, reflow-stable across resizes, and the
+  mouse wheel translated to scroll without capturing the mouse so native text
+  selection keeps working over the conversation only.
+- **Honest chrome.** The per-turn duration and the context / cost / token
+  readout come only from the canonical `llm.cost.recorded` stream (never
+  estimated); the operator's own message is echoed on a live turn; honesty
+  states surface as chrome. The conversation carries the conversation —
+  audit records, cost accounting, planner decisions, and session/task lifecycle
+  stay on the diagnostics and events routes, never interleaved with the answer.
+- **76× faster transcript layout** — a per-block layout cache keyed on a content
+  signature plus a structured projection clone replacing a JSON round-trip, so
+  scrolling a long conversation costs map lookups instead of a full re-render.
+- **Interactive-workflow correctness.** A single command-dispatch path with a
+  submit-time slash guard keeps `/command` drafts out of the model (they execute
+  or toast, never send as chat) and makes shell-owned commands reachable from the
+  composer; interrupting a run takes a deliberate double-esc; `ctrl+c` quits from
+  every input mode. Free-text dialogs (rename, attach, credential, action input)
+  now carry real labels, masked credential echo, and inline validation instead of
+  a mislabeled "Search:" prompt. Start Fresh mints a fresh session instantly
+  (with per-session dev-token minting under `harbor dev`), a failed session
+  switch is non-destructive (the previous session stays live), mid-run steering
+  targets the active run from the conversation, an explicit theme choice locks
+  against terminal auto-detect, and closing search always clears its filter.
+
+### Fixed
+
+- **Streaming transcript segmentation.** A turn's assistant text and reasoning
+  were keyed per run, so a turn's preamble and its post-tool answer merged into
+  one block anchored at its first appearance — reordering the intervening
+  reasoning and tool blocks. Streaming blocks now key per `(kind, run, step)`,
+  advancing on each stream's `Done` terminator (content and reasoning carry
+  independent terminators), so every message and reasoning segment is a distinct,
+  correctly-ordered block while consecutive same-step deltas still merge.
+
 (Next up: the run-start connection reconcile landed DETACH-ONLY in v1.11
 (D-287) — only the attach / OAuth-resume leg of issue
 [#375](https://github.com/hurtener/Harbor/issues/375) remains parked with the

@@ -1,0 +1,16 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+  ┃  ctrl+x ?  Keyboard help
+  ┃  ctrl+x s  Toggle runtime context
+  ┃  ctrl+x t  Switch theme
+  ┃  ctrl+x l  Switch session · unavailable: requires a l
+  ┃  ctrl+x n  Start Fresh · unavailable: requires a live
+  ┃  ctrl+x d  Delete session · unavailable: requires a l
+  ┃  ctrl+x i  Replace credential
+  ┃  Composer idle · attach a Runtime
+  ┃
+  ┃
+  ╹──────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Tog

@@ -85,6 +85,9 @@ llm:
   # time. Pick whichever env var your secret store populates. NEVER
   # commit a literal API key here — the validator accepts a literal
   # value but the linter / reviewer SHOULD reject the PR.
+  # `harbor dev` auto-loads ./.env into the process environment before
+  # boot (dev-only — never `harbor serve`; existing environment wins;
+  # opt out with --no-env-file), so the var can live in a local .env.
   api_key: env.OPENROUTER_API_KEY
   timeout: 60s
   context_window_reserve: 0.05

@@ -1,0 +1,1890 @@
+{
+  "status": "candidate-generated-pending-orchestrator-review",
+  "generated_on": "2026-07-15",
+  "review_date": "",
+  "review_scope": "Phase 183 Runtime control candidates: task, tool, artifact, event, posture, intervention, diagnostics, action matrix, and destructive confirmation states across the binding size/color matrix; orchestrator review pending. Previously reviewed Phase 181-182 captures remain recorded under prior_reviews.",
+  "reviewed": false,
+  "reproduce": "go test -race ./internal/tui/app -run TestCaptureMatrix -update-captures",
+  "terminal_profile": {
+    "COLORTERM": "truecolor",
+    "TERM": "xterm-256color",
+    "unicode_width": "github.com/charmbracelet/x/ansi v0.11.7"
+  },
+  "reference_measurements": {
+    "actions": "79 stacked; 80 horizontal",
+    "autocomplete_rows": 10,
+    "composer": "75 columns or 70% wide",
+    "dialogs": [
+      60,
+      88,
+      116
+    ],
+    "outer_padding_cells": 2,
+    "sidebar": "120 overlay; 121 joined",
+    "sidebar_columns": 42,
+    "source": "docs/research/tui-investigation/05-opencode-visual-grammar.md lines 25-48, 88-104, 184-263, 373-422",
+    "spinner_ms": [
+      80,
+      40
+    ]
+  },
+  "known_deviations": [
+    "Terminal scrims use semantic faint/dim styling because alpha compositing is unavailable.",
+    "Operational captures use canonical test Protocol data through RuntimeModel; authenticated transport behavior is separately verified by the built-CLI PTY integration.",
+    "PTY behavior varies by terminal; xterm-256color is the pinned capture profile."
+  ],
+  "candidates": [
+    {
+      "path": "100x30-active-stream.txt",
+      "sha256": "efcc61f185e250ec2a13a1eb7081c767c3fa4f50d58a61d1446a7850ce257256"
+    },
+    {
+      "path": "100x30-autocomplete.txt",
+      "sha256": "a2ff5bf66de73b16a1058efb65f85d2a176a2059e259127b06e6917f06e45dac"
+    },
+    {
+      "path": "100x30-closed.txt",
+      "sha256": "e18002d953264730aa0d08ae9f9c7c9bf2666c52b67a1dc581c7607cde2a5a83"
+    },
+    {
+      "path": "100x30-composer-attachment.txt",
+      "sha256": "7e8fffdac557c7e2b6ca205d45e7545c8dce4df53132c4589c1c796e3fd04588"
+    },
+    {
+      "path": "100x30-composer-disabled.txt",
+      "sha256": "967aca8fd4bff42af48a4f239b5297d6afbc3d0647b6d58ebbbbd109c4687ba9"
+    },
+    {
+      "path": "100x30-composer-focused.txt",
+      "sha256": "a101e8e4b36276feda799082189d4477097fa4c3cf3a185623c57abb0a7164ee"
+    },
+    {
+      "path": "100x30-composer-retry.txt",
+      "sha256": "7acdfeaf7ba0bae8f3cba625029dd970e582ec1d9dea827d1e05117d63c9a379"
+    },
+    {
+      "path": "100x30-composer-running.txt",
+      "sha256": "9f8326a82d177152d68507826129bca8358381240f39d967f46c14b1576be7b2"
+    },
+    {
+      "path": "100x30-dropped-event.txt",
+      "sha256": "2cdd6049e5a367c599729d477b1804d549c78faa5e9221c38d560e8c426e9a8e"
+    },
+    {
+      "path": "100x30-erased.txt",
+      "sha256": "855d23d800d149796c65e9d4c91c24b9de73848551cdfa395611a759f6803eda"
+    },
+    {
+      "path": "100x30-focus-restore.txt",
+      "sha256": "d8459569a17bfa051b2d5cd31f1b91a0e71c8e5618da3576d1659d2e496e10c6"
+    },
+    {
+      "path": "100x30-home.txt",
+      "sha256": "84c64a19e13fa46a7af99205aa3c9082466f05c2bcd9903d1a4fa6788c814b2e"
+    },
+    {
+      "path": "100x30-intervention.txt",
+      "sha256": "4941f4d2ddf8beee76177640321740a46be4216ee2cad8290c8a17e22c8416d4"
+    },
+    {
+      "path": "100x30-modal-filter.txt",
+      "sha256": "064be9dbe34e2df8425c3e1157cef8209f7e8fa0829f663e3749921fd1392dc6"
+    },
+    {
+      "path": "100x30-nested-modal.txt",
+      "sha256": "4cd5741de157ebbd8eaed267953fd57f985a824db27c39967dc80aee8ea65cb1"
+    },
+    {
+      "path": "100x30-operational-attachment.txt",
+      "sha256": "7f4d28c79551e0d0b681b39e39fbbaab331c3ee0c64e3e706827f6f25ebe7577"
+    },
+    {
+      "path": "100x30-operational-degraded.txt",
+      "sha256": "6ee9599ffb8f50781f5d299e652184a711ff745c2cdb3787f2eb6702269d7b8b"
+    },
+    {
+      "path": "100x30-operational-dropped.txt",
+      "sha256": "f5e3d583720dc82ff90e0b49d41f820e07158c8f7825fce5184ca80b46518355"
+    },
+    {
+      "path": "100x30-operational-failed.txt",
+      "sha256": "758af1b1b1d83be72633f6b325f6b3c69357b93068be61333a7470c5d57b3fdc"
+    },
+    {
+      "path": "100x30-operational-followup-failed.txt",
+      "sha256": "319b5c1d8855eadfa3fe751ab0811d2c35edf51cd5b8375a81d05dcf52b2d9b2"
+    },
+    {
+      "path": "100x30-operational-live.txt",
+      "sha256": "a13bbfe7a360eaf58b163ae85ae995dbe97bd4a0587c55026556634fda70a4ba"
+    },
+    {
+      "path": "100x30-operational-reauth.txt",
+      "sha256": "fcc9b35960c252c6f9c81eefac120931d37bf8f036f03da2b5017305832244b8"
+    },
+    {
+      "path": "100x30-operational-search.txt",
+      "sha256": "bfa79712a479b074e4696a5b3af80be0562be34cb5d632b7c9041a68deb1d04c"
+    },
+    {
+      "path": "100x30-operational-session-picker.txt",
+      "sha256": "52523c69542201f3aeaebb853448fc5213a949ba0c52cf7bb4b4ed019e284170"
+    },
+    {
+      "path": "100x30-operational-start-fresh.txt",
+      "sha256": "3acb4cf1fa434079e0ab69b984e426ff85f3c869b077d52098aafedc05cce9d6"
+    },
+    {
+      "path": "100x30-palette.txt",
+      "sha256": "3de0763166bef0af3a9d5780f113fea8be8953574823955134309df334a80208"
+    },
+    {
+      "path": "100x30-paste.txt",
+      "sha256": "c73e361653e60e13abf399d998e4900f2d50a9ef06d104ea78ddeb5521db25df"
+    },
+    {
+      "path": "100x30-reconnect.txt",
+      "sha256": "7018b7785c01ec86af665933f2eee5cdfc48a4c8a5cef03c6b4164f30857929c"
+    },
+    {
+      "path": "100x30-reduced-motion.txt",
+      "sha256": "43c7601adbf22f9a2b15804b5e210165ee1ee1d0d7f01cbf3a2d237cb45e8c25"
+    },
+    {
+      "path": "100x30-replay-gap.txt",
+      "sha256": "da15990ea4ed88525c36335a92dfff55da66c6207d31525bf8f56cf2377f64fa"
+    },
+    {
+      "path": "100x30-resize.txt",
+      "sha256": "a924aec8766256e9ddedec45d78dca498b6578e1f1f5bc71102142fa01a17298"
+    },
+    {
+      "path": "100x30-runtime-action-matrix.txt",
+      "sha256": "c4172e2a5783c1b28e663a952e015482983ca6156dbc3c9d37ddf977686a398a"
+    },
+    {
+      "path": "100x30-runtime-artifacts.txt",
+      "sha256": "aefe0fd2b234274b13b1b3d385834bad2b63a0ba84dae4d0e2d503e4dde0d1b7"
+    },
+    {
+      "path": "100x30-runtime-destructive-confirm.txt",
+      "sha256": "a732d777f2c7bfbabe0d8ecaa65d208ae3dc8221155ff1463820b46fbb250c6f"
+    },
+    {
+      "path": "100x30-runtime-diagnostics.txt",
+      "sha256": "03c71be9b705efc7ea2949b75bdc3295636fc3164a5137952cd10939941b024a"
+    },
+    {
+      "path": "100x30-runtime-events-partial.txt",
+      "sha256": "ad682b04da4dd9bf12d5c44b3bba1c61dccddbfaf5874765fdee2ab14f10ac3f"
+    },
+    {
+      "path": "100x30-runtime-interventions.txt",
+      "sha256": "19b9c6cf9e4f6c085ed527c7afcb90d34623e5a980cb9c8608c0916477e38f1a"
+    },
+    {
+      "path": "100x30-runtime-posture.txt",
+      "sha256": "360c41cebdb6699d413bf42be81b68bd4cbfff5be72b4a3581df9b5164854243"
+    },
+    {
+      "path": "100x30-runtime-tasks.txt",
+      "sha256": "b8d08a4a8cd040eed56f1f55cf453c1962c96022dbc3fbe438917945eaecfc86"
+    },
+    {
+      "path": "100x30-runtime-tools.txt",
+      "sha256": "982723a9581c048b1b19dd8a2cc5e6c08dc379346babaac7ab9917a2bf59a76a"
+    },
+    {
+      "path": "100x30-scrolled-away.txt",
+      "sha256": "a5f183d2f582f1decf17f2dd58fa4042dc66346be94f090cf1e7bed048339fee"
+    },
+    {
+      "path": "100x30-session.txt",
+      "sha256": "bafcb6c5727f3876eb2e4ac4562a3f485fb8da71781ccb12cd3f3230c1a5d9c3"
+    },
+    {
+      "path": "100x30-sidebar-overlay-or-joined.txt",
+      "sha256": "932eaf79f820d74ab87383bf505a93f9099dba316f93330d9c987f91d697ceaa"
+    },
+    {
+      "path": "100x30-unknown-fallback.txt",
+      "sha256": "45dd82e87e7079804dc3657ecc2eae7185d2d08ec6446ef270ce21568394f701"
+    },
+    {
+      "path": "100x30-which-key.txt",
+      "sha256": "01dbf98f447e4c95fc0f3952486e43896832221434dfeab879a8a93136df3c34"
+    },
+    {
+      "path": "120x30-active-stream.txt",
+      "sha256": "c5e0d97784928c639fbf91a882848882d824e0068e398a23f26364b3c17629cb"
+    },
+    {
+      "path": "120x30-autocomplete.txt",
+      "sha256": "c0c8919819ccf75c4af2403407f37271bfc198a36808ee28fcc487ef734f7d84"
+    },
+    {
+      "path": "120x30-closed.txt",
+      "sha256": "02b8c1fc156512bc17283c2adfe0c2e208391706cd9fb9c0b81cd6ea8e964992"
+    },
+    {
+      "path": "120x30-composer-attachment.txt",
+      "sha256": "cd13c093a17b65f8222d5089c7869bf7b1634483ae075e2c8c998c4ceb579d12"
+    },
+    {
+      "path": "120x30-composer-disabled.txt",
+      "sha256": "df2b1b5e8d0606b9987f6133ee9043504b62a7f8ed4577df02b4de0b82a104c3"
+    },
+    {
+      "path": "120x30-composer-focused.txt",
+      "sha256": "71dc9974d849edec8d1ddd45fd70e3443609d653835a0aeb6136b7d5f4308403"
+    },
+    {
+      "path": "120x30-composer-retry.txt",
+      "sha256": "41e0401f82ad1881bd0d891af40624e69309b9539b4c138a2f7050705ce7a53a"
+    },
+    {
+      "path": "120x30-composer-running.txt",
+      "sha256": "edd2e3bac525cfbef68d7eb0b3df3d0e33d3d309dcb01b59453a7f4667d10d00"
+    },
+    {
+      "path": "120x30-dropped-event.txt",
+      "sha256": "51b9f9b7aa735b018040ada366589e1f5a001c0c07d509571581730976ab0bcf"
+    },
+    {
+      "path": "120x30-erased.txt",
+      "sha256": "f5d62ec58e8f1538e7d089e19c2e122241db93efe0ba41b082e196f146799221"
+    },
+    {
+      "path": "120x30-focus-restore.txt",
+      "sha256": "6d6f520e912dce5d4f1698359346b20bffac5fddabc0639b0b1a84b7e3a039ea"
+    },
+    {
+      "path": "120x30-home.txt",
+      "sha256": "f0071467002b8a6917ab777813ae32a6cada67f7a6ab9ed59a7bf11b8dee7a17"
+    },
+    {
+      "path": "120x30-intervention.txt",
+      "sha256": "3fd7b24b5af09db0fb4a52a08631c9eea05ff77efb7c241b49dcdb576aaf29ed"
+    },
+    {
+      "path": "120x30-modal-filter.txt",
+      "sha256": "4ee11517e9f86f5e050db8076fea76cbb8723eb01c3624e4b382a83c2a25e3cb"
+    },
+    {
+      "path": "120x30-nested-modal.txt",
+      "sha256": "7450c1bbc1ee46e66b02ec9a427db0acfcfd71de304662881308b397139bfb1b"
+    },
+    {
+      "path": "120x30-operational-attachment.txt",
+      "sha256": "6b595ad6956d468140d360d4b4cbef63aa0b1f918fcff89ae89f1964dd654669"
+    },
+    {
+      "path": "120x30-operational-degraded.txt",
+      "sha256": "64b701f24209252e158cb33941d6fc8f52dec465eb6c0869094d715f551384a1"
+    },
+    {
+      "path": "120x30-operational-dropped.txt",
+      "sha256": "5c28ed198b47b99d04f25c928a2ef4ccff6a078315b24387e291bc826fbfbebf"
+    },
+    {
+      "path": "120x30-operational-failed.txt",
+      "sha256": "118e8a9bf384ead8aeb94f35d9054913ef5032480b91e1dc9e0cba1160ce9db5"
+    },
+    {
+      "path": "120x30-operational-followup-failed.txt",
+      "sha256": "16976eea02baee78d36e2006a674cc05be65f171605562427b22cce3e1b7cfe5"
+    },
+    {
+      "path": "120x30-operational-live.txt",
+      "sha256": "1842a25c5908163bd8b83b187e477d32d3b414e264a2663ac4636d2ca18e1d5d"
+    },
+    {
+      "path": "120x30-operational-reauth.txt",
+      "sha256": "60ad21d6d88ef4eb1c858b29579875ed433c65bf5c9b2a6f81c8bf80e52d43c0"
+    },
+    {
+      "path": "120x30-operational-search.txt",
+      "sha256": "9a8b2f8ec6a7491bc1e12bc01f03996e8ba3941df78776a0540c864722a4144a"
+    },
+    {
+      "path": "120x30-operational-session-picker.txt",
+      "sha256": "538352ee015bcd844650fd3f3338fe30feaaad82577baa55f85626a6826528d2"
+    },
+    {
+      "path": "120x30-operational-start-fresh.txt",
+      "sha256": "2e8332611a012a94dcc299b9ca62bb4ae2afa0f3421751d7a295efbac2ef72ca"
+    },
+    {
+      "path": "120x30-palette.txt",
+      "sha256": "da7d35e843be6859ab7412bc6c19dec0d6388432696353154ed0563318dcf7b4"
+    },
+    {
+      "path": "120x30-paste.txt",
+      "sha256": "6db9a06e811aedee6cd088036b39a4a64dccea3258cdaf50251f016420d0a592"
+    },
+    {
+      "path": "120x30-reconnect.txt",
+      "sha256": "b696e02f8852a717345acd9b379c343a1ebd4666955525d71092b8299140b800"
+    },
+    {
+      "path": "120x30-reduced-motion.txt",
+      "sha256": "c41e5baf596693ab6c2161c53c14877d8a78b08b3c2704488c6a40d0f001ab64"
+    },
+    {
+      "path": "120x30-replay-gap.txt",
+      "sha256": "a768319402e19c954468696d82d91b86922a3a489e07513f4af113d921c07cb9"
+    },
+    {
+      "path": "120x30-resize.txt",
+      "sha256": "646be0948d3df6c9d2292d4d2e34a404491a972aeddc1b5d4e6a9ed3082e9d86"
+    },
+    {
+      "path": "120x30-runtime-action-matrix.txt",
+      "sha256": "8dac48e741b96e894eef6d21cb3669069e6878c84b94d21a2ab5e678f026008c"
+    },
+    {
+      "path": "120x30-runtime-artifacts.txt",
+      "sha256": "ee523f2ca9f7f1ec3f49dfee28427e224b6080eb52c061b8a4064543a02ee7c8"
+    },
+    {
+      "path": "120x30-runtime-destructive-confirm.txt",
+      "sha256": "57f97252ac10d3bbf3a608587dcd6f585c1832bd1fa91d226b8db15278dcef8e"
+    },
+    {
+      "path": "120x30-runtime-diagnostics.txt",
+      "sha256": "67e8f5894576bc442a33ee5f1901af237eb9fc743dc6767d7c7a328a3ae7cdfe"
+    },
+    {
+      "path": "120x30-runtime-events-partial.txt",
+      "sha256": "e1c9a4f11ec30757683e9d6e2396727b2dd2c73e79bbac1d6430725f9fbdb090"
+    },
+    {
+      "path": "120x30-runtime-interventions.txt",
+      "sha256": "9ee013ea04ec55050e6617d03b094ae264d4e7ce341db7b14e6fefcbd6ec969c"
+    },
+    {
+      "path": "120x30-runtime-posture.txt",
+      "sha256": "fc0573f055b1b5a2934aae05daec63c5b276c0d00ff7922d3c3753e003cf7c91"
+    },
+    {
+      "path": "120x30-runtime-tasks.txt",
+      "sha256": "e50036723baa42d5a9c3f5b502ab72c4979f052c410bb3a25382631e91a3cb6d"
+    },
+    {
+      "path": "120x30-runtime-tools.txt",
+      "sha256": "7d7b3b46b9e52a223e4e1580457b485a0d93e11d104b7e2298048866dd7c6019"
+    },
+    {
+      "path": "120x30-scrolled-away.txt",
+      "sha256": "0803dcb9c2d86395a27b2dabd39ea547e5968b62baa8e930704c1064613b3c0b"
+    },
+    {
+      "path": "120x30-session.txt",
+      "sha256": "f33542f41019a9848ccd10d37a7d318ec219ecde7c5efd6777626b655e240395"
+    },
+    {
+      "path": "120x30-sidebar-overlay-or-joined.txt",
+      "sha256": "21c18a70ecc90662cf163dd2ecb08d04b0f8e081f55ef1bbdeb525178017373c"
+    },
+    {
+      "path": "120x30-unknown-fallback.txt",
+      "sha256": "2b8df31ea107e46754e941e857150b93cc02c0e0558354323ad0e55ed1ced629"
+    },
+    {
+      "path": "120x30-which-key.txt",
+      "sha256": "317a92a0a4eccd9132cf227fb04d4637721f6d435be4d4ca33eda251d2f471f6"
+    },
+    {
+      "path": "121x30-active-stream.txt",
+      "sha256": "c20498dce281c37974bd431b88094aeaf62efd890ae3adf52dbff7b828ddad01"
+    },
+    {
+      "path": "121x30-autocomplete.txt",
+      "sha256": "eda1ea77fafccabc2560f424d71f57945a35c588a7b99c90918f057f58766ce3"
+    },
+    {
+      "path": "121x30-closed.txt",
+      "sha256": "8a8e2c7ec1462a6b96ad22c9030ca4682d503cf604b9755a545ff690fd134bd1"
+    },
+    {
+      "path": "121x30-composer-attachment.txt",
+      "sha256": "c971506f2ba9765b36f35ac7eda6880a957afad24020815765b9306a87a97c68"
+    },
+    {
+      "path": "121x30-composer-disabled.txt",
+      "sha256": "c59270f3a3c7cf9af907725d67cb35d6f35a41a5018bc07f4d3eae0683a597d8"
+    },
+    {
+      "path": "121x30-composer-focused.txt",
+      "sha256": "612ea3376dda6407f8cc51fd01d9e8c8e6a426f2cf29e81b3553b85052947191"
+    },
+    {
+      "path": "121x30-composer-retry.txt",
+      "sha256": "1704dbee304517e07b54c7d7b6299c5dad20cd728ff223bd902ea536286e429a"
+    },
+    {
+      "path": "121x30-composer-running.txt",
+      "sha256": "7f7ce6af721bb45f52e79edf5dc7fe69927dd8a90b97e3cac91fdf47603e14d7"
+    },
+    {
+      "path": "121x30-dropped-event.txt",
+      "sha256": "b931c40fccc352f74fa3daf104e81890f6417ac82ea2477bd64d403d7ee6f020"
+    },
+    {
+      "path": "121x30-erased.txt",
+      "sha256": "77277babd950b540cb5bd58b25eab32971f9c3f334dfe304298b65822529d0a1"
+    },
+    {
+      "path": "121x30-focus-restore.txt",
+      "sha256": "b8af38074861b251937154d8d79b48f72827697a51eefb1e1af25277d9d5ec7e"
+    },
+    {
+      "path": "121x30-home.txt",
+      "sha256": "f02f51d752872146cb8859cf035bb8b1d8f7d13adda76c2a3deab0b4bfe7dcf4"
+    },
+    {
+      "path": "121x30-intervention.txt",
+      "sha256": "8f92540a6ce37903f48c0aec4f11606a9cd1e51acc256924758a414b09c3cfc6"
+    },
+    {
+      "path": "121x30-modal-filter.txt",
+      "sha256": "6b4995ae098b855ee3f9dea4b782d64c08943d98cee7f6c1e9ee7bd15d2561d0"
+    },
+    {
+      "path": "121x30-nested-modal.txt",
+      "sha256": "cec9a214dc00205772b0640053055f108d3e85e527ea82a07a2018b1444c6d53"
+    },
+    {
+      "path": "121x30-operational-attachment.txt",
+      "sha256": "049ef77f9cbe72cf521578bd2639de3a36fd374731a4b0bd1da393908d663a9f"
+    },
+    {
+      "path": "121x30-operational-degraded.txt",
+      "sha256": "afc6c61a458fe028bd01408e91a866047704455d2e80f5d1a29875dcbd49c33d"
+    },
+    {
+      "path": "121x30-operational-dropped.txt",
+      "sha256": "3ee6b7fc24c06c7f3d4ba4f544ddea218facef46cec49c415d7f1f0262e3a9f2"
+    },
+    {
+      "path": "121x30-operational-failed.txt",
+      "sha256": "bf679bc2707f996b6bea0400edc73e28d048e88e8ee07ce621fb686e941f6ef1"
+    },
+    {
+      "path": "121x30-operational-followup-failed.txt",
+      "sha256": "6f1e232871352cee4b5f573cd8049f4dfe744ef192f361dcb05201d022071b6d"
+    },
+    {
+      "path": "121x30-operational-live.txt",
+      "sha256": "565fe67e5a027f2f8847da918eac9268673c62f4f00c9301f4722b8f7854a769"
+    },
+    {
+      "path": "121x30-operational-reauth.txt",
+      "sha256": "69658004f5894f790d5a4ad9789a6875158e59a7e80b5281cb75def2815810f9"
+    },
+    {
+      "path": "121x30-operational-search.txt",
+      "sha256": "e6028ba46bdd54e58261d9a5543b94ceb301df3518a34b54f36803291b0fb948"
+    },
+    {
+      "path": "121x30-operational-session-picker.txt",
+      "sha256": "97237ae1d479dcfc1977d431dc0d993c577dbe01ce6c289a0921539c9e22523a"
+    },
+    {
+      "path": "121x30-operational-start-fresh.txt",
+      "sha256": "389f8791db63ac72f48cf71c0aa138534d2725e517d66706d0a3c420208ce445"
+    },
+    {
+      "path": "121x30-palette.txt",
+      "sha256": "0f8fd9da447da52dd21a7b7695760090d06fc0ba656066b0d9274fe61f68e3e6"
+    },
+    {
+      "path": "121x30-paste.txt",
+      "sha256": "f267e006620896cc1df1637ffe1c6e79ac5874e992b59f87f94e6b34b0c9c40e"
+    },
+    {
+      "path": "121x30-reconnect.txt",
+      "sha256": "c05dc00d794092312921b0239fb19d9facde398739f84fdebfdd77256c9dc1bb"
+    },
+    {
+      "path": "121x30-reduced-motion.txt",
+      "sha256": "276b679a56251f870508408e6ea4d9a8fb054d7815a6b87617dbc94a2c9a0f86"
+    },
+    {
+      "path": "121x30-replay-gap.txt",
+      "sha256": "11eb3ab4b26c4b020393ec95abaa51242fe90c08f90fa3518624401fd830f7e8"
+    },
+    {
+      "path": "121x30-resize.txt",
+      "sha256": "149e223f6ff28b485c5920b97ea670adde1dba6666deb68c0c92f88a4a921393"
+    },
+    {
+      "path": "121x30-runtime-action-matrix.txt",
+      "sha256": "9fc662ac08c08433bdfd0fa081ce12d30f16813d25674f0f7be2e49eabfbabcf"
+    },
+    {
+      "path": "121x30-runtime-artifacts.txt",
+      "sha256": "445394c2d0252b34c304436afed4c5d50996a029058d59537823e92b843c6d81"
+    },
+    {
+      "path": "121x30-runtime-destructive-confirm.txt",
+      "sha256": "49a6d1481ae0e3fb7c3579b068a20bef0f20a969e5a4b53eb5fe7d2443b990f8"
+    },
+    {
+      "path": "121x30-runtime-diagnostics.txt",
+      "sha256": "5fd07069cf81a72487f7f485e96b305dff56d6036f25a5528411b3a68e918585"
+    },
+    {
+      "path": "121x30-runtime-events-partial.txt",
+      "sha256": "bfd177dd0b6ed00baa1ccda983d98ebfcf4d84de5a52bd14bc9b6c2df7cb40a8"
+    },
+    {
+      "path": "121x30-runtime-interventions.txt",
+      "sha256": "808a68ffcebd8dbdaa1b8791ef15580d2294bfd7c27dc196574dded2a01ad4e2"
+    },
+    {
+      "path": "121x30-runtime-posture.txt",
+      "sha256": "bcc194635aac5f318dc90ff1aacd27a7d80514206b291a3a75cb27bf4aa741ce"
+    },
+    {
+      "path": "121x30-runtime-tasks.txt",
+      "sha256": "4265c6c83a8213e20200c3feb3820ed9371eb330b9e1776b7c0a0d200544b2f3"
+    },
+    {
+      "path": "121x30-runtime-tools.txt",
+      "sha256": "a73404a0cf5b0dea96ae6bf8de32738c0ccb29e7680531f4688101feb9922865"
+    },
+    {
+      "path": "121x30-scrolled-away.txt",
+      "sha256": "3627cb68006be9dcc518ca0300f6b7938070c8e95f80440a9bee91d465493e90"
+    },
+    {
+      "path": "121x30-session.txt",
+      "sha256": "36b89234de245a4b0efd7af4cb6fc91a46ca9d422418142c8d4faef66bff1d46"
+    },
+    {
+      "path": "121x30-sidebar-overlay-or-joined.txt",
+      "sha256": "feed036a3c6ba4e5b82fd0fb7bfa6d65b3059deaaa647dd21fe0952f13c4bb65"
+    },
+    {
+      "path": "121x30-unknown-fallback.txt",
+      "sha256": "93987db3fbb9d65b2339d2a80a2b1e6f70d6515e356c9ffae3bef442ab58d10a"
+    },
+    {
+      "path": "121x30-which-key.txt",
+      "sha256": "03d8bbb791f03a3f37fe2cb58ba8797a7ae51ce596d31e57f4dc91ac47e069f2"
+    },
+    {
+      "path": "16-dark-intervention.ansi",
+      "sha256": "e874d2f34685e2e4ffc917265de4c9ea9396dfef04aaadd4f2a02d4bc53cb2f1"
+    },
+    {
+      "path": "16-dark-replay-gap.ansi",
+      "sha256": "7646a2975f4704badd487b6463ad7a3eed16c4759622bbc384a79e12f37bd76a"
+    },
+    {
+      "path": "160x40-active-stream.txt",
+      "sha256": "6619224c53001de7ce0721a9163b0b25697aeed4a0aa315fcb2c86cc16835105"
+    },
+    {
+      "path": "160x40-autocomplete.txt",
+      "sha256": "f02887002c7ce66d55df99361dca9f004e7245ac271e46a12d10e8bbbeb1537f"
+    },
+    {
+      "path": "160x40-closed.txt",
+      "sha256": "93b7f9364b19c2bc26d6263fa98e74fa62f437750b41b543b5096e6c89906ec7"
+    },
+    {
+      "path": "160x40-composer-attachment.txt",
+      "sha256": "b8d474d1d98d6ecc56c21171a0e95ed0554b89812a66f857074d4ada779fec2c"
+    },
+    {
+      "path": "160x40-composer-disabled.txt",
+      "sha256": "eb8cc1061b8143d880abf10de86926dde5eea53f5cc3f9b423d1b97c5b92f688"
+    },
+    {
+      "path": "160x40-composer-focused.txt",
+      "sha256": "1ffc4e3c9e80186e3362d944b3caf1e4ee4c652ecc04041cc883d0a5e0c72e3d"
+    },
+    {
+      "path": "160x40-composer-retry.txt",
+      "sha256": "953fbc16c56c0b937a1dd07b2a5bc609fff44327bbdb06d64669def234846f37"
+    },
+    {
+      "path": "160x40-composer-running.txt",
+      "sha256": "0871db175596b49ae1e2fcf6894e6969125ba14170692890366cb703e4ba14ff"
+    },
+    {
+      "path": "160x40-dropped-event.txt",
+      "sha256": "e136f3205f73133c9f4b23af9c2064bdb35cd5c51b6a8adbc56d96351d67ed4f"
+    },
+    {
+      "path": "160x40-erased.txt",
+      "sha256": "4a2a2ecb4a464e9695691a57ef95f2e89c9d6ec3ac95594a34fab712dbf45e68"
+    },
+    {
+      "path": "160x40-focus-restore.txt",
+      "sha256": "e562033da9faf2d7b3d91173c1e2849ffe9010c79e56c2e4054bb7e2c38bf73e"
+    },
+    {
+      "path": "160x40-home.txt",
+      "sha256": "ba3ac66090aec04f441956215479ba14cb73a34f1cd04cf216063af29b30b6ea"
+    },
+    {
+      "path": "160x40-intervention.txt",
+      "sha256": "219ca5fcedbef76f76d7289fee993e9cfa4b32353025f59ba9b3d00c183a1725"
+    },
+    {
+      "path": "160x40-modal-filter.txt",
+      "sha256": "ca44569ab4cd6069496449a09f6bc64db27cca553f2840df89edab0d8d19ccc4"
+    },
+    {
+      "path": "160x40-nested-modal.txt",
+      "sha256": "2951c60ac2de1e4618b440bc829a01df3d3f86b161b2b1c0601cdf3c16cd15d8"
+    },
+    {
+      "path": "160x40-operational-attachment.txt",
+      "sha256": "f91c61ba1ab6367d14efaebd069f69c5f68f91b4b5eeea78306489917cf3a78c"
+    },
+    {
+      "path": "160x40-operational-degraded.txt",
+      "sha256": "c18db9e0d03961df30f99b1e1847412f9ccf8b8a3b17437b0d97e3027bedce0c"
+    },
+    {
+      "path": "160x40-operational-dropped.txt",
+      "sha256": "90ab15c736090b612a653b84af43308d4e0b45a50e27d03a4d9a2059ac5118b4"
+    },
+    {
+      "path": "160x40-operational-failed.txt",
+      "sha256": "9b9c9937607131ca58951326028d5d3c5ab025ce139abeef73cbca7060a9af86"
+    },
+    {
+      "path": "160x40-operational-followup-failed.txt",
+      "sha256": "5186c45b175bf5c6c9f016870052d93b4c5783d3708aba62aa34d090d94855c4"
+    },
+    {
+      "path": "160x40-operational-live.txt",
+      "sha256": "63ebb9cca657a78d0e5d781fb1fb5d966f8a831734cdb7b9a7d67b2a19415961"
+    },
+    {
+      "path": "160x40-operational-reauth.txt",
+      "sha256": "b0c4acc210424a9938b95abfc312f00a8a27910c618260881d69fd878839bcc4"
+    },
+    {
+      "path": "160x40-operational-search.txt",
+      "sha256": "f8a9d8226b814ec5a7e9ab2653a5273a1b4ad2fb74b484483576cfe6fd5d9578"
+    },
+    {
+      "path": "160x40-operational-session-picker.txt",
+      "sha256": "2254956babe9ca545c138cf662435c0be61c30771b4a599c5792eb43d3e86280"
+    },
+    {
+      "path": "160x40-operational-start-fresh.txt",
+      "sha256": "dc2c2c25213d1f23099e83016d86b8443ed3aa921e0211bfc439baf4752ae49e"
+    },
+    {
+      "path": "160x40-palette.txt",
+      "sha256": "992f6e429329f57fd7b76d7516dd6f35daa355b6cfdbd6add0ee049e66bd6489"
+    },
+    {
+      "path": "160x40-paste.txt",
+      "sha256": "3baf2bc0e11c31162a8ba1f100d35f7dd68816cdc3d1621c6428cb37df7eefdc"
+    },
+    {
+      "path": "160x40-reconnect.txt",
+      "sha256": "0055c7c91c63991588a2215e203b0747af6356aa382146e2466ef82287b42db0"
+    },
+    {
+      "path": "160x40-reduced-motion.txt",
+      "sha256": "b2a8d216918d6c2eafad4e04b06fdc0067e699fd402b3b1c07681d7fecff3b91"
+    },
+    {
+      "path": "160x40-replay-gap.txt",
+      "sha256": "39a0df78db06200c1e8c450380b1a36cacd121300fd7ed3bc8d6e216485221b5"
+    },
+    {
+      "path": "160x40-resize.txt",
+      "sha256": "1338d3319cd5fd70ec0bf058eb968a572fb16e06cd22e1f2cdd7c58eb2f1dd2a"
+    },
+    {
+      "path": "160x40-runtime-action-matrix.txt",
+      "sha256": "e69948c1dff5cbdb11f9a2fa7935c493b88063499b1465ec7c15ee643d77e16f"
+    },
+    {
+      "path": "160x40-runtime-artifacts.txt",
+      "sha256": "9fd75b89f4fd74ab0ba82625dcd405f92f19cb603c5347bc9a348fea9fa982f1"
+    },
+    {
+      "path": "160x40-runtime-destructive-confirm.txt",
+      "sha256": "7f2c885232fe58cb6b44cee4f341a49dbf46d0a6b81c289fbb109e05e7bec655"
+    },
+    {
+      "path": "160x40-runtime-diagnostics.txt",
+      "sha256": "a3707a85885b72efc55da6490a14d9dcafd7ad5ca883e97569cf46e5a6125b4e"
+    },
+    {
+      "path": "160x40-runtime-events-partial.txt",
+      "sha256": "6c6462abe5909370a0b6c5605200bc8eb9d9f2e5fb93ed3768d95e441741b913"
+    },
+    {
+      "path": "160x40-runtime-interventions.txt",
+      "sha256": "56e318f42f2f0fb87d99e890f6846cb47e679caacd0ffd2210bb1cfc63c0a27c"
+    },
+    {
+      "path": "160x40-runtime-posture.txt",
+      "sha256": "f4e7eb23fc8bbbd0ebaf470f2d45e3204fd21fd34e1ead67e7962cb1314578e9"
+    },
+    {
+      "path": "160x40-runtime-tasks.txt",
+      "sha256": "0a9620fdeea74f5211c8f0ab9dbc15f1ea3f76adeec6949f5f5367f5c5010826"
+    },
+    {
+      "path": "160x40-runtime-tools.txt",
+      "sha256": "0fc4d34782a56bc5c22545dc8030213091e38be6bdcaf5efc640255d6f8f0851"
+    },
+    {
+      "path": "160x40-scrolled-away.txt",
+      "sha256": "8e6556b6d1f4f5a69a9add0313ce0727a27119fc31cddccd621ae509ab6d6345"
+    },
+    {
+      "path": "160x40-session.txt",
+      "sha256": "75f35cecafca6ee721185c090ab2edafcb31b6e68924c7c014a48fbaafa2adfa"
+    },
+    {
+      "path": "160x40-sidebar-overlay-or-joined.txt",
+      "sha256": "242d5b3693a8c1a09e4336a7f6797774410611da56ff1531a75245901e9b7090"
+    },
+    {
+      "path": "160x40-unknown-fallback.txt",
+      "sha256": "07e7c2d6e08f8b3c8d58a5cb1a4e4526d6265a103b9ee8ee41587648dec77fc7"
+    },
+    {
+      "path": "160x40-which-key.txt",
+      "sha256": "e2af9f570a99e741a7333a017556f21cef73889350424cc475e26948d0727698"
+    },
+    {
+      "path": "240x60-active-stream.txt",
+      "sha256": "aa54bd62b4cf27211927563a905bdf27a5fdf9db0bdb7eb0ed6e17e26eb08f07"
+    },
+    {
+      "path": "240x60-autocomplete.txt",
+      "sha256": "f4f5fc3f4ed91a29f94d053bd70c603f85a9f46b557dd05d92d4f26d09b12a4c"
+    },
+    {
+      "path": "240x60-closed.txt",
+      "sha256": "7f24ac6cf7889d6c555043b0b61be71de78f97a6bcff51b62d42fd0e92e0dc64"
+    },
+    {
+      "path": "240x60-composer-attachment.txt",
+      "sha256": "e4a12eebf6cb2fd51c6c0576f530063292b06f12b2c6982b09f79f18a02ca37c"
+    },
+    {
+      "path": "240x60-composer-disabled.txt",
+      "sha256": "b3f18f48aabed540764948a5eb873b65af09342928bf499a48b4e3f96533338c"
+    },
+    {
+      "path": "240x60-composer-focused.txt",
+      "sha256": "8d1d670b6ba8677101a3210db166b328a6ca0b5ace10806a4a567490544961e0"
+    },
+    {
+      "path": "240x60-composer-retry.txt",
+      "sha256": "f4042ac59fdc94576f07bba8d6468548156a17a08c1f0563c8605f13b5970ed9"
+    },
+    {
+      "path": "240x60-composer-running.txt",
+      "sha256": "ed8fa57268aa9c3894b61d65e42d06d93bdbd90fd90eee66e4e2c8354aabb3fd"
+    },
+    {
+      "path": "240x60-dropped-event.txt",
+      "sha256": "086e79040249029dc9464b9293754b318b5f2a449f02ef61bf86edac8ac6e54b"
+    },
+    {
+      "path": "240x60-erased.txt",
+      "sha256": "9f93119de263b3eeb80c317a311ae3d134558f2699f8edd1b31bfb87416c43ee"
+    },
+    {
+      "path": "240x60-focus-restore.txt",
+      "sha256": "2945df24a057348fa0732c6f50654bbe94a8bf2ab914e4c5e2ea04aaaf5e67fa"
+    },
+    {
+      "path": "240x60-home.txt",
+      "sha256": "f6b784a85c42e5d96bd96c91cdb17ad40ddaee9099fd2149fff0579af1550035"
+    },
+    {
+      "path": "240x60-intervention.txt",
+      "sha256": "d83e546489ce10b6501dd8253aa9abde1509a0f89850ae2fece71fc966c31efb"
+    },
+    {
+      "path": "240x60-modal-filter.txt",
+      "sha256": "b7408b50e0199971a3bcf764cefca31299d26841c4c8087813e90bc89cb2bc5f"
+    },
+    {
+      "path": "240x60-nested-modal.txt",
+      "sha256": "539f14c38a5c4b038e914baa87c51ebd051aed8505c7a6a09e82489e61507749"
+    },
+    {
+      "path": "240x60-operational-attachment.txt",
+      "sha256": "ed01f0d9e8fd21362d7c42d7d6ba40d6d58d1d62511caba1c64ac65fb862d9ce"
+    },
+    {
+      "path": "240x60-operational-degraded.txt",
+      "sha256": "8cf045b487a7e8eb7931ef5c081e6ff5dcf0c7cfd795ed418f9462aadee66db6"
+    },
+    {
+      "path": "240x60-operational-dropped.txt",
+      "sha256": "9f05bcb841c2192da87fe482499771bd67fe95d6b516f5a1fce7090d0cce1669"
+    },
+    {
+      "path": "240x60-operational-failed.txt",
+      "sha256": "f9f5da01cdbe9797495d89c0bf4cee71af12ed56b939908c6469b957b8067ef8"
+    },
+    {
+      "path": "240x60-operational-followup-failed.txt",
+      "sha256": "1638e5fb338a0ce4e1f5935c15d880242162b78e13a2ddcfd74f684b5b91d054"
+    },
+    {
+      "path": "240x60-operational-live.txt",
+      "sha256": "686690c44aa1dd33c174f66ddd5b1046cfc2a0e0c6db382a5dd0501db3610461"
+    },
+    {
+      "path": "240x60-operational-reauth.txt",
+      "sha256": "878dec7c6bdf71870b7405b555c8abd5a0f5000f994f59a9e36cfd373bf9a562"
+    },
+    {
+      "path": "240x60-operational-search.txt",
+      "sha256": "f78c87379cd5559dc617dd627044c6f62ab76fd33100ee69f3fa87fcb4a78fbc"
+    },
+    {
+      "path": "240x60-operational-session-picker.txt",
+      "sha256": "1711d6891c5b5fd038abc45237d186ea188f446a557a815fa59125b5b3ab1017"
+    },
+    {
+      "path": "240x60-operational-start-fresh.txt",
+      "sha256": "2a3785107631945709bde39b80389d9c1617aa57248c38ca18d7a23cf68bc6f0"
+    },
+    {
+      "path": "240x60-palette.txt",
+      "sha256": "242c3925040f1652f2e2434e788c31bfc15ddcf74b44df98526dd903cae630f5"
+    },
+    {
+      "path": "240x60-paste.txt",
+      "sha256": "50a2349e4f32014e51daa5f138a29d4a190acbaad303ed872d57446418062738"
+    },
+    {
+      "path": "240x60-reconnect.txt",
+      "sha256": "d198caebefb4a30ec4ee1a696165e1d2b191f93921d19d56cc1a8f2d649c56b4"
+    },
+    {
+      "path": "240x60-reduced-motion.txt",
+      "sha256": "4611f3cb6c2186ffb85e6066afe89f56cc23f57386e8a1878de3f7f5bcfdcf2c"
+    },
+    {
+      "path": "240x60-replay-gap.txt",
+      "sha256": "59225a94461b1a31e4bbef3923afc98c89525241cb41106e010abdd60f60c79d"
+    },
+    {
+      "path": "240x60-resize.txt",
+      "sha256": "355db6c267af53fb72d29edcc3a4c90147a02967ea77c2d06b7289bfec095bcc"
+    },
+    {
+      "path": "240x60-runtime-action-matrix.txt",
+      "sha256": "a10e471934b4270ae9a7e73ad270b4007b40fda10f43d484de15d52003d9da92"
+    },
+    {
+      "path": "240x60-runtime-artifacts.txt",
+      "sha256": "7c4081a88e8486cc782f7bd4667726099d5dd409c5638e6709df39050e05b5d3"
+    },
+    {
+      "path": "240x60-runtime-destructive-confirm.txt",
+      "sha256": "882fd07f43271fd5fcd247cfe1a295acf7e25666a2ecc726e8da3eadff4465ec"
+    },
+    {
+      "path": "240x60-runtime-diagnostics.txt",
+      "sha256": "054f8fd6d23106cf51e2556dc7173ba203cb2b8d37eea04d528ab47d93992f53"
+    },
+    {
+      "path": "240x60-runtime-events-partial.txt",
+      "sha256": "fa86376b24e9e165b5ef7eba98a6d37b01a30506f5c96bfb9c21ed8efdb2843c"
+    },
+    {
+      "path": "240x60-runtime-interventions.txt",
+      "sha256": "3bdb5d6d0828712025dc0aad6bcf0496d957dd7ee93e9daa0ad66f1eb38af0be"
+    },
+    {
+      "path": "240x60-runtime-posture.txt",
+      "sha256": "7a7c2cfa944e26aab55b720c32795ce1321a577261c47bbf24042b3d16030828"
+    },
+    {
+      "path": "240x60-runtime-tasks.txt",
+      "sha256": "0d3f0a0064325068477479ddad28e7953c76f24999420a745e222c18cd1d4982"
+    },
+    {
+      "path": "240x60-runtime-tools.txt",
+      "sha256": "0cc89c49fc40f3384f561f2ad8b03407225853a829ba7b1631672238648f2a35"
+    },
+    {
+      "path": "240x60-scrolled-away.txt",
+      "sha256": "72d83e4c5005f3b20807a2a33d4cd53a2bec426b9f64beaf90b9feff7b4be8b3"
+    },
+    {
+      "path": "240x60-session.txt",
+      "sha256": "e93baf2dcc8f35addea87d87ec488f69b4eac846f5f06f91e1f0c0c0c878333e"
+    },
+    {
+      "path": "240x60-sidebar-overlay-or-joined.txt",
+      "sha256": "f1e3a52a86e5ab2fe5924d7351b81fafbc171cabea29bb150e10f32001b2f1f9"
+    },
+    {
+      "path": "240x60-unknown-fallback.txt",
+      "sha256": "6a867934409b3b94cea0594b62cc7702bdb68647bfef099767209cba481426b5"
+    },
+    {
+      "path": "240x60-which-key.txt",
+      "sha256": "2c6b3600766ab38714dfa992ae7e240463f118a115be060143d311c1f0901aee"
+    },
+    {
+      "path": "256-dark-intervention.ansi",
+      "sha256": "1cbae122d9a67ed3ef153916ba2010679327ee3be2252fa30f96883d56057036"
+    },
+    {
+      "path": "256-dark-replay-gap.ansi",
+      "sha256": "63c418b48b9ba4aded5f99e4379b96cef1169d245ebc6e39b252eb2895d06882"
+    },
+    {
+      "path": "256-light-intervention.ansi",
+      "sha256": "74da780dc82be127caa6b4944e57699b9bee5323847ef2c09774c354d36e7df1"
+    },
+    {
+      "path": "256-light-replay-gap.ansi",
+      "sha256": "220c52a9705f9180ef0cd40a5f22a134c9c0bb4bfdd07ce5af1f40452697fc20"
+    },
+    {
+      "path": "40x12-active-stream.txt",
+      "sha256": "5840349dad03dd3258e1a7cb3cd9498d98db0df0bf68be94547bbccc90e05b17"
+    },
+    {
+      "path": "40x12-autocomplete.txt",
+      "sha256": "d799e3c6f477489f9ff7712969de3e1e32b70c8e5d11333333d037e1c523d253"
+    },
+    {
+      "path": "40x12-closed.txt",
+      "sha256": "bdf837ac9e2f0c958a0416075ce50abf11496e383f7c55408b54797309e8d9e2"
+    },
+    {
+      "path": "40x12-composer-attachment.txt",
+      "sha256": "7d6aa2c4157443653bd246fbb47911cb8901f72e5cdbe7eaed39d5580dd42121"
+    },
+    {
+      "path": "40x12-composer-disabled.txt",
+      "sha256": "1f0f1e0f29b684e8c6107ee53d83c73223cf1dd879294036d63ef495d634f3bc"
+    },
+    {
+      "path": "40x12-composer-focused.txt",
+      "sha256": "5bc945f6f71b7fda704ccd79fd8c7af98be018e3b390118960289e331d4ff7c6"
+    },
+    {
+      "path": "40x12-composer-retry.txt",
+      "sha256": "f035ae948639f6b46f50b63f0baa758e85f710f985956180ed90b19db9f04c20"
+    },
+    {
+      "path": "40x12-composer-running.txt",
+      "sha256": "3f75f55ed598552c2d855de25dca8912f969c36ba23ef1bb1d5708bf4aacd2d2"
+    },
+    {
+      "path": "40x12-dropped-event.txt",
+      "sha256": "fc465d4416b0de054a0581f68af671b98cc41b7a15c12bd8b3a1c07310870f30"
+    },
+    {
+      "path": "40x12-erased.txt",
+      "sha256": "8cc1b62691238fd2dbedf495eec75b3dc6f061f315a00652551e36e72211f817"
+    },
+    {
+      "path": "40x12-focus-restore.txt",
+      "sha256": "7e9f9e8ba4da9ce71ea3474b9a92aaff073c309981fcc74a3efd60e21f05b915"
+    },
+    {
+      "path": "40x12-home.txt",
+      "sha256": "8c9e969752ab8af9e6804761dd86e6d5116665c8605b6d682d5bbb395c94f69f"
+    },
+    {
+      "path": "40x12-intervention.txt",
+      "sha256": "df2ccf8f3028a0f9ae9895980867199dc5a2f9c5618d32180c5edb4ab9e7a8b5"
+    },
+    {
+      "path": "40x12-modal-filter.txt",
+      "sha256": "149a5ebcbc0a811dd4087877401465a7f4881811cb9f732b3f03fd15a826d42e"
+    },
+    {
+      "path": "40x12-nested-modal.txt",
+      "sha256": "e26f93d1e6f4b5616358d6571d959b998737f6d33cb2f87a77f3a1412e6e3c71"
+    },
+    {
+      "path": "40x12-operational-attachment.txt",
+      "sha256": "5cf56131c26b68f4159e03a78376783c3e97e7e7c2628f3593c86a6b9eb9ab60"
+    },
+    {
+      "path": "40x12-operational-degraded.txt",
+      "sha256": "a37f3cdc1340dd484d8e251b88df2de314d5443219cebd007fc9e6912915e4fd"
+    },
+    {
+      "path": "40x12-operational-dropped.txt",
+      "sha256": "91511d134427cdb783cd1b076822ebd0a69706965dd61d70b979a44ce91fcfff"
+    },
+    {
+      "path": "40x12-operational-failed.txt",
+      "sha256": "9f4be0153549fbc0f28aef86794843f87c47fd863b0d761cfb246bfadcbbce2e"
+    },
+    {
+      "path": "40x12-operational-followup-failed.txt",
+      "sha256": "76a50d704b963a792467aa51d11275edddf62f6cdf25287a30e860da02b6658e"
+    },
+    {
+      "path": "40x12-operational-live.txt",
+      "sha256": "51fd8e05807a8e7e09d40d520ddd419a157533f1739ce9c5a34309013dc2c6b5"
+    },
+    {
+      "path": "40x12-operational-reauth.txt",
+      "sha256": "33cfaf68ab11bcf73c395dd2ecd3e4f25c62159605a804a66d9a760782c9a7f6"
+    },
+    {
+      "path": "40x12-operational-search.txt",
+      "sha256": "821ef33340e45dfde839e434419365b1a330ad1beecc47d4750c14e784b09bfb"
+    },
+    {
+      "path": "40x12-operational-session-picker.txt",
+      "sha256": "4ac29317a0254f8f4d6dc0ac02c1c77fb90ba59daaab6961bcd977dcd4f7efef"
+    },
+    {
+      "path": "40x12-operational-start-fresh.txt",
+      "sha256": "e37a8999dde1ef3daf8571517122fd708b028df32fa72271b85d16dfb1f0f0d3"
+    },
+    {
+      "path": "40x12-palette.txt",
+      "sha256": "7bdf4482e0e97853e13973c92dc9f6bc570b3ddc4194b3b002716ffd71470e66"
+    },
+    {
+      "path": "40x12-paste.txt",
+      "sha256": "234b63fa209b7228d88c1dd6bb3477320cce3148c3a54d6decb221c9f96e747c"
+    },
+    {
+      "path": "40x12-reconnect.txt",
+      "sha256": "4cbb64037cf3d8e38d65f62b2b53f9b68575d97718077d85c42130e1029e8e56"
+    },
+    {
+      "path": "40x12-reduced-motion.txt",
+      "sha256": "4d6e4281da4605a95fb0032a27106b30caa5281d66d05968647399c612fe259c"
+    },
+    {
+      "path": "40x12-replay-gap.txt",
+      "sha256": "b51cea0bbadc7dd92a9c66208f5e3bf1f0a4ec0b555152cec6058cb93761ca67"
+    },
+    {
+      "path": "40x12-resize.txt",
+      "sha256": "b6a2ed787892c284a6ae65d5d52417f7ade2bd8b70d8e9c5f9304f852d5c3936"
+    },
+    {
+      "path": "40x12-runtime-action-matrix.txt",
+      "sha256": "0b81ed1b01e27967f6d039cd6387f909effc31d0590a674c373a97ff5d6c90c0"
+    },
+    {
+      "path": "40x12-runtime-artifacts.txt",
+      "sha256": "57bb13e422379ba1fc19aec17fe14839728585cb845a97cfb823c4ecf250cc4c"
+    },
+    {
+      "path": "40x12-runtime-destructive-confirm.txt",
+      "sha256": "c4c99980f66cdb5d04d2e80dc4245b52dc82228f8777f3dfa3ea663aa349ef03"
+    },
+    {
+      "path": "40x12-runtime-diagnostics.txt",
+      "sha256": "bc0f4ad8a8e9a2e6dcfef36678237ddb9737c98069d9c04ef7177356916c673a"
+    },
+    {
+      "path": "40x12-runtime-events-partial.txt",
+      "sha256": "71bffb600b3c2aa7dd3523a8c106bfa010397aab446b6efa39a8ecb1fcaef92a"
+    },
+    {
+      "path": "40x12-runtime-interventions.txt",
+      "sha256": "f4d0bb911b15bca1adc6fbd9daa50b80f55fb8a54c9e9fcb13b524dfd6bbc717"
+    },
+    {
+      "path": "40x12-runtime-posture.txt",
+      "sha256": "8fda5a465036701ab2e30be1f444a9fe69a4da7c7609352a17cf67955e012fe5"
+    },
+    {
+      "path": "40x12-runtime-tasks.txt",
+      "sha256": "3c5cd5256183ceb5452cd94382edad318c5210493c9f70fc7eca74c8122107ed"
+    },
+    {
+      "path": "40x12-runtime-tools.txt",
+      "sha256": "d75dd5749c0404e2d1559f2828fc0f60f478ac78aea93a2fb82de59662025334"
+    },
+    {
+      "path": "40x12-scrolled-away.txt",
+      "sha256": "1f5b432a6b8216dbbe1cb98baf645f6e9e1dce304e40e2a859d78083b1fa2255"
+    },
+    {
+      "path": "40x12-session.txt",
+      "sha256": "0065bdb05b7b018c0b780500c630ee58ddcd89e5ed39abd4c3f1614b179299f7"
+    },
+    {
+      "path": "40x12-sidebar-overlay-or-joined.txt",
+      "sha256": "6e813ed5595d6a397f5c54fb512279cc7de4383c5b00fa5f560079e509d7cc19"
+    },
+    {
+      "path": "40x12-unknown-fallback.txt",
+      "sha256": "5c095e9aadeffe90c926f69b519136828e5f66574c7be5949133ff8f98f20a3a"
+    },
+    {
+      "path": "40x12-which-key.txt",
+      "sha256": "6465ddcab5e15610ce7b51a91eae4a9c8945418ebf1eca9bbb29de635fb9cbcb"
+    },
+    {
+      "path": "60x16-active-stream.txt",
+      "sha256": "7db13ca77a168b5776491160855de04dedf6319cca6137e55e0b18d983743cf0"
+    },
+    {
+      "path": "60x16-autocomplete.txt",
+      "sha256": "57fdccc80aaa36a4b5e7e2a3ab6912e5b73148968a0c386d9f0cd88b4ac97c14"
+    },
+    {
+      "path": "60x16-closed.txt",
+      "sha256": "59df8aafb5ef1ff9c8f337edead56897290c30ec008c4ca4e8ec6baa609b12ba"
+    },
+    {
+      "path": "60x16-composer-attachment.txt",
+      "sha256": "2da830a56b37db2bad0e4f978d87e22b40f80c5117294c5e08dd540f627aa608"
+    },
+    {
+      "path": "60x16-composer-disabled.txt",
+      "sha256": "c1a4425171778f338d614231f3a50c3577523353f763421d74ed9582104a7d0b"
+    },
+    {
+      "path": "60x16-composer-focused.txt",
+      "sha256": "100b77887124a22453555cf24c38ff91fcb86832133e7cd18d51076296b479ad"
+    },
+    {
+      "path": "60x16-composer-retry.txt",
+      "sha256": "9e285e7ec0c4df13f027ee99a9c3d4f6bc61a031eaf36974d9ad53fac6eb5609"
+    },
+    {
+      "path": "60x16-composer-running.txt",
+      "sha256": "5081bf1f90e17c694caea2761d6eece787723d26d397a8b6a2f1e0d360c66f2d"
+    },
+    {
+      "path": "60x16-dropped-event.txt",
+      "sha256": "f3ceb5bfab06c307a5b8965dc7fef9b09fcbab8161443ee88b531af02af82286"
+    },
+    {
+      "path": "60x16-erased.txt",
+      "sha256": "ee9b34edaf7fd82f66425f6cc89b709870bf3284634f1e28fcd43f88f001ff49"
+    },
+    {
+      "path": "60x16-focus-restore.txt",
+      "sha256": "6d260850618a3e847890d4548838ccb48be7e35d857a125a1566f53864b5f511"
+    },
+    {
+      "path": "60x16-home.txt",
+      "sha256": "321674f71b868b50b2f6548c70163b0629f85983e5c542c17be55631d060b0ee"
+    },
+    {
+      "path": "60x16-intervention.txt",
+      "sha256": "4bc00d84c1c89cbbcb4de763c969a26a868246d30d4a0f78cc67d76cd598dde6"
+    },
+    {
+      "path": "60x16-modal-filter.txt",
+      "sha256": "1eeeb93f5d626ada1b14e3290ab04ef2c6e86a0dba66f3e280b18e09aae4b24c"
+    },
+    {
+      "path": "60x16-nested-modal.txt",
+      "sha256": "ac08abac76dfdfd680cc6672cef25f2ca5d513e3c45aa1b2bfada559bb9d1a31"
+    },
+    {
+      "path": "60x16-operational-attachment.txt",
+      "sha256": "b78d0f00e68c4897a5c1cb890dc2ed605c4caf5f0511b7918fcafd8b71a215f2"
+    },
+    {
+      "path": "60x16-operational-degraded.txt",
+      "sha256": "64252d653f689eebbb20c0b85c10d34ffafd0b107d638677eb3159e7953379ca"
+    },
+    {
+      "path": "60x16-operational-dropped.txt",
+      "sha256": "2a8cc15c75faea5f25a4ee298278bb33f9d510b6805d09e1468612771560b1e9"
+    },
+    {
+      "path": "60x16-operational-failed.txt",
+      "sha256": "7cbfe7aab4ebeccaeeb2d7c520ecefcd6fc0a489a45486a8fb07b67f8632c059"
+    },
+    {
+      "path": "60x16-operational-followup-failed.txt",
+      "sha256": "d2ab687e95cc92d5da7402928baff629598c7c030c6ba3c83914639d2b8e8413"
+    },
+    {
+      "path": "60x16-operational-live.txt",
+      "sha256": "41afa12e93842f5ba65732178dcc44d86451f9c1de95f21e3365429791987b6d"
+    },
+    {
+      "path": "60x16-operational-reauth.txt",
+      "sha256": "5a7a53d1575e5edef5babe6c31a54e1339c5932eba0a4ab7d8dde850b9eac145"
+    },
+    {
+      "path": "60x16-operational-search.txt",
+      "sha256": "8f9e7b6221f9ac2c66ac35fbe2cf9dc09968256bed3290c21de37fe3b3672bc2"
+    },
+    {
+      "path": "60x16-operational-session-picker.txt",
+      "sha256": "5d8b2139550d76d174f4dcbb7247cfa24f393fffe05ed201b785046d4118c30e"
+    },
+    {
+      "path": "60x16-operational-start-fresh.txt",
+      "sha256": "d65d92a93308ff3f6665f9f24ba57742be0c1f3d5c775b6bd00859e6e7ced2b8"
+    },
+    {
+      "path": "60x16-palette.txt",
+      "sha256": "2c2168daefe37710e0bdb13745879b2b473f2d18826be2fa3149651fb3bf0c0e"
+    },
+    {
+      "path": "60x16-paste.txt",
+      "sha256": "fc6dda02670e025cce1e565c830fe95ece502f95aa406b81361e75dda92fa441"
+    },
+    {
+      "path": "60x16-reconnect.txt",
+      "sha256": "de919e8da9f65fa4239ef7e811ea20d29c4d57538d6176e86276f189154a17f5"
+    },
+    {
+      "path": "60x16-reduced-motion.txt",
+      "sha256": "782dc67aa478a868c6325fe6358da7202c5a574eae3d9927f53a554a3f8b6ba9"
+    },
+    {
+      "path": "60x16-replay-gap.txt",
+      "sha256": "60661744d9b8adb52d21022fcca99e39c1ecbf3cf7105f5d698d60815b8363f9"
+    },
+    {
+      "path": "60x16-resize.txt",
+      "sha256": "d1f33aff06758033c310f4d6412c2cffa5ee9677d994bd09545f415941d6671d"
+    },
+    {
+      "path": "60x16-runtime-action-matrix.txt",
+      "sha256": "b6b32bcd03c2cdaeecc05a88a2e2d438f83b94e6a00577325d627b4f6230f59a"
+    },
+    {
+      "path": "60x16-runtime-artifacts.txt",
+      "sha256": "34f34e5e819b4c4ea490747564e2b72f8010470e3709cafe7b18947e5546638a"
+    },
+    {
+      "path": "60x16-runtime-destructive-confirm.txt",
+      "sha256": "d4c72cc21d3ffb38f9cd09568273dbee3f00c7795b85ce4832c2fab6690c7a81"
+    },
+    {
+      "path": "60x16-runtime-diagnostics.txt",
+      "sha256": "25338a2425e1c0983e52b20022b1dc38278052e05691b7846d69c1324a44353f"
+    },
+    {
+      "path": "60x16-runtime-events-partial.txt",
+      "sha256": "d1daf5741bdcedcdcea10fa80c6c680be594acf4ba9285fbfce99c89320ac4a2"
+    },
+    {
+      "path": "60x16-runtime-interventions.txt",
+      "sha256": "a45f0b1a60fc16cf0ee043f843148a9ccf39194f330b4cfe04e64a1f61eb5d6d"
+    },
+    {
+      "path": "60x16-runtime-posture.txt",
+      "sha256": "ea06b0aad57c17f5ef746c045162edd018654f571c5d8d7950ce75c5f5f71b8a"
+    },
+    {
+      "path": "60x16-runtime-tasks.txt",
+      "sha256": "973acda44490fac6cacdb02b7ce96f8be1cb002e4eb807e5abe539d88f3bfd0f"
+    },
+    {
+      "path": "60x16-runtime-tools.txt",
+      "sha256": "ef6b526542c107f67160c4f5cc120b028a56caef553087703f1780a4329834fb"
+    },
+    {
+      "path": "60x16-scrolled-away.txt",
+      "sha256": "4d145080fef4d3a76723feca0f31da89c612087481a7003880e753b9d74836c0"
+    },
+    {
+      "path": "60x16-session.txt",
+      "sha256": "1279309176c596b6be587e92b1983fe47ba67fffd935b1783f466d750b32f077"
+    },
+    {
+      "path": "60x16-sidebar-overlay-or-joined.txt",
+      "sha256": "8229f1db0571be44ef6be8f812fb07259bdf1e5bf613af67b2256193e22fb2da"
+    },
+    {
+      "path": "60x16-unknown-fallback.txt",
+      "sha256": "03bfb3adb36bab18a40da1e8e7436a800b3466af65ed2c0fe2f53dd51f60b60d"
+    },
+    {
+      "path": "60x16-which-key.txt",
+      "sha256": "c359a2130c1505f1c01cd15ef38c9a99a1afc431eef717e5c7c344682fafacfe"
+    },
+    {
+      "path": "72x20-active-stream.txt",
+      "sha256": "d700343d92a6d14aec0ac0fb9ed031c796543e6e94ef064812cb2b5e2ae15c6d"
+    },
+    {
+      "path": "72x20-autocomplete.txt",
+      "sha256": "4fda91b0c0dc10071bb0e14d3b363b974d3717504b3e28ab99525331b56e5e3c"
+    },
+    {
+      "path": "72x20-closed.txt",
+      "sha256": "4f6896cc45705f6d03939e2069721fb7a86858d102c08837cfdf42231d1ead26"
+    },
+    {
+      "path": "72x20-composer-attachment.txt",
+      "sha256": "69104059f1dd96c03adef629dad6953c7cde6054f5bd9bb5e4b3934f8f53874a"
+    },
+    {
+      "path": "72x20-composer-disabled.txt",
+      "sha256": "af66777aa6086f90c49b86b3153c1974fa05b4a73f4146d5884c345220411351"
+    },
+    {
+      "path": "72x20-composer-focused.txt",
+      "sha256": "d166438dc892569ace85516c47de1c361fa27bdc2bbdb73336a2dd28f3c29037"
+    },
+    {
+      "path": "72x20-composer-retry.txt",
+      "sha256": "4a630c0825f2cd8a7d7ca8f0be21d713a41e98bf6793a1f1caf4f54d959e29a5"
+    },
+    {
+      "path": "72x20-composer-running.txt",
+      "sha256": "6dffb9b9cd4e1916b978570aab5d35e30d5170750c03d274602f357f84cdedbe"
+    },
+    {
+      "path": "72x20-dropped-event.txt",
+      "sha256": "e674a4816f9dbaae65efa10d9305a7d680173ab27c86e25ee78f07cbd648284d"
+    },
+    {
+      "path": "72x20-erased.txt",
+      "sha256": "c06152ee243e369ff959220043492e50199ea5906b6d3929eec5629552fe8c06"
+    },
+    {
+      "path": "72x20-focus-restore.txt",
+      "sha256": "abd4506cef974605491d0c1d93561fa75b1570a7e822bc2918ea0d5e790d7e84"
+    },
+    {
+      "path": "72x20-home.txt",
+      "sha256": "302d53a40c033e2eab5450c0a81d953526c3f654708fb803e6b0b27a9d4340ae"
+    },
+    {
+      "path": "72x20-intervention.txt",
+      "sha256": "d6ce1107dad33aa23f0f16156b4855be73a8e7a1539cdc68de61b7187d05b828"
+    },
+    {
+      "path": "72x20-modal-filter.txt",
+      "sha256": "2a97d296df1e644dd3dcd2459af0516265e18dbc7988ff3fff4da72d12820453"
+    },
+    {
+      "path": "72x20-nested-modal.txt",
+      "sha256": "7818e2abe6d846c77287b9b35b720185d87df18c90e1797afda8901a7b33568f"
+    },
+    {
+      "path": "72x20-operational-attachment.txt",
+      "sha256": "a34fdb562b1ad42855edb4ac90857e270d23542875bade57541141fb8de1a5ff"
+    },
+    {
+      "path": "72x20-operational-degraded.txt",
+      "sha256": "c89913d5a71e63ce8155b0cc6dc2b8ee1cbfa58aab1e6ed8fa13d11b1213a875"
+    },
+    {
+      "path": "72x20-operational-dropped.txt",
+      "sha256": "e467c89d116b2436638b36c974e5b21029ab55945d854af829ff66d5eeffe6a2"
+    },
+    {
+      "path": "72x20-operational-failed.txt",
+      "sha256": "c23cedb62e57ea1d2d8607b295b60fbd52936fa98d2757f08868572d6b2ee46a"
+    },
+    {
+      "path": "72x20-operational-followup-failed.txt",
+      "sha256": "832ecbdb36af5a2f48f78c17ee16c8070a52c2ba70778ccc609b5ce76d0d1470"
+    },
+    {
+      "path": "72x20-operational-live.txt",
+      "sha256": "b818a8354cde378eca612ad6e975a6e063c35abbc17166403efd158ac84ea720"
+    },
+    {
+      "path": "72x20-operational-reauth.txt",
+      "sha256": "f10a8d9bea8cf74742a69b732013403584bc10779d3dac6986e5d05e83326761"
+    },
+    {
+      "path": "72x20-operational-search.txt",
+      "sha256": "86034d5ca48775aefc0e3cee1860f85ad601874af32a0d80af1ae0fe1f5c90fe"
+    },
+    {
+      "path": "72x20-operational-session-picker.txt",
+      "sha256": "3d2dc99236c55c3f90693f361996b2f83a9f7e50c82d19a79973ca602c049c67"
+    },
+    {
+      "path": "72x20-operational-start-fresh.txt",
+      "sha256": "cd73d3977a5d1c9694fdca46cd28bfbffb5aaf5b8aa27dd8dd49d99766d38200"
+    },
+    {
+      "path": "72x20-palette.txt",
+      "sha256": "72f1091bfb8ecbe535b2fa5c65c08653eee707f3b951591124c7a8e873b9fb1f"
+    },
+    {
+      "path": "72x20-paste.txt",
+      "sha256": "57da000ee37979d38fd5c7609142a903cf852f01dffda8ac3546094ca66573e0"
+    },
+    {
+      "path": "72x20-reconnect.txt",
+      "sha256": "fac60eb496dfce3ddc7af9d92559ec449904cf56216533d0416aed04bb1d946d"
+    },
+    {
+      "path": "72x20-reduced-motion.txt",
+      "sha256": "e753696aa45090aa742ae33d9091e8ff0bc464f1782e9bd9abc2a04c6cccdec7"
+    },
+    {
+      "path": "72x20-replay-gap.txt",
+      "sha256": "d38b0026d2b07b4ddadc58fb34dbd427698e39ce893673ad81ef44dd27551d2d"
+    },
+    {
+      "path": "72x20-resize.txt",
+      "sha256": "ad5b22b8afbe9f0ecd97ad1cfd82de94f29b725cfc02c1c7661ac3a2a6135eea"
+    },
+    {
+      "path": "72x20-runtime-action-matrix.txt",
+      "sha256": "79c54a88fc8a1fdb8e3944aa4f4fa2ab81e5eda77fd29dd992a181eede64ffa1"
+    },
+    {
+      "path": "72x20-runtime-artifacts.txt",
+      "sha256": "5526b5a2c9140faa7c157299f9fde1464b729f97551bb9ffc7bf416e07a1bd40"
+    },
+    {
+      "path": "72x20-runtime-destructive-confirm.txt",
+      "sha256": "d6a7eab06863134864e7b7d2e9210ee6aad443f2ea9b11121e4ed5c7f14f8c97"
+    },
+    {
+      "path": "72x20-runtime-diagnostics.txt",
+      "sha256": "836f1d777e19a054e5d81193e39c5c3faff90fd06e8805c2de08788a33bc6345"
+    },
+    {
+      "path": "72x20-runtime-events-partial.txt",
+      "sha256": "7de6a9087bf7a4037f49631bc70e58761c70c5cf497c16874f062ff8f763c965"
+    },
+    {
+      "path": "72x20-runtime-interventions.txt",
+      "sha256": "df6aa999cdad33c946fde6ce822ce7091a246fbf2e1ae2bf73a27c4c39f9e5a2"
+    },
+    {
+      "path": "72x20-runtime-posture.txt",
+      "sha256": "5dfb30685e509fb93a91084d4db023dac119193676ff05539d4546e30da7321c"
+    },
+    {
+      "path": "72x20-runtime-tasks.txt",
+      "sha256": "361df1e1a4eed8850fa005a8f6cb41b323addcf8108a91bd4165934b22d8c165"
+    },
+    {
+      "path": "72x20-runtime-tools.txt",
+      "sha256": "e4664728ac4630b483b2a928a66b8c28ff22510cc231407e7d70dc694eb2bae6"
+    },
+    {
+      "path": "72x20-scrolled-away.txt",
+      "sha256": "03091eb0ff8ea35c4893ae95b7f9ff391f3063a9d3bf5a9cd1e7865c35cad6e9"
+    },
+    {
+      "path": "72x20-session.txt",
+      "sha256": "fe762f66e23e8a21527b7786439a24498b73aeb8e9644d743427c5aa88fd5beb"
+    },
+    {
+      "path": "72x20-sidebar-overlay-or-joined.txt",
+      "sha256": "409f0c1d7919397a8eea48cb587dd71e586b8def3d74e0b68aff1ac3bf2be52a"
+    },
+    {
+      "path": "72x20-unknown-fallback.txt",
+      "sha256": "855e6774396ef994a8712195e283bcbd2313b7948aa32acda9ef9b25170bd774"
+    },
+    {
+      "path": "72x20-which-key.txt",
+      "sha256": "598bc4ec308e08e6e01df44c97c0f12fe773beeb367141c3bd42df5cc5b18389"
+    },
+    {
+      "path": "79x24-active-stream.txt",
+      "sha256": "3888de10d723f0c86fff7f92d189b8e28c7e5d410b1e20af4c53ae4d37571257"
+    },
+    {
+      "path": "79x24-autocomplete.txt",
+      "sha256": "87f5a5ed204e43e023b328e2e5a2a0862c769ef14dd3f7c0854cab278c196cf1"
+    },
+    {
+      "path": "79x24-closed.txt",
+      "sha256": "19a1c1ce15abc834668b951f83c194d0cf1fa0dc6f46f9a13fd84202939f3cfb"
+    },
+    {
+      "path": "79x24-composer-attachment.txt",
+      "sha256": "893e429253951f536f88c2cf1ad1baacdf963f50da40e9e25847dc906e0b91bc"
+    },
+    {
+      "path": "79x24-composer-disabled.txt",
+      "sha256": "24f96e77f87667091ef9ac94673ce94d5a8a7b4022081f2862e32b38ef9305da"
+    },
+    {
+      "path": "79x24-composer-focused.txt",
+      "sha256": "5632e870acf54376ad177c14c23563dae6a851f4bc40015e52d734cc8bc3d227"
+    },
+    {
+      "path": "79x24-composer-retry.txt",
+      "sha256": "adaacca8cd2632ba523648bfd7d5bb03b48f66e5d89f6fa44c64333e9320c97f"
+    },
+    {
+      "path": "79x24-composer-running.txt",
+      "sha256": "d48cbcb3d1d5d683bc92bfa9cf7e82e7581ef4eb9c2aef1b4d85e2e27fa1276f"
+    },
+    {
+      "path": "79x24-dropped-event.txt",
+      "sha256": "315a8916e0ca78276b30f637749f8ac22aaea3105c10ff96b0b4c61a7e268fb3"
+    },
+    {
+      "path": "79x24-erased.txt",
+      "sha256": "1c8efc3be08fce329882281e799903edb36aedb16cd1137bc1baec5ba2da1297"
+    },
+    {
+      "path": "79x24-focus-restore.txt",
+      "sha256": "cb4d4f97d97685cb8de42359ddfa01573a222f8675af1288db563841d9ccf989"
+    },
+    {
+      "path": "79x24-home.txt",
+      "sha256": "ee270ecb18de6ebf0de9a5eed8dae2fae75fa3ff107e31316814394b89ceeb4d"
+    },
+    {
+      "path": "79x24-intervention.txt",
+      "sha256": "44a412f6477c3c7f9aede3b5b5e62f1903327dd52b34bf09dadebcb36aa4523c"
+    },
+    {
+      "path": "79x24-modal-filter.txt",
+      "sha256": "8301c7d291f3d46563985c62a3e49b984b3b2dc53392ba2566334fbe58235cf0"
+    },
+    {
+      "path": "79x24-nested-modal.txt",
+      "sha256": "87db496d5de15a60ce5f6b58390bb3c84fc7cdcdfce9659ee6f13ffa705f774b"
+    },
+    {
+      "path": "79x24-operational-attachment.txt",
+      "sha256": "a8dd1f9f699e6b276efb937911a4d45006ca069440cd047b9eb7ae23f3b62bf3"
+    },
+    {
+      "path": "79x24-operational-degraded.txt",
+      "sha256": "ee157fa690d033abb767b1e04589a529c5a58f60f2394dee61e5de4eb6cf11c5"
+    },
+    {
+      "path": "79x24-operational-dropped.txt",
+      "sha256": "74d7106f4b6f5e7940952692be78ce55f9b98c6449114e3747e00f8f6e7f87be"
+    },
+    {
+      "path": "79x24-operational-failed.txt",
+      "sha256": "05ca26fbfc48a19198780609a272da25ea97752c1457a90aed2b0295cce8baf0"
+    },
+    {
+      "path": "79x24-operational-followup-failed.txt",
+      "sha256": "098bdfae59fee99bd38770b9dd595ac8002244d39113abffcb0cebc0979b8e53"
+    },
+    {
+      "path": "79x24-operational-live.txt",
+      "sha256": "b19604d99113890c74e3dbf52e805b34da65eb29a92e0cefe7a562bad3a14b1d"
+    },
+    {
+      "path": "79x24-operational-reauth.txt",
+      "sha256": "3ac43d5aef8a4b14cfc60fb8ad15590c0162ab3e494806e443c3d33bbf79a767"
+    },
+    {
+      "path": "79x24-operational-search.txt",
+      "sha256": "e4550b8ec3aa2b4253e7b69c8b137b23beea98ddaa751466763b029d96c54f70"
+    },
+    {
+      "path": "79x24-operational-session-picker.txt",
+      "sha256": "4ecfe0120733eca36bf4daf725e2d7befab8ee728d16b568ed1e03ac49825e63"
+    },
+    {
+      "path": "79x24-operational-start-fresh.txt",
+      "sha256": "3da3dd45efe23cd0bac551fb1fd8bce44df1b9bea1dc52d06a3024041b3ef8e3"
+    },
+    {
+      "path": "79x24-palette.txt",
+      "sha256": "c09471060c1bd3b8adcb3db8ba982854bda224bc4db3a6442266ff31281f3336"
+    },
+    {
+      "path": "79x24-paste.txt",
+      "sha256": "444ea96a9e312eb4ae210ea09ee948877fa59455ea17906e555f6221688fba26"
+    },
+    {
+      "path": "79x24-reconnect.txt",
+      "sha256": "6aed9d0336e04bd22935c334fcd1a5c425e6d3bd1678fbcb1e92c49fd7595eda"
+    },
+    {
+      "path": "79x24-reduced-motion.txt",
+      "sha256": "db876a073e67b7eda84913d336946760ee16cd46120cdffa2bc4356c4a5a6bed"
+    },
+    {
+      "path": "79x24-replay-gap.txt",
+      "sha256": "04453a87ddf977f2a7ab5edf45f82e34253deca7ee3710c9d147d0329d399503"
+    },
+    {
+      "path": "79x24-resize.txt",
+      "sha256": "55606bc6ee1a572371ba01089ab646b54b4292105d8b5185d57c9c805c0b7cbb"
+    },
+    {
+      "path": "79x24-runtime-action-matrix.txt",
+      "sha256": "7ea96c5e7700030bdf8323df3e0404e9a46dcbd62db1bde4c447e600f59c756d"
+    },
+    {
+      "path": "79x24-runtime-artifacts.txt",
+      "sha256": "0fd92e783d8b377beae6351d5226d195e203e2c7341a09b452fd0110183f4463"
+    },
+    {
+      "path": "79x24-runtime-destructive-confirm.txt",
+      "sha256": "06caf9345361117eb92109e8abf048d10fa73343e85caf4ed4c813e995e8e697"
+    },
+    {
+      "path": "79x24-runtime-diagnostics.txt",
+      "sha256": "d982174463c5e66836af32c001012fb2d4b6bce8fb07f8dc6103d7df3127b1d5"
+    },
+    {
+      "path": "79x24-runtime-events-partial.txt",
+      "sha256": "d39caed5d6b41eb32fb09872a8774982c180d29cbeb043ff7d83cfe32571226a"
+    },
+    {
+      "path": "79x24-runtime-interventions.txt",
+      "sha256": "2a11e85ed4048ae85541a8218cc17e5656021ce83edd6ed17427f6b51076b6b5"
+    },
+    {
+      "path": "79x24-runtime-posture.txt",
+      "sha256": "7f4a9993428ed343c15eaad933ddc1dfbddac4ed569198b94f253378bb2b8194"
+    },
+    {
+      "path": "79x24-runtime-tasks.txt",
+      "sha256": "e4f16b7b7b6b62e705d863c15294bcba7e2087d7fba25d67081d9c41a1e8a27c"
+    },
+    {
+      "path": "79x24-runtime-tools.txt",
+      "sha256": "c47254a16ba484a20bbc79a9dd8f6c0c8f49ce4bdac61b260f97493897d89e3c"
+    },
+    {
+      "path": "79x24-scrolled-away.txt",
+      "sha256": "0305627d17c0793c8381dfd41666614aa56d41c734af9a10c8e080f47082b197"
+    },
+    {
+      "path": "79x24-session.txt",
+      "sha256": "c112559ecca975e12b3963f74d1b74f4bdbfa5e0ac6b57528671e20ea52a2503"
+    },
+    {
+      "path": "79x24-sidebar-overlay-or-joined.txt",
+      "sha256": "10b8b63ba7210589e3fe1d9099ac39c0af768bfc68f5380ba9713cc55032fabe"
+    },
+    {
+      "path": "79x24-unknown-fallback.txt",
+      "sha256": "985fa1cce13b850bb5fb6e43744866fb9b0ff0606a486785f5053e5737016993"
+    },
+    {
+      "path": "79x24-which-key.txt",
+      "sha256": "a2d77910c3519d91768fddb967077722de3668157f662f09292e09a95d3462a8"
+    },
+    {
+      "path": "80x24-active-stream.txt",
+      "sha256": "b9a47c201fbd90529ccaf0baf4c0ae0a528dfdb4443cb7e66e6e187c9580ccd7"
+    },
+    {
+      "path": "80x24-autocomplete.txt",
+      "sha256": "d9f8683138269744c4e63ef1d5641071ee0b304471f437b59b3913c050321900"
+    },
+    {
+      "path": "80x24-closed.txt",
+      "sha256": "7930fe67ab674df320c94eff8ff7d3816defdb68620a429bb23dd4f7550c05f1"
+    },
+    {
+      "path": "80x24-composer-attachment.txt",
+      "sha256": "8bcb97772dbc1e4019badf2c0fe9dfdc4271dbd6adb585b33559eb3882cbefb6"
+    },
+    {
+      "path": "80x24-composer-disabled.txt",
+      "sha256": "90a08aba5e0056c70203ae90c349a5f16041441d2ff3714dbb1890094379897e"
+    },
+    {
+      "path": "80x24-composer-focused.txt",
+      "sha256": "a6a552dd79acc137c6d5e1082158bb518b6eb01cdf575e105955d99bb9f73a72"
+    },
+    {
+      "path": "80x24-composer-retry.txt",
+      "sha256": "f9b2409bad6443cd20622f4475180b8a16f6b3ccfa9269156ff3ee9b76c0c66d"
+    },
+    {
+      "path": "80x24-composer-running.txt",
+      "sha256": "e952c8ba4edde53c12fc22647a8281b055d5d56d03890a09c9e9419b2e607a9f"
+    },
+    {
+      "path": "80x24-dropped-event.txt",
+      "sha256": "79f48ae91c135f77b120a75905bd03599b79ac4ab432f0b1d19b25935ce1d4d7"
+    },
+    {
+      "path": "80x24-erased.txt",
+      "sha256": "d28ce894610df4015f9c9d0d619291d209aa3c98de3168709099eb4b60103baa"
+    },
+    {
+      "path": "80x24-focus-restore.txt",
+      "sha256": "9480cb1f57107072b36b55f2eb4d3677d9c4bf7c644f2609a90a31aad4596f60"
+    },
+    {
+      "path": "80x24-home.txt",
+      "sha256": "29448b62f1e855e5873f3735e464fdad2a7eaa7658f07d7f5dff93ffd7ffb26b"
+    },
+    {
+      "path": "80x24-intervention.txt",
+      "sha256": "d97273b0b12b8af97dda50158c873d4242af6d340a570ab9f2fb6975f6ae9154"
+    },
+    {
+      "path": "80x24-modal-filter.txt",
+      "sha256": "b0962f93b38864832e3124b61f6c19938277d83ad5474309cc6ad4463e87246a"
+    },
+    {
+      "path": "80x24-nested-modal.txt",
+      "sha256": "a26ee844f89b3c7ba0f0ba05f32b15f80e7c2fb33c3c97d22b83d50ae4a44dea"
+    },
+    {
+      "path": "80x24-operational-attachment.txt",
+      "sha256": "6850330ab03e43845bfd346daa1fbb09751c944ea4357385d69cf17e176fee84"
+    },
+    {
+      "path": "80x24-operational-degraded.txt",
+      "sha256": "a243229a75f59f6daff5d887a030da5f0e30f40d4269c525d67a9cee1f9690c0"
+    },
+    {
+      "path": "80x24-operational-dropped.txt",
+      "sha256": "1f82fdf2f298045f7b2eb44422366bddc757682b1b8a5ded8ac6635a54da57cc"
+    },
+    {
+      "path": "80x24-operational-failed.txt",
+      "sha256": "7ce617a62fec7541e6a0060ded3cc3ace1e4dc5e8224ab8c28a51bb8a87252a5"
+    },
+    {
+      "path": "80x24-operational-followup-failed.txt",
+      "sha256": "ad936817b8933637ceb63723b294c6b4b5c9db1bf6c25542d8e89183798a9faa"
+    },
+    {
+      "path": "80x24-operational-live.txt",
+      "sha256": "a4060e50603139d3a24600d8ee691b42eb42743572c8b51e8fea3f4a8da5c5a4"
+    },
+    {
+      "path": "80x24-operational-reauth.txt",
+      "sha256": "704c256462444ca0796d556882a222b2bf637d60fb24414a0c0f5a18bfc4e49e"
+    },
+    {
+      "path": "80x24-operational-search.txt",
+      "sha256": "7c4d9a340cdbbdecfe6360535f90966facb77cb415616b7d8040e599fcc9408a"
+    },
+    {
+      "path": "80x24-operational-session-picker.txt",
+      "sha256": "790690adb5a0d9865ddf88591bce1797e9463a7592cfb353214268d0de3aa148"
+    },
+    {
+      "path": "80x24-operational-start-fresh.txt",
+      "sha256": "29e9ef54508cc6c5c1c68089a229e0417be41ec0b686cbdb75cdcb19b8ef2958"
+    },
+    {
+      "path": "80x24-palette.txt",
+      "sha256": "d368b58a98d8eb0fe79ed670a20814c2060a5bea58d2ee8d19621927a60f0cfa"
+    },
+    {
+      "path": "80x24-paste.txt",
+      "sha256": "63b0ddf95f6000661a7e53cdb9dbf8e042f7ea9bca97a7d24f5588532119acc3"
+    },
+    {
+      "path": "80x24-reconnect.txt",
+      "sha256": "e2e0b0b31ea58eae2b441f5670ed7fbabc8c024e34da04bbb705529b6eb9679d"
+    },
+    {
+      "path": "80x24-reduced-motion.txt",
+      "sha256": "aa7b3ccc84705be6453c67e1bbd9b6b79b006ecea6a328c5585246d159b7e3c5"
+    },
+    {
+      "path": "80x24-replay-gap.txt",
+      "sha256": "8876fa724da38d9d3113c42f23ae50cdd65a6dad469b7b0055ea1be761a34f2e"
+    },
+    {
+      "path": "80x24-resize.txt",
+      "sha256": "4a472b508c5902b7544c3c334cc9f950e8d7d9fb9a5f637088cc5c1852298b0a"
+    },
+    {
+      "path": "80x24-runtime-action-matrix.txt",
+      "sha256": "34a2e90306043eceb26f499787147be60086c3ea1d5f8f2004f7d4615c19f869"
+    },
+    {
+      "path": "80x24-runtime-artifacts.txt",
+      "sha256": "316c9a578496c32bc2e3803d2605971c5530f26736ea1fbd275101aa22bd2fc5"
+    },
+    {
+      "path": "80x24-runtime-destructive-confirm.txt",
+      "sha256": "f2dc744039bd7421b66acaf7b0c9f678d0992677257113884e7614a73dd7e0a1"
+    },
+    {
+      "path": "80x24-runtime-diagnostics.txt",
+      "sha256": "1cb439b35262b549664612ea8b15e2d661d8a46efb2dd967e3a36b2cd1bf185c"
+    },
+    {
+      "path": "80x24-runtime-events-partial.txt",
+      "sha256": "2d2a233c771c341894290bd14d646b08f6e23b54415a8c024de9b9734d6848ee"
+    },
+    {
+      "path": "80x24-runtime-interventions.txt",
+      "sha256": "c274150db66bebbc6a2b5995da3709491da32728840b1c8c3f5716c31b13fcb7"
+    },
+    {
+      "path": "80x24-runtime-posture.txt",
+      "sha256": "28ee67e740a9616a0956e81fa4851377e90668a7d294a76c89bf735489499c13"
+    },
+    {
+      "path": "80x24-runtime-tasks.txt",
+      "sha256": "693a60ef2a74da73d21b034520a11e3a53d798b68d937c57214bca5323537c1f"
+    },
+    {
+      "path": "80x24-runtime-tools.txt",
+      "sha256": "525dc951708b1eb7237da96be6849d161f2db8ea3242997ccd022ddbbcde7634"
+    },
+    {
+      "path": "80x24-scrolled-away.txt",
+      "sha256": "bf0fbfeba40a48c0979c575523aab0bef82b1d070d5a33a5c5c6f47f0ff1aa22"
+    },
+    {
+      "path": "80x24-session.txt",
+      "sha256": "d10f14a8f709f1d89bb5cb3a44eb60366e69281a89640ca282b5179472a592ff"
+    },
+    {
+      "path": "80x24-sidebar-overlay-or-joined.txt",
+      "sha256": "3edaf6f01d5c732a6a8dc577730966a8de7841b8fb2dd55bda36cb7877b83e56"
+    },
+    {
+      "path": "80x24-unknown-fallback.txt",
+      "sha256": "cd1877f98d180e346440f036a5fe48e3fee6f85ae3eacf768eb34708198b5f31"
+    },
+    {
+      "path": "80x24-which-key.txt",
+      "sha256": "fb91556cada382b34dfb1074068e69f56f5b843c029c468ca3badaad70292348"
+    },
+    {
+      "path": "mono-intervention.ansi",
+      "sha256": "fdbd93ee0bef9f5159be7b2165cc9d7c193f6a93b5a6c131afbf3b6a9bdfc7ee"
+    },
+    {
+      "path": "mono-replay-gap.ansi",
+      "sha256": "4d92b13fbf9924bfcc6cf143d678b6ab54d7c2c28087a6b03d42f2a6c71066ca"
+    },
+    {
+      "path": "truecolor-dark-intervention.ansi",
+      "sha256": "5ea01f4bfa653cef9c0d2b9b3ed13943c7eb945ee06bcbe447c3d73955a7c0dd"
+    },
+    {
+      "path": "truecolor-dark-replay-gap.ansi",
+      "sha256": "967115fbef52e4e0ebd7585461e771df7833f932bf89b2c62ba05b07454b4a1b"
+    },
+    {
+      "path": "truecolor-light-intervention.ansi",
+      "sha256": "4645b217fffdfaaa2413c75af07016fcae01c9c70e3b82d1080861bfe582eadc"
+    },
+    {
+      "path": "truecolor-light-replay-gap.ansi",
+      "sha256": "7a7e3c91e2ee17c6c268ecc3d8c1320de840b76eeda9b438624021f3abc352d4"
+    }
+  ],
+  "prior_reviews": {
+    "phase_181": true,
+    "phase_182": true
+  }
+}

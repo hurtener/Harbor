@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -239,5 +240,185 @@ func TestOpen_FromPath_LoadsValidatesBoots(t *testing.T) {
 	defer c()
 	if err := h.Close(cc); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestOpen_WaitReady_ReturnsBoundAddress is the AC1 gate: WaitReady
+// returns the actual OS-assigned address after Serve binds an ephemeral
+// port, with no polling or second listener lifecycle. The address
+// WaitReady returns is the one a co-launched client dials.
+func TestOpen_WaitReady_ReturnsBoundAddress(t *testing.T) {
+	cfg := externalConfig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := external.Open(ctx, cfg, "", nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = h.Close(cc)
+	}()
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer readyCancel()
+	go func() { _ = h.Serve(ctx) }()
+	addr, err := h.WaitReady(readyCtx)
+	if err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if addr == "" || strings.HasSuffix(addr, ":0") {
+		t.Fatalf("WaitReady returned empty or unbound address %q", addr)
+	}
+	// The address WaitReady returned is dialable.
+	resp, gErr := http.Get("http://" + addr + "/healthz")
+	if gErr != nil {
+		t.Fatalf("dial WaitReady address %s: %v", addr, gErr)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz on %s: status %d", addr, resp.StatusCode)
+	}
+	cancel()
+}
+
+// TestOpen_WaitReady_ConcurrentWaiters_RaceFree proves the one-shot
+// readiness is race-safe: N goroutines all calling WaitReady against one
+// shared handle receive the same bound address with no data race. The
+// -race detector is the gate.
+func TestOpen_WaitReady_ConcurrentWaiters_RaceFree(t *testing.T) {
+	cfg := externalConfig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := external.Open(ctx, cfg, "", nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = h.Close(cc)
+	}()
+	go func() { _ = h.Serve(ctx) }()
+	const N = 100
+	var wg sync.WaitGroup
+	addrs := make([]string, N)
+	wg.Add(N)
+	for i := range N {
+		go func(idx int) {
+			defer wg.Done()
+			readyCtx, rc := context.WithTimeout(context.Background(), 10*time.Second)
+			defer rc()
+			a, wErr := h.WaitReady(readyCtx)
+			if wErr != nil {
+				t.Errorf("waiter %d: %v", idx, wErr)
+				return
+			}
+			addrs[idx] = a
+		}(i)
+	}
+	wg.Wait()
+	cancel()
+	first := addrs[0]
+	if first == "" {
+		t.Fatal("first waiter got empty address")
+	}
+	for i, a := range addrs {
+		if a != first {
+			t.Errorf("waiter %d got %q, want %q (first waiter)", i, a, first)
+		}
+	}
+}
+
+// TestOpen_WaitReady_LateWaiter_ReadsBufferedValue proves a caller that
+// calls WaitReady AFTER the listener has already bound receives the
+// buffered readiness value immediately (no blocking, no polling).
+func TestOpen_WaitReady_LateWaiter_ReadsBufferedValue(t *testing.T) {
+	cfg := externalConfig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := external.Open(ctx, cfg, "", nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = h.Close(cc)
+	}()
+	go func() { _ = h.Serve(ctx) }()
+	// Wait for the first readiness to fire.
+	readyCtx, rc := context.WithTimeout(context.Background(), 10*time.Second)
+	defer rc()
+	addr1, err := h.WaitReady(readyCtx)
+	if err != nil {
+		t.Fatalf("first WaitReady: %v", err)
+	}
+	// A late waiter should get the same value immediately.
+	lateCtx, lc := context.WithTimeout(context.Background(), 2*time.Second)
+	defer lc()
+	addr2, err := h.WaitReady(lateCtx)
+	if err != nil {
+		t.Fatalf("late WaitReady: %v", err)
+	}
+	if addr2 != addr1 {
+		t.Fatalf("late waiter got %q, want %q", addr2, addr1)
+	}
+	cancel()
+}
+
+// TestOpen_WaitReady_BindFailure_ReturnsError proves WaitReady returns
+// the bind error when the listener fails to bind (a port already in use
+// by a held listener). The one-shot signal carries the error.
+func TestOpen_WaitReady_BindFailure_ReturnsError(t *testing.T) {
+	cfg := externalConfig(t)
+	// Hold a listener on the same port to force a bind failure.
+	hold, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hold listen: %v", err)
+	}
+	defer hold.Close()
+	cfg.Server.BindAddr = hold.Addr().String()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := external.Open(ctx, cfg, "", nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = h.Close(cc)
+	}()
+	go func() { _ = h.Serve(ctx) }()
+	readyCtx, rc := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rc()
+	_, wErr := h.WaitReady(readyCtx)
+	if wErr == nil {
+		t.Fatal("WaitReady succeeded on a bind that should have failed")
+	}
+	cancel()
+}
+
+// TestOpen_WaitReady_CancelledCtx_ReturnsCtxErr proves WaitReady returns
+// ctx.Err() when the caller's ctx cancels before the listener binds.
+func TestOpen_WaitReady_CancelledCtx_ReturnsCtxErr(t *testing.T) {
+	cfg := externalConfig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := external.Open(ctx, cfg, "", nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = h.Close(cc)
+	}()
+	readyCtx, readyCancel := context.WithCancel(context.Background())
+	readyCancel() // cancel immediately
+	_, wErr := h.WaitReady(readyCtx)
+	if wErr == nil {
+		t.Fatal("WaitReady succeeded on an already-cancelled ctx")
 	}
 }

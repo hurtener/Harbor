@@ -56,7 +56,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -359,73 +358,6 @@ func numericField(payload map[string]interface{}, key string) (float64, bool) {
 		return f, true
 	}
 	return 0, false
-}
-
-// ParseSSEFrames parses an SSE stream body (the bytes a GET /v1/events
-// response yields) into a slice of WireEventFrame. Skips comment lines
-// (`:` prefix), keepalives, retry directives. The SSE grammar is
-// permissive — `data:` lines can be split across multiple lines and
-// MUST be re-joined with `\n` per the spec. The `id:` and `event:`
-// header lines are diagnostic only; the JSON payload is the source of
-// truth (it duplicates type + sequence).
-//
-// Filters frames to those whose `Run` field equals runFilter. When
-// runFilter is empty, every frame is included (used when the CLI is
-// driven against an admin-scoped subscription that already filtered
-// server-side via the X-Harbor-Run header).
-//
-// keepaliveBytes counts the number of `: keepalive` comment lines
-// observed — the caller uses this to decide whether to back off the
-// idle timer (a stream that emits keepalives is alive, just empty).
-func ParseSSEFrames(body []byte, runFilter string) (frames []WireEventFrame, keepaliveCount int, err error) {
-	// Split on the SSE event boundary: two consecutive newlines.
-	rawEvents := strings.Split(string(body), "\n\n")
-	for _, raw := range rawEvents {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		// Comment / keepalive lines start with `:`. Whole-event
-		// comments are counted; otherwise we walk lines.
-		var dataLines []string
-		for _, line := range strings.Split(raw, "\n") {
-			line = strings.TrimRight(line, "\r")
-			if line == "" {
-				continue
-			}
-			if strings.HasPrefix(line, ":") {
-				if strings.Contains(line, "keepalive") {
-					keepaliveCount++
-				}
-				continue
-			}
-			if strings.HasPrefix(line, "data:") {
-				dataLines = append(dataLines, strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, "data:")), " "))
-			}
-			// event: and id: lines are diagnostic; ignored.
-			// retry: directives are ignored.
-		}
-		if len(dataLines) == 0 {
-			continue
-		}
-		// Re-join multi-line data with `\n` per SSE spec (defensive —
-		// our encoder always single-line JSON, but the parser is
-		// agnostic).
-		payload := strings.Join(dataLines, "\n")
-		var frame WireEventFrame
-		if jsonErr := json.Unmarshal([]byte(payload), &frame); jsonErr != nil {
-			// One malformed frame is not fatal — log to the caller
-			// via the surface error and continue. Returning
-			// (frames, err) lets the caller decide whether to
-			// surface or swallow.
-			return frames, keepaliveCount, fmt.Errorf("topology: parse SSE frame: %w", jsonErr)
-		}
-		if runFilter != "" && runIDFromFrame(frame) != runFilter {
-			continue
-		}
-		frames = append(frames, frame)
-	}
-	return frames, keepaliveCount, nil
 }
 
 // FrameOccurredAt parses the wire `occurred_at` field; returns a zero

@@ -186,6 +186,10 @@ type PostureDeps struct {
 	// the agent-config transport is mounted, so the advertisement cannot
 	// claim a surface the Runtime does not serve.
 	AgentConfigAvailable bool
+	// StateSnapshotsAvailable indicates the exact hydration join is mounted:
+	// state.history, tasks.list/get, sessions.inspect, and pause.list. Set it
+	// from the same conjunction that mounts those routes.
+	StateSnapshotsAvailable bool
 	// SessionLifecycleAvailable indicates this Runtime wired a session
 	// eraser (the three scoped stores + the SessionRegistry behind the
 	// `sessions.delete` cascade) — when true, `runtime.info.capabilities`
@@ -270,18 +274,18 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt:    bootedAt,
 		displayName: deps.DisplayName,
 		instanceID:  deps.InstanceID,
-		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable),
+		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable),
 	}, nil
 }
 
 // wiredCapabilitiesFor returns the lexicographically-sorted subset of
 // canonical Protocol capabilities this Runtime instance has actually
-// wired. Always-on surfaces (task control, events subscribe, runtime
-// posture) are unconditional in the dev binary; conditional ones come
+// wired. Always-on surfaces (task control, events subscribe, state snapshots,
+// runtime posture) are unconditional in the dev binary; conditional ones come
 // in via the matching deps flag. Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -292,6 +296,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, sessionLifecy
 	}
 	if agentConfigAvailable {
 		caps = append(caps, types.CapAgentConfig)
+	}
+	if stateSnapshotsAvailable {
+		caps = append(caps, types.CapStateSnapshots)
 	}
 	if sessionLifecycleAvailable {
 		caps = append(caps, types.CapSessionLifecycle)

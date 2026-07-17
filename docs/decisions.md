@@ -8403,9 +8403,16 @@ the first usable Harbor TUI below the accepted floor.
 full editor-quality composition, local history/stash, structured references,
 session search/switch/rename/resume/erase remediation, sticky streaming,
 semantic navigation, compact/native-scrollback mode, export, retry, and visible
-reconnect/partiality. Local persistence contains interaction state and
-references only, never Runtime entities or plaintext credentials. The phase is
-not complete without the applicable visual matrix and PTY keyboard walkthrough.
+reconnect/partiality. It is deliberately a single-operator, one-active-session
+terminal, not a multi-user or fleet view. Explicit session switching reacquires
+a JWT for the target triple. The lifetime-scoped token source is consulted for
+every request/reconnect, reloads rotated token-file credentials, and accepts a
+replacement in memory after visible auth expiry; it never extends or persists a
+signed token. Local persistence contains interaction state and the last durable
+session reference only, never Runtime rows or plaintext credentials. Restart
+reattaches that session; a closed durable session reopens on its next canonical
+`start`, while erased remains terminal. The phase is not complete without the
+applicable visual matrix and PTY keyboard walkthrough.
 
 **Cross-references.** D-061, D-312, D-315–D-317. RFC §3.1, §4, §5, §8.
 CLAUDE.md §6, §8, §13, §17, §18. Plan:
@@ -8459,3 +8466,41 @@ auth, identity, reconnect, controls, shutdown, and cleanup.
 §3.6, §5.1, §5.4–§5.6, §8. CLAUDE.md §1, §5, §7, §8, §13, §17. Plan:
 `docs/plans/phase-184-tui-runtime-distribution.md`. Wave:
 `docs/plans/wave-v115-tui-coordination.md`.
+
+---
+
+## D-321 — `harbor dev` loads ./.env (dev-only, loud, environment-wins)
+
+**Date:** 2026-07-17
+
+**Context.** Dev-loop configs reference secrets as `env.NAME` (resolved via
+os.Getenv, fail-closed), so operators keep keys in a local `.env` next to
+harbor.yaml and had to `source .env` manually before every `harbor dev`.
+Auto-loading a dotenv file risks the exact postures §13 forbids — silent
+degradation, implicit production behaviour, secret-leaking logs — unless the
+load is scoped and loud by construction.
+
+**Decision.** `harbor dev` — and ONLY `harbor dev` — loads `./.env` (working
+directory only, no search-up-parents) into the process environment before
+config load and boot, on both the plain and `--tui` paths. The posture is
+pinned: a successful load prints one stderr line naming the file and the
+variable NAMES loaded — never values; a missing file is a silent no-op; a
+malformed file fails the boot loudly with file:line of the bad entry (surfaced
+as a `boot_config_invalid` CLI error — bad lines are never skipped); a
+variable already present in the process environment is NEVER overridden, and
+skips are counted and named in the same line. The parser is minimal and
+dependency-free: `KEY=value`, optional `export` prefix, blank lines, `#`
+comments (full-line, and trailing after both quoted and unquoted values), single/double-quoted
+values with quote stripping only — no escapes, no multiline, no interpolation;
+keys must match `[A-Za-z_][A-Za-z0-9_]*`. Operators opt out with
+`--no-env-file` (registered like `--no-hot-reload`). `harbor serve` and every
+other subcommand never touch a dotenv file — production environments are
+provisioned by real secret machinery.
+
+**Cross-references.** D-089 (the explicit, banner'd dev-only escape-hatch
+posture this extends), D-196. CLAUDE.md §5 (fail loudly), §7 (never log
+secrets), §13 (dev-only escape hatches — explicit, never silent). Files:
+`cmd/harbor/devenv.go`, `cmd/harbor/cmd_dev.go`,
+`docs/skills/run-the-dev-loop/SKILL.md`, `examples/dev.yaml`.
+
+`KEY=` assigns an empty value — meaningful for `os.LookupEnv`-style `HARBOR_*` overrides, where set-but-empty differs from unset. Malformed-line errors carry `path:line` and a reason only; no fragment of the file's content is ever echoed into stderr or the JSON error surface, since a malformed line is exactly where a wrapped secret lands. A `.env` can also supply `HARBOR_*` knobs (including `HARBOR_DEV_ALLOW_MOCK`); the mock banner still prints unconditionally, and the environment always wins.

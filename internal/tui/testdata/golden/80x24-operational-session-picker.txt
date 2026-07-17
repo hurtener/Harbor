@@ -1,0 +1,24 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+  ┃  Summarize the deployment status.
+
+     The d
+              Sessions
+             Search:
+            ● Current session · running
+              Incident review · completed · Resume on next canonical
+
+
+            ↑/↓ move · enter select · esc close
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

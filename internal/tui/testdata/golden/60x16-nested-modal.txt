@@ -1,0 +1,16 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+
+      Themes
+     Search:
+    ● Dark
+      Light
+
+
+    ↑/↓ move · enter select · esc close
+  ┃
+  ╹──────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Tog

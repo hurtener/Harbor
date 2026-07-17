@@ -17,8 +17,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
+
+	"github.com/hurtener/Harbor/cmd/harbor/scaffold"
 )
 
 // HarborVersion is the harbor binary's product release version — its
@@ -43,6 +47,24 @@ import (
 // this variable carries.
 var HarborVersion = "v0.0.0-dev"
 
+// displayVersion resolves the version shown on operator-facing surfaces
+// (RuntimeInfo.BuildVersion, the TUI banner). Priority mirrors the scaffold's
+// module resolution: a link-stamped release tag wins; a `go install @vX.Y.Z`
+// build carries its module version in build info; an un-stamped source build
+// reports the last published release with a "-dev" suffix — honest ("this
+// source is v1.15.0 plus local changes") instead of the meaningless v0.0.0.
+func displayVersion() string {
+	if releaseDisplayRE.MatchString(HarborVersion) {
+		return HarborVersion
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info != nil && releaseDisplayRE.MatchString(info.Main.Version) {
+		return info.Main.Version
+	}
+	return scaffold.FallbackModuleVersion + "-dev"
+}
+
+var releaseDisplayRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[.0-9A-Za-z-]*)?$`)
+
 // flagJSON is the global `--json` flag name; declared as a constant so
 // subcommands and tests reference one canonical spelling.
 const flagJSON = "json"
@@ -65,7 +87,7 @@ Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
   Production          serve, token
-  Run inspection      inspect-events, inspect-runs, inspect-topology
+  Run inspection      inspect-events, inspect-runs, inspect-topology, tui
   Build information   version
 
 Subcommands without a real implementation yet stub-fail with a
@@ -103,6 +125,7 @@ docs/plans/README.md for the implementation schedule.`,
 	root.AddCommand(newInspectEventsCmd())
 	root.AddCommand(newInspectRunsCmd())
 	root.AddCommand(newInspectTopologyCmd())
+	root.AddCommand(newTUICmd())
 
 	return root
 }

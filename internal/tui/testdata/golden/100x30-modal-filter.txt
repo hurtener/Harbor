@@ -1,0 +1,30 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+     ◆  Inspecting Runtime posture
+
+     ✓  runtime.health  succeeded
+       Runtime healt
+                        Commands
+  ┃  !  Operator app   Search: theme
+  ┃  Operator approv  ● Switch theme · Choose dark, light, or automatic mode
+
+
+                      ↑/↓ move · enter select · esc close
+
+
+
+
+
+
+
+
+
+
+  ┃  Composer idle · attach a Runtime
+  ┃
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

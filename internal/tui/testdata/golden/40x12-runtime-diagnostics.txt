@@ -1,0 +1,12 @@
+
+  DIAGNOSTICS
+
+   Exactly one active session · tena
+   ↑/↓ select · PgUp/PgDn page · / f
+   DIAGNOSTICS · stream / retention
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

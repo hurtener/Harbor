@@ -199,6 +199,8 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	// the tool-annotation facets loud-reject (the honest degradation), never a
 	// false-empty page.
 	toolAnnotationsAvailable := in.Catalog != nil && in.State != nil
+	stateSnapshotsAvailable := in.Tasks != nil && in.Sessions != nil &&
+		in.Coordinator != nil && in.Artifacts != nil
 
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
 		Build: types.RuntimeInfo{
@@ -226,6 +228,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		InstanceID:                in.InstanceID,
 		TopologyAvailable:         in.TopologyAvailable,
 		AgentConfigAvailable:      in.AgentConfig != nil,
+		StateSnapshotsAvailable:   stateSnapshotsAvailable,
 		SessionLifecycleAvailable: sessionLifecycleAvailable,
 		ToolAnnotationsAvailable:  toolAnnotationsAvailable,
 	})

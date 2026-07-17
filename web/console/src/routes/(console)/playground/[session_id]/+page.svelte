@@ -437,11 +437,11 @@
         });
         return { taskID: resp.task_id };
       },
-      async approveIntervention(runID) {
-        await c.control.dispatch('approve', runID);
+      async approveIntervention(runID, pauseToken) {
+        await c.control.dispatch('approve', runID, { token: pauseToken });
       },
-      async rejectIntervention(runID) {
-        await c.control.dispatch('reject', runID);
+      async rejectIntervention(runID, pauseToken) {
+        await c.control.dispatch('reject', runID, { token: pauseToken });
       }
     };
   }
@@ -825,21 +825,21 @@
 
       // Pending interventions — the unified-pause family parks a run
       // awaiting an operator decision. A request event adds the row
-      // (deduped by runID, the approve/reject correlation key); a
+      // (deduped by pause token, the unified correlation key); a
       // resume/terminal event clears it.
       const onInterventionRequest = (msg: MessageEvent): void => {
         const ev = decodeIntervention((msg as MessageEvent<string>).data);
         if (ev === null) return;
-        const rest = interventions.filter((i) => i.runID !== ev.runID);
+        const rest = interventions.filter((i) => i.pauseToken !== ev.pauseToken);
         interventions = [...rest, ev];
       };
       es.addEventListener('tool.approval_requested', onInterventionRequest);
       es.addEventListener('tool.auth_required', onInterventionRequest);
       es.addEventListener('pause.requested', onInterventionRequest);
       const onInterventionClear = (msg: MessageEvent): void => {
-        const runID = decodeInterventionClear((msg as MessageEvent<string>).data);
-        if (runID === null) return;
-        interventions = interventions.filter((i) => i.runID !== runID);
+        const resolved = decodeInterventionClear((msg as MessageEvent<string>).data);
+        if (resolved === null) return;
+        interventions = interventions.filter((i) => i.pauseToken !== resolved.pauseToken);
       };
       es.addEventListener('pause.resumed', onInterventionClear);
       es.addEventListener('tool.approved', onInterventionClear);
@@ -1381,17 +1381,17 @@
     }
   }
 
-  async function decideIntervention(runID: string, approve: boolean): Promise<void> {
+  async function decideIntervention(runID: string, pauseToken: string, approve: boolean): Promise<void> {
     if (chatClient === null) {
       return;
     }
     try {
       if (approve) {
-        await chatClient.approveIntervention(runID);
+        await chatClient.approveIntervention(runID, pauseToken);
       } else {
-        await chatClient.rejectIntervention(runID);
+        await chatClient.rejectIntervention(runID, pauseToken);
       }
-      interventions = interventions.filter((i) => i.runID !== runID);
+      interventions = interventions.filter((i) => i.pauseToken !== pauseToken);
     } catch (err) {
       const e = toError(err);
       messages = [
@@ -1855,8 +1855,8 @@
         <PendingInterventionsCard
           interventions={interventions}
           canDecide={canControl}
-          onapprove={(runID) => void decideIntervention(runID, true)}
-          onreject={(runID) => void decideIntervention(runID, false)}
+          onapprove={(runID, pauseToken) => void decideIntervention(runID, pauseToken, true)}
+          onreject={(runID, pauseToken) => void decideIntervention(runID, pauseToken, false)}
         />
       </RailCard>
       <RailCard title="Recent artifacts">

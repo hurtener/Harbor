@@ -13,6 +13,7 @@
   /** A pending HITL intervention awaiting a decision. */
   export interface PendingIntervention {
     runID: string;
+    pauseToken: string;
     reason: string;
     /** The source event that created this intervention. */
     source: 'tool.approval_requested' | 'tool.auth_required' | 'pause.requested';
@@ -49,8 +50,8 @@
     interventions: PendingIntervention[];
     /** True when the operator carries the steering scope claim. */
     canDecide?: boolean;
-    onapprove: (runID: string) => void;
-    onreject: (runID: string) => void;
+    onapprove: (runID: string, pauseToken: string) => void;
+    onreject: (runID: string, pauseToken: string) => void;
   } = $props();
 </script>
 
@@ -70,7 +71,7 @@
     </p>
   {:else}
     <ul class="intervention-list">
-      {#each interventions as item (item.runID)}
+      {#each interventions as item (item.pauseToken)}
         <li class="intervention" data-run-id={item.runID}>
           <div class="intervention-meta">
             <div class="intervention-avatar-row">
@@ -93,7 +94,7 @@
               type="button"
               class="action approve"
               data-testid="intervention-approve"
-              onclick={() => onapprove(item.runID)}
+              onclick={() => onapprove(item.runID, item.pauseToken)}
               disabled={!canDecide}
               title={canDecide
                 ? 'Approve this intervention'
@@ -105,7 +106,7 @@
               type="button"
               class="action reject"
               data-testid="intervention-reject"
-              onclick={() => onreject(item.runID)}
+              onclick={() => onreject(item.runID, item.pauseToken)}
               disabled={!canDecide}
               title={canDecide
                 ? 'Reject this intervention'

@@ -5,7 +5,7 @@ license: Apache-2.0
 metadata:
   framework: harbor
   surface: cli
-  verbs: "dev console"
+  verbs: "dev, console"
 ---
 
 # Run the Harbor dev loop
@@ -97,6 +97,29 @@ telemetry:
 ```
 
 Per-task events ALSO go to the Console's Events page in real time (assuming `events.driver: inmem` — the dev default — keeps events in memory while the Console is attached). Use the Events page when you want a live stream; use stderr when you want grep-able history.
+
+## 6. Local secrets — `.env` auto-load
+
+`harbor dev` loads `./.env` (the working directory only — the same place `harbor.yaml` lives) into the process environment before boot, so `env.NAME` references in the yaml (e.g. `api_key: env.OPENROUTER_API_KEY`) resolve without a manual `source .env`:
+
+```bash
+echo 'OPENROUTER_API_KEY=sk-or-...' > .env
+harbor dev
+# stderr: harbor dev: loaded 1 var from .env (OPENROUTER_API_KEY)
+```
+
+The posture, pinned:
+
+- **Names only, never values.** The one-line stderr summary names the variables loaded; values never hit a log.
+- **The environment always wins.** A variable already set in your shell is never overridden — the line reports it: `... (FOO; 1 already set, kept environment: BAR)`.
+- **Missing file = silence; malformed file = loud boot failure** with the file:line of the bad entry. Bad lines are never skipped silently.
+- **Minimal syntax.** `KEY=value`, optional `export` prefix, blank lines, `#` comments, single/double quotes (stripped, no escape processing). No multiline values, no `${VAR}` interpolation.
+- **Opt out** with `harbor dev --no-env-file`.
+- **Dev-only.** `harbor serve` (and every other subcommand) never reads a `.env` — production secrets come from your real environment machinery.
+
+`KEY=` assigns an empty value (distinct from unset for `HARBOR_*` overrides).
+Malformed lines fail the boot with `path:line` and a reason — never the line's
+content, so a mis-pasted secret cannot leak into logs.
 
 ## Power-user / scripted attach
 

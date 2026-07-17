@@ -45,6 +45,22 @@ It ships two ways, and they are the same runtime:
   scaffolding, and the Console. CGo-free, no message broker to stand up;
   `harbor dev` boots the whole runtime on your laptop in under a second.
 
+External Go control-plane and UI clients use the curated
+[`sdk/protocolclient`](sdk/protocolclient/) facade. It provides one
+concurrent-safe authenticated REST/SSE client with typed Protocol errors,
+identity-aware token resolution, immutable session clones, strict bounded
+decoding, and resumable event cursors. Static tokens are principal-bound, so a
+multi-session client supplies a `TokenSource` that resolves credentials for the
+requested identity rather than reusing one session's JWT. The
+stock `inspect-events`, `inspect-runs`, and `inspect-topology` commands use the
+same implementation.
+
+The native conversation client attaches through that same authenticated
+Protocol surface: `harbor tui --attach http://127.0.0.1:18080`. It keeps one
+active session per terminal, reloads rotated JWT files before every request and
+SSE reconnect, and persists only bounded local drafts/view preferences. See the
+[`drive-the-harbor-tui`](docs/skills/drive-the-harbor-tui/SKILL.md) skill.
+
 ## Embed the runtime in your own program
 
 ```go
@@ -265,6 +281,53 @@ below — the repo stays the source of truth.
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history, Keep-a-Changelog format. |
 
 ## Status
+
+**Harbor v1.15 Phase 184: Shipped.** The native TUI is now distributed
+through three modes: standalone attach (`harbor tui --attach`), stock
+co-launch (`harbor serve --tui`), and scaffolded co-launch (`harbor
+scaffold --with-server --with-tui`). Every mode attaches through
+authenticated REST/SSE — no Runtime handle, no anonymous loopback, no
+automatic token minting. Served handles expose race-safe one-shot
+readiness (`(*server.Handle).WaitReady`) through `sdk/server`; the
+connection-only `sdk/tui.Run(ctx, Options)` facade encapsulates the
+attach flow. Co-launch quit drains the owned server; attach quit leaves
+the remote alive. Runtime logs go to a captured sink in co-launch mode
+so Bubble Tea frames are never overwritten.
+
+**Harbor v1.15 Phase 183: Shipped.** The TUI now inspects and controls
+the Runtime at the same quality floor as the Console: task lifecycle
+and tree, tool transport and OAuth/approval posture, artifact metadata,
+live and retained event diagnostics, runtime health/drivers/capabilities,
+the unified intervention queue, capability/retention/partiality/typed
+Protocol failures, and one action matrix for task, intervention, tool,
+artifact, and session controls. Every canonical control is keyboard-
+driven; identity and capability gates are exact; destructive actions
+require explicit confirmation showing the active identity target.
+
+**Harbor v1.15 Phase 182: Shipped.** `harbor tui --attach <url>` is now the
+complete authenticated, Protocol-only conversation/session client: one active
+session, stream-safe switching, renewable token sources, durable reopen and
+erasure handling, editor-quality composition, semantic transcript navigation,
+ordered local follow-ups, export, and bounded local interaction preferences.
+
+**Harbor v1.15 Phase 181: Shipped.** Harbor now has a CGo-free Bubble Tea
+terminal foundation with semantic dark/light/degraded themes, grapheme-safe
+layout, one command and focus model, exact responsive geometry, deterministic
+motion, reviewed fixture-state captures, and PTY restoration gates. The command
+now runs the authenticated Protocol-only conversation/session client described
+above; Phase 181's fixture shell remains test-only.
+
+**Harbor v1.15 Phase 180: Shipped.** A pure Go conversation projection now
+hydrates and reconciles canonical history, task, session, pause, posture, and
+event state without terminal-framework coupling. It fails visibly on replay
+gaps, preserves retention/partiality signals, treats erasure as terminal, and
+shares production-path fixtures with the Console so both clients interpret the
+same wire events consistently.
+
+**Harbor v1.15 Phase 179: Shipped.** Harbor now has one reusable authenticated
+Go Protocol client with identity-aware token resolution, strict REST/SSE
+decoding, immutable session attachments, a curated public SDK facade, and the
+three shipped `inspect-*` commands as production consumers.
 
 **Harbor v1.12.** Sessions stop displaying as raw ids: a
 session now carries an optional **title** (`sessions.set_title`) that a

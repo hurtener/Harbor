@@ -1,0 +1,12 @@
+                          [connecting]
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000
+
+  ┃  Operator approval required
+
+  ┃  Composer idle · attach a Runtime
+  ┃
+  ┃
+  ╹──────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000
+  disconnected   ·   ctrl+p Command pa

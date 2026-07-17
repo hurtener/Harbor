@@ -63,6 +63,7 @@ const (
 	flagScaffoldFromConfig = "from-config"
 	flagScaffoldPatch      = "patch"
 	flagScaffoldWithServer = "with-server"
+	flagScaffoldWithTUI    = "with-tui"
 )
 
 // scaffoldJSONResult is the wire shape `harbor scaffold --json` emits
@@ -98,10 +99,16 @@ the Harbor Protocol with this project's compiled in-process tools (an
 external Protocol server at parity with ` + "`harbor serve`" + `). The default
 (flagless) scaffold stays headless.
 
+Pass --with-tui (requires --with-server) to make the generated binary's
+opt-in ` + "`--tui`" + ` flag co-launch the native terminal client after the
+server is ready. The TUI attaches through authenticated REST/SSE using
+sdk/server plus sdk/tui; flagless behavior remains headless and unchanged.
+
 Examples:
   harbor scaffold --name my-agent
   harbor scaffold --name my-agent --output ./projects/my-agent
   harbor scaffold --name my-agent --with-server
+  harbor scaffold --name my-agent --with-server --with-tui
   harbor scaffold --name my-agent --template ` + scaffold.DefaultTemplate + ` --json`,
 		Args: cobra.NoArgs,
 		RunE: runScaffold,
@@ -117,6 +124,8 @@ Examples:
 		"skip files that already exist in --output (preserve operator-edited code on re-runs)")
 	cmd.Flags().Bool(flagScaffoldWithServer, false,
 		"also emit cmd/<name>/main.go serving the Protocol via sdk/server (opt-in; default scaffold stays headless)")
+	cmd.Flags().Bool(flagScaffoldWithTUI, false,
+		"make the generated binary's --tui flag co-launch the native terminal client via sdk/tui (requires --with-server)")
 	return cmd
 }
 
@@ -132,6 +141,15 @@ func runScaffold(cmd *cobra.Command, _ []string) error {
 	fromCfg, _ := cmd.Flags().GetString(flagScaffoldFromConfig)  //nolint:errcheck // flag statically registered; lookup cannot fail
 	patch, _ := cmd.Flags().GetBool(flagScaffoldPatch)           //nolint:errcheck // flag statically registered; lookup cannot fail
 	withServer, _ := cmd.Flags().GetBool(flagScaffoldWithServer) //nolint:errcheck // flag statically registered; lookup cannot fail
+	withTUI, _ := cmd.Flags().GetBool(flagScaffoldWithTUI)       //nolint:errcheck // flag statically registered; lookup cannot fail
+	if withTUI && !withServer {
+		return emitCLIError(cmd, CLIError{
+			Subcommand: "scaffold",
+			Message:    "--with-tui requires --with-server (the TUI co-launches from a generated serving binary)",
+			Code:       CodeScaffoldFailed,
+			Hint:       "pass --with-server --with-tui together; the default scaffold stays headless",
+		})
+	}
 	if outDir == "" {
 		// Default to ./<name>. validateName (inside Scaffold) will
 		// reject an empty/invalid name with ErrInvalidName, which
@@ -147,6 +165,7 @@ func runScaffold(cmd *cobra.Command, _ []string) error {
 		FromConfigPath: fromCfg,
 		Patch:          patch,
 		WithServer:     withServer,
+		WithTUI:        withTUI,
 		// The scaffolding binary's own release version becomes the
 		// generated go.mod's `require github.com/hurtener/Harbor` line,
 		// so the project builds off the module proxy with no edit.

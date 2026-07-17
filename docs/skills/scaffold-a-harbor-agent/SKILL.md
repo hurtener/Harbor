@@ -5,7 +5,7 @@ license: Apache-2.0
 metadata:
   framework: harbor
   surface: cli
-  verbs: "init scaffold validate"
+  verbs: "init, scaffold, validate, serve, tui"
 ---
 
 # Scaffold a new Harbor agent
@@ -153,6 +153,32 @@ harbor token mint --key ./keys/private.pem \
 ```
 
 See [`configure-production-identity`](../configure-production-identity/SKILL.md) for the JWKS posture and [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md) for driving the wire surface.
+
+### Co-launch the native TUI (`--with-tui`)
+
+Pass `--with-tui` (with `--with-server`) to make the generated binary's opt-in `--tui` flag co-launch the native terminal client after the server is ready:
+
+```bash
+harbor scaffold --name my-first-agent --with-server --with-tui
+```
+
+The generated `cmd/<name>/main.go` gains a `--tui` flag. Flagless behavior remains headless and unchanged. When `--tui` is set, the binary:
+
+1. Opens the Protocol server via `sdk/server.Open`.
+2. Waits for readiness (`h.WaitReady(ctx)`) — no polling.
+3. Resolves the operator token from `HARBOR_TOKEN` or `~/.harbor/token`.
+4. Attaches the TUI through `sdk/tui.Run` — authenticated REST/SSE, no Runtime handle.
+5. On TUI quit, drains the owned server.
+
+Runtime logs go to a captured buffer (not the terminal) so Bubble Tea frames are never overwritten; on server failure the terminal is restored before the log is printed. The operator supplies the token — there is no anonymous loopback, automatic token minting, or mock fallback.
+
+```bash
+# Build + run with the TUI co-launched.
+go build ./cmd/my-first-agent
+HARBOR_TOKEN=<jwt> ./my-first-agent --config ./harbor.yaml --bind 127.0.0.1:0 --tui
+```
+
+See [`drive-the-harbor-tui`](../drive-the-harbor-tui/SKILL.md) for the TUI's keyboard surface, session model, and intervention flow.
 
 ## Common failure modes
 

@@ -105,6 +105,22 @@ func TestParsePortFromBind_Valid(t *testing.T) {
 	}
 }
 
+// TestNewDevCmd_RegistersTUICoLaunchFlag — the one-command local-dev path
+// (`harbor dev --tui`) must expose a boolean --tui flag that defaults off.
+func TestNewDevCmd_RegistersTUICoLaunchFlag(t *testing.T) {
+	cmd := newDevCmd()
+	f := cmd.Flags().Lookup(flagDevTUI)
+	if f == nil {
+		t.Fatalf("dev command is missing the --%s flag", flagDevTUI)
+	}
+	if f.Value.Type() != "bool" {
+		t.Fatalf("--%s must be a bool flag, got %q", flagDevTUI, f.Value.Type())
+	}
+	if f.DefValue != "false" {
+		t.Fatalf("--%s must default to false, got %q", flagDevTUI, f.DefValue)
+	}
+}
+
 // TestParsePortFromBind_Malformed — invalid bind strings return
 // (0, false) so the caller keeps the supplied --port.
 func TestParsePortFromBind_Malformed(t *testing.T) {

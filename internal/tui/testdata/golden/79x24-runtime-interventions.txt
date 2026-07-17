@@ -1,0 +1,24 @@
+
+  INTERVENTIONS
+
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   INTERVENTION INBOX · retained by PauseToken · approval / OAuth / input /
+   pause-token-a paused · approval required · run task-01
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹─────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

@@ -148,6 +148,13 @@ must not degrade terminal-native text selection.
 
 ## 9. Harbor Honesty States
 
+The first Harbor TUI is a single-operator development surface with exactly one
+active session. Session selection replaces the active stream after draining it;
+it does not create simultaneous per-session panes or imply multi-user presence.
+The footer always shows the active identity triple. Auth rotation/replacement
+preserves the draft, durable session reference, and replay cursor while visibly
+showing the disconnected/reauthenticating state.
+
 The UI must visually distinguish:
 
 - disconnected, connecting, live, retrying, replaying, incomplete, and failed;
@@ -170,7 +177,7 @@ Every phase touching rendering updates goldens for applicable cells:
 | Motion | normal and reduced |
 | Input | keyboard-only, paste, resize during editing, modal focus restore |
 | Stream | idle, active, scrolled-away, reconnect, replay gap, dropped event |
-| Sessions | empty, populated, closed/resume, erased, switch during stream |
+| Sessions | empty, populated, restart restore, closed/reopen-on-next-turn, erased, switch-with-stream-drain |
 | Intervention | initial, confirm, reject editor, expired/resolved elsewhere |
 | Fallback | unknown event, unknown tool, unknown result, malformed safe payload |
 

@@ -1,0 +1,30 @@
+
+  ARTIFACTS
+
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   ARTIFACT REFERENCES · metadata only; heavy content stays by reference · loaded
+   Filter:  · page 1
+   artifact-a application/json · 128 bytes · tool
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

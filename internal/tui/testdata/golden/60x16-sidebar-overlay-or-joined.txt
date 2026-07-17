@@ -1,0 +1,16 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K  RUNTIME CONTEXT
+
+       Runtime hea  Session
+                    01K0HARBORFIXTURE0000000000
+  ┃  !  Operator a
+  ┃  Operator appr  Status
+                    running
+
+  ┃  Composer idle
+  ┃
+  ┃
+  ╹───────────────
+  acme/operator/01
+  disconnected   ·

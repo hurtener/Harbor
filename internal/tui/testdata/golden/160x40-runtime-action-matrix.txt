@@ -1,0 +1,40 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+  ┃  Summarize the deployment status.
+
+     The deployment completed successfully.
+
+
+
+
+                          Runtime actions
+                         Search:
+                        ● Delete artifact · Unavailable: no artifact selected
+                          Approve intervention · Unavailable: no unresolved PauseToken target
+                          Submit required input · Unavailable: no unresolved PauseToken target
+                          Submit OAuth intervention · Unavailable: no unresolved PauseToken target
+                          Reject intervention · Unavailable: no unresolved PauseToken target
+                          Resume intervention · Unavailable: no unresolved PauseToken target
+                          Delete session · sessions.delete · capability session_lifecycle · scope verified own session (server-enforced)
+                          Cancel task · Unavailable: no active task target
+
+
+                        ↑/↓ move · enter select · esc close
+
+
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

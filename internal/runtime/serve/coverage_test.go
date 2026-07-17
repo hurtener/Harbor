@@ -22,6 +22,7 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -80,6 +81,47 @@ func TestEnricher_ZeroValuesAndTrajectory(t *testing.T) {
 	}
 }
 
+// TestEnricher_ParentSession_WithSessionLister covers the ParentSession
+// path with a real session lister wired — the branch that actually
+// queries the session registry and maps the snapshot onto the wire ref.
+func TestEnricher_ParentSession_WithSessionLister(t *testing.T) {
+	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	reg, err := sessions.New(st, config.SessionsConfig{
+		IdleTTL:       24 * time.Hour,
+		HardCap:       720 * time.Hour,
+		SweepInterval: 15 * time.Minute,
+	}, bus)
+	if err != nil {
+		t.Fatalf("sessions.New: %v", err)
+	}
+	t.Cleanup(func() { _ = reg.CloseRegistry(context.Background()) })
+
+	e := NewEnricher(nil, WithSessionLister(reg))
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+
+	// Open a session so the lister returns a snapshot.
+	ctx := context.Background()
+	if _, openErr := reg.Open(ctx, id.SessionID, id); openErr != nil {
+		t.Fatalf("Open: %v", openErr)
+	}
+	ref := e.ParentSession(ctx, id, "task-1")
+	if ref.Status == "" {
+		t.Errorf("ParentSession with a live session should return a non-empty status, got %+v", ref)
+	}
+
+	// Empty SessionID → zero-value ref (the nil-session guard).
+	empty := e.ParentSession(ctx, identity.Identity{TenantID: "t", UserID: "u"}, "task-1")
+	if empty.Status != "" {
+		t.Errorf("ParentSession with empty SessionID should return zero-value ref, got %+v", empty)
+	}
+}
+
 // TestMCPConnectionDetacher_NilRegistry covers the detacher's nil-registry
 // short-circuits + the boot-declared helpers.
 func TestMCPConnectionDetacher_NilRegistry(t *testing.T) {
@@ -103,6 +145,192 @@ func TestMCPConnectionDetacher_NilRegistry(t *testing.T) {
 	}
 	if BootDeclaredMCPServerSet(&config.Config{}) != nil {
 		t.Error("empty config should yield a nil set")
+	}
+
+	// BootDeclaredOAuthProviderNames: nil cfg → nil; populated cfg →
+	// names; empty-name entries are filtered.
+	if got := BootDeclaredOAuthProviderNames(nil); got != nil {
+		t.Errorf("BootDeclaredOAuthProviderNames(nil) = %v, want nil", got)
+	}
+	cfg.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{{Name: "github"}, {Name: ""}, {Name: "google"}}
+	provNames := BootDeclaredOAuthProviderNames(cfg)
+	if len(provNames) != 2 || provNames[0] != "github" || provNames[1] != "google" {
+		t.Errorf("BootDeclaredOAuthProviderNames = %v, want [github google]", provNames)
+	}
+}
+
+// TestMCPConnectionDetacher_SetOAuthDiscoveryOrigins_NilRegistry covers
+// the detacher's SetOAuthDiscoveryOrigins nil-registry short-circuit —
+// the path a boot with no MCP registry takes when the agent-config
+// service calls the discovery-origin applier.
+func TestMCPConnectionDetacher_SetOAuthDiscoveryOrigins_NilRegistry(t *testing.T) {
+	d := NewMCPConnectionDetacher(nil, nil, nil)
+	prev, err := d.SetOAuthDiscoveryOrigins(context.Background(), "srv-x", []string{"https://origin.example.com"})
+	if err != nil {
+		t.Errorf("SetOAuthDiscoveryOrigins with nil registry should be a no-op, got %v", err)
+	}
+	if prev != nil {
+		t.Errorf("SetOAuthDiscoveryOrigins with nil registry should return nil prev, got %v", prev)
+	}
+}
+
+// TestMCPConnectionAttacher_SetOAuthDiscoveryOrigins_NilRegistry covers
+// the attacher's SetOAuthDiscoveryOrigins nil-registry error path —
+// the guard fires loud (no silent degradation).
+func TestMCPConnectionAttacher_SetOAuthDiscoveryOrigins_NilRegistry(t *testing.T) {
+	a := NewMCPConnectionAttacher(nil, nil, nil, nil, identity.Identity{}, nil, nil)
+	_, err := a.SetOAuthDiscoveryOrigins(context.Background(), "srv-x", []string{"https://origin.example.com"})
+	if err == nil {
+		t.Fatal("SetOAuthDiscoveryOrigins with nil registry must fail loud (no silent degradation)")
+	}
+	if !strings.Contains(err.Error(), "no registry wired") {
+		t.Errorf("expected 'no registry wired' error, got %v", err)
+	}
+}
+
+// TestParentSessionStatus_LifecycleMapping covers the pure helper that
+// maps a session snapshot onto the parent-session card's lifecycle
+// status string. All four branches are exercised.
+func TestParentSessionStatus_LifecycleMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		snap sessions.SessionSnapshot
+		want string
+	}{
+		{"running", sessions.SessionSnapshot{Running: true}, string(prototypes.SessionStatusRunning)},
+		{"open_not_closed", sessions.SessionSnapshot{Running: false}, string(prototypes.SessionStatusRunning)},
+		{"closed_failed", sessions.SessionSnapshot{Session: sessions.Session{Closed: true, ClosedReason: "failed"}}, string(prototypes.SessionStatusFailed)},
+		{"closed_completed", sessions.SessionSnapshot{Session: sessions.Session{Closed: true, ClosedReason: "done"}}, string(prototypes.SessionStatusCompleted)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parentSessionStatus(tc.snap)
+			if got != tc.want {
+				t.Errorf("parentSessionStatus(%+v) = %q, want %q", tc.snap, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOAuthProviderInstaller_NilInputsReturnsNil covers the constructor's
+// nil-guard: a nil builder OR a nil set returns a nil installer (so the
+// caller leaves the install verbs unwired → 501 at the wire edge).
+func TestOAuthProviderInstaller_NilInputsReturnsNil(t *testing.T) {
+	if got := NewOAuthProviderInstaller(nil, nil); got != nil {
+		t.Error("NewOAuthProviderInstaller(nil, nil) must return nil")
+	}
+}
+
+// TestApprovalChecker_NilCoordinatorReturnsNil + the HasPendingApproval
+// guard branches cover the approval-checker seam: nil coordinator → nil
+// installer; invalid identity / empty runID → false (honest no gate).
+func TestApprovalChecker_NilCoordinatorReturnsNil(t *testing.T) {
+	if got := NewApprovalChecker(nil); got != nil {
+		t.Error("NewApprovalChecker(nil) must return nil")
+	}
+}
+
+// TestApprovalChecker_HasPendingApproval_GuardBranches covers the
+// identity-validation and empty-runID guards — the two short-circuit
+// paths that return false without touching the coordinator.
+func TestApprovalChecker_HasPendingApproval_GuardBranches(t *testing.T) {
+	// A non-nil coordinator constructs a non-nil checker. We use
+	// pauseresume.New() — the real coordinator constructor.
+	coord := pauseresume.New()
+	checker := NewApprovalChecker(coord)
+	if checker == nil {
+		t.Fatal("NewApprovalChecker with a real coordinator returned nil")
+	}
+	ctx := context.Background()
+	// Invalid identity → false (the validate guard).
+	if checker.HasPendingApproval(ctx, identity.Identity{}, "run-1") {
+		t.Error("HasPendingApproval with an empty identity must return false")
+	}
+	// Empty RunID → false (the run-less-task guard).
+	valid := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	if checker.HasPendingApproval(ctx, valid, "") {
+		t.Error("HasPendingApproval with an empty RunID must return false")
+	}
+	// Valid identity + runID + no paused gates → false (the coordinator
+	// returns zero rows). This covers the List call + the TotalRows==0
+	// branch.
+	if checker.HasPendingApproval(ctx, valid, "run-1") {
+		t.Error("HasPendingApproval with no paused gates must return false")
+	}
+}
+
+// TestOAuthProviderInstaller_EmptyOwnerFailsLoud covers InstallProvider's
+// empty-owner guard: a missing tenant or agent fails with
+// ErrInvalidProvider before the builder is called. The builder is
+// constructed with no brokers (Build fails loud), so reaching the owner
+// check is the only path that does not invoke Build.
+func TestOAuthProviderInstaller_EmptyOwnerFailsLoud(t *testing.T) {
+	builder, err := toolauth.NewProviderBuilder(context.Background(), config.ToolsConfig{}, toolauth.BuildDeps{})
+	if err != nil {
+		t.Fatalf("NewProviderBuilder: %v", err)
+	}
+	set := toolauth.NewProviderSet(nil)
+	installer := NewOAuthProviderInstaller(builder, set)
+	if installer == nil {
+		t.Fatal("NewOAuthProviderInstaller returned nil for non-nil inputs")
+	}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		tenant string
+		agent  string
+	}{
+		{"empty_tenant", "", "agent-1"},
+		{"empty_agent", "tenant-1", ""},
+		{"both_empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := installer.InstallProvider(ctx, tc.tenant, tc.agent, agentcfg.OAuthProviderDescriptor{
+				Name: "test-provider", CredentialBroker: "unknown-broker",
+			})
+			if !errors.Is(err, agentcfgprotocol.ErrInvalidProvider) {
+				t.Errorf("expected ErrInvalidProvider, got %v", err)
+			}
+		})
+	}
+}
+
+// TestOAuthProviderInstaller_UnknownBrokerFailsLoud covers the
+// InstallProvider path where the builder rejects an unknown broker —
+// the error is wrapped into ErrProviderBrokerUnknown so the wire
+// handler classifies it as a 400.
+func TestOAuthProviderInstaller_UnknownBrokerFailsLoud(t *testing.T) {
+	builder, err := toolauth.NewProviderBuilder(context.Background(), config.ToolsConfig{}, toolauth.BuildDeps{})
+	if err != nil {
+		t.Fatalf("NewProviderBuilder: %v", err)
+	}
+	set := toolauth.NewProviderSet(nil)
+	installer := NewOAuthProviderInstaller(builder, set)
+	err = installer.InstallProvider(context.Background(), "tenant-1", "agent-1", agentcfg.OAuthProviderDescriptor{
+		Name: "test-provider", CredentialBroker: "unknown-broker",
+	})
+	if !errors.Is(err, agentcfgprotocol.ErrProviderBrokerUnknown) {
+		t.Errorf("expected ErrProviderBrokerUnknown, got %v", err)
+	}
+}
+
+// TestOAuthProviderInstaller_UninstallAndInstalledFor covers the
+// uninstall + installed-for methods against an empty provider set —
+// the no-op paths that the agent-config service calls.
+func TestOAuthProviderInstaller_UninstallAndInstalledFor(t *testing.T) {
+	builder, err := toolauth.NewProviderBuilder(context.Background(), config.ToolsConfig{}, toolauth.BuildDeps{})
+	if err != nil {
+		t.Fatalf("NewProviderBuilder: %v", err)
+	}
+	set := toolauth.NewProviderSet(nil)
+	installer := NewOAuthProviderInstaller(builder, set)
+	// Uninstall on an empty set — the set's Uninstall returns nil for
+	// a not-found name (idempotent delete semantics).
+	_ = installer.UninstallProvider(context.Background(), "nonexistent")
+	// InstalledFor on an empty owner returns an empty slice.
+	names := installer.InstalledFor(context.Background(), toolauth.Owner{Tenant: "t", Agent: "a"})
+	if len(names) != 0 {
+		t.Errorf("InstalledFor on an empty set returned %v, want empty", names)
 	}
 }
 

@@ -1,0 +1,12 @@
+
+  TOOLS
+
+   Exactly one active session · tena
+   ↑/↓ select · PgUp/PgDn page · / f
+   TOOLS · schema / transport / OAut
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

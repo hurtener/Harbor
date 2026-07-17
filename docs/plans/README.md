@@ -317,12 +317,12 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 
 V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j + 85m (MCP client/host compliance — the prioritised first post-V1 work; 85k is the separate Harbor agent-builder skills phase). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Per the MCP 2026-07-28 RC re-plan (2026-05-28) the 85-band re-shapes: 85a / 85b / 85f are ready now; 85d / 85m revisit after SDK-RC (≈ Aug 2026); 85g / 85j revisit after RC-final (2026-07-28); 85c / 85e / 85h / 85i are cut. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100. The next release tag is V1.1.x — both the hygiene + positioning + UX band (101–104 + 108) and the Playground-depth band (105 + 106 + 107 + 107a + 107c + 107d) roll up under it; the previously-sketched V1.2 / V1.3 splits collapse. Phases 105–107c ship with this release: Console first-attach UX (105), Playground real assistant response (106), the streaming completion pipeline (107), reasoning trace projection (107a), and native tool-calling + deferred tools/skills + search meta-tools (107c) — the four built-in `*_search`/`*_get` meta-tools plus the optional `declarative_action` escape-hatch tool preserving brief 07's prompt-engineered path for weaker models. The 107b streaming answer extractor was deliberately superseded by 107c (one cutover instead of stop-gap-then-replace); the file at `docs/plans/phase-107b-streaming-answer-extractor.md` is kept as historical context. Phase 107d (shipped) is the native-tool-calling follow-up that closes 107c's documented serialization carve-out: it wires the already-shipped `internal/runtime/parallel.Executor` (Phase 47 / D-056) into the dev `ToolExecutor`, flips the React planner to native `CallParallel` emission for N>1 tool-calls, and pins the `JoinKind`-collapses-to-`JoinAll`-on-native semantic (D-169). Phase 107e (pending) closes the last `ErrDecisionShapeUnsupported` carve-out the dev `ToolExecutor` carries: it wires `planner.SpawnTask` + `planner.AwaitTask` dispatch through the already-shipped `tasks.TaskRegistry` (Phase 47 / D-056) and teaches the per-task RunLoop driver to drive `KindBackground` tasks (closing the D-097 dead-task gap for the background kind), bounded by a new `planner.absolute_max_spawn_depth` recursion cap; on the synchronous V1.1.x runloop a retain-turn spawn blocks in-decision and a non-retain-turn spawn is joined by an explicit `AwaitTask` (eager push wake-on-resolution is a documented steering-runloop follow-up). SpawnTask + AwaitTask dispatch land together per §13 (D-170). Phase 108 starts a 14-round page-by-page visual-polish series (one phase per Console page, anchored to `docs/design/console/page-*.md` + `docs/design/console/CONVENTIONS.md`) and is the largest piece still pending under V1.1.x. Background context for the native-tool-calling cutover: research brief 15. **Immediately after Phase 108, the three-phase "MCP Apps host" wave 109a–c lands (D-172):** 109a (MCP Apps runtime + Protocol surface — `_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy), 109b (Console sandboxed-iframe host + the official `ext-apps` AppBridge in manual-handler mode + inline DisplayMode), 109c (fullscreen-tab + pip-split DisplayMode layout). This wave **deprecates and supersedes Phase 85g**, pulling MCP Apps forward from the post-V1 85-band: Apps is a stable independent extension (`io.modelcontextprotocol/ui`), not gated on the July RC, and ships an official host bridge that removes 85g's hand-rolled-bridge risk. The architectural invariant is D-173 — the AppBridge runs in manual-handler mode and every app→host call is Protocol-proxied through the Runtime, never a direct MCP connection, so an in-iframe app stays inside the `(tenant, user, session)` isolation boundary and the unified approval/OAuth gates. The 14-round page-polish series continues from the next free integer after the 109 band; the band precedes it in execution order, it does not displace it. **Live Runtime reframe (2026-06-01, D-177):** after 108d shipped the topology-first Live Runtime page, an operator review found it low-value and Playground-overlapping on the dominant planner/RunLoop runtime (no engine graph). Phase 108e supersedes the topology-first composition (D-126) with a single-runtime **capability-adaptive cockpit** — the runtime's advertised `runtime.info` capabilities compose the page (an always-present spine + capability-gated topology / health / cost panels), so it is full on a planner runtime and richer on engine/multi-agent shapes with no rebuild. Plan: `docs/plans/phase-108e-live-runtime-capability-cockpit.md`. **Protocol auth-hardening sequence (114–116, D-219):** a planning + adversarial review of the Protocol surface found a steering-control privilege escalation — `dispatchControl` derived caller scope + tenant from the request *body* instead of the verified context identity, so a caller could assert `scope:"admin"` in the body and the cross-tenant gate could never fire. Phase 114 (shipped) closes it: the control surface now reads authority from `identity.From(ctx)` + the JWT scope claims, fails closed when no verified identity is present, and a non-admin caller can steer only runs it owns (admin for cross-tenant). 114 is the prerequisite hardening for the lesser-privileged-token work: Phase 115 adds production JWKS verification + a `harbor serve` auth path (giving the inert `JWKSURL`/`JWKSFile` config fields a consumer), and Phase 116 introduces the non-admin session-scoped token contract — the consumer that makes 114's derivation load-bearing and the seam where the `session_user` tier becomes safe to grant. Independently, Phase 117 hardens the chat module's encapsulation boundary (D-091) so it renders self-contained — its own theming contract, font-family inheritance, and host/theme parameterization — with no Console look-and-feel leakage, and Phase 118 builds the long-tracked `protocol-ts-gen-check` gate as a field-level lockstep VERIFICATION of the hand-maintained per-page TS client against a committed, Go-generated wire manifest (`cmd/harbor-protocol-ts-lockstep`) — a D-093 deviation (D-223): the "generate" half (per-domain generated TS type modules) is a deferred future phase and the `cmd/harbor-gen-protocol-ts` name stays reserved for it.
 
-|179 | Go Protocol client foundation: one authenticated REST/SSE client, curated `sdk/protocolclient` facade, and conversion of all shipped `inspect-*` commands as first consumers (D-315) | internal/protocol/client + sdk/protocolclient + cmd/harbor | §3.6, §5, §8 | 60, 61, 118, 159, 160 | 90% | Pending (v1.15) |
-|180 | Pure TUI projection/reconciliation core: history/task/pause/event join, generation fences, replay/lifecycle repair, honest partiality, and language-neutral Console/TUI fixture parity (D-316) | internal/tui/projection + Console fixture tests | §3.1, §3.3, §4, §5 | 179, 124, 125, 161–165, 174–178 | 95% | Pending (v1.15) |
-|181 | TUI terminal foundation: Bubble Tea shell, binding OpenCode-level quality floor, responsive design system, commands/dialogs/focus, themes/accessibility, full golden matrix, and PTY lifecycle (D-317) | internal/tui/app + internal/tui/ui | §3.1, §5, §8, §10 | 179 | 90% | Pending (v1.15) |
-|182 | Complete attach conversation/session experience: `harbor tui --attach`, editor-quality composer, sessions, streaming, semantic navigation, compact mode, export, reconnect, and local interaction state (D-318) | internal/tui + cmd/harbor | §3.1, §4, §5, §8 | 180, 181 | 85% | Pending (v1.15) |
-|183 | Runtime control and inspection: tasks, tools, artifacts, events, posture, interventions, canonical controls, diagnostics, attention, and generic renderer registries at the same quality floor (D-319) | internal/tui | §3.3, §4, §5, §6.3, §8 | 182, 72e/f/g, 73d/f/l, 162–163, 174–178 | 85% | Pending (v1.15) |
-|184 | Runtime distribution: explicit readiness, `harbor serve --tui`, curated `sdk/tui`, scaffolded serving-binary `--tui`, and cross-mode frame-equivalent wave PTY E2E (D-320) | internal/runtime/serve + sdk/server + sdk/tui + cmd/harbor + scaffold | §3.6, §5.6, §8 | 183, 159, 160 | 85% | Pending (v1.15) |
+|179 | Go Protocol client foundation: one authenticated REST/SSE client, curated `sdk/protocolclient` facade, and conversion of all shipped `inspect-*` commands as first consumers (D-315) | internal/protocol/client + sdk/protocolclient + cmd/harbor | §3.6, §5, §8 | 60, 61, 118, 159, 160 | 90% | Shipped (v1.15) |
+|180 | Pure TUI projection/reconciliation core: history/task/pause/event join, generation fences, replay/lifecycle repair, honest partiality, and language-neutral Console/TUI fixture parity (D-316) | internal/tui/projection + Console fixture tests | §3.1, §3.3, §4, §5 | 179, 124, 125, 161–165, 174–178 | 95% | Shipped (v1.15) |
+|181 | TUI terminal foundation: Bubble Tea shell, binding OpenCode-level quality floor, responsive design system, commands/dialogs/focus, themes/accessibility, full golden matrix, and PTY lifecycle (D-317) | internal/tui/app + internal/tui/ui | §3.1, §5, §8, §10 | 179, 180 | 90% | Shipped (v1.15) |
+|182 | Complete attach conversation/session experience: `harbor tui --attach`, editor-quality composer, sessions, streaming, semantic navigation, compact mode, export, reconnect, and local interaction state (D-318) | internal/tui + cmd/harbor | §3.1, §4, §5, §8 | 180, 181 | 85% | Shipped (v1.15) |
+|183 | Runtime control and inspection: tasks, tools, artifacts, events, posture, interventions, canonical controls, diagnostics, attention, and generic renderer registries at the same quality floor (D-319) | internal/tui | §3.3, §4, §5, §6.3, §8 | 182, 72e/f/g, 73d/f/l, 162–163, 174–178 | 85% | Shipped (v1.15) |
+|184 | Runtime distribution: explicit readiness, `harbor serve --tui`, curated `sdk/tui`, scaffolded serving-binary `--tui`, and cross-mode frame-equivalent wave PTY E2E (D-320) | internal/runtime/serve + sdk/server + sdk/tui + cmd/harbor + scaffold | §3.6, §5.6, §8 | 183, 159, 160 | 85% | Shipped (v1.15) |
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
@@ -4112,14 +4112,14 @@ per §17.8). Status: Shipped (V1.6).
   of internal wire packages. See
   `docs/plans/phase-179-go-protocol-client.md`.
 - **Decision:** D-315.
-- **Status:** Pending (v1.15).
+- **Status:** Shipped (v1.15).
 
 ---
 
 ### Phase 180 — TUI projection and reconciliation core
 
 - **Subsystem:** `internal/tui/projection`, shared language-neutral fixtures,
-  and the Console fixture adapter.
+  and Console production-reducer fixture tests.
 - **RFC:** §3.1, §3.3, §4, §5.
 - **Deps:** 179 plus 124, 125, 161–165, and 174–178.
 - **What it delivers:** a rendering-independent deterministic reducer joining
@@ -4129,7 +4129,7 @@ per §17.8). Status: Shipped (V1.6).
   private transcript endpoint. See
   `docs/plans/phase-180-tui-projection-core.md`.
 - **Decision:** D-316.
-- **Status:** Pending (v1.15).
+- **Status:** Shipped (v1.15).
 
 ---
 
@@ -4138,7 +4138,8 @@ per §17.8). Status: Shipped (V1.6).
 - **Subsystem:** `internal/tui/app`, `internal/tui/ui`, Bubble Tea dependencies,
   terminal goldens, and PTY lifecycle harness.
 - **RFC:** §3.1, §5.1, §5.4, §8, §10.
-- **Deps:** 179.
+- **Deps:** 179 and 180. As built, the shell consumes the Phase-180 fixture
+  projection so the visual primitive ships with a real projection consumer.
 - **What it delivers:** the complete terminal design system, responsive shell,
   command/dialog/focus infrastructure, themes/accessibility, exact breakpoint
   behavior, ten-size golden matrix, and cleanup gates. The binding minimum is
@@ -4146,7 +4147,7 @@ per §17.8). Status: Shipped (V1.6).
   `docs/design/tui/CONVENTIONS.md`; functional-but-unpolished is not shippable.
   See `docs/plans/phase-181-tui-terminal-foundation.md`.
 - **Decision:** D-317.
-- **Status:** Pending (v1.15).
+- **Status:** Shipped (v1.15).
 
 ---
 
@@ -4162,7 +4163,7 @@ per §17.8). Status: Shipped (V1.6).
   interaction state. Every applicable convention frame and PTY walkthrough is
   required. See `docs/plans/phase-182-tui-conversation-experience.md`.
 - **Decision:** D-318.
-- **Status:** Pending (v1.15).
+- **Status:** Shipped (v1.15).
 
 ---
 

@@ -1,0 +1,12 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+
+  ↑  Scrolled away · new output conti
+       Search: deployment · 2 matches
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

@@ -56,23 +56,23 @@ keeps an extensible typed `Call` core for later namespaces.
 
 ## Acceptance criteria
 
-- [ ] `internal/protocol/client` implements authenticated JSON calls, typed
+- [x] `internal/protocol/client` implements authenticated JSON calls, typed
       Protocol error decoding, SSE framing, `Last-Event-ID`, reconnect inputs,
       context cancellation, and `WithSession` without mutable global identity.
-- [ ] Request/response methods needed by the first TUI are typed: runtime info
+- [x] Request/response methods needed by the first TUI are typed: runtime info
       and health, start, tasks get/list, sessions list/inspect/set-title/delete,
       state history, pause list, control, artifacts put/list, and subscribe.
-- [ ] `sdk/protocolclient` aliases/forwards only the supported client surface;
+- [x] `sdk/protocolclient` aliases/forwards only the supported client surface;
       an external-module compile test constructs and calls it.
-- [ ] Token discovery remains a CLI policy (`HARBOR_TOKEN`, then the existing
+- [x] Token discovery remains a CLI policy (`HARBOR_TOKEN`, then the existing
       token file); the client accepts an injected `TokenSource` and never reads
       process environment or user files.
-- [ ] `inspect-events`, `inspect-runs`, and `inspect-topology` use the promoted
+- [x] `inspect-events`, `inspect-runs`, and `inspect-topology` use the promoted
       client; duplicate raw REST/SSE parsing is removed from `cmd/harbor`.
-- [ ] Typed errors preserve HTTP status plus canonical Protocol code; malformed
+- [x] Typed errors preserve HTTP status plus canonical Protocol code; malformed
       JSON/SSE, an incompatible handshake, missing identity, and cancellation
       fail visibly.
-- [ ] One shared client passes N≥100 concurrent mixed-session calls under
+- [x] One shared client passes N≥100 concurrent mixed-session calls under
       `-race` with no context bleed, cancellation cross-talk, or goroutine leak.
 
 ## Files added or changed
@@ -92,6 +92,11 @@ keeps an extensible typed `Call` core for later namespaces.
 type Connection struct {
     BaseURL string
     Token   TokenSource
+    Identity IdentityScope
+}
+
+type TokenSource interface {
+    Token(context.Context, IdentityScope) (string, error)
 }
 
 type Client interface {
@@ -105,6 +110,16 @@ type Client interface {
 
 The concrete interface also carries the typed session/task/history/pause/
 control/artifact methods named in the acceptance criteria.
+
+`TokenSource.Token(ctx, requestedIdentity)` is identity-aware by contract, not
+an optional capability. A source must mint, select, or reject a credential for
+the requested scope. `StaticToken(token, principal)` is principal-bound and
+fails visibly when a regular `WithSession` clone selects another session;
+multi-session callers provide a refreshing identity-aware source. An omitted
+connection identity remains supported for operator clients whose verified JWT
+is the sole identity carrier; a partially populated identity is rejected.
+Impersonating clones retarget the execution identity while retaining the
+authenticated Actor/Requester principal.
 
 ## Test plan
 
@@ -144,6 +159,10 @@ control/artifact methods named in the acceptance criteria.
   turn implementation packages into an accidental SDK contract.
 - SSE reconnect policy belongs to callers; the client exposes cursors and
   framing, while the TUI phase owns backoff and snapshot reconciliation.
+- JWT lifetime belongs to the injected token source. The client resolves it for
+  every request and SSE connection and never caches, extends, or persists a
+  signed credential. Phase 182 owns rotated-file reload and visible in-memory
+  replacement for its one-active-session terminal.
 - Existing inspect golden output must remain byte-compatible.
 
 ## Glossary additions
@@ -152,15 +171,15 @@ control/artifact methods named in the acceptance criteria.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] Concurrent-reuse test passes with N≥100 shared-client invocations under
+- [x] `make drift-audit` passes
+- [ ] `make preflight` passes — orchestrator-owned final broad gate
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] Concurrent-reuse test passes with N≥100 shared-client invocations under
       `-race`, including cancellation and goroutine-baseline assertions
-- [ ] Real-driver authenticated integration test covers identity and one
+- [x] Real-driver authenticated integration test covers identity and one
       failure mode under `-race`
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: N/A; no departure

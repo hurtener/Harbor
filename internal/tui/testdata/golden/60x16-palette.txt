@@ -1,0 +1,16 @@
+
+  ▛▀▖  Harbor
+
+      Commands
+     Search:
+    ● Command palette · Find an available action
+      Toggle runtime context · Show the fixed context si
+      Keyboard help · Show all reachable commands
+      Quit · Restore the terminal and exit
+      Attach file · Unavailable: requires a live authent
+      Cancel queued follow-up · Unavailable: no local fo
+      Remove attachment · Unavailable: no attachment is
+      Restore stashed draft · Pop the newest local draft
+
+
+    ↑/↓ move · enter select · esc close

@@ -85,6 +85,7 @@ export interface PlannerDecisionEvent {
  */
 export interface InterventionEvent {
 	runID: string;
+	pauseToken: string;
 	/** Operator-facing one-line summary of what is being asked. */
 	reason: string;
 	/** The source event that created this intervention. */
@@ -295,17 +296,24 @@ export function decodeIntervention(data: string): InterventionEvent | null {
 	const p = frame.payload;
 	if (type === 'tool.approval_requested') {
 		const tool = str(p.Tool);
+		const pauseToken = str(p.PauseToken);
+		if (pauseToken === '') return null;
 		const why = str(p.Reason);
 		const reason = why !== '' ? `Approve call to ${tool} — ${why}` : `Approve call to ${tool}`;
-		return { runID, reason, source: 'tool.approval_requested' };
+		return { runID, pauseToken, reason, source: 'tool.approval_requested' };
 	}
 	if (type === 'tool.auth_required') {
+		const pauseToken = str(p.PauseToken);
+		if (pauseToken === '') return null;
 		const name = str(p.SourceName) || str(p.Source);
-		return { runID, reason: `Connect ${name}`, source: 'tool.auth_required' };
+		return { runID, pauseToken, reason: `Connect ${name}`, source: 'tool.auth_required' };
 	}
 	// pause.requested
+	const pauseToken = str(p.Token);
+	if (pauseToken === '') return null;
 	return {
 		runID,
+		pauseToken,
 		reason: str(p.Reason) || 'Paused — awaiting operator',
 		source: 'pause.requested'
 	};
@@ -324,12 +332,14 @@ const INTERVENTION_CLEAR_TYPES = new Set([
  * `tool.auth_completed` all terminate a parked run; the Console drops
  * the matching pending intervention. Returns null for any other frame.
  */
-export function decodeInterventionClear(data: string): string | null {
+export function decodeInterventionClear(data: string): { runID: string; pauseToken: string } | null {
 	const frame = parseFrame(data);
 	if (frame === null) return null;
 	if (!INTERVENTION_CLEAR_TYPES.has(str(frame.type))) return null;
 	const runID = str(frame.run);
-	return runID === '' ? null : runID;
+	const payload = frame.payload ?? {};
+	const pauseToken = str(payload.Token) || str(payload.PauseToken);
+	return runID === '' || pauseToken === '' ? null : { runID, pauseToken };
 }
 
 /** Decode a `governance.budget_exceeded` frame. Returns null if not one. */

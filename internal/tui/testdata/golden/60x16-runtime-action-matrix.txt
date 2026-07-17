@@ -1,0 +1,16 @@
+
+  ▛▀▖  Harbor
+
+      Runtime actions
+     Search:
+    ● Delete artifact · Unavailable: no artifact selecte
+      Approve intervention · Unavailable: no unresolved
+      Submit required input · Unavailable: no unresolved
+      Submit OAuth intervention · Unavailable: no unreso
+      Reject intervention · Unavailable: no unresolved P
+      Resume intervention · Unavailable: no unresolved P
+      Delete session · sessions.delete · capability sess
+      Cancel task · Unavailable: no active task target
+
+
+    ↑/↓ move · enter select · esc close

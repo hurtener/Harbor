@@ -1,0 +1,20 @@
+
+  TASKS
+
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   TASK LIFECYCLE / TREE / PROGRESS / GROUP / ORPHAN / LATENCY · loa
+   Filter:  · page 1
+     task-01  paused · foreground · progress indeterminate · 1250ms
+   Cost: observed/non-authoritative; inspect canonical events for co
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

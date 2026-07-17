@@ -1,0 +1,12 @@
+
+  TASKS
+
+   Exactly one active session · tena
+   ↑/↓ select · PgUp/PgDn page · / f
+   TASK LIFECYCLE / TREE / PROGRESS
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

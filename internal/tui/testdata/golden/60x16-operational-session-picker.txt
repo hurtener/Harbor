@@ -1,0 +1,16 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+
+      Sessions
+     Search:
+    ● Current session · running
+      Incident review · completed · Resume on next canon
+
+
+    ↑/↓ move · enter select · esc close
+  ┃
+  ╹──────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runt

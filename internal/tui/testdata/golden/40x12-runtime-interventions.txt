@@ -1,0 +1,12 @@
+
+  INTERVENTIONS
+
+   Exactly one active session · tena
+   ↑/↓ select · PgUp/PgDn page · / f
+   INTERVENTION INBOX · retained by
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

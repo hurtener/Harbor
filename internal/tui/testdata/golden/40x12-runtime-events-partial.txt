@@ -1,0 +1,12 @@
+
+  EVENTS
+
+   Exactly one active session · tena
+   ↑/↓ select · PgUp/PgDn page · / f
+   EVENT STREAM / AGGREGATE · filter
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

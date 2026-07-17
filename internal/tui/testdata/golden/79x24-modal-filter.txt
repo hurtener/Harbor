@@ -1,0 +1,24 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+     ◆  Inspecting Runtime posture
+
+     ✓  r
+       Ru    Commands
+            Search: theme
+  ┃  !  O  ● Switch theme · Choose dark, light, or automatic mode
+  ┃  Oper
+
+           ↑/↓ move · enter select · esc close
+
+
+
+
+
+  ┃  Composer idle · attach a Runtime
+  ┃
+  ┃
+  ╹─────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

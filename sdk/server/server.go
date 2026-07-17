@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"io"
+	"os"
 
 	"github.com/hurtener/Harbor/internal/runtime/serve/external"
 	"github.com/hurtener/Harbor/sdk/config"
@@ -33,6 +35,16 @@ type Options struct {
 	// validated from this path. Ignored when a non-nil config is passed
 	// to Open.
 	ConfigPath string
+
+	// Stderr is where the serve band writes Runtime lifecycle banners
+	// (the HARBOR_DEV_BOUND line, the CORS-wildcard warning, the pprof
+	// banner) and where slog output lands when a caller injects its own
+	// logger. Nil defaults to os.Stderr — the headless posture. A
+	// co-launch binary (e.g. `harbor serve --tui` or a generated
+	// `--tui` binary) sets this to a captured buffer so Bubble Tea
+	// frames are never overwritten; on failure the terminal is restored
+	// before the captured stderr is printed.
+	Stderr io.Writer
 }
 
 // Open composes the production Protocol server from cfg (or, when cfg is
@@ -48,5 +60,9 @@ type Options struct {
 // internal serving band, which owns the JWKS factory, the config
 // re-validation, and the pre-policy registrar wiring.
 func Open(ctx context.Context, cfg *config.Config, opts Options) (*Handle, error) {
-	return external.Open(ctx, cfg, opts.ConfigPath, opts.RegisterCatalog)
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	return external.OpenWithStderr(ctx, cfg, opts.ConfigPath, stderr, opts.RegisterCatalog)
 }

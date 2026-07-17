@@ -1,0 +1,20 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE0000000000
+
+     ◆  Inspecting Runtime posture
+
+     ✓    Commands
+         Search:
+        ● Command palette · Find an available action
+  ┃  !    Toggle runtime context · Show the fixed context sideba
+  ┃  O    Keyboard help · Show all reachable commands
+          Quit · Restore the terminal and exit
+          Attach file · Unavailable: requires a live authenticat
+          Cancel queued follow-up · Unavailable: no local follow
+  ┃  C    Remove attachment · Unavailable: no attachment is sele
+  ┃       Restore stashed draft · Pop the newest local draft
+  ┃
+  ╹───                                                            ───
+  acme  ↑/↓ move · enter select · esc close
+  disconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime

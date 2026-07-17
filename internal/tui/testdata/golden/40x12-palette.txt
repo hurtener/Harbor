@@ -1,0 +1,12 @@
+
+  ▛▀▖  Harbor
+
+      Commands
+     Search:
+    ● Command palette
+      Toggle runtime context
+      Keyboard help
+      Quit
+
+
+    ↑/↓ move · enter select · esc cl

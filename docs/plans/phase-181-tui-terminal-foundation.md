@@ -52,27 +52,27 @@ preserving Protocol-only architecture and equivalent interaction quality.
 
 ## Acceptance criteria
 
-- [ ] RFC §10 pins Bubble Tea v2, Lip Gloss v2, selected Bubbles v2, and
+- [x] RFC §10 pins Bubble Tea v2, Lip Gloss v2, selected Bubbles v2, and
       `charmbracelet/x/ansi`; the static CGo-free binary gate remains green.
-- [ ] `internal/tui/ui` defines semantic tokens, dark/light themes, one width
+- [x] `internal/tui/ui` defines semantic tokens, dark/light themes, one width
       implementation, heavy-left-rule cards, composer/dialog/sidebar geometry,
       and no component-local color literals.
-- [ ] The root layer stack is base route, sidebar overlay/scrim, autocomplete,
+- [x] The root layer stack is base route, sidebar overlay/scrim, autocomplete,
       toast, modal, then startup indicator, with explicit dimensions before
       styling.
-- [ ] Exact responsive thresholds hold: 79/80 action transition and 120/121
+- [x] Exact responsive thresholds hold: 79/80 action transition and 120/121
       sidebar transition with fixed 42-column sidebar.
-- [ ] One command registry powers key dispatch, command palette, which-key,
+- [x] One command registry powers key dispatch, command palette, which-key,
       footer hints, disabled reasons, and help.
-- [ ] One modal/select model powers search, categories, current item, paging,
+- [x] One modal/select model powers search, categories, current item, paging,
       context actions, backdrop behavior, and focus restoration.
-- [ ] Truecolor, 256-color, 16-color, `NO_COLOR`, dark/light, and reduced-motion
+- [x] Truecolor, 256-color, 16-color, `NO_COLOR`, dark/light, and reduced-motion
       modes preserve state semantics.
-- [ ] Golden frames pass at all ten sizes and applicable states required by
+- [x] Golden frames pass at all ten sizes and applicable states required by
       `docs/design/tui/CONVENTIONS.md`.
-- [ ] PTY tests cover resize, suspend/resume, SIGINT/SIGTERM, panic recovery,
+- [x] PTY tests cover resize, suspend/resume, SIGINT/SIGTERM, panic recovery,
       cursor visibility, alternate-screen restoration, and no goroutine leak.
-- [ ] Side-by-side review records show equivalent or better hierarchy,
+- [x] Side-by-side review records show equivalent or better hierarchy,
       alignment, spacing, state feedback, and responsive behavior than the
       reference frames; “polish later” is not an accepted deviation.
 
@@ -118,6 +118,8 @@ preserving Protocol-only architecture and equivalent interaction quality.
 ## Dependencies
 
 - 179
+- 180; as built, the shell consumes the projection fixture rather than carrying
+  a parallel terminal-only state shape.
 
 ## Risks / open questions
 
@@ -133,13 +135,14 @@ preserving Protocol-only architecture and equivalent interaction quality.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Multi-isolation N/A: fixture-only shell carries no identity-scoped read
-- [ ] Reusable UI/model tests cover N≥100 updates under `-race`
-- [ ] PTY integration covers ≥1 failure mode and goroutine cleanup
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Multi-isolation N/A: fixture-only shell carries no identity-scoped read
+- [x] Reusable UI/model tests cover N≥100 updates under `-race`
+- [x] PTY integration covers ≥1 failure mode and goroutine cleanup
+- [x] If new vocabulary: glossary updated
+- [x] If a brief finding was departed from: justified above; no new decision
+  required

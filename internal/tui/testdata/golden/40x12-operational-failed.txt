@@ -1,0 +1,12 @@
+
+  ▛▀▖  Harbor  ·  Devel
+  ▙▄▘  fixture · session session-alph
+
+     successfully.
+
+  ×  Session failed · terminal error
+  ┃  Ask Harbor...
+  ┃  fixture
+  ╹──────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette

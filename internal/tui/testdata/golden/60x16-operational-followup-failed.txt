@@ -1,0 +1,16 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+  ┃  Summarize the deployment status.
+
+     The deployment completed successfully.
+
+
+
+                      Follow-up failed · retry or discard
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runt

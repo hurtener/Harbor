@@ -1,0 +1,16 @@
+
+  EVENTS
+
+   Exactly one active session · tenant-a/operator/sessio
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   EVENT STREAM / AGGREGATE · filter / raw safe payload
+   Filter:  · page 1
+   #42 future.runtime.notice · run task-01 · raw metadat
+   Partial: retained event window or aggregate is trunca
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runt

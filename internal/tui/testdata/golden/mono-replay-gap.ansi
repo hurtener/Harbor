@@ -1,0 +1,30 @@
+
+  [1m▛▀▖[m  [1mHarbor[m
+  [1m▙▄▘[m  [2msession 01K0HARBORFIXTURE0000000000[m
+
+     [2m◆  Inspecting Runtime posture[m
+
+     [1m✓  runtime.health  succeeded[m
+       [2mRuntime health snapshot received[m
+
+  [4;4m┃[m  [4;4m![m[4m [m[4m [m[4;4mO[m[4;4mp[m[4;4me[m[4;4mr[m[4;4ma[m[4;4mt[m[4;4mo[m[4;4mr[m[4m [m[4;4ma[m[4;4mp[m[4;4mp[m[4;4mr[m[4;4mo[m[4;4mv[m[4;4ma[m[4;4ml[m[4m [m[4;4mr[m[4;4me[m[4;4mq[m[4;4mu[m[4;4mi[m[4;4mr[m[4;4me[m[4;4md[m
+  [4;4m┃[m  [4;4mO[m[4;4mp[m[4;4me[m[4;4mr[m[4;4ma[m[4;4mt[m[4;4mo[m[4;4mr[m[4m [m[4;4ma[m[4;4mp[m[4;4mp[m[4;4mr[m[4;4mo[m[4;4mv[m[4;4ma[m[4;4ml[m[4m [m[4;4mr[m[4;4me[m[4;4mq[m[4;4mu[m[4;4mi[m[4;4mr[m[4;4me[m[4;4md[m
+
+
+
+
+
+
+
+
+
+
+
+
+  [1;4;4m×[m[4m [m[4m [m[1;4;4mR[m[1;4;4me[m[1;4;4mp[m[1;4;4ml[m[1;4;4ma[m[1;4;4my[m[4m [m[1;4;4mg[m[1;4;4ma[m[1;4;4mp[m[4m [m[1;4;4m·[m[4m [m[1;4;4ma[m[1;4;4mu[m[1;4;4mt[m[1;4;4mh[m[1;4;4mo[m[1;4;4mr[m[1;4;4mi[m[1;4;4mt[m[1;4;4ma[m[1;4;4mt[m[1;4;4mi[m[1;4;4mv[m[1;4;4me[m[4m [m[1;4;4mr[m[1;4;4me[m[1;4;4mc[m[1;4;4mo[m[1;4;4mn[m[1;4;4mc[m[1;4;4mi[m[1;4;4ml[m[1;4;4mi[m[1;4;4ma[m[1;4;4mt[m[1;4;4mi[m[1;4;4mo[m[1;4;4mn[m[4m [m[1;4;4mr[m[1;4;4me[m[1;4;4mq[m[1;4;4mu[m[1;4;4mi[m[1;4;4mr[m[1;4;4me[m[1;4;4md[m
+  [1m┃[m  Composer idle · attach a Runtime
+  [1m┃[m
+  [1m┃[m
+  [1m╹[m──────────────────────────────────────────────────────────────────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000000000
+  [2mdisconnected   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context[m

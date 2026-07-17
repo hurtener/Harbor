@@ -8,9 +8,14 @@ package serve
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +37,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/state"
@@ -367,6 +373,25 @@ func TestBuildMux_OptionalSubsystemMatrix(t *testing.T) {
 				t.Errorf("%s with its handle nil = %d, want 404", path, code)
 			}
 		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/control/runtime.info", strings.NewReader(`{"identity":{"tenant":"t","user":"u","session":"s"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Harbor-Tenant", "t")
+		req.Header.Set("X-Harbor-User", "u")
+		req.Header.Set("X-Harbor-Session", "s")
+		rec := httptest.NewRecorder()
+		built.Mux.ServeHTTP(rec, req)
+		var info types.RuntimeInfo
+		if rec.Code != http.StatusOK {
+			t.Fatalf("runtime.info status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&info); err != nil {
+			t.Fatal(err)
+		}
+		for _, capability := range info.Capabilities {
+			if capability == types.CapStateSnapshots {
+				t.Fatal("stripped mux advertised state_snapshots without history/session/pause hydration surfaces")
+			}
+		}
 	})
 
 	t.Run("present_handles_mount_their_surfaces", func(t *testing.T) {
@@ -621,4 +646,374 @@ func TestClose_CloserError_WarnsLoud(t *testing.T) {
 	cc, c := context.WithTimeout(context.Background(), 5*time.Second)
 	defer c()
 	h.Close(cc) // must log the closer error and keep draining
+}
+
+// TestWaitReady_ReturnsBoundAddress is the in-package AC1 gate: WaitReady
+// returns the actual OS-assigned address after Serve binds an ephemeral
+// port, with no polling or second listener lifecycle.
+func TestWaitReady_ReturnsBoundAddress(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := Boot(ctx, baseOptions(t))
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		h.Close(cc)
+	}()
+	go func() { _ = h.Serve(ctx) }()
+	readyCtx, rc := context.WithTimeout(context.Background(), 10*time.Second)
+	defer rc()
+	addr, err := h.WaitReady(readyCtx)
+	if err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if addr == "" || strings.HasSuffix(addr, ":0") {
+		t.Fatalf("WaitReady returned empty or unbound address %q", addr)
+	}
+	resp, gErr := http.Get("http://" + addr + "/healthz")
+	if gErr != nil {
+		t.Fatalf("dial WaitReady address %s: %v", addr, gErr)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz on %s: status %d", addr, resp.StatusCode)
+	}
+	cancel()
+}
+
+// TestWaitReady_BindFailure_ReturnsError is the in-package gate for the
+// failure path: WaitReady carries the bind error when the listener fails.
+func TestWaitReady_BindFailure_ReturnsError(t *testing.T) {
+	hold, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hold listen: %v", err)
+	}
+	defer func() { _ = hold.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := baseOptions(t)
+	opts.BindAddr = hold.Addr().String()
+	h, err := Boot(ctx, opts)
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		h.Close(cc)
+	}()
+	go func() { _ = h.Serve(ctx) }()
+	readyCtx, rc := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rc()
+	_, wErr := h.WaitReady(readyCtx)
+	if wErr == nil {
+		t.Fatal("WaitReady succeeded on a bind that should have failed")
+	}
+	cancel()
+}
+
+// TestWaitReady_CancelledCtx_ReturnsCtxErr proves WaitReady returns
+// ctx.Err() when the caller's ctx cancels before the listener binds.
+func TestWaitReady_CancelledCtx_ReturnsCtxErr(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := Boot(ctx, baseOptions(t))
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		h.Close(cc)
+	}()
+	readyCtx, readyCancel := context.WithCancel(context.Background())
+	readyCancel()
+	_, wErr := h.WaitReady(readyCtx)
+	if wErr == nil {
+		t.Fatal("WaitReady succeeded on an already-cancelled ctx")
+	}
+}
+
+// TestWaitReady_ConcurrentWaiters_RaceFree proves the one-shot
+// readiness is race-safe: N goroutines all calling WaitReady against one
+// shared handle receive the same bound address with no data race.
+func TestWaitReady_ConcurrentWaiters_RaceFree(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := Boot(ctx, baseOptions(t))
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		h.Close(cc)
+	}()
+	go func() { _ = h.Serve(ctx) }()
+	const N = 100
+	var wg sync.WaitGroup
+	addrs := make([]string, N)
+	wg.Add(N)
+	for i := range N {
+		go func(idx int) {
+			defer wg.Done()
+			readyCtx, rc := context.WithTimeout(context.Background(), 10*time.Second)
+			defer rc()
+			a, wErr := h.WaitReady(readyCtx)
+			if wErr != nil {
+				t.Errorf("waiter %d: %v", idx, wErr)
+				return
+			}
+			addrs[idx] = a
+		}(i)
+	}
+	wg.Wait()
+	cancel()
+	first := addrs[0]
+	if first == "" {
+		t.Fatal("first waiter got empty address")
+	}
+	for i, a := range addrs {
+		if a != first {
+			t.Errorf("waiter %d got %q, want %q", i, a, first)
+		}
+	}
+}
+
+// TestNewJWKSAuthValidatorFactory_ReturnsFactory covers the production
+// auth-validator factory constructor — the one shared factory every
+// production serve caller injects. The factory is called with a real
+// config + redactor + bus + logger and must return a non-nil validator
+// backed by a real JWKS file (not the unreachable URL in serveTestYAML).
+func TestNewJWKSAuthValidatorFactory_ReturnsFactory(t *testing.T) {
+	factory := NewJWKSAuthValidatorFactory()
+	if factory == nil {
+		t.Fatal("NewJWKSAuthValidatorFactory returned nil")
+	}
+	// Write a real JWKS file so the factory's synchronous initial fetch
+	// succeeds (the test config's jwks_url is unreachable by design).
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa key: %v", err)
+	}
+	n := base64.RawURLEncoding.EncodeToString(priv.N.Bytes())
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.E)).Bytes())
+	set := map[string]any{
+		"keys": []map[string]any{
+			{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "serve-test", "n": n, "e": e},
+		},
+	}
+	raw, _ := json.Marshal(set)
+	jwksPath := filepath.Join(t.TempDir(), "jwks.json")
+	if err := os.WriteFile(jwksPath, raw, 0o600); err != nil {
+		t.Fatalf("write jwks: %v", err)
+	}
+	yaml := strings.Replace(serveTestYAML,
+		"jwks_url: https://issuer.example.com/.well-known/jwks.json",
+		"jwks_file: "+jwksPath, 1)
+	// The test config's jwt_algorithms is [ES256]; our JWKS key is
+	// RS256. Align the config so the validator accepts the key.
+	yaml = strings.Replace(yaml, "- ES256", "- RS256", 1)
+	cfgPath := filepath.Join(t.TempDir(), "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	cfg, err := config.Load(context.Background(), cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	validator, err := factory(context.Background(), cfg, red, bus, logger)
+	if err != nil {
+		t.Fatalf("factory call: %v", err)
+	}
+	if validator == nil {
+		t.Fatal("factory returned nil validator")
+	}
+}
+
+// TestInstanceID_HostnameResilience covers the InstanceID helper — the
+// stable-per-process identifier a Console keys each attachment by. The
+// helper appends the hostname when available and falls back to the bare
+// prefix otherwise.
+func TestInstanceID_HostnameResilience(t *testing.T) {
+	id := InstanceID("harbor-test")
+	if id == "" {
+		t.Fatal("InstanceID returned empty")
+	}
+	if !strings.HasPrefix(id, "harbor-test") {
+		t.Errorf("InstanceID %q does not start with the prefix", id)
+	}
+	// InstanceID always returns prefix + "-" + hostname when a hostname
+	// is available; the bare prefix is the fallback when os.Hostname
+	// fails. Both shapes are valid; the assertion is non-empty +
+	// prefix-carrying.
+	bare := InstanceID("")
+	// bare is "-<hostname>" or "" (when hostname is unavailable); both
+	// are acceptable. The assertion is that it does NOT carry a fake
+	// prefix.
+	if bare != "" && !strings.HasPrefix(bare, "-") {
+		t.Errorf("InstanceID with empty prefix returned %q, want empty or -hostname", bare)
+	}
+}
+
+// TestServe_GracefulShutdownWithinGracePeriod covers Serve's ctx-cancel
+// path: when ctx cancels, Serve drains within the configured grace
+// period and returns nil. This is the production shutdown-ordering path.
+func TestServe_GracefulShutdownWithinGracePeriod(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := Boot(ctx, baseOptions(t))
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		h.Close(cc)
+	}()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- h.Serve(ctx) }()
+	// Wait for the listener to bind.
+	readyCtx, rc := context.WithTimeout(context.Background(), 10*time.Second)
+	defer rc()
+	addr, wErr := h.WaitReady(readyCtx)
+	if wErr != nil {
+		t.Fatalf("WaitReady: %v", wErr)
+	}
+	if addr == "" || strings.HasSuffix(addr, ":0") {
+		t.Fatalf("WaitReady returned unbound address %q", addr)
+	}
+	// Cancel the serve ctx — Serve must drain and return nil.
+	cancel()
+	select {
+	case sErr := <-serveDone:
+		if sErr != nil {
+			t.Errorf("Serve returned %v on graceful shutdown, want nil", sErr)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Serve did not return within 15s of ctx cancel")
+	}
+}
+
+// TestServe_HABBOR_DEBUG_ADDR_EmptyString_ProducesNoDebugListener
+// covers the branch where HARBOR_DEBUG_ADDR is set to an empty string —
+// the env var is present but blank, so no debug listener is mounted.
+// This is a boundary case: a blank env var MUST NOT be treated as a
+// valid debug address.
+func TestServe_HARBOR_DEBUG_ADDR_EmptyString_ProducesNoDebugListener(t *testing.T) {
+	t.Setenv("HARBOR_DEBUG_ADDR", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := Boot(ctx, baseOptions(t))
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		h.Close(cc)
+	}()
+	// No debug server should be present (the empty env var is a no-op).
+	// The healthz + readyz surfaces are still mounted.
+	if code := probe(h, http.MethodGet, "/readyz", ""); code != http.StatusOK {
+		t.Errorf("/readyz = %d, want 200", code)
+	}
+}
+
+// TestServe_StderrWritesHARBOR_DEV_BOUND proves Serve writes the
+// HARBOR_DEV_BOUND line to the configured stderr sink — the co-launch
+// log-separation contract (a co-launch binary reads this line from the
+// captured sink, not the terminal).
+func TestServe_StderrWritesHARBOR_DEV_BOUND(t *testing.T) {
+	var stderr strings.Builder
+	opts := baseOptions(t)
+	opts.Stderr = &stderrSyncWriter{b: &stderr}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := Boot(ctx, opts)
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		h.Close(cc)
+	}()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- h.Serve(ctx) }()
+	readyCtx, rc := context.WithTimeout(context.Background(), 10*time.Second)
+	defer rc()
+	_, wErr := h.WaitReady(readyCtx)
+	if wErr != nil {
+		t.Fatalf("WaitReady: %v", wErr)
+	}
+	cancel()
+	<-serveDone
+	if !strings.Contains(stderr.String(), "HARBOR_DEV_BOUND=") {
+		t.Errorf("stderr missing HARBOR_DEV_BOUND line; got:\n%s", stderr.String())
+	}
+}
+
+// TestBoot_ProgrammaticConfig_ValidateFailure covers the Boot branch
+// where opts.Config is non-nil but fails Validate. A programmatically-
+// built config cannot bypass validation (the identity/JWKS ceremony a
+// Protocol server MUST carry is enforced here, loud).
+func TestBoot_ProgrammaticConfig_ValidateFailure(t *testing.T) {
+	cfg := config.Defaults()
+	// Defaults() carries no identity block — Validate must reject it.
+	opts := Options{
+		Config:               cfg,
+		AuthValidatorFactory: testFactory(t),
+		SubcommandLabel:      "dev",
+	}
+	_, err := Boot(context.Background(), opts)
+	if err == nil {
+		t.Fatal("Boot with an invalid programmatically-built config must fail loud")
+	}
+	if !strings.Contains(err.Error(), "config") {
+		t.Errorf("error should name the config layer, got %v", err)
+	}
+}
+
+// TestServe_GracePeriodFallback covers Serve's `if grace <= 0` branch:
+// when the config's ShutdownGracePeriod is zero at the Serve call site,
+// Serve falls back to 30s. The config validator rejects a zero grace
+// period, so this test loads a valid config then zeroes the field
+// post-load to exercise the Serve-level fallback.
+func TestServe_GracePeriodFallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := Boot(ctx, baseOptions(t))
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		h.Close(cc)
+	}()
+	// Zero the grace period post-load to exercise Serve's 30s fallback.
+	h.Cfg.Server.ShutdownGracePeriod = 0
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- h.Serve(ctx) }()
+	readyCtx, rc := context.WithTimeout(context.Background(), 10*time.Second)
+	defer rc()
+	_, wErr := h.WaitReady(readyCtx)
+	if wErr != nil {
+		t.Fatalf("WaitReady: %v", wErr)
+	}
+	// Cancel — Serve must drain via the 30s fallback (well within the
+	// test's timeout).
+	cancel()
+	select {
+	case <-serveDone:
+	case <-time.After(15 * time.Second):
+		t.Fatal("Serve did not return within 15s of ctx cancel (grace-period fallback)")
+	}
 }

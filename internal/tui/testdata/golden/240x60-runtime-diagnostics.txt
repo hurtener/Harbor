@@ -1,0 +1,60 @@
+
+  DIAGNOSTICS
+
+   Exactly one active session · tenant-a/operator/session-alpha
+   ↑/↓ select · PgUp/PgDn page · / filter · F9 actions
+   DIAGNOSTICS · stream / retention / capability / partiality
+   Unavailable topology.snapshot: HTTP 501 capability unavailable
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

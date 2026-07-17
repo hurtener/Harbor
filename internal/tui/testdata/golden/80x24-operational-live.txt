@@ -1,0 +1,24 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+  ┃  Summarize the deployment status.
+
+     The deployment completed successfully.
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃  Ask Harbor...
+  ┃
+  ╹──────────────────────────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  live   ·   ctrl+p Command palette   ctrl+x s Toggle runtime context

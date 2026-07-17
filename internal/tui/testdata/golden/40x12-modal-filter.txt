@@ -1,0 +1,12 @@
+
+  ▛▀▖  Harbor
+
+      Commands
+     Search: theme
+    ● Switch theme
+
+
+
+
+
+    ↑/↓ move · enter select · esc cl

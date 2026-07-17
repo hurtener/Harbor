@@ -1,0 +1,16 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session session-alpha
+
+
+      Replace credential · memory only
+     Search:
+
+
+    ↑/↓ move · enter select · esc close
+
+  ┃  Ask Harbor...
+  ┃  disabled
+  ╹──────────────────────────────────────────────────────
+  tenant-a/operator/session-alpha
+  authentication expired   ·   ctrl+p Command palette   ct

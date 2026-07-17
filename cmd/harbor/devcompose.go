@@ -89,7 +89,7 @@ func (c *devComposition) serveOptions(cfgPath string, port int, bindAddr, label 
 		},
 		DisplayName:      "harbor dev",
 		InstanceID:       devInstanceID(),
-		BuildVersion:     HarborVersion,
+		BuildVersion:     displayVersion(),
 		BuildCommit:      "dev",
 		DevAllowMock:     c.allowMock,
 		BuildLLMSnapshot: newLLMSnapshotBuilder(c.allowMock),

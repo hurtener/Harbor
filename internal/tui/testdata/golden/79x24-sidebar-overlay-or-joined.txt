@@ -1,0 +1,24 @@
+
+  ▛▀▖  Harbor
+  ▙▄▘  session 01K0HARBORFIXTURE00000  RUNTIME CONTEXT
+
+     ◆  Inspecting Runtime posture     Session
+                                       01K0HARBORFIXTURE0000000000
+     ✓  runtime.health  succeeded
+       Runtime health snapshot receiv  Status
+                                       running
+  ┃  !  Operator approval required
+  ┃  Operator approval required
+
+
+
+
+
+
+
+  ┃  Composer idle · attach a Runtime
+  ┃
+  ┃
+  ╹──────────────────────────────────
+  acme/operator/01K0HARBORFIXTURE0000
+  disconnected   ·   ctrl+p Command p
