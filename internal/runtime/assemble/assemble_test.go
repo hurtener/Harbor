@@ -22,6 +22,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/llm/mock"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -189,6 +191,54 @@ func TestAssemble_TokenBudget_BuildsCompressionRunner(t *testing.T) {
 	}()
 	if stack2.Compression != nil {
 		t.Error("Stack.Compression non-nil with planner.token_budget=0 — compression must default off")
+	}
+}
+
+// TestAssemble_BatchSpawnCap_ThreadedIntoExecutor — the assembled
+// ToolExecutor honours `planner.max_batch_spawns` from config: a stack
+// built with a cap of 2 rejects a Batch carrying 3 spawns with the
+// breadth-cap error. This proves `dispatch.WithMaxBatchSpawns(
+// cfg.Planner.BatchSpawnCap())` is threaded through the ONE production
+// assembly. (The companion `steering.WithHardCancelHook` wiring is
+// exercised end-to-end by the integration suite's cancel-hierarchy
+// test, where the run-level hard cancel's cascade is observable.)
+func TestAssemble_BatchSpawnCap_ThreadedIntoExecutor(t *testing.T) {
+	cfg := minimalCfg(t)
+	cfg.Planner.MaxBatchSpawns = 2
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("cfg.Validate(max_batch_spawns): %v", err)
+	}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	defer func() {
+		if cerr := stack.Close(context.Background()); cerr != nil {
+			t.Errorf("Close: %v", cerr)
+		}
+	}()
+	if stack.Executor == nil {
+		t.Fatal("stack.Executor is nil")
+	}
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	ctx, err := identity.WithRun(context.Background(), id, "run-batch-cap")
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+	rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: "run-batch-cap"}}
+	d := planner.Batch{
+		Spawns: []planner.SpawnTask{
+			{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"},
+			{Spec: planner.SpawnSpec{Query: "b"}, CallID: "s1"},
+			{Spec: planner.SpawnSpec{Query: "c"}, CallID: "s2"},
+		},
+	}
+	_, _, execErr := stack.Executor.ExecuteDecision(ctx, rc, d)
+	if execErr == nil {
+		t.Fatal("Batch with 3 spawns under cap=2 dispatched without error; cap not threaded from config")
+	}
+	if !strings.Contains(execErr.Error(), "max_batch_spawns") {
+		t.Errorf("err = %q, want it to name max_batch_spawns (the threaded cap)", execErr.Error())
 	}
 }
 

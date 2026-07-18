@@ -1741,6 +1741,30 @@ func TestPlannerConfig_SpawnDepthCap(t *testing.T) {
 	}
 }
 
+// TestValidate_Planner_RejectsNegativeMaxBatchSpawns pins the loud
+// rejection of a negative max_batch_spawns (mirrors the
+// absolute_max_spawn_depth rule).
+func TestValidate_Planner_RejectsNegativeMaxBatchSpawns(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", MaxBatchSpawns: -1}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate(planner.max_batch_spawns=-1) returned nil, want error")
+	}
+}
+
+// TestPlannerConfig_BatchSpawnCap pins the accessor: zero/unset resolves
+// to the dev-runtime default of 5; a positive value is honoured verbatim.
+func TestPlannerConfig_BatchSpawnCap(t *testing.T) {
+	t.Parallel()
+	if got := (config.PlannerConfig{}).BatchSpawnCap(); got != 5 {
+		t.Errorf("unset BatchSpawnCap() = %d, want 5 (default)", got)
+	}
+	if got := (config.PlannerConfig{MaxBatchSpawns: 9}).BatchSpawnCap(); got != 9 {
+		t.Errorf("BatchSpawnCap() = %d, want 9", got)
+	}
+}
+
 // TestValidate_Planner_AcceptsExtraGuidance pins the Phase 83a
 // `planner.extra_guidance` key (RFC §6.2). The validator imposes no
 // rule beyond "string" — operator copy is operator copy — so an

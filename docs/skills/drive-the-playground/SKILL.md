@@ -66,7 +66,7 @@ The Playground's chat input drives FOREGROUND tasks — synchronous, the chat pa
 
 For a chat agent, foreground is what you want — you're in conversation. But the planner CAN spawn background tasks mid-run (e.g. "I'll fetch the data in the background while we keep talking"). Those show up in the Tasks page; the foreground chat reflects them with a small "background task spawned" event in the chat history.
 
-As of Phase 107e the dev runtime actually RUNS those spawned background tasks (each gets its own planner sub-run) and the agent can join one to read its result. A background sub-task can itself spawn further sub-tasks; `planner.absolute_max_spawn_depth` (default 4) caps how deeply that nests, so a runaway agent can't recurse without bound — a spawn past the cap surfaces as an error the planner re-plans against.
+As of Phase 107e the dev runtime actually RUNS those spawned background tasks (each gets its own planner sub-run) and the agent can join one to read its result. A background sub-task can itself spawn further sub-tasks; `planner.absolute_max_spawn_depth` (default 4) caps how deeply that nests, so a runaway agent can't recurse without bound — a spawn past the cap surfaces as an error the planner re-plans against. A model can also batch several spawns alongside ordinary tool calls in ONE response; `planner.max_batch_spawns` (default 5) caps how many spawns one such batch may carry — the breadth ceiling, distinct from the depth cap — and a batch over the ceiling is rejected whole (nothing dispatches) rather than truncated.
 
 ### Steer vs queue — input during a running foreground task
 

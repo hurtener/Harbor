@@ -94,6 +94,15 @@ type toolExecutor struct {
 	// background sub-agent that itself emits SpawnTask cannot recurse
 	// without bound. The cap bounds depth, not breadth.
 	maxSpawnDepth int
+
+	// maxBatchSpawns caps the number of spawn branches ONE Batch decision
+	// may carry (planner.max_batch_spawns) — the BREADTH ceiling that
+	// maxSpawnDepth's chain-depth bound leaves open (sibling spawns in one
+	// response share the parent's depth and are otherwise unlimited). A
+	// Batch whose Spawns length exceeds it is rejected in FULL before any
+	// tool branch dispatches or any spawn registers — never truncated.
+	// Immutable after construction.
+	maxBatchSpawns int
 }
 
 // defaultHeavyThreshold is the heavy-output safety floor applied when
@@ -131,6 +140,16 @@ func WithMaxSpawnDepth(n int) Option {
 	return func(e *toolExecutor) { e.maxSpawnDepth = n }
 }
 
+// WithMaxBatchSpawns caps a Batch decision's Spawns length
+// (planner.max_batch_spawns). Non-positive values fall back to
+// `config.DefaultMaxBatchSpawns` (the one source of the batch-spawn
+// breadth default). Exceeding the cap rejects the WHOLE batch before any
+// tool branch dispatches or any spawn registers — never a silent
+// truncation to the first N spawns.
+func WithMaxBatchSpawns(n int) Option {
+	return func(e *toolExecutor) { e.maxBatchSpawns = n }
+}
+
 // WithLogger sets the executor's logger. Nil falls back to
 // slog.Default().
 func WithLogger(l *slog.Logger) Option {
@@ -139,9 +158,9 @@ func WithLogger(l *slog.Logger) Option {
 
 // NewToolExecutor binds the catalog + artifact store + task registry
 // the run loop dispatches against — the SAME instances the stack's
-// boot wiring constructs. The returned executor covers all four
-// non-Finish Decision shapes (CallTool, CallParallel, SpawnTask,
-// AwaitTask) with the heavy-result→artifact promotion applied
+// boot wiring constructs. The returned executor covers every
+// non-Finish Decision shape (CallTool, CallParallel, SpawnTask,
+// AwaitTask, and the heterogeneous Batch) with the heavy-result→artifact promotion applied
 // to every observation that reaches the planner / LLM edge.
 //
 // `taskReg` MAY be nil in degraded wiring — SpawnTask / AwaitTask then
@@ -177,6 +196,11 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 		// cross-region reference wired by per the
 		// handoff). No other literal copy of the value is allowed.
 		e.maxSpawnDepth = config.DefaultSpawnDepthCap
+	}
+	if e.maxBatchSpawns <= 0 {
+		// The batch-spawn breadth default is single-sourced on
+		// `config.DefaultMaxBatchSpawns`; no other literal copy is allowed.
+		e.maxBatchSpawns = config.DefaultMaxBatchSpawns
 	}
 	return e
 }
@@ -214,6 +238,8 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 		return e.spawnTask(ctx, rc, d)
 	case planner.AwaitTask:
 		return e.awaitTask(ctx, rc, d)
+	case planner.Batch:
+		return e.batch(ctx, rc, d)
 	default:
 		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
 	}
@@ -276,12 +302,30 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
 	}
-	raw := planner.ParallelObservation{Branches: make([]planner.ParallelBranchObservation, 0, len(results))}
-	llmAgg := planner.ParallelObservation{Branches: make([]planner.ParallelBranchObservation, 0, len(results))}
+	rawBranches, llmBranches := e.branchObservations(ctx, rc, d.Branches, results)
+	return planner.ParallelObservation{Branches: rawBranches},
+		planner.ParallelObservation{Branches: llmBranches}, nil
+}
+
+// branchObservations assembles the raw + LLM-projected per-branch
+// observation slices from a set of parallel.Executor results. Each
+// result carries its originating branch Index; the returned slices stay
+// in the executor's returned order (branch-index order under JoinAll),
+// and each entry's CallID is stamped from `branches[Index].CallID` so a
+// downstream renderer can pair every provider tool_call_id with its
+// answer. A branch error surfaces as that entry's Error (identical raw +
+// LLM entry); a success gets its Value projected through the same
+// heavy-content discipline the single-CallTool path applies, so a heavy
+// branch never trips the LLM-edge context-leak guard. Shared by the
+// CallParallel path and the Batch decision's tool half so both preserve
+// the identical non-atomic, JoinAll-only native posture.
+func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunContext, branches []planner.CallTool, results []parallel.Result) (raw, llm []planner.ParallelBranchObservation) {
+	raw = make([]planner.ParallelBranchObservation, 0, len(results))
+	llm = make([]planner.ParallelBranchObservation, 0, len(results))
 	for _, r := range results {
 		callID := ""
-		if r.Index >= 0 && r.Index < len(d.Branches) {
-			callID = d.Branches[r.Index].CallID
+		if r.Index >= 0 && r.Index < len(branches) {
+			callID = branches[r.Index].CallID
 		}
 		if r.Err != nil {
 			branchErr := planner.ParallelBranchObservation{
@@ -290,8 +334,8 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 				Index:  r.Index,
 				Error:  r.Err.Error(),
 			}
-			raw.Branches = append(raw.Branches, branchErr)
-			llmAgg.Branches = append(llmAgg.Branches, branchErr)
+			raw = append(raw, branchErr)
+			llm = append(llm, branchErr)
 			continue
 		}
 		var rawVal any
@@ -301,22 +345,22 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 				rawVal = map[string]any{"meta": r.Result.Meta}
 			}
 		}
-		raw.Branches = append(raw.Branches, planner.ParallelBranchObservation{
+		raw = append(raw, planner.ParallelBranchObservation{
 			CallID: callID,
 			Tool:   r.Tool,
 			Index:  r.Index,
 			Value:  rawVal,
 		})
-		// AC-3: per-branch projection — heavy branch values get
-		// promoted to an artifact-stub summary independently.
-		llmAgg.Branches = append(llmAgg.Branches, planner.ParallelBranchObservation{
+		// Per-branch projection — heavy branch values get promoted to an
+		// artifact-stub summary independently.
+		llm = append(llm, planner.ParallelBranchObservation{
 			CallID: callID,
 			Tool:   r.Tool,
 			Index:  r.Index,
 			Value:  e.projectForLLM(ctx, rc, r.Tool, rawVal),
 		})
 	}
-	return raw, llmAgg, nil
+	return raw, llm
 }
 
 // spawnTask dispatches a planner.SpawnTask.
@@ -345,13 +389,49 @@ func (e *toolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d p
 		return nil, nil, fmt.Errorf("SpawnTask: attach identity: %w", idErr)
 	}
 
-	// AC-8 recursion guard: the new task's depth is the parent chain
-	// depth + 1. The parent is the current run's task (RunID doubles as
-	// the TaskID at the dev layer). Reject loudly above the cap — never a
-	// silent drop.
+	handle, kind, err := e.spawnOne(taskCtx, rc, d)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if d.Spec.RetainTurn {
+		task, awaitErr := e.awaitTerminal(taskCtx, handle.ID)
+		if awaitErr != nil {
+			return nil, nil, fmt.Errorf("SpawnTask(retain-turn, %q): await: %w", handle.ID, awaitErr)
+		}
+		raw := taskOutcomeObservation(task)
+		return raw, e.projectForLLM(ctx, rc, react.SpawnTaskToolName, raw), nil
+	}
+
+	raw := map[string]any{
+		"task_id": string(handle.ID),
+		"kind":    string(kind),
+		"status":  "spawned",
+	}
+	return raw, raw, nil
+}
+
+// spawnOne performs the shared spawn-registration core both the plain
+// SpawnTask path and the Batch decision's spawn half use: the
+// recursion-guard depth check, the SpawnRequest build under the run's
+// identity triple (NEVER a global — CLAUDE.md §6), and the registry
+// Spawn call. `taskCtx` MUST already carry the run's identity (the
+// caller attaches it once). The returned kind is the resolved task kind
+// (defaulted to KindBackground) so the caller can surface it verbatim.
+//
+// Errors are returned as VALUES for the caller to dispose of per its
+// atomicity posture: the plain SpawnTask path surfaces them as the
+// step's fail-loud error; the Batch path records a registry reject
+// (depth-cap exceeded, sealed group, malformed request) as THAT spawn's
+// error observation while the rest of the batch proceeds (non-atomic
+// per-branch — every call_id is answered).
+func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, d planner.SpawnTask) (tasks.TaskHandle, tasks.TaskKind, error) {
+	// Recursion guard: the new task's depth is the parent chain depth + 1.
+	// The parent is the current run's task (RunID doubles as the TaskID at
+	// the dev layer). Reject loudly above the cap — never a silent drop.
 	parentID := tasks.TaskID(rc.Quadruple.RunID)
 	if depth := e.spawnChainDepth(taskCtx, parentID); depth+1 > e.maxSpawnDepth {
-		return nil, nil, fmt.Errorf(
+		return tasks.TaskHandle{}, "", fmt.Errorf(
 			"SpawnTask: spawn would reach depth %d, exceeding planner.absolute_max_spawn_depth=%d (parent task %q)",
 			depth+1, e.maxSpawnDepth, parentID)
 	}
@@ -374,24 +454,159 @@ func (e *toolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d p
 	}
 	handle, err := e.tasks.Spawn(taskCtx, req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("SpawnTask: registry spawn: %w", err)
+		return tasks.TaskHandle{}, "", fmt.Errorf("SpawnTask: registry spawn: %w", err)
+	}
+	return handle, kind, nil
+}
+
+// batch dispatches a heterogeneous Batch decision — a native
+// multi-call response mixing catalog-tool branches with task spawns.
+// Both halves inherit the native-path posture verbatim: the tool half
+// fans out through the SAME parallel.Executor call callParallel uses
+// (Join passed straight through — nil collapses to JoinAll; non-atomic
+// per-branch dispatch, so a branch's resolve/validate failure becomes
+// that branch's error result), and the spawn half registers through the
+// SAME TaskRegistry.Spawn path SpawnTask uses (RetainTurn=false), with a
+// spawn's registry reject becoming that spawn's error result. Every
+// branch and every spawn is always answered — provider wire contracts
+// require exactly one reply per call_id.
+//
+// Whole-batch loud rejection (BEFORE any dispatch — zero tool branches
+// dispatch, zero spawns register) is reserved for STRUCTURAL setup
+// invariants: the operator-configurable breadth cap
+// (planner.max_batch_spawns), FailFast disagreement across the spawns
+// that would auto-group, and a defensive re-check that no spawn carries
+// RetainTurn=true. Auto-grouping: when two or more spawns share no
+// explicit GroupID, ONE resolve-or-create group is assigned to each; an
+// explicit GroupID is never overwritten, and a single ungrouped spawn
+// keeps the registry's ad-hoc single-member-group path.
+//
+// The observation is a BatchObservation keyed by call_id / index and
+// index-aligned to the declaration order of Tools and Spawns regardless
+// of dispatch completion order, so reply reconstruction never depends on
+// Go map iteration order. A spawn's observation is its REGISTRATION
+// outcome ({task_id, group_id} or a registry-reject error), never a
+// "not done yet" — the eventual result arrives later via the group-watch
+// path.
+func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d planner.Batch) (any, any, error) {
+	// --- Structural setup validation (whole-batch loud rejection) ---
+
+	// Breadth cap: reject the WHOLE batch, never truncate to the first N.
+	if len(d.Spawns) > e.maxBatchSpawns {
+		return nil, nil, fmt.Errorf(
+			"Batch: %d spawns exceeds planner.max_batch_spawns=%d (the whole batch is rejected — no branch dispatches, no spawn registers)",
+			len(d.Spawns), e.maxBatchSpawns)
 	}
 
-	if d.Spec.RetainTurn {
-		task, awaitErr := e.awaitTerminal(taskCtx, handle.ID)
-		if awaitErr != nil {
-			return nil, nil, fmt.Errorf("SpawnTask(retain-turn, %q): await: %w", handle.ID, awaitErr)
+	// Defensive non-retain-turn re-check. NewBatch enforces this at
+	// construction, but Decision is a sealed interface any concrete
+	// planner can build against, and this executor is the one shared
+	// dispatch boundary for all of them.
+	for i, sp := range d.Spawns {
+		if sp.Spec.RetainTurn {
+			return nil, nil, fmt.Errorf(
+				"%w: Batch spawn %d has RetainTurn=true (a turn-retaining spawn cannot ride a non-blocking batch dispatch)",
+				planner.ErrInvalidDecision, i)
 		}
-		raw := taskOutcomeObservation(task)
-		return raw, e.projectForLLM(ctx, rc, react.SpawnTaskToolName, raw), nil
 	}
 
-	raw := map[string]any{
-		"task_id": string(handle.ID),
-		"kind":    string(kind),
-		"status":  "spawned",
+	// FailFast agreement across the spawns that would auto-group (no
+	// explicit GroupID). The one auto-created group carries a SINGLE
+	// FailFast value, so a disagreement among its would-be members is
+	// ambiguous — reject the whole batch loud rather than silently pick
+	// one.
+	var autoIdx []int
+	for i, sp := range d.Spawns {
+		if sp.GroupID == "" {
+			autoIdx = append(autoIdx, i)
+		}
 	}
-	return raw, raw, nil
+	autoGroup := len(autoIdx) >= 2
+	if autoGroup {
+		want := d.Spawns[autoIdx[0]].Spec.FailFast
+		for _, i := range autoIdx[1:] {
+			if d.Spawns[i].Spec.FailFast != want {
+				return nil, nil, fmt.Errorf(
+					"Batch: FailFast disagreement across auto-grouped spawns (spawn %d=%t vs spawn %d=%t); the one auto-created group cannot honour both",
+					autoIdx[0], want, i, d.Spawns[i].Spec.FailFast)
+			}
+		}
+	}
+
+	// Attach identity once for every spawn-side registry call (the tool
+	// half reads the run's quadruple from the caller's ctx, exactly as
+	// callParallel does).
+	var taskCtx context.Context
+	if len(d.Spawns) > 0 {
+		if e.tasks == nil {
+			return nil, nil, fmt.Errorf("%w: Batch spawns (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
+		}
+		var idErr error
+		taskCtx, idErr = identity.With(ctx, rc.Quadruple.Identity)
+		if idErr != nil {
+			return nil, nil, fmt.Errorf("Batch: attach identity: %w", idErr)
+		}
+	}
+
+	// Auto-group creation: ONE ResolveOrCreateGroup for the ungrouped set.
+	// A creation failure is a structural setup failure (no group to assign
+	// the ungrouped spawns to) — fail the whole batch loud, before any
+	// spawn registers.
+	var autoGroupID tasks.TaskGroupID
+	if autoGroup {
+		grp, err := e.tasks.ResolveOrCreateGroup(taskCtx, tasks.GroupRequest{
+			SessionID:   rc.Quadruple.Identity,
+			OwnerTaskID: tasks.TaskID(rc.Quadruple.RunID),
+			FailFast:    d.Spawns[autoIdx[0]].Spec.FailFast,
+			Description: "batch auto-group",
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("Batch: auto-group ResolveOrCreateGroup: %w", err)
+		}
+		autoGroupID = grp.ID
+	}
+
+	var raw, llm planner.BatchObservation
+
+	// --- Tools half ---
+	if len(d.Tools) > 0 {
+		results, err := e.parallel.Execute(ctx,
+			planner.CallParallel{Branches: d.Tools, Join: d.Join},
+			parallel.WithNonAtomicSetup())
+		if err != nil {
+			return nil, nil, fmt.Errorf("Batch tool dispatch: %w", err)
+		}
+		raw.Tools, llm.Tools = e.branchObservations(ctx, rc, d.Tools, results)
+	}
+
+	// --- Spawns half (non-atomic per-branch) ---
+	if len(d.Spawns) > 0 {
+		spawnObs := make([]planner.BatchSpawnObservation, len(d.Spawns))
+		for i, sp := range d.Spawns {
+			obs := planner.BatchSpawnObservation{CallID: sp.CallID, Index: i}
+			toReg := sp
+			if autoGroup && sp.GroupID == "" {
+				toReg.GroupID = autoGroupID
+			}
+			handle, _, err := e.spawnOne(taskCtx, rc, toReg)
+			if err != nil {
+				// Per-branch error-as-value: this spawn's registry reject
+				// is recorded; the rest of the batch proceeds.
+				obs.Error = err.Error()
+			} else {
+				obs.TaskID = string(handle.ID)
+				obs.GroupID = string(toReg.GroupID)
+			}
+			spawnObs[i] = obs
+		}
+		// Registration outcomes are compact ({task_id, group_id} or an
+		// error) — no heavy content to project — so both observations
+		// carry the same spawn slice.
+		raw.Spawns = spawnObs
+		llm.Spawns = spawnObs
+	}
+
+	return raw, llm, nil
 }
 
 // awaitTask dispatches a planner.AwaitTask: it

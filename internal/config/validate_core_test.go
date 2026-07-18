@@ -192,3 +192,19 @@ func TestSpawnDepthCap_SingleSourcedDefault(t *testing.T) {
 		t.Errorf("DefaultSpawnDepthCap = %d, want 4 (D-170's documented default)", config.DefaultSpawnDepthCap)
 	}
 }
+
+// TestBatchSpawnCap_SingleSourcedDefault — the batch-spawn breadth cap
+// resolver and the exported constant agree; the default is the
+// documented conservative value.
+func TestBatchSpawnCap_SingleSourcedDefault(t *testing.T) {
+	t.Parallel()
+	if got := (config.PlannerConfig{}).BatchSpawnCap(); got != config.DefaultMaxBatchSpawns {
+		t.Errorf("zero MaxBatchSpawns resolved to %d, want %d", got, config.DefaultMaxBatchSpawns)
+	}
+	if got := (config.PlannerConfig{MaxBatchSpawns: 12}).BatchSpawnCap(); got != 12 {
+		t.Errorf("explicit MaxBatchSpawns resolved to %d, want 12", got)
+	}
+	if config.DefaultMaxBatchSpawns != 5 {
+		t.Errorf("DefaultMaxBatchSpawns = %d, want 5 (the documented conservative default)", config.DefaultMaxBatchSpawns)
+	}
+}
