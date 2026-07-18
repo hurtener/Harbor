@@ -22,13 +22,22 @@ import (
 //     serialization fallback (head CallTool + tail queued on
 //     `rc.PendingToolCalls`).
 //
-// AC-21 (carried-over 107c silent tail-drop fix): a reserved
-// planner-control name (`_finish` / `_spawn_task` / `_await_task`)
-// co-occurring with ANY other tool-call in one response is rejected
-// loudly with [planner.ErrInvalidDecision] — reserved control meta-tools
-// are standalone, never batchable / parallelisable branches. The guard
-// runs BEFORE the head switch so it fires whether the reserved name is
-// the head or in the tail, and independent of `parallelEnabled`.
+// AC-21′ (narrowed successor to the silent-tail-drop guard): only the
+// terminal/blocking reserved-control names — `_finish` and
+// `_await_task` — stay standalone. Either co-occurring with ANY other
+// tool-call in one response is rejected loudly with
+// [planner.ErrInvalidDecision]: a terminal decision and a single-target
+// block have no coherent multi-call semantics (and a batched await
+// would depend on a sibling spawn's not-yet-existing task_id). The
+// guard runs BEFORE the head switch so it fires whether the reserved
+// name is the head or in the tail, and independent of `parallelEnabled`.
+//
+// `_spawn_task` is NO LONGER standalone: a response mixing spawns with
+// catalog tools (or with other spawns) projects to [planner.Batch] — a
+// spawn may co-occur with tools and other spawns in one native response.
+// The projector never constructs a degenerate one-branch Batch: a
+// lone `_spawn_task` still projects to a plain SpawnTask, and a response
+// with no spawn projects to CallTool / CallParallel exactly as before.
 func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallelEnabled bool) (planner.Decision, error) {
 	if len(resp.ToolCalls) == 0 {
 		if resp.Content != "" {
@@ -65,21 +74,37 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		}, nil
 	}
 
-	// AC-21: a reserved planner-control meta-tool is standalone. When it
+	// AC-21′ standalone guard: the terminal/blocking reserved-control
+	// names (`_finish` / `_await_task`) are standalone. When either
 	// co-occurs with one or more other tool-calls, fail loudly rather
 	// than silently honour the head and drop the rest (the §13-forbidden
 	// silent-degradation pattern this fix closes). Fires for head OR
 	// tail position, on BOTH the native-parallel path and the
-	// serialization opt-out.
+	// serialization opt-out. `_spawn_task` is NOT standalone — it
+	// partitions into a Batch below.
 	if len(resp.ToolCalls) > 1 {
 		for _, tc := range resp.ToolCalls {
-			if isReservedControlName(tc.Name) {
+			if isStandaloneControlName(tc.Name) {
 				return nil, fmt.Errorf(
-					"%w: planner-control meta-tool %q is standalone and cannot co-occur with other tool-calls (got %d tool-calls in one response — control meta-tools are not batchable or parallelisable branches)",
-					planner.ErrInvalidDecision, tc.Name, len(resp.ToolCalls),
+					"%w: planner-control meta-tool %q is standalone and cannot co-occur with other tool-calls (got %d tool-calls in one response — %q must be sent alone)",
+					planner.ErrInvalidDecision, tc.Name, len(resp.ToolCalls), tc.Name,
 				)
 			}
 		}
+	}
+
+	// Batch partition (AC-21′): a multi-call response carrying at least
+	// one `_spawn_task` alongside ≥1 other call (a catalog tool or
+	// another spawn) projects to a single planner.Batch — never to a
+	// CallParallel with a synthetic spawn branch, never to two decisions.
+	// The standalone guard above already rejected any `_finish` /
+	// `_await_task` co-occurrence, so every remaining call is a catalog
+	// tool or a spawn; with len > 1 the combined branch count is always
+	// ≥ 2, so the projector never constructs a degenerate one-branch
+	// Batch (a lone `_spawn_task` falls through to the plain SpawnTask
+	// head switch below).
+	if len(resp.ToolCalls) > 1 && responseHasSpawn(resp.ToolCalls) {
+		return projectBatch(resp, rc)
 	}
 
 	first := resp.ToolCalls[0]
@@ -136,17 +161,113 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	return call, nil
 }
 
-// isReservedControlName reports whether name is one of the reserved
-// planner-control meta-tools the projector translates to a terminal /
-// standalone Decision (Finish / SpawnTask / AwaitTask). These are never
-// catalog tools and never parallelisable branches (AC-21).
-func isReservedControlName(name string) bool {
+// isStandaloneControlName reports whether name is a reserved
+// planner-control meta-tool that must be sent alone: the terminal
+// `_finish` and the single-target block `_await_task`. Under AC-21′
+// these are the only names that reject co-occurrence with any other
+// tool-call in one response — a terminal decision and a single-target
+// block have no coherent multi-call semantics. `_spawn_task` is
+// deliberately EXCLUDED: it is batchable (see projectBatch).
+func isStandaloneControlName(name string) bool {
 	switch name {
-	case FinishToolName, SpawnTaskToolName, AwaitTaskToolName:
+	case FinishToolName, AwaitTaskToolName:
 		return true
 	default:
 		return false
 	}
+}
+
+// responseHasSpawn reports whether any call in the response is a
+// `_spawn_task` reserved-control call — the trigger for Batch
+// partitioning when the response carries more than one call.
+func responseHasSpawn(calls []llm.ToolCallStructured) bool {
+	for _, tc := range calls {
+		if tc.Name == SpawnTaskToolName {
+			return true
+		}
+	}
+	return false
+}
+
+// projectBatch partitions a native multi-call response into a
+// planner.Batch: `_spawn_task` calls become Batch.Spawns (each stamped
+// with its native call id), every other call becomes a Batch.Tool
+// branch (catalog name resolved from the sanitized declaration name).
+// Join stays nil → the executor collapses it to JoinAll, matching the
+// native CallParallel path.
+//
+// Two projection-time semantic checks fail loud with
+// planner.ErrInvalidDecision:
+//
+//   - a malformed `_spawn_task` args envelope (surfaced by
+//     translateNativeSpawn — reused verbatim so the batch and
+//     single-spawn paths agree on the schema); and
+//   - FailFast disagreement across the spawns the executor would
+//     auto-group (≥2 spawns sharing no explicit GroupID) — a batch
+//     cannot honour two contradictory group-cancellation policies.
+//
+// NewBatch enforces the remaining structural invariants (non-degenerate,
+// non-retain-turn); by construction len(calls) > 1 with ≥1 spawn and no
+// standalone control name, so the combined branch count is always ≥ 2.
+func projectBatch(resp llm.CompleteResponse, rc *planner.RunContext) (planner.Decision, error) {
+	var tools []planner.CallTool
+	var spawns []planner.SpawnTask
+	for _, tc := range resp.ToolCalls {
+		if tc.Name == SpawnTaskToolName {
+			sp, err := translateNativeSpawn(tc)
+			if err != nil {
+				return nil, err
+			}
+			sp.CallID = tc.ID
+			spawns = append(spawns, sp)
+			continue
+		}
+		tools = append(tools, planner.CallTool{
+			Tool:   resolveDeclaredToolName(rc, tc.Name),
+			Args:   tc.Args,
+			CallID: tc.ID,
+		})
+	}
+
+	if err := validateAutoGroupedFailFast(spawns); err != nil {
+		return nil, err
+	}
+
+	batch, err := planner.NewBatch(tools, spawns, nil)
+	if err != nil {
+		return nil, err
+	}
+	return batch, nil
+}
+
+// validateAutoGroupedFailFast rejects a Batch whose auto-grouped spawns
+// (≥2 entries sharing no explicit GroupID — the ones the executor folds
+// into one resolve-or-create group) disagree on FailFast. A single
+// group cannot both cancel-on-first-failure and not; the disagreement
+// fails the whole batch loud, naming both conflicting values. Spawns
+// carrying an explicit GroupID are never auto-grouped and are exempt.
+func validateAutoGroupedFailFast(spawns []planner.SpawnTask) error {
+	var (
+		seen     bool
+		failFast bool
+	)
+	for _, sp := range spawns {
+		if sp.GroupID != "" {
+			continue
+		}
+		if !seen {
+			seen = true
+			failFast = sp.Spec.FailFast
+			continue
+		}
+		if sp.Spec.FailFast != failFast {
+			return fmt.Errorf(
+				"%w: Batch auto-grouped spawns disagree on fail_fast (%t vs %t) — a single auto-created group cannot honour both cancellation policies",
+				planner.ErrInvalidDecision, failFast, sp.Spec.FailFast,
+			)
+		}
+	}
+	return nil
 }
 
 func drainPending(rc *planner.RunContext) *planner.CallTool {

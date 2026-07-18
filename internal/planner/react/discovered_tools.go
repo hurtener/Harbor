@@ -303,12 +303,12 @@ func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
 	return []llm.ToolDeclaration{
 		{
 			Name:        SpawnTaskToolName,
-			Description: "Planner control — spawn a background task. Use to launch parallel work that the foreground turn does not need to wait on. The runtime returns a task_id you can later observe via _await_task.",
+			Description: "Planner control — spawn a background task the foreground turn does not wait on. You MAY call it alongside catalog tools and alongside other _spawn_task calls in the same response; the runtime dispatches each concurrently and returns a task_id per spawn. To wait on a spawned task's result, send _await_task with its task_id in a LATER response, on its own.",
 			Schema:      jsonSchemaRawSpawnTask,
 		},
 		{
 			Name:        AwaitTaskToolName,
-			Description: "Planner control — block the foreground turn on a previously-spawned task's completion. Pass the task_id returned by _spawn_task. The runtime resumes the planner with the task's resolved outcome.",
+			Description: "Planner control — block the foreground turn on a previously-spawned task's completion. Send it ALONE (never alongside any other tool call in the same response): pass the task_id returned by an earlier _spawn_task. The runtime resumes the planner with the task's resolved outcome.",
 			Schema:      jsonSchemaRawAwaitTask,
 		},
 	}

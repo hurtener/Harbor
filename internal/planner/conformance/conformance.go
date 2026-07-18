@@ -348,9 +348,10 @@ func Run(t *testing.T, factoryFunc func() Harness) {
 			t.Fatal("Next returned nil Decision")
 		}
 		switch dec.(type) {
-		case planner.CallTool, planner.CallParallel, planner.SpawnTask,
-			planner.AwaitTask, planner.RequestPause, planner.Finish:
-			// OK — one of the six canonical shapes.
+		case planner.CallTool, planner.CallParallel, planner.Batch,
+			planner.SpawnTask, planner.AwaitTask, planner.RequestPause,
+			planner.Finish:
+			// OK — one of the seven canonical shapes.
 		default:
 			t.Fatalf("Next returned unknown Decision shape: %T", dec)
 		}
@@ -377,6 +378,7 @@ func Run(t *testing.T, factoryFunc func() Harness) {
 	t.Run("Sealed_DecisionSum", func(t *testing.T) {
 		var _ planner.Decision = planner.CallTool{}
 		var _ planner.Decision = planner.CallParallel{}
+		var _ planner.Decision = planner.Batch{}
 		var _ planner.Decision = planner.SpawnTask{}
 		var _ planner.Decision = planner.AwaitTask{}
 		var _ planner.Decision = planner.RequestPause{}
@@ -897,7 +899,7 @@ func runWakeRoundTripPoll(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 	// OnResolved; accept any non-AwaitTask shape (Finish is the
 	// typical case).
 	switch dec3.(type) {
-	case planner.Finish, planner.CallTool, planner.CallParallel, planner.SpawnTask, planner.RequestPause:
+	case planner.Finish, planner.CallTool, planner.CallParallel, planner.Batch, planner.SpawnTask, planner.RequestPause:
 		// OK — any canonical Decision shape is acceptable.
 	default:
 		t.Fatalf("WakeMode_RoundTrip (poll): planner returned unknown Decision shape %T after resolve", dec3)
