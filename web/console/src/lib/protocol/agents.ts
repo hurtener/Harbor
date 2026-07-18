@@ -74,6 +74,15 @@ export interface Agent {
    * (D-059).
    */
   identity: IdentityScope;
+  /**
+   * Marks the runtime's synthetic default agent — the boot-configured agent
+   * every process serves through but which is never registered as a fleet
+   * entity. Absent/false for every real registered agent. A fleet catalog
+   * uses it to tell "the runtime's own agent" apart from a registered member,
+   * and to render "one agent, not enumerable this way" instead of an empty
+   * page. It never widens or narrows the isolation tuple.
+   */
+  is_default?: boolean;
 }
 
 /** Server-enforced facet filter on `agents.list`. */

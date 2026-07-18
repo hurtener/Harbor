@@ -8504,3 +8504,68 @@ secrets), §13 (dev-only escape hatches — explicit, never silent). Files:
 `docs/skills/run-the-dev-loop/SKILL.md`, `examples/dev.yaml`.
 
 `KEY=` assigns an empty value — meaningful for `os.LookupEnv`-style `HARBOR_*` overrides, where set-but-empty differs from unset. Malformed-line errors carry `path:line` and a reason only; no fragment of the file's content is ever echoed into stderr or the JSON error surface, since a malformed line is exactly where a wrapped secret lands. A `.env` can also supply `HARBOR_*` knobs (including `HARBOR_DEV_ALLOW_MOCK`); the mock banner still prints unconditionally, and the environment always wins.
+
+---
+
+## D-327 — `agents.list` surfaces the runtime's synthetic default agent as a first-class, marked row
+
+**Date:** 2026-07-17
+
+**Context.** A second consumer's fleet Agents catalog (tracked externally
+as HA-25) composes `agents.list` across runtimes. The Agent Registry
+scopes over agents explicitly registered by session orchestration
+(`internal/runtime/registry`); a runtime serving ONLY its synthetic
+default agent — the boot-configured agent every `harbor dev` / `harbor
+serve` / generated-binary process boots with, never written to the
+registry's StateStore — has produced ZERO `agents.list` rows since the
+Agents page shipped. "No rows" reads as "no agents" when the truth is
+"one agent, not enumerable this way": the exact absence-read-as-zero
+failure the silent-absence class rule (D-311) names — an empty page on an
+actively-serving runtime is indistinguishable from a true-empty fleet.
+
+**Decision.** The `RegistryProjector` gains an optional `WithDefaultAgent`
+seam (a value-typed `DefaultAgentDescriptor{ID, DisplayName, PlannerType,
+Model, BootedAt}`) mirroring the existing nil-is-honest `WithConfigSource`
+pattern: a zero-value descriptor leaves the projector byte-identical to
+today (honest absence when unwired — an embedder with no boot AgentConfig
+synthesizes nothing). When wired, `ListAgents` / `ListTenantAgents` /
+`GetAgent` / `Metrics` emit the boot agent as a first-class catalog row
+marked with an additive `Agent.IsDefault bool` (`is_default` wire marker,
+`omitempty`), so a consumer distinguishes "the runtime's own agent" from a
+registered fleet member. **Collision rule:** a real `AgentRecord`
+registered under the same well-known id SUPPRESSES the synthetic row (real
+data wins; one row per id, never a duplicate) — enforced per-tenant on the
+widened fan-in. `agents.get` on the well-known id resolves the synthetic
+projection when no real record shadows it; the `Active` metric counts it
+(the call succeeding proves the runtime is serving). It is wired from
+`internal/runtime/serve/mux.go` off the existing boot `AgentConfigID`.
+
+Authority stays server-derived from the verified session (D-299) — one
+more row, NO scope change, NO new identity axis, NO
+registration-semantics change (the synthetic row is never written to the
+registry StateStore). On the narrow read the row carries the caller's own
+verified triple; on the admin-widened fleet read it carries the named
+tenant only (`{Tenant}`, user/session empty) — representable absence
+(D-311), never a fabricated session id, because the default agent serves
+every session on the runtime, not one. Fleet-CONTROL verbs against the
+well-known id fall through UNCHANGED to the existing `ErrAgentNotFound`
+(the Controller is the real registry, which holds no record for the id):
+no control surface over the runtime's own process. `ProtocolVersion`
+stays 0.1.0; full D-223 lockstep (`wire-manifest.gen.json` +
+`web/console/src/lib/protocol/agents.ts`) and D-209 lockstep
+(`docs/site/protocol/types.md`) land in the implementing PR, and the
+Console Agents catalog renders an `is_default` badge.
+
+**Findings I'm departing from.** None.
+
+**Cross-references.** D-311 (the silent-absence class rule this is a new
+instance of — an empty read on an actively-serving runtime), D-299
+(server-derived authority; a single own-scope read is not elevation),
+D-059/D-060 (the three-ID registration model the synthetic row does NOT
+touch — agent_id is not an isolation principal), D-284 (the admin-widened
+fleet fan-in this rides), D-122 (registry-projection-is-pure), D-223 /
+D-209 (the additive-field lockstep). CLAUDE.md §5 (fail loudly / honest
+absence), §6 (multi-isolation; agent_id is not an isolation key), §13
+(no silent degradation), §4.4 (optional seam, nil-is-honest), §17.1 /
+§17.3 (real-StateStore integration test), §18 (skill same-PR update).
+RFC §6.16, §5.2, §7. Plan: `docs/plans/phase-190-default-agent-row.md`.

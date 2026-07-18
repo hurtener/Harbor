@@ -305,6 +305,7 @@ export interface Agent {
   registered_at: string;
   updated_at: string;
   identity: IdentityScope;
+  is_default?: boolean;
 }
 
 export interface AgentAggregates {

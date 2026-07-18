@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -44,14 +45,51 @@ type ConfigSource interface {
 	Skills(ctx context.Context, id identity.Identity, agentID string) ([]prototypes.AgentSkillBinding, error)
 }
 
+// DefaultAgentDescriptor describes the runtime's synthetic default
+// agent — the boot-configured agent every process serves through but
+// which is never written to the Agent Registry's StateStore, so the
+// registry-scoped projections never produce a row for it. When one is
+// wired (WithDefaultAgent), the projector synthesizes a first-class,
+// IsDefault-marked catalog row for it so a fleet Agents catalog sees
+// "one agent, not enumerable this way" instead of an indistinguishable
+// empty page (the absence-must-be-representable class).
+//
+// The descriptor is immutable after NewRegistryProjector; it holds only
+// value-typed fields, carrying no per-run state, so the projector stays
+// a concurrency-safe compiled artifact.
+type DefaultAgentDescriptor struct {
+	// ID is the well-known boot agent id — the same id the serving
+	// assembly threads elsewhere (e.g. the MCP Apps accessor's AgentID).
+	// An empty ID means "no default agent to synthesize".
+	ID string
+	// DisplayName is the operator-facing name for the row.
+	DisplayName string
+	// PlannerType is the boot agent's planner, when the assembly knows it
+	// cheaply; empty is an honest "not joined" projection (no ConfigSource
+	// join runs for the synthetic row).
+	PlannerType string
+	// Model is the boot agent's model, when cheaply known; empty is an
+	// honest "not joined" projection.
+	Model string
+	// BootedAt is when this runtime's serving assembly came up. It backs
+	// the row's RegisteredAt / UpdatedAt as the closest honest timestamp;
+	// the synthetic agent was never "registered", so there is no
+	// registration time to report.
+	BootedAt time.Time
+}
+
+// isSet reports whether a default agent is wired (a non-empty id).
+func (d DefaultAgentDescriptor) isSet() bool { return d.ID != "" }
+
 // RegistryProjector is the V1 production Projector — a read-only
 // projection over a registry.AgentRegistry, optionally joined to a
 // ConfigSource for the configuration-derived tabs. It is a concurrency-safe
 // compiled artifact: immutable after NewRegistryProjector, holding only
-// interface references.
+// interface references and a value-typed default-agent descriptor.
 type RegistryProjector struct {
-	reg    registry.AgentRegistry
-	config ConfigSource // optional — nil ⇒ honest empty config projections
+	reg          registry.AgentRegistry
+	config       ConfigSource           // optional — nil ⇒ honest empty config projections
+	defaultAgent DefaultAgentDescriptor // optional — zero-value ⇒ no synthetic default row
 }
 
 // ProjectorOption configures NewRegistryProjector.
@@ -63,6 +101,22 @@ func WithConfigSource(src ConfigSource) ProjectorOption {
 	return func(p *RegistryProjector) {
 		if src != nil {
 			p.config = src
+		}
+	}
+}
+
+// WithDefaultAgent wires the synthetic default-agent row. A descriptor
+// with an empty ID is treated as "WithDefaultAgent not supplied" — the
+// projector's behavior is then byte-identical to an unwired projector,
+// matching the ConfigSource nil-is-honest pattern this type already
+// uses. When wired, the descriptor's row is emitted by ListAgents /
+// ListTenantAgents / GetAgent / Metrics UNLESS a real registration
+// under the same well-known id is present, in which case the real
+// record wins and no synthetic row is emitted (one row per id).
+func WithDefaultAgent(d DefaultAgentDescriptor) ProjectorOption {
+	return func(p *RegistryProjector) {
+		if d.isSet() {
+			p.defaultAgent = d
 		}
 	}
 }
@@ -160,23 +214,77 @@ func (p *RegistryProjector) projectRecord(ctx context.Context, id identity.Ident
 	return a
 }
 
-// ListAgents implements Projector.ListAgents.
+// synthDefaultRow builds the synthetic default-agent catalog row under
+// the supplied identity scope. The caller guarantees the descriptor is
+// set and no real registration collides with its well-known id. The row
+// is always active/healthy/local — the call reaching this point proves
+// the runtime is serving through its boot agent. It carries no
+// VersionHash / Owner / Incarnation: the agent was never registered, so
+// there is no registry-shaped value to report (an honest absence, not a
+// fabricated one).
+func (p *RegistryProjector) synthDefaultRow(scope identity.Identity) prototypes.Agent {
+	var registeredAt, updatedAt string
+	if !p.defaultAgent.BootedAt.IsZero() {
+		registeredAt = p.defaultAgent.BootedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+		updatedAt = registeredAt
+	}
+	return prototypes.Agent{
+		ID:           p.defaultAgent.ID,
+		Name:         p.defaultAgent.DisplayName,
+		PlannerType:  p.defaultAgent.PlannerType,
+		Model:        p.defaultAgent.Model,
+		Status:       prototypes.AgentStatusActive,
+		Health:       prototypes.AgentHealthHealthy,
+		Hosting:      prototypes.AgentHostingLocal,
+		RegisteredAt: registeredAt,
+		UpdatedAt:    updatedAt,
+		Identity: prototypes.IdentityScope{
+			Tenant:  scope.TenantID,
+			User:    scope.UserID,
+			Session: scope.SessionID,
+		},
+		IsDefault: true,
+	}
+}
+
+// ListAgents implements Projector.ListAgents. When a default agent is
+// wired and no real registration shares its well-known id, it appends
+// the synthetic IsDefault row under the caller's own verified scope.
 func (p *RegistryProjector) ListAgents(ctx context.Context, id identity.Identity) ([]prototypes.Agent, error) {
 	records, err := p.reg.List(ctx)
 	if err != nil {
 		return nil, mapRegistryErr(err)
 	}
-	out := make([]prototypes.Agent, 0, len(records))
+	out := make([]prototypes.Agent, 0, len(records)+1)
+	collides := false
 	for _, rec := range records {
+		if p.defaultAgent.isSet() && rec.AgentID == p.defaultAgent.ID {
+			collides = true
+		}
 		out = append(out, p.projectRecord(ctx, id, rec))
+	}
+	// Collision rule: a real registration under the well-known id wins;
+	// the synthetic row is emitted only when none is present, so a
+	// response never carries a duplicate id.
+	if p.defaultAgent.isSet() && !collides {
+		out = append(out, p.synthDefaultRow(id))
 	}
 	return out, nil
 }
 
-// GetAgent implements Projector.GetAgent.
+// GetAgent implements Projector.GetAgent. A get on the well-known
+// default-agent id resolves the synthetic projection when no real
+// registration shadows it — so a Console drill-down from the list row
+// composes (no ErrAgentNotFound). A real registration under the id wins
+// (the registry.Get succeeds and its record is projected).
 func (p *RegistryProjector) GetAgent(ctx context.Context, id identity.Identity, agentID string) (prototypes.AgentGetResponse, error) {
 	rec, err := p.reg.Get(ctx, agentID)
 	if err != nil {
+		if p.defaultAgent.isSet() && agentID == p.defaultAgent.ID && errors.Is(err, registry.ErrAgentNotFound) {
+			row := p.synthDefaultRow(id)
+			row.Description = p.defaultAgent.DisplayName
+			return prototypes.AgentGetResponse{Agent: row}, nil
+		}
 		return prototypes.AgentGetResponse{}, mapRegistryErr(err)
 	}
 	resp := prototypes.AgentGetResponse{
@@ -278,7 +386,11 @@ func (p *RegistryProjector) Metrics(ctx context.Context, id identity.Identity) (
 		return prototypes.AgentMetrics{}, mapRegistryErr(err)
 	}
 	m := prototypes.AgentMetrics{}
+	collides := false
 	for _, rec := range records {
+		if p.defaultAgent.isSet() && rec.AgentID == p.defaultAgent.ID {
+			collides = true
+		}
 		if projectStatus(rec.Health) == prototypes.AgentStatusActive {
 			m.ActiveAgents++
 		}
@@ -289,6 +401,12 @@ func (p *RegistryProjector) Metrics(ctx context.Context, id identity.Identity) (
 				}
 			}
 		}
+	}
+	// The synthetic default agent is always active when emitted — the
+	// call succeeding proves the runtime is serving through it. Count it
+	// exactly like a real row, unless a real registration shadows the id.
+	if p.defaultAgent.isSet() && !collides {
+		m.ActiveAgents++
 	}
 	return m, nil
 }

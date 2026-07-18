@@ -47,7 +47,11 @@ func (p *RegistryProjector) ListTenantAgents(ctx context.Context, tenantIDs []st
 		if err != nil {
 			return nil, fmt.Errorf("registry/protocol: fleet list tenant %q: %w", tid, mapRegistryErr(err))
 		}
+		collides := false
 		for _, rec := range records {
+			if p.defaultAgent.isSet() && rec.AgentID == p.defaultAgent.ID {
+				collides = true
+			}
 			// Project under the record's OWN registration identity so any
 			// ConfigSource join scopes to the agent's own scope.
 			ownIdentity := identity.Identity{
@@ -56,6 +60,16 @@ func (p *RegistryProjector) ListTenantAgents(ctx context.Context, tenantIDs []st
 				SessionID: rec.Identity.SessionID,
 			}
 			out = append(out, p.projectRecord(ctx, ownIdentity, rec))
+		}
+		// The synthetic default agent surfaces once per named tenant this
+		// runtime serves, unless a real registration under the well-known
+		// id shadows it in that tenant (collision is per-tenant). Its
+		// per-row Identity carries only the named tenant — the default
+		// agent serves every session on the runtime, not a single owning
+		// (user, session), so those axes are left empty as representable
+		// absence, never a fabricated session id.
+		if p.defaultAgent.isSet() && !collides {
+			out = append(out, p.synthDefaultRow(identity.Identity{TenantID: tid}))
 		}
 	}
 	return out, nil

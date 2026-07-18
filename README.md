@@ -282,6 +282,20 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.16 Phase 190: Shipped.** `agents.list` now surfaces the
+runtime's synthetic default agent — the boot-configured agent every
+process serves through but never registers as a fleet entity — as a
+first-class row marked `is_default: true` (well-known `agent_id`,
+`agents.get` resolves it, the `Active` metric counts it, the Console
+Agents catalog renders a **Default** badge). A runtime with zero
+registrations is no longer an indistinguishable empty page. The
+admin-widened fleet fan-in surfaces one such row per named tenant; a real
+registration reusing the well-known id suppresses the synthetic row (real
+data wins, never a duplicate id); fleet-control verbs against it fall
+through to the existing `agent_not_found` (no control surface over the
+runtime's own process). Authority stays server-derived; `ProtocolVersion`
+stays `0.1.0`.
+
 **Harbor v1.15 Phase 184: Shipped.** The native TUI is now distributed
 through three modes: standalone attach (`harbor tui --attach`), stock
 co-launch (`harbor serve --tui`), and scaffolded co-launch (`harbor
