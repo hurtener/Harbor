@@ -43,6 +43,15 @@ import (
 
 const ptyHelperEnv = "HARBOR_TUI_PTY_HELPER"
 
+// ptyWaitTimeout bounds every PTY render/condition wait. It is deliberately
+// generous: the 5ms poll ticker returns the instant the expected frame lands,
+// so a healthy run is unaffected, but a loaded CI runner's full spawn →
+// connect → key-by-key type → re-render pipeline can exceed a tight budget.
+// A 5s bound flaked the key-driven search walkthrough on CI (the intermediate
+// frames rendered, the final one just missed the window); this headroom keeps
+// the gate honest without masking a genuine hang.
+const ptyWaitTimeout = 20 * time.Second
+
 type panicModel struct{ app.Model }
 type errorModel struct{ app.Model }
 type startupFaultModel struct{ app.Model }
@@ -797,7 +806,7 @@ func (s *ptySession) resize(t *testing.T, width, height int) {
 func (s *ptySession) snapshot() string { s.mu.Lock(); defer s.mu.Unlock(); return s.output.String() }
 func (s *ptySession) waitContains(t *testing.T, needle string) {
 	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(ptyWaitTimeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
@@ -815,7 +824,7 @@ func (s *ptySession) waitContains(t *testing.T, needle string) {
 }
 func (s *ptySession) waitContainsAfter(t *testing.T, offset int, needle string) {
 	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(ptyWaitTimeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
@@ -911,7 +920,7 @@ func processStopped(pid int) bool {
 }
 func await(t *testing.T, condition func() bool, label string) {
 	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(ptyWaitTimeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
@@ -928,7 +937,7 @@ func await(t *testing.T, condition func() bool, label string) {
 }
 func waitChannel(t *testing.T, ch <-chan error, label string) error {
 	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(ptyWaitTimeout)
 	defer timer.Stop()
 	select {
 	case err := <-ch:
