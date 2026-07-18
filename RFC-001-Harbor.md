@@ -391,8 +391,11 @@ type Decision interface{ isDecision() }
 
 type CallTool      struct { Tool string; Args json.RawMessage; Reasoning string }
 type CallParallel  struct { Branches []CallTool; Join *JoinSpec }
-type SpawnTask     struct { Kind tasks.Kind; Spec tasks.Spec; GroupID string }
+type SpawnTask     struct { Kind tasks.Kind; Spec tasks.Spec; GroupID string; CallID string }
 type AwaitTask     struct { TaskID tasks.TaskID }
+type Batch         struct { Tools []CallTool; Spawns []SpawnTask; Join *JoinSpec }
+type TaskStatusQuery struct { TaskIDs []tasks.TaskID }   // planner.TaskStatusQuery — own descendants only; distinct from the tasks.TaskStatus lifecycle enum
+type CancelTask    struct { TaskID tasks.TaskID; Reason string } // own descendants only
 type RequestPause  struct { Reason pauseresume.Reason; Payload map[string]any }
 type Finish        struct { Reason FinishReason; Payload any; Metadata map[string]any }
 ```
@@ -400,6 +403,8 @@ type Finish        struct { Reason FinishReason; Payload any; Metadata map[strin
 **Settled decisions:**
 
 - `Decision` is a sum type. Runtime opcodes (parallel, spawn, await, pause, finish) are *different shapes* from tool calls. The predecessor's "magic strings as `next_node`" pattern is rejected.
+- `Batch` composes one native tool-calling response's heterogeneous intent: N catalog tool calls (joined per `JoinSpec`, exactly as `CallParallel`) plus M non-blocking spawns (each `RetainTurn=false`; ≥2 unbound spawns auto-join one task group). Only `_finish` and `_await_task` remain standalone at the projector edge — a terminal decision and a single-target block have no coherent multi-call semantics, while a spawn batched with tools does (this supersedes the blanket standalone rule for reserved planner-control names; a batched await is rejected because it would create a same-step dependency on a sibling's not-yet-existing task id). Spawns are never tool invocations for accounting; a degenerate one-branch `Batch` is never constructed — one representation per semantic. Observation results key by the provider `call_id` and reply in original call order.
+- `TaskStatusQuery` / `CancelTask` (planner-package shapes — `TaskStatusQuery` is deliberately NOT named `TaskStatus`, which is the tasks-package lifecycle enum) give the planner observation and control over the tasks *its own run* spawned — descendant-scoped via the parent-task chain, never arbitrary session tasks. The cancel hierarchy is invariant: the operator reaches any task directly regardless of propagation mode (`isolate` detaches a task from its parent's cascade, never from operator control; a session-scoped operator cancel sweeps isolate-marked tasks too — there is no uncancellable task); the agent reaches only its descendants; cascade is the default so an interrupt kills everything not explicitly detached. Model-expressible `isolate` lands only together with these management meta-tools (power with brake).
 - `RunContext` is the *only* surface the planner sees. Planners do not import Runtime internals. The Runtime hands the planner a pre-filtered catalog (visibility already applied), a memory view (scoping already bound), a skills lookup, the artifact store, and `Control` signals.
 - The reference `react` planner uses functional options for the small set of genuinely policy-shaped knobs. Token budget, hop budget, deadline, max_iters, schema mode, cost cap are **runtime-level run options**, not planner state. The predecessor's ~70-field, ~50-constructor-parameter planner class is the anti-pattern.
 - Concurrency: planners are safe to use across runs; the Runtime serializes calls *within* a run. State keyed by `RunID` is the pattern.

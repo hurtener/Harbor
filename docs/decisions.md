@@ -4110,7 +4110,7 @@ These need go-sdk RC support; the plan can be authored against the RC SEPs now s
 
 **4. The default flips to native `CallParallel`; serialization survives as a single-knob opt-out.** `planner.react.parallel_tool_calls` defaults to `true` (D-167 §2 promised this flip). `false` reverts to the 107c serialization fallback. The serialization path is NOT dead code at `false`: it also remains the same-turn-discovery-race guard (D-167 risk #4 — a `tool_search` plus a call to the not-yet-declared tool in one response must serialise so the second call lands on the turn after the tool is declared).
 
-**5. Reserved planner-control names are standalone — co-occurrence with another tool-call is `ErrInvalidDecision` (carried-over 107c silent tail-drop fix; AC-21).** 107c's `projectResponse` switched on `resp.ToolCalls[0].Name` and translated a reserved control name (`_finish` / `_spawn_task` / `_await_task`) to its `Finish` / `SpawnTask` / `AwaitTask` Decision **before** the N>1 tail-queueing block — so a control meta-tool emitted alongside other tool-calls in one response silently honoured only the first and **dropped** the rest (no error, no event — the §13-forbidden silent-degradation pattern). The symmetric tail case was just as wrong: a reserved name in the tail got queued to `PendingToolCalls` and later drained as a literal `CallTool{Tool:"_spawn_task"}` that hit the catalog as an unknown tool. Phase 107d adds a guard in `projectResponse` that runs BEFORE the head switch: any response where a reserved control name co-occurs with one or more other tool-calls is rejected with a wrapped `planner.ErrInvalidDecision` naming the offending control tool. Reserved control meta-tools are terminal/standalone — they are not `CallParallel` branches (`Branches` is `[]CallTool`, catalog tools) and not serialisable tail entries. The guard fires whether the reserved name is head or tail, and on BOTH the native-parallel path and the serialization opt-out (it is independent of `parallel_tool_calls`). Single-reserved-call cases are unchanged; all-regular N>1 still flows to `CallParallel` (on) or the serialization tail (off). This is bundled here, not a separate hotfix, because it is the same projector seam 107d reshapes for the N>1 → `CallParallel` mapping, and the two changes must agree on what a "batchable" tool-call is. A future one-turn batch-spawn, if wanted, is a dedicated `_spawn_tasks` meta-tool taking an array — never reserved names as `CallParallel` branches.
+**5. Reserved planner-control names are standalone — co-occurrence with another tool-call is `ErrInvalidDecision` (carried-over 107c silent tail-drop fix; AC-21).** 107c's `projectResponse` switched on `resp.ToolCalls[0].Name` and translated a reserved control name (`_finish` / `_spawn_task` / `_await_task`) to its `Finish` / `SpawnTask` / `AwaitTask` Decision **before** the N>1 tail-queueing block — so a control meta-tool emitted alongside other tool-calls in one response silently honoured only the first and **dropped** the rest (no error, no event — the §13-forbidden silent-degradation pattern). The symmetric tail case was just as wrong: a reserved name in the tail got queued to `PendingToolCalls` and later drained as a literal `CallTool{Tool:"_spawn_task"}` that hit the catalog as an unknown tool. Phase 107d adds a guard in `projectResponse` that runs BEFORE the head switch: any response where a reserved control name co-occurs with one or more other tool-calls is rejected with a wrapped `planner.ErrInvalidDecision` naming the offending control tool. Reserved control meta-tools are terminal/standalone — they are not `CallParallel` branches (`Branches` is `[]CallTool`, catalog tools) and not serialisable tail entries. The guard fires whether the reserved name is head or tail, and on BOTH the native-parallel path and the serialization opt-out (it is independent of `parallel_tool_calls`). Single-reserved-call cases are unchanged; all-regular N>1 still flows to `CallParallel` (on) or the serialization tail (off). This is bundled here, not a separate hotfix, because it is the same projector seam 107d reshapes for the N>1 → `CallParallel` mapping, and the two changes must agree on what a "batchable" tool-call is. A future one-turn batch-spawn, if wanted, is a dedicated `_spawn_tasks` meta-tool taking an array — never reserved names as `CallParallel` branches. (The array-meta-tool direction of this closing note is superseded by D-322: spawns batch as the typed `Batch.Spawns` half of a dedicated Decision shape — still never `CallParallel` branches.)
 
 **Why.** The serialization fallback was always a defensive stop-gap (D-167 §2 named the follow-up "Phase 110z or equivalent"); it makes the LLM's single N-tool-call turn replay to the provider as N separate assistant turns — tolerated by providers but unfaithful, and it serialises genuinely-independent calls that the model wanted run concurrently. Closing the carve-out delivers the concurrency the model asked for and makes the trajectory round-trip faithful to the provider wire shape. The cost is concentrated in the trajectory→prompt round-trip (one assistant message with N `tool_calls` answered by N `RoleTool` messages) and per-branch heavy-output projection — not in the dispatch engine, which already exists.
 
@@ -8504,3 +8504,229 @@ secrets), §13 (dev-only escape hatches — explicit, never silent). Files:
 `docs/skills/run-the-dev-loop/SKILL.md`, `examples/dev.yaml`.
 
 `KEY=` assigns an empty value — meaningful for `os.LookupEnv`-style `HARBOR_*` overrides, where set-but-empty differs from unset. Malformed-line errors carry `path:line` and a reason only; no fragment of the file's content is ever echoed into stderr or the JSON error surface, since a malformed line is exactly where a wrapped secret lands. A `.env` can also supply `HARBOR_*` knobs (including `HARBOR_DEV_ALLOW_MOCK`); the mock banner still prints unconditionally, and the environment always wins.
+
+---
+
+## D-322 — The `Batch` decision: one native response carries heterogeneous intent; the standalone rule shrinks to `_finish` and `_await_task`
+
+**Date:** 2026-07-17
+
+**Context.** The reserved planner-control guard (the AC-21 co-occurrence rule)
+rejects any `_finish` / `_spawn_task` / `_await_task` call that co-occurs with
+another tool call in one native response. The rule closed a real silent-tail-
+drop defect in the one-JSON-action-per-step era, but native tool calling made a
+response a *set* of calls — and models trained on "send a single message with
+multiple tool calls" batch a spawn with catalog tools in production, failing
+runs at step 0 with `ErrInvalidDecision`. The mined evidence (brief 16 §2) is
+unambiguous: mature agents allow and even prompt for spawn-plus-tools
+co-occurrence; none carries an AC-21 equivalent. Harbor's own `_spawn_task`
+description invites the parallelism the guard rejects.
+
+**Decision.** Phase 185 adds `planner.Batch{Tools []CallTool; Spawns
+[]SpawnTask; Join *JoinSpec}` as a new sealed `Decision` shape — a fourth
+shape, never a widening of `CallParallel` (whose branch count is load-bearing
+for tool-invocation accounting; spawns count zero). The projector partitions a
+native response by reserved name: `_finish` and `_await_task` keep the
+standalone guard verbatim (a terminal decision and a single-target block have
+no coherent multi-call semantics; a batched await would create a same-step
+dependency on a sibling's not-yet-existing task id); `_spawn_task` becomes
+batchable with catalog tools and with other spawns — the narrowed guard is
+named AC-21′ across the wave's plans. Every `Batch` spawn is
+`RetainTurn=false` (a blocking spawn inside a non-blocking multi-dispatch is a
+contradiction — construction fails loud). The projector never constructs a
+degenerate one-branch `Batch` — single-call responses keep their plain shapes,
+one representation per semantic, pinned by conformance. The reserved-control
+prompt descriptions are rewritten to teach the new contract, closing the
+prompt-vs-validator disagreement. RFC §6.2 amended in the same planning PR;
+the executor consumer lands in the same wave (Phase 186), satisfying §13.
+
+**Supersession, named.** D-169 item 5's closing note settled a different
+future shape ("a one-turn batch-spawn, if wanted, is a dedicated
+`_spawn_tasks` meta-tool taking an array — never reserved names as
+`CallParallel` branches"). This decision supersedes that note's array-meta-
+tool direction while honoring its actual constraint: spawns still never
+become `CallParallel` branches — they become `Batch.Spawns`, a distinct
+typed half with its own dispatch and accounting. The singular `_spawn_task`
+name and args schema stay; models batch by emitting N native calls, the
+convention they are trained on, not a bespoke array envelope.
+
+---
+
+## D-323 — Batch execution: flat concurrent dispatch, auto-grouped spawns, call-id-keyed ordered observations, cascade-by-default cancellation
+
+**Date:** 2026-07-17
+
+**Context.** A heterogeneous batch has two halves with different completion
+semantics: tool branches join within the turn; spawn branches escape it (the
+task registry and `WatchGroup` own their resolution). The mined agents (brief
+16 §2d-e) agree on error-as-value per branch and disagree on caps (one caps
+spawns hard, one relies on prompt hope). Harbor's spawn depth cap bounds depth
+only — sibling spawns in one response are unlimited today (brief 16 §6).
+Provider tool-calling protocols require exactly one result per `call_id`, some
+order-sensitive; Go map iteration must never decide reply order.
+
+**Decision.** Phase 186 dispatches `Batch` as ONE flat concurrent dispatch:
+tool branches through the existing `JoinSpec` executor, spawn branches
+through the existing registry spawn path. NATIVE-PATH parity with D-169
+governs both halves: `Join` is always nil → `JoinAll` (partial joins would
+orphan unanswered `tool_call_id`s — D-169 item 2; the other kinds stay
+programmatic-planner surface), and dispatch is NON-ATOMIC per branch (a tool
+branch's resolve/validate failure becomes that branch's error result while
+valid branches fan out; a spawn branch's registry reject becomes that
+branch's error result — D-169 item 3; every `call_id` is always answered).
+Whole-batch loud rejection is reserved for STRUCTURAL invariants, not branch
+args: the `planner.max_batch_spawns` breadth cap (operator-configurable;
+never silent truncation), `FailFast` disagreement across auto-grouped
+spawns, and a `RetainTurn=true` spawn inside a batch. Auto-grouping: ≥2
+spawns without an explicit `GroupID` join one `ResolveOrCreateGroup` group;
+an explicit `GroupID` is never overwritten. The observation keys by
+`call_id`; spawn results carry `{task_id, group_id}` at registration (never
+"not done yet"); `RoleTool` replies reconstruct in original `resp.ToolCalls`
+order — a binding invariant with its own test. Cancellation: a run-level
+cancel aborts in-flight tool branches AND cascade-walks the batch's
+auto-created group — interrupt kills everything — except spawns explicitly
+marked `isolate` (unreachable from the model until D-324 lands the brake).
+Spawns never fire the tool-dispatch accounting hook.
+
+---
+
+## D-324 — Task-management meta-tools `_task_status` / `_cancel_task`, descendant-scoped; model-expressible `isolate` lands only with them
+
+**Date:** 2026-07-17
+
+**Context.** The planner's task-management surface is fire (`SpawnTask`),
+block (`AwaitTask`), and typed outcome at resolution (`BackgroundResult`) —
+no mid-flight observation, no cancel. A model that fans out four explorations
+and gets its answer from the first cannot cancel the other three. Separately,
+`Task.PropagateOnCancel` (`cascade`/`isolate`) exists in the registry but is
+deliberately absent from `SpawnSpec` (D-047): the model cannot detach work
+from its own cancellation — and it must not gain that power without tools to
+observe and stop what it detached, while the operator must keep the last word.
+
+**Decision.** Phase 187 ships two reserved planner-control meta-tools
+following the `_spawn_task` translation pattern into new sealed shapes
+(`TaskStatusQuery`, `CancelTask` — the query shape is deliberately NOT named `TaskStatus`, the tasks-package lifecycle enum): both resolve ONLY tasks whose parent chain
+reaches the calling run's task — descendant scope, enforced with an isolation
+test (a run can never status or cancel a sibling run's tasks). In the same
+phase — never earlier — `propagate_on_cancel: isolate` becomes expressible in
+the `_spawn_task` args and `SpawnSpec` (amending D-047's field set). The
+cancel hierarchy is invariant and tested end-to-end: the operator reaches any
+task directly regardless of propagation mode, and a session-scoped operator
+cancel sweeps isolate-marked tasks too — there is no uncancellable task; the
+agent reaches only its own descendants; cascade stays the default. The two
+meta-tools are NOT batchable in this wave (conservative grammar; widening is
+cheap, retracting is not).
+
+---
+
+## D-325 — Background-task resolution wakes the conversation: a notification-class mirror on top of the typed completion, plus foreground turn-failure honesty
+
+**Date:** 2026-07-17
+
+**Context.** Group resolution reaches the planner as typed `MemberOutcome`s
+(the wake contract) — but nothing tells the OPERATOR conversationally that
+background work finished, and a foreground turn that FAILS goes idle with no
+on-chat indication (`task.failed` is deliberately filtered off the chat
+surface as runtime internals), so a planner rejection reads as a silent hang.
+The mined background-mode precedent (brief 16 §2c) wakes the parent by
+injecting a message — a side effect Harbor should not copy wholesale, but the
+insight stands: the typed channel and the conversational channel compose.
+
+**Decision.** Phase 188 emits a notification-class event through the existing
+notifications subsystem on group resolution (and single background terminal
+transitions with `NotifyOnComplete`), carrying ref-shaped member-outcome
+summaries under the owning identity. The planner-facing `WatchGroup` path is
+untouched. The TUI renders these as muted conversational lifecycle lines and
+renders an explicit failure line for a foreground run's terminal failure
+(detail stays on diagnostics); the Console's run view renders the same
+family. Any new event type rides the canonical stream (no new method) with
+generated-docs lockstep, and every hand-decoded payload consumer is
+enumerated and updated in the same PR.
+
+---
+
+## D-326 — Stop dropping provider cache accounting: typed cache read/write tokens on `Usage`, mirrored on the cost event
+
+**Date:** 2026-07-17
+
+**Context.** The LLM gateway dependency already returns per-response cache
+accounting (`PromptTokensDetails.CachedReadTokens` / `CachedWriteTokens`);
+Harbor's driver translator never reads the field — provider-computed cache
+data is silently discarded (brief 17 §1). Governance consumes
+`CompleteResponse.Usage` synchronously in-band; the cost event is a
+best-effort mirror whose payload three consumers hand-decode with no compile
+check (brief 17 §2, §4). No cache metric exists anywhere, which also blocks
+any future cache-aware policy from being designed against data.
+
+**Decision.** Phase 189 is telemetry-only, zero behavior change: the driver
+translator reads the cache token details; `llm.Usage` gains additive
+`CacheReadTokens` / `CacheWriteTokens`; the cost-recorded payload mirrors
+them; and ALL hand-decoded consumers update in the same PR (TUI reducer and
+Console run-events reader/cost components functionally; the sessions
+enricher as a documented intentional non-extraction — no `SessionRow`
+field carries cache counts) —
+a missed consumer silently reads zero, so the consumer list is acceptance
+criteria, not a footnote. Generated protocol-docs regenerate. Governance
+ceiling math is deliberately untouched (cache tokens are informational
+first). The request-side cache-intent surface (`CachePolicy` on
+`CompleteRequest`, config lowering into the gateway's existing cache wire
+vocabulary) is a named mid-wave decision point, not part of this phase.
+
+---
+
+## D-327 — `agents.list` surfaces the runtime's synthetic default agent as a first-class, marked row
+
+**Date:** 2026-07-17
+
+**Context.** A second consumer's fleet Agents catalog composes
+`agents.list` across runtimes. The registry scopes over agents explicitly
+registered by session orchestration — a runtime serving only its synthetic
+default agent (which its own live view already reports as active) has never
+produced a row, so the catalog renders empty for a runtime actively serving
+traffic. "No rows" reads as "no agents" when the truth is "one agent, not
+enumerable this way" — the absence-must-be-representable class (D-311),
+tracked externally as HA-25.
+
+**Decision.** Phase 190 emits the synthetic default agent as a first-class
+`agents.list` row: well-known id/name plus an additive `is_default: true`
+marker distinguishing it from registered sub-agents. Authority stays
+server-derived from the verified session (D-299) — one more row, no scope
+change, no new identity axis, no registration-semantics change. Full wire
+lockstep (TS manifest, generated docs, Console catalog rendering) in the
+implementing PR; the admin-widened fleet fan-in picks the row up and an
+integration test asserts it.
+
+---
+
+## D-328 — OAuth broker legs: structured step-up visibility, resource-bound exchange with per-tool provider binding, and the actor leg of the delegation chain
+
+**Date:** 2026-07-17
+
+**Context.** The broker-pull spine is shipped: discovery surfaces the OAuth
+requirement as inert data, operator-confirmed writes bind a provider, the
+runtime PULLs per-identity downstream bearers via RFC 8693 token exchange
+(D-271) and never runs the flow or holds a token. Three runtime-side legs
+remain, tracked externally as HA-26/HA-27/HA-28: a mid-run
+`insufficient_scope` step-up challenge dies as an opaque tool error (the
+required-vs-granted scope delta is present at the MCP edge and lost before
+the Protocol); the exchange cannot assert WHICH downstream resource a token
+is for (the discovered RFC 8707 resource indicator is not carried, and the
+`oauth_provider` binding is per-connection, forcing one audience across a
+multi-resource server's tools); and the exchange carries no RFC 8693
+`actor_token`, so the broker's authorization server cannot bind or audit the
+delegation chain.
+
+**Decision.** Phase 191 ships the three additive legs, posture invariant
+(report-not-act; no custody change; no auto-escalation; discovered values
+stay operator-confirmed proposals; composes with the D-300 credential-sink
+allow-lists, never weakens them): (a) a structured step-up surface — the
+downstream resource id, required scopes from the challenge, granted scopes
+the binding carried, and the verbatim challenge with origin — on the
+tool-result/error envelope and connection view the coordinator already
+reads; (b) an optional RFC 8707 `resource` indicator on the exchange request
+with returned-token audience validation, and the non-secret
+`oauth_provider` binding resolvable at tool granularity with connection-level
+fallback; (c) an optional RFC 8693 `actor_token` carrying the run's VALIDATED
+inbound principal — never a client-named field — for subject/actor
+cross-checking and delegation-chain audit. Absent fields preserve today's
+behavior exactly. The phase also carries the wave-end E2E per §17.7.
