@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -257,22 +258,9 @@ func TestCallTool_InsufficientScope_TypedError(t *testing.T) {
 	}
 }
 
-// asErrInsufficientScope is errors.As specialised so the test file needs no
-// extra import churn.
+// asErrInsufficientScope wraps errors.As for the test's target type.
 func asErrInsufficientScope(err error, target **tools.ErrInsufficientScope) bool {
-	for err != nil {
-		if e, ok := err.(*tools.ErrInsufficientScope); ok {
-			*target = e
-			return true
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
+	return errors.As(err, target)
 }
 
 // TestRegistry_LastScopeShortfall_Surfaced proves the connection view's

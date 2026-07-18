@@ -383,10 +383,10 @@ func TestProjectResponse_PartitionTable(t *testing.T) {
 			t.Run(tc.name+map[bool]string{true: "/on", false: "/off"}[parallelOn], func(t *testing.T) {
 				t.Parallel()
 				var calls []llm.ToolCallStructured
-				for i := 0; i < tc.tools; i++ {
+				for i := range tc.tools {
 					calls = append(calls, toolCall(fmt.Sprintf("t%d", i), fmt.Sprintf("tool%d", i)))
 				}
-				for i := 0; i < tc.spawns; i++ {
+				for i := range tc.spawns {
 					calls = append(calls, spawnCall(fmt.Sprintf("s%d", i), fmt.Sprintf("q%d", i)))
 				}
 				dec, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, parallelOn)
