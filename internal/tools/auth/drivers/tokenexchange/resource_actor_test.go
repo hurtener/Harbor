@@ -25,6 +25,7 @@ type jwtBroker struct {
 
 	mu       sync.Mutex
 	lastForm map[string][]string
+	calls    int
 	// tokenFn maps the request form to the access_token string the broker
 	// returns. Set per test.
 	tokenFn func(form map[string][]string) string
@@ -48,6 +49,12 @@ func (b *jwtBroker) form() map[string][]string {
 	return b.lastForm
 }
 
+func (b *jwtBroker) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
 func (b *jwtBroker) formValue(key string) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -64,6 +71,7 @@ func (b *jwtBroker) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	b.mu.Lock()
 	b.lastForm = r.Form
+	b.calls++
 	fn := b.tokenFn
 	b.mu.Unlock()
 	tok := "opaque-token"
@@ -210,10 +218,77 @@ func TestExchange_AudienceMismatch_FailsLoudNothingCached(t *testing.T) {
 		t.Fatalf("Token err = %v, want wrapped under ErrExchangeFailed", err)
 	}
 	// A second call MUST re-exchange (nothing cached) — the broker sees a
-	// second request.
-	before := len(broker.form())
-	_, _ = prov.Token(ctx, tools.ToolSourceID("any"))
-	_ = before
+	// second request AND the second call fails the same loud way. A
+	// regression that silently cached the mismatched token would drop the
+	// broker call count and/or return a stale success here, defeating the
+	// confused-deputy guard this leg exists for.
+	before := broker.callCount()
+	_, err2 := prov.Token(ctx, tools.ToolSourceID("any"))
+	if got := broker.callCount(); got != before+1 {
+		t.Fatalf("second Token() broker calls = %d, want %d (nothing may be cached on audience mismatch)", got, before+1)
+	}
+	if !errors.Is(err2, tokenexchange.ErrAudienceMismatch) {
+		t.Fatalf("second Token() err = %v, want ErrAudienceMismatch (mismatch must fail loud every time)", err2)
+	}
+}
+
+// TestExchange_MalformedJWT_ParseSafeOpaqueNoOp proves a returned token that
+// LOOKS JWT-shaped but is structurally malformed (wrong segment count, non-
+// base64url payload, valid-base64-but-non-JSON payload) is a panic-safe
+// OPAQUE no-op: the exchange still SUCCEEDS, records AudienceVerified:false,
+// and never fails loud — a hostile/broken broker cannot crash the exchange
+// nor forge a false-positive audience pass. (verifyAudience returns
+// (false, nil) for every unparseable shape; the 64 KiB LimitReader bounds
+// the body so a pathological token cannot exhaust memory.)
+func TestExchange_MalformedJWT_ParseSafeOpaqueNoOp(t *testing.T) {
+	t.Parallel()
+	const resource = "https://graph.microsoft.com"
+	// A valid-base64url segment whose decoded bytes are NOT JSON.
+	nonJSONPayload := base64.RawURLEncoding.EncodeToString([]byte("not-json-at-all"))
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{"two_segments", "aGVhZGVy.cGF5bG9hZA"},              // only 2 segments
+		{"non_base64url_payload", "x.@@@not-base64@@@.z"},    // middle segment not base64url
+		{"valid_b64_non_json", "x." + nonJSONPayload + ".z"}, // decodes, but not JSON
+		{"empty_payload", "x..z"},                            // empty middle segment
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			broker := newJWTBroker(t)
+			broker.tokenFn = func(_ map[string][]string) string { return tc.token }
+			deps, _, bus := mkDeps(t)
+			prov, err := tokenexchange.New(auth.ProviderConfig{
+				Name:                   tProviderName,
+				CredentialSource:       credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),
+				Scopes:                 []string{"Mail.Read"},
+				TokenURL:               broker.tokenURL(),
+				Audience:               resource,
+				AllowedDownstreamHosts: []string{"graph.microsoft.com"},
+				ResourceIndicator:      resource,
+			}, deps)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { _ = prov.Close(context.Background()) })
+
+			sub := subscribe(t, bus, aliceID())
+			ctx := mkCtx(t, aliceID())
+			// A malformed JWT is treated as opaque — the exchange must
+			// SUCCEED (opaque tokens are honest no-ops, not mismatches).
+			if _, err := prov.Token(ctx, tools.ToolSourceID("any")); err != nil {
+				t.Fatalf("Token with malformed-JWT token = %v, want success (opaque no-op)", err)
+			}
+			ev := waitEvent(t, sub, auth.EventTypeToolCredentialExchanged)
+			p := ev.Payload.(auth.ToolCredentialExchangedPayload)
+			if p.AudienceVerified {
+				t.Fatalf("AudienceVerified = true for malformed JWT %q, want false (unparseable ⇒ opaque)", tc.token)
+			}
+		})
+	}
 }
 
 // TestExchange_ActorToken_PresentIffOptedInAndAgentOnCtx proves the RFC 8693

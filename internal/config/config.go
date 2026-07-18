@@ -1177,6 +1177,17 @@ type ToolOAuthProviderConfig struct {
 	// to today). The actor token is the runtime's VERIFIED acting principal —
 	// never a client-supplied field. Ignored by the interactive `oauth2`
 	// driver. Restart-required.
+	//
+	// Caching note: the exchanged token is cached at user granularity
+	// (scope, tenant, user, source) — the acting principal is deliberately
+	// NOT part of the cache key, because `agent_id` is not an isolation
+	// principal. Within one cached token's TTL, a second acting principal
+	// under the same (tenant, user) reuses the token minted under the
+	// first — no isolation boundary is crossed (the token stays user-bound
+	// and the `actor_asserted` audit signal fires only on the real
+	// exchange). If a downstream broker scopes grants PER acting principal,
+	// disable caching pressure by narrowing the token TTL rather than
+	// expecting per-actor cache separation here.
 	IncludeActorToken bool `yaml:"include_actor_token,omitempty"`
 }
 
