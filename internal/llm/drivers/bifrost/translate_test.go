@@ -630,6 +630,85 @@ func TestTranslateResponse_NoUsage(t *testing.T) {
 	}
 }
 
+// TestExtractUsageAndCost_CacheTokens_ExplicitSplit — providers that report
+// separate read/write cache counts (e.g. Anthropic/OpenRouter) land both on
+// llm.Usage. Uses bifrost's own vendored struct type directly (§17.8: the
+// fixture is the real schema type, not a hand-authored belief).
+func TestExtractUsageAndCost_CacheTokens_ExplicitSplit(t *testing.T) {
+	resp := &bfschemas.BifrostChatResponse{
+		Usage: &bfschemas.BifrostLLMUsage{
+			PromptTokens:     1000,
+			CompletionTokens: 200,
+			TotalTokens:      1200,
+			PromptTokensDetails: &bfschemas.ChatPromptTokensDetails{
+				CachedReadTokens:  800,
+				CachedWriteTokens: 150,
+			},
+		},
+	}
+	usage, _ := extractUsageAndCost(resp)
+	if usage.CacheReadTokens != 800 {
+		t.Errorf("CacheReadTokens = %d want 800", usage.CacheReadTokens)
+	}
+	if usage.CacheWriteTokens != 150 {
+		t.Errorf("CacheWriteTokens = %d want 150", usage.CacheWriteTokens)
+	}
+	// Cache counts are a subset of PromptTokens — the base counts are unchanged.
+	if usage.PromptTokens != 1000 || usage.TotalTokens != 1200 {
+		t.Errorf("base counts altered by cache split: %+v", usage)
+	}
+}
+
+// TestExtractUsageAndCost_CacheTokens_OpenAICollapsed — OpenAI-spec providers
+// send a single `cached_tokens` field; bifrost's ChatPromptTokensDetails
+// UnmarshalJSON maps it into CachedReadTokens. Runs a raw JSON payload through
+// bifrost's real UnmarshalJSON (§17.8) rather than asserting a hand-built
+// belief about OpenAI's wire shape.
+func TestExtractUsageAndCost_CacheTokens_OpenAICollapsed(t *testing.T) {
+	raw := `{
+		"usage": {
+			"prompt_tokens": 500,
+			"completion_tokens": 100,
+			"total_tokens": 600,
+			"prompt_tokens_details": {"cached_tokens": 320}
+		}
+	}`
+	var resp bfschemas.BifrostChatResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	usage, _ := extractUsageAndCost(&resp)
+	if usage.CacheReadTokens != 320 {
+		t.Errorf("CacheReadTokens = %d want 320 (cached_tokens collapse)", usage.CacheReadTokens)
+	}
+	if usage.CacheWriteTokens != 0 {
+		t.Errorf("CacheWriteTokens = %d want 0 (no write reported)", usage.CacheWriteTokens)
+	}
+}
+
+// TestExtractUsageAndCost_CacheTokens_NilDetails — a nil PromptTokensDetails
+// (or nil Usage) yields zero cache counts, extending the existing
+// nil-usage-yields-zero contract without changing its shape.
+func TestExtractUsageAndCost_CacheTokens_NilDetails(t *testing.T) {
+	resp := &bfschemas.BifrostChatResponse{
+		Usage: &bfschemas.BifrostLLMUsage{
+			PromptTokens: 42,
+			TotalTokens:  42,
+			// PromptTokensDetails intentionally nil.
+		},
+	}
+	usage, _ := extractUsageAndCost(resp)
+	if usage.CacheReadTokens != 0 || usage.CacheWriteTokens != 0 {
+		t.Errorf("nil PromptTokensDetails must yield zero cache counts, got %+v", usage)
+	}
+
+	// Nil Usage entirely — the pre-existing zero-value path.
+	nilUsage, _ := extractUsageAndCost(&bfschemas.BifrostChatResponse{})
+	if nilUsage.CacheReadTokens != 0 || nilUsage.CacheWriteTokens != 0 {
+		t.Errorf("nil Usage must yield zero cache counts, got %+v", nilUsage)
+	}
+}
+
 // TestTranslateError — wraps bifrost error with status code prefix.
 func TestTranslateError(t *testing.T) {
 	status := 503

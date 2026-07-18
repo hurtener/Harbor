@@ -101,6 +101,17 @@ export interface RunCost {
   reasoningTokens: number;
   /** Σ total tokens. */
   totalTokens: number;
+  /**
+   * Σ prompt tokens served from the provider's prompt cache. A SUBSET of
+   * `promptTokens`, never additive to `totalTokens` — render as an
+   * annotation, not a fifth summed row.
+   */
+  cacheReadTokens: number;
+  /**
+   * Σ prompt tokens newly written to the provider's prompt cache. A SUBSET
+   * of `promptTokens`, never additive to `totalTokens`.
+   */
+  cacheWriteTokens: number;
   /** The count of `llm.cost.recorded` events folded in. */
   events: number;
   /** The distinct model labels seen (e.g. `openai/gpt-5.4`). */
@@ -116,6 +127,8 @@ const EMPTY_RUN_COST: RunCost = {
   outputTokens: 0,
   reasoningTokens: 0,
   totalTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   events: 0,
   models: []
 };
@@ -152,6 +165,10 @@ export function projectRunCost(events: readonly Event[]): RunCost {
       out.outputTokens += readNumber(usage, ['CompletionTokens', 'completion_tokens']);
       out.reasoningTokens += readNumber(usage, ['ReasoningTokens', 'reasoning_tokens']);
       out.totalTokens += readNumber(usage, ['TotalTokens', 'total_tokens']);
+      // Cache reads/writes are a SUBSET of promptTokens (already folded
+      // into totalTokens) — accumulated for annotation, never re-summed.
+      out.cacheReadTokens += readNumber(usage, ['CacheReadTokens', 'cache_read_tokens']);
+      out.cacheWriteTokens += readNumber(usage, ['CacheWriteTokens', 'cache_write_tokens']);
     }
     const model = readString(p, ['Model', 'model']);
     if (model !== null) models.add(model);

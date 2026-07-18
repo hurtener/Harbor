@@ -103,6 +103,78 @@ func TestReducer_CapturedCanonicalCorpus_NormalizesDeterministically(t *testing.
 	}
 }
 
+// TestReducer_CostRecorded_AccumulatesCacheTokens pins that the
+// llm.cost.recorded reducer folds the provider's cache-token counts into
+// both the session-level Usage and the per-run RunUsage, without disturbing
+// the existing token/cost totals.
+func TestReducer_CostRecorded_AccumulatesCacheTokens(t *testing.T) {
+	id := testIdentity("cache")
+	r := &Reducer{}
+	p, err := r.Hydrate(SnapshotBundle{Generation: 1, Identity: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"Model": "openai/gpt-5.4",
+		"Usage": map[string]any{
+			"TotalTokens":      1200,
+			"PromptTokens":     1000,
+			"CompletionTokens": 200,
+			"CacheReadTokens":  800,
+			"CacheWriteTokens": 150,
+		},
+		"Cost": map[string]any{"TotalCost": 0.01},
+	}
+	p, _, _ = r.Apply(p, wireEvent(id, 1, "llm.cost.recorded", "run-a", payload))
+	// A second event on the same run accumulates.
+	p, _, _ = r.Apply(p, wireEvent(id, 2, "llm.cost.recorded", "run-a", payload))
+
+	if p.Usage.CacheReadTokens != 1600 {
+		t.Errorf("session Usage.CacheReadTokens = %d want 1600", p.Usage.CacheReadTokens)
+	}
+	if p.Usage.CacheWriteTokens != 300 {
+		t.Errorf("session Usage.CacheWriteTokens = %d want 300", p.Usage.CacheWriteTokens)
+	}
+	if p.Usage.TotalTokens != 2400 || p.Usage.PromptTokens != 2000 {
+		t.Errorf("base session totals disturbed: %+v", p.Usage)
+	}
+	run := p.RunUsage["run-a"]
+	if run.CacheReadTokens != 1600 || run.CacheWriteTokens != 300 {
+		t.Errorf("RunUsage cache counts = read %d write %d want 1600/300", run.CacheReadTokens, run.CacheWriteTokens)
+	}
+}
+
+// TestReducer_CostRecorded_AbsentCacheFieldsDecodeToZero pins zero-value
+// honesty: an older-shaped cost payload with no cache fields decodes cleanly
+// (not a decode failure) and yields zero cache counts.
+func TestReducer_CostRecorded_AbsentCacheFieldsDecodeToZero(t *testing.T) {
+	id := testIdentity("nocache")
+	r := &Reducer{}
+	p, err := r.Hydrate(SnapshotBundle{Generation: 1, Identity: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"Model": "openai/gpt-5.4",
+		"Usage": map[string]any{
+			"TotalTokens":      600,
+			"PromptTokens":     500,
+			"CompletionTokens": 100,
+		},
+		"Cost": map[string]any{"TotalCost": 0.005},
+	}
+	next, change, _ := r.Apply(p, wireEvent(id, 1, "llm.cost.recorded", "run-b", payload))
+	if !change.Changed {
+		t.Fatal("cost payload with no cache fields must still decode and change state, not fall through to generic")
+	}
+	if next.Usage.CacheReadTokens != 0 || next.Usage.CacheWriteTokens != 0 {
+		t.Errorf("absent cache fields must decode to zero, got read %d write %d", next.Usage.CacheReadTokens, next.Usage.CacheWriteTokens)
+	}
+	if next.Usage.TotalTokens != 600 {
+		t.Errorf("base totals broken on cache-absent decode: %+v", next.Usage)
+	}
+}
+
 func TestReconcile_AuthoritativeSnapshotRepairsRemovalAndPreservesOnlyNewerLive(t *testing.T) {
 	id := testIdentity("session")
 	r := &Reducer{}

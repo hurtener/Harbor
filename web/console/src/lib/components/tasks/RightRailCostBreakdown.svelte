@@ -18,10 +18,22 @@
 
   let { cost }: { cost: RunCost } = $props();
 
+  // Cache reads/writes are a SUBSET of prompt (Input) tokens, not a fifth
+  // category — surfaced as a qualifier on the Input row, never a peer row
+  // summed into Total (a naive additive row would double-count against
+  // promptTokens). Hidden entirely when both counts are zero across every
+  // folded event — never a rendered "0 cached".
+  const cacheNote = $derived.by(() => {
+    const parts: string[] = [];
+    if (cost.cacheReadTokens > 0) parts.push(`${cost.cacheReadTokens.toLocaleString()} cached`);
+    if (cost.cacheWriteTokens > 0) parts.push(`${cost.cacheWriteTokens.toLocaleString()} written`);
+    return parts.length > 0 ? parts.join(', ') : '';
+  });
+
   const rows = $derived([
-    { label: 'Input', usd: cost.inputUSD, tokens: cost.promptTokens },
-    { label: 'Output', usd: cost.outputUSD, tokens: cost.outputTokens },
-    { label: 'Reasoning', usd: cost.reasoningUSD, tokens: cost.reasoningTokens }
+    { label: 'Input', usd: cost.inputUSD, tokens: cost.promptTokens, note: cacheNote },
+    { label: 'Output', usd: cost.outputUSD, tokens: cost.outputTokens, note: '' },
+    { label: 'Reasoning', usd: cost.reasoningUSD, tokens: cost.reasoningTokens, note: '' }
   ]);
 
   /**
@@ -50,7 +62,9 @@
         {#each rows as r (r.label)}
           <tr>
             <td>{r.label}</td>
-            <td class="num mono">{r.tokens.toLocaleString()}</td>
+            <td class="num mono">
+              {r.tokens.toLocaleString()}{#if r.note}<span class="cache-note" data-testid="rail-cost-cache-note"> ({r.note})</span>{/if}
+            </td>
             <td class="num mono">{usdCell(r.usd)}</td>
           </tr>
         {/each}
@@ -115,6 +129,11 @@
 
   .mono {
     font-family: var(--font-mono);
+  }
+
+  .cache-note {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
 
   .muted {

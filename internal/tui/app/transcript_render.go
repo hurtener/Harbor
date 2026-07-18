@@ -376,11 +376,17 @@ func (m Model) contextLabel() string {
 	if u.TotalTokens <= 0 {
 		return ""
 	}
+	// Cache reads are a subset of the prompt tokens already in the context
+	// figure — appended as a qualifier, never added to the denominator.
+	cached := ""
+	if u.CacheReadTokens > 0 {
+		cached = fmt.Sprintf(" (%s cached)", compactTokens(u.CacheReadTokens))
+	}
 	if u.ContextWindow <= 0 {
-		return fmt.Sprintf("Context %s", compactTokens(u.TotalTokens))
+		return fmt.Sprintf("Context %s%s", compactTokens(u.TotalTokens), cached)
 	}
 	percent := float64(u.PromptTokens) / float64(u.ContextWindow) * 100
-	return fmt.Sprintf("Context %s/%s (%.0f%%)", compactTokens(u.PromptTokens), compactTokens(u.ContextWindow), percent)
+	return fmt.Sprintf("Context %s/%s (%.0f%%)%s", compactTokens(u.PromptTokens), compactTokens(u.ContextWindow), percent, cached)
 }
 
 // compactTokens renders a token count the way an operator reads it: 17.4k.

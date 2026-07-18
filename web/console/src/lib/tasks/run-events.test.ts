@@ -133,6 +133,52 @@ describe('projectRunCost', () => {
     expect(c.reasoningTokens).toBe(27);
     expect(c.totalTokens).toBe(2351);
     expect(c.models).toEqual(['openai/gpt-5.4']);
+    // The captured fixture reports no cache accounting — the two cache
+    // fields decode to zero, not undefined/NaN (absent-field honesty).
+    expect(c.cacheReadTokens).toBe(0);
+    expect(c.cacheWriteTokens).toBe(0);
+  });
+
+  it('folds the PascalCase cache-token counts as a subset of promptTokens', () => {
+    const cached: Event = {
+      ...costRecorded,
+      sequence: 45,
+      payload: {
+        Identity: { RunID: RUN },
+        Model: 'openai/gpt-5.4',
+        Cost: { TotalCost: 0.002 },
+        Usage: {
+          PromptTokens: 5000,
+          CompletionTokens: 100,
+          ReasoningTokens: 0,
+          TotalTokens: 5100,
+          CacheReadTokens: 4000,
+          CacheWriteTokens: 800
+        }
+      }
+    };
+    const c = projectRunCost([cached]);
+    expect(c.cacheReadTokens).toBe(4000);
+    expect(c.cacheWriteTokens).toBe(800);
+    // Cache tokens are a SUBSET of promptTokens — never added into totalTokens.
+    expect(c.promptTokens).toBe(5000);
+    expect(c.totalTokens).toBe(5100);
+  });
+
+  it('reads the snake_case cache field spelling defensively', () => {
+    const cached: Event = {
+      ...costRecorded,
+      sequence: 46,
+      payload: {
+        Identity: { RunID: RUN },
+        Model: 'openai/gpt-5.4',
+        Cost: { total_cost: 0.001 },
+        Usage: { total_tokens: 300, prompt_tokens: 250, cache_read_tokens: 200, cache_write_tokens: 50 }
+      }
+    };
+    const c = projectRunCost([cached]);
+    expect(c.cacheReadTokens).toBe(200);
+    expect(c.cacheWriteTokens).toBe(50);
   });
 
   it('returns an all-zero rollup for a stream with no cost events', () => {
@@ -140,6 +186,8 @@ describe('projectRunCost', () => {
     expect(c.events).toBe(0);
     expect(c.totalUSD).toBe(0);
     expect(c.totalTokens).toBe(0);
+    expect(c.cacheReadTokens).toBe(0);
+    expect(c.cacheWriteTokens).toBe(0);
     expect(c.models).toEqual([]);
   });
 
