@@ -59,6 +59,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	artifactsInmem "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -67,6 +68,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/runtime/notifications"
+	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
@@ -264,14 +266,44 @@ func testWaveV116MetaToolCancelHierarchy(t *testing.T) {
 	}
 }
 
-// testWaveV116BackgroundWake proves the 188 surface: a background
-// `task.completed` with NotifyOnComplete=true flows through the REAL
-// notifications Subscriber and arrives as a `notification.task_completed`
-// reaching the conversation surface, with identity carried unchanged. The
-// failure mode is the negative half — a NotifyOnComplete=false completion
-// produces no wake notification.
+// testWaveV116BackgroundWake proves the 188 surface end-to-end over the
+// REAL producer chain, not a hand-published payload: a real background
+// task Spawned with NotifyOnComplete=true (the exact field `spawnOne`
+// stamps in internal/runtime/dispatch) is driven to completion through
+// the real task engine's MarkComplete, which emits `task.completed`
+// carrying the flag echoed from the Task record; the real notifications
+// Subscriber converts it to `notification.task_completed` reaching the
+// conversation surface, identity carried unchanged. Because the whole
+// chain is real, a future break in `spawnOne → Spawn → MarkComplete →
+// TaskCompletedPayload.NotifyOnComplete` (dispatch.go / engine.go) fails
+// THIS integration gate, not only the tasks-engine unit test.
+//
+// The failure mode is the negative half — a real task Spawned with
+// NotifyOnComplete=false and completed the same way produces no wake
+// notification.
 func testWaveV116BackgroundWake(t *testing.T) {
 	bus := openNotificationsBus(t)
+
+	// REAL task engine over the SAME bus: production tasks.Open (inprocess
+	// driver) over a real inmem StateStore + the canonical audit redactor.
+	// This is the exact registry `spawnOne` calls Spawn on, and whose
+	// MarkComplete emits task.completed (engine.go). No mock at the seam
+	// (§17.3).
+	store, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	reg, err := tasks.Open(context.Background(), tasks.Dependencies{
+		Store:    store,
+		Bus:      bus,
+		Redactor: auditpatterns.New(),
+		Cfg:      config.TasksConfig{Driver: "inprocess"},
+	})
+	if err != nil {
+		t.Fatalf("tasks.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reg.Close(context.Background()) })
 
 	listener, err := bus.Subscribe(context.Background(), events.Filter{
 		Admin: true,
@@ -287,23 +319,38 @@ func testWaveV116BackgroundWake(t *testing.T) {
 	idQuiet := triple("v116-quiet")
 	idWake := triple("v116-wake")
 
-	// Publish the QUIET (no-notify) completion FIRST: FIFO ordering means a
-	// wrongly-synthesised notification for it would arrive before the wake.
-	if err := bus.Publish(context.Background(), events.Event{
-		Type:     tasks.EventTypeTaskCompleted,
-		Identity: idQuiet,
-		Payload:  tasks.TaskCompletedPayload{TaskID: "task-v116-quiet", NotifyOnComplete: false},
-	}); err != nil {
-		t.Fatalf("Publish quiet: %v", err)
+	// completeReal spawns a REAL background task carrying the notify opt-in
+	// exactly as spawnOne does, then drives it Pending→Running→Complete via
+	// the engine's real transitions so MarkComplete emits the real
+	// task.completed with NotifyOnComplete echoed from the persisted record.
+	completeReal := func(id identity.Quadruple, notify bool) {
+		t.Helper()
+		ctx, wErr := identity.With(context.Background(), id.Identity)
+		if wErr != nil {
+			t.Fatalf("identity.With(%v): %v", id.Identity, wErr)
+		}
+		h, sErr := reg.Spawn(ctx, tasks.SpawnRequest{
+			Identity:         id,
+			Kind:             tasks.KindBackground,
+			Description:      "wave-v116 background wake",
+			NotifyOnComplete: notify,
+		})
+		if sErr != nil {
+			t.Fatalf("Spawn(notify=%v): %v", notify, sErr)
+		}
+		if rErr := reg.MarkRunning(ctx, h.ID); rErr != nil {
+			t.Fatalf("MarkRunning(%s): %v", h.ID, rErr)
+		}
+		if cErr := reg.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte(`"done"`)}); cErr != nil {
+			t.Fatalf("MarkComplete(%s): %v", h.ID, cErr)
+		}
 	}
 
-	if err := bus.Publish(context.Background(), events.Event{
-		Type:     tasks.EventTypeTaskCompleted,
-		Identity: idWake,
-		Payload:  tasks.TaskCompletedPayload{TaskID: "task-v116-wake", NotifyOnComplete: true},
-	}); err != nil {
-		t.Fatalf("Publish wake: %v", err)
-	}
+	// Drive the QUIET (no-notify) task to completion FIRST: FIFO ordering
+	// means a wrongly-synthesised notification for it would arrive before
+	// the wake.
+	completeReal(idQuiet, false)
+	completeReal(idWake, true)
 
 	// Bounded wait (no time.Sleep as a sync primitive, §17.4).
 	deadline := time.After(30 * time.Second)
@@ -318,13 +365,20 @@ func testWaveV116BackgroundWake(t *testing.T) {
 		t.Fatal("deadline before notification.task_completed arrived")
 	}
 
-	// Identity propagation across the seam.
+	// The notification rode the REAL producer chain — assert it is the
+	// task-completed topic carrying the wake task's notify opt-in.
+	if wake.Type != notifications.EventTypeNotificationTaskCompleted {
+		t.Errorf("wake event type = %q, want %q", wake.Type, notifications.EventTypeNotificationTaskCompleted)
+	}
+	// Identity propagation across the whole Spawn→MarkComplete→Subscriber
+	// seam: the triple + run reach the conversation surface unchanged.
 	if wake.Identity != idWake {
 		t.Errorf("wake notification identity bled: got %v, want %v", wake.Identity, idWake)
 	}
 
-	// Failure-mode negative: the NotifyOnComplete=false completion produced no
-	// further notification.
+	// Failure-mode negative: the NotifyOnComplete=false completion produced
+	// no further notification (proves the flag actually gates the wake — a
+	// producer that lost the flag would notify on BOTH and trip this).
 	select {
 	case ev, ok := <-listener.Events():
 		if ok {
@@ -640,7 +694,7 @@ func testWaveV116OAuthScope(t *testing.T) {
 			_, callErr := needsScope.Invoke(ctx, json.RawMessage(`{}`))
 			var se *tools.ErrInsufficientScope
 			if !errors.As(callErr, &se) {
-				fails[i] = fmt.Errorf("Invoke err = %v, want *tools.ErrInsufficientScope", callErr)
+				fails[i] = fmt.Errorf("Invoke err = %w, want *tools.ErrInsufficientScope", callErr)
 				return
 			}
 			scopeErrs[i] = se

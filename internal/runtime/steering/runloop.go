@@ -271,6 +271,21 @@ func NewRunLoop(reg *Registry, coord pauseresume.Coordinator, opts ...RunLoopOpt
 // unbounded planner loop is a misconfiguration, never a silent spin.
 const DefaultMaxSteps = 64
 
+// DefaultMaxConsecutiveInvalidDecisions bounds native-path structural
+// repair: how many CONSECUTIVE planner steps may return a repairable
+// invalid-decision error (a [planner.ErrInvalidDecision] — the planner
+// consumed the LLM response but could not project it into an actionable
+// Decision: malformed tool-call args JSON, a retain-turn spawn riding a
+// multi-call batch, a terminal/blocking control co-occurring with other
+// calls) before the run terminates loud. Each such rejection is fed back
+// to the planner as a step observation so the next step re-plans; a
+// persistently-malformed model that never recovers is stopped after this
+// many consecutive rejections rather than looping to the MaxSteps cap
+// (fail-loudly per §13). Any valid decision resets the counter. The
+// value mirrors the schema-repair loop's consecutive-arg-failure
+// storm-guard so the two failure classes bound identically.
+const DefaultMaxConsecutiveInvalidDecisions = 2
+
 // ToolExecutor is the runtime-side dispatch surface the RunLoop calls
 // when the planner returns a non-Finish, non-RequestPause decision
 // (CallTool, CallParallel, SpawnTask, AwaitTask). The executor:
@@ -333,6 +348,14 @@ type RunSpec struct {
 	TaskID tasks.TaskID
 	// MaxSteps caps the planner-step count. ≤ 0 ⇒ DefaultMaxSteps.
 	MaxSteps int
+
+	// MaxConsecutiveInvalidDecisions bounds native-path structural
+	// repair: the number of CONSECUTIVE planner steps that may return a
+	// repairable [planner.ErrInvalidDecision] (fed back as a step
+	// observation for the planner to re-plan) before the run terminates
+	// loud. ≤ 0 ⇒ DefaultMaxConsecutiveInvalidDecisions. Any valid
+	// decision resets the counter.
+	MaxConsecutiveInvalidDecisions int
 
 	// ToolExecutor dispatches the planner's non-Finish, non-RequestPause
 	// decisions (CallTool, CallParallel, SpawnTask, AwaitTask).
@@ -475,6 +498,16 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if maxSteps <= 0 {
 		maxSteps = DefaultMaxSteps
 	}
+
+	maxConsecutiveInvalid := spec.MaxConsecutiveInvalidDecisions
+	if maxConsecutiveInvalid <= 0 {
+		maxConsecutiveInvalid = DefaultMaxConsecutiveInvalidDecisions
+	}
+	// consecutiveInvalid tracks native-path structural repair across steps:
+	// it climbs on each repairable planner rejection fed back as an
+	// observation and resets on any valid decision. Stack-local per-run
+	// state (the concurrent-reuse contract — never on the RunLoop artifact).
+	consecutiveInvalid := 0
 
 	// runCtx carries the run's identity quadruple so Coordinator.Resume
 	// (called from applyEvent) and Coordinator.Request (called below)
@@ -775,8 +808,59 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// --- NEXT: the planner contributes exactly this. ---
 		decision, nerr := spec.Planner.Next(runCtx, rc)
 		if nerr != nil {
+			// A native-path projector structural rejection — the planner
+			// consumed the LLM response but could not project it into an
+			// actionable Decision (malformed tool-call args JSON, a
+			// retain-turn spawn riding a multi-call batch, a
+			// terminal/blocking control co-occurring with other calls, an
+			// out-of-enum spawn arg) — surfaces as a wrapped
+			// planner.ErrInvalidDecision. This is the SAME semantic class as
+			// a dispatch error (the default case below feeds a tool-execution
+			// failure back as the step observation and re-plans): the model
+			// produced something that cannot be actioned, so re-planning with
+			// the failure visible is the right recovery, not aborting the run.
+			// Feed it back as a repairable step observation and let the next
+			// step re-plan, bounded by the consecutive-failure budget so a
+			// persistently-malformed model still terminates loud (§13).
+			//
+			// Genuinely-fatal Next errors — ctx cancellation, missing
+			// identity, an unserializable memory block, an LLM transport
+			// error — do NOT wrap ErrInvalidDecision and stay fatal.
+			if errors.Is(nerr, planner.ErrInvalidDecision) {
+				consecutiveInvalid++
+				if consecutiveInvalid >= maxConsecutiveInvalid {
+					// Budget exhausted: a persistently-malformed model
+					// terminates the run loudly (never an infinite re-plan
+					// loop). Emit the fail-loudly observability surface, then
+					// return the wrapped rejection.
+					rl.emitNativeRepairExhausted(runCtx, q, consecutiveInvalid)
+					return planner.Finish{}, fmt.Errorf(
+						"steering: planner step %d: native tool-call repair budget exhausted after %d consecutive invalid decisions: %w",
+						step, consecutiveInvalid, nerr)
+				}
+				// Record the rejection as a step observation so the planner's
+				// next prompt build surfaces the exact violation (the react
+				// prompt builder renders Step.Error as an "Observation
+				// (error)" turn) and re-plans. Same trajectory-feedback
+				// posture the dispatch-error path uses below.
+				rl.appendInvalidDecisionStep(spec, nerr)
+				// Log the recovery WITHOUT the error text: a projector
+				// malformed-args rejection embeds the raw tool-call args in
+				// its message, and §5/§7 forbid logging raw tool arguments.
+				// The full (redacted) violation reaches operators via the
+				// trajectory observation and, on exhaustion, the returned
+				// run error.
+				slog.WarnContext(runCtx, "steering: repairable planner rejection fed back as observation",
+					"step", step,
+					"consecutive_invalid", consecutiveInvalid,
+					"max_consecutive_invalid", maxConsecutiveInvalid,
+				)
+				continue
+			}
 			return planner.Finish{}, fmt.Errorf("steering: planner step %d: %w", step, nerr)
 		}
+		// A valid decision resets the native-path structural-repair budget.
+		consecutiveInvalid = 0
 		if decision == nil {
 			// (nil, nil) is the silent-degradation shape §13 forbids.
 			return planner.Finish{}, fmt.Errorf("steering: planner step %d returned a nil Decision (silent degradation forbidden — CLAUDE.md §13)", step)
@@ -1146,6 +1230,65 @@ func (rl *RunLoop) emitLifecycle(ctx context.Context, q identity.Quadruple, t Co
 			Type:    string(t),
 			Outcome: outcome,
 			Err:     errStr,
+		},
+	})
+}
+
+// appendInvalidDecisionStep records a repairable planner rejection as a
+// trajectory step so the next planner step re-plans with the exact
+// violation visible. The step carries only Error (the wrapped
+// planner.ErrInvalidDecision message) and a nil Action — the react
+// prompt builder renders Step.Error as an "Observation (error)" turn, the
+// same feedback channel the dispatch-error observation uses. The append
+// is guarded by TrajectoryMu when an out-of-band Protocol reader is
+// wired, matching the decision-execution append path.
+func (rl *RunLoop) appendInvalidDecisionStep(spec RunSpec, nerr error) {
+	if spec.Base.Trajectory == nil {
+		return
+	}
+	// Trajectory is a pointer on spec.Base; the append mutates the shared
+	// pointee, visible to the next iteration's `rc := spec.Base` copy.
+	if spec.TrajectoryMu != nil {
+		spec.TrajectoryMu.Lock()
+		defer spec.TrajectoryMu.Unlock()
+	}
+	spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, planner.Step{
+		Error: nerr.Error(),
+	})
+}
+
+// emitNativeRepairExhausted publishes the fail-loudly observability
+// surface when native-path structural repair exhausts its
+// consecutive-failure budget. It reuses
+// [planner.EventTypePlannerRepairExhausted] — the same event the
+// schema-repair loop emits on its graceful-failure path — so operators
+// see both repair-budget terminations through one signal.
+//
+// The Reasons slice carries an arg-free category label, NOT the raw
+// rejection error: a projector malformed-args rejection embeds the raw
+// tool-call args in its message, and this payload is SafeSealed (it
+// bypasses the audit redactor), so §7 forbids putting untyped tool args
+// in it. The specific (redacted) violation reaches operators via the
+// trajectory observation and the returned run error.
+//
+// Best-effort: a nil bus is a no-op and a publish failure is swallowed
+// (observability, not correctness — the run already terminates loud via
+// the returned error).
+func (rl *RunLoop) emitNativeRepairExhausted(ctx context.Context, q identity.Quadruple, consecutive int) {
+	if rl.bus == nil {
+		return
+	}
+	now := time.Now()
+	_ = rl.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort fail-loudly emit; the run still terminates via the returned error
+		Type:       planner.EventTypePlannerRepairExhausted,
+		Identity:   q,
+		OccurredAt: now,
+		Payload: planner.RepairExhaustedPayload{
+			Identity:               q,
+			Attempts:               consecutive,
+			ConsecutiveArgFailures: consecutive,
+			Reasons:                []string{"native tool-call structural rejection: repair budget exhausted"},
+			OccurredAt:             now,
 		},
 	})
 }
