@@ -323,6 +323,13 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |182 | Complete attach conversation/session experience: `harbor tui --attach`, editor-quality composer, sessions, streaming, semantic navigation, compact mode, export, reconnect, and local interaction state (D-318) | internal/tui + cmd/harbor | §3.1, §4, §5, §8 | 180, 181 | 85% | Shipped (v1.15) |
 |183 | Runtime control and inspection: tasks, tools, artifacts, events, posture, interventions, canonical controls, diagnostics, attention, and generic renderer registries at the same quality floor (D-319) | internal/tui | §3.3, §4, §5, §6.3, §8 | 182, 72e/f/g, 73d/f/l, 162–163, 174–178 | 85% | Shipped (v1.15) |
 |184 | Runtime distribution: explicit readiness, `harbor serve --tui`, curated `sdk/tui`, scaffolded serving-binary `--tui`, and cross-mode frame-equivalent wave PTY E2E (D-320) | internal/runtime/serve + sdk/server + sdk/tui + cmd/harbor + scaffold | §3.6, §5.6, §8 | 183, 159, 160 | 85% | Shipped (v1.15) |
+|185 | Batch decision: fourth sealed `Decision` shape (`Tools`/`Spawns`/`Join`) letting one native multi-call response mix catalog tools with non-retain-turn `_spawn_task` spawns (each spawn stamped with its provider `CallID`, mirroring `CallTool.CallID`); AC-21 narrows to AC-21′ (`_finish`/`_await_task` stay standalone, `_spawn_task` becomes batchable); degenerate one-branch batches never constructed; trajectory invocation-count + serialization coverage; corrected `_spawn_task` prompt description closing the prompt-vs-validator disagreement; supersedes D-169 item 5's `_spawn_tasks`-array direction while keeping its spawns-are-never-CallParallel-branches constraint (D-322) | internal/planner + internal/planner/react + internal/planner/trajectory + internal/planner/conformance | §6.2, §6.4 | 184, 42, 45, 47, 107c, 107d, 107e | 85% | Pending (v1.16) |
+|186 | Batch executor: flat concurrent dispatch of heterogeneous `Batch` decisions — tool branches via the existing `JoinSpec` executor (D-169 JoinAll/non-atomic parity: every branch failure is that branch's error result, every `call_id` answered), spawn branches via auto-grouped registry spawn (ONE `ResolveOrCreateGroup` group for ≥2 unbound spawns; explicit `GroupID` never overwritten); whole-batch loud rejection reserved for structural invariants (new operator-configurable `planner.max_batch_spawns` breadth cap, `FailFast` disagreement, retain-turn re-check); `BatchObservation` call-id-keyed and declaration-order-stable; closes the previously-unwired `steering.WithHardCancelHook` production seam so a run-level hard cancel cascades into batch-spawned descendants (D-323) | internal/runtime/dispatch + internal/runtime/steering + internal/runtime/assemble + internal/tasks + internal/config + internal/planner | §6.2, §6.8 | 185 | 85% | Pending (v1.16) |
+|187 | Task-management planner meta-tools + the cancel hierarchy: `_task_status`/`_cancel_task` reserved controls → new sealed `TaskStatus`/`CancelTask` decisions, descendant-scoped via the parent-task chain (a run can never observe or cancel a sibling run's tasks); model-expressible `propagate_on_cancel: isolate` on `_spawn_task` lands in the SAME phase as its brake (amending D-047's `SpawnSpec` field set); fixes the shipped cascade-cancel walk (`internal/tasks/engine`) that cancels descendants regardless of their own `PropagateOnCancel` — dormant until `isolate` becomes reachable; cancel hierarchy tested end-to-end: human (any task, always; session-scoped cancel sweeps isolate too) > agent (own descendants) > cascade defaults (D-324) | internal/planner + internal/planner/react + internal/runtime/dispatch + internal/tasks/engine | §6.2, §6.4, §6.8 | 185, 186 | 85% | Pending (v1.16) |
+|188 | Background wake notifications + turn-failure honesty: `notification.task_group_resolved`/`notification.task_completed` mirror background resolution conversationally (ref-shaped member outcomes; the typed `WatchGroup` planner path untouched); the TUI renders muted lifecycle one-liners (a new conversational `notification` block kind; `notification.task_failed` suppressed when the failing task IS the tracked foreground turn) and a dedicated `× Turn failed · <ErrorCode>` status-strip line for a FAILED foreground turn that previously went silently idle; Console Sessions + Tasks docks render the same family; additive wire fields only, D-209 lockstep regen (D-325) | internal/runtime/notifications + internal/tasks + internal/tui/projection + internal/tui/app + web/console | §6.13, §6.8, §5.2, §7 | 186 | 85% | Pending (v1.16) |
+|189 | Cache-token capture: the bifrost translator stops discarding `PromptTokensDetails.CachedReadTokens`/`CachedWriteTokens` into new additive `llm.Usage.CacheReadTokens`/`CacheWriteTokens`, mirrored onto `llm.CostRecordedPayload`; ALL verified hand-decoders of that event (TUI reducer, Console `run-events.ts`, sessions enricher — the last documented as a deliberate non-consumer) updated or annotated in the same PR; the one real Console UI consumer (`RightRailCostBreakdown.svelte`) renders cache counts as a non-summed annotation (cache tokens are a SUBSET of prompt tokens — never a double-counting fifth row); governance `PostCall` and `CompleteRequest` untouched — telemetry-only, zero design forks; the request-side cache-intent surface stays a named mid-wave decision point (D-326) | internal/llm + internal/llm/drivers/bifrost + internal/tui/projection + internal/tui/app + internal/sessions/protocol + web/console | §6.5, §5.2 | 184 | 85% | Pending (v1.16) |
+|190 | `agents.list` surfaces the runtime's synthetic default agent (HA-25; the absence-representable class, D-311): a runtime serving only its boot agent (the well-known id already threaded as `MuxInput.AgentConfigID`) produced ZERO rows, so a fleet Agents catalog read "no rows" as "no agents"; FIX = an optional `WithDefaultAgent` projector seam (nil ⇒ byte-identical behavior) synthesizing ONE first-class row with additive `Agent.IsDefault` marker; COLLISION RULE: a real registration under the same id suppresses the synthetic row (real data wins, never a duplicate); `agents.get` resolves it, `agents.metrics.Active` counts it, the admin-widened fleet fan-in (`ListTenantAgents`) picks it up per tenant with no bespoke code (integration-proven); fleet-CONTROL verbs fall through to `ErrAgentNotFound` unchanged (no control surface over the runtime's own process); authority server-derived (D-299), no scope change; additive field, `ProtocolVersion` 0.1.0, full D-223 + D-209 lockstep + §18 `observe-with-the-console` (its "one row" claim made true) + `use-the-harbor-protocol` same PR (D-327) | internal/runtime/registry/protocol + internal/protocol/types + internal/runtime/serve + web/console | §6.16, §5.2, §7 | 184 | 85% | Pending (v1.16) |
+|191 | OAuth broker legs (HA-26 + HA-27 + HA-28; bundles the wave-end E2E): three additive legs on the broker-pull spine, posture invariant (runtime never runs the flow/holds tokens; custody coordinator-side; discovered values stay operator-confirmed proposals; composes with D-300, never weakens). HA-26: a downstream 403 `insufficient_scope` step-up — today an OPAQUE error that `ClassifyError` treats as TRANSIENT and silently RETRIES (a shortfall retrying can never fix) — becomes typed `tools.ErrInsufficientScope` (resource id + required/granted scopes + verbatim challenge + origin) on the tool-result path (additive `ToolFailedPayload.ScopeShortfall`) AND the MCP connection view (additive canonical `MCPServerView.LastScopeShortfall`), classified PERMANENT; capture extends 401→401+403 with RFC 6750 §3.1 `error`/`scope` parsing. HA-27: boot-declared `resource_indicator` rides the RFC 8693 exchange as the RFC 8707 `resource` param with best-effort `aud` verification (`AudienceVerified:false` recorded for opaque tokens, never a false pass; NEVER auto-populated from discovery); boot-declared per-tool `MCPServerConfig.ToolOAuthProviders` (mirroring `ToolPolicies`) closes one-audience-per-server — deliberately NOT on Protocol-writable `ToolExposure` (D-300: no admin-writable field determines a credential sink). HA-28: opt-in `IncludeActorToken` carries the verified invoking `agent_id` (the `InvokingAgentFrom` ctx seam, D-278) as RFC 8693 `actor_token` beside the unchanged `subject_token` — backward-compatible when absent. §17.8 fixture = captured RFC 6750 challenge; wave E2E `test/integration/wave_v116_test.go` spans 185–191 under `-race` (D-328) | internal/tools + internal/tools/auth/drivers/tokenexchange + internal/tools/drivers/mcp + internal/protocol/types + internal/config | §6.4, §5.2, §7 | 28, 30, 142, 148, 164, 166, 168, 169, 185, 186, 187, 188, 189, 190 | 85% | Pending (v1.16) |
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
@@ -4179,7 +4186,7 @@ per §17.8). Status: Shipped (V1.6).
   remain explicit; coding-agent features remain excluded. See
   `docs/plans/phase-183-tui-runtime-control.md`.
 - **Decision:** D-319.
-- **Status:** Pending (v1.15).
+- **Status:** Shipped (v1.15).
 
 ---
 
@@ -4195,7 +4202,212 @@ per §17.8). Status: Shipped (V1.6).
   cleanup. See `docs/plans/phase-184-tui-runtime-distribution.md` and
   `docs/plans/wave-v115-tui-coordination.md`.
 - **Decision:** D-320.
-- **Status:** Pending (v1.15).
+- **Status:** Shipped (v1.15).
+
+---
+
+### Phase 185 — Batch decision + AC-21 supersession (projector)
+
+- **Subsystem:** `internal/planner`, `internal/planner/react`,
+  `internal/planner/trajectory`, `internal/planner/conformance`.
+- **RFC:** §6.2, §6.4.
+- **Deps:** 184, 42, 45, 47, 107c, 107d, 107e.
+- **What it delivers:** the fourth sealed `Decision` shape `Batch{Tools,
+  Spawns, Join}` (not a widening of `CallParallel` — spawns are never
+  counted as tool invocations; each spawn stamped with its provider
+  `CallID`, mirroring `CallTool.CallID`); AC-21′, narrowing the
+  standalone-co-occurrence guard to `_finish`/`_await_task` only so
+  `_spawn_task` can batch with catalog tools and other spawns; the
+  projector partition logic, the degenerate-batch-never-constructed
+  invariant, and `FailFast`-disagreement rejection;
+  `DecisionInvocationCount`'s `Batch` case; a corrected `_spawn_task`
+  reserved-control description that teaches the batching contract instead
+  of contradicting the validator; and the conformance pack's `Batch`
+  registration ahead of its first dispatch consumer (186, same wave).
+  Supersedes D-169 item 5's `_spawn_tasks`-array direction while keeping
+  its constraint (spawns never become `CallParallel` branches). See
+  `docs/plans/phase-185-batch-decision.md` and
+  `docs/plans/wave-v116-parallel-intent-coordination.md`.
+- **Decision:** D-322.
+- **Status:** Pending (v1.16).
+
+---
+
+### Phase 186 — Batch executor: heterogeneous dispatch, auto-grouping, ordered observations
+
+- **Subsystem:** `internal/runtime/dispatch`, `internal/runtime/steering`,
+  `internal/runtime/assemble`, `internal/tasks`, `internal/config`,
+  `internal/planner`.
+- **RFC:** §6.2, §6.8.
+- **Deps:** 185.
+- **What it delivers:** dispatches `planner.Batch` as one flat concurrent
+  dispatch — tool branches through the same executor `CallParallel`
+  already uses (Join always nil→JoinAll, non-atomic per-branch dispatch —
+  extending D-169 items 2/3 verbatim), spawn branches through the
+  existing registry spawn path, auto-grouped into ONE
+  `ResolveOrCreateGroup` group when ≥2 share no explicit `GroupID`.
+  Whole-batch loud rejection is reserved for structural setup only: the
+  new operator-configurable `planner.max_batch_spawns` breadth cap,
+  `FailFast` disagreement across auto-grouped spawns, and a defensive
+  non-retain-turn re-check. Produces `planner.BatchObservation`
+  (call-id-keyed, declaration-order-stable regardless of completion
+  order) and closes the previously-unwired `steering.WithHardCancelHook`
+  production seam in the one stack assembler so a run-level hard cancel
+  actually cascades into a batch's spawned descendants. States and tests
+  the full cancellation hierarchy: human (any task, always) > agent (own
+  descendants, phase 187) > cascade defaults. See
+  `docs/plans/phase-186-batch-executor.md`.
+- **Decision:** D-323.
+- **Status:** Pending (v1.16).
+
+---
+
+### Phase 187 — Task-management planner meta-tools + the cancel hierarchy
+
+- **Subsystem:** `internal/planner` (decision + react projector/prompt),
+  `internal/runtime/dispatch`, `internal/tasks/engine`.
+- **RFC:** §6.2, §6.4, §6.8.
+- **Deps:** 185, 186.
+- **What it delivers:** two new reserved planner-control meta-tools —
+  `_task_status` and `_cancel_task` — giving the model descendant-scoped
+  observation and control over tasks its own run spawned, dispatched as
+  new sealed `TaskStatus`/`CancelTask` `Decision` shapes; model-expressible
+  `propagate_on_cancel: isolate` on `_spawn_task` landing in the same phase
+  as its brake (the power-with-brake gate, amending D-047's frozen
+  `SpawnSpec` field set); and a fix to the shared cascade-cancel walk in
+  `internal/tasks/engine` so an ancestor's cascade actually detaches an
+  isolate-marked descendant's subtree, closing the gap between the shipped
+  code and the RFC's cancel-hierarchy invariant now that `isolate` is
+  reachable for the first time. See
+  `docs/plans/phase-187-task-management-meta-tools.md`.
+- **Decision:** D-324.
+- **Status:** Pending (v1.16).
+
+---
+
+### Phase 188 — Background wake notifications + turn-failure honesty
+
+- **Subsystem:** `internal/runtime/notifications`, `internal/tasks`
+  (+ `internal/tasks/engine`), `internal/tui/projection`,
+  `internal/tui/app`, `web/console` (Sessions + Tasks docks, taxonomy).
+- **RFC:** §6.13, §6.8, §5.2, §7.
+- **Deps:** 186.
+- **What it delivers:** extends the existing `notification.*` topic with
+  `notification.task_group_resolved` and `notification.task_completed`
+  (background wake, mirroring `GroupCompletion`/`NotifyOnComplete`
+  conversationally while the typed `WatchGroup` planner path stays
+  untouched); the TUI renders these as muted lifecycle one-liners (a new
+  conversational `notification` block kind, with `notification.task_failed`
+  suppressed when the failing task IS the tracked foreground turn) and
+  renders a dedicated `× Turn failed · <ErrorCode>` status-strip line for
+  a FAILED foreground turn that previously went silently idle; the
+  Console's Sessions and Tasks docks render the same family. No new
+  Protocol method; additive wire fields only, D-209 lockstep regen in the
+  same PR. See
+  `docs/plans/phase-188-background-wake-and-failure-honesty.md`.
+- **Decision:** D-325.
+- **Status:** Pending (v1.16).
+
+---
+
+### Phase 189 — Cache-token capture: stop dropping provider cache accounting
+
+- **Subsystem:** `internal/llm`, `internal/llm/drivers/bifrost`,
+  `internal/tui/projection`, `internal/tui/app`,
+  `internal/sessions/protocol`, `web/console`.
+- **RFC:** §6.5, §5.2.
+- **Deps:** 184.
+- **What it delivers:** the bifrost translator stops discarding
+  `PromptTokensDetails.CachedReadTokens`/`CachedWriteTokens`; `llm.Usage`
+  gains the two fields (additive, `ProviderExtras` untouched);
+  `llm.CostRecordedPayload` mirrors them through its embedded `Usage`;
+  the TUI turn-status/context readouts and the Console's
+  `RightRailCostBreakdown.svelte` (fed by an updated `run-events.ts`)
+  render the counts as a non-summed cache annotation (cache tokens are a
+  SUBSET of prompt tokens — never a double-counting extra row); the
+  sessions enricher is verified to need no field change and gets a
+  documented non-extraction comment instead of silent omission.
+  Governance ceiling math and `CompleteRequest` are unmodified —
+  telemetry-only; the request-side cache-intent surface stays a named
+  mid-wave decision point. See
+  `docs/plans/phase-189-cache-telemetry-capture.md`.
+- **Decision:** D-326.
+- **Status:** Pending (v1.16).
+
+---
+
+### Phase 190 — `agents.list` surfaces the synthetic default agent (HA-25)
+
+- **Subsystem:** `internal/runtime/registry/protocol` (RegistryProjector +
+  aggregating projector — the default-agent synthesis + collision rule),
+  `internal/protocol/types` (additive `Agent.IsDefault`),
+  `internal/runtime/serve` (mux wiring off the existing boot
+  `AgentConfigID`), `web/console` (Agents catalog badge + typed client).
+- **RFC:** §6.16, §5.2, §7.
+- **Deps:** 184.
+- **What it delivers:** HA-25 — the absence-representable class (D-311)
+  applied to the boot agent no session ever registers. The registry scopes
+  over agents explicitly registered by session orchestration; a runtime
+  serving only its synthetic boot agent has produced ZERO `agents.list`
+  rows, so a fleet catalog composing reads across runtimes cannot
+  distinguish "no agents" from "one agent, not enumerable this way." An
+  optional `WithDefaultAgent` projector seam (nil ⇒ behavior unchanged)
+  synthesizes ONE first-class row with the additive `Agent.IsDefault`
+  marker; a real registration under the same well-known id suppresses the
+  synthetic row (real data wins, never a duplicate id); `agents.get`
+  resolves it and `agents.metrics.Active` counts it; the admin-widened
+  fleet fan-in picks it up per tenant with no bespoke code, proven by an
+  integration test. Fleet-control verbs against the id fall through to
+  the existing `ErrAgentNotFound` — no control surface over the runtime's
+  own process. Authority stays server-derived (D-299); one additive wire
+  field; `ProtocolVersion` stays 0.1.0; full D-223 lockstep, D-209 regen,
+  and §18 same-PR updates to `observe-with-the-console` (its "for a
+  single-agent setup, you see one row" claim, made true) and
+  `use-the-harbor-protocol`. See
+  `docs/plans/phase-190-default-agent-row.md`.
+- **Decision:** D-327.
+- **Status:** Pending (v1.16).
+
+---
+
+### Phase 191 — OAuth broker legs: step-up visibility, resource-bound exchange, per-tool binding, actor chain (HA-26/HA-27/HA-28)
+
+- **Subsystem:** `internal/tools`,
+  `internal/tools/auth/drivers/tokenexchange`,
+  `internal/tools/drivers/mcp`, `internal/protocol/types`,
+  `internal/config`.
+- **RFC:** §6.4, §5.2, §7.
+- **Deps:** 28, 30, 142, 148, 164, 166, 168, 169; 185–190 for the
+  bundled wave-end E2E only.
+- **What it delivers:** three additive legs on the broker-pull spine,
+  posture invariant (the runtime never runs the OAuth flow, never
+  holds/refreshes tokens; custody stays coordinator-side; every new knob
+  is boot-declared config-only, composing with — never weakening — D-300;
+  the unified pause/resume primitive is untouched). HA-26 turns an opaque
+  downstream 403 `insufficient_scope` step-up — which today also falls
+  through error classification as TRANSIENT and is silently retried —
+  into typed structured data (`tools.ErrInsufficientScope`: resource id,
+  required/granted scopes, verbatim challenge + origin) on both the
+  tool-result error path (additive `ToolFailedPayload.ScopeShortfall`)
+  and the MCP connection view (additive canonical
+  `MCPServerView.LastScopeShortfall`, full D-223/D-209 lockstep),
+  classified PERMANENT; report-not-act — lifting the shortfall stays the
+  operator-confirmed discovery-allowance write. HA-27 carries a
+  boot-declared RFC 8707 `resource` indicator on the RFC 8693 exchange
+  with best-effort audience verification (opaque tokens record
+  `AudienceVerified:false`, never a false pass) and adds boot-declared
+  per-tool `oauth_provider` overrides on one MCP connection (mirroring
+  `ToolPolicies`; deliberately NOT on Protocol-writable `ToolExposure`
+  per D-300), falling back to the connection-level binding. HA-28
+  optionally carries the run's verified invoking `agent_id` as an RFC
+  8693 `actor_token` beside the unchanged `subject_token` —
+  backward-compatible when absent. §17.8 fixture: a captured RFC 6750
+  §3.1 challenge, spec-derived. Bundles
+  `test/integration/wave_v116_test.go` per §17.7 step 5, spanning phases
+  185–191 under `-race`. See
+  `docs/plans/phase-191-oauth-broker-legs.md`.
+- **Decision:** D-328.
+- **Status:** Pending (v1.16).
 
 ---
 
