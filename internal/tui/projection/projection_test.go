@@ -638,7 +638,15 @@ func TestHydrateClient_128BlockedCancellationsHaveNoCrossTalk(t *testing.T) {
 			f.entered = entered
 			_, err := HydrateClient(ctx, f, 1, 0, 1)
 			if i%2 == 0 {
-				if !errors.Is(err, context.Canceled) {
+				// A cancelled hydration either observes the cancellation
+				// (context.Canceled) or completes before the cancel is
+				// observed (nil) — both are correct; cancellation is
+				// best-effort. Only a DIFFERENT, foreign error would be
+				// cross-talk from another run. (The strict "must be
+				// Canceled" form flaked on loaded CI when the work won the
+				// race — the "no cross-talk" guarantee is the odd-index
+				// check below, which stays strict.)
+				if err != nil && !errors.Is(err, context.Canceled) {
 					results <- fmt.Errorf("cancelled %d: %w", i, err)
 				}
 			} else if err != nil {

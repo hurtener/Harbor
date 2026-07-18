@@ -199,9 +199,15 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.command(t, 'f')
 	session.waitContainsAfter(t, mark, "earch:")
 	session.text(t, "hello")
-	// A resize forces a full repaint: the cell-diff renderer may split the
-	// incrementally-updated toast across cursor moves, so the assertion text
-	// is only guaranteed contiguous in the byte stream after a fresh paint.
+	// Let the query fully register (all five keystrokes processed and the
+	// match count recomputed) BEFORE forcing the repaint — otherwise the
+	// resize can race the input pipeline on a loaded runner and repaint a
+	// stale search state, leaving the assertion text absent (a CI flake).
+	session.waitContains(t, "Search: hello")
+	// A resize then forces a full repaint: the cell-diff renderer may split
+	// the incrementally-updated toast across cursor moves, so the assertion
+	// text is only guaranteed contiguous in the byte stream after a fresh
+	// paint of the now-settled search state.
 	session.resize(t, 100, 30)
 	session.waitContains(t, "hello · 0 matches")
 	mark = len(session.snapshot())
