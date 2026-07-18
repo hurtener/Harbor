@@ -255,7 +255,6 @@ func TestExchange_MalformedJWT_ParseSafeOpaqueNoOp(t *testing.T) {
 		{"empty_payload", "x..z"},                            // empty middle segment
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			broker := newJWTBroker(t)

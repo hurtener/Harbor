@@ -115,7 +115,10 @@ func scopeShortfallSlotFrom(ctx context.Context) *scopeShortfallSlot {
 	if ctx == nil {
 		return nil
 	}
-	slot, _ := ctx.Value(scopeShortfallCtxKey{}).(*scopeShortfallSlot)
+	slot, ok := ctx.Value(scopeShortfallCtxKey{}).(*scopeShortfallSlot)
+	if !ok {
+		return nil
+	}
 	return slot
 }
 

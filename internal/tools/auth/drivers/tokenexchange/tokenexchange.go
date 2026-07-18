@@ -865,12 +865,15 @@ func verifyAudience(accessToken, resource string) (bool, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		// Not a decodable JWT payload — treat as opaque, not a mismatch.
+		//nolint:nilerr // an undecodable JWT payload is a deliberate opaque no-op, not an exchange error
 		return false, nil
 	}
 	var claims struct {
 		Aud json.RawMessage `json:"aud"`
 	}
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		// Not a JSON JWT payload — treat as opaque, not a mismatch.
+		//nolint:nilerr // a non-JSON JWT payload is a deliberate opaque no-op, not an exchange error
 		return false, nil
 	}
 	auds := parseAudClaim(claims.Aud)

@@ -596,7 +596,7 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 		var idErr error
 		taskCtx, idErr = identity.With(ctx, rc.Quadruple.Identity)
 		if idErr != nil {
-			return nil, nil, fmt.Errorf("Batch: attach identity: %w", idErr)
+			return nil, nil, fmt.Errorf("batch: attach identity: %w", idErr)
 		}
 	}
 
@@ -615,7 +615,7 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 			planner.CallParallel{Branches: d.Tools, Join: d.Join},
 			parallel.WithNonAtomicSetup())
 		if err != nil {
-			return nil, nil, fmt.Errorf("Batch tool dispatch: %w", err)
+			return nil, nil, fmt.Errorf("batch tool dispatch: %w", err)
 		}
 		raw.Tools, llm.Tools = e.branchObservations(ctx, rc, d.Tools, results)
 	}
@@ -636,7 +636,7 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 			Description: "batch auto-group",
 		})
 		if gErr != nil {
-			autoGroupErr = fmt.Errorf("Batch: auto-group ResolveOrCreateGroup: %w", gErr)
+			autoGroupErr = fmt.Errorf("batch: auto-group ResolveOrCreateGroup: %w", gErr)
 		} else {
 			autoGroupID = grp.ID
 		}
