@@ -985,6 +985,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	stack.Executor = dispatch.NewToolExecutor(toolCat, stack.Artifacts, stack.Tasks,
 		dispatch.WithHeavyThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
 		dispatch.WithMaxSpawnDepth(cfg.Planner.SpawnDepthCap()),
+		dispatch.WithMaxBatchSpawns(cfg.Planner.BatchSpawnCap()),
 		dispatch.WithLogger(logger))
 	return nil
 }
@@ -1040,11 +1041,41 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 	if opts.SkipRunLoop || stack.Planner == nil || stack.Coordinator == nil {
 		return nil
 	}
+	// Close the run-level hard-cancel seam: a hard CANCEL cancels the
+	// run's OWN task, whose existing TARGET-GATED descendant cascade (a BFS
+	// over ParentTaskID; the target task's own PropagateOnCancel decides
+	// whether the walk cascades, after which descendants are cancelled
+	// regardless of their own policy) reaches every task the run has
+	// spawned — including a batch's auto-created group members, which each
+	// carry ParentTaskID = the run's task. This is the cancellation
+	// hierarchy in one seam: an operator can always cancel any task
+	// directly (the "no uncancellable task" invariant), and a run-level
+	// interrupt cascades to descendants by default. No new cascade
+	// mechanism is built here — only the previously-dangling hook is wired
+	// to the registry's Cancel.
+	//
+	// Target invariant: the hook cancels tasks.TaskID(runID). This is the
+	// SAME task PRIORITIZE targets via spec.TaskID — the one RunSpec
+	// construction (assemble/runonce.go and the task-driven run-loop
+	// drivers) sets `TaskID: tasks.TaskID(runID)`, so spec.TaskID == the
+	// run's RunID by construction. Batch-spawned descendants carry
+	// ParentTaskID = RunID (the dispatch executor stamps the run's RunID as
+	// the parent), so cancelling that task id is exactly what reaches them.
+	tasksReg := stack.Tasks
 	runLoop, err := steering.NewRunLoop(stack.Steering, stack.Coordinator,
 		steering.WithRunLoopBus(stack.Bus),
 		steering.WithTaskRegistry(stack.Tasks),
 		steering.WithApprovalGates(stack.Gates),
 		steering.WithRunLoopLogger(logger),
+		steering.WithHardCancelHook(func(ctx context.Context, runID string) error {
+			if tasksReg == nil {
+				return nil
+			}
+			if _, cErr := tasksReg.Cancel(ctx, tasks.TaskID(runID), "hard-cancel: run-level interrupt"); cErr != nil {
+				return fmt.Errorf("hard-cancel run %q: %w", runID, cErr)
+			}
+			return nil
+		}),
 	)
 	if err != nil {
 		return fmt.Errorf("steering.RunLoop: %w", err)
