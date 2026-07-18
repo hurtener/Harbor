@@ -34,6 +34,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -371,5 +372,134 @@ func TestBatchExecutor_ConcurrentSessions_NoLeakage(t *testing.T) {
 	close(errCh)
 	for err := range errCh {
 		t.Error(err)
+	}
+}
+
+// batchThenCancelPlanner is a scripted PlannerOverride: step 0 emits a
+// spawns-only Batch (auto-grouped) and enqueues a HARD CANCEL onto the
+// run's own steering inbox; step 1 (which the runloop reaches only after
+// draining + firing the wired hard-cancel hook at the step boundary)
+// returns a cancelled Finish. It proves the hard CANCEL travels THROUGH
+// the runloop into the assemble-wired steering.WithHardCancelHook closure,
+// which cascades to the batch-spawned descendants.
+type batchThenCancelPlanner struct {
+	reg   *steering.Registry // set after Assemble (the stack's steering registry)
+	q     identity.Quadruple
+	batch planner.Batch
+
+	mu   sync.Mutex
+	step int
+}
+
+func (p *batchThenCancelPlanner) Next(_ context.Context, _ planner.RunContext) (planner.Decision, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.step == 0 {
+		p.step++
+		// The inbox is Opened by RunLoop.Run before the first Next, so a
+		// Lookup here succeeds. Enqueue the hard CANCEL so it is drained at
+		// THIS step's boundary (after the Batch dispatches), firing the
+		// wired hook before step 1's Next.
+		if in, err := p.reg.Lookup(p.q); err == nil {
+			_ = in.Enqueue(steering.ControlEvent{
+				Type:         steering.ControlCancel,
+				Identity:     p.q,
+				CallerScope:  steering.ScopeOwnerUser,
+				CallerTenant: p.q.TenantID,
+				Payload:      map[string]any{"hard": true},
+			})
+		}
+		return p.batch, nil
+	}
+	p.step++
+	return planner.Finish{Reason: planner.FinishCancelled}, nil
+}
+
+// TestBatchExecutor_HardCancelThroughRunLoop_CascadesToDescendants — the
+// D-323 cancel core proven END TO END: a hard CANCEL injected through the
+// runloop's steering inbox fires the assemble-wired
+// steering.WithHardCancelHook closure with the run id, which cancels the
+// run's task and cascades to a batch-spawned descendant (→ Cancelled).
+func TestBatchExecutor_HardCancelThroughRunLoop_CascadesToDescendants(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.LLM.Driver = "mock"
+	cfg.LLM.Model = "mock/echo"
+	cfg.LLM.Timeout = 5 * time.Second
+	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+		"mock/echo": {ContextWindowTokens: 100000, TokenEstimator: "chars_div_4"},
+	}
+	if err := cfg.ValidateCore(); err != nil {
+		t.Fatalf("ValidateCore: %v", err)
+	}
+
+	pl := &batchThenCancelPlanner{
+		batch: planner.Batch{
+			Spawns: []planner.SpawnTask{
+				{Spec: planner.SpawnSpec{Query: "sub-a"}, CallID: "s0"},
+				{Spec: planner.SpawnSpec{Query: "sub-b"}, CallID: "s1"},
+			},
+		},
+	}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{PlannerOverride: pl})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	t.Cleanup(func() { _ = stack.Close(context.Background()) })
+	pl.reg = stack.Steering
+
+	id := identity.Identity{TenantID: "acme", UserID: "u1", SessionID: "sess-runloop-cancel"}
+	tripleCtx, err := identity.With(context.Background(), id)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	// Pre-spawn the run's OWN task; its id doubles as the RunID (the one
+	// RunSpec construction sets TaskID: tasks.TaskID(runID)). Batch spawns
+	// carry ParentTaskID = RunID, so cancelling this task cascades to them.
+	parentID := spawnParent(t, stack.Tasks, tripleCtx, id)
+	q := identity.Quadruple{Identity: id, RunID: string(parentID)}
+	pl.q = q
+
+	runCtx, err := identity.WithRun(context.Background(), id, string(parentID))
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+	fin, err := stack.RunLoop.Run(runCtx, steering.RunSpec{
+		Planner: stack.Planner,
+		TaskID:  parentID,
+		Base: planner.RunContext{
+			Quadruple:      q,
+			Query:          "batch then hard cancel",
+			Goal:           "batch then hard cancel",
+			Trajectory:     &planner.Trajectory{Query: "batch then hard cancel"},
+			RepairCounters: &planner.RepairCounters{},
+			Catalog: tools.NewPlannerView(stack.Catalog, tools.CatalogFilter{
+				TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+			}),
+		},
+		ToolExecutor: stack.Executor,
+		MaxSteps:     stack.Cfg.Planner.MaxSteps,
+	})
+	if err != nil {
+		t.Fatalf("RunLoop.Run: %v", err)
+	}
+	if fin.Reason != planner.FinishCancelled {
+		t.Errorf("Finish.Reason = %q, want %q", fin.Reason, planner.FinishCancelled)
+	}
+
+	// The batch-spawned descendants (ParentTaskID = the run's task) must be
+	// Cancelled — proving the hard CANCEL fired the wired hook and cascaded.
+	kids, err := stack.Tasks.List(tripleCtx, id, tasks.TaskFilter{ParentID: &parentID})
+	if err != nil {
+		t.Fatalf("List(children of %s): %v", parentID, err)
+	}
+	if len(kids) != 2 {
+		t.Fatalf("batch spawned %d children, want 2", len(kids))
+	}
+	for _, k := range kids {
+		if k.Status != tasks.StatusCancelled {
+			t.Errorf("batch descendant %s status = %q, want cancelled (hard-cancel hook cascade through the runloop)", k.ID, k.Status)
+		}
 	}
 }

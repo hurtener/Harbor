@@ -218,6 +218,9 @@ func TestExecutor_Batch_BreadthCap_RejectsWholeBatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("Batch with 3 spawns under cap=2 returned nil error, want whole-batch rejection")
 	}
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Errorf("breadth-cap rejection err = %v, want wrapped planner.ErrInvalidDecision", err)
+	}
 	if !strings.Contains(err.Error(), "max_batch_spawns") || !strings.Contains(err.Error(), "3") {
 		t.Errorf("rejection error = %q, want it to name max_batch_spawns and the actual count 3", err.Error())
 	}
@@ -257,6 +260,9 @@ func TestExecutor_Batch_FailFastDisagreement_Rejects(t *testing.T) {
 	if err == nil {
 		t.Fatal("Batch with FailFast disagreement returned nil error, want rejection")
 	}
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Errorf("FailFast-disagreement rejection err = %v, want wrapped planner.ErrInvalidDecision", err)
+	}
 	if !strings.Contains(err.Error(), "FailFast") {
 		t.Errorf("rejection error = %q, want it to name FailFast", err.Error())
 	}
@@ -293,6 +299,111 @@ func TestExecutor_Batch_RetainTurn_DefensiveReject(t *testing.T) {
 	}
 	if resolve, spawn := reg.counts(); resolve != 0 || spawn != 0 {
 		t.Errorf("registry calls resolve=%d spawn=%d, want 0/0", resolve, spawn)
+	}
+}
+
+// TestExecutor_Batch_ToolCapExceeded_StructuralReject — a Batch with more
+// tool branches than the parallel cap is rejected as a STRUCTURAL
+// pre-check (wrapped ErrInvalidDecision) BEFORE any side effect, not as a
+// mid-dispatch parallel abort: zero tool invokes, zero registry calls.
+func TestExecutor_Batch_ToolCapExceeded_StructuralReject(t *testing.T) {
+	cat := tools.NewCatalog()
+	var invokes atomic.Int64
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "counted"},
+		Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+			invokes.Add(1)
+			return tools.ToolResult{Value: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	exec, reg := newBatchTestExecutor(t, cat, 5)
+
+	q := dispatchTestQuad("r-batch")
+	// One over the parallel cap.
+	toolBranches := make([]planner.CallTool, planner.AbsoluteMaxParallel+1)
+	for i := range toolBranches {
+		toolBranches[i] = planner.CallTool{Tool: "counted", Args: json.RawMessage(`{}`), CallID: fmt.Sprintf("t%d", i)}
+	}
+	d := planner.Batch{
+		Tools:  toolBranches,
+		Spawns: []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"}},
+	}
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	if err == nil {
+		t.Fatal("over-parallel-cap Batch returned nil error, want structural rejection")
+	}
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Errorf("tool-cap rejection err = %v, want wrapped planner.ErrInvalidDecision", err)
+	}
+	if got := invokes.Load(); got != 0 {
+		t.Errorf("tool invokes = %d, want 0 (structural pre-check before any dispatch)", got)
+	}
+	if resolve, spawn := reg.counts(); resolve != 0 || spawn != 0 {
+		t.Errorf("registry calls resolve=%d spawn=%d, want 0/0", resolve, spawn)
+	}
+}
+
+// TestExecutor_Batch_DegenerateCombinedCount_Rejects — a programmatic
+// Batch with fewer than two combined branches reaching ExecuteDecision is
+// rejected loudly (wrapped ErrInvalidDecision), never a silent no-op
+// success (the same invariant NewBatch enforces at construction).
+func TestExecutor_Batch_DegenerateCombinedCount_Rejects(t *testing.T) {
+	cat := tools.NewCatalog()
+	registerEcho(t, cat, "solo")
+	exec, reg := newBatchTestExecutor(t, cat, 5)
+	q := dispatchTestQuad("r-batch")
+
+	cases := []planner.Batch{
+		{}, // zero branches
+		{Tools: []planner.CallTool{{Tool: "solo", Args: json.RawMessage(`{}`), CallID: "t0"}}}, // one tool
+		{Spawns: []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"}}},     // one spawn
+	}
+	for i, d := range cases {
+		_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+		if err == nil {
+			t.Errorf("case %d: degenerate Batch returned nil error, want rejection", i)
+			continue
+		}
+		if !errors.Is(err, planner.ErrInvalidDecision) {
+			t.Errorf("case %d: err = %v, want wrapped planner.ErrInvalidDecision", i, err)
+		}
+	}
+	if resolve, spawn := reg.counts(); resolve != 0 || spawn != 0 {
+		t.Errorf("registry calls resolve=%d spawn=%d, want 0/0 (no side effects on a degenerate batch)", resolve, spawn)
+	}
+}
+
+// TestExecutor_Batch_ToolHalfError_NoOrphanGroup — the W1 regression
+// guard: when the tool half returns a whole-call error (a malformed Join)
+// AFTER the structural pre-checks pass, the auto-group is NEVER created
+// (no orphaned memberless group) and no spawn registers. Group creation
+// only follows a SUCCESSFUL tool-half dispatch.
+func TestExecutor_Batch_ToolHalfError_NoOrphanGroup(t *testing.T) {
+	cat := tools.NewCatalog()
+	registerEcho(t, cat, "good")
+	exec, reg := newBatchTestExecutor(t, cat, 5)
+
+	q := dispatchTestQuad("r-batch")
+	d := planner.Batch{
+		Tools: []planner.CallTool{{Tool: "good", Args: json.RawMessage(`{}`), CallID: "t0"}},
+		// A malformed Join makes parallel.Execute return a whole-call
+		// error (ErrParallelInvalidJoin) — the residual tool-half error
+		// path that must not orphan the auto-group.
+		Join: &planner.JoinSpec{Kind: planner.JoinKind("bogus")},
+		Spawns: []planner.SpawnTask{
+			{Spec: planner.SpawnSpec{Query: "a"}, CallID: "s0"},
+			{Spec: planner.SpawnSpec{Query: "b"}, CallID: "s1"},
+		},
+	}
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), planner.RunContext{Quadruple: q}, d)
+	if err == nil {
+		t.Fatal("malformed-Join Batch returned nil error, want the tool-half error surfaced")
+	}
+	// The auto-group must NOT have been created, and no spawn registered.
+	if resolve, spawn := reg.counts(); resolve != 0 || spawn != 0 {
+		t.Errorf("registry calls resolve=%d spawn=%d, want 0/0 — a tool-half failure orphaned a group or registered a spawn", resolve, spawn)
 	}
 }
 

@@ -310,6 +310,19 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 					messages = append(messages, toolMsgs...)
 					continue
 				}
+				// A Batch step (a native multi-call response mixing catalog
+				// tools with _spawn_task calls) replays as ONE assistant
+				// message carrying the native tool_calls for every Tools
+				// branch AND every Spawns call, answered by one RoleTool
+				// message per call_id in declaration order — the tool result
+				// for a tool branch, the {task_id, group_id} registration
+				// outcome for a spawn.
+				if bcall, ok := step.Action.(planner.Batch); ok {
+					asstMsg, toolMsgs := renderNativeBatchStep(step, bcall, replayMode, i)
+					messages = append(messages, asstMsg)
+					messages = append(messages, toolMsgs...)
+					continue
+				}
 				asstMsg, toolMsg, native := renderNativeStepPair(step, replayMode, i)
 				if native {
 					messages = append(messages, asstMsg)
@@ -1152,6 +1165,151 @@ func renderNativeParallelStep(step planner.Step, call planner.CallParallel, repl
 		}
 	}
 	return asst, toolMsgs
+}
+
+// renderNativeBatchStep projects a trajectory step whose Action is a
+// [planner.Batch] into ONE assistant message plus one RoleTool message
+// per call_id. The assistant's `ToolCalls` slice carries every Tools
+// branch's `{ID, Name, Args}` followed by every Spawns call's reserved
+// `_spawn_task` `{ID, Name, Args}`, in declaration order; the RoleTool
+// answers follow in the SAME order — a tool result for a tool branch, the
+// `{task_id, group_id}` registration outcome (or the reject error) for a
+// spawn. Reconstruction indexes the call-id/index-keyed
+// [planner.BatchObservation] so reply order never depends on Go map
+// iteration; every native tool_call_id — spawn calls included — is
+// answered exactly once (the provider wire contract).
+func renderNativeBatchStep(step planner.Step, call planner.Batch, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, []llm.ChatMessage) {
+	obs, hasObs := batchObservationFrom(step)
+
+	// Build the combined tool_calls (tools first, then spawns) and the
+	// matching RoleTool bodies in lockstep, so each assistant tool_call has
+	// exactly one answer at the same position.
+	total := len(call.Tools) + len(call.Spawns)
+	toolCalls := make([]llm.ToolCallStructured, 0, total)
+	bodies := make([]string, 0, total)
+
+	toolByIndex := map[int]planner.ParallelBranchObservation{}
+	spawnByIndex := map[int]planner.BatchSpawnObservation{}
+	if hasObs {
+		for _, b := range obs.Tools {
+			toolByIndex[b.Index] = b
+		}
+		for _, s := range obs.Spawns {
+			spawnByIndex[s.Index] = s
+		}
+	}
+
+	for ti, b := range call.Tools {
+		cid := b.CallID
+		if cid == "" {
+			cid = fmt.Sprintf("react.callid.%d.t%d", stepIdx, ti)
+		}
+		toolCalls = append(toolCalls, llm.ToolCallStructured{
+			ID:   cid,
+			Name: sanitizeToolName(b.Tool),
+			Args: json.RawMessage(safeArgs(b.Args)),
+		})
+		body := ""
+		if o, ok := toolByIndex[ti]; ok {
+			body = renderParallelBranchBody(o)
+		}
+		bodies = append(bodies, body)
+	}
+	for si, sp := range call.Spawns {
+		cid := sp.CallID
+		if cid == "" {
+			cid = fmt.Sprintf("react.callid.%d.s%d", stepIdx, si)
+		}
+		toolCalls = append(toolCalls, llm.ToolCallStructured{
+			ID:   cid,
+			Name: SpawnTaskToolName,
+			Args: spawnTaskReplayArgs(sp),
+		})
+		body := ""
+		if o, ok := spawnByIndex[si]; ok {
+			body = renderBatchSpawnBody(o)
+		}
+		bodies = append(bodies, body)
+	}
+
+	// Assistant preamble + reasoning replay — same shape as the CallParallel
+	// path.
+	assistantText := step.AssistantPreamble
+	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
+		if assistantText != "" {
+			assistantText += "\n\nReasoning:\n" + step.ReasoningTrace
+		} else {
+			assistantText = "Reasoning:\n" + step.ReasoningTrace
+		}
+	}
+	var asstContent llm.Content
+	if assistantText != "" {
+		asstContent = textContent(assistantText)
+	}
+	asst := llm.ChatMessage{
+		Role:      llm.RoleAssistant,
+		Content:   asstContent,
+		ToolCalls: toolCalls,
+	}
+
+	toolMsgs := make([]llm.ChatMessage, len(toolCalls))
+	for i := range toolCalls {
+		body := bodies[i]
+		if body == "" {
+			slog.Warn("react.renderNativeBatchStep: empty branch observation — emitting placeholder to preserve wire contract",
+				"step_idx", stepIdx,
+				"call_id", toolCalls[i].ID,
+				"name", toolCalls[i].Name,
+			)
+			body = "(tool returned no observation)"
+		}
+		id := toolCalls[i].ID
+		toolMsgs[i] = llm.ChatMessage{
+			Role:       llm.RoleTool,
+			Content:    textContent(body),
+			ToolCallID: &id,
+		}
+	}
+	return asst, toolMsgs
+}
+
+// renderBatchSpawnBody renders one Batch spawn's RoleTool body: the
+// registration outcome the model reads on its next step. A registry
+// reject surfaces its error first; a successful registration surfaces the
+// task id (and group id, when the spawn was grouped).
+func renderBatchSpawnBody(s planner.BatchSpawnObservation) string {
+	if s.Error != "" {
+		return "Spawn error: " + oneLine(s.Error)
+	}
+	if s.TaskID == "" {
+		return ""
+	}
+	if s.GroupID != "" {
+		return fmt.Sprintf("Task spawned: task_id=%s group_id=%s (running in the background; await its result later with _await_task).", s.TaskID, s.GroupID)
+	}
+	return fmt.Sprintf("Task spawned: task_id=%s (running in the background; await its result later with _await_task).", s.TaskID)
+}
+
+// batchObservationFrom extracts the call-id/index-keyed
+// [planner.BatchObservation] from a Batch step. Prefers
+// `step.LLMObservation` (the projected forms) over the raw
+// `step.Observation`. Returns (nil, false) when neither slot carries a
+// BatchObservation.
+func batchObservationFrom(step planner.Step) (planner.BatchObservation, bool) {
+	for _, obs := range []any{step.LLMObservation, step.Observation} {
+		switch v := obs.(type) {
+		case planner.BatchObservation:
+			return v, true
+		case *planner.BatchObservation:
+			if v == nil {
+				continue
+			}
+			return *v, true
+		default:
+			continue
+		}
+	}
+	return planner.BatchObservation{}, false
 }
 
 // parallelBranchBodiesByIndex extracts the AC-4 aggregate observation

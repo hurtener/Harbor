@@ -471,15 +471,21 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 // branch and every spawn is always answered — provider wire contracts
 // require exactly one reply per call_id.
 //
-// Whole-batch loud rejection (BEFORE any dispatch — zero tool branches
-// dispatch, zero spawns register) is reserved for STRUCTURAL setup
-// invariants: the operator-configurable breadth cap
-// (planner.max_batch_spawns), FailFast disagreement across the spawns
-// that would auto-group, and a defensive re-check that no spawn carries
-// RetainTurn=true. Auto-grouping: when two or more spawns share no
-// explicit GroupID, ONE resolve-or-create group is assigned to each; an
-// explicit GroupID is never overwritten, and a single ungrouped spawn
-// keeps the registry's ad-hoc single-member-group path.
+// Whole-batch loud rejection (a zero-side-effect structural pre-check —
+// no tool branch dispatches, no group is created, no spawn registers) is
+// reserved for STRUCTURAL invariants, each wrapped in ErrInvalidDecision:
+// the combined-branch-count minimum, the tool-branch parallel cap, the
+// operator-configurable spawn breadth cap (planner.max_batch_spawns),
+// FailFast disagreement across the spawns that would auto-group, and a
+// defensive re-check that no spawn carries RetainTurn=true. The
+// auto-group's resolve-or-create is the ONLY registry side effect that
+// precedes the spawn loop, and it runs AFTER a successful tool-half
+// dispatch so a tool-half failure never orphans a memberless group; its
+// own failure degrades to a per-spawn error, not a whole-batch abort.
+// Auto-grouping: when two or more spawns share no explicit GroupID, ONE
+// resolve-or-create group is assigned to each; an explicit GroupID is
+// never overwritten, and a single ungrouped spawn keeps the registry's
+// ad-hoc single-member-group path.
 //
 // The observation is a BatchObservation keyed by call_id / index and
 // index-aligned to the declaration order of Tools and Spawns regardless
@@ -489,19 +495,41 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 // "not done yet" — the eventual result arrives later via the group-watch
 // path.
 func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d planner.Batch) (any, any, error) {
-	// --- Structural setup validation (whole-batch loud rejection) ---
+	// === Structural pre-checks: pure inspection of the decision, ZERO
+	// side effects. A structural rejection dispatches no tool branch,
+	// creates no group, and registers no spawn. All are wrapped in
+	// ErrInvalidDecision for uniform classification.
 
-	// Breadth cap: reject the WHOLE batch, never truncate to the first N.
-	if len(d.Spawns) > e.maxBatchSpawns {
+	// Combined-branch-count invariant (the same one NewBatch enforces at
+	// construction). Re-checked here because Decision is a sealed interface
+	// any concrete planner can build against, and this executor is the one
+	// shared dispatch boundary for all of them — a degenerate empty/one-
+	// branch Batch reaching dispatch must fail loud, never a silent no-op.
+	if len(d.Tools)+len(d.Spawns) < 2 {
 		return nil, nil, fmt.Errorf(
-			"Batch: %d spawns exceeds planner.max_batch_spawns=%d (the whole batch is rejected — no branch dispatches, no spawn registers)",
-			len(d.Spawns), e.maxBatchSpawns)
+			"%w: Batch requires at least 2 combined branches, got %d tools + %d spawns",
+			planner.ErrInvalidDecision, len(d.Tools), len(d.Spawns))
 	}
 
-	// Defensive non-retain-turn re-check. NewBatch enforces this at
-	// construction, but Decision is a sealed interface any concrete
-	// planner can build against, and this executor is the one shared
-	// dispatch boundary for all of them.
+	// Tool-count breadth vs the shared parallel cap. A structural pre-check
+	// here keeps an over-cap tool set a decision-level reject rather than a
+	// mid-dispatch parallel abort surfaced from Execute — the whole-batch
+	// loud-reject set stays exactly the structural invariants.
+	if len(d.Tools) > planner.AbsoluteMaxParallel {
+		return nil, nil, fmt.Errorf(
+			"%w: Batch has %d tool branches, exceeding the parallel cap of %d",
+			planner.ErrInvalidDecision, len(d.Tools), planner.AbsoluteMaxParallel)
+	}
+
+	// Spawn breadth cap: reject the WHOLE batch, never truncate to the
+	// first N.
+	if len(d.Spawns) > e.maxBatchSpawns {
+		return nil, nil, fmt.Errorf(
+			"%w: Batch has %d spawns, exceeding planner.max_batch_spawns=%d (the whole batch is rejected — no branch dispatches, no spawn registers)",
+			planner.ErrInvalidDecision, len(d.Spawns), e.maxBatchSpawns)
+	}
+
+	// Defensive non-retain-turn re-check.
 	for i, sp := range d.Spawns {
 		if sp.Spec.RetainTurn {
 			return nil, nil, fmt.Errorf(
@@ -513,8 +541,9 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 	// FailFast agreement across the spawns that would auto-group (no
 	// explicit GroupID). The one auto-created group carries a SINGLE
 	// FailFast value, so a disagreement among its would-be members is
-	// ambiguous — reject the whole batch loud rather than silently pick
-	// one.
+	// ambiguous — reject the whole batch loud (still a zero-side-effect
+	// structural reject: this runs BEFORE the tool half dispatches or the
+	// group is created) rather than silently pick one.
 	var autoIdx []int
 	for i, sp := range d.Spawns {
 		if sp.GroupID == "" {
@@ -527,8 +556,8 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 		for _, i := range autoIdx[1:] {
 			if d.Spawns[i].Spec.FailFast != want {
 				return nil, nil, fmt.Errorf(
-					"Batch: FailFast disagreement across auto-grouped spawns (spawn %d=%t vs spawn %d=%t); the one auto-created group cannot honour both",
-					autoIdx[0], want, i, d.Spawns[i].Spec.FailFast)
+					"%w: Batch FailFast disagreement across auto-grouped spawns (spawn %d=%t vs spawn %d=%t); the one auto-created group cannot honour both",
+					planner.ErrInvalidDecision, autoIdx[0], want, i, d.Spawns[i].Spec.FailFast)
 			}
 		}
 	}
@@ -548,27 +577,16 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 		}
 	}
 
-	// Auto-group creation: ONE ResolveOrCreateGroup for the ungrouped set.
-	// A creation failure is a structural setup failure (no group to assign
-	// the ungrouped spawns to) — fail the whole batch loud, before any
-	// spawn registers.
-	var autoGroupID tasks.TaskGroupID
-	if autoGroup {
-		grp, err := e.tasks.ResolveOrCreateGroup(taskCtx, tasks.GroupRequest{
-			SessionID:   rc.Quadruple.Identity,
-			OwnerTaskID: tasks.TaskID(rc.Quadruple.RunID),
-			FailFast:    d.Spawns[autoIdx[0]].Spec.FailFast,
-			Description: "batch auto-group",
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("Batch: auto-group ResolveOrCreateGroup: %w", err)
-		}
-		autoGroupID = grp.ID
-	}
-
 	var raw, llm planner.BatchObservation
 
-	// --- Tools half ---
+	// === Tools half — dispatched BEFORE any spawn-side registry side
+	// effect. A tool-half whole-call error (a malformed Join, a pause
+	// mid-dispatch, a missing-identity ctx — the over-cap case is
+	// pre-checked above) surfaces here BEFORE the auto-group is created or
+	// any spawn registers, so a tool-half failure can never orphan a
+	// memberless auto-group. In non-atomic mode these setup errors abort
+	// before any branch goroutine fires, so a rejected tool half runs no
+	// branch either.
 	if len(d.Tools) > 0 {
 		results, err := e.parallel.Execute(ctx,
 			planner.CallParallel{Branches: d.Tools, Join: d.Join},
@@ -579,23 +597,54 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 		raw.Tools, llm.Tools = e.branchObservations(ctx, rc, d.Tools, results)
 	}
 
+	// === Auto-group creation: ONE ResolveOrCreateGroup for the ungrouped
+	// set, created AFTER a successful tool-half dispatch so a tool-half
+	// failure above never leaves an orphaned group. Group creation failing
+	// here degrades to a per-spawn error on every auto-grouped spawn (via
+	// spawnOne's own reject path below) rather than a whole-batch abort —
+	// whole-batch rejection stays reserved for the structural invariants.
+	var autoGroupID tasks.TaskGroupID
+	var autoGroupErr error
+	if autoGroup {
+		grp, gErr := e.tasks.ResolveOrCreateGroup(taskCtx, tasks.GroupRequest{
+			SessionID:   rc.Quadruple.Identity,
+			OwnerTaskID: tasks.TaskID(rc.Quadruple.RunID),
+			FailFast:    d.Spawns[autoIdx[0]].Spec.FailFast,
+			Description: "batch auto-group",
+		})
+		if gErr != nil {
+			autoGroupErr = fmt.Errorf("Batch: auto-group ResolveOrCreateGroup: %w", gErr)
+		} else {
+			autoGroupID = grp.ID
+		}
+	}
+
 	// --- Spawns half (non-atomic per-branch) ---
 	if len(d.Spawns) > 0 {
 		spawnObs := make([]planner.BatchSpawnObservation, len(d.Spawns))
 		for i, sp := range d.Spawns {
 			obs := planner.BatchSpawnObservation{CallID: sp.CallID, Index: i}
 			toReg := sp
-			if autoGroup && sp.GroupID == "" {
-				toReg.GroupID = autoGroupID
-			}
-			handle, _, err := e.spawnOne(taskCtx, rc, toReg)
-			if err != nil {
-				// Per-branch error-as-value: this spawn's registry reject
-				// is recorded; the rest of the batch proceeds.
-				obs.Error = err.Error()
-			} else {
-				obs.TaskID = string(handle.ID)
-				obs.GroupID = string(toReg.GroupID)
+			isAutoMember := autoGroup && sp.GroupID == ""
+			switch {
+			case isAutoMember && autoGroupErr != nil:
+				// The auto-group could not be created — every auto-grouped
+				// spawn's registration fails as a value (per-branch, never a
+				// whole-batch abort); explicit-GroupID spawns still register.
+				obs.Error = autoGroupErr.Error()
+			default:
+				if isAutoMember {
+					toReg.GroupID = autoGroupID
+				}
+				handle, _, err := e.spawnOne(taskCtx, rc, toReg)
+				if err != nil {
+					// Per-branch error-as-value: this spawn's registry reject
+					// is recorded; the rest of the batch proceeds.
+					obs.Error = err.Error()
+				} else {
+					obs.TaskID = string(handle.ID)
+					obs.GroupID = string(toReg.GroupID)
+				}
 			}
 			spawnObs[i] = obs
 		}

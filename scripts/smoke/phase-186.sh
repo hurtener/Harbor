@@ -88,6 +88,18 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# 5b. The React prompt builder reconstructs a Batch step faithfully (one
+#     assistant tool_calls turn spanning tools + spawns, one RoleTool per
+#     call_id) — no degraded legacy replay after the executor activates.
+# ----------------------------------------------------------------------------
+if grep -qE 'func renderNativeBatchStep\(' internal/planner/react/prompt.go \
+    && grep -qE 'case step\.Action\.\(planner\.Batch\)|step\.Action\.\(planner\.Batch\)' internal/planner/react/prompt.go; then
+    ok 'phase 186: React prompt builder reconstructs a Batch step (renderNativeBatchStep)'
+else
+    fail 'phase 186: React prompt builder has no Batch step reconstruction'
+fi
+
+# ----------------------------------------------------------------------------
 # 6. The assembler wires BOTH the breadth cap AND the hard-cancel hook
 #    into the ONE production stack — the regression guard against the hook
 #    silently going unwired again (its only production call site).

@@ -303,7 +303,7 @@ func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
 	return []llm.ToolDeclaration{
 		{
 			Name:        SpawnTaskToolName,
-			Description: "Planner control — spawn a background task the foreground turn does not wait on. You MAY call it alongside catalog tools and alongside other _spawn_task calls in the same response; the runtime dispatches each concurrently and returns a task_id per spawn. To wait on a spawned task's result, send _await_task with its task_id in a LATER response, on its own.",
+			Description: "Planner control — spawn a background task the foreground turn does not wait on. You MAY call it alongside catalog tools and alongside other _spawn_task calls in the same response; the runtime dispatches each concurrently and returns a task_id per spawn. When you batch a _spawn_task with ANY other call in the same response it is ALWAYS non-blocking — do NOT set retain_turn:true in a multi-call response (the runtime rejects the whole response). To block on a spawn instead, emit that single _spawn_task ALONE in its own response with retain_turn:true. To wait on an already-spawned task's result, send _await_task with its task_id in a LATER response, on its own.",
 			Schema:      jsonSchemaRawSpawnTask,
 		},
 		{

@@ -1579,6 +1579,211 @@ func TestRenderNativeParallelStep_EmptyCallIDsSynthesised(t *testing.T) {
 	}
 }
 
+// TestRenderNativeBatchStep_RoundTrip — a Batch step reconstructs as ONE
+// assistant message carrying native tool_calls for every Tools branch AND
+// every Spawns call (in declaration order: tools then spawns), answered
+// by one RoleTool message per call_id in the SAME order. Reconstruction
+// keys the call-id/index-keyed BatchObservation (deliberately shuffled
+// here), never Go map order.
+func TestRenderNativeBatchStep_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	call := planner.Batch{
+		Tools: []planner.CallTool{
+			{Tool: "alpha", Args: json.RawMessage(`{"a":1}`), CallID: "t_a"},
+			{Tool: "beta", Args: json.RawMessage(`{"b":2}`), CallID: "t_b"},
+		},
+		Spawns: []planner.SpawnTask{
+			{Spec: planner.SpawnSpec{Query: "sub-a"}, CallID: "s_a"},
+			{Spec: planner.SpawnSpec{Query: "sub-b"}, CallID: "s_b"},
+		},
+	}
+	step := planner.Step{
+		Action: call,
+		// Both halves are shuffled on purpose — the renderer must key by
+		// Index, not slice order.
+		LLMObservation: planner.BatchObservation{
+			Tools: []planner.ParallelBranchObservation{
+				{CallID: "t_b", Tool: "beta", Index: 1, Error: "beta-boom"},
+				{CallID: "t_a", Tool: "alpha", Index: 0, Value: "alpha-result"},
+			},
+			Spawns: []planner.BatchSpawnObservation{
+				{CallID: "s_b", Index: 1, Error: "sealed group"},
+				{CallID: "s_a", Index: 0, TaskID: "task-1", GroupID: "grp-1"},
+			},
+		},
+	}
+
+	asst, toolMsgs := renderNativeBatchStep(step, call, planner.ReasoningReplayNever, 0)
+
+	// ONE assistant message: 4 tool_calls in declaration order (tools then spawns).
+	wantIDs := []string{"t_a", "t_b", "s_a", "s_b"}
+	wantNames := []string{"alpha", "beta", SpawnTaskToolName, SpawnTaskToolName}
+	if len(asst.ToolCalls) != 4 {
+		t.Fatalf("assistant ToolCalls = %d, want 4", len(asst.ToolCalls))
+	}
+	for i, tc := range asst.ToolCalls {
+		if tc.ID != wantIDs[i] || tc.Name != wantNames[i] {
+			t.Errorf("assistant tool_call[%d] = {%q,%q}, want {%q,%q}", i, tc.ID, tc.Name, wantIDs[i], wantNames[i])
+		}
+	}
+
+	// 4 RoleTool answers, matched by ID in the same order.
+	if len(toolMsgs) != 4 {
+		t.Fatalf("tool messages = %d, want 4", len(toolMsgs))
+	}
+	for i, tm := range toolMsgs {
+		if tm.Role != llm.RoleTool {
+			t.Errorf("toolMsgs[%d].Role = %q, want RoleTool", i, tm.Role)
+		}
+		if tm.ToolCallID == nil || *tm.ToolCallID != wantIDs[i] {
+			t.Errorf("toolMsgs[%d].ToolCallID = %v, want %q", i, tm.ToolCallID, wantIDs[i])
+		}
+	}
+	// tool 0 (alpha) success, tool 1 (beta) error.
+	if body := *toolMsgs[0].Content.Text; !strings.Contains(body, "alpha-result") {
+		t.Errorf("alpha body = %q, want alpha-result", body)
+	}
+	if body := *toolMsgs[1].Content.Text; !strings.Contains(body, "beta-boom") {
+		t.Errorf("beta body = %q, want the tool error", body)
+	}
+	// spawn 0 registration outcome, spawn 1 reject error.
+	if body := *toolMsgs[2].Content.Text; !strings.Contains(body, "task-1") || !strings.Contains(body, "grp-1") {
+		t.Errorf("spawn-a body = %q, want task_id + group_id", body)
+	}
+	if body := *toolMsgs[3].Content.Text; !strings.Contains(body, "sealed group") {
+		t.Errorf("spawn-b body = %q, want the registry reject error", body)
+	}
+
+	// Every tool_call_id has exactly one matching RoleTool (wire invariant).
+	pending := map[string]int{}
+	for _, tc := range asst.ToolCalls {
+		pending[tc.ID]++
+	}
+	for _, tm := range toolMsgs {
+		pending[*tm.ToolCallID]--
+	}
+	for id, n := range pending {
+		if n != 0 {
+			t.Errorf("tool_call_id %q unbalanced: %d", id, n)
+		}
+	}
+}
+
+// TestBatchObservationFrom_SlotsAndPointer — the extraction prefers
+// LLMObservation, falls back to the raw Observation slot, accepts the
+// pointer form, and reports (‑, false) when neither slot carries a
+// BatchObservation (the renderer then emits placeholders).
+func TestBatchObservationFrom_SlotsAndPointer(t *testing.T) {
+	t.Parallel()
+	// Pointer form in LLMObservation.
+	ptr := &planner.BatchObservation{Spawns: []planner.BatchSpawnObservation{{Index: 0, TaskID: "p"}}}
+	if got, ok := batchObservationFrom(planner.Step{LLMObservation: ptr}); !ok || len(got.Spawns) != 1 {
+		t.Errorf("pointer LLMObservation: got %+v ok=%v", got, ok)
+	}
+	// Raw Observation slot fallback (LLMObservation absent).
+	val := planner.BatchObservation{Tools: []planner.ParallelBranchObservation{{Index: 0, Value: "x"}}}
+	if got, ok := batchObservationFrom(planner.Step{Observation: val}); !ok || len(got.Tools) != 1 {
+		t.Errorf("Observation-slot fallback: got %+v ok=%v", got, ok)
+	}
+	// A nil pointer in LLMObservation is skipped; the value slot wins.
+	var nilPtr *planner.BatchObservation
+	if got, ok := batchObservationFrom(planner.Step{LLMObservation: nilPtr, Observation: val}); !ok || len(got.Tools) != 1 {
+		t.Errorf("nil pointer skip → value slot: got %+v ok=%v", got, ok)
+	}
+	// Neither slot carries a BatchObservation.
+	if _, ok := batchObservationFrom(planner.Step{Observation: "not-a-batch-obs"}); ok {
+		t.Error("non-BatchObservation slots should report ok=false")
+	}
+}
+
+// TestRenderNativeBatchStep_EmptyCallIDsSynthesised — a Batch whose
+// branches carry no CallID gets deterministic synthetic IDs (tools
+// `react.callid.<step>.t<i>`, spawns `.s<i>`) stamped on BOTH the
+// assistant tool_call AND its RoleTool answer, so the pairing stays
+// well-formed.
+func TestRenderNativeBatchStep_EmptyCallIDsSynthesised(t *testing.T) {
+	t.Parallel()
+	call := planner.Batch{
+		Tools:  []planner.CallTool{{Tool: "alpha", Args: json.RawMessage(`{}`)}},
+		Spawns: []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "x"}}},
+	}
+	step := planner.Step{
+		Action: call,
+		LLMObservation: planner.BatchObservation{
+			Tools:  []planner.ParallelBranchObservation{{Tool: "alpha", Index: 0, Value: "a"}},
+			Spawns: []planner.BatchSpawnObservation{{Index: 0, TaskID: "t9"}},
+		},
+	}
+	asst, toolMsgs := renderNativeBatchStep(step, call, planner.ReasoningReplayNever, 3)
+	if len(asst.ToolCalls) != 2 || len(toolMsgs) != 2 {
+		t.Fatalf("got %d tool_calls / %d tool msgs, want 2/2", len(asst.ToolCalls), len(toolMsgs))
+	}
+	if asst.ToolCalls[0].ID != "react.callid.3.t0" || asst.ToolCalls[1].ID != "react.callid.3.s0" {
+		t.Errorf("synthetic IDs = %q,%q, want react.callid.3.t0/.s0", asst.ToolCalls[0].ID, asst.ToolCalls[1].ID)
+	}
+	for i := range asst.ToolCalls {
+		if toolMsgs[i].ToolCallID == nil || *toolMsgs[i].ToolCallID != asst.ToolCalls[i].ID {
+			t.Errorf("tool msg[%d] ID %v does not match assistant ID %q", i, toolMsgs[i].ToolCallID, asst.ToolCalls[i].ID)
+		}
+	}
+}
+
+// TestDefaultBuilder_BatchStepRoundTripsThroughMessages — the builder
+// level: a Batch step assembled through Build produces a paired wire
+// slice (one assistant tool_calls turn spanning tools + spawns, one
+// matching RoleTool answer per call_id, no orphans) — so merging the
+// Batch executor no longer leaves a degraded replay for a multi-step run.
+func TestDefaultBuilder_BatchStepRoundTripsThroughMessages(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "batch",
+		Trajectory: &planner.Trajectory{
+			Steps: []planner.Step{{
+				Action: planner.Batch{
+					Tools:  []planner.CallTool{{Tool: "alpha", Args: json.RawMessage(`{}`), CallID: "b1"}},
+					Spawns: []planner.SpawnTask{{Spec: planner.SpawnSpec{Query: "q"}, CallID: "b2"}},
+				},
+				LLMObservation: planner.BatchObservation{
+					Tools:  []planner.ParallelBranchObservation{{CallID: "b1", Tool: "alpha", Index: 0, Value: "ra"}},
+					Spawns: []planner.BatchSpawnObservation{{CallID: "b2", Index: 0, TaskID: "task-9"}},
+				},
+			}},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+	var pending []string
+	for i, m := range req.Messages {
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0 {
+			if len(pending) != 0 {
+				t.Fatalf("messages[%d]: new assistant ToolCalls turn with %d unanswered IDs %v", i, len(pending), pending)
+			}
+			for _, tc := range m.ToolCalls {
+				pending = append(pending, tc.ID)
+			}
+		}
+		if m.Role == llm.RoleTool {
+			if m.ToolCallID == nil {
+				t.Fatalf("messages[%d]: RoleTool missing ToolCallID", i)
+			}
+			found := false
+			for j, pid := range pending {
+				if pid == *m.ToolCallID {
+					pending = append(pending[:j], pending[j+1:]...)
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("messages[%d]: RoleTool ToolCallID=%q matched no pending (pending=%v)", i, *m.ToolCallID, pending)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		t.Fatalf("Batch step produced orphan assistant tool_calls: %v", pending)
+	}
+}
+
 // TestDefaultBuilder_CallParallelStepRoundTripsThroughMessages — AC-15
 // at the builder level: a CallParallel step assembled through Build
 // produces a paired wire slice (one assistant tool_calls turn, N
