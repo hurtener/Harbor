@@ -282,6 +282,23 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.16 Phase 191: Shipped.** Three additive OAuth broker legs on the
+pull-based token-exchange spine, all report-not-act (the runtime never runs the
+flow, holds a token, or widens a binding). A downstream `403` +
+`WWW-Authenticate: insufficient_scope` (RFC 6750 §3.1) step-up is now
+**structured data** — a typed `tools.ErrInsufficientScope` (downstream resource,
+required-vs-granted scopes, verbatim challenge, origin) on the `tool.failed`
+envelope and on the MCP connection view (`mcp.servers.get`'s
+`last_scope_shortfall`), classified **permanent** so a shortfall retrying can
+never fix is no longer silently retried. A `tokenexchange` provider can carry a
+boot-declared RFC 8707 `resource` indicator on the exchange (with best-effort
+`aud` verification — honest `AudienceVerified:false` for opaque tokens), bind a
+distinct provider **per tool** on one MCP connection (`tool_oauth_providers`,
+closing the one-audience-per-server constraint), and optionally carry the run's
+verified acting `agent_id` as an RFC 8693 `actor_token`. Every field is
+boot-declared and additive; absent fields preserve today's behaviour exactly.
+`ProtocolVersion` stays `0.1.0`.
+
 **Harbor v1.16 Phase 190: Shipped.** `agents.list` now surfaces the
 runtime's synthetic default agent — the boot-configured agent every
 process serves through but never registers as a fleet entity — as a

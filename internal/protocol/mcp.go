@@ -96,6 +96,23 @@ type MCPServerRow struct {
 	// advertised — nil when discovery has not run. Populated only on
 	// the detail read (GetServer / probe-triggered), never on the hot list row.
 	OAuthRequirement *MCPOAuthRequirementRow
+	// LastScopeShortfall is the last observed downstream insufficient-scope
+	// step-up — nil when none seen. Populated only on the detail read
+	// (GetServer), never on the hot list row.
+	LastScopeShortfall *MCPScopeShortfallRow
+}
+
+// MCPScopeShortfallRow is the runtime-side projection of a captured downstream
+// insufficient-scope step-up. Inert, server-supplied data — the operator acts
+// on it, the runtime never does.
+type MCPScopeShortfallRow struct {
+	ToolName           string
+	DownstreamResource string
+	RequiredScopes     []string
+	GrantedScopes      []string
+	WWWAuthenticate    string
+	Origin             string
+	ObservedAt         time.Time
 }
 
 // MCPOAuthRequirementRow is the runtime-side projection of a discovered MCP
@@ -938,19 +955,38 @@ func (s *MCPSurface) emitRawHTMLTrustToggled(ctx context.Context, actor identity
 // projectServerRow maps a runtime MCPServerRow onto the wire view.
 func projectServerRow(row MCPServerRow) types.MCPServerView {
 	return types.MCPServerView{
-		Name:              row.Name,
-		Transport:         row.Transport,
-		URLOrCommand:      row.URLOrCommand,
-		State:             types.MCPServerStateView(row.State),
-		LastDiscoveryAt:   row.LastDiscoveryAt,
-		ToolCount:         mcpCountToWire(row.ToolCount),
-		ResourceCount:     mcpCountToWire(row.ResourceCount),
-		PromptCount:       mcpCountToWire(row.PromptCount),
-		RecentLatencyMs:   row.RecentLatencyMs,
-		ErrorRatePerMin:   row.ErrorRatePerMin,
-		OAuthBindingCount: mcpCountToWire(row.OAuthBindingCount),
-		RawHTMLTrusted:    row.RawHTMLTrusted,
-		OAuthRequirement:  projectOAuthRequirement(row.OAuthRequirement),
+		Name:               row.Name,
+		Transport:          row.Transport,
+		URLOrCommand:       row.URLOrCommand,
+		State:              types.MCPServerStateView(row.State),
+		LastDiscoveryAt:    row.LastDiscoveryAt,
+		ToolCount:          mcpCountToWire(row.ToolCount),
+		ResourceCount:      mcpCountToWire(row.ResourceCount),
+		PromptCount:        mcpCountToWire(row.PromptCount),
+		RecentLatencyMs:    row.RecentLatencyMs,
+		ErrorRatePerMin:    row.ErrorRatePerMin,
+		OAuthBindingCount:  mcpCountToWire(row.OAuthBindingCount),
+		RawHTMLTrusted:     row.RawHTMLTrusted,
+		OAuthRequirement:   projectOAuthRequirement(row.OAuthRequirement),
+		LastScopeShortfall: projectScopeShortfall(row.LastScopeShortfall),
+	}
+}
+
+// projectScopeShortfall maps the runtime-side captured scope shortfall onto
+// the wire view. Nil (none observed, or a list-row projection) maps to nil —
+// the field is omitempty on the wire.
+func projectScopeShortfall(row *MCPScopeShortfallRow) *types.MCPScopeShortfallView {
+	if row == nil {
+		return nil
+	}
+	return &types.MCPScopeShortfallView{
+		ToolName:           row.ToolName,
+		DownstreamResource: row.DownstreamResource,
+		RequiredScopes:     nonNilStrings(row.RequiredScopes),
+		GrantedScopes:      nonNilStrings(row.GrantedScopes),
+		WWWAuthenticate:    row.WWWAuthenticate,
+		Origin:             row.Origin,
+		ObservedAt:         row.ObservedAt,
 	}
 }
 

@@ -174,27 +174,40 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if bindErr != nil {
 		return fmt.Errorf("mcp server %q: %w", ms.Name, bindErr)
 	}
+	// Resolve the per-tool oauth_provider overrides (CallTool granularity),
+	// re-enforcing every binding rule per entry against the same resolver.
+	toolProviders, toolBindErr := resolveToolOAuthBindings(ms, mode, resolver)
+	if toolBindErr != nil {
+		return fmt.Errorf("mcp server %q: %w", ms.Name, toolBindErr)
+	}
 	provider, err := New(Config{
-		Name:             ms.Name,
-		TransportMode:    mode,
-		URL:              ms.URL,
-		Command:          append([]string(nil), ms.Command...),
-		Headers:          cloneHeaderMap(ms.Headers),
-		KeepAlive:        ms.KeepAlive,
-		Logger:           deps.Logger,
-		Bus:              deps.Bus,
-		DefaultPolicy:    defaultPolicy,
-		ToolPolicies:     toolPolicies,
-		DefaultIdentity:  deps.DefaultIdentity,
-		HostDisplayModes: append([]string(nil), deps.HostDisplayModes...),
-		ToolContext:      deps.ToolContext,
-		OAuthProvider:    oauthProvider,
-		MetaAnnotations:  cloneHeaderMap(ms.MetaAnnotations),
+		Name:               ms.Name,
+		TransportMode:      mode,
+		URL:                ms.URL,
+		Command:            append([]string(nil), ms.Command...),
+		Headers:            cloneHeaderMap(ms.Headers),
+		KeepAlive:          ms.KeepAlive,
+		Logger:             deps.Logger,
+		Bus:                deps.Bus,
+		DefaultPolicy:      defaultPolicy,
+		ToolPolicies:       toolPolicies,
+		DefaultIdentity:    deps.DefaultIdentity,
+		HostDisplayModes:   append([]string(nil), deps.HostDisplayModes...),
+		ToolContext:        deps.ToolContext,
+		OAuthProvider:      oauthProvider,
+		ToolOAuthProviders: toolProviders,
+		MetaAnnotations:    cloneHeaderMap(ms.MetaAnnotations),
 		// Record any `WWW-Authenticate` OAuth step-up challenge on the
 		// registry state so an operator can inspect the advertised requirement
 		// Best-effort observability — never alters the call.
 		OnAuthChallenge: func(ch AuthChallenge) {
 			deps.Registry.RecordAuthChallenge(ms.Name, ch)
+		},
+		// Record any downstream insufficient-scope step-up on the registry
+		// state (mirrors OnAuthChallenge for the 403 path). Best-effort
+		// observability — never alters the call.
+		OnScopeShortfall: func(sf ScopeShortfall) {
+			deps.Registry.RecordScopeShortfall(ms.Name, sf)
 		},
 	})
 	if err != nil {
@@ -356,6 +369,41 @@ func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, provi
 	if ms.OAuthProvider == "" {
 		return nil, nil
 	}
+	return resolveProviderBinding(ms, mode, ms.OAuthProvider, providers)
+}
+
+// resolveToolOAuthBindings resolves a connection's per-tool `oauth_provider`
+// overrides (server-side tool name → provider name) against the registry,
+// re-enforcing EVERY binding rule per entry exactly like the connection-level
+// binding (unknown name / stdio transport / static-Authorization conflict /
+// downstream-host allow-list). Scope is CallTool only. An empty map returns
+// nil (no overrides). An empty tool-name key or empty provider name fails
+// loud.
+func resolveToolOAuthBindings(ms config.MCPServerConfig, mode MCPTransportMode, providers OAuthProviderResolver) (map[string]auth.OAuthProvider, error) {
+	if len(ms.ToolOAuthProviders) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]auth.OAuthProvider, len(ms.ToolOAuthProviders))
+	for toolName, providerName := range ms.ToolOAuthProviders {
+		if strings.TrimSpace(toolName) == "" {
+			return nil, fmt.Errorf("%w: tool_oauth_providers key (tool name) must not be empty", ErrOAuthBinding)
+		}
+		if strings.TrimSpace(providerName) == "" {
+			return nil, fmt.Errorf("%w: tool_oauth_providers[%q] provider name must not be empty", ErrOAuthBinding, toolName)
+		}
+		prov, err := resolveProviderBinding(ms, mode, providerName, providers)
+		if err != nil {
+			return nil, fmt.Errorf("tool_oauth_providers[%q]: %w", toolName, err)
+		}
+		out[toolName] = prov
+	}
+	return out, nil
+}
+
+// resolveProviderBinding resolves one provider name against the registry and
+// re-enforces the binding rules the connection-level and per-tool bindings
+// share. Returns the resolved provider or a loud error.
+func resolveProviderBinding(ms config.MCPServerConfig, mode MCPTransportMode, providerName string, providers OAuthProviderResolver) (auth.OAuthProvider, error) {
 	// The binding needs an HTTP request to inject into. An explicit stdio
 	// transport is rejected, and so is ANY connection without a URL — an
 	// auto transport with only a command auto-selects stdio at connect,
@@ -369,9 +417,9 @@ func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, provi
 			return nil, fmt.Errorf("%w: static Authorization header conflicts with oauth_provider (one auth mode per connection)", ErrOAuthBinding)
 		}
 	}
-	prov, ok := providers.Get(ms.OAuthProvider)
+	prov, ok := providers.Get(providerName)
 	if !ok {
-		return nil, fmt.Errorf("%w: unknown provider %q (registered: %s)", ErrOAuthBinding, ms.OAuthProvider, strings.Join(providers.Names(), ","))
+		return nil, fmt.Errorf("%w: unknown provider %q (registered: %s)", ErrOAuthBinding, providerName, strings.Join(providers.Names(), ","))
 	}
 	// Downstream-sink allow-list (the credential-plane invariant):
 	// the provider's boot-declared allow-list is the ONLY authority for
@@ -383,11 +431,11 @@ func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, provi
 	// shared with config-time validation.
 	allowed := prov.AllowedDownstreamHosts()
 	if len(allowed) == 0 {
-		return nil, fmt.Errorf("%w: provider %q declares no allowed_downstream_hosts — a bearer-injecting provider must declare its downstream sinks (fail-closed; the credential-plane invariant)", ErrOAuthBinding, ms.OAuthProvider)
+		return nil, fmt.Errorf("%w: provider %q declares no allowed_downstream_hosts — a bearer-injecting provider must declare its downstream sinks (fail-closed; the credential-plane invariant)", ErrOAuthBinding, providerName)
 	}
 	connHost := config.NormalizeDownstreamHost(ms.URL)
 	if connHost == "" || !hostAllowed(allowed, connHost) {
-		return nil, fmt.Errorf("%w: connection host %q is not in provider %q's allowed_downstream_hosts — the credential may only be injected into a boot-declared downstream sink", ErrOAuthBinding, connHost, ms.OAuthProvider)
+		return nil, fmt.Errorf("%w: connection host %q is not in provider %q's allowed_downstream_hosts — the credential may only be injected into a boot-declared downstream sink", ErrOAuthBinding, connHost, providerName)
 	}
 	return prov, nil
 }

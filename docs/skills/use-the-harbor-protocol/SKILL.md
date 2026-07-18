@@ -394,6 +394,15 @@ Three trustworthy sources, none of which is hand-rolling:
 
 Hand-rolling the types from scratch is fine for a quick prototype but you'll drift. Anchor any client you intend to maintain on the generated module or the generated reference.
 
+### 8a. Reading a downstream scope shortfall
+
+When an MCP-backed tool call is refused downstream with a `403` + `WWW-Authenticate: Bearer error="insufficient_scope"` (RFC 6750 §3.1), the shortfall surfaces as **structured data on the two surfaces you already read** — never an opaque error string:
+
+- **On the tool-result error path** — the `tool.failed` event's `ScopeShortfall` field carries `downstream_resource`, `required_scopes`, `granted_scopes`, the verbatim `www_authenticate` header, and `origin`. It is set only when the challenge is explicitly marked `insufficient_scope`; an unmarked 403 stays an opaque failure. The runtime classifies the shortfall as **permanent** (it never retries a shortfall retrying cannot fix).
+- **On the MCP connection view** — `mcp.servers.get` returns `MCPServerView.last_scope_shortfall` (`MCPScopeShortfallView`) recording the last observed shortfall on that connection — visible even to a reader who never made the offending call. It rides the DETAIL read only (like `oauth_requirement`), not the hot list row.
+
+Both are **report-only**: the runtime never auto-escalates, re-consents, or widens a binding on a shortfall. The operator acts on it via the boot-declared `oauth_provider` / `tool_oauth_providers` bindings (which can bind a distinct provider per tool for a server fronting several downstream resources).
+
 ## 9. A minimal client (TS, ~30 LoC)
 
 ```typescript

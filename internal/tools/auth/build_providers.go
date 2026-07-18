@@ -104,6 +104,8 @@ func BuildProviders(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps)
 			AllowedDownstreamHosts: append([]string(nil), p.AllowedDownstreamHosts...),
 			Audience:               p.Audience,
 			ScopeCeiling:           append([]string(nil), p.ScopeCeiling...),
+			ResourceIndicator:      p.ResourceIndicator,
+			IncludeActorToken:      p.IncludeActorToken,
 		}
 		prov, err := Resolve(ctx, p.Driver, pcfg, factoryDeps)
 		if err != nil {

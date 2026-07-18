@@ -1600,6 +1600,146 @@ func TestValidateTools_OAuthProviders(t *testing.T) {
 	}
 }
 
+// TestValidateTools_OAuthBrokerLegs covers the additive OAuth-broker-leg
+// config fields: resource_indicator / include_actor_token (tokenexchange-only)
+// and the per-tool tool_oauth_providers map (MCP callTool binding).
+func TestValidateTools_OAuthBrokerLegs(t *testing.T) {
+	// A valid tokenexchange provider whose allow-list covers the MCP fixture
+	// host so the per-tool binding passes the downstream-sink check.
+	txProvider := func() config.ToolOAuthProviderConfig {
+		return config.ToolOAuthProviderConfig{
+			Name: "m365", Driver: "tokenexchange",
+			ClientIDEnv: "M365_ID", ClientSecretEnv: "M365_SECRET",
+			TokenURL:               "https://broker.example.com/token",
+			AllowedDownstreamHosts: []string{"graph.microsoft.com"},
+		}
+	}
+	mcpConn := func() config.MCPServerConfig {
+		return config.MCPServerConfig{
+			Name: "graph", TransportMode: "streamable_http",
+			URL: "https://graph.microsoft.com/mcp",
+		}
+	}
+	cases := []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantOK  bool
+		wantSub string
+	}{
+		{
+			name: "resource_indicator + include_actor_token on tokenexchange passes",
+			mutate: func(c *config.Config) {
+				p := txProvider()
+				p.ResourceIndicator = "https://graph.microsoft.com"
+				p.IncludeActorToken = true
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{p}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantOK: true,
+		},
+		{
+			name: "resource_indicator on oauth2 rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{{
+					Name: "gh", Driver: "oauth2",
+					ClientIDEnv: "GH_ID", ClientSecretEnv: "GH_SECRET",
+					ResourceIndicator: "https://api.github.com",
+				}}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "resource_indicator",
+		},
+		{
+			name: "include_actor_token on oauth2 rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{{
+					Name: "gh", Driver: "oauth2",
+					ClientIDEnv: "GH_ID", ClientSecretEnv: "GH_SECRET",
+					IncludeActorToken: true,
+				}}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "include_actor_token",
+		},
+		{
+			name: "tool_oauth_providers referencing declared provider passes",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				conn := mcpConn()
+				conn.ToolOAuthProviders = map[string]string{"send_mail": "m365"}
+				c.Tools.MCPServers = []config.MCPServerConfig{conn}
+			},
+			wantOK: true,
+		},
+		{
+			name: "tool_oauth_providers referencing unknown provider rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				conn := mcpConn()
+				conn.ToolOAuthProviders = map[string]string{"send_mail": "nope"}
+				c.Tools.MCPServers = []config.MCPServerConfig{conn}
+			},
+			wantSub: `unknown OAuth provider "nope"`,
+		},
+		{
+			name: "tool_oauth_providers on stdio connection rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				c.Tools.MCPServers = []config.MCPServerConfig{{
+					Name: "graph", TransportMode: "stdio", Command: []string{"srv"},
+					ToolOAuthProviders: map[string]string{"send_mail": "m365"},
+				}}
+			},
+			wantSub: "http(s) url",
+		},
+		{
+			name: "tool_oauth_providers host not in allow-list rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				conn := mcpConn()
+				conn.URL = "https://other.example.com/mcp" // not in allow-list
+				conn.ToolOAuthProviders = map[string]string{"send_mail": "m365"}
+				c.Tools.MCPServers = []config.MCPServerConfig{conn}
+			},
+			wantSub: "allowed_downstream_hosts",
+		},
+		{
+			name: "tool_oauth_providers empty provider name rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				conn := mcpConn()
+				conn.ToolOAuthProviders = map[string]string{"send_mail": ""}
+				c.Tools.MCPServers = []config.MCPServerConfig{conn}
+			},
+			wantSub: "provider name must not be empty",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoadValid(t)
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("expected ok, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected validation failure, got nil")
+			}
+			if tc.wantSub != "" && !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("expected substring %q in error, got: %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
 func TestIsValidationError(t *testing.T) {
 	cfg := mustLoadValid(t)
 	cfg.Server.BindAddr = ""

@@ -1455,6 +1455,8 @@ Payload `ToolCredentialExchangedPayload` — safe payload (delivered typed, verb
 | `BrokerHost` | `string` |  |
 | `GrantedScopes` | `[]string` |  |
 | `ExpiresAt` | `time.Time` |  |
+| `AudienceVerified` | `bool` |  |
+| `ActorAsserted` | `bool` |  |
 
 ## `tool.failed`
 
@@ -1468,6 +1470,7 @@ Payload `ToolFailedPayload` — safe payload (delivered typed, verbatim).
 | `Attempts` | `int` |  |
 | `ErrorClass` | `tools.ErrorClass` |  |
 | `ErrorMessage` | `string` |  |
+| `ScopeShortfall` | `*tools.ScopeShortfallDetail` |  |
 
 ## `tool.invalid_args`
 

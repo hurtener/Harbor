@@ -53,10 +53,15 @@ func buildHTTPClient(cfg Config) *http.Client {
 	}
 	// The challenge capturer is the OUTERMOST wrapper so it observes the final
 	// response (after any auth injection) and can read a `401`'s
-	// `WWW-Authenticate` header. It never alters the call — see
+	// `WWW-Authenticate` header (OAuth step-up) or a `403`'s
+	// `insufficient_scope` shortfall. It never alters the call — see
 	// challengeCapturingTransport.
-	if cfg.OnAuthChallenge != nil {
-		rt = &challengeCapturingTransport{base: rt, onChallenge: cfg.OnAuthChallenge}
+	if cfg.OnAuthChallenge != nil || cfg.OnScopeShortfall != nil {
+		rt = &challengeCapturingTransport{
+			base:             rt,
+			onChallenge:      cfg.OnAuthChallenge,
+			onScopeShortfall: cfg.OnScopeShortfall,
+		}
 	}
 	if rt == base {
 		return http.DefaultClient

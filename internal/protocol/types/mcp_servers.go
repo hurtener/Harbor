@@ -89,6 +89,38 @@ type MCPServerView struct {
 	// and after a probe triggers discovery); the list projection omits it so
 	// the hot list row stays compact. Nil / omitted when no discovery has run.
 	OAuthRequirement *MCPOAuthRequirementView `json:"oauth_requirement,omitempty"`
+	// LastScopeShortfall is the last downstream insufficient-scope step-up
+	// (a `403` + `WWW-Authenticate` marking `error="insufficient_scope"`)
+	// observed on this connection — the required-vs-granted scope gap surfaced
+	// as inert data. Present only on the DETAIL read (mcp.servers.get),
+	// mirroring OAuthRequirement; the list projection omits it. Report-only:
+	// Harbor never auto-escalates or re-consents on it. Nil / omitted when no
+	// shortfall has been observed.
+	LastScopeShortfall *MCPScopeShortfallView `json:"last_scope_shortfall,omitempty"`
+}
+
+// MCPScopeShortfallView is the last observed downstream insufficient-scope
+// step-up on a connection, surfaced as inert Protocol data. The Console
+// renders it as "insufficient scope (from the connected server)". Harbor
+// never acts on it: no escalation, no re-consent, no widened binding.
+type MCPScopeShortfallView struct {
+	// ToolName is the server-side tool name the shortfall was observed on
+	// (empty when the observation was not tied to a specific tool call).
+	ToolName string `json:"tool_name"`
+	// DownstreamResource is the origin/host the challenge came from.
+	DownstreamResource string `json:"downstream_resource"`
+	// RequiredScopes is the parsed `scope` challenge parameter — the scopes
+	// the downstream demands. Always non-nil in the wire JSON.
+	RequiredScopes []string `json:"required_scopes"`
+	// GrantedScopes is the binding's most-recently-granted scope set. Always
+	// non-nil in the wire JSON (empty when unknown).
+	GrantedScopes []string `json:"granted_scopes"`
+	// WWWAuthenticate is the verbatim challenge header value.
+	WWWAuthenticate string `json:"www_authenticate"`
+	// Origin is the scheme://host[:port] the challenge was observed on.
+	Origin string `json:"origin"`
+	// ObservedAt is the wall-clock instant the shortfall was observed.
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 // MCPOAuthRequirementView is the discovered MCP OAuth requirement, surfaced as
