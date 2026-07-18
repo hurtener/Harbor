@@ -280,9 +280,14 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 
 // reservedPlannerControlDeclarations returns the synthetic
 // `llm.ToolDeclaration` entries for the React planner's reserved
-// control names (`_spawn_task` / `_await_task`). The schemas mirror
-// the projector's `translateNativeSpawn` / `translateNativeAwait`
-// args envelopes verbatim.
+// control names (`_spawn_task` / `_await_task` / `_task_status` /
+// `_cancel_task`). The schemas mirror the projector's
+// `translateNativeSpawn` / `translateNativeAwait` /
+// `translateNativeTaskStatus` / `translateNativeCancelTask` args
+// envelopes verbatim. The task observation/cancel controls are
+// descendant-scoped at dispatch (a run reaches only its own spawned
+// tasks) — the declaration descriptions state that honestly so the
+// model never expects to reach a sibling run's tasks.
 //
 // Background — the AC-20a follow-up. Step 9 of An earlier phase shipped the
 // React projector's reserved-name interception (`_finish` /
@@ -303,13 +308,23 @@ func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
 	return []llm.ToolDeclaration{
 		{
 			Name:        SpawnTaskToolName,
-			Description: "Planner control — spawn a background task the foreground turn does not wait on. You MAY call it alongside catalog tools and alongside other _spawn_task calls in the same response; the runtime dispatches each concurrently and returns a task_id per spawn. When you batch a _spawn_task with ANY other call in the same response it is ALWAYS non-blocking — do NOT set retain_turn:true in a multi-call response (the runtime rejects the whole response). To block on a spawn instead, emit that single _spawn_task ALONE in its own response with retain_turn:true. To wait on an already-spawned task's result, send _await_task with its task_id in a LATER response, on its own.",
+			Description: "Planner control — spawn a background task the foreground turn does not wait on. You MAY call it alongside catalog tools and alongside other _spawn_task calls in the same response; the runtime dispatches each concurrently and returns a task_id per spawn. When you batch a _spawn_task with ANY other call in the same response it is ALWAYS non-blocking — do NOT set retain_turn:true in a multi-call response (the runtime rejects the whole response). To block on a spawn instead, emit that single _spawn_task ALONE in its own response with retain_turn:true. To wait on an already-spawned task's result, send _await_task with its task_id in a LATER response, on its own. Set spec.propagate_on_cancel:\"isolate\" to let this task survive YOUR OWN later cancellation (including a cascade from a task you spawned it under); it never survives a direct cancel by the operator, who can always stop any task. Omit it (or use \"cascade\") for the default, where cancelling a parent sweeps this task too.",
 			Schema:      jsonSchemaRawSpawnTask,
 		},
 		{
 			Name:        AwaitTaskToolName,
 			Description: "Planner control — block the foreground turn on a previously-spawned task's completion. Send it ALONE (never alongside any other tool call in the same response): pass the task_id returned by an earlier _spawn_task. The runtime resumes the planner with the task's resolved outcome.",
 			Schema:      jsonSchemaRawAwaitTask,
+		},
+		{
+			Name:        TaskStatusToolName,
+			Description: "Planner control — check the status of the background tasks THIS run spawned (directly or transitively). Send it ALONE (never alongside any other tool call in the same response). Pass task_ids to report specific tasks, or omit it to list every task your run has spawned, including nested descendants. You can only see tasks your OWN run spawned — never another run's tasks, even in the same session. Each row is {task_id, status, description, group_id}. Use it before deciding whether to _await_task a spawn or _cancel_task the ones you no longer need.",
+			Schema:      jsonSchemaRawTaskStatus,
+		},
+		{
+			Name:        CancelTaskToolName,
+			Description: "Planner control — cancel one background task THIS run spawned (e.g. abandon the losing branches of a fan-out once the first answered). Send it ALONE (never alongside any other tool call in the same response). Pass the task_id (required) and an optional reason. You can only cancel tasks your OWN run spawned, directly or transitively — never another run's tasks. Cancelling a task you spawned always works, even one you marked propagate_on_cancel:\"isolate\" — isolate only detaches a task from YOUR cancellation of an ANCESTOR, never from a direct cancel of that task itself.",
+			Schema:      jsonSchemaRawCancelTask,
 		},
 	}
 }
@@ -352,7 +367,12 @@ var (
         "query": {"type": "string"},
         "priority": {"type": "integer"},
         "retain_turn": {"type": "boolean"},
-        "fail_fast": {"type": "boolean"}
+        "fail_fast": {"type": "boolean"},
+        "propagate_on_cancel": {
+          "type": "string",
+          "enum": ["cascade", "isolate"],
+          "description": "cascade (default; omit for this): cancelling a parent task sweeps this task too. isolate: this task survives YOUR cancellation of an ancestor, but never a direct cancel by the operator."
+        }
       }
     }
   },
@@ -365,6 +385,32 @@ var (
     "task_id": {
       "type": "string",
       "description": "The id returned by a prior _spawn_task call."
+    }
+  },
+  "required": ["task_id"]
+}`)
+	jsonSchemaRawTaskStatus = []byte(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "task_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Task ids to report on. Omit or leave empty to list every task this run has spawned, including nested descendants. Every id must be a task your own run spawned; an out-of-scope id fails the whole call."
+    }
+  }
+}`)
+	jsonSchemaRawCancelTask = []byte(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "The id of a task this run spawned (directly or transitively) to cancel."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Optional human-readable cancellation reason, recorded on the task.cancelled event."
     }
   },
   "required": ["task_id"]

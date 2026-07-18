@@ -956,11 +956,11 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 	return asst, tool, true
 }
 
-// renderNativeControlStep projects a trajectory step whose Action is a
-// [planner.SpawnTask] or [planner.AwaitTask] — the two NON-terminal
-// planner-control meta-tools the model emits as native tool-calls
-// (`_spawn_task` / `_await_task`; declared natively from the start,
-// first dispatched on the dev path by the background-task work)
+// renderNativeControlStep projects a trajectory step whose Action is one
+// of the NON-terminal planner-control meta-tools the model emits as
+// native tool-calls — [planner.SpawnTask], [planner.AwaitTask],
+// [planner.TaskStatusQuery], or [planner.CancelTask] (`_spawn_task` /
+// `_await_task` / `_task_status` / `_cancel_task`)
 // — back into the native tool-call wire shape, mirroring
 // [renderNativeStepPair] for CallTool: ONE assistant message carrying the
 // reserved tool name + reconstructed args, paired with ONE RoleTool
@@ -992,6 +992,12 @@ func renderNativeControlStep(step planner.Step, replayMode planner.ReasoningRepl
 	case planner.AwaitTask:
 		toolName = AwaitTaskToolName
 		args = awaitTaskReplayArgs(a)
+	case planner.TaskStatusQuery:
+		toolName = TaskStatusToolName
+		args = taskStatusReplayArgs(a)
+	case planner.CancelTask:
+		toolName = CancelTaskToolName
+		args = cancelTaskReplayArgs(a)
 	default:
 		return llm.ChatMessage{}, nil, false
 	}
@@ -1037,15 +1043,19 @@ func renderNativeControlStep(step planner.Step, replayMode planner.ReasoningRepl
 // envelope [translateNativeSpawn] parses; it is rendered for the model's
 // eyes (not re-parsed), so it carries every field the model set.
 func spawnTaskReplayArgs(d planner.SpawnTask) json.RawMessage {
+	spec := map[string]any{
+		"description": d.Spec.Description,
+		"query":       d.Spec.Query,
+		"priority":    d.Spec.Priority,
+		"retain_turn": d.Spec.RetainTurn,
+		"fail_fast":   d.Spec.FailFast,
+	}
+	if d.Spec.PropagateOnCancel != "" {
+		spec["propagate_on_cancel"] = d.Spec.PropagateOnCancel
+	}
 	env := map[string]any{
 		"kind": string(d.Kind),
-		"spec": map[string]any{
-			"description": d.Spec.Description,
-			"query":       d.Spec.Query,
-			"priority":    d.Spec.Priority,
-			"retain_turn": d.Spec.RetainTurn,
-			"fail_fast":   d.Spec.FailFast,
-		},
+		"spec": spec,
 	}
 	if d.GroupID != "" {
 		env["group_id"] = string(d.GroupID)
@@ -1061,6 +1071,42 @@ func spawnTaskReplayArgs(d planner.SpawnTask) json.RawMessage {
 // typed [planner.AwaitTask] for trajectory replay.
 func awaitTaskReplayArgs(d planner.AwaitTask) json.RawMessage {
 	out, err := json.Marshal(map[string]any{"task_id": string(d.TaskID)})
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// taskStatusReplayArgs reconstructs the `_task_status` args envelope from
+// a typed [planner.TaskStatusQuery] for trajectory replay. A nil/empty
+// TaskIDs (the list-everything sentinel) renders an empty object, exactly
+// what the model may have emitted; a non-empty slice renders the
+// `task_ids` array so the model sees which tasks it queried.
+func taskStatusReplayArgs(d planner.TaskStatusQuery) json.RawMessage {
+	env := map[string]any{}
+	if len(d.TaskIDs) > 0 {
+		ids := make([]string, 0, len(d.TaskIDs))
+		for _, id := range d.TaskIDs {
+			ids = append(ids, string(id))
+		}
+		env["task_ids"] = ids
+	}
+	out, err := json.Marshal(env)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// cancelTaskReplayArgs reconstructs the `_cancel_task` args envelope from
+// a typed [planner.CancelTask] for trajectory replay. `reason` is omitted
+// when empty, mirroring what the model may have emitted.
+func cancelTaskReplayArgs(d planner.CancelTask) json.RawMessage {
+	env := map[string]any{"task_id": string(d.TaskID)}
+	if d.Reason != "" {
+		env["reason"] = d.Reason
+	}
+	out, err := json.Marshal(env)
 	if err != nil {
 		return json.RawMessage("{}")
 	}

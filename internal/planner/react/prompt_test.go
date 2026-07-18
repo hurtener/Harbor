@@ -263,6 +263,70 @@ func TestDefaultBuilder_RendersSpawnAwaitStepsAsNativeToolPairs(t *testing.T) {
 	}
 }
 
+// TestDefaultBuilder_RendersTaskStatusCancelStepsAsNativeToolPairs —
+// AC-12: a trajectory step whose Action is TaskStatusQuery / CancelTask
+// replays as a native tool_call + RoleTool pair, mirroring the
+// _spawn_task / _await_task replay.
+func TestDefaultBuilder_RendersTaskStatusCancelStepsAsNativeToolPairs(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "manage fan-out",
+		Trajectory: &planner.Trajectory{
+			Steps: []planner.Step{
+				{
+					Action:         planner.TaskStatusQuery{TaskIDs: []tasks.TaskID{"task-A", "task-B"}},
+					LLMObservation: map[string]any{"tasks": []any{map[string]any{"task_id": "task-A", "status": "running"}}},
+				},
+				{
+					Action:         planner.CancelTask{TaskID: tasks.TaskID("task-B"), Reason: "lost the race"},
+					LLMObservation: map[string]any{"task_id": "task-B", "cancelled": true},
+				},
+			},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+	wantRoles := []llm.Role{
+		llm.RoleSystem, llm.RoleUser,
+		llm.RoleAssistant, llm.RoleTool,
+		llm.RoleAssistant, llm.RoleTool,
+	}
+	if len(req.Messages) != len(wantRoles) {
+		t.Fatalf("len(Messages) = %d, want %d — roles: %+v", len(req.Messages), len(wantRoles), summariseRoles(req.Messages))
+	}
+	for i, w := range wantRoles {
+		if req.Messages[i].Role != w {
+			t.Errorf("Messages[%d].Role = %q, want %q", i, req.Messages[i].Role, w)
+		}
+	}
+
+	// Status step: assistant emits a native _task_status tool_call whose
+	// args preserve the queried ids; the RoleTool carries the observation.
+	statusAsst := req.Messages[2]
+	if len(statusAsst.ToolCalls) != 1 || statusAsst.ToolCalls[0].Name != TaskStatusToolName {
+		t.Fatalf("status assistant ToolCalls = %+v, want one %q call", statusAsst.ToolCalls, TaskStatusToolName)
+	}
+	if !strings.Contains(string(statusAsst.ToolCalls[0].Args), "task-A") {
+		t.Errorf("status replay dropped the queried ids: args = %s", statusAsst.ToolCalls[0].Args)
+	}
+	statusTool := req.Messages[3]
+	if statusTool.ToolCallID == nil || *statusTool.ToolCallID != statusAsst.ToolCalls[0].ID {
+		t.Errorf("status tool ToolCallID = %v, want match to assistant id %q", statusTool.ToolCallID, statusAsst.ToolCalls[0].ID)
+	}
+
+	// Cancel step: native _cancel_task tool_call + matching RoleTool.
+	cancelAsst := req.Messages[4]
+	if len(cancelAsst.ToolCalls) != 1 || cancelAsst.ToolCalls[0].Name != CancelTaskToolName {
+		t.Fatalf("cancel assistant ToolCalls = %+v, want one %q call", cancelAsst.ToolCalls, CancelTaskToolName)
+	}
+	if !strings.Contains(string(cancelAsst.ToolCalls[0].Args), "task-B") || !strings.Contains(string(cancelAsst.ToolCalls[0].Args), "lost the race") {
+		t.Errorf("cancel replay dropped task_id/reason: args = %s", cancelAsst.ToolCalls[0].Args)
+	}
+	cancelTool := req.Messages[5]
+	if cancelTool.ToolCallID == nil || *cancelTool.ToolCallID != cancelAsst.ToolCalls[0].ID {
+		t.Errorf("cancel tool ToolCallID = %v, want match to assistant id %q", cancelTool.ToolCallID, cancelAsst.ToolCalls[0].ID)
+	}
+}
+
 // TestDefaultBuilder_PrefersLLMObservationOverRawObservation asserts
 // D-026 heavy-content discipline: the prompt uses LLMObservation
 // (compressed/redacted projection) over raw Observation when both

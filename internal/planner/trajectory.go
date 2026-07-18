@@ -127,7 +127,8 @@ func CountToolInvocations(t *Trajectory) int {
 // single decision represents: 1 for CallTool, len(Branches) for
 // CallParallel, len(Tools) for Batch (its Spawns contribute zero,
 // matching SpawnTask's rule — a spawn is never a tool invocation), 0
-// for SpawnTask / AwaitTask / RequestPause / Finish / any other value
+// for SpawnTask / AwaitTask / TaskStatusQuery / CancelTask /
+// RequestPause / Finish / any other value
 // (including a trajectory step restored from JSON without being
 // re-typed through the Decision sum — e.g. a bare map[string]any).
 // Typed-nil pointers count as zero.
