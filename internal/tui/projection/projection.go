@@ -139,6 +139,11 @@ type Block struct {
 	// run (TaskRow.StartedAt → UpdatedAt). It is authoritative: the client never
 	// derives elapsed time from local wall-clock reads.
 	DurationMS int64 `json:"duration_ms,omitempty"`
+	// ErrorCode is the bounded terminal error code the Runtime reports on a
+	// task.failed frame. It is read from a field the reducer already received
+	// on the wire (no wire change); the foreground turn-failure line renders
+	// it so a failed turn shows an explicit code instead of going idle.
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // ChangeSet tells a renderer whether it may coalesce this update. Content and
@@ -390,6 +395,44 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 		runID = decoded.TaskID
 		id := "task:" + runID
 		terminalLifecycle(&next, id, "task", runID, strings.TrimPrefix(event.Type, "task."), event)
+		if event.Type == "task.failed" && decoded.ErrorCode != "" {
+			if idx := blockIndex(next.Blocks, id); idx >= 0 {
+				next.Blocks[idx].ErrorCode = safeText(decoded.ErrorCode)
+			}
+		}
+		blockIDs = append(blockIDs, id)
+	case "notification.task_completed", "notification.task_group_resolved":
+		// The conversational mirror of a background terminal transition /
+		// group resolution. Rendered unconditionally as a muted one-line
+		// lifecycle notice — these are deliberate operator-facing wake
+		// signals, not the event-fallback leakage the generic branch
+		// guards against.
+		var decoded notificationPayload
+		if !decodePayload(event.Payload, &decoded) || decoded.Summary == "" {
+			return genericFallback(next, event, payload), ChangeSet{Changed: true, Immediate: true, BlockIDs: []string{genericEventID(event)}}, nil
+		}
+		id := notificationID(event)
+		upsertNotification(&next, id, decoded.Summary, event)
+		blockIDs = append(blockIDs, id)
+	case "notification.task_failed":
+		// The background-failure mirror. Suppressed when the failing task
+		// IS a foreground turn — a "user:"+TaskID block exists, and that
+		// block is minted only for foreground-Kind rows, so its presence is
+		// the reliable foreground discriminator. That failure is surfaced by
+		// the dedicated turn-failure line, so the mirror would duplicate it.
+		// Rendered when no such foreground turn is tracked (a genuinely
+		// background task failing).
+		var decoded notificationPayload
+		if !decodePayload(event.Payload, &decoded) || decoded.Summary == "" {
+			return genericFallback(next, event, payload), ChangeSet{Changed: true, Immediate: true, BlockIDs: []string{genericEventID(event)}}, nil
+		}
+		if decoded.TaskID != "" && blockIndex(next.Blocks, "user:"+decoded.TaskID) >= 0 {
+			// Foreground turn — the turn-failure line owns this. Suppress the
+			// duplicate mirror (still a typed, classified event, not a drop).
+			return next, ChangeSet{Changed: false}, nil
+		}
+		id := notificationID(event)
+		upsertNotification(&next, id, decoded.Summary, event)
 		blockIDs = append(blockIDs, id)
 	case "tool.invoked":
 		var decoded toolPayload
@@ -654,10 +697,22 @@ func mergeTasks(p *Projection, rows []types.TaskRow, details []types.TaskDetail,
 		if row.Identity.Tenant != p.Identity.Tenant || row.Identity.User != p.Identity.User || row.Identity.Session != p.Identity.Session {
 			continue
 		}
-		if row.Query != "" {
+		// A user block is the marker of a FOREGROUND turn (a
+		// composer-submitted prompt). Gate its creation on the row's Kind,
+		// not on Query presence: a spawned BACKGROUND task also carries a
+		// non-empty Query, so keying on Query would fabricate a user block
+		// for background rows and misclassify their failures as foreground
+		// turn failures. A foreground row always gets its user block —
+		// falling back to the description (or empty) when Query is empty —
+		// so a foreground turn is never misread as a background notice.
+		if row.Kind == types.TaskKindForeground {
 			id := "user:" + row.ID
 			if blockIndex(p.Blocks, id) < 0 {
-				p.Blocks = append(p.Blocks, Block{ID: id, Kind: "user", RunID: row.ID, At: row.StartedAt, Text: row.Query})
+				text := row.Query
+				if text == "" {
+					text = row.Description
+				}
+				p.Blocks = append(p.Blocks, Block{ID: id, Kind: "user", RunID: row.ID, At: row.StartedAt, Text: text})
 			}
 		}
 		id := "task:" + row.ID
@@ -872,6 +927,29 @@ func genericFallback(p Projection, event WireEvent, payload map[string]any) Proj
 	return p
 }
 
+// notificationID keys a notification block. A notification.* event is a
+// synthesised one-shot with its own bus sequence, so the sequence (or the
+// unsequenced fallback) uniquely identifies it.
+func notificationID(event WireEvent) string {
+	if event.Sequence != 0 {
+		return fmt.Sprintf("notification:%d", event.Sequence)
+	}
+	return "notification:unsequenced:" + event.Type + ":" + event.OccurredAt.UTC().Format(time.RFC3339Nano)
+}
+
+// upsertNotification appends (or idempotently refreshes) a muted
+// conversational notification block. The text is the bounded, redacted
+// Summary the runtime already composed; the reducer never fabricates one.
+func upsertNotification(p *Projection, id, summary string, event WireEvent) {
+	block := Block{ID: id, Kind: "notification", RunID: event.Run, Sequence: event.Sequence, At: event.OccurredAt, Text: safeText(summary)}
+	idx := blockIndex(p.Blocks, id)
+	if idx < 0 {
+		p.Blocks = append(p.Blocks, block)
+		return
+	}
+	p.Blocks[idx] = block
+}
+
 func upsertIntervention(p *Projection, token, runID, label string, event WireEvent) {
 	id := "intervention:" + token
 	if p.tombstones[id] >= event.Sequence && event.Sequence != 0 {
@@ -889,7 +967,22 @@ type completionChunkPayload struct {
 	// and reasoning segments, so streaming blocks segment on it.
 	Done bool
 }
-type taskPayload struct{ TaskID string }
+type taskPayload struct {
+	TaskID string
+	// ErrorCode is populated on task.failed frames (empty on other task.*
+	// lifecycle types). The reducer already received it on the wire and
+	// previously discarded it; the turn-failure line now reads it.
+	ErrorCode string
+}
+
+// notificationPayload decodes the redacted notification.* wire shape.
+// The bus redacts NotificationPayload on Publish, so its wire keys are
+// lowercase (the audit redactor lowercases field names); encoding/json
+// matches these to the PascalCase fields case-insensitively.
+type notificationPayload struct {
+	Summary string
+	TaskID  string
+}
 
 // costPayload mirrors the canonical llm.cost.recorded frame.
 type costPayload struct {
@@ -951,7 +1044,8 @@ func ClassifyEventType(eventType string) EventClassification {
 	case "llm.completion.chunk", "task.spawned", "task.started", "task.completed", "task.failed", "task.cancelled",
 		"tool.invoked", "tool.completed", "tool.failed", "tool.policy_exhausted", "pause.requested", "pause.resumed",
 		"tool.approval_requested", "tool.approved", "tool.rejected", "tool.auth_required", "tool.auth_completed",
-		"session.closed", "session.reopened", "session.erased":
+		"session.closed", "session.reopened", "session.erased",
+		"notification.task_completed", "notification.task_group_resolved", "notification.task_failed":
 		return EventTyped
 	default:
 		return EventGeneric

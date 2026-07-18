@@ -710,11 +710,67 @@ func TestReducer_IdentityFailuresFailClosed(t *testing.T) {
 	}
 }
 
+func TestReducer_UserBlockGatedByKindNotQueryPresence(t *testing.T) {
+	id := testIdentity("classify")
+	cases := []struct {
+		name          string
+		row           types.TaskRow
+		wantUserBlock bool
+		wantText      string
+	}{
+		{
+			name:          "background row with non-empty query gets no user block",
+			row:           backgroundTaskRow(id, "bg", "spawned query", types.TaskStatusRunning),
+			wantUserBlock: false,
+		},
+		{
+			name:          "foreground row with query gets user block",
+			row:           taskRow(id, "fg", "composer prompt", types.TaskStatusRunning),
+			wantUserBlock: true,
+			wantText:      "composer prompt",
+		},
+		{
+			name:          "foreground row with empty query still gets user block, falling back to description",
+			row:           foregroundTaskRowNoQuery(id, "fg-empty", "fallback desc", types.TaskStatusRunning),
+			wantUserBlock: true,
+			wantText:      "fallback desc",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := (&Reducer{}).Hydrate(SnapshotBundle{
+				Generation: 1, Identity: id,
+				Tasks: types.TaskListResponse{Rows: []types.TaskRow{tc.row}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			idx := blockIndex(p.Blocks, "user:"+tc.row.ID)
+			if tc.wantUserBlock {
+				if idx < 0 {
+					t.Fatalf("expected user block for %s, blocks=%#v", tc.row.ID, p.Blocks)
+				}
+				if p.Blocks[idx].Text != tc.wantText {
+					t.Fatalf("user block text=%q want=%q", p.Blocks[idx].Text, tc.wantText)
+				}
+			} else if idx >= 0 {
+				t.Fatalf("did not expect user block for background row %s, blocks=%#v", tc.row.ID, p.Blocks)
+			}
+		})
+	}
+}
+
 func newPagedClient(id types.IdentityScope) *pagedClient {
 	return &pagedClient{id: id, history: []types.StateHistoryResponse{{}}, taskPages: map[string]types.TaskListResponse{"": {}}, details: map[string]types.TaskDetail{}, pausePages: map[int]types.PauseListResponse{1: {Page: 1, PageCount: 1}}}
 }
 func testIdentity(session string) types.IdentityScope {
 	return types.IdentityScope{Tenant: "tenant", User: "user", Session: session}
+}
+func backgroundTaskRow(id types.IdentityScope, taskID, query string, status types.TaskStatus) types.TaskRow {
+	return types.TaskRow{ID: taskID, Kind: types.TaskKindBackground, IsBackground: true, Status: status, Identity: id, ParentSessionID: id.Session, Query: query, StartedAt: time.Unix(1, 0).UTC()}
+}
+func foregroundTaskRowNoQuery(id types.IdentityScope, taskID, description string, status types.TaskStatus) types.TaskRow {
+	return types.TaskRow{ID: taskID, Kind: types.TaskKindForeground, Status: status, Identity: id, ParentSessionID: id.Session, Description: description, StartedAt: time.Unix(1, 0).UTC()}
 }
 func taskRow(id types.IdentityScope, taskID, query string, status types.TaskStatus) types.TaskRow {
 	return types.TaskRow{ID: taskID, Kind: types.TaskKindForeground, Status: status, Identity: id, ParentSessionID: id.Session, Query: query, StartedAt: time.Unix(1, 0).UTC()}

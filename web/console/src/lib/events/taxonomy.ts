@@ -36,6 +36,7 @@ export type EventCategory =
 	| 'skill'
 	| 'auth'
 	| 'dev'
+	| 'notification'
 	| 'topology';
 
 /** Derives the category of a dotted event-type name (the prefix). */
@@ -95,6 +96,9 @@ export const EVENT_TYPES: readonly string[] = [
 	'memory.identity_rejected',
 	'memory.health_changed',
 	'memory.recovery_dropped',
+	'notification.task_failed',
+	'notification.task_completed',
+	'notification.task_group_resolved',
 	'distributed.bus_envelope',
 	'planner.decision',
 	'planner.finish',

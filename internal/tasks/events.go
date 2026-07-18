@@ -144,10 +144,18 @@ type TaskResumedPayload struct {
 // subscribers do not see an unredacted result by accident. The
 // caller pre-redacts `TaskResult.Value` before MarkComplete.
 //
-// SafePayload by construction.
+// SafePayload by construction — `NotifyOnComplete` is a bounded
+// bookkeeping bool echoed from the `Task` record so a downstream
+// conversational-notification consumer can gate a wake line on the
+// completing task's own opt-in without a second registry read.
 type TaskCompletedPayload struct {
 	events.SafeSealed
 	TaskID TaskID
+	// NotifyOnComplete echoes the completing task's `Task.NotifyOnComplete`
+	// opt-in. A conversational-notification consumer emits an
+	// operator-visible completion line only when this is true; the typed
+	// completion path is unaffected either way.
+	NotifyOnComplete bool
 }
 
 // TaskFailedPayload reports MarkFailed. Carries the error code; the

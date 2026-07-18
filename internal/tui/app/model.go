@@ -81,6 +81,14 @@ type State struct {
 	// duration) shown under a finished answer. Empty when there is nothing
 	// honest to report.
 	TurnStatus string
+	// TurnFailed marks that the newest FOREGROUND turn reached a terminal
+	// failure. The status strip renders an explicit failure line instead of
+	// letting the composer quietly return to idle; the line clears when a
+	// fresh turn is submitted (the newest foreground turn is then in-flight,
+	// not failed). TurnFailedCode is the bounded Runtime error code — never
+	// the raw error message, which stays on the diagnostics route.
+	TurnFailed     bool
+	TurnFailedCode string
 	// Model is the Runtime's reported LLM model. Empty when the Runtime has not
 	// advertised one — never guessed.
 	Model string
@@ -767,6 +775,14 @@ func (m Model) statusStrip() (string, ui.Role, bool) {
 		return "×  Session failed · terminal error state, not resumable", ui.RoleError, true
 	case m.state.ReplayGap:
 		return "×  Replay gap · authoritative reconciliation required", ui.RoleError, true
+	// A foreground turn that terminally failed. Shown only when the composer
+	// is not already running a fresh turn (a new submit clears it), and only
+	// the bounded error code — full detail stays on the diagnostics route.
+	case m.state.TurnFailed && m.state.Composer != ComposerRunning:
+		if m.state.TurnFailedCode != "" {
+			return "×  Turn failed · " + m.state.TurnFailedCode, ui.RoleError, true
+		}
+		return "×  Turn failed", ui.RoleError, true
 	// Blocking / attention.
 	case m.state.Intervention:
 		return "!  Operator approval required", ui.RoleWarning, true

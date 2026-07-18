@@ -60,7 +60,8 @@ type NotificationPayload struct {
 
 	// Class is the notification.* class this payload belongs to. One
 	// of EventTypeNotificationTaskFailed / ToolApprovalRequested /
-	// GovernanceBudgetExceeded / AuthRequired / PauseRequested.
+	// GovernanceBudgetExceeded / AuthRequired / PauseRequested /
+	// TaskGroupResolved / TaskCompleted.
 	Class events.EventType
 
 	// Severity is the operator-visible urgency.
@@ -82,6 +83,62 @@ type NotificationPayload struct {
 	// OriginEventSequence is the originating event's bus Sequence
 	// (correlation key).
 	OriginEventSequence uint64
+
+	// TaskID is the subject task for single-task classes
+	// (task_failed, task_completed). Empty for classes that do not
+	// name a single task.
+	TaskID string
+
+	// GroupID is the resolved group for the task_group_resolved class.
+	// Empty otherwise.
+	GroupID string
+
+	// Members is the ref-shaped per-member outcome summary for the
+	// task_group_resolved class. Bounded at MaxMemberSummaries — when
+	// the group has more members than the cap, the first
+	// MaxMemberSummaries are carried and MembersTruncated is set (never
+	// a silent drop). Member Result/Error bytes never cross onto this
+	// payload; only TaskID/Status/Description.
+	Members []MemberOutcomeSummary
+
+	// MembersTruncated reports that Members was capped at
+	// MaxMemberSummaries and does not enumerate every group member. The
+	// counts below still reflect the full membership.
+	MembersTruncated bool
+
+	// MemberSucceeded / MemberFailed / MemberCancelled are the full-
+	// membership terminal-status tallies for the task_group_resolved
+	// class (independent of the Members cap). Zero for other classes.
+	MemberSucceeded int
+	MemberFailed    int
+	MemberCancelled int
+}
+
+// MaxMemberSummaries caps the number of per-member entries carried on a
+// task_group_resolved notification payload. It balances "the operator
+// can see what happened" against payload size and audit-redactor walk
+// cost on large batches, and stays comfortably above the common
+// parallel-spawn fan-out while keeping the mirror a single bounded line.
+// When a group exceeds the cap the payload carries the first
+// MaxMemberSummaries members and sets MembersTruncated — never a silent
+// drop (CLAUDE.md §13).
+const MaxMemberSummaries = 20
+
+// MemberOutcomeSummary is the ref-shaped per-member record carried on a
+// task_group_resolved NotificationPayload. It echoes only the member's
+// identifier, terminal status, and human-readable description — never
+// the member's Result or Error bytes, which stay on the typed
+// GroupCompletion wake path the planner consumes.
+type MemberOutcomeSummary struct {
+	// TaskID is the member task's identifier.
+	TaskID string
+	// Status is the member's terminal status ("complete" / "failed" /
+	// "cancelled").
+	Status string
+	// Description echoes the member Task.Description (bounded, already
+	// caller-side redacted upstream; the bus redactor walks it again on
+	// Publish because NotificationPayload is non-Safe).
+	Description string
 }
 
 // IdentityRejectedPayload reports a Subscriber-side identity rejection:

@@ -53,6 +53,8 @@ func (m Model) layoutBlock(b projection.Block, width int, selected bool) laidBlo
 		return m.layoutTool(b, width)
 	case "task", "session", "result":
 		return m.layoutLifecycle(b, width)
+	case "notification":
+		return m.layoutNotification(b, width)
 	case "intervention":
 		return m.layoutInterventionBlock(b, width)
 	case "event":
@@ -156,6 +158,22 @@ func (m Model) layoutLifecycle(b projection.Block, width int) laidBlock {
 	if text == "" {
 		text = strings.TrimSpace(b.Kind + " · " + b.Status)
 	}
+	line := ui.Truncate(glyph+"  "+text, width-proseIndent)
+	return laidBlock{height: 1, ops: []drawOp{{dx: proseIndent, dy: 0, text: line, style: m.theme.Style(role, nil).Faint(true)}}}
+}
+
+// layoutNotification renders a background-wake notification as one muted
+// lifecycle line — the muted "·" mark from lifecycleGlyph's vocabulary plus
+// the runtime-composed bounded Summary. It is deliberately quiet: these are
+// operator-facing wake signals (background work finished / a group resolved),
+// never a card and never a per-member fan-out. The Summary is the only text;
+// the reducer never fabricates one.
+func (m Model) layoutNotification(b projection.Block, width int) laidBlock {
+	text := strings.TrimSpace(b.Text)
+	if text == "" {
+		return laidBlock{}
+	}
+	glyph, role := lifecycleGlyph("notification")
 	line := ui.Truncate(glyph+"  "+text, width-proseIndent)
 	return laidBlock{height: 1, ops: []drawOp{{dx: proseIndent, dy: 0, text: line, style: m.theme.Style(role, nil).Faint(true)}}}
 }

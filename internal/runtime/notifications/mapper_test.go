@@ -232,6 +232,193 @@ func TestMap_PauseRequested_SynthesisesNotificationPauseRequested(t *testing.T) 
 	}
 }
 
+func TestMap_TaskGroupResolved_AllSucceeded_SeverityInfo(t *testing.T) {
+	t.Parallel()
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskGroupResolved,
+		Identity: testQuadruple,
+		Sequence: 10,
+		Payload: tasks.TaskGroupResolvedPayload{Completion: tasks.GroupCompletion{
+			GroupID:     "grp-1",
+			FinalStatus: tasks.GroupCompleted,
+			Members: []tasks.MemberOutcome{
+				{TaskID: "m-1", Status: tasks.StatusComplete, Description: "fetch A"},
+				{TaskID: "m-2", Status: tasks.StatusComplete, Description: "fetch B"},
+			},
+		}},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1", len(got))
+	}
+	payload := got[0].Payload.(notifications.NotificationPayload)
+	if got[0].Type != notifications.EventTypeNotificationTaskGroupResolved {
+		t.Errorf("Type=%q", got[0].Type)
+	}
+	if payload.Severity != notifications.SeverityInfo {
+		t.Errorf("Severity=%q, want info (all succeeded)", payload.Severity)
+	}
+	if payload.GroupID != "grp-1" {
+		t.Errorf("GroupID=%q, want grp-1", payload.GroupID)
+	}
+	if payload.MemberSucceeded != 2 || payload.MemberFailed != 0 || payload.MemberCancelled != 0 {
+		t.Errorf("counts succeeded/failed/cancelled = %d/%d/%d, want 2/0/0",
+			payload.MemberSucceeded, payload.MemberFailed, payload.MemberCancelled)
+	}
+	if len(payload.Members) != 2 || payload.MembersTruncated {
+		t.Errorf("Members len=%d truncated=%v, want 2/false", len(payload.Members), payload.MembersTruncated)
+	}
+	if payload.Members[0].Description != "fetch A" || payload.Members[0].TaskID != "m-1" {
+		t.Errorf("member[0]=%+v, want ref-shaped taskid+description", payload.Members[0])
+	}
+	if !strings.Contains(payload.Summary, "2 of 2") {
+		t.Errorf("Summary=%q must report the rollup", payload.Summary)
+	}
+}
+
+func TestMap_TaskGroupResolved_MixedOutcome_SeverityWarning(t *testing.T) {
+	t.Parallel()
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskGroupResolved,
+		Identity: testQuadruple,
+		Sequence: 11,
+		Payload: tasks.TaskGroupResolvedPayload{Completion: tasks.GroupCompletion{
+			GroupID:     "grp-2",
+			FinalStatus: tasks.GroupCompleted,
+			Members: []tasks.MemberOutcome{
+				{TaskID: "m-1", Status: tasks.StatusComplete},
+				{TaskID: "m-2", Status: tasks.StatusFailed},
+				{TaskID: "m-3", Status: tasks.StatusCancelled},
+			},
+		}},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	payload := got[0].Payload.(notifications.NotificationPayload)
+	if payload.Severity != notifications.SeverityWarning {
+		t.Errorf("Severity=%q, want warning (a member failed/cancelled)", payload.Severity)
+	}
+	if payload.MemberSucceeded != 1 || payload.MemberFailed != 1 || payload.MemberCancelled != 1 {
+		t.Errorf("counts = %d/%d/%d, want 1/1/1",
+			payload.MemberSucceeded, payload.MemberFailed, payload.MemberCancelled)
+	}
+}
+
+func TestMap_TaskGroupResolved_CapsMembersAndSetsTruncated(t *testing.T) {
+	t.Parallel()
+	members := make([]tasks.MemberOutcome, notifications.MaxMemberSummaries+5)
+	for i := range members {
+		members[i] = tasks.MemberOutcome{TaskID: tasks.TaskID(fmt.Sprintf("m-%d", i)), Status: tasks.StatusComplete}
+	}
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskGroupResolved,
+		Identity: testQuadruple,
+		Sequence: 12,
+		Payload:  tasks.TaskGroupResolvedPayload{Completion: tasks.GroupCompletion{GroupID: "grp-3", FinalStatus: tasks.GroupCompleted, Members: members}},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	payload := got[0].Payload.(notifications.NotificationPayload)
+	if len(payload.Members) != notifications.MaxMemberSummaries {
+		t.Errorf("Members len=%d, want cap %d", len(payload.Members), notifications.MaxMemberSummaries)
+	}
+	if !payload.MembersTruncated {
+		t.Error("MembersTruncated=false, want true (cap hit — never a silent drop)")
+	}
+	// Counts reflect the FULL membership, not the capped slice.
+	if payload.MemberSucceeded != len(members) {
+		t.Errorf("MemberSucceeded=%d, want %d (full membership)", payload.MemberSucceeded, len(members))
+	}
+}
+
+func TestMap_TaskGroupResolved_WrongPayload_ErrUnmappable(t *testing.T) {
+	t.Parallel()
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskGroupResolved,
+		Identity: testQuadruple,
+		Payload:  events.RedactedMap{Data: map[string]any{"completion": "x"}},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if got != nil {
+		t.Errorf("got=%v, want nil", got)
+	}
+	if !errors.Is(err, notifications.ErrUnmappable) {
+		t.Fatalf("err=%v, want ErrUnmappable", err)
+	}
+}
+
+func TestMap_TaskCompleted_NotifyFalse_ReturnsNilNil(t *testing.T) {
+	t.Parallel()
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskCompleted,
+		Identity: testQuadruple,
+		Payload:  tasks.TaskCompletedPayload{TaskID: "t-quiet", NotifyOnComplete: false},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("NotifyOnComplete=false must produce no notification, got %v", got)
+	}
+}
+
+func TestMap_TaskCompleted_NotifyTrue_SynthesisesNotification(t *testing.T) {
+	t.Parallel()
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskCompleted,
+		Identity: testQuadruple,
+		Sequence: 20,
+		Payload:  tasks.TaskCompletedPayload{TaskID: "t-loud", NotifyOnComplete: true},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1", len(got))
+	}
+	payload := got[0].Payload.(notifications.NotificationPayload)
+	if got[0].Type != notifications.EventTypeNotificationTaskCompleted {
+		t.Errorf("Type=%q", got[0].Type)
+	}
+	if payload.Severity != notifications.SeverityInfo {
+		t.Errorf("Severity=%q, want info", payload.Severity)
+	}
+	if payload.TaskID != "t-loud" {
+		t.Errorf("TaskID=%q, want t-loud", payload.TaskID)
+	}
+	if !strings.Contains(payload.Summary, "t-loud") {
+		t.Errorf("Summary=%q must name the task", payload.Summary)
+	}
+	if payload.OriginEventSequence != 20 {
+		t.Errorf("OriginEventSequence=%d, want 20", payload.OriginEventSequence)
+	}
+}
+
+func TestMap_TaskCompleted_WrongPayload_ErrUnmappable(t *testing.T) {
+	t.Parallel()
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskCompleted,
+		Identity: testQuadruple,
+		Payload:  events.RedactedMap{Data: map[string]any{"taskid": "x"}},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if got != nil {
+		t.Errorf("got=%v, want nil", got)
+	}
+	if !errors.Is(err, notifications.ErrUnmappable) {
+		t.Fatalf("err=%v, want ErrUnmappable", err)
+	}
+}
+
 func TestMap_UnmappedEventType_ReturnsNilNil(t *testing.T) {
 	t.Parallel()
 	// bus.dropped is a real registered event type that is NOT in the
@@ -329,6 +516,24 @@ func TestMap_ConcurrentReuse(t *testing.T) {
 			Sequence: 5,
 			Payload:  pauseresume.PauseRequestedPayload{Token: "pt-1", Reason: "approval_required"},
 		},
+		{
+			Type:     tasks.EventTypeTaskGroupResolved,
+			Identity: testQuadruple,
+			Sequence: 6,
+			Payload: tasks.TaskGroupResolvedPayload{Completion: tasks.GroupCompletion{
+				GroupID:     "g-1",
+				FinalStatus: tasks.GroupCompleted,
+				Members: []tasks.MemberOutcome{
+					{TaskID: "m-1", Status: tasks.StatusComplete, Description: "member one"},
+				},
+			}},
+		},
+		{
+			Type:     tasks.EventTypeTaskCompleted,
+			Identity: testQuadruple,
+			Sequence: 7,
+			Payload:  tasks.TaskCompletedPayload{TaskID: "t-done", NotifyOnComplete: true},
+		},
 	}
 	wantClass := []events.EventType{
 		notifications.EventTypeNotificationTaskFailed,
@@ -336,6 +541,8 @@ func TestMap_ConcurrentReuse(t *testing.T) {
 		notifications.EventTypeNotificationGovernanceBudgetExceeded,
 		notifications.EventTypeNotificationAuthRequired,
 		notifications.EventTypeNotificationPauseRequested,
+		notifications.EventTypeNotificationTaskGroupResolved,
+		notifications.EventTypeNotificationTaskCompleted,
 	}
 
 	const N = 100

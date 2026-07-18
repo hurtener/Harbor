@@ -30,6 +30,7 @@
   import { projectTrajectory } from '$lib/sessions/trajectory.js';
   import { projectCost } from '$lib/overview/cost.js';
   import { exportEventsNDJSON, exportMeta, triggerDownload } from '$lib/events/export.js';
+  import { notificationSummary } from '$lib/tasks/run-events.js';
   import { formatRelative } from '$lib/sessions/format.js';
   import { StatusChip } from '$lib/components/ui/index.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
@@ -62,6 +63,7 @@
       t.startsWith('session.') ||
       t.startsWith('audit.') ||
       t.startsWith('runtime.') ||
+      t.startsWith('notification.') ||
       t === 'llm.cost.recorded'
   );
 
@@ -232,7 +234,11 @@
           {#each sessionEvents as ev (ev.sequence)}
             <li class="event-row">
               <StatusChip kind={categoryKind(categoryOf(ev.type))} label={categoryOf(ev.type)} />
-              <span class="event-type">{ev.type}</span>
+              <span class="event-type">
+                {ev.type.startsWith('notification.')
+                  ? (notificationSummary(ev) ?? ev.type)
+                  : ev.type}
+              </span>
               <span class="event-age">{formatRelative(ev.occurred_at)}</span>
             </li>
           {/each}
