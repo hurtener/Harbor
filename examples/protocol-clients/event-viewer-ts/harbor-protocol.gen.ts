@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:22787e659d8cbaaad1f3828f0b55dff0c84e09f2663bef9fa8d540bdb051fcb3";
+export const WIRE_SURFACE_DIGEST = "sha256:f47c6ed217211a93e1b1c153c80801e05727835689f64a730578966f57f7f7de";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -223,7 +223,9 @@ export type HarborEventType =
   | "notification.governance_budget_exceeded"
   | "notification.identity_rejected"
   | "notification.pause_requested"
+  | "notification.task_completed"
   | "notification.task_failed"
+  | "notification.task_group_resolved"
   | "notification.tool_approval_requested"
   | "pause.payload_artifact_routed"
   | "pause.requested"
@@ -1544,6 +1546,16 @@ export interface MCPResourceView {
   title?: string;
 }
 
+export interface MCPScopeShortfallView {
+  tool_name: string;
+  downstream_resource: string;
+  required_scopes: string[];
+  granted_scopes: string[];
+  www_authenticate: string;
+  origin: string;
+  observed_at: string;
+}
+
 export interface MCPServerBindingsListRequest {
   identity: IdentityScope;
   name: string;
@@ -1684,6 +1696,7 @@ export interface MCPServerView {
   oauth_binding_count: number;
   raw_html_trusted: boolean;
   oauth_requirement?: MCPOAuthRequirementView;
+  last_scope_shortfall?: MCPScopeShortfallView;
 }
 
 export interface MCPServersListRequest {

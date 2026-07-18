@@ -228,6 +228,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"MCPServerView":                               reflect.TypeOf(types.MCPServerView{}),
 	"MCPOAuthRequirementView":                     reflect.TypeOf(types.MCPOAuthRequirementView{}),
 	"MCPAuthorizationServerView":                  reflect.TypeOf(types.MCPAuthorizationServerView{}),
+	"MCPScopeShortfallView":                       reflect.TypeOf(types.MCPScopeShortfallView{}),
 	"MCPDiscoveryStepStatusView":                  reflect.TypeOf(types.MCPDiscoveryStepStatusView{}),
 	"MCPServersListRequest":                       reflect.TypeOf(types.MCPServersListRequest{}),
 	"MCPServersListResponse":                      reflect.TypeOf(types.MCPServersListResponse{}),
