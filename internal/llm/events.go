@@ -153,6 +153,11 @@ type ContextWindowExceededPayload struct {
 // completion for dashboards, replay tooling, and session-reopen
 // reconstruction. Governance does NOT subscribe against it — cost
 // accounting is in-band synchronous in the governance PostCall.
+//
+// The embedded Usage carries the provider's cache accounting
+// (Usage.CacheReadTokens / Usage.CacheWriteTokens) for free — those two
+// counts ride the same field and reach every consumer that already decodes
+// Usage, no additional payload field required.
 type CostRecordedPayload struct {
 	events.SafeSealed
 	Identity identity.Quadruple

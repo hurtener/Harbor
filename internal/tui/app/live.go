@@ -1031,7 +1031,13 @@ func (m RuntimeModel) turnStatus() string {
 	// fronted by the past tense of the verb the run worked under.
 	parts := []string{runVerb(runID)[1] + " for " + formatTurnDuration(duration)}
 	if usage, ok := m.transcript.Projection.RunUsage[runID]; ok && usage.TotalTokens > 0 {
-		parts = append(parts, formatTokens(usage.TotalTokens)+" tok")
+		tokens := formatTokens(usage.TotalTokens) + " tok"
+		// Cache reads are a subset of the prompt tokens already counted in
+		// TotalTokens — surfaced as a qualifier, never added to the total.
+		if usage.CacheReadTokens > 0 {
+			tokens += " (" + formatTokens(usage.CacheReadTokens) + " cached)"
+		}
+		parts = append(parts, tokens)
 		if usage.USD > 0 {
 			parts = append(parts, fmt.Sprintf("$%.4f", usage.USD))
 		}

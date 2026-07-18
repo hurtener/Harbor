@@ -492,6 +492,15 @@ type Usage struct {
 	ReasoningTokens  int
 	TotalTokens      int
 	LatencyMS        int64
+	// CacheReadTokens is the count of PromptTokens served from the
+	// provider's prompt cache — a subset of PromptTokens, not additional
+	// tokens. Zero when the provider/response reports no cache data.
+	CacheReadTokens int
+	// CacheWriteTokens is the count of PromptTokens newly written to the
+	// provider's prompt cache on this call — a subset of PromptTokens, not
+	// additional tokens. Zero when the provider/response reports no cache
+	// data.
+	CacheWriteTokens int
 	// ProviderExtras — opaque provider-specific bag (e.g. cache
 	// hit/miss). Harbor does not interpret these fields; later phases
 	// may read them for correction-layer decisions.

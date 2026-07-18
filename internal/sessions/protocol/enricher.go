@@ -335,6 +335,14 @@ func (e *CounterEnricher) eventCounters(ctx context.Context, id identity.Identit
 // (a per-event round would floor sub-cent per-call costs to 0). A payload
 // that matches neither shape contributes zero (honest — an unrecognised
 // payload is not a fabricated cost).
+//
+// Usage.CacheReadTokens / Usage.CacheWriteTokens are intentionally NOT
+// extracted here: cache reads/writes are a subset of PromptTokens, which
+// already rolls into TotalTokens, so the session-level token figure is
+// unaffected by the cache split. No SessionRow wire field carries a
+// cache-token count today, so extracting them would be dead code with
+// nowhere to land — a session-level cache facet is Protocol-wire-shaped
+// work (new SessionRow field + docs/TS regen), out of scope here.
 func costFromEvent(ev events.Event) (dollars float64, tokens int64) {
 	switch p := ev.Payload.(type) {
 	case llm.CostRecordedPayload:
@@ -350,6 +358,11 @@ func costFromEvent(ev events.Event) (dollars float64, tokens int64) {
 // JSON-shaped payload the durable substrate stores. The keys mirror the
 // exported field names of llm.CostRecordedPayload (no json tags) → `Cost` /
 // `Usage` objects. Dollars are returned unrounded for page-level summation.
+//
+// Like costFromEvent, this reads only Usage.TotalTokens — the cache split
+// (Usage.CacheReadTokens / CacheWriteTokens) is intentionally not read: it
+// is a subset already inside TotalTokens and has no SessionRow field to land
+// in this phase.
 func costFromMap(m map[string]any) (dollars float64, tokens int64) {
 	if c, ok := m["Cost"].(map[string]any); ok {
 		if tc, ok := c["TotalCost"].(float64); ok {

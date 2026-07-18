@@ -114,6 +114,11 @@ type Usage struct {
 	OutputTokens  int64   `json:"output_tokens,omitempty"`
 	USD           float64 `json:"usd,omitempty"`
 	ContextWindow int64   `json:"context_window,omitempty"`
+	// CacheReadTokens / CacheWriteTokens are a subset of PromptTokens
+	// (prompt tokens served from / written to the provider's prompt cache),
+	// not additional tokens — never summed into TotalTokens.
+	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
 }
 
 type Block struct {
@@ -351,6 +356,8 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 		next.Usage.TotalTokens += decoded.Usage.TotalTokens
 		next.Usage.PromptTokens += decoded.Usage.PromptTokens
 		next.Usage.OutputTokens += decoded.Usage.CompletionTokens
+		next.Usage.CacheReadTokens += decoded.Usage.CacheReadTokens
+		next.Usage.CacheWriteTokens += decoded.Usage.CacheWriteTokens
 		next.Usage.USD += decoded.Cost.TotalCost
 		if event.Run != "" {
 			if next.RunUsage == nil {
@@ -360,6 +367,8 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 			run.TotalTokens += decoded.Usage.TotalTokens
 			run.PromptTokens += decoded.Usage.PromptTokens
 			run.OutputTokens += decoded.Usage.CompletionTokens
+			run.CacheReadTokens += decoded.Usage.CacheReadTokens
+			run.CacheWriteTokens += decoded.Usage.CacheWriteTokens
 			run.USD += decoded.Cost.TotalCost
 			next.RunUsage[event.Run] = run
 		}
@@ -890,6 +899,8 @@ type costPayload struct {
 		TotalTokens      int64
 		PromptTokens     int64
 		CompletionTokens int64
+		CacheReadTokens  int64
+		CacheWriteTokens int64
 	}
 	Cost struct{ TotalCost float64 }
 }

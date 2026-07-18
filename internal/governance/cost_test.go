@@ -46,6 +46,58 @@ func TestCostAccumulator_PostCallAccumulates(t *testing.T) {
 	}
 }
 
+// TestCostAccumulator_CacheTokensInertToCeilingMath proves the new
+// Usage.CacheReadTokens / CacheWriteTokens counts carry no dollar weight:
+// PostCall folds only resp.Cost.TotalCost (plus the attempt-cost tap), so a
+// response with non-zero cache tokens accumulates identically to the same
+// response with those fields zeroed. Cache tokens are informational, not a
+// cost line.
+func TestCostAccumulator_CacheTokensInertToCeilingMath(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, usage llm.Usage) float64 {
+		t.Helper()
+		bus, st, cleanup := busAndState(t)
+		defer cleanup()
+		ctx := ctxWith(t, "T", "U", "S", "R")
+		q := identity.MustQuadrupleFrom(ctx)
+		acc, err := governance.NewCostAccumulator(st, bus, governance.Config{})
+		if err != nil {
+			t.Fatalf("NewCostAccumulator: %v", err)
+		}
+		defer acc.Close(context.Background())
+
+		if err := acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+			llm.CompleteResponse{Cost: llm.Cost{TotalCost: 0.42}, Usage: usage}, nil); err != nil {
+			t.Fatalf("PostCall: %v", err)
+		}
+		total, _, err := acc.Snapshot(ctx, q)
+		if err != nil {
+			t.Fatalf("Snapshot: %v", err)
+		}
+		return total
+	}
+
+	withCache := run(t, llm.Usage{
+		PromptTokens:     1000,
+		CompletionTokens: 200,
+		TotalTokens:      1200,
+		CacheReadTokens:  800,
+		CacheWriteTokens: 150,
+	})
+	zeroed := run(t, llm.Usage{
+		PromptTokens:     1000,
+		CompletionTokens: 200,
+		TotalTokens:      1200,
+	})
+	if !floatNear(withCache, zeroed) {
+		t.Errorf("cache tokens perturbed accumulator: withCache=%v zeroed=%v", withCache, zeroed)
+	}
+	if !floatNear(withCache, 0.42) {
+		t.Errorf("accumulated total = %v want 0.42 (cost only)", withCache)
+	}
+}
+
 func TestCostAccumulator_CrossIdentityIsolation(t *testing.T) {
 	t.Parallel()
 	bus, st, cleanup := busAndState(t)
