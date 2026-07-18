@@ -778,6 +778,8 @@ func decisionKindAndTool(dec planner.Decision) (kind, tool string) {
 		return "CallTool", d.Tool
 	case planner.CallParallel:
 		return "CallParallel", ""
+	case planner.Batch:
+		return "Batch", ""
 	case planner.Finish:
 		return "Finish", ""
 	case planner.SpawnTask:

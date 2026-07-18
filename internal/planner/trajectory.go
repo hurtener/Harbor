@@ -88,9 +88,10 @@ func NewProcessLocalRegistry() HandleRegistry {
 // t's steps — the counting rule behind AnswerEnvelope.ToolCallsSeen.
 // A CallTool step counts as one invocation; a CallParallel step counts
 // as len(Branches) (the runtime dispatches N tools concurrently, not
-// one); SpawnTask, AwaitTask, and any other step value count as zero —
-// they are runtime decisions the planner made, never tool dispatches. A
-// nil Trajectory counts as zero.
+// one); a Batch step counts as len(Tools) (its spawns are not tool
+// dispatches); SpawnTask, AwaitTask, and any other step value count as
+// zero — they are runtime decisions the planner made, never tool
+// dispatches. A nil Trajectory counts as zero.
 //
 // The Console Tasks-page tool_count uses the SAME per-decision counting
 // rule (DecisionInvocationCount) but differs on the failure axis: the
@@ -124,10 +125,12 @@ func CountToolInvocations(t *Trajectory) int {
 
 // DecisionInvocationCount returns the number of tool invocations a
 // single decision represents: 1 for CallTool, len(Branches) for
-// CallParallel, 0 for SpawnTask / AwaitTask / RequestPause / Finish /
-// any other value (including a trajectory step restored from JSON
-// without being re-typed through the Decision sum — e.g. a bare
-// map[string]any). Typed-nil pointers count as zero.
+// CallParallel, len(Tools) for Batch (its Spawns contribute zero,
+// matching SpawnTask's rule — a spawn is never a tool invocation), 0
+// for SpawnTask / AwaitTask / RequestPause / Finish / any other value
+// (including a trajectory step restored from JSON without being
+// re-typed through the Decision sum — e.g. a bare map[string]any).
+// Typed-nil pointers count as zero.
 //
 // action is typed `any`, not Decision: trajectory.Step.Action is `any`
 // to avoid a planner<->trajectory import cycle (see Step's godoc); the
@@ -150,6 +153,13 @@ func DecisionInvocationCount(action any) int {
 			return 0
 		}
 		return len(d.Branches)
+	case Batch:
+		return len(d.Tools)
+	case *Batch:
+		if d == nil {
+			return 0
+		}
+		return len(d.Tools)
 	default:
 		return 0
 	}
