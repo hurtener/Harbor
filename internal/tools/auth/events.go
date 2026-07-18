@@ -121,4 +121,17 @@ type ToolCredentialExchangedPayload struct {
 	// runtime's in-memory cache-serve horizon is bounded by (never
 	// exceeds) this value.
 	ExpiresAt time.Time
+	// AudienceVerified reports whether the exchanged token's `aud` claim was
+	// checked against the boot-declared RFC 8707 resource indicator. True only
+	// when a resource indicator is declared AND the returned token was
+	// JWT-shaped (so its `aud` could be read). False is an HONEST no-op — an
+	// opaque bearer (RFC 8693 does not require a JWT) or an undeclared resource
+	// leaves it false rather than a fabricated pass. A JWT whose `aud` excludes
+	// the resource fails the exchange loud and emits nothing.
+	AudienceVerified bool
+	// ActorAsserted reports whether an RFC 8693 `actor_token` (the run's
+	// verified acting principal — `agent_id`) rode the exchange. True only when
+	// the provider opted in AND the ctx carried an invoking agent id. Never a
+	// client-named value.
+	ActorAsserted bool
 }

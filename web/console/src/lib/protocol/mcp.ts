@@ -47,6 +47,29 @@ export interface MCPServerView {
    * Mirrors types.MCPServerView.oauth_requirement.
    */
   oauth_requirement?: MCPOAuthRequirementView | null;
+  /**
+   * The last downstream insufficient-scope step-up observed on this
+   * connection (a 403 + WWW-Authenticate error="insufficient_scope") — the
+   * required-vs-granted scope gap surfaced as inert data. Present only on the
+   * detail read (mcp.servers.get); omitted on list rows. Report-only: Harbor
+   * never auto-escalates on it. Mirrors types.MCPServerView.last_scope_shortfall.
+   */
+  last_scope_shortfall?: MCPScopeShortfallView | null;
+}
+
+/**
+ * Last observed downstream insufficient-scope step-up, surfaced as inert
+ * Protocol data. Harbor never acts on it (no escalation, no re-consent).
+ * Mirrors types.MCPScopeShortfallView.
+ */
+export interface MCPScopeShortfallView {
+  tool_name: string;
+  downstream_resource: string;
+  required_scopes: string[];
+  granted_scopes: string[];
+  www_authenticate: string;
+  origin: string;
+  observed_at: string;
 }
 
 /**

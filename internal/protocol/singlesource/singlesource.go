@@ -455,6 +455,7 @@ var CanonicalWireTypes = map[string]string{
 	// listed here — CanonicalWireTypes records struct wire types only.
 	"MCPServerView":                     "types",
 	"MCPOAuthRequirementView":           "types",
+	"MCPScopeShortfallView":             "types",
 	"MCPAuthorizationServerView":        "types",
 	"MCPDiscoveryStepStatusView":        "types",
 	"MCPServersListRequest":             "types",

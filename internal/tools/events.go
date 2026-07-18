@@ -91,6 +91,12 @@ type ToolFailedPayload struct {
 	Attempts     int
 	ErrorClass   ErrorClass
 	ErrorMessage string
+	// ScopeShortfall carries the structured downstream insufficient-scope
+	// step-up when the terminal failure was an *ErrInsufficientScope. Nil for
+	// every other failure. Additive: it enriches the SAME tool.failed event
+	// every transport already emits, never a new event type. SafePayload —
+	// server/operator-supplied challenge metadata, never a token.
+	ScopeShortfall *ScopeShortfallDetail `json:",omitempty"`
 }
 
 // ToolInvalidArgsPayload is the typed payload for

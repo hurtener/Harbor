@@ -1464,6 +1464,21 @@ func (c *Config) validateTools() error {
 			return fieldError(prefix+".token_url",
 				"must not be empty for driver \"tokenexchange\" (the credential broker's RFC-8693 token-exchange endpoint; auth_url / redirect_url are not used by this driver)")
 		}
+		// resource_indicator (RFC 8707) and include_actor_token (RFC 8693) ride
+		// the exchange REQUEST — they have meaning only for the brokered
+		// `tokenexchange` driver. Setting either on the interactive `oauth2`
+		// driver (which has no exchange request to carry them on) is a
+		// misconfiguration, rejected fail-loud rather than silently ignored.
+		if p.Driver != "tokenexchange" {
+			if p.ResourceIndicator != "" {
+				return fieldError(prefix+".resource_indicator",
+					fmt.Sprintf("is meaningful only for driver \"tokenexchange\" (the RFC 8707 resource rides the token-exchange request), got driver %q", p.Driver))
+			}
+			if p.IncludeActorToken {
+				return fieldError(prefix+".include_actor_token",
+					fmt.Sprintf("is meaningful only for driver \"tokenexchange\" (the RFC 8693 actor_token rides the token-exchange request), got driver %q", p.Driver))
+			}
+		}
 		// Downstream-sink allow-list entries (the credential-plane
 		// invariant). Each entry must be a well-formed host[:port]
 		// with a non-empty host; empty entries are a typo. Membership +
@@ -1621,6 +1636,48 @@ func (c *Config) validateTools() error {
 			if IsReservedMCPMetaKey(k) {
 				return fieldError(field,
 					fmt.Sprintf("key %q is reserved (tenant/user/session/agent_id/traceparent/tracestate and any io.modelcontextprotocol/-prefixed key are stamped by the runtime; choose a non-reserved key)", k))
+			}
+		}
+		// Per-tool oauth_provider overrides (CallTool granularity). Each entry
+		// re-enforces exactly the same binding rules as the connection-level
+		// oauth_provider (unknown name / stdio transport / static-Authorization
+		// conflict / downstream-host allow-list), keyed by the MCP server-side
+		// tool name. A tool_oauth_providers map on a connection without an
+		// http(s) url is a misconfiguration (the same fail-closed reasoning as
+		// the connection-level binding).
+		for toolName, providerName := range s.ToolOAuthProviders {
+			field := fmt.Sprintf("%s.tool_oauth_providers[%q]", prefix, toolName)
+			if strings.TrimSpace(toolName) == "" {
+				return fieldError(prefix+".tool_oauth_providers",
+					"override key (tool name) must not be empty")
+			}
+			if strings.TrimSpace(providerName) == "" {
+				return fieldError(field, "provider name must not be empty")
+			}
+			if _, ok := oauthProviderNames[providerName]; !ok {
+				return fieldError(field,
+					fmt.Sprintf("references unknown OAuth provider %q (declared providers: %s; declare via tools.oauth_providers[])",
+						providerName, sortedKeysFromSet(oauthProviderNames)))
+			}
+			if mode == "stdio" || s.URL == "" {
+				return fieldError(field,
+					"must not be set on a connection without an http(s) url (a stdio connection carries no HTTP request to inject Authorization into)")
+			}
+			for k := range s.Headers {
+				if strings.EqualFold(k, "authorization") {
+					return fieldError(prefix+".headers",
+						"must not carry a static \"Authorization\" header alongside tool_oauth_providers (one auth mode per connection — the bearer is injected per-identity)")
+				}
+			}
+			allowed := oauthProviderAllowedHosts[providerName]
+			if len(allowed) == 0 {
+				return fieldError(field,
+					fmt.Sprintf("provider %q declares no allowed_downstream_hosts, but this tool binds it — a bearer-injecting provider must declare its downstream sinks (add allowed_downstream_hosts to tools.oauth_providers[]; the credential-plane invariant is fail-closed)", providerName))
+			}
+			connHost := NormalizeDownstreamHost(s.URL)
+			if connHost == "" || !containsHost(allowed, connHost) {
+				return fieldError(field,
+					fmt.Sprintf("connection host %q is not in provider %q's allowed_downstream_hosts %v — the bearer may only be injected into a boot-declared downstream sink", connHost, providerName, allowed))
 			}
 		}
 		// OAuth-requirement discovery cross-origin allowances: each

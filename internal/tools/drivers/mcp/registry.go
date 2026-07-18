@@ -124,6 +124,13 @@ type ServerView struct {
 	// list row stays compact (§4.3-recorded — the requirement rides get/probe,
 	// not list). It is inert, server-supplied, UNVERIFIED data.
 	OAuthRequirement *auth.OAuthRequirement
+	// LastScopeShortfall is the most recent downstream insufficient-scope
+	// step-up (a `403` + `WWW-Authenticate` marking
+	// `error="insufficient_scope"`) observed on this connection. Nil when
+	// none seen. Populated only on the DETAIL read (GetServer), mirroring how
+	// OAuthRequirement rides get — the list row stays compact. Inert,
+	// server-supplied data; the operator acts on it, the runtime never does.
+	LastScopeShortfall *ScopeShortfall
 }
 
 // ResourceView is one advertised resource.
@@ -274,6 +281,9 @@ type serverStats struct {
 	// oauthRequirement is the discovered OAuth requirement chain.
 	// Nil when discovery has not run.
 	oauthRequirement *auth.OAuthRequirement
+	// scopeShortfall is the most recent captured downstream
+	// insufficient-scope step-up — inert, server-supplied. Nil when none seen.
+	scopeShortfall *ScopeShortfall
 }
 
 // Registry is the process-local MCP-server read API. It is a compiled
@@ -652,6 +662,12 @@ func (r *Registry) GetServer(ctx context.Context, name string) (*ServerView, err
 	// The OAuth requirement rides the DETAIL read only (get/probe), never the
 	// hot list row — see ServerView.OAuthRequirement.
 	v.OAuthRequirement = e.stats.oauthRequirement
+	// The last scope shortfall likewise rides the DETAIL read only — see
+	// ServerView.LastScopeShortfall.
+	if e.stats.scopeShortfall != nil {
+		sf := *e.stats.scopeShortfall
+		v.LastScopeShortfall = &sf
+	}
 	r.mu.RUnlock()
 	return &v, nil
 }
@@ -672,6 +688,25 @@ func (r *Registry) RecordAuthChallenge(name string, ch AuthChallenge) {
 	}
 	captured := ch
 	e.stats.oauthChallenge = &captured
+}
+
+// RecordScopeShortfall records a captured downstream insufficient-scope
+// step-up on a server's state (mirrors RecordAuthChallenge for the 403 path).
+// It is invoked from the HTTP transport's shortfall-capture callback whenever
+// an MCP call answers `403` + `error="insufficient_scope"`. Pure observation:
+// it records inert, server-supplied data and never alters transport state or
+// call semantics. An unknown name is a no-op (the connection may have been
+// deregistered mid-flight) — recording is best-effort observability, never a
+// hard failure on the call path.
+func (r *Registry) RecordScopeShortfall(name string, sf ScopeShortfall) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.servers[name]
+	if !ok {
+		return
+	}
+	captured := sf
+	e.stats.scopeShortfall = &captured
 }
 
 // RecordOAuthRequirement records the discovered OAuth requirement chain on a

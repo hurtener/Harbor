@@ -526,6 +526,15 @@ func ClassifyError(err error, perAttemptTimeout bool) ErrorClass {
 	if errors.Is(err, ErrToolInvalidArgs) || errors.Is(err, ErrToolNotFound) {
 		return ErrClassPermanent
 	}
+	// A downstream insufficient-scope step-up is permanent: retrying the same
+	// call with the same (shortfall) scopes can never converge. Without this
+	// case the 403-shaped error would fall through to the conservative
+	// ErrClassTransient default below and burn the retry budget against a
+	// shortfall only a re-consent can fix.
+	var scopeErr *ErrInsufficientScope
+	if errors.As(err, &scopeErr) {
+		return ErrClassPermanent
+	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "status 5") ||
 		strings.Contains(msg, " 500 ") ||

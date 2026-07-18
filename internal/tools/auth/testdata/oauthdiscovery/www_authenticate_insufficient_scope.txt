@@ -1,0 +1,1 @@
+WWW-Authenticate: Bearer realm="example", error="insufficient_scope", error_description="The request requires higher privileges than provided by the access token.", scope="read:calendar write:calendar"

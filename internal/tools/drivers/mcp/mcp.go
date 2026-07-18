@@ -193,6 +193,32 @@ type Config struct {
 	// never set it — the challenge is an HTTP-auth construct). Read once at
 	// construction; immutable thereafter.
 	OnAuthChallenge func(AuthChallenge)
+
+	// OnScopeShortfall, when non-nil, is invoked whenever an MCP HTTP call
+	// answers `403` with a `WWW-Authenticate` marking
+	// `error="insufficient_scope"` (RFC 6750 §3.1) — a downstream step-up
+	// scope shortfall. The callback records the parsed shortfall on the
+	// connection's registry state so an operator can inspect the last
+	// observed required-vs-granted gap. Best-effort observability: it never
+	// retries, never widens a binding, and never alters the call's error
+	// semantics (the per-call error enrichment rides a request-scoped ctx
+	// slot instead). Optional; nil disables the registry-side record (stdio
+	// connections never set it). Read once at construction; immutable
+	// thereafter.
+	OnScopeShortfall func(ScopeShortfall)
+
+	// ToolOAuthProviders are per-tool OAuth-provider overrides keyed by the
+	// MCP server-side tool name (mirroring ToolPolicies' shape). A tool named
+	// here binds THAT provider for its CallTool RPCs only; an unlisted tool
+	// falls back to OAuthProvider (the connection-level binding). Each entry
+	// was resolved + validated against the same binding rules as
+	// OAuthProvider at attach time (unknown name / stdio transport /
+	// static-Authorization conflict / downstream-host allow-list). Scope is
+	// CallTool ONLY — resource/prompt paths keep resolving OAuthProvider.
+	// Read-only after New; the resolved provider is read per-call from the
+	// call's own tool name, so concurrent invocations of different tools
+	// never share or race this map (the concurrent-reuse contract).
+	ToolOAuthProviders map[string]auth.OAuthProvider
 }
 
 // pushIdentity returns the identity to stamp on a server-pushed
@@ -671,10 +697,17 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
+	// Thread a per-call scope-shortfall slot onto ctx BEFORE dispatch: the
+	// challenge-capturing transport writes a parsed `403` + insufficient_scope
+	// step-up here, and this call reads it after CallTool returns to enrich the
+	// SAME call's error. Per-run state on ctx, never provider-level state.
+	slot := &scopeShortfallSlot{}
+	ctx = withScopeShortfallSlot(ctx, slot)
 	// Fail-closed per-identity bearer: on a bound connection, resolve the
-	// token and thread it onto the call's ctx BEFORE dispatch. A Token()
-	// failure aborts here — no wire request is issued.
-	ctx, err = p.resolveBearerCtx(ctx)
+	// token (per-tool override, falling back to the connection binding) and
+	// thread it onto the call's ctx BEFORE dispatch. A Token() failure aborts
+	// here — no wire request is issued.
+	ctx, err = p.resolveBearerCtx(ctx, name)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
@@ -685,6 +718,31 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	params.Meta = meta
 	res, err := session.CallTool(ctx, params)
 	if err != nil {
+		// When the transport observed a `403` + insufficient_scope step-up on
+		// this exact call, upgrade the opaque transport error to the typed,
+		// structured *tools.ErrInsufficientScope so the tool-result error path
+		// carries the required-vs-granted gap and classification stops
+		// retrying a shortfall retry can never fix.
+		if sf, granted := slot.get(); sf != nil {
+			// Enrich the connection-view record with the tool name the
+			// transport-side capture could not know (the transport already
+			// recorded a tool-less shortfall; last-write-wins upgrades it).
+			if p.cfg.OnScopeShortfall != nil {
+				named := *sf
+				named.ToolName = name
+				named.GrantedScopes = granted
+				p.cfg.OnScopeShortfall(named)
+			}
+			return tools.ToolResult{}, &tools.ErrInsufficientScope{
+				Source:             p.source,
+				ToolName:           name,
+				DownstreamResource: sf.DownstreamResource,
+				RequiredScopes:     sf.RequiredScopes,
+				GrantedScopes:      granted,
+				WWWAuthenticate:    sf.WWWAuthenticate,
+				Origin:             sf.Origin,
+			}
+		}
 		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
 	}
 	value, lowerErr := lowerCallToolResult(res)
@@ -842,7 +900,7 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
-				ctx, mErr = p.resolveBearerCtx(ctx)
+				ctx, mErr = p.resolveBearerCtx(ctx, "")
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
@@ -895,7 +953,7 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
-				ctx, mErr = p.resolveBearerCtx(ctx)
+				ctx, mErr = p.resolveBearerCtx(ctx, "")
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
@@ -937,7 +995,7 @@ func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte
 	if mErr != nil {
 		return nil, "", mErr
 	}
-	ctx, mErr = p.resolveBearerCtx(ctx)
+	ctx, mErr = p.resolveBearerCtx(ctx, "")
 	if mErr != nil {
 		return nil, "", mErr
 	}
@@ -1011,7 +1069,7 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 	if mErr != nil {
 		return mErr
 	}
-	ctx, mErr = p.resolveBearerCtx(ctx)
+	ctx, mErr = p.resolveBearerCtx(ctx, "")
 	if mErr != nil {
 		return mErr
 	}
@@ -1151,23 +1209,45 @@ func isReservedMetaKey(k string) bool {
 	return config.IsReservedMCPMetaKey(k)
 }
 
+// resolveBearerProvider selects the OAuth provider that authenticates a call
+// to toolName. A non-empty toolName (a CallTool RPC) resolves the per-tool
+// override map, falling back to the connection-level OAuthProvider when the
+// tool is unlisted; an empty toolName (resource/prompt/subscribe paths)
+// always resolves the connection-level OAuthProvider. The map is read-only
+// after construction, so this per-call read never races.
+func (p *Provider) resolveBearerProvider(toolName string) auth.OAuthProvider {
+	if toolName != "" {
+		if prov, ok := p.cfg.ToolOAuthProviders[toolName]; ok {
+			return prov
+		}
+	}
+	return p.cfg.OAuthProvider
+}
+
 // resolveBearerCtx threads a fresh per-identity bearer onto the call's ctx
-// when this connection binds an OAuth provider, so the context-aware
-// bearerInjectingTransport sets Authorization on the outbound request. It is
-// FAIL-CLOSED: a Token() error (including a typed *auth.ErrAuthRequired the
-// runtime catches to park the run on the unified pause/resume primitive)
+// when this connection binds an OAuth provider for toolName, so the
+// context-aware bearerInjectingTransport sets Authorization on the outbound
+// request. Provider selection is per-tool: toolName != "" resolves the
+// per-tool override map (falling back to the connection-level provider);
+// toolName == "" always resolves the connection-level provider.
+//
+// It is FAIL-CLOSED: a Token() error (including a typed *auth.ErrAuthRequired
+// the runtime catches to park the run on the unified pause/resume primitive)
 // aborts the RPC by returning the error BEFORE any wire request — never a
 // fallback to an unauthenticated call (CLAUDE.md §13). An unbound connection
 // (no provider) returns the ctx unchanged.
 //
-// No Provider or transport field mutates: the bearer rides the returned ctx
-// (per-call state lives on the ctx, never on the compiled artifact — the
-// concurrent-reuse contract).
-func (p *Provider) resolveBearerCtx(ctx context.Context) (context.Context, error) {
-	if p.cfg.OAuthProvider == nil {
+// When a per-call scope-shortfall slot rides ctx, the resolved token's
+// granted scopes are recorded on it so a subsequent insufficient-scope
+// step-up can report the required-vs-granted gap. No Provider or transport
+// field mutates: the bearer rides the returned ctx (per-call state lives on
+// the ctx, never on the compiled artifact — the concurrent-reuse contract).
+func (p *Provider) resolveBearerCtx(ctx context.Context, toolName string) (context.Context, error) {
+	provider := p.resolveBearerProvider(toolName)
+	if provider == nil {
 		return ctx, nil
 	}
-	tok, err := p.cfg.OAuthProvider.Token(ctx, p.source)
+	tok, err := provider.Token(ctx, p.source)
 	if err != nil {
 		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
 		return nil, err
@@ -1178,6 +1258,9 @@ func (p *Provider) resolveBearerCtx(ctx context.Context) (context.Context, error
 		// shipped drivers, which reject empty tokens — but this is the
 		// fail-closed surface, so it fails loud here too).
 		return nil, fmt.Errorf("%w (connection %q, source %q)", ErrEmptyBearer, p.cfg.Name, p.source)
+	}
+	if slot := scopeShortfallSlotFrom(ctx); slot != nil {
+		slot.setGranted(tok.Scopes)
 	}
 	return withBearer(ctx, tok.AccessToken), nil
 }
