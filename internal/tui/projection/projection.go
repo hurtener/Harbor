@@ -416,10 +416,12 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 		blockIDs = append(blockIDs, id)
 	case "notification.task_failed":
 		// The background-failure mirror. Suppressed when the failing task
-		// IS a tracked foreground turn (a "user:"+TaskID block exists) —
-		// that failure is surfaced by the dedicated turn-failure line, so
-		// the mirror would duplicate it. Rendered when no such foreground
-		// turn is tracked (a genuinely background task failing).
+		// IS a foreground turn — a "user:"+TaskID block exists, and that
+		// block is minted only for foreground-Kind rows, so its presence is
+		// the reliable foreground discriminator. That failure is surfaced by
+		// the dedicated turn-failure line, so the mirror would duplicate it.
+		// Rendered when no such foreground turn is tracked (a genuinely
+		// background task failing).
 		var decoded notificationPayload
 		if !decodePayload(event.Payload, &decoded) || decoded.Summary == "" {
 			return genericFallback(next, event, payload), ChangeSet{Changed: true, Immediate: true, BlockIDs: []string{genericEventID(event)}}, nil
@@ -695,10 +697,22 @@ func mergeTasks(p *Projection, rows []types.TaskRow, details []types.TaskDetail,
 		if row.Identity.Tenant != p.Identity.Tenant || row.Identity.User != p.Identity.User || row.Identity.Session != p.Identity.Session {
 			continue
 		}
-		if row.Query != "" {
+		// A user block is the marker of a FOREGROUND turn (a
+		// composer-submitted prompt). Gate its creation on the row's Kind,
+		// not on Query presence: a spawned BACKGROUND task also carries a
+		// non-empty Query, so keying on Query would fabricate a user block
+		// for background rows and misclassify their failures as foreground
+		// turn failures. A foreground row always gets its user block —
+		// falling back to the description (or empty) when Query is empty —
+		// so a foreground turn is never misread as a background notice.
+		if row.Kind == types.TaskKindForeground {
 			id := "user:" + row.ID
 			if blockIndex(p.Blocks, id) < 0 {
-				p.Blocks = append(p.Blocks, Block{ID: id, Kind: "user", RunID: row.ID, At: row.StartedAt, Text: row.Query})
+				text := row.Query
+				if text == "" {
+					text = row.Description
+				}
+				p.Blocks = append(p.Blocks, Block{ID: id, Kind: "user", RunID: row.ID, At: row.StartedAt, Text: text})
 			}
 		}
 		id := "task:" + row.ID

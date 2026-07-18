@@ -182,5 +182,11 @@ func V1TriggerEventTypes() []events.EventType {
 		"pause.requested",
 		"task.group_resolved",
 		"task.completed",
+		// `task.group_cancelled` is intentionally NOT mirrored: a group
+		// cancellation is human/agent-initiated or is downstream of an
+		// already-visible parent-turn failure, not an unprompted autonomous
+		// resolution worth waking the conversation surface. Only autonomous
+		// resolutions (`task.group_resolved`) and background completions
+		// (`task.completed`) earn a wake mirror.
 	}
 }

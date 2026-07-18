@@ -157,3 +157,47 @@ func TestTurnFailure_BackgroundTaskFailureNeverCountsAsTurnFailure(t *testing.T)
 		t.Error("a background task failure (no user block) must not light the turn-failure line")
 	}
 }
+
+// TestTurnFailure_HydratedRowsClassifyByKindNotQuery proves the end-to-end
+// hydration path: a failed BACKGROUND task row carrying a non-empty Query does
+// NOT light the turn-failure line (it has no user block), while a failed
+// FOREGROUND row — even one with an empty Query — DOES. This closes the
+// misclassification where background tasks (which also carry a Query) produced
+// a spurious "Turn failed" line.
+func TestTurnFailure_HydratedRowsClassifyByKindNotQuery(t *testing.T) {
+	m, _, _ := operationalModel(t)
+	id := m.controller.Identity()
+	now := time.Unix(1, 0).UTC()
+
+	background := mustHydrate(t, id, types.TaskRow{
+		ID: "bg", Kind: types.TaskKindBackground, IsBackground: true,
+		Status: types.TaskStatusFailed, ErrorClass: "timeout",
+		Identity: id, ParentSessionID: id.Session, Query: "spawned query", StartedAt: now,
+	})
+	m.applyUpdate(conversation.Update{Identity: id, Generation: 2, State: conversation.StateLive, Projection: background})
+	if m.shell.state.TurnFailed {
+		t.Error("a failed background row with a Query must not light the turn-failure line")
+	}
+
+	foreground := mustHydrate(t, id, types.TaskRow{
+		ID: "fg", Kind: types.TaskKindForeground,
+		Status: types.TaskStatusFailed, ErrorClass: "planner_rejected",
+		Identity: id, ParentSessionID: id.Session, Description: "no query here", StartedAt: now,
+	})
+	m.applyUpdate(conversation.Update{Identity: id, Generation: 3, State: conversation.StateLive, Projection: foreground})
+	if !m.shell.state.TurnFailed {
+		t.Error("a failed foreground row (even with an empty Query) must light the turn-failure line")
+	}
+}
+
+func mustHydrate(t *testing.T, id types.IdentityScope, rows ...types.TaskRow) projection.Projection {
+	t.Helper()
+	p, err := (&projection.Reducer{}).Hydrate(projection.SnapshotBundle{
+		Generation: 1, Identity: id,
+		Tasks: types.TaskListResponse{Rows: rows},
+	})
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	return p
+}

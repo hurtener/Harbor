@@ -2249,13 +2249,15 @@ func conversational(kind string) bool {
 
 // turnFailure derives the foreground turn-failure state from the canonical
 // projection. The newest FOREGROUND turn is the last "task" block whose run
-// also has a "user:" turn block (only a composer-submitted turn ever creates
-// a user block — background tasks never do). When that newest foreground turn
-// is terminally failed, it returns the bounded error code; when it is
-// running/pending/complete (including after a fresh submit), it returns
-// (_, false) so the line clears. Background-task failures never match here —
-// they have no user block — and are surfaced by the muted notification mirror
-// instead.
+// also has a "user:" turn block. The user block is the foreground marker: it
+// is minted only for foreground-Kind task rows, never for background rows
+// (which carry a Query of their own but are classified by Kind), so its
+// presence — not the presence of a query — discriminates a foreground turn.
+// When that newest foreground turn is terminally failed, it returns the
+// bounded error code; when it is running/pending/complete (including after a
+// fresh submit), it returns (_, false) so the line clears. Background-task
+// failures never match here — they have no user block — and are surfaced by
+// the muted notification mirror instead.
 func (m RuntimeModel) turnFailure() (string, bool) {
 	blocks := m.transcript.Projection.Blocks
 	hasUserTurn := func(runID string) bool {
