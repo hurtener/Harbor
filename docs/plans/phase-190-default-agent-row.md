@@ -26,11 +26,12 @@ enumerable this way" instead of an indistinguishable empty page.
 ## Brief findings incorporated
 
 - brief 11 §"Agents view" (OVERVIEW): "List of configured agents in the
-  current tenant... for a single-agent setup, you see one row" —
-  `docs/skills/observe-with-the-console/SKILL.md` §"Agents — the
-  registry" already states this as the intended UX; this phase is what
-  makes it literally true for a runtime with zero fleet-registered
-  sub-agents (today it renders zero rows, not one).
+  current tenant" — the catalog view this phase makes honest for the
+  single-default-agent runtime. Separately (a SKILL claim, not a brief
+  quote): `docs/skills/observe-with-the-console/SKILL.md` §"Agents — the
+  registry" already asserts "for a single-agent setup, you see one row"
+  — today that renders zero rows; this phase is what makes the shipped
+  skill sentence literally true.
 - brief 11 §"Open questions": "Agent as a Protocol-addressable
   principal. The Agents view requires agents to exist on the Protocol
   with addressable IDs" — the synthetic row is the minimal instance of

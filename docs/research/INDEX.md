@@ -23,8 +23,8 @@ The briefs themselves live alongside this file (`docs/research/01..NN.md`). Brie
 | 13 | React planner prompt engineering (system prompt depth, dynamic augmentation, UNTRUSTED memory framing) | ~3400 | 2026-05-18 |
 | 14 | MCP client/host compliance (spec 2025-11-25 — capability matrix audit + 85-band decomposition) | ~3600 | 2026-05-21 |
 | 15 | Native tool-calling + deferred loading + tag-based scoping (V1.4 React migration tradeoff) | ~3500 | 2026-05-26 |
-| 16 | Parallel intent + task management (Batch decision mining, AC-21 supersession, cancel hierarchy, child-run inheritance) | ~2400 | 2026-07-17 |
-| 17 | Prompt-cache telemetry + intent, grounded at Harbor's LLM edge (dropped cache tokens, prefix-invalidation hazards, phase sequencing) | ~1800 | 2026-07-17 |
+| 16 | Parallel intent + task management (Batch decision mining, AC-21 supersession, cancel hierarchy, child-run inheritance) | ~1800 | 2026-07-17 |
+| 17 | Prompt-cache telemetry + intent, grounded at Harbor's LLM edge (dropped cache tokens, prefix-invalidation hazards, phase sequencing) | ~1100 | 2026-07-17 |
 
 ## Subsystem → briefs reverse index
 

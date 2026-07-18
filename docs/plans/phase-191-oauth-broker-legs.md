@@ -281,7 +281,9 @@ type ToolOAuthProviderConfig struct {
     // ResourceIndicator is the boot-declared RFC 8707 `resource` value
     // carried on every tokenexchange exchange request. Empty preserves
     // today's behaviour (no resource param sent). Ignored by `oauth2`.
-    // NEVER auto-populated from discovery (D-297 report-don't-follow) —
+    // NEVER auto-populated from discovery (discovery is report-only;
+    // Harbor never auto-follows a discovered value into a credential-sink
+    // field) —
     // an operator copies a discovered+confirmed value in by hand.
     ResourceIndicator string `yaml:"resource_indicator,omitempty"`
 

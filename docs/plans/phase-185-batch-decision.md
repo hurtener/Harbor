@@ -189,7 +189,10 @@ dispatches `Batch` lands in the same wave's next phase.
 
 ## Files added or changed
 
-- `internal/planner/decision.go` — `Batch` type + validating constructor.
+- `internal/planner/decision.go` — `Batch` type + validating constructor. Also the additive
+  `SpawnTask.CallID string` field (mirroring `CallTool.CallID`; stamped by
+  the projector during partition, empty on programmatic emissions) — the
+  batch executor keys spawn observations by it.
 - `internal/planner/decision_test.go` — constructor validation unit tests.
 - `internal/planner/trajectory.go` — `DecisionInvocationCount` `Batch`
   case.

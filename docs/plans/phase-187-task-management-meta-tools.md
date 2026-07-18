@@ -48,7 +48,7 @@ never just the direct-cancel target.
 - brief 02 §5 (sharp edge 4, "Magic strings as opcodes"): "Harbor's
   `Decision` is a sum type; tool calls and runtime opcodes are different
   shapes. Future runtime-level actions ... extend the sum, not the catalog
-  of magic strings." — directly informs shipping `TaskStatus` / `CancelTask`
+  of magic strings." — directly informs shipping `TaskStatusQuery` / `CancelTask`
   as two new sealed `Decision` shapes rather than overloading `CallTool`
   args or a string-typed control channel.
 - brief 05 §5 (sharp edge, task interface breadth): "Harbor keeps the
@@ -76,7 +76,7 @@ filed as D-324 per the wave's pre-assignment
 
 - Ship `_task_status` and `_cancel_task` as reserved, natively-declared
   planner-control meta-tools, dispatched as two new sealed `planner.Decision`
-  shapes (`TaskStatus{TaskIDs []tasks.TaskID}`, `CancelTask{TaskID
+  shapes (`TaskStatusQuery{TaskIDs []tasks.TaskID}`, `CancelTask{TaskID
   tasks.TaskID, Reason string}` — RFC §6.2) through the same
   projector-translation → executor-dispatch seam `_spawn_task` / `_await_task`
   already use. Both are non-terminal: the runtime executor dispatches them
@@ -155,12 +155,14 @@ filed as D-324 per the wave's pre-assignment
 ## Acceptance criteria
 
 - [ ] **AC-1** `internal/planner/decision.go`: two new sealed `Decision`
-      shapes — `TaskStatus{TaskIDs []tasks.TaskID}` and `CancelTask{TaskID
+      shapes — `TaskStatusQuery{TaskIDs []tasks.TaskID}` and `CancelTask{TaskID
       tasks.TaskID; Reason string}` — matching RFC §6.2 verbatim, each with
       an `isDecision()` marker. `SpawnSpec` gains `PropagateOnCancel string`
       (empty = runtime default `tasks.PropagateCascade`; `tasks.PropagateIsolate`
       is the only other accepted value). Godoc on both new shapes and the
-      amended field cites D-324 and the RFC §6.2 cancel-hierarchy sentence,
+      amended field names the isolate/cascade FEATURE and the cancel-hierarchy
+      invariant in feature terms (decision citations live in
+      docs/decisions.md, never in godoc-visible source — CLAUDE.md §13),
       naming the FEATURE not an internal phase/wave number (CLAUDE.md §13).
 - [ ] **AC-2** `internal/planner/react/react.go`: `TaskStatusToolName =
       "_task_status"` and `CancelTaskToolName = "_cancel_task"` reserved-name
@@ -209,7 +211,7 @@ filed as D-324 per the wave's pre-assignment
       and is UNAFFECTED by this change. Single-call `_task_status` /
       `_cancel_task` translate normally.
 - [ ] **AC-7** `internal/runtime/dispatch/dispatch.go`: `ExecuteDecision`'s
-      switch gains `case planner.TaskStatus: return e.taskStatus(ctx, rc,
+      switch gains `case planner.TaskStatusQuery: return e.taskStatus(ctx, rc,
       d)` and `case planner.CancelTask: return e.cancelTask(ctx, rc, d)`.
       Both new executor methods attach the run's identity via
       `identity.With` exactly like `spawnTask` / `awaitTask` (never a
@@ -264,7 +266,7 @@ filed as D-324 per the wave's pre-assignment
       byte-for-byte unchanged; only the treatment of nodes reached
       mid-walk changes.
 - [ ] **AC-12** `internal/planner/react/prompt.go`: `renderNativeControlStep`
-      gains `case planner.TaskStatus` / `case planner.CancelTask`, each with
+      gains `case planner.TaskStatusQuery` / `case planner.CancelTask`, each with
       a matching `taskStatusReplayArgs` / `cancelTaskReplayArgs` builder
       (mirroring `spawnTaskReplayArgs` / `awaitTaskReplayArgs` exactly), so
       a trajectory containing either meta-tool step replays as a native
@@ -389,7 +391,8 @@ type SpawnSpec struct {
     RetainTurn  bool
     FailFast    bool
     // PropagateOnCancel: "" (default; runtime maps to tasks.PropagateCascade)
-    // or tasks.PropagateIsolate. Amends D-047's frozen field set — D-324.
+    // or tasks.PropagateIsolate — detaching the spawned task from its
+    // PARENT's cancellation cascade, never from direct operator control.
     PropagateOnCancel string
 }
 ```
@@ -488,15 +491,13 @@ Reserved tool names (LLM-facing, `internal/planner/react`):
 
 ## Glossary additions
 
-- `_task_status`
-- `_cancel_task`
-- cancel hierarchy
-
-`docs/glossary.md`'s existing **PropagateOnCancel** and **SpawnSpec**
-entries need amending (not fresh additions) in the same PR: PropagateOnCancel
-to note the AC-11 cascade-walk fix and that a descendant's own flag now
-matters mid-walk, not just at the direct target; SpawnSpec to note the
-D-324 `PropagateOnCancel` field addition.
+- **Task-management meta-tools** (one combined glossary entry covering
+  `_task_status` and `_cancel_task`) — added.
+- **Cancel hierarchy** — added.
+- **PropagateOnCancel** (existing entry) — amended for the cascade-walk fix
+  and model-expressible `isolate` (done in the planning PR).
+- **SpawnSpec** (existing entry) — amended for the D-324 field addition
+  (done in the planning PR).
 
 ## Pre-merge checklist
 

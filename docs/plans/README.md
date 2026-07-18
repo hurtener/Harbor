@@ -324,8 +324,8 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |183 | Runtime control and inspection: tasks, tools, artifacts, events, posture, interventions, canonical controls, diagnostics, attention, and generic renderer registries at the same quality floor (D-319) | internal/tui | §3.3, §4, §5, §6.3, §8 | 182, 72e/f/g, 73d/f/l, 162–163, 174–178 | 85% | Shipped (v1.15) |
 |184 | Runtime distribution: explicit readiness, `harbor serve --tui`, curated `sdk/tui`, scaffolded serving-binary `--tui`, and cross-mode frame-equivalent wave PTY E2E (D-320) | internal/runtime/serve + sdk/server + sdk/tui + cmd/harbor + scaffold | §3.6, §5.6, §8 | 183, 159, 160 | 85% | Shipped (v1.15) |
 |185 | Batch decision: fourth sealed `Decision` shape (`Tools`/`Spawns`/`Join`) letting one native multi-call response mix catalog tools with non-retain-turn `_spawn_task` spawns (each spawn stamped with its provider `CallID`, mirroring `CallTool.CallID`); AC-21 narrows to AC-21′ (`_finish`/`_await_task` stay standalone, `_spawn_task` becomes batchable); degenerate one-branch batches never constructed; trajectory invocation-count + serialization coverage; corrected `_spawn_task` prompt description closing the prompt-vs-validator disagreement; supersedes D-169 item 5's `_spawn_tasks`-array direction while keeping its spawns-are-never-CallParallel-branches constraint (D-322) | internal/planner + internal/planner/react + internal/planner/trajectory + internal/planner/conformance | §6.2, §6.4 | 184, 42, 45, 47, 107c, 107d, 107e | 85% | Pending (v1.16) |
-|186 | Batch executor: flat concurrent dispatch of heterogeneous `Batch` decisions — tool branches via the existing `JoinSpec` executor (D-169 JoinAll/non-atomic parity: every branch failure is that branch's error result, every `call_id` answered), spawn branches via auto-grouped registry spawn (ONE `ResolveOrCreateGroup` group for ≥2 unbound spawns; explicit `GroupID` never overwritten); whole-batch loud rejection reserved for structural invariants (new operator-configurable `planner.max_batch_spawns` breadth cap, `FailFast` disagreement, retain-turn re-check); `BatchObservation` call-id-keyed and declaration-order-stable; closes the previously-unwired `steering.WithHardCancelHook` production seam so a run-level hard cancel cascades into batch-spawned descendants (D-323) | internal/runtime/dispatch + internal/runtime/steering + internal/runtime/assemble + internal/tasks + internal/config + internal/planner | §6.2, §6.8 | 185 | 85% | Pending (v1.16) |
-|187 | Task-management planner meta-tools + the cancel hierarchy: `_task_status`/`_cancel_task` reserved controls → new sealed `TaskStatus`/`CancelTask` decisions, descendant-scoped via the parent-task chain (a run can never observe or cancel a sibling run's tasks); model-expressible `propagate_on_cancel: isolate` on `_spawn_task` lands in the SAME phase as its brake (amending D-047's `SpawnSpec` field set); fixes the shipped cascade-cancel walk (`internal/tasks/engine`) that cancels descendants regardless of their own `PropagateOnCancel` — dormant until `isolate` becomes reachable; cancel hierarchy tested end-to-end: human (any task, always; session-scoped cancel sweeps isolate too) > agent (own descendants) > cascade defaults (D-324) | internal/planner + internal/planner/react + internal/runtime/dispatch + internal/tasks/engine | §6.2, §6.4, §6.8 | 185, 186 | 85% | Pending (v1.16) |
+|186 | Batch executor: flat concurrent dispatch of heterogeneous `Batch` decisions — tool branches via the existing `JoinSpec` executor (D-169 JoinAll/non-atomic parity: every branch failure is that branch's error result, every `call_id` answered), spawn branches via auto-grouped registry spawn (ONE `ResolveOrCreateGroup` group for ≥2 unbound spawns; explicit `GroupID` never overwritten); whole-batch loud rejection reserved for structural invariants (new operator-configurable `planner.max_batch_spawns` breadth cap, `FailFast` disagreement, retain-turn re-check); `BatchObservation` call-id-keyed and declaration-order-stable; closes the previously-unwired `steering.WithHardCancelHook` production seam so a run-level hard cancel cascades into batch-spawned descendants (D-323) | internal/runtime/dispatch + internal/runtime/assemble + internal/config + internal/planner | §6.2, §6.8 | 185, 47, 107d, 107e | 85% | Pending (v1.16) |
+|187 | Task-management planner meta-tools + the cancel hierarchy: `_task_status`/`_cancel_task` reserved controls → new sealed `TaskStatusQuery`/`CancelTask` decisions (query shape deliberately not named after the `TaskStatus` lifecycle enum), descendant-scoped via the parent-task chain (a run can never observe or cancel a sibling run's tasks); model-expressible `propagate_on_cancel: isolate` on `_spawn_task` lands in the SAME phase as its brake (amending D-047's `SpawnSpec` field set); fixes the shipped cascade-cancel walk (`internal/tasks/engine`) that cancels descendants regardless of their own `PropagateOnCancel` — dormant until `isolate` becomes reachable; cancel hierarchy tested end-to-end: human (any task, always; session-scoped cancel sweeps isolate too) > agent (own descendants) > cascade defaults (D-324) | internal/planner + internal/planner/react + internal/runtime/dispatch + internal/tasks/engine | §6.2, §6.4, §6.8 | 185, 186 | 85% | Pending (v1.16) |
 |188 | Background wake notifications + turn-failure honesty: `notification.task_group_resolved`/`notification.task_completed` mirror background resolution conversationally (ref-shaped member outcomes; the typed `WatchGroup` planner path untouched); the TUI renders muted lifecycle one-liners (a new conversational `notification` block kind; `notification.task_failed` suppressed when the failing task IS the tracked foreground turn) and a dedicated `× Turn failed · <ErrorCode>` status-strip line for a FAILED foreground turn that previously went silently idle; Console Sessions + Tasks docks render the same family; additive wire fields only, D-209 lockstep regen (D-325) | internal/runtime/notifications + internal/tasks + internal/tui/projection + internal/tui/app + web/console | §6.13, §6.8, §5.2, §7 | 186 | 85% | Pending (v1.16) |
 |189 | Cache-token capture: the bifrost translator stops discarding `PromptTokensDetails.CachedReadTokens`/`CachedWriteTokens` into new additive `llm.Usage.CacheReadTokens`/`CacheWriteTokens`, mirrored onto `llm.CostRecordedPayload`; ALL verified hand-decoders of that event (TUI reducer, Console `run-events.ts`, sessions enricher — the last documented as a deliberate non-consumer) updated or annotated in the same PR; the one real Console UI consumer (`RightRailCostBreakdown.svelte`) renders cache counts as a non-summed annotation (cache tokens are a SUBSET of prompt tokens — never a double-counting fifth row); governance `PostCall` and `CompleteRequest` untouched — telemetry-only, zero design forks; the request-side cache-intent surface stays a named mid-wave decision point (D-326) | internal/llm + internal/llm/drivers/bifrost + internal/tui/projection + internal/tui/app + internal/sessions/protocol + web/console | §6.5, §5.2 | 184 | 85% | Pending (v1.16) |
 |190 | `agents.list` surfaces the runtime's synthetic default agent (HA-25; the absence-representable class, D-311): a runtime serving only its boot agent (the well-known id already threaded as `MuxInput.AgentConfigID`) produced ZERO rows, so a fleet Agents catalog read "no rows" as "no agents"; FIX = an optional `WithDefaultAgent` projector seam (nil ⇒ byte-identical behavior) synthesizing ONE first-class row with additive `Agent.IsDefault` marker; COLLISION RULE: a real registration under the same id suppresses the synthetic row (real data wins, never a duplicate); `agents.get` resolves it, `agents.metrics.Active` counts it, the admin-widened fleet fan-in (`ListTenantAgents`) picks it up per tenant with no bespoke code (integration-proven); fleet-CONTROL verbs fall through to `ErrAgentNotFound` unchanged (no control surface over the runtime's own process); authority server-derived (D-299), no scope change; additive field, `ProtocolVersion` 0.1.0, full D-223 + D-209 lockstep + §18 `observe-with-the-console` (its "one row" claim made true) + `use-the-harbor-protocol` same PR (D-327) | internal/runtime/registry/protocol + internal/protocol/types + internal/runtime/serve + web/console | §6.16, §5.2, §7 | 184 | 85% | Pending (v1.16) |
@@ -4235,11 +4235,12 @@ per §17.8). Status: Shipped (V1.6).
 
 ### Phase 186 — Batch executor: heterogeneous dispatch, auto-grouping, ordered observations
 
-- **Subsystem:** `internal/runtime/dispatch`, `internal/runtime/steering`,
-  `internal/runtime/assemble`, `internal/tasks`, `internal/config`,
-  `internal/planner`.
+- **Subsystem:** `internal/runtime/dispatch`, `internal/runtime/assemble`,
+  `internal/config`, `internal/planner` (consuming — not modifying — the
+  shipped `internal/runtime/steering` hook and `internal/tasks` group
+  seams).
 - **RFC:** §6.2, §6.8.
-- **Deps:** 185.
+- **Deps:** 185, 47, 107d, 107e.
 - **What it delivers:** dispatches `planner.Batch` as one flat concurrent
   dispatch — tool branches through the same executor `CallParallel`
   already uses (Join always nil→JoinAll, non-atomic per-branch dispatch —
@@ -4254,8 +4255,8 @@ per §17.8). Status: Shipped (V1.6).
   order) and closes the previously-unwired `steering.WithHardCancelHook`
   production seam in the one stack assembler so a run-level hard cancel
   actually cascades into a batch's spawned descendants. States and tests
-  the full cancellation hierarchy: human (any task, always) > agent (own
-  descendants, phase 187) > cascade defaults. See
+  the full cancellation hierarchy: operator (any task, always) > agent
+  (own descendants, phase 187) > cascade defaults. See
   `docs/plans/phase-186-batch-executor.md`.
 - **Decision:** D-323.
 - **Status:** Pending (v1.16).
@@ -4271,7 +4272,7 @@ per §17.8). Status: Shipped (V1.6).
 - **What it delivers:** two new reserved planner-control meta-tools —
   `_task_status` and `_cancel_task` — giving the model descendant-scoped
   observation and control over tasks its own run spawned, dispatched as
-  new sealed `TaskStatus`/`CancelTask` `Decision` shapes; model-expressible
+  new sealed `TaskStatusQuery`/`CancelTask` `Decision` shapes; model-expressible
   `propagate_on_cancel: isolate` on `_spawn_task` landing in the same phase
   as its brake (the power-with-brake gate, amending D-047's frozen
   `SpawnSpec` field set); and a fix to the shared cascade-cancel walk in
@@ -4361,8 +4362,9 @@ per §17.8). Status: Shipped (V1.6).
   the existing `ErrAgentNotFound` — no control surface over the runtime's
   own process. Authority stays server-derived (D-299); one additive wire
   field; `ProtocolVersion` stays 0.1.0; full D-223 lockstep, D-209 regen,
-  and §18 same-PR updates to `observe-with-the-console` (its "for a
-  single-agent setup, you see one row" claim, made true) and
+  and §18 same-PR updates to `observe-with-the-console` (whose shipped
+  "for a single-agent setup, you see one row" sentence this phase makes
+  true — today it renders zero rows) and
   `use-the-harbor-protocol`. See
   `docs/plans/phase-190-default-agent-row.md`.
 - **Decision:** D-327.

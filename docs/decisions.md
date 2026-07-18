@@ -4110,7 +4110,7 @@ These need go-sdk RC support; the plan can be authored against the RC SEPs now s
 
 **4. The default flips to native `CallParallel`; serialization survives as a single-knob opt-out.** `planner.react.parallel_tool_calls` defaults to `true` (D-167 §2 promised this flip). `false` reverts to the 107c serialization fallback. The serialization path is NOT dead code at `false`: it also remains the same-turn-discovery-race guard (D-167 risk #4 — a `tool_search` plus a call to the not-yet-declared tool in one response must serialise so the second call lands on the turn after the tool is declared).
 
-**5. Reserved planner-control names are standalone — co-occurrence with another tool-call is `ErrInvalidDecision` (carried-over 107c silent tail-drop fix; AC-21).** 107c's `projectResponse` switched on `resp.ToolCalls[0].Name` and translated a reserved control name (`_finish` / `_spawn_task` / `_await_task`) to its `Finish` / `SpawnTask` / `AwaitTask` Decision **before** the N>1 tail-queueing block — so a control meta-tool emitted alongside other tool-calls in one response silently honoured only the first and **dropped** the rest (no error, no event — the §13-forbidden silent-degradation pattern). The symmetric tail case was just as wrong: a reserved name in the tail got queued to `PendingToolCalls` and later drained as a literal `CallTool{Tool:"_spawn_task"}` that hit the catalog as an unknown tool. Phase 107d adds a guard in `projectResponse` that runs BEFORE the head switch: any response where a reserved control name co-occurs with one or more other tool-calls is rejected with a wrapped `planner.ErrInvalidDecision` naming the offending control tool. Reserved control meta-tools are terminal/standalone — they are not `CallParallel` branches (`Branches` is `[]CallTool`, catalog tools) and not serialisable tail entries. The guard fires whether the reserved name is head or tail, and on BOTH the native-parallel path and the serialization opt-out (it is independent of `parallel_tool_calls`). Single-reserved-call cases are unchanged; all-regular N>1 still flows to `CallParallel` (on) or the serialization tail (off). This is bundled here, not a separate hotfix, because it is the same projector seam 107d reshapes for the N>1 → `CallParallel` mapping, and the two changes must agree on what a "batchable" tool-call is. A future one-turn batch-spawn, if wanted, is a dedicated `_spawn_tasks` meta-tool taking an array — never reserved names as `CallParallel` branches.
+**5. Reserved planner-control names are standalone — co-occurrence with another tool-call is `ErrInvalidDecision` (carried-over 107c silent tail-drop fix; AC-21).** 107c's `projectResponse` switched on `resp.ToolCalls[0].Name` and translated a reserved control name (`_finish` / `_spawn_task` / `_await_task`) to its `Finish` / `SpawnTask` / `AwaitTask` Decision **before** the N>1 tail-queueing block — so a control meta-tool emitted alongside other tool-calls in one response silently honoured only the first and **dropped** the rest (no error, no event — the §13-forbidden silent-degradation pattern). The symmetric tail case was just as wrong: a reserved name in the tail got queued to `PendingToolCalls` and later drained as a literal `CallTool{Tool:"_spawn_task"}` that hit the catalog as an unknown tool. Phase 107d adds a guard in `projectResponse` that runs BEFORE the head switch: any response where a reserved control name co-occurs with one or more other tool-calls is rejected with a wrapped `planner.ErrInvalidDecision` naming the offending control tool. Reserved control meta-tools are terminal/standalone — they are not `CallParallel` branches (`Branches` is `[]CallTool`, catalog tools) and not serialisable tail entries. The guard fires whether the reserved name is head or tail, and on BOTH the native-parallel path and the serialization opt-out (it is independent of `parallel_tool_calls`). Single-reserved-call cases are unchanged; all-regular N>1 still flows to `CallParallel` (on) or the serialization tail (off). This is bundled here, not a separate hotfix, because it is the same projector seam 107d reshapes for the N>1 → `CallParallel` mapping, and the two changes must agree on what a "batchable" tool-call is. A future one-turn batch-spawn, if wanted, is a dedicated `_spawn_tasks` meta-tool taking an array — never reserved names as `CallParallel` branches. (The array-meta-tool direction of this closing note is superseded by D-322: spawns batch as the typed `Batch.Spawns` half of a dedicated Decision shape — still never `CallParallel` branches.)
 
 **Why.** The serialization fallback was always a defensive stop-gap (D-167 §2 named the follow-up "Phase 110z or equivalent"); it makes the LLM's single N-tool-call turn replay to the provider as N separate assistant turns — tolerated by providers but unfaithful, and it serialises genuinely-independent calls that the model wanted run concurrently. Closing the carve-out delivers the concurrency the model asked for and makes the trajectory round-trip faithful to the provider wire shape. The cost is concentrated in the trajectory→prompt round-trip (one assistant message with N `tool_calls` answered by N `RoleTool` messages) and per-branch heavy-output projection — not in the dispatch engine, which already exists.
 
@@ -8530,7 +8530,8 @@ native response by reserved name: `_finish` and `_await_task` keep the
 standalone guard verbatim (a terminal decision and a single-target block have
 no coherent multi-call semantics; a batched await would create a same-step
 dependency on a sibling's not-yet-existing task id); `_spawn_task` becomes
-batchable with catalog tools and with other spawns. Every `Batch` spawn is
+batchable with catalog tools and with other spawns — the narrowed guard is
+named AC-21′ across the wave's plans. Every `Batch` spawn is
 `RetainTurn=false` (a blocking spawn inside a non-blocking multi-dispatch is a
 contradiction — construction fails loud). The projector never constructs a
 degenerate one-branch `Batch` — single-call responses keep their plain shapes,
@@ -8604,7 +8605,7 @@ observe and stop what it detached, while the operator must keep the last word.
 
 **Decision.** Phase 187 ships two reserved planner-control meta-tools
 following the `_spawn_task` translation pattern into new sealed shapes
-(`TaskStatus`, `CancelTask`): both resolve ONLY tasks whose parent chain
+(`TaskStatusQuery`, `CancelTask` — the query shape is deliberately NOT named `TaskStatus`, the tasks-package lifecycle enum): both resolve ONLY tasks whose parent chain
 reaches the calling run's task — descendant scope, enforced with an isolation
 test (a run can never status or cancel a sibling run's tasks). In the same
 phase — never earlier — `propagate_on_cancel: isolate` becomes expressible in
@@ -8660,8 +8661,10 @@ any future cache-aware policy from being designed against data.
 **Decision.** Phase 189 is telemetry-only, zero behavior change: the driver
 translator reads the cache token details; `llm.Usage` gains additive
 `CacheReadTokens` / `CacheWriteTokens`; the cost-recorded payload mirrors
-them; and ALL hand-decoded consumers (TUI reducer, Console run-events reader
-and cost components, sessions enricher both branches) update in the same PR —
+them; and ALL hand-decoded consumers update in the same PR (TUI reducer and
+Console run-events reader/cost components functionally; the sessions
+enricher as a documented intentional non-extraction — no `SessionRow`
+field carries cache counts) —
 a missed consumer silently reads zero, so the consumer list is acceptance
 criteria, not a footnote. Generated protocol-docs regenerate. Governance
 ceiling math is deliberately untouched (cache tokens are informational

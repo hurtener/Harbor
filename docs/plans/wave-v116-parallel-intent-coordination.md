@@ -68,7 +68,7 @@ Three tracks, seven phases, each independently reviewable:
 | 190 | D-327 | `agents.list` synthetic default-agent row (`is_default`) |
 | 191 | D-328 | OAuth broker legs: step-up data, resource-bound exchange, actor chain |
 
-- The RFC §6.2 amendment (the `Batch`/`TaskStatus`/`CancelTask` shapes + the
+- The RFC §6.2 amendment (the `Batch`/`TaskStatusQuery`/`CancelTask` shapes + the
   cancel-hierarchy invariant) is included in this planning PR.
 
 ## 3. Staging
@@ -116,7 +116,7 @@ that does not exist).
 
 ## 5. Binding invariants the wave must not weaken
 
-- **Planner swappability:** `Batch`/`TaskStatus`/`CancelTask` are sealed
+- **Planner swappability:** `Batch`/`TaskStatusQuery`/`CancelTask` are sealed
   decision shapes dispatched by the runtime; no planner-to-registry imports.
 - **Cancel hierarchy:** operator reaches any task, always (isolate detaches
   from the parent's cascade, never from the operator; session-scoped cancel

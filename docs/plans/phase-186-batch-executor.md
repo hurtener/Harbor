@@ -101,18 +101,12 @@ native-path posture, extended to `Batch`:
   — CLAUDE.md §4.4 — and the executor is the one shared dispatch boundary
   for all of them, not just the react projector).
 
-A related, additive (non-breaking) amendment: phase 185's shipped `Batch`
-shape reuses `SpawnTask{Kind, Spec, GroupID}` unchanged, which carries no
-provider `call_id`. A heterogeneous batch with ≥2 spawns needs each spawn's
-original native `tool_call_id` preserved (exactly as `CallTool.CallID`
-already is) so `BatchObservation.Spawns` can be keyed the same way
-`BatchObservation.Tools` is. This phase adds `SpawnTask.CallID string`
-(empty for the pre-existing standalone/prompt-engineered emission paths,
-mirroring `CallTool.CallID`'s doc contract) and phase 185's projector
-partition step populates it for `Batch.Spawns` entries. This is scoped as a
-small, zero-value-compatible field addition on a type `internal/planner`
-already owns across many phases — not a reopening of phase 185's shipped
-design.
+Consumed-field note: phase 185 ships the additive `SpawnTask.CallID
+string` field (mirroring `CallTool.CallID`; the projector stamps it
+during partition — see phase 185's Public API surface), preserving each
+spawn's original native `tool_call_id`. This phase CONSUMES that field to
+key `BatchObservation.Spawns` exactly the way `BatchObservation.Tools`
+is keyed; it adds no field of its own to `SpawnTask`.
 
 ## Goals
 
@@ -130,7 +124,7 @@ design.
   observation is its registration outcome (`{task_id, group_id}` or an
   error), not its eventual terminal result.
 - State and test the FULL cancellation hierarchy for batch-spawned
-  descendants: human (any task, always, via direct `Cancel`) > agent (own
+  descendants: operator (any task, always, via direct `Cancel`) > agent (own
   descendants only — phase 187) > cascade defaults (`PropagateOnCancel`
   BFS, the always-on default until phase 187 makes `isolate`
   model-expressible).
@@ -255,8 +249,6 @@ design.
   or a depth-cap-exceeded spawn does NOT abort the batch), tool-count
   accounting test, ordering-invariant test under randomized completion
   latency, `TestExecutor_Batch_ConcurrentReuse` (N≥100, `-race`).
-- `internal/planner/decision.go` — additive `SpawnTask.CallID string`
-  field (empty for pre-existing standalone paths).
 - `internal/planner/batch_observation.go` — new file: `BatchObservation`,
   `BatchSpawnObservation` types (JSON-encodable, mirroring
   `parallel_observation.go`'s doc pattern and package placement rationale).
@@ -293,10 +285,10 @@ design.
 // silent truncation to the first N spawns.
 func WithMaxBatchSpawns(n int) Option
 
-// batch dispatches a planner.Batch (D-323): the Tools half fans out
+// batch dispatches a heterogeneous tool/spawn decision: the Tools half fans out
 // through the same parallel.Executor call callParallel uses (Join always
-// nil -> JoinAll on the native path, D-169 item 2; non-atomic per-branch
-// dispatch, D-169 item 3); the Spawns half registers through
+// nil -> JoinAll on the native path; non-atomic per-branch
+// dispatch — a branch failure is that branch's error result); the Spawns half registers through
 // TaskRegistry.Spawn, auto-grouped via ONE ResolveOrCreateGroup call when
 // >=2 spawns share no explicit GroupID. Whole-batch loud rejection is
 // reserved for structural setup: the breadth cap, FailFast disagreement
@@ -483,12 +475,10 @@ const DefaultMaxBatchSpawns = 5
   scoping it into 186 is deliberate — the source-grounding for this phase
   is dispatch/steering/tasks/config, and prompt-builder work belongs with
   the phase that owns the projection round-trip (185's family).
-- **`SpawnTask.CallID` is an additive field phase 185 didn't anticipate.**
-  If 185 lands first without it, this phase's PR adds it as a small,
-  backward-compatible amendment (see "Findings I'm departing from"). If a
-  later reviewer of 185 already added an equivalent field under a
-  different name, reconcile naming in this PR rather than shipping two
-  provider-id fields on `SpawnTask`.
+- **`SpawnTask.CallID` is owned by phase 185** (shape + projector
+  stamping). This phase only consumes it; if 185 somehow lands without
+  it, STOP and amend 185's PR rather than adding the field here — one
+  owner per field.
 - **Cross-half dispatch ordering (Tools vs. Spawns) is unspecified beyond
   "both wait on structural setup."** This phase does not mandate that
   Tools and Spawns fire in literally the same instant; a future
@@ -532,7 +522,7 @@ const DefaultMaxBatchSpawns = 5
   (`PropagateOnCancel=cascade`, the only reachable value until phase 187
   ships `isolate` as model-expressible, D-324); a human operator can
   always cancel any task directly regardless of propagation mode — the
-  hierarchy is human (any task, always) > agent (own descendants, phase
+  hierarchy is operator (any task, always) > agent (own descendants, phase
   187) > cascade defaults. Phase 186, D-323.
 
 ## Pre-merge checklist

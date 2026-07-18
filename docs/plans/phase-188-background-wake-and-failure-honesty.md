@@ -426,9 +426,10 @@ not on any meta-tool surface.)
 
 ## Glossary additions
 
-- `notification.task_group_resolved`
-- `notification.task_completed`
-- turn-failure status-strip line
+- **Notification wake events** (one combined glossary entry covering
+  `notification.task_group_resolved` and `notification.task_completed`) —
+  added.
+- **Turn-failure status-strip line** — added.
 
 ## Pre-merge checklist
 

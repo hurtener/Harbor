@@ -288,6 +288,14 @@ D-316.
 
 **Cache read tokens / cache write tokens** — the counts of a completion call's `PromptTokens` served from (read) or newly written to (write) the provider's prompt cache, reported on `llm.Usage.CacheReadTokens`/`CacheWriteTokens` (sourced from the gateway's `PromptTokensDetails`). A SUBSET of `PromptTokens`, never additional tokens — surfaces render them as an annotation, not a summed row. Zero when the provider reports no cache data. Phase 189, D-326.
 
+**Cascade-by-default batch cancellation** — the `Batch`-scoped instance of
+the cancel hierarchy: a run-level hard cancel aborts in-flight `Batch` tool
+branches and cascades through every batch-spawned descendant
+(`PropagateOnCancel=cascade`, the only reachable value until `isolate`
+becomes model-expressible); the operator can always cancel any task
+directly regardless of propagation mode. See **Cancel hierarchy**. Phase
+186, D-323.
+
 **Cancel hierarchy** — the settled ordering of cancellation authority: the OPERATOR reaches any task directly regardless of propagation mode (`isolate` detaches a task from its parent's cascade, never from operator control; a session-scoped operator cancel sweeps isolate-marked tasks too — there is no uncancellable task); the AGENT reaches only its own run's descendants (`_cancel_task`); CASCADE is the default so an interrupt kills everything not explicitly detached. RFC §6.2, Phases 186–187, D-323/D-324.
 
 ## D
@@ -1351,7 +1359,7 @@ walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
 
 **SkillLookup** — narrow planner-facing read view over the skills subsystem (Phase 42). Two methods: `Search(ctx, query, limit) ([]SkillResult, error)` and `Get(ctx, id) (*Skill, error)`. The planner-package types (`Skill`, `SkillResult`) are projections of the production `internal/skills` records — Phase 37 ships the production surface; Phase 42 declares the view so the planner package compiles without importing `internal/skills` (parallel fork at Wave 8 Stage A). RFC §6.2, D-047.
 
-**SpawnSpec** — planner-side projection of `tasks.SpawnRequest` (Phase 42). Carries the fields the planner controls: `Description`, `Query`, `Priority`, `RetainTurn`, `FailFast`. The Runtime fills the rest (`Identity` from the run quadruple, `IdempotencyKey` from the planner step counter, `PropagateOnCancel` from the default, `NotifyOnComplete` from the spawn intent) at dispatch time. NOT a duplicate type — `tasks.TaskKind` is consumed verbatim on `SpawnTask.Kind`. RFC §6.2, D-047.
+**SpawnSpec** — planner-side projection of `tasks.SpawnRequest` (Phase 42). Carries the fields the planner controls: `Description`, `Query`, `Priority`, `RetainTurn`, `FailFast`. The Runtime fills the rest (`Identity` from the run quadruple, `IdempotencyKey` from the planner step counter, `PropagateOnCancel` from the default, `NotifyOnComplete` from the spawn intent) at dispatch time. NOT a duplicate type — `tasks.TaskKind` is consumed verbatim on `SpawnTask.Kind`. RFC §6.2, D-047. Phase 187 (D-324) amends the field set with a planner-settable `PropagateOnCancel` (`""`→cascade default, `isolate` to detach from the parent's cascade — never from operator control), landing only alongside the `_task_status`/`_cancel_task` brakes.
 
 **ToolDescriptor** — the callable binding produced by a driver: `Tool` + `Invoke(ctx, args) (ToolResult, error)` + `Validate(args) error`. The planner never sees a `ToolDescriptor`; the dispatcher uses it. RFC §6.4.
 
@@ -1403,7 +1411,7 @@ walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
 
 **`trajectory.compression_failed`** — event emitted by `CompressionRunner.MaybeCompress` (Phase 46) when the summariser returns an error, the summariser returns `(nil, nil)` (contract violation surfaced as `ErrEmptySummary`), or the estimator errors (typically a Phase 43 `ErrUnserializable` from `Trajectory.Serialize`). `TrajectoryCompressionFailedPayload` (SafePayload) carries the identity + step count + token estimate + error code (`summariser_error` / `empty_summary` / `estimator_error`) + truncated message (capped at 256 chars; never raw trajectory content). The load-bearing fail-loudly observability surface for compression failures (§13 — silent degradation banned). RFC §6.2, D-055.
 
-**Task-management meta-tools** — the reserved planner controls `_task_status` (typed state/progress rows for tasks THIS run spawned) and `_cancel_task` (cancel an own descendant, reason recorded), projected into the sealed `TaskStatus`/`CancelTask` decisions and dispatched against the task registry. Descendant-scoped via the parent-task chain — never arbitrary session tasks; not batchable in their first wave. Model-expressible `propagate_on_cancel: isolate` lands only alongside them (power with brake). RFC §6.2, Phase 187, D-324.
+**Task-management meta-tools** — the reserved planner controls `_task_status` (typed state/progress rows for tasks THIS run spawned) and `_cancel_task` (cancel an own descendant, reason recorded), projected into the sealed `TaskStatusQuery`/`CancelTask` decisions (the query shape is deliberately not named `TaskStatus` — that is the lifecycle enum) and dispatched against the task registry. Descendant-scoped via the parent-task chain — never arbitrary session tasks; not batchable in their first wave. Model-expressible `propagate_on_cancel: isolate` lands only alongside them (power with brake). RFC §6.2, Phase 187, D-324.
 
 **Turn-failure status-strip line** — the TUI's dedicated `× Turn failed · <ErrorCode>` honesty line rendered when a FOREGROUND run reaches a terminal failure, replacing the prior silent return to idle; detail stays on the diagnostics route. Phase 188, D-325.
 
