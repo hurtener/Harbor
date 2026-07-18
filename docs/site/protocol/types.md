@@ -34,6 +34,7 @@ Declared in `internal/protocol/types`.
 | `registered_at` | `string` |  |
 | `updated_at` | `string` |  |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `is_default` | `bool` | optional (`omitempty`) |
 
 ## AgentAggregates
 

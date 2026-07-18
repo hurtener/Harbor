@@ -234,6 +234,77 @@ func TestListTenantAgents_ConcurrentReuse_D025(t *testing.T) {
 	}
 }
 
+// TestListTenantAgents_DefaultAgent_OneRowPerTenant proves the
+// admin-widened fleet fan-in surfaces exactly one synthetic default row
+// per named tenant this runtime serves, alongside real registered rows,
+// through the UNCHANGED ListTenantAgents seam — no bespoke fan-in code.
+// The synthetic row's identity attribution carries only the tenant (the
+// default agent serves every session, not one), never a fabricated
+// (user, session).
+func TestListTenantAgents_DefaultAgent_OneRowPerTenant(t *testing.T) {
+	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state inmem.New: %v", err)
+	}
+	red := auditpatterns.New()
+	bus, err := eventsinmem.New(config.EventsConfig{
+		Driver: "inmem", MaxSubscribersPerSession: 8, SubscriberBufferSize: 64,
+		IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 64,
+	}, red)
+	if err != nil {
+		t.Fatalf("events inmem.New: %v", err)
+	}
+	reg, err := registry.New(registry.Deps{Store: store, Bus: bus, Redactor: red})
+	if err != nil {
+		t.Fatalf("registry.New: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = reg.Close(context.Background())
+		_ = bus.Close(context.Background())
+		_ = store.Close(context.Background())
+	})
+	// tenant-A has one real registered agent; tenant-B has none. Both must
+	// still surface a synthetic default row under the widened read.
+	if _, err := reg.Register(idCtx(t, "tenant-A", "u1", "s1"), "k1", sampleFleetConfig(), registry.RegisterOptions{DisplayName: "A one"}); err != nil {
+		t.Fatal(err)
+	}
+	proj, err := agentsprotocol.NewRegistryProjector(reg,
+		agentsprotocol.WithDefaultAgent(agentsprotocol.DefaultAgentDescriptor{
+			ID: "harbor-default-agent", DisplayName: "Harbor default agent",
+		}))
+	if err != nil {
+		t.Fatalf("NewRegistryProjector: %v", err)
+	}
+	svc, err := agentsprotocol.NewService(proj, agentsprotocol.WithBus(bus), agentsprotocol.WithRedactor(red))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	resp, err := svc.List(context.Background(), prototypes.AgentListRequest{
+		Identity: prototypes.IdentityScope{Tenant: "tenant-A", User: "obs", Session: "obs"},
+		Filter:   prototypes.AgentFilter{TenantIDs: []string{"tenant-A", "tenant-B"}},
+	}, true)
+	if err != nil {
+		t.Fatalf("widened List: %v", err)
+	}
+	// Expect: A one (real) + synthetic-A + synthetic-B == 3 rows.
+	defaultsByTenant := map[string]int{}
+	for _, a := range resp.Agents {
+		if a.IsDefault {
+			defaultsByTenant[a.Identity.Tenant]++
+			if a.Identity.User != "" || a.Identity.Session != "" {
+				t.Errorf("widened synthetic row carried a (user, session): %+v — want tenant-only attribution", a.Identity)
+			}
+		}
+	}
+	if len(resp.Agents) != 3 {
+		t.Fatalf("widened rows=%d, want 3 (1 real + 1 synthetic per named tenant)", len(resp.Agents))
+	}
+	if defaultsByTenant["tenant-A"] != 1 || defaultsByTenant["tenant-B"] != 1 {
+		t.Fatalf("synthetic rows per tenant=%v, want exactly one for tenant-A and tenant-B", defaultsByTenant)
+	}
+}
+
 // sampleFleetConfig is a minimal AgentConfig fixture for the fleet tests.
 func sampleFleetConfig() registry.AgentConfig {
 	return registry.AgentConfig{

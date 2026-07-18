@@ -300,6 +300,8 @@ directly regardless of propagation mode. See **Cancel hierarchy**. Phase
 
 ## D
 
+**Default agent** — the runtime's boot-configured agent: the one every `harbor dev` / `harbor serve` / generated-binary process boots serving through, identified by the well-known boot `agent_id` (`MuxInput.AgentConfigID`). It is NEVER written to the Agent Registry's StateStore (it is not a fleet-registered entity, so `registry.Register` is never called for it), which is why registry-scoped `agents.*` projections produced zero rows for a runtime serving only it — until Phase 190 (D-327) surfaced it as a **synthetic agent row**. It carries the caller's own verified `(tenant, user, session)` triple on a narrow read; agent_id is a registration identity, not an isolation principal (CLAUDE.md §6 clarifying note, D-059).
+
 **durable user-scope prompt layer** — a user-instruction prompt layer persisted per `(tenant, user)` for an agent (one field — `user_prompt` — of the **Durable user config variant** Phase 126a writes), spanning that user's sessions. At run start it is PROJECTED (Phase 126b, D-257) into the existing lower-trust `<user_instructions>` block as the MIDDLE segment, in precedence order admin Base > admin User > USER-durable > session User. It carries no base field (a user caller cannot edit the operator base) and is written ONLY through `agent_config.user.set_revision` (one writer) and read back ONLY by the run-start `ApplyPromptLayers` projection (one reader) — the §13 two-writers/one-reader trap closed by construction. RFC §6.16, §5.5.
 
 **Desired-state registry** — the durable, identity-scoped, versioned StateStore-backed store of agent-config revisions (`internal/agentcfg`, Phase 92a) — the unifying primitive of the **agent-config control plane**. It reuses the §9 driver triad (in-mem / SQLite / Postgres) for identity isolation, is keyed by `agent_id` (the RFC §6.16 registration identity — never an isolation filter) plus the `(tenant, user, session)` triple, and holds **config revisions** + an active-revision pointer. Reconciliation is next-turn-only: a run reads the active revision ONCE at run start into its immutable snapshot (D-025-aligned), so config edits never touch in-flight runs. Mirrors the governance `TenantOverridePolicy` synthetic-identity + Kind keying. D-234.
@@ -345,8 +347,6 @@ directly regardless of propagation mode. See **Cancel hierarchy**. Phase
 **docs site** — the published VitePress site at `hurtener.github.io/Harbor/`, built from `docs/site/` by `.github/workflows/docs.yml` (build on every PR as a dead-link gate; deploy to GitHub Pages on `main`). It mirrors the canonical in-repo docs — operator skills, recipes, CONFIG, glossary, decisions log, RFC, master plan, productionization playbook, changelog — via include stubs, so the repo stays the source of truth. Distinct from `docs/` (the in-repo markdown) and the Console (the in-product runtime UI). Phase 103, D-208.
 
 **Detach-on-reconcile** — the removal leg of agent-config run-start reconciliation: a connected MCP server no longer present in the active revision's connections section (removed via `agent_config.remove_mcp_connection`, or rolled back past its add) is deregistered from the planner catalog + MCP registry and its transport closed at the next-turn projection boundary — never mid-run; in-flight runs keep their snapshot. One mechanism serves both remove and rollback. Phase 156, D-287.
-
-**Default agent** — the runtime's synthetic, boot-configured agent (the one every `harbor dev` / `harbor serve` / generated binary boots with, keyed by the well-known id threaded as `MuxInput.AgentConfigID`) — never written to the Agent Registry via `registry.Register`, distinct from a registered fleet sub-agent. RFC §6.16, Phase 190, D-327.
 
 **Degenerate batch** — a would-be `Batch` with fewer than two combined `Tools`+`Spawns` branches; the projector never constructs one, preferring the plain single-shape `Decision` ("one representation per semantic"), pinned by conformance. Phase 185, D-322.
 
@@ -1041,6 +1041,8 @@ D-320.
 
 ## S
 
+**Synthetic agent row** — the first-class `agents.list` / `agents.get` row the `RegistryProjector` emits for the runtime's **default agent** when wired via `WithDefaultAgent` (Phase 190, D-327). It is synthesized on read from a value-typed `DefaultAgentDescriptor`, never persisted to the Agent Registry's StateStore, and is marked with the additive `Agent.IsDefault bool` (`is_default` wire marker) so a fleet catalog distinguishes "the runtime's own agent" from a registered member and reads "one agent, not enumerable this way" instead of an empty page (the silent-absence class, D-311). Collision rule: a real registration under the same well-known id suppresses the synthetic row (real data wins; one row per id). On the admin-widened fleet read it carries the named tenant only (user/session left empty — representable absence, not a fabricated session). Fleet-control verbs against its id fall through to the existing `ErrAgentNotFound` — no control surface over the runtime's own process.
+
 **Snapshot generation fence (TUI)** — the monotonically ordered reconciliation
 marker that prevents an older in-flight snapshot from overwriting events or a
 newer snapshot already applied to the conversation projection. Phase 180,
@@ -1240,8 +1242,6 @@ Additions to this set are RFC PRs.
 **`StreamFrame`** — Chunked payload tied to a parent run (Phase 12). `StreamID` (defaults to `RunID`), `Seq` (engine-assigned, monotonic per StreamID), `Text`, `Done`, `Meta`. Distinct from `events.Event` (lifecycle markers); StreamFrames carry incremental output. RFC §6.1, brief 01 §2.
 
 **`Subflow`** — Runtime primitive (Phase 14): `(nctx *NodeContext) CallSubflow(ctx, factory) (Envelope, error)`. Runs a child engine for one parent envelope, mirrors parent cancellation via a watcher goroutine, returns the first egress payload, then `Stop`s the child. RFC §6.1, brief 01 §4.
-
-**Synthetic agent row** — the `agents.list`/`agents.get` row projected for the default agent, additively marked `is_default: true` on the `Agent` wire type so a consumer distinguishes it from a registered `AgentRecord`. Suppressed when a real registration collides on the same well-known id (real data wins). Phase 190, D-311 (class), D-327.
 
 ## T
 

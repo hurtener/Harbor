@@ -81,7 +81,7 @@ The **"Has pending approval"** facet now narrows to REAL rows — the runtime po
 
 ### Agents — the registry
 
-The Agent Registry (RFC §6.16). Every agent registered with this Runtime, its `agent_id` (registration identity, NOT isolation identity — see CLAUDE.md §6 clarification), capabilities, last-seen, register/deregister events. Useful for multi-agent deployments where one Runtime hosts many agents; for a single-agent setup, you see one row.
+The Agent Registry (RFC §6.16). Every agent registered with this Runtime, its `agent_id` (registration identity, NOT isolation identity — see CLAUDE.md §6 clarification), capabilities, last-seen, register/deregister events. Useful for multi-agent deployments where one Runtime hosts many agents; for a single-agent setup, you see one row — the runtime's **default agent** (the boot-configured agent it serves through, which is never registered as a fleet entity). That row is marked `is_default: true` and rendered with a **Default** badge on its card, so you can tell "the runtime's own agent" apart from a registered sub-agent, and a fleet catalog reads "one agent" instead of an empty page.
 
 Click an agent for its detail page, which carries the per-agent tabs: **Identity**, **Autonomy**, **Tools** (connected tools), **Memory**, **Cost**, and **Skills**. The Skills tab is where you inspect the DB-backed runtime skill catalog this agent draws on (`internal/skills/`, RFC §6.7) — there is no standalone Skills nav page. See [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md).
 

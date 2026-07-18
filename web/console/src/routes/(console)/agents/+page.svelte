@@ -176,22 +176,20 @@
         </div>
       {/snippet}
       {#snippet empty()}
-        <!-- W11 (Phase 83x): the Agents page reads from the AgentRegistry,
-             which carries zero rows until something explicitly registers an
-             agent. The runtime still runs a SYNTHETIC "default agent" for the
-             dev token's identity scope (Live Runtime surfaces it under that
-             label) — but that synthetic is NOT a registered row and is
-             intentionally invisible here. -->
+        <!-- The Agents catalog now surfaces the runtime's synthetic default
+             agent as a first-class row marked `is_default` (a "Default" chip
+             on its card), so a runtime actively serving through its boot agent
+             is never an empty page. This empty state is reached only when a
+             FILTER excludes every row (including the default one). -->
         <div class="empty-block" data-testid="agents-catalog-empty">
           <p class="empty-headline">No agents match these filters</p>
           <p class="empty-detail">
-            The registry has 0 registered agents matching the current view. The
-            runtime still runs a synthetic <strong>default agent</strong> for
-            the dev token's identity scope (visible on
-            <a href="/live-runtime">Live Runtime</a>) — that synthetic is not a
-            registered row and does not appear here. To register a named agent,
-            scaffold one with <code>harbor scaffold</code> and run it with
-            <code>harbor dev</code>.
+            No agents match the current view. The runtime's synthetic
+            <strong>default agent</strong> — the boot-configured agent it serves
+            through, shown with a <strong>Default</strong> marker — is a
+            first-class row here; a filter is currently excluding it. To register
+            a named agent, scaffold one with <code>harbor scaffold</code> and run
+            it with <code>harbor dev</code>.
           </p>
           <button type="button" class="bar-action" onclick={() => state.clearFilters()}>
             Clear filters
