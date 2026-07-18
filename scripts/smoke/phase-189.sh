@@ -31,7 +31,10 @@ run_race_tests() {
     local desc="$1"
     shift
     local out rc
-    out="$(CGO_ENABLED=0 go test -race -count=1 "$@" 2>&1)" && rc=0 || rc=$?
+    # -race requires the cgo race runtime — do NOT force CGO_ENABLED=0
+    # (that disables cgo and the race build fails to link on CI, exit 2).
+    # Matches the go-test CI job, which deliberately leaves CGO unset.
+    out="$(go test -race -count=1 "$@" 2>&1)" && rc=0 || rc=$?
     if [ "${rc}" -eq 0 ]; then
         ok "${desc}"
         return
