@@ -59,6 +59,7 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - Lifecycle_TerminalIsTerminal
 //   - Cancel_Cascade_PropagatesToChildren
 //   - Cancel_Isolate_LeavesChildrenAlone
+//   - Cancel_Cascade_SkipsIsolateDescendant
 //   - Cancel_AlreadyTerminal_NoOp
 //   - Cancel_DeepGrandchildren_AllReceiveCancellation
 //   - Prioritize_UpdatesValue
@@ -526,6 +527,81 @@ func Run(t *testing.T, factory Factory) {
 			if cgot.Status != tasks.StatusRunning {
 				t.Errorf("child %q status=%q, want %q (isolate must not cascade)",
 					cID, cgot.Status, tasks.StatusRunning)
+			}
+		}
+	})
+
+	t.Run("Cancel_Cascade_SkipsIsolateDescendant", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+		ctx := ctxA()
+		// Parent P is cascade; it has a cascade child C2 and an isolate
+		// child C1, and C1 itself has a cascade grandchild GC1. Cancelling
+		// P (an ancestor cascade) must sweep C2 but leave the WHOLE C1
+		// isolate subtree (C1 AND GC1) running: a mid-walk isolate node
+		// detaches its subtree from the ancestor's cascade.
+		parentReq := freshSpawnReq(tripleA())
+		parentReq.PropagateOnCancel = tasks.PropagateCascade
+		p, err := r.Spawn(ctx, parentReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.MarkRunning(ctx, p.ID); err != nil {
+			t.Fatal(err)
+		}
+		pid := p.ID
+
+		c1Req := freshSpawnReq(tripleA())
+		c1Req.ParentTaskID = &pid
+		c1Req.PropagateOnCancel = tasks.PropagateIsolate
+		c1, err := r.Spawn(ctx, c1Req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.MarkRunning(ctx, c1.ID); err != nil {
+			t.Fatal(err)
+		}
+		c1id := c1.ID
+
+		gcReq := freshSpawnReq(tripleA())
+		gcReq.ParentTaskID = &c1id
+		gcReq.PropagateOnCancel = tasks.PropagateCascade
+		gc1, err := r.Spawn(ctx, gcReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.MarkRunning(ctx, gc1.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		c2Req := freshSpawnReq(tripleA())
+		c2Req.ParentTaskID = &pid
+		c2Req.PropagateOnCancel = tasks.PropagateCascade
+		c2, err := r.Spawn(ctx, c2Req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.MarkRunning(ctx, c2.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := r.Cancel(ctx, pid, "ancestor-cascade"); err != nil {
+			t.Fatalf("Cancel P: %v", err)
+		}
+
+		want := map[tasks.TaskID]tasks.TaskStatus{
+			pid:    tasks.StatusCancelled, // direct target
+			c2.ID:  tasks.StatusCancelled, // cascade sibling swept
+			c1id:   tasks.StatusRunning,   // isolate detached
+			gc1.ID: tasks.StatusRunning,   // isolate subtree detached
+		}
+		for id, wantStatus := range want {
+			got, err := r.Get(ctx, id)
+			if err != nil {
+				t.Fatalf("Get %q: %v", id, err)
+			}
+			if got.Status != wantStatus {
+				t.Errorf("task %q status=%q, want %q", id, got.Status, wantStatus)
 			}
 		}
 	})

@@ -8,7 +8,7 @@ import (
 )
 
 // Decision is the sealed sum-type a planner returns from Next.
-// Seven shapes ship (RFC §6.2):
+// The shapes ship per RFC §6.2:
 //
 //   - CallTool: invoke one tool with structured args.
 //   - CallParallel: invoke N tools in parallel with a join spec.
@@ -16,6 +16,8 @@ import (
 //     branches with non-retain-turn task spawns.
 //   - SpawnTask: spawn a background task (retain-turn or non-retain-turn).
 //   - AwaitTask: block the planner until a spawned task resolves.
+//   - TaskStatusQuery: observe the state of tasks this run spawned.
+//   - CancelTask: cancel one task this run spawned.
 //   - RequestPause: pause the run for approval / input / external event.
 //   - Finish: terminal decision with a reason + payload.
 //
@@ -211,10 +213,12 @@ func (SpawnTask) isDecision() {}
 // it into a `tasks.SpawnRequest` (or `tasks.SpawnToolRequest`) at
 // dispatch time; identity is filled from the run's quadruple.
 //
-// At the shape carries only the fields the planner needs to
-// specify; the Runtime fills the rest (Identity, IdempotencyKey,
-// PropagateOnCancel, NotifyOnComplete). Future phases MAY extend this
-// shape with additional planner-controlled fields.
+// The shape carries only the fields the planner needs to specify; the
+// Runtime fills the rest (Identity, IdempotencyKey, NotifyOnComplete).
+// PropagateOnCancel became planner-controllable once the model gained
+// the task observation/cancel meta-tools to manage detached work.
+// Future phases MAY extend this shape with additional
+// planner-controlled fields.
 type SpawnSpec struct {
 	// Description is the human-readable task description (audit +
 	// observability).
@@ -234,6 +238,19 @@ type SpawnSpec struct {
 	// remaining members when the first fails. Ignored when joining
 	// an existing GroupID.
 	FailFast bool
+	// PropagateOnCancel controls whether this spawned task survives a
+	// cancellation cascade from an ANCESTOR task. Empty (the default)
+	// maps to `tasks.PropagateCascade`: the task is swept when a task
+	// above it in the parent chain is cancelled with a cascade policy.
+	// `tasks.PropagateIsolate` detaches the task from that cascade — it
+	// keeps running when its parent is cancelled. Isolate never detaches
+	// a task from a DIRECT cancel: the operator (via the Protocol) and
+	// the spawning run itself (via CancelTask) both reach an
+	// isolate-marked task at any time. Any other value is rejected loud
+	// at the dispatch edge. This is the model's brake on the parallelism
+	// it spawns — paired with the observation/cancel meta-tools so
+	// detached work is never unobservable or unstoppable.
+	PropagateOnCancel string
 }
 
 // AwaitTask blocks the planner until the named task reaches a
@@ -245,6 +262,54 @@ type AwaitTask struct {
 }
 
 func (AwaitTask) isDecision() {}
+
+// TaskStatusQuery observes the state of the background tasks THIS run
+// spawned — a non-terminal, non-blocking decision the Runtime executor
+// dispatches like CallTool, appending a trajectory step the planner
+// reads on its next turn. A model that fanned out several explorations
+// uses it to poll which have resolved before deciding whether to await
+// or cancel the rest.
+//
+// TaskIDs names the tasks to report; an empty/nil slice means "every
+// task this run has spawned, directly or transitively" (the run's whole
+// descendant subtree). Every explicitly-named id is scope-checked: the
+// executor resolves ONLY tasks whose parent-task chain reaches the
+// calling run's own task, never an arbitrary session task — one
+// out-of-scope id fails the whole call rather than silently omitting it.
+//
+// The shape is deliberately NOT named TaskStatus: that identifier is the
+// tasks-package lifecycle enum (pending/running/…/cancelled). This is the
+// planner-facing query decision.
+type TaskStatusQuery struct {
+	// TaskIDs are the tasks to report on; nil/empty means every task
+	// this run has spawned, including nested descendants.
+	TaskIDs []tasks.TaskID
+}
+
+func (TaskStatusQuery) isDecision() {}
+
+// CancelTask cancels one background task THIS run spawned — the model's
+// own judgment applied to work it started (e.g. cancelling the losing
+// branches of a fan-out once the first answered). A non-terminal,
+// non-blocking decision dispatched like CallTool; the planner observes
+// the {task_id, cancelled} outcome on its next turn.
+//
+// TaskID must reach the calling run's own task by walking the
+// parent-task chain upward — a run can cancel only its own descendants,
+// never a sibling run's tasks in the same session. A cancel on a task
+// the run spawned under an isolate propagation policy still succeeds: a
+// direct cancel is never gated on the target's own propagation mode —
+// isolate only detaches a task from an ANCESTOR's cascade, never from a
+// direct cancel by the run that spawned it or by the operator.
+type CancelTask struct {
+	// TaskID is the descendant to cancel.
+	TaskID tasks.TaskID
+	// Reason is the human-readable cancellation reason recorded on the
+	// emitted task.cancelled event.
+	Reason string
+}
+
+func (CancelTask) isDecision() {}
 
 // RequestPause asks the Runtime to pause the run for an external
 // signal. The unified pause/resume primitive (later phase) drives the

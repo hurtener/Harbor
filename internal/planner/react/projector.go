@@ -22,15 +22,17 @@ import (
 //     serialization fallback (head CallTool + tail queued on
 //     `rc.PendingToolCalls`).
 //
-// AC-21′ (narrowed successor to the silent-tail-drop guard): only the
-// terminal/blocking reserved-control names — `_finish` and
-// `_await_task` — stay standalone. Either co-occurring with ANY other
-// tool-call in one response is rejected loudly with
-// [planner.ErrInvalidDecision]: a terminal decision and a single-target
-// block have no coherent multi-call semantics (and a batched await
-// would depend on a sibling spawn's not-yet-existing task_id). The
-// guard runs BEFORE the head switch so it fires whether the reserved
-// name is the head or in the tail, and independent of `parallelEnabled`.
+// Narrowed successor to the silent-tail-drop guard: the
+// terminal/blocking reserved-control names — `_finish`, `_await_task`,
+// and the two task-management controls `_task_status` / `_cancel_task`
+// — stay standalone. Any of them co-occurring with ANY other tool-call
+// in one response is rejected loudly with [planner.ErrInvalidDecision]:
+// a terminal decision, a single-target block, and the task
+// observation/cancel controls have no coherent multi-call semantics
+// (and a batched await would depend on a sibling spawn's
+// not-yet-existing task_id). The guard runs BEFORE the head switch so it
+// fires whether the reserved name is the head or in the tail, and
+// independent of `parallelEnabled`.
 //
 // `_spawn_task` is NO LONGER standalone: a response mixing spawns with
 // catalog tools (or with other spawns) projects to [planner.Batch] — a
@@ -74,13 +76,13 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		}, nil
 	}
 
-	// AC-21′ standalone guard: the terminal/blocking reserved-control
-	// names (`_finish` / `_await_task`) are standalone. When either
-	// co-occurs with one or more other tool-calls, fail loudly rather
-	// than silently honour the head and drop the rest (the §13-forbidden
-	// silent-degradation pattern this fix closes). Fires for head OR
-	// tail position, on BOTH the native-parallel path and the
-	// serialization opt-out. `_spawn_task` is NOT standalone — it
+	// Standalone guard: the terminal/blocking reserved-control names
+	// (`_finish` / `_await_task` / `_task_status` / `_cancel_task`) are
+	// standalone. When any co-occurs with one or more other tool-calls,
+	// fail loudly rather than silently honour the head and drop the rest
+	// (the §13-forbidden silent-degradation pattern this fix closes).
+	// Fires for head OR tail position, on BOTH the native-parallel path
+	// and the serialization opt-out. `_spawn_task` is NOT standalone — it
 	// partitions into a Batch below.
 	if len(resp.ToolCalls) > 1 {
 		for _, tc := range resp.ToolCalls {
@@ -115,6 +117,10 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		return translateNativeSpawn(first)
 	case AwaitTaskToolName:
 		return translateNativeAwait(first)
+	case TaskStatusToolName:
+		return translateNativeTaskStatus(first)
+	case CancelTaskToolName:
+		return translateNativeCancelTask(first)
 	default:
 	}
 
@@ -163,14 +169,19 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 
 // isStandaloneControlName reports whether name is a reserved
 // planner-control meta-tool that must be sent alone: the terminal
-// `_finish` and the single-target block `_await_task`. Under AC-21′
-// these are the only names that reject co-occurrence with any other
-// tool-call in one response — a terminal decision and a single-target
-// block have no coherent multi-call semantics. `_spawn_task` is
-// deliberately EXCLUDED: it is batchable (see projectBatch).
+// `_finish`, the single-target block `_await_task`, and the two
+// task-management controls `_task_status` / `_cancel_task`. These names
+// reject co-occurrence with any other tool-call in one response — a
+// terminal decision, a single-target block, and the task
+// observation/cancel controls have no coherent multi-call semantics
+// (widening either task-management control to batchable later is
+// additive; retracting a shipped batchable surface is not, so the
+// conservative non-batchable grammar is the first-wave choice).
+// `_spawn_task` is deliberately EXCLUDED: it is batchable (see
+// projectBatch).
 func isStandaloneControlName(name string) bool {
 	switch name {
-	case FinishToolName, AwaitTaskToolName:
+	case FinishToolName, AwaitTaskToolName, TaskStatusToolName, CancelTaskToolName:
 		return true
 	default:
 		return false
@@ -308,11 +319,12 @@ func translateNativeSpawn(tc llm.ToolCallStructured) (planner.SpawnTask, error) 
 		Kind    string `json:"kind"`
 		GroupID string `json:"group_id"`
 		Spec    struct {
-			Description string `json:"description"`
-			Query       string `json:"query"`
-			Priority    int    `json:"priority"`
-			RetainTurn  bool   `json:"retain_turn"`
-			FailFast    bool   `json:"fail_fast"`
+			Description       string `json:"description"`
+			Query             string `json:"query"`
+			Priority          int    `json:"priority"`
+			RetainTurn        bool   `json:"retain_turn"`
+			FailFast          bool   `json:"fail_fast"`
+			PropagateOnCancel string `json:"propagate_on_cancel"`
 		} `json:"spec"`
 	}
 	var env spawnArgsEnvelope
@@ -336,17 +348,87 @@ func translateNativeSpawn(tc llm.ToolCallStructured) (planner.SpawnTask, error) 
 			planner.ErrInvalidDecision, env.Kind,
 		)
 	}
+	// Validate propagate_on_cancel against the accepted set, mirroring the
+	// kind enum check above. Empty maps to the cascade default at the
+	// dispatch edge; an out-of-enum value fails loud naming the offending
+	// value — never silently clamped to cascade.
+	switch env.Spec.PropagateOnCancel {
+	case "", tasks.PropagateCascade, tasks.PropagateIsolate:
+	default:
+		return planner.SpawnTask{}, fmt.Errorf(
+			"%w: react._spawn_task propagate_on_cancel %q not in {cascade, isolate}",
+			planner.ErrInvalidDecision, env.Spec.PropagateOnCancel,
+		)
+	}
 	return planner.SpawnTask{
 		Kind: kind,
 		Spec: planner.SpawnSpec{
-			Description: env.Spec.Description,
-			Query:       env.Spec.Query,
-			Priority:    env.Spec.Priority,
-			RetainTurn:  env.Spec.RetainTurn,
-			FailFast:    env.Spec.FailFast,
+			Description:       env.Spec.Description,
+			Query:             env.Spec.Query,
+			Priority:          env.Spec.Priority,
+			RetainTurn:        env.Spec.RetainTurn,
+			FailFast:          env.Spec.FailFast,
+			PropagateOnCancel: env.Spec.PropagateOnCancel,
 		},
 		GroupID: tasks.TaskGroupID(env.GroupID),
 	}, nil
+}
+
+// translateNativeTaskStatus parses a `_task_status` native call into a
+// [planner.TaskStatusQuery]. A missing / null / empty `task_ids` array
+// yields `TaskIDs: nil`, which the executor reads as "report every task
+// this run spawned". Malformed JSON fails loud with a wrapped
+// [planner.ErrInvalidDecision] (mirroring translateNativeSpawn's malformed
+// guard); a valid-but-empty list is the list-everything sentinel, never an
+// error.
+func translateNativeTaskStatus(tc llm.ToolCallStructured) (planner.TaskStatusQuery, error) {
+	type taskStatusArgs struct {
+		TaskIDs []string `json:"task_ids"`
+	}
+	var args taskStatusArgs
+	if len(tc.Args) > 0 {
+		if err := json.Unmarshal(tc.Args, &args); err != nil {
+			return planner.TaskStatusQuery{}, fmt.Errorf(
+				"%w: react._task_status args malformed JSON: %w (raw=%q)",
+				planner.ErrInvalidDecision, err, string(tc.Args),
+			)
+		}
+	}
+	if len(args.TaskIDs) == 0 {
+		return planner.TaskStatusQuery{TaskIDs: nil}, nil
+	}
+	ids := make([]tasks.TaskID, 0, len(args.TaskIDs))
+	for _, id := range args.TaskIDs {
+		ids = append(ids, tasks.TaskID(id))
+	}
+	return planner.TaskStatusQuery{TaskIDs: ids}, nil
+}
+
+// translateNativeCancelTask parses a `_cancel_task` native call into a
+// [planner.CancelTask]. An empty `task_id` fails loud with
+// [planner.ErrInvalidDecision] (mirroring translateNativeAwait's empty-id
+// guard verbatim); `reason` is optional.
+func translateNativeCancelTask(tc llm.ToolCallStructured) (planner.CancelTask, error) {
+	type cancelArgs struct {
+		TaskID string `json:"task_id"`
+		Reason string `json:"reason"`
+	}
+	var args cancelArgs
+	if len(tc.Args) > 0 {
+		if err := json.Unmarshal(tc.Args, &args); err != nil {
+			return planner.CancelTask{}, fmt.Errorf(
+				"%w: react._cancel_task args malformed JSON: %w (raw=%q)",
+				planner.ErrInvalidDecision, err, string(tc.Args),
+			)
+		}
+	}
+	if args.TaskID == "" {
+		return planner.CancelTask{}, fmt.Errorf(
+			"%w: react._cancel_task requires non-empty task_id (raw=%q)",
+			planner.ErrInvalidDecision, string(tc.Args),
+		)
+	}
+	return planner.CancelTask{TaskID: tasks.TaskID(args.TaskID), Reason: args.Reason}, nil
 }
 
 func translateNativeAwait(tc llm.ToolCallStructured) (planner.AwaitTask, error) {

@@ -8617,6 +8617,35 @@ agent reaches only its own descendants; cascade stays the default. The two
 meta-tools are NOT batchable in this wave (conservative grammar; widening is
 cheap, retracting is not).
 
+**Descendant scoping is IN ADDITION to identity scoping, not instead of it.**
+`dispatch.isOwnDescendant` walks the target's `ParentTaskID` chain upward
+(bounded like `spawnChainDepth`) and rejects any target that does not reach
+the calling run's own task with the new `dispatch.ErrTaskNotOwnDescendant`
+sentinel — a sibling run's own tasks in the SAME session are out of scope.
+This runs on top of the registry's existing `(tenant, user, session)`
+`identityVisible` check (CLAUDE.md §6), never as a replacement. `_task_status`
+with explicit ids validates EVERY id before any `Get` (atomic — one
+out-of-scope id fails the whole call, never a silent partial result);
+list-all walks the caller's own subtree, so those ids are in-scope by
+construction.
+
+**Cascade-walk fix.** `isolate` was structurally unreachable from the model
+before this phase, so the shipped engine cascade left a dormant gap:
+`internal/tasks/engine/engine.go`'s `Cancel` and `groups.go`'s
+`cancelTaskLocked` cancelled every reachable descendant "regardless of their
+own PropagateOnCancel" (the code's own comment at `engine.go:620-625`),
+consulting only the CANCEL TARGET's flag to decide whether to start the walk.
+That contradicts the now-load-bearing invariant "isolate detaches a task from
+its parent's cascade." This phase extracts one shared
+`cascadeCancelDescendantsLocked` helper both call sites use, which checks EACH
+descendant's own `PropagateOnCancel` mid-walk: an isolate-marked descendant is
+skipped AND its whole subtree detaches (children never enqueued). The
+direct-target semantics are byte-for-byte unchanged — a direct `Cancel` on an
+isolate task still transitions it (the operator's last word; the spawning
+run's own `_cancel_task`); only the treatment of nodes reached mid-cascade
+changed. Covered by the `Cancel_Cascade_SkipsIsolateDescendant` conformance
+scenario (both drivers) plus the engine cancel-hierarchy end-to-end test.
+
 ---
 
 ## D-325 — Background-task resolution wakes the conversation: a notification-class mirror on top of the typed completion, plus foreground turn-failure honesty

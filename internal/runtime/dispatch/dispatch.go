@@ -53,6 +53,17 @@ import (
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
+// ErrTaskNotOwnDescendant is returned when a task observation/cancel
+// meta-tool (_task_status / _cancel_task) names a target the calling run
+// did not spawn — a task whose ParentTaskID chain does not reach the
+// run's own task. It is a SCOPE (authorization) violation, distinct from
+// a not-found or identity-secrecy boundary: the caller's own session may
+// already know the sibling task exists (it is Console-visible), so the
+// message says "not your descendant" so the model can self-correct rather
+// than retry a typo. This is IN ADDITION to the registry's own
+// (tenant, user, session) identity-visibility check, never instead of it.
+var ErrTaskNotOwnDescendant = errors.New("dispatch: task is not a descendant this run spawned")
+
 // toolExecutor is the production `steering.ToolExecutor`
 // implementation. Concurrent-safe — the catalog + artifact store are
 // immutable after the stack's boot wiring runs.
@@ -225,9 +236,16 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 //     the spawned task reaches a terminal status and returns its outcome.
 //   - AwaitTask: poll the named task (Get) until it reaches a terminal
 //     status, then return its answer-envelope / error as the observation.
+//   - TaskStatusQuery: report the state of the tasks THIS run spawned
+//     (descendant-scoped), one {task_id, status, description, group_id}
+//     row per task.
+//   - CancelTask: cancel one task THIS run spawned (descendant-scoped),
+//     returning {task_id, cancelled}.
 //
 // Both spawn/await observations go through the same projectForLLM
-// discipline so a heavy result never trips ErrContextLeak.
+// discipline so a heavy result never trips ErrContextLeak. The task
+// observation/cancel observations are compact (status rows / a cancel
+// bool) and carry no heavy content.
 func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
 	switch d := decision.(type) {
 	case planner.CallTool:
@@ -238,6 +256,10 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 		return e.spawnTask(ctx, rc, d)
 	case planner.AwaitTask:
 		return e.awaitTask(ctx, rc, d)
+	case planner.TaskStatusQuery:
+		return e.taskStatus(ctx, rc, d)
+	case planner.CancelTask:
+		return e.cancelTask(ctx, rc, d)
 	case planner.Batch:
 		return e.batch(ctx, rc, d)
 	default:
@@ -441,13 +463,14 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		kind = tasks.KindBackground
 	}
 	req := tasks.SpawnRequest{
-		Identity:         identity.Quadruple{Identity: rc.Quadruple.Identity},
-		Kind:             kind,
-		Description:      d.Spec.Description,
-		Query:            d.Spec.Query,
-		Priority:         d.Spec.Priority,
-		GroupID:          d.GroupID,
-		NotifyOnComplete: true,
+		Identity:          identity.Quadruple{Identity: rc.Quadruple.Identity},
+		Kind:              kind,
+		Description:       d.Spec.Description,
+		Query:             d.Spec.Query,
+		Priority:          d.Spec.Priority,
+		GroupID:           d.GroupID,
+		PropagateOnCancel: d.Spec.PropagateOnCancel,
+		NotifyOnComplete:  true,
 	}
 	if parentID != "" {
 		req.ParentTaskID = &parentID
@@ -726,6 +749,194 @@ func (e *toolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) int
 		cur = *task.ParentTaskID
 	}
 	return depth
+}
+
+// isOwnDescendant reports whether targetID is a task the calling run
+// spawned, directly or transitively: it walks targetID's ParentTaskID
+// chain upward and returns true iff callerID appears in that chain. The
+// walk is bounded to maxSpawnDepth+1 hops (the same bound spawnChainDepth
+// uses) so a corrupt or cyclic parent chain cannot loop unbounded.
+// targetID == callerID returns FALSE — a run's own task is not a
+// descendant, and neither task meta-tool is a self-control surface. A Get
+// error mid-walk stops the walk and returns false: an unresolvable
+// lineage is treated as out-of-scope (fail closed), never permitted. ctx
+// MUST already carry the run's identity so the Get calls are
+// identity-scoped (the registry's own visibility check is thus additive,
+// not replaced — CLAUDE.md §6).
+func (e *toolExecutor) isOwnDescendant(ctx context.Context, targetID, callerID tasks.TaskID) bool {
+	if targetID == "" || callerID == "" || targetID == callerID {
+		return false
+	}
+	cur := targetID
+	for hops := 0; cur != "" && hops <= e.maxSpawnDepth; hops++ {
+		task, err := e.tasks.Get(ctx, cur)
+		if err != nil || task == nil || task.ParentTaskID == nil {
+			return false
+		}
+		parent := *task.ParentTaskID
+		if parent == callerID {
+			return true
+		}
+		cur = parent
+	}
+	return false
+}
+
+// taskStatus dispatches a planner.TaskStatusQuery — the model observing
+// the background tasks its own run spawned. Identity is attached exactly
+// like spawnTask / awaitTask (never a global — CLAUDE.md §6).
+//
+// With TaskIDs == nil it walks the caller's own descendant subtree (BFS
+// over TaskRegistry.List filtered by ParentID, bounded by maxSpawnDepth
+// levels) — those ids are own descendants by construction, so no
+// per-id scope check is needed. With TaskIDs non-empty, EVERY named id is
+// descendant-scope-checked (isOwnDescendant) BEFORE any Get; one
+// out-of-scope id fails the WHOLE call loud with ErrTaskNotOwnDescendant
+// (atomic validation, matching CallParallel's "any branch's invalid args
+// fails the whole call" precedent — never a silent partial result that
+// quietly omits ids the caller can't see).
+//
+// Each row is {task_id, status, description, group_id}; group_id is
+// resolved from the caller's identity-scoped ListGroups reverse index
+// (the same derivation the tasks/protocol registry projector uses — no
+// Task.GroupID field exists on the persisted record).
+func (e *toolExecutor) taskStatus(ctx context.Context, rc planner.RunContext, d planner.TaskStatusQuery) (any, any, error) {
+	if e.tasks == nil {
+		return nil, nil, fmt.Errorf("%w: TaskStatusQuery (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
+	}
+	taskCtx, idErr := identity.With(ctx, rc.Quadruple.Identity)
+	if idErr != nil {
+		return nil, nil, fmt.Errorf("TaskStatusQuery: attach identity: %w", idErr)
+	}
+	callerID := tasks.TaskID(rc.Quadruple.RunID)
+
+	var ids []tasks.TaskID
+	if len(d.TaskIDs) == 0 {
+		collected, cErr := e.collectDescendants(taskCtx, rc.Quadruple.Identity, callerID)
+		if cErr != nil {
+			return nil, nil, fmt.Errorf("TaskStatusQuery: collect descendants: %w", cErr)
+		}
+		ids = collected
+	} else {
+		for _, id := range d.TaskIDs {
+			if !e.isOwnDescendant(taskCtx, id, callerID) {
+				return nil, nil, fmt.Errorf("%w: id=%q (caller run task %q)", ErrTaskNotOwnDescendant, id, callerID)
+			}
+		}
+		ids = d.TaskIDs
+	}
+
+	groupOf, err := e.taskGroupIndex(taskCtx, rc.Quadruple.Identity)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TaskStatusQuery: group index: %w", err)
+	}
+
+	rows := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		task, gErr := e.tasks.Get(taskCtx, id)
+		if gErr != nil {
+			return nil, nil, fmt.Errorf("TaskStatusQuery: get %q: %w", id, gErr)
+		}
+		rows = append(rows, map[string]any{
+			"task_id":     string(task.ID),
+			"status":      string(task.Status),
+			"description": task.Description,
+			"group_id":    string(groupOf[task.ID]),
+		})
+	}
+	raw := map[string]any{"tasks": rows}
+	return raw, raw, nil
+}
+
+// cancelTask dispatches a planner.CancelTask — the model cancelling one
+// task its own run spawned. It descendant-scope-checks d.TaskID against
+// the calling run's task (isOwnDescendant) BEFORE touching the registry,
+// then calls TaskRegistry.Cancel and returns {task_id, cancelled}. A
+// target outside the run's lineage fails loud with
+// ErrTaskNotOwnDescendant (never a bare not-found). Cancel's own
+// (bool, error) contract is idempotent on a terminal target — cancelling
+// an already-terminal descendant returns cancelled:false, not an error.
+// A direct cancel is never gated on the target's own PropagateOnCancel:
+// isolate detaches a task from an ANCESTOR's cascade, never from the
+// spawning run's own CancelTask. Identity is attached exactly like
+// spawnTask / awaitTask (never a global — CLAUDE.md §6).
+func (e *toolExecutor) cancelTask(ctx context.Context, rc planner.RunContext, d planner.CancelTask) (any, any, error) {
+	if e.tasks == nil {
+		return nil, nil, fmt.Errorf("%w: CancelTask (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
+	}
+	if d.TaskID == "" {
+		return nil, nil, errors.New("CancelTask: TaskID is empty")
+	}
+	taskCtx, idErr := identity.With(ctx, rc.Quadruple.Identity)
+	if idErr != nil {
+		return nil, nil, fmt.Errorf("CancelTask: attach identity: %w", idErr)
+	}
+	callerID := tasks.TaskID(rc.Quadruple.RunID)
+	if !e.isOwnDescendant(taskCtx, d.TaskID, callerID) {
+		return nil, nil, fmt.Errorf("%w: id=%q (caller run task %q)", ErrTaskNotOwnDescendant, d.TaskID, callerID)
+	}
+	cancelled, err := e.tasks.Cancel(taskCtx, d.TaskID, d.Reason)
+	if err != nil {
+		return nil, nil, fmt.Errorf("CancelTask(%q): %w", d.TaskID, err)
+	}
+	raw := map[string]any{
+		"task_id":   string(d.TaskID),
+		"cancelled": cancelled,
+	}
+	return raw, raw, nil
+}
+
+// collectDescendants returns the ids of every task in the caller's own
+// descendant subtree — a BFS over TaskRegistry.List filtered by ParentID
+// starting from callerID, bounded to maxSpawnDepth levels of descent (the
+// same depth the spawn tree is already capped at; no new cap is
+// introduced). The caller's own task is NOT included — it is not a
+// descendant of itself. ctx MUST carry the run's identity so List is
+// identity-scoped.
+func (e *toolExecutor) collectDescendants(ctx context.Context, sessionID identity.Identity, callerID tasks.TaskID) ([]tasks.TaskID, error) {
+	var out []tasks.TaskID
+	frontier := []tasks.TaskID{callerID}
+	seen := map[tasks.TaskID]struct{}{callerID: {}}
+	for level := 0; level < e.maxSpawnDepth && len(frontier) > 0; level++ {
+		var next []tasks.TaskID
+		for _, parent := range frontier {
+			pid := parent
+			children, err := e.tasks.List(ctx, sessionID, tasks.TaskFilter{ParentID: &pid})
+			if err != nil {
+				return nil, err
+			}
+			for _, c := range children {
+				if _, dup := seen[c.ID]; dup {
+					continue
+				}
+				seen[c.ID] = struct{}{}
+				out = append(out, c.ID)
+				next = append(next, c.ID)
+			}
+		}
+		frontier = next
+	}
+	return out, nil
+}
+
+// taskGroupIndex builds the task→group reverse index the status rows use
+// for their group_id column, mirroring the tasks/protocol registry
+// projector's "Group enrichment" derivation: ListGroups is
+// identity-scoped; a registry without group support returns an empty
+// slice, so an absent membership is the honest "" default, never a silent
+// degradation of a known value. ctx MUST carry the run's identity.
+func (e *toolExecutor) taskGroupIndex(ctx context.Context, sessionID identity.Identity) (map[tasks.TaskID]tasks.TaskGroupID, error) {
+	groups, err := e.tasks.ListGroups(ctx, sessionID, nil)
+	if err != nil {
+		return nil, err
+	}
+	groupOf := make(map[tasks.TaskID]tasks.TaskGroupID, len(groups))
+	for _, g := range groups {
+		for _, member := range g.Members {
+			groupOf[member] = g.ID
+		}
+	}
+	return groupOf, nil
 }
 
 // taskOutcomeObservation projects a terminal task record into the
