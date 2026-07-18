@@ -159,6 +159,23 @@ intent. `Ctrl+X J` retries a failed follow-up and resumes ordered dispatch;
 order after the active task becomes terminal and never clears a draft or labels
 text accepted before canonical `start` succeeds.
 
+Background work wakes the conversation. When a background task you launched
+finishes, or a parallel task group resolves, a single muted line lands inline
+in the transcript — for example `·  Background task <id> completed` or
+`·  Background group resolved: 2 of 3 succeeded, 1 failed`. It is one quiet
+lifecycle line, never a per-member flood and never a card; the full detail
+stays on the Tasks route. A background task that *fails* wakes the same way
+(`·  Task <id> failed …`). These wake lines are the only runtime-lifecycle
+notices that belong on the chat surface — audit, cost, and planner internals
+stay on the events and diagnostics routes.
+
+When your *foreground* turn fails, the composer no longer just returns to idle:
+a status line pins `×  Turn failed · <ErrorCode>` above the composer with the
+bounded error code (never the raw error text — open the Tasks/diagnostics route
+for the message and trajectory). The line clears the moment you submit the next
+turn. A foreground failure never also shows the muted background-failure line —
+the turn-failure line owns it.
+
 ## 5. Session lifecycle
 
 The last session reference and bounded interaction state are restored from

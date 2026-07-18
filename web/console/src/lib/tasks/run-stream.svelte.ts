@@ -29,6 +29,7 @@ import {
   filterControlEvents,
   filterInterventionEvents,
   filterGroupEvents,
+  filterNotificationEvents,
   projectRunCost,
   type RunCost
 } from './run-events.js';
@@ -45,6 +46,7 @@ const RUN_DOCK_TYPES = EVENT_TYPES.filter(
     t.startsWith('task.') ||
     t.startsWith('control.') ||
     t.startsWith('pause.') ||
+    t.startsWith('notification.') ||
     t === 'llm.cost.recorded'
 );
 
@@ -122,6 +124,11 @@ export class TaskRunStream {
   /** The TaskGroup lifecycle events for this run. */
   get groupEvents(): Event[] {
     return filterGroupEvents(this.runEvents);
+  }
+
+  /** The background-wake notification events for this run (`notification.*`). */
+  get notificationEvents(): Event[] {
+    return filterNotificationEvents(this.runEvents);
   }
 
   /** The token-type cost rollup for this run (the rail Cost + Summary). */

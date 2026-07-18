@@ -296,6 +296,21 @@ through to the existing `agent_not_found` (no control surface over the
 runtime's own process). Authority stays server-derived; `ProtocolVersion`
 stays `0.1.0`.
 
+**Harbor v1.16 Phase 188: Shipped.** Background work now wakes the
+conversation. Group resolution and background-task completion emit two new
+conversational-mirror classes on the existing `notification.*` topic —
+`notification.task_group_resolved` and `notification.task_completed` (the
+latter gated on the task's `NotifyOnComplete` opt-in) — carrying ref-shaped
+member-outcome summaries under the owning identity; the typed `WatchGroup`
+planner path is untouched. The TUI renders these as muted one-line lifecycle
+notices (a new conversational `notification` block kind) and, for a FOREGROUND
+turn that terminally fails, a dedicated `×  Turn failed · <ErrorCode>`
+status-strip line instead of silently returning to idle (the background mirror
+is suppressed for that turn to avoid a duplicate). The Console's Sessions and
+Tasks docks surface the same family. No new Protocol method; additive
+event-payload fields only, generated docs regenerated in lockstep;
+`ProtocolVersion` stays `0.1.0`.
+
 **Harbor v1.15 Phase 184: Shipped.** The native TUI is now distributed
 through three modes: standalone attach (`harbor tui --attach`), stock
 co-launch (`harbor serve --tui`), and scaffolded co-launch (`harbor

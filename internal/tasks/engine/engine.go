@@ -798,7 +798,10 @@ func (e *Engine) MarkComplete(ctx context.Context, id tasks.TaskID, result tasks
 		t.Result = priorResult
 		return err
 	}
-	return e.publish(ctx, t, tasks.EventTypeTaskCompleted, tasks.TaskCompletedPayload{TaskID: t.ID})
+	return e.publish(ctx, t, tasks.EventTypeTaskCompleted, tasks.TaskCompletedPayload{
+		TaskID:           t.ID,
+		NotifyOnComplete: t.NotifyOnComplete,
+	})
 }
 
 // MarkFailed implements tasks.TaskRegistry. Persists `err` on the

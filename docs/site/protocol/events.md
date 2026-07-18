@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 131 canonical event types a Harbor Runtime can publish, read from the live
+The 133 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -775,6 +775,13 @@ Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; sub
 | `DeepLink` | `string` |  |
 | `OriginEventType` | `events.EventType` |  |
 | `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
 
 ## `notification.governance_budget_exceeded`
 
@@ -788,6 +795,13 @@ Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; sub
 | `DeepLink` | `string` |  |
 | `OriginEventType` | `events.EventType` |  |
 | `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
 
 ## `notification.identity_rejected`
 
@@ -801,6 +815,13 @@ Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; sub
 | `DeepLink` | `string` |  |
 | `OriginEventType` | `events.EventType` |  |
 | `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
 
 ## `notification.pause_requested`
 
@@ -814,6 +835,33 @@ Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; sub
 | `DeepLink` | `string` |  |
 | `OriginEventType` | `events.EventType` |  |
 | `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
+
+## `notification.task_completed`
+
+Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; subscribers receive a redacted map).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Class` | `events.EventType` |  |
+| `Severity` | `notifications.Severity` |  |
+| `Summary` | `string` |  |
+| `DeepLink` | `string` |  |
+| `OriginEventType` | `events.EventType` |  |
+| `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
 
 ## `notification.task_failed`
 
@@ -827,6 +875,33 @@ Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; sub
 | `DeepLink` | `string` |  |
 | `OriginEventType` | `events.EventType` |  |
 | `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
+
+## `notification.task_group_resolved`
+
+Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; subscribers receive a redacted map).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Class` | `events.EventType` |  |
+| `Severity` | `notifications.Severity` |  |
+| `Summary` | `string` |  |
+| `DeepLink` | `string` |  |
+| `OriginEventType` | `events.EventType` |  |
+| `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
 
 ## `notification.tool_approval_requested`
 
@@ -840,6 +915,13 @@ Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; sub
 | `DeepLink` | `string` |  |
 | `OriginEventType` | `events.EventType` |  |
 | `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
 
 ## `pause.payload_artifact_routed`
 
@@ -1168,6 +1250,7 @@ Payload `TaskCompletedPayload` — safe payload (delivered typed, verbatim).
 | Wire key | Go type | Notes |
 |---|---|---|
 | `TaskID` | `tasks.TaskID` |  |
+| `NotifyOnComplete` | `bool` |  |
 
 ## `task.failed`
 

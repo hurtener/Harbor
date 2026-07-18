@@ -660,7 +660,7 @@ func (e *Engine) collectMemberOutcomesLocked(g *tasks.TaskGroup) []tasks.MemberO
 			out = append(out, tasks.MemberOutcome{TaskID: tid, Status: tasks.StatusCancelled})
 			continue
 		}
-		mo := tasks.MemberOutcome{TaskID: tid, Status: t.Status}
+		mo := tasks.MemberOutcome{TaskID: tid, Status: t.Status, Description: t.Description}
 		if t.Result != nil {
 			r := *t.Result
 			mo.Result = &r

@@ -18,6 +18,7 @@
   // pure view. Tasks-specific. Svelte 5 runes (D-092); tokens only.
   import { StatusChip } from '$lib/components/ui/index.js';
   import { categoryOf, categoryKind } from '$lib/events/taxonomy.js';
+  import { notificationSummary } from '$lib/tasks/run-events.js';
   import { formatRelative } from '$lib/sessions/format.js';
   import type { TaskRunStream } from '$lib/tasks/run-stream.svelte.js';
   import type { PauseSnapshot } from '$lib/protocol/pause.js';
@@ -174,7 +175,11 @@
           {#each runEvents as ev (ev.sequence)}
             <li class="event-row">
               <StatusChip kind={categoryKind(categoryOf(ev.type))} label={categoryOf(ev.type)} />
-              <span class="event-type">{ev.type}</span>
+              <span class="event-type">
+                {ev.type.startsWith('notification.')
+                  ? (notificationSummary(ev) ?? ev.type)
+                  : ev.type}
+              </span>
               <span class="event-age">{formatRelative(ev.occurred_at)}</span>
             </li>
           {/each}
