@@ -447,6 +447,68 @@ func wrap(sentinel error, format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{sentinel}, args...)...)
 }
 
+// ErrInsufficientScope is the typed, structured signal for a downstream
+// step-up scope shortfall: a `403` answered with a `WWW-Authenticate`
+// challenge carrying `error="insufficient_scope"` (RFC 6750 §3.1). It is
+// constructed ONLY when the challenge is explicitly marked
+// insufficient_scope — an unmarked 403 stays an opaque transport error, so
+// no false-positive structured signal is raised on a server that just
+// returns bare 403s.
+//
+// Report-not-act: constructing this value never escalates, re-consents, or
+// widens a binding. It is inert data for the coordinator to act on via the
+// existing operator-driven discovery-allowance path — the runtime never
+// auto-follows a shortfall. Classification treats it as permanent
+// (ClassifyError), so the reliability shell stops retrying a shortfall
+// retrying can never fix.
+type ErrInsufficientScope struct {
+	// Source is the tool source (MCP connection) that answered the challenge.
+	Source ToolSourceID
+	// ToolName is the server-side tool name the call targeted.
+	ToolName string
+	// DownstreamResource is the origin/host the challenge came from.
+	DownstreamResource string
+	// RequiredScopes is the parsed `scope` challenge parameter — the scopes
+	// the downstream demands.
+	RequiredScopes []string
+	// GrantedScopes is the binding's most-recently-granted scope set (from
+	// the resolved token). Empty when unknown.
+	GrantedScopes []string
+	// WWWAuthenticate is the verbatim challenge header value.
+	WWWAuthenticate string
+	// Origin is the scheme://host[:port] the challenge was observed on.
+	Origin string
+}
+
+// Error implements error.
+func (e *ErrInsufficientScope) Error() string {
+	return fmt.Sprintf("tools: insufficient scope for %q on %s (required=%v, granted=%v)",
+		e.ToolName, e.Origin, e.RequiredScopes, e.GrantedScopes)
+}
+
+// ShortfallDetail projects the structured shortfall onto the wire-safe
+// ScopeShortfallDetail carried on tool.failed. It never carries token bytes.
+func (e *ErrInsufficientScope) ShortfallDetail() ScopeShortfallDetail {
+	return ScopeShortfallDetail{
+		DownstreamResource: e.DownstreamResource,
+		RequiredScopes:     append([]string(nil), e.RequiredScopes...),
+		GrantedScopes:      append([]string(nil), e.GrantedScopes...),
+		WWWAuthenticate:    e.WWWAuthenticate,
+		Origin:             e.Origin,
+	}
+}
+
+// ScopeShortfallDetail is the wire-safe (SafePayload) projection of
+// ErrInsufficientScope carried on ToolFailedPayload. Every field is
+// operator/server-supplied metadata — never a token or an arg value.
+type ScopeShortfallDetail struct {
+	DownstreamResource string
+	RequiredScopes     []string
+	GrantedScopes      []string
+	WWWAuthenticate    string
+	Origin             string
+}
+
 // ctxKey is the unexported key under which a ToolCatalog is
 // propagated on a context. Independent from identity / events /
 // audit ctx keys.

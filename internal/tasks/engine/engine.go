@@ -550,12 +550,20 @@ func copyTask(t *tasks.Task) *tasks.Task {
 	return &cp
 }
 
-// Cancel implements tasks.TaskRegistry. Walks the children index per
-// the target task's PropagateOnCancel:
+// Cancel implements tasks.TaskRegistry. The target transitions
+// unconditionally (a direct cancel is never gated on the target's own
+// PropagateOnCancel); the descendant walk then depends on the target's
+// PropagateOnCancel:
 //
-//   - "cascade" (default): BFS through descendants, transitioning
-//     each non-terminal child to StatusCancelled.
-//   - "isolate": only the target transitions.
+//   - "cascade" (default): BFS through descendants, transitioning each
+//     non-terminal descendant to StatusCancelled — EXCEPT an
+//     isolate-marked descendant, whose whole subtree detaches from the
+//     cascade and keeps running (see cascadeCancelDescendantsLocked).
+//   - "isolate": only the target transitions; no descendant walk.
+//
+// So an isolate-marked task survives an ANCESTOR's cascade but is always
+// reachable by a direct Cancel (the operator's last word, and the
+// spawning run's own CancelTask).
 //
 // Already-terminal target → (false, nil). Missing target →
 // ErrNotFound.
@@ -593,41 +601,72 @@ func (e *Engine) Cancel(ctx context.Context, id tasks.TaskID, reason string) (bo
 		return false, err
 	}
 
-	// Cascade to descendants per the target's policy.
+	// Cascade to descendants per the target's policy. The direct target
+	// was already transitioned above (a direct cancel is never gated on
+	// the target's own flag); the descendant walk honours EACH
+	// descendant's own PropagateOnCancel so an isolate-marked subtree
+	// detaches from this ancestor's cascade.
 	if t.PropagateOnCancel == tasks.PropagateCascade {
-		// BFS: queue starts with the target's direct children.
-		queue := append([]tasks.TaskID(nil), e.children[t.ID]...)
-		for len(queue) > 0 {
-			childID := queue[0]
-			queue = queue[1:]
-			child, ok := e.tasks[childID]
-			if !ok {
-				continue
-			}
-			if isTerminal(child.Status) {
-				continue
-			}
-			if err := e.transitionLocked(ctx, child, tasks.StatusCancelled); err != nil {
-				return true, err
-			}
-			if err := e.publish(ctx, child, tasks.EventTypeTaskCancelled, tasks.TaskCancelledPayload{
-				TaskID:   child.ID,
-				Reason:   reason,
-				Cascaded: true,
-			}); err != nil {
-				return true, err
-			}
-			// Enqueue grandchildren regardless of their own
-			// PropagateOnCancel — once a parent cascade has reached
-			// them, the cascade stops at terminal-status checks, not
-			// at policy boundaries. (By design cascade is a parent-
-			// initiated walk; child policy governs the child's own
-			// Cancel call, not its parent's cascade.)
-			queue = append(queue, e.children[childID]...)
+		if err := e.cascadeCancelDescendantsLocked(ctx, t.ID, reason); err != nil {
+			return true, err
 		}
 	}
 
 	return true, nil
+}
+
+// cascadeCancelDescendantsLocked walks the descendant subtree rooted at
+// rootID in BFS order, cancelling each descendant whose own
+// PropagateOnCancel is cascade (the stored default) and enqueuing that
+// descendant's children. A descendant marked PropagateIsolate DETACHES
+// from the ancestor's cascade: it is neither cancelled NOR are its
+// children enqueued, so the whole isolate-marked subtree survives the
+// ancestor's cancellation.
+//
+// This governs ONLY descendants reached mid-walk. The direct cancel
+// target (rootID) is transitioned unconditionally by the caller BEFORE
+// the walk starts, and a direct Cancel on an isolate-marked task still
+// transitions it — isolate detaches a task from an ANCESTOR's cascade,
+// never from a direct cancel by the operator or by the run that spawned
+// it. Both Cancel and the group-cancel path share this one walk so the
+// isolate-detaches invariant holds identically at every cascade site.
+//
+// Caller MUST hold e.mu. A transition/publish error stops the walk and
+// is returned; the walk is bounded by the finite task set (terminal and
+// isolate nodes are never re-enqueued).
+func (e *Engine) cascadeCancelDescendantsLocked(ctx context.Context, rootID tasks.TaskID, reason string) error {
+	queue := append([]tasks.TaskID(nil), e.children[rootID]...)
+	for len(queue) > 0 {
+		childID := queue[0]
+		queue = queue[1:]
+		child, ok := e.tasks[childID]
+		if !ok {
+			continue
+		}
+		if isTerminal(child.Status) {
+			continue
+		}
+		// An isolate-marked descendant detaches from the ancestor's
+		// cascade: skip it AND its whole subtree (do not enqueue its
+		// children). A direct Cancel on this task still reaches it via
+		// the public Cancel path, which transitions the direct target
+		// unconditionally.
+		if child.PropagateOnCancel == tasks.PropagateIsolate {
+			continue
+		}
+		if err := e.transitionLocked(ctx, child, tasks.StatusCancelled); err != nil {
+			return err
+		}
+		if err := e.publish(ctx, child, tasks.EventTypeTaskCancelled, tasks.TaskCancelledPayload{
+			TaskID:   child.ID,
+			Reason:   reason,
+			Cascaded: true,
+		}); err != nil {
+			return err
+		}
+		queue = append(queue, e.children[childID]...)
+	}
+	return nil
 }
 
 // Prioritize implements tasks.TaskRegistry. Stores the new value;
@@ -759,7 +798,10 @@ func (e *Engine) MarkComplete(ctx context.Context, id tasks.TaskID, result tasks
 		t.Result = priorResult
 		return err
 	}
-	return e.publish(ctx, t, tasks.EventTypeTaskCompleted, tasks.TaskCompletedPayload{TaskID: t.ID})
+	return e.publish(ctx, t, tasks.EventTypeTaskCompleted, tasks.TaskCompletedPayload{
+		TaskID:           t.ID,
+		NotifyOnComplete: t.NotifyOnComplete,
+	})
 }
 
 // MarkFailed implements tasks.TaskRegistry. Persists `err` on the

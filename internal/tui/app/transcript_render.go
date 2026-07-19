@@ -53,6 +53,8 @@ func (m Model) layoutBlock(b projection.Block, width int, selected bool) laidBlo
 		return m.layoutTool(b, width)
 	case "task", "session", "result":
 		return m.layoutLifecycle(b, width)
+	case "notification":
+		return m.layoutNotification(b, width)
 	case "intervention":
 		return m.layoutInterventionBlock(b, width)
 	case "event":
@@ -156,6 +158,22 @@ func (m Model) layoutLifecycle(b projection.Block, width int) laidBlock {
 	if text == "" {
 		text = strings.TrimSpace(b.Kind + " · " + b.Status)
 	}
+	line := ui.Truncate(glyph+"  "+text, width-proseIndent)
+	return laidBlock{height: 1, ops: []drawOp{{dx: proseIndent, dy: 0, text: line, style: m.theme.Style(role, nil).Faint(true)}}}
+}
+
+// layoutNotification renders a background-wake notification as one muted
+// lifecycle line — the muted "·" mark from lifecycleGlyph's vocabulary plus
+// the runtime-composed bounded Summary. It is deliberately quiet: these are
+// operator-facing wake signals (background work finished / a group resolved),
+// never a card and never a per-member fan-out. The Summary is the only text;
+// the reducer never fabricates one.
+func (m Model) layoutNotification(b projection.Block, width int) laidBlock {
+	text := strings.TrimSpace(b.Text)
+	if text == "" {
+		return laidBlock{}
+	}
+	glyph, role := lifecycleGlyph("notification")
 	line := ui.Truncate(glyph+"  "+text, width-proseIndent)
 	return laidBlock{height: 1, ops: []drawOp{{dx: proseIndent, dy: 0, text: line, style: m.theme.Style(role, nil).Faint(true)}}}
 }
@@ -376,11 +394,17 @@ func (m Model) contextLabel() string {
 	if u.TotalTokens <= 0 {
 		return ""
 	}
+	// Cache reads are a subset of the prompt tokens already in the context
+	// figure — appended as a qualifier, never added to the denominator.
+	cached := ""
+	if u.CacheReadTokens > 0 {
+		cached = fmt.Sprintf(" (%s cached)", compactTokens(u.CacheReadTokens))
+	}
 	if u.ContextWindow <= 0 {
-		return fmt.Sprintf("Context %s", compactTokens(u.TotalTokens))
+		return fmt.Sprintf("Context %s%s", compactTokens(u.TotalTokens), cached)
 	}
 	percent := float64(u.PromptTokens) / float64(u.ContextWindow) * 100
-	return fmt.Sprintf("Context %s/%s (%.0f%%)", compactTokens(u.PromptTokens), compactTokens(u.ContextWindow), percent)
+	return fmt.Sprintf("Context %s/%s (%.0f%%)%s", compactTokens(u.PromptTokens), compactTokens(u.ContextWindow), percent, cached)
 }
 
 // compactTokens renders a token count the way an operator reads it: 17.4k.

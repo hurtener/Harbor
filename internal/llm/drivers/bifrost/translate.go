@@ -653,6 +653,14 @@ func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Co
 	if resp.Usage.CompletionTokensDetails != nil {
 		usage.ReasoningTokens = resp.Usage.CompletionTokensDetails.ReasoningTokens
 	}
+	if resp.Usage.PromptTokensDetails != nil {
+		// Cache read/write counts are a subset of PromptTokens (prompt
+		// tokens served from / newly written to the provider's prompt
+		// cache), not additional tokens. A nil PromptTokensDetails leaves
+		// both at zero — the same "nil-usage yields zero values" contract.
+		usage.CacheReadTokens = resp.Usage.PromptTokensDetails.CachedReadTokens
+		usage.CacheWriteTokens = resp.Usage.PromptTokensDetails.CachedWriteTokens
+	}
 	usage.LatencyMS = resp.ExtraFields.Latency
 	if resp.Usage.Cost != nil {
 		cost.InputTokensCost = resp.Usage.Cost.InputTokensCost

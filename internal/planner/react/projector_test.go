@@ -3,6 +3,7 @@ package react
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -216,6 +217,10 @@ func TestProjectResponse_MultiToolCallNativeParallel(t *testing.T) {
 // reserved planner-control name co-occurring with another tool-call is
 // rejected with ErrInvalidDecision, in head AND tail position, with the
 // knob ON and OFF, and PendingToolCalls is never populated.
+// TestProjectResponse_ReservedNameCoOccurrenceRejected pins AC-21′: only
+// `_finish` and `_await_task` reject co-occurrence with other tool-calls.
+// The `_spawn_task` cases that were rejected pre-AC-21′ now project to a
+// Batch (see TestProjectBatch_*); they are removed from this table.
 func TestProjectResponse_ReservedNameCoOccurrenceRejected(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -224,32 +229,7 @@ func TestProjectResponse_ReservedNameCoOccurrenceRejected(t *testing.T) {
 		want  string // substring expected in the error
 	}{
 		{
-			name: "spawn_head_plus_two",
-			calls: []llm.ToolCallStructured{
-				{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{}`)},
-				{ID: "t1", Name: "alpha", Args: json.RawMessage(`{}`)},
-				{ID: "t2", Name: "beta", Args: json.RawMessage(`{}`)},
-			},
-			want: SpawnTaskToolName,
-		},
-		{
-			name: "regular_head_spawn_in_tail",
-			calls: []llm.ToolCallStructured{
-				{ID: "t1", Name: "alpha", Args: json.RawMessage(`{}`)},
-				{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{}`)},
-			},
-			want: SpawnTaskToolName,
-		},
-		{
-			name: "two_spawns",
-			calls: []llm.ToolCallStructured{
-				{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{}`)},
-				{ID: "s2", Name: SpawnTaskToolName, Args: json.RawMessage(`{}`)},
-			},
-			want: SpawnTaskToolName,
-		},
-		{
-			name: "finish_with_tool",
+			name: "finish_head_with_tool",
 			calls: []llm.ToolCallStructured{
 				{ID: "f1", Name: FinishToolName, Args: json.RawMessage(`{"answer":"x"}`)},
 				{ID: "t1", Name: "alpha", Args: json.RawMessage(`{}`)},
@@ -257,10 +237,26 @@ func TestProjectResponse_ReservedNameCoOccurrenceRejected(t *testing.T) {
 			want: FinishToolName,
 		},
 		{
-			name: "await_with_tool",
+			name: "await_in_tail_with_tool",
 			calls: []llm.ToolCallStructured{
 				{ID: "t1", Name: "alpha", Args: json.RawMessage(`{}`)},
 				{ID: "a1", Name: AwaitTaskToolName, Args: json.RawMessage(`{"task_id":"q"}`)},
+			},
+			want: AwaitTaskToolName,
+		},
+		{
+			name: "finish_with_spawn",
+			calls: []llm.ToolCallStructured{
+				{ID: "f1", Name: FinishToolName, Args: json.RawMessage(`{"answer":"x"}`)},
+				{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{}`)},
+			},
+			want: FinishToolName,
+		},
+		{
+			name: "await_with_spawn",
+			calls: []llm.ToolCallStructured{
+				{ID: "a1", Name: AwaitTaskToolName, Args: json.RawMessage(`{"task_id":"q"}`)},
+				{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{}`)},
 			},
 			want: AwaitTaskToolName,
 		},
@@ -316,5 +312,276 @@ func TestProjectResponse_SingleReservedCallsStillTranslate(t *testing.T) {
 	}
 	if _, ok := dec.(planner.AwaitTask); !ok {
 		t.Fatalf("expected AwaitTask, got %T", dec)
+	}
+}
+
+// TestDecisionKindAndTool_Batch — the observability label for a Batch
+// decision is "Batch", not the "unknown" fall-through (the emit path
+// fires when Next returns a Batch).
+func TestDecisionKindAndTool_Batch(t *testing.T) {
+	t.Parallel()
+	kind, tool := decisionKindAndTool(planner.Batch{
+		Tools:  []planner.CallTool{{Tool: "a"}},
+		Spawns: []planner.SpawnTask{{}},
+	})
+	if kind != "Batch" {
+		t.Errorf("decisionKindAndTool kind = %q, want Batch", kind)
+	}
+	if tool != "" {
+		t.Errorf("decisionKindAndTool tool = %q, want empty", tool)
+	}
+}
+
+// toolCall builds a catalog tool-call fixture.
+func toolCall(id, name string) llm.ToolCallStructured {
+	return llm.ToolCallStructured{ID: id, Name: name, Args: json.RawMessage(`{}`)}
+}
+
+// spawnCall builds a `_spawn_task` call fixture with the given query.
+func spawnCall(id, query string) llm.ToolCallStructured {
+	return llm.ToolCallStructured{
+		ID:   id,
+		Name: SpawnTaskToolName,
+		Args: json.RawMessage(`{"spec":{"query":"` + query + `"}}`),
+	}
+}
+
+// TestProjectResponse_PartitionTable is the AC-21′ partition table: every
+// combination of {0,1,N} catalog-tool calls × {0,1,N} `_spawn_task`
+// calls (no `_finish` / `_await_task` in the tail) maps to the correct
+// Decision shape. The key invariant: a response is a Batch iff it has
+// ≥1 spawn AND ≥2 combined branches; a lone spawn stays SpawnTask; a
+// spawn-free multi-call stays CallParallel; a single tool stays CallTool.
+func TestProjectResponse_PartitionTable(t *testing.T) {
+	t.Parallel()
+	type shape int
+	const (
+		wantCallTool shape = iota
+		wantCallParallel
+		wantSpawnTask
+		wantBatch
+	)
+	cases := []struct {
+		name      string
+		tools     int
+		spawns    int
+		want      shape
+		wantTools int // for Batch/CallParallel assertions
+		wantSpn   int
+	}{
+		{name: "1tool_0spawn", tools: 1, spawns: 0, want: wantCallTool},
+		{name: "2tool_0spawn", tools: 2, spawns: 0, want: wantCallParallel, wantTools: 2},
+		{name: "0tool_1spawn", tools: 0, spawns: 1, want: wantSpawnTask},
+		{name: "1tool_1spawn", tools: 1, spawns: 1, want: wantBatch, wantTools: 1, wantSpn: 1},
+		{name: "0tool_2spawn", tools: 0, spawns: 2, want: wantBatch, wantTools: 0, wantSpn: 2},
+		{name: "2tool_1spawn", tools: 2, spawns: 1, want: wantBatch, wantTools: 2, wantSpn: 1},
+		{name: "1tool_2spawn", tools: 1, spawns: 2, want: wantBatch, wantTools: 1, wantSpn: 2},
+		{name: "3tool_2spawn", tools: 3, spawns: 2, want: wantBatch, wantTools: 3, wantSpn: 2},
+	}
+	for _, tc := range cases {
+		for _, parallelOn := range []bool{true, false} {
+			t.Run(tc.name+map[bool]string{true: "/on", false: "/off"}[parallelOn], func(t *testing.T) {
+				t.Parallel()
+				var calls []llm.ToolCallStructured
+				for i := range tc.tools {
+					calls = append(calls, toolCall(fmt.Sprintf("t%d", i), fmt.Sprintf("tool%d", i)))
+				}
+				for i := range tc.spawns {
+					calls = append(calls, spawnCall(fmt.Sprintf("s%d", i), fmt.Sprintf("q%d", i)))
+				}
+				dec, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, parallelOn)
+				if err != nil {
+					t.Fatalf("projectResponse err: %v", err)
+				}
+				switch tc.want {
+				case wantCallTool:
+					if _, ok := dec.(planner.CallTool); !ok {
+						t.Fatalf("got %T, want CallTool", dec)
+					}
+				case wantCallParallel:
+					// The serialization fallback (parallel off) yields a
+					// head CallTool with the tail queued; only assert
+					// CallParallel when native-parallel is on.
+					if parallelOn {
+						par, ok := dec.(planner.CallParallel)
+						if !ok {
+							t.Fatalf("got %T, want CallParallel", dec)
+						}
+						if len(par.Branches) != tc.wantTools {
+							t.Errorf("CallParallel branches = %d, want %d", len(par.Branches), tc.wantTools)
+						}
+					} else if _, ok := dec.(planner.CallTool); !ok {
+						t.Fatalf("got %T, want CallTool (serialization fallback head)", dec)
+					}
+				case wantSpawnTask:
+					if _, ok := dec.(planner.SpawnTask); !ok {
+						t.Fatalf("got %T, want SpawnTask", dec)
+					}
+				case wantBatch:
+					b, ok := dec.(planner.Batch)
+					if !ok {
+						t.Fatalf("got %T, want Batch", dec)
+					}
+					if len(b.Tools) != tc.wantTools {
+						t.Errorf("Batch.Tools = %d, want %d", len(b.Tools), tc.wantTools)
+					}
+					if len(b.Spawns) != tc.wantSpn {
+						t.Errorf("Batch.Spawns = %d, want %d", len(b.Spawns), tc.wantSpn)
+					}
+					// Batch construction respects the sealed invariants.
+					if len(b.Tools)+len(b.Spawns) < 2 {
+						t.Errorf("Batch is degenerate: %d combined branches", len(b.Tools)+len(b.Spawns))
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestProjectBatch_StampsSpawnCallIDs — every spawn projected into a
+// Batch carries the native call-id of its `_spawn_task` call, and every
+// tool branch carries its own call-id (the batch executor keys
+// observations by them).
+func TestProjectBatch_StampsSpawnCallIDs(t *testing.T) {
+	t.Parallel()
+	calls := []llm.ToolCallStructured{
+		toolCall("call_tool_1", "search"),
+		spawnCall("call_spawn_1", "dig-a"),
+		spawnCall("call_spawn_2", "dig-b"),
+	}
+	dec, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, true)
+	if err != nil {
+		t.Fatalf("projectResponse err: %v", err)
+	}
+	b, ok := dec.(planner.Batch)
+	if !ok {
+		t.Fatalf("got %T, want Batch", dec)
+	}
+	if len(b.Tools) != 1 || b.Tools[0].CallID != "call_tool_1" {
+		t.Errorf("tool branch CallID = %q, want call_tool_1", b.Tools[0].CallID)
+	}
+	if len(b.Spawns) != 2 {
+		t.Fatalf("Batch.Spawns = %d, want 2", len(b.Spawns))
+	}
+	if b.Spawns[0].CallID != "call_spawn_1" || b.Spawns[1].CallID != "call_spawn_2" {
+		t.Errorf("spawn CallIDs = [%q, %q], want [call_spawn_1, call_spawn_2]",
+			b.Spawns[0].CallID, b.Spawns[1].CallID)
+	}
+}
+
+// TestProjectBatch_MalformedSpawnArgsRejected — a `_spawn_task` with a
+// malformed args envelope inside a batch surfaces ErrInvalidDecision
+// (via the shared translateNativeSpawn path), so the batch and
+// single-spawn projections agree on the schema.
+func TestProjectBatch_MalformedSpawnArgsRejected(t *testing.T) {
+	t.Parallel()
+	calls := []llm.ToolCallStructured{
+		toolCall("t1", "search"),
+		{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{"kind":"nonsense"}`)},
+	}
+	_, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, true)
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Fatalf("malformed spawn in batch err = %v, want ErrInvalidDecision", err)
+	}
+}
+
+// TestProjectBatch_RetainTurnSpawnRejected — a batched `_spawn_task`
+// carrying retain_turn:true is rejected loud (NewBatch's non-retain-turn
+// invariant): a turn-retaining spawn cannot ride a non-blocking batch
+// dispatch.
+func TestProjectBatch_RetainTurnSpawnRejected(t *testing.T) {
+	t.Parallel()
+	calls := []llm.ToolCallStructured{
+		toolCall("t1", "search"),
+		{ID: "s1", Name: SpawnTaskToolName, Args: json.RawMessage(`{"spec":{"query":"q","retain_turn":true}}`)},
+	}
+	_, err := projectResponse(llm.CompleteResponse{ToolCalls: calls}, &planner.RunContext{}, true)
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Fatalf("retain-turn spawn in batch err = %v, want ErrInvalidDecision", err)
+	}
+	if !strings.Contains(err.Error(), "RetainTurn") {
+		t.Errorf("error %q does not name RetainTurn", err.Error())
+	}
+}
+
+// TestProjectBatch_NeverDegenerate is the "one representation per
+// semantic" invariant, asserted directly at the projector: no input the
+// projector accepts ever yields a one-branch-total Batch. A lone spawn
+// projects to SpawnTask; a spawn-free multi-call projects to
+// CallParallel; only ≥2 combined branches with ≥1 spawn yield Batch.
+func TestProjectBatch_NeverDegenerate(t *testing.T) {
+	t.Parallel()
+	// Lone spawn → SpawnTask, never a one-branch Batch.
+	dec, err := projectResponse(llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{spawnCall("s1", "solo")},
+	}, &planner.RunContext{}, true)
+	if err != nil {
+		t.Fatalf("lone spawn err: %v", err)
+	}
+	if _, isBatch := dec.(planner.Batch); isBatch {
+		t.Fatalf("lone spawn projected to Batch — degenerate; want SpawnTask")
+	}
+	if _, ok := dec.(planner.SpawnTask); !ok {
+		t.Fatalf("lone spawn = %T, want SpawnTask", dec)
+	}
+	// Spawn-free multi-call → CallParallel, never a Batch.
+	dec, err = projectResponse(llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{toolCall("t1", "a"), toolCall("t2", "b")},
+	}, &planner.RunContext{}, true)
+	if err != nil {
+		t.Fatalf("spawn-free multi err: %v", err)
+	}
+	if _, isBatch := dec.(planner.Batch); isBatch {
+		t.Fatalf("spawn-free multi-call projected to Batch; want CallParallel")
+	}
+}
+
+// TestProjectBatch_FailFastDisagreementRejected — when ≥2 spawns share
+// no explicit GroupID (auto-grouped) but disagree on fail_fast, the
+// projector fails loud with ErrInvalidDecision naming both conflicting
+// values. A matching fail_fast, or an explicit GroupID that opts a spawn
+// out of auto-grouping, does NOT trip the guard.
+func TestProjectBatch_FailFastDisagreementRejected(t *testing.T) {
+	t.Parallel()
+	mkSpawn := func(id string, failFast bool, group string) llm.ToolCallStructured {
+		args := fmt.Sprintf(`{"group_id":%q,"spec":{"query":"q","fail_fast":%t}}`, group, failFast)
+		return llm.ToolCallStructured{ID: id, Name: SpawnTaskToolName, Args: json.RawMessage(args)}
+	}
+
+	// Disagreement across auto-grouped (no group_id) spawns → reject.
+	_, err := projectResponse(llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{
+		mkSpawn("s1", true, ""),
+		mkSpawn("s2", false, ""),
+	}}, &planner.RunContext{}, true)
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Fatalf("disagreement err = %v, want ErrInvalidDecision", err)
+	}
+	if !strings.Contains(err.Error(), "fail_fast") {
+		t.Errorf("error %q does not name fail_fast", err.Error())
+	}
+
+	// Agreement across auto-grouped spawns → OK.
+	dec, err := projectResponse(llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{
+		mkSpawn("s1", true, ""),
+		mkSpawn("s2", true, ""),
+	}}, &planner.RunContext{}, true)
+	if err != nil {
+		t.Fatalf("agreement err: %v", err)
+	}
+	if _, ok := dec.(planner.Batch); !ok {
+		t.Fatalf("agreement got %T, want Batch", dec)
+	}
+
+	// Explicit group_ids opt the spawns out of auto-grouping — a
+	// fail_fast difference across explicitly-grouped spawns is allowed.
+	dec, err = projectResponse(llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{
+		mkSpawn("s1", true, "g-a"),
+		mkSpawn("s2", false, "g-b"),
+	}}, &planner.RunContext{}, true)
+	if err != nil {
+		t.Fatalf("explicit-group err: %v", err)
+	}
+	if _, ok := dec.(planner.Batch); !ok {
+		t.Fatalf("explicit-group got %T, want Batch", dec)
 	}
 }

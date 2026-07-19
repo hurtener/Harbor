@@ -2,22 +2,27 @@ package planner
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // Decision is the sealed sum-type a planner returns from Next.
-// Six shapes ship (RFC §6.2):
+// The shapes ship per RFC §6.2:
 //
 //   - CallTool: invoke one tool with structured args.
 //   - CallParallel: invoke N tools in parallel with a join spec.
+//   - Batch: one native multi-call response mixing catalog-tool
+//     branches with non-retain-turn task spawns.
 //   - SpawnTask: spawn a background task (retain-turn or non-retain-turn).
 //   - AwaitTask: block the planner until a spawned task resolves.
+//   - TaskStatusQuery: observe the state of tasks this run spawned.
+//   - CancelTask: cancel one task this run spawned.
 //   - RequestPause: pause the run for approval / input / external event.
 //   - Finish: terminal decision with a reason + payload.
 //
 // The interface is sealed via the unexported `isDecision()` marker —
-// adding a seventh shape requires editing this file. The predecessor's
+// adding a further shape requires editing this file. The predecessor's
 // "magic strings as next_node" anti-pattern is explicitly rejected
 // here (RFC §6.2 settled decisions); each shape is its own Go type.
 //
@@ -114,6 +119,71 @@ const (
 	JoinN JoinKind = "n"
 )
 
+// Batch groups zero-or-more catalog-tool branches with zero-or-more
+// task spawns projected from ONE native multi-call LLM response — the
+// shape a projector constructs when a model batches a `_spawn_task`
+// call alongside an ordinary tool call (or alongside other spawns) in
+// a single response.
+//
+// Batch is a distinct fourth dispatch shape, NOT a widening of
+// CallParallel: tool-invocation accounting counts Tools and Spawns
+// separately (a spawn is never a tool invocation — see
+// DecisionInvocationCount, which returns len(Tools) for a Batch and
+// counts Spawns as zero). Reserved-control terminal/blocking names
+// (`_finish` / `_await_task`) are never Batch members; only catalog
+// tools and non-retain-turn spawns are.
+//
+// Invariants (enforced by NewBatch, failing loud on violation):
+//
+//   - len(Tools)+len(Spawns) >= 2. A single-branch would-be Batch is
+//     degenerate; producers construct the plain CallTool / SpawnTask /
+//     CallParallel shape instead (one representation per semantic).
+//   - Every Spawns[i].Spec.RetainTurn is false. A turn-retaining spawn
+//     inside a non-blocking multi-dispatch is a contradiction.
+type Batch struct {
+	// Tools are the catalog-tool branches, dispatched concurrently
+	// and joined per Join (nil collapses to JoinAll, matching the
+	// native-parallel path).
+	Tools []CallTool
+	// Spawns are the task spawns; every entry's Spec.RetainTurn is
+	// false.
+	Spawns []SpawnTask
+	// Join governs ONLY Tools. It is nil (JoinAll) when Tools is
+	// empty — a spawns-only Batch carries no join.
+	Join *JoinSpec
+}
+
+func (Batch) isDecision() {}
+
+// NewBatch validates and constructs a Batch, failing loud (wrapping
+// ErrInvalidDecision) on a degenerate batch (fewer than two combined
+// Tools+Spawns branches) or any retain-turn spawn. Every producer of a
+// Batch — the React projector today, future concrete planners — routes
+// through this constructor so the structural invariants hold at every
+// call site.
+//
+// NewBatch validates STRUCTURAL invariants only. Semantic checks that
+// need projection context (e.g. FailFast disagreement across
+// auto-grouped spawns) live at the producing projector, and the
+// operator-configured breadth cap lives at the dispatch edge.
+func NewBatch(tools []CallTool, spawns []SpawnTask, join *JoinSpec) (Batch, error) {
+	if len(tools)+len(spawns) < 2 {
+		return Batch{}, fmt.Errorf(
+			"%w: Batch requires at least 2 combined branches, got %d tools + %d spawns (construct the plain CallTool / SpawnTask / CallParallel shape for a single branch)",
+			ErrInvalidDecision, len(tools), len(spawns),
+		)
+	}
+	for i, sp := range spawns {
+		if sp.Spec.RetainTurn {
+			return Batch{}, fmt.Errorf(
+				"%w: Batch spawn %d has RetainTurn=true (a turn-retaining spawn cannot ride a non-blocking batch dispatch)",
+				ErrInvalidDecision, i,
+			)
+		}
+	}
+	return Batch{Tools: tools, Spawns: spawns, Join: join}, nil
+}
+
 // SpawnTask spawns a background task. When `Spec.RetainTurn` is true
 // the foreground turn blocks on the spawned task's group; when false
 // the planner returns control to the runtime and consumes
@@ -127,6 +197,14 @@ type SpawnTask struct {
 	Kind    tasks.TaskKind
 	Spec    SpawnSpec
 	GroupID tasks.TaskGroupID
+	// CallID is the provider-assigned tool-call identifier of the
+	// native `_spawn_task` call this spawn was projected from,
+	// mirroring CallTool.CallID. Batch dispatch keys each spawn's
+	// observation by it so every native tool_call_id — spawn calls
+	// included — is answered. Empty for programmatic (non-native)
+	// spawn emissions, exactly like CallTool.CallID; the projector
+	// stamps it when partitioning a native multi-call response.
+	CallID string
 }
 
 func (SpawnTask) isDecision() {}
@@ -135,10 +213,12 @@ func (SpawnTask) isDecision() {}
 // it into a `tasks.SpawnRequest` (or `tasks.SpawnToolRequest`) at
 // dispatch time; identity is filled from the run's quadruple.
 //
-// At the shape carries only the fields the planner needs to
-// specify; the Runtime fills the rest (Identity, IdempotencyKey,
-// PropagateOnCancel, NotifyOnComplete). Future phases MAY extend this
-// shape with additional planner-controlled fields.
+// The shape carries only the fields the planner needs to specify; the
+// Runtime fills the rest (Identity, IdempotencyKey, NotifyOnComplete).
+// PropagateOnCancel became planner-controllable once the model gained
+// the task observation/cancel meta-tools to manage detached work.
+// Future phases MAY extend this shape with additional
+// planner-controlled fields.
 type SpawnSpec struct {
 	// Description is the human-readable task description (audit +
 	// observability).
@@ -158,6 +238,19 @@ type SpawnSpec struct {
 	// remaining members when the first fails. Ignored when joining
 	// an existing GroupID.
 	FailFast bool
+	// PropagateOnCancel controls whether this spawned task survives a
+	// cancellation cascade from an ANCESTOR task. Empty (the default)
+	// maps to `tasks.PropagateCascade`: the task is swept when a task
+	// above it in the parent chain is cancelled with a cascade policy.
+	// `tasks.PropagateIsolate` detaches the task from that cascade — it
+	// keeps running when its parent is cancelled. Isolate never detaches
+	// a task from a DIRECT cancel: the operator (via the Protocol) and
+	// the spawning run itself (via CancelTask) both reach an
+	// isolate-marked task at any time. Any other value is rejected loud
+	// at the dispatch edge. This is the model's brake on the parallelism
+	// it spawns — paired with the observation/cancel meta-tools so
+	// detached work is never unobservable or unstoppable.
+	PropagateOnCancel string
 }
 
 // AwaitTask blocks the planner until the named task reaches a
@@ -169,6 +262,54 @@ type AwaitTask struct {
 }
 
 func (AwaitTask) isDecision() {}
+
+// TaskStatusQuery observes the state of the background tasks THIS run
+// spawned — a non-terminal, non-blocking decision the Runtime executor
+// dispatches like CallTool, appending a trajectory step the planner
+// reads on its next turn. A model that fanned out several explorations
+// uses it to poll which have resolved before deciding whether to await
+// or cancel the rest.
+//
+// TaskIDs names the tasks to report; an empty/nil slice means "every
+// task this run has spawned, directly or transitively" (the run's whole
+// descendant subtree). Every explicitly-named id is scope-checked: the
+// executor resolves ONLY tasks whose parent-task chain reaches the
+// calling run's own task, never an arbitrary session task — one
+// out-of-scope id fails the whole call rather than silently omitting it.
+//
+// The shape is deliberately NOT named TaskStatus: that identifier is the
+// tasks-package lifecycle enum (pending/running/…/cancelled). This is the
+// planner-facing query decision.
+type TaskStatusQuery struct {
+	// TaskIDs are the tasks to report on; nil/empty means every task
+	// this run has spawned, including nested descendants.
+	TaskIDs []tasks.TaskID
+}
+
+func (TaskStatusQuery) isDecision() {}
+
+// CancelTask cancels one background task THIS run spawned — the model's
+// own judgment applied to work it started (e.g. cancelling the losing
+// branches of a fan-out once the first answered). A non-terminal,
+// non-blocking decision dispatched like CallTool; the planner observes
+// the {task_id, cancelled} outcome on its next turn.
+//
+// TaskID must reach the calling run's own task by walking the
+// parent-task chain upward — a run can cancel only its own descendants,
+// never a sibling run's tasks in the same session. A cancel on a task
+// the run spawned under an isolate propagation policy still succeeds: a
+// direct cancel is never gated on the target's own propagation mode —
+// isolate only detaches a task from an ANCESTOR's cascade, never from a
+// direct cancel by the run that spawned it or by the operator.
+type CancelTask struct {
+	// TaskID is the descendant to cancel.
+	TaskID tasks.TaskID
+	// Reason is the human-readable cancellation reason recorded on the
+	// emitted task.cancelled event.
+	Reason string
+}
+
+func (CancelTask) isDecision() {}
 
 // RequestPause asks the Runtime to pause the run for an external
 // signal. The unified pause/resume primitive (later phase) drives the

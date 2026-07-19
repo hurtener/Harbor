@@ -3,6 +3,7 @@ package react_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -1167,5 +1168,117 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 	// drove the counter via the shared planner.
 	if !client.containsAny("r-A", react.ReminderArgsGuidance) {
 		t.Error("A's prompts never carried any args repair-guidance marker — the test setup did not actually trip the counter (positive control failed)")
+	}
+}
+
+// TestE2E_React_BatchProjection_RoundTripsAndFailsLoud is the in-package
+// wiring test between the REAL projector, decision.go's Batch shape, and
+// the REAL Trajectory. A scripted native multi-call response carrying two
+// `_spawn_task` calls plus one catalog-tool call drives a full
+// ReActPlanner.Next; the resulting Batch is asserted, appended as a
+// Step.Action, and round-tripped through Trajectory.Serialize. The ≥1
+// failure mode (§17.3): a non-serialisable value on the Batch step
+// surfaces ErrUnserializable with a field-path locator, never a silent
+// drop.
+func TestE2E_React_BatchProjection_RoundTripsAndFailsLoud(t *testing.T) {
+	t.Parallel()
+
+	searchSchema := `{"type":"object","properties":{"q":{"type":"string"}}}`
+	catalog := &stubDiscoveryCatalog{
+		always: []tools.Tool{{
+			Name:        "search",
+			Description: "Search the corpus",
+			ArgsSchema:  json.RawMessage(searchSchema),
+			Loading:     tools.LoadingAlways,
+		}},
+	}
+
+	// One native response mixing a catalog tool with two spawns — the
+	// exact shape AC-21 rejected and AC-21′ projects to a Batch.
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			{ToolCalls: []llm.ToolCallStructured{
+				{ID: "call_search", Name: "search", Args: json.RawMessage(`{"q":"foo"}`)},
+				{ID: "call_spawn_a", Name: react.SpawnTaskToolName, Args: json.RawMessage(`{"spec":{"query":"dig-a"}}`)},
+				{ID: "call_spawn_b", Name: react.SpawnTaskToolName, Args: json.RawMessage(`{"spec":{"query":"dig-b"}}`)},
+			}},
+		},
+	}
+
+	q := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "t-batch", UserID: "u-batch", SessionID: "s-batch"},
+		RunID:    "r-batch",
+	}
+	ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+
+	traj := &planner.Trajectory{}
+	p := react.New(client)
+	rc := planner.RunContext{
+		Quadruple:  q,
+		Goal:       "fan out",
+		Trajectory: traj,
+		Catalog:    catalog,
+	}
+
+	dec, err := p.Next(ctx, rc)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	batch, ok := dec.(planner.Batch)
+	if !ok {
+		t.Fatalf("decision = %T, want planner.Batch", dec)
+	}
+	if len(batch.Tools) != 1 {
+		t.Fatalf("Batch.Tools = %d, want 1", len(batch.Tools))
+	}
+	if batch.Tools[0].Tool != "search" || batch.Tools[0].CallID != "call_search" {
+		t.Errorf("Batch tool = {%q,%q}, want {search,call_search}", batch.Tools[0].Tool, batch.Tools[0].CallID)
+	}
+	if len(batch.Spawns) != 2 {
+		t.Fatalf("Batch.Spawns = %d, want 2", len(batch.Spawns))
+	}
+	if batch.Spawns[0].CallID != "call_spawn_a" || batch.Spawns[1].CallID != "call_spawn_b" {
+		t.Errorf("spawn CallIDs = [%q,%q], want [call_spawn_a, call_spawn_b]",
+			batch.Spawns[0].CallID, batch.Spawns[1].CallID)
+	}
+	for i, sp := range batch.Spawns {
+		if sp.Spec.RetainTurn {
+			t.Errorf("Batch.Spawns[%d].RetainTurn = true, want false", i)
+		}
+	}
+
+	// Append as a Step.Action and prove the trajectory round-trips.
+	traj.Steps = append(traj.Steps, planner.Step{Action: batch})
+	if _, err := traj.Serialize(); err != nil {
+		t.Fatalf("Serialize(Batch-carrying trajectory): %v", err)
+	}
+
+	// Failure mode: a non-serialisable value on the same Batch step
+	// surfaces ErrUnserializable with a field-path locator.
+	//
+	// The plan's Test-plan text describes forcing this via an
+	// unserialisable Args payload on a Tools branch. CallTool.Args is
+	// json.RawMessage (a []byte), so it — and therefore a fully-typed
+	// Batch — is statically serialisable by construction. To still
+	// exercise the fail-loud path on a Batch step, the non-serialisable
+	// func is placed on the step's Observation (an `any` the walker
+	// reaches); the contract proven is identical.
+	bad := &planner.Trajectory{Steps: []planner.Step{{
+		Action:      batch,
+		Observation: map[string]any{"leak": func() {}},
+	}}}
+	out, err := bad.Serialize()
+	if out != nil {
+		t.Fatalf("Serialize returned non-nil bytes on non-encodable input — fail-loud violated")
+	}
+	var unserr planner.ErrUnserializable
+	if !errors.As(err, &unserr) {
+		t.Fatalf("Serialize err = %v, want ErrUnserializable", err)
+	}
+	if unserr.Field == "" {
+		t.Fatalf("ErrUnserializable.Field is empty — locator missing")
 	}
 }

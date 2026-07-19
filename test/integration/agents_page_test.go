@@ -154,6 +154,193 @@ func newPhase73eDeps(t *testing.T) *phase73eDeps {
 	}
 }
 
+// wellKnownDefaultAgentID is the synthetic default agent's well-known id
+// the default-agent E2E wires through WithDefaultAgent.
+const wellKnownDefaultAgentID = "harbor-default-agent"
+
+// newPhase73eDepsWithDefault is newPhase73eDeps wired with the synthetic
+// default-agent seam (WithDefaultAgent) AND the fleet Controller — so the
+// widened fan-in and the control-verb-against-the-default-id failure mode
+// are both exercised end-to-end against real drivers.
+func newPhase73eDepsWithDefault(t *testing.T) *phase73eDeps {
+	t.Helper()
+
+	priv, pub := loadES256Phase61(t)
+	red := auditpatterns.New()
+
+	bus, err := events.Open(context.Background(), config.EventsConfig{
+		Driver: "inmem", MaxSubscribersPerSession: 64, SubscriberBufferSize: 512,
+		IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 512,
+	}, red)
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	store, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		_ = bus.Close(context.Background())
+		t.Fatalf("state.Open: %v", err)
+	}
+	taskReg, err := tasks.Open(context.Background(), tasks.Dependencies{
+		Store: store, Bus: bus, Redactor: audit.Redactor(red),
+		Cfg: config.TasksConfig{Driver: "inprocess"},
+	})
+	if err != nil {
+		_ = store.Close(context.Background())
+		_ = bus.Close(context.Background())
+		t.Fatalf("tasks.Open: %v", err)
+	}
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	if err != nil {
+		_ = taskReg.Close(context.Background())
+		_ = store.Close(context.Background())
+		_ = bus.Close(context.Background())
+		t.Fatalf("protocol.NewControlSurface: %v", err)
+	}
+	reg, err := registry.New(registry.Deps{Store: store, Bus: bus, Redactor: red})
+	if err != nil {
+		t.Fatalf("registry.New: %v", err)
+	}
+	projector, err := agentsprotocol.NewRegistryProjector(reg,
+		agentsprotocol.WithDefaultAgent(agentsprotocol.DefaultAgentDescriptor{
+			ID: wellKnownDefaultAgentID, DisplayName: "Harbor default agent", BootedAt: fixedNowPhase73e,
+		}))
+	if err != nil {
+		t.Fatalf("NewRegistryProjector: %v", err)
+	}
+	agentsSvc, err := agentsprotocol.NewService(projector,
+		agentsprotocol.WithController(reg), agentsprotocol.WithBus(bus), agentsprotocol.WithRedactor(red))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	keys := newES256KeySet(phase73eKid, pub)
+	now := func() time.Time { return fixedNowPhase73e }
+	v, err := auth.NewValidator(keys, auth.WithClock(now), auth.WithRedactor(red))
+	if err != nil {
+		t.Fatalf("auth.NewValidator: %v", err)
+	}
+	mux, err := transports.NewMux(surface, bus,
+		transports.WithValidator(v),
+		transports.WithAgentsService(agentsSvc),
+	)
+	if err != nil {
+		t.Fatalf("transports.NewMux: %v", err)
+	}
+	return &phase73eDeps{
+		mux:  mux,
+		priv: priv,
+		reg:  reg,
+		cleanup: func() {
+			_ = reg.Close(context.Background())
+			_ = taskReg.Close(context.Background())
+			_ = store.Close(context.Background())
+			_ = bus.Close(context.Background())
+		},
+	}
+}
+
+// TestE2E_Phase190_DefaultAgentRow is the §13 primitive-with-consumer
+// binding test for the synthetic default-agent row: end-to-end over the
+// real wire transport + real StateStore-backed Agent Registry, it proves
+// (a) a runtime with zero registrations returns exactly one honest
+// is_default row on the narrow read, attributed to the caller's own
+// verified triple; (b) agents.get on the well-known id resolves it;
+// (c) agents.metrics counts it Active; (d) the admin-widened fleet fan-in
+// surfaces one synthetic row per named tenant with tenant-only identity
+// attribution, through the UNCHANGED ListTenantAgents seam; and (e) the
+// failure mode — a fleet-control verb against the well-known id falls
+// through to the existing not-found error, opening no control surface
+// over the runtime's own process.
+func TestE2E_Phase190_DefaultAgentRow(t *testing.T) {
+	deps := newPhase73eDepsWithDefault(t)
+	defer deps.cleanup()
+
+	srv := httptest.NewServer(deps.mux)
+	defer srv.Close()
+
+	idA := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-A"}
+	tokA := signES256Wave10(t, deps.priv, phase73eClaims(idA, nil), phase73eKid)
+
+	// (a) Narrow read — zero registrations, exactly one is_default row
+	// attributed to the caller's own triple.
+	status, body := postAgents(t, srv.URL, "list", `{}`, tokA)
+	if status != http.StatusOK {
+		t.Fatalf("agents.list: status=%d, want 200; body=%s", status, body)
+	}
+	var listResp prototypes.AgentListResponse
+	if err := json.Unmarshal(body, &listResp); err != nil {
+		t.Fatalf("decode agents.list: %v", err)
+	}
+	if len(listResp.Agents) != 1 || listResp.Aggregates.Total != 1 {
+		t.Fatalf("narrow list len=%d total=%d, want 1/1 (the synthetic default row)", len(listResp.Agents), listResp.Aggregates.Total)
+	}
+	got := listResp.Agents[0]
+	if !got.IsDefault || got.ID != wellKnownDefaultAgentID {
+		t.Fatalf("narrow row = %+v, want IsDefault with the well-known id", got)
+	}
+	if got.Identity.Tenant != "tenant-A" || got.Identity.User != "u-A" || got.Identity.Session != "s-A" {
+		t.Errorf("narrow synthetic row identity = %+v, want caller's own triple", got.Identity)
+	}
+
+	// (b) agents.get on the well-known id resolves the synthetic projection.
+	status, body = postAgents(t, srv.URL, "get", `{"id":"`+wellKnownDefaultAgentID+`"}`, tokA)
+	if status != http.StatusOK {
+		t.Fatalf("agents.get(default id): status=%d, want 200; body=%s", status, body)
+	}
+	var getResp prototypes.AgentGetResponse
+	_ = json.Unmarshal(body, &getResp)
+	if !getResp.Agent.IsDefault || getResp.Agent.ID != wellKnownDefaultAgentID {
+		t.Fatalf("agents.get(default id) = %+v, want the IsDefault projection", getResp.Agent)
+	}
+
+	// (c) agents.metrics counts the synthetic row Active.
+	status, body = postAgents(t, srv.URL, "metrics", `{}`, tokA)
+	if status != http.StatusOK {
+		t.Fatalf("agents.metrics: status=%d, want 200; body=%s", status, body)
+	}
+	var metricsResp prototypes.AgentMetricsResponse
+	_ = json.Unmarshal(body, &metricsResp)
+	if metricsResp.Metrics.ActiveAgents != 1 {
+		t.Fatalf("agents.metrics ActiveAgents=%d, want 1 (the synthetic default)", metricsResp.Metrics.ActiveAgents)
+	}
+
+	// (d) Admin-widened fleet fan-in over ≥2 tenants. tenant-A has one real
+	// registered agent; the widened read surfaces it plus one synthetic
+	// row per named tenant, attributed by tenant only.
+	registerPhase73eAgent(t, deps.reg, idA, "support", "Support Bot")
+	admin := identity.Identity{TenantID: "tenant-A", UserID: "obs", SessionID: "obs"}
+	tokAdmin := signES256Wave10(t, deps.priv, phase73eClaims(admin, []string{"admin"}), phase73eKid)
+	status, body = postAgents(t, srv.URL, "list", `{"filter":{"tenant_ids":["tenant-A","tenant-B"]}}`, tokAdmin)
+	if status != http.StatusOK {
+		t.Fatalf("widened agents.list: status=%d, want 200; body=%s", status, body)
+	}
+	var widened prototypes.AgentListResponse
+	_ = json.Unmarshal(body, &widened)
+	defaultsByTenant := map[string]int{}
+	reals := 0
+	for _, a := range widened.Agents {
+		if a.IsDefault {
+			defaultsByTenant[a.Identity.Tenant]++
+			if a.Identity.User != "" || a.Identity.Session != "" {
+				t.Errorf("widened synthetic row carried a (user, session): %+v", a.Identity)
+			}
+		} else {
+			reals++
+		}
+	}
+	if reals != 1 || defaultsByTenant["tenant-A"] != 1 || defaultsByTenant["tenant-B"] != 1 {
+		t.Fatalf("widened rows=%+v (reals=%d, defaults=%v), want 1 real + 1 synthetic per named tenant", widened.Agents, reals, defaultsByTenant)
+	}
+
+	// (e) Failure mode — a fleet-control verb against the well-known default
+	// id falls through to the existing not-found error (404). The Controller
+	// is the real registry, which holds no record for the id: no control
+	// surface over the runtime's own process.
+	status, _ = postAgents(t, srv.URL, "pause", `{"id":"`+wellKnownDefaultAgentID+`"}`, tokAdmin)
+	if status != http.StatusNotFound {
+		t.Errorf("agents.pause(default id): status=%d, want 404 (ErrAgentNotFound — no control surface over the default agent)", status)
+	}
+}
+
 // phase73eClaims mints a JWT MapClaims with the test's standard shape.
 func phase73eClaims(id identity.Identity, scopes []string) jwt.MapClaims {
 	return jwt.MapClaims{

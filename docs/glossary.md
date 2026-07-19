@@ -149,6 +149,12 @@ never stops the server. Phase 182, D-318.
 
 **`AssertSequence`** — Phase 71 (`harbortest`) public assertion that checks a list of `events.EventType` appears as an ordered subsequence of an `EventLog`'s captured events. Intervening event types are allowed; only the order of the want list is enforced. The right semantics for flow-level tests where bus-internal events (audit.admin_scope_used, bus.dropped) may interleave with the agent's emits. RFC §6.13, D-085.
 
+**AC-21′** — the narrowed successor to the AC-21 reserved-control guard: only `_finish` and `_await_task` remain standalone (co-occurrence with any other tool call in one native response stays `ErrInvalidDecision`); `_spawn_task` is batchable with catalog tools and other spawns via the `Batch` decision. Phase 185, D-322 (superseding D-169 item 5's array-meta-tool direction).
+
+**Actor token (RFC 8693)** — the opt-in (`IncludeActorToken`) leg of the `tokenexchange` exchange request carrying the run's verified invoking `agent_id` (the `tools.InvokingAgentFrom` ctx seam, D-278) as a distinct `actor_token`/`actor_token_type` beside the unchanged `subject_token` (the requesting-principal triple), so the broker's authorization server can bind and cross-check actor vs subject and audit the delegation chain. Never a client-named or wire-supplied field. Phase 191, D-328.
+
+**Auto-grouped batch spawn** — a `Batch.Spawns` entry with no explicit `GroupID` that joins the ONE task group the executor resolves-or-creates for every such entry in the same batch (an explicit-`GroupID` spawn is never redirected). Requires ≥2 qualifying entries to activate. Phase 186, D-323.
+
 ## B
 
 **Background Jobs page** — Console route at `/background-jobs` (served under the `(console)` route group with no `/console/` URL prefix — CONVENTIONS.md §1 / D-121; Phase 73h). A focused queue projection of `tasks.list` with `kinds=["background"]` (the plural `[]TaskKind` slice — the canonical 73d shape, never a `type=background` scalar) with queue-shaped affordances: faceted filter chips, saved-filter chips, virtualised queue table with priority badge / progress mini-bar / parent-session deep-link / orphan badge, bulk-action toolbar (per-row invocations of the shipped Phase 54 `cancel` / `pause` / `resume` / `prioritize` verbs — no parallel bulk endpoint), and a per-job right-rail with Details / Progress / Logs / Pending approvals / Artifacts for this Job / Related Sessions tabs. The page is a runtime lens (RFC §7.1) — every row round-trips through `tasks.list`; the Console DB holds only saved-filter chips, column visibility, and bulk-select state per D-061. D-128.
@@ -170,6 +176,10 @@ never stops the server. Phase 182, D-318.
 **BaseProviderType** — the wire-protocol family a `CustomProvider` emulates (Phase 33a). Phase 33a supports only `"openai"` (OpenAI-compatible endpoints; NIM, vLLM, ollama, lm-studio, in-house gateways). Future phases may widen to `"anthropic"` / `"cohere"` / etc. as evidence accrues. The validator's `allowedCustomBaseProviderTypes` map gates which values land.
 
 **built-in tool** — a tool shipped in the Harbor binary that registers on demand by name via `tools.built_in: [name]` in `harbor.yaml`. Lives at `internal/tools/builtin/`. V1.1 ships two — `clock.now` (current UTC time as RFC 3339 + epoch ms) and `text.echo` (echo input verbatim) — both registered through `inproc.RegisterFunc`, indistinguishable to the planner from an operator's custom Go tool except by the opt-in path. The `internal/config` validator carries a mirror of `builtin.KnownNames()` per the §4.4 seam pattern (a `builtin_test.go::TestKnownNames_MirrorsConfigAllowlist` asserts no drift); a name not in the registry fails at `harbor validate` time. Phase 83n / D-153.
+
+**Batch (decision)** — the fourth sealed `planner.Decision` shape (`Batch{Tools []CallTool; Spawns []SpawnTask; Join *JoinSpec}`) a projector constructs when one native multi-call LLM response mixes catalog-tool calls with `_spawn_task` calls; not a widening of `CallParallel` (spawns are never tool invocations for accounting). Every spawn is `RetainTurn=false`; `Join` collapses to `JoinAll` on the native path (D-169 parity); dispatch is non-atomic per branch. RFC §6.2, Phase 185, D-322.
+
+**BatchObservation** — the call-id-keyed aggregate observation the executor produces for a dispatched `Batch` (tool branches + spawn branches), declaration-order-stable regardless of concurrent completion order so every provider `tool_call_id` is answered in original order. Phase 186, D-323.
 
 ## C
 
@@ -276,7 +286,21 @@ D-316.
 
 **Credential sink** — any endpoint a Harbor runtime sends credential material to: a token endpoint (where the org's OAuth `client_id`/`client_secret` are POSTed for exchange) or a downstream connection host (where an exchanged bearer is injected). The v1.14 credential-plane invariant (D-300) is that **no admin-writable field may determine a credential sink** — every sink-determining value (token endpoint, allowed downstream hosts, audience, scope ceiling) is boot-declared, config/file-only. Enforced by the boot-declared `allowed_downstream_hosts` allow-list checked in `resolveOAuthBinding`, the boot audience/scope ceiling, and the hardened, redirect-refusing token-exchange client. Supersedes the earlier "no env-var NAMES on the wire" symptom rule, which two adversarial reviews proved insufficient (the `token_url` and connection `url` remained admin-writable sinks). Phase 166, RFC §6.4, §7, D-300.
 
+**Cache read tokens / cache write tokens** — the counts of a completion call's `PromptTokens` served from (read) or newly written to (write) the provider's prompt cache, reported on `llm.Usage.CacheReadTokens`/`CacheWriteTokens` (sourced from the gateway's `PromptTokensDetails`). A SUBSET of `PromptTokens`, never additional tokens — surfaces render them as an annotation, not a summed row. Zero when the provider reports no cache data. Phase 189, D-326.
+
+**Cascade-by-default batch cancellation** — the `Batch`-scoped instance of
+the cancel hierarchy: a run-level hard cancel aborts in-flight `Batch` tool
+branches and cascades through every batch-spawned descendant
+(`PropagateOnCancel=cascade`, the only reachable value until `isolate`
+becomes model-expressible); the operator can always cancel any task
+directly regardless of propagation mode. See **Cancel hierarchy**. Phase
+186, D-323.
+
+**Cancel hierarchy** — the settled ordering of cancellation authority: the OPERATOR reaches any task directly regardless of propagation mode (`isolate` detaches a task from its parent's cascade, never from operator control; a session-scoped operator cancel sweeps isolate-marked tasks too — there is no uncancellable task); the AGENT reaches only its own run's descendants (`_cancel_task`); CASCADE is the default so an interrupt kills everything not explicitly detached. RFC §6.2, Phases 186–187, D-323/D-324.
+
 ## D
+
+**Default agent** — the runtime's boot-configured agent: the one every `harbor dev` / `harbor serve` / generated-binary process boots serving through, identified by the well-known boot `agent_id` (`MuxInput.AgentConfigID`). It is NEVER written to the Agent Registry's StateStore (it is not a fleet-registered entity, so `registry.Register` is never called for it), which is why registry-scoped `agents.*` projections produced zero rows for a runtime serving only it — until Phase 190 (D-327) surfaced it as a **synthetic agent row**. It carries the caller's own verified `(tenant, user, session)` triple on a narrow read; agent_id is a registration identity, not an isolation principal (CLAUDE.md §6 clarifying note, D-059).
 
 **durable user-scope prompt layer** — a user-instruction prompt layer persisted per `(tenant, user)` for an agent (one field — `user_prompt` — of the **Durable user config variant** Phase 126a writes), spanning that user's sessions. At run start it is PROJECTED (Phase 126b, D-257) into the existing lower-trust `<user_instructions>` block as the MIDDLE segment, in precedence order admin Base > admin User > USER-durable > session User. It carries no base field (a user caller cannot edit the operator base) and is written ONLY through `agent_config.user.set_revision` (one writer) and read back ONLY by the run-start `ApplyPromptLayers` projection (one reader) — the §13 two-writers/one-reader trap closed by construction. RFC §6.16, §5.5.
 
@@ -323,6 +347,8 @@ D-316.
 **docs site** — the published VitePress site at `hurtener.github.io/Harbor/`, built from `docs/site/` by `.github/workflows/docs.yml` (build on every PR as a dead-link gate; deploy to GitHub Pages on `main`). It mirrors the canonical in-repo docs — operator skills, recipes, CONFIG, glossary, decisions log, RFC, master plan, productionization playbook, changelog — via include stubs, so the repo stays the source of truth. Distinct from `docs/` (the in-repo markdown) and the Console (the in-product runtime UI). Phase 103, D-208.
 
 **Detach-on-reconcile** — the removal leg of agent-config run-start reconciliation: a connected MCP server no longer present in the active revision's connections section (removed via `agent_config.remove_mcp_connection`, or rolled back past its add) is deregistered from the planner catalog + MCP registry and its transport closed at the next-turn projection boundary — never mid-run; in-flight runs keep their snapshot. One mechanism serves both remove and rollback. Phase 156, D-287.
+
+**Degenerate batch** — a would-be `Batch` with fewer than two combined `Tools`+`Spawns` branches; the projector never constructs one, preferring the plain single-shape `Decision` ("one representation per semantic"), pinned by conformance. Phase 185, D-322.
 
 ## E
 
@@ -522,6 +548,8 @@ Phase 183, D-319.
 
 **isolation conformance harness** — the Phase 76 master cross-tenant + cross-session isolation gate at `test/integration/isolation_conformance_test.go`. Spins ~100 concurrent session-workers across a grid of tenants / users / sessions; each loops a randomized write-then-read op-mix against all SIX identity-scoped subsystems (StateStore, ArtifactStore, MemoryStore, SkillStore, TaskRegistry, EventBus) opened through their production registry factories — no mocks at the seam. Every write stamps the worker's identity into the value; every read asserts the recovered identity tuple matches the caller's verbatim. The binding invariant (RFC §4.3): every read returns only data whose `(tenant, user, session)` exactly matches the caller — zero cross-scope bleed. The every-PR soak window is fast (~3 s, the `isolation` CI job); the master-plan 30 s soak is opt-in via `HARBOR_ISOLATION_SOAK=<dur>` (`-short` forces the fast window). A regression here is a security bug, not a flake. RFC §4.3, D-134.
 
+**Insufficient-scope step-up** — a downstream MCP call refused with `403` + `WWW-Authenticate: Bearer error="insufficient_scope"` (RFC 6750 §3.1), surfaced as structured data — downstream resource id, required/granted scopes, verbatim challenge, origin — on the tool-result error path (`tools.ErrInsufficientScope` → `ToolFailedPayload.ScopeShortfall`, classified PERMANENT) and the MCP connection view (`MCPServerView.LastScopeShortfall`). Report-not-act: the runtime never escalates, re-consents, or widens a binding on this signal. Phase 191, D-328.
+
 ## J
 
 **JWT bearer** — the `Authorization: Bearer <token>` HTTP header carrying a Harbor Protocol JWT. Phase 61's `auth.Middleware` reads the bearer at the Phase 60 transport edge, calls `Validator.Validate`, and on success injects the verified `(tenant, user, session)` triple into `r.Context()`. A missing / malformed bearer is rejected `401 identity_required`; a present-but-invalid bearer is `401 auth_rejected`. RFC §5.5, D-079.
@@ -685,6 +713,8 @@ server queue. Phase 182, D-318.
 
 **`MaxStepsExceededPayload`** — typed payload for the `planner.max_steps_exceeded` event (Phase 45). SafePayload (composes `events.SafeSealed`): `Identity` (the run's quadruple), `MaxSteps` (the configured cap), `StepsObserved` (the trajectory step count at the moment the breaker fired), `LastTool` (the most recently dispatched tool name, empty when the trajectory was empty), `OccurredAt`. RFC §6.2, D-051.
 
+**max_batch_spawns (breadth cap)** — the operator-configurable ceiling on a single `Batch` decision's `Spawns` length; whole-batch loud rejection when exceeded, never per-excess truncation. Distinct from `absolute_max_spawn_depth`, which bounds spawn-chain DEPTH, not the breadth of one response's spawns. Phase 186, D-323.
+
 ## O
 
 **Owned server (TUI)** — the Protocol server lifecycle created by an explicit
@@ -744,6 +774,10 @@ D-320.
 **`notification.pause_requested`** — V1 notification class synthesised from `pause.requested` events (Phase 50). Severity Info. Carries a deep-link to the paused task in the Console's Interventions queue. Phase 72d.
 
 **`notifications_routing` (Console DB table)** — Phase 72h Console DB table that persists the per-operator routing matrix for `notification.*` event classes (Brief 11 §CC-3). Columns: `notification_class` (one of `governance_budget_exceeded`, `tool_auth_required`, `tool_approval_required`, `task_failed`, `agent_credentials_expired`, `runtime_health_degraded` — starter list; new classes ship as additive forward migrations), `transport` (one of `in_app`, `email`, `webhook`, `web_push` — V1 wires `in_app` only; deliverer transports are post-V1), `enabled`, `target_json`. NOT the source of `notification.*` events — the runtime emits them via Phase 72d's topic; this table decides which transports light up on receipt. Per-operator scoped. RFC §7, D-061, Phase 72h.
+
+**Notification wake events** — `notification.task_group_resolved` and `notification.task_completed`: the notification-class conversational mirror emitted on background group resolution / `NotifyOnComplete` terminal transitions, carrying ref-shaped member-outcome summaries under the owning identity. The typed `WatchGroup`/`MemberOutcome` planner path is untouched — the model gets structure, the operator gets narrative. Phase 188, D-325.
+
+**Per-tool OAuth binding (MCP)** — the boot-declared `MCPServerConfig.ToolOAuthProviders` map (server-side tool name → declared `oauth_provider` name), mirroring the per-tool `ToolPolicies` shape, letting one MCP connection front N downstream resources under N distinct audiences; an unlisted tool falls back to the connection-level binding. Deliberately NOT on the Protocol-writable `ToolExposure` layer (D-300: no admin-writable field determines a credential sink). Phase 191, D-328.
 
 ## P
 
@@ -811,7 +845,7 @@ D-320.
 
 **Protocol (Harbor Protocol)** — the canonical event/state contract between the Runtime and any client (Console, CLI, third-party). Versioned. RFC §5.
 
-**PropagateOnCancel** — `tasks.Task` field controlling how `Cancel` walks descendants: `"cascade"` (default; cancels descendants in BFS order, emitting `task.cancelled` per cancel) or `"isolate"` (cancellation stays local to the target). Per `tasks.SpawnRequest`; the resolved value is stored on the Task and consulted at Cancel time. RFC §6.8.
+**PropagateOnCancel** — `tasks.Task` field controlling how `Cancel` walks descendants: `"cascade"` (default; cancels descendants in BFS order, emitting `task.cancelled` per cancel) or `"isolate"` (cancellation stays local to the target). Per `tasks.SpawnRequest`; the resolved value is stored on the Task and consulted at Cancel time. RFC §6.8. Phase 187 (D-324) makes `isolate` model-expressible on `_spawn_task` (amending D-047's `SpawnSpec`), fixes the engine cascade walk to actually honor a descendant's own `isolate` (dormant until then), and binds the whole field to the cancel hierarchy: isolate detaches from the PARENT's cascade, never from direct operator control.
 
 **`TaskPushNotificationConfig`** — A2A's per-task push-notification configuration (URL + auth credentials + optional token). Harbor's `RemoteTransport` exposes CRUD (Create / Get / List / Delete); V1's loopback driver stores in memory, post-V1 + Phase 29 add durability + outbound dispatch. RFC §6.12, D-031.
 
@@ -1003,7 +1037,11 @@ D-320.
 
 **`RuntimeHealth`** — Phase 72f wire type carrying the `runtime.health` response: a `Subsystems []SubsystemHealth` slice. Each `SubsystemHealth` entry pins one subsystem's `Status` (`"ready"` / `"degraded"` / `"unavailable"`) and an optional `Detail` reason string.
 
+**Resource indicator (RFC 8707, tokenexchange)** — the boot-declared, config-only `ToolOAuthProviderConfig.ResourceIndicator` carried as the `resource` form parameter on the RFC 8693 exchange, with best-effort `aud`-claim verification on a JWT-shaped returned token (an opaque token records `AudienceVerified:false`, never a false pass). Never auto-populated from discovery — an operator copies a discovered, confirmed value by hand (report-don't-follow, D-297; boot-declared-sink invariant, D-300). Phase 191, D-328.
+
 ## S
+
+**Synthetic agent row** — the first-class `agents.list` / `agents.get` row the `RegistryProjector` emits for the runtime's **default agent** when wired via `WithDefaultAgent` (Phase 190, D-327). It is synthesized on read from a value-typed `DefaultAgentDescriptor`, never persisted to the Agent Registry's StateStore, and is marked with the additive `Agent.IsDefault bool` (`is_default` wire marker) so a fleet catalog distinguishes "the runtime's own agent" from a registered member and reads "one agent, not enumerable this way" instead of an empty page (the silent-absence class, D-311). Collision rule: a real registration under the same well-known id suppresses the synthetic row (real data wins; one row per id). On the admin-widened fleet read it carries the named tenant only (user/session left empty — representable absence, not a fabricated session). Fleet-control verbs against its id fall through to the existing `ErrAgentNotFound` — no control surface over the runtime's own process.
 
 **Snapshot generation fence (TUI)** — the monotonically ordered reconciliation
 marker that prevents an older in-flight snapshot from overwriting events or a
@@ -1321,7 +1359,7 @@ walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
 
 **SkillLookup** — narrow planner-facing read view over the skills subsystem (Phase 42). Two methods: `Search(ctx, query, limit) ([]SkillResult, error)` and `Get(ctx, id) (*Skill, error)`. The planner-package types (`Skill`, `SkillResult`) are projections of the production `internal/skills` records — Phase 37 ships the production surface; Phase 42 declares the view so the planner package compiles without importing `internal/skills` (parallel fork at Wave 8 Stage A). RFC §6.2, D-047.
 
-**SpawnSpec** — planner-side projection of `tasks.SpawnRequest` (Phase 42). Carries the fields the planner controls: `Description`, `Query`, `Priority`, `RetainTurn`, `FailFast`. The Runtime fills the rest (`Identity` from the run quadruple, `IdempotencyKey` from the planner step counter, `PropagateOnCancel` from the default, `NotifyOnComplete` from the spawn intent) at dispatch time. NOT a duplicate type — `tasks.TaskKind` is consumed verbatim on `SpawnTask.Kind`. RFC §6.2, D-047.
+**SpawnSpec** — planner-side projection of `tasks.SpawnRequest` (Phase 42). Carries the fields the planner controls: `Description`, `Query`, `Priority`, `RetainTurn`, `FailFast`. The Runtime fills the rest (`Identity` from the run quadruple, `IdempotencyKey` from the planner step counter, `PropagateOnCancel` from the default, `NotifyOnComplete` from the spawn intent) at dispatch time. NOT a duplicate type — `tasks.TaskKind` is consumed verbatim on `SpawnTask.Kind`. RFC §6.2, D-047. Phase 187 (D-324) amends the field set with a planner-settable `PropagateOnCancel` (`""`→cascade default, `isolate` to detach from the parent's cascade — never from operator control), landing only alongside the `_task_status`/`_cancel_task` brakes.
 
 **ToolDescriptor** — the callable binding produced by a driver: `Tool` + `Invoke(ctx, args) (ToolResult, error)` + `Validate(args) error`. The planner never sees a `ToolDescriptor`; the dispatcher uses it. RFC §6.4.
 
@@ -1372,6 +1410,10 @@ walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
 **`trajectory.compressed`** — event emitted by `CompressionRunner.MaybeCompress` (Phase 46) on successful summary stamping. `TrajectoryCompressedPayload` (SafePayload) carries the run's identity quadruple + step count before/after + token estimate at the moment of compression. The success-path companion to `trajectory.compression_failed`; together they make compression observable in both directions (§13 fail-loudly principle). RFC §6.2, D-055.
 
 **`trajectory.compression_failed`** — event emitted by `CompressionRunner.MaybeCompress` (Phase 46) when the summariser returns an error, the summariser returns `(nil, nil)` (contract violation surfaced as `ErrEmptySummary`), or the estimator errors (typically a Phase 43 `ErrUnserializable` from `Trajectory.Serialize`). `TrajectoryCompressionFailedPayload` (SafePayload) carries the identity + step count + token estimate + error code (`summariser_error` / `empty_summary` / `estimator_error`) + truncated message (capped at 256 chars; never raw trajectory content). The load-bearing fail-loudly observability surface for compression failures (§13 — silent degradation banned). RFC §6.2, D-055.
+
+**Task-management meta-tools** — the reserved planner controls `_task_status` (typed state/progress rows for tasks THIS run spawned) and `_cancel_task` (cancel an own descendant, reason recorded), projected into the sealed `TaskStatusQuery`/`CancelTask` decisions (the query shape is deliberately not named `TaskStatus` — that is the lifecycle enum) and dispatched against the task registry. Descendant-scoped via the parent-task chain — never arbitrary session tasks; not batchable in their first wave. Model-expressible `propagate_on_cancel: isolate` lands only alongside them (power with brake). RFC §6.2, Phase 187, D-324.
+
+**Turn-failure status-strip line** — the TUI's dedicated `× Turn failed · <ErrorCode>` honesty line rendered when a FOREGROUND run reaches a terminal failure, replacing the prior silent return to idle; detail stays on the diagnostics route. Phase 188, D-325.
 
 ## U
 

@@ -107,6 +107,22 @@ const (
 	// at the paused task in the Console's Interventions queue.
 	EventTypeNotificationPauseRequested events.EventType = "notification.pause_requested"
 
+	// EventTypeNotificationTaskGroupResolved — synthesised from
+	// task.group_resolved. Severity Info when every member
+	// succeeded, Warning when any member failed or was cancelled. The
+	// deep-link points at the resolved group in the Console. This is the
+	// conversational mirror of the typed group-completion wake — the
+	// planner still consumes the typed GroupCompletion path unchanged.
+	EventTypeNotificationTaskGroupResolved events.EventType = "notification.task_group_resolved"
+
+	// EventTypeNotificationTaskCompleted — synthesised from
+	// task.completed ONLY when the completing task carried the
+	// NotifyOnComplete opt-in. Severity Info. Closes the silent-
+	// background-success gap: a solo background task that finishes
+	// produces an operator-visible completion line, not just the typed
+	// result the planner already had.
+	EventTypeNotificationTaskCompleted events.EventType = "notification.task_completed"
+
 	// EventTypeNotificationIdentityRejected — emitted by the Subscriber
 	// when a trigger event arrives with the `<missing>` sentinel
 	// substituted into one or more identity components. Mirrors the
@@ -124,6 +140,8 @@ func init() {
 	events.RegisterEventType(EventTypeNotificationGovernanceBudgetExceeded)
 	events.RegisterEventType(EventTypeNotificationAuthRequired)
 	events.RegisterEventType(EventTypeNotificationPauseRequested)
+	events.RegisterEventType(EventTypeNotificationTaskGroupResolved)
+	events.RegisterEventType(EventTypeNotificationTaskCompleted)
 	events.RegisterEventType(EventTypeNotificationIdentityRejected)
 }
 
@@ -140,6 +158,8 @@ func V1NotificationClasses() []events.EventType {
 		EventTypeNotificationGovernanceBudgetExceeded,
 		EventTypeNotificationAuthRequired,
 		EventTypeNotificationPauseRequested,
+		EventTypeNotificationTaskGroupResolved,
+		EventTypeNotificationTaskCompleted,
 	}
 }
 
@@ -160,5 +180,13 @@ func V1TriggerEventTypes() []events.EventType {
 		"governance.budget_exceeded",
 		"tool.auth_required",
 		"pause.requested",
+		"task.group_resolved",
+		"task.completed",
+		// `task.group_cancelled` is intentionally NOT mirrored: a group
+		// cancellation is human/agent-initiated or is downstream of an
+		// already-visible parent-turn failure, not an unprompted autonomous
+		// resolution worth waking the conversation surface. Only autonomous
+		// resolutions (`task.group_resolved`) and background completions
+		// (`task.completed`) earn a wake mirror.
 	}
 }

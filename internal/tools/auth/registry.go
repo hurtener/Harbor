@@ -85,6 +85,16 @@ type ProviderConfig struct {
 	// scope outside the ceiling is dropped, never honoured. An empty
 	// ceiling preserves the legacy pass-through behaviour.
 	ScopeCeiling []string
+	// ResourceIndicator is the boot-declared RFC 8707 `resource` value the
+	// `tokenexchange` driver carries as the `resource` form parameter on every
+	// exchange, and verifies the returned token's `aud` against (when the
+	// token is JWT-shaped). Empty preserves today's behaviour (no `resource`
+	// sent, no audience check). Ignored by the interactive `oauth2` driver.
+	ResourceIndicator string
+	// IncludeActorToken opts the `tokenexchange` driver into carrying the
+	// run's verified acting principal (`agent_id`, when present on ctx) as an
+	// RFC 8693 `actor_token`. Default false. Ignored by `oauth2`.
+	IncludeActorToken bool
 }
 
 // FactoryDeps bundles the shared collaborators every OAuth provider

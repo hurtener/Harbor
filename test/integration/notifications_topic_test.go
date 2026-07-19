@@ -297,6 +297,148 @@ func TestE2E_NotificationsTopic_MissingIdentityFailsLoudly(t *testing.T) {
 	}
 }
 
+// TestE2E_NotificationsTopic_BackgroundWakeClasses exercises the two
+// background-wake classes end-to-end against the real bus + Subscriber:
+//
+//   - a task.group_resolved with mixed member outcomes round-trips to
+//     notification.task_group_resolved with the correct full-membership
+//     counts and identity;
+//   - a task.completed with NotifyOnComplete=true round-trips to
+//     notification.task_completed;
+//   - a task.completed with NotifyOnComplete=false produces NO
+//     notification (bounded-wait negative check per §17.4 — never a
+//     sleep).
+func TestE2E_NotificationsTopic_BackgroundWakeClasses(t *testing.T) {
+	t.Parallel()
+
+	bus := openNotificationsBus(t)
+
+	listener, err := bus.Subscribe(context.Background(), events.Filter{
+		Admin: true,
+		Types: []events.EventType{
+			notifications.EventTypeNotificationTaskGroupResolved,
+			notifications.EventTypeNotificationTaskCompleted,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe listener: %v", err)
+	}
+	defer listener.Cancel()
+
+	startSubscriber(t, bus)
+
+	idGroup := triple("group")
+	idDone := triple("done")
+	idQuiet := triple("quiet")
+
+	// Publish the QUIET (no-notify) completion FIRST. If it (wrongly)
+	// synthesised a notification, FIFO ordering means it would arrive
+	// before the two expected ones below — so draining for the two
+	// expected and then asserting no third arrives is a sound negative.
+	quiet := events.Event{
+		Type:     tasks.EventTypeTaskCompleted,
+		Identity: idQuiet,
+		Payload:  tasks.TaskCompletedPayload{TaskID: "task-quiet", NotifyOnComplete: false},
+	}
+	if err := bus.Publish(context.Background(), quiet); err != nil {
+		t.Fatalf("Publish quiet: %v", err)
+	}
+
+	resolved := events.Event{
+		Type:     tasks.EventTypeTaskGroupResolved,
+		Identity: idGroup,
+		Payload: tasks.TaskGroupResolvedPayload{Completion: tasks.GroupCompletion{
+			GroupID:     "grp-e2e",
+			SessionID:   idGroup.Identity,
+			FinalStatus: tasks.GroupCompleted,
+			Members: []tasks.MemberOutcome{
+				{TaskID: "m-1", Status: tasks.StatusComplete, Description: "one"},
+				{TaskID: "m-2", Status: tasks.StatusFailed, Description: "two"},
+			},
+		}},
+	}
+	if err := bus.Publish(context.Background(), resolved); err != nil {
+		t.Fatalf("Publish resolved: %v", err)
+	}
+
+	done := events.Event{
+		Type:     tasks.EventTypeTaskCompleted,
+		Identity: idDone,
+		Payload:  tasks.TaskCompletedPayload{TaskID: "task-done", NotifyOnComplete: true},
+	}
+	if err := bus.Publish(context.Background(), done); err != nil {
+		t.Fatalf("Publish done: %v", err)
+	}
+
+	got := make(map[events.EventType]events.Event, 2)
+	deadline := time.After(30 * time.Second)
+	for len(got) < 2 {
+		select {
+		case ev, ok := <-listener.Events():
+			if !ok {
+				t.Fatalf("listener closed early; got=%d/2", len(got))
+			}
+			got[ev.Type] = ev
+		case <-deadline:
+			t.Fatalf("deadline before both wake notifications arrived (got %d/2)", len(got))
+		}
+	}
+
+	// The group notification: identity + counts.
+	grp, ok := got[notifications.EventTypeNotificationTaskGroupResolved]
+	if !ok {
+		t.Fatal("no notification.task_group_resolved arrived")
+	}
+	if grp.Identity != idGroup {
+		t.Errorf("group notification identity bled: got %v, want %v", grp.Identity, idGroup)
+	}
+	if rm, ok := grp.Payload.(events.RedactedMap); ok {
+		if got := redactedInt(rm.Data["membersucceeded"]); got != 1 {
+			t.Errorf("membersucceeded=%d, want 1", got)
+		}
+		if got := redactedInt(rm.Data["memberfailed"]); got != 1 {
+			t.Errorf("memberfailed=%d, want 1", got)
+		}
+	} else {
+		t.Errorf("group notification payload type=%T, want RedactedMap", grp.Payload)
+	}
+
+	// The background-completion notification: identity propagated.
+	dn, ok := got[notifications.EventTypeNotificationTaskCompleted]
+	if !ok {
+		t.Fatal("no notification.task_completed arrived for the NotifyOnComplete=true task")
+	}
+	if dn.Identity != idDone {
+		t.Errorf("completion notification identity bled: got %v, want %v", dn.Identity, idDone)
+	}
+
+	// Bounded-wait negative: the NotifyOnComplete=false completion must NOT
+	// have produced any further notification.
+	select {
+	case ev, ok := <-listener.Events():
+		if ok {
+			t.Fatalf("unexpected extra notification %q — a NotifyOnComplete=false completion must produce none", ev.Type)
+		}
+	case <-time.After(500 * time.Millisecond):
+		// No extra notification — correct.
+	}
+}
+
+// redactedInt reads an int count from a redacted-map value, tolerating the
+// int / float64 shapes a JSON round-trip may produce.
+func redactedInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return -1
+	}
+}
+
 // TestE2E_NotificationsTopic_ConcurrencyStress is the §17.3 long-lived-
 // wiring requirement: N=20 concurrent producers each fire a mix of
 // trigger event types against a single shared bus + Subscriber, all

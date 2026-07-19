@@ -636,8 +636,19 @@ tools:
   #     client_id_env: HARBOR_BROKER_CLIENT_ID
   #     client_secret_env: HARBOR_BROKER_CLIENT_SECRET
   #     token_url: https://broker.example.com/oauth2/token
+  #     allowed_downstream_hosts: [api.weather.example]
   #     extra:
   #       audience: https://api.weather.example
+  #     # resource_indicator (RFC 8707) — carried as the `resource` form param
+  #     # on every exchange; a JWT-shaped returned token whose `aud` excludes
+  #     # it fails the exchange loud. Never auto-populated from discovery — an
+  #     # operator copies a discovered, confirmed value in by hand. tokenexchange
+  #     # only (rejected on the interactive `oauth2` driver).
+  #     resource_indicator: https://api.weather.example
+  #     # include_actor_token (RFC 8693) — opt in to carrying the run's VERIFIED
+  #     # acting principal (agent_id, when present) as an `actor_token` beside
+  #     # the subject_token. Absent agent_id sends none. tokenexchange only.
+  #     include_actor_token: true
   oauth_providers: []
 
   # MCP southbound attachments (Phase 28). Each entry boots a
@@ -721,6 +732,19 @@ tools:
   #     # Omit to leave the AS half of the chain needs-allowance (partial).
   #     oauth_discovery_allowed_origins:
   #       - https://login.example.com
+  #     # oauth_provider — bind a declared tools.oauth_providers[] entry for
+  #     # per-identity southbound bearer injection on every callTool RPC.
+  #     # oauth_provider: weather-broker
+  #     # tool_oauth_providers — per-tool oauth_provider overrides keyed by the
+  #     # MCP server-side tool name (mirrors tool_policies). A tool named here
+  #     # binds THAT provider for its callTool RPCs; an unlisted tool falls back
+  #     # to oauth_provider. Each entry re-enforces the same binding rules
+  #     # (unknown name / stdio / static-Authorization conflict / downstream-host
+  #     # allow-list). Closes the one-audience-per-server constraint for a shared
+  #     # server fronting N downstream resources.
+  #     # tool_oauth_providers:
+  #     #   send_mail: m365-mail-broker
+  #     #   list_events: gcal-broker
   #
   #   - name: filesystem
   #     transport_mode: stdio

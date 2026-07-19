@@ -63,6 +63,8 @@ Every session for the attached identity. Idle TTL countdown, hard-cap countdown,
 
 A session row shows its **title** when one is set (truncated, with the full title + id in a tooltip) and falls back to the bare id otherwise. Click **Rename** inline to set/change/clear it — this calls `sessions.set_title` (D-288) and can name any session of your own `(tenant, user)`, not just the one you're currently attached to.
 
+The session-detail bottom dock's **Events** tab also surfaces the session's background-wake notifications (`notification.task_completed`, `notification.task_group_resolved`, `notification.task_failed`) with their human-readable `Summary` — so when a background task or task group resolves while you're watching a session, you see the same narrative the TUI shows.
+
 The **"Most expensive"** sort and the **cost-above** facet chip now operate on TRUTHFUL per-session cost — the runtime populates `total_cost_cents` / `total_tokens` / `tasks_count` / `events_count` at the source (D-309), so sorting by cost actually reorders by real spend instead of the old permanently-zero placeholder. The Events cell shows a **"≥"** prefix when a row's counts are an honest lower bound (its per-session scan hit its bound). The Agent column reads `—` when no single agent is bound to the session (there is no one authoritative agent for a multi-agent session), and the page carries no agent-id filter chip — a programmatic `filter.agent_ids` call fails loud rather than lying with an empty page.
 
 ### Tasks — the request-level view
@@ -72,7 +74,7 @@ Every chat message creates a Task. Every background spawn creates a Task. Every 
 Select a row and the page swaps into **detail mode** — same page, an in-page detail header plus a bottom-dock tab strip. This is the most useful debugging surface in the Console:
 
 - **Details / Input / Output** — status, started/ended, duration, identity triple, planner used, LLM model, token usage, the request input and final output (`tasks.get`).
-- **Events** — the canonical event stream for THIS task (every `tool.invoked`, `llm.call`, `pause.requested`, `pause.resumed`, etc.) in order.
+- **Events** — the canonical event stream for THIS task (every `tool.invoked`, `llm.call`, `pause.requested`, `pause.resumed`, etc.) in order. Background-wake notifications (`notification.task_completed`, `notification.task_group_resolved`, `notification.task_failed`) render their human-readable `Summary` on this row — the same operator-facing wake line the TUI shows conversationally — instead of the bare event type.
 - **Tools** — every tool invocation for the task with args, result, latency, error chain.
 
 When something goes wrong, start here. For the OTel span tree of a task, flip the trace overlay on in **Live Runtime**.
@@ -81,7 +83,7 @@ The **"Has pending approval"** facet now narrows to REAL rows — the runtime po
 
 ### Agents — the registry
 
-The Agent Registry (RFC §6.16). Every agent registered with this Runtime, its `agent_id` (registration identity, NOT isolation identity — see CLAUDE.md §6 clarification), capabilities, last-seen, register/deregister events. Useful for multi-agent deployments where one Runtime hosts many agents; for a single-agent setup, you see one row.
+The Agent Registry (RFC §6.16). Every agent registered with this Runtime, its `agent_id` (registration identity, NOT isolation identity — see CLAUDE.md §6 clarification), capabilities, last-seen, register/deregister events. Useful for multi-agent deployments where one Runtime hosts many agents; for a single-agent setup, you see one row — the runtime's **default agent** (the boot-configured agent it serves through, which is never registered as a fleet entity). That row is marked `is_default: true` and rendered with a **Default** badge on its card, so you can tell "the runtime's own agent" apart from a registered sub-agent, and a fleet catalog reads "one agent" instead of an empty page.
 
 Click an agent for its detail page, which carries the per-agent tabs: **Identity**, **Autonomy**, **Tools** (connected tools), **Memory**, **Cost**, and **Skills**. The Skills tab is where you inspect the DB-backed runtime skill catalog this agent draws on (`internal/skills/`, RFC §6.7) — there is no standalone Skills nav page. See [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md).
 

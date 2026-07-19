@@ -42,7 +42,17 @@
     onclick={() => onopen(agent.id)}
   >
     <div class="card-head">
-      <span class="name">{agent.name || agent.id}</span>
+      <span class="name-group">
+        <span class="name">{agent.name || agent.id}</span>
+        {#if agent.is_default}
+          <!-- The runtime's synthetic default agent — the boot-configured
+               agent this process serves through, never a registered fleet
+               row. The marker distinguishes it from a registered sub-agent. -->
+          <span data-testid="agent-card-default">
+            <StatusChip kind="accent" label="Default" />
+          </span>
+        {/if}
+      </span>
       <StatusChip kind={healthKind(agent.health)} label={agent.health} />
     </div>
     <span class="handle mono">{shortID(agent.id)}</span>
@@ -126,6 +136,13 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
+  }
+
+  .name-group {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
   }
 
   .name {

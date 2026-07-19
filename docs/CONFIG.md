@@ -1320,6 +1320,18 @@ sub-agent that itself emits `_spawn_task` cannot recurse without
 bound. The cap bounds depth, not breadth. Default: `0` → dev-runtime
 default of 4. Validation: >= 0.
 
+### planner.max_batch_spawns
+
+Caps how many task spawns a single `Batch` decision may carry — the
+BREADTH ceiling (Phase 186 / D-323). A `Batch` is the shape a projector
+builds when a model batches `_spawn_task` calls alongside other calls in
+one response; the dev `ToolExecutor` rejects the WHOLE batch (no tool
+branch dispatches, no spawn registers) — never a silent truncation to
+the first N — when its spawn count exceeds this cap. Distinct from
+`absolute_max_spawn_depth`, which bounds spawn-chain DEPTH, not the
+breadth of one response's spawns. Default: `0` → dev-runtime default of
+5 (conservative, operator-revisable). Validation: >= 0.
+
 ### planner.token_budget
 
 Trajectory-compression threshold in estimated tokens (Phase 111e /

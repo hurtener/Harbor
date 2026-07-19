@@ -23,6 +23,8 @@ The briefs themselves live alongside this file (`docs/research/01..NN.md`). Brie
 | 13 | React planner prompt engineering (system prompt depth, dynamic augmentation, UNTRUSTED memory framing) | ~3400 | 2026-05-18 |
 | 14 | MCP client/host compliance (spec 2025-11-25 — capability matrix audit + 85-band decomposition) | ~3600 | 2026-05-21 |
 | 15 | Native tool-calling + deferred loading + tag-based scoping (V1.4 React migration tradeoff) | ~3500 | 2026-05-26 |
+| 16 | Parallel intent + task management (Batch decision mining, AC-21 supersession, cancel hierarchy, child-run inheritance) | ~1800 | 2026-07-17 |
+| 17 | Prompt-cache telemetry + intent, grounded at Harbor's LLM edge (dropped cache tokens, prefix-invalidation hazards, phase sequencing) | ~1100 | 2026-07-17 |
 
 ## Subsystem → briefs reverse index
 
@@ -55,6 +57,8 @@ When authoring a phase plan whose subsystem matches the left column, **read at l
 | Console — observability + control plane UI | §7 | **06** (Playground anti-pattern) |
 | CLI — `harbor dev`, scaffolding, deployment | §8 | **06** |
 | Native Runtime TUI (Phases 179–184) | §5, §8 | **06**, 07, 11, 12 + `tui-investigation/` dossier |
+| Batch decision + task-management meta-tools + cancel hierarchy (v1.16 parallel-intent phases) | §6.2, §6.4, §6.8 | **16**, 02, 05, 07, 15 |
+| Prompt-cache telemetry + cache intent (v1.16 cache phases) | §6.5 | **17**, 08, 03 |
 | Persistence triad — interfaces + conformance | §9 | **05** |
 | Identity & isolation contract | §4 | (cross-cutting; every brief touches identity) |
 

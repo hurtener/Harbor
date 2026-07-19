@@ -229,23 +229,41 @@ func (a *RegistryAccessor) SetRawHTMLTrust(ctx context.Context, name string, tru
 // serverRow maps a mcp.ServerView onto the protocol.MCPServerRow shape.
 func serverRow(v mcp.ServerView) protocol.MCPServerRow {
 	return protocol.MCPServerRow{
-		Name:              v.Name,
-		Transport:         v.Transport,
-		URLOrCommand:      v.URLOrCommand,
-		State:             string(v.State),
-		LastDiscoveryAt:   v.LastDiscoveryAt,
-		ToolCount:         v.ToolCount,
-		ResourceCount:     v.ResourceCount,
-		PromptCount:       v.PromptCount,
-		RecentLatencyMs:   v.RecentLatencyMs,
-		ErrorRatePerMin:   v.ErrorRatePerMin,
-		OAuthBindingCount: v.OAuthBindingCount,
-		RawHTMLTrusted:    v.RawHTMLTrusted,
-		DisplayModes:      v.DisplayModes,
-		ContentShapes:     v.ContentShapes,
-		PolicyTimeoutMs:   int64(v.Policy.TimeoutMS),
-		PolicyMaxRetries:  v.Policy.MaxRetries,
-		OAuthRequirement:  oauthRequirementRow(v.OAuthRequirement),
+		Name:               v.Name,
+		Transport:          v.Transport,
+		URLOrCommand:       v.URLOrCommand,
+		State:              string(v.State),
+		LastDiscoveryAt:    v.LastDiscoveryAt,
+		ToolCount:          v.ToolCount,
+		ResourceCount:      v.ResourceCount,
+		PromptCount:        v.PromptCount,
+		RecentLatencyMs:    v.RecentLatencyMs,
+		ErrorRatePerMin:    v.ErrorRatePerMin,
+		OAuthBindingCount:  v.OAuthBindingCount,
+		RawHTMLTrusted:     v.RawHTMLTrusted,
+		DisplayModes:       v.DisplayModes,
+		ContentShapes:      v.ContentShapes,
+		PolicyTimeoutMs:    int64(v.Policy.TimeoutMS),
+		PolicyMaxRetries:   v.Policy.MaxRetries,
+		OAuthRequirement:   oauthRequirementRow(v.OAuthRequirement),
+		LastScopeShortfall: scopeShortfallRow(v.LastScopeShortfall),
+	}
+}
+
+// scopeShortfallRow maps a captured mcp.ScopeShortfall onto the protocol
+// runtime-side row. Nil (none observed, or a list-row projection) maps to nil.
+func scopeShortfallRow(sf *mcp.ScopeShortfall) *protocol.MCPScopeShortfallRow {
+	if sf == nil {
+		return nil
+	}
+	return &protocol.MCPScopeShortfallRow{
+		ToolName:           sf.ToolName,
+		DownstreamResource: sf.DownstreamResource,
+		RequiredScopes:     append([]string(nil), sf.RequiredScopes...),
+		GrantedScopes:      append([]string(nil), sf.GrantedScopes...),
+		WWWAuthenticate:    sf.WWWAuthenticate,
+		Origin:             sf.Origin,
+		ObservedAt:         sf.CapturedAt,
 	}
 }
 

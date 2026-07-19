@@ -147,6 +147,15 @@ type Agent struct {
 	// isolation principal — this Identity triple is the isolation
 	// attribution.
 	Identity IdentityScope `json:"identity"`
+	// IsDefault marks the runtime's synthetic default agent — the one
+	// serving the identity scope it was booted with, never written to
+	// the Agent Registry's StateStore. false (the zero value, omitted on
+	// the wire) for every real registered agent. A consumer uses this to
+	// distinguish "the runtime's own agent" from a registered fleet
+	// member; it never widens or narrows the isolation tuple. It lets a
+	// fleet catalog tell "one agent, not enumerable this way" apart from
+	// an empty page (the absence-must-be-representable class).
+	IsDefault bool `json:"is_default,omitempty"`
 }
 
 // AgentFilter is the server-enforced facet filter on `agents.list`.

@@ -232,6 +232,13 @@ type MemberOutcome struct {
 	Status TaskStatus
 	Result *TaskResult
 	Error  *TaskError
+	// Description echoes the member `Task.Description` (the caller-side
+	// redacted, human-readable label already stored on the record). It is
+	// populated at the resolve call site that already reads the member
+	// `Task`; a ref-shaped conversational-notification mirror uses it to
+	// name each member without a second registry read. The typed wake
+	// path ignores it.
+	Description string
 }
 
 // Sentinel errors for the group + patch surface. Callers compare via

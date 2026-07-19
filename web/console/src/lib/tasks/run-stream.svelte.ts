@@ -45,6 +45,7 @@ const RUN_DOCK_TYPES = EVENT_TYPES.filter(
     t.startsWith('task.') ||
     t.startsWith('control.') ||
     t.startsWith('pause.') ||
+    t.startsWith('notification.') ||
     t === 'llm.cost.recorded'
 );
 

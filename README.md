@@ -282,6 +282,52 @@ below — the repo stays the source of truth.
 
 ## Status
 
+**Harbor v1.16 Phase 191: Shipped.** Three additive OAuth broker legs on the
+pull-based token-exchange spine, all report-not-act (the runtime never runs the
+flow, holds a token, or widens a binding). A downstream `403` +
+`WWW-Authenticate: insufficient_scope` (RFC 6750 §3.1) step-up is now
+**structured data** — a typed `tools.ErrInsufficientScope` (downstream resource,
+required-vs-granted scopes, verbatim challenge, origin) on the `tool.failed`
+envelope and on the MCP connection view (`mcp.servers.get`'s
+`last_scope_shortfall`), classified **permanent** so a shortfall retrying can
+never fix is no longer silently retried. A `tokenexchange` provider can carry a
+boot-declared RFC 8707 `resource` indicator on the exchange (with best-effort
+`aud` verification — honest `AudienceVerified:false` for opaque tokens), bind a
+distinct provider **per tool** on one MCP connection (`tool_oauth_providers`,
+closing the one-audience-per-server constraint), and optionally carry the run's
+verified acting `agent_id` as an RFC 8693 `actor_token`. Every field is
+boot-declared and additive; absent fields preserve today's behaviour exactly.
+`ProtocolVersion` stays `0.1.0`.
+
+**Harbor v1.16 Phase 190: Shipped.** `agents.list` now surfaces the
+runtime's synthetic default agent — the boot-configured agent every
+process serves through but never registers as a fleet entity — as a
+first-class row marked `is_default: true` (well-known `agent_id`,
+`agents.get` resolves it, the `Active` metric counts it, the Console
+Agents catalog renders a **Default** badge). A runtime with zero
+registrations is no longer an indistinguishable empty page. The
+admin-widened fleet fan-in surfaces one such row per named tenant; a real
+registration reusing the well-known id suppresses the synthetic row (real
+data wins, never a duplicate id); fleet-control verbs against it fall
+through to the existing `agent_not_found` (no control surface over the
+runtime's own process). Authority stays server-derived; `ProtocolVersion`
+stays `0.1.0`.
+
+**Harbor v1.16 Phase 188: Shipped.** Background work now wakes the
+conversation. Group resolution and background-task completion emit two new
+conversational-mirror classes on the existing `notification.*` topic —
+`notification.task_group_resolved` and `notification.task_completed` (the
+latter gated on the task's `NotifyOnComplete` opt-in) — carrying ref-shaped
+member-outcome summaries under the owning identity; the typed `WatchGroup`
+planner path is untouched. The TUI renders these as muted one-line lifecycle
+notices (a new conversational `notification` block kind) and, for a FOREGROUND
+turn that terminally fails, a dedicated `×  Turn failed · <ErrorCode>`
+status-strip line instead of silently returning to idle (the background mirror
+is suppressed for that turn to avoid a duplicate). The Console's Sessions and
+Tasks docks surface the same family. No new Protocol method; additive
+event-payload fields only, generated docs regenerated in lockstep;
+`ProtocolVersion` stays `0.1.0`.
+
 **Harbor v1.15 Phase 184: Shipped.** The native TUI is now distributed
 through three modes: standalone attach (`harbor tui --attach`), stock
 co-launch (`harbor serve --tui`), and scaffolded co-launch (`harbor

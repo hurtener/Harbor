@@ -455,3 +455,159 @@ func TestEngine_Recovery_ReconcilesFailFastGroup(t *testing.T) {
 		t.Errorf("pending sibling not cancelled by fail-fast reconcile: %+v", sib)
 	}
 }
+
+// TestEngine_CancelHierarchy_IsolateDetachesFromAncestorCascade — the
+// cancel-hierarchy invariant end-to-end (the AC-11 cascade-walk fix
+// consumed): a parent P has a cascade-default child C2 and an
+// isolate-marked child C1 (with its own grandchild GC1). Cancelling P
+// (an ancestor cascade) sweeps C2 but leaves the whole C1 subtree
+// running; a DIRECT Cancel on C1 still transitions it (isolate never
+// blocks a direct target — the operator's / spawning-run's last word).
+func TestEngine_CancelHierarchy_IsolateDetachesFromAncestorCascade(t *testing.T) {
+	bus := mkBus(t)
+	defer func() { _ = bus.Close(context.Background()) }()
+	eng, err := engine.New(bus, auditpatterns.New(), &memBackend{})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	id := idQuad()
+	ctx, _ := identity.With(context.Background(), id.Identity)
+
+	// Parent P (cascade default).
+	p, err := eng.Spawn(ctx, tasks.SpawnRequest{Identity: id, Kind: tasks.KindBackground, Description: "P"})
+	if err != nil {
+		t.Fatalf("spawn P: %v", err)
+	}
+	pid := p.ID
+	if err := eng.MarkRunning(ctx, pid); err != nil {
+		t.Fatal(err)
+	}
+
+	// C1 (isolate) under P, with a grandchild GC1 (cascade) under C1.
+	c1, err := eng.Spawn(ctx, tasks.SpawnRequest{
+		Identity: id, Kind: tasks.KindBackground, Description: "C1",
+		ParentTaskID: &pid, PropagateOnCancel: tasks.PropagateIsolate,
+	})
+	if err != nil {
+		t.Fatalf("spawn C1: %v", err)
+	}
+	c1id := c1.ID
+	if err := eng.MarkRunning(ctx, c1id); err != nil {
+		t.Fatal(err)
+	}
+	gc1, err := eng.Spawn(ctx, tasks.SpawnRequest{
+		Identity: id, Kind: tasks.KindBackground, Description: "GC1",
+		ParentTaskID: &c1id, PropagateOnCancel: tasks.PropagateCascade,
+	})
+	if err != nil {
+		t.Fatalf("spawn GC1: %v", err)
+	}
+	if err := eng.MarkRunning(ctx, gc1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// C2 (cascade default) under P.
+	c2, err := eng.Spawn(ctx, tasks.SpawnRequest{
+		Identity: id, Kind: tasks.KindBackground, Description: "C2",
+		ParentTaskID: &pid, PropagateOnCancel: tasks.PropagateCascade,
+	})
+	if err != nil {
+		t.Fatalf("spawn C2: %v", err)
+	}
+	if err := eng.MarkRunning(ctx, c2.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) Cancel P directly — ancestor cascade. C2 is swept; the whole C1
+	// isolate subtree (C1 AND its grandchild GC1) survives.
+	if _, err := eng.Cancel(ctx, pid, "ancestor-cancel"); err != nil {
+		t.Fatalf("Cancel P: %v", err)
+	}
+	assertStatus(t, eng, ctx, pid, tasks.StatusCancelled, "P (direct target)")
+	assertStatus(t, eng, ctx, c2.ID, tasks.StatusCancelled, "C2 (cascade swept)")
+	assertStatus(t, eng, ctx, c1id, tasks.StatusRunning, "C1 (isolate detached)")
+	assertStatus(t, eng, ctx, gc1.ID, tasks.StatusRunning, "GC1 (isolate subtree detached)")
+
+	// (b) A direct Cancel on the isolate task C1 DOES transition it —
+	// isolate never blocks a direct target (the operator's last word, and
+	// the same path the run's own _cancel_task drives). Its cascade child
+	// GC1 is then swept by C1's own cascade... wait: C1 is isolate, so its
+	// OWN cascade does not start — only C1 transitions. GC1 stays running.
+	if _, err := eng.Cancel(ctx, c1id, "direct-cancel-isolate"); err != nil {
+		t.Fatalf("direct Cancel C1: %v", err)
+	}
+	assertStatus(t, eng, ctx, c1id, tasks.StatusCancelled, "C1 (direct cancel reaches isolate)")
+	assertStatus(t, eng, ctx, gc1.ID, tasks.StatusRunning, "GC1 (C1 isolate → no cascade from its direct cancel)")
+
+	// (c) A direct Cancel on GC1 finally reaches it (agent/operator direct
+	// cancel of an own descendant is never gated on any isolate ancestor).
+	if _, err := eng.Cancel(ctx, gc1.ID, "direct-cancel-gc1"); err != nil {
+		t.Fatalf("direct Cancel GC1: %v", err)
+	}
+	assertStatus(t, eng, ctx, gc1.ID, tasks.StatusCancelled, "GC1 (direct cancel)")
+}
+
+// TestEngine_CancelCascade_SkipsTerminalDescendantEnqueuesGrandchildren —
+// exercises the shared cascade walk's terminal-skip branch and its
+// past-a-cascaded-node enqueue: a parent P (cascade) has an
+// already-complete child C1 (whose own grandchild GC1 must therefore NOT
+// be reached — a terminal node stops that sub-branch) and a running
+// child C2 (cascade) with a running grandchild GC2 that IS cancelled.
+func TestEngine_CancelCascade_SkipsTerminalDescendantEnqueuesGrandchildren(t *testing.T) {
+	bus := mkBus(t)
+	defer func() { _ = bus.Close(context.Background()) }()
+	eng, err := engine.New(bus, auditpatterns.New(), &memBackend{})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	id := idQuad()
+	ctx, _ := identity.With(context.Background(), id.Identity)
+
+	spawnRunning := func(desc string, parent *tasks.TaskID) tasks.TaskID {
+		h, err := eng.Spawn(ctx, tasks.SpawnRequest{
+			Identity: id, Kind: tasks.KindBackground, Description: desc,
+			ParentTaskID: parent, PropagateOnCancel: tasks.PropagateCascade,
+		})
+		if err != nil {
+			t.Fatalf("spawn %s: %v", desc, err)
+		}
+		if err := eng.MarkRunning(ctx, h.ID); err != nil {
+			t.Fatalf("MarkRunning %s: %v", desc, err)
+		}
+		return h.ID
+	}
+
+	pid := spawnRunning("P", nil)
+	c1 := spawnRunning("C1", &pid)
+	gc1 := spawnRunning("GC1", &c1)
+	c2 := spawnRunning("C2", &pid)
+	gc2 := spawnRunning("GC2", &c2)
+
+	// Drive C1 terminal (complete) BEFORE the cascade reaches it.
+	if err := eng.MarkComplete(ctx, c1, tasks.TaskResult{Value: []byte(`"c1-done"`)}); err != nil {
+		t.Fatalf("MarkComplete C1: %v", err)
+	}
+
+	if _, err := eng.Cancel(ctx, pid, "cascade"); err != nil {
+		t.Fatalf("Cancel P: %v", err)
+	}
+
+	// C1 stays complete (terminal-skip); its grandchild GC1 is NOT reached
+	// because the terminal node stops that sub-branch. C2 + GC2 cancelled.
+	assertStatus(t, eng, ctx, pid, tasks.StatusCancelled, "P")
+	assertStatus(t, eng, ctx, c1, tasks.StatusComplete, "C1 (terminal, skipped)")
+	assertStatus(t, eng, ctx, gc1, tasks.StatusRunning, "GC1 (behind terminal C1, not reached)")
+	assertStatus(t, eng, ctx, c2, tasks.StatusCancelled, "C2 (cascade)")
+	assertStatus(t, eng, ctx, gc2, tasks.StatusCancelled, "GC2 (cascade past C2)")
+}
+
+func assertStatus(t *testing.T, eng *engine.Engine, ctx context.Context, id tasks.TaskID, want tasks.TaskStatus, label string) {
+	t.Helper()
+	task, err := eng.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get %s (%q): %v", label, id, err)
+	}
+	if task.Status != want {
+		t.Errorf("%s: status = %q, want %q", label, task.Status, want)
+	}
+}

@@ -88,6 +88,27 @@ func TestParseWWWAuthenticate_FromSpecFixture(t *testing.T) {
 	}
 }
 
+// TestParseWWWAuthenticate_InsufficientScope_FromSpecFixture proves the
+// error/scope params parse off the committed RFC 6750 §3.1 fixture — a
+// wrong-field mutation of the fixture fails here (§17.8).
+func TestParseWWWAuthenticate_InsufficientScope_FromSpecFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "auth", "testdata", "oauthdiscovery", "www_authenticate_insufficient_scope.txt"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "WWW-Authenticate:"))
+	ch, ok := parseWWWAuthenticate(line, time.Now())
+	if !ok {
+		t.Fatalf("insufficient_scope fixture did not parse as Bearer")
+	}
+	if ch.Error != "insufficient_scope" {
+		t.Errorf("error = %q, want insufficient_scope", ch.Error)
+	}
+	if got := splitScopeParam(ch.Scope); len(got) != 2 || got[0] != "read:calendar" || got[1] != "write:calendar" {
+		t.Errorf("scope = %v, want [read:calendar write:calendar]", got)
+	}
+}
+
 // challengeCapturingTransport invokes the callback on a 401 + WWW-Authenticate,
 // records the challenge, and NEVER alters the response/error the caller sees.
 func TestChallengeCapturingTransport_CapturesAndPreservesSemantics(t *testing.T) {

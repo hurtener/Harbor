@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 324 canonical Harbor Protocol wire types, generated from the single-source
+The 325 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -34,6 +34,7 @@ Declared in `internal/protocol/types`.
 | `registered_at` | `string` |  |
 | `updated_at` | `string` |  |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `is_default` | `bool` | optional (`omitempty`) |
 
 ## AgentAggregates
 
@@ -2011,6 +2012,20 @@ Declared in `internal/protocol/types`.
 | `name` | `string` | optional (`omitempty`) |
 | `title` | `string` | optional (`omitempty`) |
 
+## MCPScopeShortfallView
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `tool_name` | `string` |  |
+| `downstream_resource` | `string` |  |
+| `required_scopes` | `[]string` |  |
+| `granted_scopes` | `[]string` |  |
+| `www_authenticate` | `string` |  |
+| `origin` | `string` |  |
+| `observed_at` | `time.Time` |  |
+
 ## MCPServerBindingsListRequest
 
 Declared in `internal/protocol/types`.
@@ -2244,6 +2259,7 @@ Declared in `internal/protocol/types`.
 | `oauth_binding_count` | `int32` |  |
 | `raw_html_trusted` | `bool` |  |
 | `oauth_requirement` | `*types.MCPOAuthRequirementView` — see [`MCPOAuthRequirementView`](./types.md#mcpoauthrequirementview) | optional (`omitempty`) |
+| `last_scope_shortfall` | `*types.MCPScopeShortfallView` — see [`MCPScopeShortfallView`](./types.md#mcpscopeshortfallview) | optional (`omitempty`) |
 
 ## MCPServersListRequest
 

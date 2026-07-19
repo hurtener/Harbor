@@ -53,6 +53,17 @@ import (
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
+// ErrTaskNotOwnDescendant is returned when a task observation/cancel
+// meta-tool (_task_status / _cancel_task) names a target the calling run
+// did not spawn — a task whose ParentTaskID chain does not reach the
+// run's own task. It is a SCOPE (authorization) violation, distinct from
+// a not-found or identity-secrecy boundary: the caller's own session may
+// already know the sibling task exists (it is Console-visible), so the
+// message says "not your descendant" so the model can self-correct rather
+// than retry a typo. This is IN ADDITION to the registry's own
+// (tenant, user, session) identity-visibility check, never instead of it.
+var ErrTaskNotOwnDescendant = errors.New("dispatch: task is not a descendant this run spawned")
+
 // toolExecutor is the production `steering.ToolExecutor`
 // implementation. Concurrent-safe — the catalog + artifact store are
 // immutable after the stack's boot wiring runs.
@@ -94,6 +105,15 @@ type toolExecutor struct {
 	// background sub-agent that itself emits SpawnTask cannot recurse
 	// without bound. The cap bounds depth, not breadth.
 	maxSpawnDepth int
+
+	// maxBatchSpawns caps the number of spawn branches ONE Batch decision
+	// may carry (planner.max_batch_spawns) — the BREADTH ceiling that
+	// maxSpawnDepth's chain-depth bound leaves open (sibling spawns in one
+	// response share the parent's depth and are otherwise unlimited). A
+	// Batch whose Spawns length exceeds it is rejected in FULL before any
+	// tool branch dispatches or any spawn registers — never truncated.
+	// Immutable after construction.
+	maxBatchSpawns int
 }
 
 // defaultHeavyThreshold is the heavy-output safety floor applied when
@@ -131,6 +151,16 @@ func WithMaxSpawnDepth(n int) Option {
 	return func(e *toolExecutor) { e.maxSpawnDepth = n }
 }
 
+// WithMaxBatchSpawns caps a Batch decision's Spawns length
+// (planner.max_batch_spawns). Non-positive values fall back to
+// `config.DefaultMaxBatchSpawns` (the one source of the batch-spawn
+// breadth default). Exceeding the cap rejects the WHOLE batch before any
+// tool branch dispatches or any spawn registers — never a silent
+// truncation to the first N spawns.
+func WithMaxBatchSpawns(n int) Option {
+	return func(e *toolExecutor) { e.maxBatchSpawns = n }
+}
+
 // WithLogger sets the executor's logger. Nil falls back to
 // slog.Default().
 func WithLogger(l *slog.Logger) Option {
@@ -139,9 +169,9 @@ func WithLogger(l *slog.Logger) Option {
 
 // NewToolExecutor binds the catalog + artifact store + task registry
 // the run loop dispatches against — the SAME instances the stack's
-// boot wiring constructs. The returned executor covers all four
-// non-Finish Decision shapes (CallTool, CallParallel, SpawnTask,
-// AwaitTask) with the heavy-result→artifact promotion applied
+// boot wiring constructs. The returned executor covers every
+// non-Finish Decision shape (CallTool, CallParallel, SpawnTask,
+// AwaitTask, and the heterogeneous Batch) with the heavy-result→artifact promotion applied
 // to every observation that reaches the planner / LLM edge.
 //
 // `taskReg` MAY be nil in degraded wiring — SpawnTask / AwaitTask then
@@ -178,6 +208,11 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 		// handoff). No other literal copy of the value is allowed.
 		e.maxSpawnDepth = config.DefaultSpawnDepthCap
 	}
+	if e.maxBatchSpawns <= 0 {
+		// The batch-spawn breadth default is single-sourced on
+		// `config.DefaultMaxBatchSpawns`; no other literal copy is allowed.
+		e.maxBatchSpawns = config.DefaultMaxBatchSpawns
+	}
 	return e
 }
 
@@ -201,9 +236,16 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 //     the spawned task reaches a terminal status and returns its outcome.
 //   - AwaitTask: poll the named task (Get) until it reaches a terminal
 //     status, then return its answer-envelope / error as the observation.
+//   - TaskStatusQuery: report the state of the tasks THIS run spawned
+//     (descendant-scoped), one {task_id, status, description, group_id}
+//     row per task.
+//   - CancelTask: cancel one task THIS run spawned (descendant-scoped),
+//     returning {task_id, cancelled}.
 //
 // Both spawn/await observations go through the same projectForLLM
-// discipline so a heavy result never trips ErrContextLeak.
+// discipline so a heavy result never trips ErrContextLeak. The task
+// observation/cancel observations are compact (status rows / a cancel
+// bool) and carry no heavy content.
 func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
 	switch d := decision.(type) {
 	case planner.CallTool:
@@ -214,6 +256,12 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 		return e.spawnTask(ctx, rc, d)
 	case planner.AwaitTask:
 		return e.awaitTask(ctx, rc, d)
+	case planner.TaskStatusQuery:
+		return e.taskStatus(ctx, rc, d)
+	case planner.CancelTask:
+		return e.cancelTask(ctx, rc, d)
+	case planner.Batch:
+		return e.batch(ctx, rc, d)
 	default:
 		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
 	}
@@ -276,12 +324,30 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
 	}
-	raw := planner.ParallelObservation{Branches: make([]planner.ParallelBranchObservation, 0, len(results))}
-	llmAgg := planner.ParallelObservation{Branches: make([]planner.ParallelBranchObservation, 0, len(results))}
+	rawBranches, llmBranches := e.branchObservations(ctx, rc, d.Branches, results)
+	return planner.ParallelObservation{Branches: rawBranches},
+		planner.ParallelObservation{Branches: llmBranches}, nil
+}
+
+// branchObservations assembles the raw + LLM-projected per-branch
+// observation slices from a set of parallel.Executor results. Each
+// result carries its originating branch Index; the returned slices stay
+// in the executor's returned order (branch-index order under JoinAll),
+// and each entry's CallID is stamped from `branches[Index].CallID` so a
+// downstream renderer can pair every provider tool_call_id with its
+// answer. A branch error surfaces as that entry's Error (identical raw +
+// LLM entry); a success gets its Value projected through the same
+// heavy-content discipline the single-CallTool path applies, so a heavy
+// branch never trips the LLM-edge context-leak guard. Shared by the
+// CallParallel path and the Batch decision's tool half so both preserve
+// the identical non-atomic, JoinAll-only native posture.
+func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunContext, branches []planner.CallTool, results []parallel.Result) (raw, llm []planner.ParallelBranchObservation) {
+	raw = make([]planner.ParallelBranchObservation, 0, len(results))
+	llm = make([]planner.ParallelBranchObservation, 0, len(results))
 	for _, r := range results {
 		callID := ""
-		if r.Index >= 0 && r.Index < len(d.Branches) {
-			callID = d.Branches[r.Index].CallID
+		if r.Index >= 0 && r.Index < len(branches) {
+			callID = branches[r.Index].CallID
 		}
 		if r.Err != nil {
 			branchErr := planner.ParallelBranchObservation{
@@ -290,8 +356,8 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 				Index:  r.Index,
 				Error:  r.Err.Error(),
 			}
-			raw.Branches = append(raw.Branches, branchErr)
-			llmAgg.Branches = append(llmAgg.Branches, branchErr)
+			raw = append(raw, branchErr)
+			llm = append(llm, branchErr)
 			continue
 		}
 		var rawVal any
@@ -301,22 +367,22 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 				rawVal = map[string]any{"meta": r.Result.Meta}
 			}
 		}
-		raw.Branches = append(raw.Branches, planner.ParallelBranchObservation{
+		raw = append(raw, planner.ParallelBranchObservation{
 			CallID: callID,
 			Tool:   r.Tool,
 			Index:  r.Index,
 			Value:  rawVal,
 		})
-		// AC-3: per-branch projection — heavy branch values get
-		// promoted to an artifact-stub summary independently.
-		llmAgg.Branches = append(llmAgg.Branches, planner.ParallelBranchObservation{
+		// Per-branch projection — heavy branch values get promoted to an
+		// artifact-stub summary independently.
+		llm = append(llm, planner.ParallelBranchObservation{
 			CallID: callID,
 			Tool:   r.Tool,
 			Index:  r.Index,
 			Value:  e.projectForLLM(ctx, rc, r.Tool, rawVal),
 		})
 	}
-	return raw, llmAgg, nil
+	return raw, llm
 }
 
 // spawnTask dispatches a planner.SpawnTask.
@@ -345,36 +411,9 @@ func (e *toolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d p
 		return nil, nil, fmt.Errorf("SpawnTask: attach identity: %w", idErr)
 	}
 
-	// AC-8 recursion guard: the new task's depth is the parent chain
-	// depth + 1. The parent is the current run's task (RunID doubles as
-	// the TaskID at the dev layer). Reject loudly above the cap — never a
-	// silent drop.
-	parentID := tasks.TaskID(rc.Quadruple.RunID)
-	if depth := e.spawnChainDepth(taskCtx, parentID); depth+1 > e.maxSpawnDepth {
-		return nil, nil, fmt.Errorf(
-			"SpawnTask: spawn would reach depth %d, exceeding planner.absolute_max_spawn_depth=%d (parent task %q)",
-			depth+1, e.maxSpawnDepth, parentID)
-	}
-
-	kind := d.Kind
-	if kind == "" {
-		kind = tasks.KindBackground
-	}
-	req := tasks.SpawnRequest{
-		Identity:         identity.Quadruple{Identity: rc.Quadruple.Identity},
-		Kind:             kind,
-		Description:      d.Spec.Description,
-		Query:            d.Spec.Query,
-		Priority:         d.Spec.Priority,
-		GroupID:          d.GroupID,
-		NotifyOnComplete: true,
-	}
-	if parentID != "" {
-		req.ParentTaskID = &parentID
-	}
-	handle, err := e.tasks.Spawn(taskCtx, req)
+	handle, kind, err := e.spawnOne(taskCtx, rc, d)
 	if err != nil {
-		return nil, nil, fmt.Errorf("SpawnTask: registry spawn: %w", err)
+		return nil, nil, err
 	}
 
 	if d.Spec.RetainTurn {
@@ -392,6 +431,254 @@ func (e *toolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d p
 		"status":  "spawned",
 	}
 	return raw, raw, nil
+}
+
+// spawnOne performs the shared spawn-registration core both the plain
+// SpawnTask path and the Batch decision's spawn half use: the
+// recursion-guard depth check, the SpawnRequest build under the run's
+// identity triple (NEVER a global — CLAUDE.md §6), and the registry
+// Spawn call. `taskCtx` MUST already carry the run's identity (the
+// caller attaches it once). The returned kind is the resolved task kind
+// (defaulted to KindBackground) so the caller can surface it verbatim.
+//
+// Errors are returned as VALUES for the caller to dispose of per its
+// atomicity posture: the plain SpawnTask path surfaces them as the
+// step's fail-loud error; the Batch path records a registry reject
+// (depth-cap exceeded, sealed group, malformed request) as THAT spawn's
+// error observation while the rest of the batch proceeds (non-atomic
+// per-branch — every call_id is answered).
+func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, d planner.SpawnTask) (tasks.TaskHandle, tasks.TaskKind, error) {
+	// Recursion guard: the new task's depth is the parent chain depth + 1.
+	// The parent is the current run's task (RunID doubles as the TaskID at
+	// the dev layer). Reject loudly above the cap — never a silent drop.
+	parentID := tasks.TaskID(rc.Quadruple.RunID)
+	if depth := e.spawnChainDepth(taskCtx, parentID); depth+1 > e.maxSpawnDepth {
+		return tasks.TaskHandle{}, "", fmt.Errorf(
+			"SpawnTask: spawn would reach depth %d, exceeding planner.absolute_max_spawn_depth=%d (parent task %q)",
+			depth+1, e.maxSpawnDepth, parentID)
+	}
+
+	kind := d.Kind
+	if kind == "" {
+		kind = tasks.KindBackground
+	}
+	req := tasks.SpawnRequest{
+		Identity:          identity.Quadruple{Identity: rc.Quadruple.Identity},
+		Kind:              kind,
+		Description:       d.Spec.Description,
+		Query:             d.Spec.Query,
+		Priority:          d.Spec.Priority,
+		GroupID:           d.GroupID,
+		PropagateOnCancel: d.Spec.PropagateOnCancel,
+		NotifyOnComplete:  true,
+	}
+	if parentID != "" {
+		req.ParentTaskID = &parentID
+	}
+	handle, err := e.tasks.Spawn(taskCtx, req)
+	if err != nil {
+		return tasks.TaskHandle{}, "", fmt.Errorf("SpawnTask: registry spawn: %w", err)
+	}
+	return handle, kind, nil
+}
+
+// batch dispatches a heterogeneous Batch decision — a native
+// multi-call response mixing catalog-tool branches with task spawns.
+// Both halves inherit the native-path posture verbatim: the tool half
+// fans out through the SAME parallel.Executor call callParallel uses
+// (Join passed straight through — nil collapses to JoinAll; non-atomic
+// per-branch dispatch, so a branch's resolve/validate failure becomes
+// that branch's error result), and the spawn half registers through the
+// SAME TaskRegistry.Spawn path SpawnTask uses (RetainTurn=false), with a
+// spawn's registry reject becoming that spawn's error result. Every
+// branch and every spawn is always answered — provider wire contracts
+// require exactly one reply per call_id.
+//
+// Whole-batch loud rejection (a zero-side-effect structural pre-check —
+// no tool branch dispatches, no group is created, no spawn registers) is
+// reserved for STRUCTURAL invariants, each wrapped in ErrInvalidDecision:
+// the combined-branch-count minimum, the tool-branch parallel cap, the
+// operator-configurable spawn breadth cap (planner.max_batch_spawns),
+// FailFast disagreement across the spawns that would auto-group, and a
+// defensive re-check that no spawn carries RetainTurn=true. The
+// auto-group's resolve-or-create is the ONLY registry side effect that
+// precedes the spawn loop, and it runs AFTER a successful tool-half
+// dispatch so a tool-half failure never orphans a memberless group; its
+// own failure degrades to a per-spawn error, not a whole-batch abort.
+// Auto-grouping: when two or more spawns share no explicit GroupID, ONE
+// resolve-or-create group is assigned to each; an explicit GroupID is
+// never overwritten, and a single ungrouped spawn keeps the registry's
+// ad-hoc single-member-group path.
+//
+// The observation is a BatchObservation keyed by call_id / index and
+// index-aligned to the declaration order of Tools and Spawns regardless
+// of dispatch completion order, so reply reconstruction never depends on
+// Go map iteration order. A spawn's observation is its REGISTRATION
+// outcome ({task_id, group_id} or a registry-reject error), never a
+// "not done yet" — the eventual result arrives later via the group-watch
+// path.
+func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d planner.Batch) (any, any, error) {
+	// === Structural pre-checks: pure inspection of the decision, ZERO
+	// side effects. A structural rejection dispatches no tool branch,
+	// creates no group, and registers no spawn. All are wrapped in
+	// ErrInvalidDecision for uniform classification.
+
+	// Combined-branch-count invariant (the same one NewBatch enforces at
+	// construction). Re-checked here because Decision is a sealed interface
+	// any concrete planner can build against, and this executor is the one
+	// shared dispatch boundary for all of them — a degenerate empty/one-
+	// branch Batch reaching dispatch must fail loud, never a silent no-op.
+	if len(d.Tools)+len(d.Spawns) < 2 {
+		return nil, nil, fmt.Errorf(
+			"%w: Batch requires at least 2 combined branches, got %d tools + %d spawns",
+			planner.ErrInvalidDecision, len(d.Tools), len(d.Spawns))
+	}
+
+	// Tool-count breadth vs the shared parallel cap. A structural pre-check
+	// here keeps an over-cap tool set a decision-level reject rather than a
+	// mid-dispatch parallel abort surfaced from Execute — the whole-batch
+	// loud-reject set stays exactly the structural invariants.
+	if len(d.Tools) > planner.AbsoluteMaxParallel {
+		return nil, nil, fmt.Errorf(
+			"%w: Batch has %d tool branches, exceeding the parallel cap of %d",
+			planner.ErrInvalidDecision, len(d.Tools), planner.AbsoluteMaxParallel)
+	}
+
+	// Spawn breadth cap: reject the WHOLE batch, never truncate to the
+	// first N.
+	if len(d.Spawns) > e.maxBatchSpawns {
+		return nil, nil, fmt.Errorf(
+			"%w: Batch has %d spawns, exceeding planner.max_batch_spawns=%d (the whole batch is rejected — no branch dispatches, no spawn registers)",
+			planner.ErrInvalidDecision, len(d.Spawns), e.maxBatchSpawns)
+	}
+
+	// Defensive non-retain-turn re-check.
+	for i, sp := range d.Spawns {
+		if sp.Spec.RetainTurn {
+			return nil, nil, fmt.Errorf(
+				"%w: Batch spawn %d has RetainTurn=true (a turn-retaining spawn cannot ride a non-blocking batch dispatch)",
+				planner.ErrInvalidDecision, i)
+		}
+	}
+
+	// FailFast agreement across the spawns that would auto-group (no
+	// explicit GroupID). The one auto-created group carries a SINGLE
+	// FailFast value, so a disagreement among its would-be members is
+	// ambiguous — reject the whole batch loud (still a zero-side-effect
+	// structural reject: this runs BEFORE the tool half dispatches or the
+	// group is created) rather than silently pick one.
+	var autoIdx []int
+	for i, sp := range d.Spawns {
+		if sp.GroupID == "" {
+			autoIdx = append(autoIdx, i)
+		}
+	}
+	autoGroup := len(autoIdx) >= 2
+	if autoGroup {
+		want := d.Spawns[autoIdx[0]].Spec.FailFast
+		for _, i := range autoIdx[1:] {
+			if d.Spawns[i].Spec.FailFast != want {
+				return nil, nil, fmt.Errorf(
+					"%w: Batch FailFast disagreement across auto-grouped spawns (spawn %d=%t vs spawn %d=%t); the one auto-created group cannot honour both",
+					planner.ErrInvalidDecision, autoIdx[0], want, i, d.Spawns[i].Spec.FailFast)
+			}
+		}
+	}
+
+	// Attach identity once for every spawn-side registry call (the tool
+	// half reads the run's quadruple from the caller's ctx, exactly as
+	// callParallel does).
+	var taskCtx context.Context
+	if len(d.Spawns) > 0 {
+		if e.tasks == nil {
+			return nil, nil, fmt.Errorf("%w: Batch spawns (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
+		}
+		var idErr error
+		taskCtx, idErr = identity.With(ctx, rc.Quadruple.Identity)
+		if idErr != nil {
+			return nil, nil, fmt.Errorf("batch: attach identity: %w", idErr)
+		}
+	}
+
+	var raw, llm planner.BatchObservation
+
+	// === Tools half — dispatched BEFORE any spawn-side registry side
+	// effect. A tool-half whole-call error (a malformed Join, a pause
+	// mid-dispatch, a missing-identity ctx — the over-cap case is
+	// pre-checked above) surfaces here BEFORE the auto-group is created or
+	// any spawn registers, so a tool-half failure can never orphan a
+	// memberless auto-group. In non-atomic mode these setup errors abort
+	// before any branch goroutine fires, so a rejected tool half runs no
+	// branch either.
+	if len(d.Tools) > 0 {
+		results, err := e.parallel.Execute(ctx,
+			planner.CallParallel{Branches: d.Tools, Join: d.Join},
+			parallel.WithNonAtomicSetup())
+		if err != nil {
+			return nil, nil, fmt.Errorf("batch tool dispatch: %w", err)
+		}
+		raw.Tools, llm.Tools = e.branchObservations(ctx, rc, d.Tools, results)
+	}
+
+	// === Auto-group creation: ONE ResolveOrCreateGroup for the ungrouped
+	// set, created AFTER a successful tool-half dispatch so a tool-half
+	// failure above never leaves an orphaned group. Group creation failing
+	// here degrades to a per-spawn error on every auto-grouped spawn (via
+	// spawnOne's own reject path below) rather than a whole-batch abort —
+	// whole-batch rejection stays reserved for the structural invariants.
+	var autoGroupID tasks.TaskGroupID
+	var autoGroupErr error
+	if autoGroup {
+		grp, gErr := e.tasks.ResolveOrCreateGroup(taskCtx, tasks.GroupRequest{
+			SessionID:   rc.Quadruple.Identity,
+			OwnerTaskID: tasks.TaskID(rc.Quadruple.RunID),
+			FailFast:    d.Spawns[autoIdx[0]].Spec.FailFast,
+			Description: "batch auto-group",
+		})
+		if gErr != nil {
+			autoGroupErr = fmt.Errorf("batch: auto-group ResolveOrCreateGroup: %w", gErr)
+		} else {
+			autoGroupID = grp.ID
+		}
+	}
+
+	// --- Spawns half (non-atomic per-branch) ---
+	if len(d.Spawns) > 0 {
+		spawnObs := make([]planner.BatchSpawnObservation, len(d.Spawns))
+		for i, sp := range d.Spawns {
+			obs := planner.BatchSpawnObservation{CallID: sp.CallID, Index: i}
+			toReg := sp
+			isAutoMember := autoGroup && sp.GroupID == ""
+			switch {
+			case isAutoMember && autoGroupErr != nil:
+				// The auto-group could not be created — every auto-grouped
+				// spawn's registration fails as a value (per-branch, never a
+				// whole-batch abort); explicit-GroupID spawns still register.
+				obs.Error = autoGroupErr.Error()
+			default:
+				if isAutoMember {
+					toReg.GroupID = autoGroupID
+				}
+				handle, _, err := e.spawnOne(taskCtx, rc, toReg)
+				if err != nil {
+					// Per-branch error-as-value: this spawn's registry reject
+					// is recorded; the rest of the batch proceeds.
+					obs.Error = err.Error()
+				} else {
+					obs.TaskID = string(handle.ID)
+					obs.GroupID = string(toReg.GroupID)
+				}
+			}
+			spawnObs[i] = obs
+		}
+		// Registration outcomes are compact ({task_id, group_id} or an
+		// error) — no heavy content to project — so both observations
+		// carry the same spawn slice.
+		raw.Spawns = spawnObs
+		llm.Spawns = spawnObs
+	}
+
+	return raw, llm, nil
 }
 
 // awaitTask dispatches a planner.AwaitTask: it
@@ -462,6 +749,194 @@ func (e *toolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) int
 		cur = *task.ParentTaskID
 	}
 	return depth
+}
+
+// isOwnDescendant reports whether targetID is a task the calling run
+// spawned, directly or transitively: it walks targetID's ParentTaskID
+// chain upward and returns true iff callerID appears in that chain. The
+// walk is bounded to maxSpawnDepth+1 hops (the same bound spawnChainDepth
+// uses) so a corrupt or cyclic parent chain cannot loop unbounded.
+// targetID == callerID returns FALSE — a run's own task is not a
+// descendant, and neither task meta-tool is a self-control surface. A Get
+// error mid-walk stops the walk and returns false: an unresolvable
+// lineage is treated as out-of-scope (fail closed), never permitted. ctx
+// MUST already carry the run's identity so the Get calls are
+// identity-scoped (the registry's own visibility check is thus additive,
+// not replaced — CLAUDE.md §6).
+func (e *toolExecutor) isOwnDescendant(ctx context.Context, targetID, callerID tasks.TaskID) bool {
+	if targetID == "" || callerID == "" || targetID == callerID {
+		return false
+	}
+	cur := targetID
+	for hops := 0; cur != "" && hops <= e.maxSpawnDepth; hops++ {
+		task, err := e.tasks.Get(ctx, cur)
+		if err != nil || task == nil || task.ParentTaskID == nil {
+			return false
+		}
+		parent := *task.ParentTaskID
+		if parent == callerID {
+			return true
+		}
+		cur = parent
+	}
+	return false
+}
+
+// taskStatus dispatches a planner.TaskStatusQuery — the model observing
+// the background tasks its own run spawned. Identity is attached exactly
+// like spawnTask / awaitTask (never a global — CLAUDE.md §6).
+//
+// With TaskIDs == nil it walks the caller's own descendant subtree (BFS
+// over TaskRegistry.List filtered by ParentID, bounded by maxSpawnDepth
+// levels) — those ids are own descendants by construction, so no
+// per-id scope check is needed. With TaskIDs non-empty, EVERY named id is
+// descendant-scope-checked (isOwnDescendant) BEFORE any Get; one
+// out-of-scope id fails the WHOLE call loud with ErrTaskNotOwnDescendant
+// (atomic validation, matching CallParallel's "any branch's invalid args
+// fails the whole call" precedent — never a silent partial result that
+// quietly omits ids the caller can't see).
+//
+// Each row is {task_id, status, description, group_id}; group_id is
+// resolved from the caller's identity-scoped ListGroups reverse index
+// (the same derivation the tasks/protocol registry projector uses — no
+// Task.GroupID field exists on the persisted record).
+func (e *toolExecutor) taskStatus(ctx context.Context, rc planner.RunContext, d planner.TaskStatusQuery) (any, any, error) {
+	if e.tasks == nil {
+		return nil, nil, fmt.Errorf("%w: TaskStatusQuery (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
+	}
+	taskCtx, idErr := identity.With(ctx, rc.Quadruple.Identity)
+	if idErr != nil {
+		return nil, nil, fmt.Errorf("TaskStatusQuery: attach identity: %w", idErr)
+	}
+	callerID := tasks.TaskID(rc.Quadruple.RunID)
+
+	var ids []tasks.TaskID
+	if len(d.TaskIDs) == 0 {
+		collected, cErr := e.collectDescendants(taskCtx, rc.Quadruple.Identity, callerID)
+		if cErr != nil {
+			return nil, nil, fmt.Errorf("TaskStatusQuery: collect descendants: %w", cErr)
+		}
+		ids = collected
+	} else {
+		for _, id := range d.TaskIDs {
+			if !e.isOwnDescendant(taskCtx, id, callerID) {
+				return nil, nil, fmt.Errorf("%w: id=%q (caller run task %q)", ErrTaskNotOwnDescendant, id, callerID)
+			}
+		}
+		ids = d.TaskIDs
+	}
+
+	groupOf, err := e.taskGroupIndex(taskCtx, rc.Quadruple.Identity)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TaskStatusQuery: group index: %w", err)
+	}
+
+	rows := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		task, gErr := e.tasks.Get(taskCtx, id)
+		if gErr != nil {
+			return nil, nil, fmt.Errorf("TaskStatusQuery: get %q: %w", id, gErr)
+		}
+		rows = append(rows, map[string]any{
+			"task_id":     string(task.ID),
+			"status":      string(task.Status),
+			"description": task.Description,
+			"group_id":    string(groupOf[task.ID]),
+		})
+	}
+	raw := map[string]any{"tasks": rows}
+	return raw, raw, nil
+}
+
+// cancelTask dispatches a planner.CancelTask — the model cancelling one
+// task its own run spawned. It descendant-scope-checks d.TaskID against
+// the calling run's task (isOwnDescendant) BEFORE touching the registry,
+// then calls TaskRegistry.Cancel and returns {task_id, cancelled}. A
+// target outside the run's lineage fails loud with
+// ErrTaskNotOwnDescendant (never a bare not-found). Cancel's own
+// (bool, error) contract is idempotent on a terminal target — cancelling
+// an already-terminal descendant returns cancelled:false, not an error.
+// A direct cancel is never gated on the target's own PropagateOnCancel:
+// isolate detaches a task from an ANCESTOR's cascade, never from the
+// spawning run's own CancelTask. Identity is attached exactly like
+// spawnTask / awaitTask (never a global — CLAUDE.md §6).
+func (e *toolExecutor) cancelTask(ctx context.Context, rc planner.RunContext, d planner.CancelTask) (any, any, error) {
+	if e.tasks == nil {
+		return nil, nil, fmt.Errorf("%w: CancelTask (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
+	}
+	if d.TaskID == "" {
+		return nil, nil, errors.New("CancelTask: TaskID is empty")
+	}
+	taskCtx, idErr := identity.With(ctx, rc.Quadruple.Identity)
+	if idErr != nil {
+		return nil, nil, fmt.Errorf("CancelTask: attach identity: %w", idErr)
+	}
+	callerID := tasks.TaskID(rc.Quadruple.RunID)
+	if !e.isOwnDescendant(taskCtx, d.TaskID, callerID) {
+		return nil, nil, fmt.Errorf("%w: id=%q (caller run task %q)", ErrTaskNotOwnDescendant, d.TaskID, callerID)
+	}
+	cancelled, err := e.tasks.Cancel(taskCtx, d.TaskID, d.Reason)
+	if err != nil {
+		return nil, nil, fmt.Errorf("CancelTask(%q): %w", d.TaskID, err)
+	}
+	raw := map[string]any{
+		"task_id":   string(d.TaskID),
+		"cancelled": cancelled,
+	}
+	return raw, raw, nil
+}
+
+// collectDescendants returns the ids of every task in the caller's own
+// descendant subtree — a BFS over TaskRegistry.List filtered by ParentID
+// starting from callerID, bounded to maxSpawnDepth levels of descent (the
+// same depth the spawn tree is already capped at; no new cap is
+// introduced). The caller's own task is NOT included — it is not a
+// descendant of itself. ctx MUST carry the run's identity so List is
+// identity-scoped.
+func (e *toolExecutor) collectDescendants(ctx context.Context, sessionID identity.Identity, callerID tasks.TaskID) ([]tasks.TaskID, error) {
+	var out []tasks.TaskID
+	frontier := []tasks.TaskID{callerID}
+	seen := map[tasks.TaskID]struct{}{callerID: {}}
+	for level := 0; level < e.maxSpawnDepth && len(frontier) > 0; level++ {
+		var next []tasks.TaskID
+		for _, parent := range frontier {
+			pid := parent
+			children, err := e.tasks.List(ctx, sessionID, tasks.TaskFilter{ParentID: &pid})
+			if err != nil {
+				return nil, err
+			}
+			for _, c := range children {
+				if _, dup := seen[c.ID]; dup {
+					continue
+				}
+				seen[c.ID] = struct{}{}
+				out = append(out, c.ID)
+				next = append(next, c.ID)
+			}
+		}
+		frontier = next
+	}
+	return out, nil
+}
+
+// taskGroupIndex builds the task→group reverse index the status rows use
+// for their group_id column, mirroring the tasks/protocol registry
+// projector's "Group enrichment" derivation: ListGroups is
+// identity-scoped; a registry without group support returns an empty
+// slice, so an absent membership is the honest "" default, never a silent
+// degradation of a known value. ctx MUST carry the run's identity.
+func (e *toolExecutor) taskGroupIndex(ctx context.Context, sessionID identity.Identity) (map[tasks.TaskID]tasks.TaskGroupID, error) {
+	groups, err := e.tasks.ListGroups(ctx, sessionID, nil)
+	if err != nil {
+		return nil, err
+	}
+	groupOf := make(map[tasks.TaskID]tasks.TaskGroupID, len(groups))
+	for _, g := range groups {
+		for _, member := range g.Members {
+			groupOf[member] = g.ID
+		}
+	}
+	return groupOf, nil
 }
 
 // taskOutcomeObservation projects a terminal task record into the

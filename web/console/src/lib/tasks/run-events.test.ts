@@ -13,7 +13,9 @@ import {
   projectRunCost,
   filterControlEvents,
   filterInterventionEvents,
-  filterGroupEvents
+  filterGroupEvents,
+  filterNotificationEvents,
+  notificationSummary
 } from './run-events.js';
 import type { Event } from '$lib/protocol/events.js';
 
@@ -133,6 +135,52 @@ describe('projectRunCost', () => {
     expect(c.reasoningTokens).toBe(27);
     expect(c.totalTokens).toBe(2351);
     expect(c.models).toEqual(['openai/gpt-5.4']);
+    // The captured fixture reports no cache accounting — the two cache
+    // fields decode to zero, not undefined/NaN (absent-field honesty).
+    expect(c.cacheReadTokens).toBe(0);
+    expect(c.cacheWriteTokens).toBe(0);
+  });
+
+  it('folds the PascalCase cache-token counts as a subset of promptTokens', () => {
+    const cached: Event = {
+      ...costRecorded,
+      sequence: 45,
+      payload: {
+        Identity: { RunID: RUN },
+        Model: 'openai/gpt-5.4',
+        Cost: { TotalCost: 0.002 },
+        Usage: {
+          PromptTokens: 5000,
+          CompletionTokens: 100,
+          ReasoningTokens: 0,
+          TotalTokens: 5100,
+          CacheReadTokens: 4000,
+          CacheWriteTokens: 800
+        }
+      }
+    };
+    const c = projectRunCost([cached]);
+    expect(c.cacheReadTokens).toBe(4000);
+    expect(c.cacheWriteTokens).toBe(800);
+    // Cache tokens are a SUBSET of promptTokens — never added into totalTokens.
+    expect(c.promptTokens).toBe(5000);
+    expect(c.totalTokens).toBe(5100);
+  });
+
+  it('reads the snake_case cache field spelling defensively', () => {
+    const cached: Event = {
+      ...costRecorded,
+      sequence: 46,
+      payload: {
+        Identity: { RunID: RUN },
+        Model: 'openai/gpt-5.4',
+        Cost: { total_cost: 0.001 },
+        Usage: { total_tokens: 300, prompt_tokens: 250, cache_read_tokens: 200, cache_write_tokens: 50 }
+      }
+    };
+    const c = projectRunCost([cached]);
+    expect(c.cacheReadTokens).toBe(200);
+    expect(c.cacheWriteTokens).toBe(50);
   });
 
   it('returns an all-zero rollup for a stream with no cost events', () => {
@@ -140,6 +188,8 @@ describe('projectRunCost', () => {
     expect(c.events).toBe(0);
     expect(c.totalUSD).toBe(0);
     expect(c.totalTokens).toBe(0);
+    expect(c.cacheReadTokens).toBe(0);
+    expect(c.cacheWriteTokens).toBe(0);
     expect(c.models).toEqual([]);
   });
 
@@ -160,5 +210,62 @@ describe('event-category filters', () => {
     expect(filterControlEvents(page)).toEqual([control]);
     expect(filterInterventionEvents(page)).toEqual([pause]);
     expect(filterGroupEvents(page)).toEqual([group]);
+  });
+});
+
+describe('background-wake notification events', () => {
+  // The NotificationPayload is redacted on the bus, so the wire keys are
+  // LOWERCASE (`summary`, `taskid`). These fixtures use that shape.
+  const completed: Event = {
+    ...taskStarted,
+    type: 'notification.task_completed',
+    sequence: 70,
+    run: undefined,
+    payload: { summary: 'Background task bg-1 completed', taskid: 'bg-1' }
+  };
+  const groupResolved: Event = {
+    ...taskStarted,
+    type: 'notification.task_group_resolved',
+    sequence: 71,
+    run: undefined,
+    payload: { summary: 'Background group resolved: 2 of 3 succeeded, 1 failed', groupid: 'g-1' }
+  };
+  const failed: Event = {
+    ...taskStarted,
+    type: 'notification.task_failed',
+    sequence: 72,
+    run: undefined,
+    payload: { summary: 'Task bg-9 failed (error_code=timeout)', taskid: 'bg-9' }
+  };
+
+  it('filters the notification.* family', () => {
+    const page = [taskCompleted, completed, groupResolved, failed];
+    expect(filterNotificationEvents(page)).toEqual([completed, groupResolved, failed]);
+  });
+
+  it('reads the redacted lowercase Summary', () => {
+    expect(notificationSummary(completed)).toBe('Background task bg-1 completed');
+    expect(notificationSummary(groupResolved)).toBe(
+      'Background group resolved: 2 of 3 succeeded, 1 failed'
+    );
+  });
+
+  it('reads a PascalCase Summary too (unredacted path)', () => {
+    const pascal: Event = { ...completed, payload: { Summary: 'X done', TaskID: 'x' } };
+    expect(notificationSummary(pascal)).toBe('X done');
+  });
+
+  it('returns null when no summary is present (caller falls back to type)', () => {
+    const noSummary: Event = { ...completed, payload: { taskid: 'bg-1' } };
+    expect(notificationSummary(noSummary)).toBeNull();
+    expect(notificationSummary(taskCompleted)).toBeNull();
+  });
+
+  it('narrows a notification to its run via the lowercase taskid key', () => {
+    // A notification for bg-1 (redacted `taskid`, null top-level run) belongs
+    // to the bg-1 run dock — a naive PascalCase-only match would drop it.
+    const forBg1: Event = { ...completed, payload: { summary: 's', taskid: RUN } };
+    expect(eventBelongsToRun(forBg1, RUN)).toBe(true);
+    expect(eventBelongsToRun(forBg1, OTHER)).toBe(false);
   });
 });

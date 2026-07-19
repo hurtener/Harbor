@@ -148,6 +148,21 @@ const SpawnTaskToolName = "_spawn_task"
 // Decision.
 const AwaitTaskToolName = "_await_task"
 
+// TaskStatusToolName is the reserved tool name the LLM emits to observe
+// the state of the background tasks its own run spawned. The projector
+// translates the native ToolCall directly to a typed
+// [planner.TaskStatusQuery] Decision — the runtime never sees
+// `"_task_status"` as a real tool call. Descendant-scoped: the executor
+// reports only tasks whose parent chain reaches this run's task.
+const TaskStatusToolName = "_task_status"
+
+// CancelTaskToolName is the reserved tool name the LLM emits to cancel a
+// background task its own run spawned. The projector translates the
+// native ToolCall directly to a typed [planner.CancelTask] Decision.
+// Descendant-scoped: the executor cancels only a task whose parent chain
+// reaches this run's task, never a sibling run's task.
+const CancelTaskToolName = "_cancel_task"
+
 // DefaultMaxSteps is the planner-side circuit-breaker default for the
 // observed trajectory step count. Set small enough to surface bugs
 // quickly; large enough to leave 3-step scenarios headroom. The
@@ -778,12 +793,18 @@ func decisionKindAndTool(dec planner.Decision) (kind, tool string) {
 		return "CallTool", d.Tool
 	case planner.CallParallel:
 		return "CallParallel", ""
+	case planner.Batch:
+		return "Batch", ""
 	case planner.Finish:
 		return "Finish", ""
 	case planner.SpawnTask:
 		return "SpawnTask", ""
 	case planner.AwaitTask:
 		return "AwaitTask", ""
+	case planner.TaskStatusQuery:
+		return "TaskStatusQuery", ""
+	case planner.CancelTask:
+		return "CancelTask", ""
 	case planner.RequestPause:
 		return "RequestPause", ""
 	default:

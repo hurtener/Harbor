@@ -203,6 +203,15 @@ planner:
   #                           # may itself spawn further background tasks.
   #                           # Zero/unset → 4. A spawn beyond the cap is
   #                           # rejected loudly (the planner sees an error).
+  # max_batch_spawns: 5       # Phase 186 / D-323. Caps how many task spawns
+  #                           # a single batch decision (a model response
+  #                           # mixing _spawn_task calls with other calls)
+  #                           # may carry — the BREADTH ceiling, distinct
+  #                           # from absolute_max_spawn_depth's chain-DEPTH
+  #                           # bound. Zero/unset → 5 (conservative,
+  #                           # operator-revisable). A batch exceeding it is
+  #                           # rejected in FULL (no tool branch dispatches,
+  #                           # no spawn registers) — never truncated.
 
 tools:
   # UTCP-style HTTP tool manifests, loaded at boot and registered on

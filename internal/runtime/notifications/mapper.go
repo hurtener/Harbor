@@ -63,6 +63,10 @@ func Map(_ context.Context, ev events.Event) ([]events.Event, error) {
 		return mapToolAuthRequired(ev)
 	case pauseresume.EventTypePauseRequested:
 		return mapPauseRequested(ev)
+	case tasks.EventTypeTaskGroupResolved:
+		return mapTaskGroupResolved(ev)
+	case tasks.EventTypeTaskCompleted:
+		return mapTaskCompleted(ev)
 	default:
 		// Unmapped — the overwhelming majority of bus traffic. The
 		// Subscriber's bus filter already narrows the input set so this
@@ -74,7 +78,10 @@ func Map(_ context.Context, ev events.Event) ([]events.Event, error) {
 
 // mapTaskFailed synthesises a notification.task_failed event from a
 // task.failed bus event. Severity Error (a task entered a terminal
-// failure state — operator-actionable, blocking).
+// failure state — operator-actionable, blocking). The failing TaskID
+// is carried on the payload so a conversational consumer can key the
+// foreground-turn dedup (a foreground turn's failure is surfaced by the
+// dedicated turn-failure line, not the background mirror).
 func mapTaskFailed(ev events.Event) ([]events.Event, error) {
 	payload, ok := ev.Payload.(tasks.TaskFailedPayload)
 	if !ok {
@@ -83,7 +90,105 @@ func mapTaskFailed(ev events.Event) ([]events.Event, error) {
 	}
 	summary := fmt.Sprintf("Task %s failed (error_code=%s)", payload.TaskID, payload.ErrorCode)
 	deepLink := fmt.Sprintf("/console/tasks/%s", payload.TaskID)
-	return synthesise(ev, EventTypeNotificationTaskFailed, SeverityError, summary, deepLink), nil
+	out := synthesisePayload(ev, NotificationPayload{
+		Class:    EventTypeNotificationTaskFailed,
+		Severity: SeverityError,
+		Summary:  summary,
+		DeepLink: deepLink,
+		TaskID:   string(payload.TaskID),
+	})
+	return out, nil
+}
+
+// mapTaskGroupResolved synthesises a notification.task_group_resolved
+// event from a task.group_resolved bus event — the conversational
+// mirror of the typed GroupCompletion wake the planner consumes over
+// WatchGroup. Severity Info when every member succeeded, Warning when
+// any member failed or was cancelled. The per-member summaries are
+// ref-shaped (TaskID/Status/Description only — never Result/Error
+// bytes) and bounded at MaxMemberSummaries; when the group has more
+// members than the cap, MembersTruncated is set (never a silent drop).
+func mapTaskGroupResolved(ev events.Event) ([]events.Event, error) {
+	payload, ok := ev.Payload.(tasks.TaskGroupResolvedPayload)
+	if !ok {
+		return nil, wrap(ErrUnmappable, "type=%q payload=%T (want tasks.TaskGroupResolvedPayload)",
+			ev.Type, ev.Payload)
+	}
+	c := payload.Completion
+	summaries := make([]MemberOutcomeSummary, 0, min(len(c.Members), MaxMemberSummaries))
+	var succeeded, failed, cancelled int
+	for _, m := range c.Members {
+		switch m.Status {
+		case tasks.StatusComplete:
+			succeeded++
+		case tasks.StatusFailed:
+			failed++
+		default:
+			// Cancelled (or any non-terminal snapshot on the cancel path)
+			// counts as cancelled for the operator-visible rollup.
+			cancelled++
+		}
+		if len(summaries) < MaxMemberSummaries {
+			summaries = append(summaries, MemberOutcomeSummary{
+				TaskID:      string(m.TaskID),
+				Status:      string(m.Status),
+				Description: m.Description,
+			})
+		}
+	}
+	sev := SeverityInfo
+	if failed > 0 || cancelled > 0 {
+		sev = SeverityWarning
+	}
+	summary := fmt.Sprintf("Background group resolved: %d of %d succeeded",
+		succeeded, len(c.Members))
+	if failed > 0 {
+		summary += fmt.Sprintf(", %d failed", failed)
+	}
+	if cancelled > 0 {
+		summary += fmt.Sprintf(", %d cancelled", cancelled)
+	}
+	deepLink := fmt.Sprintf("/console/tasks/groups/%s", c.GroupID)
+	return synthesisePayload(ev, NotificationPayload{
+		Class:            EventTypeNotificationTaskGroupResolved,
+		Severity:         sev,
+		Summary:          summary,
+		DeepLink:         deepLink,
+		GroupID:          string(c.GroupID),
+		Members:          summaries,
+		MembersTruncated: len(c.Members) > MaxMemberSummaries,
+		MemberSucceeded:  succeeded,
+		MemberFailed:     failed,
+		MemberCancelled:  cancelled,
+	}), nil
+}
+
+// mapTaskCompleted synthesises a notification.task_completed event from
+// a task.completed bus event — but ONLY when the completing task
+// carried the NotifyOnComplete opt-in. A completion without the opt-in
+// returns (nil, nil): it is a known trigger type with a well-formed
+// payload that deliberately produces no notification (the vast majority
+// of completions — foreground turns and un-opted background tasks). This
+// closes the silent-background-success gap without flooding the surface
+// with a line per completed task. Severity Info.
+func mapTaskCompleted(ev events.Event) ([]events.Event, error) {
+	payload, ok := ev.Payload.(tasks.TaskCompletedPayload)
+	if !ok {
+		return nil, wrap(ErrUnmappable, "type=%q payload=%T (want tasks.TaskCompletedPayload)",
+			ev.Type, ev.Payload)
+	}
+	if !payload.NotifyOnComplete {
+		return nil, nil
+	}
+	summary := fmt.Sprintf("Background task %s completed", payload.TaskID)
+	deepLink := fmt.Sprintf("/console/tasks/%s", payload.TaskID)
+	return synthesisePayload(ev, NotificationPayload{
+		Class:    EventTypeNotificationTaskCompleted,
+		Severity: SeverityInfo,
+		Summary:  summary,
+		DeepLink: deepLink,
+		TaskID:   string(payload.TaskID),
+	}), nil
 }
 
 // mapToolApprovalRequested synthesises a notification.tool_approval_requested
@@ -153,20 +258,28 @@ func mapPauseRequested(ev events.Event) ([]events.Event, error) {
 // Sequence and OccurredAt are left zero so the bus's Publish path
 // assigns them (matching the bus convention).
 func synthesise(trigger events.Event, class events.EventType, sev Severity, summary, deepLink string) []events.Event {
+	return synthesisePayload(trigger, NotificationPayload{
+		Class:    class,
+		Severity: sev,
+		Summary:  summary,
+		DeepLink: deepLink,
+	})
+}
+
+// synthesisePayload wraps a per-class NotificationPayload (Class /
+// Severity / Summary / DeepLink and any additive fields already set)
+// into a bus event carrying the trigger's identity. It fills the
+// origin-correlation fields from the trigger; Sequence and OccurredAt
+// stay zero so the bus's Publish path assigns them (the mapper stays
+// pure). Classes that populate the additive TaskID / GroupID / Members
+// fields go through here directly.
+func synthesisePayload(trigger events.Event, payload NotificationPayload) []events.Event {
+	payload.OriginEventType = trigger.Type
+	payload.OriginEventSequence = trigger.Sequence
 	return []events.Event{{
-		Type:     class,
+		Type:     payload.Class,
 		Identity: trigger.Identity,
-		// Sequence and OccurredAt are intentionally zero — the bus's
-		// Publish path owns sequencing (rejects pre-filled Sequence)
-		// and fills OccurredAt when zero. The mapper stays pure.
-		Payload: NotificationPayload{
-			Class:               class,
-			Severity:            sev,
-			Summary:             summary,
-			DeepLink:            deepLink,
-			OriginEventType:     trigger.Type,
-			OriginEventSequence: trigger.Sequence,
-		},
+		Payload:  payload,
 	}}
 }
 

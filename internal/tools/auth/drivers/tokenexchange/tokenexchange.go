@@ -190,6 +190,21 @@ var (
 	// ErrMissingDeps — a mandatory FactoryDep (Store / Bus / Redactor
 	// / Coordinator) was nil.
 	ErrMissingDeps = errors.New("auth/tokenexchange: Store / Bus / Redactor / Coordinator are mandatory")
+	// ErrAudienceMismatch — a JWT-shaped exchanged access token's `aud` claim
+	// excluded the boot-declared RFC 8707 resource indicator. The exchange
+	// fails loud and the token is NEVER cached (a confused-deputy defence). It
+	// is an `aud`-claim comparison only, never signature verification — Harbor
+	// has no keying relationship with the broker's AS.
+	ErrAudienceMismatch = errors.New("auth/tokenexchange: exchanged token audience excludes the declared resource_indicator")
+)
+
+// RFC 8693 actor-token constants.
+const (
+	// actorTokenTypeInvokingAgent labels the acting-principal (agent_id)
+	// actor_token — a Harbor-defined URN mirroring the identity-triple
+	// subject-token-type. The broker's AS binds/cross-checks the subject
+	// (requesting principal) against this acting principal.
+	actorTokenTypeInvokingAgent = "urn:harbor:oauth:token-type:invoking-agent" //nolint:gosec // G101 false positive: actor-token-type URN, not a credential
 )
 
 // init self-registers the `tokenexchange` driver under its canonical
@@ -281,6 +296,8 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 		credSource:             cfg.CredentialSource,
 		scopes:                 effectiveScopes,
 		audience:               audience,
+		resourceIndicator:      strings.TrimSpace(cfg.ResourceIndicator),
+		includeActorToken:      cfg.IncludeActorToken,
 		allowedDownstreamHosts: append([]string(nil), cfg.AllowedDownstreamHosts...),
 		cacheTTLCap:            cacheTTLCap,
 		httpClient:             httpClient,
@@ -423,6 +440,15 @@ type provider struct {
 	credSource credsource.Source
 	scopes     []string
 	audience   string
+	// resourceIndicator is the boot-declared RFC 8707 `resource` value carried
+	// on every exchange request and verified against the returned token's
+	// `aud` claim (when JWT-shaped). Empty disables both. Set once at
+	// construction; read-only.
+	resourceIndicator string
+	// includeActorToken opts this provider into carrying the run's verified
+	// acting principal (agent_id) as an RFC 8693 actor_token. Set once at
+	// construction; read-only.
+	includeActorToken bool
 	// allowedDownstreamHosts is the boot-declared sink allow-list — the
 	// downstream connection hosts the exchanged bearer may be injected
 	// into. Set once at construction; the MCP southbound binding refuses a
@@ -616,7 +642,7 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 	gen := p.gens[key]
 	p.cacheMu.Unlock()
 
-	tok, err := p.exchange(ctx, id)
+	tok, meta, err := p.exchange(ctx, id)
 	if err != nil {
 		call.err = err
 		return
@@ -626,7 +652,7 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 	// failure fails loud (§7 external-credential posture): the token is
 	// NOT cached and the error propagates, so the exchange is retried
 	// rather than silently served without its audit trail.
-	if err := p.emitCredentialExchanged(ctx, id, tok); err != nil {
+	if err := p.emitCredentialExchanged(ctx, id, tok, meta); err != nil {
 		call.err = err
 		return
 	}
@@ -682,9 +708,18 @@ type brokerError struct {
 	VerificationURI string `json:"verification_uri"`
 }
 
+// exchangeMeta records the post-exchange verification outcomes threaded onto
+// the tool.credential_exchanged audit event: whether the returned token's
+// audience was verified against the declared resource indicator, and whether
+// an actor_token (the verified acting principal) rode the request.
+type exchangeMeta struct {
+	audienceVerified bool
+	actorAsserted    bool
+}
+
 // exchange performs one RFC-8693 token-exchange POST against the broker
 // and maps the outcome onto (token / *consentError / ErrExchangeFailed).
-func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Token, error) {
+func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Token, exchangeMeta, error) {
 	// Resolve the runtime's OWN broker client credential through the
 	// §4.4 credential-source seam. For the env source this returns the
 	// boot-resolved value (zero behavior change); for the remote source
@@ -693,18 +728,18 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	// typed ErrCredentialSourceUnavailable; no fallback — §13).
 	cred, err := p.credSource.Resolve(ctx)
 	if err != nil {
-		return auth.Token{}, fmt.Errorf("%w: resolve broker client credential: %w", auth.ErrExchangeFailed, err)
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: resolve broker client credential: %w", auth.ErrExchangeFailed, err)
 	}
 	if cred.ClientID == "" {
-		return auth.Token{}, fmt.Errorf("%w: %w (provider name=%q)", auth.ErrExchangeFailed, ErrMissingClientID, p.name)
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w (provider name=%q)", auth.ErrExchangeFailed, ErrMissingClientID, p.name)
 	}
 	if cred.ClientSecret == "" {
-		return auth.Token{}, fmt.Errorf("%w: %w (provider name=%q)", auth.ErrExchangeFailed, ErrMissingClientSecret, p.name)
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w (provider name=%q)", auth.ErrExchangeFailed, ErrMissingClientSecret, p.name)
 	}
 
 	subjectToken, err := encodeSubjectToken(id)
 	if err != nil {
-		return auth.Token{}, fmt.Errorf("%w: encode subject token: %w", auth.ErrExchangeFailed, err)
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: encode subject token: %w", auth.ErrExchangeFailed, err)
 	}
 
 	form := url.Values{}
@@ -715,6 +750,25 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	if len(p.scopes) > 0 {
 		form.Set("scope", strings.Join(p.scopes, " "))
 	}
+	// RFC 8707 resource indicator: when declared, ride the exchange as the
+	// `resource` form parameter (the audience the exchanged token binds to).
+	// Empty preserves the byte-identical pre-resource request shape.
+	if p.resourceIndicator != "" {
+		form.Set("resource", p.resourceIndicator)
+	}
+	// RFC 8693 actor_token: when opted in AND the run carries a VERIFIED
+	// acting principal (agent_id, read from ctx — never a client-named field),
+	// carry it as the actor_token so the broker's AS can bind/cross-check the
+	// acting principal against the subject. Absent either → byte-identical to
+	// today (no actor_token sent).
+	var actorAsserted bool
+	if p.includeActorToken {
+		if agentID, ok := tools.InvokingAgentFrom(ctx); ok && agentID != "" {
+			form.Set("actor_token", agentID)
+			form.Set("actor_token_type", actorTokenTypeInvokingAgent)
+			actorAsserted = true
+		}
+	}
 	// Runtime→broker client authentication (§7 rule 2; the credential was
 	// resolved through the credential-source seam above).
 	form.Set("client_id", cred.ClientID)
@@ -722,14 +776,14 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return auth.Token{}, fmt.Errorf("%w: build request: %w", auth.ErrExchangeFailed, err)
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: build request: %w", auth.ErrExchangeFailed, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return auth.Token{}, fmt.Errorf("%w: POST broker %s: %w", auth.ErrExchangeFailed, p.brokerHost, err)
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: POST broker %s: %w", auth.ErrExchangeFailed, p.brokerHost, err)
 	}
 	defer resp.Body.Close()
 
@@ -740,18 +794,30 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 		var be brokerError
 		_ = json.Unmarshal(raw, &be) //nolint:errcheck // a non-JSON body simply leaves be zero → treated as a hard failure
 		if isConsentRequired(be.Err) {
-			return auth.Token{}, &consentError{consentURL: firstNonEmpty(be.ConsentURL, be.VerificationURI)}
+			return auth.Token{}, exchangeMeta{}, &consentError{consentURL: firstNonEmpty(be.ConsentURL, be.VerificationURI)}
 		}
-		return auth.Token{}, fmt.Errorf("%w: broker %s status %d (error=%q)",
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: broker %s status %d (error=%q)",
 			auth.ErrExchangeFailed, p.brokerHost, resp.StatusCode, be.Err)
 	}
 
 	var br brokerResponse
 	if err := json.Unmarshal(raw, &br); err != nil {
-		return auth.Token{}, fmt.Errorf("%w: decode broker response: %w", auth.ErrExchangeFailed, err)
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: decode broker response: %w", auth.ErrExchangeFailed, err)
 	}
 	if br.AccessToken == "" {
-		return auth.Token{}, fmt.Errorf("%w: empty access_token in broker response", auth.ErrExchangeFailed)
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: empty access_token in broker response", auth.ErrExchangeFailed)
+	}
+
+	// Best-effort audience verification (confused-deputy defence). When a
+	// resource indicator is declared and the returned token is JWT-shaped, its
+	// `aud` claim MUST include the resource — a mismatch fails the exchange
+	// loud and nothing is cached. An opaque token (RFC 8693 permits one)
+	// leaves audienceVerified false — an honest no-op, never a fabricated
+	// pass. This is an `aud`-claim comparison only, NOT signature verification.
+	audienceVerified, audErr := verifyAudience(br.AccessToken, p.resourceIndicator)
+	if audErr != nil {
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w (broker %s, resource=%q)",
+			auth.ErrExchangeFailed, audErr, p.brokerHost, p.resourceIndicator)
 	}
 
 	// ExpiresAt is the broker-advertised token validity (zero when the
@@ -773,7 +839,76 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 		// RefreshToken deliberately empty: refresh is re-exchange, and a
 		// brokered token is never persisted.
 	}
-	return tok, nil
+	return tok, exchangeMeta{audienceVerified: audienceVerified, actorAsserted: actorAsserted}, nil
+}
+
+// verifyAudience checks a JWT-shaped access token's `aud` claim against the
+// declared resource indicator. It returns:
+//   - (false, nil) when no resource is declared (no check requested), or the
+//     token is opaque (not a decodable three-segment JWT) — an honest no-op.
+//   - (true, nil) when the token is JWT-shaped and its `aud` includes the
+//     resource.
+//   - (false, ErrAudienceMismatch) when the token is JWT-shaped and its `aud`
+//     EXCLUDES the resource (a confused-deputy signal).
+//
+// It decodes the JWT payload's `aud` claim ONLY — never a signature check
+// (Harbor has no keying relationship with the broker's AS).
+func verifyAudience(accessToken, resource string) (bool, error) {
+	if resource == "" {
+		return false, nil
+	}
+	parts := strings.Split(accessToken, ".")
+	if len(parts) != 3 {
+		// Opaque bearer — RFC 8693 does not require a JWT. Honest no-op.
+		return false, nil
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		// Not a decodable JWT payload — treat as opaque, not a mismatch.
+		//nolint:nilerr // an undecodable JWT payload is a deliberate opaque no-op, not an exchange error
+		return false, nil
+	}
+	var claims struct {
+		Aud json.RawMessage `json:"aud"`
+	}
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		// Not a JSON JWT payload — treat as opaque, not a mismatch.
+		//nolint:nilerr // a non-JSON JWT payload is a deliberate opaque no-op, not an exchange error
+		return false, nil
+	}
+	auds := parseAudClaim(claims.Aud)
+	if len(auds) == 0 {
+		// A JWT that binds no audience cannot be confirmed to target the
+		// declared resource — fail loud rather than serve a possibly-misbound
+		// token to a downstream sink.
+		return false, ErrAudienceMismatch
+	}
+	for _, a := range auds {
+		if a == resource {
+			return true, nil
+		}
+	}
+	return false, ErrAudienceMismatch
+}
+
+// parseAudClaim normalises the JWT `aud` claim (RFC 7519 §4.1.3: either a
+// single string or an array of strings) into a slice.
+func parseAudClaim(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		if single == "" {
+			return nil
+		}
+		return []string{single}
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err == nil {
+		return many
+	}
+	return nil
 }
 
 // buildConsentRequired parks the calling run on the unified pause
@@ -832,14 +967,16 @@ func (p *provider) buildConsentRequired(ctx context.Context, id identity.Identit
 
 // emitCredentialExchanged emits the canonical tool.credential_exchanged
 // audit event for one actual exchange (zero token bytes).
-func (p *provider) emitCredentialExchanged(ctx context.Context, id identity.Identity, tok auth.Token) error {
+func (p *provider) emitCredentialExchanged(ctx context.Context, id identity.Identity, tok auth.Token, meta exchangeMeta) error {
 	payload := auth.ToolCredentialExchangedPayload{
-		Source:        string(p.source),
-		BindingScope:  string(auth.ScopeUser),
-		SubjectKind:   string(auth.ScopeUser),
-		BrokerHost:    p.brokerHost,
-		GrantedScopes: append([]string(nil), tok.Scopes...),
-		ExpiresAt:     tok.ExpiresAt,
+		Source:           string(p.source),
+		BindingScope:     string(auth.ScopeUser),
+		SubjectKind:      string(auth.ScopeUser),
+		BrokerHost:       p.brokerHost,
+		GrantedScopes:    append([]string(nil), tok.Scopes...),
+		ExpiresAt:        tok.ExpiresAt,
+		AudienceVerified: meta.audienceVerified,
+		ActorAsserted:    meta.actorAsserted,
 	}
 	if err := p.emit(ctx, auth.EventTypeToolCredentialExchanged, id, payload); err != nil {
 		return fmt.Errorf("auth/tokenexchange: emit tool.credential_exchanged: %w", err)

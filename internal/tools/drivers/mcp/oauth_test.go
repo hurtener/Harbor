@@ -223,7 +223,7 @@ func TestBuildHTTPClient_BearerWinsOverStaticAuthorization(t *testing.T) {
 func TestResolveBearerCtx_UnboundIsNoOp(t *testing.T) {
 	p := &Provider{cfg: Config{}}
 	ctx := context.Background()
-	got, err := p.resolveBearerCtx(ctx)
+	got, err := p.resolveBearerCtx(ctx, "")
 	if err != nil {
 		t.Fatalf("resolveBearerCtx: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestResolveBearerCtx_FailClosedOnTokenError(t *testing.T) {
 	authErr := &auth.ErrAuthRequired{Source: "m365", Message: "consent required"}
 	p := &Provider{cfg: Config{OAuthProvider: &stubOAuthProvider{tokErr: authErr}}}
 	ctx := testIdentityCtx(t, identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
-	_, err := p.resolveBearerCtx(ctx)
+	_, err := p.resolveBearerCtx(ctx, "")
 	if err == nil {
 		t.Fatal("want error on Token failure, got nil")
 	}
@@ -252,7 +252,7 @@ func TestResolveBearerCtx_FailClosedOnTokenError(t *testing.T) {
 func TestResolveBearerCtx_FailClosedOnEmptyToken(t *testing.T) {
 	p := &Provider{cfg: Config{Name: "graph", OAuthProvider: &stubOAuthProvider{token: ""}}, source: "graph"}
 	ctx := testIdentityCtx(t, identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
-	_, err := p.resolveBearerCtx(ctx)
+	_, err := p.resolveBearerCtx(ctx, "")
 	if err == nil {
 		t.Fatal("want error on empty bearer, got nil (an unauthenticated call would leak)")
 	}
@@ -267,7 +267,7 @@ func TestResolveBearerCtx_FailClosedOnEmptyToken(t *testing.T) {
 func TestResolveBearerCtx_StashesBearer(t *testing.T) {
 	p := &Provider{cfg: Config{OAuthProvider: &stubOAuthProvider{token: "brokered-xyz"}}, source: "m365"}
 	ctx := testIdentityCtx(t, identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
-	got, err := p.resolveBearerCtx(ctx)
+	got, err := p.resolveBearerCtx(ctx, "")
 	if err != nil {
 		t.Fatalf("resolveBearerCtx: %v", err)
 	}
@@ -306,6 +306,39 @@ func TestResolveOAuthBinding_Table(t *testing.T) {
 		_, err := resolveOAuthBinding(config.MCPServerConfig{Name: "x", OAuthProvider: "m365"}, TransportStdio, mapProviderResolver(providers))
 		if err == nil || !errors.Is(err, ErrOAuthBinding) {
 			t.Fatalf("want ErrOAuthBinding for stdio, got %v", err)
+		}
+	})
+	t.Run("per-tool binding resolves + falls back", func(t *testing.T) {
+		ms := config.MCPServerConfig{
+			Name: "x", URL: "https://mcp.example.test", OAuthProvider: "m365",
+			ToolOAuthProviders: map[string]string{"send_mail": "m365"},
+		}
+		toolProviders, err := resolveToolOAuthBindings(ms, TransportStreamableHTTP, mapProviderResolver(providers))
+		if err != nil {
+			t.Fatalf("resolveToolOAuthBindings: %v", err)
+		}
+		if toolProviders["send_mail"] == nil {
+			t.Fatalf("send_mail not resolved")
+		}
+	})
+	t.Run("per-tool binding re-enforces rules (unknown provider)", func(t *testing.T) {
+		ms := config.MCPServerConfig{
+			Name: "x", URL: "https://mcp.example.test",
+			ToolOAuthProviders: map[string]string{"send_mail": "nope"},
+		}
+		_, err := resolveToolOAuthBindings(ms, TransportStreamableHTTP, mapProviderResolver(providers))
+		if err == nil || !errors.Is(err, ErrOAuthBinding) {
+			t.Fatalf("want ErrOAuthBinding for unknown per-tool provider, got %v", err)
+		}
+	})
+	t.Run("per-tool binding re-enforces rules (stdio)", func(t *testing.T) {
+		ms := config.MCPServerConfig{
+			Name: "x", Command: []string{"srv"},
+			ToolOAuthProviders: map[string]string{"send_mail": "m365"},
+		}
+		_, err := resolveToolOAuthBindings(ms, TransportStdio, mapProviderResolver(providers))
+		if err == nil || !errors.Is(err, ErrOAuthBinding) {
+			t.Fatalf("want ErrOAuthBinding for stdio per-tool binding, got %v", err)
 		}
 	})
 	t.Run("auto transport without url (command-only, resolves to stdio) rejected", func(t *testing.T) {

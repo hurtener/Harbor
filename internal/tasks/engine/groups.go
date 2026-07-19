@@ -660,7 +660,7 @@ func (e *Engine) collectMemberOutcomesLocked(g *tasks.TaskGroup) []tasks.MemberO
 			out = append(out, tasks.MemberOutcome{TaskID: tid, Status: tasks.StatusCancelled})
 			continue
 		}
-		mo := tasks.MemberOutcome{TaskID: tid, Status: t.Status}
+		mo := tasks.MemberOutcome{TaskID: tid, Status: t.Status, Description: t.Description}
 		if t.Result != nil {
 			r := *t.Result
 			mo.Result = &r
@@ -775,30 +775,13 @@ func (e *Engine) cancelTaskLocked(ctx context.Context, t *tasks.Task, reason str
 	}); err != nil {
 		return err
 	}
-	// Cascade to t's own children per its PropagateOnCancel.
+	// Cascade to t's own children per its PropagateOnCancel, sharing the
+	// one descendant walk with the public Cancel path so an
+	// isolate-marked descendant detaches identically here. The direct
+	// target t was already transitioned above (unconditional).
 	if t.PropagateOnCancel == tasks.PropagateCascade {
-		queue := append([]tasks.TaskID(nil), e.children[t.ID]...)
-		for len(queue) > 0 {
-			childID := queue[0]
-			queue = queue[1:]
-			child, ok := e.tasks[childID]
-			if !ok {
-				continue
-			}
-			if isTerminal(child.Status) {
-				continue
-			}
-			if err := e.transitionLocked(ctx, child, tasks.StatusCancelled); err != nil {
-				return err
-			}
-			if err := e.publish(ctx, child, tasks.EventTypeTaskCancelled, tasks.TaskCancelledPayload{
-				TaskID:   child.ID,
-				Reason:   reason,
-				Cascaded: true,
-			}); err != nil {
-				return err
-			}
-			queue = append(queue, e.children[childID]...)
+		if err := e.cascadeCancelDescendantsLocked(ctx, t.ID, reason); err != nil {
+			return err
 		}
 	}
 	return nil

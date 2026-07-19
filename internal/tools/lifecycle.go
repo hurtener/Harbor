@@ -153,17 +153,28 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 			},
 		})
 	default:
+		// A downstream insufficient-scope step-up enriches the SAME
+		// tool.failed event with its structured shortfall projection, so an
+		// operator sees the required-vs-granted scope gap without parsing the
+		// error string. Nil for every other failure.
+		var shortfall *ScopeShortfallDetail
+		var scopeErr *ErrInsufficientScope
+		if errors.As(err, &scopeErr) {
+			d := scopeErr.ShortfallDetail()
+			shortfall = &d
+		}
 		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; the tool result is the source of truth.
 			Type:       EventTypeToolFailed,
 			Identity:   q,
 			OccurredAt: time.Now(),
 			Payload: ToolFailedPayload{
-				Identity:     q,
-				ToolName:     name,
-				Transport:    transport,
-				Attempts:     1,
-				ErrorClass:   ErrClassPermanent,
-				ErrorMessage: err.Error(),
+				Identity:       q,
+				ToolName:       name,
+				Transport:      transport,
+				Attempts:       1,
+				ErrorClass:     ErrClassPermanent,
+				ErrorMessage:   err.Error(),
+				ScopeShortfall: shortfall,
 			},
 		})
 	}

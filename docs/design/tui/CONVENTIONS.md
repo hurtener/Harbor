@@ -179,6 +179,8 @@ Every phase touching rendering updates goldens for applicable cells:
 | Stream | idle, active, scrolled-away, reconnect, replay gap, dropped event |
 | Sessions | empty, populated, restart restore, closed/reopen-on-next-turn, erased, switch-with-stream-drain |
 | Intervention | initial, confirm, reject editor, expired/resolved elsewhere |
+| Notification | background-completion line, group-resolution rollup line (muted, one line — never a per-member fan-out) |
+| Turn failure | foreground turn-failure status-strip line present, then cleared on next submit |
 | Fallback | unknown event, unknown tool, unknown result, malformed safe payload |
 
 Goldens validate geometry and hierarchy with ANSI stripped, then separate style

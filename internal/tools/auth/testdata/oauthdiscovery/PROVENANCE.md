@@ -36,3 +36,16 @@ A captured `WWW-Authenticate` response-header line per the **Model Context
 Protocol authorization specification (2025-06-18)** — the `Bearer` challenge
 carrying `resource_metadata` that points at the RFC 9728 document. This is the
 step-up an unauthorized MCP HTTP call answers with.
+
+## `www_authenticate_insufficient_scope.txt`
+
+A `WWW-Authenticate` response-header line per **RFC 6750 — The OAuth 2.0
+Authorization Framework: Bearer Token Usage**, §3.1 ("Error Codes") and the
+§3 example, for the `insufficient_scope` error: a `403 Forbidden` whose
+challenge carries `error="insufficient_scope"` plus the `scope` parameter
+naming the scopes the request requires (RFC 6750 §3 states the `scope`
+attribute "SHOULD" be included for this error). The load-bearing fields the
+scope-shortfall capture reads are `error` (which MUST be literally
+`insufficient_scope` to construct a structured shortfall) and `scope` (the
+required-scopes list). A wrong-field mutation — e.g. renaming `scope` or
+changing the `error` value — must FAIL the shortfall capture test.

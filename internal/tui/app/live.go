@@ -1031,7 +1031,13 @@ func (m RuntimeModel) turnStatus() string {
 	// fronted by the past tense of the verb the run worked under.
 	parts := []string{runVerb(runID)[1] + " for " + formatTurnDuration(duration)}
 	if usage, ok := m.transcript.Projection.RunUsage[runID]; ok && usage.TotalTokens > 0 {
-		parts = append(parts, formatTokens(usage.TotalTokens)+" tok")
+		tokens := formatTokens(usage.TotalTokens) + " tok"
+		// Cache reads are a subset of the prompt tokens already counted in
+		// TotalTokens — surfaced as a qualifier, never added to the total.
+		if usage.CacheReadTokens > 0 {
+			tokens += " (" + formatTokens(usage.CacheReadTokens) + " cached)"
+		}
+		parts = append(parts, tokens)
 		if usage.USD > 0 {
 			parts = append(parts, fmt.Sprintf("$%.4f", usage.USD))
 		}
@@ -1890,6 +1896,14 @@ func (m *RuntimeModel) applyUpdate(update conversation.Update) bool {
 		m.shell.state.Unknown = m.shell.state.Unknown || (block.Kind == "tool" && block.Tool == "")
 		m.shell.state.Incomplete = m.shell.state.Incomplete || block.Incomplete
 	}
+	// A FAILED foreground turn gets an explicit status-strip line instead of
+	// silently returning the composer to idle. Derived from the newest
+	// foreground turn's terminal state (see turnFailure); cleared implicitly
+	// when a fresh turn becomes the newest foreground turn.
+	m.shell.state.TurnFailed, m.shell.state.TurnFailedCode = false, ""
+	if code, failed := m.turnFailure(); failed {
+		m.shell.state.TurnFailed, m.shell.state.TurnFailedCode = true, code
+	}
 	m.shell.state.TurnStatus = m.turnStatus()
 	if model := strings.TrimSpace(update.Projection.Usage.Model); model != "" {
 		m.shell.state.Model = model
@@ -2187,7 +2201,10 @@ func (m RuntimeModel) hasActiveWork() bool {
 func (m RuntimeModel) projectionActive() bool {
 	for _, block := range m.transcript.Projection.Blocks {
 		switch block.Kind {
-		case "event", "user":
+		case "event", "user", "notification":
+			// A notification block is a settled operator-facing wake line
+			// (background work finished / group resolved) — never in-flight
+			// work, so it must not hold the composer in the running state.
 			continue
 		case "text", "reasoning", "tool":
 			// A streaming conversational block is in-flight work even before any
@@ -2215,8 +2232,54 @@ func conversational(kind string) bool {
 	switch kind {
 	case "user", "text", "reasoning", "tool", "intervention":
 		return true
+	case "notification":
+		// Notification blocks are the ONE runtime-lifecycle kind that
+		// belongs on the conversation surface: they are deliberate,
+		// operator-addressed wake lines (background completion / group
+		// resolution) the runtime composed as a bounded Summary, not the
+		// raw internals (audit, cost, planner decisions, task/session
+		// lifecycle) that stay on the events + diagnostics routes. The
+		// distinction is authorship: a notification is FOR the operator;
+		// a fallback event block is an internal record shown honestly but
+		// off-chat.
+		return true
 	}
 	return false
+}
+
+// turnFailure derives the foreground turn-failure state from the canonical
+// projection. The newest FOREGROUND turn is the last "task" block whose run
+// also has a "user:" turn block. The user block is the foreground marker: it
+// is minted only for foreground-Kind task rows, never for background rows
+// (which carry a Query of their own but are classified by Kind), so its
+// presence — not the presence of a query — discriminates a foreground turn.
+// When that newest foreground turn is terminally failed, it returns the
+// bounded error code; when it is running/pending/complete (including after a
+// fresh submit), it returns (_, false) so the line clears. Background-task
+// failures never match here — they have no user block — and are surfaced by
+// the muted notification mirror instead.
+func (m RuntimeModel) turnFailure() (string, bool) {
+	blocks := m.transcript.Projection.Blocks
+	hasUserTurn := func(runID string) bool {
+		for i := range blocks {
+			if blocks[i].Kind == "user" && blocks[i].RunID == runID {
+				return true
+			}
+		}
+		return false
+	}
+	for i := len(blocks) - 1; i >= 0; i-- {
+		b := blocks[i]
+		if b.Kind != "task" || b.RunID == "" || !hasUserTurn(b.RunID) {
+			continue
+		}
+		// Newest foreground turn located; its terminal state decides.
+		if b.Status == "failed" {
+			return b.ErrorCode, true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 func (m *RuntimeModel) dispatchFollowUp() tea.Cmd {

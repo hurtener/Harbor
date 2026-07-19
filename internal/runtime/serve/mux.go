@@ -348,7 +348,21 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	if in.Agents != nil {
-		agentsProjector, pErr := agentsprotocol.NewRegistryProjector(in.Agents)
+		var agentsProjectorOpts []agentsprotocol.ProjectorOption
+		// Surface the runtime's synthetic default agent — the boot-configured
+		// agent every process serves through but never registers as a fleet
+		// entity — as a first-class, IsDefault-marked catalog row. Wired off
+		// the boot agent id already threaded through the assembly. An empty
+		// id leaves the projector byte-identical to an unwired one.
+		if in.AgentConfigID != "" {
+			agentsProjectorOpts = append(agentsProjectorOpts,
+				agentsprotocol.WithDefaultAgent(agentsprotocol.DefaultAgentDescriptor{
+					ID:          in.AgentConfigID,
+					DisplayName: in.AgentConfigID,
+					BootedAt:    time.Now(),
+				}))
+		}
+		agentsProjector, pErr := agentsprotocol.NewRegistryProjector(in.Agents, agentsProjectorOpts...)
 		if pErr != nil {
 			return nil, wrapErr("registry/protocol projector", pErr)
 		}

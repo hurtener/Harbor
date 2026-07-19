@@ -70,9 +70,12 @@ export function eventBelongsToRun(e: Event, taskID: string): boolean {
   if (e.run === taskID) return true;
   const p = asRecord(e.payload);
   if (p === null) return false;
-  if (readString(p, ['TaskID', 'task_id']) === taskID) return true;
+  // `taskid` (lowercase) is the redacted-payload key shape — a
+  // NotificationPayload is redacted on the bus, so its `TaskID` field
+  // crosses the wire lowercased; the run dock must still match it.
+  if (readString(p, ['TaskID', 'task_id', 'taskid']) === taskID) return true;
   const id = asRecord(p['Identity'] ?? p['identity']);
-  if (id !== null && readString(id, ['RunID', 'run_id', 'run']) === taskID) {
+  if (id !== null && readString(id, ['RunID', 'run_id', 'run', 'runid']) === taskID) {
     return true;
   }
   return false;
@@ -101,6 +104,17 @@ export interface RunCost {
   reasoningTokens: number;
   /** Σ total tokens. */
   totalTokens: number;
+  /**
+   * Σ prompt tokens served from the provider's prompt cache. A SUBSET of
+   * `promptTokens`, never additive to `totalTokens` — render as an
+   * annotation, not a fifth summed row.
+   */
+  cacheReadTokens: number;
+  /**
+   * Σ prompt tokens newly written to the provider's prompt cache. A SUBSET
+   * of `promptTokens`, never additive to `totalTokens`.
+   */
+  cacheWriteTokens: number;
   /** The count of `llm.cost.recorded` events folded in. */
   events: number;
   /** The distinct model labels seen (e.g. `openai/gpt-5.4`). */
@@ -116,6 +130,8 @@ const EMPTY_RUN_COST: RunCost = {
   outputTokens: 0,
   reasoningTokens: 0,
   totalTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   events: 0,
   models: []
 };
@@ -152,6 +168,10 @@ export function projectRunCost(events: readonly Event[]): RunCost {
       out.outputTokens += readNumber(usage, ['CompletionTokens', 'completion_tokens']);
       out.reasoningTokens += readNumber(usage, ['ReasoningTokens', 'reasoning_tokens']);
       out.totalTokens += readNumber(usage, ['TotalTokens', 'total_tokens']);
+      // Cache reads/writes are a SUBSET of promptTokens (already folded
+      // into totalTokens) — accumulated for annotation, never re-summed.
+      out.cacheReadTokens += readNumber(usage, ['CacheReadTokens', 'cache_read_tokens']);
+      out.cacheWriteTokens += readNumber(usage, ['CacheWriteTokens', 'cache_write_tokens']);
     }
     const model = readString(p, ['Model', 'model']);
     if (model !== null) models.add(model);
@@ -178,4 +198,29 @@ export function filterInterventionEvents(events: readonly Event[]): Event[] {
 /** The TaskGroup lifecycle events for a run (`task.group_*`). */
 export function filterGroupEvents(events: readonly Event[]): Event[] {
   return events.filter((e) => e.type.startsWith('task.group_'));
+}
+
+/**
+ * The background-wake notification events for a run (`notification.*`):
+ * `notification.task_completed`, `notification.task_group_resolved`, and
+ * `notification.task_failed`. These are the operator-facing conversational
+ * mirror of a background terminal transition / group resolution — the same
+ * family the TUI renders as muted one-liners.
+ */
+export function filterNotificationEvents(events: readonly Event[]): Event[] {
+  return events.filter((e) => e.type.startsWith('notification.'));
+}
+
+/**
+ * The human-readable `Summary` a `notification.*` event carries, or null
+ * when absent. The NotificationPayload is redacted on the bus, so the wire
+ * keys are LOWERCASE (`summary`); the payload can also arrive with the
+ * PascalCase Go field name when read from an unredacted path — both are
+ * accepted (CLAUDE.md §13: never silently read zero). Returns null when no
+ * summary is present so the caller can fall back to the bare event type.
+ */
+export function notificationSummary(e: Event): string | null {
+  const p = asRecord(e.payload);
+  if (p === null) return null;
+  return readString(p, ['Summary', 'summary']);
 }

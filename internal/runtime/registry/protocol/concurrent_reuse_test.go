@@ -159,6 +159,74 @@ func TestService_ConcurrentReuse_N100(t *testing.T) {
 	}
 }
 
+// TestService_DefaultAgent_ConcurrentReuse_N128 is the D-025 concurrent-
+// reuse guard for the synthetic default-agent seam: N=128 concurrent
+// ListAgents / GetAgent calls, each under its OWN tenant against a SINGLE
+// shared Service whose projector is configured WithDefaultAgent, under
+// `-race`. It proves the synthetic row is stable per-call — the row's
+// identity is derived from each call's ctx/id, never from shared mutable
+// descriptor state on the artifact — with no data race, no context bleed,
+// and no goroutine leak.
+func TestService_DefaultAgent_ConcurrentReuse_N128(t *testing.T) {
+	reg := newRealRegistry(t)
+	proj, err := agentsprotocol.NewRegistryProjector(reg,
+		agentsprotocol.WithDefaultAgent(agentsprotocol.DefaultAgentDescriptor{
+			ID: "harbor-default-agent", DisplayName: "Harbor default agent",
+		}))
+	if err != nil {
+		t.Fatalf("NewRegistryProjector: %v", err)
+	}
+	svc, err := agentsprotocol.NewService(proj)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	const n = 128
+	baseline := runtime.NumGoroutine()
+	var wg sync.WaitGroup
+	errCh := make(chan error, n)
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			tenant := "tenant-" + itoa(i)
+			ctx := idCtx(t, tenant, "u", "s")
+			scope := prototypes.IdentityScope{Tenant: tenant, User: "u", Session: "s"}
+			// The registry is empty for this tenant → exactly one synthetic row.
+			resp, lerr := svc.List(ctx, prototypes.AgentListRequest{Identity: scope}, false)
+			if lerr != nil {
+				errCh <- lerr
+				return
+			}
+			if len(resp.Agents) != 1 || !resp.Agents[0].IsDefault {
+				errCh <- fmt.Errorf("tenant %s: rows=%d, want exactly 1 IsDefault row", tenant, len(resp.Agents))
+				return
+			}
+			if resp.Agents[0].Identity.Tenant != tenant {
+				errCh <- fmt.Errorf("tenant %s: synthetic row identity leaked tenant %q (context bleed)", tenant, resp.Agents[0].Identity.Tenant)
+				return
+			}
+			if _, gerr := svc.Get(ctx, prototypes.AgentGetRequest{Identity: scope, ID: "harbor-default-agent"}); gerr != nil {
+				errCh <- fmt.Errorf("tenant %s: Get(default id): %w", tenant, gerr)
+				return
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent default-agent invocation failed: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if leaked := runtime.NumGoroutine() - baseline; leaked > 2 {
+		t.Fatalf("goroutine leak: %d goroutines above baseline %d", leaked, baseline)
+	}
+}
+
 // countErr is a typed error so the concurrent test reports a precise
 // cross-talk diagnosis rather than a bare string.
 type countErr struct {

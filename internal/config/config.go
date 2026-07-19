@@ -1158,6 +1158,37 @@ type ToolOAuthProviderConfig struct {
 	// dropped, never honoured. Empty preserves the legacy pass-through.
 	// Ignored by the interactive `oauth2` driver. Restart-required.
 	ScopeCeiling []string `yaml:"scope_ceiling,omitempty"`
+
+	// ResourceIndicator is the boot-declared RFC 8707 `resource` value the
+	// `tokenexchange` driver carries as the `resource` form parameter on
+	// every exchange request (the audience the exchanged token is bound to).
+	// A JWT-shaped returned token whose `aud` claim excludes this value fails
+	// the exchange loud (never cached). Empty preserves today's behaviour (no
+	// `resource` parameter sent). NEVER auto-populated from discovery
+	// (discovery is report-only; an operator copies a discovered+confirmed
+	// value in by hand). Ignored by the interactive `oauth2` driver.
+	// Restart-required.
+	ResourceIndicator string `yaml:"resource_indicator,omitempty"`
+
+	// IncludeActorToken opts a `tokenexchange` provider into carrying the
+	// run's verified acting principal (`agent_id`, when present on ctx) as an
+	// RFC 8693 `actor_token` on the exchange. Default false; an absent
+	// `agent_id` sends no `actor_token` regardless (a byte-identical request
+	// to today). The actor token is the runtime's VERIFIED acting principal —
+	// never a client-supplied field. Ignored by the interactive `oauth2`
+	// driver. Restart-required.
+	//
+	// Caching note: the exchanged token is cached at user granularity
+	// (scope, tenant, user, source) — the acting principal is deliberately
+	// NOT part of the cache key, because `agent_id` is not an isolation
+	// principal. Within one cached token's TTL, a second acting principal
+	// under the same (tenant, user) reuses the token minted under the
+	// first — no isolation boundary is crossed (the token stays user-bound
+	// and the `actor_asserted` audit signal fires only on the real
+	// exchange). If a downstream broker scopes grants PER acting principal,
+	// disable caching pressure by narrowing the token TTL rather than
+	// expecting per-actor cache separation here.
+	IncludeActorToken bool `yaml:"include_actor_token,omitempty"`
 }
 
 // ToolOAuthCredentialBrokerConfig declares one NAMED, boot-declared
@@ -1433,6 +1464,20 @@ type MCPServerConfig struct {
 	// means no cross-origin metadata fetch is permitted (the AS half of the
 	// chain surfaces as needs-allowance). Restart-required.
 	OAuthDiscoveryAllowedOrigins []string `yaml:"oauth_discovery_allowed_origins,omitempty"`
+
+	// ToolOAuthProviders are per-tool `oauth_provider` overrides keyed by the
+	// MCP tool's server-side name (mirroring ToolPolicies' shape). A tool
+	// named here binds THAT declared provider for its CallTool RPCs only; an
+	// unlisted tool falls back to OAuthProvider (the connection-level
+	// binding), and the resource / prompt paths always resolve OAuthProvider.
+	// Each entry re-enforces every rule OAuthProvider does (unknown name /
+	// stdio transport / static-Authorization conflict / downstream-host
+	// allow-list). It closes the one-audience-per-server constraint for a
+	// shared MCP server fronting N downstream resources. Boot-declared,
+	// config/file-only — never a Protocol-writable field (the credential-plane
+	// invariant). Optional; empty preserves today's behaviour.
+	// Restart-required.
+	ToolOAuthProviders map[string]string `yaml:"tool_oauth_providers,omitempty"`
 }
 
 // ToolPolicyConfig is the operator-facing YAML projection of
@@ -1692,6 +1737,7 @@ type PlannerConfig struct {
 	ParallelToolCalls      *bool                   `yaml:"parallel_tool_calls,omitempty"`
 	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
 	AbsoluteMaxSpawnDepth  int                     `yaml:"absolute_max_spawn_depth,omitempty"`
+	MaxBatchSpawns         int                     `yaml:"max_batch_spawns,omitempty"`
 	TokenBudget            int                     `yaml:"token_budget,omitempty"`
 	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
 	Extra                  map[string]string       `yaml:"extra,omitempty"`
@@ -1726,6 +1772,26 @@ func (p PlannerConfig) SpawnDepthCap() int {
 // The tool executor's constructor clamp references this constant; no
 // other literal copy of the value is allowed.
 const DefaultSpawnDepthCap = 4
+
+// BatchSpawnCap resolves the optional `max_batch_spawns` knob. A
+// non-positive value (unset or zero) resolves to `DefaultMaxBatchSpawns`:
+// a batch decision whose spawn count exceeds this BREADTH ceiling is
+// rejected loudly in full — never truncated to the first N spawns.
+// Distinguished from `SpawnDepthCap`, which bounds spawn-chain DEPTH,
+// not the breadth of one response's spawns.
+func (p PlannerConfig) BatchSpawnCap() int {
+	if p.MaxBatchSpawns <= 0 {
+		return DefaultMaxBatchSpawns
+	}
+	return p.MaxBatchSpawns
+}
+
+// DefaultMaxBatchSpawns is the ONE source of the batch-spawn breadth
+// default: the ceiling on how many task spawns a single batch decision
+// may carry. Conservative and operator-revisable via
+// `planner.max_batch_spawns`; the batch-dispatch cap references this
+// constant so no other literal copy of the value exists.
+const DefaultMaxBatchSpawns = 5
 
 // DefaultHeavyOutputThresholdBytes is the ONE source of the
 // heavy-output threshold default (32 KiB; RFC §6.10): the byte

@@ -244,6 +244,46 @@ func TestService_Tools_IdentityAndShape(t *testing.T) {
 	}
 }
 
+// TestService_DetailVerbs_EmptyIDAndIdentity covers the empty-id and
+// missing-identity guard branches shared by the detail-tab verbs +
+// metrics, plus WithLogger wiring — the loud-reject paths (CLAUDE.md §5).
+func TestService_DetailVerbs_EmptyIDAndIdentity(t *testing.T) {
+	svc, err := agentsprotocol.NewService(&fakeProjector{}, agentsprotocol.WithLogger(nil))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	// Empty id → ErrInvalidRequest on each detail verb.
+	if _, err := svc.Memory(context.Background(), prototypes.AgentMemoryRequest{Identity: validScope, ID: " "}); !errors.Is(err, agentsprotocol.ErrInvalidRequest) {
+		t.Errorf("Memory('') err=%v, want ErrInvalidRequest", err)
+	}
+	if _, err := svc.Governance(context.Background(), prototypes.AgentGovernanceRequest{Identity: validScope, ID: ""}); !errors.Is(err, agentsprotocol.ErrInvalidRequest) {
+		t.Errorf("Governance('') err=%v, want ErrInvalidRequest", err)
+	}
+	if _, err := svc.Skills(context.Background(), prototypes.AgentSkillsRequest{Identity: validScope, ID: ""}); !errors.Is(err, agentsprotocol.ErrInvalidRequest) {
+		t.Errorf("Skills('') err=%v, want ErrInvalidRequest", err)
+	}
+	if _, err := svc.Permissions(context.Background(), prototypes.AgentPermissionsRequest{Identity: validScope, ID: ""}); !errors.Is(err, agentsprotocol.ErrInvalidRequest) {
+		t.Errorf("Permissions('') err=%v, want ErrInvalidRequest", err)
+	}
+	// Missing identity → ErrIdentityRequired on metrics + the detail verbs.
+	badID := prototypes.IdentityScope{Tenant: "t1"}
+	if _, err := svc.Metrics(context.Background(), prototypes.AgentMetricsRequest{Identity: badID}); !errors.Is(err, agentsprotocol.ErrIdentityRequired) {
+		t.Errorf("Metrics(no-ident) err=%v, want ErrIdentityRequired", err)
+	}
+	if _, err := svc.Memory(context.Background(), prototypes.AgentMemoryRequest{Identity: badID, ID: "a1"}); !errors.Is(err, agentsprotocol.ErrIdentityRequired) {
+		t.Errorf("Memory(no-ident) err=%v, want ErrIdentityRequired", err)
+	}
+	if _, err := svc.Governance(context.Background(), prototypes.AgentGovernanceRequest{Identity: badID, ID: "a1"}); !errors.Is(err, agentsprotocol.ErrIdentityRequired) {
+		t.Errorf("Governance(no-ident) err=%v, want ErrIdentityRequired", err)
+	}
+	if _, err := svc.Skills(context.Background(), prototypes.AgentSkillsRequest{Identity: badID, ID: "a1"}); !errors.Is(err, agentsprotocol.ErrIdentityRequired) {
+		t.Errorf("Skills(no-ident) err=%v, want ErrIdentityRequired", err)
+	}
+	if _, err := svc.Permissions(context.Background(), prototypes.AgentPermissionsRequest{Identity: badID, ID: "a1"}); !errors.Is(err, agentsprotocol.ErrIdentityRequired) {
+		t.Errorf("Permissions(no-ident) err=%v, want ErrIdentityRequired", err)
+	}
+}
+
 func TestService_Memory_Governance_Skills_Permissions(t *testing.T) {
 	fp := &fakeProjector{
 		mem:    prototypes.AgentMemoryBinding{StrategyID: "rolling_summary", Scope: "session", TTLSeconds: 3600},

@@ -235,3 +235,274 @@ func TestRegistryProjector_Metrics_CountsActiveAgents(t *testing.T) {
 		t.Fatalf("ActiveAgents = %d, want 3", m.ActiveAgents)
 	}
 }
+
+// wellKnownDefaultID is the synthetic default agent's well-known id used
+// across the default-agent projector tests.
+const wellKnownDefaultID = "harbor-default-agent"
+
+// fakeConfigSource is a minimal ConfigSource returning non-empty
+// projections so the config-join branches (planner/model/tool counts +
+// the detail tabs + the governance rollup) are exercised. Its data is
+// fixed, not identity-derived — the test asserts the join wiring, not a
+// per-identity policy.
+type fakeConfigSource struct{}
+
+func (fakeConfigSource) Config(context.Context, identity.Identity, string) (prototypes.AgentConfig, error) {
+	return prototypes.AgentConfig{PlannerType: "react", Model: "test-model"}, nil
+}
+
+func (fakeConfigSource) Tools(context.Context, identity.Identity, string) ([]prototypes.AgentToolBinding, error) {
+	return []prototypes.AgentToolBinding{{Transport: "MCP"}, {Transport: "InProc"}}, nil
+}
+
+func (fakeConfigSource) Memory(context.Context, identity.Identity, string) (prototypes.AgentMemoryBinding, error) {
+	return prototypes.AgentMemoryBinding{StrategyID: "window"}, nil
+}
+
+func (fakeConfigSource) Governance(context.Context, identity.Identity, string) (prototypes.AgentGovernance, error) {
+	return prototypes.AgentGovernance{Ceilings: []prototypes.AgentCostCeiling{{SpendUSD: 1.5}}}, nil
+}
+
+func (fakeConfigSource) Skills(context.Context, identity.Identity, string) ([]prototypes.AgentSkillBinding, error) {
+	return []prototypes.AgentSkillBinding{{}}, nil
+}
+
+// TestRegistryProjector_WithConfigSource_JoinsProjections proves the
+// optional ConfigSource join hydrates the config-derived fields on the
+// list/get rows, the detail tabs, and the governance rollup.
+func TestRegistryProjector_WithConfigSource_JoinsProjections(t *testing.T) {
+	reg := newRealRegistry(t)
+	proj, err := agentsprotocol.NewRegistryProjector(reg, agentsprotocol.WithConfigSource(fakeConfigSource{}))
+	if err != nil {
+		t.Fatalf("NewRegistryProjector: %v", err)
+	}
+	ctx := idCtx(t, "t1", "u1", "s1")
+	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+	rec, err := reg.Register(ctx, "a", registry.AgentConfig{}, registry.RegisterOptions{DisplayName: "A"})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	rows, err := proj.ListAgents(ctx, id)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListAgents = %+v err=%v", rows, err)
+	}
+	if rows[0].PlannerType != "react" || rows[0].Model != "test-model" {
+		t.Errorf("row config join = %+v, want react/test-model", rows[0])
+	}
+	if rows[0].ToolsCount != 2 || rows[0].MCPCount != 1 {
+		t.Errorf("row tool counts = tools:%d mcp:%d, want 2/1", rows[0].ToolsCount, rows[0].MCPCount)
+	}
+
+	resp, err := proj.GetAgent(ctx, id, rec.AgentID)
+	if err != nil || resp.Config.PlannerType != "react" {
+		t.Fatalf("GetAgent config = %+v err=%v", resp.Config, err)
+	}
+	tools, err := proj.AgentTools(ctx, id, rec.AgentID)
+	if err != nil || len(tools) != 2 {
+		t.Fatalf("AgentTools = %+v err=%v, want 2", tools, err)
+	}
+	mem, err := proj.AgentMemory(ctx, id, rec.AgentID)
+	if err != nil || mem.StrategyID != "window" {
+		t.Fatalf("AgentMemory = %+v err=%v", mem, err)
+	}
+	gov, err := proj.AgentGovernance(ctx, id, rec.AgentID)
+	if err != nil || len(gov.Ceilings) != 1 {
+		t.Fatalf("AgentGovernance = %+v err=%v", gov, err)
+	}
+	sk, err := proj.AgentSkills(ctx, id, rec.AgentID)
+	if err != nil || len(sk) != 1 {
+		t.Fatalf("AgentSkills = %+v err=%v", sk, err)
+	}
+	m, err := proj.Metrics(ctx, id)
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if m.TotalCostUSD != 1.5 {
+		t.Errorf("Metrics TotalCostUSD = %v, want 1.5 (governance rollup)", m.TotalCostUSD)
+	}
+}
+
+// TestRegistryProjector_DefaultAgent_SynthesizedWhenRegistryEmpty proves
+// the synthetic default row is emitted for a runtime whose Agent Registry
+// holds zero records for the caller's scope: exactly one row, IsDefault
+// true, the well-known id, and the caller's own verified triple as the
+// row's identity attribution.
+func TestRegistryProjector_DefaultAgent_SynthesizedWhenRegistryEmpty(t *testing.T) {
+	reg := newRealRegistry(t)
+	proj, err := agentsprotocol.NewRegistryProjector(reg,
+		agentsprotocol.WithDefaultAgent(agentsprotocol.DefaultAgentDescriptor{
+			ID:          wellKnownDefaultID,
+			DisplayName: "Harbor default agent",
+			BootedAt:    time.Now(),
+		}))
+	if err != nil {
+		t.Fatalf("NewRegistryProjector: %v", err)
+	}
+
+	ctx := idCtx(t, "t1", "u1", "s1")
+	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+	rows, err := proj.ListAgents(ctx, id)
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListAgents rows=%d, want exactly 1 synthetic default row", len(rows))
+	}
+	got := rows[0]
+	if !got.IsDefault {
+		t.Errorf("row IsDefault=false, want true")
+	}
+	if got.ID != wellKnownDefaultID {
+		t.Errorf("row ID=%q, want %q", got.ID, wellKnownDefaultID)
+	}
+	if got.Status != prototypes.AgentStatusActive {
+		t.Errorf("row Status=%q, want active", got.Status)
+	}
+	// Identity attribution is the caller's own verified triple on the
+	// non-widened read (D-311 / D-299): the default agent serves THAT call
+	// under THAT scope.
+	if got.Identity.Tenant != "t1" || got.Identity.User != "u1" || got.Identity.Session != "s1" {
+		t.Errorf("row Identity=%+v, want caller's own triple {t1,u1,s1}", got.Identity)
+	}
+}
+
+// TestRegistryProjector_DefaultAgent_GetResolves proves agents.get on the
+// well-known id resolves the synthetic projection (no ErrAgentNotFound)
+// when no colliding real registration exists.
+func TestRegistryProjector_DefaultAgent_GetResolves(t *testing.T) {
+	reg := newRealRegistry(t)
+	proj, _ := agentsprotocol.NewRegistryProjector(reg,
+		agentsprotocol.WithDefaultAgent(agentsprotocol.DefaultAgentDescriptor{
+			ID: wellKnownDefaultID, DisplayName: "Harbor default agent",
+		}))
+
+	ctx := idCtx(t, "t1", "u1", "s1")
+	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+	resp, err := proj.GetAgent(ctx, id, wellKnownDefaultID)
+	if err != nil {
+		t.Fatalf("GetAgent(default id) err=%v, want the synthetic projection", err)
+	}
+	if !resp.Agent.IsDefault || resp.Agent.ID != wellKnownDefaultID {
+		t.Fatalf("GetAgent(default id) = %+v, want IsDefault row with the well-known id", resp.Agent)
+	}
+	// A get for an unrelated absent id still fails loud.
+	if _, err := proj.GetAgent(ctx, id, "ghost"); !errors.Is(err, agentsprotocol.ErrAgentNotFound) {
+		t.Fatalf("GetAgent(ghost) err=%v, want ErrAgentNotFound", err)
+	}
+}
+
+// TestRegistryProjector_DefaultAgent_CollisionSuppresses proves the
+// collision rule: when a real AgentRecord is registered under the
+// well-known default id, the registered record wins and NO synthetic row
+// is emitted — one row per id, real data over the placeholder.
+func TestRegistryProjector_DefaultAgent_CollisionSuppresses(t *testing.T) {
+	reg := newRealRegistry(t)
+	ctx := idCtx(t, "t1", "u1", "s1")
+	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+	rec, err := reg.Register(ctx, "real", registry.AgentConfig{}, registry.RegisterOptions{DisplayName: "Real Agent"})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// Point the descriptor at the real record's minted id so it collides.
+	proj, _ := agentsprotocol.NewRegistryProjector(reg,
+		agentsprotocol.WithDefaultAgent(agentsprotocol.DefaultAgentDescriptor{
+			ID: rec.AgentID, DisplayName: "Harbor default agent",
+		}))
+
+	rows, err := proj.ListAgents(ctx, id)
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListAgents rows=%d, want exactly 1 (no duplicate id)", len(rows))
+	}
+	if rows[0].IsDefault {
+		t.Errorf("colliding row IsDefault=true, want the REAL record (IsDefault false) to win")
+	}
+	if rows[0].Name != "Real Agent" {
+		t.Errorf("colliding row Name=%q, want the real record's display name", rows[0].Name)
+	}
+	// GetAgent on the id returns the real record (registry.Get succeeds).
+	resp, err := proj.GetAgent(ctx, id, rec.AgentID)
+	if err != nil {
+		t.Fatalf("GetAgent(colliding id): %v", err)
+	}
+	if resp.Agent.IsDefault {
+		t.Errorf("GetAgent(colliding id) IsDefault=true, want the real record")
+	}
+	// Metrics counts one active agent (the real record), not two.
+	m, err := proj.Metrics(ctx, id)
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if m.ActiveAgents != 1 {
+		t.Errorf("ActiveAgents=%d under collision, want 1 (no double count)", m.ActiveAgents)
+	}
+}
+
+// TestRegistryProjector_DefaultAgent_AbsentWhenUnwired is the regression
+// guard: without WithDefaultAgent the projector is byte-identical to
+// today — an empty registry yields zero rows and a get on the (would-be)
+// well-known id still fails loud.
+func TestRegistryProjector_DefaultAgent_AbsentWhenUnwired(t *testing.T) {
+	reg := newRealRegistry(t)
+	proj, _ := agentsprotocol.NewRegistryProjector(reg)
+
+	ctx := idCtx(t, "t1", "u1", "s1")
+	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+	rows, err := proj.ListAgents(ctx, id)
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("unwired ListAgents rows=%d, want 0 (byte-identical to pre-default behavior)", len(rows))
+	}
+	if _, err := proj.GetAgent(ctx, id, wellKnownDefaultID); !errors.Is(err, agentsprotocol.ErrAgentNotFound) {
+		t.Fatalf("unwired GetAgent(default id) err=%v, want ErrAgentNotFound", err)
+	}
+	m, err := proj.Metrics(ctx, id)
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if m.ActiveAgents != 0 {
+		t.Fatalf("unwired Metrics ActiveAgents=%d, want 0", m.ActiveAgents)
+	}
+}
+
+// TestRegistryProjector_DefaultAgent_AppendedAlongsideRealRows proves the
+// synthetic row co-exists with real registered rows (no collision) — the
+// real rows plus exactly one IsDefault row, and Metrics counts them all.
+func TestRegistryProjector_DefaultAgent_AppendedAlongsideRealRows(t *testing.T) {
+	reg := newRealRegistry(t)
+	ctx := idCtx(t, "t1", "u1", "s1")
+	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+	for _, key := range []string{"a", "b"} {
+		if _, err := reg.Register(ctx, key, registry.AgentConfig{}, registry.RegisterOptions{}); err != nil {
+			t.Fatalf("Register %s: %v", key, err)
+		}
+	}
+	proj, _ := agentsprotocol.NewRegistryProjector(reg,
+		agentsprotocol.WithDefaultAgent(agentsprotocol.DefaultAgentDescriptor{ID: wellKnownDefaultID}))
+
+	rows, err := proj.ListAgents(ctx, id)
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	defaults := 0
+	for _, r := range rows {
+		if r.IsDefault {
+			defaults++
+		}
+	}
+	if len(rows) != 3 || defaults != 1 {
+		t.Fatalf("rows=%d defaults=%d, want 3 rows with exactly 1 IsDefault", len(rows), defaults)
+	}
+	m, err := proj.Metrics(ctx, id)
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if m.ActiveAgents != 3 {
+		t.Fatalf("ActiveAgents=%d, want 3 (2 real + 1 synthetic)", m.ActiveAgents)
+	}
+}

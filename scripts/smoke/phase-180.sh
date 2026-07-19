@@ -34,7 +34,12 @@ else
     fail "authenticated projection integration failed"
 fi
 
-if (cd web/console && npm test -- --run src/lib/sessions/tests/projection-corpus.spec.ts); then
+# Guard on installed node deps: the preflight job runs `make preflight` with
+# no `npm ci`, so vitest is absent there. SKIP per the tool-absent convention
+# (CLAUDE.md §4.2) — the frontend CI job runs this same vitest corpus for real.
+if [ ! -d 'web/console/node_modules/vitest' ]; then
+    skip "Console shared projection fixtures: vitest not installed (frontend CI job covers it)"
+elif (cd web/console && npm test -- --run src/lib/sessions/tests/projection-corpus.spec.ts); then
     ok "Console consumes the shared fixture corpus with equivalent output"
 else
     fail "Console shared projection fixtures failed"
