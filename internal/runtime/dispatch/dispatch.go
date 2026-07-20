@@ -47,6 +47,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
+	"github.com/hurtener/Harbor/internal/planner/trajectory"
 	"github.com/hurtener/Harbor/internal/runtime/parallel"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -105,6 +106,18 @@ type toolExecutor struct {
 	// background sub-agent that itself emits SpawnTask cannot recurse
 	// without bound. The cap bounds depth, not breadth.
 	maxSpawnDepth int
+
+	// steer is the process-wide steering inbox registry the planner-facing
+	// steer/pause/resume verbs route through. It resolves a descendant
+	// sub-run's own per-run steering inbox (keyed by the descendant's run
+	// quadruple, where the descendant task id doubles as its run id) so an
+	// agent-issued directive / pause / resume rides the SAME inbox the
+	// operator's steering targets — the unified pause/resume primitive, no
+	// second coordination path. Immutable after construction; the registry
+	// is itself concurrent-safe. Nil only in degraded / legacy wiring —
+	// SteerTask / PauseTask / ResumeTask then fail loud with
+	// ErrDecisionShapeUnsupported rather than panic.
+	steer *steering.Registry
 
 	// maxBatchSpawns caps the number of spawn branches ONE Batch decision
 	// may carry (planner.max_batch_spawns) — the BREADTH ceiling that
@@ -165,6 +178,17 @@ func WithMaxBatchSpawns(n int) Option {
 // slog.Default().
 func WithLogger(l *slog.Logger) Option {
 	return func(e *toolExecutor) { e.logger = l }
+}
+
+// WithSteeringRegistry binds the process-wide steering inbox registry the
+// planner-facing steer/pause/resume verbs route through. It is the SAME
+// registry the operator's steering control surface uses — the agent's
+// verbs and the operator's verbs converge on one per-sub-run inbox and
+// the one unified pause/resume primitive, never a second path. Nil (the
+// default) leaves SteerTask / PauseTask / ResumeTask failing loud with
+// steering.ErrDecisionShapeUnsupported.
+func WithSteeringRegistry(reg *steering.Registry) Option {
+	return func(e *toolExecutor) { e.steer = reg }
 }
 
 // NewToolExecutor binds the catalog + artifact store + task registry
@@ -241,6 +265,11 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 //     row per task.
 //   - CancelTask: cancel one task THIS run spawned (descendant-scoped),
 //     returning {task_id, cancelled}.
+//   - SteerTask / PauseTask / ResumeTask: steer / pause / resume one task
+//     THIS run spawned (descendant-scoped), routed through that
+//     descendant's own steering inbox — the SAME inbox + unified
+//     pause/resume primitive the operator's steering targets — returning
+//     {task_id, steered|paused|resumed}.
 //
 // Both spawn/await observations go through the same projectForLLM
 // discipline so a heavy result never trips ErrContextLeak. The task
@@ -260,6 +289,12 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 		return e.taskStatus(ctx, rc, d)
 	case planner.CancelTask:
 		return e.cancelTask(ctx, rc, d)
+	case planner.SteerTask:
+		return e.steerTask(ctx, rc, d)
+	case planner.PauseTask:
+		return e.pauseTask(ctx, rc, d)
+	case planner.ResumeTask:
+		return e.resumeTask(ctx, rc, d)
 	case planner.Batch:
 		return e.batch(ctx, rc, d)
 	default:
@@ -884,6 +919,229 @@ func (e *toolExecutor) cancelTask(ctx context.Context, rc planner.RunContext, d 
 		"cancelled": cancelled,
 	}
 	return raw, raw, nil
+}
+
+// steerTask dispatches a planner.SteerTask — the model steering one task
+// its own run spawned by enqueuing a free-text directive onto that
+// descendant's per-sub-run steering inbox, the SAME inbox the operator's
+// steering targets (no second steering channel — CLAUDE.md §13). It
+// descendant-scope-checks d.TaskID against the calling run's task
+// (isOwnDescendant) BEFORE touching the inbox; a target outside the run's
+// lineage — including a sibling run's task in the same session — fails loud
+// with ErrTaskNotOwnDescendant. The operator's control surface always
+// supersedes: it reaches any task through the same inbox with its own
+// scope. Steering a terminal descendant whose inbox has been retired
+// returns {steered: false}, not an error (idempotent-on-terminal, mirroring
+// _cancel_task). Identity is attached exactly like cancelTask (never a
+// global — CLAUDE.md §6).
+func (e *toolExecutor) steerTask(ctx context.Context, rc planner.RunContext, d planner.SteerTask) (any, any, error) {
+	inbox, descQuad, live, err := e.resolveDescendantInbox(ctx, rc, d.TaskID, "SteerTask")
+	if err != nil {
+		return nil, nil, err
+	}
+	if !live {
+		return controlOutcome(d.TaskID, "steered", false), controlOutcome(d.TaskID, "steered", false), nil
+	}
+	payload := map[string]any{
+		"directive":  d.Directive,
+		"source":     "agent",
+		"issuer_run": string(rc.Quadruple.RunID),
+	}
+	done, eqErr := e.enqueueDescendantControl(inbox, descQuad, rc, steering.ControlInjectContext, payload)
+	if eqErr != nil {
+		return nil, nil, fmt.Errorf("SteerTask(%q): %w", d.TaskID, eqErr)
+	}
+	raw := controlOutcome(d.TaskID, "steered", done)
+	return raw, raw, nil
+}
+
+// pauseTask dispatches a planner.PauseTask — the model pausing one task
+// its own run spawned by enqueuing a PAUSE control onto that descendant's
+// steering inbox, which the descendant's own RunLoop routes through the
+// Runtime's unified pause/resume primitive (RFC §3.3). This adds NO new
+// pause mechanism — it is a new planner-facing PRODUCER of the existing
+// primitive, exactly the operator's PAUSE entry point. Pausing a
+// descendant NEVER pauses the run issuing the verb: only the resolved
+// descendant's inbox receives the control. Descendant-scope enforcement
+// and the terminal/idempotent contract are identical to steerTask.
+//
+// The agent-supplied PAUSE payload is validated against the fail-loud
+// serialization contract (trajectory.ErrUnserializable — CLAUDE.md §5)
+// BEFORE enqueue, so a non-encodable payload leaf never rides the control
+// silently. This guards the AGENT payload only; the descendant's own run
+// state (its trajectory) is serialized fail-loud DOWNSTREAM, unchanged, by
+// the unified primitive itself when the descendant's RunLoop parks it
+// through pauseresume.Coordinator.Request — this dispatch edge does not
+// (and cannot) inspect the descendant's run state. Identity is attached
+// exactly like cancelTask (never a global — CLAUDE.md §6).
+func (e *toolExecutor) pauseTask(ctx context.Context, rc planner.RunContext, d planner.PauseTask) (any, any, error) {
+	inbox, descQuad, live, err := e.resolveDescendantInbox(ctx, rc, d.TaskID, "PauseTask")
+	if err != nil {
+		return nil, nil, err
+	}
+	if !live {
+		return controlOutcome(d.TaskID, "paused", false), controlOutcome(d.TaskID, "paused", false), nil
+	}
+	payload := map[string]any{
+		"source":     "agent",
+		"issuer_run": string(rc.Quadruple.RunID),
+	}
+	if d.Reason != "" {
+		payload["reason"] = d.Reason
+	}
+	// Honor the unified pause/resume primitive's fail-loud serialization
+	// contract at the dispatch edge: a pause payload carrying a
+	// non-JSON-encodable leaf raises trajectory.ErrUnserializable loud, the
+	// same contract Coordinator.Request enforces on a pause record's
+	// payload — never a silent drop (CLAUDE.md §5, §13).
+	if verr := validatePausePayload(payload); verr != nil {
+		return nil, nil, fmt.Errorf("PauseTask(%q): %w", d.TaskID, verr)
+	}
+	done, eqErr := e.enqueueDescendantControl(inbox, descQuad, rc, steering.ControlPause, payload)
+	if eqErr != nil {
+		return nil, nil, fmt.Errorf("PauseTask(%q): %w", d.TaskID, eqErr)
+	}
+	raw := controlOutcome(d.TaskID, "paused", done)
+	return raw, raw, nil
+}
+
+// resumeTask dispatches a planner.ResumeTask — the model resuming one
+// paused task its own run spawned by enqueuing a RESUME control onto that
+// descendant's steering inbox, which the descendant's RunLoop routes
+// through the SAME unified pause/resume primitive pauseTask parks it with
+// (RFC §3.3). A non-empty Directive rides the resume via the RESUME
+// control's payload, which the descendant's RunLoop forwards to
+// pauseresume.Coordinator.Resume's `payload` parameter (the existing
+// resume-payload seam merged into the pause record — no new mechanism).
+// Descendant-scope enforcement and the terminal/idempotent contract are
+// identical to steerTask. The agent-supplied RESUME payload is validated
+// against the fail-loud serialization contract BEFORE enqueue (the same
+// agent-payload guard pauseTask applies — see its godoc). Identity is
+// attached exactly like cancelTask (never a global — CLAUDE.md §6).
+func (e *toolExecutor) resumeTask(ctx context.Context, rc planner.RunContext, d planner.ResumeTask) (any, any, error) {
+	inbox, descQuad, live, err := e.resolveDescendantInbox(ctx, rc, d.TaskID, "ResumeTask")
+	if err != nil {
+		return nil, nil, err
+	}
+	if !live {
+		return controlOutcome(d.TaskID, "resumed", false), controlOutcome(d.TaskID, "resumed", false), nil
+	}
+	payload := map[string]any{
+		"source":     "agent",
+		"issuer_run": string(rc.Quadruple.RunID),
+	}
+	if d.Directive != "" {
+		payload["directive"] = d.Directive
+	}
+	if verr := validatePausePayload(payload); verr != nil {
+		return nil, nil, fmt.Errorf("ResumeTask(%q): %w", d.TaskID, verr)
+	}
+	done, eqErr := e.enqueueDescendantControl(inbox, descQuad, rc, steering.ControlResume, payload)
+	if eqErr != nil {
+		return nil, nil, fmt.Errorf("ResumeTask(%q): %w", d.TaskID, eqErr)
+	}
+	raw := controlOutcome(d.TaskID, "resumed", done)
+	return raw, raw, nil
+}
+
+// resolveDescendantInbox is the shared front half of steer/pause/resume:
+// it fails loud when the steering Registry or TaskRegistry is not wired,
+// attaches the run's identity (never a global — CLAUDE.md §6), enforces
+// the descendant-scope guard (isOwnDescendant — reused verbatim from the
+// task observation/cancel controls, ONE guard, ONE sentinel), and resolves
+// the descendant's live per-sub-run steering inbox.
+//
+// The descendant task id doubles as its run id at this layer (RFC §6.8),
+// so the inbox is keyed by the run's identity triple with RunID == the
+// task id. It returns live=false (with a nil error) when the descendant's
+// inbox has been retired — the run reached a terminal state — so callers
+// surface the idempotent-on-terminal {..: false} outcome instead of an
+// error, mirroring _cancel_task. An out-of-scope target, a missing
+// registry, or an identity-attach failure is returned as a loud error.
+func (e *toolExecutor) resolveDescendantInbox(ctx context.Context, rc planner.RunContext, targetID tasks.TaskID, verb string) (*steering.Inbox, identity.Quadruple, bool, error) {
+	if e.steer == nil {
+		return nil, identity.Quadruple{}, false, fmt.Errorf("%w: %s (no steering Registry wired)", steering.ErrDecisionShapeUnsupported, verb)
+	}
+	if e.tasks == nil {
+		return nil, identity.Quadruple{}, false, fmt.Errorf("%w: %s (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported, verb)
+	}
+	if targetID == "" {
+		return nil, identity.Quadruple{}, false, fmt.Errorf("%s: TaskID is empty", verb)
+	}
+	taskCtx, idErr := identity.With(ctx, rc.Quadruple.Identity)
+	if idErr != nil {
+		return nil, identity.Quadruple{}, false, fmt.Errorf("%s: attach identity: %w", verb, idErr)
+	}
+	callerID := tasks.TaskID(rc.Quadruple.RunID)
+	if !e.isOwnDescendant(taskCtx, targetID, callerID) {
+		return nil, identity.Quadruple{}, false, fmt.Errorf("%w: id=%q (caller run task %q)", ErrTaskNotOwnDescendant, targetID, callerID)
+	}
+	descQuad := identity.Quadruple{Identity: rc.Quadruple.Identity, RunID: string(targetID)}
+	inbox, err := e.steer.Lookup(descQuad)
+	if err != nil {
+		if errors.Is(err, steering.ErrInboxNotFound) {
+			return nil, descQuad, false, nil
+		}
+		return nil, identity.Quadruple{}, false, fmt.Errorf("%s: resolve inbox for %q: %w", verb, targetID, err)
+	}
+	return inbox, descQuad, true, nil
+}
+
+// enqueueDescendantControl enqueues one agent-issued ControlEvent onto a
+// descendant's steering inbox. The event's Identity is the descendant's
+// run quadruple (Enqueue rejects a mismatch — an event for run A must
+// never land on run B's inbox). The agent acts with the run owner's
+// authority over its OWN descendants — never admin, never cross-tenant —
+// so it presents ScopeOwnerUser under the run's own tenant; the descendant
+// is in the same session, so the steering scope check passes while the
+// operator's higher scope still supersedes. A retire that races the
+// enqueue (ErrInboxNotFound) collapses to the idempotent-on-terminal
+// done=false outcome rather than a loud error.
+func (e *toolExecutor) enqueueDescendantControl(inbox *steering.Inbox, descQuad identity.Quadruple, rc planner.RunContext, ctype steering.ControlType, payload map[string]any) (bool, error) {
+	err := inbox.Enqueue(steering.ControlEvent{
+		Type:         ctype,
+		Identity:     descQuad,
+		CallerScope:  steering.ScopeOwnerUser,
+		CallerTenant: rc.Quadruple.TenantID,
+		Payload:      payload,
+	})
+	if err != nil {
+		if errors.Is(err, steering.ErrInboxNotFound) {
+			// The descendant's inbox was retired between Lookup and Enqueue
+			// (its run ended). Idempotent-on-terminal — not an error.
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// controlOutcome builds the compact observation the planner reads for a
+// steer/pause/resume dispatch: {task_id, <field>} where <field> is
+// steered / paused / resumed. done=false is the idempotent-on-terminal
+// signal (the descendant's run had already ended), never an error.
+func controlOutcome(taskID tasks.TaskID, field string, done bool) map[string]any {
+	return map[string]any{
+		"task_id": string(taskID),
+		field:     done,
+	}
+}
+
+// validatePausePayload enforces the fail-loud serialization contract on
+// the AGENT-supplied pause / resume control payload: a non-JSON-encodable
+// leaf surfaces trajectory.ErrUnserializable naming the offending field
+// path, mirroring the contract pauseresume.Coordinator.Request applies to
+// a pause record's payload (CLAUDE.md §5, §11) — never a silent
+// dropped-context pause.
+//
+// Scope note: this guards only the payload THIS dispatch edge constructs
+// from the agent's decision (source / issuer_run / reason|directive). The
+// descendant's own run-state serialization — the trajectory checkpointed
+// when the descendant actually parks — is enforced fail-loud DOWNSTREAM by
+// the unified primitive (Coordinator.Request) inside the descendant's
+// RunLoop, unchanged; the parent verb neither sees nor re-enforces it.
+func validatePausePayload(payload map[string]any) error {
+	return trajectory.ValidateEncodable(payload, "PauseRecord.payload")
 }
 
 // collectDescendants returns the ids of every task in the caller's own

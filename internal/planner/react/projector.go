@@ -24,13 +24,14 @@ import (
 //
 // Narrowed successor to the silent-tail-drop guard: the
 // terminal/blocking reserved-control names — `_finish`, `_await_task`,
-// and the two task-management controls `_task_status` / `_cancel_task`
-// — stay standalone. Any of them co-occurring with ANY other tool-call
-// in one response is rejected loudly with [planner.ErrInvalidDecision]:
-// a terminal decision, a single-target block, and the task
-// observation/cancel controls have no coherent multi-call semantics
-// (and a batched await would depend on a sibling spawn's
-// not-yet-existing task_id). The guard runs BEFORE the head switch so it
+// and the task-management controls `_task_status` / `_cancel_task` /
+// `_steer_task` / `_pause_task` / `_resume_task` — stay standalone. Any
+// of them co-occurring with ANY other tool-call in one response is
+// rejected loudly with [planner.ErrInvalidDecision]: a terminal
+// decision, a single-target block, and the task
+// observation/cancel/steer/pause/resume controls have no coherent
+// multi-call semantics (and a batched await would depend on a sibling
+// spawn's not-yet-existing task_id). The guard runs BEFORE the head switch so it
 // fires whether the reserved name is the head or in the tail, and
 // independent of `parallelEnabled`.
 //
@@ -77,7 +78,8 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 	}
 
 	// Standalone guard: the terminal/blocking reserved-control names
-	// (`_finish` / `_await_task` / `_task_status` / `_cancel_task`) are
+	// (`_finish` / `_await_task` / `_task_status` / `_cancel_task` /
+	// `_steer_task` / `_pause_task` / `_resume_task`) are
 	// standalone. When any co-occurs with one or more other tool-calls,
 	// fail loudly rather than silently honour the head and drop the rest
 	// (the §13-forbidden silent-degradation pattern this fix closes).
@@ -121,6 +123,12 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		return translateNativeTaskStatus(first)
 	case CancelTaskToolName:
 		return translateNativeCancelTask(first)
+	case SteerTaskToolName:
+		return translateNativeSteerTask(first)
+	case PauseTaskToolName:
+		return translateNativePauseTask(first)
+	case ResumeTaskToolName:
+		return translateNativeResumeTask(first)
 	default:
 	}
 
@@ -169,19 +177,21 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 
 // isStandaloneControlName reports whether name is a reserved
 // planner-control meta-tool that must be sent alone: the terminal
-// `_finish`, the single-target block `_await_task`, and the two
-// task-management controls `_task_status` / `_cancel_task`. These names
-// reject co-occurrence with any other tool-call in one response — a
-// terminal decision, a single-target block, and the task
-// observation/cancel controls have no coherent multi-call semantics
-// (widening either task-management control to batchable later is
-// additive; retracting a shipped batchable surface is not, so the
-// conservative non-batchable grammar is the first-wave choice).
+// `_finish`, the single-target block `_await_task`, and the five
+// task-management controls `_task_status` / `_cancel_task` /
+// `_steer_task` / `_pause_task` / `_resume_task`. These names reject
+// co-occurrence with any other tool-call in one response — a terminal
+// decision, a single-target block, and the task
+// observation/cancel/steer/pause/resume controls have no coherent
+// multi-call semantics (widening a task-management control to batchable
+// later is additive; retracting a shipped batchable surface is not, so
+// the conservative non-batchable grammar is the first-wave choice).
 // `_spawn_task` is deliberately EXCLUDED: it is batchable (see
 // projectBatch).
 func isStandaloneControlName(name string) bool {
 	switch name {
-	case FinishToolName, AwaitTaskToolName, TaskStatusToolName, CancelTaskToolName:
+	case FinishToolName, AwaitTaskToolName, TaskStatusToolName, CancelTaskToolName,
+		SteerTaskToolName, PauseTaskToolName, ResumeTaskToolName:
 		return true
 	default:
 		return false
@@ -429,6 +439,96 @@ func translateNativeCancelTask(tc llm.ToolCallStructured) (planner.CancelTask, e
 		)
 	}
 	return planner.CancelTask{TaskID: tasks.TaskID(args.TaskID), Reason: args.Reason}, nil
+}
+
+// translateNativeSteerTask parses a `_steer_task` native call into a
+// [planner.SteerTask]. An empty `task_id` OR an empty `directive` fails
+// loud with [planner.ErrInvalidDecision] (mirroring
+// translateNativeCancelTask's empty-id guard); malformed JSON fails loud
+// the same way.
+func translateNativeSteerTask(tc llm.ToolCallStructured) (planner.SteerTask, error) {
+	type steerArgs struct {
+		TaskID    string `json:"task_id"`
+		Directive string `json:"directive"`
+	}
+	var args steerArgs
+	if len(tc.Args) > 0 {
+		if err := json.Unmarshal(tc.Args, &args); err != nil {
+			return planner.SteerTask{}, fmt.Errorf(
+				"%w: react._steer_task args malformed JSON: %w (raw=%q)",
+				planner.ErrInvalidDecision, err, string(tc.Args),
+			)
+		}
+	}
+	if args.TaskID == "" {
+		return planner.SteerTask{}, fmt.Errorf(
+			"%w: react._steer_task requires non-empty task_id (raw=%q)",
+			planner.ErrInvalidDecision, string(tc.Args),
+		)
+	}
+	if args.Directive == "" {
+		return planner.SteerTask{}, fmt.Errorf(
+			"%w: react._steer_task requires non-empty directive (raw=%q)",
+			planner.ErrInvalidDecision, string(tc.Args),
+		)
+	}
+	return planner.SteerTask{TaskID: tasks.TaskID(args.TaskID), Directive: args.Directive}, nil
+}
+
+// translateNativePauseTask parses a `_pause_task` native call into a
+// [planner.PauseTask]. An empty `task_id` fails loud with
+// [planner.ErrInvalidDecision] (mirroring translateNativeCancelTask's
+// empty-id guard verbatim); `reason` is optional. Malformed JSON fails
+// loud the same way.
+func translateNativePauseTask(tc llm.ToolCallStructured) (planner.PauseTask, error) {
+	type pauseArgs struct {
+		TaskID string `json:"task_id"`
+		Reason string `json:"reason"`
+	}
+	var args pauseArgs
+	if len(tc.Args) > 0 {
+		if err := json.Unmarshal(tc.Args, &args); err != nil {
+			return planner.PauseTask{}, fmt.Errorf(
+				"%w: react._pause_task args malformed JSON: %w (raw=%q)",
+				planner.ErrInvalidDecision, err, string(tc.Args),
+			)
+		}
+	}
+	if args.TaskID == "" {
+		return planner.PauseTask{}, fmt.Errorf(
+			"%w: react._pause_task requires non-empty task_id (raw=%q)",
+			planner.ErrInvalidDecision, string(tc.Args),
+		)
+	}
+	return planner.PauseTask{TaskID: tasks.TaskID(args.TaskID), Reason: args.Reason}, nil
+}
+
+// translateNativeResumeTask parses a `_resume_task` native call into a
+// [planner.ResumeTask]. An empty `task_id` fails loud with
+// [planner.ErrInvalidDecision] (mirroring translateNativeCancelTask's
+// empty-id guard verbatim); `directive` is optional. Malformed JSON
+// fails loud the same way.
+func translateNativeResumeTask(tc llm.ToolCallStructured) (planner.ResumeTask, error) {
+	type resumeArgs struct {
+		TaskID    string `json:"task_id"`
+		Directive string `json:"directive"`
+	}
+	var args resumeArgs
+	if len(tc.Args) > 0 {
+		if err := json.Unmarshal(tc.Args, &args); err != nil {
+			return planner.ResumeTask{}, fmt.Errorf(
+				"%w: react._resume_task args malformed JSON: %w (raw=%q)",
+				planner.ErrInvalidDecision, err, string(tc.Args),
+			)
+		}
+	}
+	if args.TaskID == "" {
+		return planner.ResumeTask{}, fmt.Errorf(
+			"%w: react._resume_task requires non-empty task_id (raw=%q)",
+			planner.ErrInvalidDecision, string(tc.Args),
+		)
+	}
+	return planner.ResumeTask{TaskID: tasks.TaskID(args.TaskID), Directive: args.Directive}, nil
 }
 
 func translateNativeAwait(tc llm.ToolCallStructured) (planner.AwaitTask, error) {

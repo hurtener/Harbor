@@ -18,6 +18,9 @@ import (
 //   - AwaitTask: block the planner until a spawned task resolves.
 //   - TaskStatusQuery: observe the state of tasks this run spawned.
 //   - CancelTask: cancel one task this run spawned.
+//   - SteerTask: steer one background task this run spawned.
+//   - PauseTask: pause one background task this run spawned.
+//   - ResumeTask: resume one paused background task this run spawned.
 //   - RequestPause: pause the run for approval / input / external event.
 //   - Finish: terminal decision with a reason + payload.
 //
@@ -310,6 +313,96 @@ type CancelTask struct {
 }
 
 func (CancelTask) isDecision() {}
+
+// SteerTask steers one background task THIS run spawned — the model
+// applying mid-flight guidance to work it started, without waiting on
+// or cancelling it. A non-terminal, non-blocking decision the Runtime
+// executor dispatches like CallTool; the planner observes the
+// {task_id, steered} outcome on its next turn.
+//
+// The Directive is enqueued onto the target sub-run's own steering
+// inbox — the SAME inbox an operator's steering targets — so the
+// steered descendant sees the guidance at its next planner-step
+// boundary. Descendant-scope + human-supremacy invariant: TaskID must
+// reach the calling run's own task by walking the parent-task chain
+// upward, so a run steers ONLY the tasks it spawned (directly or
+// transitively), never a sibling run's tasks or its own task; the
+// operator's control surface always supersedes and reaches any task.
+// Steering a terminal descendant returns {steered: false}, not an
+// error (idempotent-on-terminal, mirroring CancelTask).
+type SteerTask struct {
+	// TaskID is the descendant to steer.
+	TaskID tasks.TaskID
+	// Directive is the free-text steering guidance enqueued onto the
+	// descendant's per-sub-run steering inbox.
+	Directive string
+}
+
+func (SteerTask) isDecision() {}
+
+// PauseTask pauses one background task THIS run spawned — the model
+// parking work it started so it can be resumed later. A non-terminal,
+// non-blocking decision dispatched like CallTool; the planner observes
+// the {task_id, paused} outcome on its next turn.
+//
+// Pausing a descendant drives that descendant through the Runtime's
+// unified pause/resume primitive (the ONE pause path shared with HITL,
+// tool-side OAuth, and operator/Console PAUSE) — it introduces no new
+// pause mechanism. Pausing a descendant NEVER pauses the run issuing
+// the verb: only the resolved descendant parks. Descendant-scope +
+// human-supremacy invariant: identical to SteerTask — a run pauses only
+// its own descendants; the operator reaches any task.
+//
+// The observed `paused` bool means the PAUSE control was ENQUEUED onto a
+// live descendant — it is false ONLY when the descendant has already
+// finished (its run ended, its inbox retired). It is NOT a
+// pause-state-transition signal: the dispatch edge does not inspect the
+// descendant's pause state, so a redundant pause of an already-paused
+// descendant still reports paused:true and coalesces downstream through
+// the unified primitive (the descendant's own RunLoop parks once); there
+// is no parent-observable "no transition" outcome.
+type PauseTask struct {
+	// TaskID is the descendant to pause.
+	TaskID tasks.TaskID
+	// Reason is the human-readable pause reason carried onto the
+	// descendant's pause record.
+	Reason string
+}
+
+func (PauseTask) isDecision() {}
+
+// ResumeTask resumes one paused background task THIS run spawned,
+// optionally injecting a steering directive on resume. A non-terminal,
+// non-blocking decision dispatched like CallTool; the planner observes
+// the {task_id, resumed} outcome on its next turn.
+//
+// Resuming a descendant releases it through the SAME unified
+// pause/resume primitive PauseTask parks it with — no new mechanism. A
+// non-empty Directive rides the resume through the primitive's existing
+// resume-payload seam so the released descendant sees the guidance as it
+// continues. Descendant-scope + human-supremacy invariant: identical to
+// SteerTask / PauseTask.
+//
+// The observed `resumed` bool means the RESUME control was ENQUEUED onto
+// a live descendant — it is false ONLY when the descendant has already
+// finished (its run ended, its inbox retired). It is NOT a
+// resume-state-transition signal: the dispatch edge does not inspect the
+// descendant's pause state, so a redundant resume of a descendant that is
+// NOT paused still reports resumed:true. Such a spurious resume is not
+// harmless downstream — the descendant's own RunLoop applies the RESUME
+// exactly as it would an operator's mistaken resume, surfacing a
+// no-outstanding-pause condition that ends that descendant's run loud
+// (inherited pause/resume-primitive semantics, never a parent-observable
+// outcome). Resume only a descendant you actually paused.
+type ResumeTask struct {
+	// TaskID is the descendant to resume.
+	TaskID tasks.TaskID
+	// Directive is optional steering guidance injected on resume via the
+	// unified pause/resume primitive's resume-payload seam.
+	Directive string
+}
+
+func (ResumeTask) isDecision() {}
 
 // RequestPause asks the Runtime to pause the run for an external
 // signal. The unified pause/resume primitive (later phase) drives the

@@ -281,13 +281,16 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 // reservedPlannerControlDeclarations returns the synthetic
 // `llm.ToolDeclaration` entries for the React planner's reserved
 // control names (`_spawn_task` / `_await_task` / `_task_status` /
-// `_cancel_task`). The schemas mirror the projector's
-// `translateNativeSpawn` / `translateNativeAwait` /
-// `translateNativeTaskStatus` / `translateNativeCancelTask` args
-// envelopes verbatim. The task observation/cancel controls are
-// descendant-scoped at dispatch (a run reaches only its own spawned
-// tasks) — the declaration descriptions state that honestly so the
-// model never expects to reach a sibling run's tasks.
+// `_cancel_task` / `_steer_task` / `_pause_task` / `_resume_task`). The
+// schemas mirror the projector's `translateNativeSpawn` /
+// `translateNativeAwait` / `translateNativeTaskStatus` /
+// `translateNativeCancelTask` / `translateNativeSteerTask` /
+// `translateNativePauseTask` / `translateNativeResumeTask` args
+// envelopes verbatim. The task observation/cancel/steer/pause/resume
+// controls are descendant-scoped at dispatch (a run reaches only its own
+// spawned tasks) — the declaration descriptions state that honestly so
+// the model never expects to reach a sibling run's tasks, and that the
+// operator always supersedes.
 //
 // Background — the AC-20a follow-up. Step 9 of An earlier phase shipped the
 // React projector's reserved-name interception (`_finish` /
@@ -325,6 +328,21 @@ func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
 			Name:        CancelTaskToolName,
 			Description: "Planner control — cancel one background task THIS run spawned (e.g. abandon the losing branches of a fan-out once the first answered). Send it ALONE (never alongside any other tool call in the same response). Pass the task_id (required) and an optional reason. You can only cancel tasks your OWN run spawned, directly or transitively — never another run's tasks. Cancelling a task you spawned always works, even one you marked propagate_on_cancel:\"isolate\" — isolate only detaches a task from YOUR cancellation of an ANCESTOR, never from a direct cancel of that task itself.",
 			Schema:      jsonSchemaRawCancelTask,
+		},
+		{
+			Name:        SteerTaskToolName,
+			Description: "Planner control — steer one background task THIS run spawned by sending it a free-text directive it will see at its next step, without waiting on or cancelling it. Send it ALONE (never alongside any other tool call in the same response). Pass the task_id (required) and a directive (required). You can only steer tasks your OWN run spawned, directly or transitively — never another run's tasks, even in the same session. The operator can always steer any task and overrides you. Returns {task_id, steered}; steering a task that has already finished returns steered:false (not an error).",
+			Schema:      jsonSchemaRawSteerTask,
+		},
+		{
+			Name:        PauseTaskToolName,
+			Description: "Planner control — pause one background task THIS run spawned so you can resume it later; it parks at its next step boundary through the runtime's pause/resume primitive. Send it ALONE (never alongside any other tool call in the same response). Pass the task_id (required) and an optional reason. Pausing a descendant NEVER pauses your own turn — only the named task parks. You can only pause tasks your OWN run spawned, directly or transitively — never another run's tasks. The operator can always pause any task and overrides you. A paused descendant only continues via _resume_task or an operator resume. Returns {task_id, paused}: paused is true when the pause was delivered to a still-running task, and false only when the task has already finished. A redundant pause of an already-paused task is harmless (the runtime parks it once).",
+			Schema:      jsonSchemaRawPauseTask,
+		},
+		{
+			Name:        ResumeTaskToolName,
+			Description: "Planner control — resume one background task THIS run previously paused, through the same pause/resume primitive _pause_task parked it with. Send it ALONE (never alongside any other tool call in the same response). Pass the task_id (required) and an optional directive to inject as it continues. You can only resume tasks your OWN run spawned, directly or transitively — never another run's tasks. The operator can always resume any task and overrides you. Returns {task_id, resumed}: resumed is true when the resume was delivered to a still-running task, and false only when the task has already finished. Only ever resume a task you actually paused: resuming one that is not paused makes the runtime treat it as a spurious resume and STOPS that task (the same effect an operator's mistaken resume has) — resumed:true means the control was delivered, not that a valid pause was released.",
+			Schema:      jsonSchemaRawResumeTask,
 		},
 	}
 }
@@ -411,6 +429,51 @@ var (
     "reason": {
       "type": "string",
       "description": "Optional human-readable cancellation reason, recorded on the task.cancelled event."
+    }
+  },
+  "required": ["task_id"]
+}`)
+	jsonSchemaRawSteerTask = []byte(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "The id of a task this run spawned (directly or transitively) to steer."
+    },
+    "directive": {
+      "type": "string",
+      "description": "The free-text steering guidance enqueued onto the task's steering inbox; it sees this at its next step."
+    }
+  },
+  "required": ["task_id", "directive"]
+}`)
+	jsonSchemaRawPauseTask = []byte(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "The id of a task this run spawned (directly or transitively) to pause. Pausing it never pauses your own turn."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Optional human-readable pause reason, carried onto the task's pause record."
+    }
+  },
+  "required": ["task_id"]
+}`)
+	jsonSchemaRawResumeTask = []byte(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "The id of a paused task this run spawned (directly or transitively) to resume."
+    },
+    "directive": {
+      "type": "string",
+      "description": "Optional steering guidance injected as the task continues on resume."
     }
   },
   "required": ["task_id"]

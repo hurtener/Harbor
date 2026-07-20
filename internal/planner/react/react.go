@@ -163,6 +163,29 @@ const TaskStatusToolName = "_task_status"
 // reaches this run's task, never a sibling run's task.
 const CancelTaskToolName = "_cancel_task"
 
+// SteerTaskToolName is the reserved tool name the LLM emits to steer a
+// background task its own run spawned — enqueuing a free-text directive
+// onto the descendant sub-run's steering inbox. The projector translates
+// the native ToolCall directly to a typed [planner.SteerTask] Decision.
+// Descendant-scoped: a run steers only a task whose parent chain reaches
+// this run's task, never a sibling run's task; the operator always
+// supersedes.
+const SteerTaskToolName = "_steer_task"
+
+// PauseTaskToolName is the reserved tool name the LLM emits to pause a
+// background task its own run spawned, through the Runtime's unified
+// pause/resume primitive. The projector translates the native ToolCall
+// directly to a typed [planner.PauseTask] Decision. Descendant-scoped and
+// human-superseded, exactly like the other task-management controls.
+const PauseTaskToolName = "_pause_task"
+
+// ResumeTaskToolName is the reserved tool name the LLM emits to resume a
+// paused background task its own run spawned, through the same unified
+// pause/resume primitive PauseTaskToolName parks it with. The projector
+// translates the native ToolCall directly to a typed
+// [planner.ResumeTask] Decision. Descendant-scoped and human-superseded.
+const ResumeTaskToolName = "_resume_task"
+
 // DefaultMaxSteps is the planner-side circuit-breaker default for the
 // observed trajectory step count. Set small enough to surface bugs
 // quickly; large enough to leave 3-step scenarios headroom. The
@@ -805,6 +828,12 @@ func decisionKindAndTool(dec planner.Decision) (kind, tool string) {
 		return "TaskStatusQuery", ""
 	case planner.CancelTask:
 		return "CancelTask", ""
+	case planner.SteerTask:
+		return "SteerTask", ""
+	case planner.PauseTask:
+		return "PauseTask", ""
+	case planner.ResumeTask:
+		return "ResumeTask", ""
 	case planner.RequestPause:
 		return "RequestPause", ""
 	default:

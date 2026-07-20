@@ -64,24 +64,25 @@ fi
 
 # AC-3/4/5: translation + standalone-co-occurrence rejection.
 run_go_test_if_present "projector translates + rejects non-standalone steer/pause/resume" \
-    'TestProjector.*(Steer|Pause|Resume)Task|TestProjector.*Standalone' \
+    'TestProjectResponse_SteerTask|TestProjectResponse_PauseTask|TestProjectResponse_ResumeTask|TestProjectResponse_SteerPauseResume|TestProjectResponse_PauseResume' \
     './internal/planner/react/'
 
-# AC-7/9/10/13: descendant-scope rejection, loud pause-serialization fail,
-# concurrent-reuse with no cross-run cancellation cross-talk.
-run_go_test_if_present "dispatch descendant-scope + unserializable-pause + concurrent-reuse" \
-    'TestExecutor_(Steer|Pause|Resume)Task.*|TestExecutor.*NotOwnDescendant|TestExecutor.*Unserializable|TestExecutor.*ConcurrentReuse' \
+# AC-8/9: steer enqueues onto the existing per-sub-run steering inbox as an
+# INJECT_CONTEXT directive; pause/resume enqueue PAUSE/RESUME controls.
+run_go_test_if_present "steer/pause/resume enqueue onto the existing steering inbox" \
+    'TestExecutor_SteerTask_OwnDescendant|TestExecutor_PauseResume_OwnDescendant|TestExecutor_PauseTask_DoesNotPauseParentRun' \
     './internal/runtime/dispatch/'
 
-# AC-8/9: steer enqueues onto the existing per-sub-run steering inbox.
-run_go_test_if_present "steering inbox accepts an agent-issued directive" \
-    'TestInbox.*Steer|TestInbox.*Directive' \
-    './internal/runtime/steering/'
+# AC-7/10/13: descendant-scope rejection, loud pause-serialization fail,
+# concurrent-reuse with no cross-run cancellation cross-talk.
+run_go_test_if_present "dispatch descendant-scope + unserializable-pause + concurrent-reuse" \
+    'TestExecutor_SteerTask_Self_NotDescendant|TestExecutor_PauseResume_AgentPayloadSerializationGuard|TestExecutor_ResumeTask_NotPausedDescendant_ParentSuccessDecoupled|TestExecutor_SteerPauseResume_ConcurrentReuse' \
+    './internal/runtime/dispatch/'
 
 # AC-12: human-supremacy + cross-run isolation (operator reaches any task; agent
 # only its own descendants).
 run_go_test_if_present "human-supremacy + cross-run steer/pause/resume isolation" \
-    'TestExecutor.*HumanSupremacy|TestExecutor.*CrossRun.*(Steer|Pause|Resume)' \
+    'TestExecutor_SteerPauseResume_HumanSupremacy_CrossRunIsolation' \
     './internal/runtime/dispatch/'
 
 # --- Live-server surface (graceful skip) -----------------------------------

@@ -980,12 +980,26 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	stack.OAuthProviders = providers
 	stack.MCPRegistry = mcpRegistry
 
+	// The steering inbox Registry is the ONE process-wide registry shared
+	// between the dispatch executor (the planner-facing steer/pause/resume
+	// verbs enqueue onto a descendant's inbox through it) and the steering
+	// band's RunLoop + control surface (which drain and operator-target the
+	// same inboxes). It is created here — before the executor — when the
+	// steering band has not run yet; assembleSteeringBand reuses the same
+	// instance rather than minting a second one. Under SkipSteering there is
+	// no RunLoop to drain inboxes, so the Registry stays nil and the
+	// steer/pause/resume verbs fail loud with ErrDecisionShapeUnsupported.
+	if !opts.SkipSteering && stack.Steering == nil {
+		stack.Steering = steering.NewRegistry()
+	}
+
 	// the promoted dispatch executor —
 	// the ONE tool-dispatch concrete every caller wires.
 	stack.Executor = dispatch.NewToolExecutor(toolCat, stack.Artifacts, stack.Tasks,
 		dispatch.WithHeavyThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
 		dispatch.WithMaxSpawnDepth(cfg.Planner.SpawnDepthCap()),
 		dispatch.WithMaxBatchSpawns(cfg.Planner.BatchSpawnCap()),
+		dispatch.WithSteeringRegistry(stack.Steering),
 		dispatch.WithLogger(logger))
 	return nil
 }
@@ -996,7 +1010,13 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 // the catalog band are available. The logger is the telemetry-backed
 // *slog.Logger Assemble threads post-bootstrap.
 func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options, stack *Stack, logger *slog.Logger) error {
-	stack.Steering = steering.NewRegistry()
+	// Reuse the ONE steering Registry the catalog band already created (so
+	// the dispatch executor's steer/pause/resume verbs and this band's
+	// RunLoop + control surface share one inbox map); only mint a fresh one
+	// when the catalog band did not run.
+	if stack.Steering == nil {
+		stack.Steering = steering.NewRegistry()
+	}
 
 	switch {
 	case opts.PlannerOverride != nil:
