@@ -8866,7 +8866,14 @@ variant is defined WITH its attribution: every connect/refresh pull emits a
 runtime-scoped SafePayload `llm.provider_credential_fetched` audit event
 keyed by the **runtime identity** (not a run/session) — superseding D-285
 note (2)'s tokenexchange-only-because-no-identity reasoning for this one
-defined, audited case. Priority MEDIUM. RFC §6.5
+defined, audited case. **Open item for the implementing phase (flagged, not
+hand-waved):** the *emission ctx* for a runtime-scoped audit event outside a
+`(tenant, user, session)` request — the exact seam D-285 note (2) named as
+hard — must be specified by the phase, keyed to the per-runtime service
+principal that already authenticates the pull (D-271's runtime service
+token), NOT a synthesized session. This is a specification gap, not a
+contradiction; the runtime principal is infrastructure identity and does not
+widen the isolation tuple (§4). Priority MEDIUM. RFC §6.5
 amended (Gate 0). Framework-framed only (§13).
 
 ## D-334 — An inference-plane provider install / rotate write binds a runtime to a NAMED broker-pull provider in the D-303 zero-URL shape
@@ -8897,8 +8904,10 @@ the wire descriptor — pins the pull endpoint / audience / scope ceiling, so
 **no admin-writable field determines where the credential is sourced,
 preserving the D-300 credential-plane invariant**. Authority is derived
 server-side from the verified session (D-219) and gated on the
-`auth.ScopeAdmin` claim ONLY (D-066 — a control write is a strictly more
-elevated tier than any read; D-079). Installed providers follow D-303's
+`auth.ScopeAdmin` claim ONLY — explicitly NOT the `admin` OR `console:fleet`
+two-scope set that can reach a read (D-066 — a control write is a strictly
+more elevated tier than any read; D-079), so a leaked read-only fleet token
+cannot rebind a runtime's provider. Installed providers follow D-303's
 provider-SET model (bare-name resolution, owner-tagged reconcile, uninstall
 closes the binding and fails bound calls loud). This closes the honest gap
 that keeps the LLM plane outside the central mint / rotate / revoke custody
