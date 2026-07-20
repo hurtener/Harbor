@@ -9158,6 +9158,12 @@ amended (Gate 0). Framework-framed only (§13).
 
 **Date:** 2026-07-20
 
+**Status:** Shipped (Phase 197, v1.17). The `FailoverPolicy` seam + the
+`chain` driver + the `governance.failover` hop event + the re-run-PreCall
+budget gate landed; see D-337 for the two implementation-shape refinements
+(the event rides the events registry, not a wire type; the chain is
+boot/install-declared, not a new Protocol write).
+
 **Context.** A consumer that centrally custodies provider credentials
 (D-333/D-334) wants a runtime's inference client to fall back from a primary
 provider key to one or more following keys on a retryable error — the
@@ -9251,3 +9257,83 @@ dedicated runtime-scoped binding store (inmem/SQLite/Postgres + conformance)
 plus a run-start reconcile — tracked as the D-336 follow-up. Until then the
 Protocol-installed rebind is live-for-process by design, documented here so it
 is not a silent gap. Priority MEDIUM. Framework-framed only (§13).
+
+---
+
+## D-337 — The `FailoverPolicy` seam shape: a `governance.failover` canonical EVENT (not a Protocol wire type), a boot/install-declared chain (no new Protocol write), and a `KeyActivator` seam over the broker-pulled LiveKey
+
+**Date:** 2026-07-20
+
+**Status:** Shipped (Phase 197, v1.17). Refines D-335's implementation shape.
+
+**Context.** D-335 settled the POSTURE (Harbor orchestrates failover at the
+Governance layer; bifrost's `Fallbacks` array is unused). Realizing it raised
+three shape questions the decision left open, two of which the Phase 197 plan
+flagged for confirmation.
+
+**Decision.**
+
+1. **`governance.failover` is a canonical EVENT, registered in the
+   `internal/events` registry (via `internal/governance/events.go`) and
+   rendered by the protocol docs generator (`cmd/harbor-gen-protocol-docs`) —
+   NOT a request/response wire type in `internal/protocol/types`.** The Phase
+   197 plan speculatively listed a `GovernanceFailoverEvent` wire type in
+   `internal/protocol/types` + a `methods.go` registration + a singlesource
+   `CanonicalWireTypes` entry + a ts-types index entry. That is the wrong
+   mechanism: Harbor events are not request/response wire types — they ride the
+   existing `events.subscribe` / `StateEvent` surface and their payloads live
+   beside their owning subsystem (exactly like every prior `governance.*` event:
+   `budget_exceeded`, `posture_set`, `key_rotated`). The `GovernanceFailoverPayload`
+   therefore lives in `internal/governance`, registers via `RegisterEventType`,
+   and joins the docs generator's `eventPayloadIndex`. Consequences: NO new
+   `internal/protocol/types` wire STRUCT, NO `methods.go` method, NO
+   `singlesource.CanonicalWireTypes` entry, NO ts-types `typeInstanceIndex`
+   entry. The one net effect on generated artifacts is the new event-type
+   STRING joining the canonical event-type enumeration — so
+   `make protocol-docs-gen` (events.md), `make protocol-ts-types-gen` (the
+   `HarborEventType` union in the external client), and `make protocol-ts-gen`
+   (the same enum in `wire-manifest.gen.json`) each add exactly the
+   `governance.failover` line and are committed. `ProtocolVersion` stays
+   `0.1.0`. (§4.3 plan deviation — a speculative "new wire type" interface
+   corrected to the real "new canonical event" mechanism once code landed.)
+
+2. **The ordered failover chain is boot/install-declared (an ordered set of
+   installed, zero-URL provider-binding names), NOT a new Protocol write.** The
+   Phase 197 plan's risk section flagged this for coordinator confirmation.
+   D-335 mandates no new write; this phase adds none. The chain references
+   installed bindings by bare name (D-303/D-334), so the WALK ORDER is never a
+   wire-writable credential-sink lever. An admin-writable chain order (a
+   `set_failover_chain` write) remains a scoped follow-up with its own
+   zero-sink-field analysis if a coordinator wants it.
+
+3. **A `KeyActivator` seam decouples the walk from the credential source.** The
+   `FailoverPolicy` calls `KeyActivator.Activate(ctx, ProviderRef)` to make a
+   hop's broker-pulled key live before re-issuing; production wires it to the
+   inference broker-pull source over the shared `llm.LiveKey` (D-333/D-334), a
+   test wires a fixture. This keeps the policy a pure governance-layer artifact
+   (immutable, D-025) and makes cross-provider chains expressible at the seam
+   without the policy knowing broker mechanics. Because V1 is single-provider
+   at the runtime level (D-333), production true multi-provider key custody is
+   beyond this phase; the seam and the `governance.failover` cross-provider
+   event surface ship so the capability is expressible and observable.
+
+   **Inert-until-wired (tracked follow-up).** As shipped, `FailoverPolicy` /
+   `WrapWithFailover` / `KeyActivator` have NO production consumer: no LLM
+   assembly or `harbor` command constructs a failover-wrapped client, and no
+   production `KeyActivator` exists (only test fixtures). This is a deliberate,
+   acceptable carve-out — the primitive-with-consumer rule (§13) is satisfied
+   by `WrapWithFailover` + the unit/wave-E2E tests that exercise the walk
+   end-to-end — but the production wiring (a real `KeyActivator` over the
+   broker-pull `LiveKey` + a boot/install-declared chain threaded into the LLM
+   assembly) is a TRACKED FOLLOW-UP, bounded by D-333's V1 single-provider
+   custody and post-V1 per D-335. Until that wiring lands the seam is inert in
+   the shipped binary by design, documented here so the status is unmistakable.
+
+**Consequence.** The `FailoverPolicy` interface + the `chain` §4.4 driver +
+`NewFailoverPolicy`/`WrapWithFailover` (the consumer) + `GovernanceFailoverPayload`
+land in `internal/governance`; the retryable-vs-permanent classifier reuses the
+existing LLM + governance sentinels (a permanent structural error or a
+governance gate stops the walk; a transient provider error advances it). The
+wave-end E2E (`test/integration/wave_v117_test.go`) exercises the budget-trip
+failure mode end-to-end. Priority MEDIUM; composes with D-335/D-333/D-334/D-019.
+Framework-framed only (§13).

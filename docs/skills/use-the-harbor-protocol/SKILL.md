@@ -207,6 +207,8 @@ event: task.completed
 data: {"task_id":"tsk_01HXYZ","status":"completed"}
 ```
 
+Governance emits its own canonical events on the same stream — subscribe with `X-Harbor-Event-Type: governance.failover` to observe LLM-provider failover. When a runtime is configured with a broker-pulled failover chain, each HOP the Harbor-orchestrated walk takes on a retryable provider error emits a `governance.failover` event carrying the run identity, the `from_provider` / `to_provider`, the 1-based `hop_index`, the accumulated per-identity cost the re-run budget check gates against, and a bounded retryable-error class (never the raw provider error). Every hop is a Harbor event through audit + bus + cost — the provider SDK's native fallback array is deliberately unused (D-018) — and a hop whose re-run budget/rate check trips fails the run loud rather than silently walking further down the chain. The full event catalogue (137+ types) is the generated [events reference](https://hurtener.github.io/Harbor/protocol/events).
+
 **A gotcha**: the event payload's task ID field is `payload.TaskID` (capital T) — match exactly when parsing in JS/TS. Documented in the Console's chat panel handler; easy to miss when hand-rolling.
 
 For a chat UI, you'd:

@@ -72,6 +72,17 @@ const (
 	// never a secret; the payload still runs through the wired bus's audit
 	// Redactor before delivery (CLAUDE.md §7 rule 6).
 	EventTypePostureSet events.EventType = "governance.posture_set"
+
+	// EventTypeFailover — emitted per HOP when the Harbor-orchestrated
+	// failover walk advances from one broker-pulled provider to the next on
+	// a retryable provider error. Harbor walks the ordered chain at the
+	// governance layer (the provider SDK's native fallback array is NOT
+	// used), so every hop is a Harbor event through the audit Redactor +
+	// event bus + the per-identity cost accumulator. SafePayload: it carries
+	// the run identity, the from/to provider, the hop index, the accumulated
+	// cost the re-run PreCall gates against, and a bounded non-secret
+	// retryable-error CLASS — never the raw provider error string.
+	EventTypeFailover events.EventType = "governance.failover"
 )
 
 func init() {
@@ -83,9 +94,33 @@ func init() {
 		EventTypeTenantOverridesSet,
 		EventTypeKeyRotated,
 		EventTypePostureSet,
+		EventTypeFailover,
 	} {
 		events.RegisterEventType(t)
 	}
+}
+
+// GovernanceFailoverPayload is the typed payload for EventTypeFailover.
+// SafePayload — the run identity, the from/to provider names, the hop index,
+// the accumulated cost, and the bounded retryable-error class are all
+// operator-visible metadata, not secret-shaped. The raw provider error
+// string is deliberately NOT carried (it may hold provider-specific detail);
+// the payload still runs through the wired bus's audit Redactor before
+// delivery (CLAUDE.md §7 rule 6).
+//
+// `AccumCostUSD` is the per-identity running total at the moment of the
+// advance — the same figure the re-run PreCall gates against, so an operator
+// can see WHY a later hop tripped the ceiling. `HopIndex` is 1-based: hop 1
+// is the first fallback entry (the primary provider is hop 0 and emits no
+// failover event).
+type GovernanceFailoverPayload struct {
+	events.SafeSealed
+	Identity     identity.Quadruple
+	FromProvider string
+	ToProvider   string
+	HopIndex     int
+	AccumCostUSD float64
+	Reason       string
 }
 
 // PostureReadAdminPayload is the typed payload for
