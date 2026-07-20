@@ -19,7 +19,7 @@ export const GITHUB = "https://github.com/hurtener/Harbor";
 export const LICENSE_URL = `${GITHUB}/blob/main/LICENSE`;
 
 export const hero = {
-  eyebrow: "Go-native agent runtime · v1.8",
+  eyebrow: "Go-native agent runtime · v1.16",
   name: "Harbor",
   tagline: "Durable, steerable, event-driven AI agents in Go.",
   lead:
@@ -44,7 +44,7 @@ export const hero = {
 };
 
 export const announcement = {
-  text: "v1.8.0 just shipped — the adopter on-ramps: harbor token self-issuing, Stack.RunOnce + streaming, and the external-client TypeScript wire-type generator",
+  text: "v1.16.0 just shipped — parallel intent: one planner turn can fan out tools and spawn background tasks at once, with a task-management control surface and an operator-first cancel hierarchy",
   link: "/reference/changelog",
 };
 
@@ -286,24 +286,24 @@ export const rigor = {
 /* ── What's new ─────────────────────────────────────────────────────────── */
 export const whatsNew = {
   eyebrow: "Recently shipped",
-  headline: "v1.8.0 — the adopter paths land",
-  date: "2026-06-27",
+  headline: "v1.16.0 — parallel intent + task management",
+  date: "2026-07-18",
   bullets: [
     {
-      title: "harbor token — self-issuing on-ramp",
-      body: "harbor token keygen / mint lets an operator with no IdP issue the JWTs serve verifies, signed with a key they manage; serve's verifier is unchanged — it trusts the key only because you point identity.jwks_file at the emitted JWK Set.",
+      title: "Parallel intent — the Batch decision",
+      body: "A single planner step can now dispatch multiple tools and spawn multiple background tasks at once; two or more spawns auto-group so they can be awaited as a unit. The old one-action-per-turn limit from the native-tool-calling migration is gone.",
     },
     {
-      title: "Stack.RunOnce + first-class streaming",
-      body: "One blocking call turns a goal + identity into the answer envelope; WithStream observes token / tool / step events as they happen, on the same method.",
+      title: "Task management with a real cancel hierarchy",
+      body: "Reserved _task_status / _cancel_task controls let a run inspect and cancel the tasks it spawned — descendant-scoped, so a run can never touch a sibling's tasks. Cancellation is operator > agent (own descendants) > cascade: there is no uncancellable task, and a human always has the last word.",
     },
     {
-      title: "External-client TypeScript wire types",
-      body: "cmd/harbor-protocol-ts-types generates a vendorable TypeScript wire-type module from the canonical Protocol surface, so a third-party client stays in lockstep without hand-transcribing types.",
+      title: "Background-wake notifications + turn-failure honesty",
+      body: "Background resolution mirrors onto the conversation surface, and a failed foreground turn now shows a prominent × Turn failed line instead of going silently idle — on both the native TUI and the Console.",
     },
     {
-      title: "Worked protocol-client examples",
-      body: "examples/protocol-clients/ now ships an SDK-free OIDC client and an in-tree conformance-fork harness — copy-pasteable proof of the attach and certification flows.",
+      title: "OAuth broker legs + prompt-cache telemetry",
+      body: "An insufficient-scope step-up becomes structured data instead of a retry storm, resource-bound token exchange and per-tool OAuth binding land, and provider cache read/write tokens now flow through the cost surface. All additive — the Harbor Protocol holds at 0.1.0.",
     },
   ],
   cta: { label: "Read the full changelog", link: "/reference/changelog" },
