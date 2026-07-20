@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -56,7 +57,7 @@ func TestProviderSet_InstallGetUninstall(t *testing.T) {
 	if names := set.InstalledFor(Owner{Tenant: "t2", Agent: "a2"}); len(names) != 0 {
 		t.Fatalf("InstalledFor(other): %v", names)
 	}
-	if err := set.Uninstall(context.Background(), "m365"); err != nil {
+	if err := set.Uninstall(context.Background(), owner, "m365"); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	if _, ok := set.Get("m365"); ok {
@@ -66,7 +67,7 @@ func TestProviderSet_InstallGetUninstall(t *testing.T) {
 		t.Fatalf("uninstall must close exactly once, got %d", p.closes.Load())
 	}
 	// Idempotent uninstall of an absent name.
-	if err := set.Uninstall(context.Background(), "m365"); err != nil {
+	if err := set.Uninstall(context.Background(), owner, "m365"); err != nil {
 		t.Fatalf("idempotent uninstall: %v", err)
 	}
 }
@@ -83,8 +84,9 @@ func TestProviderSet_BootCollisionRefused(t *testing.T) {
 	if got, ok := set.Get("github"); !ok || got != boot {
 		t.Fatalf("boot provider must survive a rejected install")
 	}
-	// Uninstalling a boot (zero-owner) provider is refused.
-	if err := set.Uninstall(context.Background(), "github"); err == nil {
+	// Uninstalling a boot (zero-owner) provider is refused (boot-protected fires
+	// before the owner check).
+	if err := set.Uninstall(context.Background(), Owner{Tenant: "t1", Agent: "a1"}, "github"); err == nil {
 		t.Fatalf("uninstall of a boot provider must be refused")
 	}
 	if boot.closes.Load() != 0 {
@@ -101,6 +103,118 @@ func TestProviderSet_OwnerCollisionRefused(t *testing.T) {
 	err := set.Install(Owner{Tenant: "tB", Agent: "aB"}, "m365", &fakeProvider{})
 	if err == nil {
 		t.Fatalf("cross-owner name collision must fail loud")
+	}
+}
+
+// TestProviderSet_Uninstall_OwnerScoped_MatchingDrops proves the matching-owner
+// drop path is unchanged: the entry is removed and the provider closed exactly
+// once.
+func TestProviderSet_Uninstall_OwnerScoped_MatchingDrops(t *testing.T) {
+	t.Parallel()
+	set := NewProviderSet(nil)
+	owner := Owner{Tenant: "tA", Agent: "aA"}
+	p := &fakeProvider{name: "m365"}
+	if err := set.Install(owner, "m365", p); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := set.Uninstall(context.Background(), owner, "m365"); err != nil {
+		t.Fatalf("owner-scoped uninstall: %v", err)
+	}
+	if _, ok := set.Get("m365"); ok {
+		t.Fatalf("Get after owner-scoped uninstall: still present")
+	}
+	if p.closes.Load() != 1 {
+		t.Fatalf("matching-owner uninstall must close exactly once, got %d", p.closes.Load())
+	}
+}
+
+// TestProviderSet_Uninstall_CrossOwnerRefused is the AC-7 store-boundary gate:
+// owner B's Uninstall against owner A's installed provider returns
+// ErrProviderOwnerCollision AND leaves A's provider fully intact — still
+// installed, still resolvable, never closed. Owner-scoping is enforced by the
+// store itself, independent of any caller-side owner resolution.
+func TestProviderSet_Uninstall_CrossOwnerRefused(t *testing.T) {
+	t.Parallel()
+	set := NewProviderSet(nil)
+	ownerA := Owner{Tenant: "tA", Agent: "aA"}
+	ownerB := Owner{Tenant: "tB", Agent: "aB"}
+	provA := &fakeProvider{name: "m365"}
+	if err := set.Install(ownerA, "m365", provA); err != nil {
+		t.Fatalf("install A: %v", err)
+	}
+	err := set.Uninstall(context.Background(), ownerB, "m365")
+	if err == nil || !errors.Is(err, ErrProviderOwnerCollision) {
+		t.Fatalf("cross-owner uninstall must fail with ErrProviderOwnerCollision, got %v", err)
+	}
+	// A's provider is untouched: still resolvable, never closed, still owned by A.
+	got, ok := set.Get("m365")
+	if !ok || got != provA {
+		t.Fatalf("owner A's provider dropped by a refused cross-owner uninstall")
+	}
+	if provA.closes.Load() != 0 {
+		t.Fatalf("refused cross-owner uninstall must not close A's provider, got %d closes", provA.closes.Load())
+	}
+	if names := set.InstalledFor(ownerA); len(names) != 1 || names[0] != "m365" {
+		t.Fatalf("owner A's install view changed by a refused cross-owner uninstall: %v", names)
+	}
+}
+
+// closableTokenProvider is an OAuthProvider whose Token succeeds until Close,
+// after which Token fails LOUD — modelling the "a dropped provider fails
+// subsequently-bound calls loud" contract at the store boundary (AC-6).
+type closableTokenProvider struct {
+	closed atomic.Bool
+}
+
+var errProviderClosed = fmt.Errorf("closableTokenProvider: closed")
+
+func (c *closableTokenProvider) Token(context.Context, tools.ToolSourceID) (Token, error) {
+	if c.closed.Load() {
+		return Token{}, errProviderClosed
+	}
+	return Token{AccessToken: "live", BindingScope: ScopeUser}, nil
+}
+func (c *closableTokenProvider) InitiateFlow(context.Context, tools.ToolSourceID) (FlowInitiation, error) {
+	return FlowInitiation{}, nil
+}
+func (c *closableTokenProvider) CompleteFlow(context.Context, string, string) (Token, error) {
+	return Token{}, nil
+}
+func (c *closableTokenProvider) PendingFlow(string) (PendingFlowInfo, bool) {
+	return PendingFlowInfo{}, false
+}
+func (c *closableTokenProvider) DenyFlow(context.Context, string, string) error   { return nil }
+func (c *closableTokenProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }
+func (c *closableTokenProvider) Close(context.Context) error {
+	c.closed.Store(true)
+	return nil
+}
+func (c *closableTokenProvider) AllowedDownstreamHosts() []string {
+	return []string{"graph.microsoft.com"}
+}
+
+// TestProviderSet_Uninstall_OwnerScoped_FailsBoundCallsLoud proves the drop
+// CLOSES the provider so a still-bound holder's next Token fails loud (never a
+// silent fall-through to the old, unauthenticated, or another owner's key).
+func TestProviderSet_Uninstall_OwnerScoped_FailsBoundCallsLoud(t *testing.T) {
+	t.Parallel()
+	set := NewProviderSet(nil)
+	owner := Owner{Tenant: "tA", Agent: "aA"}
+	prov := &closableTokenProvider{}
+	if err := set.Install(owner, "m365", prov); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// A still-bound holder (a live MCP connection) keeps the instance.
+	bound, _ := set.Get("m365")
+	if _, err := bound.Token(context.Background(), "src"); err != nil {
+		t.Fatalf("Token before uninstall: %v", err)
+	}
+	if err := set.Uninstall(context.Background(), owner, "m365"); err != nil {
+		t.Fatalf("owner-scoped uninstall: %v", err)
+	}
+	// The bound holder's next call fails LOUD (the provider was closed).
+	if _, err := bound.Token(context.Background(), "src"); !errors.Is(err, errProviderClosed) {
+		t.Fatalf("bound call after drop must fail loud, got %v", err)
 	}
 }
 
@@ -125,7 +239,7 @@ func TestProviderSet_ConcurrentReuse(t *testing.T) {
 			}
 			_ = set.InstalledFor(owner)
 			_ = set.Names()
-			_ = set.Uninstall(context.Background(), name)
+			_ = set.Uninstall(context.Background(), owner, name)
 		}(i)
 	}
 	wg.Wait()

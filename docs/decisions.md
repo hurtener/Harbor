@@ -8760,6 +8760,66 @@ inbound principal — never a client-named field — for subject/actor
 cross-checking and delegation-chain audit. Absent fields preserve today's
 behavior exactly. The phase also carries the wave-end E2E per §17.7.
 
+## D-331 — Per-tool OAuth binding reaches the resource/prompt RPC paths, and the credential-sink uninstall is owner-scoped at the store boundary
+
+**Date:** 2026-07-20
+
+**Context.** Two loose ends on the credential plane D-328 (Phase 191, HA-27b)
+established. (a) HA-27b shipped the per-tool `oauth_provider` binding —
+`MCPServerConfig.ToolOAuthProviders`, keyed by MCP-side name — but wired it to
+`callTool` ONLY. `ReadResource` / `SubscribeResource` / `GetPrompt` (the other
+identity-stamped MCP RPC paths D-278 enumerates) still resolved only the
+connection-level binding, so a shared MCP server fronting N downstream resources
+could bind a per-tool audience to a tool call but not to a resource read or a
+prompt get — the one-audience-per-server gap re-opened on the resource/prompt
+surfaces. (b) GitHub issue #507: `ProviderSet.Uninstall(ctx, name)` refused a
+boot-seeded provider but did NOT verify the caller's owner matched the installed
+entry's owner before dropping + closing it; owner-scoping was enforced entirely
+caller-side (the `remove_oauth_provider` handler resolving the name within the
+caller's own agent-config revision), so the store trusted every present and
+future caller to have done so — brief 09's "fail closed on missing components"
+read against the store boundary itself.
+
+**Decision.** Phase 194 closes both, posture invariant (report-not-act; no
+custody change; no auto-escalation; composes with D-278/D-300/D-303 and NEVER
+weakens D-300's credential-sink invariant — every knob stays boot-declared /
+server-derived, no URL/secret on the wire, `ProtocolVersion` unchanged):
+
+- **(a) Resource/prompt reach.** `resolveBearerCtx(ctx, key)` (191's per-tool
+  resolver) is now called with the RPC's addressing key on EVERY previously
+  connection-level bearer-injection site in the MCP driver — `ReadResource` and
+  `SubscribeResource` (key = resource URI), the resource-read descriptor invoke
+  (resource URI), and the prompt-get descriptor invoke (prompt name) — so the
+  SAME `ToolOAuthProviders` map (no shape change, no new config field, not on the
+  Protocol-writable `ToolExposure` layer) resolves a per-entry binding for those
+  paths, falling back to the connection-level `oauth_provider` when unbound. Every
+  per-entry binding rule HA-27b enforces for `callTool` (unknown name / stdio
+  transport / static-`Authorization` conflict / downstream-host allow-list) is
+  re-enforced identically at boot / attach validation. The per-entry map is a
+  SINGLE namespace keyed by MCP-side name: a key that would address more than one
+  discovered surface at once (a tool AND a prompt of the same name, or a resource
+  URI equal to a tool name) is rejected LOUD at discovery
+  (`ErrAmbiguousOAuthBinding`) — never a silent documented-precedence resolve. The
+  binding is a property of the RPC, not of the `callTool` dispatch site.
+
+- **(b) Owner-scoped uninstall.** `ProviderSet.Uninstall` gains an `Owner`
+  parameter — `Uninstall(ctx, owner, name)` — and refuses a cross-owner drop with
+  `ErrProviderOwnerCollision` (mirroring `Install`'s owner-collision refusal) when
+  `existing.owner != owner`, at the STORE boundary, independently of caller-side
+  owner resolution (defense in depth). The boot-protected (zero-owner) refusal via
+  `ErrProviderBootProtected` stays; a matching-owner drop closes + removes the
+  entry exactly as before, so a subsequently-bound call fails LOUD (never a silent
+  fall-through to the old key, an unauthenticated dial, or another owner's
+  provider). The one caller — the `agent_config.remove_oauth_provider` handler —
+  threads the caller's resolved owner (the active agent-config revision owner,
+  under `lockAgent`); its existing caller-side owner resolution stays, the store
+  check is the second, independent gate. The owner remains a reconcile-view tag,
+  never an isolation principal and never a credential sink.
+
+Both are the sanctioned extension of D-328, not a re-litigation; the §17.8
+conformance fixture is the official go-sdk MCP server over the real streamable
+HTTP wire (never a hand-authored RPC shape).
+
 ## D-332 — A governance-WRITE Protocol surface makes the identity-tier policy table administrable over the wire (the write sibling of `governance.posture`)
 
 **Date:** 2026-07-20

@@ -735,16 +735,21 @@ tools:
   #     # oauth_provider — bind a declared tools.oauth_providers[] entry for
   #     # per-identity southbound bearer injection on every callTool RPC.
   #     # oauth_provider: weather-broker
-  #     # tool_oauth_providers — per-tool oauth_provider overrides keyed by the
-  #     # MCP server-side tool name (mirrors tool_policies). A tool named here
-  #     # binds THAT provider for its callTool RPCs; an unlisted tool falls back
-  #     # to oauth_provider. Each entry re-enforces the same binding rules
-  #     # (unknown name / stdio / static-Authorization conflict / downstream-host
-  #     # allow-list). Closes the one-audience-per-server constraint for a shared
-  #     # server fronting N downstream resources.
+  #     # tool_oauth_providers — per-entry oauth_provider overrides keyed by the
+  #     # MCP-side name (mirrors tool_policies). An entry binds THAT provider for
+  #     # every identity-stamped RPC that addresses by its key — a callTool by
+  #     # tool name, a resource read / subscribe by resource URI, and a prompt
+  #     # get by prompt name; an unlisted key falls back to oauth_provider. Each
+  #     # entry re-enforces the same binding rules (unknown name / stdio /
+  #     # static-Authorization conflict / downstream-host allow-list); a key that
+  #     # would address more than one surface at once is rejected loud at
+  #     # discovery. Closes the one-audience-per-server constraint for a shared
+  #     # server fronting N downstream tools, resources, and prompts.
   #     # tool_oauth_providers:
-  #     #   send_mail: m365-mail-broker
-  #     #   list_events: gcal-broker
+  #     #   send_mail: m365-mail-broker      # a tool
+  #     #   list_events: gcal-broker         # a tool
+  #     #   cal://calendars/primary: gcal-broker   # a resource URI
+  #     #   draft_reply: m365-mail-broker    # a prompt
   #
   #   - name: filesystem
   #     transport_mode: stdio
