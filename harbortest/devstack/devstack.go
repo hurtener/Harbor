@@ -904,6 +904,25 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 		}
 
+		// The Protocol-installed inference provider installer (set_llm_provider)
+		// + the boot-connect of a config-declared brokered primary. Wired
+		// whenever an LLM driver is opened (the shared LiveKey is present).
+		var llmProviderInstaller agentcfgprotocol.LLMProviderInstaller
+		var inferenceBrokerNames []string
+		if core.LLMLiveKey != nil {
+			if concrete := serve.NewLLMProviderInstaller(core.LLMLiveKey, core.LLMSnapshot.Provider,
+				cfg.LLM.InferenceBrokers, bus, stack.Audit, "harbor-devstack", lg); concrete != nil {
+				llmProviderInstaller = concrete
+				inferenceBrokerNames = concrete.BrokerNames()
+				stack.closeFns = append(stack.closeFns, concrete.Close)
+				if cfg.LLM.CredentialSource == "remote" {
+					if cErr := concrete.BootConnectPrimary(context.Background(), cfg.LLM.InferenceBroker); cErr != nil {
+						return nil, fmt.Errorf("llm brokered primary: %w", cErr)
+					}
+				}
+			}
+		}
+
 		// Single-homed Protocol surface construction + fan-out. The kit's
 		// hand-mirrored mux block is deleted in favor of this shared builder,
 		// which closes the drift the mirror carried: the kit now GAINS the
@@ -943,6 +962,8 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			BootDeclaredMCP:        serve.BootDeclaredMCPServerNames(cfg),
 			BootDeclaredOAuth:      serve.BootDeclaredOAuthProviderNames(cfg),
 			OAuthProviderInstaller: oauthProviderInstaller,
+			LLMProviderInstaller:   llmProviderInstaller,
+			InferenceBrokers:       inferenceBrokerNames,
 			Validator:              stack.Validator,
 			AuthSurface:            rotateSurface,
 			DisplayName:            "harbor devstack",

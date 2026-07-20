@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:f47c6ed217211a93e1b1c153c80801e05727835689f64a730578966f57f7f7de";
+export const WIRE_SURFACE_DIGEST = "sha256:edd4b58acbb389353be0e4a4a6ef48d38fd4b9d1cea9f196473787cd94c12e35";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -34,6 +34,7 @@ export type HarborMethod =
   | "agent_config.session.skills.list"
   | "agent_config.session.skills.upsert"
   | "agent_config.set_llm_params"
+  | "agent_config.set_llm_provider"
   | "agent_config.set_mcp_discovery_origins"
   | "agent_config.set_oauth_provider"
   | "agent_config.set_prompt_layers"
@@ -166,6 +167,7 @@ export type HarborEventType =
   | "agent.registered"
   | "agent.restart_requested"
   | "agent.restarted"
+  | "agent_config.llm_provider.installed"
   | "agent_config.oauth_provider.installed"
   | "agent_config.oauth_provider.removed"
   | "artifacts.deleted"
@@ -200,6 +202,7 @@ export type HarborEventType =
   | "llm.image.materialized"
   | "llm.mode_downgraded"
   | "llm.posture_read_admin"
+  | "llm.provider_credential_fetched"
   | "llm.provider_file.uploaded"
   | "llm.retry_with_feedback"
   | "mcp.app_available"
@@ -225,6 +228,7 @@ export type HarborEventType =
   | "notification.pause_requested"
   | "notification.task_completed"
   | "notification.task_failed"
+  | "notification.task_group_cancelled"
   | "notification.task_group_resolved"
   | "notification.tool_approval_requested"
   | "pause.payload_artifact_routed"
@@ -422,6 +426,14 @@ export interface AgentConfigLLMParamsDiff {
   reasoning_effort_changed: boolean;
   reasoning_effort_from?: string;
   reasoning_effort_to?: string;
+}
+
+export interface AgentConfigLLMProviderDescriptor {
+  name: string;
+  provider: string;
+  credential_source: string;
+  inference_broker: string;
+  model_allow?: string[];
 }
 
 export interface AgentConfigListRevisionsRequest {
@@ -645,6 +657,18 @@ export interface AgentConfigSetLLMParamsRequest {
 
 export interface AgentConfigSetLLMParamsResponse {
   revision: AgentConfigRevisionView;
+  protocol_version: string;
+}
+
+export interface AgentConfigSetLLMProviderRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  provider: AgentConfigLLMProviderDescriptor;
+}
+
+export interface AgentConfigSetLLMProviderResponse {
+  name: string;
+  installed: boolean;
   protocol_version: string;
 }
 

@@ -122,6 +122,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigSetMCPDiscoveryOrigins,
 	methods.MethodAgentConfigSetOAuthProvider,
 	methods.MethodAgentConfigRemoveOAuthProvider,
+	methods.MethodAgentConfigSetLLMProvider,
 	methods.MethodAgentConfigSessionSetUserPrompt,
 	methods.MethodAgentConfigSessionSetSourceDisables,
 	methods.MethodAgentConfigSessionSkillsList,
@@ -168,9 +169,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + agent-config OAuth-provider install/uninstall two
 	// (agent_config.set_oauth_provider + remove_oauth_provider, D-303) = 116,
 	// + governance identity-tier policy write one
-	// (governance.set_posture, D-332) = 117.
-	if len(got) != 117 {
-		t.Fatalf("Methods() returned %d methods, want 117", len(got))
+	// (governance.set_posture, D-332) = 117,
+	// + agent-config inference-provider install one
+	// (agent_config.set_llm_provider, D-334) = 118.
+	if len(got) != 118 {
+		t.Fatalf("Methods() returned %d methods, want 118", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

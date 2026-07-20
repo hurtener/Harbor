@@ -141,6 +141,15 @@ type MuxInput struct {
 	// refused (boot wins).
 	BootDeclaredOAuth []string
 
+	// LLMProviderInstaller backs agent_config.set_llm_provider (the
+	// Protocol-installed, zero-URL broker-pull inference provider). Built
+	// caller-side; nil leaves the verb unwired (→ 501).
+	LLMProviderInstaller agentcfgprotocol.LLMProviderInstaller
+	// InferenceBrokers is the set of boot-declared inference-broker names
+	// (llm.inference_brokers[].name); a set_llm_provider naming a broker outside
+	// this set is refused (→ 400 — no admin-writable field determines a sink).
+	InferenceBrokers []string
+
 	// Auth. Validator nil mounts the transports WithoutValidator (the
 	// explicit test-kit opt-out); AuthSurface nil leaves auth.rotate_token
 	// un-mounted (the production posture — no in-runtime token issuer).
@@ -631,6 +640,10 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		if in.OAuthProviderInstaller != nil {
 			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithProviderInstaller(in.OAuthProviderInstaller))
 		}
+		if in.LLMProviderInstaller != nil {
+			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithLLMProviderInstaller(in.LLMProviderInstaller))
+		}
+		agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithInferenceBrokers(append([]string(nil), in.InferenceBrokers...)))
 		agentConfigService, acErr := agentcfgprotocol.NewService(in.AgentConfig, agentConfigOpts...)
 		if acErr != nil {
 			return nil, wrapErr("agent-config/protocol service", acErr)

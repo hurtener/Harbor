@@ -532,6 +532,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigRemoveOAuthProviderRequest", Response: "AgentConfigRemoveOAuthProviderResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigSetLLMProvider: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetLLMProvider),
+			Mutates: true,
+			Request: "AgentConfigSetLLMProviderRequest", Response: "AgentConfigSetLLMProviderResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigSessionSetUserPrompt: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSessionSetUserPrompt),
 			Mutates: true,

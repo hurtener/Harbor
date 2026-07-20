@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 117 canonical Harbor Protocol methods, generated from the single-source registry
+The 118 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -222,6 +222,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agent_config.session.skills.list` | `POST /v1/agent_config/session/skills/list` | agent config — session | [`AgentConfigSessionSkillsListRequest`](./types.md#agentconfigsessionskillslistrequest) | [`AgentConfigSessionSkillsListResponse`](./types.md#agentconfigsessionskillslistresponse) | read-only; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.session.skills.upsert` | `POST /v1/agent_config/session/skills/upsert` | agent config — session | [`AgentConfigSessionSkillsUpsertRequest`](./types.md#agentconfigsessionskillsupsertrequest) | [`AgentConfigSessionSkillsUpsertResponse`](./types.md#agentconfigsessionskillsupsertresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.set_llm_params` | `POST /v1/agent_config/set_llm_params` | agent config — admin | [`AgentConfigSetLLMParamsRequest`](./types.md#agentconfigsetllmparamsrequest) | [`AgentConfigSetLLMParamsResponse`](./types.md#agentconfigsetllmparamsresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.set_llm_provider` | `POST /v1/agent_config/set_llm_provider` | agent config — admin | [`AgentConfigSetLLMProviderRequest`](./types.md#agentconfigsetllmproviderrequest) | [`AgentConfigSetLLMProviderResponse`](./types.md#agentconfigsetllmproviderresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.set_mcp_discovery_origins` | `POST /v1/agent_config/set_mcp_discovery_origins` | agent config — admin | [`AgentConfigSetMCPDiscoveryOriginsRequest`](./types.md#agentconfigsetmcpdiscoveryoriginsrequest) | [`AgentConfigSetMCPDiscoveryOriginsResponse`](./types.md#agentconfigsetmcpdiscoveryoriginsresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.set_oauth_provider` | `POST /v1/agent_config/set_oauth_provider` | agent config — admin | [`AgentConfigSetOAuthProviderRequest`](./types.md#agentconfigsetoauthproviderrequest) | [`AgentConfigSetOAuthProviderResponse`](./types.md#agentconfigsetoauthproviderresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.set_prompt_layers` | `POST /v1/agent_config/set_prompt_layers` | agent config — admin | [`AgentConfigSetPromptLayersRequest`](./types.md#agentconfigsetpromptlayersrequest) | [`AgentConfigSetPromptLayersResponse`](./types.md#agentconfigsetpromptlayersresponse) | mutating; requires the verified `admin` scope claim |

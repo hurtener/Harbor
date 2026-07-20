@@ -188,6 +188,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSetOAuthProvider(w, r, body, wireID)
 	case "remove_oauth_provider":
 		h.serveRemoveOAuthProvider(w, r, body, wireID)
+	case "set_llm_provider":
+		h.serveSetLLMProvider(w, r, body, wireID)
 	case "skills/list":
 		h.serveSkillsList(w, r, body, wireID)
 	case "skills/upsert":
@@ -465,6 +467,23 @@ func (h *AgentConfigHandler) serveRemoveOAuthProvider(w http.ResponseWriter, r *
 	resp, err := h.service.RemoveOAuthProvider(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigRemoveOAuthProvider, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveSetLLMProvider(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigSetLLMProviderRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigSetLLMProvider) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.SetLLMProvider(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigSetLLMProvider, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
@@ -755,6 +774,17 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrProviderInstallUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": oauth provider install is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrLLMProviderInstallUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			m + ": llm provider install is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrInvalidLLMProvider),
+		errors.Is(err, agentcfgprotocol.ErrLLMProviderBrokerUnknown):
+		// A malformed / unknown-broker inference-provider install is a CLIENT
+		// error (a bad request body) — rejected loud BEFORE any observable state
+		// change (the credential-plane invariant: no admin-writable field
+		// determines a credential sink).
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrInvalidProvider),
 		errors.Is(err, agentcfgprotocol.ErrBootDeclaredProvider),
 		errors.Is(err, agentcfgprotocol.ErrProviderBrokerUnknown):

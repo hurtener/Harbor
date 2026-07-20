@@ -434,6 +434,23 @@ const (
 	// `POST /v1/agent_config/remove_oauth_provider`.
 	MethodAgentConfigRemoveOAuthProvider Method = "agent_config.remove_oauth_provider"
 
+	// MethodAgentConfigSetLLMProvider — admin verb: installs (upserts) /
+	// rotates a ZERO-URL, broker-pull INFERENCE provider binding onto the
+	// owner-tagged provider set so the runtime's LLM key is sourced from the
+	// named coordinator broker. The writable descriptor carries only
+	// `{name, provider, credential_source:"remote", inference_broker,
+	// model_allow?}` — NO URL, NO env-var name, NO secret; every credential
+	// sink is pinned at boot on the named inference broker (a write carrying
+	// `credential_url` / `token_url` / `*_env` / a secret is rejected BY NAME
+	// via DisallowUnknownFields). A separate method from set_oauth_provider (a
+	// distinct credential plane) — never a relaxation of its
+	// tokenexchange-only allowlist. An unknown broker name is refused loud.
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim ONLY (a control
+	// write is a strictly more elevated tier than any read — NOT the admin OR
+	// console:fleet set). The wire-transport route is
+	// `POST /v1/agent_config/set_llm_provider`.
+	MethodAgentConfigSetLLMProvider Method = "agent_config.set_llm_provider"
+
 	// MethodAgentConfigSessionSetUserPrompt — session-safe verb (the
 	// non-admin lower tier): a session-scoped end user sets a user
 	// prompt layer that composes ABOVE the operator base (it can extend the
@@ -1036,6 +1053,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins:   {},
 	MethodAgentConfigSetOAuthProvider:         {},
 	MethodAgentConfigRemoveOAuthProvider:      {},
+	MethodAgentConfigSetLLMProvider:           {},
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
 	MethodAgentConfigSessionSkillsList:        {},
@@ -1281,7 +1299,7 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the twenty-six
+// canonicalAgentConfigMethods is the closed set of the twenty-seven
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
@@ -1311,6 +1329,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins: {},
 	MethodAgentConfigSetOAuthProvider:       {},
 	MethodAgentConfigRemoveOAuthProvider:    {},
+	MethodAgentConfigSetLLMProvider:         {},
 	// Session-user safe subset (the non-admin lower tier).
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
@@ -1376,9 +1395,10 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins: {},
 	MethodAgentConfigSetOAuthProvider:       {},
 	MethodAgentConfigRemoveOAuthProvider:    {},
+	MethodAgentConfigSetLLMProvider:         {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the twenty-six
+// IsAgentConfigMethod reports whether m is one of the twenty-seven
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

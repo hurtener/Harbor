@@ -161,6 +161,43 @@ llm:
   #   concurrency: 3
   #   buffer_size: 10
 
+  # Inference-plane broker-pull credential source (D-333). By default the
+  # primary provider's key resolves from `api_key` (env / literal) once at
+  # boot — the LOCAL source. Set `credential_source: remote` to instead PULL
+  # the key from a NAMED, boot-declared inference broker at connect + refresh
+  # (never on the per-call hot path — the pulled key rides the atomic
+  # key-swap). Brokered XOR local: a `remote` primary MUST name an
+  # `inference_brokers[]` entry AND leave `api_key` empty (both set, or
+  # neither, is a boot error). Fail-loud: a broker unreachable at connect or a
+  # failed refresh raises `ErrProviderKeyUnavailable` — never a silent
+  # fallback to a local key, never a stale key served past its refresh
+  # contract.
+  #
+  # credential_source: remote        # "" / "local" (default) or "remote"
+  # inference_broker: openai-broker  # names an inference_brokers[] entry
+  #
+  # inference_brokers:
+  #   # Boot-declared, config/file-only inference-broker(s) — the pinned
+  #   # credential SINK for a runtime's LLM provider key (the D-300 analogue
+  #   # of tools.oauth_credential_brokers). Referenced by non-secret NAME
+  #   # from `credential_source: remote` above and from the
+  #   # `agent_config.set_llm_provider` zero-URL Protocol write. No URL or
+  #   # secret ever crosses the wire. Restart-required; NOT a Protocol surface.
+  #   - name: openai-broker
+  #     # The coordinator credential-pull endpoint (https; loopback allowed
+  #     # for dev/fixtures). The runtime GETs the provider key here.
+  #     credential_url: https://coordinator.example.com/runtimes/self/provider-key
+  #     # Env var holding the runtime's OWN broker credential (the Bearer
+  #     # presented to credential_url; §7 rule 2 — never hardcoded).
+  #     auth_token_env: HARBOR_COORDINATOR_TOKEN
+  #     # Optional boot-pinned audience / scope ceiling (an LLM provider key
+  #     # is not always audience/scope-shaped; omit when the broker's own
+  #     # binding governs).
+  #     # audience: openai
+  #     # scope_ceiling: [chat]
+  #     # cache_ttl: 5m   # caps the in-memory serve horizon (default 5m)
+  #     # timeout: 10s    # bounds a single pull (default 30s)
+
 # Runtime run-lifecycle hooks.
 #
 # The run-completion hook fires exactly once at the run loop's terminal

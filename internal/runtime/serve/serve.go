@@ -472,6 +472,36 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		}
 	}
 
+	// The Protocol-installed inference provider installer (set_llm_provider),
+	// plus the boot-connect of a config-declared brokered primary. Wired
+	// whenever an LLM driver is opened (the shared LiveKey is present); nil
+	// otherwise, leaving the verb at 501. A brokered primary
+	// (`llm.credential_source: remote`) that cannot be wired (or cannot
+	// connect at boot) fails Boot LOUD — never a silent empty LiveKey.
+	var llmProviderInstaller agentcfgprotocol.LLMProviderInstaller
+	var inferenceBrokerNames []string
+	if stack.LLMLiveKey != nil {
+		concrete := NewLLMProviderInstaller(stack.LLMLiveKey, stack.LLMSnapshot.Provider,
+			cfg.LLM.InferenceBrokers, bus, red, opts.InstanceID, opts.Logger)
+		if concrete != nil {
+			llmProviderInstaller = concrete
+			inferenceBrokerNames = concrete.BrokerNames()
+			closers = append(closers, concrete.Close)
+			if cfg.LLM.CredentialSource == "remote" {
+				if cErr := concrete.BootConnectPrimary(ctx, cfg.LLM.InferenceBroker); cErr != nil {
+					closeAll(ctx)
+					return nil, fmt.Errorf("llm brokered primary: %w", cErr)
+				}
+			}
+		}
+	} else if cfg.LLM.CredentialSource == "remote" {
+		// The config declared a brokered primary but no LLM driver / LiveKey was
+		// wired — fail loud rather than accept a config that can never source a
+		// key (CLAUDE.md §13 "fail loudly at boot").
+		closeAll(ctx)
+		return nil, fmt.Errorf("llm.credential_source is \"remote\" but no LLM driver is wired to source the brokered key — set llm.driver or use llm.credential_source: local")
+	}
+
 	runLoopDriver, err := NewRunLoopDriver(RunLoopDriverOptions{
 		Logger:                  opts.Logger,
 		Bus:                     bus,
@@ -567,6 +597,8 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		BootDeclaredMCP:        BootDeclaredMCPServerNames(cfg),
 		BootDeclaredOAuth:      BootDeclaredOAuthProviderNames(cfg),
 		OAuthProviderInstaller: oauthProviderInstaller,
+		LLMProviderInstaller:   llmProviderInstaller,
+		InferenceBrokers:       inferenceBrokerNames,
 		Validator:              validator,
 		AuthSurface:            authSurface,
 		DisplayName:            opts.DisplayName,

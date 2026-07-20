@@ -147,6 +147,7 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.set_mcp_discovery_origins": {},
 	"agent_config.set_oauth_provider":        {},
 	"agent_config.remove_oauth_provider":     {},
+	"agent_config.set_llm_provider":          {},
 	// Session-user safe subset (the non-admin lower tier).
 	"agent_config.session.set_user_prompt":     {},
 	"agent_config.session.set_source_disables": {},
@@ -378,6 +379,9 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigSetOAuthProviderResponse":       "types",
 	"AgentConfigRemoveOAuthProviderRequest":     "types",
 	"AgentConfigRemoveOAuthProviderResponse":    "types",
+	"AgentConfigLLMProviderDescriptor":          "types",
+	"AgentConfigSetLLMProviderRequest":          "types",
+	"AgentConfigSetLLMProviderResponse":         "types",
 	// Session-user safe subset (the non-admin lower tier).
 	"AgentConfigSessionOverlay":                   "types",
 	"AgentConfigSessionSetUserPromptRequest":      "types",

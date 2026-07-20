@@ -271,6 +271,14 @@ type Stack struct {
 	// `enforcement_pending_restart:true` rather than a silent inert 200.
 	GovernanceEnforcementActive bool
 
+	// LLMLiveKey is the SAME atomically-swappable primary-key holder the
+	// opened LLM driver reads per call — exposed so the serving binary can
+	// build the inference-plane broker-pull source over it (the boot-declared
+	// brokered primary seeds this holder at connect + refresh, and the
+	// `agent_config.set_llm_provider` installer rebinds it). Populated
+	// alongside LLM (nil when no LLM driver is configured).
+	LLMLiveKey *llm.LiveKey
+
 	// Embedder is populated when the cfg carries a non-zero
 	// `embeddings` block (or Options.Embedder is set — caller-owned
 	// lifecycle). The semantic retrieval modes in Memory / Skills
@@ -566,6 +574,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		}
 		stack.LLM = llmClient
 		stack.KeyRotator = llm.NewProviderKeyRotator(llmCfg.Provider, liveKey)
+		stack.LLMLiveKey = liveKey
 		stack.closers = append(stack.closers, llmClient.Close)
 	}
 

@@ -229,6 +229,97 @@ type LLMConfig struct {
 	// unification of timeout/retry knobs that were previously
 	// scattered). Restart-required.
 	NetworkDefaults LLMNetworkDefaults `yaml:"network_defaults,omitempty"`
+
+	// CredentialSource selects WHERE the PRIMARY provider's API key is
+	// sourced from — the inference-plane credential-source seam:
+	//
+	//   - "" / "local" (default) — the key resolves from `api_key` (an
+	//     `env.NAME` reference or a literal) once at boot, exactly as
+	//     today. The process environment is the custodian.
+	//   - "remote" — the runtime PULLS the key from the coordinator's
+	//     boot-declared inference broker named by `inference_broker`, at
+	//     connect + refresh (never on the per-call hot path). The
+	//     coordinator remains sole custodian; nothing is persisted.
+	//
+	// Brokered XOR local, validated LOUD at boot: `remote` REQUIRES a
+	// non-empty `inference_broker` (resolving to a declared broker) and
+	// REJECTS a set `api_key` (both set is a config error); a local source
+	// REJECTS a set `inference_broker` (neither a broker nor a key is also
+	// an error — a provider must declare exactly one source). Restart-
+	// required; NOT a Protocol surface.
+	CredentialSource string `yaml:"credential_source,omitempty"`
+
+	// InferenceBroker names the boot-declared `inference_brokers[]` entry
+	// the primary provider's key is pulled from when `credential_source`
+	// is "remote". Referenced by NON-SECRET name — the pull endpoint /
+	// audience / scope ceiling live on the named broker, never here and
+	// never on the wire (the credential-plane invariant). Required
+	// when `credential_source: remote`, rejected otherwise.
+	InferenceBroker string `yaml:"inference_broker,omitempty"`
+
+	// InferenceBrokers is the boot-declared list of NAMED inference-plane
+	// credential brokers — the pinned credential SINK for a runtime's LLM
+	// provider key. The credential-plane invariant (no admin-writable field
+	// determines a credential sink) keeps every sink-determining value here,
+	// referenced by non-secret name from `credential_source: remote` (and
+	// from the `agent_config.set_llm_provider` Protocol write's zero-URL
+	// descriptor). Config/file-only, restart-required — NOT a Protocol
+	// surface.
+	InferenceBrokers []InferenceBrokerConfig `yaml:"inference_brokers,omitempty"`
+}
+
+// InferenceBrokerConfig declares one NAMED, boot-declared inference-plane
+// credential broker — the pinned credential SINK for a runtime's LLM
+// provider key, the inference-plane analogue of
+// [ToolOAuthCredentialBrokerConfig]. The credential-plane invariant (no
+// admin-writable field determines a credential sink) keeps every
+// sink-determining value HERE, never on a wire-writable descriptor. It
+// pins the pull endpoint / audience / scope ceiling by non-secret NAME;
+// no URL or secret ever crosses the wire.
+//
+// Config/file-only, restart-required — NOT a Protocol surface.
+//
+// Layout in YAML:
+//
+//	llm:
+//	  inference_brokers:
+//	    - name: openai-broker
+//	      credential_url: https://coordinator.example.com/runtimes/self/provider-key
+//	      auth_token_env: HARBOR_COORDINATOR_TOKEN
+//	      audience: openai        # optional
+//	      scope_ceiling: [chat]   # optional
+//	      cache_ttl: 5m           # optional
+//	      timeout: 10s            # optional
+type InferenceBrokerConfig struct {
+	// Name is the operator-facing broker identifier (unique within the
+	// slice; referenced by non-secret name from `credential_source: remote`
+	// and from a Protocol-installed provider descriptor). Required.
+	Name string `yaml:"name"`
+	// CredentialURL is the boot-pinned coordinator credential-pull endpoint
+	// the runtime GETs the provider API key from. Required; must be https
+	// (or a loopback host for the dev / fixture case). The pull carries the
+	// runtime's own service bearer token (AuthTokenEnv), so TLS is
+	// mandatory off loopback (§7). Boot-pinned: never wire-writable.
+	CredentialURL string `yaml:"credential_url"`
+	// AuthTokenEnv names the env var holding the runtime's OWN broker
+	// credential — the `Authorization: Bearer` the runtime presents to
+	// CredentialURL (§7 rule 2 — never hardcoded). Required non-empty. Read
+	// lazily at fetch time so a rotated token is picked up without restart.
+	AuthTokenEnv string `yaml:"auth_token_env"`
+	// Audience is the boot-pinned audience ceiling for the pulled provider
+	// key. Optional — an LLM provider key is not always audience-shaped;
+	// when present it is enforced as the credential-plane sink pin, when absent the
+	// broker's own binding governs. Boot-pinned, never wire-writable.
+	Audience string `yaml:"audience,omitempty"`
+	// ScopeCeiling is the boot-pinned scope ceiling for the pulled provider
+	// key. Optional (see Audience). Boot-pinned, never wire-writable.
+	ScopeCeiling []string `yaml:"scope_ceiling,omitempty"`
+	// CacheTTL caps the in-memory serve horizon for a brokered provider
+	// key. Optional; zero = driver default.
+	CacheTTL time.Duration `yaml:"cache_ttl,omitempty"`
+	// Timeout bounds a single credential pull. Optional; zero = driver
+	// default.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
 }
 
 // LLMCustomProviderConfig declares one operator-configured

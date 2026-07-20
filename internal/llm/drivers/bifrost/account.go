@@ -148,11 +148,20 @@ func newAccount(cfg llm.ConfigSnapshot, deps llm.Deps) (*Account, error) {
 		return nil, fmt.Errorf("%w: %q (allowed native: %s; declared custom: %s)",
 			ErrInvalidProvider, cfg.Provider, knownProvidersHuman(), customNamesHuman(customByName))
 	}
-	key, err := resolveAPIKey(cfg.APIKey)
-	if err != nil {
-		return nil, err
+	// A BROKERED primary (credential_source: remote) sources its key from the
+	// coordinator inference broker, NOT from local env / config. The driver
+	// does NOT resolve a key here — the shared LiveKey holder is seeded (and
+	// refreshed) by the boundary-wired broker-pull source, and read through on
+	// every GetKeysForProvider call. Until the source's first Connect seeds it,
+	// the holder is empty and the safety edge / bifrost fails closed on the
+	// empty key (never a silent bad call).
+	if cfg.CredentialSource != "remote" {
+		key, err := resolveAPIKey(cfg.APIKey)
+		if err != nil {
+			return nil, err
+		}
+		holder.Init(key)
 	}
-	holder.Init(key)
 	nativeCfg := buildNativeProviderConfig(cfg)
 	return &Account{
 		provider:      provider,

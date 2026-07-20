@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 327 canonical Harbor Protocol wire types, generated from the single-source
+The 330 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -209,6 +209,18 @@ Declared in `internal/protocol/types`.
 | `reasoning_effort_changed` | `bool` |  |
 | `reasoning_effort_from` | `string` | optional (`omitempty`) |
 | `reasoning_effort_to` | `string` | optional (`omitempty`) |
+
+## AgentConfigLLMProviderDescriptor
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `provider` | `string` |  |
+| `credential_source` | `string` |  |
+| `inference_broker` | `string` |  |
+| `model_allow` | `[]string` | optional (`omitempty`) |
 
 ## AgentConfigListRevisionsRequest
 
@@ -564,6 +576,26 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigSetLLMProviderRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `provider` | `types.AgentConfigLLMProviderDescriptor` — see [`AgentConfigLLMProviderDescriptor`](./types.md#agentconfigllmproviderdescriptor) |  |
+
+## AgentConfigSetLLMProviderResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `installed` | `bool` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigSetMCPDiscoveryOriginsRequest

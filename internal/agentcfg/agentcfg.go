@@ -298,6 +298,29 @@ type OAuthProviderDescriptor struct {
 	Scopes []string `json:"scopes,omitempty"`
 }
 
+// LLMProviderDescriptor is the domain shape of one Protocol-installed,
+// ZERO-URL inference provider binding — the transport shape the
+// inference-plane provider installer seam consumes. It carries NO URL and NO
+// env-var name: every sink-determining value lives on the boot-declared
+// inference broker it references by non-secret name (the credential-plane
+// invariant). Distinct from [OAuthProviderDescriptor]: a different
+// credential plane (an LLM provider KEY, not an OAuth client credential).
+type LLMProviderDescriptor struct {
+	// Name is the unique provider-binding name. Required.
+	Name string `json:"name"`
+	// Provider is the LLM provider the pulled key authenticates (e.g.
+	// "openai"). Required.
+	Provider string `json:"provider"`
+	// CredentialSource is validated to be exactly "remote" (broker-pull).
+	// Required.
+	CredentialSource string `json:"credential_source"`
+	// InferenceBroker names a boot-declared inference broker that pins every
+	// credential sink. Required; an unknown name fails loud. NON-SECRET.
+	InferenceBroker string `json:"inference_broker"`
+	// ModelAllow is the optional model-name allowlist. NON-SECRET.
+	ModelAllow []string `json:"model_allow,omitempty"`
+}
+
 // OAuthProvidersSection is the Protocol-installed OAuth-provider section of the
 // config envelope: the set of ZERO-URL provider descriptors an admin has
 // installed over the control plane. Declared as its own section so an install /

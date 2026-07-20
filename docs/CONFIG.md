@@ -247,6 +247,34 @@ vLLM / ollama / lm-studio / in-house gateways). Each entry needs
 `name` / `base_url` / `api_key_env_var` / `models`. See the
 `LLMCustomProviderConfig` godoc for the full surface.
 
+### llm.credential_source
+
+Where the PRIMARY provider's API key is sourced: `""` / `"local"`
+(default — resolved from `api_key` once at boot) or `"remote"`
+(broker-pull from the named `inference_broker` at connect + refresh).
+Brokered XOR local — a `remote` source requires a resolvable
+`inference_broker` and an empty `api_key` (both set, or neither, is a
+boot error). Restart-required; NOT a Protocol surface.
+
+### llm.inference_broker
+
+Names the `inference_brokers[]` entry the primary provider's key is
+pulled from when `credential_source` is `"remote"`. Referenced by
+non-secret NAME (the pull endpoint / audience / scope ceiling live on
+the named broker). Required when `credential_source: remote`, rejected
+otherwise. Restart-required.
+
+### llm.inference_brokers
+
+Boot-declared list of NAMED inference-plane credential brokers — the
+pinned credential SINK for a runtime's LLM provider key. Each entry
+needs `name` / `credential_url` (https or loopback) / `auth_token_env`,
+with optional `audience` / `scope_ceiling` / `cache_ttl` / `timeout`.
+No URL or secret ever crosses the wire (the credential-plane invariant);
+referenced by name from `llm.credential_source: remote` and from the
+`agent_config.set_llm_provider` Protocol write. See the
+`InferenceBrokerConfig` godoc. Config/file-only, restart-required.
+
 ### llm.network_defaults.timeout
 
 Default per-provider timeout. Default: `0` → bifrost's package

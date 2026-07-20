@@ -72,6 +72,17 @@ func (k *LiveKey) Rotate(v string) error {
 	return nil
 }
 
+// Zero atomically clears the key so the next Get returns "" — the
+// fail-closed path when a broker-pulled binding is closed or its refresh
+// contract expires. A subsequent GetKeysForProvider read then serves the
+// empty key, and the bifrost / safety edge rejects the call loud rather
+// than serving a possibly-revoked key. In-flight reads see either the old
+// or the empty value, never a torn one.
+func (k *LiveKey) Zero() {
+	empty := ""
+	k.ptr.Store(&empty)
+}
+
 // Fingerprint returns a non-reversible digest of the CURRENT key for audit
 // correlation — `sha256:<first 12 hex>`. Never the key itself. An empty
 // holder returns "sha256:" (no digest). Operators correlate rotations by

@@ -358,9 +358,14 @@ func (c *Config) validateLLM() error {
 		// the legacy `llm.api_key` / `llm.base_url` / `llm.timeout`
 		// fields are not required.
 		_, isCustom := customNames[c.LLM.Provider]
+		// A brokered primary (credential_source: remote) sources its key from
+		// the coordinator broker, NOT llm.api_key — so the api_key-required
+		// check is skipped (and the brokered-XOR-local rule below REJECTS a set
+		// api_key). The timeout knob still applies.
+		brokered := c.LLM.CredentialSource == "remote"
 		if !isCustom {
-			if c.LLM.APIKey == "" {
-				return fieldError("llm.api_key", "must not be empty (or declare llm.provider as a custom-provider name)")
+			if c.LLM.APIKey == "" && !brokered {
+				return fieldError("llm.api_key", "must not be empty (or declare llm.provider as a custom-provider name, or set llm.credential_source: remote)")
 			}
 			if c.LLM.Timeout <= 0 {
 				return fieldError("llm.timeout", "must be > 0 (or declare llm.provider as a custom-provider name)")
@@ -422,6 +427,94 @@ func (c *Config) validateLLM() error {
 				fmt.Sprintf("must be >= 0, got %d", prof.MaxRetries),
 			)
 		}
+	}
+	if err := c.validateInferenceBrokers(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// allowedLLMCredentialSources is the closed value set the primary
+// provider's `credential_source` may take: the empty / "local" boot-time
+// env resolution (the default) or the "remote" broker-pull.
+var allowedLLMCredentialSources = map[string]struct{}{
+	"": {}, "local": {}, "remote": {},
+}
+
+// validateInferenceBrokers validates the boot-declared inference-plane
+// credential brokers (unique names; well-formed https / loopback
+// credential_url; non-empty auth_token_env; non-negative cache_ttl /
+// timeout) AND the primary provider's brokered-XOR-local credential source
+// The brokered-XOR-local rule: a "remote" source REQUIRES a resolvable `inference_broker` and
+// REJECTS a set `api_key` (both set is a config error); a local source
+// REJECTS a set `inference_broker`. Every sink-determining value is pinned
+// on the named broker, never on the wire (the credential-plane invariant).
+func (c *Config) validateInferenceBrokers() error {
+	brokerNames := make(map[string]struct{}, len(c.LLM.InferenceBrokers))
+	for i, b := range c.LLM.InferenceBrokers {
+		prefix := fmt.Sprintf("llm.inference_brokers[%d]", i)
+		if b.Name == "" {
+			return fieldError(prefix+".name", "must not be empty")
+		}
+		if _, dup := brokerNames[b.Name]; dup {
+			return fieldError(prefix+".name",
+				fmt.Sprintf("duplicate broker name %q (must be unique within llm.inference_brokers[])", b.Name))
+		}
+		brokerNames[b.Name] = struct{}{}
+		if b.CredentialURL == "" {
+			return fieldError(prefix+".credential_url",
+				"must not be empty (the coordinator credential-pull endpoint — the pinned credential sink)")
+		}
+		u, err := url.Parse(b.CredentialURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fieldError(prefix+".credential_url",
+				fmt.Sprintf("must be a well-formed http(s) URL with a host, got %q", b.CredentialURL))
+		}
+		// TLS mandatory off loopback — the GET carries the runtime's service
+		// bearer token and returns the provider API key (§7).
+		if u.Scheme == "http" && !isLoopbackHostname(u.Hostname()) {
+			return fieldError(prefix+".credential_url",
+				fmt.Sprintf("must be https for non-loopback hosts (the pull carries the runtime service bearer and returns the provider key; plaintext http is allowed only for 127.0.0.1 / ::1 / localhost), got %q", b.CredentialURL))
+		}
+		if b.AuthTokenEnv == "" {
+			return fieldError(prefix+".auth_token_env",
+				"must not be empty (env var name holding the runtime's broker credential; §7 rule 2 — never hardcoded)")
+		}
+		for j, sc := range b.ScopeCeiling {
+			if strings.TrimSpace(sc) == "" {
+				return fieldError(fmt.Sprintf("%s.scope_ceiling[%d]", prefix, j), "must be a non-empty scope string")
+			}
+		}
+		if b.CacheTTL < 0 {
+			return fieldError(prefix+".cache_ttl", "must be >= 0")
+		}
+		if b.Timeout < 0 {
+			return fieldError(prefix+".timeout", "must be >= 0")
+		}
+	}
+
+	// Brokered XOR local — validated for the primary provider.
+	src := c.LLM.CredentialSource
+	if _, ok := allowedLLMCredentialSources[src]; !ok {
+		return fieldError("llm.credential_source",
+			fmt.Sprintf("must be one of \"\", \"local\", \"remote\"; got %q", src))
+	}
+	if src == "remote" {
+		if c.LLM.InferenceBroker == "" {
+			return fieldError("llm.inference_broker",
+				"must name a declared llm.inference_brokers[] entry when llm.credential_source is \"remote\" (a brokered provider has no local key source)")
+		}
+		if _, ok := brokerNames[c.LLM.InferenceBroker]; !ok {
+			return fieldError("llm.inference_broker",
+				fmt.Sprintf("names no declared llm.inference_brokers[] entry (%q); an unknown broker fails loud", c.LLM.InferenceBroker))
+		}
+		if c.LLM.APIKey != "" {
+			return fieldError("llm.api_key",
+				"must be empty when llm.credential_source is \"remote\" (brokered XOR local — a provider declares exactly one key source, never both)")
+		}
+	} else if c.LLM.InferenceBroker != "" {
+		return fieldError("llm.inference_broker",
+			"must be empty unless llm.credential_source is \"remote\" (a local provider sources its key from api_key, not a broker)")
 	}
 	return nil
 }
