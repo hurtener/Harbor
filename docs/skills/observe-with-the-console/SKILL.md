@@ -146,7 +146,7 @@ When a tool persists a heavy output, this is where it lands. The Playground's fi
 
 ## Settings
 
-A calm "sub-nav rail + one section at a time" surface. The left rail lists Console-local sections (preferences, saved state) first, then a Runtime sub-heading for the read-only posture sections (runtime / governance / LLM posture). The one net-new Protocol method it owns is `auth.rotate_token`, behind the Per-Runtime Auth card's "Rotate token."
+A calm "sub-nav rail + one section at a time" surface. The left rail lists Console-local sections (preferences, saved state) first, then a Runtime sub-heading for the posture sections (runtime / governance / LLM posture). The one net-new Protocol method it owns is `auth.rotate_token`, behind the Per-Runtime Auth card's "Rotate token." The **Governance Posture** card also carries an **admin-gated write affordance** (`governance.set_posture`): with an `admin`-scoped session it shows an edit form (default tier + the identity-tier table) that replaces the WHOLE policy live through the typed client and then re-reads `governance.posture` (never mirroring its own submission — the runtime stays the sole owner of the policy record). Without the `admin` claim the form is hidden and the card stays read-only; a write that omits or zeroes a currently-enforced ceiling is rejected by the runtime and surfaced inline (never budget-widening).
 
 ---
 

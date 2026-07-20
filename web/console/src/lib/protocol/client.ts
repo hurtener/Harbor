@@ -53,6 +53,8 @@ import type {
 	GovernanceTenantOverrides,
 	GovernanceGetTenantOverridesResponse,
 	GovernanceSetTenantOverridesResponse,
+	GovernanceSetPostureRequest,
+	GovernanceSetPostureResponse,
 } from './governance.js';
 import type {
 	AgentConfigPayload,
@@ -74,6 +76,8 @@ import type {
 	AgentConfigOAuthProviderDescriptor,
 	AgentConfigSetOAuthProviderResponse,
 	AgentConfigRemoveOAuthProviderResponse,
+	AgentConfigLLMProviderDescriptor,
+	AgentConfigSetLLMProviderResponse,
 	AgentConfigSkillInput,
 	AgentConfigSkillsListResponse,
 	AgentConfigSkillsUpsertResponse,
@@ -1056,6 +1060,19 @@ export class GovernanceNamespace {
 			{ overrides: overrides as unknown as Record<string, unknown> },
 		);
 	}
+	/**
+	 * `governance.set_posture` — write the identity-tier policy table (a FULL
+	 * REPLACE). Admin-scoped (auth.ScopeAdmin ONLY). The request carries no
+	 * identity field (authority is server-side); the Transport does not fold
+	 * one in. A table that omits or zeroes a currently-enforced ceiling is
+	 * rejected fail-closed (`invalid_request`, HTTP 400).
+	 */
+	setPosture(req: GovernanceSetPostureRequest): Promise<GovernanceSetPostureResponse> {
+		return this.#t.request<GovernanceSetPostureResponse>('/v1/governance/set_posture', {
+			default_tier: req.default_tier,
+			identity_tiers: req.identity_tiers as unknown as Record<string, unknown>,
+		});
+	}
 }
 
 /**
@@ -1239,6 +1256,20 @@ export class AgentConfigNamespace {
 		return this.#t.request<AgentConfigRemoveOAuthProviderResponse>(
 			'/v1/agent_config/remove_oauth_provider',
 			{ agent_id: agentId, name },
+		);
+	}
+	/** `agent_config.set_llm_provider` — install (upsert) / rotate a ZERO-URL,
+	 * broker-pull inference provider binding. A separate method from
+	 * set_oauth_provider (a distinct credential plane). The descriptor carries only
+	 * {name, provider, credential_source, inference_broker, model_allow?}; a URL /
+	 * env-var / secret field is rejected by the wire edge. Admin-scoped. */
+	setLLMProvider(
+		agentId: string,
+		provider: AgentConfigLLMProviderDescriptor,
+	): Promise<AgentConfigSetLLMProviderResponse> {
+		return this.#t.request<AgentConfigSetLLMProviderResponse>(
+			'/v1/agent_config/set_llm_provider',
+			{ agent_id: agentId, provider },
 		);
 	}
 	/** `agent_config.skills.list` — list the agent's skills (metadata only). */

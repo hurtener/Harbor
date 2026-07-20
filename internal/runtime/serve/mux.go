@@ -117,8 +117,13 @@ type MuxInput struct {
 	// built caller-side (the policy is shared with the run-loop driver; the
 	// rotator's lifecycle is the assembly's).
 	TenantOverridePolicy *governance.TenantOverridePolicy
-	KeyRotator           *llm.ProviderKeyRotator
-	ValidModels          []string
+	// SetPosturePolicy backs governance.set_posture — the admin identity-tier
+	// policy WRITE surface (the StateStore-backed effective-policy record the
+	// posture read layers over). Built caller-side; nil leaves the
+	// set_posture route at 501 (the partial-build convention).
+	SetPosturePolicy *governance.SetPosturePolicy
+	KeyRotator       *llm.ProviderKeyRotator
+	ValidModels      []string
 
 	// MCPAttacher backs agent_config.add_mcp_connection. Built caller-side so
 	// its Close joins the caller's closer chain; nil leaves the add verb
@@ -135,6 +140,15 @@ type MuxInput struct {
 	// (tools.oauth_providers[].name); an install/uninstall of one of these is
 	// refused (boot wins).
 	BootDeclaredOAuth []string
+
+	// LLMProviderInstaller backs agent_config.set_llm_provider (the
+	// Protocol-installed, zero-URL broker-pull inference provider). Built
+	// caller-side; nil leaves the verb unwired (→ 501).
+	LLMProviderInstaller agentcfgprotocol.LLMProviderInstaller
+	// InferenceBrokers is the set of boot-declared inference-broker names
+	// (llm.inference_brokers[].name); a set_llm_provider naming a broker outside
+	// this set is refused (→ 400 — no admin-writable field determines a sink).
+	InferenceBrokers []string
 
 	// Auth. Validator nil mounts the transports WithoutValidator (the
 	// explicit test-kit opt-out); AuthSurface nil leaves auth.rotate_token
@@ -220,7 +234,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
 		Metrics:                   runtimeposture.MetricsProvider(in.Metrics, logger),
-		Governance:                governance.NewPostureProvider(governance.ConfigFromOperator(cfg.Governance)),
+		Governance:                governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
 		LLM:                       llm.NewPostureProvider(in.LLMSnapshot),
 		Redactor:                  red,
 		Bus:                       bus,
@@ -582,6 +596,15 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		muxOpts = append(muxOpts, transports.WithGovernanceService(governanceService))
 	}
 
+	if in.SetPosturePolicy != nil {
+		postureWriteService, pErr := governanceprotocol.NewPostureWriteService(in.SetPosturePolicy,
+			governanceprotocol.WithPostureWriteLogger(logger))
+		if pErr != nil {
+			return nil, wrapErr("governance/protocol set-posture service", pErr)
+		}
+		muxOpts = append(muxOpts, transports.WithGovernancePostureWrite(postureWriteService))
+	}
+
 	if in.KeyRotator != nil {
 		keyRotateService, kErr := governanceprotocol.NewKeyRotateService(in.KeyRotator,
 			governanceprotocol.WithKeyRotateBus(bus),
@@ -617,6 +640,10 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		if in.OAuthProviderInstaller != nil {
 			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithProviderInstaller(in.OAuthProviderInstaller))
 		}
+		if in.LLMProviderInstaller != nil {
+			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithLLMProviderInstaller(in.LLMProviderInstaller))
+		}
+		agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithInferenceBrokers(append([]string(nil), in.InferenceBrokers...)))
 		agentConfigService, acErr := agentcfgprotocol.NewService(in.AgentConfig, agentConfigOpts...)
 		if acErr != nil {
 			return nil, wrapErr("agent-config/protocol service", acErr)

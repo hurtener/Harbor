@@ -262,6 +262,26 @@ const (
 	// wire-transport route is `POST /v1/governance/rotate_key`.
 	MethodGovernanceRotateKey Method = "governance.rotate_key"
 
+	// MethodGovernanceSetPosture — admin verb: writes the identity-tier
+	// policy table (per tier: budget-ceiling USD / max-tokens cap /
+	// rate-limit capacity, plus the default-tier assignment) live, with no
+	// redeploy. The write is a FULL REPLACE through the shared validator the
+	// `governance.posture` read projects (never a partial merge) — a
+	// submitted table that OMITS or zeroes a ceiling the current effective
+	// policy enforces is rejected fail-closed with CodeInvalidRequest before
+	// any state mutation, never budget-widening. The tier policy graduates
+	// from hot-reloadable boot config to a StateStore-backed record layered
+	// over the config-declared defaults; it round-trips with the read (what
+	// you set is what the next `governance.posture` returns).
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim ONLY —
+	// explicitly NOT the two-scope (`admin` OR `console:fleet`) set that
+	// gates the read, so a leaked read-only fleet token cannot widen a
+	// budget. A non-admin caller is rejected with CodeScopeMismatch. NOT a
+	// control / search / posture method — `IsGovernanceAdminMethod` is its
+	// own O(1) predicate. The wire-transport route is
+	// `POST /v1/governance/set_posture`.
+	MethodGovernanceSetPosture Method = "governance.set_posture"
+
 	// MethodAgentConfigGet — reads an agent's current active config
 	// revision (the read-back the Console renders before editing).
 	// Identity-mandatory; requires the verified `auth.ScopeAdmin` claim
@@ -413,6 +433,23 @@ const (
 	// the `auth.ScopeAdmin` claim. The wire-transport route is
 	// `POST /v1/agent_config/remove_oauth_provider`.
 	MethodAgentConfigRemoveOAuthProvider Method = "agent_config.remove_oauth_provider"
+
+	// MethodAgentConfigSetLLMProvider — admin verb: installs (upserts) /
+	// rotates a ZERO-URL, broker-pull INFERENCE provider binding onto the
+	// owner-tagged provider set so the runtime's LLM key is sourced from the
+	// named coordinator broker. The writable descriptor carries only
+	// `{name, provider, credential_source:"remote", inference_broker,
+	// model_allow?}` — NO URL, NO env-var name, NO secret; every credential
+	// sink is pinned at boot on the named inference broker (a write carrying
+	// `credential_url` / `token_url` / `*_env` / a secret is rejected BY NAME
+	// via DisallowUnknownFields). A separate method from set_oauth_provider (a
+	// distinct credential plane) — never a relaxation of its
+	// tokenexchange-only allowlist. An unknown broker name is refused loud.
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim ONLY (a control
+	// write is a strictly more elevated tier than any read — NOT the admin OR
+	// console:fleet set). The wire-transport route is
+	// `POST /v1/agent_config/set_llm_provider`.
+	MethodAgentConfigSetLLMProvider Method = "agent_config.set_llm_provider"
 
 	// MethodAgentConfigSessionSetUserPrompt — session-safe verb (the
 	// non-admin lower tier): a session-scoped end user sets a user
@@ -999,6 +1036,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodGovernanceSetTenantOverrides:        {},
 	MethodGovernanceGetTenantOverrides:        {},
 	MethodGovernanceRotateKey:                 {},
+	MethodGovernanceSetPosture:                {},
 	MethodAgentConfigGet:                      {},
 	MethodAgentConfigSetRevision:              {},
 	MethodAgentConfigListRevisions:            {},
@@ -1015,6 +1053,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins:   {},
 	MethodAgentConfigSetOAuthProvider:         {},
 	MethodAgentConfigRemoveOAuthProvider:      {},
+	MethodAgentConfigSetLLMProvider:           {},
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
 	MethodAgentConfigSessionSkillsList:        {},
@@ -1247,6 +1286,7 @@ var canonicalGovernanceAdminMethods = map[Method]struct{}{
 	MethodGovernanceSetTenantOverrides: {},
 	MethodGovernanceGetTenantOverrides: {},
 	MethodGovernanceRotateKey:          {},
+	MethodGovernanceSetPosture:         {},
 }
 
 // IsGovernanceAdminMethod reports whether m is one of the admin-scoped
@@ -1259,7 +1299,7 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the twenty-six
+// canonicalAgentConfigMethods is the closed set of the twenty-seven
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
@@ -1289,6 +1329,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins: {},
 	MethodAgentConfigSetOAuthProvider:       {},
 	MethodAgentConfigRemoveOAuthProvider:    {},
+	MethodAgentConfigSetLLMProvider:         {},
 	// Session-user safe subset (the non-admin lower tier).
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
@@ -1354,9 +1395,10 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetMCPDiscoveryOrigins: {},
 	MethodAgentConfigSetOAuthProvider:       {},
 	MethodAgentConfigRemoveOAuthProvider:    {},
+	MethodAgentConfigSetLLMProvider:         {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the twenty-six
+// IsAgentConfigMethod reports whether m is one of the twenty-seven
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

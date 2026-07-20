@@ -59,6 +59,17 @@ const (
 	// per stream (terminator marker). SafePayload — deltas are per-session
 	// operator-visible content.
 	EventTypeCompletionChunk events.EventType = "llm.completion.chunk"
+	// EventTypeProviderCredentialFetched — emitted at every connect /
+	// refresh pull of a broker-sourced provider key from the coordinator's
+	// inference broker. Runtime-scoped: attributed to the per-runtime
+	// SERVICE PRINCIPAL (the runtime service token that authenticates the
+	// pull), NOT a (tenant, user, session) request — a provider key is a
+	// runtime-level credential, not identity-scoped data, so the event does
+	// not widen the isolation tuple. SafePayload: carries a non-reversible
+	// key fingerprint (never the key value), the broker name, and the
+	// outcome. A pull that cannot be audited fails loud (the pull is not
+	// served without its audit trail).
+	EventTypeProviderCredentialFetched events.EventType = "llm.provider_credential_fetched" //nolint:gosec // event type name, not a credential value
 	// EventTypeProviderFileUploaded — emitted by the LLM driver when a
 	// `provider_native`-flagged content part is uploaded to the
 	// provider's file surface and rewritten to an opaque `file_id`
@@ -82,9 +93,47 @@ func init() {
 		EventTypePostureReadAdmin,
 		EventTypeCompletionChunk,
 		EventTypeProviderFileUploaded,
+		EventTypeProviderCredentialFetched,
 	} {
 		events.RegisterEventType(t)
 	}
+}
+
+// LLMProviderCredentialFetchedPayload is the typed payload for
+// EventTypeProviderCredentialFetched. SafePayload — the runtime principal
+// id, broker name, provider, non-reversible key fingerprint, and outcome
+// are operator-visible audit metadata; the key VALUE is never carried.
+//
+// Attribution is RUNTIME-scoped (the flagged open item, resolved): the
+// event is keyed by the per-runtime service principal — the runtime service
+// token that authenticates the coordinator pull — NOT a synthesized
+// (tenant, user, session). The principal is infrastructure identity and
+// does not widen the isolation tuple (§4): storage / memory / event-filter
+// scoping never treats it as an isolation principal. The reserved runtime
+// scope on the carrying Event.Identity satisfies the bus's structural
+// triple requirement only; the authoritative attribution is
+// RuntimePrincipal.
+type LLMProviderCredentialFetchedPayload struct {
+	events.SafeSealed
+	// RuntimePrincipal is the per-runtime service-principal id (a
+	// non-secret identifier for the runtime service token that authenticated
+	// the pull). The authoritative audit attribution key.
+	RuntimePrincipal string
+	// Broker is the boot-declared inference-broker name the key was pulled
+	// from (non-secret).
+	Broker string
+	// Provider is the LLM provider the key authenticates (e.g. "openai").
+	Provider string
+	// KeyFingerprint is the non-reversible digest of the pulled key
+	// (`sha256:<first 12 hex>`) for rotation correlation. NEVER the key.
+	KeyFingerprint string
+	// Phase is the pull occasion: "connect" (first pull) or "refresh".
+	Phase string
+	// Outcome is "ok" on a served pull; the failure event is emitted
+	// separately by the source's fail-loud path.
+	Outcome string
+	// OccurredAt is the pull wall-clock instant.
+	OccurredAt time.Time
 }
 
 // PostureReadAdminPayload is the typed payload for

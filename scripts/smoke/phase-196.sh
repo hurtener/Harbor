@@ -117,4 +117,20 @@ else
     skip "phase 196: HARBOR_DEV_FLEET_TOKEN unavailable — scope-gate assertion skipped"
 fi
 
+# --- REAL INSTALL: a valid zero-URL descriptor naming the boot-declared dev
+#     inference broker installs the binding live and returns 200 (an OK, not a
+#     501 SKIP — the installer IS wired in dev). examples/dev.yaml declares
+#     `dev-inference-broker`; the primary provider is `openrouter`. The install
+#     is async (the background refresh loop performs the pull), so the 200 does
+#     not require a reachable coordinator. ---
+INSTALL_CODE="$(post_code "${SET_URL}" \
+    "{\"agent_id\":\"${AGENT_ID}\",\"provider\":{\"name\":\"rotate-openrouter\",\"provider\":\"openrouter\",\"credential_source\":\"remote\",\"inference_broker\":\"dev-inference-broker\"}}")"
+if [ "${INSTALL_CODE}" = "200" ]; then
+    ok "phase 196: a valid zero-URL set_llm_provider installs the binding (200) — the installer is wired in dev"
+elif [ "${INSTALL_CODE}" = "501" ]; then
+    fail "phase 196: set_llm_provider returned 501 — the LLMProviderInstaller is NOT wired (the feature is inert)"
+else
+    fail "phase 196: a valid set_llm_provider returned ${INSTALL_CODE}, want 200"
+fi
+
 smoke_summary

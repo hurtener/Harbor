@@ -187,6 +187,22 @@ type Service struct {
 	// on the interface. Owner-tagged for reconcile scoping; resolution stays
 	// process-global bare-name.
 	providerInstaller ProviderInstaller
+	// llmProviderInstaller installs / uninstalls a Protocol-installed, zero-URL
+	// broker-pull INFERENCE provider binding live into the owner-tagged provider
+	// set for `agent_config.set_llm_provider`. Optional — nil ⇒ the verb returns
+	// ErrLLMProviderInstallUnavailable (→ 501 at the wire edge). The concrete
+	// (which resolves the boot inference broker + builds the InferenceKeySource)
+	// is injected at the cmd/harbor + devstack boundary; this package depends
+	// only on the interface.
+	llmProviderInstaller LLMProviderInstaller
+	// inferenceBrokers is the set of boot-declared inference-broker names
+	// (`llm.inference_brokers[].name`). set_llm_provider rejects a descriptor
+	// whose inference_broker is not in this set with ErrLLMProviderBrokerUnknown
+	// (400) — no admin-writable field determines a credential sink (the credential-plane invariant). An
+	// empty / nil set means NO broker is installable (every name is unknown →
+	// 400), the fail-closed default. Populated at the cmd/harbor + devstack
+	// boundary from the loaded config.
+	inferenceBrokers map[string]struct{}
 	// bootDeclaredOAuthProviders is the set of OAuth provider names declared in
 	// the boot yaml (`tools.oauth_providers[].name`). set_oauth_provider /
 	// remove_oauth_provider reject a name in this set with a DISTINCT loud error:
@@ -391,6 +407,42 @@ func WithProviderInstaller(a ProviderInstaller) Option {
 		if a != nil {
 			s.providerInstaller = a
 		}
+	}
+}
+
+// WithLLMProviderInstaller wires the concrete that installs / uninstalls a
+// Protocol-installed, zero-URL broker-pull inference provider binding live into
+// the owner-tagged provider set for `agent_config.set_llm_provider`. A nil
+// installer leaves the verb returning ErrLLMProviderInstallUnavailable (→ 501).
+// The concrete (which resolves the boot inference broker + builds the
+// InferenceKeySource) is injected at the cmd/harbor + devstack boundary; this
+// package depends only on the interface.
+func WithLLMProviderInstaller(a LLMProviderInstaller) Option {
+	return func(s *Service) {
+		if a != nil {
+			s.llmProviderInstaller = a
+		}
+	}
+}
+
+// WithInferenceBrokers sets the set of boot-declared inference-broker names
+// (`llm.inference_brokers[].name`). set_llm_provider rejects a descriptor whose
+// inference_broker is not in this set with ErrLLMProviderBrokerUnknown (400) —
+// no admin-writable field determines a credential sink (the credential-plane invariant). An empty / nil
+// list leaves EVERY broker name unknown (the fail-closed default). Injected at
+// the cmd/harbor + devstack boundary from the loaded config.
+func WithInferenceBrokers(names []string) Option {
+	return func(s *Service) {
+		if len(names) == 0 {
+			return
+		}
+		set := make(map[string]struct{}, len(names))
+		for _, n := range names {
+			if n != "" {
+				set[n] = struct{}{}
+			}
+		}
+		s.inferenceBrokers = set
 	}
 }
 

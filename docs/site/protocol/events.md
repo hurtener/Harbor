@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 134 canonical event types a Harbor Runtime can publish, read from the live
+The 137 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -133,6 +133,19 @@ Payload `AgentRestartedPayload` — safe payload (delivered typed, verbatim).
 | `VersionHash` | `string` |  |
 | `VersionHashChanged` | `bool` |  |
 | `RestartedAt` | `int64` |  |
+
+## `agent_config.llm_provider.installed`
+
+Payload `LLMProviderSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ProviderName` | `string` |  |
+| `Provider` | `string` |  |
+| `InferenceBroker` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
 
 ## `agent_config.oauth_provider.installed`
 
@@ -404,6 +417,21 @@ Payload `PostureReadAdminPayload` — safe payload (delivered typed, verbatim).
 | `RequestedTenant` | `string` |  |
 | `OccurredAt` | `time.Time` |  |
 
+## `governance.posture_set`
+
+Payload `GovernancePostureSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Actor` | `identity.Quadruple` |  |
+| `DefaultTierBefore` | `string` |  |
+| `DefaultTierAfter` | `string` |  |
+| `TierCountBefore` | `int` |  |
+| `TierCountAfter` | `int` |  |
+| `TiersBefore` | `[]string` |  |
+| `TiersAfter` | `[]string` |  |
+| `OccurredAt` | `time.Time` |  |
+
 ## `governance.rate_limited`
 
 Payload `RateLimitedPayload` — safe payload (delivered typed, verbatim).
@@ -525,6 +553,20 @@ Payload `PostureReadAdminPayload` — safe payload (delivered typed, verbatim).
 |---|---|---|
 | `Actor` | `identity.Quadruple` |  |
 | `RequestedTenant` | `string` |  |
+
+## `llm.provider_credential_fetched`
+
+Payload `LLMProviderCredentialFetchedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `RuntimePrincipal` | `string` |  |
+| `Broker` | `string` |  |
+| `Provider` | `string` |  |
+| `KeyFingerprint` | `string` |  |
+| `Phase` | `string` |  |
+| `Outcome` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
 
 ## `llm.provider_file.uploaded`
 

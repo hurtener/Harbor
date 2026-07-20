@@ -83,6 +83,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	governance.EventTypePostureReadAdmin:      {Payloads: []reflect.Type{reflect.TypeOf(governance.PostureReadAdminPayload{})}},
 	governance.EventTypeTenantOverridesSet:    {Payloads: []reflect.Type{reflect.TypeOf(governance.TenantOverridesSetPayload{})}},
 	governance.EventTypeKeyRotated:            {Payloads: []reflect.Type{reflect.TypeOf(governance.KeyRotatedPayload{})}},
+	governance.EventTypePostureSet:            {Payloads: []reflect.Type{reflect.TypeOf(governance.GovernancePostureSetPayload{})}},
 
 	// --- Agent-config control plane (internal/agentcfg).
 	agentcfg.EventTypeConfigRevised:             {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.ConfigRevisedPayload{})}},
@@ -97,6 +98,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	agentcfg.EventTypeMCPDiscoveryOriginsSet:    {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.MCPDiscoveryOriginsSetPayload{})}},
 	agentcfg.EventTypeOAuthProviderInstalled:    {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.OAuthProviderSetPayload{})}},
 	agentcfg.EventTypeOAuthProviderRemoved:      {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.OAuthProviderSetPayload{})}},
+	agentcfg.EventTypeLLMProviderInstalled:      {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.LLMProviderSetPayload{})}},
 
 	// --- Dev-draft lifecycle (harbor dev's dynamic agent scaffolding).
 	devdraft.EventTypeDraftCreated:   {Payloads: []reflect.Type{reflect.TypeOf(devdraft.DraftCreatedPayload{})}},
@@ -109,15 +111,16 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	distributed.EventTypeDistributedBusEnvelope: {Payloads: []reflect.Type{reflect.TypeOf(distributed.BusEnvelopePayload{})}},
 
 	// --- LLM edge.
-	llm.EventTypeImageMaterialized:     {Payloads: []reflect.Type{reflect.TypeOf(llm.ImageMaterializedPayload{})}},
-	llm.EventTypeContextLeak:           {Payloads: []reflect.Type{reflect.TypeOf(llm.ContextLeakPayload{})}},
-	llm.EventTypeContextWindowExceeded: {Payloads: []reflect.Type{reflect.TypeOf(llm.ContextWindowExceededPayload{})}},
-	llm.EventTypeCostRecorded:          {Payloads: []reflect.Type{reflect.TypeOf(llm.CostRecordedPayload{})}},
-	llm.EventTypeModeDowngraded:        {Payloads: []reflect.Type{reflect.TypeOf(llm.ModeDowngradedPayload{})}},
-	llm.EventTypeRetryWithFeedback:     {Payloads: []reflect.Type{reflect.TypeOf(llm.RetryWithFeedbackPayload{})}},
-	llm.EventTypePostureReadAdmin:      {Payloads: []reflect.Type{reflect.TypeOf(llm.PostureReadAdminPayload{})}},
-	llm.EventTypeCompletionChunk:       {Payloads: []reflect.Type{reflect.TypeOf(llm.CompletionChunkPayload{})}},
-	llm.EventTypeProviderFileUploaded:  {Payloads: []reflect.Type{reflect.TypeOf(llm.ProviderFileUploadedPayload{})}},
+	llm.EventTypeImageMaterialized:         {Payloads: []reflect.Type{reflect.TypeOf(llm.ImageMaterializedPayload{})}},
+	llm.EventTypeContextLeak:               {Payloads: []reflect.Type{reflect.TypeOf(llm.ContextLeakPayload{})}},
+	llm.EventTypeContextWindowExceeded:     {Payloads: []reflect.Type{reflect.TypeOf(llm.ContextWindowExceededPayload{})}},
+	llm.EventTypeCostRecorded:              {Payloads: []reflect.Type{reflect.TypeOf(llm.CostRecordedPayload{})}},
+	llm.EventTypeModeDowngraded:            {Payloads: []reflect.Type{reflect.TypeOf(llm.ModeDowngradedPayload{})}},
+	llm.EventTypeRetryWithFeedback:         {Payloads: []reflect.Type{reflect.TypeOf(llm.RetryWithFeedbackPayload{})}},
+	llm.EventTypePostureReadAdmin:          {Payloads: []reflect.Type{reflect.TypeOf(llm.PostureReadAdminPayload{})}},
+	llm.EventTypeCompletionChunk:           {Payloads: []reflect.Type{reflect.TypeOf(llm.CompletionChunkPayload{})}},
+	llm.EventTypeProviderFileUploaded:      {Payloads: []reflect.Type{reflect.TypeOf(llm.ProviderFileUploadedPayload{})}},
+	llm.EventTypeProviderCredentialFetched: {Payloads: []reflect.Type{reflect.TypeOf(llm.LLMProviderCredentialFetchedPayload{})}},
 
 	// --- Memory.
 	memory.EventTypeMemoryIdentityRejected: {Payloads: []reflect.Type{reflect.TypeOf(memory.MemoryIdentityRejectedPayload{})}},

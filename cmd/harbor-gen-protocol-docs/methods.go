@@ -430,6 +430,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "GovernanceRotateKeyRequest", Response: "GovernanceRotateKeyResponse",
 			Auth: adminNote,
 		},
+		methods.MethodGovernanceSetPosture: {
+			Route:   subtreeRoute(stream.GovernanceRoutePattern, "governance.", methods.MethodGovernanceSetPosture),
+			Mutates: true,
+			Request: "GovernanceSetPostureRequest", Response: "GovernanceSetPostureResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigGet: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigGet),
 			Mutates: false,
@@ -524,6 +530,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigRemoveOAuthProvider),
 			Mutates: true,
 			Request: "AgentConfigRemoveOAuthProviderRequest", Response: "AgentConfigRemoveOAuthProviderResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigSetLLMProvider: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetLLMProvider),
+			Mutates: true,
+			Request: "AgentConfigSetLLMProviderRequest", Response: "AgentConfigSetLLMProviderResponse",
 			Auth: adminNote,
 		},
 		methods.MethodAgentConfigSessionSetUserPrompt: {

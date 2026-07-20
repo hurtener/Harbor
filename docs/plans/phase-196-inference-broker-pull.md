@@ -187,9 +187,16 @@ decisions log. No other brief finding is departed from.
       determines where the credential is sourced (D-300 credential-plane
       invariant preserved). An unknown broker name is rejected loud (400).
 - [ ] Installed providers follow the D-303 provider-SET model: bare-name
-      resolution, owner-tagged reconcile at run start, and uninstall closes
-      the binding and fails subsequently-bound calls loud (not a silent
-      no-op serving the old key).
+      resolution, live install/rebind of the runtime's shared key holder, and
+      uninstall closes the binding and fails subsequently-bound calls loud
+      (not a silent no-op serving the old key). **DEVIATION (D-336):** the
+      binding is a LIVE runtime-level rebind, NOT persisted through the
+      per-agent revision spine — "owner-tagged reconcile at run start" is
+      DROPPED because a provider key is runtime-level (D-333), so recording it
+      in a per-agent revision mis-models it; durable restart-survival (a
+      runtime-scoped store) is a flagged D-336 follow-up. The config-declared
+      brokered primary (`llm.credential_source: remote`) IS durable (yaml) and
+      boot-connects fail-loud.
 - [ ] The boot-declared inference-broker config
       (`config.InferenceBrokerConfig`, the D-300 analogue) lands in
       `internal/config`: config/file-only, restart-required, NOT a Protocol
@@ -225,7 +232,11 @@ internal/llm/livekey.go                                 # (reuse) atomic key-swa
 internal/llm/events.go                                  # LLMProviderCredentialFetchedPayload (SafePayload, runtime-principal-keyed)
 internal/runtime/agentcfg/protocol/setllmprovider.go   # agent_config.set_llm_provider handler (zero-URL, admin-only, provider-SET model) (new)
 internal/runtime/agentcfg/protocol/setllmprovider_test.go  # zero-URL reflective, admin gate, boot-collision, unknown-broker
-internal/runtime/agentcfg/protocol/service.go          # LLMProviderInstaller seam (mirrors ProviderInstaller)
+internal/runtime/agentcfg/protocol/service.go          # LLMProviderInstaller seam + WithInferenceBrokers/WithLLMProviderInstaller
+internal/runtime/serve/llm_provider_installer.go       # PRODUCTION concrete installer + BootConnectPrimary (fail-loud) + refresh scheduler lifecycle (new, D-336)
+internal/runtime/serve/serve.go, mux.go                # wire the installer + boot-connect brokered primary (fail-loud) into the Protocol surface
+internal/runtime/assemble/assemble.go                  # expose the shared LLMLiveKey the installer + boot-connect build over
+cmd/harbor (via serve.Boot) + harbortest/devstack/devstack.go  # the §13 production consumer: installer wired + brokered-primary boot-connect
 internal/protocol/methods/methods.go                   # MethodAgentConfigSetLLMProvider + admin-method membership
 internal/protocol/types/agentconfig_llm.go             # AgentConfigLLMProviderDescriptor (zero-URL) + set/response types (new)
 internal/protocol/types/agentconfig_llm_test.go        # TestSetLLMProviderWire_HasNoSinkField (its OWN reflective test)

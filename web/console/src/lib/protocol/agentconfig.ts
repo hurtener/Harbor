@@ -116,6 +116,23 @@ export interface AgentConfigOAuthProviders {
 	providers?: AgentConfigOAuthProviderDescriptor[];
 }
 
+/** The writable inference-provider binding — the D-303 zero-URL / zero-secret
+ * shape. Carries NO URL and NO env-var name; every sink-determining value lives
+ * on the boot-declared `inference_broker` it references by name. A write carrying
+ * a `credential_url` / `token_url` / `*_env` / secret field is rejected by name at
+ * the wire edge. Mirrors `types.AgentConfigLLMProviderDescriptor`. */
+export interface AgentConfigLLMProviderDescriptor {
+	name: string;
+	/** The LLM provider the pulled key authenticates (e.g. "openai"). */
+	provider: string;
+	/** Exactly "remote" (broker-pull). */
+	credential_source: string;
+	/** Boot-declared inference broker name (pins every sink). Non-secret. */
+	inference_broker: string;
+	/** Optional model-name allowlist. Non-secret. */
+	model_allow?: string[];
+}
+
 /** An agent's durable run-completion hook — the catalog tool the run
  * transcript is dispatched to at the run loop's terminal boundary, plus an
  * optional dispatch timeout (milliseconds). Mirrors
@@ -501,6 +518,26 @@ export interface AgentConfigSetOAuthProviderRequest {
 export interface AgentConfigSetOAuthProviderResponse {
 	revision: AgentConfigRevisionView;
 	name: string;
+	protocol_version: string;
+}
+
+/** `agent_config.set_llm_provider` request — admin-scoped. Install (upsert) /
+ * rotate a ZERO-URL, broker-pull inference provider binding. A separate method
+ * from set_oauth_provider (a distinct credential plane); the descriptor carries
+ * NO URL, NO env-var name, NO secret. Mirrors
+ * `types.AgentConfigSetLLMProviderRequest`. */
+export interface AgentConfigSetLLMProviderRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	provider: AgentConfigLLMProviderDescriptor;
+}
+
+/** `agent_config.set_llm_provider` response — the installed binding name and
+ * whether it took effect on the live provider set. Mirrors
+ * `types.AgentConfigSetLLMProviderResponse`. */
+export interface AgentConfigSetLLMProviderResponse {
+	name: string;
+	installed: boolean;
 	protocol_version: string;
 }
 

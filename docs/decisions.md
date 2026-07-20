@@ -9190,3 +9190,64 @@ possibly cross-provider" capability: the *mechanism* is Harbor-orchestrated
 even though the *capability* mirrors what the SDK offers. Priority MEDIUM;
 composes with D-333/D-334 and the shipped `governance.rotate_key` (D-019).
 RFC §6.15 amended (Gate 0). Framework-framed only (§13).
+
+---
+
+## D-336 — The Protocol-installed inference-provider binding (`set_llm_provider`) is a LIVE runtime-level rebind, NOT persisted through the per-agent agent-config revision spine (FLAGGED for coordinator confirmation)
+
+**Date:** 2026-07-20
+
+**Status:** Shipped ephemeral (Phase 196, v1.17) — the durability posture is FLAGGED for coordinator sign-off; see "Open item" below.
+
+**Context.** D-334's `agent_config.set_llm_provider` installs a broker-pull
+inference-provider binding. The v1.17 security review asked whether that
+binding should be DURABLE the way the OAuth `set_oauth_provider` binding is —
+persisted through the agent-config revision `ConfigPayload` (giving rollback,
+run-start reconcile, restart-survival). The OAuth binding rides that spine
+because an OAuth provider is a **per-agent** entity (a connection's
+`oauth_provider` references it, owner-tagged). The question is whether the
+LLM-provider binding should mirror it.
+
+**Decision.** The `set_llm_provider` binding is a **LIVE, runtime-level
+rebind** of the runtime's shared provider-key holder (`llm.LiveKey`) via the
+`LLMProviderInstaller` seam + a fail-closed admin audit
+(`agent_config.llm_provider.installed`); it is NOT threaded through the
+per-agent agent-config revision `ConfigPayload`. The install builds an
+`InferenceKeySource` over the shared `LiveKey`, starts its refresh scheduler,
+and the pull happens at connect + refresh (D-333). It is LIVE for the process
+lifetime; a restart drops it (the config-declared brokered primary
+`llm.credential_source: remote` IS durable — it lives in yaml).
+
+**Rationale (a semantic mismatch, not merely scope).** D-333 settled that a
+provider KEY is a **runtime-level** credential — "the pull is per-runtime,
+not per-identity … it does not widen the isolation tuple." There is exactly
+ONE primary provider key per runtime. The per-agent agent-config revision
+payload is keyed by `agent_id`; recording a runtime-level key-source binding
+inside one agent's revision mis-models it (no single agent "owns" the
+runtime's provider key). The honest durability mechanism for a runtime-level
+credential-source binding is a **runtime-scoped** persistent store + a
+run-start reconcile — a NEW persistence surface that, per §9, must ship with
+in-mem / SQLite / Postgres driver parity + a conformance suite. That is a
+disproportionate multi-file domain surface for this phase, AND it is a
+genuinely different shape from the per-agent OAuth spine (so "parity with
+OAuth" would be the wrong parity). The provider KEY itself is NEVER persisted
+either way (D-333 custody model), so the only thing at stake is the durability
+of the *which-broker* binding, which a coordinator that rotates keys in can
+re-apply on reconnect (the coordinator remains the source of truth).
+
+**Consequence.** The plan's "owner-tagged reconcile at run start" acceptance
+line is NOT met for the Protocol-installed binding and is dropped for this
+phase (the config-declared brokered primary needs no reconcile — it is
+re-established at boot). The install verb's provider-SET semantics that ARE
+met: bare-name resolution, live install/rebind, and uninstall closes the
+binding + fails subsequently-bound calls loud (never a silent no-op serving
+the old key).
+
+**Open item (FLAGGED — coordinator to confirm).** Whether the runtime-level
+binding should gain durable, restart-surviving persistence via a
+runtime-scoped store (NOT the per-agent revision spine) is deferred to a
+follow-up decision. If the coordinator wants restart-survival, it is a
+dedicated runtime-scoped binding store (inmem/SQLite/Postgres + conformance)
+plus a run-start reconcile — tracked as the D-336 follow-up. Until then the
+Protocol-installed rebind is live-for-process by design, documented here so it
+is not a silent gap. Priority MEDIUM. Framework-framed only (§13).

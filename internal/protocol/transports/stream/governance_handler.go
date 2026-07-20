@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/governance"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -60,9 +61,10 @@ var ErrGovernanceMisconfigured = errors.New("stream: governance handler missing 
 // enforce the admin scope, branch on the trailing path segment, decode,
 // dispatch, encode.
 type GovernanceHandler struct {
-	service   *governanceprotocol.Service
-	keyRotate *governanceprotocol.KeyRotateService // optional — nil ⇒ rotate_key route 501s
-	logger    *slog.Logger
+	service      *governanceprotocol.Service
+	keyRotate    *governanceprotocol.KeyRotateService    // optional — nil ⇒ rotate_key route 501s
+	postureWrite *governanceprotocol.PostureWriteService // optional — nil ⇒ set_posture route 501s
+	logger       *slog.Logger
 }
 
 // GovernanceOption configures NewGovernanceHandler.
@@ -86,6 +88,20 @@ func WithGovernanceKeyRotate(s *governanceprotocol.KeyRotateService) GovernanceO
 	return func(h *GovernanceHandler) {
 		if s != nil {
 			h.keyRotate = s
+		}
+	}
+}
+
+// WithGovernancePostureWrite wires the set-posture service so the
+// `POST /v1/governance/set_posture` route is live (the admin identity-tier
+// policy WRITE surface). A nil service (the default) leaves the route
+// returning 501 — the partial-build convention. When supplied AND
+// WithValidator is set, the route inherits the same admin gate as the rest
+// of `/v1/governance/*` (auth.ScopeAdmin ONLY).
+func WithGovernancePostureWrite(s *governanceprotocol.PostureWriteService) GovernanceOption {
+	return func(h *GovernanceHandler) {
+		if s != nil {
+			h.postureWrite = s
 		}
 	}
 }
@@ -144,6 +160,8 @@ func (h *GovernanceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveGet(w, r, body, wireID)
 	case "rotate_key":
 		h.serveRotateKey(w, r, body, wireID)
+	case "set_posture":
+		h.serveSetPosture(w, r, body, wireID)
 	default:
 		writeGovernanceError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown governance method route")
@@ -174,6 +192,37 @@ func (h *GovernanceHandler) serveRotateKey(w http.ResponseWriter, r *http.Reques
 	resp, err := h.keyRotate.RotateKey(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodGovernanceRotateKey, err)
+		return
+	}
+	writeGovernanceJSON(w, r, resp, h.logger)
+}
+
+// serveSetPosture handles `governance.set_posture`. The request carries the
+// WHOLE identity-tier policy table (a full replace) and NO identity field —
+// authority is server-side: the verified identity resolved above is
+// the admin actor. The route is admin-gated (auth.ScopeAdmin ONLY) at the
+// top of ServeHTTP. A widening / zeroing / empty write is rejected
+// fail-closed (CodeInvalidRequest) by the policy before any state mutation.
+func (h *GovernanceHandler) serveSetPosture(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	if h.postureWrite == nil {
+		writeGovernanceError(w, protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			"governance.set_posture is not wired on this runtime")
+		return
+	}
+	var req prototypes.GovernanceSetPostureRequest
+	if err := decodeGovernanceBody(body, &req); err != nil {
+		writeGovernanceError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			"failed to decode governance.set_posture request: "+err.Error())
+		return
+	}
+	actor := identity.Quadruple{Identity: identity.Identity{
+		TenantID:  wireID.Tenant,
+		UserID:    wireID.User,
+		SessionID: wireID.Session,
+	}}
+	resp, err := h.postureWrite.SetPosture(r.Context(), actor, req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodGovernanceSetPosture, err)
 		return
 	}
 	writeGovernanceJSON(w, r, resp, h.logger)
@@ -266,6 +315,15 @@ func classifyGovernanceError(method methods.Method, err error) (protoerrors.Code
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, governance.ErrInvalidOverride):
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, governance.ErrPolicyWidening):
+		// Fail-closed reject of a ceiling-omitting / zeroing write — the
+		// phase's real fail-loud path. 400: the submitted table is invalid
+		// (never budget-widening), not a runtime fault.
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, governance.ErrInvalidPosture):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, llm.ErrEmptyKey):
