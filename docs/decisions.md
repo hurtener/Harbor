@@ -8780,26 +8780,36 @@ Protocol client must not do. The already-writable
 temperature / max-tokens / reasoning-effort) but NOT the identity-tier
 policy table itself. Tracked externally as HA-29.
 
-**Decision.** Add `governance.set_posture` (the name may resolve to
-`governance.set_identity_tiers` at plan time) — the write sibling of the
-existing `governance.posture` read — that upserts the identity-tier policy
-table: per tier its budget ceiling / max-tokens cap / rate-limit capacity,
-and the default-tier assignment. Same admin-write posture as every other
-control-plane write in this line: authority is derived **server-side from
-the verified session**, never the request body (D-219); the runtime is the
-**sole owner and enforcer** of the policy record — the consumer drives the
-change in as an authenticated admin and keeps only intent/index, never a
-shadow copy of the tier table (D-061). Round-trips faithfully with the read
-(what you set is what the next `posture` returns). The tier policy
-graduates from hot-reloadable boot config to a StateStore-backed record
-layered over the config-declared defaults (in-mem / SQLite / Postgres
-conformance, forward-only migrations per §9); a runtime with no written
-override enforces its config defaults, so the write is additive and
-backward-compatible. **Explicitly not part of this:** no consumer-side
-policy engine or re-enforcement, no new identity axis, no change to how a
-tier is resolved for a caller, no scope-gate relaxation. Priority MEDIUM (an
-operator can still edit runtime config out-of-band; this closes the honest
-gap between a policy an operator can see and one they can administer). RFC
+**Decision.** Add `governance.set_posture` (the pinned method name; a
+plan-time rename must be settled before D-209/D-223 lockstep, not left
+floating) — the write sibling of the existing `governance.posture` read.
+**Full-replace semantics, never a partial merge:** the write validates and
+replaces the whole identity-tier policy table (per tier its budget ceiling
+/ max-tokens cap / rate-limit capacity, plus the default-tier assignment)
+through the same shared validator the read projects (the D-302 FULL-REPLACE
+pattern) — a write that OMITS or zeroes an enforced ceiling is **rejected
+fail-closed**, never silently widened to unbounded, and never a
+budget-widening default; a §9 conformance test covers the partial/empty
+write case across all three drivers. **Authority is admin-only:** derived
+**server-side from the verified session**, never the request body (D-219),
+and gated on the `auth.ScopeAdmin` claim ONLY — explicitly NOT the two-scope
+set (`admin` OR `console:fleet`) that gates the read, so a leaked read-only
+fleet token cannot widen a budget (D-066 — control is a strictly more
+elevated tier than observation; D-079). The runtime is the **sole owner and
+enforcer** of the policy record — the consumer drives the change in as an
+authenticated admin and keeps only Console-local state (saved-views /
+annotations class, D-061), never a projected copy or shadow of the tier
+values. Round-trips faithfully with the read (what you set is what the next
+`posture` returns). The tier policy graduates from hot-reloadable boot
+config to a StateStore-backed record layered over the config-declared
+defaults (in-mem / SQLite / Postgres conformance, forward-only migrations
+per §9); a runtime with no written override enforces its config defaults, so
+the write is additive and backward-compatible. **Explicitly not part of
+this:** no consumer-side policy engine or re-enforcement, no new identity
+axis, no change to how a tier is resolved for a caller, no scope-gate
+relaxation. Priority MEDIUM (an operator can still edit runtime config
+out-of-band; this closes the honest gap between a policy an operator can see
+and one they can administer). RFC
 §6.15 amended (Gate 0). Framework-framed only — no consumer product /
 white-label / resale intent in any committed artifact (§13). Full
 D-209/D-223 wire lockstep and a `governance.set_posture` smoke land with the
@@ -8831,12 +8841,32 @@ provider key from the coordinator's broker instead of reading local config.
 Same custody posture as D-271: the runtime never persists the key, the
 coordinator remains sole custodian, the pull is per-runtime-authenticated.
 The pulled key rides the existing atomic key-swap (D-019), so a broker-side
-rotation lands on the next call with no `ReloadConfig` race. **Granularity
-(deliberate):** unlike a tool bearer, a provider key is a **runtime-level**
-credential, not an isolation-tuple `(tenant, user, session)` one — the pull
-is per-runtime, not per-identity, and the key is infrastructure custody,
-never identity-scoped data; it does not widen the isolation tuple (§4).
-Lives behind the §4.4 credential-source seam. Priority MEDIUM. RFC §6.5
+rotation lands on the next call with no `ReloadConfig` race. **Fail-loud, no
+dual path (D-271 item 2, carried verbatim — not just its custody half).** A
+broker unreachable at connect OR a failed refresh raises a typed sentinel
+(`ErrProviderKeyUnavailable`); the runtime NEVER silently falls back to a
+local/boot key, and NEVER continues serving a **stale cached key past its
+refresh contract** (a broker-side revocation that fails to propagate must
+surface, not be masked by the cache). A provider source is brokered XOR
+local, config-declared — no dual path, no silent degradation (§13). **The
+sink is boot-pinned (D-300 preserved).** The pull URL / audience / scope
+ceiling are pinned by a boot-declared, config/file-only **inference-broker
+config** (the D-300 analogue of `ToolOAuthCredentialBrokerConfig`),
+referenced by non-secret NAME — no URL or secret ever crosses the wire (the
+install write that binds it is D-334). **Granularity (deliberate):** unlike
+a tool bearer, a provider key is a **runtime-level** credential, not an
+isolation-tuple `(tenant, user, session)` one — the pull is per-runtime, not
+per-identity, and the key is infrastructure custody, never identity-scoped
+data; it does not widen the isolation tuple (§4). **Attribution (extends
+D-285, does not silently contradict it).** This lives behind the §4.4
+credential-source seam, but D-285 restricted its `remote` source to
+per-identity, LAZY pulls precisely because a connect-time pull has "no run
+identity to attribute" the mandatory fetch event to. This runtime-scoped
+variant is defined WITH its attribution: every connect/refresh pull emits a
+runtime-scoped SafePayload `llm.provider_credential_fetched` audit event
+keyed by the **runtime identity** (not a run/session) — superseding D-285
+note (2)'s tokenexchange-only-because-no-identity reasoning for this one
+defined, audited case. Priority MEDIUM. RFC §6.5
 amended (Gate 0). Framework-framed only (§13).
 
 ## D-334 — An inference-plane provider install / rotate write binds a runtime to a NAMED broker-pull provider in the D-303 zero-URL shape
@@ -8853,23 +8883,31 @@ write: provider keys live per-runtime as boot config, and a central
 custodian cannot rotate them in over the Protocol. Tracked externally as
 HA-30 (leg 2).
 
-**Decision.** Add `agent_config.set_llm_provider` — the inference-plane
-sibling of `set_oauth_provider` (or a generalization of it past the
-tokenexchange-only allowlist) — that binds a runtime's inference `Account`
-to a named broker-pull provider. The written descriptor is the **D-303
-shape exactly: zero-URL, zero-secret** — the named broker pins the endpoint
-/ audience / scope, so **no admin-writable field determines where the
-credential is sourced, preserving the D-300 credential-plane invariant**;
-authority is derived server-side from the verified session (D-219). This
-closes the honest gap that keeps the LLM plane outside the central mint /
-rotate / revoke custody every other credential plane already enjoys.
+**Decision.** Add `agent_config.set_llm_provider` — a **SEPARATE**
+inference-plane method, NOT a relaxation of `set_oauth_provider`'s hard
+`tokenexchange`-only allowlist (that allowlist and its reflective no-URL
+decode test stay intact — widening it would reopen exactly the surface
+D-303 hardened). The new method ships its OWN reflective zero-URL /
+zero-secret decode test asserting the writable descriptor carries no URL and
+no env-var name. The written descriptor is the **D-303 shape exactly:
+zero-URL, zero-secret** — it references a boot-declared, config/file-only
+**inference-broker config** (D-333, the D-300 analogue of
+`ToolOAuthCredentialBrokerConfig`) by non-secret NAME; that config — never
+the wire descriptor — pins the pull endpoint / audience / scope ceiling, so
+**no admin-writable field determines where the credential is sourced,
+preserving the D-300 credential-plane invariant**. Authority is derived
+server-side from the verified session (D-219) and gated on the
+`auth.ScopeAdmin` claim ONLY (D-066 — a control write is a strictly more
+elevated tier than any read; D-079). Installed providers follow D-303's
+provider-SET model (bare-name resolution, owner-tagged reconcile, uninstall
+closes the binding and fails bound calls loud). This closes the honest gap
+that keeps the LLM plane outside the central mint / rotate / revoke custody
+every other credential plane already enjoys.
 **Explicitly not part of this:** no coordinator-side inference and no
 provider-key mirror beyond the single central custody the broker already
 holds (the runtime does all inference; the coordinator never calls an LLM);
 no change to model selection; discovered / confirmed values stay
-operator-gated, never auto-applied. Installed providers follow D-303's
-provider-SET model (bare-name resolution, owner-tagged reconcile, uninstall
-closes the binding and fails bound calls loud). Priority MEDIUM. RFC §6.5
+operator-gated, never auto-applied. Priority MEDIUM. RFC §6.5
 amended (Gate 0). Framework-framed only (§13).
 
 ## D-335 — Broker-pulled provider failover stays Harbor-orchestrated at the Governance layer; bifrost's native `Fallbacks` array is NOT used (extends, does not reverse, D-018)
@@ -8893,12 +8931,17 @@ Harbor's own `FailoverPolicy` seam (§6.15; post-V1 phase 93), NOT bifrost's
 of keys/providers the consumer configured (each a named,
 zero-URL/zero-secret broker descriptor); `FailoverPolicy` walks it — on a
 retryable provider error it advances to the next key/provider, emits a
-`governance.failover` hop event (cost + identity attached), and re-issues
-through the same one-method `LLMClient`, the fallback provider's key itself
-broker-pulled and never persisted. Cross-provider fallback is fully
-expressible (a heterogeneous chain) without delegating orchestration to the
-SDK — every hop stays a Harbor event that passes audit + bus + cost
-accounting. This is the DNA-aligned realization of the "fallback on error,
+`governance.failover` hop event (cost + identity attached), **re-runs
+Governance `PreCall` (budget / rate-limit / MaxTokens) BEFORE re-issuing —
+not merely PostCall accounting after the fact** — so a chain walking N
+providers cannot push a run past its per-identity ceiling across hops (the
+exact cost-control hole D-018 exists to prevent), and re-issues through the
+same one-method `LLMClient`, the fallback provider's key itself broker-pulled
+and never persisted. A hop that trips `PreCall` fails loud (`ErrBudgetExceeded`
+/ `ErrRateLimited`), it does not silently continue down the chain.
+Cross-provider fallback is fully expressible (a heterogeneous chain) without
+delegating orchestration to the SDK — every hop stays a Harbor event that
+passes the full Governance gate + audit + bus + cost accounting. This is the DNA-aligned realization of the "fallback on error,
 possibly cross-provider" capability: the *mechanism* is Harbor-orchestrated
 even though the *capability* mirrors what the SDK offers. Priority MEDIUM;
 composes with D-333/D-334 and the shipped `governance.rotate_key` (D-019).
