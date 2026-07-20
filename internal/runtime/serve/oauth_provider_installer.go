@@ -73,9 +73,12 @@ func (i *OAuthProviderInstaller) InstallProvider(ctx context.Context, tenant, ag
 }
 
 // UninstallProvider removes the named provider from the owner-tagged set and
-// CLOSES it (a still-bound connection's next call then fails loud).
-func (i *OAuthProviderInstaller) UninstallProvider(ctx context.Context, name string) error {
-	return i.set.Uninstall(ctx, name)
+// CLOSES it (a still-bound connection's next call then fails loud). The
+// (tenant, agentID) pair is the caller's resolved owner; the set refuses a
+// cross-owner drop at its own boundary (ErrProviderOwnerCollision) — defense in
+// depth independent of the handler's caller-side owner resolution.
+func (i *OAuthProviderInstaller) UninstallProvider(ctx context.Context, tenant, agentID, name string) error {
+	return i.set.Uninstall(ctx, toolauth.Owner{Tenant: tenant, Agent: agentID}, name)
 }
 
 // InstalledFor returns the owner's installed provider names — the owner-scoped

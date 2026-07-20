@@ -54,28 +54,36 @@ fi
 
 # --- Class assertions (unit tests) -----------------------------------------
 
-# AC-1/2/8: resolveBearerCtx resolves per-resource/per-prompt bindings + falls
-# back to the connection binding + no token bleed across identities/RPCs.
+# AC-1/2/3/8: resolveBearerCtx resolves per-resource/per-prompt bindings on the
+# ReadResource/Subscribe/resource-read/prompt-get sites + falls back to the
+# connection binding + rejects an ambiguous cross-surface key + no token bleed
+# across identities/RPCs.
 run_go_test_if_present "mcp resource/prompt per-tool binding + no-token-bleed" \
-    'TestProvider.*(ReadResource|GetPrompt).*OAuth|TestConcurrentReuse_ToolOAuthProviders' \
+    'TestResolveBearerCtx_ResourcePromptKey|TestProvider_ResourcePromptBinding_RoundTrip|TestDiscover_AmbiguousOAuthBinding_FailsLoud|TestConcurrentReuse_ResourcePromptOAuthProviders_NoTokenBleed' \
     './internal/tools/drivers/mcp/'
 
 # AC-4/6/7: store-boundary owner-scoped uninstall (matching-owner drops;
 # cross-owner refused; boot-protected refused; loud bound-call failure after).
 run_go_test_if_present "provider set owner-scoped uninstall + collision refusal" \
-    'TestProviderSet_Uninstall.*Owner|TestProviderSet_Uninstall.*Collision' \
+    'TestProviderSet_Uninstall_' \
     './internal/tools/auth/'
 
 # AC-5: the remove_oauth_provider handler passes the resolved owner.
 run_go_test_if_present "remove_oauth_provider handler passes owner" \
-    'TestRemoveOAuthProvider.*Owner' \
+    'TestRemoveOAuthProvider_PassesResolvedOwner' \
     './internal/runtime/agentcfg/protocol/'
 
 # AC-9: boot validation rejects a resource/prompt binding on stdio /
-# static-Authorization conflict.
+# static-Authorization conflict (the tool_oauth_providers applicability).
 run_go_test_if_present "config validation for resource/prompt oauth binding" \
-    'TestValidate.*ToolOAuthProviders|TestValidate.*ResourcePromptBinding' \
+    'TestValidateTools_OAuthBrokerLegs' \
     './internal/config/'
+
+# AC-10/11: cross-package E2E — real MCP driver + real provider set +
+# owner-scoped uninstall round-trip against the spec-derived go-sdk fixture.
+run_go_test_if_present "E2E resource binding + owner-scoped uninstall" \
+    'TestE2E_MCPResourceBinding_OwnerScopedUninstall' \
+    './test/integration/'
 
 # --- Live-server surface (graceful skip) -----------------------------------
 

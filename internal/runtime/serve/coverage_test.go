@@ -326,7 +326,7 @@ func TestOAuthProviderInstaller_UninstallAndInstalledFor(t *testing.T) {
 	installer := NewOAuthProviderInstaller(builder, set)
 	// Uninstall on an empty set — the set's Uninstall returns nil for
 	// a not-found name (idempotent delete semantics).
-	_ = installer.UninstallProvider(context.Background(), "nonexistent")
+	_ = installer.UninstallProvider(context.Background(), "t", "a", "nonexistent")
 	// InstalledFor on an empty owner returns an empty slice.
 	names := installer.InstalledFor(context.Background(), toolauth.Owner{Tenant: "t", Agent: "a"})
 	if len(names) != 0 {
