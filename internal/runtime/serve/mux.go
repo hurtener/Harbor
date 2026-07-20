@@ -117,8 +117,13 @@ type MuxInput struct {
 	// built caller-side (the policy is shared with the run-loop driver; the
 	// rotator's lifecycle is the assembly's).
 	TenantOverridePolicy *governance.TenantOverridePolicy
-	KeyRotator           *llm.ProviderKeyRotator
-	ValidModels          []string
+	// SetPosturePolicy backs governance.set_posture — the admin identity-tier
+	// policy WRITE surface (the StateStore-backed effective-policy record the
+	// posture read layers over). Built caller-side; nil leaves the
+	// set_posture route at 501 (the partial-build convention).
+	SetPosturePolicy *governance.SetPosturePolicy
+	KeyRotator       *llm.ProviderKeyRotator
+	ValidModels      []string
 
 	// MCPAttacher backs agent_config.add_mcp_connection. Built caller-side so
 	// its Close joins the caller's closer chain; nil leaves the add verb
@@ -220,7 +225,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
 		Metrics:                   runtimeposture.MetricsProvider(in.Metrics, logger),
-		Governance:                governance.NewPostureProvider(governance.ConfigFromOperator(cfg.Governance)),
+		Governance:                governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
 		LLM:                       llm.NewPostureProvider(in.LLMSnapshot),
 		Redactor:                  red,
 		Bus:                       bus,
@@ -580,6 +585,15 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return nil, wrapErr("governance/protocol service", gErr)
 		}
 		muxOpts = append(muxOpts, transports.WithGovernanceService(governanceService))
+	}
+
+	if in.SetPosturePolicy != nil {
+		postureWriteService, pErr := governanceprotocol.NewPostureWriteService(in.SetPosturePolicy,
+			governanceprotocol.WithPostureWriteLogger(logger))
+		if pErr != nil {
+			return nil, wrapErr("governance/protocol set-posture service", pErr)
+		}
+		muxOpts = append(muxOpts, transports.WithGovernancePostureWrite(postureWriteService))
 	}
 
 	if in.KeyRotator != nil {

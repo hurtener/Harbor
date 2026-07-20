@@ -61,6 +61,17 @@ const (
 	// fingerprint of the new key + actor + timestamp — NEVER the key value
 	// (CLAUDE.md §7: secrets are never logged or persisted to the bus).
 	EventTypeKeyRotated events.EventType = "governance.key_rotated"
+
+	// EventTypePostureSet — Emitted when an admin-scoped caller writes the
+	// identity-tier policy table via the `governance.set_posture` Protocol
+	// method. The change is a privileged, no-deploy full-replace of the
+	// per-tier budget / rate-limit / max-tokens policy plus the default-tier
+	// assignment and lands on the audit trail (CLAUDE.md §7, RFC §6.15). The
+	// payload carries only the non-secret tier SUMMARY (sorted tier names +
+	// counts + default-tier before/after) — never the ceiling VALUES and
+	// never a secret; the payload still runs through the wired bus's audit
+	// Redactor before delivery (CLAUDE.md §7 rule 6).
+	EventTypePostureSet events.EventType = "governance.posture_set"
 )
 
 func init() {
@@ -71,6 +82,7 @@ func init() {
 		EventTypePostureReadAdmin,
 		EventTypeTenantOverridesSet,
 		EventTypeKeyRotated,
+		EventTypePostureSet,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -166,6 +178,33 @@ type TenantOverridesSetPayload struct {
 	SetMaxTokens         bool
 	SetReasoningEffort   bool
 	OccurredAt           time.Time
+}
+
+// GovernancePostureSetPayload is the typed payload for
+// EventTypePostureSet. SafePayload — the actor identity, the default-tier
+// before/after, the tier counts, and the sorted tier NAMES are
+// operator-visible audit metadata. The per-tier ceiling VALUES are never
+// carried here (only the names + counts), so no policy figure leaks onto
+// the bus; the payload still runs through the audit Redactor before publish
+// (CLAUDE.md §7 rule 6).
+type GovernancePostureSetPayload struct {
+	events.SafeSealed
+	// Actor is the admin-scoped caller that performed the write.
+	Actor identity.Quadruple
+	// DefaultTierBefore / DefaultTierAfter report the default-tier
+	// assignment before and after the full-replace write.
+	DefaultTierBefore string
+	DefaultTierAfter  string
+	// TierCountBefore / TierCountAfter report the number of tiers in the
+	// effective policy before and after the write.
+	TierCountBefore int
+	TierCountAfter  int
+	// TiersBefore / TiersAfter are the sorted tier names before and after
+	// the write. Non-secret metadata (tier names only, never ceilings).
+	TiersBefore []string
+	TiersAfter  []string
+	// OccurredAt is the wall-clock time of the write.
+	OccurredAt time.Time
 }
 
 // KeyRotatedPayload is the typed payload for EventTypeKeyRotated.

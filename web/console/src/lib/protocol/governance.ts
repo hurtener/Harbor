@@ -19,6 +19,7 @@
  */
 
 import type { IdentityScope } from './memory-types';
+import type { IdentityTierView } from './settings';
 
 /**
  * A tenant's default LLM-parameter overrides — every field optional (a nil
@@ -62,5 +63,41 @@ export interface GovernanceGetTenantOverridesResponse {
 	overrides: GovernanceTenantOverrides;
 	/** Whether a tenant-default record exists; false = inherits config. */
 	set: boolean;
+	protocol_version: string;
+}
+
+/**
+ * `governance.set_posture` request — the admin-scoped WRITE sibling of
+ * `governance.posture`. Mirrors `types.GovernanceSetPostureRequest`.
+ *
+ * The write is a FULL REPLACE of the whole identity-tier policy table
+ * (never a partial merge) and carries NO identity/scope field — authority is
+ * server-side from the verified session (D-219). Requires the `admin` scope
+ * claim ONLY (a `console:fleet`-only token — the read's second gate — is
+ * rejected 403). A table that omits or zeroes a currently-enforced ceiling
+ * is rejected fail-closed (400) before any state mutation.
+ */
+export interface GovernanceSetPostureRequest {
+	/** Default-tier assignment; required when any tier is enforced. */
+	default_tier: string;
+	/** The complete tier table (a full replace), keyed by tier name. */
+	identity_tiers: Record<string, IdentityTierView>;
+}
+
+/**
+ * `governance.set_posture` response — echoes the persisted, resolved posture
+ * (byte-faithful to what the next `governance.posture` read returns).
+ * Mirrors `types.GovernanceSetPostureResponse`.
+ */
+export interface GovernanceSetPostureResponse {
+	default_tier: string;
+	identity_tiers: Record<string, IdentityTierView>;
+	/**
+	 * True when the policy persisted but this runtime booted fully latent (no
+	 * config tiers AND no prior record) so it composed no governance wrapper —
+	 * the new policy does NOT enforce until the next restart. False (the common
+	 * case) means the write enforces on the next call.
+	 */
+	enforcement_pending_restart: boolean;
 	protocol_version: string;
 }

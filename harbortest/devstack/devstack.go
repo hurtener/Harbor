@@ -643,6 +643,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// mounted governance surface (set/get), mirroring production. Built
 	// whenever the assembly opened a StateStore.
 	var tenantPolicy *governance.TenantOverridePolicy
+	var setPosturePolicy *governance.SetPosturePolicy
 	if core.State != nil {
 		reg, regErr := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: core.State, Bus: bus})
 		if regErr != nil {
@@ -669,6 +670,15 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		tenantPolicy = tp
 		stack.closeFns = append(stack.closeFns, tp.Close)
+
+		spp, sppErr := governance.NewSetPosturePolicy(core.State, bus,
+			governance.ConfigFromOperator(cfg.Governance), nil, core.GovernanceTierSource,
+			core.GovernanceEnforcementActive)
+		if sppErr != nil {
+			return stack, fmt.Errorf("governance set-posture policy: %w", sppErr)
+		}
+		setPosturePolicy = spp
+		stack.closeFns = append(stack.closeFns, spp.Close)
 	}
 
 	// Steering surface + run-loop driver. Skip-aware: the Mux phase
@@ -925,6 +935,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			RunLoopDriver:          stack.RunLoopDriver,
 			OAuthProviders:         stack.OAuthProviders,
 			TenantOverridePolicy:   tenantPolicy,
+			SetPosturePolicy:       setPosturePolicy,
 			KeyRotator:             core.KeyRotator,
 			ValidModels:            devstackValidModels(cfg),
 			MCPAttacher:            attacher,

@@ -212,6 +212,15 @@ governance:
   # omitted (or `default_tier` empty), the surface is fully latent —
   # no enforcement, no governance wrapper in the LLM chain.
   #
+  # **CONFIG-DEFAULT LAYER (D-332).** This block is the *default* layer
+  # the admin-write `governance.set_posture` Protocol method layers over.
+  # A runtime with no written override enforces exactly what is declared
+  # here; an admin `set_posture` write replaces the whole tier table live
+  # (StateStore-backed, no redeploy) and the read-only `governance.posture`
+  # then reflects the written record. A write that omits or zeroes a
+  # currently-enforced ceiling is rejected fail-closed — never
+  # budget-widening.
+  #
   # **Removed in D-081.** The pre-Phase-36a single-knob fields
   # `default_max_tokens`, `cost_ceiling_usd`, and `rate_limit_tps`
   # are no longer accepted on this block. They were validated-but-

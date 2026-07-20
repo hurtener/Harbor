@@ -11,8 +11,7 @@ The write is a **full replace through the projected shared validator**
 is rejected fail-closed), authority is derived server-side from the
 verified session and gated on the `auth.ScopeAdmin` claim ONLY, and the
 tier policy graduates from hot-reloadable boot config to a StateStore-backed
-record layered over the config-declared defaults (in-mem / SQLite / Postgres
-conformance, forward-only migration). It round-trips faithfully with the
+record layered over the config-declared defaults (in-mem / SQLite / Postgres conformance on the generic state_records table — no new migration). It round-trips faithfully with the
 read.
 
 ## RFC anchor
@@ -79,7 +78,7 @@ contradicted.
   (`admin` OR `console:fleet`) set that gates the read (D-066 / D-079).
 - Graduate the tier policy from hot-reloadable boot config to a
   StateStore-backed policy record layered over the config-declared defaults
-  (in-mem / SQLite / Postgres §9 conformance, forward-only migration); a
+  (in-mem / SQLite / Postgres §9 conformance on the generic state_records table — no new migration); a
   runtime with no written override enforces exactly its config defaults.
 - Round-trip faithfully with the read: what `set_posture` writes is what
   the next `governance.posture` returns.
@@ -132,11 +131,13 @@ contradicted.
       bearing `console:fleet` (the read's second gate) but NOT `admin` is
       rejected with the canonical permission-denied Code (403), proving a
       leaked read-only fleet token cannot widen a budget (D-066 / D-079).
-- [ ] The tier policy is StateStore-backed: a forward-only migration adds
-      the policy record table; the write persists through the StateStore
-      (in-mem / SQLite / Postgres), and a §9 conformance test asserts
-      identical behavior across all three drivers — including the
-      partial/empty-write fail-closed case.
+- [ ] The tier policy is StateStore-backed: the write persists through the
+      StateStore (in-mem / SQLite / Postgres) on the existing generic
+      `state_records` table under a reserved synthetic runtime identity (NO
+      new table/migration — matching `governance.tenant_overrides`; §4.3
+      deviation below), and a §9 conformance test asserts identical behavior
+      across all three drivers — including the partial/empty-write fail-closed
+      case.
 - [ ] Layering: a runtime with NO written override enforces exactly its
       config-declared `IdentityTiers` defaults (the write is additive and
       backward-compatible); once written, the StateStore record is the
@@ -184,9 +185,12 @@ internal/protocol/errors/errors.go                   # (if needed) ErrCodePolicy
 internal/protocol/types/governance.go                # GovernanceSetPostureRequest/Response (reuse IdentityTierView + DefaultTier)
 internal/protocol/governance.go                       # wire handler: admin gate (ScopeAdmin only) + dispatch to the write policy
 internal/governance/posture.go                        # PostureProvider gains a StateStore-backed effective-policy layer over Config defaults
-internal/governance/setposture.go                     # SetPosturePolicy: full-replace validate + StateStore write + fail-closed event (new)
-internal/governance/setposture_test.go                # unit: full-replace, fail-closed widening/zeroing/empty, round-trip
-internal/governance/migrations/<driver>/NNNN_governance_posture.sql   # forward-only policy-record table (per §9 driver dirs)
+internal/governance/setposture.go                     # SetPosturePolicy: full-replace validate + StateStore write + TierSource swap + fail-closed event (new)
+internal/governance/tiersource.go                     # TierSource: the atomic-swappable ENFORCED effective tier policy the enforcers read per PreCall (new)
+internal/governance/governance.go                     # Config.tierConfig / resolveTier consult the TierSource (record-over-config) when bound; Resolver untouched
+internal/runtime/assemble/assemble.go                 # seed the TierSource from record-over-config at boot; build the enforcement Subsystem from the effective policy; expose Stack.GovernanceTierSource
+internal/governance/setposture_test.go                # unit: full-replace, fail-closed widening/zeroing/empty, round-trip, ENFORCEMENT-takes-effect
+# (no migration) — persists on the existing generic state_records table under a reserved synthetic runtime identity, matching governance.tenant_overrides (§4.3 deviation)
 internal/governance/conformance_inmem_test.go         # extend: set_posture conformance across drivers (or new conformance file)
 internal/governance/events.go                          # GovernancePostureSetPayload (SafePayload)
 internal/config/config.go                              # (doc only) IdentityTiers stays the config-default layer set_posture layers over
@@ -287,8 +291,9 @@ var (
   - Extend the governance conformance suite so all three StateStore drivers
     (in-mem / SQLite / Postgres) pass the SAME `set_posture` behavior —
     including the partial/empty-write fail-closed case (D-332's explicit
-    §9 conformance requirement) and the migration applying cleanly on a
-    fresh DB and on an existing DB.
+    §9 conformance requirement) and a fresh-store round-trip (the record
+    persists + reads back identically on every driver via the shared generic
+    `state_records` table — no per-kind migration).
 - **Concurrency / leak:**
   - `TestConcurrentReuse_SetPosturePolicy_NoBleed`: N≥100 concurrent `Set` +
     read invocations against a single shared `SetPosturePolicy` instance
@@ -328,6 +333,39 @@ var (
   the branch base). No sibling-phase dependency; 195 parallelizes with 196
   in Stage 2.
 
+## Enforcement wiring (the record IS the effective policy, not just the read)
+
+The written record becomes the **ENFORCED** identity-tier policy, not merely
+what `governance.posture` reflects — otherwise the read and enforcement would
+diverge the moment an override is written (an operator lowers a ceiling, the
+read confirms it, but budgets stay uncapped). RFC §6.15 lists "Ceilings, rate
+limits, MaxTokens tiers" as HOT-RELOADABLE; this phase realises that via the
+key-rotation atomic-swap pattern:
+
+- `governance.TierSource` (new) holds the current effective policy
+  (`{DefaultTier, IdentityTiers}`) behind an `atomic.Pointer`. The
+  CostAccumulator / RateLimiter / MaxTokensEnforcer read tier VALUES + the
+  effective DefaultTier through it per PreCall (via `Config.tierConfig` /
+  `Config.resolveTier`) — cache + swap, NO per-call StateStore read on the hot
+  path. The `TierResolver` (which tier a caller maps to) is untouched — only
+  the tier's VALUES come from the record now.
+- Boot: `assemble.Assemble` seeds the TierSource from the EFFECTIVE policy —
+  the persisted record layered over the config-declared tiers (record present
+  ⇒ record wins; absent ⇒ config defaults). The enforcement Subsystem is built
+  when the effective policy is non-empty (config tiers OR a persisted record),
+  so a runtime that booted with a persisted policy enforces it. The PreCall
+  compose order is unchanged.
+- Write: on a successful `set_posture` the durable StateStore write is followed
+  by an atomic `TierSource.Store`, so the new ceilings ENFORCE on the next
+  PreCall with no restart, and the durable record + the in-memory enforcement
+  source agree.
+- Latent default preserved: no config tiers AND no record ⇒ no wrapper
+  composed ⇒ every PreCall permits. On such a fully-latent runtime a
+  `set_posture` write still persists + surfaces in the read; its enforcement
+  activates at the next restart (which seeds the source from the now-persisted
+  record) — the boundary of the boot-time opt-in contract, the same boot step
+  config tiers already require.
+
 ## Risks / open questions
 
 - **Design choice the decision left for the phase to confirm — the exact
@@ -351,10 +389,36 @@ var (
   validator distinguishes a tier that was never enforced (zero stays a valid
   "no enforcement") from a tier being silently de-enforced (rejection). This
   is the load-bearing subtlety the conformance test pins.
-- **Migration ordering across the three drivers.** The forward-only policy
-  record migration must be idempotent (`INSERT OR IGNORE INTO
-  schema_migrations` per §9) and land in each driver's migration dir; the
-  conformance test asserts a fresh DB and an existing DB both converge.
+- **§4.3 deviation — no new migration/table.** The plan originally called for
+  a forward-only policy-record migration, but the `internal/state` StateStore
+  is a generic opaque KV: the shipped governance cost accumulator and the
+  tenant-override record already persist on the single `state_records` table
+  keyed by `(identity-quad, kind)` with NO per-kind migration. The
+  identity-tier policy record follows that precedent exactly — it reuses
+  `state_records` under a reserved synthetic runtime identity
+  (`__governance__/__governance__/__posture_policy__`) at
+  `Kind="governance.posture_policy"`, matching `governance.tenant_overrides`.
+  §9 three-driver conformance is satisfied by the governance conformance suite
+  (all three drivers persist + read the generic record identically); no
+  migration/table is added.
+- **De-enforcement guard is per-dimension, including the default caller class.**
+  The fail-closed check rejects dropping ANY currently-enforced dimension
+  (budget / rate / max-tokens) of ANY currently-enforced tier — AND of the
+  DEFAULT-resolved caller class (a `DefaultTier` repoint to a tier that drops a
+  dimension the old default enforced, even if the new default enforces a
+  different dimension, is rejected; a `DefaultTier` pointing at an absent tier
+  is rejected). This closes the silent-de-enforcement vector where the posture
+  read still shows enforced-looking tiers while every default caller runs
+  uncapped.
+- **Limitation — no in-process tier retire/rename/consolidate (WARN,
+  accepted).** Because the guard rejects omitting or zeroing any
+  currently-enforced tier, an operator cannot retire, rename, or consolidate an
+  enforced tier over the Protocol within a single process lifetime — doing so
+  requires a `harbor.yaml` edit + restart (which re-seeds the effective policy
+  from config). This is fail-closed-safe and matches the D-332 "never
+  budget-widening" design; it is a documented limitation, not a latent
+  surprise. Relaxing it (e.g. an explicit `--allow-retire` admin affordance
+  with audit) is a future extension, not part of this phase.
 
 ## Glossary additions
 

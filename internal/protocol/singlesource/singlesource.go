@@ -129,6 +129,7 @@ var CanonicalMethods = map[string]struct{}{
 	"governance.set_tenant_overrides": {},
 	"governance.get_tenant_overrides": {},
 	"governance.rotate_key":           {},
+	"governance.set_posture":          {},
 	// agent-config control-plane cluster — fourteen methods.
 	"agent_config.get":                       {},
 	"agent_config.set_revision":              {},
@@ -311,6 +312,11 @@ var CanonicalWireTypes = map[string]string{
 	"GovernanceGetTenantOverridesResponse": "types",
 	"GovernanceRotateKeyRequest":           "types",
 	"GovernanceRotateKeyResponse":          "types",
+	// admin-scoped governance identity-tier policy WRITE wire types — the
+	// `governance.set_posture` request/response shapes (the write sibling of
+	// `governance.posture`) live in internal/protocol/types/governance.go.
+	"GovernanceSetPostureRequest":  "types",
+	"GovernanceSetPostureResponse": "types",
 	// agent-config control-plane wire types — the `agent_config.*` family
 	// request/response shapes live in
 	// internal/protocol/types/agentconfig.go (the agent-config registry primitive

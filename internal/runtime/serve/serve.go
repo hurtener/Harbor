@@ -435,6 +435,18 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 	closers = append(closers, tenantOverridePolicy.Close)
 
+	// The identity-tier policy WRITE policy (governance.set_posture) — the
+	// StateStore-backed effective-policy record layered over the
+	// config-declared defaults; the posture read reflects the same record.
+	setPosturePolicy, err := governance.NewSetPosturePolicy(stack.State, bus,
+		governance.ConfigFromOperator(cfg.Governance), nil, stack.GovernanceTierSource,
+		stack.GovernanceEnforcementActive)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("governance set-posture policy: %w", err)
+	}
+	closers = append(closers, setPosturePolicy.Close)
+
 	// The MCP attach/detach concretes — the attacher backs the runtime
 	// add-connection verb; the detacher drives the run-start reconcile.
 	var mcpAttacher agentcfgprotocol.ConnectionAttacher
@@ -547,6 +559,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		RunLoopDriver:          runLoopDriver,
 		OAuthProviders:         oauthProviders,
 		TenantOverridePolicy:   tenantOverridePolicy,
+		SetPosturePolicy:       setPosturePolicy,
 		KeyRotator:             stack.KeyRotator,
 		ValidModels:            validModels,
 		MCPAttacher:            mcpAttacher,

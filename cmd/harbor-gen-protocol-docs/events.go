@@ -83,6 +83,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	governance.EventTypePostureReadAdmin:      {Payloads: []reflect.Type{reflect.TypeOf(governance.PostureReadAdminPayload{})}},
 	governance.EventTypeTenantOverridesSet:    {Payloads: []reflect.Type{reflect.TypeOf(governance.TenantOverridesSetPayload{})}},
 	governance.EventTypeKeyRotated:            {Payloads: []reflect.Type{reflect.TypeOf(governance.KeyRotatedPayload{})}},
+	governance.EventTypePostureSet:            {Payloads: []reflect.Type{reflect.TypeOf(governance.GovernancePostureSetPayload{})}},
 
 	// --- Agent-config control plane (internal/agentcfg).
 	agentcfg.EventTypeConfigRevised:             {Payloads: []reflect.Type{reflect.TypeOf(agentcfg.ConfigRevisedPayload{})}},

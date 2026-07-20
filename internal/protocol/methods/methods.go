@@ -262,6 +262,26 @@ const (
 	// wire-transport route is `POST /v1/governance/rotate_key`.
 	MethodGovernanceRotateKey Method = "governance.rotate_key"
 
+	// MethodGovernanceSetPosture — admin verb: writes the identity-tier
+	// policy table (per tier: budget-ceiling USD / max-tokens cap /
+	// rate-limit capacity, plus the default-tier assignment) live, with no
+	// redeploy. The write is a FULL REPLACE through the shared validator the
+	// `governance.posture` read projects (never a partial merge) — a
+	// submitted table that OMITS or zeroes a ceiling the current effective
+	// policy enforces is rejected fail-closed with CodeInvalidRequest before
+	// any state mutation, never budget-widening. The tier policy graduates
+	// from hot-reloadable boot config to a StateStore-backed record layered
+	// over the config-declared defaults; it round-trips with the read (what
+	// you set is what the next `governance.posture` returns).
+	// Identity-mandatory; requires the `auth.ScopeAdmin` claim ONLY —
+	// explicitly NOT the two-scope (`admin` OR `console:fleet`) set that
+	// gates the read, so a leaked read-only fleet token cannot widen a
+	// budget. A non-admin caller is rejected with CodeScopeMismatch. NOT a
+	// control / search / posture method — `IsGovernanceAdminMethod` is its
+	// own O(1) predicate. The wire-transport route is
+	// `POST /v1/governance/set_posture`.
+	MethodGovernanceSetPosture Method = "governance.set_posture"
+
 	// MethodAgentConfigGet — reads an agent's current active config
 	// revision (the read-back the Console renders before editing).
 	// Identity-mandatory; requires the verified `auth.ScopeAdmin` claim
@@ -999,6 +1019,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodGovernanceSetTenantOverrides:        {},
 	MethodGovernanceGetTenantOverrides:        {},
 	MethodGovernanceRotateKey:                 {},
+	MethodGovernanceSetPosture:                {},
 	MethodAgentConfigGet:                      {},
 	MethodAgentConfigSetRevision:              {},
 	MethodAgentConfigListRevisions:            {},
@@ -1247,6 +1268,7 @@ var canonicalGovernanceAdminMethods = map[Method]struct{}{
 	MethodGovernanceSetTenantOverrides: {},
 	MethodGovernanceGetTenantOverrides: {},
 	MethodGovernanceRotateKey:          {},
+	MethodGovernanceSetPosture:         {},
 }
 
 // IsGovernanceAdminMethod reports whether m is one of the admin-scoped

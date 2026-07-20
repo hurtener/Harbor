@@ -430,6 +430,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "GovernanceRotateKeyRequest", Response: "GovernanceRotateKeyResponse",
 			Auth: adminNote,
 		},
+		methods.MethodGovernanceSetPosture: {
+			Route:   subtreeRoute(stream.GovernanceRoutePattern, "governance.", methods.MethodGovernanceSetPosture),
+			Mutates: true,
+			Request: "GovernanceSetPostureRequest", Response: "GovernanceSetPostureResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigGet: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigGet),
 			Mutates: false,

@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 116 canonical Harbor Protocol methods, generated from the single-source registry
+The 117 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -202,6 +202,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 |---|---|---|---|---|---|
 | `governance.get_tenant_overrides` | `POST /v1/governance/get_tenant_overrides` | governance — admin | [`GovernanceGetTenantOverridesRequest`](./types.md#governancegettenantoverridesrequest) | [`GovernanceGetTenantOverridesResponse`](./types.md#governancegettenantoverridesresponse) | read-only; requires the verified `admin` scope claim |
 | `governance.rotate_key` | `POST /v1/governance/rotate_key` | governance — admin | [`GovernanceRotateKeyRequest`](./types.md#governancerotatekeyrequest) | [`GovernanceRotateKeyResponse`](./types.md#governancerotatekeyresponse) | mutating; requires the verified `admin` scope claim |
+| `governance.set_posture` | `POST /v1/governance/set_posture` | governance — admin | [`GovernanceSetPostureRequest`](./types.md#governancesetposturerequest) | [`GovernanceSetPostureResponse`](./types.md#governancesetpostureresponse) | mutating; requires the verified `admin` scope claim |
 | `governance.set_tenant_overrides` | `POST /v1/governance/set_tenant_overrides` | governance — admin | [`GovernanceSetTenantOverridesRequest`](./types.md#governancesettenantoverridesrequest) | [`GovernanceSetTenantOverridesResponse`](./types.md#governancesettenantoverridesresponse) | mutating; requires the verified `admin` scope claim |
 
 ## Agent config

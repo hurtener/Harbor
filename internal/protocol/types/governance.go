@@ -177,6 +177,53 @@ type GovernanceGetTenantOverridesResponse struct {
 	ProtocolVersion string `json:"protocol_version"`
 }
 
+// GovernanceSetPostureRequest is the `governance.set_posture` request body
+// — the admin-scoped WRITE sibling of `governance.posture`. It carries the
+// WHOLE identity-tier policy table as a FULL REPLACE (never a partial
+// merge) and REUSES the read's `IdentityTierView` + `DefaultTier` shapes.
+//
+// It carries NO identity / scope field: authority is derived server-side
+// from the verified session, never the request body. The runtime
+// requires the `auth.ScopeAdmin` claim (a non-admin caller — including one
+// bearing only `console:fleet` — is rejected with CodeScopeMismatch, so a
+// leaked read-only fleet token cannot widen a budget). A submitted table
+// that OMITS or zeroes a ceiling the current effective policy enforces is
+// rejected fail-closed with CodeInvalidRequest before any state mutation.
+type GovernanceSetPostureRequest struct {
+	// DefaultTier is the default-tier assignment applied to an identity
+	// that resolves to no explicit tier. Required — an empty value is
+	// rejected when any tier is enforced.
+	DefaultTier string `json:"default_tier"`
+	// IdentityTiers is the complete tier table keyed by tier name. A tier
+	// present in the current effective policy but ABSENT here — or present
+	// with a zeroed enforced ceiling — is a fail-closed rejection, not a
+	// silent widening. Always keyed by tier name; the value is the read's
+	// `IdentityTierView` projection.
+	IdentityTiers map[string]IdentityTierView `json:"identity_tiers"`
+}
+
+// GovernanceSetPostureResponse echoes the persisted, resolved posture — it
+// is byte-faithful to what the next `governance.posture` read returns.
+type GovernanceSetPostureResponse struct {
+	// DefaultTier is the persisted default-tier assignment.
+	DefaultTier string `json:"default_tier"`
+	// IdentityTiers is the persisted tier table (the full-replace result).
+	// Always non-nil in the wire JSON (`{}`, never `null`).
+	IdentityTiers map[string]IdentityTierView `json:"identity_tiers"`
+	// EnforcementPendingRestart reports an honest degradation: the policy was
+	// persisted and will be enforced, but this runtime booted fully latent (no
+	// config tiers AND no prior record) so it composed no governance wrapper —
+	// the new policy therefore does NOT enforce until the next restart (which
+	// seeds a wrapper from the now-persisted record). False on a runtime that
+	// booted with an active governance wrapper (the common case): the write
+	// enforces on the next call. Additive field — omitted (false) is the
+	// enforce-immediately posture.
+	EnforcementPendingRestart bool `json:"enforcement_pending_restart"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// with, so a Console can assert wire compatibility.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
 // GovernanceRotateKeyRequest is the wire request for the admin-scoped
 // `governance.rotate_key` method — rotate the LLM provider API key live.
 type GovernanceRotateKeyRequest struct {

@@ -74,6 +74,33 @@ type Config struct {
 	// Clock is the time source for bucket-refill math. nil =
 	// `time.Now` (the production default). Tests inject a fake clock.
 	Clock Clock
+
+	// tierSource, when non-nil, is the hot-swappable effective identity-tier
+	// policy the enforcement subsystem reads per PreCall — the mechanism by
+	// which an admin `governance.set_posture` write becomes the ENFORCED
+	// policy (not merely the read) with no restart. When set, `resolveTier`
+	// and `tierConfig` read the tier VALUES + the effective DefaultTier from
+	// the source (record-over-config), NOT from the embedded `DefaultTier` /
+	// `IdentityTiers` snapshot; the `Resolver` (which tier a caller maps to)
+	// is untouched. When nil (the headless / pre-set_posture default), the
+	// embedded config values are authoritative — backward-compatible.
+	tierSource *TierSource
+}
+
+// WithTierSource returns a copy of the Config bound to the hot-swappable
+// TierSource. The enforcement subsystem reads the tier VALUES + the
+// effective DefaultTier through the source, so an admin `set_posture` write
+// (which swaps the source) takes effect on the next PreCall. The embedded
+// `IdentityTiers` / `DefaultTier` are also set to the source's current
+// snapshot so the latent-default decision (`len(IdentityTiers) == 0`) and
+// any config-only reader see the effective policy at construction time.
+func WithTierSource(cfg Config, src *TierSource) Config {
+	cfg.tierSource = src
+	if src != nil {
+		cfg.DefaultTier = src.DefaultTier()
+		cfg.IdentityTiers = src.Tiers()
+	}
+	return cfg
 }
 
 // TierConfig is one tier's policy bundle. Each field zero = latent for
@@ -150,6 +177,12 @@ func (c Config) resolveTier(id identity.Identity) string {
 			return name
 		}
 	}
+	// The tier VALUES + the effective DefaultTier come from the
+	// hot-swappable source when bound (record-over-config); the Resolver
+	// mapping above is untouched.
+	if c.tierSource != nil {
+		return c.tierSource.DefaultTier()
+	}
 	return c.DefaultTier
 }
 
@@ -161,6 +194,13 @@ func (c Config) tierConfig(id identity.Identity) (TierConfig, bool) {
 	name := c.resolveTier(id)
 	if name == "" {
 		return TierConfig{}, false
+	}
+	// Read the tier VALUES from the hot-swappable source when bound so a
+	// `set_posture` write's new ceilings enforce on the next PreCall; else
+	// the embedded config snapshot.
+	if c.tierSource != nil {
+		tc, ok := c.tierSource.load().tiers[name]
+		return tc, ok
 	}
 	tc, ok := c.IdentityTiers[name]
 	if !ok {

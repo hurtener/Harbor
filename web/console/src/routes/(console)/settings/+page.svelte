@@ -52,6 +52,7 @@
     SettingsState,
     RotateTokenState,
     TenantDefaultOverridesState,
+    GovernancePostureWriteState,
     SETTINGS_SECTIONS,
     consoleLocalSections,
     runtimePostureSections,
@@ -63,6 +64,17 @@
   const db = new SettingsDBController();
   const rotate = new RotateTokenState();
   const tenantDefaults = new TenantDefaultOverridesState();
+  const posturePolicyWrite = new GovernancePostureWriteState();
+
+  // Seed the admin identity-tier WRITE affordance from the posture read the
+  // page holds, so an admin edits the live table (D-332). Re-seed whenever
+  // the read changes AND no edit is in flight (idle) so a fresh load does not
+  // clobber an in-progress edit.
+  $effect(() => {
+    if (posturePolicyWrite.phase === 'idle') {
+      posturePolicyWrite.seed(settings.posture.governance);
+    }
+  });
 
   /** The active section — drives the sub-nav rail highlight + the right pane. */
   let activeSection = $state<SettingsSectionId>('connected-runtimes');
@@ -215,6 +227,7 @@
                 <GovernancePostureCard
                   governance={settings.posture.governance}
                   mockMode={settings.mockMode}
+                  write={posturePolicyWrite}
                 />
               {:else if section.id === 'tenant-defaults'}
                 <TenantDefaultOverridesCard overrides={tenantDefaults} />

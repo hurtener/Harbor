@@ -38,7 +38,8 @@ fi
 # Live-server assertions.
 # ----------------------------------------------------------------------------
 SET_URL="$(api_url /v1/governance/set_posture)"
-POSTURE_URL="$(api_url /v1/governance/posture)"
+# The read sibling routes through the control surface (POST /v1/control/{method}).
+POSTURE_URL="$(api_url /v1/control/governance.posture)"
 
 PROBE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H 'Content-Type: application/json' -d '{}' "${SET_URL}" 2>/dev/null || true)
@@ -104,6 +105,48 @@ if printf '%s' "${READBACK2}" | grep -q '"budget_ceiling_usd":25'; then
     ok "phase 195: the prior enforced ceiling survives the rejected write (not widened)"
 else
     fail "phase 195: the rejected write leaked through / widened the policy; got: ${READBACK2}"
+fi
+
+# --- F1 (security): a DefaultTier repoint to a present-but-UNENFORCED tier
+#     silently de-enforces every default caller — must be rejected fail-closed
+#     even though the previously-enforced tier stays in the map. ---
+REPOINT_BODY='{"default_tier":"unbounded","identity_tiers":{"team":{"budget_ceiling_usd":25,"max_tokens":0,"rate_limit":{"capacity":0,"refill_tokens":0,"refill_interval_ms":0}},"unbounded":{"budget_ceiling_usd":0,"max_tokens":0,"rate_limit":{"capacity":0,"refill_tokens":0,"refill_interval_ms":0}}}}'
+REPOINT_CODE="$(post_code "${SET_URL}" "${REPOINT_BODY}")"
+case "${REPOINT_CODE}" in
+    400|422)
+        ok "phase 195: a default-tier repoint to an unenforced tier is rejected fail-closed (${REPOINT_CODE})"
+        ;;
+    *)
+        fail "phase 195: a default-repoint-to-unenforced write returned ${REPOINT_CODE}, want 400/422 (F1 de-enforcement guard)"
+        ;;
+esac
+
+# --- F1 (dimension-swap): the current default class (team) enforces budget 25;
+#     repoint the default to a tier that enforces a DIFFERENT dimension
+#     (max_tokens) but DROPS the budget cap. The new default enforces SOMETHING,
+#     so the coarse all-zero check would miss it — the per-dimension guard must
+#     still reject it (400). ---
+SWAP_BODY='{"default_tier":"swap","identity_tiers":{"team":{"budget_ceiling_usd":25,"max_tokens":0,"rate_limit":{"capacity":0,"refill_tokens":0,"refill_interval_ms":0}},"swap":{"budget_ceiling_usd":0,"max_tokens":50,"rate_limit":{"capacity":0,"refill_tokens":0,"refill_interval_ms":0}}}}'
+SWAP_CODE="$(post_code "${SET_URL}" "${SWAP_BODY}")"
+case "${SWAP_CODE}" in
+    400|422)
+        ok "phase 195: a default-tier repoint that swaps dimensions (drops budget) is rejected fail-closed (${SWAP_CODE})"
+        ;;
+    *)
+        fail "phase 195: a dimension-swap default repoint returned ${SWAP_CODE}, want 400/422 (per-dimension de-enforcement guard)"
+        ;;
+esac
+
+# --- W1 (honesty): the write response carries enforcement_pending_restart.
+#     The preflight dev config is latent (no identity_tiers), so no governance
+#     wrapper is composed and a persisted write reports pending_restart:true. ---
+PENDING_BODY=$(curl -s --max-time 5 -X POST "${SET_URL}" \
+    -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \
+    -H 'Content-Type: application/json' -d "${FULL_BODY}" 2>/dev/null || true)
+if printf '%s' "${PENDING_BODY}" | grep -q '"enforcement_pending_restart"'; then
+    ok "phase 195: set_posture response carries enforcement_pending_restart (honest enforcement signal)"
+else
+    fail "phase 195: set_posture response missing enforcement_pending_restart; got: ${PENDING_BODY}"
 fi
 
 # --- SCOPE GATE: a console:fleet-only token (no admin) cannot widen a budget. ---

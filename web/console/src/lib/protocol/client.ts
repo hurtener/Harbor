@@ -53,6 +53,8 @@ import type {
 	GovernanceTenantOverrides,
 	GovernanceGetTenantOverridesResponse,
 	GovernanceSetTenantOverridesResponse,
+	GovernanceSetPostureRequest,
+	GovernanceSetPostureResponse,
 } from './governance.js';
 import type {
 	AgentConfigPayload,
@@ -1055,6 +1057,19 @@ export class GovernanceNamespace {
 			'/v1/governance/set_tenant_overrides',
 			{ overrides: overrides as unknown as Record<string, unknown> },
 		);
+	}
+	/**
+	 * `governance.set_posture` — write the identity-tier policy table (a FULL
+	 * REPLACE). Admin-scoped (auth.ScopeAdmin ONLY). The request carries no
+	 * identity field (authority is server-side); the Transport does not fold
+	 * one in. A table that omits or zeroes a currently-enforced ceiling is
+	 * rejected fail-closed (`invalid_request`, HTTP 400).
+	 */
+	setPosture(req: GovernanceSetPostureRequest): Promise<GovernanceSetPostureResponse> {
+		return this.#t.request<GovernanceSetPostureResponse>('/v1/governance/set_posture', {
+			default_tier: req.default_tier,
+			identity_tiers: req.identity_tiers as unknown as Record<string, unknown>,
+		});
 	}
 }
 

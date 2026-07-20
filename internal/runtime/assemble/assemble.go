@@ -252,6 +252,25 @@ type Stack struct {
 	// `governance.rotate_key` service.
 	KeyRotator *llm.ProviderKeyRotator
 
+	// GovernanceTierSource is the hot-swappable ENFORCED identity-tier policy
+	// (the record-over-config effective policy the CostAccumulator /
+	// RateLimiter / MaxTokensEnforcer read per PreCall). Seeded at boot from
+	// the persisted `set_posture` record layered over the config-declared
+	// tiers; the serving binary wires it into the `governance.set_posture`
+	// write service so a write ENFORCES with no restart. Nil when the runtime
+	// booted fully latent (no config tiers AND no persisted record) — no
+	// governance wrapper is composed, so a subsequent write enforces at the
+	// next restart.
+	GovernanceTierSource *governance.TierSource
+
+	// GovernanceEnforcementActive reports whether this boot composed a
+	// governance enforcement wrapper reading the TierSource (a non-empty
+	// effective policy — config tiers OR a persisted record). The serving
+	// binary threads it into the `governance.set_posture` write service so a
+	// write on a fully-latent runtime (no wrapper) returns
+	// `enforcement_pending_restart:true` rather than a silent inert 200.
+	GovernanceEnforcementActive bool
+
 	// Embedder is populated when the cfg carries a non-zero
 	// `embeddings` block (or Options.Embedder is set — caller-owned
 	// lifecycle). The semantic retrieval modes in Memory / Skills
@@ -459,13 +478,31 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// stays nil in the latent no-enforcement default (empty tiers), in
 	// which case the gauge reports zero via governance.CacheLen(nil).
 	var govSub governance.Subsystem
-	if len(cfg.Governance.IdentityTiers) > 0 {
-		sub, govErr := governance.NewSubsystemFromConfig(
-			governance.ConfigFromOperator(cfg.Governance), stateStore, bus)
+	// Seed the hot-swappable ENFORCED tier policy from the EFFECTIVE policy at
+	// boot: the persisted `set_posture` record layered over the
+	// config-declared tiers (record present ⇒ record wins; absent ⇒ config
+	// defaults, preserving the latent default). The enforcers read tier
+	// VALUES through this source, so an admin `set_posture` write (which swaps
+	// the source) ENFORCES on the next PreCall with no restart — the RFC §6.15
+	// hot-reloadable-tiers path.
+	govDefaults := governance.ConfigFromOperator(cfg.Governance)
+	tierSource, tsErr := governance.NewTierSourceFromState(ctx, stateStore, govDefaults)
+	if tsErr != nil {
+		return stack, fmt.Errorf("governance tier source: %w", tsErr)
+	}
+	stack.GovernanceTierSource = tierSource
+	// Build the enforcement subsystem when the EFFECTIVE policy is non-empty
+	// (config tiers OR a persisted record) — a runtime that booted with a
+	// persisted policy enforces it even when the config is latent. A fully
+	// latent runtime (no config tiers, no record) composes no wrapper.
+	if len(tierSource.Tiers()) > 0 {
+		effCfg := governance.WithTierSource(govDefaults, tierSource)
+		sub, govErr := governance.NewSubsystemFromConfig(effCfg, stateStore, bus)
 		if govErr != nil {
 			return stack, fmt.Errorf("governance: %w", govErr)
 		}
 		govSub = sub
+		stack.GovernanceEnforcementActive = true
 		governance.SetFactory(func(llm.ConfigSnapshot, llm.Deps) (governance.Subsystem, error) {
 			return govSub, nil
 		})

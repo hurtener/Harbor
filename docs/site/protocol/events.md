@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 134 canonical event types a Harbor Runtime can publish, read from the live
+The 135 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -402,6 +402,21 @@ Payload `PostureReadAdminPayload` — safe payload (delivered typed, verbatim).
 |---|---|---|
 | `Actor` | `identity.Quadruple` |  |
 | `RequestedTenant` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `governance.posture_set`
+
+Payload `GovernancePostureSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Actor` | `identity.Quadruple` |  |
+| `DefaultTierBefore` | `string` |  |
+| `DefaultTierAfter` | `string` |  |
+| `TierCountBefore` | `int` |  |
+| `TierCountAfter` | `int` |  |
+| `TiersBefore` | `[]string` |  |
+| `TiersAfter` | `[]string` |  |
 | `OccurredAt` | `time.Time` |  |
 
 ## `governance.rate_limited`

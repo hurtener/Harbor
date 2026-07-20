@@ -183,6 +183,8 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"GovernanceGetTenantOverridesResponse":        reflect.TypeOf(types.GovernanceGetTenantOverridesResponse{}),
 	"GovernanceRotateKeyRequest":                  reflect.TypeOf(types.GovernanceRotateKeyRequest{}),
 	"GovernanceRotateKeyResponse":                 reflect.TypeOf(types.GovernanceRotateKeyResponse{}),
+	"GovernanceSetPostureRequest":                 reflect.TypeOf(types.GovernanceSetPostureRequest{}),
+	"GovernanceSetPostureResponse":                reflect.TypeOf(types.GovernanceSetPostureResponse{}),
 	"HistogramBucket":                             reflect.TypeOf(types.HistogramBucket{}),
 	"IdentityScope":                               reflect.TypeOf(types.IdentityScope{}),
 	"IdentityTierView":                            reflect.TypeOf(types.IdentityTierView{}),
