@@ -99,6 +99,7 @@ export const EVENT_TYPES: readonly string[] = [
 	'notification.task_failed',
 	'notification.task_completed',
 	'notification.task_group_resolved',
+	'notification.task_group_cancelled',
 	'distributed.bus_envelope',
 	'planner.decision',
 	'planner.finish',

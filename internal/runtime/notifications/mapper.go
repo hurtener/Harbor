@@ -65,6 +65,8 @@ func Map(_ context.Context, ev events.Event) ([]events.Event, error) {
 		return mapPauseRequested(ev)
 	case tasks.EventTypeTaskGroupResolved:
 		return mapTaskGroupResolved(ev)
+	case tasks.EventTypeTaskGroupCancelled:
+		return mapTaskGroupCancelled(ev)
 	case tasks.EventTypeTaskCompleted:
 		return mapTaskCompleted(ev)
 	default:
@@ -161,6 +163,103 @@ func mapTaskGroupResolved(ev events.Event) ([]events.Event, error) {
 		MemberFailed:     failed,
 		MemberCancelled:  cancelled,
 	}), nil
+}
+
+// mapTaskGroupCancelled synthesises a notification.task_group_cancelled
+// event from a task.group_cancelled bus event — but SELECTIVELY, keyed
+// on the cancel's typed origin:
+//
+//   - CancelOriginOperator → (nil, nil). The operator (or an agent
+//     acting on their behalf) drove the cancel directly and already
+//     knows; a conversational mirror would be noise. This is the settled
+//     suppression rule — analogous in intent to how task_failed suppresses
+//     a foreground turn's own failure (suppress what the operator already
+//     knows), but enforced earlier and more decisively: here at the mapper
+//     on a typed origin (so NO notification.* event is synthesised at all,
+//     Console included), rather than in the TUI reducer on projection state.
+//   - CancelOriginCascade / CancelOriginFailFast → synthesised. An
+//     unprompted, runtime-initiated cancel is narrative the operator did
+//     not ask for — exactly what a wake mirror exists to surface.
+//   - any other value, including the empty string (an older or
+//     hand-built event that carried no origin) → synthesised. An
+//     unclassified cancel FAILS LOUD by being surfaced, never silently
+//     swallowed (CLAUDE.md §13): the failure mode is an extra
+//     notification, never a hidden one.
+//
+// The per-member summaries reuse the resolved-group shape: ref-shaped
+// (TaskID/Status/Description only — never Result/Error bytes), bounded
+// at MaxMemberSummaries with MembersTruncated set on overflow, and the
+// counts reflect the full membership. Severity is Warning — a cancelled
+// group is operator-relevant (work stopped short of completion).
+func mapTaskGroupCancelled(ev events.Event) ([]events.Event, error) {
+	payload, ok := ev.Payload.(tasks.TaskGroupCancelledPayload)
+	if !ok {
+		return nil, wrap(ErrUnmappable, "type=%q payload=%T (want tasks.TaskGroupCancelledPayload)",
+			ev.Type, ev.Payload)
+	}
+	// Suppression rule: an operator-driven cancel is not news.
+	if payload.Origin == tasks.CancelOriginOperator {
+		return nil, nil
+	}
+
+	c := payload.Completion
+	summaries := make([]MemberOutcomeSummary, 0, min(len(c.Members), MaxMemberSummaries))
+	var succeeded, failed, cancelled int
+	for _, m := range c.Members {
+		switch m.Status {
+		case tasks.StatusComplete:
+			succeeded++
+		case tasks.StatusFailed:
+			failed++
+		default:
+			// Cancelled (or any non-terminal snapshot on the cancel path)
+			// counts as cancelled for the operator-visible rollup.
+			cancelled++
+		}
+		if len(summaries) < MaxMemberSummaries {
+			summaries = append(summaries, MemberOutcomeSummary{
+				TaskID:      string(m.TaskID),
+				Status:      string(m.Status),
+				Description: m.Description,
+			})
+		}
+	}
+	summary := fmt.Sprintf("Background group cancelled (%s): %d cancelled of %d",
+		cancelReasonLabel(payload.Origin), cancelled, len(c.Members))
+	if succeeded > 0 {
+		summary += fmt.Sprintf(", %d already succeeded", succeeded)
+	}
+	if failed > 0 {
+		summary += fmt.Sprintf(", %d failed", failed)
+	}
+	deepLink := fmt.Sprintf("/console/tasks/groups/%s", c.GroupID)
+	return synthesisePayload(ev, NotificationPayload{
+		Class:            EventTypeNotificationTaskGroupCancelled,
+		Severity:         SeverityWarning,
+		Summary:          summary,
+		DeepLink:         deepLink,
+		GroupID:          string(c.GroupID),
+		Members:          summaries,
+		MembersTruncated: len(c.Members) > MaxMemberSummaries,
+		MemberSucceeded:  succeeded,
+		MemberFailed:     failed,
+		MemberCancelled:  cancelled,
+	}), nil
+}
+
+// cancelReasonLabel renders a short, human-readable label for an
+// unprompted cancel origin, used in the rollup summary. An unknown or
+// empty origin (a surfaced-not-swallowed unclassified cancel) reads as
+// "unspecified" rather than an empty parenthetical.
+func cancelReasonLabel(origin tasks.CancelOrigin) string {
+	switch origin {
+	case tasks.CancelOriginCascade:
+		return "cascade"
+	case tasks.CancelOriginFailFast:
+		return "fail-fast"
+	default:
+		return "unspecified"
+	}
 }
 
 // mapTaskCompleted synthesises a notification.task_completed event from

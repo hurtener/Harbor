@@ -218,6 +218,33 @@ For a chat UI, you'd:
 5. Render `tool.invoked` / `tool.result` as collapsed cards inside the assistant bubble.
 6. Close the bubble on `task.completed`.
 
+**Background-wake notifications (`notification.*`).** The runtime also
+synthesises an operator-facing `notification.*` family onto the same
+`events.subscribe` stream (no separate method) — the conversational mirror of
+background work you'd otherwise miss. Each carries a human-readable
+`Summary` your UI renders inline (fall back to the bare event type when
+absent). The wake classes:
+
+- `notification.task_completed` — a background task that opted in with
+  `NotifyOnComplete` finished.
+- `notification.task_group_resolved` — a parallel task group resolved
+  (with ref-shaped member-outcome counts).
+- `notification.task_group_cancelled` — a parallel task group was cancelled
+  **without the operator asking** (a fail-fast gate firing on a member
+  failure, or a cascade inherited from an ancestor cancel). This closes the
+  sibling asymmetry the resolved-group mirror opened: a batch's winners wake
+  the conversation while its unprompted-cancelled losers would otherwise
+  vanish silently. **Suppression rule:** a group cancel the operator drove
+  DIRECTLY produces NO notification (they already know) — the runtime keys
+  this on the cancel's typed origin, so you only ever receive this event for
+  an unprompted cancel worth surfacing.
+- `notification.task_failed` — a background task failed (suppressed for a
+  foreground turn's own failure, which the client surfaces itself).
+
+These are additive event classes on the existing stream; a client that
+doesn't recognise a `notification.*` type can ignore it. `ProtocolVersion`
+is unchanged.
+
 ## 4a. Reopening a long session — `state.history`
 
 `events.subscribe` is the LIVE tail. To **reopen** a closed conversation you don't want to re-stream every event from sequence 1 — a 5 000-event session would flood the client before the newest turn renders. The `state.history` method (capability `state_snapshots`) is the bounded, **tail-first** windowed read of the same durable event stream:

@@ -777,6 +777,10 @@ D-320.
 
 **Notification wake events** — `notification.task_group_resolved` and `notification.task_completed`: the notification-class conversational mirror emitted on background group resolution / `NotifyOnComplete` terminal transitions, carrying ref-shaped member-outcome summaries under the owning identity. The typed `WatchGroup`/`MemberOutcome` planner path is untouched — the model gets structure, the operator gets narrative. Phase 188, D-325.
 
+**`notification.task_group_cancelled`** — the conversational-mirror class for an *unprompted* (cascade / fail-fast) cancellation of a batch-spawned task group, closing the sibling asymmetry the resolved-group mirror opened (a group's winners wake the conversation while its unprompted-cancelled losers would otherwise vanish silently). Reuses the resolved-group member-outcome summarisation. SUPPRESSED for a directly-operator-initiated cancel — the operator already knows — keyed on the typed `CancelOrigin` the engine stamps at the group-cancel call site (never downstream guesswork). Additive event class, no `ProtocolVersion` bump. Phase 192, D-329.
+
+**CancelOrigin** — the typed classification of WHY a task group was cancelled (`operator` / `cascade` / `failfast`), stamped on `TaskGroupCancelledPayload` at the engine's group-cancel call site from that site's own provenance. It keys the `notification.task_group_cancelled` suppression rule: an operator-driven cancel is suppressed from the conversational mirror; an unprompted cascade / fail-fast cancel is mirrored; an unknown/empty origin fails loud by being surfaced (never silently swallowed). Phase 192, D-329.
+
 **Per-tool OAuth binding (MCP)** — the boot-declared `MCPServerConfig.ToolOAuthProviders` map (server-side tool name → declared `oauth_provider` name), mirroring the per-tool `ToolPolicies` shape, letting one MCP connection front N downstream resources under N distinct audiences; an unlisted tool falls back to the connection-level binding. Deliberately NOT on the Protocol-writable `ToolExposure` layer (D-300: no admin-writable field determines a credential sink). Phase 191, D-328.
 
 ## P

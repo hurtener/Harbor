@@ -155,6 +155,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	notifications.EventTypeNotificationAuthRequired:             {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},
 	notifications.EventTypeNotificationPauseRequested:           {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},
 	notifications.EventTypeNotificationTaskGroupResolved:        {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},
+	notifications.EventTypeNotificationTaskGroupCancelled:       {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},
 	notifications.EventTypeNotificationTaskCompleted:            {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},
 	notifications.EventTypeNotificationIdentityRejected:         {Payloads: []reflect.Type{reflect.TypeOf(notifications.NotificationPayload{})}},
 

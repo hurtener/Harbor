@@ -71,6 +71,36 @@ func TestReducer_NotificationGroupResolved_RendersBlock(t *testing.T) {
 	}
 }
 
+func TestReducer_NotificationGroupCancelled_RendersMutedBlock(t *testing.T) {
+	id := testIdentity("session")
+	r := &Reducer{}
+	p, _ := r.Hydrate(SnapshotBundle{Generation: 1, Identity: id})
+	// Only an unprompted cancel reaches the TUI (the notifications mapper
+	// suppresses operator-driven cancels upstream), so this event stands in
+	// for a fail-fast / cascade rollup — rendered as one muted line, never a
+	// per-member fan-out.
+	p, change, err := r.Apply(p, wireEvent(id, 4, "notification.task_group_cancelled", "", map[string]any{
+		"summary": "Background group cancelled (fail-fast): 2 cancelled of 3, 1 failed",
+		"groupid": "gc-1",
+	}))
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !change.Changed {
+		t.Error("an unprompted group-cancel mirror must render (Changed)")
+	}
+	b := findBlock(p, "notification:4")
+	if b == nil || b.Kind != "notification" {
+		t.Fatalf("no notification block: %#v", p.Blocks)
+	}
+	if b.Text != "Background group cancelled (fail-fast): 2 cancelled of 3, 1 failed" {
+		t.Errorf("Text=%q", b.Text)
+	}
+	if ClassifyEventType("notification.task_group_cancelled") != EventTyped {
+		t.Error("notification.task_group_cancelled must classify as EventTyped, not the generic fallback")
+	}
+}
+
 func TestReducer_NotificationTaskFailed_SuppressedForForegroundTurn(t *testing.T) {
 	id := testIdentity("session")
 	r := &Reducer{}

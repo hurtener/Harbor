@@ -8760,6 +8760,64 @@ inbound principal — never a client-named field — for subject/actor
 cross-checking and delegation-chain audit. Absent fields preserve today's
 behavior exactly. The phase also carries the wave-end E2E per §17.7.
 
+## D-329 — The unprompted group-cancel wakes the conversation too: a `notification.task_group_cancelled` mirror keyed on a typed cancel origin
+
+**Date:** 2026-07-20
+
+**Context.** D-325 shipped the background-wake notification family:
+`notification.task_group_resolved` / `notification.task_completed` mirror a
+group's *successful* resolution (and opted-in background completions) onto
+the conversation surface while the typed `WatchGroup` planner path stays
+untouched. D-325 deliberately scoped the wake to the success path and filed
+a cancelled-group mirror as an explicit non-goal — "a reasonable follow-up
+... left out to keep the blast radius matched to what D-325 authorizes." But
+a batch-spawned group cancelled by fail-fast or by an inherited cascade is
+then SILENT while its successful siblings wake: `spawnOne` marks every batch
+spawn `NotifyOnComplete=true`, so an operator watching the conversation sees
+the winners announce themselves and the unprompted-cancelled losers vanish
+without a word. Tracked externally as the v1.16 checkpoint audit WARN W2
+(GitHub issue #532).
+
+**Decision.** Phase 192 adds the authorized D-325 follow-up — it EXTENDS
+D-325's design to the sibling transition D-325 parked, it does not
+re-litigate it. A new V1 notification class `notification.task_group_cancelled`
+(trigger `task.group_cancelled`) is synthesised by the same
+`internal/runtime/notifications` mapper, reusing D-325's ref-shaped
+member-outcome summarisation verbatim (`MemberOutcomeSummary` capped at
+`MaxMemberSummaries`, `MembersTruncated` on overflow, true full-membership
+`Member{Succeeded,Failed,Cancelled}` totals; member `Result`/`Error` bytes
+never cross onto the payload). The planner-facing `WatchGroup` /
+`GroupCompletion` typed path and the cancel hierarchy (D-324) are unchanged —
+this is a mirror, not a new decision point or a new cancel mechanism.
+
+**The suppression rule keys on a typed cancel origin, never on downstream
+guesswork.** A new `tasks.CancelOrigin` (`operator` / `cascade` / `failfast`)
+is stamped on `TaskGroupCancelledPayload` at the engine's group-cancel call
+site from that site's own provenance: a direct `CancelGroup` is
+`CancelOriginOperator`, the fail-fast gate (live and crash-recovery
+recompute) is `CancelOriginFailFast`, and an inherited ancestor cascade is
+`CancelOriginCascade`. `mapTaskGroupCancelled` MIRRORS an unprompted cancel
+(cascade / fail-fast — narrative the operator did not ask for) and
+SUPPRESSES a directly-operator-initiated cancel (`return nil, nil` — the
+actor already knows), exactly analogous to how D-325's `notification.task_failed`
+suppresses a foreground turn's own failure. **An unknown or empty origin
+FAILS LOUD by being surfaced, never silently swallowed** (CLAUDE.md §13): an
+unclassified cancel synthesises a notification (the failure mode is an extra
+line, never a hidden one). Rendered on the SAME surfaces D-325 wired — the
+TUI's muted `notification` block kind (no new kind) and the Console Sessions
+/ Tasks docks — with no per-member fan-out.
+
+**Additive wire, no version bump.** The new event class rides the canonical
+`events.subscribe` stream (no new Protocol method); the additive
+`TaskGroupCancelledPayload.Origin` field and the new class regenerate the
+wire manifest (D-223) and generated Protocol docs (D-209) in the same PR;
+`ProtocolVersion` stays `0.1.0` (additive event class + additive payload
+field, same posture as D-325). Deliberately out of scope: a solo
+`notification.task_cancelled` for a non-group cancelled task (no
+sibling-asymmetry driver — a second additive class with its own suppression
+question, filed not folded in) and any Console notification-center / toast /
+bell surface (D-325's non-goal, unchanged).
+
 ## D-332 — A governance-WRITE Protocol surface makes the identity-tier policy table administrable over the wire (the write sibling of `governance.posture`)
 
 **Date:** 2026-07-20
