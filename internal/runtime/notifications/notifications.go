@@ -115,6 +115,18 @@ const (
 	// planner still consumes the typed GroupCompletion path unchanged.
 	EventTypeNotificationTaskGroupResolved events.EventType = "notification.task_group_resolved"
 
+	// EventTypeNotificationTaskGroupCancelled — synthesised from
+	// task.group_cancelled ONLY for an unprompted cancel (a fail-fast
+	// gate firing or an inherited cascade). Severity Warning. The
+	// deep-link points at the cancelled group in the Console. A cancel
+	// the operator drove directly is suppressed — the actor already
+	// knows — keyed on the typed cancel origin the engine stamps at the
+	// group-cancel call site. This closes the sibling asymmetry the
+	// resolved-group mirror opened: a batch-spawned group's winners wake
+	// the conversation while its unprompted-cancelled losers would
+	// otherwise vanish silently.
+	EventTypeNotificationTaskGroupCancelled events.EventType = "notification.task_group_cancelled"
+
 	// EventTypeNotificationTaskCompleted — synthesised from
 	// task.completed ONLY when the completing task carried the
 	// NotifyOnComplete opt-in. Severity Info. Closes the silent-
@@ -141,6 +153,7 @@ func init() {
 	events.RegisterEventType(EventTypeNotificationAuthRequired)
 	events.RegisterEventType(EventTypeNotificationPauseRequested)
 	events.RegisterEventType(EventTypeNotificationTaskGroupResolved)
+	events.RegisterEventType(EventTypeNotificationTaskGroupCancelled)
 	events.RegisterEventType(EventTypeNotificationTaskCompleted)
 	events.RegisterEventType(EventTypeNotificationIdentityRejected)
 }
@@ -159,6 +172,7 @@ func V1NotificationClasses() []events.EventType {
 		EventTypeNotificationAuthRequired,
 		EventTypeNotificationPauseRequested,
 		EventTypeNotificationTaskGroupResolved,
+		EventTypeNotificationTaskGroupCancelled,
 		EventTypeNotificationTaskCompleted,
 	}
 }
@@ -181,12 +195,14 @@ func V1TriggerEventTypes() []events.EventType {
 		"tool.auth_required",
 		"pause.requested",
 		"task.group_resolved",
+		"task.group_cancelled",
 		"task.completed",
-		// `task.group_cancelled` is intentionally NOT mirrored: a group
-		// cancellation is human/agent-initiated or is downstream of an
-		// already-visible parent-turn failure, not an unprompted autonomous
-		// resolution worth waking the conversation surface. Only autonomous
-		// resolutions (`task.group_resolved`) and background completions
-		// (`task.completed`) earn a wake mirror.
+		// `task.group_cancelled` is a trigger, but the mapper mirrors it
+		// SELECTIVELY: an unprompted cancel (a fail-fast gate or an
+		// inherited cascade) wakes the conversation, while a cancel the
+		// operator drove directly is suppressed — the actor already
+		// knows. The mapper keys that choice on the typed cancel origin
+		// the engine stamps at the group-cancel call site, never on
+		// downstream guesswork.
 	}
 }

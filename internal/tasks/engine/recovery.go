@@ -156,7 +156,11 @@ func (e *Engine) reconcileGroupsLocked(ctx context.Context) error {
 						errs = append(errs, fmt.Errorf("reconcile group %q cancel member %q: %w", gid, mid, cerr))
 					}
 				}
-				if rerr := e.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason); rerr != nil {
+				// The crash-recovery recompute of a fail-fast group: the
+				// fail-fast gate (not the operator) is the cancel's origin,
+				// so a conversational mirror surfaces it like any other
+				// fail-fast cancel.
+				if rerr := e.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason, tasks.CancelOriginFailFast); rerr != nil {
 					errs = append(errs, fmt.Errorf("reconcile group %q resolve cancelled: %w", gid, rerr))
 				}
 				continue
@@ -164,7 +168,7 @@ func (e *Engine) reconcileGroupsLocked(ctx context.Context) error {
 		}
 		// Sealed + all members terminal → Completed.
 		if g.Status == tasks.GroupSealed && e.allMembersTerminalLocked(g) {
-			if rerr := e.resolveGroupLocked(ctx, g, tasks.GroupCompleted, ""); rerr != nil {
+			if rerr := e.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "", ""); rerr != nil {
 				errs = append(errs, fmt.Errorf("reconcile group %q resolve completed: %w", gid, rerr))
 			}
 		}

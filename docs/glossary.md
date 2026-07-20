@@ -487,6 +487,15 @@ Phase 179, D-315.
 
 ## H
 
+**Human supremacy (control hierarchy)** — the invariant that the operator can
+steer / pause / resume / cancel ANY task through the Protocol control surface,
+while the agent reaches only the background tasks its OWN run spawned (directly
+or transitively). It is the steer/pause/resume analogue of the cancel hierarchy
+(human > agent > cascade; D-324): the planner-facing task-control verbs present
+only the run-owner's scope over their own descendants and route through the same
+steering inbox the operator targets, so an operator control always supersedes an
+agent's and reaches tasks the agent cannot. Phase 193, D-330.
+
 **Harbor TUI** — the native terminal test/control client for Harbor runtimes.
 It renders sessions, turns, tasks, tools, interventions, artifacts, events,
 Runtime posture, controls, and diagnostics exclusively through the
@@ -777,9 +786,26 @@ D-320.
 
 **Notification wake events** — `notification.task_group_resolved` and `notification.task_completed`: the notification-class conversational mirror emitted on background group resolution / `NotifyOnComplete` terminal transitions, carrying ref-shaped member-outcome summaries under the owning identity. The typed `WatchGroup`/`MemberOutcome` planner path is untouched — the model gets structure, the operator gets narrative. Phase 188, D-325.
 
+**`notification.task_group_cancelled`** — the conversational-mirror class for an *unprompted* (cascade / fail-fast) cancellation of a batch-spawned task group, closing the sibling asymmetry the resolved-group mirror opened (a group's winners wake the conversation while its unprompted-cancelled losers would otherwise vanish silently). Reuses the resolved-group member-outcome summarisation. SUPPRESSED for a directly-operator-initiated cancel — the operator already knows — keyed on the typed `CancelOrigin` the engine stamps at the group-cancel call site (never downstream guesswork). Additive event class, no `ProtocolVersion` bump. Phase 192, D-329.
+
+**CancelOrigin** — the typed classification of WHY a task group was cancelled (`operator` / `cascade` / `failfast`), stamped on `TaskGroupCancelledPayload` at the engine's group-cancel call site from that site's own provenance. It keys the `notification.task_group_cancelled` suppression rule: an operator-driven cancel is suppressed from the conversational mirror; an unprompted cascade / fail-fast cancel is mirrored; an unknown/empty origin fails loud by being surfaced (never silently swallowed). Phase 192, D-329.
+
 **Per-tool OAuth binding (MCP)** — the boot-declared `MCPServerConfig.ToolOAuthProviders` map (server-side tool name → declared `oauth_provider` name), mirroring the per-tool `ToolPolicies` shape, letting one MCP connection front N downstream resources under N distinct audiences; an unlisted tool falls back to the connection-level binding. Deliberately NOT on the Protocol-writable `ToolExposure` layer (D-300: no admin-writable field determines a credential sink). Phase 191, D-328.
 
 ## P
+
+**Planner-facing task control** — the agent-side verbs `_steer_task` /
+`_pause_task` / `_resume_task` (sealed decisions `planner.SteerTask` /
+`PauseTask` / `ResumeTask`, Phase 193 / D-330) letting a run steer, pause, and
+resume the background tasks it spawned, descendant-scoped via the SAME
+`dispatch.isOwnDescendant` guard and `ErrTaskNotOwnDescendant` sentinel as the
+task observation/cancel controls (D-324). They introduce NO new mechanism:
+steer enqueues a directive onto the descendant's EXISTING per-sub-run steering
+inbox (the same inbox the operator's steering targets), and pause/resume drive
+that descendant through the EXISTING unified pause/resume primitive (RFC §3.3) —
+pausing a descendant never pauses the run issuing the verb, and the operator's
+control always supersedes (see **Human supremacy (control hierarchy)**).
+Non-batchable in this wave; each returns `{task_id, steered|paused|resumed}`.
 
 **per-agent LLM parameters** — a versioned agent-config section (Phase 92j) pinning ONE agent's sampling defaults — model / temperature / max-tokens / reasoning-effort, all independently optional — durably through the **desired-state registry** (diff/rollback for free). Resolves BETWEEN the session override and the **tenant default override**: precedence **session › per-agent › tenant-wide baseline › config default**, composed per-field via `ComposeLLMOverrides` and read at run-start by the shared `projection.ActiveLLMOverrides` (the D-094 devstack twin). Admin-scoped writes only (D-235); a pinned model with no `ModelProfile` fails loud (parity with the Phase 92 tenant swap). Distinct from the tenant default override (one spec for every agent in the tenant). D-238.
 
@@ -1558,3 +1584,7 @@ walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
 **honest-omission allow-list** — the per-surface map (field json-tag → one-line reason) the projection-completeness gate consults so a field that is genuinely operated-over AND is LEGITIMATELY left zero does not fail Half A. The only member at Phase 177 is a facet gated behind a not-yet-wired capability (the tools annotator-backed fields pending Phase 178). A field that is NOT operated-over (`FlowBudget.TokenCap`; the `MemoryItem.AgentID` / `.ExpiresAt` row fields) or that IS populated (`TaskParentSessionRef.SessionID`) needs NO entry and must not carry one — the list stays minimal, every line a real intentional absence. Every entry MUST carry a NON-EMPTY reason; an empty-string reason is itself a gate failure (the anti-theater check) — the allow-list records intentional honest absence, never a place to silence a real false-absence bug. Phase 177, D-313.
 
 **tools annotator (production)** — the production `Annotator` concrete (Phase 178) supplied behind the tools `CatalogProjector`'s already-shipped optional `Annotator` seam, aggregating each per-tool annotation from the subsystem that owns it: OAuth status from `tools/auth`, approval policy from `tools/approval`, last-used / error-rate metrics / content-size stats read-time from the events stream, and DisplayModes from MCP negotiation. It also implements the `ApprovalPolicySetter` / `OAuthRevoker` admin seams the projector delegates to, so `tools.set_approval_policy` / `tools.revoke_oauth` — inert (`ErrAdminUnsupported`) until it is wired — persist through those subsystems with audit (never a Console shadow store). Wiring it flips the D-313 annotator-wired capability on, turning the honestly-gated tools facets/search/aggregates into real data. Distinct from the `fakeAnnotator` test double, which stays test-only (§17.8). Phase 178, D-314.
+
+**Per-tool OAuth binding (resource/prompt)** — the extension of HA-27b's per-tool `oauth_provider` binding (the `MCPServerConfig.ToolOAuthProviders` map) to the `ReadResource` / `SubscribeResource` / `GetPrompt` (and the other identity-stamped) MCP RPC paths, so a resource read / subscribe (keyed by resource URI) or a prompt get (keyed by prompt name) resolves its per-entry provider bearer with connection-level `oauth_provider` fallback — re-enforcing every per-entry binding rule (unknown name / stdio transport / static-`Authorization` conflict / downstream-host allow-list) at boot. The map is a single per-entry namespace keyed by MCP-side name; a key that would address more than one discovered surface at once is rejected loud at discovery (`ErrAmbiguousOAuthBinding`), never resolved by an undocumented precedence. Boot-declared, never Protocol-writable (D-300). Phase 194, D-331.
+
+**Owner-scoped provider uninstall** — the defense-in-depth store-boundary check that refuses a cross-owner `ProviderSet.Uninstall(ctx, owner, name)` with `ErrProviderOwnerCollision` (mirroring `Install`'s owner-collision refusal), so the credential-sink provider set enforces owner-scoping independently of the caller's owner resolution — an uninstall closes only the owner's binding (a matching-owner drop still fails that owner's subsequently-bound calls loud), never another owner's. The owner is a reconcile-view tag, never an isolation principal or credential sink. Phase 194, D-331.

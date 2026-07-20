@@ -188,15 +188,29 @@ re-litigation.
       EXISTING unified pause/resume primitive (RFC §3.3) — pause parks the
       descendant's run through the existing pause path; resume releases it
       (optionally carrying a `directive` injected on resume). No new pause
-      reason is invented at the coordination layer. `pauseTask` on an already-
-      paused descendant is idempotent (`paused: false` when no transition);
-      `resumeTask` on a non-paused descendant is idempotent (`resumed: false`).
-- [ ] **AC-10** Pause serialization fails loud (§5, D-025, §11): a `_pause_task`
-      against a descendant whose run state carries an unserializable handle
-      raises `ErrUnserializable` (surfaced as a loud dispatch error the planner
-      observes), never a silent `nil`/dropped-context pause. A mandatory test
-      asserts this (mirroring the project's pause/resume serialization test
-      convention).
+      reason is invented at the coordination layer. **Implementation note
+      (§4.3, D-330):** because routing goes through the descendant's inbox (not
+      a parent-side query of the descendant's pause token — which would be the
+      §13-forbidden second coordination path), the returned bool means "control
+      ENQUEUED onto a live descendant" and is `false` only when the descendant
+      has already finished (inbox retired). There is no parent-observable
+      "no transition" signal: a redundant `_pause_task` on an already-paused
+      descendant reports `paused: true` (harmless — the RunLoop parks once), and
+      a `_resume_task` on a not-paused descendant reports `resumed: true` but
+      ends that descendant's run loud with `ErrNoOutstandingPause` downstream —
+      inherited operator-RESUME semantics, stated truthfully in the tool
+      description. The finer already-paused / not-paused idempotency is
+      delegated downstream to the primitive rather than resolved at the edge.
+- [ ] **AC-10** Serialization fails loud (§5, D-025, §11). **Implementation
+      note (§4.3, D-330):** the parent dispatch edge honors the fail-loud
+      contract on the AGENT-supplied pause/resume payload (`validatePausePayload`
+      → `trajectory.ErrUnserializable`, never a silent drop). The
+      descendant-run-state serialization contract AC-10 names lives DOWNSTREAM in
+      the descendant's own RunLoop (`Coordinator.Request`), enforced unchanged
+      there and covered by the pauseresume package's contract tests — it is not
+      re-surfaced through the parent verb (the async design cannot deliver an
+      end-to-end parent-observable `ErrUnserializable`). The mandatory test is
+      scoped honestly to the agent-payload guard.
 - [ ] **AC-11** `internal/planner/react/prompt.go`: `renderNativeControlStep`
       gains a `case` per new decision shape with matching replay-arg builders
       (mirroring `cancelTaskReplayArgs`), so a trajectory containing a

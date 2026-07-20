@@ -65,22 +65,24 @@ type ProviderSet interface {
 	// install fails loud (ErrProviderOwnerCollision); a re-install by the SAME
 	// owner replaces (and closes) the prior instance. owner must be non-zero.
 	Install(owner Owner, name string, p OAuthProvider) error
-	// Uninstall removes the runtime-installed provider under name and CLOSES it
-	// (so a still-bound connection's next call fails LOUD, never an
-	// unauthenticated dial). A missing name is an idempotent no-op; a
-	// boot-seeded (zero-owner) name is refused (ErrProviderBootProtected) — boot
-	// providers are edited in yaml + restart, never uninstalled over the control
-	// plane.
+	// Uninstall removes the runtime-installed provider under name IFF owner
+	// matches the installed entry's owner, and CLOSES it (so a still-bound
+	// connection's next call fails LOUD, never an unauthenticated dial). A
+	// missing name is an idempotent no-op; a boot-seeded (zero-owner) name is
+	// refused (ErrProviderBootProtected) — boot providers are edited in yaml +
+	// restart, never uninstalled over the control plane; a cross-owner drop is
+	// refused (ErrProviderOwnerCollision).
 	//
-	// Uninstall takes no Owner: owner-scoping is enforced by the CALLER. The
-	// sole caller, the `agent_config.remove_oauth_provider` handler, resolves
-	// the name within the caller's OWN active agent-config revision (under
-	// lockAgent) and only reaches Uninstall for a provider present in that
-	// owner's revision, so no caller can drop another owner's provider. A
-	// defense-in-depth `Uninstall(owner, name)` that re-checks the entry's owner
-	// at this boundary (mirroring Install's ErrProviderOwnerCollision) is a
-	// tracked follow-up (issue #507).
-	Uninstall(ctx context.Context, name string) error
+	// Owner-scoping is enforced HERE, at the store boundary, independently of
+	// caller-side owner resolution — a second, independent owner check
+	// (defense in depth). The
+	// `agent_config.remove_oauth_provider` handler already resolves the name
+	// within the caller's OWN active agent-config revision (under lockAgent), so
+	// the store check is the second, independent gate: the store refuses a drop
+	// whose owner does not match the entry's owner, mirroring Install's
+	// owner-collision refusal. Never weakens the credential-sink invariant
+	// (owner is a reconcile-view tag, never a credential sink).
+	Uninstall(ctx context.Context, owner Owner, name string) error
 }
 
 // ProviderSet sentinel errors.
@@ -95,10 +97,13 @@ var (
 	// ErrProviderBootCollision — Install named a boot-seeded provider. Boot
 	// wins; a runtime install never shadows a boot-declared provider.
 	ErrProviderBootCollision = errors.New("auth: provider set install: name collides with a boot-declared provider (boot wins; edit yaml + restart)")
-	// ErrProviderOwnerCollision — Install named a provider another owner already
-	// installed. In a shared runtime a runtime-installed name is
-	// deployment-global (the bounded guarantee: no silent shadow).
-	ErrProviderOwnerCollision = errors.New("auth: provider set install: name already installed by a different owner (a runtime-installed name is deployment-global)")
+	// ErrProviderOwnerCollision — a runtime-installed name is owned by a
+	// DIFFERENT owner than the caller. Install refuses shadowing another owner's
+	// name; Uninstall refuses dropping another owner's provider (the
+	// defense-in-depth store-boundary owner check). In a shared runtime a
+	// runtime-installed name is deployment-global (the bounded guarantee: no
+	// silent shadow, no cross-owner drop).
+	ErrProviderOwnerCollision = errors.New("auth: provider set: name owned by a different owner (a runtime-installed name is deployment-global)")
 	// ErrProviderBootProtected — Uninstall named a boot-seeded provider. A boot
 	// provider is edited in yaml + restart, never uninstalled over the control
 	// plane.
@@ -202,11 +207,12 @@ func (s *providerSet) Install(owner Owner, name string, p OAuthProvider) error {
 	return nil
 }
 
-// Uninstall implements ProviderSet.Uninstall. Owner-scoping is enforced by the
-// caller (the remove_oauth_provider handler resolves the name within the
-// caller's own agent-config revision); a defense-in-depth owner re-check at
-// this boundary is a tracked follow-up (issue #507).
-func (s *providerSet) Uninstall(ctx context.Context, name string) error {
+// Uninstall implements ProviderSet.Uninstall. Owner-scoping is enforced HERE at
+// the store boundary: the drop is refused unless owner matches the
+// entry's owner, mirroring Install's owner-collision refusal — a second,
+// independent gate on top of the caller-side owner resolution the
+// remove_oauth_provider handler already performs.
+func (s *providerSet) Uninstall(ctx context.Context, owner Owner, name string) error {
 	s.mu.Lock()
 	e, ok := s.entries[name]
 	if !ok {
@@ -216,6 +222,13 @@ func (s *providerSet) Uninstall(ctx context.Context, name string) error {
 	if e.owner.IsZero() {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: %q", ErrProviderBootProtected, name)
+	}
+	if e.owner != owner {
+		// Cross-owner drop refused at the store boundary: an owner may only
+		// uninstall its OWN installed provider (defense in depth — never trust
+		// caller-side owner resolution alone). The entry is untouched.
+		s.mu.Unlock()
+		return fmt.Errorf("%w: %q (installed by tenant=%q agent=%q)", ErrProviderOwnerCollision, name, e.owner.Tenant, e.owner.Agent)
 	}
 	delete(s.entries, name)
 	s.mu.Unlock()

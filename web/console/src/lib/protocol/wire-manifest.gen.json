@@ -7673,6 +7673,7 @@
     "notification.pause_requested",
     "notification.task_completed",
     "notification.task_failed",
+    "notification.task_group_cancelled",
     "notification.task_group_resolved",
     "notification.tool_approval_requested",
     "pause.payload_artifact_routed",

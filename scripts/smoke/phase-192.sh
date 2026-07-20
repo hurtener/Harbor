@@ -50,10 +50,11 @@ run_go_test_if_present "mapTaskGroupCancelled synthesize/suppress per origin" \
     'TestMap.*GroupCancelled|TestSubscriber.*GroupCancelled' \
     './internal/runtime/notifications/'
 
-# AC-4: the engine emits TaskGroupCancelledPayload with a correct Origin.
+# AC-4: the engine emits TaskGroupCancelledPayload with a correct Origin —
+# operator on a direct CancelGroup, failfast when the fail-fast gate fires.
 run_go_test_if_present "engine group-cancel emits TaskGroupCancelledPayload+Origin" \
-    'TestEngine.*GroupCancelled|TestGroups.*Cancelled.*Origin' \
-    './internal/tasks/engine/'
+    'TestCancelGroup_Stamps|TestFailFastGroup_Stamps' \
+    './internal/tasks/drivers/inprocess/'
 
 # AC-7: the TUI projection renders the new type as the muted notification kind.
 run_go_test_if_present "tui projection renders notification.task_group_cancelled" \

@@ -165,7 +165,13 @@ in the transcript — for example `·  Background task <id> completed` or
 `·  Background group resolved: 2 of 3 succeeded, 1 failed`. It is one quiet
 lifecycle line, never a per-member flood and never a card; the full detail
 stays on the Tasks route. A background task that *fails* wakes the same way
-(`·  Task <id> failed …`). These wake lines are the only runtime-lifecycle
+(`·  Task <id> failed …`). A parallel group that gets **cancelled without you
+asking** — a fail-fast gate firing on a member failure, or a cascade from an
+ancestor cancel — wakes too (`·  Background group cancelled (fail-fast): 2
+cancelled of 3, 1 failed`), so a batch's cancelled losers no longer vanish
+silently while its winners announce themselves. A group *you* cancelled
+yourself is not echoed back — you already know, so that muted line only ever
+appears for the unprompted cancels. These wake lines are the only runtime-lifecycle
 notices that belong on the chat surface — audit, cost, and planner internals
 stay on the events and diagnostics routes.
 

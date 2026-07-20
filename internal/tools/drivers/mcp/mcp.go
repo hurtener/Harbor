@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,14 @@ var (
 	// surface: the call aborts rather than proceeding unauthenticated
 	// on a connection the operator declared per-identity-authorized.
 	ErrEmptyBearer = errors.New("mcp: oauth provider returned an empty bearer token")
+	// ErrAmbiguousOAuthBinding — a per-tool `oauth_provider` binding key
+	// addresses more than ONE MCP surface on this server at once (e.g. both a
+	// tool AND a prompt of the same name, or a resource whose URI equals a tool
+	// name). The per-tool binding map is a single per-entry namespace keyed by
+	// MCP-side name; when a key would bind more than one surface the operator's
+	// intent is ambiguous, so the binding is rejected LOUD at discovery rather
+	// than silently resolved by an undocumented precedence.
+	ErrAmbiguousOAuthBinding = errors.New("mcp: ambiguous oauth_provider binding (key addresses more than one MCP surface)")
 )
 
 // resourceTypeSeparator — used in the synthetic tool names for
@@ -207,17 +216,21 @@ type Config struct {
 	// thereafter.
 	OnScopeShortfall func(ScopeShortfall)
 
-	// ToolOAuthProviders are per-tool OAuth-provider overrides keyed by the
-	// MCP server-side tool name (mirroring ToolPolicies' shape). A tool named
-	// here binds THAT provider for its CallTool RPCs only; an unlisted tool
-	// falls back to OAuthProvider (the connection-level binding). Each entry
-	// was resolved + validated against the same binding rules as
-	// OAuthProvider at attach time (unknown name / stdio transport /
-	// static-Authorization conflict / downstream-host allow-list). Scope is
-	// CallTool ONLY — resource/prompt paths keep resolving OAuthProvider.
-	// Read-only after New; the resolved provider is read per-call from the
-	// call's own tool name, so concurrent invocations of different tools
-	// never share or race this map (the concurrent-reuse contract).
+	// ToolOAuthProviders are per-entry OAuth-provider overrides keyed by the
+	// MCP-side name (mirroring ToolPolicies' shape). An entry named here binds
+	// THAT provider for every identity-stamped RPC that addresses by the entry's
+	// key — a CallTool by tool name, a ReadResource / SubscribeResource by
+	// resource URI, and a GetPrompt by prompt name; an unlisted key falls back
+	// to OAuthProvider (the connection-level binding). Each entry was resolved +
+	// validated against the same binding rules as OAuthProvider at attach time
+	// (unknown name / stdio transport / static-Authorization conflict /
+	// downstream-host allow-list). The map is a single per-entry namespace; a
+	// key that would address more than one surface at once (a tool AND a prompt
+	// of the same name) is rejected loud at discovery (ErrAmbiguousOAuthBinding),
+	// never silently resolved by precedence. Read-only after New; the resolved
+	// provider is read per-call from the call's own addressing key, so concurrent
+	// invocations of different tools / resources / prompts never share or race
+	// this map (the concurrent-reuse contract).
 	ToolOAuthProviders map[string]auth.OAuthProvider
 }
 
@@ -512,8 +525,13 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	}
 
 	// Capacity is seeded from the tool count; resources/prompts append
-	// further and may grow the slice.
+	// further and may grow the slice. The three per-surface key sets are
+	// collected alongside so the per-entry OAuth-binding namespace can be
+	// checked for a cross-surface collision once discovery is complete.
 	out := make([]tools.ToolDescriptor, 0, len(toolsRes.Tools))
+	toolNames := make(map[string]struct{}, len(toolsRes.Tools))
+	resourceURIs := make(map[string]struct{})
+	promptNames := make(map[string]struct{})
 	for _, t := range toolsRes.Tools {
 		if t == nil {
 			continue
@@ -530,6 +548,7 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 			)
 			continue
 		}
+		toolNames[t.Name] = struct{}{}
 		out = append(out, desc)
 	}
 
@@ -540,6 +559,7 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 			if r == nil || r.URI == "" {
 				continue
 			}
+			resourceURIs[r.URI] = struct{}{}
 			out = append(out, p.buildResourceDescriptor(r))
 		}
 	}
@@ -553,11 +573,50 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 			if pr == nil || pr.Name == "" {
 				continue
 			}
+			promptNames[pr.Name] = struct{}{}
 			out = append(out, p.buildPromptDescriptor(pr))
 		}
 	}
 
+	// A per-entry OAuth binding key must address exactly ONE surface. A key
+	// matching a tool AND a prompt (or a resource URI equal to a tool name)
+	// is ambiguous — fail the discovery loud so the boot / runtime-add attach
+	// fails rather than silently binding the credential to a surface the
+	// operator did not intend.
+	if err := p.checkOAuthBindingAmbiguity(toolNames, resourceURIs, promptNames); err != nil {
+		return nil, err
+	}
+
 	return out, nil
+}
+
+// checkOAuthBindingAmbiguity fails loud when a per-entry `tool_oauth_providers`
+// key addresses more than one discovered MCP surface at once (a tool, a resource
+// URI, and a prompt name share the single per-entry namespace). It is the
+// discovery-time half of AC-3: a cross-surface key collision is rejected with
+// ErrAmbiguousOAuthBinding, never resolved by an undocumented precedence. An
+// unbound connection (no per-entry map) is a no-op.
+func (p *Provider) checkOAuthBindingAmbiguity(toolNames, resourceURIs, promptNames map[string]struct{}) error {
+	if len(p.cfg.ToolOAuthProviders) == 0 {
+		return nil
+	}
+	for key := range p.cfg.ToolOAuthProviders {
+		kinds := make([]string, 0, 3)
+		if _, ok := toolNames[key]; ok {
+			kinds = append(kinds, "tool")
+		}
+		if _, ok := resourceURIs[key]; ok {
+			kinds = append(kinds, "resource")
+		}
+		if _, ok := promptNames[key]; ok {
+			kinds = append(kinds, "prompt")
+		}
+		if len(kinds) > 1 {
+			return fmt.Errorf("%w: key %q addresses %s on server %q — rename one surface or bind them to distinct keys",
+				ErrAmbiguousOAuthBinding, key, strings.Join(kinds, "+"), p.source)
+		}
+	}
+	return nil
 }
 
 // buildToolDescriptor maps an MCP Tool into a Harbor ToolDescriptor.
@@ -900,7 +959,11 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
-				ctx, mErr = p.resolveBearerCtx(ctx, "")
+				// Per-entry binding: the resource URI is the addressing key, so a
+				// per-tool `oauth_provider` override declared for this resource
+				// resolves its bearer; an unbound resource falls back to the
+				// connection-level binding.
+				ctx, mErr = p.resolveBearerCtx(ctx, uri)
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
@@ -953,7 +1016,11 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
-				ctx, mErr = p.resolveBearerCtx(ctx, "")
+				// Per-entry binding: the prompt name is the addressing key, so a
+				// per-tool `oauth_provider` override declared for this prompt
+				// resolves its bearer; an unbound prompt falls back to the
+				// connection-level binding.
+				ctx, mErr = p.resolveBearerCtx(ctx, name)
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
@@ -995,7 +1062,10 @@ func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte
 	if mErr != nil {
 		return nil, "", mErr
 	}
-	ctx, mErr = p.resolveBearerCtx(ctx, "")
+	// Per-entry binding: the resource URI is the addressing key so a per-tool
+	// override declared for this resource resolves its bearer (connection-level
+	// fallback when unbound).
+	ctx, mErr = p.resolveBearerCtx(ctx, uri)
 	if mErr != nil {
 		return nil, "", mErr
 	}
@@ -1069,7 +1139,10 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 	if mErr != nil {
 		return mErr
 	}
-	ctx, mErr = p.resolveBearerCtx(ctx, "")
+	// Per-entry binding: the resource URI is the addressing key so a per-tool
+	// override declared for this resource resolves its bearer (connection-level
+	// fallback when unbound).
+	ctx, mErr = p.resolveBearerCtx(ctx, uri)
 	if mErr != nil {
 		return mErr
 	}
@@ -1209,15 +1282,16 @@ func isReservedMetaKey(k string) bool {
 	return config.IsReservedMCPMetaKey(k)
 }
 
-// resolveBearerProvider selects the OAuth provider that authenticates a call
-// to toolName. A non-empty toolName (a CallTool RPC) resolves the per-tool
-// override map, falling back to the connection-level OAuthProvider when the
-// tool is unlisted; an empty toolName (resource/prompt/subscribe paths)
-// always resolves the connection-level OAuthProvider. The map is read-only
-// after construction, so this per-call read never races.
-func (p *Provider) resolveBearerProvider(toolName string) auth.OAuthProvider {
-	if toolName != "" {
-		if prov, ok := p.cfg.ToolOAuthProviders[toolName]; ok {
+// resolveBearerProvider selects the OAuth provider that authenticates an RPC
+// addressed by key. A non-empty key — a CallTool tool name, a ReadResource /
+// SubscribeResource resource URI, or a GetPrompt prompt name — resolves the
+// per-entry override map, falling back to the connection-level OAuthProvider
+// when the key is unlisted; an empty key always resolves the connection-level
+// OAuthProvider. The map is read-only after construction, so this per-call read
+// never races.
+func (p *Provider) resolveBearerProvider(key string) auth.OAuthProvider {
+	if key != "" {
+		if prov, ok := p.cfg.ToolOAuthProviders[key]; ok {
 			return prov
 		}
 	}
@@ -1225,11 +1299,13 @@ func (p *Provider) resolveBearerProvider(toolName string) auth.OAuthProvider {
 }
 
 // resolveBearerCtx threads a fresh per-identity bearer onto the call's ctx
-// when this connection binds an OAuth provider for toolName, so the
+// when this connection binds an OAuth provider for the addressing key, so the
 // context-aware bearerInjectingTransport sets Authorization on the outbound
-// request. Provider selection is per-tool: toolName != "" resolves the
-// per-tool override map (falling back to the connection-level provider);
-// toolName == "" always resolves the connection-level provider.
+// request. Provider selection is per-entry: a non-empty key (a CallTool tool
+// name, a ReadResource / SubscribeResource resource URI, or a GetPrompt prompt
+// name) resolves the per-entry override map (falling back to the
+// connection-level provider); an empty key always resolves the connection-level
+// provider.
 //
 // It is FAIL-CLOSED: a Token() error (including a typed *auth.ErrAuthRequired
 // the runtime catches to park the run on the unified pause/resume primitive)
@@ -1242,8 +1318,8 @@ func (p *Provider) resolveBearerProvider(toolName string) auth.OAuthProvider {
 // step-up can report the required-vs-granted gap. No Provider or transport
 // field mutates: the bearer rides the returned ctx (per-call state lives on
 // the ctx, never on the compiled artifact — the concurrent-reuse contract).
-func (p *Provider) resolveBearerCtx(ctx context.Context, toolName string) (context.Context, error) {
-	provider := p.resolveBearerProvider(toolName)
+func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Context, error) {
+	provider := p.resolveBearerProvider(key)
 	if provider == nil {
 		return ctx, nil
 	}

@@ -93,3 +93,60 @@ func TestBatch_IsDecision(t *testing.T) {
 	t.Parallel()
 	var _ Decision = Batch{}
 }
+
+// TestSteerPauseResume_AreDecisions pins the three planner-facing task
+// control shapes onto the sealed Decision sum at compile time.
+func TestSteerPauseResume_AreDecisions(t *testing.T) {
+	t.Parallel()
+	var _ Decision = SteerTask{}
+	var _ Decision = PauseTask{}
+	var _ Decision = ResumeTask{}
+}
+
+// TestTaskControlDecisions_SerializeRoundTrip is the decision
+// serialization conformance coverage for the task-management control
+// shapes: every field survives a JSON marshal→unmarshal round-trip
+// unchanged. A trajectory persists a decision as Step.Action via JSON, so
+// stability here is the contract that a replayed steer/pause/resume step
+// reconstructs the ids and directives the model emitted.
+func TestTaskControlDecisions_SerializeRoundTrip(t *testing.T) {
+	t.Parallel()
+	roundTrip := func(t *testing.T, in, out any) {
+		t.Helper()
+		b, err := json.Marshal(in)
+		if err != nil {
+			t.Fatalf("marshal %T: %v", in, err)
+		}
+		if err := json.Unmarshal(b, out); err != nil {
+			t.Fatalf("unmarshal %T: %v", in, err)
+		}
+	}
+
+	t.Run("SteerTask", func(t *testing.T) {
+		t.Parallel()
+		in := SteerTask{TaskID: tasks.TaskID("task-abc"), Directive: "focus on the auth path"}
+		var got SteerTask
+		roundTrip(t, in, &got)
+		if got != in {
+			t.Fatalf("round-trip = %+v, want %+v", got, in)
+		}
+	})
+	t.Run("PauseTask", func(t *testing.T) {
+		t.Parallel()
+		in := PauseTask{TaskID: tasks.TaskID("task-def"), Reason: "waiting on upstream"}
+		var got PauseTask
+		roundTrip(t, in, &got)
+		if got != in {
+			t.Fatalf("round-trip = %+v, want %+v", got, in)
+		}
+	})
+	t.Run("ResumeTask", func(t *testing.T) {
+		t.Parallel()
+		in := ResumeTask{TaskID: tasks.TaskID("task-ghi"), Directive: "continue with the new budget"}
+		var got ResumeTask
+		roundTrip(t, in, &got)
+		if got != in {
+			t.Fatalf("round-trip = %+v, want %+v", got, in)
+		}
+	})
+}

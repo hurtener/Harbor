@@ -184,7 +184,7 @@ func (e *Engine) SealGroup(ctx context.Context, id tasks.TaskGroupID) error {
 	// If sealing finds the group already has all members terminal
 	// (e.g. members completed before the seal), resolve immediately.
 	if e.allMembersTerminalLocked(g) {
-		if err := e.resolveGroupLocked(ctx, g, tasks.GroupCompleted, ""); err != nil {
+		if err := e.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "", ""); err != nil {
 			return err
 		}
 	}
@@ -234,7 +234,10 @@ func (e *Engine) CancelGroup(ctx context.Context, id tasks.TaskGroupID, reason s
 		}
 	}
 
-	if err := e.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason); err != nil {
+	// A direct CancelGroup is the operator (or an agent acting on the
+	// operator's behalf) driving the cancel — they already know, so the
+	// origin is operator and a conversational mirror suppresses it.
+	if err := e.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason, tasks.CancelOriginOperator); err != nil {
 		return err
 	}
 	return nil
@@ -279,7 +282,7 @@ func (e *Engine) applyResolveAction(ctx context.Context, id tasks.TaskGroupID) e
 	case tasks.GroupOpen:
 		return fmt.Errorf("%w: id=%q (still open)", tasks.ErrGroupNotSealed, id)
 	case tasks.GroupSealed:
-		return e.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "")
+		return e.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "", "")
 	default:
 		return fmt.Errorf("%w: from=%q to=%q",
 			tasks.ErrGroupInvalidTransition, g.Status, tasks.GroupCompleted)
@@ -557,13 +560,18 @@ func (e *Engine) WatchGroup(sessionID identity.Identity, groupID tasks.TaskGroup
 // retain-turn waiters for the owning session, persists the group,
 // and emits the right bus event.
 //
+// `origin` classifies WHY a Cancelled transition happened and is
+// stamped onto the emitted `task.group_cancelled` payload so an
+// operator-facing consumer can mirror an unprompted cancel and suppress
+// an operator-driven one. It is ignored on the Completed path.
+//
 // Caller MUST hold e.mu. Returns the first persist / publish error
 // encountered. The completion payload is cached and delivered to
 // subscribers regardless of persist/publish failure so callers
 // observing WatchGroup don't deadlock; the error surfaces the
 // durable-record + bus-event gap to the public-method caller so
 // retries can land at the right layer (fail-loudly per AGENTS.md §5).
-func (e *Engine) resolveGroupLocked(ctx context.Context, g *tasks.TaskGroup, final tasks.TaskGroupStatus, reason string) error {
+func (e *Engine) resolveGroupLocked(ctx context.Context, g *tasks.TaskGroup, final tasks.TaskGroupStatus, reason string, origin tasks.CancelOrigin) error {
 	now := time.Now()
 	g.Status = final
 	g.UpdatedAt = now
@@ -592,7 +600,7 @@ func (e *Engine) resolveGroupLocked(ctx context.Context, g *tasks.TaskGroup, fin
 	var payload events.EventPayload = tasks.TaskGroupResolvedPayload{Completion: completion}
 	if final != tasks.GroupCompleted {
 		evType = tasks.EventTypeTaskGroupCancelled
-		payload = tasks.TaskGroupCancelledPayload{Completion: completion}
+		payload = tasks.TaskGroupCancelledPayload{Completion: completion, Origin: origin}
 	}
 	if err := e.bus.Publish(ctx, events.Event{
 		Type:     evType,
@@ -739,7 +747,10 @@ func (e *Engine) onMemberTerminalLocked(ctx context.Context, t *tasks.Task) erro
 				cancelErr = fmt.Errorf("tasks/engine: fail-fast cascade cancel member %q: %w", mid, cerr)
 			}
 		}
-		if rerr := e.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason); rerr != nil {
+		// The fail-fast gate — not the operator — drove this cancel, so
+		// the origin is fail-fast and a conversational mirror surfaces it
+		// (the operator did not ask for it).
+		if rerr := e.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason, tasks.CancelOriginFailFast); rerr != nil {
 			if cancelErr == nil {
 				return rerr
 			}
@@ -751,7 +762,7 @@ func (e *Engine) onMemberTerminalLocked(ctx context.Context, t *tasks.Task) erro
 	// Normal resolve path: when the group is sealed AND all members
 	// terminal, transition to Completed.
 	if g.Status == tasks.GroupSealed && e.allMembersTerminalLocked(g) {
-		return e.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "")
+		return e.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "", "")
 	}
 	return nil
 }

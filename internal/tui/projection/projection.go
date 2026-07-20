@@ -401,12 +401,15 @@ func (r *Reducer) apply(current Projection, event WireEvent, historical bool) (P
 			}
 		}
 		blockIDs = append(blockIDs, id)
-	case "notification.task_completed", "notification.task_group_resolved":
+	case "notification.task_completed", "notification.task_group_resolved", "notification.task_group_cancelled":
 		// The conversational mirror of a background terminal transition /
-		// group resolution. Rendered unconditionally as a muted one-line
-		// lifecycle notice — these are deliberate operator-facing wake
-		// signals, not the event-fallback leakage the generic branch
-		// guards against.
+		// group resolution / unprompted group cancellation. Rendered
+		// unconditionally as a muted one-line lifecycle notice — these are
+		// deliberate operator-facing wake signals, not the event-fallback
+		// leakage the generic branch guards against. (An operator-driven
+		// cancel is suppressed upstream at the notifications mapper, so a
+		// task_group_cancelled notification only ever reaches here for an
+		// unprompted cancel worth surfacing.)
 		var decoded notificationPayload
 		if !decodePayload(event.Payload, &decoded) || decoded.Summary == "" {
 			return genericFallback(next, event, payload), ChangeSet{Changed: true, Immediate: true, BlockIDs: []string{genericEventID(event)}}, nil
@@ -1045,7 +1048,7 @@ func ClassifyEventType(eventType string) EventClassification {
 		"tool.invoked", "tool.completed", "tool.failed", "tool.policy_exhausted", "pause.requested", "pause.resumed",
 		"tool.approval_requested", "tool.approved", "tool.rejected", "tool.auth_required", "tool.auth_completed",
 		"session.closed", "session.reopened", "session.erased",
-		"notification.task_completed", "notification.task_group_resolved", "notification.task_failed":
+		"notification.task_completed", "notification.task_group_resolved", "notification.task_group_cancelled", "notification.task_failed":
 		return EventTyped
 	default:
 		return EventGeneric

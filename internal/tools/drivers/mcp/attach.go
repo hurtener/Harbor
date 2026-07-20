@@ -372,13 +372,15 @@ func resolveOAuthBinding(ms config.MCPServerConfig, mode MCPTransportMode, provi
 	return resolveProviderBinding(ms, mode, ms.OAuthProvider, providers)
 }
 
-// resolveToolOAuthBindings resolves a connection's per-tool `oauth_provider`
-// overrides (server-side tool name → provider name) against the registry,
-// re-enforcing EVERY binding rule per entry exactly like the connection-level
-// binding (unknown name / stdio transport / static-Authorization conflict /
-// downstream-host allow-list). Scope is CallTool only. An empty map returns
-// nil (no overrides). An empty tool-name key or empty provider name fails
-// loud.
+// resolveToolOAuthBindings resolves a connection's per-entry `oauth_provider`
+// overrides (MCP-side name → provider name) against the registry, re-enforcing
+// EVERY binding rule per entry exactly like the connection-level binding
+// (unknown name / stdio transport / static-Authorization conflict /
+// downstream-host allow-list). The overrides apply to every identity-stamped
+// RPC that addresses by the entry's key — CallTool by tool name, ReadResource /
+// SubscribeResource by resource URI, GetPrompt by prompt name (the cross-surface
+// key-collision guard runs at discovery, ErrAmbiguousOAuthBinding). An empty map
+// returns nil (no overrides). An empty key or empty provider name fails loud.
 func resolveToolOAuthBindings(ms config.MCPServerConfig, mode MCPTransportMode, providers OAuthProviderResolver) (map[string]auth.OAuthProvider, error) {
 	if len(ms.ToolOAuthProviders) == 0 {
 		return nil, nil

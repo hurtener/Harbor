@@ -424,6 +424,117 @@ func TestE2E_NotificationsTopic_BackgroundWakeClasses(t *testing.T) {
 	}
 }
 
+// TestE2E_NotificationsTopic_GroupCancelledMirror exercises the
+// conversational cancel-mirror class end-to-end against the real bus +
+// Subscriber:
+//
+//   - a task.group_cancelled with Origin=Cascade and mixed member
+//     outcomes round-trips to notification.task_group_cancelled with the
+//     correct full-membership counts and the trigger identity intact;
+//   - a task.group_cancelled with Origin=Operator produces NO
+//     notification (the settled suppression rule — the operator already
+//     knows), proven with a bounded-wait negative check per §17.4, never
+//     a sleep.
+func TestE2E_NotificationsTopic_GroupCancelledMirror(t *testing.T) {
+	t.Parallel()
+
+	bus := openNotificationsBus(t)
+
+	listener, err := bus.Subscribe(context.Background(), events.Filter{
+		Admin: true,
+		Types: []events.EventType{notifications.EventTypeNotificationTaskGroupCancelled},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe listener: %v", err)
+	}
+	defer listener.Cancel()
+
+	startSubscriber(t, bus)
+
+	idCascade := triple("cascade")
+	idOperator := triple("operator")
+
+	// Publish the OPERATOR (suppressed) cancel FIRST. FIFO ordering means a
+	// wrongly-synthesised notification would arrive before the cascade one,
+	// so draining for the expected cascade notification and then asserting
+	// no second arrives is a sound negative.
+	operatorCancel := events.Event{
+		Type:     tasks.EventTypeTaskGroupCancelled,
+		Identity: idOperator,
+		Payload: tasks.TaskGroupCancelledPayload{Origin: tasks.CancelOriginOperator, Completion: tasks.GroupCompletion{
+			GroupID:     "grp-op",
+			SessionID:   idOperator.Identity,
+			FinalStatus: tasks.GroupCancelled,
+			Members: []tasks.MemberOutcome{
+				{TaskID: "m-1", Status: tasks.StatusCancelled, Description: "stopped"},
+			},
+		}},
+	}
+	if err := bus.Publish(context.Background(), operatorCancel); err != nil {
+		t.Fatalf("Publish operator cancel: %v", err)
+	}
+
+	cascadeCancel := events.Event{
+		Type:     tasks.EventTypeTaskGroupCancelled,
+		Identity: idCascade,
+		Payload: tasks.TaskGroupCancelledPayload{Origin: tasks.CancelOriginCascade, Completion: tasks.GroupCompletion{
+			GroupID:     "grp-cascade",
+			SessionID:   idCascade.Identity,
+			FinalStatus: tasks.GroupCancelled,
+			Members: []tasks.MemberOutcome{
+				{TaskID: "m-1", Status: tasks.StatusComplete, Description: "won"},
+				{TaskID: "m-2", Status: tasks.StatusFailed, Description: "lost"},
+				{TaskID: "m-3", Status: tasks.StatusCancelled, Description: "stopped"},
+			},
+		}},
+	}
+	if err := bus.Publish(context.Background(), cascadeCancel); err != nil {
+		t.Fatalf("Publish cascade cancel: %v", err)
+	}
+
+	// The cascade cancel must arrive as the cancel-mirror class.
+	deadline := time.After(30 * time.Second)
+	var got events.Event
+	select {
+	case ev, ok := <-listener.Events():
+		if !ok {
+			t.Fatal("listener closed early before the cascade cancel arrived")
+		}
+		got = ev
+	case <-deadline:
+		t.Fatal("deadline before notification.task_group_cancelled arrived")
+	}
+	if got.Type != notifications.EventTypeNotificationTaskGroupCancelled {
+		t.Fatalf("type=%q, want notification.task_group_cancelled", got.Type)
+	}
+	if got.Identity != idCascade {
+		t.Errorf("cascade cancel identity bled: got %v, want %v", got.Identity, idCascade)
+	}
+	if rm, ok := got.Payload.(events.RedactedMap); ok {
+		if n := redactedInt(rm.Data["membersucceeded"]); n != 1 {
+			t.Errorf("membersucceeded=%d, want 1", n)
+		}
+		if n := redactedInt(rm.Data["memberfailed"]); n != 1 {
+			t.Errorf("memberfailed=%d, want 1", n)
+		}
+		if n := redactedInt(rm.Data["membercancelled"]); n != 1 {
+			t.Errorf("membercancelled=%d, want 1", n)
+		}
+	} else {
+		t.Errorf("cancel notification payload type=%T, want RedactedMap", got.Payload)
+	}
+
+	// Bounded-wait negative: the operator cancel produced no notification.
+	select {
+	case ev, ok := <-listener.Events():
+		if ok {
+			t.Fatalf("unexpected extra notification %q — an operator-driven cancel must produce none", ev.Type)
+		}
+	case <-time.After(500 * time.Millisecond):
+		// No extra notification — correct (operator cancel suppressed).
+	}
+}
+
 // redactedInt reads an int count from a redacted-map value, tolerating the
 // int / float64 shapes a JSON round-trip may produce.
 func redactedInt(v any) int {
@@ -641,8 +752,13 @@ func triple(suffix string) identity.Quadruple {
 }
 
 func buildTrigger(id identity.Quadruple, j, i int) events.Event {
-	// Rotate over the five V1 triggers for balanced coverage.
-	switch (j + i) % 5 {
+	// Rotate over a balanced trigger mix. The group-cancel case uses an
+	// unprompted (cascade) origin so it always synthesises exactly one
+	// notification, keeping the 1:1 producer→notification accounting the
+	// stress test asserts. (An operator-origin cancel would suppress and
+	// break the count — the suppression path is covered separately by
+	// TestE2E_NotificationsTopic_GroupCancelledMirror.)
+	switch (j + i) % 6 {
 	case 0:
 		return events.Event{
 			Type:     tasks.EventTypeTaskFailed,
@@ -685,6 +801,19 @@ func buildTrigger(id identity.Quadruple, j, i int) events.Event {
 				BindingScope: "user",
 				State:        "csrf-stress",
 			},
+		}
+	case 4:
+		return events.Event{
+			Type:     tasks.EventTypeTaskGroupCancelled,
+			Identity: id,
+			Payload: tasks.TaskGroupCancelledPayload{Origin: tasks.CancelOriginCascade, Completion: tasks.GroupCompletion{
+				GroupID:     "grp-stress",
+				SessionID:   id.Identity,
+				FinalStatus: tasks.GroupCancelled,
+				Members: []tasks.MemberOutcome{
+					{TaskID: "m-stress", Status: tasks.StatusCancelled, Description: "stress member"},
+				},
+			}},
 		}
 	default:
 		return events.Event{
