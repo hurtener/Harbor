@@ -115,10 +115,16 @@ contradicted; D-331 is filed as the sanctioned extension, not a re-litigation.
 
 ## Acceptance criteria
 
-- [ ] **AC-1** `internal/tools/drivers/mcp`: `resolveBearerCtx(ctx, toolName)`
-      (191's per-tool-aware resolver) is called on the `ReadResource` and
-      `GetPrompt` RPC paths — and the other identity-stamped RPC paths D-278
-      lists — with the resource/prompt's addressing key as `toolName` so
+- [ ] **AC-1** `internal/tools/drivers/mcp`: `resolveBearerCtx(ctx, key)`
+      (191's per-tool-aware resolver) is called with a per-key binding on
+      EVERY currently-connection-level bearer-injection site — concretely the
+      four non-`callTool` `resolveBearerCtx(ctx, "")` call sites in `mcp.go`:
+      **`ReadResource`, `SubscribeResource`, the resource-read descriptor
+      invoke, and the prompt-get (`GetPrompt`) descriptor invoke**. The
+      implementor confirms the set is complete by grepping
+      `resolveBearerCtx(ctx, "")` in the driver and covering each site with a
+      test (a mechanical completeness gate, not an unlisted "D-278 set"). The
+      resource/prompt's addressing key is passed as `key` so
       `cfg.ToolOAuthProviders[key]` resolves, falling back to
       `cfg.OAuthProvider` when unbound. The resource/prompt binding key is
       documented explicitly (the MCP-side resource/prompt name); an unbound

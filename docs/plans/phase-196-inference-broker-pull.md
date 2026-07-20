@@ -82,9 +82,18 @@ decisions log. No other brief finding is departed from.
 
 ## Goals
 
-- Add an inference-plane broker-pull credential source behind the §4.4
-  credential-source seam (`internal/tools/auth/credsource` — the same seam
-  D-285 established), consumed by the LLM `Account` impl.
+- Add an inference-plane broker-pull credential source following the §4.4
+  seam PATTERN (interface + drivers + factory), consumed by the LLM `Account`
+  impl. It is a DISTINCT interface in `internal/llm`, NOT the OAuth-plane
+  `credsource.Source` (`internal/tools/auth/credsource`): that seam resolves
+  an OAuth provider's `client_id`/`client_secret`, whereas the inference
+  source resolves an LLM PROVIDER API KEY for the bifrost `Account` — a
+  different resolution target, a different consumer, and a different custody
+  model (runtime-scoped connect+refresh vs D-285's per-identity lazy pull,
+  the split D-285/D-333 deliberately keep). This is therefore NOT a §13
+  "two parallel implementations of the same feature" — they are different
+  credential features that share the §4.4 seam pattern; the sibling is
+  justified, not incidental.
 - Pull the provider key at **connect + refresh only** — cached, refreshed,
   NEVER a per-hot-path-call KEK decrypt on the inference critical path.
 - **Fail loud** (D-271 item 2, verbatim): broker-unreachable-at-connect OR
@@ -133,8 +142,9 @@ decisions log. No other brief finding is departed from.
 
 ## Acceptance criteria
 
-- [ ] A new inference-broker credential source (behind the §4.4
-      credential-source seam) pulls the provider key from the coordinator
+- [ ] A new inference-broker credential source (a distinct `internal/llm`
+      interface following the §4.4 seam pattern, NOT the OAuth `credsource`
+      interface — see Goals) pulls the provider key from the coordinator
       broker at connect + refresh; the LLM `Account`
       (`internal/llm/drivers/bifrost/account.go`) sources its key from it
       when the provider is config-declared brokered, and from local config
@@ -183,8 +193,11 @@ decisions log. No other brief finding is departed from.
 - [ ] The boot-declared inference-broker config
       (`config.InferenceBrokerConfig`, the D-300 analogue) lands in
       `internal/config`: config/file-only, restart-required, NOT a Protocol
-      surface; boot validation enforces its required fields (name,
-      credential_url, auth_token_env, audience/scope ceiling) and the
+      surface; boot validation enforces its REQUIRED fields (name,
+      credential_url, auth_token_env) and the OPTIONAL audience / scope-ceiling
+      pins (`omitempty` — an LLM provider key is not always audience/scope-
+      shaped; when present they are enforced as the D-300 sink pin, when
+      absent the broker's own binding governs), and the
       brokered-XOR-local rule.
 - [ ] `LLMClient` stays one method; no `CompleteRequest` field added; the
       broker-pull is entirely an `Account`-layer concern below the client.
@@ -205,8 +218,7 @@ decisions log. No other brief finding is departed from.
 ```text
 internal/config/config.go                              # InferenceBrokerConfig (D-300 analogue); LLMProviderConfig.credential_source brokered/local
 internal/config/validate.go                            # boot validation: required broker fields, brokered-XOR-local, unknown-broker resolution
-internal/tools/auth/credsource/drivers/remote/remote.go  # (reuse) the remote-pull mechanics; OR a sibling inference source (see Risks)
-internal/llm/credsource/inference_source.go            # inference-plane broker-pull source feeding the Account (new; connect+refresh, cache, fail-loud)
+internal/llm/credsource/inference_source.go            # inference-plane broker-pull source feeding the Account (new SIBLING interface, §4.4 pattern — NOT the OAuth credsource.Source; connect+refresh, cache, fail-loud). May extract the HTTP-pull/single-flight mechanics into a shared internal helper if it stays credential-agnostic, but the interface is distinct.
 internal/llm/credsource/inference_source_test.go       # unit: fail-loud, no-stale-cache, single-flight, atomic-swap
 internal/llm/drivers/bifrost/account.go                # GetKeysForProvider reads LiveKey seeded/refreshed by the broker-pull source (brokered XOR local)
 internal/llm/livekey.go                                 # (reuse) atomic key-swap the pulled key rides; refresh path documented

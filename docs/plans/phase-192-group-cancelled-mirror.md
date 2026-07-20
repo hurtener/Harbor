@@ -220,7 +220,7 @@ internal/tui/app/transcript_render.go             # cancelled-group rollup line 
 internal/tui/app/transcript_render_test.go
 internal/tui/app/testdata/                        # golden fixtures (rollup line; suppressed operator cancel = no line)
 docs/design/tui/CONVENTIONS.md                    # §10 matrix rows (new fixtures only)
-internal/protocol/... / wire manifest              # D-223 lockstep (mirrored TS + regenerated manifest)
+internal/protocol/singlesource/singlesource.go     # register the canonical event type/class (where TestCanonicalWireTypes gates) + regenerated wire manifest + mirrored TS (D-223/D-209 lockstep)
 web/console/src/lib/events/taxonomy.ts
 web/console/src/lib/tasks/run-events.test.ts
 web/console/src/lib/components/sessions/BottomDockTabs.svelte

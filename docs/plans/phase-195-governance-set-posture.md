@@ -144,12 +144,19 @@ contradicted.
 - [ ] Round-trip: a successful `set_posture` followed by `governance.posture`
       returns byte-faithful the tiers + `DefaultTier` that were written
       (what you set is what you read).
-- [ ] The write emits a `governance.posture_set` admin-write audit event
-      (SafePayload — actor tenant, non-secret tier-summary before/after, no
-      raw secrets) through the wired Redactor + Bus as ONE fail-closed unit
-      with the StateStore mutation (audit-emit failure COMPENSATES / rolls
-      back the mutation — the `adminwrite.Apply` posture the sibling admin
-      verbs reuse); an un-auditable write is never left observably applied.
+- [ ] The write's fail-loud gate is VALIDATION, not emit: a write that omits
+      or zeroes an enforced ceiling (or otherwise fails the shared validator)
+      is rejected fail-closed BEFORE any StateStore mutation. On a valid
+      write the record is persisted and THEN a `governance.posture_set`
+      admin-write audit event (SafePayload — actor tenant, non-secret
+      tier-summary before/after, no raw secrets) is emitted best-effort
+      through the wired Redactor + Bus; an emit/redactor failure logs loud
+      (`Warn`) but does NOT roll back the already-persisted write — mirroring
+      the shipped `governance.set_tenant_overrides::emitSet` posture (D-332
+      requires fail-closed validation + a redacted audit event, not
+      rollback-on-emit; `internal/protocol/adminwrite.Apply` is an
+      agentcfg-handler helper deliberately NOT imported into
+      `internal/governance`, which would be a reverse-layer dependency).
 - [ ] The Console Governance page gains an admin-gated write affordance
       (`docs/design/console/CONVENTIONS.md`, D-121): the edit form is
       visible/enabled only for a caller whose session carries `admin`,
@@ -271,9 +278,11 @@ var (
     on the seam; a `set_posture` write emits `governance.posture_set` on the
     bus AND a following `governance.posture` returns the written table;
     identity propagation asserted (the actor's verified triple is on the
-    event); ≥1 failure mode — a forced Redactor error COMPENSATES the write
-    (the StateStore record is rolled back, the next read shows the prior
-    policy). Runs under `-race`.
+    event); ≥1 failure mode — a budget-widening/ceiling-omitting write is
+    rejected fail-closed by the validator, NO StateStore mutation occurs, and
+    the next read shows the prior policy unchanged (the real fail-loud path;
+    a forced Redactor error on a VALID write is best-effort — logs loud, the
+    persisted write stands). Runs under `-race`.
 - **Conformance:**
   - Extend the governance conformance suite so all three StateStore drivers
     (in-mem / SQLite / Postgres) pass the SAME `set_posture` behavior —
@@ -369,7 +378,8 @@ var (
 - [ ] This phase consumes a shipped subsystem's surface (StateStore, Bus,
       Redactor): integration test exists, wires real drivers end-to-end,
       asserts identity propagation on the event, covers ≥1 failure mode
-      (Redactor-error compensation), runs under `-race`.
+      (a fail-closed validation reject on a budget-widening write), runs
+      under `-race`.
 - [ ] Glossary updated (2 terms above)
 - [ ] N/A — no brief finding departed from (the brief-selection note above
       is a sourcing explanation, not a design departure)

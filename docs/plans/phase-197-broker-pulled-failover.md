@@ -128,8 +128,10 @@ contradicted.
       a Harbor event.
 - [ ] `LLMClient` stays one method; no `CompleteRequest` field added; the
       walk is entirely governance/runtime mechanism above the client.
-- [ ] `governance.failover` is added to `internal/protocol/methods` (as an
-      event type) / `internal/protocol/types` with full D-223 / D-209
+- [ ] `governance.failover` is registered as a canonical EVENT type in
+      `internal/protocol/singlesource/singlesource.go` (NOT `methods.go`,
+      which is RPC methods) + its payload in `internal/protocol/types` with
+      full D-223 / D-209
       lockstep; `ProtocolVersion` stays `0.1.0`.
 - [ ] `test/integration/wave_v117_test.go` proves, over real drivers, under
       `-race`, N≥10 concurrency, with identity propagation asserted
