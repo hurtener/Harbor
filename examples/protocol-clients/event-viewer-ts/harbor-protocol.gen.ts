@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:edd4b58acbb389353be0e4a4a6ef48d38fd4b9d1cea9f196473787cd94c12e35";
+export const WIRE_SURFACE_DIGEST = "sha256:63a4c79ec11c73dc576dfe2eca38891a59c3920fb99298dec79696331b5c551e";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -80,6 +80,7 @@ export type HarborMethod =
   | "governance.get_tenant_overrides"
   | "governance.posture"
   | "governance.rotate_key"
+  | "governance.set_posture"
   | "governance.set_tenant_overrides"
   | "inject_context"
   | "llm.posture"
@@ -193,6 +194,7 @@ export type HarborEventType =
   | "governance.key_rotated"
   | "governance.maxtokens_exceeded"
   | "governance.posture_read_admin"
+  | "governance.posture_set"
   | "governance.rate_limited"
   | "governance.tenant_overrides_set"
   | "llm.completion.chunk"
@@ -1406,6 +1408,18 @@ export interface GovernanceRotateKeyResponse {
   provider: string;
   fingerprint: string;
   rotated_at: string;
+  protocol_version: string;
+}
+
+export interface GovernanceSetPostureRequest {
+  default_tier: string;
+  identity_tiers: Record<string, IdentityTierView>;
+}
+
+export interface GovernanceSetPostureResponse {
+  default_tier: string;
+  identity_tiers: Record<string, IdentityTierView>;
+  enforcement_pending_restart: boolean;
   protocol_version: string;
 }
 
