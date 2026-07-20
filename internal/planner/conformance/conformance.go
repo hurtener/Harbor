@@ -381,6 +381,11 @@ func Run(t *testing.T, factoryFunc func() Harness) {
 		var _ planner.Decision = planner.Batch{}
 		var _ planner.Decision = planner.SpawnTask{}
 		var _ planner.Decision = planner.AwaitTask{}
+		var _ planner.Decision = planner.TaskStatusQuery{}
+		var _ planner.Decision = planner.CancelTask{}
+		var _ planner.Decision = planner.SteerTask{}
+		var _ planner.Decision = planner.PauseTask{}
+		var _ planner.Decision = planner.ResumeTask{}
 		var _ planner.Decision = planner.RequestPause{}
 		var _ planner.Decision = planner.Finish{}
 	})

@@ -8817,6 +8817,122 @@ field, same posture as D-325). Deliberately out of scope: a solo
 sibling-asymmetry driver — a second additive class with its own suppression
 question, filed not folded in) and any Console notification-center / toast /
 bell surface (D-325's non-goal, unchanged).
+---
+
+## D-330 — Planner-facing steer / pause / resume of a spawned child: three sealed decisions producing the existing steering inbox + unified pause/resume primitive, descendant-scoped, human-superseded
+
+**Date:** 2026-07-20
+
+**Context.** D-324 gave the model observation (`_task_status`) and control
+(`_cancel_task`) over the background tasks its own run spawned, and parked one
+verb as a named future extension: steering or pausing a spawned child from the
+parent's model turn. The per-sub-run steering inbox
+(`internal/runtime/steering/inbox.go`) already exists for every background
+sub-run and the unified pause/resume primitive (RFC §3.3) already coordinates
+pause — but neither was exposed as a planner-facing verb. A model that fans
+out several explorations can cancel the losing branches (D-324) but cannot
+nudge a promising one mid-flight, nor park one and resume it later. This
+completes the operator↔agent control taxonomy on the AGENT side.
+
+**Decision.** Three reserved planner-control meta-tools — `_steer_task`,
+`_pause_task`, `_resume_task` — become three new sealed `planner.Decision`
+shapes (`SteerTask{TaskID; Directive}`, `PauseTask{TaskID; Reason}`,
+`ResumeTask{TaskID; Directive}`, RFC §6.2), projected in the React projector
+through the same reserved-name translation → executor-dispatch seam
+`_task_status` / `_cancel_task` use. Following brief 02 §5 (sharp edge 4,
+"magic strings as opcodes") they extend the `Decision` sum, never a
+string-typed control channel — the same choice D-324 made.
+
+**Not a widening of `Batch` (structural).** `Batch`'s shape carries only
+`Tools []CallTool` and `Spawns []SpawnTask` — it has no slot for these three
+types, so they are structurally non-batchable. The projector's standalone-name
+guard (`isStandaloneControlName`) gains all three: a steer/pause/resume control
+co-occurring with ANY other tool-call in one response is rejected loud with
+`planner.ErrInvalidDecision` naming the offending control. Widening to batchable
+later is additive; retracting a shipped batchable surface is not — the
+conservative non-batchable grammar is the first-wave choice, exactly as D-324
+chose for `_task_status` / `_cancel_task`.
+
+**One guard, one sentinel (reuses D-324).** All three executor methods call
+D-324's EXISTING `dispatch.isOwnDescendant(ctx, targetID, callerRunTaskID)`
+BEFORE touching the inbox; a target outside the caller's `ParentTaskID` lineage
+— including a sibling run's tasks in the SAME session, and the run's own task
+(self is not a descendant) — is rejected with D-324's EXISTING
+`dispatch.ErrTaskNotOwnDescendant` sentinel. No new scope sentinel is minted;
+the steer/pause/resume taxonomy stays coherent with the cancel taxonomy. This
+is IN ADDITION to the registry's `(tenant, user, session)` identity-visibility
+check, never instead of it (CLAUDE.md §6).
+
+**No new mechanism (§13, RFC §3.3).** All three verbs enqueue a canonical
+`steering.ControlEvent` onto the descendant sub-run's EXISTING per-sub-run
+steering inbox — the SAME inbox the operator's steering targets (the descendant
+task id doubles as its run id at this layer, RFC §6.8, so the inbox is keyed by
+the run triple with `RunID == taskID`). `_steer_task` enqueues an
+`INJECT_CONTEXT` control carrying the directive; `_pause_task` enqueues a
+`PAUSE` control and `_resume_task` a `RESUME` control — the operator's exact
+entry points to the unified pause/resume primitive, which the descendant's own
+RunLoop drives through `pauseresume.Coordinator`. A resume `directive` rides the
+`RESUME` control's payload, which the RunLoop forwards to the primitive's
+EXISTING resume-payload seam (`pauseresume.Coordinator.Resume`'s `payload`
+parameter, merged into the pause record via `mergeStringMap`) — no new resume
+mechanism. Pausing a descendant NEVER pauses the run issuing the verb: only the
+resolved descendant's inbox receives the control (a test asserts the parent
+inbox stays empty).
+
+**Human supremacy preserved.** The agent presents `ScopeOwnerUser` under its
+own tenant — the run-owner's authority over its OWN descendants, never admin,
+never cross-tenant. The operator's EXISTING control surface reaches ANY task at
+`ScopeAdmin` through the same inbox and always supersedes; a companion test
+proves an admin-scoped operator PAUSE reaches a descendant that run B (a
+sibling) is rejected from touching.
+
+**Fail-loud serialization — the honest scope (§5).** `_pause_task` /
+`_resume_task` validate the AGENT-supplied control payload (the `{source,
+issuer_run, reason|directive}` map this dispatch edge builds) against
+`trajectory.ValidateEncodable` BEFORE enqueue, surfacing
+`trajectory.ErrUnserializable` loud rather than a silent drop. This is a real
+guard on the agent payload — but it is NOT the descendant-run-state
+serialization contract §5/AC-10 primarily names, and it CANNOT trip through the
+real projector→dispatch path (every field it emits is an agent-supplied
+string/literal). The descendant's own run-state serialization (its checkpointed
+trajectory) is enforced fail-loud DOWNSTREAM, unchanged, by the unified
+primitive inside the descendant's RunLoop (`Coordinator.Request`) — the parent
+verb neither sees nor re-enforces it, so there is no parent-observable,
+end-to-end `ErrUnserializable` from `_pause_task` itself. The AC-10 test is
+scoped honestly to the agent-payload guard; the descendant-run-state contract is
+covered by the pauseresume package's own contract tests.
+
+**Return-value semantics — "control enqueued", not "state transitioned"
+(§4.3 deviation, noted).** Each verb returns `{task_id,
+steered|paused|resumed: bool}` where the bool means the control was ENQUEUED
+onto a live descendant; it is `false` ONLY when the descendant has already
+finished (its inbox retired), mirroring D-324's `_cancel_task` terminal
+contract. The dispatch edge does NOT inspect the descendant's pause state, so
+there is no parent-observable "no transition" signal: a redundant `_pause_task`
+on an already-paused descendant still reports `paused:true` (harmless — the
+descendant's RunLoop parks once via the re-emit guard), and — the sharp edge — a
+`_resume_task` on a live descendant that was never paused still reports
+`resumed:true` but is NOT harmless: the descendant's RunLoop applies that RESUME
+exactly as an operator's mistaken resume, surfacing `ErrNoOutstandingPause` that
+ends that descendant's run loud. This is INHERITED pause/resume-primitive
+behavior (an operator's spurious RESUME does the same), not a new mechanism; the
+model-facing description and godoc state it truthfully ("resume only a task you
+actually paused"). Resolving fine-grained already-paused / not-paused
+idempotency at the dispatch edge would require the parent to query/drive the
+descendant's pause token directly — a second coordination path §13 forbids, and
+making agent-issued spurious resumes non-fatal would be a steering-RunLoop
+semantics change (a separate decision), out of scope here. Routing through the
+inbox keeps "no new mechanism" exact.
+
+**Consumers land in the same phase (§13 primitive-with-consumer).** Each of the
+three controls ships its real dispatch executor method + tests (descendant-scope
+rejection, idempotent-terminal, the human-supremacy + cross-sibling isolation
+integration test against the real inprocess TaskRegistry + real steering
+Registry, the fail-loud serialization test, and the N≥100 D-025 concurrent-reuse
+test) in THIS phase — never a primitive without its consumer. No new Protocol
+method; `ProtocolVersion` unchanged. RFC §6.2's standalone-control sentence is
+extended to name the three tools in the same PR (keeping RFC ↔ projector guard
+in lockstep, mirroring D-324's AC-19).
 
 ## D-332 — A governance-WRITE Protocol surface makes the identity-tier policy table administrable over the wire (the write sibling of `governance.posture`)
 
