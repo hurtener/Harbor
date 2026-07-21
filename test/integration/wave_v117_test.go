@@ -185,11 +185,15 @@ func testWaveV117GroupCancelledMirror(t *testing.T) {
 
 func testWaveV117PlannerSteerPauseResume(t *testing.T) {
 	t.Parallel()
-	// The three new sealed decision shapes are wired into the canonical
-	// planner.Decision surface (the react projector produces them and the
-	// dispatch edge consumes them — covered deeply by the react package's own
-	// projector tests). Here we prove the shapes carry the descendant TaskID +
-	// guidance and are distinguishable in a Decision type switch.
+	// Scope note: this leg is a decision-shape contract check, NOT the
+	// end-to-end seam proof. The authoritative end-to-end coverage — routing a
+	// SteerTask/PauseTask/ResumeTask through a real dispatch executor onto a
+	// per-sub-run steering inbox, with descendant-scoping, human-supremacy, and
+	// fail-loud serialization against real drivers — lives in
+	// internal/runtime/dispatch/dispatch_steer_pause_test.go. Here we only prove
+	// the three sealed shapes carry the descendant TaskID + guidance and remain
+	// distinguishable in a planner.Decision type switch (the compile-time sum
+	// type plus the field contract the projector and dispatch edge rely on).
 	decs := []planner.Decision{
 		planner.SteerTask{TaskID: tasks.TaskID("t-1"), Directive: "focus on the auth path"},
 		planner.PauseTask{TaskID: tasks.TaskID("t-2"), Reason: "waiting on upstream"},

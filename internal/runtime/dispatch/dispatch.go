@@ -945,7 +945,7 @@ func (e *toolExecutor) steerTask(ctx context.Context, rc planner.RunContext, d p
 	payload := map[string]any{
 		"directive":  d.Directive,
 		"source":     "agent",
-		"issuer_run": string(rc.Quadruple.RunID),
+		"issuer_run": rc.Quadruple.RunID,
 	}
 	done, eqErr := e.enqueueDescendantControl(inbox, descQuad, rc, steering.ControlInjectContext, payload)
 	if eqErr != nil {
@@ -984,7 +984,7 @@ func (e *toolExecutor) pauseTask(ctx context.Context, rc planner.RunContext, d p
 	}
 	payload := map[string]any{
 		"source":     "agent",
-		"issuer_run": string(rc.Quadruple.RunID),
+		"issuer_run": rc.Quadruple.RunID,
 	}
 	if d.Reason != "" {
 		payload["reason"] = d.Reason
@@ -1028,7 +1028,7 @@ func (e *toolExecutor) resumeTask(ctx context.Context, rc planner.RunContext, d 
 	}
 	payload := map[string]any{
 		"source":     "agent",
-		"issuer_run": string(rc.Quadruple.RunID),
+		"issuer_run": rc.Quadruple.RunID,
 	}
 	if d.Directive != "" {
 		payload["directive"] = d.Directive

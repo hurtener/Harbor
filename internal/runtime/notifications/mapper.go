@@ -19,7 +19,7 @@ import (
 // dependency (the bus's Publish path fills OccurredAt on the
 // synthesised event). Concurrent calls against a single shared mapper
 // instance are trivially safe — there is nothing to share. The concurrent-reuse
-// concurrent-reuse is satisfied by construction.
+// contract is satisfied by construction.
 //
 // Return contract:
 //

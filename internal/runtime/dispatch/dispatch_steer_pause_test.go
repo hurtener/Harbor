@@ -34,11 +34,11 @@ import (
 
 // newSteerExecutor builds an executor wired with a steering Registry so
 // the steer/pause/resume verbs can resolve a descendant's inbox.
-func newSteerExecutor(t *testing.T, reg tasks.TaskRegistry, sreg *steering.Registry, maxDepth int) steering.ToolExecutor {
+func newSteerExecutor(t *testing.T, reg tasks.TaskRegistry, sreg *steering.Registry) steering.ToolExecutor {
 	t.Helper()
 	return NewToolExecutor(tools.NewCatalog(), newTestArtifactStore(t), reg,
 		WithHeavyThreshold(32*1024),
-		WithMaxSpawnDepth(maxDepth),
+		WithMaxSpawnDepth(4),
 		WithSteeringRegistry(sreg))
 }
 
@@ -91,7 +91,7 @@ func TestExecutor_SteerTask_OwnDescendant_EnqueuesDirective(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	child := spawnChildUnder(t, exec, "runA", "child")
 	inbox := openDescendantInbox(t, sreg, child)
@@ -134,7 +134,7 @@ func TestExecutor_SteerTask_TerminalDescendant_Idempotent(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	child := spawnChildUnder(t, exec, "runA", "child")
 	// Deliberately do NOT open an inbox — the descendant's run has ended,
@@ -156,7 +156,7 @@ func TestExecutor_PauseResume_OwnDescendant_RoundTrips(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	child := spawnChildUnder(t, exec, "runA", "child")
 	inbox := openDescendantInbox(t, sreg, child)
@@ -205,7 +205,7 @@ func TestExecutor_PauseTask_DoesNotPauseParentRun(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	// Open the PARENT run's own inbox so we can assert nothing lands on it.
 	parentInbox, err := sreg.Open(identity.Quadruple{Identity: dispatchTestID, RunID: "runA"})
@@ -234,7 +234,7 @@ func TestExecutor_SteerPauseResume_EmptyTaskID_FailsLoud(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.SteerTask{Directive: "d"}); err == nil {
 		t.Error("SteerTask with empty TaskID must fail loud")
@@ -253,7 +253,7 @@ func TestExecutor_SteerTask_Self_NotDescendant(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	if _, _, err := exec.ExecuteDecision(context.Background(), rcFor("runA"), planner.SteerTask{TaskID: "runA", Directive: "d"}); !errors.Is(err, ErrTaskNotOwnDescendant) {
 		t.Fatalf("self-steer err = %v, want ErrTaskNotOwnDescendant", err)
@@ -321,7 +321,7 @@ func TestExecutor_ResumeTask_NotPausedDescendant_ParentSuccessDecoupled(t *testi
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	child := spawnChildUnder(t, exec, "runA", "child")
 	inbox := openDescendantInbox(t, sreg, child)
@@ -362,7 +362,7 @@ func TestExecutor_SteerPauseResume_HumanSupremacy_CrossRunIsolation(t *testing.T
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	// Run A spawns a descendant under its own run (same session identity).
 	aChild := spawnChildUnder(t, exec, "runA", "run-A-work")
@@ -428,7 +428,7 @@ func TestExecutor_SteerPauseResume_ConcurrentReuse(t *testing.T) {
 	bus := mkSpawnAwaitTestBus(t)
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	sreg := steering.NewRegistry()
-	exec := newSteerExecutor(t, reg, sreg, 4)
+	exec := newSteerExecutor(t, reg, sreg)
 
 	baseline := runtime.NumGoroutine()
 
