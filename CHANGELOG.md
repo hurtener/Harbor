@@ -17,6 +17,161 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.17.0] — 2026-07-21
+
+The control-plane admin-write release. Harbor's admin/control plane gains
+WRITE surfaces that were previously read-only or absent, plus the
+parallel-intent primitives that complete the v1.16 task-control story: a
+planner can now steer, pause, and resume the children it spawned; operators
+can rewrite the governance identity-tier policy live; and the LLM credential
+plane learns to pull provider keys from a broker and orchestrate failover —
+all fail-closed, all identity-scoped.
+
+Every new surface is additive on the wire — one new canonical event
+(`governance.failover`), two new Protocol methods (`governance.set_posture`,
+`agent_config.set_llm_provider`), new optional wire fields, and new config
+keys — so the Harbor Protocol holds at `0.1.0` (no methods removed, no
+breaking changes). Nine decisions land: D-329 (task-group-cancelled
+conversational mirror), D-330 (planner steer/pause/resume of a spawned
+child), D-331 (per-tool OAuth on resource/prompt paths + owner-scoped
+uninstall), D-332 (`governance.set_posture` tier-policy write), D-333
+(inference broker-pull credential source), D-334
+(`agent_config.set_llm_provider`), D-335 (broker-pulled Harbor-orchestrated
+failover), D-336 (ephemeral inference-provider rebind), D-337
+(`governance.failover` as a canonical event).
+
+### Added — control-plane admin-write surfaces
+
+- **`notification.task_group_cancelled`** conversational mirror with a
+  cancel-origin (operator / cascade / fail-fast); operator-driven cancels
+  are suppressed, only unprompted cancels surface (D-329).
+- **Planner-facing steer / pause / resume** of a spawned child
+  (`_steer_task` / `_pause_task` / `_resume_task`), dispatched onto the
+  existing per-sub-run steering inbox and the unified pause/resume
+  primitive; descendant-scoped, human-supremacy-preserving (D-330).
+- **Per-tool OAuth binding** extended to MCP resource/prompt paths, plus
+  **owner-scoped provider uninstall** (defense-in-depth on D-303) (D-331).
+- **`governance.set_posture`** — admin identity-tier **policy write**
+  (per-tier budget / max-tokens / rate + default tier), fail-closed against
+  any budget-widening write, `admin`-scope only, hot-swapped into live
+  enforcement with no restart (D-332).
+- **Inference-plane broker-pull** credential source (per-runtime, fail-loud,
+  no stale-key-past-refresh) plus a zero-URL admin
+  **`agent_config.set_llm_provider`** install/rebind (D-333, D-334).
+- **Broker-pulled Harbor-orchestrated failover** — on a retryable provider
+  error, advance the chain, emit `governance.failover`, re-run governance
+  `PreCall` (budget is never bypassed), re-issue through the one-method
+  `LLMClient`; the provider SDK's native fallback array stays unused
+  (D-018) (D-335, D-337).
+
+## [1.16.0] — 2026-07-18
+
+The parallel-intent release. Harbor's React planner and runtime gain the
+ability to express and execute *concurrent* intent in a single turn, a
+task-management control surface with a real cancel hierarchy, honest
+background-wake and turn-failure signals on the conversation surfaces,
+prompt-cache telemetry, a default-agent row, and three additive OAuth
+broker legs. The wave closes a long-standing limitation from the native
+tool-calling migration: a planner could no longer say "do these things at
+once."
+
+Every new surface is additive on the wire — new event classes, new
+optional wire fields, new config keys — so the Harbor Protocol holds at
+`0.1.0` (no methods removed, no breaking changes). Seven decisions land:
+D-322 (Batch decision), D-323 (Batch executor), D-324 (task-management
+meta-tools + cancel hierarchy), D-325 (background wake + failure honesty),
+D-326 (cache-token capture), D-327 (default-agent row), D-328 (OAuth
+broker legs).
+
+### Added — parallel intent + task management
+
+- **The `Batch` decision (D-322).** A fourth sealed `planner.Decision`
+  shape, `Batch{Tools, Spawns, Join}`, lets a single planner step dispatch
+  multiple tool calls and/or spawn multiple background tasks at once. The
+  fossilized "`_spawn_task` must stand alone" rule (a leftover from the
+  pre-native-tool-calling era) is lifted: only the genuinely terminal /
+  blocking controls (`_finish`, `_await_task`, `_task_status`,
+  `_cancel_task`) remain standalone; `_spawn_task` is now batchable
+  alongside ordinary tool calls. `SpawnTask` gains an additive `CallID`.
+- **The Batch executor with auto-grouping (D-323).** The runtime dispatch
+  path executes a `Batch` with non-atomic per-branch semantics (a branch
+  failure is that branch's error result, not a whole-run abort); two or
+  more unbound spawns are auto-grouped so the planner can await them as a
+  unit. A `planner.max_batch_spawns` config key (default `5`) caps spawn
+  breadth per batch.
+- **Task-management meta-tools + a cancel hierarchy (D-324).** New reserved
+  controls `_task_status` and `_cancel_task` (sealed `TaskStatusQuery` /
+  `CancelTask` decisions) let a run inspect and cancel the tasks it spawned
+  — descendant-scoped, so a run can never observe or cancel a sibling
+  run's tasks. A model-expressible `propagate_on_cancel: isolate` lands in
+  the same phase as its brake. The cancel hierarchy is explicit and tested
+  end-to-end: **operator > agent (own descendants) > cascade** — there is
+  no uncancellable task; a human always has the last word.
+- **Background-wake notifications + turn-failure honesty (D-325).** Two new
+  conversational-mirror event classes, `notification.task_group_resolved`
+  and `notification.task_completed`, surface background resolution on the
+  conversation surface (ref-shaped member outcomes; the typed `WatchGroup`
+  planner path is untouched). The TUI renders muted lifecycle one-liners (a
+  new conversational `notification` block kind) and a dedicated
+  `× Turn failed · <ErrorCode>` status-strip line for a failed foreground
+  turn that previously went silently idle. The Console Sessions and Tasks
+  docks render the same family.
+- **A default-agent row on `agents.list` (D-327).** The agent registry
+  projection synthesises a default-agent row (`Agent.IsDefault`), so a
+  zero-registration Runtime still presents an agent to operators; a real
+  registration suppresses the synthetic row.
+- **OAuth broker legs (D-328).** Three additive, report-not-act legs on the
+  broker-pull spine: (HA-26) a downstream 403 +
+  `WWW-Authenticate: insufficient_scope` becomes typed
+  `tools.ErrInsufficientScope` on the tool-result error path and
+  `MCPServerView.LastScopeShortfall` on the connection view, and
+  `ClassifyError` now returns `ErrClassPermanent` for it (closing a
+  retry-storm where a scope shortfall was retried); (HA-27a) an RFC 8707
+  `resource_indicator` rides the RFC 8693 exchange with best-effort
+  audience verification; (HA-27b) a per-tool `tool_oauth_providers` binding
+  overrides the connection-level `oauth_provider` for a shared MCP server
+  fronting multiple downstream resources; (HA-28) an
+  `include_actor_token` opts the run's verified acting principal into the
+  exchange as an RFC 8693 `actor_token`. Custody, acquisition, refresh, and
+  consent stay coordinator-side; no leg widens a binding or runs a flow,
+  and D-300's boot-declared credential-sink invariant is preserved.
+
+### Changed
+
+- **Prompt-cache telemetry (D-326).** The bifrost translator no longer
+  drops the provider's cache accounting: `llm.Usage` gains
+  `CacheReadTokens` / `CacheWriteTokens`, threaded through the cost surface
+  and its consumers (the TUI reducer, the Console run-events reader, and
+  the sessions enricher). Cache tokens are informational first — governance
+  ceiling math is intentionally untouched this wave.
+- **New configuration keys (all additive, optional, restart-required):**
+  `planner.max_batch_spawns`; and on a `tokenexchange`-bound MCP provider,
+  `resource_indicator`, `include_actor_token`, and the per-server
+  `tool_oauth_providers` map. Documented in `examples/harbor.yaml`.
+
+### Fixed
+
+- **Native-path structural rejections are now repairable, not fatal.** A
+  native tool-calling response the React projector cannot turn into an
+  actionable decision — malformed tool-call args JSON, a `retain_turn`
+  spawn riding a multi-call batch, a terminal/blocking control co-occurring
+  with other calls, an out-of-enum spawn arg — previously killed the run,
+  while the same class of failure raised at dispatch was fed back to the
+  planner and re-planned. The runloop now feeds a projector structural
+  rejection back as a repairable step observation (bounded by a
+  consecutive-failure budget so a persistently-malformed model still
+  terminates loudly). Genuinely-fatal errors (context cancellation, missing
+  identity, unserializable state, LLM transport failure) stay fatal. A real
+  streaming model emitting imperfect JSON now recovers instead of dying.
+
+### Known follow-ups
+
+- A cascade / fail-fast-cancelled batch-spawned task has no
+  conversational mirror while its successful siblings wake — tracked in
+  [#532](https://github.com/hurtener/Harbor/issues/532) (a
+  `notification.task_group_cancelled` class), accepted-by-plan per D-325's
+  scope for this wave.
+
 ## [1.15.0] — 2026-07-17
 
 The native terminal client release. Harbor gains a first-party TUI — a pure
