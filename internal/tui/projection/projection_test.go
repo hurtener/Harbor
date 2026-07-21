@@ -479,8 +479,21 @@ func TestReducer_ConcurrentReuse_Isolates128Sessions(t *testing.T) {
 	for err := range errs {
 		t.Error(err)
 	}
-	if got := runtime.NumGoroutine(); got > baseline+2 {
-		t.Fatalf("goroutines baseline=%d got=%d", baseline, got)
+	// Hydrate/Apply are synchronous (spawn no goroutines) and wg.Wait joins all
+	// 128 workers, so nothing the Reducer owns can leak. runtime.NumGoroutine is
+	// process-global, though: under -race and CPU pressure the runtime's own
+	// background goroutines (GC workers, etc.) transiently inflate the count, so
+	// poll for it to settle within a bounded window rather than reading once (a
+	// real leak would persist past the window; transient runtime goroutines drain).
+	var got int
+	for range 40 {
+		if got = runtime.NumGoroutine(); got <= baseline+2 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got > baseline+2 {
+		t.Fatalf("goroutines did not settle: baseline=%d got=%d", baseline, got)
 	}
 }
 
