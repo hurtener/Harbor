@@ -17,6 +17,20 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.17.2] — 2026-07-21
+
+Patch: fix `tool_search` output validation when a discovered tool has no tags.
+
+### Fixed
+
+- **`tool_search` failed its own output schema whenever a searchable MCP tool
+  had no tags.** An MCP-discovered tool with `tags: null` surfaces in Go as a
+  nil slice, which JSON-marshals to `null`; but the `tool_search` result schema
+  requires `tags` to be an array, so the whole result failed validation
+  (`/tools/N/tags: got null, want array`) — breaking `tool_search` for any agent
+  whose catalog held an MCP tool without tags. The `tool_search` result builder
+  now normalizes a nil tag slice to an empty array (`[]`) at the emit boundary.
+
 ## [1.17.1] — 2026-07-21
 
 Patch: fix runtime-added MCP connections on SDK-facade servers.
