@@ -53,10 +53,36 @@ v1.17 wave-end E2E (`test/integration/wave_v117_test.go`) per §17.7 step 5.
 
 ## Findings I'm departing from (if any)
 
-None. D-335 explicitly EXTENDS D-018 (does not reverse it): Harbor
-orchestrates failover at the Governance layer, bifrost's `Fallbacks` stays
-unused. This phase implements exactly that posture. No brief finding is
-contradicted.
+No brief finding is contradicted — D-335 explicitly EXTENDS D-018 (does not
+reverse it): Harbor orchestrates failover at the Governance layer, bifrost's
+`Fallbacks` stays unused, and this phase implements exactly that posture.
+
+**Implementation-shape deviation from this plan's own draft (§4.3, D-337).**
+This plan's "Files added or changed" + one acceptance criterion assumed
+`governance.failover` would be a Protocol REQUEST/RESPONSE wire type in
+`internal/protocol/types`, registered in `methods.go` + `singlesource` +
+the ts-types index. That is the wrong mechanism once the code landed: Harbor
+events are NOT request/response wire types — they ride the existing
+`events.subscribe` / `StateEvent` surface, register in the `internal/events`
+canonical registry, and their payloads live beside the owning subsystem
+(exactly like every prior `governance.*` event). So `GovernanceFailoverPayload`
+lives in `internal/governance/events.go`, registers via `RegisterEventType`,
+and joins the docs generator's `eventPayloadIndex`. Net: NO new
+`internal/protocol/types` wire struct / `methods.go` method / `singlesource`
+`CanonicalWireTypes` / ts-types `typeInstanceIndex` entry — the only generated
+change is the new event-type STRING joining the canonical event-type
+enumeration, so `make protocol-docs-gen` (events.md) + `make
+protocol-ts-types-gen` (the external client's `HarborEventType` union) + `make
+protocol-ts-gen` (the same enum in `wire-manifest.gen.json`) each add exactly
+the `governance.failover` line. `ProtocolVersion` stays `0.1.0`. The chain
+stays boot/install-declared (no new Protocol write), and a `KeyActivator` seam
+decouples the walk from the broker-pull source. **Inert-until-wired:** as
+shipped, `FailoverPolicy` / `WrapWithFailover` / `KeyActivator` have no
+production consumer — the LLM-assembly wiring of a real `KeyActivator` over the
+broker-pull `LiveKey` + a boot/install-declared chain is a TRACKED FOLLOW-UP
+(bounded by D-333 V1 single-provider custody, post-V1 per D-335); the §13
+primitive-with-consumer rule is met by `WrapWithFailover` + its unit/wave-E2E
+tests. Full rationale: D-337.
 
 ## Goals
 
@@ -128,11 +154,14 @@ contradicted.
       a Harbor event.
 - [ ] `LLMClient` stays one method; no `CompleteRequest` field added; the
       walk is entirely governance/runtime mechanism above the client.
-- [ ] `governance.failover` is registered as a canonical EVENT type in
-      `internal/protocol/singlesource/singlesource.go` (NOT `methods.go`,
-      which is RPC methods) + its payload in `internal/protocol/types` with
-      full D-223 / D-209
-      lockstep; `ProtocolVersion` stays `0.1.0`.
+- [x] `governance.failover` is registered as a canonical EVENT type in the
+      `internal/events` registry (via `internal/governance/events.go`
+      `RegisterEventType`) and rendered by the protocol docs generator
+      (`cmd/harbor-gen-protocol-docs` `eventPayloadIndex` → regenerated
+      `docs/site/protocol/events.md`) — the actual Harbor event mechanism, NOT
+      a `internal/protocol/types` wire type / `methods.go` / `singlesource`
+      registration (that was this plan's mis-assumption; corrected per D-337).
+      `ProtocolVersion` stays `0.1.0`.
 - [ ] `test/integration/wave_v117_test.go` proves, over real drivers, under
       `-race`, N≥10 concurrency, with identity propagation asserted
       throughout: the v1.17 wave surfaces end-to-end —

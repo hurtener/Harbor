@@ -25,10 +25,14 @@ source "scripts/smoke/common.sh"
 # ----------------------------------------------------------------------------
 # Static trip-wires (run regardless of the live server).
 # ----------------------------------------------------------------------------
-if grep -q 'governance.failover' web/console/src/lib/protocol/wire-manifest.gen.json 2>/dev/null; then
-    ok "static: governance.failover is in the regenerated wire manifest"
+# governance.failover is a canonical EVENT (registered in the internal events
+# registry + rendered by the protocol docs generator), NOT a request/response
+# wire type — so it rides the events surface, never the TS wire manifest
+# (D-337). Assert it is declared + registered in the governance event source.
+if grep -q 'EventTypeFailover.*governance.failover' internal/governance/events.go 2>/dev/null; then
+    ok "static: governance.failover is declared as a canonical event type in internal/governance/events.go"
 else
-    skip "static: governance.failover absent from wire-manifest.gen.json (pre-197 build)"
+    skip "static: governance.failover event type absent from internal/governance/events.go (pre-197 build)"
 fi
 if grep -q 'governance.failover' docs/site/protocol/events.md 2>/dev/null; then
     ok "static: governance.failover is in the generated protocol events doc"

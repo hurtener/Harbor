@@ -191,6 +191,7 @@ export type HarborEventType =
   | "flows.page_viewed"
   | "flows.run_invoked"
   | "governance.budget_exceeded"
+  | "governance.failover"
   | "governance.key_rotated"
   | "governance.maxtokens_exceeded"
   | "governance.posture_read_admin"

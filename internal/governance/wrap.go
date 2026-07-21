@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/llm"
 )
 
@@ -52,9 +53,54 @@ func Wrap(inner llm.LLMClient, sub Subsystem) llm.LLMClient {
 	return &wrappedClient{inner: inner, sub: sub}
 }
 
+// WrapWithFailover composes governance around `inner` AND routes every
+// Complete through a broker-pulled failover chain when one is configured.
+// It is the CONSUMER of the FailoverPolicy seam: with a non-empty `chain`
+// the returned client delegates the whole PreCall → issue → PostCall cycle
+// (per hop) to a chain-walk FailoverPolicy built over the SAME inner client
+// and Subsystem; with an EMPTY chain it is byte-for-byte the plain
+// single-provider `Wrap` path (one path, chain length 0 == single provider —
+// no two parallel implementations, CLAUDE.md §13).
+//
+// `act` swaps the broker-pulled live key per hop; `cost` (optional) reads the
+// accumulated per-identity cost for the hop event; `bus` publishes the
+// governance.failover hop event. Nil inner / sub panic (composition error
+// caught at boot), mirroring Wrap.
+func WrapWithFailover(inner llm.LLMClient, sub Subsystem, chain []ProviderRef, act KeyActivator, cost CostReader, bus events.EventBus) (llm.LLMClient, error) {
+	if inner == nil {
+		panic("governance.WrapWithFailover: nil inner client")
+	}
+	if sub == nil {
+		panic("governance.WrapWithFailover: nil Subsystem")
+	}
+	wc := &wrappedClient{inner: inner, sub: sub}
+	if len(chain) == 0 {
+		// No chain configured — the plain single-provider path.
+		return wc, nil
+	}
+	fp, err := NewFailoverPolicy(FailoverConfig{
+		Inner:      inner,
+		Governance: sub,
+		Activator:  act,
+		Cost:       cost,
+		Bus:        bus,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("governance.WrapWithFailover: build failover policy: %w", err)
+	}
+	wc.failover = fp
+	wc.chain = append([]ProviderRef(nil), chain...) // defensive copy — immutable after construction
+	return wc, nil
+}
+
 type wrappedClient struct {
 	inner llm.LLMClient
 	sub   Subsystem
+	// failover is non-nil ONLY when a broker-pulled chain is configured; it
+	// then owns the PreCall → issue → PostCall cycle per hop and this
+	// wrapper delegates entirely (never double-runs PreCall/PostCall).
+	failover FailoverPolicy
+	chain    []ProviderRef
 }
 
 // Complete runs PreCall → inner → PostCall. The Complete signature
@@ -81,6 +127,18 @@ type wrappedClient struct {
 // channel: `resp.Cost` still reports the final call's cost to every other
 // consumer.
 func (w *wrappedClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	// When a broker-pulled failover chain is configured, delegate the whole
+	// PreCall → issue → PostCall cycle to the chain-walk policy — it re-runs
+	// PreCall before each hop and emits the governance.failover event. The
+	// wrapper does NOT also run PreCall/PostCall here (that would double-gate
+	// and double-account the primary hop).
+	if w.failover != nil && len(w.chain) > 0 {
+		id, err := identityFromCtx(ctx)
+		if err != nil {
+			return llm.CompleteResponse{}, err
+		}
+		return w.failover.Complete(ctx, id, req, w.chain)
+	}
 	if err := w.sub.PreCall(ctx, req); err != nil {
 		return llm.CompleteResponse{}, err
 	}
