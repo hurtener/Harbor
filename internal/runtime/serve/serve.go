@@ -289,6 +289,23 @@ func (h *Handle) signalReady(r readiness) {
 // Boot reads the config, opens every subsystem, composes the Protocol
 // surface, and returns a Handle whose Serve binds the listener. On any error
 // every already-opened subsystem is Closed before returning.
+// resolveMCPAttachIdentity returns the transport-event fallback identity for
+// the runtime-added MCP connection attacher. An empty configured value — the
+// state of every SDK-facade embedder, since the facade exposes no knob to set
+// it — is filled with assemble.DefaultMCPIdentity, mirroring the boot-time
+// fallback assemble already applies to config-declared servers. Without this,
+// a runtime-added MCP connection is rejected at construction ("DefaultIdentity
+// must be fully populated"), so a compiled SDK server can never accept one.
+// The default only stamps transport-side events that arrive without an
+// inflight call; per-call isolation rides the inflight caller identity, never
+// this value.
+func resolveMCPAttachIdentity(configured identity.Identity) identity.Identity {
+	if configured == (identity.Identity{}) {
+		return assemble.DefaultMCPIdentity
+	}
+	return configured
+}
+
 func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	if opts.AuthValidatorFactory == nil {
 		return nil, ErrAuthValidatorFactoryRequired
@@ -453,7 +470,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	var mcpDetacher projection.ConnectionDetacher
 	if toolCat != nil && mcpRegistry != nil {
 		attacher := NewMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.Logger,
-			opts.MCPDefaultIdentity, oauthProviders, stack.OAuthProviderSet)
+			resolveMCPAttachIdentity(opts.MCPDefaultIdentity), oauthProviders, stack.OAuthProviderSet)
 		closers = append(closers, attacher.Close)
 		mcpAttacher = attacher
 		mcpDetacher = NewMCPConnectionDetacher(toolCat, mcpRegistry, opts.Logger)
