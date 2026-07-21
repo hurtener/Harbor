@@ -49,10 +49,19 @@ func toolSearch(ctx context.Context, cat tools.ToolCatalog, args ToolSearchArgs)
 	results := cat.Search(ctx, args.Query, args.Tags, args.Limit)
 	out := ToolSearchOut{Tools: make([]ToolSearchResult, 0, len(results)), Count: len(results)}
 	for _, t := range results {
+		// `tags` is a required array in the tool_search output schema, so it
+		// must serialize as `[]`, never `null`. A tool with no tags — an MCP
+		// tool discovered without any (its descriptor carries `tags: null`) —
+		// has a nil slice, which JSON-marshals to null and fails the schema.
+		// Normalize to an empty slice at the emit boundary.
+		tags := t.Tags
+		if tags == nil {
+			tags = []string{}
+		}
 		out.Tools = append(out.Tools, ToolSearchResult{
 			Name:        t.Name,
 			Description: t.Description,
-			Tags:        t.Tags,
+			Tags:        tags,
 		})
 	}
 	return out, nil
