@@ -90,7 +90,11 @@ func (s *Service) RemoveOAuthProvider(ctx context.Context, req prototypes.AgentC
 				return nil, recErr
 			}
 			rev = written
-			if uErr := s.providerInstaller.UninstallProvider(ctx, name); uErr != nil {
+			// Pass the caller's resolved owner (the active agent-config revision
+			// owner, resolved under lockAgent above) so the provider set's
+			// store-boundary owner check (issue #507) is the second, independent
+			// gate on top of this handler's caller-side owner resolution.
+			if uErr := s.providerInstaller.UninstallProvider(ctx, id.TenantID, req.AgentID, name); uErr != nil {
 				// A real live uninstall failure (a Close error) — roll the
 				// just-written revision back so the call has NO observable effect.
 				if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); rbErr != nil {

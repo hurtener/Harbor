@@ -61,7 +61,7 @@ type NotificationPayload struct {
 	// Class is the notification.* class this payload belongs to. One
 	// of EventTypeNotificationTaskFailed / ToolApprovalRequested /
 	// GovernanceBudgetExceeded / AuthRequired / PauseRequested /
-	// TaskGroupResolved / TaskCompleted.
+	// TaskGroupResolved / TaskGroupCancelled / TaskCompleted.
 	Class events.EventType
 
 	// Severity is the operator-visible urgency.
@@ -89,12 +89,12 @@ type NotificationPayload struct {
 	// name a single task.
 	TaskID string
 
-	// GroupID is the resolved group for the task_group_resolved class.
-	// Empty otherwise.
+	// GroupID is the group for the task_group_resolved /
+	// task_group_cancelled classes. Empty otherwise.
 	GroupID string
 
 	// Members is the ref-shaped per-member outcome summary for the
-	// task_group_resolved class. Bounded at MaxMemberSummaries — when
+	// task_group_resolved / task_group_cancelled classes. Bounded at MaxMemberSummaries — when
 	// the group has more members than the cap, the first
 	// MaxMemberSummaries are carried and MembersTruncated is set (never
 	// a silent drop). Member Result/Error bytes never cross onto this
@@ -107,8 +107,9 @@ type NotificationPayload struct {
 	MembersTruncated bool
 
 	// MemberSucceeded / MemberFailed / MemberCancelled are the full-
-	// membership terminal-status tallies for the task_group_resolved
-	// class (independent of the Members cap). Zero for other classes.
+	// membership terminal-status tallies for the task_group_resolved /
+	// task_group_cancelled classes (independent of the Members cap). Zero
+	// for other classes.
 	MemberSucceeded int
 	MemberFailed    int
 	MemberCancelled int

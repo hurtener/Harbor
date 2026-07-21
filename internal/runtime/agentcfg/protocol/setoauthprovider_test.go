@@ -25,6 +25,11 @@ type fakeInstaller struct {
 	installErr error
 	installs   int
 	uninstalls int
+	// lastUninstallOwner records the (tenant, agentID) the handler passed to the
+	// most recent UninstallProvider call, so a test can assert the caller-side
+	// owner is threaded to the store boundary (AC-5).
+	lastUninstallTenant  string
+	lastUninstallAgentID string
 }
 
 func newFakeInstaller() *fakeInstaller {
@@ -42,10 +47,12 @@ func (f *fakeInstaller) InstallProvider(_ context.Context, _, _ string, desc age
 	return nil
 }
 
-func (f *fakeInstaller) UninstallProvider(_ context.Context, name string) error {
+func (f *fakeInstaller) UninstallProvider(_ context.Context, tenant, agentID, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.uninstalls++
+	f.lastUninstallTenant = tenant
+	f.lastUninstallAgentID = agentID
 	delete(f.installed, name)
 	return nil
 }
@@ -249,5 +256,32 @@ func TestRemoveOAuthProvider_UninstallsAndDrops(t *testing.T) {
 	got, _ := s.Get(ctx, prototypes.AgentConfigGetRequest{Identity: scope(), AgentID: testAgentID})
 	if got.Revision != nil && got.Revision.Payload.OAuthProviders != nil {
 		t.Fatalf("remove must drop the descriptor from the revision")
+	}
+}
+
+// TestRemoveOAuthProvider_PassesResolvedOwner is the AC-5 gate: the handler
+// threads the caller's resolved owner (the active agent-config revision owner —
+// the request tenant + agentID) to UninstallProvider, so the provider set's
+// store-boundary owner check has the owner it needs to refuse a cross-owner
+// drop. The caller-side owner resolution stays; the store check is additive.
+func TestRemoveOAuthProvider_PassesResolvedOwner(t *testing.T) {
+	ctx := context.Background()
+	inst := newFakeInstaller()
+	s := svcWithInstaller(t, inst, nil, nil)
+	if _, err := s.SetOAuthProvider(ctx, prototypes.AgentConfigSetOAuthProviderRequest{
+		Identity: scope(), AgentID: testAgentID, Provider: okProvider("m365"),
+	}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := s.RemoveOAuthProvider(ctx, prototypes.AgentConfigRemoveOAuthProviderRequest{
+		Identity: scope(), AgentID: testAgentID, Name: "m365",
+	}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	// scope() → tenant "t"; testAgentID → "agent-x": the exact owner the store's
+	// cross-owner check compares against.
+	if inst.lastUninstallTenant != "t" || inst.lastUninstallAgentID != testAgentID {
+		t.Fatalf("handler must pass resolved owner (tenant, agentID) to UninstallProvider, got (%q, %q)",
+			inst.lastUninstallTenant, inst.lastUninstallAgentID)
 	}
 }

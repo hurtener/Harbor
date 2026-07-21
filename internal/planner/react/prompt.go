@@ -959,8 +959,10 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 // renderNativeControlStep projects a trajectory step whose Action is one
 // of the NON-terminal planner-control meta-tools the model emits as
 // native tool-calls — [planner.SpawnTask], [planner.AwaitTask],
-// [planner.TaskStatusQuery], or [planner.CancelTask] (`_spawn_task` /
-// `_await_task` / `_task_status` / `_cancel_task`)
+// [planner.TaskStatusQuery], [planner.CancelTask], [planner.SteerTask],
+// [planner.PauseTask], or [planner.ResumeTask] (`_spawn_task` /
+// `_await_task` / `_task_status` / `_cancel_task` / `_steer_task` /
+// `_pause_task` / `_resume_task`)
 // — back into the native tool-call wire shape, mirroring
 // [renderNativeStepPair] for CallTool: ONE assistant message carrying the
 // reserved tool name + reconstructed args, paired with ONE RoleTool
@@ -998,6 +1000,15 @@ func renderNativeControlStep(step planner.Step, replayMode planner.ReasoningRepl
 	case planner.CancelTask:
 		toolName = CancelTaskToolName
 		args = cancelTaskReplayArgs(a)
+	case planner.SteerTask:
+		toolName = SteerTaskToolName
+		args = steerTaskReplayArgs(a)
+	case planner.PauseTask:
+		toolName = PauseTaskToolName
+		args = pauseTaskReplayArgs(a)
+	case planner.ResumeTask:
+		toolName = ResumeTaskToolName
+		args = resumeTaskReplayArgs(a)
 	default:
 		return llm.ChatMessage{}, nil, false
 	}
@@ -1105,6 +1116,49 @@ func cancelTaskReplayArgs(d planner.CancelTask) json.RawMessage {
 	env := map[string]any{"task_id": string(d.TaskID)}
 	if d.Reason != "" {
 		env["reason"] = d.Reason
+	}
+	out, err := json.Marshal(env)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// steerTaskReplayArgs reconstructs the `_steer_task` args envelope from a
+// typed [planner.SteerTask] for trajectory replay.
+func steerTaskReplayArgs(d planner.SteerTask) json.RawMessage {
+	out, err := json.Marshal(map[string]any{
+		"task_id":   string(d.TaskID),
+		"directive": d.Directive,
+	})
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// pauseTaskReplayArgs reconstructs the `_pause_task` args envelope from a
+// typed [planner.PauseTask] for trajectory replay. `reason` is omitted
+// when empty, mirroring what the model may have emitted.
+func pauseTaskReplayArgs(d planner.PauseTask) json.RawMessage {
+	env := map[string]any{"task_id": string(d.TaskID)}
+	if d.Reason != "" {
+		env["reason"] = d.Reason
+	}
+	out, err := json.Marshal(env)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// resumeTaskReplayArgs reconstructs the `_resume_task` args envelope from
+// a typed [planner.ResumeTask] for trajectory replay. `directive` is
+// omitted when empty, mirroring what the model may have emitted.
+func resumeTaskReplayArgs(d planner.ResumeTask) json.RawMessage {
+	env := map[string]any{"task_id": string(d.TaskID)}
+	if d.Directive != "" {
+		env["directive"] = d.Directive
 	}
 	out, err := json.Marshal(env)
 	if err != nil {

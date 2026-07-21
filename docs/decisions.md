@@ -8759,3 +8759,581 @@ fallback; (c) an optional RFC 8693 `actor_token` carrying the run's VALIDATED
 inbound principal — never a client-named field — for subject/actor
 cross-checking and delegation-chain audit. Absent fields preserve today's
 behavior exactly. The phase also carries the wave-end E2E per §17.7.
+
+## D-329 — The unprompted group-cancel wakes the conversation too: a `notification.task_group_cancelled` mirror keyed on a typed cancel origin
+
+**Date:** 2026-07-20
+
+**Context.** D-325 shipped the background-wake notification family:
+`notification.task_group_resolved` / `notification.task_completed` mirror a
+group's *successful* resolution (and opted-in background completions) onto
+the conversation surface while the typed `WatchGroup` planner path stays
+untouched. D-325 deliberately scoped the wake to the success path and filed
+a cancelled-group mirror as an explicit non-goal — "a reasonable follow-up
+... left out to keep the blast radius matched to what D-325 authorizes." But
+a batch-spawned group cancelled by fail-fast or by an inherited cascade is
+then SILENT while its successful siblings wake: `spawnOne` marks every batch
+spawn `NotifyOnComplete=true`, so an operator watching the conversation sees
+the winners announce themselves and the unprompted-cancelled losers vanish
+without a word. Tracked externally as the v1.16 checkpoint audit WARN W2
+(GitHub issue #532).
+
+**Decision.** Phase 192 adds the authorized D-325 follow-up — it EXTENDS
+D-325's design to the sibling transition D-325 parked, it does not
+re-litigate it. A new V1 notification class `notification.task_group_cancelled`
+(trigger `task.group_cancelled`) is synthesised by the same
+`internal/runtime/notifications` mapper, reusing D-325's ref-shaped
+member-outcome summarisation verbatim (`MemberOutcomeSummary` capped at
+`MaxMemberSummaries`, `MembersTruncated` on overflow, true full-membership
+`Member{Succeeded,Failed,Cancelled}` totals; member `Result`/`Error` bytes
+never cross onto the payload). The planner-facing `WatchGroup` /
+`GroupCompletion` typed path and the cancel hierarchy (D-324) are unchanged —
+this is a mirror, not a new decision point or a new cancel mechanism.
+
+**The suppression rule keys on a typed cancel origin, never on downstream
+guesswork.** A new `tasks.CancelOrigin` (`operator` / `cascade` / `failfast`)
+is stamped on `TaskGroupCancelledPayload` at the engine's group-cancel call
+site from that site's own provenance: a direct `CancelGroup` is
+`CancelOriginOperator`, the fail-fast gate (live and crash-recovery
+recompute) is `CancelOriginFailFast`, and an inherited ancestor cascade is
+`CancelOriginCascade`. `mapTaskGroupCancelled` MIRRORS an unprompted cancel
+(cascade / fail-fast — narrative the operator did not ask for) and
+SUPPRESSES a directly-operator-initiated cancel (`return nil, nil` — the
+actor already knows), exactly analogous to how D-325's `notification.task_failed`
+suppresses a foreground turn's own failure. **An unknown or empty origin
+FAILS LOUD by being surfaced, never silently swallowed** (CLAUDE.md §13): an
+unclassified cancel synthesises a notification (the failure mode is an extra
+line, never a hidden one). Rendered on the SAME surfaces D-325 wired — the
+TUI's muted `notification` block kind (no new kind) and the Console Sessions
+/ Tasks docks — with no per-member fan-out.
+
+**Additive wire, no version bump.** The new event class rides the canonical
+`events.subscribe` stream (no new Protocol method); the additive
+`TaskGroupCancelledPayload.Origin` field and the new class regenerate the
+wire manifest (D-223) and generated Protocol docs (D-209) in the same PR;
+`ProtocolVersion` stays `0.1.0` (additive event class + additive payload
+field, same posture as D-325). Deliberately out of scope: a solo
+`notification.task_cancelled` for a non-group cancelled task (no
+sibling-asymmetry driver — a second additive class with its own suppression
+question, filed not folded in) and any Console notification-center / toast /
+bell surface (D-325's non-goal, unchanged).
+
+---
+
+## D-330 — Planner-facing steer / pause / resume of a spawned child: three sealed decisions producing the existing steering inbox + unified pause/resume primitive, descendant-scoped, human-superseded
+
+**Date:** 2026-07-20
+
+**Context.** D-324 gave the model observation (`_task_status`) and control
+(`_cancel_task`) over the background tasks its own run spawned, and parked one
+verb as a named future extension: steering or pausing a spawned child from the
+parent's model turn. The per-sub-run steering inbox
+(`internal/runtime/steering/inbox.go`) already exists for every background
+sub-run and the unified pause/resume primitive (RFC §3.3) already coordinates
+pause — but neither was exposed as a planner-facing verb. A model that fans
+out several explorations can cancel the losing branches (D-324) but cannot
+nudge a promising one mid-flight, nor park one and resume it later. This
+completes the operator↔agent control taxonomy on the AGENT side.
+
+**Decision.** Three reserved planner-control meta-tools — `_steer_task`,
+`_pause_task`, `_resume_task` — become three new sealed `planner.Decision`
+shapes (`SteerTask{TaskID; Directive}`, `PauseTask{TaskID; Reason}`,
+`ResumeTask{TaskID; Directive}`, RFC §6.2), projected in the React projector
+through the same reserved-name translation → executor-dispatch seam
+`_task_status` / `_cancel_task` use. Following brief 02 §5 (sharp edge 4,
+"magic strings as opcodes") they extend the `Decision` sum, never a
+string-typed control channel — the same choice D-324 made.
+
+**Not a widening of `Batch` (structural).** `Batch`'s shape carries only
+`Tools []CallTool` and `Spawns []SpawnTask` — it has no slot for these three
+types, so they are structurally non-batchable. The projector's standalone-name
+guard (`isStandaloneControlName`) gains all three: a steer/pause/resume control
+co-occurring with ANY other tool-call in one response is rejected loud with
+`planner.ErrInvalidDecision` naming the offending control. Widening to batchable
+later is additive; retracting a shipped batchable surface is not — the
+conservative non-batchable grammar is the first-wave choice, exactly as D-324
+chose for `_task_status` / `_cancel_task`.
+
+**One guard, one sentinel (reuses D-324).** All three executor methods call
+D-324's EXISTING `dispatch.isOwnDescendant(ctx, targetID, callerRunTaskID)`
+BEFORE touching the inbox; a target outside the caller's `ParentTaskID` lineage
+— including a sibling run's tasks in the SAME session, and the run's own task
+(self is not a descendant) — is rejected with D-324's EXISTING
+`dispatch.ErrTaskNotOwnDescendant` sentinel. No new scope sentinel is minted;
+the steer/pause/resume taxonomy stays coherent with the cancel taxonomy. This
+is IN ADDITION to the registry's `(tenant, user, session)` identity-visibility
+check, never instead of it (CLAUDE.md §6).
+
+**No new mechanism (§13, RFC §3.3).** All three verbs enqueue a canonical
+`steering.ControlEvent` onto the descendant sub-run's EXISTING per-sub-run
+steering inbox — the SAME inbox the operator's steering targets (the descendant
+task id doubles as its run id at this layer, RFC §6.8, so the inbox is keyed by
+the run triple with `RunID == taskID`). `_steer_task` enqueues an
+`INJECT_CONTEXT` control carrying the directive; `_pause_task` enqueues a
+`PAUSE` control and `_resume_task` a `RESUME` control — the operator's exact
+entry points to the unified pause/resume primitive, which the descendant's own
+RunLoop drives through `pauseresume.Coordinator`. A resume `directive` rides the
+`RESUME` control's payload, which the RunLoop forwards to the primitive's
+EXISTING resume-payload seam (`pauseresume.Coordinator.Resume`'s `payload`
+parameter, merged into the pause record via `mergeStringMap`) — no new resume
+mechanism. Pausing a descendant NEVER pauses the run issuing the verb: only the
+resolved descendant's inbox receives the control (a test asserts the parent
+inbox stays empty).
+
+**Human supremacy preserved.** The agent presents `ScopeOwnerUser` under its
+own tenant — the run-owner's authority over its OWN descendants, never admin,
+never cross-tenant. The operator's EXISTING control surface reaches ANY task at
+`ScopeAdmin` through the same inbox and always supersedes; a companion test
+proves an admin-scoped operator PAUSE reaches a descendant that run B (a
+sibling) is rejected from touching.
+
+**Fail-loud serialization — the honest scope (§5).** `_pause_task` /
+`_resume_task` validate the AGENT-supplied control payload (the `{source,
+issuer_run, reason|directive}` map this dispatch edge builds) against
+`trajectory.ValidateEncodable` BEFORE enqueue, surfacing
+`trajectory.ErrUnserializable` loud rather than a silent drop. This is a real
+guard on the agent payload — but it is NOT the descendant-run-state
+serialization contract §5/AC-10 primarily names, and it CANNOT trip through the
+real projector→dispatch path (every field it emits is an agent-supplied
+string/literal). The descendant's own run-state serialization (its checkpointed
+trajectory) is enforced fail-loud DOWNSTREAM, unchanged, by the unified
+primitive inside the descendant's RunLoop (`Coordinator.Request`) — the parent
+verb neither sees nor re-enforces it, so there is no parent-observable,
+end-to-end `ErrUnserializable` from `_pause_task` itself. The AC-10 test is
+scoped honestly to the agent-payload guard; the descendant-run-state contract is
+covered by the pauseresume package's own contract tests.
+
+**Return-value semantics — "control enqueued", not "state transitioned"
+(§4.3 deviation, noted).** Each verb returns `{task_id,
+steered|paused|resumed: bool}` where the bool means the control was ENQUEUED
+onto a live descendant; it is `false` ONLY when the descendant has already
+finished (its inbox retired), mirroring D-324's `_cancel_task` terminal
+contract. The dispatch edge does NOT inspect the descendant's pause state, so
+there is no parent-observable "no transition" signal: a redundant `_pause_task`
+on an already-paused descendant still reports `paused:true` (harmless — the
+descendant's RunLoop parks once via the re-emit guard), and — the sharp edge — a
+`_resume_task` on a live descendant that was never paused still reports
+`resumed:true` but is NOT harmless: the descendant's RunLoop applies that RESUME
+exactly as an operator's mistaken resume, surfacing `ErrNoOutstandingPause` that
+ends that descendant's run loud. This is INHERITED pause/resume-primitive
+behavior (an operator's spurious RESUME does the same), not a new mechanism; the
+model-facing description and godoc state it truthfully ("resume only a task you
+actually paused"). Resolving fine-grained already-paused / not-paused
+idempotency at the dispatch edge would require the parent to query/drive the
+descendant's pause token directly — a second coordination path §13 forbids, and
+making agent-issued spurious resumes non-fatal would be a steering-RunLoop
+semantics change (a separate decision), out of scope here. Routing through the
+inbox keeps "no new mechanism" exact.
+
+**Consumers land in the same phase (§13 primitive-with-consumer).** Each of the
+three controls ships its real dispatch executor method + tests (descendant-scope
+rejection, idempotent-terminal, the human-supremacy + cross-sibling isolation
+integration test against the real inprocess TaskRegistry + real steering
+Registry, the fail-loud serialization test, and the N≥100 D-025 concurrent-reuse
+test) in THIS phase — never a primitive without its consumer. No new Protocol
+method; `ProtocolVersion` unchanged. RFC §6.2's standalone-control sentence is
+extended to name the three tools in the same PR (keeping RFC ↔ projector guard
+in lockstep, mirroring D-324's AC-19).
+
+## D-331 — Per-tool OAuth binding reaches the resource/prompt RPC paths, and the credential-sink uninstall is owner-scoped at the store boundary
+
+**Date:** 2026-07-20
+
+**Context.** Two loose ends on the credential plane D-328 (Phase 191, HA-27b)
+established. (a) HA-27b shipped the per-tool `oauth_provider` binding —
+`MCPServerConfig.ToolOAuthProviders`, keyed by MCP-side name — but wired it to
+`callTool` ONLY. `ReadResource` / `SubscribeResource` / `GetPrompt` (the other
+identity-stamped MCP RPC paths D-278 enumerates) still resolved only the
+connection-level binding, so a shared MCP server fronting N downstream resources
+could bind a per-tool audience to a tool call but not to a resource read or a
+prompt get — the one-audience-per-server gap re-opened on the resource/prompt
+surfaces. (b) GitHub issue #507: `ProviderSet.Uninstall(ctx, name)` refused a
+boot-seeded provider but did NOT verify the caller's owner matched the installed
+entry's owner before dropping + closing it; owner-scoping was enforced entirely
+caller-side (the `remove_oauth_provider` handler resolving the name within the
+caller's own agent-config revision), so the store trusted every present and
+future caller to have done so — brief 09's "fail closed on missing components"
+read against the store boundary itself.
+
+**Decision.** Phase 194 closes both, posture invariant (report-not-act; no
+custody change; no auto-escalation; composes with D-278/D-300/D-303 and NEVER
+weakens D-300's credential-sink invariant — every knob stays boot-declared /
+server-derived, no URL/secret on the wire, `ProtocolVersion` unchanged):
+
+- **(a) Resource/prompt reach.** `resolveBearerCtx(ctx, key)` (191's per-tool
+  resolver) is now called with the RPC's addressing key on EVERY previously
+  connection-level bearer-injection site in the MCP driver — `ReadResource` and
+  `SubscribeResource` (key = resource URI), the resource-read descriptor invoke
+  (resource URI), and the prompt-get descriptor invoke (prompt name) — so the
+  SAME `ToolOAuthProviders` map (no shape change, no new config field, not on the
+  Protocol-writable `ToolExposure` layer) resolves a per-entry binding for those
+  paths, falling back to the connection-level `oauth_provider` when unbound. Every
+  per-entry binding rule HA-27b enforces for `callTool` (unknown name / stdio
+  transport / static-`Authorization` conflict / downstream-host allow-list) is
+  re-enforced identically at boot / attach validation. The per-entry map is a
+  SINGLE namespace keyed by MCP-side name: a key that would address more than one
+  discovered surface at once (a tool AND a prompt of the same name, or a resource
+  URI equal to a tool name) is rejected LOUD at discovery
+  (`ErrAmbiguousOAuthBinding`) — never a silent documented-precedence resolve. The
+  binding is a property of the RPC, not of the `callTool` dispatch site.
+
+- **(b) Owner-scoped uninstall.** `ProviderSet.Uninstall` gains an `Owner`
+  parameter — `Uninstall(ctx, owner, name)` — and refuses a cross-owner drop with
+  `ErrProviderOwnerCollision` (mirroring `Install`'s owner-collision refusal) when
+  `existing.owner != owner`, at the STORE boundary, independently of caller-side
+  owner resolution (defense in depth). The boot-protected (zero-owner) refusal via
+  `ErrProviderBootProtected` stays; a matching-owner drop closes + removes the
+  entry exactly as before, so a subsequently-bound call fails LOUD (never a silent
+  fall-through to the old key, an unauthenticated dial, or another owner's
+  provider). The one caller — the `agent_config.remove_oauth_provider` handler —
+  threads the caller's resolved owner (the active agent-config revision owner,
+  under `lockAgent`); its existing caller-side owner resolution stays, the store
+  check is the second, independent gate. The owner remains a reconcile-view tag,
+  never an isolation principal and never a credential sink.
+
+Both are the sanctioned extension of D-328, not a re-litigation; the §17.8
+conformance fixture is the official go-sdk MCP server over the real streamable
+HTTP wire (never a hand-authored RPC shape).
+
+## D-332 — A governance-WRITE Protocol surface makes the identity-tier policy table administrable over the wire (the write sibling of `governance.posture`)
+
+**Date:** 2026-07-20
+
+**Context.** A second consumer renders a Governance page from
+`governance.posture` — the default tier, the caller's resolved tier, and
+the per-tier table of budget (USD) ceiling / max-tokens cap / rate-limit
+capacity the runtime enforces. The read is faithful and complete, but it is
+read-only: an operator can inspect the identity-tier policy and cannot
+change it over the Protocol. `governance.posture`'s own consumer note
+already says editing identity tiers is a runtime-config concern (post-V1),
+so the enforced policy is Protocol-visible but Protocol-immutable, and a
+coordinator whose whole job is policy + composition has a Governance page
+that shows the enforced policy and offers no honest control to change it —
+short of reaching around the Protocol into runtime config, which a pure
+Protocol client must not do. The already-writable
+`governance.set_tenant_overrides` covers per-tenant LLM defaults (model /
+temperature / max-tokens / reasoning-effort) but NOT the identity-tier
+policy table itself. Tracked externally as HA-29.
+
+**Decision.** Add `governance.set_posture` (the pinned method name; a
+plan-time rename must be settled before D-209/D-223 lockstep, not left
+floating) — the write sibling of the existing `governance.posture` read.
+**Full-replace semantics, never a partial merge:** the write validates and
+replaces the whole identity-tier policy table (per tier its budget ceiling
+/ max-tokens cap / rate-limit capacity, plus the default-tier assignment)
+through the same shared validator the read projects (the D-302 FULL-REPLACE
+pattern) — a write that OMITS or zeroes an enforced ceiling is **rejected
+fail-closed**, never silently widened to unbounded, and never a
+budget-widening default; a §9 conformance test covers the partial/empty
+write case across all three drivers. **Authority is admin-only:** derived
+**server-side from the verified session**, never the request body (D-219),
+and gated on the `auth.ScopeAdmin` claim ONLY — explicitly NOT the two-scope
+set (`admin` OR `console:fleet`) that gates the read, so a leaked read-only
+fleet token cannot widen a budget (D-066 — control is a strictly more
+elevated tier than observation; D-079). The runtime is the **sole owner and
+enforcer** of the policy record — the consumer drives the change in as an
+authenticated admin and keeps only Console-local state (saved-views /
+annotations class, D-061), never a projected copy or shadow of the tier
+values. Round-trips faithfully with the read (what you set is what the next
+`posture` returns). The tier policy graduates from hot-reloadable boot
+config to a StateStore-backed record layered over the config-declared
+defaults (in-mem / SQLite / Postgres conformance, forward-only migrations
+per §9); a runtime with no written override enforces its config defaults, so
+the write is additive and backward-compatible. **Explicitly not part of
+this:** no consumer-side policy engine or re-enforcement, no new identity
+axis, no change to how a tier is resolved for a caller, no scope-gate
+relaxation. Priority MEDIUM (an operator can still edit runtime config
+out-of-band; this closes the honest gap between a policy an operator can see
+and one they can administer). RFC
+§6.15 amended (Gate 0). Framework-framed only — no consumer product /
+white-label / resale intent in any committed artifact (§13). Full
+D-209/D-223 wire lockstep and a `governance.set_posture` smoke land with the
+implementing phase.
+
+## D-333 — The inference plane gains a broker-pull credential source, mirroring the tool-plane token-exchange PULL (D-271) onto the LLM client
+
+**Date:** 2026-07-20
+
+**Context.** A coordinator that centrally custodies downstream credentials
+— mint / rotate / revoke, pulled per-use, never persisted per-runtime (the
+Plane-B posture D-271 established for the tool/OAuth plane) — wants the same
+custody model for the one plane that lacks it: the runtime's LLM provider
+key. Today the inference client sources its key from local boot config (an
+env var / config-file key Harbor's `Account` impl hands to bifrost via
+`Account.GetKeysForProvider`); there is no broker-pull credential source for
+it — no analogue of the `tokenexchange` `credential_source: remote` driver,
+which is bound to the MCP `oauth_provider` plane and never reaches the LLM
+client. So the LLM plane is the only credential plane with no pull path:
+provider keys live per-runtime as boot config, and a central custodian
+cannot rotate them in without touching each runtime's environment
+out-of-band. Tracked externally as HA-30 (leg 1).
+
+**Decision.** Add an inference-plane analogue of the token-exchange PULL: an
+`Account` credential source that, at **connect + refresh** (NOT per
+hot-path call — the pulled key is cached and refreshed like the tool plane;
+the inference critical path must not eat a per-call KEK decrypt), pulls the
+provider key from the coordinator's broker instead of reading local config.
+Same custody posture as D-271: the runtime never persists the key, the
+coordinator remains sole custodian, the pull is per-runtime-authenticated.
+The pulled key rides the existing atomic key-swap (D-019), so a broker-side
+rotation lands on the next call with no `ReloadConfig` race. **Fail-loud, no
+dual path (D-271 item 2, carried verbatim — not just its custody half).** A
+broker unreachable at connect OR a failed refresh raises a typed sentinel
+(`ErrProviderKeyUnavailable`); the runtime NEVER silently falls back to a
+local/boot key, and NEVER continues serving a **stale cached key past its
+refresh contract** (a broker-side revocation that fails to propagate must
+surface, not be masked by the cache). A provider source is brokered XOR
+local, config-declared — no dual path, no silent degradation (§13). **The
+sink is boot-pinned (D-300 preserved).** The pull URL / audience / scope
+ceiling are pinned by a boot-declared, config/file-only **inference-broker
+config** (the D-300 analogue of `ToolOAuthCredentialBrokerConfig`),
+referenced by non-secret NAME — no URL or secret ever crosses the wire (the
+install write that binds it is D-334). **Granularity (deliberate):** unlike
+a tool bearer, a provider key is a **runtime-level** credential, not an
+isolation-tuple `(tenant, user, session)` one — the pull is per-runtime, not
+per-identity, and the key is infrastructure custody, never identity-scoped
+data; it does not widen the isolation tuple (§4). **Attribution (extends
+D-285, does not silently contradict it).** This lives behind the §4.4
+credential-source seam, but D-285 restricted its `remote` source to
+per-identity, LAZY pulls precisely because a connect-time pull has "no run
+identity to attribute" the mandatory fetch event to. This runtime-scoped
+variant is defined WITH its attribution: every connect/refresh pull emits a
+runtime-scoped SafePayload `llm.provider_credential_fetched` audit event
+keyed by the **runtime identity** (not a run/session) — superseding D-285
+note (2)'s tokenexchange-only-because-no-identity reasoning for this one
+defined, audited case. **Open item for the implementing phase (flagged, not
+hand-waved):** the *emission ctx* for a runtime-scoped audit event outside a
+`(tenant, user, session)` request — the exact seam D-285 note (2) named as
+hard — must be specified by the phase, keyed to the per-runtime service
+principal that already authenticates the pull (D-271's runtime service
+token), NOT a synthesized session. This is a specification gap, not a
+contradiction; the runtime principal is infrastructure identity and does not
+widen the isolation tuple (§4). Priority MEDIUM. RFC §6.5
+amended (Gate 0). Framework-framed only (§13).
+
+## D-334 — An inference-plane provider install / rotate write binds a runtime to a NAMED broker-pull provider in the D-303 zero-URL shape
+
+**Date:** 2026-07-20
+
+**Context.** D-333 gives the inference client a broker-pull source; it needs
+a Protocol write to install / rotate that binding. Today
+`agent_config.set_oauth_provider` (D-303) is validated to exactly
+`driver: "tokenexchange"` and hard-rejects anything else (it serves the
+OAuth plane); `runs.set_overrides` selects a model *name* against the
+runtime's own key, never a provider key. So the LLM plane has no rotate
+write: provider keys live per-runtime as boot config, and a central
+custodian cannot rotate them in over the Protocol. Tracked externally as
+HA-30 (leg 2).
+
+**Decision.** Add `agent_config.set_llm_provider` — a **SEPARATE**
+inference-plane method, NOT a relaxation of `set_oauth_provider`'s hard
+`tokenexchange`-only allowlist (that allowlist and its reflective no-URL
+decode test stay intact — widening it would reopen exactly the surface
+D-303 hardened). The new method ships its OWN reflective zero-URL /
+zero-secret decode test asserting the writable descriptor carries no URL and
+no env-var name. The written descriptor is the **D-303 shape exactly:
+zero-URL, zero-secret** — it references a boot-declared, config/file-only
+**inference-broker config** (D-333, the D-300 analogue of
+`ToolOAuthCredentialBrokerConfig`) by non-secret NAME; that config — never
+the wire descriptor — pins the pull endpoint / audience / scope ceiling, so
+**no admin-writable field determines where the credential is sourced,
+preserving the D-300 credential-plane invariant**. Authority is derived
+server-side from the verified session (D-219) and gated on the
+`auth.ScopeAdmin` claim ONLY — explicitly NOT the `admin` OR `console:fleet`
+two-scope set that can reach a read (D-066 — a control write is a strictly
+more elevated tier than any read; D-079), so a leaked read-only fleet token
+cannot rebind a runtime's provider. Installed providers follow D-303's
+provider-SET model (bare-name resolution, owner-tagged reconcile, uninstall
+closes the binding and fails bound calls loud). This closes the honest gap
+that keeps the LLM plane outside the central mint / rotate / revoke custody
+every other credential plane already enjoys.
+**Explicitly not part of this:** no coordinator-side inference and no
+provider-key mirror beyond the single central custody the broker already
+holds (the runtime does all inference; the coordinator never calls an LLM);
+no change to model selection; discovered / confirmed values stay
+operator-gated, never auto-applied. Priority MEDIUM. RFC §6.5
+amended (Gate 0). Framework-framed only (§13).
+
+## D-335 — Broker-pulled provider failover stays Harbor-orchestrated at the Governance layer; bifrost's native `Fallbacks` array is NOT used (extends, does not reverse, D-018)
+
+**Date:** 2026-07-20
+
+**Status:** Shipped (Phase 197, v1.17). The `FailoverPolicy` seam + the
+`chain` driver + the `governance.failover` hop event + the re-run-PreCall
+budget gate landed; see D-337 for the two implementation-shape refinements
+(the event rides the events registry, not a wire type; the chain is
+boot/install-declared, not a new Protocol write).
+
+**Context.** A consumer that centrally custodies provider credentials
+(D-333/D-334) wants a runtime's inference client to fall back from a primary
+provider key to one or more following keys on a retryable error — the
+following keys potentially naming a **different provider altogether**.
+bifrost exposes a native per-request `Fallbacks` array (`schemas.Fallback`,
+core v1.5.x) that would perform this inside the SDK. Doing so, however,
+would hide every fallback hop from Harbor's audit redactor, event bus, and
+per-identity cost accumulator — exactly the coupling D-018 rejected when it
+settled that Harbor orchestrates failover at the Governance layer, not by
+pushing a `Fallbacks` array into bifrost.
+
+**Decision.** **D-018 stands.** Broker-pulled failover is expressed through
+Harbor's own `FailoverPolicy` seam (§6.15; post-V1 phase 93), NOT bifrost's
+`Fallbacks`. The broker-pull source (D-333) supplies the **ordered chain**
+of keys/providers the consumer configured (each a named,
+zero-URL/zero-secret broker descriptor); `FailoverPolicy` walks it — on a
+retryable provider error it advances to the next key/provider, emits a
+`governance.failover` hop event (cost + identity attached), **re-runs
+Governance `PreCall` (budget / rate-limit / MaxTokens) BEFORE re-issuing —
+not merely PostCall accounting after the fact** — so a chain walking N
+providers cannot push a run past its per-identity ceiling across hops (the
+exact cost-control hole D-018 exists to prevent), and re-issues through the
+same one-method `LLMClient`, the fallback provider's key itself broker-pulled
+and never persisted. A hop that trips `PreCall` fails loud (`ErrBudgetExceeded`
+/ `ErrRateLimited`), it does not silently continue down the chain.
+Cross-provider fallback is fully expressible (a heterogeneous chain) without
+delegating orchestration to the SDK — every hop stays a Harbor event that
+passes the full Governance gate + audit + bus + cost accounting. This is the DNA-aligned realization of the "fallback on error,
+possibly cross-provider" capability: the *mechanism* is Harbor-orchestrated
+even though the *capability* mirrors what the SDK offers. Priority MEDIUM;
+composes with D-333/D-334 and the shipped `governance.rotate_key` (D-019).
+RFC §6.15 amended (Gate 0). Framework-framed only (§13).
+
+---
+
+## D-336 — The Protocol-installed inference-provider binding (`set_llm_provider`) is a LIVE runtime-level rebind, NOT persisted through the per-agent agent-config revision spine (FLAGGED for coordinator confirmation)
+
+**Date:** 2026-07-20
+
+**Status:** Shipped ephemeral (Phase 196, v1.17) — the durability posture is FLAGGED for coordinator sign-off; see "Open item" below.
+
+**Context.** D-334's `agent_config.set_llm_provider` installs a broker-pull
+inference-provider binding. The v1.17 security review asked whether that
+binding should be DURABLE the way the OAuth `set_oauth_provider` binding is —
+persisted through the agent-config revision `ConfigPayload` (giving rollback,
+run-start reconcile, restart-survival). The OAuth binding rides that spine
+because an OAuth provider is a **per-agent** entity (a connection's
+`oauth_provider` references it, owner-tagged). The question is whether the
+LLM-provider binding should mirror it.
+
+**Decision.** The `set_llm_provider` binding is a **LIVE, runtime-level
+rebind** of the runtime's shared provider-key holder (`llm.LiveKey`) via the
+`LLMProviderInstaller` seam + a fail-closed admin audit
+(`agent_config.llm_provider.installed`); it is NOT threaded through the
+per-agent agent-config revision `ConfigPayload`. The install builds an
+`InferenceKeySource` over the shared `LiveKey`, starts its refresh scheduler,
+and the pull happens at connect + refresh (D-333). It is LIVE for the process
+lifetime; a restart drops it (the config-declared brokered primary
+`llm.credential_source: remote` IS durable — it lives in yaml).
+
+**Rationale (a semantic mismatch, not merely scope).** D-333 settled that a
+provider KEY is a **runtime-level** credential — "the pull is per-runtime,
+not per-identity … it does not widen the isolation tuple." There is exactly
+ONE primary provider key per runtime. The per-agent agent-config revision
+payload is keyed by `agent_id`; recording a runtime-level key-source binding
+inside one agent's revision mis-models it (no single agent "owns" the
+runtime's provider key). The honest durability mechanism for a runtime-level
+credential-source binding is a **runtime-scoped** persistent store + a
+run-start reconcile — a NEW persistence surface that, per §9, must ship with
+in-mem / SQLite / Postgres driver parity + a conformance suite. That is a
+disproportionate multi-file domain surface for this phase, AND it is a
+genuinely different shape from the per-agent OAuth spine (so "parity with
+OAuth" would be the wrong parity). The provider KEY itself is NEVER persisted
+either way (D-333 custody model), so the only thing at stake is the durability
+of the *which-broker* binding, which a coordinator that rotates keys in can
+re-apply on reconnect (the coordinator remains the source of truth).
+
+**Consequence.** The plan's "owner-tagged reconcile at run start" acceptance
+line is NOT met for the Protocol-installed binding and is dropped for this
+phase (the config-declared brokered primary needs no reconcile — it is
+re-established at boot). The install verb's provider-SET semantics that ARE
+met: bare-name resolution, live install/rebind, and uninstall closes the
+binding + fails subsequently-bound calls loud (never a silent no-op serving
+the old key).
+
+**Open item (FLAGGED — coordinator to confirm).** Whether the runtime-level
+binding should gain durable, restart-surviving persistence via a
+runtime-scoped store (NOT the per-agent revision spine) is deferred to a
+follow-up decision. If the coordinator wants restart-survival, it is a
+dedicated runtime-scoped binding store (inmem/SQLite/Postgres + conformance)
+plus a run-start reconcile — tracked as the D-336 follow-up. Until then the
+Protocol-installed rebind is live-for-process by design, documented here so it
+is not a silent gap. Priority MEDIUM. Framework-framed only (§13).
+
+---
+
+## D-337 — The `FailoverPolicy` seam shape: a `governance.failover` canonical EVENT (not a Protocol wire type), a boot/install-declared chain (no new Protocol write), and a `KeyActivator` seam over the broker-pulled LiveKey
+
+**Date:** 2026-07-20
+
+**Status:** Shipped (Phase 197, v1.17). Refines D-335's implementation shape.
+
+**Context.** D-335 settled the POSTURE (Harbor orchestrates failover at the
+Governance layer; bifrost's `Fallbacks` array is unused). Realizing it raised
+three shape questions the decision left open, two of which the Phase 197 plan
+flagged for confirmation.
+
+**Decision.**
+
+1. **`governance.failover` is a canonical EVENT, registered in the
+   `internal/events` registry (via `internal/governance/events.go`) and
+   rendered by the protocol docs generator (`cmd/harbor-gen-protocol-docs`) —
+   NOT a request/response wire type in `internal/protocol/types`.** The Phase
+   197 plan speculatively listed a `GovernanceFailoverEvent` wire type in
+   `internal/protocol/types` + a `methods.go` registration + a singlesource
+   `CanonicalWireTypes` entry + a ts-types index entry. That is the wrong
+   mechanism: Harbor events are not request/response wire types — they ride the
+   existing `events.subscribe` / `StateEvent` surface and their payloads live
+   beside their owning subsystem (exactly like every prior `governance.*` event:
+   `budget_exceeded`, `posture_set`, `key_rotated`). The `GovernanceFailoverPayload`
+   therefore lives in `internal/governance`, registers via `RegisterEventType`,
+   and joins the docs generator's `eventPayloadIndex`. Consequences: NO new
+   `internal/protocol/types` wire STRUCT, NO `methods.go` method, NO
+   `singlesource.CanonicalWireTypes` entry, NO ts-types `typeInstanceIndex`
+   entry. The one net effect on generated artifacts is the new event-type
+   STRING joining the canonical event-type enumeration — so
+   `make protocol-docs-gen` (events.md), `make protocol-ts-types-gen` (the
+   `HarborEventType` union in the external client), and `make protocol-ts-gen`
+   (the same enum in `wire-manifest.gen.json`) each add exactly the
+   `governance.failover` line and are committed. `ProtocolVersion` stays
+   `0.1.0`. (§4.3 plan deviation — a speculative "new wire type" interface
+   corrected to the real "new canonical event" mechanism once code landed.)
+
+2. **The ordered failover chain is boot/install-declared (an ordered set of
+   installed, zero-URL provider-binding names), NOT a new Protocol write.** The
+   Phase 197 plan's risk section flagged this for coordinator confirmation.
+   D-335 mandates no new write; this phase adds none. The chain references
+   installed bindings by bare name (D-303/D-334), so the WALK ORDER is never a
+   wire-writable credential-sink lever. An admin-writable chain order (a
+   `set_failover_chain` write) remains a scoped follow-up with its own
+   zero-sink-field analysis if a coordinator wants it.
+
+3. **A `KeyActivator` seam decouples the walk from the credential source.** The
+   `FailoverPolicy` calls `KeyActivator.Activate(ctx, ProviderRef)` to make a
+   hop's broker-pulled key live before re-issuing; production wires it to the
+   inference broker-pull source over the shared `llm.LiveKey` (D-333/D-334), a
+   test wires a fixture. This keeps the policy a pure governance-layer artifact
+   (immutable, D-025) and makes cross-provider chains expressible at the seam
+   without the policy knowing broker mechanics. Because V1 is single-provider
+   at the runtime level (D-333), production true multi-provider key custody is
+   beyond this phase; the seam and the `governance.failover` cross-provider
+   event surface ship so the capability is expressible and observable.
+
+   **Inert-until-wired (tracked follow-up).** As shipped, `FailoverPolicy` /
+   `WrapWithFailover` / `KeyActivator` have NO production consumer: no LLM
+   assembly or `harbor` command constructs a failover-wrapped client, and no
+   production `KeyActivator` exists (only test fixtures). This is a deliberate,
+   acceptable carve-out — the primitive-with-consumer rule (§13) is satisfied
+   by `WrapWithFailover` + the unit/wave-E2E tests that exercise the walk
+   end-to-end — but the production wiring (a real `KeyActivator` over the
+   broker-pull `LiveKey` + a boot/install-declared chain threaded into the LLM
+   assembly) is a TRACKED FOLLOW-UP, bounded by D-333's V1 single-provider
+   custody and post-V1 per D-335. Until that wiring lands the seam is inert in
+   the shipped binary by design, documented here so the status is unmistakable.
+
+**Consequence.** The `FailoverPolicy` interface + the `chain` §4.4 driver +
+`NewFailoverPolicy`/`WrapWithFailover` (the consumer) + `GovernanceFailoverPayload`
+land in `internal/governance`; the retryable-vs-permanent classifier reuses the
+existing LLM + governance sentinels (a permanent structural error or a
+governance gate stops the walk; a transient provider error advances it). The
+wave-end E2E (`test/integration/wave_v117_test.go`) exercises the budget-trip
+failure mode end-to-end. Priority MEDIUM; composes with D-335/D-333/D-334/D-019.
+Framework-framed only (§13).

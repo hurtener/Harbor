@@ -345,6 +345,124 @@ func Run(t *testing.T, mk Factory) {
 		}
 	})
 
+	t.Run("SetPosture_FullReplaceRoundTrips", func(t *testing.T) {
+		t.Parallel()
+		h := mk()
+		defer h.Cleanup()
+		policy, err := governance.NewSetPosturePolicy(h.State, h.Bus, governance.Config{}, nil, nil, false)
+		if err != nil {
+			t.Fatalf("NewSetPosturePolicy: %v", err)
+		}
+		defer policy.Close(context.Background())
+		provider := governance.NewPostureProviderWithState(governance.Config{}, h.State)
+
+		actor := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+		if _, err := policy.Set(context.Background(), actor, governance.SetPostureSpec{
+			DefaultTier: "free",
+			IdentityTiers: map[string]governance.TierConfig{
+				"free": {BudgetCeilingUSD: 0.50, MaxTokens: 1000},
+			},
+		}); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		ctx, err := identity.With(context.Background(), actor.Identity)
+		if err != nil {
+			t.Fatalf("identity.With: %v", err)
+		}
+		read, err := provider.Posture(ctx)
+		if err != nil {
+			t.Fatalf("Posture: %v", err)
+		}
+		if read.DefaultTier != "free" || read.IdentityTiers["free"].BudgetCeilingUSD != 0.50 {
+			t.Fatalf("round-trip mismatch on this driver: %+v", read)
+		}
+	})
+
+	t.Run("SetPosture_PartialAndEmptyWriteFailClosed", func(t *testing.T) {
+		t.Parallel()
+		h := mk()
+		defer h.Cleanup()
+		policy, err := governance.NewSetPosturePolicy(h.State, h.Bus, governance.Config{}, nil, nil, false)
+		if err != nil {
+			t.Fatalf("NewSetPosturePolicy: %v", err)
+		}
+		defer policy.Close(context.Background())
+		actor := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+
+		// Seed an enforced tier, then assert both the omit-the-tier and the
+		// empty-table writes are rejected fail-closed identically on every
+		// driver (the identity-tier policy write's §9 conformance requirement).
+		if _, err := policy.Set(context.Background(), actor, governance.SetPostureSpec{
+			DefaultTier:   "free",
+			IdentityTiers: map[string]governance.TierConfig{"free": {BudgetCeilingUSD: 0.50}},
+		}); err != nil {
+			t.Fatalf("seed Set: %v", err)
+		}
+		if _, err := policy.Set(context.Background(), actor, governance.SetPostureSpec{
+			DefaultTier:   "team",
+			IdentityTiers: map[string]governance.TierConfig{"team": {BudgetCeilingUSD: 5.0}},
+		}); !errors.Is(err, governance.ErrPolicyWidening) {
+			t.Fatalf("partial write: got %v, want ErrPolicyWidening", err)
+		}
+		// Fail-closed either way: DefaultTier "free" is absent from the empty
+		// map (ErrInvalidPosture, the structural check) — an equally-valid
+		// fail-closed rejection to the no-widening path. The write is never
+		// silently persisted, which is the conformance invariant.
+		if _, err := policy.Set(context.Background(), actor, governance.SetPostureSpec{
+			DefaultTier:   "free",
+			IdentityTiers: map[string]governance.TierConfig{},
+		}); !errors.Is(err, governance.ErrPolicyWidening) && !errors.Is(err, governance.ErrInvalidPosture) {
+			t.Fatalf("empty write: got %v, want ErrPolicyWidening or ErrInvalidPosture", err)
+		}
+
+		// The prior enforced policy is unchanged (no mutation on a reject).
+		provider := governance.NewPostureProviderWithState(governance.Config{}, h.State)
+		ctx, err := identity.With(context.Background(), actor.Identity)
+		if err != nil {
+			t.Fatalf("identity.With: %v", err)
+		}
+		read, err := provider.Posture(ctx)
+		if err != nil {
+			t.Fatalf("Posture: %v", err)
+		}
+		if read.IdentityTiers["free"].BudgetCeilingUSD != 0.50 {
+			t.Fatalf("post-reject policy widened: %+v", read)
+		}
+	})
+
+	t.Run("SetPosture_SurvivesRestart", func(t *testing.T) {
+		t.Parallel()
+		h := mk()
+		defer h.Cleanup()
+		actor := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+
+		p1, err := governance.NewSetPosturePolicy(h.State, h.Bus, governance.Config{}, nil, nil, false)
+		if err != nil {
+			t.Fatalf("p1: %v", err)
+		}
+		if _, err := p1.Set(context.Background(), actor, governance.SetPostureSpec{
+			DefaultTier:   "free",
+			IdentityTiers: map[string]governance.TierConfig{"free": {MaxTokens: 4096}},
+		}); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		_ = p1.Close(context.Background())
+
+		// A fresh provider over the SAME store reads back the persisted record.
+		provider := governance.NewPostureProviderWithState(governance.Config{}, h.State)
+		ctx, err := identity.With(context.Background(), actor.Identity)
+		if err != nil {
+			t.Fatalf("identity.With: %v", err)
+		}
+		read, err := provider.Posture(ctx)
+		if err != nil {
+			t.Fatalf("Posture: %v", err)
+		}
+		if read.IdentityTiers["free"].MaxTokens != 4096 {
+			t.Fatalf("restart read = %+v want free max_tokens 4096", read)
+		}
+	})
+
 	// parity gate for the assembly-constructed
 	// Subsystem — `NewSubsystemFromConfig` composes the same enforcers
 	// the per-policy subtests above exercise individually; this subtest

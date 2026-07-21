@@ -19,6 +19,7 @@ func TestV1Registration_IncludesWakeClasses(t *testing.T) {
 	classes := notifications.V1NotificationClasses()
 	wantClasses := []events.EventType{
 		notifications.EventTypeNotificationTaskGroupResolved,
+		notifications.EventTypeNotificationTaskGroupCancelled,
 		notifications.EventTypeNotificationTaskCompleted,
 	}
 	for _, want := range wantClasses {
@@ -27,10 +28,75 @@ func TestV1Registration_IncludesWakeClasses(t *testing.T) {
 		}
 	}
 	triggers := notifications.V1TriggerEventTypes()
-	for _, want := range []events.EventType{tasks.EventTypeTaskGroupResolved, tasks.EventTypeTaskCompleted} {
+	for _, want := range []events.EventType{tasks.EventTypeTaskGroupResolved, tasks.EventTypeTaskGroupCancelled, tasks.EventTypeTaskCompleted} {
 		if !containsType(triggers, want) {
 			t.Errorf("V1TriggerEventTypes missing %q", want)
 		}
+	}
+}
+
+// TestSubscriber_GroupCancelledRoundTrip drives the cancel-mirror class
+// through the real Subscriber: an unprompted (cascade) cancel arrives as
+// notification.task_group_cancelled with the trigger identity intact,
+// while an operator-driven cancel produces NO notification (the settled
+// suppression rule, verified with a bounded negative — no sleep).
+func TestSubscriber_GroupCancelledRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	bus := newBus(t)
+
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Admin: true,
+		Types: []events.EventType{notifications.EventTypeNotificationTaskGroupCancelled},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	startWakeSubscriber(t, bus, ctx)
+
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t-gc", UserID: "u-gc", SessionID: "s-gc"}, RunID: "r-gc"}
+
+	// Operator cancel FIRST (must produce nothing). FIFO ordering means a
+	// wrongly-synthesised notification would arrive before the cascade one.
+	if err := bus.Publish(ctx, events.Event{
+		Type:     tasks.EventTypeTaskGroupCancelled,
+		Identity: id,
+		Payload: tasks.TaskGroupCancelledPayload{Origin: tasks.CancelOriginOperator, Completion: tasks.GroupCompletion{
+			GroupID: "gc-op", FinalStatus: tasks.GroupCancelled,
+			Members: []tasks.MemberOutcome{{TaskID: "m-1", Status: tasks.StatusCancelled}},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish operator cancel: %v", err)
+	}
+	// Cascade cancel (must be mirrored).
+	if err := bus.Publish(ctx, events.Event{
+		Type:     tasks.EventTypeTaskGroupCancelled,
+		Identity: id,
+		Payload: tasks.TaskGroupCancelledPayload{Origin: tasks.CancelOriginCascade, Completion: tasks.GroupCompletion{
+			GroupID: "gc-cascade", FinalStatus: tasks.GroupCancelled,
+			Members: []tasks.MemberOutcome{
+				{TaskID: "m-1", Status: tasks.StatusComplete, Description: "one"},
+				{TaskID: "m-2", Status: tasks.StatusCancelled, Description: "two"},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish cascade cancel: %v", err)
+	}
+
+	ev := waitEvent(t, sub, 5*time.Second)
+	if ev.Type != notifications.EventTypeNotificationTaskGroupCancelled {
+		t.Fatalf("type=%q, want notification.task_group_cancelled", ev.Type)
+	}
+	if ev.Identity != id {
+		t.Errorf("identity bled: got %v, want %v", ev.Identity, id)
+	}
+	// Bounded negative: the operator cancel produced no notification.
+	select {
+	case extra := <-sub.Events():
+		t.Fatalf("unexpected extra notification %q — an operator-driven cancel must produce none", extra.Type)
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 

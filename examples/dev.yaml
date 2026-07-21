@@ -97,6 +97,22 @@ llm:
       token_estimator: chars_div_4
       json_schema_mode: native
       reasoning_effort: low
+  # The primary provider stays LOCAL (api_key above). This dev broker is
+  # declared so `agent_config.set_llm_provider` has a NAMED sink to reference
+  # (the zero-URL install references it by name); a coordinator can rotate the
+  # runtime's provider key in over the Protocol without editing yaml. The
+  # loopback credential_url is a dev placeholder — the install is async, so it
+  # returns immediately and the background refresh loop performs the pull.
+  # REBIND SEMANTICS: a `set_llm_provider` install returns 200 on accept, but
+  # it REBINDS the runtime's single shared provider-key holder to this broker.
+  # If the named broker is unreachable, the background pull fails and the holder
+  # is zeroed fail-closed (logged at WARN) — so a rebind over a working LOCAL
+  # primary can leave subsequent LLM calls failing until a reachable broker
+  # serves a key. Rebind only when the coordinator is the intended key source.
+  inference_brokers:
+    - name: dev-inference-broker
+      credential_url: http://127.0.0.1:9/provider-key
+      auth_token_env: HARBOR_DEV_COORDINATOR_TOKEN
 
 # Runtime run-lifecycle hooks. The run-completion hook dispatches the run's
 # transcript to a named catalog tool at the terminal boundary (for memory /

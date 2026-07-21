@@ -78,9 +78,9 @@ assert_grep_present 'case "notification":' \
 assert_grep_present 'Turn failed' \
     internal/tui/app/model.go \
     'phase 188: statusStrip() carries the foreground turn-failure line'
-assert_grep_present 'notification.task_completed", "notification.task_group_resolved", "notification.task_failed"' \
+assert_grep_present 'notification.task_completed", "notification.task_group_resolved", "notification.task_group_cancelled", "notification.task_failed"' \
     internal/tui/projection/projection.go \
-    'phase 188: projection classifies the three notification classes as EventTyped'
+    'phase 188: projection classifies the notification classes as EventTyped'
 assert_grep_present 'notification.task_group_resolved' \
     web/console/src/lib/events/taxonomy.ts \
     'phase 188: Console taxonomy registers the wake classes'

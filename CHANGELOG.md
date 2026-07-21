@@ -17,6 +17,53 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.17.0] — 2026-07-21
+
+The control-plane admin-write release. Harbor's admin/control plane gains
+WRITE surfaces that were previously read-only or absent, plus the
+parallel-intent primitives that complete the v1.16 task-control story: a
+planner can now steer, pause, and resume the children it spawned; operators
+can rewrite the governance identity-tier policy live; and the LLM credential
+plane learns to pull provider keys from a broker and orchestrate failover —
+all fail-closed, all identity-scoped.
+
+Every new surface is additive on the wire — one new canonical event
+(`governance.failover`), two new Protocol methods (`governance.set_posture`,
+`agent_config.set_llm_provider`), new optional wire fields, and new config
+keys — so the Harbor Protocol holds at `0.1.0` (no methods removed, no
+breaking changes). Nine decisions land: D-329 (task-group-cancelled
+conversational mirror), D-330 (planner steer/pause/resume of a spawned
+child), D-331 (per-tool OAuth on resource/prompt paths + owner-scoped
+uninstall), D-332 (`governance.set_posture` tier-policy write), D-333
+(inference broker-pull credential source), D-334
+(`agent_config.set_llm_provider`), D-335 (broker-pulled Harbor-orchestrated
+failover), D-336 (ephemeral inference-provider rebind), D-337
+(`governance.failover` as a canonical event).
+
+### Added — control-plane admin-write surfaces
+
+- **`notification.task_group_cancelled`** conversational mirror with a
+  cancel-origin (operator / cascade / fail-fast); operator-driven cancels
+  are suppressed, only unprompted cancels surface (D-329).
+- **Planner-facing steer / pause / resume** of a spawned child
+  (`_steer_task` / `_pause_task` / `_resume_task`), dispatched onto the
+  existing per-sub-run steering inbox and the unified pause/resume
+  primitive; descendant-scoped, human-supremacy-preserving (D-330).
+- **Per-tool OAuth binding** extended to MCP resource/prompt paths, plus
+  **owner-scoped provider uninstall** (defense-in-depth on D-303) (D-331).
+- **`governance.set_posture`** — admin identity-tier **policy write**
+  (per-tier budget / max-tokens / rate + default tier), fail-closed against
+  any budget-widening write, `admin`-scope only, hot-swapped into live
+  enforcement with no restart (D-332).
+- **Inference-plane broker-pull** credential source (per-runtime, fail-loud,
+  no stale-key-past-refresh) plus a zero-URL admin
+  **`agent_config.set_llm_provider`** install/rebind (D-333, D-334).
+- **Broker-pulled Harbor-orchestrated failover** — on a retryable provider
+  error, advance the chain, emit `governance.failover`, re-run governance
+  `PreCall` (budget is never bypassed), re-issue through the one-method
+  `LLMClient`; the provider SDK's native fallback array stays unused
+  (D-018) (D-335, D-337).
+
 ## [1.16.0] — 2026-07-18
 
 The parallel-intent release. Harbor's React planner and runtime gain the

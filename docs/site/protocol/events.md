@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 133 canonical event types a Harbor Runtime can publish, read from the live
+The 138 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -133,6 +133,19 @@ Payload `AgentRestartedPayload` — safe payload (delivered typed, verbatim).
 | `VersionHash` | `string` |  |
 | `VersionHashChanged` | `bool` |  |
 | `RestartedAt` | `int64` |  |
+
+## `agent_config.llm_provider.installed`
+
+Payload `LLMProviderSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Author` | `identity.Quadruple` |  |
+| `AgentID` | `string` |  |
+| `ProviderName` | `string` |  |
+| `Provider` | `string` |  |
+| `InferenceBroker` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
 
 ## `agent_config.oauth_provider.installed`
 
@@ -370,6 +383,19 @@ Payload `BudgetExceededPayload` — safe payload (delivered typed, verbatim).
 | `Currency` | `string` |  |
 | `OccurredAt` | `time.Time` |  |
 
+## `governance.failover`
+
+Payload `GovernanceFailoverPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Identity` | `identity.Quadruple` |  |
+| `FromProvider` | `string` |  |
+| `ToProvider` | `string` |  |
+| `HopIndex` | `int` |  |
+| `AccumCostUSD` | `float64` |  |
+| `Reason` | `string` |  |
+
 ## `governance.key_rotated`
 
 Payload `KeyRotatedPayload` — safe payload (delivered typed, verbatim).
@@ -402,6 +428,21 @@ Payload `PostureReadAdminPayload` — safe payload (delivered typed, verbatim).
 |---|---|---|
 | `Actor` | `identity.Quadruple` |  |
 | `RequestedTenant` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
+
+## `governance.posture_set`
+
+Payload `GovernancePostureSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Actor` | `identity.Quadruple` |  |
+| `DefaultTierBefore` | `string` |  |
+| `DefaultTierAfter` | `string` |  |
+| `TierCountBefore` | `int` |  |
+| `TierCountAfter` | `int` |  |
+| `TiersBefore` | `[]string` |  |
+| `TiersAfter` | `[]string` |  |
 | `OccurredAt` | `time.Time` |  |
 
 ## `governance.rate_limited`
@@ -525,6 +566,20 @@ Payload `PostureReadAdminPayload` — safe payload (delivered typed, verbatim).
 |---|---|---|
 | `Actor` | `identity.Quadruple` |  |
 | `RequestedTenant` | `string` |  |
+
+## `llm.provider_credential_fetched`
+
+Payload `LLMProviderCredentialFetchedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `RuntimePrincipal` | `string` |  |
+| `Broker` | `string` |  |
+| `Provider` | `string` |  |
+| `KeyFingerprint` | `string` |  |
+| `Phase` | `string` |  |
+| `Outcome` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
 
 ## `llm.provider_file.uploaded`
 
@@ -864,6 +919,26 @@ Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; sub
 | `MemberCancelled` | `int` |  |
 
 ## `notification.task_failed`
+
+Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; subscribers receive a redacted map).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Class` | `events.EventType` |  |
+| `Severity` | `notifications.Severity` |  |
+| `Summary` | `string` |  |
+| `DeepLink` | `string` |  |
+| `OriginEventType` | `events.EventType` |  |
+| `OriginEventSequence` | `uint64` |  |
+| `TaskID` | `string` |  |
+| `GroupID` | `string` |  |
+| `Members` | `[]notifications.MemberOutcomeSummary` |  |
+| `MembersTruncated` | `bool` |  |
+| `MemberSucceeded` | `int` |  |
+| `MemberFailed` | `int` |  |
+| `MemberCancelled` | `int` |  |
+
+## `notification.task_group_cancelled`
 
 Payload `NotificationPayload` — redacted on the wire (audit-redactor walk; subscribers receive a redacted map).
 
@@ -1268,6 +1343,7 @@ Payload `TaskGroupCancelledPayload` — safe payload (delivered typed, verbatim)
 | Wire key | Go type | Notes |
 |---|---|---|
 | `Completion` | `tasks.GroupCompletion` |  |
+| `Origin` | `tasks.CancelOrigin` |  |
 
 ## `task.group_created`
 

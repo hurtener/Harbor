@@ -1718,6 +1718,50 @@ func TestValidateTools_OAuthBrokerLegs(t *testing.T) {
 			},
 			wantSub: "provider name must not be empty",
 		},
+		{
+			// The per-entry map is one namespace keyed by MCP-side name — a
+			// resource URI is a valid key and binds the resource/prompt paths.
+			// A resource-keyed binding on a declared provider passes exactly like
+			// a tool-keyed one.
+			name: "tool_oauth_providers keyed by a resource URI passes",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				conn := mcpConn()
+				conn.ToolOAuthProviders = map[string]string{"mem://calendar": "m365"}
+				c.Tools.MCPServers = []config.MCPServerConfig{conn}
+			},
+			wantOK: true,
+		},
+		{
+			// AC-9: the resource/prompt applicability is validated identically to
+			// the tool-call case — a resource-keyed binding on a stdio connection
+			// (no bearer injection) is rejected loud at boot.
+			name: "tool_oauth_providers keyed by a resource URI on stdio rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				c.Tools.MCPServers = []config.MCPServerConfig{{
+					Name: "graph", TransportMode: "stdio", Command: []string{"srv"},
+					ToolOAuthProviders: map[string]string{"mem://calendar": "m365"},
+				}}
+			},
+			wantSub: "http(s) url",
+		},
+		{
+			// AC-9: a prompt-keyed binding alongside a static Authorization header
+			// is rejected loud at boot — same one-auth-mode-per-connection rule.
+			name: "tool_oauth_providers keyed by a prompt name with static Authorization rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				conn := mcpConn()
+				conn.Headers = map[string]string{"Authorization": "Bearer static"}
+				conn.ToolOAuthProviders = map[string]string{"summarize_prompt": "m365"}
+				c.Tools.MCPServers = []config.MCPServerConfig{conn}
+			},
+			wantSub: "one auth mode per connection",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

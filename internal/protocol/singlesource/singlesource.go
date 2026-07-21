@@ -129,6 +129,7 @@ var CanonicalMethods = map[string]struct{}{
 	"governance.set_tenant_overrides": {},
 	"governance.get_tenant_overrides": {},
 	"governance.rotate_key":           {},
+	"governance.set_posture":          {},
 	// agent-config control-plane cluster — fourteen methods.
 	"agent_config.get":                       {},
 	"agent_config.set_revision":              {},
@@ -146,6 +147,7 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.set_mcp_discovery_origins": {},
 	"agent_config.set_oauth_provider":        {},
 	"agent_config.remove_oauth_provider":     {},
+	"agent_config.set_llm_provider":          {},
 	// Session-user safe subset (the non-admin lower tier).
 	"agent_config.session.set_user_prompt":     {},
 	"agent_config.session.set_source_disables": {},
@@ -311,6 +313,11 @@ var CanonicalWireTypes = map[string]string{
 	"GovernanceGetTenantOverridesResponse": "types",
 	"GovernanceRotateKeyRequest":           "types",
 	"GovernanceRotateKeyResponse":          "types",
+	// admin-scoped governance identity-tier policy WRITE wire types — the
+	// `governance.set_posture` request/response shapes (the write sibling of
+	// `governance.posture`) live in internal/protocol/types/governance.go.
+	"GovernanceSetPostureRequest":  "types",
+	"GovernanceSetPostureResponse": "types",
 	// agent-config control-plane wire types — the `agent_config.*` family
 	// request/response shapes live in
 	// internal/protocol/types/agentconfig.go (the agent-config registry primitive
@@ -372,6 +379,9 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigSetOAuthProviderResponse":       "types",
 	"AgentConfigRemoveOAuthProviderRequest":     "types",
 	"AgentConfigRemoveOAuthProviderResponse":    "types",
+	"AgentConfigLLMProviderDescriptor":          "types",
+	"AgentConfigSetLLMProviderRequest":          "types",
+	"AgentConfigSetLLMProviderResponse":         "types",
 	// Session-user safe subset (the non-admin lower tier).
 	"AgentConfigSessionOverlay":                   "types",
 	"AgentConfigSessionSetUserPromptRequest":      "types",

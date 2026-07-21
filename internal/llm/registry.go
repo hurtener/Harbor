@@ -116,6 +116,19 @@ type ConfigSnapshot struct {
 	BaseURL  string
 	Timeout  time.Duration
 
+	// CredentialSource selects WHERE the primary provider's key is sourced:
+	// "" / "local" (the historical env / literal resolution, the default) or
+	// "remote" (broker-pull). When "remote", the driver does NOT resolve
+	// `APIKey` at construction — the key holder is seeded / refreshed by the
+	// inference-plane broker-pull source (wired at the boot boundary) and read
+	// through the shared LiveKey on the hot path. Brokered XOR local, validated
+	// loud at the config layer.
+	CredentialSource string
+	// InferenceBroker is the boot-declared broker name the primary provider's
+	// key is pulled from when CredentialSource is "remote". Non-secret
+	// reference; the pull endpoint / audience live on the named broker.
+	InferenceBroker string
+
 	// CustomProviders is the operator-declared registry of
 	// OpenAI-compatible providers. When `Provider`
 	// matches a custom entry's `Name`, the entry's `BaseURL` /

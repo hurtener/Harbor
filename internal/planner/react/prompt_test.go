@@ -327,6 +327,79 @@ func TestDefaultBuilder_RendersTaskStatusCancelStepsAsNativeToolPairs(t *testing
 	}
 }
 
+// TestDefaultBuilder_RendersSteerPauseResumeStepsAsNativeToolPairs —
+// AC-11: a trajectory step whose Action is SteerTask / PauseTask /
+// ResumeTask replays as a native tool_call + RoleTool pair, mirroring the
+// _task_status / _cancel_task replay, preserving the task ids and
+// directives/reasons the model emitted.
+func TestDefaultBuilder_RendersSteerPauseResumeStepsAsNativeToolPairs(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "manage fan-out",
+		Trajectory: &planner.Trajectory{
+			Steps: []planner.Step{
+				{
+					Action:         planner.SteerTask{TaskID: tasks.TaskID("task-A"), Directive: "focus on auth"},
+					LLMObservation: map[string]any{"task_id": "task-A", "steered": true},
+				},
+				{
+					Action:         planner.PauseTask{TaskID: tasks.TaskID("task-B"), Reason: "hold"},
+					LLMObservation: map[string]any{"task_id": "task-B", "paused": true},
+				},
+				{
+					Action:         planner.ResumeTask{TaskID: tasks.TaskID("task-B"), Directive: "carry on"},
+					LLMObservation: map[string]any{"task_id": "task-B", "resumed": true},
+				},
+			},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+	wantRoles := []llm.Role{
+		llm.RoleSystem, llm.RoleUser,
+		llm.RoleAssistant, llm.RoleTool,
+		llm.RoleAssistant, llm.RoleTool,
+		llm.RoleAssistant, llm.RoleTool,
+	}
+	if len(req.Messages) != len(wantRoles) {
+		t.Fatalf("len(Messages) = %d, want %d — roles: %+v", len(req.Messages), len(wantRoles), summariseRoles(req.Messages))
+	}
+	for i, w := range wantRoles {
+		if req.Messages[i].Role != w {
+			t.Errorf("Messages[%d].Role = %q, want %q", i, req.Messages[i].Role, w)
+		}
+	}
+
+	steerAsst := req.Messages[2]
+	if len(steerAsst.ToolCalls) != 1 || steerAsst.ToolCalls[0].Name != SteerTaskToolName {
+		t.Fatalf("steer assistant ToolCalls = %+v, want one %q call", steerAsst.ToolCalls, SteerTaskToolName)
+	}
+	if !strings.Contains(string(steerAsst.ToolCalls[0].Args), "task-A") || !strings.Contains(string(steerAsst.ToolCalls[0].Args), "focus on auth") {
+		t.Errorf("steer replay dropped task_id/directive: args = %s", steerAsst.ToolCalls[0].Args)
+	}
+	if m := req.Messages[3]; m.ToolCallID == nil || *m.ToolCallID != steerAsst.ToolCalls[0].ID {
+		t.Errorf("steer tool ToolCallID = %v, want match to assistant id %q", m.ToolCallID, steerAsst.ToolCalls[0].ID)
+	}
+
+	pauseAsst := req.Messages[4]
+	if len(pauseAsst.ToolCalls) != 1 || pauseAsst.ToolCalls[0].Name != PauseTaskToolName {
+		t.Fatalf("pause assistant ToolCalls = %+v, want one %q call", pauseAsst.ToolCalls, PauseTaskToolName)
+	}
+	if !strings.Contains(string(pauseAsst.ToolCalls[0].Args), "task-B") || !strings.Contains(string(pauseAsst.ToolCalls[0].Args), "hold") {
+		t.Errorf("pause replay dropped task_id/reason: args = %s", pauseAsst.ToolCalls[0].Args)
+	}
+
+	resumeAsst := req.Messages[6]
+	if len(resumeAsst.ToolCalls) != 1 || resumeAsst.ToolCalls[0].Name != ResumeTaskToolName {
+		t.Fatalf("resume assistant ToolCalls = %+v, want one %q call", resumeAsst.ToolCalls, ResumeTaskToolName)
+	}
+	if !strings.Contains(string(resumeAsst.ToolCalls[0].Args), "task-B") || !strings.Contains(string(resumeAsst.ToolCalls[0].Args), "carry on") {
+		t.Errorf("resume replay dropped task_id/directive: args = %s", resumeAsst.ToolCalls[0].Args)
+	}
+	if m := req.Messages[7]; m.ToolCallID == nil || *m.ToolCallID != resumeAsst.ToolCalls[0].ID {
+		t.Errorf("resume tool ToolCallID = %v, want match to assistant id %q", m.ToolCallID, resumeAsst.ToolCalls[0].ID)
+	}
+}
+
 // TestDefaultBuilder_PrefersLLMObservationOverRawObservation asserts
 // D-026 heavy-content discipline: the prompt uses LLMObservation
 // (compressed/redacted projection) over raw Observation when both

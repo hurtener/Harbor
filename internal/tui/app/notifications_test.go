@@ -67,6 +67,48 @@ func TestLayoutNotification_MutedSingleLine(t *testing.T) {
 	}
 }
 
+// TestLayoutNotification_GroupCancelledRollup is the CONVENTIONS §10
+// fixture for the cancelled-group rollup line: an unprompted
+// (fail-fast / cascade) group cancel renders as ONE muted lifecycle line
+// (muted "·" glyph + the runtime-composed Summary), never a card or a
+// per-member fan-out. The suppressed operator-initiated cancel is proven
+// at the mapper (it never synthesises a notification), so at the
+// transcript layer the suppressed case is simply the absence of any such
+// block — covered here by the empty-text no-row assertion.
+func TestLayoutNotification_GroupCancelledRollup(t *testing.T) {
+	p := projection.Projection{Identity: types.IdentityScope{Tenant: "t", User: "u", Session: "s"}, Blocks: []projection.Block{
+		{ID: "notification:4", Kind: "notification", Text: "Background group cancelled (fail-fast): 2 cancelled of 3, 1 failed"},
+	}}
+	m := NewOperationalModel(100, 24, ui.NewTheme(ui.ModeDark, ui.ProfileMono), true, p)
+
+	lb := m.layoutBlock(p.Blocks[0], 90, false)
+	if lb.height != 1 {
+		t.Fatalf("cancelled-group line height=%d, want 1 (never a card / per-member fan-out)", lb.height)
+	}
+	if len(lb.ops) != 1 {
+		t.Fatalf("cancelled-group line ops=%d, want 1", len(lb.ops))
+	}
+	text := lb.ops[0].text
+	if !strings.Contains(text, "2 cancelled of 3") || !strings.HasPrefix(text, "·") {
+		t.Errorf("cancelled-group line=%q, want the muted glyph + Summary", text)
+	}
+	if _, role := lifecycleGlyph("notification"); role != ui.RoleMuted {
+		t.Errorf("notification glyph role=%v, want RoleMuted", role)
+	}
+	// Lands on the conversation surface (Frame, ANSI-stripped).
+	m.state.Route, m.state.Connection, m.state.Composer = "session", "live", ComposerFocused
+	m.startup = startupHidden
+	if !strings.Contains(m.Frame(), "2 cancelled of 3") {
+		t.Error("cancelled-group summary missing from the conversation surface")
+	}
+	// The suppressed operator-cancel case: no notification block is minted
+	// upstream, so a blank one costs zero rows here.
+	empty := m.layoutBlock(projection.Block{ID: "n", Kind: "notification", Text: ""}, 90, false)
+	if empty.height != 0 {
+		t.Errorf("suppressed (empty) cancel block height=%d, want 0", empty.height)
+	}
+}
+
 // TestStatusStrip_TurnFailedWithoutCode covers the no-error-code branch of the
 // turn-failure line (a bounded fallback when the Runtime reported no code).
 func TestStatusStrip_TurnFailedWithoutCode(t *testing.T) {

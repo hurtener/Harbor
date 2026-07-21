@@ -24,24 +24,42 @@ package governance
 import (
 	"context"
 	"fmt"
+
+	"github.com/hurtener/Harbor/internal/state"
 )
 
-// PostureProvider is the read-only accessor over a configured
-// `governance.Config`. Built once per Runtime process via
-// NewPostureProvider; `Posture` is safe for concurrent use by N
-// goroutines.
+// PostureProvider is the read-only accessor over the effective governance
+// identity-tier policy — the StateStore-backed policy record (written via
+// `governance.set_posture`) layered over the operator-configured
+// `governance.Config` defaults. Built once per Runtime process via
+// NewPostureProvider / NewPostureProviderWithState; `Posture` is safe for
+// concurrent use by N goroutines.
 type PostureProvider struct {
 	cfg Config
+	// state is the StateStore the effective-policy layer reads through.
+	// Optional — a nil state (the config-only posture) makes `Posture`
+	// return exactly the config defaults, so a runtime that wires no
+	// StateStore (or a test) is unaffected.
+	state state.StateStore
 }
 
 // NewPostureProvider builds a PostureProvider over the operator-supplied
-// governance configuration. The Config is copied by value at
-// construction; the provider holds its own immutable copy. A latent
-// (zero-value) Config is valid — `Posture` returns an empty
-// `IdentityTiers` map and empty tier selectors, which the Console
-// renders as the explicit "No tiers configured" state.
+// governance configuration WITHOUT a StateStore layer — `Posture` returns
+// exactly the config defaults. A latent (zero-value) Config is valid —
+// `Posture` returns an empty `IdentityTiers` map and empty tier selectors,
+// which the Console renders as the explicit "No tiers configured" state.
 func NewPostureProvider(cfg Config) *PostureProvider {
 	return &PostureProvider{cfg: cfg}
+}
+
+// NewPostureProviderWithState builds a PostureProvider whose `Posture`
+// reflects the StateStore-backed effective policy layered over the config
+// defaults: when a `governance.set_posture` record has been written, the
+// provider returns that record's tiers + default tier; otherwise it returns
+// the config-declared defaults (additive / backward-compatible). `st` is
+// the StateStore the runtime persists the policy record through.
+func NewPostureProviderWithState(cfg Config, st state.StateStore) *PostureProvider {
+	return &PostureProvider{cfg: cfg, state: st}
 }
 
 // Snapshot is a deep-copied, immutable view of the configured governance
@@ -78,20 +96,31 @@ func (p *PostureProvider) Posture(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("governance: posture read: %w", err)
 	}
 
-	// Deep-copy the tier map so a caller mutating the snapshot cannot
-	// reach back into the provider's Config (no shared mutable
-	// state crossing the call boundary). Always non-nil.
-	tiers := make(map[string]TierConfig, len(p.cfg.IdentityTiers))
-	for name, tc := range p.cfg.IdentityTiers {
-		// TierConfig is a value type whose only nested field
-		// (RateLimitConfig) is itself a value type — a plain map copy
-		// is a full deep copy.
-		tiers[name] = tc
+	// Read the effective policy — the StateStore record (written via
+	// set_posture) layered over the config defaults, else the config
+	// defaults. loadEffectivePolicy deep-copies the tier map so a caller
+	// mutating the snapshot cannot reach the provider's Config or the
+	// persisted record (no shared mutable state crossing the call
+	// boundary). Always non-nil.
+	defaultTier, tiers, err := loadEffectivePolicy(ctx, p.state, p.cfg)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("governance: posture read: %w", err)
+	}
+
+	// Resolve the caller's tier against the EFFECTIVE default tier (the
+	// written record's default when present), applying the config's
+	// Resolver — a nil resolver makes ResolvedTier == the effective
+	// DefaultTier for every caller.
+	resolved := defaultTier
+	if p.cfg.Resolver != nil {
+		if name := p.cfg.Resolver(id); name != "" {
+			resolved = name
+		}
 	}
 
 	return Snapshot{
-		DefaultTier:   p.cfg.DefaultTier,
-		ResolvedTier:  p.cfg.resolveTier(id),
+		DefaultTier:   defaultTier,
+		ResolvedTier:  resolved,
 		IdentityTiers: tiers,
 	}, nil
 }

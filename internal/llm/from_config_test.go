@@ -256,11 +256,15 @@ func TestSnapshotFromConfig_FieldParity_LLMConfig(t *testing.T) {
 		"Corrections":          true, // → DisableCorrections (inverse bool)
 		"CustomProviders":      true,
 		"NetworkDefaults":      true,
+		"CredentialSource":     true, // → the brokered-XOR-local primary selector
+		"InferenceBroker":      true, // → the named broker the primary key is pulled from
 	}
-	// No exclusions today: every operator-facing LLM config field maps
-	// onto the snapshot. Add entries here ONLY with a reason naming the
-	// non-snapshot consumer.
-	excluded := map[string]string{}
+	// InferenceBrokers is boundary-wired, not a snapshot field: the boot
+	// builds the InferenceKeySource over the shared LiveKey and connects it,
+	// rather than handing the broker LIST to the LLM client snapshot.
+	excluded := map[string]string{
+		"InferenceBrokers": "boundary-wired: the boot builds the broker-pull InferenceKeySource; the LLM client reads the seeded LiveKey, not the broker list",
+	}
 	assertFieldParity(t, reflect.TypeOf(config.LLMConfig{}), projected, excluded)
 }
 

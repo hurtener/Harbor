@@ -114,6 +114,17 @@ const (
 	// id, and the author identity — all NON-SECRET. Emitted as one fail-closed
 	// unit with the mutation.
 	EventTypeOAuthProviderRemoved events.EventType = "agent_config.oauth_provider.removed"
+
+	// EventTypeLLMProviderInstalled — emitted when an admin installs (upserts)
+	// / rotates a Protocol-installed, ZERO-URL inference provider binding
+	// (agent_config.set_llm_provider): the binding is installed live into the
+	// owner-tagged provider set so the runtime's LLM key is sourced from the
+	// named coordinator broker. Carries the agent id, the binding name, the
+	// provider, the inference-broker name, and the author identity — all
+	// NON-SECRET. NO URL, NO env-var name, NO secret is ever carried (there is
+	// none on the descriptor). Emitted as one fail-closed unit with the
+	// mutation (CLAUDE.md §7).
+	EventTypeLLMProviderInstalled events.EventType = "agent_config.llm_provider.installed"
 )
 
 func init() {
@@ -130,9 +141,33 @@ func init() {
 		EventTypeMCPDiscoveryOriginsSet,
 		EventTypeOAuthProviderInstalled,
 		EventTypeOAuthProviderRemoved,
+		EventTypeLLMProviderInstalled,
 	} {
 		events.RegisterEventType(t)
 	}
+}
+
+// LLMProviderSetPayload is the typed payload for the Protocol-installed
+// inference-provider install / rotate audit event. SafePayload — every field
+// is operator-visible audit metadata; NO URL, NO env-var name, NO secret is
+// ever carried (there is none on the zero-URL descriptor). The
+// inference-broker name is a non-secret boot reference.
+type LLMProviderSetPayload struct {
+	events.SafeSealed
+	// Author is the identity that performed the install / rotate.
+	Author identity.Quadruple
+	// AgentID is the agent whose installed inference-provider binding changed
+	// (a registration identity, NOT an isolation principal).
+	AgentID string
+	// ProviderName is the installed binding name.
+	ProviderName string
+	// Provider is the LLM provider the pulled key authenticates.
+	Provider string
+	// InferenceBroker is the boot-declared broker the binding references by
+	// name. NON-SECRET.
+	InferenceBroker string
+	// OccurredAt is the write instant.
+	OccurredAt time.Time
 }
 
 // ConfigRevisedPayload is the typed payload for EventTypeConfigRevised.

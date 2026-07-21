@@ -282,8 +282,12 @@ type OAuthProviderReconciler interface {
 	// agent-config service's ProviderInstaller so one concrete satisfies both).
 	InstallProvider(ctx context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) error
 	// UninstallProvider removes the named provider from the owner-tagged set and
-	// CLOSES it (used when a rollback past an install no longer declares it).
-	UninstallProvider(ctx context.Context, name string) error
+	// CLOSES it (used when a rollback past an install no longer declares it). The
+	// (tenant, agentID) pair is the reconciling owner; the set refuses a
+	// cross-owner drop at its own boundary (defense in depth). The shared shape
+	// with the agent-config service's ProviderInstaller lets one concrete satisfy
+	// both.
+	UninstallProvider(ctx context.Context, tenant, agentID, name string) error
 }
 
 // ReconcileOAuthProviders is the PROVIDER-RECONCILE leg of run-start
@@ -330,7 +334,7 @@ func ReconcileOAuthProviders(ctx context.Context, reg agentcfg.Registry, agentID
 		if _, stillDeclared := declared[name]; stillDeclared {
 			continue
 		}
-		if uerr := reconciler.UninstallProvider(ctx, name); uerr != nil {
+		if uerr := reconciler.UninstallProvider(ctx, owner.Tenant, owner.Agent, name); uerr != nil {
 			errs = append(errs, fmt.Errorf("uninstall provider %q: %w", name, uerr))
 			continue
 		}

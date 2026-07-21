@@ -230,15 +230,52 @@ type TaskGroupResolvedPayload struct {
 	Completion GroupCompletion
 }
 
-// TaskGroupCancelledPayload reports a CancelGroup transition (or a
-// FailFast cascade-cancel). Same `GroupCompletion` shape as
-// resolved, with `FinalStatus = GroupCancelled` and `Reason`
-// populated.
+// CancelOrigin classifies WHY a task group was cancelled. It is stamped
+// at the engine's group-cancel call site from that site's own
+// provenance — never inferred by a downstream consumer over projection
+// state. Its purpose is to let an operator-facing consumer distinguish a
+// cancel the operator drove themselves (which they already know about)
+// from an unprompted, runtime-initiated cancel (which is news worth
+// surfacing).
+type CancelOrigin string
+
+const (
+	// CancelOriginOperator marks a cancel the operator (or an agent
+	// acting on their behalf) drove directly through the group-cancel
+	// API. A conversational mirror suppresses it — the actor already
+	// knows they cancelled.
+	CancelOriginOperator CancelOrigin = "operator"
+
+	// CancelOriginCascade marks a cancel a group inherited from an
+	// ancestor cancellation propagating down. Unprompted from the
+	// operator's point of view — a conversational mirror surfaces it.
+	// No engine path produces this today: a cascade cancels descendant
+	// TASKS, and when a cascaded task is a group member the resulting
+	// group cancel is attributed to fail-fast; the value completes the
+	// human > agent > cascade taxonomy and is ready (with a fail-loud
+	// mapper fallback) for a future ancestor-cascade-to-group path.
+	CancelOriginCascade CancelOrigin = "cascade"
+
+	// CancelOriginFailFast marks a cancel the fail-fast gate triggered
+	// when a member of a fail-fast group failed. Unprompted from the
+	// operator's point of view — a conversational mirror surfaces it.
+	CancelOriginFailFast CancelOrigin = "failfast"
+)
+
+// TaskGroupCancelledPayload reports a group-cancel transition (a direct
+// cancel, a fail-fast gate firing, or an inherited cascade). Same
+// `GroupCompletion` shape as resolved, with `FinalStatus =
+// GroupCancelled` and `Reason` populated. `Origin` carries the typed
+// cancel classification so an operator-facing consumer can mirror an
+// unprompted cancel and suppress an operator-driven one; an empty
+// `Origin` on an older or hand-built event is treated as unclassified
+// (surfaced, never silently suppressed).
 //
 // SafePayload by construction.
 type TaskGroupCancelledPayload struct {
 	events.SafeSealed
 	Completion GroupCompletion
+	Origin     CancelOrigin
 }
 
 // TaskPatchAppliedPayload reports ApplyPatch(action=PatchAccept).

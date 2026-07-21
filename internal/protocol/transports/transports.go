@@ -207,6 +207,12 @@ type muxConfig struct {
 	// convention). Built only alongside governanceService. Production
 	// wiring supplies it so an admin can rotate the LLM provider key live.
 	governanceKeyRotate *governanceprotocol.KeyRotateService
+	// governancePostureWrite feeds the `POST /v1/governance/set_posture`
+	// route (the admin identity-tier policy WRITE surface). OPTIONAL: when
+	// unsupplied the route 501s (the partial-build convention). Built only
+	// alongside governanceService. Production wiring supplies it so an admin
+	// can replace the identity-tier policy table live (no redeploy).
+	governancePostureWrite *governanceprotocol.PostureWriteService
 	// stateHistoryBus + stateHistoryArtifacts feed the `state.history`
 	// windowed event-replay handler — the `POST /v1/state/history` route.
 	// Both are OPTIONAL in the mux config so existing call-sites compile
@@ -659,6 +665,22 @@ func WithGovernanceKeyRotate(s *governanceprotocol.KeyRotateService) Option {
 	}
 }
 
+// WithGovernancePostureWrite wires the set-posture service so the
+// `POST /v1/governance/set_posture` route is live (the admin identity-tier
+// policy WRITE surface — the write sibling of `governance.posture`).
+// OPTIONAL; built only alongside WithGovernanceService. A nil service leaves
+// the route returning 501. When supplied AND WithValidator is set, the route
+// inherits the same admin gate as the rest of `/v1/governance/*`
+// (auth.ScopeAdmin ONLY — a leaked read-only `console:fleet` token cannot
+// widen a budget).
+func WithGovernancePostureWrite(s *governanceprotocol.PostureWriteService) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.governancePostureWrite = s
+		}
+	}
+}
+
 // WithAgentConfigService wires the admin-scoped agent-config
 // control-plane handler into NewMux — the `POST /v1/agent_config/*`
 // routes (the versioned desired-state registry + skills control).
@@ -1008,6 +1030,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		govOpts := []stream.GovernanceOption{stream.WithGovernanceLogger(cfg.logger)}
 		if cfg.governanceKeyRotate != nil {
 			govOpts = append(govOpts, stream.WithGovernanceKeyRotate(cfg.governanceKeyRotate))
+		}
+		if cfg.governancePostureWrite != nil {
+			govOpts = append(govOpts, stream.WithGovernancePostureWrite(cfg.governancePostureWrite))
 		}
 		gh, err := stream.NewGovernanceHandler(cfg.governanceService, govOpts...)
 		if err != nil {

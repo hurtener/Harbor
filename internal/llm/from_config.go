@@ -63,6 +63,13 @@ func SnapshotFromConfig(cfg config.LLMConfig, art config.ArtifactsConfig) Config
 		CustomProviders:    customProvidersFromConfig(cfg.CustomProviders),
 		NetworkDefaults:    networkDefaultsFromConfig(cfg.NetworkDefaults),
 		DisableCorrections: disableCorrectionsFromConfig(cfg.Corrections),
+		// The inference-plane credential-source selector (the brokered-XOR-local
+		// decision): a "remote" primary skips boot env resolution and is seeded
+		// by the broker-pull source. The broker LIST itself
+		// (`InferenceBrokers`) is boundary-wired (the boot builds the
+		// InferenceKeySource + connects it), not a snapshot field.
+		CredentialSource: cfg.CredentialSource,
+		InferenceBroker:  cfg.InferenceBroker,
 	}
 }
 

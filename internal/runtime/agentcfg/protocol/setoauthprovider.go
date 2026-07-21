@@ -65,8 +65,10 @@ type ProviderInstaller interface {
 	// re-install by the same owner replaces (and closes) the prior instance.
 	InstallProvider(ctx context.Context, tenant, agentID string, desc agentcfg.OAuthProviderDescriptor) error
 	// UninstallProvider removes the named provider from the owner-tagged set and
-	// CLOSES it. A missing name is an idempotent no-op.
-	UninstallProvider(ctx context.Context, name string) error
+	// CLOSES it. The (tenant, agentID) pair is the caller's resolved owner; the
+	// set refuses a cross-owner drop at its own boundary (defense in depth). A
+	// missing name is an idempotent no-op.
+	UninstallProvider(ctx context.Context, tenant, agentID, name string) error
 }
 
 // Provider install/uninstall sentinel errors. The wire handler maps each onto a
@@ -163,7 +165,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 			}
 			revert = func() error {
 				var errs []error
-				if e := s.providerInstaller.UninstallProvider(ctx, desc.Name); e != nil {
+				if e := s.providerInstaller.UninstallProvider(ctx, id.TenantID, req.AgentID, desc.Name); e != nil {
 					errs = append(errs, e)
 				}
 				if hasActive {

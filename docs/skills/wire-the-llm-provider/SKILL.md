@@ -134,6 +134,35 @@ The Console's connection footer reflects the new model on the next Task run.
 
 Provider swap (e.g. OpenRouter → Anthropic direct) is the same flow — edit, save, watcher reloads. Bifrost handles the provider handshake internally.
 
+## 4b. Broker-pull the provider key (a coordinator custodies it)
+
+By default the provider key resolves from `api_key` (env / literal) once at boot — the **local** source. When a coordinator centrally custodies the key (mint / rotate / revoke, pulled per-runtime, never persisted), set the **broker-pull** source instead so a central rotate lands on the next call with no per-runtime env touch:
+
+```yaml
+llm:
+  provider: openai
+  model: gpt-4o
+  # api_key omitted — a brokered primary sources NO local key.
+  credential_source: remote          # "" / "local" (default) or "remote"
+  inference_broker: openai-broker     # names an inference_brokers[] entry below
+  inference_brokers:
+    - name: openai-broker
+      credential_url: https://coordinator.example.com/runtimes/self/provider-key
+      auth_token_env: HARBOR_COORDINATOR_TOKEN   # the runtime's OWN broker credential
+      # audience: openai            # optional boot-pinned ceiling
+      # scope_ceiling: [chat]       # optional boot-pinned ceiling
+      # cache_ttl: 5m               # in-memory serve horizon (default 5m)
+```
+
+Rules the boot validator enforces (all fail loud):
+
+- **Brokered XOR local.** A `remote` primary MUST name an `inference_brokers[]` entry AND leave `api_key` empty. Both set, or neither, is a config error.
+- **No URL or secret on the wire.** Every sink-determining value (`credential_url`, `auth_token_env`, audience, scope ceiling) lives on the boot-declared broker, referenced by non-secret NAME. The `agent_config.set_llm_provider` Protocol write (below) can only reference a broker by name — it can never carry a URL or an env-var name.
+- **Fail-loud, no stale key.** A broker unreachable at connect, or a failed refresh once the cache TTL is crossed, raises `ErrProviderKeyUnavailable`; the runtime NEVER falls back to a local key and NEVER serves a stale key. The pull happens at connect + refresh only — the inference hot path reads the cached key with no per-call broker round-trip.
+- **Harbor-orchestrated failover, not the SDK's.** When a coordinator supplies an ordered chain of broker-pulled provider keys/providers, Harbor walks that chain itself at the governance layer: on a *retryable* provider error it advances to the next key/provider, emits a `governance.failover` event (identity + cost + from/to provider), **re-runs the budget / rate-limit / MaxTokens check BEFORE re-issuing** (a trip fails loud and stops the walk — a chain can never spend past a run's per-identity ceiling across hops), and re-issues through the same client. Cross-provider chains are expressible; the fallback keys are broker-pulled and never persisted. Harbor deliberately does NOT hand the provider SDK its native `Fallbacks` array — that would hide every hop from audit + bus + cost. Observe the hops on the event stream (`governance.failover`).
+
+**Rotate / install over the Protocol.** An admin can bind (or rotate) a runtime's brokered provider without editing yaml via `agent_config.set_llm_provider` — a ZERO-URL, admin-only write carrying only `{name, provider, credential_source:"remote", inference_broker, model_allow?}`. A write carrying a `credential_url` / `token_url` / `*_env` / secret field is rejected by name at the wire edge; an unknown broker or a `console:fleet`-only (read) token is rejected loud. See the `use-the-harbor-protocol` skill for the request shape.
+
 ## 5. Timeouts + retries
 
 ```yaml

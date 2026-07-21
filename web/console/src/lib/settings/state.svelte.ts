@@ -26,6 +26,7 @@ import type {
 	AuthRotateTokenResponse
 } from '$lib/protocol/settings.js';
 import type { GovernanceTenantOverrides } from '$lib/protocol/governance.js';
+import type { IdentityTierView } from '$lib/protocol/settings.js';
 
 /** A page-friendly error projection. */
 export interface PageError {
@@ -399,5 +400,119 @@ export class TenantDefaultOverridesState {
 		if (this.maxTokens.trim() !== '') o.max_tokens = Number(this.maxTokens);
 		if (this.reasoningEffort.trim() !== '') o.reasoning_effort = this.reasoningEffort.trim();
 		return o;
+	}
+}
+
+/**
+ * GovernancePostureWriteState drives the admin identity-tier policy WRITE
+ * affordance (`governance.set_posture`) — the write sibling of the read-only
+ * `governance.posture` this page already renders (D-332). It writes the WHOLE
+ * tier table as a FULL REPLACE and, on success, RE-READS `governance.posture`
+ * rather than optimistically mirroring its own submission (the runtime stays
+ * the sole owner of the policy record — the page never holds a shadow copy;
+ * D-061).
+ *
+ * ADMIN-gated (auth.ScopeAdmin ONLY — explicitly NOT the read's `admin` OR
+ * `console:fleet` set): the form is rendered disabled when `hasAdminScope` is
+ * false; the runtime ALSO gates (a leaked `console:fleet` token fails closed
+ * with a 403 the error phase surfaces). A submitted table that omits or
+ * zeroes a currently-enforced ceiling is rejected fail-closed (400) — the
+ * runtime's validator is authoritative; the form surfaces that error.
+ *
+ * Built against `docs/design/console/CONVENTIONS.md` (D-121): the typed
+ * `HarborClient` is the single Protocol choke point (no hand-rolled fetch),
+ * and the four-state async contract (idle → editing → saving → ready/error)
+ * drives the affordance.
+ */
+export class GovernancePostureWriteState {
+	/** 'idle' | 'saving' | 'ready' | 'error'. */
+	phase = $state<'idle' | 'saving' | 'ready' | 'error'>('idle');
+	/** The bound default-tier assignment. */
+	defaultTier = $state('');
+	/** The bound identity-tiers table, edited as canonical JSON. */
+	tiersJSON = $state('{}');
+	/** A one-shot "saved" confirmation flag, cleared on the next edit. */
+	saved = $state(false);
+	/**
+	 * True when the last write persisted but the runtime booted fully latent
+	 * (no wrapper composed), so the policy won't enforce until restart.
+	 */
+	pendingRestart = $state(false);
+	error = $state<PageError | null>(null);
+	/** The re-read posture after a successful write (the runtime's truth). */
+	posture = $state<GovernancePostureResponse | null>(null);
+
+	/** True when the resolved connection carries the `admin` scope claim. */
+	get hasAdminScope(): boolean {
+		const conn = resolveConnection();
+		return conn !== null && conn.scopes.includes('admin');
+	}
+
+	/** True when the Console is attached to a Runtime. */
+	get connected(): boolean {
+		return resolveConnection() !== null;
+	}
+
+	/**
+	 * seed prefills the edit form from the current posture read the page
+	 * already holds, so an admin edits the live table rather than a blank one.
+	 */
+	seed(posture: GovernancePostureResponse | null): void {
+		this.posture = posture;
+		this.defaultTier = posture?.default_tier ?? '';
+		this.tiersJSON = JSON.stringify(posture?.identity_tiers ?? {}, null, 2);
+		this.phase = 'idle';
+		this.saved = false;
+		this.error = null;
+	}
+
+	/** markEdited clears the one-shot saved confirmation. */
+	markEdited(): void {
+		this.saved = false;
+	}
+
+	/**
+	 * save writes the form as the WHOLE identity-tier policy table (full
+	 * replace) via `governance.set_posture`, then RE-READS `governance.posture`
+	 * so the page reflects the runtime's persisted truth, never the submission.
+	 */
+	async save(): Promise<void> {
+		const client = buildClient();
+		if (client === null) {
+			this.phase = 'error';
+			this.error = { code: 'disconnected', message: 'Not attached to a Runtime.' };
+			return;
+		}
+		let tiers: Record<string, IdentityTierView>;
+		try {
+			tiers = JSON.parse(this.tiersJSON) as Record<string, IdentityTierView>;
+		} catch {
+			this.phase = 'error';
+			this.error = { code: 'invalid_request', message: 'Identity tiers is not valid JSON.' };
+			return;
+		}
+		this.phase = 'saving';
+		this.error = null;
+		this.saved = false;
+		this.pendingRestart = false;
+		try {
+			const resp = await client.governance.setPosture({
+				default_tier: this.defaultTier.trim(),
+				identity_tiers: tiers
+			});
+			// Honest signal: on a fully-latent runtime the write persisted but
+			// won't enforce until restart.
+			this.pendingRestart = resp.enforcement_pending_restart === true;
+			// Re-read the runtime's truth rather than mirroring the submission.
+			const fresh = await client.posture.governance<GovernancePostureResponse>();
+			this.posture = fresh;
+			this.defaultTier = fresh.default_tier ?? '';
+			this.tiersJSON = JSON.stringify(fresh.identity_tiers ?? {}, null, 2);
+			this.saved = true;
+			this.phase = 'ready';
+		} catch (e) {
+			this.error = describeError(e);
+			this.phase = 'error';
+		}
 	}
 }

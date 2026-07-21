@@ -237,16 +237,32 @@ describe('background-wake notification events', () => {
     run: undefined,
     payload: { summary: 'Task bg-9 failed (error_code=timeout)', taskid: 'bg-9' }
   };
+  // The conversational cancel-mirror class — only an unprompted
+  // (fail-fast / cascade) cancel reaches the Console (an operator-driven
+  // cancel is suppressed upstream at the notifications mapper).
+  const groupCancelled: Event = {
+    ...taskStarted,
+    type: 'notification.task_group_cancelled',
+    sequence: 73,
+    run: undefined,
+    payload: {
+      summary: 'Background group cancelled (fail-fast): 2 cancelled of 3, 1 failed',
+      groupid: 'gc-1'
+    }
+  };
 
   it('filters the notification.* family', () => {
-    const page = [taskCompleted, completed, groupResolved, failed];
-    expect(filterNotificationEvents(page)).toEqual([completed, groupResolved, failed]);
+    const page = [taskCompleted, completed, groupResolved, groupCancelled, failed];
+    expect(filterNotificationEvents(page)).toEqual([completed, groupResolved, groupCancelled, failed]);
   });
 
   it('reads the redacted lowercase Summary', () => {
     expect(notificationSummary(completed)).toBe('Background task bg-1 completed');
     expect(notificationSummary(groupResolved)).toBe(
       'Background group resolved: 2 of 3 succeeded, 1 failed'
+    );
+    expect(notificationSummary(groupCancelled)).toBe(
+      'Background group cancelled (fail-fast): 2 cancelled of 3, 1 failed'
     );
   });
 

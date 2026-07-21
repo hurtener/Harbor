@@ -449,7 +449,11 @@ func TestExecutor_ParallelCancel_NoCrossTalk(t *testing.T) {
 	t.Parallel()
 	cat := tools.NewCatalog()
 	registerEcho(t, cat, "fast")
-	blockEntered := make(chan struct{})
+	// Buffered so the tool body's non-blocking send latches even if the main
+	// goroutine has not yet parked on the receive — an unbuffered channel drops
+	// the edge-triggered signal through the `default:` branch under scheduler
+	// contention, stalling the test to its timeout (issue #480).
+	blockEntered := make(chan struct{}, 1)
 	if err := cat.Register(tools.ToolDescriptor{
 		Tool: tools.Tool{Name: "block"},
 		Invoke: func(ctx context.Context, _ json.RawMessage) (tools.ToolResult, error) {

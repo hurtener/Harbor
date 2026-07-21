@@ -354,6 +354,164 @@ func TestMap_TaskGroupResolved_WrongPayload_ErrUnmappable(t *testing.T) {
 	}
 }
 
+// groupCancelledEvent builds a task.group_cancelled trigger with the
+// given origin and a fixed mixed-outcome membership (one already
+// succeeded, one failed, one cancelled).
+func groupCancelledEvent(origin tasks.CancelOrigin) events.Event {
+	return events.Event{
+		Type:     tasks.EventTypeTaskGroupCancelled,
+		Identity: testQuadruple,
+		Sequence: 20,
+		Payload: tasks.TaskGroupCancelledPayload{Origin: origin, Completion: tasks.GroupCompletion{
+			GroupID:     "gc-1",
+			FinalStatus: tasks.GroupCancelled,
+			Reason:      "fail-fast:boom",
+			Members: []tasks.MemberOutcome{
+				{TaskID: "m-1", Status: tasks.StatusComplete, Description: "won"},
+				{TaskID: "m-2", Status: tasks.StatusFailed, Description: "lost"},
+				{TaskID: "m-3", Status: tasks.StatusCancelled, Description: "stopped"},
+			},
+		}},
+	}
+}
+
+// TestMap_TaskGroupCancelled_CascadeSynthesises proves an unprompted
+// cascade cancel is mirrored with the correct full-membership counts,
+// ref-shaped member summaries, and Warning severity.
+func TestMap_TaskGroupCancelled_CascadeSynthesises(t *testing.T) {
+	t.Parallel()
+	got, err := notifications.Map(context.Background(), groupCancelledEvent(tasks.CancelOriginCascade))
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1 (cascade cancel is mirrored)", len(got))
+	}
+	if got[0].Type != notifications.EventTypeNotificationTaskGroupCancelled {
+		t.Errorf("Type=%q, want notification.task_group_cancelled", got[0].Type)
+	}
+	payload := got[0].Payload.(notifications.NotificationPayload)
+	if payload.Severity != notifications.SeverityWarning {
+		t.Errorf("Severity=%q, want warning", payload.Severity)
+	}
+	if payload.GroupID != "gc-1" {
+		t.Errorf("GroupID=%q, want gc-1", payload.GroupID)
+	}
+	if payload.MemberSucceeded != 1 || payload.MemberFailed != 1 || payload.MemberCancelled != 1 {
+		t.Errorf("counts succeeded/failed/cancelled = %d/%d/%d, want 1/1/1",
+			payload.MemberSucceeded, payload.MemberFailed, payload.MemberCancelled)
+	}
+	if len(payload.Members) != 3 || payload.MembersTruncated {
+		t.Errorf("Members len=%d truncated=%v, want 3/false", len(payload.Members), payload.MembersTruncated)
+	}
+	if payload.Members[1].TaskID != "m-2" || payload.Members[1].Status != string(tasks.StatusFailed) {
+		t.Errorf("member[1]=%+v, want ref-shaped m-2/failed", payload.Members[1])
+	}
+	if !strings.Contains(payload.Summary, "cascade") || !strings.Contains(payload.Summary, "1 cancelled of 3") {
+		t.Errorf("Summary=%q must name the origin + rollup", payload.Summary)
+	}
+}
+
+// TestMap_TaskGroupCancelled_FailFastSynthesises proves a fail-fast
+// cancel is mirrored.
+func TestMap_TaskGroupCancelled_FailFastSynthesises(t *testing.T) {
+	t.Parallel()
+	got, err := notifications.Map(context.Background(), groupCancelledEvent(tasks.CancelOriginFailFast))
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1 (fail-fast cancel is mirrored)", len(got))
+	}
+	payload := got[0].Payload.(notifications.NotificationPayload)
+	if !strings.Contains(payload.Summary, "fail-fast") {
+		t.Errorf("Summary=%q must name the fail-fast origin", payload.Summary)
+	}
+}
+
+// TestMap_TaskGroupCancelled_OperatorSuppressed proves the settled
+// suppression rule: an operator-driven cancel produces NO notification
+// (the operator already knows), returning (nil, nil).
+func TestMap_TaskGroupCancelled_OperatorSuppressed(t *testing.T) {
+	t.Parallel()
+	got, err := notifications.Map(context.Background(), groupCancelledEvent(tasks.CancelOriginOperator))
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("got=%v, want nil (operator-driven cancel is suppressed)", got)
+	}
+}
+
+// TestMap_TaskGroupCancelled_UnknownOriginSynthesises proves the
+// fail-loud-not-swallow rule: an empty/unknown origin (an older or
+// hand-built event) is SURFACED, never silently dropped — the failure
+// mode is an extra notification, never a hidden one.
+func TestMap_TaskGroupCancelled_UnknownOriginSynthesises(t *testing.T) {
+	t.Parallel()
+	for _, origin := range []tasks.CancelOrigin{"", "some-future-origin"} {
+		got, err := notifications.Map(context.Background(), groupCancelledEvent(origin))
+		if err != nil {
+			t.Fatalf("origin=%q Map: %v", origin, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("origin=%q len=%d, want 1 (unclassified cancel is surfaced, not swallowed)", origin, len(got))
+		}
+		payload := got[0].Payload.(notifications.NotificationPayload)
+		if !strings.Contains(payload.Summary, "unspecified") {
+			t.Errorf("origin=%q Summary=%q must read as unspecified", origin, payload.Summary)
+		}
+	}
+}
+
+// TestMap_TaskGroupCancelled_CapsMembersAndSetsTruncated proves the
+// member cap + truncation flag hold on a large fail-fast batch (counts
+// still reflect full membership).
+func TestMap_TaskGroupCancelled_CapsMembersAndSetsTruncated(t *testing.T) {
+	t.Parallel()
+	members := make([]tasks.MemberOutcome, notifications.MaxMemberSummaries+7)
+	for i := range members {
+		members[i] = tasks.MemberOutcome{TaskID: tasks.TaskID(fmt.Sprintf("m-%d", i)), Status: tasks.StatusCancelled}
+	}
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskGroupCancelled,
+		Identity: testQuadruple,
+		Payload:  tasks.TaskGroupCancelledPayload{Origin: tasks.CancelOriginFailFast, Completion: tasks.GroupCompletion{GroupID: "gc-big", FinalStatus: tasks.GroupCancelled, Members: members}},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	payload := got[0].Payload.(notifications.NotificationPayload)
+	if len(payload.Members) != notifications.MaxMemberSummaries {
+		t.Errorf("Members len=%d, want cap %d", len(payload.Members), notifications.MaxMemberSummaries)
+	}
+	if !payload.MembersTruncated {
+		t.Error("MembersTruncated=false, want true (cap hit — never a silent drop)")
+	}
+	if payload.MemberCancelled != len(members) {
+		t.Errorf("MemberCancelled=%d, want %d (full membership)", payload.MemberCancelled, len(members))
+	}
+}
+
+// TestMap_TaskGroupCancelled_WrongPayload_ErrUnmappable proves the
+// mapper fails loud on a wrong payload type rather than degrading.
+func TestMap_TaskGroupCancelled_WrongPayload_ErrUnmappable(t *testing.T) {
+	t.Parallel()
+	ev := events.Event{
+		Type:     tasks.EventTypeTaskGroupCancelled,
+		Identity: testQuadruple,
+		Payload:  events.RedactedMap{Data: map[string]any{"completion": "x"}},
+	}
+	got, err := notifications.Map(context.Background(), ev)
+	if got != nil {
+		t.Errorf("got=%v, want nil", got)
+	}
+	if !errors.Is(err, notifications.ErrUnmappable) {
+		t.Fatalf("err=%v, want ErrUnmappable", err)
+	}
+}
+
 func TestMap_TaskCompleted_NotifyFalse_ReturnsNilNil(t *testing.T) {
 	t.Parallel()
 	ev := events.Event{
@@ -529,9 +687,21 @@ func TestMap_ConcurrentReuse(t *testing.T) {
 			}},
 		},
 		{
-			Type:     tasks.EventTypeTaskCompleted,
+			Type:     tasks.EventTypeTaskGroupCancelled,
 			Identity: testQuadruple,
 			Sequence: 7,
+			Payload: tasks.TaskGroupCancelledPayload{Origin: tasks.CancelOriginCascade, Completion: tasks.GroupCompletion{
+				GroupID:     "g-2",
+				FinalStatus: tasks.GroupCancelled,
+				Members: []tasks.MemberOutcome{
+					{TaskID: "m-1", Status: tasks.StatusCancelled, Description: "member one"},
+				},
+			}},
+		},
+		{
+			Type:     tasks.EventTypeTaskCompleted,
+			Identity: testQuadruple,
+			Sequence: 8,
 			Payload:  tasks.TaskCompletedPayload{TaskID: "t-done", NotifyOnComplete: true},
 		},
 	}
@@ -542,6 +712,7 @@ func TestMap_ConcurrentReuse(t *testing.T) {
 		notifications.EventTypeNotificationAuthRequired,
 		notifications.EventTypeNotificationPauseRequested,
 		notifications.EventTypeNotificationTaskGroupResolved,
+		notifications.EventTypeNotificationTaskGroupCancelled,
 		notifications.EventTypeNotificationTaskCompleted,
 	}
 
