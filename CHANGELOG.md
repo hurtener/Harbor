@@ -17,6 +17,24 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.17.1] — 2026-07-21
+
+Patch: fix runtime-added MCP connections on SDK-facade servers.
+
+### Fixed
+
+- **A compiled `sdk/server` agent could not accept a runtime-added MCP
+  connection.** The SDK facade exposes no knob for `MCPDefaultIdentity`, so it
+  was left empty; the runtime-add attacher then passed that empty triple to the
+  MCP provider, which rejected it at construction (`DefaultIdentity must be
+  fully populated`). Every runtime-added connection on such a server died before
+  dialing. `serve.Boot` now fills an unset `MCPDefaultIdentity` with the same
+  fully-populated `assemble.DefaultMCPIdentity` fallback the boot path already
+  applies to config-declared servers. The default only stamps transport-side
+  events; per-call isolation continues to ride the inflight caller identity, so
+  multi-isolation is unchanged. Agents launched via `harbor serve` / `harbor
+  dev` / the test devstack were unaffected (they set the identity explicitly).
+
 ## [1.17.0] — 2026-07-21
 
 The control-plane admin-write release. Harbor's admin/control plane gains
