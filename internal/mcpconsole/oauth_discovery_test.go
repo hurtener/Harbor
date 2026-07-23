@@ -43,7 +43,7 @@ func TestRegistryAccessor_ProbeTriggersDiscovery(t *testing.T) {
 	defer prServer.Close()
 
 	reg := mcp.NewRegistry()
-	if err := reg.Register(mcp.ServerRegistration{
+	if err := reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:                     &stubProvider{id: "auth-srv"},
 		Transport:                    "streamable-http",
 		URLOrCommand:                 prServer.URL,
@@ -97,7 +97,7 @@ func TestRegistryAccessor_ProbeTriggersDiscovery(t *testing.T) {
 // Without a wired discoverer, the probe path stays discovery-free.
 func TestRegistryAccessor_ProbeNoDiscoverer_NoRequirement(t *testing.T) {
 	reg := mcp.NewRegistry()
-	_ = reg.Register(mcp.ServerRegistration{
+	_ = reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:     &stubProvider{id: "plain"},
 		Transport:    "streamable-http",
 		URLOrCommand: "https://mcp.example.com",

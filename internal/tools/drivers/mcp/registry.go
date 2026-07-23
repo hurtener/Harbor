@@ -353,8 +353,16 @@ type ServerRegistration struct {
 }
 
 // Register adds a server to the Registry. Re-registering the same name
-// replaces the prior entry (the dev hot-reload path re-registers).
-func (r *Registry) Register(reg ServerRegistration) error {
+// replaces the prior entry (the dev hot-reload path and the runtime
+// re-attach path both re-register). A same-name replacement CLOSES the
+// prior provider's transport so the replaced session drains instead of
+// leaking: the entry is swapped under the write lock, then the displaced
+// provider's Close runs OUTSIDE the lock (a transport close can block on
+// session teardown and must not stall concurrent reads — mirroring
+// Deregister). When the replacement re-registers the very same provider
+// instance (an idempotent re-register of the live one), the close is
+// skipped so the just-registered transport is not torn down.
+func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 	if reg.Provider == nil {
 		return fmt.Errorf("mcp: Register requires a non-nil Provider")
 	}
@@ -374,7 +382,7 @@ func (r *Registry) Register(reg ServerRegistration) error {
 		st = ServerStateOffline
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	prior := r.servers[name]
 	r.servers[name] = &serverEntry{
 		provider:     reg.Provider,
 		transport:    reg.Transport,
@@ -392,6 +400,16 @@ func (r *Registry) Register(reg ServerRegistration) error {
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
 		},
+	}
+	r.mu.Unlock()
+	// Close the DISPLACED provider's transport outside the lock so a same-name
+	// replacement drains the old session instead of leaking it. Skip when the
+	// prior entry held the exact same provider (a no-op re-register must not
+	// close the transport we just re-registered).
+	if prior != nil && prior.provider != nil && prior.provider != reg.Provider {
+		if err := prior.provider.Close(ctx); err != nil {
+			return fmt.Errorf("mcp: Register %q: close replaced transport: %w", name, err)
+		}
 	}
 	return nil
 }

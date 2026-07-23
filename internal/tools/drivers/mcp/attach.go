@@ -213,6 +213,33 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if err != nil {
 		return fmt.Errorf("mcp.New: %w", err)
 	}
+	// Idempotent same-name replace at the live layer: when this connection
+	// name already has a live in-memory registration — a re-attach against a
+	// still-attached server whose deferred detach has not run yet — tear the
+	// old one down BEFORE dialing and registering the new connection: (1)
+	// deregister the old server's catalog tools (so the register step below
+	// does not collide on a duplicate `<name>_<tool>`), and (2) close the old
+	// transport via the registry deregister. The attach then proceeds as an
+	// atomic upsert. A FIRST attach with no prior registration is unaffected:
+	// DeregisterSource removes nothing (returns 0) and Deregister returns
+	// ErrServerNotFound, both swallowed — idempotent by construction. This
+	// runs inside the caller's serialise-the-whole-attach lock (the runtime
+	// attacher holds it for the whole Attach), so two concurrent same-name
+	// attaches cannot race the replace — no new lock. Once the old tools are
+	// deregistered a later Connect/Discover failure leaves the old set removed;
+	// that is intended (a re-attach the operator asked for supersedes the old
+	// registration).
+	if dc, ok := deps.Catalog.(tools.CatalogSourceDeregisterer); ok {
+		if removed := dc.DeregisterSource(tools.ToolSourceID(ms.Name)); removed > 0 && deps.Logger != nil {
+			deps.Logger.Info("mcp: replacing live same-name registration",
+				slog.String("name", ms.Name),
+				slog.Int("tools_deregistered", removed),
+			)
+		}
+	}
+	if deregErr := deps.Registry.Deregister(ctx, ms.Name); deregErr != nil && !errors.Is(deregErr, ErrServerNotFound) {
+		return fmt.Errorf("mcp attach %q: replace live registration: %w", ms.Name, deregErr)
+	}
 	if connectErr := provider.Connect(ctx); connectErr != nil {
 		_ = provider.Close(ctx)
 		return fmt.Errorf("provider.Connect: %w", connectErr)
@@ -239,7 +266,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if urlOrCommand == "" {
 		urlOrCommand = strings.Join(ms.Command, " ")
 	}
-	if regErr := deps.Registry.Register(ServerRegistration{
+	if regErr := deps.Registry.Register(ctx, ServerRegistration{
 		Provider:     provider,
 		Transport:    string(mode),
 		URLOrCommand: urlOrCommand,

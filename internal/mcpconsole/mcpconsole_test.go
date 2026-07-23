@@ -57,7 +57,7 @@ func TestRegistryAccessor_ListAndGet(t *testing.T) {
 	reg := mcp.NewRegistry(mcp.WithRegistryClock(func() time.Time {
 		return time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
 	}))
-	if err := reg.Register(mcp.ServerRegistration{
+	if err := reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:     &stubProvider{id: "srv-a"},
 		Transport:    "http+sse",
 		InitialState: mcp.ServerStateOnline,

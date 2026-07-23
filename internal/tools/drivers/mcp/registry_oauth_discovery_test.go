@@ -12,7 +12,7 @@ import (
 func newDiscoveryRegistry(t *testing.T) *Registry {
 	t.Helper()
 	r := NewRegistry()
-	if err := r.Register(ServerRegistration{
+	if err := r.Register(idCtx(t), ServerRegistration{
 		Provider:                     &stubProvider{id: "auth-server", toolNames: []string{"call"}},
 		Transport:                    "streamable-http",
 		URLOrCommand:                 "https://mcp.example.com/rpc",

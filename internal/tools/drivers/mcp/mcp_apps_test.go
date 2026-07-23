@@ -121,7 +121,7 @@ func TestProvider_ReadResource_FailsClosedOnMissingIdentity(t *testing.T) {
 func TestRegistry_ReadResource_EndToEnd(t *testing.T) {
 	p := newAppsProvider(t, "ui-doc")
 	r := NewRegistry()
-	if err := r.Register(ServerRegistration{
+	if err := r.Register(context.Background(), ServerRegistration{
 		Provider:     p,
 		Transport:    "inmemory",
 		InitialState: ServerStateOnline,
