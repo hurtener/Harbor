@@ -51,4 +51,22 @@ else
     fail "phase 142: TokenStore.Put referenced in driver production code: ${PROD_PUT_HITS}"
 fi
 
+# 4: the dev-only private-IP dial opt-in surfaces are recognized (D-338) —
+# a config field + a boot env, not a Protocol method, so this is a static
+# assertion that both surfaces and the fail-closed default are wired.
+assert_grep_present \
+    'allow_private_token_url' \
+    internal/config/config.go \
+    'phase 142: allow_private_token_url config field declared (D-338)'
+assert_grep_present \
+    'HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE' \
+    cmd/harbor/cmd_dev.go \
+    'phase 142: HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE boot env declared (D-338)'
+# The dial guard must thread the opt-in (isBlockedDialIP takes allowPrivate)
+# rather than hard-refusing unconditionally.
+assert_grep_present \
+    'func isBlockedDialIP\(ip net\.IP, allowPrivate bool\)' \
+    internal/tools/auth/drivers/tokenexchange/tokenexchange.go \
+    'phase 142: dial guard threads the allowPrivate opt-in (D-338)'
+
 smoke_summary

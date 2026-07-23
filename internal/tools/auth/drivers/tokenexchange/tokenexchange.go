@@ -214,6 +214,50 @@ func init() {
 	auth.MustRegister(DriverName, New)
 }
 
+// allowPrivateExchange records whether the runtime booted with the
+// dev-only escape hatch that permits the credential-bearing
+// token-exchange POST to dial a PRIVATE-range / link-local resolved
+// address — the standard containerized local-dev topology, where the
+// credential broker sits behind a private-IP TLS sidecar. It is written
+// exactly once at boot via RegisterAllowPrivateExchangeCaptured
+// (write-once-at-boot package state, the same posture as the driver
+// registry) and read-many by every provider constructed thereafter; the
+// atomic makes the write/read pair race-free. Default false: the
+// private-dial guard stays ARMED unless the operator explicitly opts in.
+// The flag NEVER relaxes the unspecified-address block, the loopback
+// carve-out, or the redirect refusal.
+var allowPrivateExchange atomic.Bool
+
+// RegisterAllowPrivateExchangeCaptured records that the runtime booted
+// with the dev-only private-IP token-exchange escape hatch. It is called
+// exactly once at boot from the SAME call site that prints the
+// `[DEV-ONLY PRIVATE-IP TOKEN EXCHANGE — DO NOT USE IN PRODUCTION]`
+// stderr banner, so the capture and the banner stay structurally
+// reciprocal — a future re-route of the dev-hatch path cannot flip the
+// dial relaxation without also emitting the banner. Calling it with
+// `true` relaxes the private / link-local / ULA branch of the dial guard
+// for providers that do not already opt in via their own config; `false`
+// (or never calling it — the zero value) leaves the guard armed. It is
+// dev-only, fail-closed, and boot-only; it is never Protocol-writable.
+func RegisterAllowPrivateExchangeCaptured(v bool) {
+	allowPrivateExchange.Store(v)
+}
+
+// allowPrivateExchangeCaptured reports whether the boot-captured
+// private-IP token-exchange escape hatch is active. Read at provider
+// construction to compute the per-provider effective private-dial
+// posture (the provider's own config flag OR this global boot env).
+func allowPrivateExchangeCaptured() bool {
+	return allowPrivateExchange.Load()
+}
+
+// resetAllowPrivateExchangeCapturedForTesting clears the captured flag.
+// Used only by package-internal tests that exercise both the captured
+// and uncaptured dial paths; the flag is otherwise write-once-at-boot.
+func resetAllowPrivateExchangeCapturedForTesting() {
+	allowPrivateExchange.Store(false)
+}
+
 // New constructs the `tokenexchange` driver's OAuthProvider for one
 // operator-config entry. Registered as the driver's auth.Factory; the
 // dev stack never calls it directly — auth.Resolve dispatches by name.
@@ -282,7 +326,25 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 	// shallow-copied and re-hardened (redirect refusal), never mutated in
 	// place, mirroring the credsource/remote precedent.
 	clientTimeout := 30 * time.Second
-	httpClient := hardenTokenExchangeClient(deps.HTTPClient, clientTimeout)
+	// Dev-only, fail-closed private-dial opt-in (default OFF). The
+	// effective posture is (this provider's boot-declared config flag) OR
+	// (the global boot env captured once at process start) — never a
+	// Protocol write, never derived from a discovered / wire descriptor.
+	// When true it relaxes ONLY the private / link-local / ULA branch of
+	// the dial guard for THIS provider's own boot-declared token_url POST;
+	// loopback, the unspecified-address block, and the redirect refusal
+	// stay armed.
+	//
+	// Blast radius of the two surfaces differs: the config flag is
+	// per-provider, but the boot env is a GLOBAL relaxation — it is read
+	// through allowPrivateExchangeCaptured() by EVERY provider constructed
+	// after boot (including a Protocol-installed broker-pull provider whose
+	// own config never opted in). That remains safe: each provider's
+	// hardened client dials ONLY that provider's own boot-declared
+	// token_url, so the env widens WHICH providers may reach a private
+	// address, never WHICH address any of them dials.
+	allowPrivate := cfg.AllowPrivateTokenURL || allowPrivateExchangeCaptured()
+	httpClient := hardenTokenExchangeClient(deps.HTTPClient, clientTimeout, allowPrivate)
 	clock := deps.Clock
 	if clock == nil {
 		clock = time.Now
@@ -342,8 +404,20 @@ var ErrPrivateDialRefused = errors.New("auth/tokenexchange: dial to a private/li
 // legitimate deployment. So loopback is allowed, mirroring the
 // credsource/remote loopback carve-out for its own bearer-carrying client.
 // The DNS-rebinding threat this guard defends is a hostname resolving into
-// the RFC1918 / link-local space, which stays refused.
-func hardenTokenExchangeClient(supplied *http.Client, timeout time.Duration) *http.Client {
+// the RFC1918 / link-local space, which stays refused by default.
+//
+// Dev-only private-dial opt-in (allowPrivate): default OFF, fail-closed,
+// boot-only, never Protocol-writable. When the operator explicitly enables
+// it — per provider via `allow_private_token_url`, or globally via the
+// captured boot env — this relaxes ONLY the private / link-local / ULA
+// branch of the dial guard, so the POST may reach a broker (or its TLS
+// sidecar) at a private-IP resolved address, the standard containerized
+// local-dev topology. It is inherently scoped to this provider's OWN
+// boot-declared token_url — the ONLY endpoint this client ever dials. It
+// does NOT relax the unspecified-address block (never a valid coordinator),
+// does NOT touch the loopback carve-out (still allowed), and does NOT touch
+// the redirect refusal (still absolute).
+func hardenTokenExchangeClient(supplied *http.Client, timeout time.Duration, allowPrivate bool) *http.Client {
 	if supplied != nil {
 		clone := *supplied
 		clone.CheckRedirect = refuseTokenEndpointRedirect
@@ -353,7 +427,9 @@ func hardenTokenExchangeClient(supplied *http.Client, timeout time.Duration) *ht
 	// Control runs AFTER DNS resolution with the resolved ip:port — the
 	// load-bearing backstop (mirrors discovery.go's post-resolution guard).
 	// A hostname that resolves into private / link-local space is refused
-	// here, fail-closed.
+	// here, fail-closed (unless the dev-only allowPrivate opt-in is set,
+	// which relaxes only the private/link-local/ULA branch — never the
+	// unspecified-address block).
 	dialer.Control = func(_, address string, _ syscall.RawConn) error {
 		host, _, splitErr := net.SplitHostPort(address)
 		if splitErr != nil {
@@ -363,7 +439,7 @@ func hardenTokenExchangeClient(supplied *http.Client, timeout time.Duration) *ht
 		if ip == nil {
 			return fmt.Errorf("%w: unresolved dial address %q", ErrPrivateDialRefused, address)
 		}
-		if isBlockedDialIP(ip) {
+		if isBlockedDialIP(ip, allowPrivate) {
 			return fmt.Errorf("%w: %s", ErrPrivateDialRefused, host)
 		}
 		return nil
@@ -386,16 +462,31 @@ func refuseTokenEndpointRedirect(_ *http.Request, _ []*http.Request) error {
 }
 
 // isBlockedDialIP reports whether ip is in a range the credential POST must
-// never reach: link-local, unique-local, RFC 1918 private, or the
-// unspecified address. Loopback is deliberately EXCLUDED (the boot-declared
-// broker on a localhost sidecar is a legitimate deployment — see
+// never reach. The unspecified address (0.0.0.0 / ::) is ALWAYS blocked —
+// it is never a valid coordinator and the dev-only opt-in below does not
+// relax it. Loopback is deliberately EXCLUDED (the boot-declared broker on
+// a localhost sidecar is a legitimate deployment — see
 // hardenTokenExchangeClient). The DNS-rebinding backstop this powers refuses
 // a hostname that resolves into the blocked space.
-func isBlockedDialIP(ip net.IP) bool {
+//
+// When allowPrivate is true — the dev-only, fail-closed, boot-only opt-in
+// (per-provider `allow_private_token_url` OR the captured boot env), scoped
+// to this provider's own boot-declared token_url — the link-local
+// (unicast+multicast), RFC 1918 private, and IPv6 ULA ranges are permitted
+// so the POST may reach a broker behind a private-IP TLS sidecar (the
+// containerized local-dev topology). The unspecified-address block stays
+// unconditional even then.
+func isBlockedDialIP(ip net.IP, allowPrivate bool) bool {
+	if ip.IsUnspecified() {
+		// Never a valid coordinator; blocked regardless of the opt-in.
+		return true
+	}
+	if allowPrivate {
+		return false
+	}
 	return ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
-		ip.IsPrivate() ||
-		ip.IsUnspecified()
+		ip.IsPrivate()
 }
 
 // intersectScopes returns the requested scopes that also appear in the

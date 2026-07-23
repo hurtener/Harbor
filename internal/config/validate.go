@@ -1571,6 +1571,16 @@ func (c *Config) validateTools() error {
 				return fieldError(prefix+".include_actor_token",
 					fmt.Sprintf("is meaningful only for driver \"tokenexchange\" (the RFC 8693 actor_token rides the token-exchange request), got driver %q", p.Driver))
 			}
+			// allow_private_token_url is a DEV-ONLY opt-in that relaxes the
+			// `tokenexchange` driver's private-dial guard on its exchange POST.
+			// It has meaning only for that driver (the interactive `oauth2`
+			// driver has no hardened exchange client to relax) — reject it on
+			// any other driver fail-loud rather than silently ignore. The bool
+			// itself needs no value validation.
+			if p.AllowPrivateTokenURL {
+				return fieldError(prefix+".allow_private_token_url",
+					fmt.Sprintf("is meaningful only for driver \"tokenexchange\" (it relaxes that driver's private-dial guard on the RFC-8693 exchange POST), got driver %q", p.Driver))
+			}
 		}
 		// Downstream-sink allow-list entries (the credential-plane
 		// invariant). Each entry must be a well-formed host[:port]

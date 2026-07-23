@@ -1032,6 +1032,22 @@ Operator-configured OAuth providers (D-095). Each entry needs `name`,
     set, the requested `scopes` are INTERSECTED against it — a requested
     scope outside the ceiling is dropped. Optional; empty preserves the
     legacy pass-through.
+  - `allow_private_token_url` — **DEV-ONLY, fail-closed opt-in** (D-338).
+    The credential-bearing exchange POST is hardened with a post-DNS dial
+    backstop that refuses private-range / link-local resolved addresses
+    (the DNS-rebinding defence). Set this `true` to permit a **private-IP**
+    `token_url` for THIS provider — the containerized local-dev topology
+    where the broker sits behind a private-IP TLS sidecar. It relaxes ONLY
+    the private / link-local / ULA branch; the unspecified address
+    (`0.0.0.0` / `::`) stays refused, loopback stays allowed, and the
+    token-endpoint redirect refusal is untouched. Default `false`;
+    boot-declared and config/file-only — never Protocol-writable. The
+    global `HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE=1` boot env is the equivalent
+    opt-in for all providers (effective = this flag OR that env); when it
+    fires, every boot prints a `[DEV-ONLY PRIVATE-IP TOKEN EXCHANGE — DO
+    NOT USE IN PRODUCTION]` stderr banner. Meaningful only for the
+    `tokenexchange` driver (rejected fail-loud on `oauth2`). **Do NOT
+    enable in production.**
 
 **Credential-sink allow-list — `allowed_downstream_hosts` (D-300).** Every
 provider a `tools.mcp_servers[]` connection binds MUST declare

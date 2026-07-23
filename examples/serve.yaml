@@ -76,6 +76,14 @@ state:
   # see examples/harbor.yaml for the dsn forms.
   driver: inmem
 
+# Note: unlike the mock-LLM hatch, `harbor serve` DOES honour the
+# dev-only HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE=1 escape hatch (it permits
+# the tokenexchange credential POST to dial a private-IP token_url — the
+# containerized broker-behind-a-sidecar dev topology). It relaxes a
+# DNS-rebinding dial guard, defaults off / fail-closed, and prints a
+# [DEV-ONLY PRIVATE-IP TOKEN EXCHANGE — DO NOT USE IN PRODUCTION] banner
+# on every boot when set. Do NOT enable in production.
+
 llm:
   # A real provider is mandatory — `harbor serve` does NOT honour the
   # HARBOR_DEV_ALLOW_MOCK escape hatch.

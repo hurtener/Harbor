@@ -95,6 +95,19 @@ type ProviderConfig struct {
 	// run's verified acting principal (`agent_id`, when present on ctx) as an
 	// RFC 8693 `actor_token`. Default false. Ignored by `oauth2`.
 	IncludeActorToken bool
+	// AllowPrivateTokenURL is the per-provider DEV-ONLY opt-in that permits
+	// the `tokenexchange` driver's credential-bearing exchange POST to dial a
+	// PRIVATE-range / link-local resolved address for THIS provider's own
+	// boot-declared `TokenURL` — the standard containerized local-dev
+	// topology, where the broker sits behind a private-IP TLS sidecar.
+	// Default false (the DNS-rebinding dial guard stays armed); it relaxes
+	// ONLY the private / link-local / ULA branch, never the
+	// unspecified-address block, the loopback carve-out, or the redirect
+	// refusal. Boot-declared and config/file-only — never Protocol-writable
+	// or wire-derived. The effective posture is this flag OR the global boot
+	// env; the global env is the alternative surface for the same opt-in.
+	// Ignored by the interactive `oauth2` driver.
+	AllowPrivateTokenURL bool
 }
 
 // FactoryDeps bundles the shared collaborators every OAuth provider
