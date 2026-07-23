@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	goruntime "runtime"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -29,11 +31,11 @@ import (
 // name. Wave-level seam: the attach path (internal/tools/drivers/mcp) meeting
 // the runtime add-connection glue (internal/runtime/serve).
 
-// reattachFixtureServer builds a streamable-HTTP MCP fixture with one echo
-// tool (discovered as `<name>_echo`). It is the reachable server the runtime
-// add-connection dials.
-func reattachFixtureServer(t *testing.T) *httptest.Server {
-	t.Helper()
+// reattachEchoMCPServer builds an MCP server exposing one echo tool (discovered
+// as `<name>_echo`). Callers wrap it in a streamable-HTTP httptest server and
+// own its lifecycle — the goroutine-baseline test closes the fixture BEFORE
+// asserting the baseline, so it cannot use a t.Cleanup-owned server.
+func reattachEchoMCPServer() *mcpsdk.Server {
 	srv := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "harbor-reattach-fixture", Version: "v0"}, nil)
 	mcpsdk.AddTool(srv,
 		&mcpsdk.Tool{
@@ -51,6 +53,15 @@ func reattachFixtureServer(t *testing.T) *httptest.Server {
 			return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: in.Text}}}, nil, nil
 		},
 	)
+	return srv
+}
+
+// reattachFixtureServer wraps the echo MCP server in a streamable-HTTP httptest
+// server whose Close is registered with t.Cleanup. Use it when the test does
+// not need to tear the fixture down before an assertion.
+func reattachFixtureServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := reattachEchoMCPServer()
 	hs := httptest.NewServer(mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return srv }, nil))
 	t.Cleanup(hs.Close)
 	return hs
@@ -102,7 +113,23 @@ func reattachIDCtx(t *testing.T) context.Context {
 // the duplicate tool name.
 func TestMCPConnectionAttacher_ReAttach_ReplacesLiveRegistration(t *testing.T) {
 	const name = "reattach"
-	fixture := reattachFixtureServer(t)
+
+	// Goroutine baseline captured BEFORE any fixture / transport exists, so the
+	// "no leak after a replace" assertion below is measured against a clean
+	// floor once the whole thing — attacher, replaced fake, surviving real
+	// transport, and the httptest fixture — is torn down.
+	base := goruntime.NumGoroutine()
+
+	mcpSrv := reattachEchoMCPServer()
+	fixture := httptest.NewServer(mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mcpSrv }, nil))
+	fixtureClosed := false
+	closeFixture := func() {
+		if !fixtureClosed {
+			fixtureClosed = true
+			fixture.Close()
+		}
+	}
+	t.Cleanup(closeFixture)
 
 	cat := tools.NewCatalog()
 	reg := mcpdrv.NewRegistry()
@@ -112,10 +139,14 @@ func TestMCPConnectionAttacher_ReAttach_ReplacesLiveRegistration(t *testing.T) {
 		identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}, nil, nil)
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 
-	// Pre-seed a still-LIVE same-name registration + its colliding catalog tool.
+	// Pre-seed a still-LIVE same-name registration + its colliding catalog tool,
+	// OWNED BY the re-attaching caller (owner = {tenant "t", agent "agent-1"} —
+	// the tuple the attacher stamps from the AttachRequest below), so the
+	// re-attach is a SAME-OWNER supersede.
+	callerOwner := toolauth.Owner{Tenant: "t", Agent: "agent-1"}
 	oldProv := &reattachFakeProvider{id: tools.ToolSourceID(name)}
 	if err := reg.Register(reattachIDCtx(t), mcpdrv.ServerRegistration{
-		Provider: oldProv, Transport: "stdio", InitialState: mcpdrv.ServerStateOnline,
+		Provider: oldProv, Transport: "stdio", InitialState: mcpdrv.ServerStateOnline, Owner: callerOwner,
 	}); err != nil {
 		t.Fatalf("pre-seed registry: %v", err)
 	}
@@ -163,6 +194,21 @@ func TestMCPConnectionAttacher_ReAttach_ReplacesLiveRegistration(t *testing.T) {
 	}
 	if len(servers) != 1 || servers[0].State != mcpdrv.ServerStateOnline || servers[0].ToolCount == 0 {
 		t.Fatalf("registry not in the post-upsert state: %+v", servers)
+	}
+
+	// Goroutine baseline restored after teardown — the replaced transport (the
+	// fake, no goroutines) plus the surviving real transport drain on Close, and
+	// the fixture server winds down on its own Close, with no leak (the
+	// acceptance criterion's "no leak after a replace").
+	_ = a.Close(context.Background())
+	closeFixture()
+	deadline := time.Now().Add(5 * time.Second)
+	for goruntime.NumGoroutine() > base+2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		goruntime.GC()
+	}
+	if leaked := goruntime.NumGoroutine() - base; leaked > 2 {
+		t.Errorf("goroutine leak after re-attach + Close: baseline=%d now=%d (leaked ~%d)", base, goruntime.NumGoroutine(), leaked)
 	}
 }
 

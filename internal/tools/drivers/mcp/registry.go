@@ -444,6 +444,24 @@ func (r *Registry) Deregister(ctx context.Context, name string) error {
 	return nil
 }
 
+// OwnerOf returns the (tenant, agent) owner tag of the named registration and
+// whether a registration by that name currently exists. It is the read the
+// same-name replace consults to keep an atomic upsert scoped to the caller's
+// OWN registration: a re-attach that supersedes a still-live connection is the
+// operator replacing their own, so tearing the old one down first is intended;
+// a same-name attach by a DIFFERENT owner must never tear down another owner's
+// live tools/transport. A boot-declared server carries the zero owner. The
+// returned owner is a value copy, safe to read without the registry lock.
+func (r *Registry) OwnerOf(name string) (auth.Owner, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.servers[name]
+	if !ok {
+		return auth.Owner{}, false
+	}
+	return e.owner, true
+}
+
 // SourceIDs returns the source ids of every currently-registered server —
 // boot-declared AND runtime-added, across every owner. It is the PROCESS-GLOBAL
 // enumeration (the deployment-shared attached set), NOT the owner-scoped

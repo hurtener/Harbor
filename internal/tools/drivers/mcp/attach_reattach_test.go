@@ -14,6 +14,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // attach_reattach_test.go — coverage for the live-layer idempotent MCP
@@ -121,13 +122,15 @@ func TestAttach_ReAttach_ReplacesLiveRegistration(t *testing.T) {
 	const name = "reattach"
 	cat := tools.NewCatalog()
 	reg := NewRegistry()
+	owner := auth.Owner{Tenant: "tenant-A", Agent: "agent-A"}
 
-	// Pre-seed a still-LIVE same-name registration: an old provider in the
-	// registry (its deferred detach has not run) plus its catalog tool under
-	// the exact name the new server discovers (reattach_echo). This reproduces
-	// the duplicate-tool-name collision the blind register loop hit.
+	// Pre-seed a still-LIVE same-name registration OWNED BY the re-attaching
+	// caller: an old provider in the registry (its deferred detach has not run)
+	// plus its catalog tool under the exact name the new server discovers
+	// (reattach_echo). This reproduces the duplicate-tool-name collision the
+	// blind register loop hit, for a same-owner supersede.
 	oldProv := &stubProvider{id: tools.ToolSourceID(name), toolNames: []string{"echo"}}
-	if err := reg.Register(idCtx(t), ServerRegistration{Provider: oldProv, Transport: "stdio", InitialState: ServerStateOnline}); err != nil {
+	if err := reg.Register(idCtx(t), ServerRegistration{Provider: oldProv, Transport: "stdio", InitialState: ServerStateOnline, Owner: owner}); err != nil {
 		t.Fatalf("pre-seed registry: %v", err)
 	}
 	if err := cat.Register(tools.ToolDescriptor{
@@ -157,6 +160,7 @@ func TestAttach_ReAttach_ReplacesLiveRegistration(t *testing.T) {
 		Bus:             newTestBus(t),
 		DefaultIdentity: defaultIdentity(),
 		Closers:         &closers,
+		Owner:           owner,
 	}); err != nil {
 		t.Fatalf("re-attach must succeed (idempotent upsert), got: %v", err)
 	}
@@ -194,6 +198,87 @@ func TestAttach_ReAttach_ReplacesLiveRegistration(t *testing.T) {
 	}
 	if servers[0].State != ServerStateOnline || servers[0].ToolCount == 0 {
 		t.Fatalf("re-attached server not online with tools: %+v", servers[0])
+	}
+}
+
+// TestAttach_ReAttach_CrossOwner_RejectedPreservesLiveRegistration is the
+// multi-isolation gate: a same-name attach by a DIFFERENT owner must NOT tear
+// down the live owner's tools/transport. Owner A has a live "github"
+// registration; owner B's same-name attach is rejected loud
+// (ErrConnectionNameOwnerConflict) and A's transport stays open, A's tool stays
+// resolvable, A's registration stays put.
+//
+// MUTATION: drop the `priorOwner != deps.Owner` reject in attach.go (make the
+// replace owner-blind) and this fails — B evicts A (A's transport closes, A's
+// tool is deregistered).
+func TestAttach_ReAttach_CrossOwner_RejectedPreservesLiveRegistration(t *testing.T) {
+	const name = "github"
+	cat := tools.NewCatalog()
+	reg := NewRegistry()
+	ownerA := auth.Owner{Tenant: "tenant-A", Agent: "agent-A"}
+	ownerB := auth.Owner{Tenant: "tenant-B", Agent: "agent-B"}
+
+	// Owner A's still-live registration + its catalog tool.
+	provA := &stubProvider{id: tools.ToolSourceID(name), toolNames: []string{"echo"}}
+	if err := reg.Register(idCtx(t), ServerRegistration{Provider: provA, Transport: "stdio", InitialState: ServerStateOnline, Owner: ownerA}); err != nil {
+		t.Fatalf("pre-seed owner A registry: %v", err)
+	}
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{
+			Name:      name + "_echo",
+			Transport: tools.TransportInProcess,
+			Source:    tools.ToolSourceID(name),
+		},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("pre-seed owner A catalog: %v", err)
+	}
+
+	// Owner B attaches the SAME name. The owner check fires BEFORE Connect, so
+	// the URL never needs to be reachable — the reject is synchronous.
+	closers := []func(context.Context) error{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := Attach(ctx, config.MCPServerConfig{
+		Name:          name,
+		TransportMode: string(TransportStreamableHTTP),
+		URL:           "http://127.0.0.1:1/mcp", // never dialled — rejected first
+	}, AttachDeps{
+		Catalog:         cat,
+		Registry:        reg,
+		Bus:             newTestBus(t),
+		DefaultIdentity: defaultIdentity(),
+		Closers:         &closers,
+		Owner:           ownerB,
+	})
+	if !errors.Is(err, ErrConnectionNameOwnerConflict) {
+		t.Fatalf("cross-owner same-name attach must be rejected with ErrConnectionNameOwnerConflict, got: %v", err)
+	}
+
+	// Owner A's transport was NOT closed (no cross-owner eviction).
+	provA.mu.Lock()
+	aClosed := provA.closed
+	provA.mu.Unlock()
+	if aClosed != 0 {
+		t.Fatalf("owner A's transport was closed %d times by a cross-owner attach (eviction/DoS!), want 0", aClosed)
+	}
+	// Owner A's tool is still resolvable (still the in-process placeholder).
+	d, ok := cat.Resolve(name + "_echo")
+	if !ok {
+		t.Fatal("owner A's tool was evicted from the catalog by a cross-owner attach")
+	}
+	if d.Tool.Transport != tools.TransportInProcess {
+		t.Fatalf("owner A's tool was replaced by a cross-owner attach: transport=%q", d.Tool.Transport)
+	}
+	// Owner A's registration stays put, still owned by A.
+	if got, exists := reg.OwnerOf(name); !exists || got != ownerA {
+		t.Fatalf("owner A's registration was disturbed: exists=%v owner=%+v", exists, got)
+	}
+	// No closer was left behind (the reject happened before Connect).
+	if len(closers) != 0 {
+		t.Fatalf("a cross-owner reject must not leave a closer, got %d", len(closers))
 	}
 }
 
@@ -241,12 +326,14 @@ func TestAttach_FirstAttach_NoPrior_Unaffected(t *testing.T) {
 }
 
 // TestReAttach_ConcurrentReuse is the D-025 concurrent-reuse gate: N≥100
-// interleaved same-name attach/re-attach against ONE shared Registry + Catalog,
-// serialised by a mutex that mirrors the production attacher's
-// serialise-the-whole-attach lock (mcpdrv.Attach itself takes no transport-free
-// injection point, so this exercises the exact live-layer legs the attach path
-// runs — DeregisterSource → Registry.Deregister → Registry.Register — with
-// deterministic close accounting the real-transport path cannot give).
+// interleaved same-owner same-name attach/re-attach against ONE shared Registry
+// + Catalog, serialised by a mutex that mirrors the production attacher's
+// serialise-the-whole-attach lock. mcpdrv.Attach constructs a real transport
+// internally, so this test drives the same-owner replace LEGS it runs — the
+// teardown pair (DeregisterSource + Registry.Deregister) followed by the
+// register pair (catalog tool + Registry.Register), in that production order —
+// against stubs, giving deterministic close accounting the real-transport path
+// cannot. It is a mirror of those legs, not the attach code path itself.
 //
 // Guarantees asserted under -race: no data race; no duplicate-registration
 // error (the replace makes every same-name register a clean upsert); no leaked
@@ -277,14 +364,15 @@ func TestReAttach_ConcurrentReuse(t *testing.T) {
 	replace := func(ctx context.Context, p *stubProvider) error {
 		attachMu.Lock()
 		defer attachMu.Unlock()
-		// Leg 1: deregister the old server's catalog tools (idempotent — 0 on
-		// a first attach). Leg 2: deregister + close the old transport (swallow
-		// ErrServerNotFound). Leg 3: register the new connection.
+		// Teardown pair FIRST (production order): deregister the old server's
+		// catalog tools (idempotent — 0 on a first attach) then deregister +
+		// close the old transport (swallow ErrServerNotFound).
 		dereg.DeregisterSource(tools.ToolSourceID(name))
-		// Register the new provider's tool BEFORE the registry register so the
-		// catalog carries the live source's descriptor (mirrors Attach's
-		// discover→register loop). Duplicate-name would surface here if the
-		// deregister leg were dropped.
+		if derr := reg.Deregister(ctx, name); derr != nil && !errors.Is(derr, ErrServerNotFound) {
+			return derr
+		}
+		// Register pair: the new source's catalog tool, then the new provider.
+		// A dropped teardown leg would surface here as a duplicate-tool-name.
 		if err := cat.Register(tools.ToolDescriptor{
 			Tool: tools.Tool{
 				Name:      name + "_echo",
@@ -296,9 +384,6 @@ func TestReAttach_ConcurrentReuse(t *testing.T) {
 			},
 		}); err != nil {
 			return err
-		}
-		if derr := reg.Deregister(ctx, name); derr != nil && !errors.Is(derr, ErrServerNotFound) {
-			return derr
 		}
 		return reg.Register(ctx, ServerRegistration{Provider: p, Transport: "stdio", InitialState: ServerStateOnline})
 	}
