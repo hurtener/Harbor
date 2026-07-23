@@ -32,6 +32,19 @@
 # The escape hatch prints a stderr banner [DEV-ONLY MOCK LLM — DO
 # NOT USE IN PRODUCTION] on every boot. The default path with no
 # flag set demands a real provider.
+#
+# A second dev-only escape hatch permits the tokenexchange credential
+# POST to dial a PRIVATE-range / link-local token_url (a broker behind
+# a private-IP TLS sidecar — the containerized local-dev topology):
+#
+#   HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE=1 harbor dev
+#
+# It RELAXES a load-bearing DNS-rebinding dial guard (default off /
+# fail-closed) and prints a [DEV-ONLY PRIVATE-IP TOKEN EXCHANGE — DO
+# NOT USE IN PRODUCTION] stderr banner on every boot when set. The
+# per-provider allow_private_token_url flag (see oauth_providers below)
+# is the equivalent opt-in for a single provider; effective = flag OR
+# env. Do NOT enable in production.
 
 server:
   bind_addr: 127.0.0.1:8080
@@ -391,6 +404,18 @@ tools:
   #     # D-300 ceilings (optional hardening; boot-declared, never wire-derived):
   #     audience: https://graph.microsoft.com   # authority for the exchanged token's audience
   #     scope_ceiling: ["Mail.Read", "Calendars.Read"]  # requested scopes intersected against this
+  #     # DEV-ONLY: permit the credential-bearing exchange POST to dial a
+  #     # PRIVATE-range / link-local token_url (a broker behind a private-IP
+  #     # TLS sidecar — the containerized local-dev topology). This RELAXES a
+  #     # load-bearing DNS-rebinding dial guard: default false / fail-closed,
+  #     # scoped to THIS provider's token_url only, never Protocol-writable.
+  #     # It relaxes ONLY the private/link-local/ULA branch — loopback stays
+  #     # allowed, the unspecified address (0.0.0.0/::) and the redirect
+  #     # refusal stay armed. Do NOT enable in production. The global boot env
+  #     # HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE=1 is the equivalent opt-in for all
+  #     # providers (effective = this flag OR that env); when it fires, every
+  #     # boot prints a [DEV-ONLY PRIVATE-IP TOKEN EXCHANGE …] stderr banner.
+  #     allow_private_token_url: true   # DEV-ONLY; default false
   #     extra:
   #       cache_ttl_cap: 5m
   #

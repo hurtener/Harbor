@@ -106,6 +106,7 @@ func BuildProviders(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps)
 			ScopeCeiling:           append([]string(nil), p.ScopeCeiling...),
 			ResourceIndicator:      p.ResourceIndicator,
 			IncludeActorToken:      p.IncludeActorToken,
+			AllowPrivateTokenURL:   p.AllowPrivateTokenURL,
 		}
 		prov, err := Resolve(ctx, p.Driver, pcfg, factoryDeps)
 		if err != nil {

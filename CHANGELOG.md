@@ -17,6 +17,36 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.17.3] — 2026-07-23
+
+Patch: dev-only, fail-closed opt-in to permit a private-IP `tokenexchange` dial.
+
+### Added
+
+- **Dev-only opt-in to reach a private-IP credential broker.** The
+  `tokenexchange` credential-bearing RFC-8693 exchange POST is hardened with a
+  post-DNS dial backstop that refuses private-range / link-local resolved
+  addresses (the DNS-rebinding defence). That backstop also refused the ordinary
+  containerized local-dev topology — a coordinator behind a **private-IP** TLS
+  sidecar whose operator-declared `token_url` resolves into RFC 1918 space. A new
+  **fail-closed, boot-only** opt-in relaxes ONLY the private / link-local / ULA
+  branch of the guard, scoped to that provider's own boot-declared `token_url`:
+  the per-provider `tools.oauth_providers[].allow_private_token_url` config flag,
+  or the global `HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE=1` boot env (effective posture
+  is the OR of the two, default off). When the env hatch fires, every boot prints
+  a `[DEV-ONLY PRIVATE-IP TOKEN EXCHANGE — DO NOT USE IN PRODUCTION]` stderr
+  banner. It is never Protocol-writable or derived from a discovered / wire
+  descriptor.
+
+### Changed
+
+- **Production posture is unchanged.** The dial backstop stays default-armed; the
+  opt-in is off unless an operator explicitly sets the config flag or the banner'd
+  env. The unspecified-address block (`0.0.0.0` / `::`) stays refused
+  unconditionally, the loopback carve-out stays allowed, and the token-endpoint
+  redirect refusal (the credential-form-replay defence) stays absolute — none of
+  them are touched by the opt-in (see D-300, D-338).
+
 ## [1.17.2] — 2026-07-21
 
 Patch: fix `tool_search` output validation when a discovered tool has no tags.

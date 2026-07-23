@@ -45,6 +45,13 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/llm"
+	// Token-exchange OAuth driver — imported (dev-only gated, §13
+	// carve-out for `cmd/harbor`) to call its boot-capture setter for the
+	// `HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE` escape hatch, exactly as the
+	// llm mock-mode capture is called below. The driver's registration
+	// still rides the prod aggregator's blank import; this named import
+	// is solely for the reciprocal banner+capture at boot.
+	"github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
 
 	// Mock LLM driver — deterministic test-grade. Blank-
 	// imported here so its init() seats the registration in the
@@ -88,4 +95,34 @@ func registerMockIfDevAllowMock(allowMock bool, stderr interface{ Write(p []byte
 		return
 	}
 	_, _ = fmt.Fprintln(stderr, MockBanner)
+}
+
+// registerAllowPrivateExchangeIfDev is the reciprocal banner+capture for
+// the dev-only `HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE` escape hatch — the
+// exact shape of registerMockIfDevAllowMock. When `allow` is true it
+// permits the `tokenexchange` credential-bearing exchange POST to dial a
+// private-range / link-local resolved address (a broker behind a
+// private-IP TLS sidecar — the containerized local-dev topology).
+//
+// It captures the boot flag UNCONDITIONALLY (`false` is the honest
+// non-dev boot state) via tokenexchange.RegisterAllowPrivateExchangeCaptured
+// AND prints the [DEV-ONLY PRIVATE-IP TOKEN EXCHANGE …] stderr banner at
+// the SAME call site when the hatch fired — keeping the capture and the
+// banner structurally reciprocal (a future re-route of the dev-hatch path
+// cannot relax the dial guard without also emitting the banner). The
+// opt-in relaxes ONLY the private / link-local / ULA dial branch; the
+// redirect refusal, the loopback carve-out, and the unspecified-address
+// block are unaffected. Never Protocol-writable.
+func registerAllowPrivateExchangeIfDev(allow bool, stderr interface{ Write(p []byte) (int, error) }) {
+	// capture the dev private-dial boot flag for the tokenexchange driver.
+	// Called unconditionally — `false` is the honest non-dev boot state.
+	tokenexchange.RegisterAllowPrivateExchangeCaptured(allow)
+
+	if !allow {
+		return
+	}
+	if stderr == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(stderr, PrivateExchangeBanner)
 }

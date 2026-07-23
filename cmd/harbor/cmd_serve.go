@@ -172,6 +172,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Dev-only private-IP token-exchange escape hatch. `harbor serve` is the
+	// production boot path and does NOT compose the mock-LLM hatch, but the
+	// private-dial opt-in must be reachable here too: the containerized
+	// broker-behind-a-private-IP-sidecar topology is exactly the local-dev
+	// serve deployment. Captured unconditionally (`false` is the honest
+	// non-dev state) and banner'd when the env fired — reciprocal, never
+	// Protocol-writable. The per-provider `allow_private_token_url` config
+	// flag is the other surface for the same opt-in.
+	registerAllowPrivateExchangeIfDev(os.Getenv(EnvDevAllowPrivateExchange) == "1", logSink)
+
 	stack, err := serve.Boot(ctx, serve.Options{
 		ConfigPath:      cfgPath,
 		Port:            port,
