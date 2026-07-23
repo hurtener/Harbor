@@ -213,6 +213,44 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if err != nil {
 		return fmt.Errorf("mcp.New: %w", err)
 	}
+	// Idempotent same-name replace at the live layer — SAME-OWNER ONLY. When
+	// this connection name already has a live in-memory registration owned by
+	// the SAME (tenant, agent) — a re-attach against a still-attached server
+	// whose deferred detach has not run yet — tear the old one down BEFORE
+	// dialing and registering the new connection: (1) deregister the old
+	// server's catalog tools (so the register step below does not collide on a
+	// duplicate `<name>_<tool>`), and (2) close the old transport via the
+	// registry deregister. The attach then proceeds as an atomic upsert. The
+	// teardown-first supersede is deliberate but confined to the caller
+	// replacing THEIR OWN connection (the operator asked to replace it): a
+	// same-name registration owned by a DIFFERENT owner is NEVER torn down —
+	// that would evict another tenant's live tools/transport — it is rejected
+	// loud instead (the registry is process-global bare-name but owner-tagged,
+	// and the run-start reconcile is likewise owner-scoped). A FIRST attach
+	// with no prior registration is unaffected: the deregister legs no-op
+	// (DeregisterSource removes 0; Deregister returns ErrServerNotFound), both
+	// swallowed — idempotent by construction. This runs inside the caller's
+	// serialise-the-whole-attach lock (the runtime attacher holds it for the
+	// whole Attach), so two concurrent same-name attaches cannot race the
+	// replace — no new lock. Once the old tools are deregistered a later
+	// Connect/Discover failure leaves the old set removed; that is intended for
+	// a same-owner re-attach the operator asked for.
+	if priorOwner, priorExists := deps.Registry.OwnerOf(ms.Name); priorExists {
+		if priorOwner != deps.Owner {
+			return fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, ms.Name)
+		}
+		if dc, ok := deps.Catalog.(tools.CatalogSourceDeregisterer); ok {
+			if removed := dc.DeregisterSource(tools.ToolSourceID(ms.Name)); removed > 0 && deps.Logger != nil {
+				deps.Logger.Info("mcp: replacing live same-name registration",
+					slog.String("name", ms.Name),
+					slog.Int("tools_deregistered", removed),
+				)
+			}
+		}
+		if deregErr := deps.Registry.Deregister(ctx, ms.Name); deregErr != nil && !errors.Is(deregErr, ErrServerNotFound) {
+			return fmt.Errorf("mcp attach %q: replace live registration: %w", ms.Name, deregErr)
+		}
+	}
 	if connectErr := provider.Connect(ctx); connectErr != nil {
 		_ = provider.Close(ctx)
 		return fmt.Errorf("provider.Connect: %w", connectErr)
@@ -239,7 +277,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if urlOrCommand == "" {
 		urlOrCommand = strings.Join(ms.Command, " ")
 	}
-	if regErr := deps.Registry.Register(ServerRegistration{
+	if regErr := deps.Registry.Register(ctx, ServerRegistration{
 		Provider:     provider,
 		Transport:    string(mode),
 		URLOrCommand: urlOrCommand,
@@ -345,6 +383,13 @@ func toolPolicyFromProjected(p config.ProjectedToolPolicy) tools.ToolPolicy {
 		RetryOn:     retryOn,
 	}
 }
+
+// ErrConnectionNameOwnerConflict — a same-name attach collided with a live
+// registration owned by a DIFFERENT (tenant, agent). The idempotent same-name
+// replace is scoped to the caller's OWN registration, so a cross-owner
+// collision is rejected loud rather than tearing down another owner's live
+// tools and transport. Callers compare with errors.Is.
+var ErrConnectionNameOwnerConflict = errors.New("mcp: connection name already registered to a different owner")
 
 // ErrOAuthBinding — a connection's `oauth_provider` binding is invalid: it
 // names an unregistered provider, sits on a stdio transport, or conflicts

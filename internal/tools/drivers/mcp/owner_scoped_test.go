@@ -35,7 +35,7 @@ func ownerB() auth.Owner { return auth.Owner{Tenant: "tenant-b", Agent: "agent-b
 // owner marks a boot-declared (untagged) server.
 func registerServer(t *testing.T, r *Registry, name string, owner auth.Owner) {
 	t.Helper()
-	if err := r.Register(ServerRegistration{
+	if err := r.Register(context.Background(), ServerRegistration{
 		Provider:     &stubProvider{id: tools.ToolSourceID(name), toolNames: []string{"do"}},
 		Transport:    "stdio",
 		URLOrCommand: "/usr/bin/" + name,

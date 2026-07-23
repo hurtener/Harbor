@@ -66,7 +66,7 @@ func TestLive_ToolContext_RealServerRoundTrip(t *testing.T) {
 	t.Cleanup(func() { _ = p.Close(context.Background()) })
 
 	reg := mcp.NewRegistry()
-	if err := reg.Register(mcp.ServerRegistration{
+	if err := reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider: p, Transport: "stdio", InitialState: mcp.ServerStateOnline,
 	}); err != nil {
 		t.Fatalf("Register: %v", err)

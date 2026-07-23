@@ -181,7 +181,7 @@ func ownerB167() ownerCfg {
 // under one identity and read under many sessions.
 func seedBootServer(t *testing.T, h *ownerHarness) {
 	t.Helper()
-	if err := h.mcpReg.Register(mcpdrv.ServerRegistration{
+	if err := h.mcpReg.Register(context.Background(), mcpdrv.ServerRegistration{
 		Provider:     &bootStubProvider{id: "boot-srv"},
 		Transport:    "stdio",
 		URLOrCommand: "/usr/bin/boot-srv",

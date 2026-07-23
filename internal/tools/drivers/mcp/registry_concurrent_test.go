@@ -38,7 +38,7 @@ func TestRegistry_ListServers_ConcurrentReuse(t *testing.T) {
 	// "srv-007".
 	for i := range n {
 		name := fmt.Sprintf("srv-%03d", i)
-		if err := r.Register(ServerRegistration{
+		if err := r.Register(context.Background(), ServerRegistration{
 			Provider:     &stubProvider{id: tools.ToolSourceID(name), toolNames: []string{"t"}},
 			Transport:    "http+sse",
 			InitialState: ServerStateOnline,
