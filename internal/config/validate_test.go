@@ -1662,6 +1662,28 @@ func TestValidateTools_OAuthBrokerLegs(t *testing.T) {
 			wantSub: "include_actor_token",
 		},
 		{
+			name: "allow_private_token_url on tokenexchange passes",
+			mutate: func(c *config.Config) {
+				p := txProvider()
+				p.AllowPrivateTokenURL = true
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{p}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantOK: true,
+		},
+		{
+			name: "allow_private_token_url on oauth2 rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{{
+					Name: "gh", Driver: "oauth2",
+					ClientIDEnv: "GH_ID", ClientSecretEnv: "GH_SECRET",
+					AllowPrivateTokenURL: true,
+				}}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "allow_private_token_url",
+		},
+		{
 			name: "tool_oauth_providers referencing declared provider passes",
 			mutate: func(c *config.Config) {
 				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{txProvider()}

@@ -1280,6 +1280,25 @@ type ToolOAuthProviderConfig struct {
 	// disable caching pressure by narrowing the token TTL rather than
 	// expecting per-actor cache separation here.
 	IncludeActorToken bool `yaml:"include_actor_token,omitempty"`
+
+	// AllowPrivateTokenURL is a DEV-ONLY opt-in that permits the
+	// `tokenexchange` driver's credential-bearing exchange POST to dial a
+	// PRIVATE-range / link-local resolved address for THIS provider's own
+	// `token_url` — the standard containerized local-dev topology, where the
+	// broker (a coordinator) sits behind a private-IP TLS sidecar. It
+	// RELAXES a load-bearing DNS-rebinding dial guard, so it is default
+	// false / fail-closed: with it unset the guard refuses any resolved
+	// private / link-local / ULA address. When set it relaxes ONLY that
+	// branch, scoped to this provider's own boot-declared `token_url`; the
+	// unspecified-address (0.0.0.0 / ::) block, the loopback carve-out
+	// (loopback stays allowed either way), and the redirect refusal are
+	// UNCHANGED. Boot-declared and config/file-only — never Protocol-writable
+	// or derived from a discovered / wire descriptor. The same opt-in is
+	// also available globally via the `HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE`
+	// boot env; the effective posture is this flag OR that env. Ignored by
+	// the interactive `oauth2` driver. Restart-required. Do NOT enable in
+	// production.
+	AllowPrivateTokenURL bool `yaml:"allow_private_token_url,omitempty"`
 }
 
 // ToolOAuthCredentialBrokerConfig declares one NAMED, boot-declared

@@ -184,6 +184,9 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 	// The mock-LLM escape hatch is dev policy: print the banner + capture the
 	// posture flag (the embedded zero-config default flips allowMock=true).
 	registerMockIfDevAllowMock(allowMock, cmd.ErrOrStderr())
+	// Dev-only private-IP token-exchange escape hatch — reciprocal capture +
+	// banner, mirroring the mock hatch above.
+	registerAllowPrivateExchangeIfDev(os.Getenv(EnvDevAllowPrivateExchange) == "1", cmd.ErrOrStderr())
 
 	comp, err := newDevComposition(devCompositionOptions{
 		allowMock:    allowMock,

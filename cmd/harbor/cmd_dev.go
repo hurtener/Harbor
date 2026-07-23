@@ -126,6 +126,24 @@ const EnvDevAllowMock = "HARBOR_DEV_ALLOW_MOCK"
 // amendment: "every boot prints a stderr banner".
 const MockBanner = "[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]"
 
+// EnvDevAllowPrivateExchange is the env var name that unlocks the
+// dev-only opt-in permitting the `tokenexchange` credential-bearing
+// exchange POST to dial a PRIVATE-range / link-local resolved address
+// (a credential broker behind a private-IP TLS sidecar — the standard
+// containerized local-dev topology). It RELAXES a load-bearing
+// DNS-rebinding dial guard, so it is fail-closed: unset leaves the guard
+// armed. Mirrors HARBOR_DEV_ALLOW_MOCK exactly (env, not flag, so
+// preflight can boot without arguments). Captured once at boot; never
+// re-read at request time; never Protocol-writable. It relaxes ONLY the
+// private / link-local / ULA dial branch — never the redirect refusal,
+// the loopback carve-out, or the unspecified-address block.
+const EnvDevAllowPrivateExchange = "HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE"
+
+// PrivateExchangeBanner is the unconditional stderr banner printed on
+// every boot when the private-IP token-exchange escape hatch is active.
+// §13 amendment: "every boot prints a stderr banner".
+const PrivateExchangeBanner = "[DEV-ONLY PRIVATE-IP TOKEN EXCHANGE — DO NOT USE IN PRODUCTION]"
+
 // DefaultDevPort is the loopback port `harbor dev` listens on when
 // the operator does not override via `--port` or env. Matches the
 // preflight harness default.
@@ -232,6 +250,9 @@ func runDev(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	allowMock := os.Getenv(EnvDevAllowMock) == "1"
+	// Dev-only private-IP token-exchange escape hatch (read exactly like the
+	// mock hatch above). Captured + banner'd at the same call sites as the mock.
+	allowPrivateExchange := os.Getenv(EnvDevAllowPrivateExchange) == "1"
 
 	// Co-launch log separation (mirrors serve --tui): when --tui is set the
 	// Bubble Tea program owns stdout+stderr, so Runtime logs and the dev-token
@@ -258,6 +279,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	// llm.posture surface. The mock driver itself is blank-imported at
 	// compile time via devmock.go; this is the runtime surfacing.
 	registerMockIfDevAllowMock(allowMock, logSink)
+	registerAllowPrivateExchangeIfDev(allowPrivateExchange, logSink)
 
 	comp, err := newDevComposition(devCompositionOptions{
 		allowMock:    allowMock,
@@ -342,6 +364,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	stderr := cmd.ErrOrStderr()
 	supervisor.onReboot = func(_ *serve.Handle) {
 		registerMockIfDevAllowMock(allowMock, stderr)
+		registerAllowPrivateExchangeIfDev(allowPrivateExchange, stderr)
 		if tErr := comp.printDevToken("dev", logger, stderr); tErr != nil {
 			logger.Error("harbor dev: dev-token re-mint after hot-reload failed (the previously printed token remains valid)",
 				slog.String("error", tErr.Error()))
