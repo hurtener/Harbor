@@ -173,8 +173,21 @@ export class Transport {
 	 * Runtime mounts (e.g. `/v1/tools/list`, `/v1/control/artifacts.list`).
 	 * The identity triple is folded into the body; `body` is merged over it so
 	 * a caller-supplied `identity` field wins for cross-tenant admin calls.
+	 *
+	 * `opts.omitBodyIdentity` suppresses the body identity fold for the few
+	 * handlers that decode an identity-LESS request type with
+	 * `DisallowUnknownFields` (e.g. `governance.set_posture`) and would reject a
+	 * folded `identity` key with `unknown field "identity"` (HTTP 400). The
+	 * identity still rides the `X-Harbor-*` headers, so the handler's
+	 * server-side `resolveIdentity` is unaffected — only the body fold is
+	 * dropped.
 	 */
-	async request<T>(path: string, body: Record<string, unknown> = {}, method: Method = 'POST'): Promise<T> {
+	async request<T>(
+		path: string,
+		body: Record<string, unknown> = {},
+		method: Method = 'POST',
+		opts: { omitBodyIdentity?: boolean } = {}
+	): Promise<T> {
 		// D-171 — session is per-request (header-supplied) and OPTIONAL on a
 		// connection. The runtime's posture handlers require a body identity
 		// to FULLY match the resolved identity (incl. session) OR be empty;
@@ -191,7 +204,9 @@ export class Transport {
 					session: this.#identity.session
 				}
 			: {};
-		const payload = JSON.stringify({ identity: idObj, ...body });
+		const payload = opts.omitBodyIdentity
+			? JSON.stringify({ ...body })
+			: JSON.stringify({ identity: idObj, ...body });
 		const resp = await this.#fetch(`${this.#baseURL}${path}`, {
 			method,
 			headers: {
@@ -1062,16 +1077,25 @@ export class GovernanceNamespace {
 	}
 	/**
 	 * `governance.set_posture` — write the identity-tier policy table (a FULL
-	 * REPLACE). Admin-scoped (auth.ScopeAdmin ONLY). The request carries no
-	 * identity field (authority is server-side); the Transport does not fold
-	 * one in. A table that omits or zeroes a currently-enforced ceiling is
-	 * rejected fail-closed (`invalid_request`, HTTP 400).
+	 * REPLACE). Admin-scoped (auth.ScopeAdmin ONLY). The request wire type
+	 * carries no identity field (authority is server-side, from the verified
+	 * session), and the handler decodes it with `DisallowUnknownFields` — so
+	 * this call MUST opt out of the Transport's default body identity fold
+	 * (`omitBodyIdentity`), otherwise the folded `identity` key is rejected with
+	 * `unknown field "identity"` (HTTP 400). Identity still rides the
+	 * `X-Harbor-*` headers. A table that omits or zeroes a currently-enforced
+	 * ceiling is rejected fail-closed (`invalid_request`, HTTP 400).
 	 */
 	setPosture(req: GovernanceSetPostureRequest): Promise<GovernanceSetPostureResponse> {
-		return this.#t.request<GovernanceSetPostureResponse>('/v1/governance/set_posture', {
-			default_tier: req.default_tier,
-			identity_tiers: req.identity_tiers as unknown as Record<string, unknown>,
-		});
+		return this.#t.request<GovernanceSetPostureResponse>(
+			'/v1/governance/set_posture',
+			{
+				default_tier: req.default_tier,
+				identity_tiers: req.identity_tiers as unknown as Record<string, unknown>,
+			},
+			'POST',
+			{ omitBodyIdentity: true },
+		);
 	}
 }
 

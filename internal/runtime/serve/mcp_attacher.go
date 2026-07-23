@@ -142,6 +142,17 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 	// provider's Close even if a later step failed — drain it on teardown).
 	a.closers = append(a.closers, local...)
 	if err != nil {
+		// A binding/config error (unknown provider, missing or mismatched
+		// downstream allow-list, stdio/no-url, static-Authorization conflict)
+		// is a fail-loud operator misconfiguration, never a transient
+		// auth-required. Its message carries "oauth_provider", which the string
+		// heuristic below would otherwise match on "oauth" and misclassify as
+		// auth-required — silently parking the connection and hiding the real
+		// diagnostic. Check the typed sentinel first so the operator sees the
+		// actual cause (e.g. "unknown provider" / "host not in allow-list").
+		if errors.Is(err, mcpdrv.ErrOAuthBinding) {
+			return err
+		}
 		if looksLikeAuthRequired(err) {
 			return fmt.Errorf("%w: %w", agentcfgprotocol.ErrAuthRequired, err)
 		}
