@@ -45,11 +45,18 @@ else
     fail 'phase 170: integration test failed (run `go test -race -run TestE2E_Phase170 ./test/integration/`)'
 fi
 
-# 3: "no production private-network knob" invariant — every `allowPrivate = true`
-# assignment lives inside internal/tools/auth/discovery.go (the test-only option
-# body), and there is EXACTLY one. Scope by file + count (a `grep -v` on the
-# option name false-fails: the assignment line does not contain it).
-setters="$(grep -RnE 'allowPrivate[[:space:]]*=[[:space:]]*true' internal/ --include='*.go' || true)"
+# 3: "no production private-network knob" invariant — every PRODUCTION
+# `allowPrivate = true` assignment lives inside internal/tools/auth/discovery.go
+# (the test-only option body), and there is EXACTLY one. Scope by file + count
+# (a `grep -v` on the option name false-fails: the assignment line does not
+# contain it). Test files (`_test.go`) are excluded — they legitimately mention
+# the option in assertions/messages and are not production code. The
+# tokenexchange dev-only private-dial opt-in (D-338) is a DIFFERENT mechanism —
+# a config/boot-env-gated `allowPrivate := cfg.X || env()`, never a bare
+# `= true` production assignment — so it does not (and must not) appear here;
+# D-304's no-production-knob invariant still holds, and D-338 documents the
+# credential-plane departure.
+setters="$(grep -RnE 'allowPrivate[[:space:]]*=[[:space:]]*true' internal/ --include='*.go' | grep -v '_test\.go:' || true)"
 outside="$(printf '%s\n' "${setters}" | grep -v '^[[:space:]]*$' | grep -v 'internal/tools/auth/discovery.go:' || true)"
 inside_count="$(printf '%s\n' "${setters}" | grep -c 'internal/tools/auth/discovery.go:' || true)"
 if [ -n "${outside}" ]; then
