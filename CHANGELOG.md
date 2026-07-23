@@ -17,6 +17,29 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.17.4] — 2026-07-23
+
+Patch: fix the Console's posture-edit 400 and a silent-park on an unresolvable MCP OAuth binding.
+
+### Fixed
+
+- **The Console's Governance-Posture edit card 400'd on every submit.** The
+  shared Console transport folds the identity triple into every request body,
+  but `governance.set_posture` decodes an identity-LESS request type with
+  `DisallowUnknownFields`, so the folded `identity` key was rejected with
+  `unknown field "identity"` (HTTP 400) before the validator ran. `setPosture`
+  now opts out of the body fold (identity still rides the `X-Harbor-*`
+  headers); a corrected JSDoc no longer claims the transport skips the fold.
+- **A runtime-added MCP connection whose `oauth_provider` did not resolve
+  parked silently at `auth_required` instead of failing loud.** The
+  auth-required classifier is a message heuristic that matches the marker
+  `oauth`; a binding/config error (`mcp: invalid oauth_provider binding: …`)
+  contains `oauth_provider`, so an unknown-provider / missing-or-mismatched
+  downstream-allow-list error was misclassified as auth-required and parked,
+  hiding the diagnostic. The attacher now checks the typed `ErrOAuthBinding`
+  sentinel first, so a binding misconfiguration surfaces its real cause loudly
+  (§13). The genuine transport auth-required path is unchanged.
+
 ## [1.17.3] — 2026-07-23
 
 Patch: dev-only, fail-closed opt-in to permit a private-IP `tokenexchange` dial.
