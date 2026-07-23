@@ -166,7 +166,7 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 	}
 	q := identity.Quadruple{Identity: id}
 
-	desc, err := validateConnection(req.Connection)
+	desc, inlineOAuth, err := validateConnection(req.Connection)
 	if err != nil {
 		return prototypes.AgentConfigAddMCPConnectionResponse{}, err
 	}
@@ -184,6 +184,20 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 
 	if s.attacher == nil {
 		return prototypes.AgentConfigAddMCPConnectionResponse{}, ErrConnectionAttachUnavailable
+	}
+
+	// Dev-gated wire-carried OAuth binding. An inline wire descriptor installs a
+	// NEW provider whose downstream sink is DERIVED from this connection's own URL
+	// (never a wire field); a NAME binding to an already-installed WIRE provider
+	// (e.g. from a prior set_oauth_provider) re-derives that provider's sink from
+	// this connection's URL. Both fail-closed behind the opt-in (the gate is
+	// inside gateAndValidateOAuthProviderDescriptor). The live install happens
+	// BEFORE the attach so the binding resolves; a wire provider newly installed
+	// here is rolled back if the attach fails (no orphan). Returns the domain
+	// descriptor to persist alongside the connection revision.
+	wireProvider, wireProviderIsNew, err := s.prepareWireOAuthBinding(ctx, id, req.AgentID, &desc, inlineOAuth)
+	if err != nil {
+		return prototypes.AgentConfigAddMCPConnectionResponse{}, err
 	}
 
 	// Emit the `pending` lifecycle transition before the dial (loud
@@ -208,8 +222,9 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 	switch {
 	case attachErr == nil:
 		// Online — record the non-secret descriptor as a revision (preserving
-		// the other sections) and emit the terminal `added` event.
-		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc)
+		// the other sections; upserting the wire provider when one was installed)
+		// and emit the terminal `added` event.
+		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider)
 		if recErr != nil {
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
 		}
@@ -229,7 +244,7 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		if s.coordinator == nil {
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, ErrCoordinatorUnavailable
 		}
-		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc)
+		rev, recErr := s.recordConnectionRevision(ctx, q, req.AgentID, desc, wireProvider)
 		if recErr != nil {
 			return prototypes.AgentConfigAddMCPConnectionResponse{}, recErr
 		}
@@ -253,6 +268,18 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		// explicitly on the response (state=failed + reason): this is the
 		// opposite of a silent drop (CLAUDE.md §13), not an error to the
 		// caller (the operator gets the recorded failure).
+		//
+		// A wire provider newly installed for THIS inline binding is rolled back
+		// (uninstalled + closed) so a failed attach leaves no orphan live provider
+		// (nothing was persisted; the live install must not linger). A re-derived
+		// pre-existing provider (bind-by-name) is left in place — it was installed
+		// by its own set_oauth_provider and survives this failed attach.
+		if wireProviderIsNew && wireProvider != nil && s.providerInstaller != nil {
+			if uErr := s.providerInstaller.UninstallProvider(ctx, id.TenantID, req.AgentID, wireProvider.Name); uErr != nil {
+				s.logger.WarnContext(ctx, "agent-config: rollback of inline wire oauth provider after failed attach failed",
+					"agent_id", req.AgentID, "provider", wireProvider.Name, "error", uErr.Error())
+			}
+		}
 		reason := safeReason(attachErr)
 		s.emitConnectionLifecycle(ctx, q, req.AgentID, desc, ConnectionStateFailed, "", "", reason)
 		return prototypes.AgentConfigAddMCPConnectionResponse{
@@ -266,49 +293,60 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 
 // validateConnection validates + normalises the wire descriptor, failing
 // loud with ErrInvalidConnection. stdio requires a non-empty argv command
-// and no URL; http requires a URL and no command.
-func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentcfg.MCPConnectionDescriptor, error) {
+// and no URL; http requires a URL and no command. An inline dev-gated OAuth
+// binding (`connection.oauth`) is mutually exclusive with the `oauth_provider`
+// NAME binding and is returned raw (the handler gates + installs it); the
+// returned pointer is nil unless an inline binding is present.
+func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentcfg.MCPConnectionDescriptor, *prototypes.AgentConfigOAuthProviderDescriptor, error) {
 	name := strings.TrimSpace(c.Name)
 	if name == "" {
-		return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: name is empty", ErrInvalidConnection)
+		return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: name is empty", ErrInvalidConnection)
 	}
 	// Reserved / spec-prefixed / empty `_meta` annotation keys are rejected
 	// for every transport (the runtime stamps the triple + agent_id + trace
 	// context; an operator annotation must not shadow them).
 	if err := validateConnectionAnnotations(c.MetaAnnotations); err != nil {
-		return agentcfg.MCPConnectionDescriptor{}, err
+		return agentcfg.MCPConnectionDescriptor{}, nil, err
+	}
+	// An inline OAuth binding and a provider-NAME binding are two ways to bind
+	// one auth mode — reject both set (one auth mode per connection).
+	if c.OAuth != nil && strings.TrimSpace(c.OAuthProvider) != "" {
+		return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: oauth (inline binding) and oauth_provider (name binding) are mutually exclusive — one auth mode per connection", ErrInvalidConnection)
 	}
 	transport := agentcfg.MCPTransport(strings.TrimSpace(c.Transport))
 	switch transport {
 	case agentcfg.MCPTransportStdio:
 		if len(c.Command) == 0 || strings.TrimSpace(c.Command[0]) == "" {
-			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: stdio transport requires a non-empty argv command", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport requires a non-empty argv command", ErrInvalidConnection)
 		}
 		if c.URL != "" {
-			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: stdio transport must not carry a url", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport must not carry a url", ErrInvalidConnection)
 		}
 		if strings.TrimSpace(c.OAuthProvider) != "" {
-			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: stdio transport must not bind an oauth_provider (no HTTP request to inject Authorization into)", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport must not bind an oauth_provider (no HTTP request to inject Authorization into)", ErrInvalidConnection)
+		}
+		if c.OAuth != nil {
+			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport must not carry an inline oauth binding (no HTTP request to inject Authorization into)", ErrInvalidConnection)
 		}
 		if len(c.OAuthDiscoveryAllowedOrigins) > 0 {
-			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: stdio transport must not carry oauth_discovery_allowed_origins (no HTTP discovery walk)", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport must not carry oauth_discovery_allowed_origins (no HTTP discovery walk)", ErrInvalidConnection)
 		}
 		return agentcfg.MCPConnectionDescriptor{
 			Name:            name,
 			Transport:       transport,
 			Command:         append([]string(nil), c.Command...),
 			MetaAnnotations: cloneAnnotations(c.MetaAnnotations),
-		}, nil
+		}, nil, nil
 	case agentcfg.MCPTransportHTTP:
 		if strings.TrimSpace(c.URL) == "" {
-			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: http transport requires a url", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: http transport requires a url", ErrInvalidConnection)
 		}
 		if len(c.Command) > 0 {
-			return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)
 		}
 		origins, oerr := normalizeDiscoveryOrigins(c.OAuthDiscoveryAllowedOrigins)
 		if oerr != nil {
-			return agentcfg.MCPConnectionDescriptor{}, oerr
+			return agentcfg.MCPConnectionDescriptor{}, nil, oerr
 		}
 		return agentcfg.MCPConnectionDescriptor{
 			Name:                         name,
@@ -317,9 +355,9 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 			OAuthProvider:                strings.TrimSpace(c.OAuthProvider),
 			MetaAnnotations:              cloneAnnotations(c.MetaAnnotations),
 			OAuthDiscoveryAllowedOrigins: origins,
-		}, nil
+		}, c.OAuth, nil
 	default:
-		return agentcfg.MCPConnectionDescriptor{}, fmt.Errorf("%w: unknown transport %q (want stdio|http)", ErrInvalidConnection, c.Transport)
+		return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: unknown transport %q (want stdio|http)", ErrInvalidConnection, c.Transport)
 	}
 }
 
@@ -329,7 +367,7 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 // prompt-layer + llm-params + hooks sections of the active revision (the
 // bidirectional section-merge invariant). The descriptor is NON-SECRET — no
 // header / token is ever part of the persisted payload.
-func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadruple, agentID string, desc agentcfg.MCPConnectionDescriptor) (agentcfg.Revision, error) {
+func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadruple, agentID string, desc agentcfg.MCPConnectionDescriptor, wireProvider *agentcfg.OAuthProviderDescriptor) (agentcfg.Revision, error) {
 	// Serialise the registry read-modify-write per agent (NOT the preceding
 	// dial/handshake, which must not block a quick concurrent edit).
 	defer s.lockAgent(q.TenantID, agentID)()
@@ -339,6 +377,7 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 	}
 	var servers []agentcfg.MCPConnectionDescriptor
 	payload := agentcfg.ConfigPayload{}
+	var providers []agentcfg.OAuthProviderDescriptor
 	if hasActive {
 		servers = append(servers, active.Payload.ConnectionDescriptors()...)
 		payload.Skills = active.Payload.Skills
@@ -347,11 +386,119 @@ func (s *Service) recordConnectionRevision(ctx context.Context, q identity.Quadr
 		payload.LLMParams = active.Payload.LLMParams
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
-		payload.OAuthProviders = active.Payload.OAuthProviders
+		providers = active.Payload.OAuthProviderDescriptors()
 	}
 	servers = append(servers, desc)
 	payload.Connections = &agentcfg.ConnectionsSection{Servers: servers}
+	// Upsert the wire provider (installed / re-derived for this connection's
+	// binding) into the oauth-providers section so a rollback / reconcile rebuilds
+	// it with the SAME derived downstream sink. The descriptor is NON-SECRET (a
+	// token endpoint URL + an env-var NAME; no secret). A nil wireProvider carries
+	// the existing section forward unchanged.
+	if wireProvider != nil {
+		merged := make([]agentcfg.OAuthProviderDescriptor, 0, len(providers)+1)
+		replaced := false
+		for _, p := range providers {
+			if p.Name == wireProvider.Name {
+				merged = append(merged, *wireProvider)
+				replaced = true
+				continue
+			}
+			merged = append(merged, p)
+		}
+		if !replaced {
+			merged = append(merged, *wireProvider)
+		}
+		providers = merged
+	}
+	if len(providers) > 0 {
+		payload.OAuthProviders = &agentcfg.OAuthProvidersSection{Providers: providers}
+	}
 	return s.registry.SetRevision(ctx, q, agentID, agentcfg.ConfigScopeAgent, payload)
+}
+
+// prepareWireOAuthBinding resolves a connection's dev-gated wire OAuth binding
+// BEFORE the attach, so the live binding resolves during attach. It returns the
+// domain provider descriptor to persist (or nil when the connection carries no
+// wire binding), and whether that provider was NEWLY installed by this call (so
+// a failed attach can roll it back).
+//
+//   - Inline binding (`connection.oauth`): gate + validate the wire descriptor,
+//     DERIVE the downstream sink from the connection's own URL (never a wire
+//     field), install the provider owner-tagged, and rewrite the connection's
+//     OAuthProvider to the installed name. Newly installed ⇒ rolled back on a
+//     failed attach.
+//   - Name binding (`oauth_provider`) to an already-installed WIRE provider (e.g.
+//     from a prior set_oauth_provider, whose downstream sink was deferred): re-derive
+//     that provider's sink from THIS connection's URL and re-install (upsert). Not
+//     "new" (it pre-existed) ⇒ left in place on a failed attach.
+//
+// A plain name binding to a non-wire (broker-pull or interactive) provider is a
+// no-op here (nil, false) — the existing resolution path handles it.
+func (s *Service) prepareWireOAuthBinding(ctx context.Context, id identity.Identity, agentID string, desc *agentcfg.MCPConnectionDescriptor, inline *prototypes.AgentConfigOAuthProviderDescriptor) (*agentcfg.OAuthProviderDescriptor, bool, error) {
+	if inline != nil {
+		pdesc, err := s.gateAndValidateOAuthProviderDescriptor(*inline)
+		if err != nil {
+			return nil, false, err
+		}
+		if pdesc.TokenURL == "" {
+			// A name-only descriptor inline is pointless (it references a boot
+			// broker but installs nothing derivable) — direct the operator to the
+			// name binding instead. Fail loud rather than silently install.
+			return nil, false, fmt.Errorf("%w: inline oauth binding must carry a wire descriptor (token_url); bind an already-installed provider with oauth_provider (name) instead", ErrInvalidConnection)
+		}
+		host := config.NormalizeDownstreamHost(desc.URL)
+		if host == "" {
+			return nil, false, fmt.Errorf("%w: cannot derive a downstream host from the connection url %q", ErrInvalidConnection, desc.URL)
+		}
+		pdesc.AllowedDownstreamHosts = []string{host}
+		if _, boot := s.bootDeclaredOAuthProviders[pdesc.Name]; boot {
+			return nil, false, fmt.Errorf("%w: %q", ErrBootDeclaredProvider, pdesc.Name)
+		}
+		if s.providerInstaller == nil {
+			return nil, false, ErrProviderInstallUnavailable
+		}
+		if err := s.providerInstaller.InstallProvider(ctx, id.TenantID, agentID, pdesc); err != nil {
+			return nil, false, err
+		}
+		desc.OAuthProvider = pdesc.Name
+		return &pdesc, true, nil
+	}
+	if strings.TrimSpace(desc.OAuthProvider) == "" {
+		return nil, false, nil
+	}
+	// Name binding: re-derive iff the named provider is a wire provider whose
+	// downstream sink was deferred at install (set_oauth_provider). Read the
+	// active revision under the per-agent lock so a concurrent edit does not race
+	// the read.
+	q := identity.Quadruple{Identity: id}
+	release := s.lockAgent(id.TenantID, agentID)
+	active, hasActive, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+	release()
+	if err != nil {
+		return nil, false, err
+	}
+	if !hasActive {
+		return nil, false, nil
+	}
+	for _, p := range active.Payload.OAuthProviderDescriptors() {
+		if p.Name != desc.OAuthProvider || p.TokenURL == "" {
+			continue
+		}
+		host := config.NormalizeDownstreamHost(desc.URL)
+		if host == "" {
+			return nil, false, fmt.Errorf("%w: cannot derive a downstream host from the connection url %q", ErrInvalidConnection, desc.URL)
+		}
+		p.AllowedDownstreamHosts = []string{host}
+		if s.providerInstaller == nil {
+			return nil, false, ErrProviderInstallUnavailable
+		}
+		if err := s.providerInstaller.InstallProvider(ctx, id.TenantID, agentID, p); err != nil {
+			return nil, false, err
+		}
+		return &p, false, nil
+	}
+	return nil, false, nil
 }
 
 // parkForAuth records a pause on the unified pause/resume primitive for an

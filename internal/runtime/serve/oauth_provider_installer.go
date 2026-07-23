@@ -56,7 +56,7 @@ func (i *OAuthProviderInstaller) InstallProvider(ctx context.Context, tenant, ag
 	if owner.Tenant == "" || owner.Agent == "" {
 		return fmt.Errorf("%w: install requires a (tenant, agent) owner (tenant=%q agent=%q)", agentcfgprotocol.ErrInvalidProvider, tenant, agentID)
 	}
-	prov, err := i.builder.Build(ctx, desc.Name, desc.CredentialBroker, desc.Scopes)
+	prov, err := i.build(ctx, desc)
 	if err != nil {
 		if errors.Is(err, toolauth.ErrUnknownBroker) || errors.Is(err, toolauth.ErrBrokerMissingCredentialURL) {
 			return fmt.Errorf("%w: %w", agentcfgprotocol.ErrProviderBrokerUnknown, err)
@@ -70,6 +70,31 @@ func (i *OAuthProviderInstaller) InstallProvider(ctx context.Context, tenant, ag
 		return fmt.Errorf("%w: %w", agentcfgprotocol.ErrInvalidProvider, err)
 	}
 	return nil
+}
+
+// build constructs the provider instance for a descriptor: the DEV-GATED wire
+// full binding (TokenURL set — build from the wire token_url + wire remote pull +
+// the runtime-DERIVED downstream sink) or the default zero-URL broker-pull shape
+// (build from the boot-declared credential broker). The gate that a wire
+// descriptor is only reached with the opt-in ON lives in the agent-config
+// handler; by the time a descriptor with wire fields arrives here the operator
+// has opted in.
+func (i *OAuthProviderInstaller) build(ctx context.Context, desc agentcfg.OAuthProviderDescriptor) (toolauth.OAuthProvider, error) {
+	if desc.TokenURL != "" || desc.Remote != nil {
+		wire := toolauth.WireProviderDescriptor{
+			Name:                   desc.Name,
+			TokenURL:               desc.TokenURL,
+			Audience:               desc.Audience,
+			Scopes:                 append([]string(nil), desc.Scopes...),
+			AllowedDownstreamHosts: append([]string(nil), desc.AllowedDownstreamHosts...),
+		}
+		if desc.Remote != nil {
+			wire.RemoteURL = desc.Remote.URL
+			wire.RemoteAuthTokenEnv = desc.Remote.AuthTokenEnv
+		}
+		return i.builder.BuildWire(ctx, wire)
+	}
+	return i.builder.Build(ctx, desc.Name, desc.CredentialBroker, desc.Scopes)
 }
 
 // UninstallProvider removes the named provider from the owner-tagged set and

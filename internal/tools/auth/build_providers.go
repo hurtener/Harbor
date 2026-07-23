@@ -26,8 +26,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
@@ -246,6 +249,146 @@ func (b *ProviderBuilder) Build(ctx context.Context, name, brokerName string, sc
 		return nil, fmt.Errorf("tools/oauth: install provider %q (broker=%q, driver=%q): %w", name, brokerName, TokenExchangeDriverName, err)
 	}
 	return prov, nil
+}
+
+// WireProviderDescriptor is the non-secret input to [ProviderBuilder.BuildWire]:
+// a FULL OAuth-provider binding carried over the wire behind the dev-only
+// `allow_wire_oauth_descriptor` opt-in. Every field is non-secret — RemoteAuthTokenEnv
+// NAMES an env var (the token is read from the process environment), never the
+// token itself. AllowedDownstreamHosts is DERIVED by the caller from the bound
+// connection's own URL (never a wire field); the two URLs (TokenURL, RemoteURL)
+// are dialed through the token-exchange SSRF backstop.
+type WireProviderDescriptor struct {
+	// Name is the installed provider name.
+	Name string
+	// TokenURL is the RFC-8693 token-exchange endpoint (wire-carried).
+	TokenURL string
+	// Audience is the exchanged token's audience (wire-carried; optional).
+	Audience string
+	// Scopes is the requested scope subset (wire-carried; optional).
+	Scopes []string
+	// RemoteURL is the coordinator credential-pull endpoint (wire-carried).
+	RemoteURL string
+	// RemoteAuthTokenEnv names the env var holding the runtime's own service
+	// token used to authenticate the pull. NON-SECRET (a name).
+	RemoteAuthTokenEnv string
+	// AllowedDownstreamHosts is the DERIVED downstream sink allow-list (from the
+	// bound connection's URL). May be empty (a set_oauth_provider install with no
+	// bound connection yet — the provider is unbindable until a connection derives
+	// its sink); a bound connection ALWAYS supplies exactly one host.
+	AllowedDownstreamHosts []string
+}
+
+// ErrWireDescriptorIncomplete — a wire provider descriptor is missing a required
+// field (token_url or the remote credential-pull block). Loud, fail-closed.
+var ErrWireDescriptorIncomplete = errors.New("auth: wire oauth provider descriptor is incomplete (token_url and remote{url,auth_token_env} are required for the dev-gated full binding)")
+
+// BuildWire constructs a broker-pull `tokenexchange` provider from a wire-carried
+// full binding (the dev-only `allow_wire_oauth_descriptor` path). Unlike [Build]
+// (which reads every sink from a boot-declared broker), the token endpoint, the
+// audience, and the credential-pull endpoint come from the wire descriptor —
+// bounded by two guards that keep the credential-plane relaxation honest:
+//
+//   - The exchanged token's downstream sink is the caller-DERIVED
+//     AllowedDownstreamHosts (from the bound connection's own URL, never a wire
+//     field), so a token can only ever be injected into the endpoint the
+//     connection actually dials.
+//   - Both wire URLs face the token-exchange SSRF backstop: the exchange POST
+//     through the driver's own hardened client (private / link-local / ULA /
+//     unspecified refused post-DNS, every redirect refused, no proxy — subject to
+//     the independent dev-only private-dial opt-in), and the credential PULL through
+//     a client hardened HERE with the same private-dial + redirect refusal (the
+//     pull carries the runtime's service bearer, so a redirecting or private-range
+//     pull endpoint is a fault).
+//
+// No secret rides the wire: the pull reads its bearer from the env var NAMED by
+// RemoteAuthTokenEnv at fetch time.
+func (b *ProviderBuilder) BuildWire(ctx context.Context, desc WireProviderDescriptor) (OAuthProvider, error) {
+	if desc.TokenURL == "" || desc.RemoteURL == "" || desc.RemoteAuthTokenEnv == "" {
+		return nil, fmt.Errorf("%w (name=%q)", ErrWireDescriptorIncomplete, desc.Name)
+	}
+	if b.factoryDeps.Store == nil {
+		// No broker was declared at boot ⇒ the shared crypto chain (KEK → sealer
+		// → token store) was never built, so a wire provider has no token store to
+		// share. Fail loud rather than nil-panic — the operator opted into the
+		// wire descriptor but declared no `oauth_token_kek_env`.
+		return nil, fmt.Errorf("auth: wire oauth provider %q: no boot token store (set tools.oauth_token_kek_env and declare at least one oauth_credential_broker to seed the shared crypto chain)", desc.Name)
+	}
+	// The credential PULL carries the runtime's service bearer — harden its
+	// client to the same bar as the token-exchange POST: refuse a private-range /
+	// link-local / ULA / unspecified resolved address post-DNS (the pull URL is
+	// wire-derived, so unlike a boot-declared broker it is attacker-influenceable
+	// when the operator opts in), no proxy. The credsource/remote source adds its
+	// own redirect refusal. The pull's private-dial refusal is UNCONDITIONAL (the
+	// dev-only private-dial opt-in is scoped to the token-exchange POST, not the pull).
+	pullClient := hardenedWirePullClient(defaultWirePullTimeout)
+	src, err := credsource.Resolve(credsource.SourceRemote, credsource.Config{
+		ProviderName: desc.Name,
+		Bus:          b.bus,
+		Redactor:     b.redactor,
+		Clock:        time.Now,
+		HTTPClient:   pullClient,
+		Remote: &credsource.RemoteConfig{
+			URL:          desc.RemoteURL,
+			AuthTokenEnv: desc.RemoteAuthTokenEnv,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth: wire oauth provider %q credential source: %w", desc.Name, err)
+	}
+	if err := src.ValidateAtBoot(ctx); err != nil {
+		return nil, fmt.Errorf("auth: wire oauth provider %q credential source: %w", desc.Name, err)
+	}
+	pcfg := ProviderConfig{
+		Name:                   desc.Name,
+		CredentialSource:       src,
+		Scopes:                 append([]string(nil), desc.Scopes...),
+		TokenURL:               desc.TokenURL,
+		Audience:               desc.Audience,
+		AllowedDownstreamHosts: append([]string(nil), desc.AllowedDownstreamHosts...),
+	}
+	prov, err := Resolve(ctx, TokenExchangeDriverName, pcfg, b.factoryDeps)
+	if err != nil {
+		return nil, fmt.Errorf("auth: wire oauth provider %q (driver=%q): %w", desc.Name, TokenExchangeDriverName, err)
+	}
+	return prov, nil
+}
+
+// defaultWirePullTimeout bounds a single wire credential-pull fetch.
+const defaultWirePullTimeout = 30 * time.Second
+
+// hardenedWirePullClient builds the HTTP client the wire-carried credential PULL
+// fetches through: a post-DNS dial control that refuses a private-range /
+// link-local / ULA / unspecified resolved address (the SSRF backstop for the
+// wire-derived, attacker-influenceable pull URL) and no proxy. The
+// credsource/remote source adds the redirect refusal (the pull carries a service
+// bearer; a redirect is a replay fault). Loopback is allowed (a localhost
+// coordinator / fixture is a legitimate dev deployment, mirroring the
+// token-exchange loopback carve-out). The private-dial refusal is UNCONDITIONAL:
+// unlike the token-exchange POST it has no dev-only private-dial relaxation.
+func hardenedWirePullClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: timeout}
+	dialer.Control = func(_, address string, _ syscall.RawConn) error {
+		host, _, splitErr := net.SplitHostPort(address)
+		if splitErr != nil {
+			host = address
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("wire oauth credential pull: unresolved dial address %q", address)
+		}
+		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+			return fmt.Errorf("wire oauth credential pull: dial to a private/link-local address %q refused (the pull carries the runtime service bearer)", host)
+		}
+		return nil
+	}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:       nil,
+			DialContext: dialer.DialContext,
+		},
+	}
 }
 
 // buildCredentialSource constructs the §4.4 credential source declared by

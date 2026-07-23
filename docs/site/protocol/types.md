@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 330 canonical Harbor Protocol wire types, generated from the single-source
+The 331 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -263,6 +263,7 @@ Declared in `internal/protocol/types`.
 | `url` | `string` | optional (`omitempty`) |
 | `oauth_provider` | `string` | optional (`omitempty`) |
 | `meta_annotations` | `map[string]string` | optional (`omitempty`) |
+| `oauth` | `*types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) | optional (`omitempty`) |
 | `oauth_discovery_allowed_origins` | `[]string` | optional (`omitempty`) |
 
 ## AgentConfigNaming
@@ -312,8 +313,11 @@ Declared in `internal/protocol/types`.
 | `name` | `string` |  |
 | `driver` | `string` |  |
 | `credential_source` | `string` |  |
-| `credential_broker` | `string` |  |
+| `credential_broker` | `string` | optional (`omitempty`) |
 | `scopes` | `[]string` | optional (`omitempty`) |
+| `token_url` | `string` | optional (`omitempty`) |
+| `audience` | `string` | optional (`omitempty`) |
+| `remote` | `*types.AgentConfigOAuthRemoteDescriptor` — see [`AgentConfigOAuthRemoteDescriptor`](./types.md#agentconfigoauthremotedescriptor) | optional (`omitempty`) |
 
 ## AgentConfigOAuthProviders
 
@@ -331,6 +335,15 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `added` | `[]string` | optional (`omitempty`) |
 | `removed` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigOAuthRemoteDescriptor
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `url` | `string` |  |
+| `auth_token_env` | `string` |  |
 
 ## AgentConfigPayload
 

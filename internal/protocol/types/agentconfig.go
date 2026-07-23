@@ -117,6 +117,19 @@ type AgentConfigMCPConnectionDescriptor struct {
 	// merged verbatim into the MCP `_meta` on every identity-stamped call.
 	// Reserved / spec-prefixed keys are rejected at attach.
 	MetaAnnotations map[string]string `json:"meta_annotations,omitempty"`
+	// OAuth is an OPTIONAL inline OAuth-provider binding carried over the wire
+	// for this connection (a coordinator standing up a new OAuth-fronted MCP
+	// server without a pre-installed provider). It is mutually exclusive with
+	// OAuthProvider (bind a name that already exists vs. carry the full binding
+	// inline). It is accepted ONLY behind the fail-closed
+	// `tools.allow_wire_oauth_descriptor` boot opt-in (default off): with the
+	// opt-in off an inline descriptor carrying any credential-sink field is
+	// rejected, exactly as the name-only binding rejects a sink field today. When
+	// opted in, the exchanged token's downstream sink (`allowed_downstream_hosts`)
+	// is DERIVED from this connection's own URL — never a wire-supplied list — and
+	// the wire `token_url` faces the identical token-exchange SSRF backstop the
+	// boot path uses. Set only for the http transport.
+	OAuth *AgentConfigOAuthProviderDescriptor `json:"oauth,omitempty"`
 	// OAuthDiscoveryAllowedOrigins is the explicit per-connection cross-origin
 	// allow-list of public https origins the OAuth-requirement discovery walker
 	// may fetch authorization-server metadata from. NON-SECRET (an origin
@@ -138,16 +151,35 @@ type AgentConfigConnections struct {
 }
 
 // AgentConfigOAuthProviderDescriptor is the wire projection of one
-// Protocol-installed OAuth provider — the ZERO-URL descriptor only. It carries
-// NO URL of any kind, NO env-var name, and NO literal secret: the
-// credential-plane invariant pins every credential-sink-determining
-// value (token endpoint, credential-pull endpoint, allowed downstream hosts,
-// audience, scope ceiling) at boot on the NAMED credential broker the
-// descriptor references by non-secret name. Because the forbidden fields
-// (`token_url`, `auth_url`, `client_id_env`, `client_secret_env`, `remote`) are
-// simply NOT on this struct, a `DisallowUnknownFields` decode rejects any of
-// them BY NAME (`json: unknown field "client_secret_env"`) — a loud reject with
-// no decoy fields (the field cannot exist).
+// Protocol-installed OAuth provider. By DEFAULT it is the ZERO-URL,
+// name-only descriptor: it carries NO URL of any kind, NO env-var name, and NO
+// literal secret, and every credential-sink-determining value (token endpoint,
+// credential-pull endpoint, allowed downstream hosts, audience, scope ceiling)
+// is pinned at boot on the NAMED credential broker the descriptor references by
+// non-secret name.
+//
+// # Dev-gated full binding over the wire
+//
+// Behind the fail-closed, boot-only `tools.allow_wire_oauth_descriptor` opt-in
+// (config flag OR the `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR` boot env; default
+// off, all of production) the descriptor MAY instead carry the full binding
+// over the wire — TokenURL, Audience, Scopes, and a Remote credential-pull
+// block — so a coordinator can stand up a new OAuth-fronted MCP server at
+// runtime. With the opt-in OFF, a descriptor carrying ANY of those
+// credential-sink fields is REJECTED (fail-loud, naming the field + the opt-in
+// key) — the name-only posture is byte-for-byte unchanged. The relaxation stays
+// honest even when opted in: `allowed_downstream_hosts` is NEVER a wire field —
+// it is DERIVED from the connected server's own URL — and the wire TokenURL /
+// Remote URL are dialed through the identical token-exchange SSRF backstop the
+// boot path uses (refuse resolved private / link-local / ULA / unspecified, no
+// proxy, every redirect refused). NO secret ever rides the wire: Remote.AuthTokenEnv
+// names an env var (the runtime reads the token from the process environment),
+// it is not the token itself.
+//
+// The forbidden fields that determine a sink WITHOUT the opt-in bounds (a raw
+// `allowed_downstream_hosts` list, `client_id_env`, `client_secret_env`,
+// `auth_url`) are simply NOT on this struct, so a `DisallowUnknownFields` decode
+// rejects any of them BY NAME.
 type AgentConfigOAuthProviderDescriptor struct {
 	// Name is the unique provider name (a connection's oauth_provider binding
 	// references it). Required.
@@ -159,11 +191,44 @@ type AgentConfigOAuthProviderDescriptor struct {
 	// "remote" (broker-pull). An empty value is a LOUD reject. Required.
 	CredentialSource string `json:"credential_source"`
 	// CredentialBroker names a boot-declared credential broker that pins every
-	// credential sink. Required; an unknown name fails loud. NON-SECRET.
-	CredentialBroker string `json:"credential_broker"`
+	// credential sink. Required for the name-only shape; mutually exclusive with
+	// the dev-gated wire fields (TokenURL / Remote). NON-SECRET.
+	CredentialBroker string `json:"credential_broker,omitempty"`
 	// Scopes is the requested OAuth scope subset. NON-SECRET; clamped to the
 	// broker's boot scope ceiling at build time. Optional.
 	Scopes []string `json:"scopes,omitempty"`
+	// TokenURL is the RFC-8693 token-exchange endpoint. A credential-sink field:
+	// carried over the wire ONLY behind the `tools.allow_wire_oauth_descriptor`
+	// opt-in, and dialed through the token-exchange SSRF backstop (private /
+	// link-local / ULA / unspecified refused post-DNS, every redirect refused, no
+	// proxy). Rejected when the opt-in is off. Optional.
+	TokenURL string `json:"token_url,omitempty"`
+	// Audience is the exchanged token's audience. A credential-sink field:
+	// carried over the wire ONLY behind the opt-in; rejected when off. Optional.
+	Audience string `json:"audience,omitempty"`
+	// Remote is the wire-carried credential-pull block (the coordinator endpoint
+	// the runtime pulls its OWN org client credential from). A credential-sink
+	// field: carried over the wire ONLY behind the opt-in; rejected when off. NO
+	// secret rides it — AuthTokenEnv is an env-var NAME, and the pull URL is
+	// dialed through the same SSRF backstop as TokenURL. Optional.
+	Remote *AgentConfigOAuthRemoteDescriptor `json:"remote,omitempty"`
+}
+
+// AgentConfigOAuthRemoteDescriptor is the wire projection of a wire-carried
+// broker-pull credential source (the dev-gated full-binding shape only). The
+// runtime performs a single authenticated GET against URL (Authorization:
+// Bearer, token read from the env var NAMED by AuthTokenEnv) to pull its own org
+// client credential. NO secret is carried — AuthTokenEnv is a NAME, not a value.
+// The pull dial faces the identical SSRF backstop as the token endpoint.
+type AgentConfigOAuthRemoteDescriptor struct {
+	// URL is the coordinator credential-pull endpoint. Required when Remote is
+	// set. https (or a loopback host for the dev/fixture case); dialed through
+	// the SSRF backstop.
+	URL string `json:"url"`
+	// AuthTokenEnv names the env var holding the runtime's own service token
+	// (sent as a Bearer credential on the pull). NON-SECRET — an env-var name,
+	// never the token. Required when Remote is set.
+	AuthTokenEnv string `json:"auth_token_env"`
 }
 
 // AgentConfigOAuthProviders is the wire projection of the Protocol-installed

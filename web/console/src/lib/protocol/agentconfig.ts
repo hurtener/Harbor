@@ -84,6 +84,11 @@ export interface AgentConfigMCPConnectionDescriptor {
 	 * metadata from. Revisioned + writable live over
 	 * `agent_config.set_mcp_discovery_origins` (http transport only). */
 	oauth_discovery_allowed_origins?: string[];
+	/** Optional inline dev-gated OAuth binding — carries the FULL provider binding
+	 * for this connection (mutually exclusive with `oauth_provider`). Accepted only
+	 * behind the fail-closed `tools.allow_wire_oauth_descriptor` boot opt-in; the
+	 * downstream sink is DERIVED from this connection's url (http transport only). */
+	oauth?: AgentConfigOAuthProviderDescriptor;
 }
 
 /** The runtime-added MCP-connection section of the config envelope. Mirrors
@@ -92,11 +97,12 @@ export interface AgentConfigConnections {
 	servers?: AgentConfigMCPConnectionDescriptor[];
 }
 
-/** A Protocol-installed OAuth provider — the ZERO-URL descriptor. It carries NO
- * URL, NO env-var name, and NO secret: the credential-plane invariant pins every
- * credential sink (token endpoint, credential-pull endpoint, allowed downstream
- * hosts, audience, scope ceiling) at boot on the named credential broker the
- * descriptor references by name. Mirrors
+/** A Protocol-installed OAuth provider. By default the ZERO-URL, name-only
+ * descriptor (every credential sink pinned at boot on the named credential
+ * broker). Behind the fail-closed `tools.allow_wire_oauth_descriptor` boot
+ * opt-in it MAY instead carry the full binding over the wire (token_url /
+ * audience / scopes / remote{}); with the opt-in off a descriptor carrying any
+ * of those sink fields is rejected. Mirrors
  * `types.AgentConfigOAuthProviderDescriptor`. */
 export interface AgentConfigOAuthProviderDescriptor {
 	name: string;
@@ -104,10 +110,29 @@ export interface AgentConfigOAuthProviderDescriptor {
 	driver: string;
 	/** Exactly "remote" (broker-pull). */
 	credential_source: string;
-	/** Boot-declared credential broker name (pins every sink). Non-secret. */
-	credential_broker: string;
+	/** Boot-declared credential broker name (pins every sink). Required for the
+	 * name-only shape; mutually exclusive with the dev-gated wire fields. */
+	credential_broker?: string;
 	/** Requested scope subset (clamped to the broker's boot scope ceiling). */
 	scopes?: string[];
+	/** Dev-gated wire-carried RFC-8693 token-exchange endpoint (a credential-sink
+	 * field; rejected unless the opt-in is on; dialed through the SSRF backstop). */
+	token_url?: string;
+	/** Dev-gated wire-carried exchanged-token audience (rejected unless opted in). */
+	audience?: string;
+	/** Dev-gated wire-carried broker-pull credential source (rejected unless opted
+	 * in). No secret — auth_token_env is an env-var NAME. */
+	remote?: AgentConfigOAuthRemoteDescriptor;
+}
+
+/** A wire-carried broker-pull credential source (dev-gated full-binding shape
+ * only). No secret is carried — auth_token_env NAMES an env var. Mirrors
+ * `types.AgentConfigOAuthRemoteDescriptor`. */
+export interface AgentConfigOAuthRemoteDescriptor {
+	/** Coordinator credential-pull endpoint (dialed through the SSRF backstop). */
+	url: string;
+	/** Env-var NAME holding the runtime service token (never the token itself). */
+	auth_token_env: string;
 }
 
 /** The Protocol-installed OAuth-provider section of the config envelope. Mirrors

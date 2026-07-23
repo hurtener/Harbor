@@ -45,6 +45,11 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/llm"
+	// Credential-plane package — imported (dev-only gated, §13 carve-out for
+	// `cmd/harbor`) to call its boot-capture setter for the
+	// `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR` escape hatch, exactly as the
+	// tokenexchange private-dial capture is called below.
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	// Token-exchange OAuth driver — imported (dev-only gated, §13
 	// carve-out for `cmd/harbor`) to call its boot-capture setter for the
 	// `HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE` escape hatch, exactly as the
@@ -125,4 +130,31 @@ func registerAllowPrivateExchangeIfDev(allow bool, stderr interface{ Write(p []b
 		return
 	}
 	_, _ = fmt.Fprintln(stderr, PrivateExchangeBanner)
+}
+
+// registerAllowWireOAuthDescriptorIfDev is the reciprocal banner+capture for the
+// dev-only `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR` escape hatch — the exact shape of
+// registerAllowPrivateExchangeIfDev. When `allow` is true it permits
+// set_oauth_provider / add_mcp_connection to carry a FULL OAuth-provider binding
+// over the wire (token_url / audience / scopes / remote{}) instead of only a
+// boot-declared provider NAME. It captures the boot flag UNCONDITIONALLY
+// (`false` is the honest non-dev boot state) into the credential-plane package's
+// write-once atomic AND prints the [DEV-ONLY WIRE OAUTH DESCRIPTOR …] stderr
+// banner at the SAME call site when the hatch fired — keeping capture and banner
+// structurally reciprocal. The effective posture the serve wiring reads is this
+// captured flag OR the `tools.allow_wire_oauth_descriptor` config flag. Never
+// Protocol-writable; the derived-downstream-sink + SSRF guards keep the
+// relaxation bounded even when it fires.
+func registerAllowWireOAuthDescriptorIfDev(allow bool, stderr interface{ Write(p []byte) (int, error) }) {
+	// capture the dev wire-descriptor boot flag for the agent-config gate.
+	// Called unconditionally — `false` is the honest non-dev boot state.
+	toolauth.RegisterAllowWireOAuthDescriptorCaptured(allow)
+
+	if !allow {
+		return
+	}
+	if stderr == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(stderr, WireOAuthDescriptorBanner)
 }

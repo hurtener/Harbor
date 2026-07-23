@@ -373,6 +373,7 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigSetMCPDiscoveryOriginsRequest":  "types",
 	"AgentConfigSetMCPDiscoveryOriginsResponse": "types",
 	"AgentConfigOAuthProviderDescriptor":        "types",
+	"AgentConfigOAuthRemoteDescriptor":          "types",
 	"AgentConfigOAuthProviders":                 "types",
 	"AgentConfigOAuthProvidersDiff":             "types",
 	"AgentConfigSetOAuthProviderRequest":        "types",
