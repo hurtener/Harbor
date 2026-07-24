@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -232,6 +233,57 @@ type Config struct {
 	// invocations of different tools / resources / prompts never share or race
 	// this map (the concurrent-reuse contract).
 	ToolOAuthProviders map[string]auth.OAuthProvider
+
+	// Injection, when non-nil, binds this connection to per-user credential
+	// INJECTION for a receiver-style MCP server: on each identity-stamped
+	// outbound tool call the driver SOURCES the acting principal's credential
+	// from Injection.Provider (the same per-user broker-pull as OAuthProvider —
+	// per-user via the ctx identity, fetched-not-held) and INJECTS it in the
+	// declared form (a request header, an `Authorization: Basic` value, or a
+	// `_meta` key). Mutually exclusive with OAuthProvider / ToolOAuthProviders /
+	// a static `Authorization` header (one auth mode per connection). Resolved
+	// once at construction; immutable thereafter — the per-user value is pulled
+	// per-call from the ctx and never held here (the concurrent-reuse contract).
+	Injection *CredentialInjection
+}
+
+// InjectionForm selects how a receiver-style MCP server's per-user credential is
+// delivered on each outbound tool call.
+type InjectionForm string
+
+const (
+	// InjectionFormHeader sets the pulled credential as the value of a declared
+	// request header.
+	InjectionFormHeader InjectionForm = "header"
+	// InjectionFormBasic sets the pulled credential as the password half of an
+	// `Authorization: Basic base64(username ":" credential)` header.
+	InjectionFormBasic InjectionForm = "basic"
+	// InjectionFormMeta sets the pulled credential as the leaf value of a
+	// declared `_meta` key path.
+	InjectionFormMeta InjectionForm = "meta"
+)
+
+// CredentialInjection is the resolved, NON-SECRET per-connection binding that
+// sources the acting principal's credential from Provider on each
+// identity-stamped outbound tool call and injects it in Form. Immutable after
+// construction: the per-user value is pulled per-call from the ctx identity
+// (Provider.Token, reading identity.From(ctx)) and never held on this struct, so
+// one shared Provider serves N concurrent identities with no value bleed (the
+// concurrent-reuse contract). The credential still originates from the broker
+// (fetched-not-held, memory-only TTL); injection changes only the LAST hop — the
+// runtime delivers the value because the receiver server cannot pull it.
+type CredentialInjection struct {
+	// Provider is the resolved broker the per-user credential is pulled from.
+	Provider auth.OAuthProvider
+	// Form selects the injection form.
+	Form InjectionForm
+	// Header is the target request header name for InjectionFormHeader.
+	Header string
+	// BasicUsername is the (non-secret, optional) username half for
+	// InjectionFormBasic; the pulled credential is the password half.
+	BasicUsername string
+	// MetaKey is the split target `_meta` key path for InjectionFormMeta.
+	MetaKey []string
 }
 
 // pushIdentity returns the identity to stamp on a server-pushed
@@ -294,6 +346,55 @@ func (c Config) validate() error {
 	// is mandatory because the event bus rejects empty-triple events.
 	if c.DefaultIdentity.TenantID == "" || c.DefaultIdentity.UserID == "" || c.DefaultIdentity.SessionID == "" {
 		return fmt.Errorf("%w: DefaultIdentity must be fully populated (tenant/user/session)", ErrInvalidConfig)
+	}
+	// Per-user credential injection is mutually exclusive with the bearer/oauth
+	// mode and a static Authorization header (one auth mode per connection), and
+	// the resolved binding must be well-formed. Attach re-enforces the same
+	// rules for the runtime-add path; this is defence-in-depth for programmatic
+	// New() callers.
+	if c.Injection != nil {
+		if c.OAuthProvider != nil || len(c.ToolOAuthProviders) > 0 {
+			return fmt.Errorf("%w: Injection is mutually exclusive with OAuthProvider/ToolOAuthProviders (one auth mode per connection)", ErrInvalidConfig)
+		}
+		for k := range c.Headers {
+			if strings.EqualFold(k, "authorization") {
+				return fmt.Errorf("%w: Injection is mutually exclusive with a static Authorization header (one auth mode per connection)", ErrInvalidConfig)
+			}
+		}
+		if c.Injection.Provider == nil {
+			return fmt.Errorf("%w: Injection.Provider is required", ErrInvalidConfig)
+		}
+		switch c.Injection.Form {
+		case InjectionFormHeader:
+			if c.Injection.Header == "" {
+				return fmt.Errorf("%w: Injection form=header requires Header", ErrInvalidConfig)
+			}
+			if strings.EqualFold(c.Injection.Header, "authorization") {
+				return fmt.Errorf("%w: Injection form=header must not target Authorization (use form=basic)", ErrInvalidConfig)
+			}
+			if !config.IsReceiverInjectionCredentialKey(c.Injection.Header) {
+				return fmt.Errorf("%w: Injection header %q is not redaction-covered", ErrInvalidConfig, c.Injection.Header)
+			}
+		case InjectionFormBasic:
+			// Authorization: Basic — no target key to validate.
+		case InjectionFormMeta:
+			if len(c.Injection.MetaKey) == 0 {
+				return fmt.Errorf("%w: Injection form=meta requires MetaKey", ErrInvalidConfig)
+			}
+			for _, seg := range c.Injection.MetaKey {
+				if seg == "" {
+					return fmt.Errorf("%w: Injection MetaKey has an empty segment", ErrInvalidConfig)
+				}
+				if config.IsReservedMCPMetaKey(seg) {
+					return fmt.Errorf("%w: Injection MetaKey segment %q is reserved", ErrInvalidConfig, seg)
+				}
+			}
+			if !config.IsReceiverInjectionCredentialKey(c.Injection.MetaKey[len(c.Injection.MetaKey)-1]) {
+				return fmt.Errorf("%w: Injection MetaKey leaf is not redaction-covered", ErrInvalidConfig)
+			}
+		default:
+			return fmt.Errorf("%w: Injection.Form %q is invalid (header/basic/meta)", ErrInvalidConfig, c.Injection.Form)
+		}
 	}
 	return nil
 }
@@ -767,6 +868,15 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	// thread it onto the call's ctx BEFORE dispatch. A Token() failure aborts
 	// here — no wire request is issued.
 	ctx, err = p.resolveBearerCtx(ctx, name)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	// Fail-closed per-user credential injection (receiver-style server): source
+	// the acting principal's credential from the broker and inject it in the
+	// declared form. The HTTP forms (header / Basic) ride the call's ctx into
+	// the injecting transport; the `_meta` form mutates meta in place BEFORE it
+	// is stamped onto params below. A broker error aborts here — no wire request.
+	ctx, err = p.resolveInjection(ctx, meta)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
@@ -1339,6 +1449,74 @@ func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Co
 		slot.setGranted(tok.Scopes)
 	}
 	return withBearer(ctx, tok.AccessToken), nil
+}
+
+// resolveInjection sources the acting principal's credential from the bound
+// injection provider and injects it in the declared form. It is FAIL-CLOSED: a
+// Token() error (including a typed *auth.ErrAuthRequired) aborts the RPC by
+// returning the error BEFORE any wire request — never a fallback to an
+// unauthenticated call (CLAUDE.md §13). An unbound connection returns the ctx
+// unchanged.
+//
+// The per-user value derives from identity.From(ctx) via the broker pull, so two
+// different acting users on one shared connection get two different injected
+// values — no cross-user bleed. For the HTTP forms the value rides the returned
+// ctx into the injecting transport (per-call state on the ctx, never on the
+// compiled artifact); for the `_meta` form the value is written into meta in
+// place (meta is a per-call map).
+func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (context.Context, error) {
+	inj := p.cfg.Injection
+	if inj == nil {
+		return ctx, nil
+	}
+	tok, err := inj.Provider.Token(ctx, p.source)
+	if err != nil {
+		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
+		return nil, err
+	}
+	if tok.AccessToken == "" {
+		// Defence-in-depth: a ("", nil) return from a bound provider must never
+		// let the RPC proceed unauthenticated.
+		return nil, fmt.Errorf("%w (connection %q, source %q)", ErrEmptyBearer, p.cfg.Name, p.source)
+	}
+	switch inj.Form {
+	case InjectionFormHeader:
+		return withInjectedHeaders(ctx, map[string]string{inj.Header: tok.AccessToken}), nil
+	case InjectionFormBasic:
+		creds := base64.StdEncoding.EncodeToString([]byte(inj.BasicUsername + ":" + tok.AccessToken))
+		return withInjectedHeaders(ctx, map[string]string{"Authorization": "Basic " + creds}), nil
+	case InjectionFormMeta:
+		injectMeta(meta, inj.MetaKey, tok.AccessToken)
+		return ctx, nil
+	default:
+		// Unreachable: validate() rejects an unknown form at construction.
+		return nil, fmt.Errorf("%w: unknown injection form %q", ErrInvalidConfig, inj.Form)
+	}
+}
+
+// injectMeta writes value into meta at the (already-validated, non-reserved) key
+// path, creating intermediate maps as needed. A single-segment path sets a
+// top-level key; a multi-segment path nests. Reserved top-level keys are stamped
+// LAST by buildIdentityMeta, and validate() guarantees no path segment is
+// reserved, so injection can never shadow the identity triple.
+func injectMeta(meta mcpsdk.Meta, path []string, value string) {
+	if len(path) == 0 {
+		return
+	}
+	if len(path) == 1 {
+		meta[path[0]] = value
+		return
+	}
+	cur := map[string]any(meta)
+	for _, seg := range path[:len(path)-1] {
+		next, ok := cur[seg].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			cur[seg] = next
+		}
+		cur = next
+	}
+	cur[path[len(path)-1]] = value
 }
 
 // chooseString returns first when non-empty, else second.

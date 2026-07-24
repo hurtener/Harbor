@@ -1783,6 +1783,100 @@ func (c *Config) validateTools() error {
 					fmt.Sprintf("connection host %q is not in provider %q's allowed_downstream_hosts %v — the bearer may only be injected into a boot-declared downstream sink", connHost, providerName, allowed))
 			}
 		}
+		// Per-user credential INJECTION for a receiver-style server. The mapping
+		// is non-secret; it names a declared broker and declares WHERE the
+		// per-user pulled value is placed (header / Basic / `_meta`). It is
+		// mutually exclusive with the bearer/oauth mode and a static
+		// `Authorization` header (one auth mode per connection), needs an HTTP
+		// request (the pulled credential leaves to a network host — the same
+		// downstream-sink allow-list applies), and may only target a
+		// redaction-covered key (fail-closed: the redactor must be able to hold
+		// the injected value to `***`).
+		if s.Injection != nil {
+			inj := s.Injection
+			field := prefix + ".injection"
+			if s.OAuthProvider != "" {
+				return fieldError(field,
+					"must not be set alongside oauth_provider (one auth mode per connection — injection and bearer are mutually exclusive)")
+			}
+			if len(s.ToolOAuthProviders) > 0 {
+				return fieldError(field,
+					"must not be set alongside tool_oauth_providers (one auth mode per connection — injection and bearer are mutually exclusive)")
+			}
+			for k := range s.Headers {
+				if strings.EqualFold(k, "authorization") {
+					return fieldError(prefix+".headers",
+						"must not carry a static \"Authorization\" header alongside injection (one auth mode per connection — the credential is injected per-identity)")
+				}
+			}
+			if strings.TrimSpace(inj.Provider) == "" {
+				return fieldError(field+".provider", "must name a declared tools.oauth_providers[] broker")
+			}
+			if _, ok := oauthProviderNames[inj.Provider]; !ok {
+				return fieldError(field+".provider",
+					fmt.Sprintf("references unknown OAuth provider %q (declared providers: %s; declare via tools.oauth_providers[])",
+						inj.Provider, sortedKeysFromSet(oauthProviderNames)))
+			}
+			// The credential leaves to a network host: needs an http(s) url and
+			// the connection host must be a boot-declared downstream sink of the
+			// named broker (the credential-plane invariant, fail-closed).
+			if mode == "stdio" || s.URL == "" {
+				return fieldError(field,
+					"must not be set on a connection without an http(s) url (a receiver-style server is reached over HTTP; the pulled credential is delivered on the outbound request)")
+			}
+			allowed := oauthProviderAllowedHosts[inj.Provider]
+			if len(allowed) == 0 {
+				return fieldError(field+".provider",
+					fmt.Sprintf("provider %q declares no allowed_downstream_hosts, but this connection injects its credential — a credential-sourcing provider must declare its downstream sinks (add allowed_downstream_hosts to tools.oauth_providers[]; the credential-plane invariant is fail-closed)", inj.Provider))
+			}
+			connHost := NormalizeDownstreamHost(s.URL)
+			if connHost == "" || !containsHost(allowed, connHost) {
+				return fieldError(field+".provider",
+					fmt.Sprintf("connection host %q is not in provider %q's allowed_downstream_hosts %v — the pulled credential may only be injected into a boot-declared downstream sink", connHost, inj.Provider, allowed))
+			}
+			switch inj.Form {
+			case MCPInjectionFormHeader:
+				if strings.TrimSpace(inj.Header) == "" {
+					return fieldError(field+".header", "must name a target request header for form=header")
+				}
+				if strings.EqualFold(inj.Header, "authorization") {
+					return fieldError(field+".header",
+						"must not target the \"Authorization\" header (use form=basic for an Authorization: Basic value)")
+				}
+				if !IsReceiverInjectionCredentialKey(inj.Header) {
+					return fieldError(field+".header",
+						fmt.Sprintf("header %q is not a redaction-covered credential key — the audit redactor could not hold the injected value to *** (name it with a credential segment such as -api-key / -token / -secret so it is always redacted)", inj.Header))
+				}
+			case MCPInjectionFormBasic:
+				// Authorization: Basic — the header key is the reserved
+				// Authorization lane the redactor already covers; no target key
+				// to validate. BasicUsername is non-secret and optional.
+			case MCPInjectionFormMeta:
+				if strings.TrimSpace(inj.MetaKey) == "" {
+					return fieldError(field+".meta_key", "must name a target _meta key path for form=meta")
+				}
+				segs := strings.Split(inj.MetaKey, ".")
+				for _, seg := range segs {
+					if strings.TrimSpace(seg) == "" {
+						return fieldError(field+".meta_key", "must not contain an empty path segment")
+					}
+					if IsReservedMCPMetaKey(seg) {
+						return fieldError(field+".meta_key",
+							fmt.Sprintf("segment %q is reserved (tenant/user/session/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", seg))
+					}
+				}
+				leaf := segs[len(segs)-1]
+				if !IsReceiverInjectionCredentialKey(leaf) {
+					return fieldError(field+".meta_key",
+						fmt.Sprintf("leaf key %q is not a redaction-covered credential key — the audit redactor could not hold the injected value to *** (name the leaf with a credential segment such as api_key / token / secret)", leaf))
+				}
+			case "":
+				return fieldError(field+".form", "must be set (header / basic / meta)")
+			default:
+				return fieldError(field+".form",
+					fmt.Sprintf("unknown form %q (must be header / basic / meta)", inj.Form))
+			}
+		}
 		// OAuth-requirement discovery cross-origin allowances: each
 		// entry must be a well-formed https origin (scheme://host[:port], no
 		// path). The runtime additionally refuses private-range / IP-literal
@@ -2389,6 +2483,51 @@ func IsReservedMCPMetaKey(k string) bool {
 		return true
 	}
 	return strings.HasPrefix(k, mcpSpecMetaAnnotationPrefix)
+}
+
+// receiverInjectionCredentialSegments is the set of trailing key SEGMENTS that
+// mark a header / `_meta` key as carrying a credential. It is the SINGLE
+// authority both the receiver-injection mapping validation (which target keys an
+// operator may declare) and the audit redactor's injection rule (which keys it
+// holds to `***`) consult, so validation permits a target key IFF the redactor
+// is guaranteed to redact it — the fail-closed guarantee that an injected
+// credential can never reach an audit payload uncredacted. Bare `auth` is
+// deliberately EXCLUDED (an `Authorization` header is covered by the dedicated
+// authorization rule, and a plain `auth` key is often a non-secret sub-object);
+// the tokens here are unambiguously credential-bearing.
+var receiverInjectionCredentialSegments = map[string]struct{}{
+	"key":        {},
+	"apikey":     {},
+	"token":      {},
+	"secret":     {},
+	"credential": {},
+	"password":   {},
+}
+
+// IsReceiverInjectionCredentialKey reports whether a header or `_meta` leaf key
+// is redaction-covered for receiver-style credential injection: it is true when
+// the LAST `-`/`_`/`.`-separated segment of the key (case-insensitive) is a
+// known credential token. Both the injection-mapping validation and the audit
+// redactor's injection rule call it, so a target key an operator may declare is
+// exactly a target key the redactor holds to `***` (fail-closed). Matching only
+// the TRAILING segment keeps legitimate observability fields whose key merely
+// CONTAINS a token word — `token_type`, `token_url`, `access_token_count` — out
+// of the redaction net, while catching genuine credential keys. Examples:
+// `x-vendor-api-key`, `x_github_token`, `vendor.api_key`, `user_password` →
+// true; `x-request-id`, `content-type`, `token_url`, `token_type` → false.
+func IsReceiverInjectionCredentialKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "" {
+		return false
+	}
+	segs := strings.FieldsFunc(k, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.'
+	})
+	if len(segs) == 0 {
+		return false
+	}
+	_, ok := receiverInjectionCredentialSegments[segs[len(segs)-1]]
+	return ok
 }
 
 // sortedKeys returns a deterministic comma-separated list of map

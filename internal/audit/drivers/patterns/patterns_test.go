@@ -25,7 +25,9 @@ func TestDriver_Names_DeterministicOrder(t *testing.T) {
 		"cookie",
 		"authorization",
 		"bearer",
+		"injection_credential",
 		"bearer_in_value",
+		"basic_in_value",
 		"multimodal",
 	}
 	if len(got) != len(want) {

@@ -949,6 +949,39 @@ keys (`tenant` / `user` / `session` / `agent_id` / `traceparent` /
 `tracestate` and any `io.modelcontextprotocol/`-prefixed key) and empty keys
 are rejected at validation. See `examples/dev.yaml` for a worked stanza.
 
+#### tools.mcp_servers[].injection
+
+Per-user credential INJECTION for a RECEIVER-STYLE server (D-341) — one that
+authenticates by RECEIVING its credential directly on each request (an
+arbitrary header, an `Authorization: Basic` value, or a `_meta` key) instead of
+PULLING it via RFC 8693. The runtime SOURCES the acting user's credential from
+the named broker on every identity-stamped call (the SAME per-user broker-pull
+as `oauth_provider` — never held, never client-pushed) and INJECTS it in the
+declared, NON-SECRET form. Only the pulled value is secret; the mapping is
+config. Fields:
+
+- `provider` — a declared `tools.oauth_providers[]` broker name (required).
+- `form` — `header` / `basic` / `meta` (required).
+- `header` — for `form: header`, the target request header name (e.g.
+  `x-vendor-api-key`). Must be a redaction-covered credential key and must not
+  be `Authorization` (use `form: basic`).
+- `basic_username` — for `form: basic`, the (optional, non-secret) username
+  half; the pulled credential is the password half of `Authorization: Basic
+  base64(username ":" credential)`.
+- `meta_key` — for `form: meta`, the target `_meta` key PATH, dot-separated for
+  nesting (e.g. `vendor.api_key`). No path segment may be a reserved `_meta` key
+  and the leaf must be a redaction-covered credential key.
+
+Injection is **mutually exclusive** with `oauth_provider` / `tool_oauth_providers`
+/ a static `Authorization` header (one auth mode per connection). The connection
+needs an http(s) `url` and its host must be in the broker's
+`allowed_downstream_hosts` (fail-closed — the credential leaves to that host). A
+broker error fails the call loud (never an unauthenticated send). The audit
+redactor is extended so the Basic scheme, the declared header key, and the
+`_meta` credential leaf are all held to `***`; validation rejects a target key
+the redactor would not cover, so an injected value can never reach an audit
+payload uncredacted. See `examples/harbor.yaml` › `tools.mcp_servers[].injection`.
+
 #### tools.mcp_servers[].policy (and .tool_policies)
 
 Optional retry/timeout policy for the tools a server registers (Phase

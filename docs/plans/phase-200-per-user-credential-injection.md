@@ -39,12 +39,12 @@ None. D-271's pull-only posture is revisited (a controlled exception) but not de
 
 ## Acceptance criteria
 
-- [ ] A connection configured with an injection mapping sources the acting principal's credential via the broker-pull (`OAuthProvider.Token(ctx, source)`, reading `identity.From(ctx)`) per outbound call and injects it per the declared mapping (header / Basic / `_meta`).
-- [ ] Per-user isolation: two acting users on the same connection produce two distinct injected values; a concurrent-reuse test (N≥100 interleaved per-user calls, one shared driver, `-race`) shows no cross-user value bleed.
-- [ ] A broker error fails the call loudly (surfaces the typed error; the call is not sent unauthenticated).
-- [ ] The audit redactor redacts `Authorization: Basic <b64>`, the declared injection header keys, and the declared `_meta` credential keys to `***` (asserted against a captured outbound request payload).
-- [ ] The attach-time one-auth-mode guard rejects an injection mapping declared alongside an `oauth_provider` bearer binding or a static `Authorization` header.
-- [ ] `scripts/smoke/phase-200.sh` asserts the redaction discipline / mapping validation (degrades to SKIP where no dev receiver fixture is reachable).
+- [x] A connection configured with an injection mapping sources the acting principal's credential via the broker-pull (`OAuthProvider.Token(ctx, source)`, reading `identity.From(ctx)`) per outbound call and injects it per the declared mapping (header / Basic / `_meta`).
+- [x] Per-user isolation: two acting users on the same connection produce two distinct injected values; a concurrent-reuse test (N≥100 interleaved per-user calls, one shared driver, `-race`) shows no cross-user value bleed.
+- [x] A broker error fails the call loudly (surfaces the typed error; the call is not sent unauthenticated).
+- [x] The audit redactor redacts `Authorization: Basic <b64>`, the declared injection header keys, and the declared `_meta` credential keys to `***` (asserted against a captured outbound request payload).
+- [x] The attach-time one-auth-mode guard rejects an injection mapping declared alongside an `oauth_provider` bearer binding or a static `Authorization` header.
+- [x] `scripts/smoke/phase-200.sh` asserts the redaction discipline / mapping validation (degrades to SKIP where no dev receiver fixture is reachable).
 
 ## Files added or changed
 

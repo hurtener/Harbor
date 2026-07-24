@@ -814,6 +814,26 @@ tools:
   #     #   list_events: gcal-broker         # a tool
   #     #   cal://calendars/primary: gcal-broker   # a resource URI
   #     #   draft_reply: m365-mail-broker    # a prompt
+  #     # injection — per-user credential INJECTION for a RECEIVER-STYLE server
+  #     # (one that RECEIVES its credential on each request instead of PULLING it
+  #     # via RFC 8693). The runtime SOURCES the acting user's credential from the
+  #     # named broker per call (the SAME per-user broker-pull as oauth_provider)
+  #     # and INJECTS it in the declared, NON-SECRET form. Only the pulled value is
+  #     # secret; the mapping is config. Mutually exclusive with oauth_provider /
+  #     # tool_oauth_providers / a static Authorization header (one auth mode per
+  #     # connection). The broker's allowed_downstream_hosts must list this
+  #     # connection's host (fail-closed). The target header / _meta leaf key MUST
+  #     # be redaction-covered (a credential segment such as -api-key / -token /
+  #     # -secret) so the audit redactor always holds the injected value to ***.
+  #     # Pick exactly ONE form:
+  #     # injection:
+  #     #   provider: recv-broker            # a declared tools.oauth_providers[] broker
+  #     #   form: header                     # header | basic | meta
+  #     #   header: x-vendor-api-key         # form=header: the pulled value → this header
+  #     #   # form=basic → Authorization: Basic base64(basic_username ":" <pulled>)
+  #     #   # basic_username: svc
+  #     #   # form=meta → the pulled value → this dot-path _meta leaf
+  #     #   # meta_key: vendor.api_key
   #
   #   - name: filesystem
   #     transport_mode: stdio

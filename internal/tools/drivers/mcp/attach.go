@@ -180,6 +180,13 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if toolBindErr != nil {
 		return fmt.Errorf("mcp server %q: %w", ms.Name, toolBindErr)
 	}
+	// Resolve the per-user credential-injection binding (receiver-style server),
+	// re-enforcing one-auth-mode + the downstream-sink allow-list at attach time
+	// for the runtime-add path exactly like the bearer binding.
+	injection, injErr := resolveInjectionBinding(ms, mode, resolver)
+	if injErr != nil {
+		return fmt.Errorf("mcp server %q: %w", ms.Name, injErr)
+	}
 	provider, err := New(Config{
 		Name:               ms.Name,
 		TransportMode:      mode,
@@ -196,6 +203,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		ToolContext:        deps.ToolContext,
 		OAuthProvider:      oauthProvider,
 		ToolOAuthProviders: toolProviders,
+		Injection:          injection,
 		MetaAnnotations:    cloneHeaderMap(ms.MetaAnnotations),
 		// Record any `WWW-Authenticate` OAuth step-up challenge on the
 		// registry state so an operator can inspect the advertised requirement
@@ -445,6 +453,76 @@ func resolveToolOAuthBindings(ms config.MCPServerConfig, mode MCPTransportMode, 
 		out[toolName] = prov
 	}
 	return out, nil
+}
+
+// resolveInjectionBinding resolves a connection's non-secret per-user
+// credential-INJECTION mapping (receiver-style server) into a resolved
+// CredentialInjection, re-enforcing every rule config validation enforces so the
+// runtime-add path (which never passes through `harbor validate`) is held to the
+// same bar: mutual exclusivity with the bearer/oauth mode + a static
+// Authorization header (one auth mode per connection), an http(s) transport, the
+// broker's downstream-sink allow-list (via resolveProviderBinding), and a
+// redaction-covered target key. Returns nil when the connection declares no
+// injection.
+func resolveInjectionBinding(ms config.MCPServerConfig, mode MCPTransportMode, providers OAuthProviderResolver) (*CredentialInjection, error) {
+	if ms.Injection == nil {
+		return nil, nil
+	}
+	inj := ms.Injection
+	if ms.OAuthProvider != "" || len(ms.ToolOAuthProviders) > 0 {
+		return nil, fmt.Errorf("%w: injection is mutually exclusive with oauth_provider/tool_oauth_providers (one auth mode per connection)", ErrOAuthBinding)
+	}
+	if strings.TrimSpace(inj.Provider) == "" {
+		return nil, fmt.Errorf("%w: injection.provider must name a declared oauth provider", ErrOAuthBinding)
+	}
+	// resolveProviderBinding enforces stdio/url + static-Authorization conflict +
+	// unknown-name + the downstream-sink allow-list — the same gate the bearer
+	// binding uses (the pulled credential leaves to the connection host).
+	prov, err := resolveProviderBinding(ms, mode, inj.Provider, providers)
+	if err != nil {
+		return nil, err
+	}
+	ci := &CredentialInjection{Provider: prov}
+	switch inj.Form {
+	case config.MCPInjectionFormHeader:
+		if strings.TrimSpace(inj.Header) == "" {
+			return nil, fmt.Errorf("%w: injection form=header requires a header", ErrOAuthBinding)
+		}
+		if strings.EqualFold(inj.Header, "authorization") {
+			return nil, fmt.Errorf("%w: injection form=header must not target the Authorization header (use form=basic)", ErrOAuthBinding)
+		}
+		if !config.IsReceiverInjectionCredentialKey(inj.Header) {
+			return nil, fmt.Errorf("%w: injection header %q is not a redaction-covered credential key (name it with a credential segment such as -api-key / -token / -secret)", ErrOAuthBinding, inj.Header)
+		}
+		ci.Form = InjectionFormHeader
+		ci.Header = inj.Header
+	case config.MCPInjectionFormBasic:
+		ci.Form = InjectionFormBasic
+		ci.BasicUsername = inj.BasicUsername
+	case config.MCPInjectionFormMeta:
+		if strings.TrimSpace(inj.MetaKey) == "" {
+			return nil, fmt.Errorf("%w: injection form=meta requires a meta_key path", ErrOAuthBinding)
+		}
+		segs := strings.Split(inj.MetaKey, ".")
+		for _, seg := range segs {
+			if strings.TrimSpace(seg) == "" {
+				return nil, fmt.Errorf("%w: injection meta_key has an empty segment", ErrOAuthBinding)
+			}
+			if isReservedMetaKey(seg) {
+				return nil, fmt.Errorf("%w: injection meta_key segment %q is reserved (triple/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", ErrOAuthBinding, seg)
+			}
+		}
+		if !config.IsReceiverInjectionCredentialKey(segs[len(segs)-1]) {
+			return nil, fmt.Errorf("%w: injection meta_key leaf is not a redaction-covered credential key (name the leaf with a credential segment such as api_key / token / secret)", ErrOAuthBinding)
+		}
+		ci.Form = InjectionFormMeta
+		ci.MetaKey = segs
+	case "":
+		return nil, fmt.Errorf("%w: injection.form must be set (header/basic/meta)", ErrOAuthBinding)
+	default:
+		return nil, fmt.Errorf("%w: injection.form %q is invalid (header/basic/meta)", ErrOAuthBinding, inj.Form)
+	}
+	return ci, nil
 }
 
 // resolveProviderBinding resolves one provider name against the registry and
