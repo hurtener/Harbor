@@ -2,7 +2,7 @@
 
 ## Summary
 
-`agent_config.set_oauth_provider` and the `oauth_provider` binding on `agent_config.add_mcp_connection` may carry a FULL provider descriptor over the wire (`token_url`, `audience`, `scopes`, `remote{}`) so a coordinator can stand up a NEW OAuth-fronted MCP server at runtime without a static `tools.oauth_providers[]` block and a redeploy — but ONLY behind a fail-closed, boot-only opt-in (`tools.allow_wire_oauth_descriptor` OR `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR`, default off). With the opt-in off (all of production), a wire descriptor carrying any credential-sink field is rejected exactly as the name-only binding (D-303) rejects it today. When opted in, the relaxation stays honest: `allowed_downstream_hosts` is DERIVED from the connected server's URL (never a free-form wire field), and the wire `token_url` is dialed through the identical tokenexchange SSRF backstop (D-300/D-338).
+`agent_config.set_oauth_provider` and the `oauth_provider` binding on `agent_config.add_mcp_connection` may carry the NEW server's OAuth params over the wire (`token_url`, `audience`, `scopes`), still naming a boot-declared `credential_broker`, so a coordinator can stand up a NEW OAuth-fronted MCP server at runtime without a static `tools.oauth_providers[]` block and a redeploy — but ONLY behind a fail-closed, boot-only opt-in (`tools.allow_wire_oauth_descriptor` OR `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR`, default off). With the opt-in off (all of production), a wire descriptor carrying any credential-sink field is rejected exactly as the name-only binding (D-303) rejects it today. When opted in, the relaxation stays honest: `allowed_downstream_hosts` is DERIVED from the connected server's URL (never a free-form wire field), and the wire `token_url` is dialed through the identical tokenexchange SSRF backstop (D-300/D-338).
 
 ## RFC anchor
 
@@ -25,7 +25,7 @@ None. This phase revisits D-303 (the zero-URL name-only default) but does NOT de
 
 ## Goals
 
-- With the opt-in OFF (default): a wire descriptor carrying ANY sink field (`token_url`/`audience`/`remote`/downstream-host list) is rejected with a clear error — the D-303 posture is byte-for-byte unchanged.
+- With the opt-in OFF (default): a wire descriptor carrying a wire field (`token_url`/`audience`) is rejected with a clear error — the D-303 posture is byte-for-byte unchanged.
 - With the opt-in ON: `set_oauth_provider` / `add_mcp_connection` install a provider from the wire descriptor at runtime; `allowed_downstream_hosts` is DERIVED as `NormalizeDownstreamHost(connection.url)`; a wire-supplied downstream-host list is rejected.
 - The wire `token_url` faces the identical SSRF backstop as the boot path (refuse resolved private/link-local/ULA/unspecified, no redirect, no proxy, loopback carve-out).
 - The boot opt-in (config OR env) is fail-closed, boot-captured, and prints the `[DEV-ONLY WIRE OAUTH DESCRIPTOR — DO NOT USE IN PRODUCTION]` stderr banner when the env fires.
@@ -39,7 +39,7 @@ None. This phase revisits D-303 (the zero-URL name-only default) but does NOT de
 
 ## Acceptance criteria
 
-- [ ] `AgentConfigOAuthProviderDescriptor` (and the `add_mcp_connection` inline-oauth path) gains `token_url` / `audience` / `remote{}` wire fields, all `omitempty`; `scopes` already exists.
+- [ ] `AgentConfigOAuthProviderDescriptor` (and the `add_mcp_connection` inline-oauth path) gains `token_url` / `audience` wire fields, all `omitempty`; `scopes` already exists; `credential_broker` is required in the wire shape (the runtime's credential source stays boot-declared — NO wire `remote{}`).
 - [ ] Opt-in OFF → a descriptor carrying any sink field is rejected (fail-loud, names the field + the opt-in key); the name-only path is unchanged.
 - [ ] Opt-in ON → the provider installs; its `allowed_downstream_hosts` equals `NormalizeDownstreamHost(connection.url)`; a wire-supplied downstream-host list is rejected even when opted in.
 - [ ] A wire `token_url` that resolves to a private/link-local/ULA/unspecified address, or that redirects, is refused by the SSRF backstop (opt-in does NOT relax D-300/D-338).
@@ -101,7 +101,7 @@ docs/glossary.md                                       # "Wire-carried OAuth-pro
 
 ## Glossary additions
 
-- **Wire-carried OAuth-provider descriptor** — a full provider binding (`token_url`/`audience`/`scopes`/`remote`) carried over `set_oauth_provider` / `add_mcp_connection`, accepted only behind the fail-closed `allow_wire_oauth_descriptor` boot opt-in; the downstream allow-list is derived from the connected server URL. D-340.
+- **Wire-carried OAuth-provider descriptor** — the NEW server's OAuth params (`token_url`/`audience`/`scopes`) carried over `set_oauth_provider` / `add_mcp_connection`, still naming a boot-declared `credential_broker` (the runtime's own credential custody never rides the wire), accepted only behind the fail-closed `allow_wire_oauth_descriptor` boot opt-in; the downstream allow-list is derived from the connected server URL. D-340.
 
 ## Pre-merge checklist
 

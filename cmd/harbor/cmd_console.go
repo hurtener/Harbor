@@ -187,6 +187,9 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 	// Dev-only private-IP token-exchange escape hatch — reciprocal capture +
 	// banner, mirroring the mock hatch above.
 	registerAllowPrivateExchangeIfDev(os.Getenv(EnvDevAllowPrivateExchange) == "1", cmd.ErrOrStderr())
+	// Dev-only wire-carried OAuth-descriptor escape hatch — reciprocal capture +
+	// banner, mirroring the hatches above.
+	registerAllowWireOAuthDescriptorIfDev(os.Getenv(EnvAllowWireOAuthDescriptor) == "1", cmd.ErrOrStderr())
 
 	comp, err := newDevComposition(devCompositionOptions{
 		allowMock:    allowMock,

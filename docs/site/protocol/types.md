@@ -263,6 +263,7 @@ Declared in `internal/protocol/types`.
 | `url` | `string` | optional (`omitempty`) |
 | `oauth_provider` | `string` | optional (`omitempty`) |
 | `meta_annotations` | `map[string]string` | optional (`omitempty`) |
+| `oauth` | `*types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) | optional (`omitempty`) |
 | `oauth_discovery_allowed_origins` | `[]string` | optional (`omitempty`) |
 
 ## AgentConfigNaming
@@ -314,6 +315,8 @@ Declared in `internal/protocol/types`.
 | `credential_source` | `string` |  |
 | `credential_broker` | `string` |  |
 | `scopes` | `[]string` | optional (`omitempty`) |
+| `token_url` | `string` | optional (`omitempty`) |
+| `audience` | `string` | optional (`omitempty`) |
 
 ## AgentConfigOAuthProviders
 

@@ -92,6 +92,13 @@ var (
 	// no boot-declared broker (→ 400). The installer wraps its own broker error;
 	// this sentinel lets the wire handler classify it as a client error.
 	ErrProviderBrokerUnknown = errors.New("agentcfg/protocol: credential_broker resolves to no boot-declared broker")
+	// ErrWireDescriptorNotAllowed — a provider descriptor (set_oauth_provider or
+	// an add_mcp_connection inline binding) carried a credential-sink field
+	// (token_url / audience / remote) while the fail-closed
+	// tools.allow_wire_oauth_descriptor opt-in was OFF (→ 400). The default
+	// zero-URL name-only posture is unchanged; the reject names the offending
+	// field + the opt-in key.
+	ErrWireDescriptorNotAllowed = errors.New("agentcfg/protocol: wire-carried oauth-provider descriptor is not allowed (the fail-closed tools.allow_wire_oauth_descriptor opt-in is off)")
 )
 
 // providerWritableDriver / providerWritableSource are the ONLY driver /
@@ -113,7 +120,7 @@ func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConf
 	if err != nil {
 		return prototypes.AgentConfigSetOAuthProviderResponse{}, err
 	}
-	desc, err := validateOAuthProviderDescriptor(req.Provider)
+	desc, err := s.gateAndValidateOAuthProviderDescriptor(req.Provider)
 	if err != nil {
 		return prototypes.AgentConfigSetOAuthProviderResponse{}, err
 	}

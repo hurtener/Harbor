@@ -752,7 +752,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			var devProviderReconciler projection.OAuthProviderReconciler
 			if stack.OAuthProviderSet != nil && stack.OAuthProviderBuilder != nil {
-				if concrete := serve.NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet); concrete != nil {
+				if concrete := serve.NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet, cfg.Tools.AllowWireOAuthDescriptor, opts.Logger); concrete != nil {
 					devProviderReconciler = concrete
 				}
 			}
@@ -899,7 +899,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// remove_oauth_provider + the run-start provider reconcile).
 		var oauthProviderInstaller agentcfgprotocol.ProviderInstaller
 		if stack.OAuthProviderSet != nil && stack.OAuthProviderBuilder != nil {
-			if concrete := serve.NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet); concrete != nil {
+			if concrete := serve.NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet, cfg.Tools.AllowWireOAuthDescriptor, opts.Logger); concrete != nil {
 				oauthProviderInstaller = concrete
 			}
 		}
@@ -929,48 +929,49 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// agents / auth-rotate / governance-override / governance-key-rotate
 		// surfaces the mirror omitted.
 		built, bErr := serve.BuildMux(serve.MuxInput{
-			Cfg:                    cfg,
-			Surface:                stack.Surface,
-			Bus:                    bus,
-			Redactor:               stack.Audit,
-			Logger:                 lg,
-			Metrics:                metricsReg,
-			LLMSnapshot:            llmPostureCfg,
-			Tasks:                  stack.Tasks,
-			Sessions:               stack.Sessions,
-			Agents:                 core.Agents,
-			Artifacts:              stack.Artifacts,
-			Memory:                 stack.Memory,
-			Catalog:                stack.Catalog,
-			Coordinator:            stack.Coordinator,
-			MCPRegistry:            stack.MCPRegistry,
-			MCPToolContext:         stack.MCPToolContext,
-			State:                  stack.State,
-			Skills:                 stack.Skills,
-			AgentConfig:            stack.AgentConfig,
-			AgentConfigID:          stack.AgentConfigID,
-			SessionOverlay:         stack.SessionOverlay,
-			RunsStore:              runsStore,
-			RunLoopDriver:          stack.RunLoopDriver,
-			OAuthProviders:         stack.OAuthProviders,
-			TenantOverridePolicy:   tenantPolicy,
-			SetPosturePolicy:       setPosturePolicy,
-			KeyRotator:             core.KeyRotator,
-			ValidModels:            devstackValidModels(cfg),
-			MCPAttacher:            attacher,
-			MCPStdioAllowlist:      append([]string(nil), opts.MCPStdioAllowlist...),
-			BootDeclaredMCP:        serve.BootDeclaredMCPServerNames(cfg),
-			BootDeclaredOAuth:      serve.BootDeclaredOAuthProviderNames(cfg),
-			OAuthProviderInstaller: oauthProviderInstaller,
-			LLMProviderInstaller:   llmProviderInstaller,
-			InferenceBrokers:       inferenceBrokerNames,
-			Validator:              stack.Validator,
-			AuthSurface:            rotateSurface,
-			DisplayName:            "harbor devstack",
-			InstanceID:             "harbor-devstack",
-			BuildVersion:           "devstack",
-			BuildCommit:            "devstack",
-			TopologyAvailable:      false,
+			Cfg:                      cfg,
+			Surface:                  stack.Surface,
+			Bus:                      bus,
+			Redactor:                 stack.Audit,
+			Logger:                   lg,
+			Metrics:                  metricsReg,
+			LLMSnapshot:              llmPostureCfg,
+			Tasks:                    stack.Tasks,
+			Sessions:                 stack.Sessions,
+			Agents:                   core.Agents,
+			Artifacts:                stack.Artifacts,
+			Memory:                   stack.Memory,
+			Catalog:                  stack.Catalog,
+			Coordinator:              stack.Coordinator,
+			MCPRegistry:              stack.MCPRegistry,
+			MCPToolContext:           stack.MCPToolContext,
+			State:                    stack.State,
+			Skills:                   stack.Skills,
+			AgentConfig:              stack.AgentConfig,
+			AgentConfigID:            stack.AgentConfigID,
+			SessionOverlay:           stack.SessionOverlay,
+			RunsStore:                runsStore,
+			RunLoopDriver:            stack.RunLoopDriver,
+			OAuthProviders:           stack.OAuthProviders,
+			TenantOverridePolicy:     tenantPolicy,
+			SetPosturePolicy:         setPosturePolicy,
+			KeyRotator:               core.KeyRotator,
+			ValidModels:              devstackValidModels(cfg),
+			MCPAttacher:              attacher,
+			MCPStdioAllowlist:        append([]string(nil), opts.MCPStdioAllowlist...),
+			BootDeclaredMCP:          serve.BootDeclaredMCPServerNames(cfg),
+			BootDeclaredOAuth:        serve.BootDeclaredOAuthProviderNames(cfg),
+			AllowWireOAuthDescriptor: cfg.Tools.AllowWireOAuthDescriptor,
+			OAuthProviderInstaller:   oauthProviderInstaller,
+			LLMProviderInstaller:     llmProviderInstaller,
+			InferenceBrokers:         inferenceBrokerNames,
+			Validator:                stack.Validator,
+			AuthSurface:              rotateSurface,
+			DisplayName:              "harbor devstack",
+			InstanceID:               "harbor-devstack",
+			BuildVersion:             "devstack",
+			BuildCommit:              "devstack",
+			TopologyAvailable:        false,
 		})
 		if bErr != nil {
 			return stack, bErr

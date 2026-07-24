@@ -1165,6 +1165,22 @@ Env-var name holding the 32-byte hex-encoded key-encryption key
 (KEK) used for AES-256-GCM token encryption at rest. Default: empty.
 Validation: required when `oauth_providers` is non-empty.
 
+### tools.allow_wire_oauth_descriptor
+
+DEV-ONLY, fail-closed opt-in permitting `agent_config.set_oauth_provider`
+/ `add_mcp_connection` to carry a FULL OAuth-provider binding over the
+wire (`token_url` / `audience` / `scopes`, still naming a boot-declared `credential_broker`) instead of only a
+boot-declared provider NAME — so a coordinator can stand up a new
+OAuth-fronted MCP server at runtime without a static `oauth_providers[]`
+block + redeploy. Default: `false`. With it unset (all of production) a
+wire descriptor carrying any credential-sink field is REJECTED, exactly as
+the zero-URL name-only binding rejects it today. When set, the relaxation
+stays bounded — `allowed_downstream_hosts` is DERIVED from the connected
+server's own URL (never a wire field) and the wire `token_url` dials face the identical token-exchange SSRF backstop. The same opt-in is
+also available globally via the `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR` boot
+env; the effective posture is this flag OR that env. Restart-required. Do
+NOT enable in production.
+
 ### tools.built_in
 
 Opt-in list of Harbor-shipped built-in tools to register against the

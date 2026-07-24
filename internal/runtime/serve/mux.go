@@ -140,6 +140,12 @@ type MuxInput struct {
 	// (tools.oauth_providers[].name); an install/uninstall of one of these is
 	// refused (boot wins).
 	BootDeclaredOAuth []string
+	// AllowWireOAuthDescriptor is the effective DEV-ONLY, fail-closed opt-in that
+	// permits set_oauth_provider / add_mcp_connection to carry a FULL OAuth
+	// provider binding over the wire (token_url / audience / scopes / remote{}).
+	// The caller passes (tools.allow_wire_oauth_descriptor) OR (the captured
+	// HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR boot env). Default false / fail-closed.
+	AllowWireOAuthDescriptor bool
 
 	// LLMProviderInstaller backs agent_config.set_llm_provider (the
 	// Protocol-installed, zero-URL broker-pull inference provider). Built
@@ -627,6 +633,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithValidModels(in.ValidModels),
 			agentcfgprotocol.WithBootDeclaredMCPServers(append([]string(nil), in.BootDeclaredMCP...)),
 			agentcfgprotocol.WithBootDeclaredOAuthProviders(append([]string(nil), in.BootDeclaredOAuth...)),
+			agentcfgprotocol.WithAllowWireOAuthDescriptor(in.AllowWireOAuthDescriptor),
 		}
 		if in.MCPAttacher != nil {
 			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(in.MCPAttacher))

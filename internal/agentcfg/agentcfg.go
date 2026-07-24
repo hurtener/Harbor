@@ -289,13 +289,29 @@ type OAuthProviderDescriptor struct {
 	// "" means the `env` source, which this shape forbids). Required.
 	CredentialSource string `json:"credential_source"`
 	// CredentialBroker names a boot-declared credential broker that
-	// pins every credential sink. Required; an unknown name fails loud.
+	// pins the runtime's OWN credential custody. Required in BOTH the name-only
+	// and the dev-gated wire shape — the wire descriptor still names a boot broker
+	// so no credential-source URL or secret ever rides the wire. NON-SECRET.
 	CredentialBroker string `json:"credential_broker"`
 	// Scopes is the requested OAuth scope subset. NON-SECRET. Clamped to the
 	// broker's boot scope ceiling at build time — a scope outside the ceiling is
 	// dropped, never honoured (an installed descriptor can never widen scope).
 	// Optional.
 	Scopes []string `json:"scopes,omitempty"`
+	// TokenURL is the dev-gated wire-carried RFC-8693 token-exchange endpoint of
+	// the NEW server. Persisted (NON-SECRET, a URL); accepted only behind the
+	// `allow_wire_oauth_descriptor` boot opt-in and dialed through the
+	// token-exchange SSRF backstop. Empty for the name-only shape.
+	TokenURL string `json:"token_url,omitempty"`
+	// Audience is the dev-gated wire-carried exchanged-token audience of the NEW
+	// server. Persisted (NON-SECRET). Empty for the name-only shape.
+	Audience string `json:"audience,omitempty"`
+	// AllowedDownstreamHosts is the DERIVED downstream sink allow-list for a
+	// wire-installed provider — set by the runtime from the bound connection's
+	// own URL, NEVER from a wire field. Persisted (NON-SECRET) so a rollback /
+	// reconcile rebuilds the provider with the same derived sink. Empty for the
+	// name-only shape (its sink is the boot broker's).
+	AllowedDownstreamHosts []string `json:"allowed_downstream_hosts,omitempty"`
 }
 
 // LLMProviderDescriptor is the domain shape of one Protocol-installed,
@@ -716,12 +732,19 @@ func normalizeOAuthProviders(in []OAuthProviderDescriptor) []OAuthProviderDescri
 		if _, seen := byName[d.Name]; !seen {
 			names = append(names, d.Name)
 		}
+		var hosts []string
+		if len(d.AllowedDownstreamHosts) > 0 {
+			hosts = sortDedup(d.AllowedDownstreamHosts)
+		}
 		byName[d.Name] = OAuthProviderDescriptor{
-			Name:             d.Name,
-			Driver:           d.Driver,
-			CredentialSource: d.CredentialSource,
-			CredentialBroker: d.CredentialBroker,
-			Scopes:           sortDedup(d.Scopes),
+			Name:                   d.Name,
+			Driver:                 d.Driver,
+			CredentialSource:       d.CredentialSource,
+			CredentialBroker:       d.CredentialBroker,
+			Scopes:                 sortDedup(d.Scopes),
+			TokenURL:               d.TokenURL,
+			Audience:               d.Audience,
+			AllowedDownstreamHosts: hosts,
 		}
 	}
 	if len(names) == 0 {

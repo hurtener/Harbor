@@ -178,7 +178,7 @@ func newP169Harness(t *testing.T, f *p169Fixtures) *p169Harness {
 		t.Fatalf("NewProviderBuilder: %v", err)
 	}
 	set := toolauth.NewProviderSet(nil)
-	installer := serve.NewOAuthProviderInstaller(builder, set)
+	installer := serve.NewOAuthProviderInstaller(builder, set, false, nil)
 	if installer == nil {
 		t.Fatal("installer is nil")
 	}

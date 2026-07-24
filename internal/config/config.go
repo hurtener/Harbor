@@ -1005,6 +1005,24 @@ type ToolsConfig struct {
 	// consumer within the wave, not a dangling field.
 	OAuthCredentialBrokers []ToolOAuthCredentialBrokerConfig `yaml:"oauth_credential_brokers,omitempty"`
 
+	// AllowWireOAuthDescriptor is a DEV-ONLY, fail-closed opt-in that permits
+	// `agent_config.set_oauth_provider` / `add_mcp_connection` to carry a FULL
+	// OAuth-provider binding over the wire (`token_url` / `audience` / `scopes` /
+	// `remote{}`) instead of only a boot-declared provider NAME — so a
+	// coordinator can stand up a new OAuth-fronted MCP server at runtime without a
+	// static `oauth_providers[]` block and a redeploy. It RELAXES the
+	// credential-plane invariant that no admin-writable field determines a
+	// credential sink, so it is default false / fail-closed: with it unset (all of
+	// production), a wire descriptor carrying any credential-sink field is REJECTED
+	// exactly as the zero-URL name-only binding rejects it today. When set, the
+	// relaxation stays bounded — `allowed_downstream_hosts` is DERIVED from the
+	// connected server's own URL (never a wire field) and the wire `token_url` /
+	// `remote{}` dials face the identical token-exchange SSRF backstop. The same
+	// opt-in is also available globally via the `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR`
+	// boot env; the effective posture is this flag OR that env. Restart-required.
+	// Do NOT enable in production.
+	AllowWireOAuthDescriptor bool `yaml:"allow_wire_oauth_descriptor,omitempty"`
+
 	// BuiltIn lists opt-in tools shipped in the Harbor binary that the
 	// runtime should register against the catalog at boot. V1.1 ships
 	// two names: `clock.now` (current UTC time) and `text.echo` (echo
