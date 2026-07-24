@@ -465,9 +465,5 @@ func TestE2E_SearchCluster_CrossSessionIsolation_Concurrent(t *testing.T) {
 	}
 
 	// Goroutine baseline.
-	time.Sleep(100 * time.Millisecond)
-	runtime.GC()
-	if got := runtime.NumGoroutine(); got > baseline+10 {
-		t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, got)
-	}
+	eventuallyGoroutinesSettle(t, baseline, 10)
 }

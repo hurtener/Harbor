@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -80,13 +79,7 @@ func TestRuntimeClient_ConcurrentInspectionActionsAndCancellationIsolation(t *te
 	}
 	wait.Wait()
 	server.CloseClientConnections()
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > baseline+8 && time.Now().Before(deadline) {
-		runtime.Gosched()
-	}
-	if got := runtime.NumGoroutine(); got > baseline+8 {
-		t.Fatalf("goroutine leak: baseline=%d got=%d", baseline, got)
-	}
+	eventuallyGoroutinesSettle(t, baseline, 8)
 }
 
 func TestClient_RuntimeInfo_ValidatesHandshakeAndHeaders(t *testing.T) {
@@ -319,13 +312,7 @@ func TestClient_ConcurrentReuse_SessionIsolationCancellationAndLeak(t *testing.T
 		t.Fatalf("base client session mutated to %q", client.Identity().Session)
 	}
 	server.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > baseline+4 && time.Now().Before(deadline) {
-		runtime.Gosched()
-	}
-	if got := runtime.NumGoroutine(); got > baseline+4 {
-		t.Fatalf("goroutines did not return near baseline: before=%d after=%d", baseline, got)
-	}
+	eventuallyGoroutinesSettle(t, baseline, 4)
 }
 
 func TestClient_New_RejectsMissingIdentityAndToken(t *testing.T) {

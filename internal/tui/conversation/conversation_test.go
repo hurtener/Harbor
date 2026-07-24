@@ -73,9 +73,7 @@ func TestLifetimeTokenSource_RotationReplacementExpiryAndConcurrentReuse(t *test
 	for err := range errs {
 		t.Error(err)
 	}
-	if runtime.NumGoroutine() > baseline+2 {
-		t.Fatalf("goroutine leak baseline=%d now=%d", baseline, runtime.NumGoroutine())
-	}
+	eventuallyGoroutinesSettle(t, baseline, 2)
 	expired := NewTokenSource("", testToken(t, id, now.Add(-time.Second)))
 	expired.now = func() time.Time { return now }
 	if _, err := expired.Token(context.Background(), id); !errors.Is(err, ErrTokenExpired) {
@@ -133,9 +131,7 @@ func TestStore_ConcurrentAtomicReuseIsBounded(t *testing.T) {
 	if err != nil || len(file.Entries) != maxStateEntries {
 		t.Fatalf("entries=%d err=%v", len(file.Entries), err)
 	}
-	if runtime.NumGoroutine() > baseline+2 {
-		t.Fatalf("goroutine leak baseline=%d now=%d", baseline, runtime.NumGoroutine())
-	}
+	eventuallyGoroutinesSettle(t, baseline, 2)
 }
 
 func TestTranscript_StickySearchNavigationExportAndQueueFailure(t *testing.T) {

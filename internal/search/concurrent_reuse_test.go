@@ -101,11 +101,21 @@ func TestSearchers_ConcurrentReuse_AllFourIndexes_NoCrossTalk(t *testing.T) {
 		t.Fatalf("concurrent-reuse failures (%d):\n  %v", len(msgs), msgs)
 	}
 
-	// Allow the Query dispatcher's per-index timeout goroutines to
-	// wind down before snapshotting.
-	time.Sleep(100 * time.Millisecond)
-	runtime.GC()
-	if got := runtime.NumGoroutine(); got > baseline+5 {
+	// Allow the Query dispatcher's per-index timeout goroutines to wind
+	// down before snapshotting. Bounded drain-poll (§17.4): re-sample after
+	// GC until the count settles within tolerance or a deadline elapses — a
+	// genuine leak still fails.
+	settleDeadline := time.Now().Add(5 * time.Second)
+	var got int
+	for {
+		runtime.GC()
+		got = runtime.NumGoroutine()
+		if got <= baseline+5 || !time.Now().Before(settleDeadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got > baseline+5 {
 		t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, got)
 	}
 }

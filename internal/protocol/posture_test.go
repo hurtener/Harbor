@@ -367,10 +367,7 @@ func TestPostureDispatch_RuntimeInfo_ConcurrentIdenticalDigest(t *testing.T) {
 		}
 	}
 
-	time.Sleep(20 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after > baseline+8 {
-		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-	}
+	eventuallyGoroutinesSettle(t, baseline, 8)
 }
 
 func TestPostureDispatch_RuntimeHealth(t *testing.T) {

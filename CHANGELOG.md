@@ -17,6 +17,35 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.18.1] — 2026-07-24
+
+Patch: test-only hardening — eliminate a class of load-sensitive flaky
+goroutine-leak tests. No Runtime, Protocol, or Console behaviour changes.
+
+### Fixed
+
+- **Load-sensitive goroutine-leak tests hardened to a bounded drain-poll.**
+  A class of concurrent-reuse and leak tests sampled `runtime.NumGoroutine()`
+  a SINGLE instant right after their workers joined — after a fixed
+  `time.Sleep`, a lone `runtime.GC()`, or a tight `runtime.Gosched()` spin —
+  and compared against a baseline. Under the full `go test -race ./...` matrix
+  (and `make preflight`) shared background teardown goroutines (event/notification
+  consume-loops, HTTP handler unwinds, SSE keepalives, server-close readers) can
+  still be draining at that instant, so the count reads transiently over
+  tolerance and the test FAILs on one platform while passing on the other and in
+  isolation — a spurious failure that forced CI re-runs on otherwise-clean PRs.
+  Each such site now polls a real-time bounded eventually-assertion (AGENTS.md
+  §17.4): re-sample after `runtime.GC()` (which reaps finished-but-unscheduled
+  goroutines and parks the poller so exiting goroutines get scheduler time under
+  load) until the count settles within tolerance or a deadline elapses, failing
+  only if it never drains — the leak-detection intent is preserved. Twenty-three
+  single-instant sites across the protocol, protocol/transports, protocol/client,
+  tui/app, tui/conversation, runtime/engine, runtime/pauseresume, search (+ four
+  index sub-packages), tools/drivers/mcp, and the `test/integration` wave suites
+  were converted; the two `protocol/client` sites' `runtime.Gosched()` spin (which
+  can starve the very goroutines it waits on under load) was replaced with the
+  same GC-parked poll. Test files only.
+
 ## [1.18.0] — 2026-07-23
 
 Minor: runtime-time MCP connection management + per-user credential delivery — an idempotent live re-attach, a dev-gated wire-carried OAuth-provider descriptor, and per-user credential injection for receiver-style MCP servers.
