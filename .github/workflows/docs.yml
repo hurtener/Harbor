@@ -55,7 +55,7 @@ jobs:
       # regenerated docs/site/protocol fails the same job that would
       # publish it. The generator compiles against the Protocol
       # packages, so this job now needs the Go toolchain.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           check-latest: true
