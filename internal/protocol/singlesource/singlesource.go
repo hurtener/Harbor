@@ -160,6 +160,9 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.user.list_revisions": {},
 	"agent_config.user.diff":           {},
 	"agent_config.user.rollback":       {},
+	"agent_config.user.skills.list":    {},
+	"agent_config.user.skills.upsert":  {},
+	"agent_config.user.skills.delete":  {},
 	"pause.list":                       {},
 	"topology.snapshot":                {},
 	"artifacts.list":                   {},
@@ -407,6 +410,13 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigUserDiffResponse":          "types",
 	"AgentConfigUserRollbackRequest":       "types",
 	"AgentConfigUserRollbackResponse":      "types",
+	// Durable-per-user skills wire types (CLAIM-FREE).
+	"AgentConfigUserSkillsListRequest":    "types",
+	"AgentConfigUserSkillsListResponse":   "types",
+	"AgentConfigUserSkillsUpsertRequest":  "types",
+	"AgentConfigUserSkillsUpsertResponse": "types",
+	"AgentConfigUserSkillsDeleteRequest":  "types",
+	"AgentConfigUserSkillsDeleteResponse": "types",
 	// pause-list snapshot wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"PauseListRequest":  "types",

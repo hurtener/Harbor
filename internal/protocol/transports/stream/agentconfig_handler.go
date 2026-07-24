@@ -19,6 +19,7 @@
 //	POST /v1/agent_config/skills/upsert   — upsert a skill (records a rev)
 //	POST /v1/agent_config/skills/delete   — delete a skill (records a rev)
 //	POST /v1/agent_config/user/*          — the durable per-user variant tier
+//	POST /v1/agent_config/user/skills/*   — durable-per-user skills (CLAIM-FREE)
 //
 // The routes span THREE authorization tiers. The `session/*` routes are the
 // SAFE SUBSET (identity-mandatory, no scope). The `user/*` routes are the
@@ -216,6 +217,12 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUserDiff(w, r, body, wireID)
 	case "user/rollback":
 		h.serveUserRollback(w, r, body, wireID)
+	case "user/skills/list":
+		h.serveUserSkillsList(w, r, body, wireID)
+	case "user/skills/upsert":
+		h.serveUserSkillsUpsert(w, r, body, wireID)
+	case "user/skills/delete":
+		h.serveUserSkillsDelete(w, r, body, wireID)
 	default:
 		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown agent_config method route")
@@ -235,6 +242,14 @@ var agentConfigSessionSafeRoutes = map[string]bool{
 	"session/skills/list":         true,
 	"session/skills/upsert":       true,
 	"session/skills/delete":       true,
+	// Durable-per-user skills are CLAIM-FREE too: `user/skills/*` names the
+	// durable STORAGE scope, not an auth tier. A personal skill cannot widen
+	// capability, so — like the session rung — these need only a valid
+	// identity (NOT admin, NOT auth.ScopeAgentConfigUser). They intentionally
+	// live in this safe-subset set, NOT agentConfigUserRoutes.
+	"user/skills/list":   true,
+	"user/skills/upsert": true,
+	"user/skills/delete": true,
 }
 
 // agentConfigUserRoutes is the closed set of trailing path segments that are
@@ -709,6 +724,59 @@ func (h *AgentConfigHandler) serveUserRollback(w http.ResponseWriter, r *http.Re
 	resp, err := h.service.UserRollback(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserRollback, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+// --- durable-per-user skills (CLAIM-FREE, session-safe tier) routes ---
+
+func (h *AgentConfigHandler) serveUserSkillsList(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsListRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsList) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserSkillsList(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsList, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserSkillsUpsert(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsUpsertRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsUpsert) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserSkillsUpsert(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsUpsert, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserSkillsDelete(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsDeleteRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsDelete) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserSkillsDelete(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsDelete, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)

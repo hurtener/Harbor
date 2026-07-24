@@ -133,6 +133,9 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigUserListRevisions,
 	methods.MethodAgentConfigUserDiff,
 	methods.MethodAgentConfigUserRollback,
+	methods.MethodAgentConfigUserSkillsList,
+	methods.MethodAgentConfigUserSkillsUpsert,
+	methods.MethodAgentConfigUserSkillsDelete,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -171,9 +174,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// + governance identity-tier policy write one
 	// (governance.set_posture, D-332) = 117,
 	// + agent-config inference-provider install one
-	// (agent_config.set_llm_provider, D-334) = 118.
-	if len(got) != 118 {
-		t.Fatalf("Methods() returned %d methods, want 118", len(got))
+	// (agent_config.set_llm_provider, D-334) = 118,
+	// + durable-per-user skills three (agent_config.user.skills.{list,upsert,
+	// delete}, CLAIM-FREE, D-345) = 121.
+	if len(got) != 121 {
+		t.Fatalf("Methods() returned %d methods, want 121", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

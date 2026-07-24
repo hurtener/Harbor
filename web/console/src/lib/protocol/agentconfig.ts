@@ -836,3 +836,49 @@ export interface AgentConfigUserRollbackResponse {
 	revision: AgentConfigRevisionView;
 	protocol_version: string;
 }
+
+// --- Durable-per-user skills (CLAIM-FREE). `user` names the durable STORAGE
+// scope, not an auth tier: these verbs need only a valid identity (NOT admin,
+// NOT the `agent_config:user` scope) because a personal skill cannot widen
+// capability. The upsert/delete responses REUSE AgentConfigRevisionView (the
+// recorded durable membership revision). ---
+
+/** `agent_config.user.skills.list` request — CLAIM-FREE. */
+export interface AgentConfigUserSkillsListRequest {
+	identity: IdentityScope;
+	agent_id: string;
+}
+
+/** `agent_config.user.skills.list` response. */
+export interface AgentConfigUserSkillsListResponse {
+	skills: AgentConfigSkillSummary[];
+	protocol_version: string;
+}
+
+/** `agent_config.user.skills.upsert` request — CLAIM-FREE. Upserts a durable
+ * personal skill (scope forced to `user` server-side). */
+export interface AgentConfigUserSkillsUpsertRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	skill: AgentConfigSkillInput;
+}
+
+/** `agent_config.user.skills.upsert` response. */
+export interface AgentConfigUserSkillsUpsertResponse {
+	skill: AgentConfigSkillSummary;
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.user.skills.delete` request — CLAIM-FREE. */
+export interface AgentConfigUserSkillsDeleteRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+}
+
+/** `agent_config.user.skills.delete` response. */
+export interface AgentConfigUserSkillsDeleteResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}

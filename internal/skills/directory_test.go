@@ -79,14 +79,46 @@ func (m *memStore) seed(id identity.Identity, in ...skills.Skill) {
 	m.skillsByIdent[id] = append(m.skillsByIdent[id], in...)
 }
 
+// storageKey mirrors the production drivers: a ScopeUser skill is stored under
+// a session-zeroed identity key so it resolves across every session of the same
+// (tenant, user); every other scope pins the caller's session.
+func storageKey(id identity.Identity, scope skills.Scope) identity.Identity {
+	if scope == skills.ScopeUser {
+		id.SessionID = ""
+	}
+	return id
+}
+
+// userBucket is the session-zeroed key for the caller's user-scope rows.
+func userBucket(id identity.Identity) identity.Identity {
+	id.SessionID = ""
+	return id
+}
+
 func (m *memStore) Upsert(_ context.Context, id identity.Quadruple, sk skills.Skill) error {
 	if err := identity.Validate(id.Identity); err != nil {
 		return errors.New("memStore: identity rejected")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.skillsByIdent[id.Identity] = append(m.skillsByIdent[id.Identity], sk)
+	key := storageKey(id.Identity, sk.Scope)
+	m.skillsByIdent[key] = append(m.skillsByIdent[key], sk)
 	return nil
+}
+
+// visible returns the caller's own session rows PLUS any user-scope
+// (session-zeroed) rows of the same (tenant, user) — the ScopeUser union the
+// production drivers resolve.
+func (m *memStore) visible(id identity.Identity) []skills.Skill {
+	out := append([]skills.Skill(nil), m.skillsByIdent[id]...)
+	if bucket := userBucket(id); bucket != id {
+		for _, s := range m.skillsByIdent[bucket] {
+			if s.Scope == skills.ScopeUser {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 func (m *memStore) Get(ctx context.Context, id identity.Quadruple, name string) (skills.Skill, error) {
@@ -95,7 +127,7 @@ func (m *memStore) Get(ctx context.Context, id identity.Quadruple, name string) 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, s := range m.skillsByIdent[id.Identity] {
+	for _, s := range m.visible(id.Identity) {
 		if s.Name == name {
 			return s, nil
 		}
@@ -103,15 +135,19 @@ func (m *memStore) Get(ctx context.Context, id identity.Quadruple, name string) 
 	return skills.Skill{}, skills.ErrSkillNotFound
 }
 
-func (m *memStore) List(ctx context.Context, id identity.Quadruple, _ skills.ListFilter) ([]skills.Skill, error) {
+func (m *memStore) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
 		return nil, skills.EmitIdentityRejected(ctx, m.bus, id, "List")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	src := m.skillsByIdent[id.Identity]
-	out := make([]skills.Skill, len(src))
-	copy(out, src)
+	out := make([]skills.Skill, 0)
+	for _, s := range m.visible(id.Identity) {
+		if filter.Scope != "" && s.Scope != filter.Scope {
+			continue
+		}
+		out = append(out, s)
+	}
 	return out, nil
 }
 
@@ -122,9 +158,31 @@ func (m *memStore) Search(ctx context.Context, id identity.Quadruple, _ string, 
 	return nil, nil
 }
 
-func (m *memStore) Delete(_ context.Context, id identity.Quadruple, _ string) error {
+func (m *memStore) Delete(_ context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	if err := identity.Validate(id.Identity); err != nil {
 		return errors.New("memStore: identity rejected")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Rung-precise: a ScopeUser delete targets ONLY the durable (session-zeroed)
+	// bucket; any other scope targets ONLY the caller's session-local non-user
+	// rows — never crossing the durability boundary.
+	prune := func(key identity.Identity, keepUser bool) {
+		src := m.skillsByIdent[key]
+		out := src[:0:0]
+		for _, s := range src {
+			isUser := s.Scope == skills.ScopeUser
+			if s.Name == name && isUser == keepUser {
+				continue // drop
+			}
+			out = append(out, s)
+		}
+		m.skillsByIdent[key] = out
+	}
+	if scope == skills.ScopeUser {
+		prune(userBucket(id.Identity), true)
+	} else {
+		prune(id.Identity, false)
 	}
 	return nil
 }

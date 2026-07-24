@@ -1075,6 +1075,69 @@ type AgentConfigSessionSkillsDeleteResponse struct {
 	ProtocolVersion string                    `json:"protocol_version"`
 }
 
+// --- Durable-per-user skills (CLAIM-FREE) ---
+//
+// These wire types back the `agent_config.user.skills.*` verbs — the durable
+// analogue of the ephemeral session-skills family. `user` names the storage
+// SCOPE (durable, keyed (tenant, user)); it is NOT an auth tier: the verbs are
+// CLAIM-FREE (a valid identity is enough, no admin and no
+// `auth.ScopeAgentConfigUser`) because a personal skill cannot widen
+// capability — the capability filter is default-deny and the injection-time
+// redactor scrubs any tool a skill names that is outside the run's allowed
+// set. The upsert/delete responses REUSE the canonical AgentConfigRevisionView
+// (the recorded user-scope membership revision) so the durable rung inherits
+// the same diff/rollback trail as the rest of the user config variant.
+
+// AgentConfigUserSkillsListRequest is the `agent_config.user.skills.list`
+// request — lists the caller's durable user-scope personal skills (metadata
+// only) under their real (tenant, user).
+type AgentConfigUserSkillsListRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+}
+
+// AgentConfigUserSkillsListResponse is the `agent_config.user.skills.list`
+// response.
+type AgentConfigUserSkillsListResponse struct {
+	Skills          []AgentConfigSkillSummary `json:"skills"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// AgentConfigUserSkillsUpsertRequest is the `agent_config.user.skills.upsert`
+// request — upserts a DURABLE personal skill at user scope (persists across
+// ALL of the caller's conversations). The skill scope is forced to
+// `skills.ScopeUser` server-side; the body has no scope field.
+type AgentConfigUserSkillsUpsertRequest struct {
+	Identity IdentityScope         `json:"identity"`
+	AgentID  string                `json:"agent_id"`
+	Skill    AgentConfigSkillInput `json:"skill"`
+}
+
+// AgentConfigUserSkillsUpsertResponse is the `agent_config.user.skills.upsert`
+// response — the upserted skill summary plus the recorded durable user-scope
+// membership revision.
+type AgentConfigUserSkillsUpsertResponse struct {
+	Skill           AgentConfigSkillSummary `json:"skill"`
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigUserSkillsDeleteRequest is the `agent_config.user.skills.delete`
+// request.
+type AgentConfigUserSkillsDeleteRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	Name     string        `json:"name"`
+}
+
+// AgentConfigUserSkillsDeleteResponse is the `agent_config.user.skills.delete`
+// response — the recorded durable user-scope membership revision after the
+// change.
+type AgentConfigUserSkillsDeleteResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
 // --- User-scope durable config variant (the middle tier of the
 // authorization matrix) ---
 //
@@ -1108,8 +1171,13 @@ type AgentConfigUserPayload struct {
 	// DisabledTools names the individual tools the user narrows out (the
 	// tool-exposure projection consumes this).
 	DisabledTools []string `json:"disabled_tools,omitempty"`
-	// PersonalSkills names the user's personal skill membership for the
-	// variant.
+	// PersonalSkills names the user's durable personal skill membership for
+	// the variant. It COMPOSES with the `agent_config.user.skills.*` verbs:
+	// those verbs write the skill BODIES to the SkillStore at user scope AND
+	// incrementally mutate this same membership list; `set_revision` sets it
+	// declaratively. The run-start skills projection reads this membership to
+	// keep durable user skills visible even when the admin pins a skills
+	// membership.
 	PersonalSkills []string `json:"personal_skills,omitempty"`
 }
 

@@ -227,6 +227,45 @@ func TestActiveSkillViews_PersonalSkillSurvivesAdminMembershipFilter(t *testing.
 	}
 }
 
+// TestActiveSkillViews_DurableUserSkillSurvivesAdminMembershipFilter is the
+// run-start consumer of the durable ScopeUser rung (D-345): a durable
+// user-scope personal skill (recorded in the caller's ConfigScopeUser
+// membership) survives the admin membership filter, exactly like the session's
+// ephemeral personal skill. Its BODY already resolved into `views` because the
+// SkillStore returns ScopeUser rows across the user's sessions; this asserts
+// the projection keeps it visible when the admin pins a membership.
+func TestActiveSkillViews_DurableUserSkillSurvivesAdminMembershipFilter(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	ov := newOverlay(t)
+	// Admin pins membership {a}. The user has a durable user-scope skill "u"
+	// (ConfigScopeUser membership) and a session ephemeral skill "p".
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		Skills: &agentcfg.SkillsSelection{Names: []string{"a"}},
+	}); err != nil {
+		t.Fatalf("admin membership: %v", err)
+	}
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+		Skills: &agentcfg.SkillsSelection{Names: []string{"u"}},
+	}); err != nil {
+		t.Fatalf("durable user membership: %v", err)
+	}
+	if _, err := ov.AddPersonalSkill(ctx, projID(), projAgent, "p"); err != nil {
+		t.Fatalf("add personal: %v", err)
+	}
+	got, err := projection.ActiveSkillViews(ctx, reg, ov, projAgent, projID(), views("a", "b", "p", "u"))
+	if err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+	gn := names(got)
+	if !hasName(gn, "a") || !hasName(gn, "p") || !hasName(gn, "u") {
+		t.Fatalf("admin member 'a' + session personal 'p' + durable user 'u' expected: %v", gn)
+	}
+	if hasName(gn, "b") {
+		t.Fatalf("non-member 'b' leaked through: %v", gn)
+	}
+}
+
 func deref(s *string) string {
 	if s == nil {
 		return "<nil>"

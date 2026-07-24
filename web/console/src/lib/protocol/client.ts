@@ -93,6 +93,9 @@ import type {
 	AgentConfigUserListRevisionsResponse,
 	AgentConfigUserDiffResponse,
 	AgentConfigUserRollbackResponse,
+	AgentConfigUserSkillsListResponse,
+	AgentConfigUserSkillsUpsertResponse,
+	AgentConfigUserSkillsDeleteResponse,
 } from './agentconfig.js';
 
 /* ------------------------------------------------------------------ */
@@ -1436,6 +1439,41 @@ export class AgentConfigNamespace {
 		return this.#t.request<AgentConfigUserRollbackResponse>(
 			'/v1/agent_config/user/rollback',
 			{ agent_id: agentId, revision_id: revisionId },
+		);
+	}
+
+	// --- Durable-per-user skills (CLAIM-FREE — a valid identity is enough;
+	// `user` names the durable STORAGE scope, not an auth tier). ---
+
+	/** `agent_config.user.skills.list` — list the caller's durable user-scope
+	 * personal skills (visible across ALL of their conversations). Claim-free. */
+	userSkillsList(agentId: string): Promise<AgentConfigUserSkillsListResponse> {
+		return this.#t.request<AgentConfigUserSkillsListResponse>(
+			'/v1/agent_config/user/skills/list',
+			{ agent_id: agentId },
+		);
+	}
+	/** `agent_config.user.skills.upsert` — upsert a DURABLE personal skill
+	 * (scope forced to user server-side; persists across conversations).
+	 * Claim-free. */
+	userSkillsUpsert(
+		agentId: string,
+		skill: AgentConfigSkillInput,
+	): Promise<AgentConfigUserSkillsUpsertResponse> {
+		return this.#t.request<AgentConfigUserSkillsUpsertResponse>(
+			'/v1/agent_config/user/skills/upsert',
+			{ agent_id: agentId, skill: skill as unknown as Record<string, unknown> },
+		);
+	}
+	/** `agent_config.user.skills.delete` — delete one of the caller's durable
+	 * user-scope personal skills. Claim-free. */
+	userSkillsDelete(
+		agentId: string,
+		name: string,
+	): Promise<AgentConfigUserSkillsDeleteResponse> {
+		return this.#t.request<AgentConfigUserSkillsDeleteResponse>(
+			'/v1/agent_config/user/skills/delete',
+			{ agent_id: agentId, name },
 		);
 	}
 }

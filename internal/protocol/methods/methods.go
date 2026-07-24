@@ -516,6 +516,27 @@ const (
 	// wire-transport route is `POST /v1/agent_config/user/rollback`.
 	MethodAgentConfigUserRollback Method = "agent_config.user.rollback"
 
+	// MethodAgentConfigUserSkillsList — durable-per-user skills verb: lists
+	// the caller's user-scope (durable, cross-session) personal skills under
+	// their real (tenant, user). CLAIM-FREE — a valid identity is enough (NO
+	// admin, NO `auth.ScopeAgentConfigUser`): a personal skill cannot widen
+	// capability (the capability filter is default-deny and the injection-time
+	// redactor scrubs any tool a skill names that is outside the run's allowed
+	// set), so authoring one is as safe as the session-scoped rung. The
+	// wire-transport route is `POST /v1/agent_config/user/skills/list`.
+	MethodAgentConfigUserSkillsList Method = "agent_config.user.skills.list"
+	// MethodAgentConfigUserSkillsUpsert — durable-per-user skills verb:
+	// upserts a DURABLE personal skill at user scope (persists across ALL of
+	// the caller's conversations, keyed (tenant, user)). CLAIM-FREE, forced to
+	// `skills.ScopeUser`. The wire-transport route is
+	// `POST /v1/agent_config/user/skills/upsert`.
+	MethodAgentConfigUserSkillsUpsert Method = "agent_config.user.skills.upsert"
+	// MethodAgentConfigUserSkillsDelete — durable-per-user skills verb:
+	// deletes one of the caller's durable user-scope personal skills.
+	// CLAIM-FREE. The wire-transport route is
+	// `POST /v1/agent_config/user/skills/delete`.
+	MethodAgentConfigUserSkillsDelete Method = "agent_config.user.skills.delete"
+
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
 	// the unified pause/resume Coordinator. Read-only: it
@@ -1064,6 +1085,9 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigUserListRevisions:        {},
 	MethodAgentConfigUserDiff:                 {},
 	MethodAgentConfigUserRollback:             {},
+	MethodAgentConfigUserSkillsList:           {},
+	MethodAgentConfigUserSkillsUpsert:         {},
+	MethodAgentConfigUserSkillsDelete:         {},
 	MethodPauseList:                           {},
 	MethodTopologySnapshot:                    {},
 	MethodArtifactsList:                       {},
@@ -1299,7 +1323,7 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the twenty-seven
+// canonicalAgentConfigMethods is the closed set of the thirty
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
@@ -1308,10 +1332,12 @@ func IsGovernanceAdminMethod(m Method) bool {
 // (add_mcp_connection), the remove-connection verb (remove_mcp_connection),
 // the discovery-allowance write (set_mcp_discovery_origins), the OAuth-provider
 // install / uninstall verbs (set_oauth_provider / remove_oauth_provider),
-// the five session safe-subset verbs, and the five user-tier verbs
+// the five session safe-subset verbs, the five user-tier registry verbs
 // (user.get / user.set_revision / user.list_revisions / user.diff /
-// user.rollback). IsAgentConfigMethod is O(1); the agent-config wire handler
-// branches on the trailing path segment to dispatch.
+// user.rollback), and the three CLAIM-FREE durable-per-user skills verbs
+// (user.skills.list / user.skills.upsert / user.skills.delete).
+// IsAgentConfigMethod is O(1); the agent-config wire handler branches on the
+// trailing path segment to dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigGet:                    {},
 	MethodAgentConfigSetRevision:            {},
@@ -1342,6 +1368,11 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigUserListRevisions: {},
 	MethodAgentConfigUserDiff:          {},
 	MethodAgentConfigUserRollback:      {},
+	// Durable-per-user skills (CLAIM-FREE, session-safe tier — a personal
+	// skill cannot widen capability, so it needs only a valid identity).
+	MethodAgentConfigUserSkillsList:   {},
+	MethodAgentConfigUserSkillsUpsert: {},
+	MethodAgentConfigUserSkillsDelete: {},
 }
 
 // canonicalAgentConfigUserMethods is the closed sub-set of the five
@@ -1360,20 +1391,31 @@ var canonicalAgentConfigUserMethods = map[Method]struct{}{
 	MethodAgentConfigUserRollback:      {},
 }
 
-// canonicalAgentConfigSessionMethods is the closed sub-set of the
-// `agent_config.session.*` SAFE-SUBSET methods — the non-admin lower tier of
-// the authorization matrix. A session-scoped (non-admin) caller is permitted
-// on EXACTLY these verbs: set the user prompt layer, narrow-only source/tool
-// disable, and ephemeral personal-skill upsert/delete/list. Every other
-// `agent_config.*` method is admin-gated. These verbs require a valid
-// identity but NOT the admin scope; authority derives from the verified ctx,
-// never the request body.
+// canonicalAgentConfigSessionMethods is the closed CLAIM-FREE SAFE-SUBSET —
+// the non-admin lower tier of the authorization matrix. A caller is permitted
+// on EXACTLY these verbs with only a valid identity (no admin, no
+// `auth.ScopeAgentConfigUser`): set the user prompt layer, narrow-only
+// source/tool disable, ephemeral (session-scoped) personal-skill
+// upsert/delete/list, AND durable-per-user personal-skill upsert/delete/list
+// (`agent_config.user.skills.*` — `user` names the durable STORAGE scope, not
+// an auth tier; a personal skill cannot widen capability, so it is as safe as
+// the session rung). Every other `agent_config.*` method is admin- or
+// user-claim-gated. Authority derives from the verified ctx, never the request
+// body.
 var canonicalAgentConfigSessionMethods = map[Method]struct{}{
 	MethodAgentConfigSessionSetUserPrompt:     {},
 	MethodAgentConfigSessionSetSourceDisables: {},
 	MethodAgentConfigSessionSkillsList:        {},
 	MethodAgentConfigSessionSkillsUpsert:      {},
 	MethodAgentConfigSessionSkillsDelete:      {},
+	// Durable-per-user skills verbs are CLAIM-FREE too: `user` here names the
+	// storage SCOPE (durable, keyed (tenant, user)), not an auth tier. A
+	// personal skill cannot widen capability, so — like the session rung —
+	// these need a valid identity but neither admin nor the
+	// `auth.ScopeAgentConfigUser` claim.
+	MethodAgentConfigUserSkillsList:   {},
+	MethodAgentConfigUserSkillsUpsert: {},
+	MethodAgentConfigUserSkillsDelete: {},
 }
 
 // canonicalAgentConfigAdminMethods is the closed sub-set of the
@@ -1398,7 +1440,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetLLMProvider:         {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the twenty-seven
+// IsAgentConfigMethod reports whether m is one of the thirty
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

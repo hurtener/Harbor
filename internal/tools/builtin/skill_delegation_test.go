@@ -114,7 +114,7 @@ func (f *fakeSkillStore) Search(ctx context.Context, q identity.Quadruple, query
 	return out, nil
 }
 
-func (f *fakeSkillStore) Delete(ctx context.Context, q identity.Quadruple, name string) error {
+func (f *fakeSkillStore) Delete(ctx context.Context, q identity.Quadruple, name string, _ skills.Scope) error {
 	if err := skills.ValidateIdentity(q); err != nil {
 		return err
 	}

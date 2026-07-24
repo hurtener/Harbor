@@ -61,6 +61,9 @@ const (
 const (
 	// ScopeSession — visible to one session (the default).
 	ScopeSession = internal.ScopeSession
+	// ScopeUser — durable-by-default; visible to every session of the same
+	// (tenant, user).
+	ScopeUser = internal.ScopeUser
 	// ScopeProject — visible to a project.
 	ScopeProject = internal.ScopeProject
 	// ScopeTenant — visible to a tenant.

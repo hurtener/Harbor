@@ -71,7 +71,7 @@ func (s *fakeStore) Search(ctx context.Context, id identity.Quadruple, query str
 	return out, nil
 }
 
-func (s *fakeStore) Delete(ctx context.Context, id identity.Quadruple, name string) error {
+func (s *fakeStore) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	return errors.New("fakeStore: Delete not used")
 }
 

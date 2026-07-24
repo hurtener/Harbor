@@ -408,12 +408,48 @@ func ActiveSkillViews(ctx context.Context, reg agentcfg.Registry, ov sessionover
 			return nil, fmt.Errorf("%w: agent %q pins skill %q", ErrSkillBodyMissing, agentID, name)
 		}
 	}
-	// Keep the admin members AND add back the session's personal skills (the
-	// session-overlay ON TOP of the admin baseline). A personal name absent
-	// from views is harmless — FilterSkillViewsByMembership keeps only names
-	// present in views.
-	allowed := append(append([]string(nil), rev.Payload.Skills.Names...), personal...)
+	// The durable user-scope personal-skill membership: a safe-subset ADD that
+	// survives the admin membership filter (the durable analogue of the
+	// session's ephemeral personal skills). Read from the caller's active
+	// USER-scope config revision — the same ConfigScopeUser arm the
+	// tool-exposure and user-prompt projections read. Their BODIES already
+	// resolved into `views` because the SkillStore returns ScopeUser rows for
+	// every session of the (tenant, user); this keeps them visible when the
+	// admin pins a membership.
+	durableUser, uerr := activeDurableUserSkillNames(ctx, reg, agentID, id)
+	if uerr != nil {
+		return nil, uerr
+	}
+	// Keep the admin members AND add back BOTH the session's ephemeral personal
+	// skills and the durable user-scope personal skills (the user + session
+	// safe-subset adds ON TOP of the admin baseline). A name absent from views
+	// is harmless — FilterSkillViewsByMembership keeps only names present in
+	// views.
+	allowed := append(append(append([]string(nil), rev.Payload.Skills.Names...), personal...), durableUser...)
 	return FilterSkillViewsByMembership(views, allowed), nil
+}
+
+// activeDurableUserSkillNames resolves the caller's active USER-scope durable
+// config revision and returns its skills-membership names — the durable
+// per-user personal-skill set. It keys by the run's identity triple with
+// agent_id as the per-agent key (the USER config scope), so the real
+// (tenant, user) is the isolation principal and the tuple is never widened.
+// nil registry / empty agentID / no active user revision / a revision with no
+// skills section yields nil (the backward-compatible "no durable user skills"
+// path). A registry read error is returned so the caller fails the run loudly
+// — never a silent drop (CLAUDE.md §13). Mirrors activeDurableUserPrompt.
+func activeDurableUserSkillNames(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) ([]string, error) {
+	if reg == nil || agentID == "" {
+		return nil, nil
+	}
+	rev, found, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeUser)
+	if err != nil {
+		return nil, err
+	}
+	if !found || rev.Payload.Skills == nil {
+		return nil, nil
+	}
+	return rev.Payload.Skills.Names, nil
 }
 
 // ActiveLLMOverrides resolves the PER-AGENT LLM-parameter override layer from

@@ -52,8 +52,10 @@ func (stubStore) List(context.Context, identity.Quadruple, skills.ListFilter) ([
 func (stubStore) Search(context.Context, identity.Quadruple, string, int) ([]skills.RankedSkill, error) {
 	return nil, nil
 }
-func (stubStore) Delete(context.Context, identity.Quadruple, string) error { return nil }
-func (stubStore) Close(context.Context) error                              { return nil }
+func (stubStore) Delete(context.Context, identity.Quadruple, string, skills.Scope) error {
+	return nil
+}
+func (stubStore) Close(context.Context) error { return nil }
 
 func validSkill() skills.Skill {
 	return skills.Skill{
@@ -108,7 +110,7 @@ func TestSkill_Validate_AcceptsEveryOriginAndScope(t *testing.T) {
 	t.Parallel()
 	for _, o := range []skills.Origin{skills.OriginPack, skills.OriginGenerated} {
 		for _, sc := range []skills.Scope{
-			skills.ScopeSession, skills.ScopeProject, skills.ScopeTenant, skills.ScopeGlobal,
+			skills.ScopeSession, skills.ScopeUser, skills.ScopeProject, skills.ScopeTenant, skills.ScopeGlobal,
 		} {
 			s := validSkill()
 			s.Origin, s.Scope = o, sc
