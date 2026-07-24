@@ -559,10 +559,7 @@ func TestE2E_RuntimePosture(t *testing.T) {
 			t.Error(err)
 		}
 
-		time.Sleep(50 * time.Millisecond)
-		if after := runtime.NumGoroutine(); after > baseline+8 {
-			t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-		}
+		eventuallyGoroutinesSettle(t, baseline, 8)
 	})
 }
 

@@ -128,10 +128,7 @@ func TestConcurrentReuse_PostureSurface(t *testing.T) {
 
 	// No goroutine leak: the baseline is restored once every Dispatch
 	// has returned.
-	time.Sleep(50 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after > baseline+5 {
-		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-	}
+	eventuallyGoroutinesSettle(t, baseline, 5)
 }
 
 // TestConcurrentReuse_PostureHealth_WidenNoCrossTalk pins D-310's
@@ -212,10 +209,7 @@ func TestConcurrentReuse_PostureHealth_WidenNoCrossTalk(t *testing.T) {
 		t.FailNow()
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after > baseline+5 {
-		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-	}
+	eventuallyGoroutinesSettle(t, baseline, 5)
 }
 
 // TestPostureSurface_CancellationNoCrossTalk pins that cancelling one

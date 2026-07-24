@@ -234,9 +234,19 @@ func TestEventsSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 	if len(msgs) > 0 {
 		t.Fatalf("concurrent-reuse failures: %v", msgs)
 	}
-	time.Sleep(50 * time.Millisecond)
-	runtime.GC()
-	if got := runtime.NumGoroutine(); got > baseline+5 {
+	// Bounded drain-poll (§17.4): re-sample after GC until the count settles
+	// within tolerance or a deadline elapses — a genuine leak still fails.
+	settleDeadline := time.Now().Add(5 * time.Second)
+	var got int
+	for {
+		runtime.GC()
+		got = runtime.NumGoroutine()
+		if got <= baseline+5 || !time.Now().Before(settleDeadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got > baseline+5 {
 		t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, got)
 	}
 }
