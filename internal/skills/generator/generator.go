@@ -360,7 +360,9 @@ func Propose(ctx context.Context, store skills.SkillStore, deps Deps, args Propo
 	if emitErr := emitProposed(ctx, deps, q, args.Skill, skill, ResultPersisted, "", false); emitErr != nil {
 		// Best-effort rollback. Delete's failure is folded into
 		// the surfaced error so the caller sees both.
-		delErr := store.Delete(ctx, q, skill.Name)
+		// Roll back exactly the row just inserted — pass its own scope so the
+		// rung-precise Delete targets the same rung it was written to.
+		delErr := store.Delete(ctx, q, skill.Name, skill.Scope)
 		if delErr != nil {
 			return SkillReceipt{}, fmt.Errorf("skills/generator: audit emit failed AND rollback delete failed: emit=%w deleteErr=%w", emitErr, delErr)
 		}
@@ -427,6 +429,13 @@ func Promote(ctx context.Context, store skills.SkillStore, deps Deps, src identi
 	case skills.ScopeProject, skills.ScopeTenant, skills.ScopeGlobal:
 	case skills.ScopeSession:
 		return errors.New("skills/generator: Promote scope=session is contradictory (use ScopeProject or ScopeTenant)")
+	case skills.ScopeUser:
+		// A durable per-user personal skill is authored through the user
+		// verb, keyed (tenant, user); it is not a promotion TARGET (promotion
+		// widens visibility across identities, and ScopeUser stays pinned to a
+		// single user). Reject with an accurate message rather than the
+		// misleading "unknown scope".
+		return errors.New("skills/generator: Promote scope=user is not a supported target (user-scope skills are authored via the user verb, not promoted)")
 	default:
 		return fmt.Errorf("skills/generator: Promote unknown scope %q", scope)
 	}
@@ -467,7 +476,7 @@ func Promote(ctx context.Context, store skills.SkillStore, deps Deps, src identi
 			// Roll back THIS target. Other targets stay (the
 			// strict-fail model is per-target — we surface the
 			// first failure and don't continue).
-			delErr := store.Delete(ctx, target, copyForTarget.Name)
+			delErr := store.Delete(ctx, target, copyForTarget.Name, copyForTarget.Scope)
 			if delErr != nil {
 				return fmt.Errorf("skills/generator: Promote audit emit failed AND rollback delete failed for target=%s/%s/%s: emit=%w delete=%w",
 					target.TenantID, target.UserID, target.SessionID, err, delErr)

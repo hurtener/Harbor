@@ -281,9 +281,23 @@ type SkillStore interface {
 	// result.
 	Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]RankedSkill, error)
 
-	// Delete removes the named skill under the identity. Missing →
-	// `ErrSkillNotFound`. Emits `skill.deleted` on success.
-	Delete(ctx context.Context, id identity.Quadruple, name string) error
+	// Delete removes the named skill under the identity, at the target
+	// `scope`. The scope makes the DESTRUCTIVE op RUNG-PRECISE so an
+	// ephemeral session delete can never destroy a durable user-scope skill
+	// (and vice versa) — the read filter unions the session and user rungs,
+	// but a delete MUST NOT cross that boundary:
+	//
+	//   - scope == ScopeUser: deletes ONLY the durable user-scope row, keyed
+	//     `(tenant, user)` with the session independent (the cross-session
+	//     durable delete — the intended semantics of the user verb). Never
+	//     touches a same-named session-local row.
+	//   - any other scope: deletes ONLY the caller's session-local,
+	//     NON-durable row(s) of that name (session pinned, `scope != user`) —
+	//     never touches a durable user-scope row. This is the pre-user-rung
+	//     behaviour for the session/admin/generator/CLI callers.
+	//
+	// Missing → `ErrSkillNotFound`. Emits `skill.deleted` on success.
+	Delete(ctx context.Context, id identity.Quadruple, name string, scope Scope) error
 
 	// Close releases the driver's resources. Subsequent method
 	// calls return `ErrStoreClosed`. Close is idempotent.

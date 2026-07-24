@@ -106,7 +106,7 @@ func (s *paritySkillStore) Search(_ context.Context, id identity.Quadruple, _ st
 	return nil, nil
 }
 
-func (s *paritySkillStore) Delete(_ context.Context, id identity.Quadruple, _ string) error {
+func (s *paritySkillStore) Delete(_ context.Context, id identity.Quadruple, _ string, _ skills.Scope) error {
 	if err := identity.Validate(id.Identity); err != nil {
 		return err
 	}

@@ -84,6 +84,46 @@ func TestUserSkills_CrossUserIsolation(t *testing.T) {
 	}
 }
 
+// TestUserSkills_SessionDeleteLeavesDurableIntact proves the rung-precise
+// delete at the SERVICE wiring level: an ephemeral session.skills.delete of a
+// name must NOT destroy a same-named durable user skill (the cross-durability
+// data-loss bug). The session verb passes ScopeSession; the user verb ScopeUser.
+func TestUserSkills_SessionDeleteLeavesDurableIntact(t *testing.T) {
+	ctx := context.Background()
+	s := sessionSvc(t)
+	id := prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s1"}
+
+	// A durable user skill AND a same-named ephemeral session skill.
+	if _, err := s.UserSkillsUpsert(ctx, prototypes.AgentConfigUserSkillsUpsertRequest{
+		Identity: id, AgentID: testAgentID,
+		Skill: prototypes.AgentConfigSkillInput{Name: "shared", Trigger: "t", Steps: []string{"s"}, Origin: "generated", Scope: "user"},
+	}); err != nil {
+		t.Fatalf("user upsert: %v", err)
+	}
+	if _, err := s.SessionSkillsUpsert(ctx, prototypes.AgentConfigSessionSkillsUpsertRequest{
+		Identity: id, AgentID: testAgentID,
+		Skill: prototypes.AgentConfigSkillInput{Name: "shared", Trigger: "t", Steps: []string{"s"}, Origin: "generated", Scope: "session"},
+	}); err != nil {
+		t.Fatalf("session upsert: %v", err)
+	}
+
+	// Ephemeral delete of "shared" must remove ONLY the session rung.
+	if _, err := s.SessionSkillsDelete(ctx, prototypes.AgentConfigSessionSkillsDeleteRequest{
+		Identity: id, AgentID: testAgentID, Name: "shared",
+	}); err != nil {
+		t.Fatalf("session delete: %v", err)
+	}
+
+	// The durable user skill MUST survive.
+	list, err := s.UserSkillsList(ctx, prototypes.AgentConfigUserSkillsListRequest{Identity: id, AgentID: testAgentID})
+	if err != nil {
+		t.Fatalf("user list after session delete: %v", err)
+	}
+	if len(list.Skills) != 1 || list.Skills[0].Name != "shared" {
+		t.Fatalf("ephemeral session delete destroyed the durable user skill: %+v", list.Skills)
+	}
+}
+
 // TestUserSkills_MissingIdentity_FailsLoud proves the identity gate holds on
 // the claim-free verbs: an incomplete triple is rejected, never silently
 // accepted.

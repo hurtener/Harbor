@@ -135,7 +135,9 @@ skills membership.
   store + StateStore-backed registry + overlay + wire handler + projection;
   cross-session durability, cross-user isolation, admin-pin survival,
   incomplete-identity → `identity_required` (401).
-- **Conformance:** `user_scope_cross_session` runs against localdb + postgres.
+- **Conformance:** `user_scope_cross_session` + `delete_rung_independence` run
+  against localdb + postgres (the latter pins rung-precise deletes both
+  directions so an ephemeral delete can never destroy a durable user skill).
 - **Concurrency / leak:** N≥128 concurrent user upserts/reads against one shared
   store, no cross-user bleed, no goroutine leak, under `-race`.
 
@@ -157,11 +159,17 @@ skills membership.
 
 ## Risks / open questions
 
-- Name collision across the session and user scopes for the SAME
-  `(tenant, user, session)`: reads prefer the exact-session row (deterministic),
-  and a bare `Delete(name)` removes the name from the caller's union view. This
-  is the documented union-visibility semantics; a future refinement could add a
-  scope-precise delete. No isolation risk (tenant + user stay pinned).
+- **Destructive ops must not cross the durability boundary (RESOLVED).** The
+  READ filter unions the session + user rungs, but `SkillStore.Delete` takes a
+  target `Scope` so it stays RUNG-PRECISE: an ephemeral `session.skills.delete`
+  can never destroy a durable user skill of the same name, and a
+  `user.skills.delete` never removes a same-named session row. The conformance
+  `delete_rung_independence` subtest pins both directions across all drivers.
+  (An earlier draft used a union delete — a cross-durability data-loss bug the
+  review caught; fixed here.)
+- Name collision across the session and user scopes for reads: `Get` prefers the
+  exact-session row (deterministic); `List` returns both as distinct entries. No
+  isolation risk (tenant + user stay pinned).
 
 ## Glossary additions
 

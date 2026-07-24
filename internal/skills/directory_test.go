@@ -158,9 +158,31 @@ func (m *memStore) Search(ctx context.Context, id identity.Quadruple, _ string, 
 	return nil, nil
 }
 
-func (m *memStore) Delete(_ context.Context, id identity.Quadruple, _ string) error {
+func (m *memStore) Delete(_ context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	if err := identity.Validate(id.Identity); err != nil {
 		return errors.New("memStore: identity rejected")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Rung-precise: a ScopeUser delete targets ONLY the durable (session-zeroed)
+	// bucket; any other scope targets ONLY the caller's session-local non-user
+	// rows — never crossing the durability boundary.
+	prune := func(key identity.Identity, keepUser bool) {
+		src := m.skillsByIdent[key]
+		out := src[:0:0]
+		for _, s := range src {
+			isUser := s.Scope == skills.ScopeUser
+			if s.Name == name && isUser == keepUser {
+				continue // drop
+			}
+			out = append(out, s)
+		}
+		m.skillsByIdent[key] = out
+	}
+	if scope == skills.ScopeUser {
+		prune(userBucket(id.Identity), true)
+	} else {
+		prune(id.Identity, false)
 	}
 	return nil
 }

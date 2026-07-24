@@ -343,7 +343,7 @@ func TestDelete_SuccessAndNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// Delete of a row that was never inserted → ErrSkillNotFound.
-	if err := d.Delete(ctx, covID, "ghost"); err == nil ||
+	if err := d.Delete(ctx, covID, "ghost", skills.ScopeSession); err == nil ||
 		!errors.Is(err, skills.ErrSkillNotFound) {
 		t.Fatalf("Delete(ghost) = %v, want ErrSkillNotFound", err)
 	}
@@ -356,7 +356,7 @@ func TestDelete_SuccessAndNotFound(t *testing.T) {
 	if err := d.Upsert(ctx, covID, s); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	if err := d.Delete(ctx, covID, "deletable"); err != nil {
+	if err := d.Delete(ctx, covID, "deletable", s.Scope); err != nil {
 		t.Fatalf("Delete(deletable): %v", err)
 	}
 	// Gone now.
@@ -524,7 +524,7 @@ func TestGuardBranches_ClosedStoreAndBadIdentity(t *testing.T) {
 	if _, err := d.Search(ctx, badID, "q", 5); !errors.Is(err, skills.ErrIdentityRequired) {
 		t.Errorf("Search(bad id) = %v, want ErrIdentityRequired", err)
 	}
-	if err := d.Delete(ctx, badID, "x"); !errors.Is(err, skills.ErrIdentityRequired) {
+	if err := d.Delete(ctx, badID, "x", skills.ScopeSession); !errors.Is(err, skills.ErrIdentityRequired) {
 		t.Errorf("Delete(bad id) = %v, want ErrIdentityRequired", err)
 	}
 
@@ -545,7 +545,7 @@ func TestGuardBranches_ClosedStoreAndBadIdentity(t *testing.T) {
 	if _, err := d2.Search(ctx, covID, "q", 5); !errors.Is(err, skills.ErrStoreClosed) {
 		t.Errorf("Search(closed) = %v, want ErrStoreClosed", err)
 	}
-	if err := d2.Delete(ctx, covID, "x"); !errors.Is(err, skills.ErrStoreClosed) {
+	if err := d2.Delete(ctx, covID, "x", skills.ScopeSession); !errors.Is(err, skills.ErrStoreClosed) {
 		t.Errorf("Delete(closed) = %v, want ErrStoreClosed", err)
 	}
 }

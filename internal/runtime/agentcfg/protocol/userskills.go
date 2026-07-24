@@ -136,9 +136,14 @@ func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, fmt.Errorf("%w: skill name is empty", ErrIdentityRequired)
 	}
 	q := identity.Quadruple{Identity: id}
-	if err := s.skills.Delete(ctx, q, req.Name); err != nil {
+	// RUNG-PRECISE: the durable user verb deletes ONLY the ScopeUser row
+	// (keyed (tenant, user), session-independent — the intended cross-session
+	// durable delete). It must never touch a same-named session-scoped row.
+	if err := s.skills.Delete(ctx, q, req.Name, skills.ScopeUser); err != nil {
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
 	}
+	// Remove the name from the durable ConfigScopeUser membership so the
+	// revision never lists a name whose body is gone.
 	rev, err := s.recordUserSkillsMembership(ctx, q, req.AgentID, removeName, req.Name)
 	if err != nil {
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err

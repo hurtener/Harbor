@@ -458,25 +458,31 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 }
 
 // Delete implements skills.SkillStore.
-func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string) error {
+func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	if d.closed.Load() {
 		return skills.ErrStoreClosed
 	}
 	if skills.ValidateIdentity(id) != nil {
 		return skills.EmitIdentityRejected(ctx, d.bus, id, "Delete")
 	}
-	// Delete resolves the same union the reads do: the caller's own session
-	// rows PLUS any user-scope (durable, session-zeroed) row of the same
-	// (tenant, user). This is what lets the user verb delete its durable rung
-	// from any session. On a (pathological) name collision between a
-	// session-scoped and a user-scoped skill of the same name, deleting the
-	// name removes both from the caller's view — the union-visibility
-	// semantics; the verbs treat a name as one skill from the caller's
-	// vantage.
-	res, err := d.db.ExecContext(ctx, `
-        DELETE FROM skills
-        WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4) AND name = $5`,
-		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name)
+	// RUNG-PRECISE delete: reads union the session + user rungs, but a
+	// DESTRUCTIVE op must never cross that boundary. A ScopeUser delete
+	// targets ONLY the durable user-scope row (keyed (tenant, user), session
+	// independent); every other scope targets ONLY the caller's session-local
+	// non-durable rows — so an ephemeral session delete can never destroy a
+	// durable user skill, and vice versa.
+	var (
+		query string
+		args  []any
+	)
+	if scope == skills.ScopeUser {
+		query = `DELETE FROM skills WHERE tenant_id = $1 AND user_id = $2 AND scope = $3 AND name = $4`
+		args = []any{id.TenantID, id.UserID, string(skills.ScopeUser), name}
+	} else {
+		query = `DELETE FROM skills WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND scope != $4 AND name = $5`
+		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name}
+	}
+	res, err := d.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("skills/postgres: Delete exec: %w", err)
 	}
