@@ -247,6 +247,10 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		if priorOwner != deps.Owner {
 			return fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, ms.Name)
 		}
+		// The production catalog implements CatalogSourceDeregisterer, so this
+		// branch always runs in practice. Were a catalog to not implement it, the
+		// old tools would not be deregistered and the Register below would fail
+		// LOUD on ErrToolDuplicateName — never a silent stale-registration.
 		if dc, ok := deps.Catalog.(tools.CatalogSourceDeregisterer); ok {
 			if removed := dc.DeregisterSource(tools.ToolSourceID(ms.Name)); removed > 0 && deps.Logger != nil {
 				deps.Logger.Info("mcp: replacing live same-name registration",

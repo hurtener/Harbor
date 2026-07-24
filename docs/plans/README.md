@@ -4479,7 +4479,7 @@ per §17.8). Status: Shipped (V1.6).
 - **Subsystem:** `internal/protocol`, `internal/runtime/agentcfg`, `internal/tools/auth`, `internal/config`, `cmd/harbor`, `web/console` (typed-client mirror).
 - **RFC:** §6.4. **Deps:** Gate-0; the shipped name-only provider install (D-303), the tokenexchange SSRF backstop (D-300/D-338), the add-connection lifecycle (#375).
 - **What it delivers:** D-340 — `set_oauth_provider` / `add_mcp_connection` MAY carry the NEW server's OAuth params (`token_url`/`audience`/`scopes`, still naming a boot-declared `credential_broker`) over the wire so a NEW OAuth-fronted MCP server is connectable at runtime without a static `tools.oauth_providers[]` block — ONLY behind a fail-closed boot opt-in (`tools.allow_wire_oauth_descriptor` OR `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR`, default off). Opt-in-off rejects any sink field exactly as D-303 does today (production posture unchanged). Opt-in-on: `allowed_downstream_hosts` is DERIVED from `connection.url` (a wire-supplied host list is rejected), and the wire `token_url` faces the identical D-300/D-338 SSRF backstop; the broker secret never rides the wire. Additive `omitempty` wire fields, D-223/D-209 lockstep, ProtocolVersion 0.1.0. §17.8 wire round-trip fixture from a real transcript. Reviewed security posture (fail-closed boot opt-in). See `docs/plans/phase-199-wire-oauth-descriptor.md`.
-- **Decision:** D-340. **Status:** Pending (v1.18).
+- **Decision:** D-340. **Status:** Shipped (v1.18).
 
 ### Phase 200 — per-user credential injection for receiver-style MCP servers (HA-34)
 

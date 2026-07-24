@@ -463,6 +463,7 @@ export interface AgentConfigMCPConnectionDescriptor {
   url?: string;
   oauth_provider?: string;
   meta_annotations?: Record<string, string>;
+  oauth?: AgentConfigOAuthProviderDescriptor;
   oauth_discovery_allowed_origins?: string[];
 }
 
@@ -502,6 +503,8 @@ export interface AgentConfigOAuthProviderDescriptor {
   credential_source: string;
   credential_broker: string;
   scopes?: string[];
+  token_url?: string;
+  audience?: string;
 }
 
 export interface AgentConfigOAuthProviders {
