@@ -20,7 +20,7 @@ func TestRegistry_SourceIDs_ListsAttached(t *testing.T) {
 func TestRegistry_Deregister_RemovesAndClosesTransport(t *testing.T) {
 	r := NewRegistry()
 	prov := &stubProvider{id: "srv", toolNames: []string{"t"}}
-	if err := r.Register(ServerRegistration{Provider: prov, Transport: "stdio", InitialState: ServerStateOnline}); err != nil {
+	if err := r.Register(idCtx(t), ServerRegistration{Provider: prov, Transport: "stdio", InitialState: ServerStateOnline}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if got := r.SourceIDs(); len(got) != 1 {
@@ -56,7 +56,7 @@ func TestRegistry_Deregister_UnknownName_NotFound(t *testing.T) {
 func TestRegistry_Deregister_PropagatesCloseError(t *testing.T) {
 	r := NewRegistry()
 	prov := &stubProvider{id: "srv", closeErr: errors.New("close boom")}
-	if err := r.Register(ServerRegistration{Provider: prov, Transport: "stdio", InitialState: ServerStateOnline}); err != nil {
+	if err := r.Register(idCtx(t), ServerRegistration{Provider: prov, Transport: "stdio", InitialState: ServerStateOnline}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	// The entry is still removed (visible immediately) but the close error is

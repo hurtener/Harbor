@@ -37,11 +37,11 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `add_mcp_connection` for a name with a live same-name registration deregisters the old server's catalog tools (`DeregisterSource`) AND closes its transport (`Registry.Deregister`) BEFORE registering the new connection, returning `state: online` with the new tools live.
-- [ ] The replace happens inside the attacher's existing attach mutex — no new lock introduced; a concurrent-reuse test (N≥100 interleaved same-name attach/re-attach against one shared attacher, `-race`) shows no duplicate-registration error, no leaked transport, no cross-talk.
-- [ ] `Registry.Register`'s same-name path no longer silently overwrites: same-name replacement closes the prior provider's transport (goroutine-baseline test asserts no leak after a replace).
-- [ ] A first attach (no prior registration) is behaviorally identical to today (deregister legs no-op via the `ErrServerNotFound` swallow).
-- [ ] `scripts/smoke/phase-198.sh` asserts a live add → same-name re-add returns success (or SKIPs cleanly where no dev MCP fixture is reachable).
+- [x] `add_mcp_connection` for a name with a live same-name registration deregisters the old server's catalog tools (`DeregisterSource`) AND closes its transport (`Registry.Deregister`) BEFORE registering the new connection, returning `state: online` with the new tools live.
+- [x] The replace happens inside the attacher's existing attach mutex — no new lock introduced; a concurrent-reuse test (N≥100 interleaved same-name attach/re-attach against one shared attacher, `-race`) shows no duplicate-registration error, no leaked transport, no cross-talk.
+- [x] `Registry.Register`'s same-name path no longer silently overwrites: same-name replacement closes the prior provider's transport (goroutine-baseline test asserts no leak after a replace).
+- [x] A first attach (no prior registration) is behaviorally identical to today (deregister legs no-op via the `ErrServerNotFound` swallow).
+- [x] `scripts/smoke/phase-198.sh` asserts a live add → same-name re-add returns success (or SKIPs cleanly where no dev MCP fixture is reachable).
 
 ## Files added or changed
 
