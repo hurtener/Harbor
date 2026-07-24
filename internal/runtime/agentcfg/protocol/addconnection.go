@@ -104,6 +104,13 @@ type AttachRequest struct {
 	// runtime-added connection). Empty leaves the authorization-server hop
 	// needs-allowance.
 	OAuthDiscoveryAllowedOrigins []string
+	// Injection is the non-secret per-user credential-INJECTION mapping for a
+	// receiver-style server (nil when the connection binds none). The attacher
+	// carries it into the config.MCPServerConfig it builds so the shared injection
+	// engine sources + injects the acting principal's credential per outbound call.
+	// NON-SECRET (a broker name + a target key/form); the pulled value is resolved
+	// per-call from the ctx identity and never rides this request.
+	Injection *agentcfg.MCPCredentialInjectionDescriptor
 }
 
 // ConnectionState is the explicit attach lifecycle state surfaced on the
@@ -166,10 +173,24 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 	}
 	q := identity.Quadruple{Identity: id}
 
-	desc, inlineOAuth, err := validateConnection(req.Connection)
+	desc, inlineOAuth, wireInjection, err := validateConnection(req.Connection)
 	if err != nil {
 		return prototypes.AgentConfigAddMCPConnectionResponse{}, err
 	}
+
+	// Dev-gated wire-carried credential-INJECTION mapping (receiver-style server).
+	// Fail-closed behind the `tools.allow_wire_injection` opt-in (independent of
+	// the wire-OAuth opt-in): a connection carrying an injection mapping with the
+	// opt-in off is rejected loud BEFORE any dial or revision write. When opted in,
+	// the mapping is validated (form + redaction-covered target key) and normalised
+	// onto the domain descriptor so it is carried into the attach AND persisted in
+	// the revision (diff / rollback). The broker-name resolution + downstream-sink
+	// derivation are re-enforced at attach time in the shared injection engine.
+	injDesc, err := s.gateAndValidateInjectionDescriptor(wireInjection)
+	if err != nil {
+		return prototypes.AgentConfigAddMCPConnectionResponse{}, err
+	}
+	desc.Injection = injDesc
 
 	// stdio gate (fail-closed, §7). A stdio add whose command[0] is absent
 	// from the allowlist is rejected BEFORE any dial or revision write — the
@@ -217,6 +238,7 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 		OAuthProvider:                desc.OAuthProvider,
 		MetaAnnotations:              cloneAnnotations(desc.MetaAnnotations),
 		OAuthDiscoveryAllowedOrigins: append([]string(nil), desc.OAuthDiscoveryAllowedOrigins...),
+		Injection:                    desc.Injection.Clone(),
 	})
 
 	switch {
@@ -295,58 +317,69 @@ func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConf
 // loud with ErrInvalidConnection. stdio requires a non-empty argv command
 // and no URL; http requires a URL and no command. An inline dev-gated OAuth
 // binding (`connection.oauth`) is mutually exclusive with the `oauth_provider`
-// NAME binding and is returned raw (the handler gates + installs it); the
-// returned pointer is nil unless an inline binding is present.
-func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentcfg.MCPConnectionDescriptor, *prototypes.AgentConfigOAuthProviderDescriptor, error) {
+// NAME binding and with a credential-injection mapping (`connection.injection`);
+// both raw wire objects are returned for the handler to gate + validate (the
+// returned pointers are nil unless present). One auth mode per connection.
+func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentcfg.MCPConnectionDescriptor, *prototypes.AgentConfigOAuthProviderDescriptor, *prototypes.AgentConfigMCPCredentialInjectionDescriptor, error) {
 	name := strings.TrimSpace(c.Name)
 	if name == "" {
-		return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: name is empty", ErrInvalidConnection)
+		return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: name is empty", ErrInvalidConnection)
 	}
 	// Reserved / spec-prefixed / empty `_meta` annotation keys are rejected
 	// for every transport (the runtime stamps the triple + agent_id + trace
 	// context; an operator annotation must not shadow them).
 	if err := validateConnectionAnnotations(c.MetaAnnotations); err != nil {
-		return agentcfg.MCPConnectionDescriptor{}, nil, err
+		return agentcfg.MCPConnectionDescriptor{}, nil, nil, err
 	}
-	// An inline OAuth binding and a provider-NAME binding are two ways to bind
-	// one auth mode — reject both set (one auth mode per connection).
+	// An inline OAuth binding, a provider-NAME binding, and a credential-injection
+	// mapping are three ways to bind ONE auth mode — reject any two set together
+	// (one auth mode per connection).
 	if c.OAuth != nil && strings.TrimSpace(c.OAuthProvider) != "" {
-		return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: oauth (inline binding) and oauth_provider (name binding) are mutually exclusive — one auth mode per connection", ErrInvalidConnection)
+		return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: oauth (inline binding) and oauth_provider (name binding) are mutually exclusive — one auth mode per connection", ErrInvalidConnection)
+	}
+	if c.Injection != nil && strings.TrimSpace(c.OAuthProvider) != "" {
+		return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: injection (credential-injection mapping) and oauth_provider (name binding) are mutually exclusive — one auth mode per connection", ErrInvalidConnection)
+	}
+	if c.Injection != nil && c.OAuth != nil {
+		return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: injection (credential-injection mapping) and oauth (inline binding) are mutually exclusive — one auth mode per connection", ErrInvalidConnection)
 	}
 	transport := agentcfg.MCPTransport(strings.TrimSpace(c.Transport))
 	switch transport {
 	case agentcfg.MCPTransportStdio:
 		if len(c.Command) == 0 || strings.TrimSpace(c.Command[0]) == "" {
-			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport requires a non-empty argv command", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport requires a non-empty argv command", ErrInvalidConnection)
 		}
 		if c.URL != "" {
-			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport must not carry a url", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport must not carry a url", ErrInvalidConnection)
 		}
 		if strings.TrimSpace(c.OAuthProvider) != "" {
-			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport must not bind an oauth_provider (no HTTP request to inject Authorization into)", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport must not bind an oauth_provider (no HTTP request to inject Authorization into)", ErrInvalidConnection)
 		}
 		if c.OAuth != nil {
-			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport must not carry an inline oauth binding (no HTTP request to inject Authorization into)", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport must not carry an inline oauth binding (no HTTP request to inject Authorization into)", ErrInvalidConnection)
+		}
+		if c.Injection != nil {
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport must not carry an injection mapping (a receiver-style server is reached over HTTP; the pulled credential is delivered on the outbound request)", ErrInvalidConnection)
 		}
 		if len(c.OAuthDiscoveryAllowedOrigins) > 0 {
-			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: stdio transport must not carry oauth_discovery_allowed_origins (no HTTP discovery walk)", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: stdio transport must not carry oauth_discovery_allowed_origins (no HTTP discovery walk)", ErrInvalidConnection)
 		}
 		return agentcfg.MCPConnectionDescriptor{
 			Name:            name,
 			Transport:       transport,
 			Command:         append([]string(nil), c.Command...),
 			MetaAnnotations: cloneAnnotations(c.MetaAnnotations),
-		}, nil, nil
+		}, nil, nil, nil
 	case agentcfg.MCPTransportHTTP:
 		if strings.TrimSpace(c.URL) == "" {
-			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: http transport requires a url", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport requires a url", ErrInvalidConnection)
 		}
 		if len(c.Command) > 0 {
-			return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: http transport must not carry a command", ErrInvalidConnection)
 		}
 		origins, oerr := normalizeDiscoveryOrigins(c.OAuthDiscoveryAllowedOrigins)
 		if oerr != nil {
-			return agentcfg.MCPConnectionDescriptor{}, nil, oerr
+			return agentcfg.MCPConnectionDescriptor{}, nil, nil, oerr
 		}
 		return agentcfg.MCPConnectionDescriptor{
 			Name:                         name,
@@ -355,9 +388,9 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 			OAuthProvider:                strings.TrimSpace(c.OAuthProvider),
 			MetaAnnotations:              cloneAnnotations(c.MetaAnnotations),
 			OAuthDiscoveryAllowedOrigins: origins,
-		}, c.OAuth, nil
+		}, c.OAuth, c.Injection, nil
 	default:
-		return agentcfg.MCPConnectionDescriptor{}, nil, fmt.Errorf("%w: unknown transport %q (want stdio|http)", ErrInvalidConnection, c.Transport)
+		return agentcfg.MCPConnectionDescriptor{}, nil, nil, fmt.Errorf("%w: unknown transport %q (want stdio|http)", ErrInvalidConnection, c.Transport)
 	}
 }
 
@@ -581,6 +614,22 @@ func descriptorToWire(d agentcfg.MCPConnectionDescriptor) prototypes.AgentConfig
 		OAuthProvider:                d.OAuthProvider,
 		MetaAnnotations:              cloneAnnotations(d.MetaAnnotations),
 		OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
+		Injection:                    injectionDescriptorToWire(d.Injection),
+	}
+}
+
+// injectionDescriptorToWire projects a domain injection descriptor onto the wire
+// shape (nil for nil). NON-SECRET throughout — the mapping only, never a value.
+func injectionDescriptorToWire(d *agentcfg.MCPCredentialInjectionDescriptor) *prototypes.AgentConfigMCPCredentialInjectionDescriptor {
+	if d == nil {
+		return nil
+	}
+	return &prototypes.AgentConfigMCPCredentialInjectionDescriptor{
+		Provider:      d.Provider,
+		Form:          d.Form,
+		Header:        d.Header,
+		BasicUsername: d.BasicUsername,
+		MetaKey:       d.MetaKey,
 	}
 }
 

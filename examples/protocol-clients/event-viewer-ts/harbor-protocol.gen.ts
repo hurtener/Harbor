@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:63a4c79ec11c73dc576dfe2eca38891a59c3920fb99298dec79696331b5c551e";
+export const WIRE_SURFACE_DIGEST = "sha256:eb4edaac8408bd35e8462afaac9a9d989b3904693362a0cdccada96010c5e315";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -464,7 +464,16 @@ export interface AgentConfigMCPConnectionDescriptor {
   oauth_provider?: string;
   meta_annotations?: Record<string, string>;
   oauth?: AgentConfigOAuthProviderDescriptor;
+  injection?: AgentConfigMCPCredentialInjectionDescriptor;
   oauth_discovery_allowed_origins?: string[];
+}
+
+export interface AgentConfigMCPCredentialInjectionDescriptor {
+  provider: string;
+  form: string;
+  header?: string;
+  basic_username?: string;
+  meta_key?: string;
 }
 
 export interface AgentConfigNaming {

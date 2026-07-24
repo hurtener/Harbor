@@ -1023,6 +1023,28 @@ type ToolsConfig struct {
 	// Do NOT enable in production.
 	AllowWireOAuthDescriptor bool `yaml:"allow_wire_oauth_descriptor,omitempty"`
 
+	// AllowWireInjection is a DEV-ONLY, fail-closed opt-in that permits
+	// `agent_config.add_mcp_connection` to carry a per-user credential-INJECTION
+	// mapping for a RECEIVER-STYLE MCP server over the wire (the `injection`
+	// object: which boot-declared broker + which target header / basic / `_meta`
+	// key), so a coordinator can ATTACH such a server at runtime and wire per-user
+	// credential delivery to it without a static `tools.mcp_servers[].injection`
+	// block and a redeploy. It is INDEPENDENT of AllowWireOAuthDescriptor — an
+	// operator may enable wire-OAuth without wire-injection or vice versa. It
+	// carries a NON-SECRET mapping only (the credential is still pulled per-user
+	// from the named broker at call time; nothing secret rides the wire), but it
+	// RELAXES the posture that no admin-writable field wires a credential to a
+	// receiver, so it is default false / fail-closed: with it unset (all of
+	// production), a connection descriptor carrying any injection field is
+	// REJECTED. When set, the relaxation stays bounded — the pulled credential's
+	// reachable host is DERIVED from the connection's own URL and validated against
+	// the named broker's boot-declared allow-list (never a wire field), and every
+	// declared target key must be redaction-covered. The same opt-in is also
+	// available globally via the `HARBOR_ALLOW_WIRE_INJECTION` boot env; the
+	// effective posture is this flag OR that env. Restart-required. Do NOT enable
+	// in production.
+	AllowWireInjection bool `yaml:"allow_wire_injection,omitempty"`
+
 	// BuiltIn lists opt-in tools shipped in the Harbor binary that the
 	// runtime should register against the catalog at boot. V1.1 ships
 	// two names: `clock.now` (current UTC time) and `text.echo` (echo

@@ -130,6 +130,27 @@ type AgentConfigMCPConnectionDescriptor struct {
 	// the wire `token_url` faces the identical token-exchange SSRF backstop the
 	// boot path uses. Set only for the http transport.
 	OAuth *AgentConfigOAuthProviderDescriptor `json:"oauth,omitempty"`
+	// Injection is an OPTIONAL per-user credential-INJECTION binding for a
+	// RECEIVER-STYLE MCP server (one that authenticates by RECEIVING a credential
+	// directly on each request rather than PULLING it via RFC 8693) — a
+	// coordinator ATTACHING such a server at runtime and wiring per-user
+	// credential delivery to it without a boot redeploy. It NAMES a boot-declared
+	// `tools.oauth_providers[]` broker (the per-user credential is sourced from it
+	// per outbound call via the acting ctx identity — fetched-not-held, per-user,
+	// never logged) and declares WHERE the pulled value is placed on the outbound
+	// request (a header / an `Authorization: Basic` value / a `_meta` key). Only
+	// the pulled value is secret; the mapping (broker name + target key/form) is
+	// NON-SECRET. It is mutually exclusive with OAuthProvider / OAuth (one auth
+	// mode per connection). It is accepted ONLY behind the fail-closed
+	// `tools.allow_wire_injection` boot opt-in (default off, independent of the
+	// wire-OAuth opt-in): with the opt-in off a connection carrying any injection
+	// field is REJECTED, fail-loud. When opted in, the credential's reachable
+	// downstream sink is the host DERIVED from this connection's own URL and
+	// validated against the named broker's boot-declared allow-list — never a
+	// wire-supplied host list — and every declared target key must be
+	// redaction-covered (the audit redactor holds it to `***`). Persisted in the
+	// revision (diff / rollback / list parity). Set only for the http transport.
+	Injection *AgentConfigMCPCredentialInjectionDescriptor `json:"injection,omitempty"`
 	// OAuthDiscoveryAllowedOrigins is the explicit per-connection cross-origin
 	// allow-list of public https origins the OAuth-requirement discovery walker
 	// may fetch authorization-server metadata from. NON-SECRET (an origin
@@ -139,6 +160,40 @@ type AgentConfigMCPConnectionDescriptor struct {
 	// network hole (a granted origin is still refused at dial if it resolves
 	// private / loopback). Set only for the http transport.
 	OAuthDiscoveryAllowedOrigins []string `json:"oauth_discovery_allowed_origins,omitempty"`
+}
+
+// AgentConfigMCPCredentialInjectionDescriptor is the wire projection of one
+// runtime-added connection's per-user credential-INJECTION mapping for a
+// RECEIVER-STYLE MCP server. It is the NON-SECRET mapping ONLY: it NAMES a
+// boot-declared `tools.oauth_providers[]` broker (the per-user credential is
+// pulled from it per outbound call via the acting ctx identity) and declares
+// WHERE the pulled value is placed on the outbound request. No secret material
+// rides this descriptor — only the broker-pulled value (resolved per-call) is
+// secret. It mirrors the boot `tools.mcp_servers[].injection` shape so the
+// runtime-add path and the boot path share one injection engine. Accepted only
+// behind the fail-closed `tools.allow_wire_injection` boot opt-in; the pulled
+// credential's reachable sink is derived from the connection URL (never a
+// wire-supplied host list) and every declared target key must be
+// redaction-covered.
+type AgentConfigMCPCredentialInjectionDescriptor struct {
+	// Provider NAMES the declared `tools.oauth_providers[]` broker the per-user
+	// credential is pulled from (the SAME registry `oauth_provider` resolves
+	// against). NON-SECRET (a name). Required; an unknown name fails at attach.
+	Provider string `json:"provider"`
+	// Form selects the injection form: "header" / "basic" / "meta". Required.
+	Form string `json:"form"`
+	// Header is the target request header NAME for Form=="header" (e.g.
+	// `x-vendor-api-key`). Required for that form; must be a redaction-covered
+	// credential key and must not be `Authorization` (use Form=="basic").
+	Header string `json:"header,omitempty"`
+	// BasicUsername is the username half for Form=="basic"; the pulled credential
+	// becomes the password half (`Authorization: Basic base64(user ":" value)`).
+	// Optional (an empty username is the common API-key-as-basic shape). NON-SECRET.
+	BasicUsername string `json:"basic_username,omitempty"`
+	// MetaKey is the target `_meta` key PATH for Form=="meta", dot-separated for
+	// nesting (e.g. `vendor.api_key`). Required for that form; no segment may be a
+	// reserved `_meta` key and the leaf must be a redaction-covered credential key.
+	MetaKey string `json:"meta_key,omitempty"`
 }
 
 // AgentConfigConnections is the wire projection of the runtime-added

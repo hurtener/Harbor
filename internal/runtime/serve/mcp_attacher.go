@@ -117,6 +117,12 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		// discovery walker's allowance input is no longer inert for a
 		// runtime-added connection (mcpdrv.Attach → Registry.Register reads it).
 		OAuthDiscoveryAllowedOrigins: append([]string(nil), req.OAuthDiscoveryAllowedOrigins...),
+		// Carry the non-secret per-user credential-INJECTION mapping (receiver-style
+		// server) into the config the driver builds, so the shared injection engine
+		// (mcpdrv.resolveInjectionBinding) sources + injects the acting principal's
+		// credential per outbound call. NON-SECRET (a broker name + a target
+		// key/form); the pulled value is resolved per-call from the ctx identity.
+		Injection: injectionToConfig(req.Injection),
 	}
 
 	// Serialise adds: the per-add closer slice is merged into the master
@@ -210,6 +216,25 @@ func MCPAddStdioAllowlist(cfg *config.Config) []string {
 		return nil
 	}
 	return append([]string(nil), cfg.Tools.MCPAddConnection.StdioAllowlist...)
+}
+
+// injectionToConfig projects the agent-config domain injection descriptor onto
+// the boot `config.MCPCredentialInjectionConfig` the MCP driver's shared
+// injection engine reads (nil for nil). It is the §4.4 boundary translation for
+// the runtime-add path: the wire descriptor and the boot yaml converge on ONE
+// config shape, so the runtime-add and boot paths share one injection engine
+// (never a parallel implementation). NON-SECRET throughout — the mapping only.
+func injectionToConfig(d *agentcfg.MCPCredentialInjectionDescriptor) *config.MCPCredentialInjectionConfig {
+	if d == nil {
+		return nil
+	}
+	return &config.MCPCredentialInjectionConfig{
+		Provider:      d.Provider,
+		Form:          d.Form,
+		Header:        d.Header,
+		BasicUsername: d.BasicUsername,
+		MetaKey:       d.MetaKey,
+	}
 }
 
 // transportModeForAdd maps the control-plane transport onto the MCP driver's
