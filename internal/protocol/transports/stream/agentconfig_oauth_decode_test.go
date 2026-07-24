@@ -11,12 +11,14 @@ import (
 // TestSetOAuthProvider_RejectsUnknownSinkFields proves the wire decode path
 // (DisallowUnknownFields) STILL rejects a set_oauth_provider descriptor carrying a
 // credential-sink / secret field that is NOT on the struct — BY NAME. After
-// D-340 the deliberate wire fields (token_url / audience / remote) are known
-// fields (gated at validation, see the agentcfg gate tests), but a broker-secret
-// env name or an interactive auth_url has no field to land in, so the decode
-// fails loud naming it — the never-wire-writable set.
+// D-340 the deliberate wire fields (token_url / audience) are known fields (gated
+// at validation, see the agentcfg gate tests), but any credential-SOURCE URL /
+// env-var name — `remote`, `auth_token_env`, `client_*_env`, `auth_url` — and a
+// raw `allowed_downstream_hosts` list have no field to land in, so the decode
+// fails loud naming it. This is the structural proof the self-contained wire
+// credential-pull exfil surface cannot exist.
 func TestSetOAuthProvider_RejectsUnknownSinkFields(t *testing.T) {
-	forbidden := []string{"auth_url", "client_id_env", "client_secret_env", "allowed_downstream_hosts"}
+	forbidden := []string{"remote", "auth_token_env", "auth_url", "client_id_env", "client_secret_env", "allowed_downstream_hosts"}
 	for _, field := range forbidden {
 		t.Run(field, func(t *testing.T) {
 			body := fmt.Sprintf(`{"agent_id":"a1","provider":{"name":"m365","driver":"tokenexchange","credential_source":"remote","credential_broker":"b1","%s":"https://attacker.example/token"}}`, field)
@@ -33,18 +35,19 @@ func TestSetOAuthProvider_RejectsUnknownSinkFields(t *testing.T) {
 }
 
 // TestSetOAuthProvider_WireFieldsDecodeButGateAtValidation proves the D-340
-// subtlety: token_url / audience / remote are now KNOWN fields, so
-// DisallowUnknownFields no longer rejects them at DECODE — the fail-closed
-// rejection moved to the validation gate (ErrWireDescriptorNotAllowed, pinned in
-// the agentcfg gate tests + phase-199 smoke). A decode test that expected a
-// decode-time reject here would silently stop guarding the exfil path.
+// subtlety: token_url / audience are now KNOWN fields, so DisallowUnknownFields no
+// longer rejects them at DECODE — the fail-closed rejection moved to the
+// validation gate (ErrWireDescriptorNotAllowed, pinned in the agentcfg gate tests
+// + phase-199 smoke). A decode test that expected a decode-time reject here would
+// silently stop guarding the exfil path. The wire descriptor still NAMES a
+// boot-declared credential_broker (no credential-source URL on the wire).
 func TestSetOAuthProvider_WireFieldsDecodeButGateAtValidation(t *testing.T) {
-	body := `{"agent_id":"a1","provider":{"name":"m365","driver":"tokenexchange","credential_source":"remote","token_url":"https://broker/token","audience":"https://graph","remote":{"url":"https://c/x","auth_token_env":"E"}}}`
+	body := `{"agent_id":"a1","provider":{"name":"m365","driver":"tokenexchange","credential_source":"remote","credential_broker":"m365-broker","token_url":"https://broker/token","audience":"https://graph"}}`
 	var req prototypes.AgentConfigSetOAuthProviderRequest
 	if err := decodeGovernanceBody([]byte(body), &req); err != nil {
 		t.Fatalf("D-340 wire fields must DECODE (the gate rejects them at validation, not decode), got %v", err)
 	}
-	if req.Provider.TokenURL == "" || req.Provider.Remote == nil {
+	if req.Provider.TokenURL == "" || req.Provider.CredentialBroker == "" {
 		t.Fatalf("wire fields must be decoded onto the struct, got %+v", req.Provider)
 	}
 }

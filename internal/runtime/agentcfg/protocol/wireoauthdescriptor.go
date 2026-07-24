@@ -13,23 +13,34 @@ import (
 //
 // # The two shapes, one gate
 //
-// A provider descriptor is EITHER the zero-URL name-only shape (the default and
-// all of production: `{name, driver, credential_source, credential_broker,
-// scopes?}`) OR the dev-gated full-binding shape (`{name, driver,
-// credential_source, token_url, audience?, scopes?, remote{}}`). The
-// credential-sink fields (`token_url`, `audience`, `remote`) are accepted ONLY
-// behind the fail-closed `tools.allow_wire_oauth_descriptor` opt-in (config flag
-// OR `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR` boot env). With the opt-in OFF a
-// descriptor carrying ANY sink field is REJECTED, fail-loud, naming the field +
-// the opt-in key — the zero-URL name-only posture is byte-for-byte unchanged.
+// A provider descriptor is EITHER the name-only shape (the default and all of
+// production: `{name, driver, credential_source, credential_broker, scopes?}`) OR
+// the dev-gated wire shape, which adds the NEW server's OAuth params
+// (`{..., credential_broker, token_url, audience?, scopes?}`) while STILL naming
+// a boot-declared `credential_broker`. The wire-carried fields (`token_url`,
+// `audience`) are accepted ONLY behind the fail-closed
+// `tools.allow_wire_oauth_descriptor` opt-in (config flag OR
+// `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR` boot env). With the opt-in OFF a
+// descriptor carrying either wire field is REJECTED, fail-loud, naming the field
+// + the opt-in key — the name-only posture is byte-for-byte unchanged.
+//
+// # The runtime's credential custody stays boot-declared
+//
+// The wire descriptor carries the NEW SERVER's public token endpoint only. The
+// runtime's OWN credential custody — the coordinator credential-pull endpoint,
+// the service-token env-var name, the org client credential — lives on the named
+// `credential_broker` (a `tools.oauth_credential_brokers[]` boot entry) and NEVER
+// rides the wire. A credential-source URL / env-var name (`remote`, `client_id_env`,
+// `client_secret_env`, `auth_url`) has no field on the wire struct, so a
+// `DisallowUnknownFields` decode rejects any of them BY NAME.
 //
 // # Why this is an explicit reject, not a decode reject
 //
 // Before the wire fields existed on the struct, a `DisallowUnknownFields` decode
-// rejected them BY NAME. Now that `token_url` / `audience` / `remote` ARE known
-// fields, that decode no longer rejects them — so the default-off reject is an
-// EXPLICIT validation here. It is fail-closed: a sink-bearing descriptor with the
-// opt-in off returns an error, never a silent downgrade to the name-only shape.
+// rejected them BY NAME. Now that `token_url` / `audience` ARE known fields, that
+// decode no longer rejects them — so the default-off reject is an EXPLICIT
+// validation here. It is fail-closed: a wire-bearing descriptor with the opt-in
+// off returns an error, never a silent downgrade to the name-only shape.
 //
 // # The derived downstream sink (never a wire field)
 //
@@ -40,17 +51,17 @@ import (
 // wire-supplied host list has no field to land in (a `DisallowUnknownFields`
 // decode rejects one by name).
 
-// oauthSinkFieldName returns the name of the first credential-sink field set on
-// the descriptor, and whether any is set. The zero-URL name-only shape sets
-// none.
+// oauthSinkFieldName returns the name of the first wire-carried field set on the
+// descriptor, and whether any is set. The name-only shape sets none. (A raw
+// credential-source URL / env-var name — the `remote` block — is NOT on the wire
+// struct at all, so it can never be carried: the runtime's own credential
+// custody stays 100% boot-declared on the named credential_broker.)
 func oauthSinkFieldName(p prototypes.AgentConfigOAuthProviderDescriptor) (string, bool) {
 	switch {
 	case strings.TrimSpace(p.TokenURL) != "":
 		return "token_url", true
 	case strings.TrimSpace(p.Audience) != "":
 		return "audience", true
-	case p.Remote != nil:
-		return "remote", true
 	default:
 		return "", false
 	}
@@ -76,14 +87,17 @@ func (s *Service) gateAndValidateOAuthProviderDescriptor(p prototypes.AgentConfi
 	return validateOAuthProviderDescriptor(p)
 }
 
-// validateWireOAuthProviderDescriptor validates the DEV-GATED full-binding shape
-// and returns the domain descriptor carrying the wire fields (the derived
-// downstream sink is filled by a connection binding, not here). It enforces: a
-// non-empty name; driver EXACTLY "tokenexchange"; credential_source EXACTLY
-// "remote"; NO credential_broker (mutually exclusive with the wire fields — a
-// wire descriptor pins its own sinks, a name-only descriptor pins a boot broker);
-// a non-empty token_url; and a complete remote block (url + auth_token_env — no
-// secret, an env-var NAME). Scopes are carried verbatim (clamped at build time).
+// validateWireOAuthProviderDescriptor validates the DEV-GATED wire shape and
+// returns the domain descriptor carrying the wire fields (the derived downstream
+// sink is filled by a connection binding, not here). It enforces: a non-empty
+// name; driver EXACTLY "tokenexchange"; credential_source EXACTLY "remote"; a
+// non-empty credential_broker (the wire descriptor still NAMES a boot broker —
+// the runtime's own credential custody stays 100% boot-declared, no
+// credential-source URL or secret ever rides the wire); and a non-empty token_url
+// (the NEW server's exchange endpoint). Scopes + audience are carried verbatim
+// (scopes clamped at build time). There is deliberately no `remote` field on the
+// wire struct to validate — a credential-source URL / env-var name cannot be
+// wire-carried.
 func validateWireOAuthProviderDescriptor(p prototypes.AgentConfigOAuthProviderDescriptor) (agentcfg.OAuthProviderDescriptor, error) {
 	name := strings.TrimSpace(p.Name)
 	if name == "" {
@@ -99,23 +113,13 @@ func validateWireOAuthProviderDescriptor(p prototypes.AgentConfigOAuthProviderDe
 	if source != providerWritableSource {
 		return agentcfg.OAuthProviderDescriptor{}, fmt.Errorf("%w: credential_source %q not installable — only %q (broker-pull) is Protocol-installable", ErrInvalidProvider, p.CredentialSource, providerWritableSource)
 	}
-	if strings.TrimSpace(p.CredentialBroker) != "" {
-		return agentcfg.OAuthProviderDescriptor{}, fmt.Errorf("%w: credential_broker is mutually exclusive with the wire fields (token_url/remote) — a wire descriptor pins its own token endpoint + credential pull, a name-only descriptor references a boot broker", ErrInvalidProvider)
+	broker := strings.TrimSpace(p.CredentialBroker)
+	if broker == "" {
+		return agentcfg.OAuthProviderDescriptor{}, fmt.Errorf("%w: credential_broker is empty — a wire descriptor still NAMES a boot-declared broker for the runtime's own credential custody (no credential-source URL or secret rides the wire)", ErrInvalidProvider)
 	}
 	tokenURL := strings.TrimSpace(p.TokenURL)
 	if tokenURL == "" {
-		return agentcfg.OAuthProviderDescriptor{}, fmt.Errorf("%w: token_url is empty — a wire descriptor must declare its RFC-8693 token-exchange endpoint", ErrInvalidProvider)
-	}
-	if p.Remote == nil {
-		return agentcfg.OAuthProviderDescriptor{}, fmt.Errorf("%w: remote{} is required — a wire descriptor pulls its org client credential from a coordinator endpoint (url + auth_token_env, no secret on the wire)", ErrInvalidProvider)
-	}
-	remoteURL := strings.TrimSpace(p.Remote.URL)
-	if remoteURL == "" {
-		return agentcfg.OAuthProviderDescriptor{}, fmt.Errorf("%w: remote.url is empty — the credential-pull endpoint is required", ErrInvalidProvider)
-	}
-	authTokenEnv := strings.TrimSpace(p.Remote.AuthTokenEnv)
-	if authTokenEnv == "" {
-		return agentcfg.OAuthProviderDescriptor{}, fmt.Errorf("%w: remote.auth_token_env is empty — a wire descriptor names (never carries) the env var holding the runtime service token", ErrInvalidProvider)
+		return agentcfg.OAuthProviderDescriptor{}, fmt.Errorf("%w: token_url is empty — a wire descriptor must declare the NEW server's RFC-8693 token-exchange endpoint", ErrInvalidProvider)
 	}
 	scopes := make([]string, 0, len(p.Scopes))
 	for _, sc := range p.Scopes {
@@ -130,9 +134,9 @@ func validateWireOAuthProviderDescriptor(p prototypes.AgentConfigOAuthProviderDe
 		Name:             name,
 		Driver:           providerWritableDriver,
 		CredentialSource: providerWritableSource,
+		CredentialBroker: broker,
 		Scopes:           scopes,
 		TokenURL:         tokenURL,
 		Audience:         strings.TrimSpace(p.Audience),
-		Remote:           &agentcfg.OAuthRemoteDescriptor{URL: remoteURL, AuthTokenEnv: authTokenEnv},
 	}, nil
 }

@@ -289,45 +289,29 @@ type OAuthProviderDescriptor struct {
 	// "" means the `env` source, which this shape forbids). Required.
 	CredentialSource string `json:"credential_source"`
 	// CredentialBroker names a boot-declared credential broker that
-	// pins every credential sink. Required for the name-only shape; mutually
-	// exclusive with the dev-gated wire fields (TokenURL / Remote). NON-SECRET.
-	CredentialBroker string `json:"credential_broker,omitempty"`
+	// pins the runtime's OWN credential custody. Required in BOTH the name-only
+	// and the dev-gated wire shape — the wire descriptor still names a boot broker
+	// so no credential-source URL or secret ever rides the wire. NON-SECRET.
+	CredentialBroker string `json:"credential_broker"`
 	// Scopes is the requested OAuth scope subset. NON-SECRET. Clamped to the
 	// broker's boot scope ceiling at build time — a scope outside the ceiling is
 	// dropped, never honoured (an installed descriptor can never widen scope).
 	// Optional.
 	Scopes []string `json:"scopes,omitempty"`
-	// TokenURL is the dev-gated wire-carried RFC-8693 token-exchange endpoint.
-	// Persisted (NON-SECRET, a URL); a credential-sink field carried only behind
-	// the `allow_wire_oauth_descriptor` boot opt-in and dialed through the
+	// TokenURL is the dev-gated wire-carried RFC-8693 token-exchange endpoint of
+	// the NEW server. Persisted (NON-SECRET, a URL); accepted only behind the
+	// `allow_wire_oauth_descriptor` boot opt-in and dialed through the
 	// token-exchange SSRF backstop. Empty for the name-only shape.
 	TokenURL string `json:"token_url,omitempty"`
-	// Audience is the dev-gated wire-carried exchanged-token audience. Persisted
-	// (NON-SECRET). Empty for the name-only shape.
+	// Audience is the dev-gated wire-carried exchanged-token audience of the NEW
+	// server. Persisted (NON-SECRET). Empty for the name-only shape.
 	Audience string `json:"audience,omitempty"`
-	// Remote is the dev-gated wire-carried broker-pull credential source (the
-	// coordinator endpoint the runtime pulls its org client credential from). NO
-	// secret persisted — AuthTokenEnv is an env-var NAME. Nil for the name-only
-	// shape.
-	Remote *OAuthRemoteDescriptor `json:"remote,omitempty"`
 	// AllowedDownstreamHosts is the DERIVED downstream sink allow-list for a
 	// wire-installed provider — set by the runtime from the bound connection's
 	// own URL, NEVER from a wire field. Persisted (NON-SECRET) so a rollback /
 	// reconcile rebuilds the provider with the same derived sink. Empty for the
 	// name-only shape (its sink is the boot broker's).
 	AllowedDownstreamHosts []string `json:"allowed_downstream_hosts,omitempty"`
-}
-
-// OAuthRemoteDescriptor is the domain shape of a wire-carried broker-pull
-// credential source (the dev-gated full-binding shape only). It carries NO
-// secret: AuthTokenEnv NAMES an env var the runtime reads the token from.
-type OAuthRemoteDescriptor struct {
-	// URL is the coordinator credential-pull endpoint. Dialed through the SSRF
-	// backstop.
-	URL string `json:"url"`
-	// AuthTokenEnv names the env var holding the runtime's own service token.
-	// NON-SECRET — a name, never the token.
-	AuthTokenEnv string `json:"auth_token_env"`
 }
 
 // LLMProviderDescriptor is the domain shape of one Protocol-installed,
@@ -748,10 +732,6 @@ func normalizeOAuthProviders(in []OAuthProviderDescriptor) []OAuthProviderDescri
 		if _, seen := byName[d.Name]; !seen {
 			names = append(names, d.Name)
 		}
-		var remote *OAuthRemoteDescriptor
-		if d.Remote != nil {
-			remote = &OAuthRemoteDescriptor{URL: d.Remote.URL, AuthTokenEnv: d.Remote.AuthTokenEnv}
-		}
 		var hosts []string
 		if len(d.AllowedDownstreamHosts) > 0 {
 			hosts = sortDedup(d.AllowedDownstreamHosts)
@@ -764,7 +744,6 @@ func normalizeOAuthProviders(in []OAuthProviderDescriptor) []OAuthProviderDescri
 			Scopes:                 sortDedup(d.Scopes),
 			TokenURL:               d.TokenURL,
 			Audience:               d.Audience,
-			Remote:                 remote,
 			AllowedDownstreamHosts: hosts,
 		}
 	}

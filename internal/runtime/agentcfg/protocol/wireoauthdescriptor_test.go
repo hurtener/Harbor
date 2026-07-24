@@ -125,23 +125,20 @@ func wireProviderDesc(name string) prototypes.AgentConfigOAuthProviderDescriptor
 		Name:             name,
 		Driver:           "tokenexchange",
 		CredentialSource: "remote",
+		CredentialBroker: "m365-broker",
 		TokenURL:         "https://broker.example.com/oauth2/token",
 		Audience:         "https://graph.microsoft.com",
 		Scopes:           []string{"mail.read"},
-		Remote: &prototypes.AgentConfigOAuthRemoteDescriptor{
-			URL: "https://coordinator.example.com/broker-credential", AuthTokenEnv: "HARBOR_COORD_TOKEN",
-		},
 	}
 }
 
-// --- Gate OFF: every sink field is rejected (the D-303 posture) ---
+// --- Gate OFF: every wire field is rejected (the D-303 posture) ---
 
 func TestWireOAuthDescriptor_OptInOff_SetOAuthProvider_RejectsEachSinkField(t *testing.T) {
 	h := newWireHarness(t, false, nil)
 	cases := map[string]prototypes.AgentConfigOAuthProviderDescriptor{
-		"token_url": {Name: "wp", Driver: "tokenexchange", CredentialSource: "remote", TokenURL: "https://broker/oauth2/token"},
-		"audience":  {Name: "wp", Driver: "tokenexchange", CredentialSource: "remote", Audience: "https://graph"},
-		"remote":    {Name: "wp", Driver: "tokenexchange", CredentialSource: "remote", Remote: &prototypes.AgentConfigOAuthRemoteDescriptor{URL: "https://c/x", AuthTokenEnv: "E"}},
+		"token_url": {Name: "wp", Driver: "tokenexchange", CredentialSource: "remote", CredentialBroker: "m365-broker", TokenURL: "https://broker/oauth2/token"},
+		"audience":  {Name: "wp", Driver: "tokenexchange", CredentialSource: "remote", CredentialBroker: "m365-broker", Audience: "https://graph"},
 	}
 	for field, desc := range cases {
 		t.Run(field, func(t *testing.T) {
@@ -205,16 +202,18 @@ func TestWireOAuthDescriptor_OptInOn_SetOAuthProvider_Installs(t *testing.T) {
 	if !ok {
 		t.Fatalf("wire provider should have installed")
 	}
-	if d.TokenURL == "" || d.Remote == nil {
-		t.Fatalf("installed wire descriptor lost its wire fields: %+v", d)
+	if d.TokenURL == "" {
+		t.Fatalf("installed wire descriptor lost its token_url: %+v", d)
+	}
+	// The wire descriptor NAMES a boot broker for the runtime's own credential
+	// custody — no credential-source URL rides the wire.
+	if d.CredentialBroker == "" {
+		t.Fatalf("a wire descriptor must name a boot credential_broker (credential custody stays boot-declared), got %+v", d)
 	}
 	// No connection bound yet ⇒ the downstream sink is DEFERRED (empty), never a
 	// wire-supplied value — a binding derives it.
 	if len(d.AllowedDownstreamHosts) != 0 {
 		t.Fatalf("set_oauth_provider must NOT fix a downstream host (derive happens at bind), got %v", d.AllowedDownstreamHosts)
-	}
-	if d.CredentialBroker != "" {
-		t.Fatalf("a wire descriptor must not carry a credential_broker, got %q", d.CredentialBroker)
 	}
 }
 

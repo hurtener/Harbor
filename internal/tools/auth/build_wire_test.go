@@ -36,9 +36,8 @@ func wireBuilder(t *testing.T) *ProviderBuilder {
 func TestBuildWire_IncompleteDescriptorFailsLoud(t *testing.T) {
 	b := wireBuilder(t)
 	cases := map[string]WireProviderDescriptor{
-		"no token_url":  {Name: "w", RemoteURL: "https://c/x", RemoteAuthTokenEnv: "E"},
-		"no remote url": {Name: "w", TokenURL: "https://b/token", RemoteAuthTokenEnv: "E"},
-		"no auth env":   {Name: "w", TokenURL: "https://b/token", RemoteURL: "https://c/x"},
+		"no token_url": {Name: "w", CredentialBroker: "seed"},
+		"no broker":    {Name: "w", TokenURL: "https://b/token"},
 	}
 	for name, desc := range cases {
 		t.Run(name, func(t *testing.T) {

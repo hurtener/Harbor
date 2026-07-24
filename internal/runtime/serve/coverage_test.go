@@ -216,8 +216,8 @@ func TestParentSessionStatus_LifecycleMapping(t *testing.T) {
 // nil-guard: a nil builder OR a nil set returns a nil installer (so the
 // caller leaves the install verbs unwired → 501 at the wire edge).
 func TestOAuthProviderInstaller_NilInputsReturnsNil(t *testing.T) {
-	if got := NewOAuthProviderInstaller(nil, nil); got != nil {
-		t.Error("NewOAuthProviderInstaller(nil, nil) must return nil")
+	if got := NewOAuthProviderInstaller(nil, nil, false, nil); got != nil {
+		t.Error("NewOAuthProviderInstaller(nil, nil, ...) must return nil")
 	}
 }
 
@@ -270,7 +270,7 @@ func TestOAuthProviderInstaller_EmptyOwnerFailsLoud(t *testing.T) {
 		t.Fatalf("NewProviderBuilder: %v", err)
 	}
 	set := toolauth.NewProviderSet(nil)
-	installer := NewOAuthProviderInstaller(builder, set)
+	installer := NewOAuthProviderInstaller(builder, set, false, nil)
 	if installer == nil {
 		t.Fatal("NewOAuthProviderInstaller returned nil for non-nil inputs")
 	}
@@ -305,7 +305,7 @@ func TestOAuthProviderInstaller_UnknownBrokerFailsLoud(t *testing.T) {
 		t.Fatalf("NewProviderBuilder: %v", err)
 	}
 	set := toolauth.NewProviderSet(nil)
-	installer := NewOAuthProviderInstaller(builder, set)
+	installer := NewOAuthProviderInstaller(builder, set, false, nil)
 	err = installer.InstallProvider(context.Background(), "tenant-1", "agent-1", agentcfg.OAuthProviderDescriptor{
 		Name: "test-provider", CredentialBroker: "unknown-broker",
 	})
@@ -323,7 +323,7 @@ func TestOAuthProviderInstaller_UninstallAndInstalledFor(t *testing.T) {
 		t.Fatalf("NewProviderBuilder: %v", err)
 	}
 	set := toolauth.NewProviderSet(nil)
-	installer := NewOAuthProviderInstaller(builder, set)
+	installer := NewOAuthProviderInstaller(builder, set, false, nil)
 	// Uninstall on an empty set — the set's Uninstall returns nil for
 	// a not-found name (idempotent delete semantics).
 	_ = installer.UninstallProvider(context.Background(), "t", "a", "nonexistent")

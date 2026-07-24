@@ -479,10 +479,16 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// The Protocol-installed OAuth provider installer (set_oauth_provider /
 	// remove_oauth_provider + the run-start provider reconcile). Nil when no
 	// provider set / builder is wired (no catalog), leaving the verbs at 501.
+	// Effective DEV-ONLY wire-descriptor opt-in: the config flag OR the boot env
+	// captured once at process start (cmd/harbor). Default false / fail-closed.
+	// Threaded into BOTH the agent-config gate (the write path) AND the installer
+	// (the reconcile kill-switch, so a wire provider persisted while it was on is
+	// not rebuilt after a restart with it off).
+	allowWireOAuthDescriptor := cfg.Tools.AllowWireOAuthDescriptor || toolauth.AllowWireOAuthDescriptorCaptured()
 	var oauthProviderInstaller agentcfgprotocol.ProviderInstaller
 	var oauthProviderReconciler projection.OAuthProviderReconciler
 	if stack.OAuthProviderSet != nil && stack.OAuthProviderBuilder != nil {
-		concrete := NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet)
+		concrete := NewOAuthProviderInstaller(stack.OAuthProviderBuilder, stack.OAuthProviderSet, allowWireOAuthDescriptor, opts.Logger)
 		if concrete != nil {
 			oauthProviderInstaller = concrete
 			oauthProviderReconciler = concrete
@@ -581,41 +587,39 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	built, err := BuildMux(MuxInput{
-		Cfg:                  cfg,
-		Surface:              surface,
-		Bus:                  bus,
-		Redactor:             red,
-		Logger:               opts.Logger,
-		Metrics:              metricsReg,
-		LLMSnapshot:          llmCfg,
-		Tasks:                taskReg,
-		Sessions:             sessionRegistry,
-		Agents:               agentRegistry,
-		Artifacts:            artStore,
-		Memory:               memStore,
-		Catalog:              toolCat,
-		Coordinator:          coord,
-		MCPRegistry:          mcpRegistry,
-		MCPToolContext:       mcpToolContext,
-		State:                stack.State,
-		Skills:               skillStore,
-		AgentConfig:          agentConfigRegistry,
-		AgentConfigID:        devAgentConfigID,
-		SessionOverlay:       sessionOverlayStore,
-		RunsStore:            runsStore,
-		RunLoopDriver:        runLoopDriver,
-		OAuthProviders:       oauthProviders,
-		TenantOverridePolicy: tenantOverridePolicy,
-		SetPosturePolicy:     setPosturePolicy,
-		KeyRotator:           stack.KeyRotator,
-		ValidModels:          validModels,
-		MCPAttacher:          mcpAttacher,
-		MCPStdioAllowlist:    MCPAddStdioAllowlist(cfg),
-		BootDeclaredMCP:      BootDeclaredMCPServerNames(cfg),
-		BootDeclaredOAuth:    BootDeclaredOAuthProviderNames(cfg),
-		// Effective wire-descriptor opt-in: the config flag OR the boot env
-		// captured once at process start (cmd/harbor). Default false / fail-closed.
-		AllowWireOAuthDescriptor: cfg.Tools.AllowWireOAuthDescriptor || toolauth.AllowWireOAuthDescriptorCaptured(),
+		Cfg:                      cfg,
+		Surface:                  surface,
+		Bus:                      bus,
+		Redactor:                 red,
+		Logger:                   opts.Logger,
+		Metrics:                  metricsReg,
+		LLMSnapshot:              llmCfg,
+		Tasks:                    taskReg,
+		Sessions:                 sessionRegistry,
+		Agents:                   agentRegistry,
+		Artifacts:                artStore,
+		Memory:                   memStore,
+		Catalog:                  toolCat,
+		Coordinator:              coord,
+		MCPRegistry:              mcpRegistry,
+		MCPToolContext:           mcpToolContext,
+		State:                    stack.State,
+		Skills:                   skillStore,
+		AgentConfig:              agentConfigRegistry,
+		AgentConfigID:            devAgentConfigID,
+		SessionOverlay:           sessionOverlayStore,
+		RunsStore:                runsStore,
+		RunLoopDriver:            runLoopDriver,
+		OAuthProviders:           oauthProviders,
+		TenantOverridePolicy:     tenantOverridePolicy,
+		SetPosturePolicy:         setPosturePolicy,
+		KeyRotator:               stack.KeyRotator,
+		ValidModels:              validModels,
+		MCPAttacher:              mcpAttacher,
+		MCPStdioAllowlist:        MCPAddStdioAllowlist(cfg),
+		BootDeclaredMCP:          BootDeclaredMCPServerNames(cfg),
+		BootDeclaredOAuth:        BootDeclaredOAuthProviderNames(cfg),
+		AllowWireOAuthDescriptor: allowWireOAuthDescriptor,
 		OAuthProviderInstaller:   oauthProviderInstaller,
 		LLMProviderInstaller:     llmProviderInstaller,
 		InferenceBrokers:         inferenceBrokerNames,

@@ -34,15 +34,19 @@ import (
 // descriptor (HA-32 / D-340) end to end with REAL drivers + REAL fixtures (the
 // same §17.8 spec-derived RFC-8693 coordinator + token-broker transcript
 // phase-169 uses). It proves, with the opt-in ON:
-//   - set_oauth_provider carrying a WIRE binding (token_url + remote{}) installs a
-//     provider whose Token() exchange dials the WIRE token_url and yields the
+//   - set_oauth_provider carrying a WIRE binding (the NEW server's token_url +
+//     audience, NAMING a boot broker for the runtime's own credential custody)
+//     installs a provider whose Token() exchange dials the WIRE token_url, pulls
+//     its client credential from the BOOT broker's coordinator, and yields the
 //     fixture bearer for the identity-stamped caller;
 //   - an add_mcp_connection inline wire binding DERIVES allowed_downstream_hosts
 //     from the connection's own URL (never a wire field);
 //   - a wire token_url resolving to a private address is REFUSED by the SSRF
 //     backstop (the opt-in does NOT relax the private-dial refusal — D-338 is
 //     independent);
-// and with the opt-in OFF the wire descriptor is rejected (the D-303 posture).
+// with the opt-in OFF the wire descriptor is rejected (the D-303 posture); and
+// the opt-in is a KILL-SWITCH — an opt-in-off reconcile does NOT rebuild a
+// persisted wire provider (loud skip) but DOES rebuild a name-only one.
 
 const (
 	p199KEKEnv       = "HARBOR_TEST_P199_KEK"
@@ -104,12 +108,17 @@ type p199OnlineAttacher struct{}
 func (p199OnlineAttacher) Attach(context.Context, agentcfgprotocol.AttachRequest) error { return nil }
 
 type p199Harness struct {
-	svc *agentcfgprotocol.Service
-	set toolauth.ProviderSet
-	bus events.EventBus
+	svc       *agentcfgprotocol.Service
+	set       toolauth.ProviderSet
+	installer *serve.OAuthProviderInstaller
+	bus       events.EventBus
 }
 
-func newP199Harness(t *testing.T, allowWire bool) *p199Harness {
+// p199BrokerName is the boot-declared broker the wire descriptor NAMES for the
+// runtime's own credential custody (the fixture coordinator pull + service token).
+const p199BrokerName = "p199-broker"
+
+func newP199Harness(t *testing.T, f *p199Fixtures, allowWire bool) *p199Harness {
 	t.Helper()
 	t.Setenv(p199KEKEnv, hex.EncodeToString(make([]byte, toolauth.KEKSizeBytes)))
 	t.Setenv(p199CoordTokEnv, "test-coord-service-token")
@@ -129,13 +138,15 @@ func newP199Harness(t *testing.T, allowWire bool) *p199Harness {
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
 
-	// One dummy broker seeds the shared crypto chain (KEK → sealer → token store)
-	// a wire provider shares; a wire descriptor never resolves it.
+	// The boot-declared broker pins the runtime's OWN credential custody: the
+	// coordinator credential-pull endpoint (f.coordinator.URL) + the service-token
+	// env name. A wire descriptor NAMES this broker; none of that rides the wire.
+	// Its TokenURL is a placeholder — the wire descriptor's token_url overrides it.
 	toolsCfg := config.ToolsConfig{
 		OAuthTokenKEKEnv: p199KEKEnv,
 		OAuthCredentialBrokers: []config.ToolOAuthCredentialBrokerConfig{{
-			Name: "seed", TokenURL: "https://broker/token", CredentialURL: "https://c/x",
-			AllowedDownstreamHosts: []string{"x"}, AuthTokenEnv: p199CoordTokEnv,
+			Name: p199BrokerName, TokenURL: "https://placeholder.invalid/token",
+			CredentialURL: f.coordinator.URL, AuthTokenEnv: p199CoordTokEnv,
 		}},
 	}
 	builder, err := toolauth.NewProviderBuilder(context.Background(), toolsCfg, toolauth.BuildDeps{
@@ -145,7 +156,7 @@ func newP199Harness(t *testing.T, allowWire bool) *p199Harness {
 		t.Fatalf("NewProviderBuilder: %v", err)
 	}
 	set := toolauth.NewProviderSet(nil)
-	installer := serve.NewOAuthProviderInstaller(builder, set)
+	installer := serve.NewOAuthProviderInstaller(builder, set, allowWire, nil)
 
 	reg, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: st, Bus: bus})
 	if err != nil {
@@ -163,18 +174,21 @@ func newP199Harness(t *testing.T, allowWire bool) *p199Harness {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	return &p199Harness{svc: svc, set: set, bus: bus}
+	return &p199Harness{svc: svc, set: set, installer: installer, bus: bus}
 }
 
 func p199Scope() prototypes.IdentityScope {
 	return prototypes.IdentityScope{Tenant: "tenant-A", User: "u", Session: "s"}
 }
 
-func wireDesc(name, tokenURL, coordURL string) prototypes.AgentConfigOAuthProviderDescriptor {
+// wireDesc builds the dev-gated wire descriptor: the NEW server's token_url +
+// audience + scopes, NAMING the boot-declared broker for the runtime's own
+// credential custody (no credential-source URL rides the wire).
+func wireDesc(name, tokenURL string) prototypes.AgentConfigOAuthProviderDescriptor {
 	return prototypes.AgentConfigOAuthProviderDescriptor{
 		Name: name, Driver: "tokenexchange", CredentialSource: "remote",
-		TokenURL: tokenURL, Audience: "https://graph.microsoft.com", Scopes: []string{"mail.read"},
-		Remote: &prototypes.AgentConfigOAuthRemoteDescriptor{URL: coordURL, AuthTokenEnv: p199CoordTokEnv},
+		CredentialBroker: p199BrokerName,
+		TokenURL:         tokenURL, Audience: "https://graph.microsoft.com", Scopes: []string{"mail.read"},
 	}
 }
 
@@ -182,13 +196,13 @@ func wireDesc(name, tokenURL, coordURL string) prototypes.AgentConfigOAuthProvid
 // WIRE provider whose Token() exchange dials the WIRE token_url.
 func TestE2E_Phase199_WireInstallExchange(t *testing.T) {
 	f := newP199Fixtures(t)
-	h := newP199Harness(t, true)
+	h := newP199Harness(t, f, true)
 	ctx := context.Background()
 	const agentID = "agent-199"
 
 	if _, err := h.svc.SetOAuthProvider(ctx, prototypes.AgentConfigSetOAuthProviderRequest{
 		Identity: p199Scope(), AgentID: agentID,
-		Provider: wireDesc("wp", f.tokenBroker.URL, f.coordinator.URL),
+		Provider: wireDesc("wp", f.tokenBroker.URL),
 	}); err != nil {
 		t.Fatalf("SetOAuthProvider (wire): %v", err)
 	}
@@ -216,7 +230,7 @@ func TestE2E_Phase199_WireInstallExchange(t *testing.T) {
 // inline wire binding DERIVES allowed_downstream_hosts from the connection URL.
 func TestE2E_Phase199_InlineDerivesDownstreamHost(t *testing.T) {
 	f := newP199Fixtures(t)
-	h := newP199Harness(t, true)
+	h := newP199Harness(t, f, true)
 	ctx := context.Background()
 
 	resp, err := h.svc.AddMCPConnection(ctx, prototypes.AgentConfigAddMCPConnectionRequest{
@@ -224,7 +238,7 @@ func TestE2E_Phase199_InlineDerivesDownstreamHost(t *testing.T) {
 		Connection: prototypes.AgentConfigMCPConnectionDescriptor{
 			Name: "srv", Transport: "http", URL: "https://graph.microsoft.com:8443/mcp",
 			OAuth: func() *prototypes.AgentConfigOAuthProviderDescriptor {
-				d := wireDesc("srv-oauth", f.tokenBroker.URL, f.coordinator.URL)
+				d := wireDesc("srv-oauth", f.tokenBroker.URL)
 				return &d
 			}(),
 		},
@@ -250,12 +264,12 @@ func TestE2E_Phase199_InlineDerivesDownstreamHost(t *testing.T) {
 // backstop: a wire token_url resolving to a private address is refused at exchange.
 func TestE2E_Phase199_PrivateTokenURLRefused(t *testing.T) {
 	f := newP199Fixtures(t)
-	h := newP199Harness(t, true)
+	h := newP199Harness(t, f, true)
 	ctx := context.Background()
 
 	if _, err := h.svc.SetOAuthProvider(ctx, prototypes.AgentConfigSetOAuthProviderRequest{
 		Identity: p199Scope(), AgentID: "agent-199",
-		Provider: wireDesc("wp-priv", "http://10.255.255.1:8443/token", f.coordinator.URL),
+		Provider: wireDesc("wp-priv", "http://10.255.255.1:8443/token"),
 	}); err != nil {
 		t.Fatalf("SetOAuthProvider install (build does not dial): %v", err)
 	}
@@ -276,17 +290,53 @@ func TestE2E_Phase199_PrivateTokenURLRefused(t *testing.T) {
 // is rejected when the opt-in is off (the zero-URL name-only binding stands).
 func TestE2E_Phase199_OptInOffPreservesD303(t *testing.T) {
 	f := newP199Fixtures(t)
-	h := newP199Harness(t, false)
+	h := newP199Harness(t, f, false)
 	ctx := context.Background()
 
 	_, err := h.svc.SetOAuthProvider(ctx, prototypes.AgentConfigSetOAuthProviderRequest{
 		Identity: p199Scope(), AgentID: "agent-199",
-		Provider: wireDesc("wp", f.tokenBroker.URL, f.coordinator.URL),
+		Provider: wireDesc("wp", f.tokenBroker.URL),
 	})
 	if !errors.Is(err, agentcfgprotocol.ErrWireDescriptorNotAllowed) {
 		t.Fatalf("with the opt-in off a wire descriptor must be rejected, got %v", err)
 	}
 	if _, ok := h.set.Get("wp"); ok {
 		t.Fatal("no provider should be installed with the opt-in off")
+	}
+}
+
+// TestE2E_Phase199_OptInOffReconcileSkipsWireProviderKillSwitch proves the
+// opt-in is a true KILL-SWITCH: a wire provider persisted during a prior
+// opt-in-ON window, presented to the run-start reconcile after a restart with
+// the opt-in OFF, is NOT rebuilt live (loud skip, no error — the provider stays
+// absent, so a bound connection's next call fails loud rather than silently
+// POSTing the boot client credential to the previously wire-set endpoint). A
+// name-only / boot broker-pull provider is unaffected — it rebuilds.
+func TestE2E_Phase199_OptInOffReconcileSkipsWireProviderKillSwitch(t *testing.T) {
+	f := newP199Fixtures(t)
+	h := newP199Harness(t, f, false) // opt-in OFF
+	ctx := context.Background()
+
+	wire := agentcfg.OAuthProviderDescriptor{
+		Name: "persisted-wire", Driver: "tokenexchange", CredentialSource: "remote",
+		CredentialBroker: p199BrokerName, TokenURL: f.tokenBroker.URL,
+		AllowedDownstreamHosts: []string{"graph.microsoft.com"},
+	}
+	if err := h.installer.InstallProvider(ctx, "tenant-A", "agent-199", wire); err != nil {
+		t.Fatalf("kill-switch skip must NOT error (it logs + skips), got %v", err)
+	}
+	if _, ok := h.set.Get("persisted-wire"); ok {
+		t.Fatal("kill-switch: a wire provider must NOT be rebuilt with the opt-in off")
+	}
+
+	nameOnly := agentcfg.OAuthProviderDescriptor{
+		Name: "persisted-nameonly", Driver: "tokenexchange", CredentialSource: "remote",
+		CredentialBroker: p199BrokerName,
+	}
+	if err := h.installer.InstallProvider(ctx, "tenant-A", "agent-199", nameOnly); err != nil {
+		t.Fatalf("name-only provider must still install with the opt-in off, got %v", err)
+	}
+	if _, ok := h.set.Get("persisted-nameonly"); !ok {
+		t.Fatal("name-only provider must be rebuilt (the kill-switch only gates wire providers)")
 	}
 }

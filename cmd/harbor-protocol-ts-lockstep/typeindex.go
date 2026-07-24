@@ -73,7 +73,6 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"AgentConfigSetMCPDiscoveryOriginsRequest":    reflect.TypeOf(types.AgentConfigSetMCPDiscoveryOriginsRequest{}),
 	"AgentConfigSetMCPDiscoveryOriginsResponse":   reflect.TypeOf(types.AgentConfigSetMCPDiscoveryOriginsResponse{}),
 	"AgentConfigOAuthProviderDescriptor":          reflect.TypeOf(types.AgentConfigOAuthProviderDescriptor{}),
-	"AgentConfigOAuthRemoteDescriptor":            reflect.TypeOf(types.AgentConfigOAuthRemoteDescriptor{}),
 	"AgentConfigOAuthProviders":                   reflect.TypeOf(types.AgentConfigOAuthProviders{}),
 	"AgentConfigOAuthProvidersDiff":               reflect.TypeOf(types.AgentConfigOAuthProvidersDiff{}),
 	"AgentConfigSetOAuthProviderRequest":          reflect.TypeOf(types.AgentConfigSetOAuthProviderRequest{}),
