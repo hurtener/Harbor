@@ -205,12 +205,18 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 		}
 	}()
 
+	// User-scope rows persist session-zeroed so they resolve across every
+	// session of the same (tenant, user) — the durable-by-default rung. All
+	// other scopes pin the caller's real session (unchanged). Identity was
+	// validated above, so zeroing the STORED session never relaxes the gate.
+	storeSession := skills.StorageSessionID(id, skill.Scope)
+
 	var existingOrigin sql.NullString
 	var existingHash sql.NullString
 	err = tx.QueryRowContext(ctx, `
         SELECT origin, content_hash FROM skills
         WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND scope = $4 AND name = $5`,
-		id.TenantID, id.UserID, id.SessionID, string(skill.Scope), skill.Name,
+		id.TenantID, id.UserID, storeSession, string(skill.Scope), skill.Name,
 	).Scan(&existingOrigin, &existingHash)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -317,7 +323,7 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
             content_hash        = excluded.content_hash,
             updated_at          = excluded.updated_at,
             extra_json          = excluded.extra_json`,
-		id.TenantID, id.UserID, id.SessionID, string(skill.Scope), skill.Name,
+		id.TenantID, id.UserID, storeSession, string(skill.Scope), skill.Name,
 		skill.Title, skill.Description, skill.Trigger, skill.TaskType,
 		tagsJSON, tagsText, stepsJSON, preJSON, failJSON,
 		rtJSON, rnsJSON, rtgJSON,
@@ -362,10 +368,17 @@ func (d *driver) Get(ctx context.Context, id identity.Quadruple, name string) (s
 	if skills.ValidateIdentity(id) != nil {
 		return skills.Skill{}, skills.EmitIdentityRejected(ctx, d.bus, id, "Get")
 	}
+	// Resolve the caller's own session rows PLUS any user-scope (durable,
+	// session-zeroed) rows of the same (tenant, user). On a name collision
+	// between a session-scoped and a user-scoped skill, the exact-session row
+	// wins (ORDER BY (session_id = $3) DESC) so the session verb's read-back
+	// is deterministic; the user verb reads its rung back via a scope-filtered
+	// List, never this ambiguous path.
 	row := d.db.QueryRowContext(ctx, selectSkillsSQL+`
-        WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND name = $4
+        WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4) AND name = $5
+        ORDER BY (session_id = $3) DESC
         LIMIT 1`,
-		id.TenantID, id.UserID, id.SessionID, name)
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name)
 	got, err := scanSkill(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -397,9 +410,14 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 	// per-tag filters + limit + offset grow the slice past this.
 	args := make([]any, 0, 5+len(filter.Tags))
 	sb.WriteString(selectSkillsSQL)
-	sb.WriteString(` WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3`)
-	args = append(args, id.TenantID, id.UserID, id.SessionID)
-	n := 3
+	// The caller's own session rows PLUS any user-scope (durable,
+	// session-zeroed) rows of the same (tenant, user). A ScopeUser filter
+	// narrows this to the user rung alone (the AND scope below); the default
+	// (no scope filter) unions the session rung with the durable user rung,
+	// which is exactly what the run-start directory view needs.
+	sb.WriteString(` WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4)`)
+	args = append(args, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser))
+	n := 4
 	if filter.Scope != "" {
 		n++
 		fmt.Fprintf(&sb, ` AND scope = $%d`, n)
@@ -440,17 +458,31 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 }
 
 // Delete implements skills.SkillStore.
-func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string) error {
+func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	if d.closed.Load() {
 		return skills.ErrStoreClosed
 	}
 	if skills.ValidateIdentity(id) != nil {
 		return skills.EmitIdentityRejected(ctx, d.bus, id, "Delete")
 	}
-	res, err := d.db.ExecContext(ctx, `
-        DELETE FROM skills
-        WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND name = $4`,
-		id.TenantID, id.UserID, id.SessionID, name)
+	// RUNG-PRECISE delete: reads union the session + user rungs, but a
+	// DESTRUCTIVE op must never cross that boundary. A ScopeUser delete
+	// targets ONLY the durable user-scope row (keyed (tenant, user), session
+	// independent); every other scope targets ONLY the caller's session-local
+	// non-durable rows — so an ephemeral session delete can never destroy a
+	// durable user skill, and vice versa.
+	var (
+		query string
+		args  []any
+	)
+	if scope == skills.ScopeUser {
+		query = `DELETE FROM skills WHERE tenant_id = $1 AND user_id = $2 AND scope = $3 AND name = $4`
+		args = []any{id.TenantID, id.UserID, string(skills.ScopeUser), name}
+	} else {
+		query = `DELETE FROM skills WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND scope != $4 AND name = $5`
+		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name}
+	}
+	res, err := d.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("skills/postgres: Delete exec: %w", err)
 	}

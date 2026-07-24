@@ -130,6 +130,27 @@ type AgentConfigMCPConnectionDescriptor struct {
 	// the wire `token_url` faces the identical token-exchange SSRF backstop the
 	// boot path uses. Set only for the http transport.
 	OAuth *AgentConfigOAuthProviderDescriptor `json:"oauth,omitempty"`
+	// Injection is an OPTIONAL per-user credential-INJECTION binding for a
+	// RECEIVER-STYLE MCP server (one that authenticates by RECEIVING a credential
+	// directly on each request rather than PULLING it via RFC 8693) — a
+	// coordinator ATTACHING such a server at runtime and wiring per-user
+	// credential delivery to it without a boot redeploy. It NAMES a boot-declared
+	// `tools.oauth_providers[]` broker (the per-user credential is sourced from it
+	// per outbound call via the acting ctx identity — fetched-not-held, per-user,
+	// never logged) and declares WHERE the pulled value is placed on the outbound
+	// request (a header / an `Authorization: Basic` value / a `_meta` key). Only
+	// the pulled value is secret; the mapping (broker name + target key/form) is
+	// NON-SECRET. It is mutually exclusive with OAuthProvider / OAuth (one auth
+	// mode per connection). It is accepted ONLY behind the fail-closed
+	// `tools.allow_wire_injection` boot opt-in (default off, independent of the
+	// wire-OAuth opt-in): with the opt-in off a connection carrying any injection
+	// field is REJECTED, fail-loud. When opted in, the credential's reachable
+	// downstream sink is the host DERIVED from this connection's own URL and
+	// validated against the named broker's boot-declared allow-list — never a
+	// wire-supplied host list — and every declared target key must be
+	// redaction-covered (the audit redactor holds it to `***`). Persisted in the
+	// revision (diff / rollback / list parity). Set only for the http transport.
+	Injection *AgentConfigMCPCredentialInjectionDescriptor `json:"injection,omitempty"`
 	// OAuthDiscoveryAllowedOrigins is the explicit per-connection cross-origin
 	// allow-list of public https origins the OAuth-requirement discovery walker
 	// may fetch authorization-server metadata from. NON-SECRET (an origin
@@ -139,6 +160,40 @@ type AgentConfigMCPConnectionDescriptor struct {
 	// network hole (a granted origin is still refused at dial if it resolves
 	// private / loopback). Set only for the http transport.
 	OAuthDiscoveryAllowedOrigins []string `json:"oauth_discovery_allowed_origins,omitempty"`
+}
+
+// AgentConfigMCPCredentialInjectionDescriptor is the wire projection of one
+// runtime-added connection's per-user credential-INJECTION mapping for a
+// RECEIVER-STYLE MCP server. It is the NON-SECRET mapping ONLY: it NAMES a
+// boot-declared `tools.oauth_providers[]` broker (the per-user credential is
+// pulled from it per outbound call via the acting ctx identity) and declares
+// WHERE the pulled value is placed on the outbound request. No secret material
+// rides this descriptor — only the broker-pulled value (resolved per-call) is
+// secret. It mirrors the boot `tools.mcp_servers[].injection` shape so the
+// runtime-add path and the boot path share one injection engine. Accepted only
+// behind the fail-closed `tools.allow_wire_injection` boot opt-in; the pulled
+// credential's reachable sink is derived from the connection URL (never a
+// wire-supplied host list) and every declared target key must be
+// redaction-covered.
+type AgentConfigMCPCredentialInjectionDescriptor struct {
+	// Provider NAMES the declared `tools.oauth_providers[]` broker the per-user
+	// credential is pulled from (the SAME registry `oauth_provider` resolves
+	// against). NON-SECRET (a name). Required; an unknown name fails at attach.
+	Provider string `json:"provider"`
+	// Form selects the injection form: "header" / "basic" / "meta". Required.
+	Form string `json:"form"`
+	// Header is the target request header NAME for Form=="header" (e.g.
+	// `x-vendor-api-key`). Required for that form; must be a redaction-covered
+	// credential key and must not be `Authorization` (use Form=="basic").
+	Header string `json:"header,omitempty"`
+	// BasicUsername is the username half for Form=="basic"; the pulled credential
+	// becomes the password half (`Authorization: Basic base64(user ":" value)`).
+	// Optional (an empty username is the common API-key-as-basic shape). NON-SECRET.
+	BasicUsername string `json:"basic_username,omitempty"`
+	// MetaKey is the target `_meta` key PATH for Form=="meta", dot-separated for
+	// nesting (e.g. `vendor.api_key`). Required for that form; no segment may be a
+	// reserved `_meta` key and the leaf must be a redaction-covered credential key.
+	MetaKey string `json:"meta_key,omitempty"`
 }
 
 // AgentConfigConnections is the wire projection of the runtime-added
@@ -1020,6 +1075,69 @@ type AgentConfigSessionSkillsDeleteResponse struct {
 	ProtocolVersion string                    `json:"protocol_version"`
 }
 
+// --- Durable-per-user skills (CLAIM-FREE) ---
+//
+// These wire types back the `agent_config.user.skills.*` verbs — the durable
+// analogue of the ephemeral session-skills family. `user` names the storage
+// SCOPE (durable, keyed (tenant, user)); it is NOT an auth tier: the verbs are
+// CLAIM-FREE (a valid identity is enough, no admin and no
+// `auth.ScopeAgentConfigUser`) because a personal skill cannot widen
+// capability — the capability filter is default-deny and the injection-time
+// redactor scrubs any tool a skill names that is outside the run's allowed
+// set. The upsert/delete responses REUSE the canonical AgentConfigRevisionView
+// (the recorded user-scope membership revision) so the durable rung inherits
+// the same diff/rollback trail as the rest of the user config variant.
+
+// AgentConfigUserSkillsListRequest is the `agent_config.user.skills.list`
+// request — lists the caller's durable user-scope personal skills (metadata
+// only) under their real (tenant, user).
+type AgentConfigUserSkillsListRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+}
+
+// AgentConfigUserSkillsListResponse is the `agent_config.user.skills.list`
+// response.
+type AgentConfigUserSkillsListResponse struct {
+	Skills          []AgentConfigSkillSummary `json:"skills"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// AgentConfigUserSkillsUpsertRequest is the `agent_config.user.skills.upsert`
+// request — upserts a DURABLE personal skill at user scope (persists across
+// ALL of the caller's conversations). The skill scope is forced to
+// `skills.ScopeUser` server-side; the body has no scope field.
+type AgentConfigUserSkillsUpsertRequest struct {
+	Identity IdentityScope         `json:"identity"`
+	AgentID  string                `json:"agent_id"`
+	Skill    AgentConfigSkillInput `json:"skill"`
+}
+
+// AgentConfigUserSkillsUpsertResponse is the `agent_config.user.skills.upsert`
+// response — the upserted skill summary plus the recorded durable user-scope
+// membership revision.
+type AgentConfigUserSkillsUpsertResponse struct {
+	Skill           AgentConfigSkillSummary `json:"skill"`
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigUserSkillsDeleteRequest is the `agent_config.user.skills.delete`
+// request.
+type AgentConfigUserSkillsDeleteRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	Name     string        `json:"name"`
+}
+
+// AgentConfigUserSkillsDeleteResponse is the `agent_config.user.skills.delete`
+// response — the recorded durable user-scope membership revision after the
+// change.
+type AgentConfigUserSkillsDeleteResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
 // --- User-scope durable config variant (the middle tier of the
 // authorization matrix) ---
 //
@@ -1053,8 +1171,13 @@ type AgentConfigUserPayload struct {
 	// DisabledTools names the individual tools the user narrows out (the
 	// tool-exposure projection consumes this).
 	DisabledTools []string `json:"disabled_tools,omitempty"`
-	// PersonalSkills names the user's personal skill membership for the
-	// variant.
+	// PersonalSkills names the user's durable personal skill membership for
+	// the variant. It COMPOSES with the `agent_config.user.skills.*` verbs:
+	// those verbs write the skill BODIES to the SkillStore at user scope AND
+	// incrementally mutate this same membership list; `set_revision` sets it
+	// declaratively. The run-start skills projection reads this membership to
+	// keep durable user skills visible even when the admin pins a skills
+	// membership.
 	PersonalSkills []string `json:"personal_skills,omitempty"`
 }
 

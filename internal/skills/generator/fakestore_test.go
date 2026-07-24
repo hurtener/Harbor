@@ -49,12 +49,12 @@ func (f *failingUpsertStore) Search(ctx context.Context, id identity.Quadruple, 
 	return f.inner.Search(ctx, id, q, limit)
 }
 
-func (f *failingUpsertStore) Delete(ctx context.Context, id identity.Quadruple, name string) error {
+func (f *failingUpsertStore) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	f.deleteCalls++
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
-	return f.inner.Delete(ctx, id, name)
+	return f.inner.Delete(ctx, id, name, scope)
 }
 
 func (f *failingUpsertStore) Close(ctx context.Context) error {

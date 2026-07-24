@@ -220,6 +220,17 @@ type Service struct {
 	// flag) OR (the HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR boot env), computed at the
 	// cmd/harbor + devstack boundary and injected here — never Protocol-writable.
 	allowWireOAuthDescriptor bool
+	// allowWireInjection is the effective DEV-ONLY, fail-closed opt-in that
+	// permits add_mcp_connection to carry a per-user credential-INJECTION mapping
+	// (the `injection` object) for a receiver-style MCP server over the wire,
+	// instead of only a boot-declared `tools.mcp_servers[].injection` block. It is
+	// INDEPENDENT of allowWireOAuthDescriptor (an operator may enable one without
+	// the other). Default false / fail-closed: with it off (all of production) a
+	// connection carrying any injection field is REJECTED. The effective value is
+	// (tools.allow_wire_injection config flag) OR (the HARBOR_ALLOW_WIRE_INJECTION
+	// boot env), computed at the cmd/harbor + devstack boundary and injected here
+	// — never Protocol-writable.
+	allowWireInjection bool
 	// coordinator is the unified pause/resume primitive an auth-required
 	// attach parks on. Optional — nil ⇒ an auth-required attach fails loud
 	// with ErrCoordinatorUnavailable rather than silently dropping the auth
@@ -490,6 +501,20 @@ func WithAllowWireOAuthDescriptor(allow bool) Option {
 	}
 }
 
+// WithAllowWireInjection sets the effective DEV-ONLY, fail-closed opt-in that
+// permits add_mcp_connection to carry a per-user credential-INJECTION mapping
+// (the `injection` object) for a receiver-style MCP server over the wire. The
+// caller passes (tools.allow_wire_injection config flag) OR (the
+// HARBOR_ALLOW_WIRE_INJECTION boot env). It is INDEPENDENT of
+// WithAllowWireOAuthDescriptor. Default (option not applied) is false /
+// fail-closed — a connection carrying any injection field is rejected. Injected
+// at the cmd/harbor + devstack boundary; never Protocol-writable.
+func WithAllowWireInjection(allow bool) Option {
+	return func(s *Service) {
+		s.allowWireInjection = allow
+	}
+}
+
 // WithCoordinator wires the unified pause/resume primitive an auth-required
 // MCP attach parks on. A nil coordinator leaves an auth-required attach
 // failing loud with ErrCoordinatorUnavailable (never a silent drop).
@@ -757,6 +782,14 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err := s.validateNaming(req.Payload.Naming); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
+	// A full-payload set that pins a runtime-added MCP connection carrying a
+	// per-user credential-INJECTION mapping runs through the SAME fail-closed
+	// opt-in gate + shape validation the add_mcp_connection door enforces — so a
+	// gated (opt-in off) or malformed injection can never be persisted through
+	// this second door (the fail-closed invariant holds at both doors).
+	if err := s.gateAndValidateConnectionsInjection(req.Payload.Connections); err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
 	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payloadToDomain(req.Payload))
 	if err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
@@ -948,6 +981,10 @@ func connectionsToWire(in []agentcfg.MCPConnectionDescriptor) []prototypes.Agent
 			URL:             d.URL,
 			OAuthProvider:   d.OAuthProvider,
 			MetaAnnotations: cloneAnnotations(d.MetaAnnotations),
+			// The per-user credential-injection mapping is part of the versioned
+			// desired state — surface it on the revision view (diff / rollback /
+			// list parity). NON-SECRET (a mapping, never a value).
+			Injection: injectionDescriptorToWire(d.Injection),
 		})
 	}
 	return out
@@ -968,9 +1005,25 @@ func connectionsToDomain(in []prototypes.AgentConfigMCPConnectionDescriptor) []a
 			URL:             d.URL,
 			OAuthProvider:   d.OAuthProvider,
 			MetaAnnotations: cloneAnnotations(d.MetaAnnotations),
+			Injection:       injectionDescriptorToDomain(d.Injection),
 		})
 	}
 	return out
+}
+
+// injectionDescriptorToDomain projects a wire injection descriptor onto the
+// domain shape (nil for nil). NON-SECRET throughout — the mapping only.
+func injectionDescriptorToDomain(d *prototypes.AgentConfigMCPCredentialInjectionDescriptor) *agentcfg.MCPCredentialInjectionDescriptor {
+	if d == nil {
+		return nil
+	}
+	return &agentcfg.MCPCredentialInjectionDescriptor{
+		Provider:      d.Provider,
+		Form:          d.Form,
+		Header:        d.Header,
+		BasicUsername: d.BasicUsername,
+		MetaKey:       d.MetaKey,
+	}
 }
 
 // oauthProvidersToWire projects domain installed-provider descriptors onto the

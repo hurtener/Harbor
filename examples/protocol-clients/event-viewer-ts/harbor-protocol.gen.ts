@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:63a4c79ec11c73dc576dfe2eca38891a59c3920fb99298dec79696331b5c551e";
+export const WIRE_SURFACE_DIGEST = "sha256:824caea1729be0cf3051b0247a15a7599088d0dadc90724d21d6fb0462947fc7";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -48,6 +48,9 @@ export type HarborMethod =
   | "agent_config.user.list_revisions"
   | "agent_config.user.rollback"
   | "agent_config.user.set_revision"
+  | "agent_config.user.skills.delete"
+  | "agent_config.user.skills.list"
+  | "agent_config.user.skills.upsert"
   | "agents.deregister"
   | "agents.drain"
   | "agents.force_stop"
@@ -464,7 +467,16 @@ export interface AgentConfigMCPConnectionDescriptor {
   oauth_provider?: string;
   meta_annotations?: Record<string, string>;
   oauth?: AgentConfigOAuthProviderDescriptor;
+  injection?: AgentConfigMCPCredentialInjectionDescriptor;
   oauth_discovery_allowed_origins?: string[];
+}
+
+export interface AgentConfigMCPCredentialInjectionDescriptor {
+  provider: string;
+  form: string;
+  header?: string;
+  basic_username?: string;
+  meta_key?: string;
 }
 
 export interface AgentConfigNaming {
@@ -879,6 +891,39 @@ export interface AgentConfigUserSetRevisionRequest {
 }
 
 export interface AgentConfigUserSetRevisionResponse {
+  revision: AgentConfigRevisionView;
+  protocol_version: string;
+}
+
+export interface AgentConfigUserSkillsDeleteRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  name: string;
+}
+
+export interface AgentConfigUserSkillsDeleteResponse {
+  revision: AgentConfigRevisionView;
+  protocol_version: string;
+}
+
+export interface AgentConfigUserSkillsListRequest {
+  identity: IdentityScope;
+  agent_id: string;
+}
+
+export interface AgentConfigUserSkillsListResponse {
+  skills: AgentConfigSkillSummary[];
+  protocol_version: string;
+}
+
+export interface AgentConfigUserSkillsUpsertRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  skill: AgentConfigSkillInput;
+}
+
+export interface AgentConfigUserSkillsUpsertResponse {
+  skill: AgentConfigSkillSummary;
   revision: AgentConfigRevisionView;
   protocol_version: string;
 }

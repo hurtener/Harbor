@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 330 canonical Harbor Protocol wire types, generated from the single-source
+The 337 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -264,7 +264,20 @@ Declared in `internal/protocol/types`.
 | `oauth_provider` | `string` | optional (`omitempty`) |
 | `meta_annotations` | `map[string]string` | optional (`omitempty`) |
 | `oauth` | `*types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) | optional (`omitempty`) |
+| `injection` | `*types.AgentConfigMCPCredentialInjectionDescriptor` — see [`AgentConfigMCPCredentialInjectionDescriptor`](./types.md#agentconfigmcpcredentialinjectiondescriptor) | optional (`omitempty`) |
 | `oauth_discovery_allowed_origins` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigMCPCredentialInjectionDescriptor
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `provider` | `string` |  |
+| `form` | `string` |  |
+| `header` | `string` | optional (`omitempty`) |
+| `basic_username` | `string` | optional (`omitempty`) |
+| `meta_key` | `string` | optional (`omitempty`) |
 
 ## AgentConfigNaming
 
@@ -935,6 +948,63 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigUserSkillsDeleteRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+
+## AgentConfigUserSkillsDeleteResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigUserSkillsListRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+
+## AgentConfigUserSkillsListResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `skills` | `[]types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigUserSkillsUpsertRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `skill` | `types.AgentConfigSkillInput` — see [`AgentConfigSkillInput`](./types.md#agentconfigskillinput) |  |
+
+## AgentConfigUserSkillsUpsertResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `protocol_version` | `string` |  |
 

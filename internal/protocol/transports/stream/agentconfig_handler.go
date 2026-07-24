@@ -19,6 +19,7 @@
 //	POST /v1/agent_config/skills/upsert   — upsert a skill (records a rev)
 //	POST /v1/agent_config/skills/delete   — delete a skill (records a rev)
 //	POST /v1/agent_config/user/*          — the durable per-user variant tier
+//	POST /v1/agent_config/user/skills/*   — durable-per-user skills (CLAIM-FREE)
 //
 // The routes span THREE authorization tiers. The `session/*` routes are the
 // SAFE SUBSET (identity-mandatory, no scope). The `user/*` routes are the
@@ -216,6 +217,12 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUserDiff(w, r, body, wireID)
 	case "user/rollback":
 		h.serveUserRollback(w, r, body, wireID)
+	case "user/skills/list":
+		h.serveUserSkillsList(w, r, body, wireID)
+	case "user/skills/upsert":
+		h.serveUserSkillsUpsert(w, r, body, wireID)
+	case "user/skills/delete":
+		h.serveUserSkillsDelete(w, r, body, wireID)
 	default:
 		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown agent_config method route")
@@ -235,6 +242,14 @@ var agentConfigSessionSafeRoutes = map[string]bool{
 	"session/skills/list":         true,
 	"session/skills/upsert":       true,
 	"session/skills/delete":       true,
+	// Durable-per-user skills are CLAIM-FREE too: `user/skills/*` names the
+	// durable STORAGE scope, not an auth tier. A personal skill cannot widen
+	// capability, so — like the session rung — these need only a valid
+	// identity (NOT admin, NOT auth.ScopeAgentConfigUser). They intentionally
+	// live in this safe-subset set, NOT agentConfigUserRoutes.
+	"user/skills/list":   true,
+	"user/skills/upsert": true,
+	"user/skills/delete": true,
 }
 
 // agentConfigUserRoutes is the closed set of trailing path segments that are
@@ -714,6 +729,59 @@ func (h *AgentConfigHandler) serveUserRollback(w http.ResponseWriter, r *http.Re
 	writeAgentConfigJSON(w, r, resp, h.logger)
 }
 
+// --- durable-per-user skills (CLAIM-FREE, session-safe tier) routes ---
+
+func (h *AgentConfigHandler) serveUserSkillsList(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsListRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsList) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserSkillsList(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsList, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserSkillsUpsert(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsUpsertRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsUpsert) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserSkillsUpsert(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsUpsert, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserSkillsDelete(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsDeleteRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsDelete) {
+		return
+	}
+	if !h.assertIdentity(w, req.Identity, wireID) {
+		return
+	}
+	req.Identity = wireID
+	resp, err := h.service.UserSkillsDelete(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsDelete, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
 // decode decodes the JSON body into req (rejecting unknown fields) and
 // writes a CodeInvalidRequest error on failure, returning false.
 func (h *AgentConfigHandler) decode(w http.ResponseWriter, body []byte, req any, method methods.Method) bool {
@@ -788,14 +856,17 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrInvalidProvider),
 		errors.Is(err, agentcfgprotocol.ErrBootDeclaredProvider),
 		errors.Is(err, agentcfgprotocol.ErrProviderBrokerUnknown),
-		errors.Is(err, agentcfgprotocol.ErrWireDescriptorNotAllowed):
+		errors.Is(err, agentcfgprotocol.ErrWireDescriptorNotAllowed),
+		errors.Is(err, agentcfgprotocol.ErrWireInjectionNotAllowed):
 		// A malformed / boot-colliding / unknown-broker install is a CLIENT
 		// error (a bad request body) — rejected loud BEFORE any observable state
 		// change. The installer wraps the auth-package errors (unknown broker,
 		// name collision) into these service sentinels. A wire descriptor with the
 		// fail-closed opt-in off (ErrWireDescriptorNotAllowed) is likewise a
 		// rejected bad request — the zero-URL name-only posture (no admin-writable credential
-		// sink) held by default.
+		// sink) held by default. A wire credential-injection mapping with its own
+		// fail-closed opt-in off (ErrWireInjectionNotAllowed) is the same shape: a
+		// rejected bad request, the boot-declared-only injection posture by default.
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrProviderNotFound):

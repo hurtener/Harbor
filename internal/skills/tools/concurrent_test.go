@@ -217,7 +217,7 @@ func (s *spyStore) Search(ctx context.Context, id identity.Quadruple, query stri
 	return out, nil
 }
 
-func (s *spyStore) Delete(ctx context.Context, id identity.Quadruple, name string) error {
+func (s *spyStore) Delete(ctx context.Context, id identity.Quadruple, name string, scope skills.Scope) error {
 	return nil
 }
 

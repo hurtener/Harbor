@@ -620,6 +620,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		BootDeclaredMCP:          BootDeclaredMCPServerNames(cfg),
 		BootDeclaredOAuth:        BootDeclaredOAuthProviderNames(cfg),
 		AllowWireOAuthDescriptor: allowWireOAuthDescriptor,
+		AllowWireInjection:       cfg.Tools.AllowWireInjection || toolauth.AllowWireInjectionCaptured(),
 		OAuthProviderInstaller:   oauthProviderInstaller,
 		LLMProviderInstaller:     llmProviderInstaller,
 		InferenceBrokers:         inferenceBrokerNames,
