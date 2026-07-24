@@ -46,6 +46,16 @@
   let srcdoc = $state('');
   let iframeEl = $state<HTMLIFrameElement | null>(null);
   let host: AppBridgeHost | undefined;
+  // The `ui://` resource URI whose document is currently loaded. The preload
+  // effect re-runs whenever the `app` prop's IDENTITY changes — which the
+  // transcript does on every re-render of a turn (a failing turn thrashes the
+  // message list). Re-fetching the same document each time churns `loadState`,
+  // which tears the bridge down and rebuilds it (the lifecycle effect keys on
+  // `loadState`), producing a `read_resource` + handshake storm. Dedup on the
+  // URI: an identity change that resolves to the SAME document is a no-op. A
+  // genuinely different URI (a different app) still reloads. Non-reactive on
+  // purpose — it must not itself re-trigger the effect.
+  let loadedUri: string | undefined;
 
   // Live theme state, isolated from the bridge lifecycle.
   //
@@ -97,6 +107,12 @@
       loadState = 'empty';
       return;
     }
+    // Same document already loaded and live — a prop-identity re-run, not a new
+    // app. Skip the refetch so `loadState` stays `ready` and the bridge is not
+    // torn down + rebuilt (guards the re-render storm; see `loadedUri`).
+    if (app.resourceUri === loadedUri && loadState === 'ready') {
+      return;
+    }
     loadState = 'loading';
     errorMessage = '';
     try {
@@ -127,6 +143,7 @@
         return;
       }
       srcdoc = wrapAppDocument(documentHTML, buildAppCSP(trusted));
+      loadedUri = app.resourceUri;
       loadState = 'ready';
     } catch (err) {
       errorMessage = err instanceof Error ? err.message : String(err);

@@ -225,12 +225,15 @@ describe('AppBridgeHost Data Delivery — sendToolInput then sendToolResult (HA 
       result: { content: { revenue: 42 } },
       isError: false,
     };
-    new AppBridgeHost({ client: ctxClient(ctx), serverID: 'srv', toolCallId: 'tc_1' });
+    const host = new AppBridgeHost({ client: ctxClient(ctx), serverID: 'srv', toolCallId: 'tc_1' });
     const bridge = captured.instances[0];
 
     // No delivery before the app initializes.
     expect(bridge.toolInputCalls).toHaveLength(0);
 
+    // The app can only send `ui/notifications/initialized` over a CONNECTED
+    // transport, so connect precedes the handshake (as it does in the renderer).
+    await host.connect({} as unknown as Window);
     bridge.fireInitialized();
     await flushMicrotasks();
 
@@ -259,6 +262,34 @@ describe('AppBridgeHost Data Delivery — sendToolInput then sendToolResult (HA 
     const bridge = captured.instances[0];
     bridge.fireInitialized();
     await flushMicrotasks();
+    expect(bridge.toolInputCalls).toHaveLength(0);
+    expect(bridge.toolResultCalls).toHaveLength(0);
+  });
+
+  it('drops a stale delivery when the bridge is closed mid tool-context fetch (no "Not connected")', async () => {
+    // A transcript re-render can `close()` the bridge while the `toolContext`
+    // request started on `oninitialized` is still in flight. The resumed
+    // delivery must NOT push onto the torn-down transport (that threw
+    // "Not connected" and spammed the console on failing turns).
+    captured.instances.length = 0;
+    let releaseCtx: (v: MCPAppToolContext) => void = () => {};
+    const gate = new Promise<MCPAppToolContext>((resolve) => {
+      releaseCtx = resolve;
+    });
+    const client: MCPAppHostClient = { ...fakeClient(), async toolContext() { return gate; } };
+    const host = new AppBridgeHost({ client, serverID: 'srv', toolCallId: 'tc_1' });
+    const bridge = captured.instances[0];
+
+    await host.connect({} as unknown as Window);
+    bridge.fireInitialized(); // starts #deliverToolContext → awaits the gated fetch
+    await flushMicrotasks();
+    expect(bridge.toolInputCalls).toHaveLength(0);
+
+    await host.close(); // transport torn down while the fetch is still parked
+    releaseCtx({ tool: 't', input: { content: { a: 1 } }, result: { content: {} }, isError: false });
+    await flushMicrotasks();
+
+    // The stale delivery is dropped — never sent onto the closed transport.
     expect(bridge.toolInputCalls).toHaveLength(0);
     expect(bridge.toolResultCalls).toHaveLength(0);
   });

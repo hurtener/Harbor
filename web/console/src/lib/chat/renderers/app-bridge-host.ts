@@ -582,7 +582,15 @@ export class AppBridgeHost {
     try {
       const ctx = await this.#client.toolContext(this.#serverID, this.#toolCallId);
       if (!ctx) return;
+      // Re-check liveness AFTER the async context fetch: a transcript re-render
+      // can `close()` this bridge while the `toolContext` request is in flight,
+      // swapping the transport out from under us. Sending onto a torn-down
+      // transport throws "Not connected" — a stale delivery for a bridge that
+      // no longer exists, not a real failure. Bail silently instead; the
+      // replacement bridge runs its own delivery on its own `oninitialized`.
+      if (!this.#connected || !this.#initialized) return;
       await this.#bridge.sendToolInput({ arguments: await this.#payloadToArgs(ctx.input) });
+      if (!this.#connected || !this.#initialized) return;
       await this.#bridge.sendToolResult(await this.#payloadToResult(ctx.result, ctx.isError));
     } catch (err) {
       // The delivery is best-effort — surface the failure to the console but
