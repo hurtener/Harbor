@@ -38,12 +38,12 @@ None. Straight §9 parity add behind the existing seam.
 
 ## Acceptance criteria
 
-- [ ] `internal/skills/drivers/postgres/` implements `SkillStore` fully (upsert/get/list/search/delete + the conflict policy), `pgx`, all queries parameterized, identity-triple-scoped `WHERE` filters (§6).
-- [ ] The driver self-registers from `init()` and is blank-imported in `internal/drivers/prod/prod.go` (next to the `localdb` line, D-196); nothing else imports it.
-- [ ] Forward-only per-driver migrations (§9), each idempotent (`... ON CONFLICT DO NOTHING` into `schema_migrations`); clean DB starts cleanly; existing DB runs the new migration — both via test.
-- [ ] The driver PASSES `internal/skills/conformancetest.Run` unchanged (parity), including the golden-ranking / FTS-fallback assertions.
-- [ ] D-025 concurrent-reuse test: N≥100 concurrent invocations against one shared driver instance under `-race` — no races, no cross-identity bleed, no goroutine leak.
-- [ ] `scripts/smoke/phase-201.sh` asserts the `postgres` skills driver registers (present in the aggregator; the conformance suite covers behavior).
+- [x] `internal/skills/drivers/postgres/` implements `SkillStore` fully (upsert/get/list/search/delete + the conflict policy), `pgx`, all queries parameterized, identity-triple-scoped `WHERE` filters (§6).
+- [x] The driver self-registers from `init()` and is blank-imported in `internal/drivers/prod/prod.go` (next to the `localdb` line, D-196); nothing else imports it.
+- [x] Forward-only per-driver migrations (§9), each idempotent (`... ON CONFLICT DO NOTHING` into `schema_migrations`); clean DB starts cleanly; existing DB runs the new migration — both via test.
+- [x] The driver PASSES `internal/skills/conformancetest.Run` unchanged (parity), including the golden-ranking / FTS-fallback assertions.
+- [x] D-025 concurrent-reuse test: N≥100 concurrent invocations against one shared driver instance under `-race` — no races, no cross-identity bleed, no goroutine leak.
+- [x] `scripts/smoke/phase-201.sh` asserts the `postgres` skills driver registers (present in the aggregator; the conformance suite covers behavior).
 
 ## Files added or changed
 
@@ -93,14 +93,14 @@ No new exported API. A new registered driver name (`postgres`) on the existing s
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: identity-scoped `WHERE` filters proven by the conformance suite's isolation assertions
-- [ ] **Concurrent-reuse test passes** — N≥100 shared-instance under `-race` (the driver is a reusable artifact). See §5 + D-025.
-- [ ] **Integration test exists** — `conformancetest.Run` against real Postgres (parity gate)
-- [ ] If migrations added: clean DB starts cleanly; existing DB runs the migration — both via tests
-- [ ] If config schema changed: `examples/harbor.yaml` updated; backward compatible (`localdb` stays default)
-- [ ] Skill `configure-memory-and-skills` updated same-PR (§18)
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: identity-scoped `WHERE` filters proven by the conformance suite's isolation assertions
+- [x] **Concurrent-reuse test passes** — N≥100 shared-instance under `-race` (the driver is a reusable artifact). See §5 + D-025.
+- [x] **Integration test exists** — `conformancetest.Run` against real Postgres (parity gate)
+- [x] If migrations added: clean DB starts cleanly; existing DB runs the migration — both via tests
+- [x] If config schema changed: `examples/harbor.yaml` updated; backward compatible (`localdb` stays default)
+- [x] Skill `configure-memory-and-skills` updated same-PR (§18)

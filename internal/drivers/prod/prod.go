@@ -103,6 +103,9 @@ import (
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
 	// Skills driver — LocalDB SkillStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
+	// Skills driver — Postgres SkillStore (durable/shared storage),
+	// registered via init().
+	_ "github.com/hurtener/Harbor/internal/skills/drivers/postgres"
 	// Skills planner tools — (`skill_search` / `skill_get` /
 	// `skill_list`). The package has no init-time registration
 	// (catalogs are constructed at boot, not from a factory registry);
