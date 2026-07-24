@@ -1040,15 +1040,17 @@ func (c *Config) validateMemory() error {
 }
 
 // allowedSkillsDrivers is the V1 skills-driver allowlist. Harbor
-// ships only `"localdb"`. A later phase will add `"portico"`.
+// ships `"localdb"` and the durable/shared `"postgres"` store.
 var allowedSkillsDrivers = map[string]struct{}{
-	"localdb": {},
+	"localdb":  {},
+	"postgres": {},
 }
 
 // skillsDriversRequiringDSN names the drivers whose `DSN` field must
 // be supplied. Mirrors `memoryDriversRequiringDSN`.
 var skillsDriversRequiringDSN = map[string]struct{}{
-	"localdb": {},
+	"localdb":  {},
+	"postgres": {},
 }
 
 // validateSkills validates the optional `skills:` block. The block
