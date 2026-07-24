@@ -1,4 +1,4 @@
--- Initial Postgres SkillStore schema (RFC §6.7 + §9, brief 04).
+-- Initial Postgres SkillStore schema (RFC §6.7 + §9).
 --
 -- Forward-only migration. Editing this file after merge is forbidden
 -- (AGENTS.md §13). Future schema changes land as new files
@@ -13,8 +13,8 @@
 --   - `skills` is keyed by `(tenant_id, user_id, session_id, scope,
 --     name)`. Identity-mandatory: every row carries the full triple.
 --     RunID is NOT part of the key (skills are session-scoped at the
---     storage layer per brief 04 §4.3; the run id only appears inside
---     origin_ref for generator provenance).
+--     storage layer; the run id only appears inside origin_ref for
+--     generator provenance).
 --   - Postgres reserves `user` and `trigger`; the columns are named
 --     `user_id` and `trigger_text` to avoid quoting reserved words.
 --   - JSON-encoded slice columns (`tags_json`, `steps_json`, ...) are
@@ -25,7 +25,7 @@
 --     join.
 --   - `origin` is `'pack'` | `'generated'`. The Upsert path's
 --     pack-overwrite refusal short-circuits on `existing.origin =
---     'pack' AND incoming != 'pack'` (brief 04 §4.8, RFC §6.7).
+--     'pack' AND incoming != 'pack'` (RFC §6.7).
 --   - `content_hash` is the canonical sha256 hex computed by
 --     `skills.CanonicalContentHash`. Used for LWW + idempotency.
 --   - `created_at` / `updated_at` / `last_used` are TIMESTAMPTZ; the

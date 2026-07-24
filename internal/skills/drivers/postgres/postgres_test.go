@@ -239,6 +239,84 @@ func TestSearch_Semantic(t *testing.T) {
 	}
 }
 
+// TestPostgres_ListGet_CrossIdentityIsolation is the explicit
+// security gate for the identity-scoped WHERE filters on the Get + List
+// read paths (§6). Skill A is upserted under identity A; identity B
+// (same tenant + user, different session) must NOT be able to Get it or
+// see it in List — and vice versa. The concurrent test covers this
+// implicitly; this asserts it directly so a dropped `session_id`
+// predicate on Get/List fails loudly here.
+func TestPostgres_ListGet_CrossIdentityIsolation(t *testing.T) {
+	baseDSN := requireDSN(t)
+	bus := buildBus(t)
+	dsn := freshSchema(t, baseDSN)
+	store, err := postgres.New(skills.ConfigSnapshot{Driver: "postgres", DSN: dsn},
+		skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("postgres.New: %v", err)
+	}
+	defer func() { _ = store.Close(context.Background()) }()
+
+	ctx := context.Background()
+	idA := fixtureID
+	idA.SessionID = "s-A"
+	idB := fixtureID
+	idB.SessionID = "s-B"
+
+	mkSkill := func(name string) skills.Skill {
+		return skills.Skill{
+			Name: name, Title: name, Trigger: "trigger-" + name,
+			Description: "desc " + name, Steps: []string{"step"},
+			Origin: skills.OriginGenerated, Scope: skills.ScopeProject,
+		}
+	}
+	if err := store.Upsert(ctx, idA, mkSkill("skill-a")); err != nil {
+		t.Fatalf("Upsert(A): %v", err)
+	}
+	if err := store.Upsert(ctx, idB, mkSkill("skill-b")); err != nil {
+		t.Fatalf("Upsert(B): %v", err)
+	}
+
+	// Get isolation: B cannot read A's skill, and vice versa.
+	if _, err := store.Get(ctx, idB, "skill-a"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Errorf("Get(B, skill-a): want ErrSkillNotFound, got %v", err)
+	}
+	if _, err := store.Get(ctx, idA, "skill-b"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Errorf("Get(A, skill-b): want ErrSkillNotFound, got %v", err)
+	}
+	// Each identity CAN read its own.
+	if _, err := store.Get(ctx, idA, "skill-a"); err != nil {
+		t.Errorf("Get(A, skill-a): own skill unreadable: %v", err)
+	}
+	if _, err := store.Get(ctx, idB, "skill-b"); err != nil {
+		t.Errorf("Get(B, skill-b): own skill unreadable: %v", err)
+	}
+
+	// List isolation: A's List holds only skill-a; B's only skill-b.
+	listA, err := store.List(ctx, idA, skills.ListFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("List(A): %v", err)
+	}
+	if len(listA) != 1 || listA[0].Name != "skill-a" {
+		t.Errorf("List(A) = %v, want exactly [skill-a]", listNames(listA))
+	}
+	listB, err := store.List(ctx, idB, skills.ListFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("List(B): %v", err)
+	}
+	if len(listB) != 1 || listB[0].Name != "skill-b" {
+		t.Errorf("List(B) = %v, want exactly [skill-b]", listNames(listB))
+	}
+}
+
+func listNames(ss []skills.Skill) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = s.Name
+	}
+	return out
+}
+
 func names(rs []skills.RankedSkill) []string {
 	out := make([]string, len(rs))
 	for i, r := range rs {
