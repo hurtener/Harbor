@@ -224,9 +224,24 @@ func TestE2E_WaveV118_HA34_ConcurrencyStress(t *testing.T) {
 		}
 	}
 
-	runtime.GC()
-	if got := runtime.NumGoroutine(); got > base+10 {
-		t.Errorf("goroutine leak: base=%d after=%d", base, got)
+	// Background subscribers on the shared test server (the notifications
+	// consume-loops) can still be spinning up when the stress goroutines join,
+	// so the count is transiently above baseline right after wg.Wait(). Poll
+	// until it settles within tolerance rather than sampling a single instant
+	// (a bounded real-time eventually-assertion, §17.4 — not a leak if it drains).
+	const tol = 10
+	deadline := time.Now().Add(3 * time.Second)
+	var got int
+	for {
+		runtime.GC()
+		got = runtime.NumGoroutine()
+		if got <= base+tol || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got > base+tol {
+		t.Errorf("goroutine leak: base=%d after=%d (did not drain within 3s)", base, got)
 	}
 }
 
