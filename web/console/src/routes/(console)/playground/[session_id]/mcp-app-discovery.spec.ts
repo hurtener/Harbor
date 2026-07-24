@@ -55,6 +55,12 @@ function fakeHostClient(): MCPAppHostClient & { reads: Array<[string, string]> }
     },
     async resolveArtifact(id) {
       return `https://artifacts.example/${id}`;
+    },
+    async toolContext() {
+      return null;
+    },
+    async fetchArtifactText() {
+      return '{}';
     }
   };
 }
@@ -264,6 +270,12 @@ function heavyHostClient(): MCPAppHostClient & { resolved: string[] } {
     async resolveArtifact(id) {
       resolved.push(id);
       return `https://artifacts.example/${id}`;
+    },
+    async toolContext() {
+      return null;
+    },
+    async fetchArtifactText() {
+      return '{}';
     }
   };
 }

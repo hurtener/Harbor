@@ -60,6 +60,12 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
     async resolveArtifact(id) {
       return `https://artifacts.example/${id}`;
     },
+    async toolContext() {
+      return null;
+    },
+    async fetchArtifactText() {
+      return '{}';
+    },
     ...overrides,
   };
   return { client, calls };

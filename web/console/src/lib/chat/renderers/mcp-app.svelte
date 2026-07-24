@@ -20,6 +20,8 @@
   //   3. Construct the AppBridge host (manual-handler mode) and connect it to
   //      the iframe's `contentWindow`, completing the `ui/initialize`
   //      handshake. Every app→host request routes through `appHostClient`.
+  import { untrack } from 'svelte';
+  import type { McpUiTheme } from '@modelcontextprotocol/ext-apps/app-bridge';
   import type { RendererProps } from './index.js';
   import {
     AppBridgeHost,
@@ -27,6 +29,7 @@
     type McpUiDisplayMode
   } from './app-bridge-host.js';
   import { appIframeSandbox, buildAppCSP, wrapAppDocument } from './sandbox-policy.js';
+  import { buildHostStyles, hostThemeMediaQuery, resolveHostTheme } from './theme-tokens.js';
 
   let {
     app,
@@ -43,6 +46,33 @@
   let srcdoc = $state('');
   let iframeEl = $state<HTMLIFrameElement | null>(null);
   let host: AppBridgeHost | undefined;
+  // The `ui://` resource URI whose document is currently loaded. The preload
+  // effect re-runs whenever the `app` prop's IDENTITY changes — which the
+  // transcript does on every re-render of a turn (a failing turn thrashes the
+  // message list). Re-fetching the same document each time churns `loadState`,
+  // which tears the bridge down and rebuilds it (the lifecycle effect keys on
+  // `loadState`), producing a `read_resource` + handshake storm. Dedup on the
+  // URI: an identity change that resolves to the SAME document is a no-op. A
+  // genuinely different URI (a different app) still reloads. Non-reactive on
+  // purpose — it must not itself re-trigger the effect.
+  let loadedUri: string | undefined;
+
+  // Live theme state, isolated from the bridge lifecycle.
+  //
+  // `hostTheme` tracks the OS `prefers-color-scheme`; a matchMedia `change`
+  // event updates it. The bridge is NOT rebuilt when it changes — a SEPARATE
+  // effect relays the change onto the LIVE bridge via `setHostContext`. This
+  // isolation is the fix for the reverted-work handshake break: the bridge's
+  // lifecycle effect must never re-run (and tear the transport down) because
+  // the theme changed.
+  let hostTheme = $state<McpUiTheme>(resolveHostTheme());
+  // Flipped true once the bridge completes `ui/initialize`; GATES the theme
+  // relay so it never patches a bridge mid-handshake.
+  let bridgeReady = $state(false);
+  // The theme most recently baked into / relayed onto the bridge — so the relay
+  // skips the redundant echo of the theme the bridge was constructed with, and
+  // still fires when the OS toggles back to a previously-applied theme.
+  let lastAppliedTheme: McpUiTheme | undefined;
 
   // The sandbox token set + CSP are derived from the per-server raw-HTML
   // trust posture. `appIframeSandbox` GUARANTEES `allow-same-origin` is never
@@ -77,6 +107,12 @@
       loadState = 'empty';
       return;
     }
+    // Same document already loaded and live — a prop-identity re-run, not a new
+    // app. Skip the refetch so `loadState` stays `ready` and the bridge is not
+    // torn down + rebuilt (guards the re-render storm; see `loadedUri`).
+    if (app.resourceUri === loadedUri && loadState === 'ready') {
+      return;
+    }
     loadState = 'loading';
     errorMessage = '';
     try {
@@ -107,6 +143,7 @@
         return;
       }
       srcdoc = wrapAppDocument(documentHTML, buildAppCSP(trusted));
+      loadedUri = app.resourceUri;
       loadState = 'ready';
     } catch (err) {
       errorMessage = err instanceof Error ? err.message : String(err);
@@ -119,20 +156,47 @@
   // that exact window (origin / source validation), so a foreign frame's
   // messages are rejected.
   async function connectBridge(): Promise<void> {
-    if (!iframeEl?.contentWindow || !app || !serverID || !appHostClient) return;
     if (host) return;
-    host = new AppBridgeHost({
-      client: appHostClient,
+    // Snapshot EVERY reactive input to the bridge — the iframe window, the five
+    // renderer props, and the resolved theme/styles — in a single `untrack`, so
+    // NONE of them is tracked by the caller (the lifecycle `$effect` below).
+    // That effect therefore depends on ONLY `loadState` + `iframeEl` (the two
+    // signals it reads directly): a change to any prop's identity, or a theme
+    // change, can never re-run it and tear the transport down mid-`ui/initialize`
+    // — the exact outage that got the original work reverted. `iframeEl` stays a
+    // tracked dep because the effect body reads it directly; reading it here
+    // untracked only avoids a redundant second subscription. Theme/styles are
+    // plain DOM reads, snapshotted here for the same isolation guarantee.
+    const s = untrack(() => ({
+      win: iframeEl?.contentWindow ?? null,
+      app,
       serverID,
+      client: appHostClient,
       availableDisplayModes,
       onDisplayModeRequest,
+      theme: resolveHostTheme(),
+      styles: buildHostStyles()
+    }));
+    if (!s.win || !s.app || !s.serverID || !s.client) return;
+    lastAppliedTheme = s.theme;
+    host = new AppBridgeHost({
+      client: s.client,
+      serverID: s.serverID,
+      availableDisplayModes: s.availableDisplayModes,
+      onDisplayModeRequest: s.onDisplayModeRequest,
       // Host identity is injected through the seam (not baked into the module).
-      // The Console supplies its own identity; theme stays at the seam default
-      // ('dark'), preserving prior behaviour until a theme prop is threaded.
-      hostInfo: DEFAULT_HOST_INFO
+      hostInfo: DEFAULT_HOST_INFO,
+      theme: s.theme,
+      styles: s.styles,
+      // The correlation key for the after-init Data Delivery push.
+      toolCallId: s.app.toolCallId,
+      // The renderer flips its live-theme gate here, AFTER the handshake.
+      onInitialized: () => {
+        bridgeReady = true;
+      }
     });
     try {
-      await host.connect(iframeEl.contentWindow);
+      await host.connect(s.win);
     } catch (err) {
       errorMessage = err instanceof Error ? err.message : String(err);
       loadState = 'error';
@@ -143,6 +207,12 @@
     void preload();
   });
 
+  // The bridge lifecycle effect — depends ONLY on `loadState` + `iframeEl` (the
+  // two signals it reads directly). Every other input the bridge needs (theme,
+  // styles, and all five renderer props) is snapshotted UNTRACKED inside
+  // `connectBridge`, so neither a theme change nor prop-identity churn can
+  // re-run this effect and tear the transport down mid-handshake. That teardown
+  // was the reverted-work outage (#346); this isolation is the fix (D-342).
   $effect(() => {
     if (loadState === 'ready' && iframeEl) {
       void connectBridge();
@@ -152,7 +222,33 @@
         void host.close();
         host = undefined;
       }
+      bridgeReady = false;
     };
+  });
+
+  // Track the OS `prefers-color-scheme` into `hostTheme`. Runs once (reads no
+  // reactive state); the listener is torn down on unmount. Separate from the
+  // bridge lifecycle effect on purpose.
+  $effect(() => {
+    const mql = hostThemeMediaQuery();
+    if (!mql) return;
+    const onChange = (e: MediaQueryListEvent): void => {
+      hostTheme = e.matches ? 'dark' : 'light';
+    };
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  });
+
+  // Relay a LIVE theme change onto the running bridge — NEVER a teardown. Fires
+  // only after the bridge is initialized and only when the theme actually
+  // changed from the last-applied value; `AppBridgeHost.setHostContext` gates
+  // on init a second time.
+  $effect(() => {
+    const theme = hostTheme;
+    if (!bridgeReady || !host) return;
+    if (theme === lastAppliedTheme) return;
+    lastAppliedTheme = theme;
+    host.setHostContext({ theme, styles: buildHostStyles() });
   });
 </script>
 

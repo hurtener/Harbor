@@ -17,6 +17,48 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.20.0] — 2026-07-24
+
+Minor: MCP Apps in the Console now adapt to the host — live theme + design tokens and real tool data delivered into the rendered app — re-landed handshake-safe.
+
+### Added
+
+- **MCP Apps host theme + design tokens.** When a `ui://` MCP App mounts in the
+  Console, the host now hands it the viewer's light/dark preference (from the OS
+  `prefers-color-scheme`) plus the Console's structural design tokens
+  (`styles.variables`, the ext-apps `McpUiStyleVariableKey` namespace, mapped
+  from `tokens.css`) in the `ui/initialize` host-context, and relays a live OS
+  theme flip mid-session via `host-context-changed` — the app re-themes without
+  a reload. A spec-conformant app themes itself to match the Console instead of
+  booting to a fixed palette.
+- **MCP Apps Data Delivery (Console half).** After the app sends
+  `ui/notifications/initialized`, the host delivers the originating tool call's
+  input then result into it (official AppBridge `sendToolInput` /
+  `sendToolResult`, through the D-173 injected client reading
+  `mcp.apps.tool_context`) — so the app renders its real content rather than an
+  empty shell, and never re-invokes the tool (which would double a side effect).
+
+  This re-lands the two Console halves reverted in #346 (D-226 Data Delivery,
+  D-227 live theme) as one coherent, handshake-safe slice: the bridge is
+  constructed once with the final host-context, the lifecycle effect is isolated
+  from theme reactivity, and every host→app send is gated behind
+  `oninitialized` — never a teardown-rebuild that would break `ui/initialize`.
+  Gated by a real-iframe Playwright handshake test and a binding live-render of
+  a real Dockyard `analytics-widgets` app under a real agent. Console-only; no
+  Runtime/Protocol change. (D-342)
+
+### Fixed
+
+- **MCP-App re-render resource storm.** On a turn that produced no final answer
+  (the task fails and the transcript re-renders), a single widget render could
+  fire hundreds of `mcp.servers.read_resource` calls and log repeated
+  "Not connected" tool-context delivery failures. The app-document fetch now
+  dedups on the resource URI (an app-prop identity change to the same document
+  no longer refetches and tears the bridge down), and tool-context delivery
+  re-checks the transport is still connected after its async fetch — a bridge
+  closed mid-fetch drops its stale delivery instead of throwing. A failed-turn
+  render is now bounded to a handful of requests with zero delivery errors.
+
 ## [1.19.1] — 2026-07-24
 
 Patch: config-validation hotfix for the v1.19.0 skills Postgres driver.
