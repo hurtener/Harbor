@@ -190,6 +190,9 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 	// Dev-only wire-carried OAuth-descriptor escape hatch — reciprocal capture +
 	// banner, mirroring the hatches above.
 	registerAllowWireOAuthDescriptorIfDev(os.Getenv(EnvAllowWireOAuthDescriptor) == "1", cmd.ErrOrStderr())
+	// Dev-only wire-carried credential-injection escape hatch — reciprocal capture
+	// + banner, independent of the wire-OAuth hatch above.
+	registerAllowWireInjectionIfDev(os.Getenv(EnvAllowWireInjection) == "1", cmd.ErrOrStderr())
 
 	comp, err := newDevComposition(devCompositionOptions{
 		allowMock:    allowMock,

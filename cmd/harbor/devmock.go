@@ -158,3 +158,32 @@ func registerAllowWireOAuthDescriptorIfDev(allow bool, stderr interface{ Write(p
 	}
 	_, _ = fmt.Fprintln(stderr, WireOAuthDescriptorBanner)
 }
+
+// registerAllowWireInjectionIfDev is the reciprocal banner+capture for the
+// dev-only `HARBOR_ALLOW_WIRE_INJECTION` escape hatch — the exact shape of
+// registerAllowWireOAuthDescriptorIfDev, and INDEPENDENT of it. When `allow` is
+// true it permits `agent_config.add_mcp_connection` to carry a per-user
+// credential-INJECTION mapping (the `injection` object) for a receiver-style MCP
+// server over the wire, instead of only a boot-declared
+// `tools.mcp_servers[].injection` block. It captures the boot flag
+// UNCONDITIONALLY (`false` is the honest non-dev boot state) into the
+// credential-plane package's write-once atomic AND prints the
+// [DEV-ONLY WIRE INJECTION …] stderr banner at the SAME call site when the hatch
+// fired — keeping capture and banner structurally reciprocal. The effective
+// posture the serve wiring reads is this captured flag OR the
+// `tools.allow_wire_injection` config flag. Never Protocol-writable; the
+// derived-downstream-sink + redaction-coverage guards keep the relaxation bounded
+// even when it fires.
+func registerAllowWireInjectionIfDev(allow bool, stderr interface{ Write(p []byte) (int, error) }) {
+	// capture the dev wire-injection boot flag for the agent-config gate.
+	// Called unconditionally — `false` is the honest non-dev boot state.
+	toolauth.RegisterAllowWireInjectionCaptured(allow)
+
+	if !allow {
+		return
+	}
+	if stderr == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(stderr, WireInjectionBanner)
+}

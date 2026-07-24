@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 336 canonical Harbor Protocol wire types, generated from the single-source
+The 337 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -264,7 +264,20 @@ Declared in `internal/protocol/types`.
 | `oauth_provider` | `string` | optional (`omitempty`) |
 | `meta_annotations` | `map[string]string` | optional (`omitempty`) |
 | `oauth` | `*types.AgentConfigOAuthProviderDescriptor` — see [`AgentConfigOAuthProviderDescriptor`](./types.md#agentconfigoauthproviderdescriptor) | optional (`omitempty`) |
+| `injection` | `*types.AgentConfigMCPCredentialInjectionDescriptor` — see [`AgentConfigMCPCredentialInjectionDescriptor`](./types.md#agentconfigmcpcredentialinjectiondescriptor) | optional (`omitempty`) |
 | `oauth_discovery_allowed_origins` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigMCPCredentialInjectionDescriptor
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `provider` | `string` |  |
+| `form` | `string` |  |
+| `header` | `string` | optional (`omitempty`) |
+| `basic_username` | `string` | optional (`omitempty`) |
+| `meta_key` | `string` | optional (`omitempty`) |
 
 ## AgentConfigNaming
 

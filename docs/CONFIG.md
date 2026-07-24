@@ -1214,6 +1214,26 @@ also available globally via the `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR` boot
 env; the effective posture is this flag OR that env. Restart-required. Do
 NOT enable in production.
 
+### tools.allow_wire_injection
+
+DEV-ONLY, fail-closed opt-in permitting `agent_config.add_mcp_connection`
+to carry a per-user credential-INJECTION mapping for a RECEIVER-STYLE MCP
+server over the wire (the `injection` object: which boot-declared
+`oauth_providers[]` broker + which target header / basic / `_meta` key), so
+a coordinator can ATTACH such a server at runtime and wire per-user
+credential delivery to it without a static `mcp_servers[].injection` block +
+redeploy. INDEPENDENT of `allow_wire_oauth_descriptor` — enable one without
+the other. Default: `false`. With it unset (all of production) a connection
+carrying any injection field is REJECTED. The mapping is NON-secret (the
+credential is still pulled per-user from the named broker at call time;
+nothing secret rides the wire); when set the relaxation stays bounded — the
+pulled credential's reachable host is DERIVED from the connection's own URL
+and validated against the named broker's boot-declared
+`allowed_downstream_hosts` (never a wire field), and every declared target
+key must be redaction-covered. The same opt-in is also available globally
+via the `HARBOR_ALLOW_WIRE_INJECTION` boot env; the effective posture is
+this flag OR that env. Restart-required. Do NOT enable in production.
+
 ### tools.built_in
 
 Opt-in list of Harbor-shipped built-in tools to register against the

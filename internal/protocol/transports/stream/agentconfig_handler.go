@@ -856,14 +856,17 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrInvalidProvider),
 		errors.Is(err, agentcfgprotocol.ErrBootDeclaredProvider),
 		errors.Is(err, agentcfgprotocol.ErrProviderBrokerUnknown),
-		errors.Is(err, agentcfgprotocol.ErrWireDescriptorNotAllowed):
+		errors.Is(err, agentcfgprotocol.ErrWireDescriptorNotAllowed),
+		errors.Is(err, agentcfgprotocol.ErrWireInjectionNotAllowed):
 		// A malformed / boot-colliding / unknown-broker install is a CLIENT
 		// error (a bad request body) — rejected loud BEFORE any observable state
 		// change. The installer wraps the auth-package errors (unknown broker,
 		// name collision) into these service sentinels. A wire descriptor with the
 		// fail-closed opt-in off (ErrWireDescriptorNotAllowed) is likewise a
 		// rejected bad request — the zero-URL name-only posture (no admin-writable credential
-		// sink) held by default.
+		// sink) held by default. A wire credential-injection mapping with its own
+		// fail-closed opt-in off (ErrWireInjectionNotAllowed) is the same shape: a
+		// rejected bad request, the boot-declared-only injection posture by default.
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrProviderNotFound):

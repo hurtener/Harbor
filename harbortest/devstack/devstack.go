@@ -962,6 +962,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			BootDeclaredMCP:          serve.BootDeclaredMCPServerNames(cfg),
 			BootDeclaredOAuth:        serve.BootDeclaredOAuthProviderNames(cfg),
 			AllowWireOAuthDescriptor: cfg.Tools.AllowWireOAuthDescriptor,
+			AllowWireInjection:       cfg.Tools.AllowWireInjection,
 			OAuthProviderInstaller:   oauthProviderInstaller,
 			LLMProviderInstaller:     llmProviderInstaller,
 			InferenceBrokers:         inferenceBrokerNames,
