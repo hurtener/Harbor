@@ -250,6 +250,51 @@ type MCPConnectionDescriptor struct {
 	// network hole: a granted origin is still refused at dial time if it
 	// resolves private / loopback. Set only for the http transport.
 	OAuthDiscoveryAllowedOrigins []string `json:"oauth_discovery_allowed_origins,omitempty"`
+	// Injection, when set, binds this runtime-added connection to per-user
+	// credential INJECTION for a RECEIVER-STYLE MCP server (the acting principal's
+	// credential is pulled per outbound call from the named broker and delivered
+	// in the declared form). NON-SECRET — it NAMES a boot-declared broker and
+	// declares a target key/form; only the broker-pulled value is secret, and it
+	// never rides this descriptor. Carried over the wire only behind the
+	// fail-closed `tools.allow_wire_injection` opt-in; recorded here so the
+	// binding is part of the agent's versioned desired state (diff / rollback).
+	// Set only for the http transport; mutually exclusive with OAuthProvider.
+	Injection *MCPCredentialInjectionDescriptor `json:"injection,omitempty"`
+}
+
+// MCPCredentialInjectionDescriptor is the NON-SECRET per-connection mapping that
+// binds a runtime-added receiver-style MCP server to per-user credential
+// injection, recorded in a config revision as part of the agent's versioned
+// desired state. It NAMES the broker the per-user credential is pulled from and
+// declares WHERE the pulled value is placed on the outbound request (a header,
+// an `Authorization: Basic` value, or a `_meta` key). No secret material lives
+// here — only the broker-pulled value (resolved per-call from the ctx identity)
+// is secret. It mirrors the boot `config.MCPCredentialInjectionConfig` so the
+// runtime-add path and the boot path share ONE injection engine.
+type MCPCredentialInjectionDescriptor struct {
+	// Provider names the declared OAuth-provider broker the per-user credential is
+	// pulled from. Required. NON-SECRET (a name).
+	Provider string `json:"provider"`
+	// Form selects the injection form: "header" / "basic" / "meta". Required.
+	Form string `json:"form"`
+	// Header is the target request header name for Form=="header". Required for
+	// that form; a redaction-covered credential key, never `Authorization`.
+	Header string `json:"header,omitempty"`
+	// BasicUsername is the username half for Form=="basic" (the pulled credential
+	// is the password half). Optional. NON-SECRET.
+	BasicUsername string `json:"basic_username,omitempty"`
+	// MetaKey is the target `_meta` key path for Form=="meta", dot-separated for
+	// nesting. Required for that form; no reserved segment; redaction-covered leaf.
+	MetaKey string `json:"meta_key,omitempty"`
+}
+
+// Clone returns a defensive copy of the injection descriptor (nil for nil).
+func (d *MCPCredentialInjectionDescriptor) Clone() *MCPCredentialInjectionDescriptor {
+	if d == nil {
+		return nil
+	}
+	c := *d
+	return &c
 }
 
 // ConnectionsSection is the runtime-added MCP-connection section of the
@@ -700,6 +745,7 @@ func normalizeConnections(in []MCPConnectionDescriptor) []MCPConnectionDescripto
 			OAuthProvider:                d.OAuthProvider,
 			MetaAnnotations:              cloneStringMap(d.MetaAnnotations),
 			OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
+			Injection:                    d.Injection.Clone(),
 		}
 	}
 	if len(names) == 0 {

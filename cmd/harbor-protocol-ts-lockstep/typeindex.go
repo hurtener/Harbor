@@ -64,6 +64,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"AgentConfigSetLLMParamsRequest":              reflect.TypeOf(types.AgentConfigSetLLMParamsRequest{}),
 	"AgentConfigSetLLMParamsResponse":             reflect.TypeOf(types.AgentConfigSetLLMParamsResponse{}),
 	"AgentConfigMCPConnectionDescriptor":          reflect.TypeOf(types.AgentConfigMCPConnectionDescriptor{}),
+	"AgentConfigMCPCredentialInjectionDescriptor": reflect.TypeOf(types.AgentConfigMCPCredentialInjectionDescriptor{}),
 	"AgentConfigConnections":                      reflect.TypeOf(types.AgentConfigConnections{}),
 	"AgentConfigConnectionsDiff":                  reflect.TypeOf(types.AgentConfigConnectionsDiff{}),
 	"AgentConfigAddMCPConnectionRequest":          reflect.TypeOf(types.AgentConfigAddMCPConnectionRequest{}),

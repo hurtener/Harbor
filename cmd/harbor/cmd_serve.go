@@ -184,6 +184,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Dev-only wire-carried OAuth-descriptor escape hatch — reciprocal capture +
 	// banner, mirroring the private-dial hatch above.
 	registerAllowWireOAuthDescriptorIfDev(os.Getenv(EnvAllowWireOAuthDescriptor) == "1", logSink)
+	// Dev-only wire-carried credential-injection escape hatch — reciprocal capture
+	// + banner, independent of the wire-OAuth hatch above.
+	registerAllowWireInjectionIfDev(os.Getenv(EnvAllowWireInjection) == "1", logSink)
 
 	stack, err := serve.Boot(ctx, serve.Options{
 		ConfigPath:      cfgPath,

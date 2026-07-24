@@ -146,6 +146,13 @@ type MuxInput struct {
 	// The caller passes (tools.allow_wire_oauth_descriptor) OR (the captured
 	// HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR boot env). Default false / fail-closed.
 	AllowWireOAuthDescriptor bool
+	// AllowWireInjection is the effective DEV-ONLY, fail-closed opt-in that
+	// permits add_mcp_connection to carry a per-user credential-INJECTION mapping
+	// (the `injection` object) for a receiver-style MCP server over the wire. The
+	// caller passes (tools.allow_wire_injection) OR (the captured
+	// HARBOR_ALLOW_WIRE_INJECTION boot env). INDEPENDENT of
+	// AllowWireOAuthDescriptor. Default false / fail-closed.
+	AllowWireInjection bool
 
 	// LLMProviderInstaller backs agent_config.set_llm_provider (the
 	// Protocol-installed, zero-URL broker-pull inference provider). Built
@@ -634,6 +641,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithBootDeclaredMCPServers(append([]string(nil), in.BootDeclaredMCP...)),
 			agentcfgprotocol.WithBootDeclaredOAuthProviders(append([]string(nil), in.BootDeclaredOAuth...)),
 			agentcfgprotocol.WithAllowWireOAuthDescriptor(in.AllowWireOAuthDescriptor),
+			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
 		}
 		if in.MCPAttacher != nil {
 			agentConfigOpts = append(agentConfigOpts, agentcfgprotocol.WithConnectionAttacher(in.MCPAttacher))
