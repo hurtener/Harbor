@@ -250,6 +250,13 @@ export interface AppAvailableEvent {
 	/** The per-result display-mode hint (`inline` / `fullscreen` / `pip`), or ''. */
 	displayMode: string;
 	rawHtmlTrusted: boolean;
+	/**
+	 * The stable per-invocation id of the tool call that declared the app — the
+	 * correlation key the renderer passes to `mcp.apps.tool_context` to fetch
+	 * the captured input + lowered result the host delivers into the app after
+	 * it initializes (Data Delivery). Empty when the discovery carried none.
+	 */
+	toolCallId: string;
 }
 
 /** Decode an `mcp.app_available` frame. Returns null if not one. */
@@ -269,7 +276,8 @@ export function decodeAppAvailable(data: string): AppAvailableEvent | null {
 		serverID,
 		resourceUri,
 		displayMode: str(frame.payload.DisplayMode),
-		rawHtmlTrusted: frame.payload.RawHTMLTrusted === true
+		rawHtmlTrusted: frame.payload.RawHTMLTrusted === true,
+		toolCallId: str(frame.payload.ToolCallID)
 	};
 }
 

@@ -61,6 +61,12 @@ export interface OpenApp {
   resourceUri: string;
   /** The per-server raw-HTML trust flag — forwarded to the renderer sandbox. */
   rawHtmlTrusted: boolean;
+  /**
+   * The stable per-invocation id of the tool call that declared the app — the
+   * correlation key the renderer passes to `mcp.apps.tool_context` for the
+   * after-init Data Delivery push. Absent when the discovery carried none.
+   */
+  toolCallId?: string;
   /** The page-level mode: `fullscreen` or `pip` (never `inline` here). */
   mode: Exclude<DisplayMode, 'inline'>;
 }
