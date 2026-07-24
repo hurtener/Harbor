@@ -4,12 +4,13 @@
 // consumer of the new `mcp.servers.read_resource` / `mcp.apps.call_tool`
 // client methods.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeMCPAppHostClient } from './mcp-app-host-client.js';
 import type { ProtocolClient } from './protocol/client.js';
+import { ProtocolError } from './protocol/errors.js';
 
-function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnType<typeof vi.fn>; callTool: ReturnType<typeof vi.fn>; resources: ReturnType<typeof vi.fn>; toolsList: ReturnType<typeof vi.fn>; getRef: ReturnType<typeof vi.fn> } {
+function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnType<typeof vi.fn>; callTool: ReturnType<typeof vi.fn>; resources: ReturnType<typeof vi.fn>; toolsList: ReturnType<typeof vi.fn>; getRef: ReturnType<typeof vi.fn>; toolContext: ReturnType<typeof vi.fn> } {
   const readResource = vi.fn(async () => ({
     resource_uri: 'ui://srv/app.html',
     mime_type: 'text/html',
@@ -38,12 +39,19 @@ function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnTyp
     expires_at: '2026-06-13T00:00:00Z',
     protocol_version: '1',
   }));
+  const toolContext = vi.fn(async () => ({
+    tool: 'srv_report',
+    input: { content: { region: 'emea' } },
+    result: { content: { revenue: 42 } },
+    is_error: false,
+    protocol_version: '1',
+  }));
   const client = {
-    mcp: { servers: { readResource, resources }, apps: { callTool } },
+    mcp: { servers: { readResource, resources }, apps: { callTool, toolContext } },
     tools: { list: toolsList },
     artifacts: { getRef },
   } as unknown as ProtocolClient;
-  return { client, readResource, callTool, resources, toolsList, getRef };
+  return { client, readResource, callTool, resources, toolsList, getRef, toolContext };
 }
 
 describe('makeMCPAppHostClient', () => {
@@ -88,4 +96,73 @@ describe('makeMCPAppHostClient', () => {
     // The Go wire field is `presigned_url` — a `.url` read would be undefined.
     expect(url).toBe('https://artifacts.example/art_studio_abc');
   });
+
+  it('toolContext routes to mcp.apps.tool_context and maps the input/result payloads', async () => {
+    const { client, toolContext } = fakeProtocolClient();
+    const host = makeMCPAppHostClient(client);
+    const ctx = await host.toolContext('srv', 'tc_1');
+    expect(toolContext).toHaveBeenCalledWith('srv', 'tc_1');
+    expect(ctx).toEqual({
+      tool: 'srv_report',
+      input: { content: { region: 'emea' }, artifactRef: undefined },
+      result: { content: { revenue: 42 }, artifactRef: undefined },
+      isError: false,
+    });
+  });
+
+  it('toolContext maps a heavy by-reference payload to an artifactRef stub', async () => {
+    const { client, toolContext } = fakeProtocolClient();
+    toolContext.mockResolvedValueOnce({
+      tool: 'srv_report',
+      input: { content: { region: 'emea' } },
+      result: { artifact_ref: { id: 'art_big', mime_type: 'application/json', size_bytes: 90_000 } },
+      is_error: false,
+      protocol_version: '1',
+    });
+    const host = makeMCPAppHostClient(client);
+    const ctx = await host.toolContext('srv', 'tc_1');
+    expect(ctx?.result.artifactRef).toEqual({
+      id: 'art_big',
+      mimeType: 'application/json',
+      sizeBytes: 90_000,
+    });
+    expect(ctx?.result.content).toBeUndefined();
+  });
+
+  it('toolContext maps a Runtime not_found to null (no delivery, degraded)', async () => {
+    const { client, toolContext } = fakeProtocolClient();
+    toolContext.mockRejectedValueOnce(new ProtocolError('not_found', 'no context', 404));
+    const host = makeMCPAppHostClient(client);
+    expect(await host.toolContext('srv', 'gone')).toBeNull();
+  });
+
+  it('toolContext re-throws a non-not_found Protocol error (fail loud)', async () => {
+    const { client, toolContext } = fakeProtocolClient();
+    toolContext.mockRejectedValueOnce(new ProtocolError('identity_scope_required', 'nope', 401));
+    const host = makeMCPAppHostClient(client);
+    await expect(host.toolContext('srv', 'x')).rejects.toThrow(/nope/);
+  });
+
+  it('fetchArtifactText resolves the presigned URL and returns the bytes as text', async () => {
+    const { client, getRef } = fakeProtocolClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('{"revenue":42}', { status: 200 }));
+    const host = makeMCPAppHostClient(client);
+    const text = await host.fetchArtifactText('art_studio_abc');
+    expect(getRef).toHaveBeenCalledWith({ id: 'art_studio_abc' });
+    expect(fetchSpy).toHaveBeenCalledWith('https://artifacts.example/art_studio_abc');
+    expect(text).toBe('{"revenue":42}');
+  });
+
+  it('fetchArtifactText throws on a non-OK response (fail loud, never silently empty)', async () => {
+    const { client } = fakeProtocolClient();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 502 }));
+    const host = makeMCPAppHostClient(client);
+    await expect(host.fetchArtifactText('art_studio_abc')).rejects.toThrow(/HTTP 502/);
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });

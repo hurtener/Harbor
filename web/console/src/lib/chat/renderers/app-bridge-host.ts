@@ -45,6 +45,8 @@ import {
   type McpUiDisplayMode,
   type McpUiHostCapabilities,
   type McpUiHostContext,
+  type McpUiHostStyles,
+  type McpUiTheme,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
 
 /** The MCP-Apps display mode union, re-exported for host callers. */
@@ -67,10 +69,18 @@ import type {
 export interface MCPAppRefView {
   /** The `ui://`-scheme URI of the app's UI document. */
   resourceUri: string;
-  /** The negotiated display mode; Phase 109b consumes only `inline`. */
+  /** The negotiated display mode; the inline host consumes only `inline`. */
   displayMode?: McpUiDisplayMode | '';
   /** The per-server raw-HTML trust flag — default-deny. */
   rawHtmlTrusted: boolean;
+  /**
+   * The stable per-invocation id of the tool call that declared the app —
+   * paired with the server id to fetch the captured tool context (input +
+   * lowered result) the host delivers into the app after it initializes (the
+   * Data Delivery lifecycle stage). Empty/absent when the discovery event
+   * carried no correlation id; the host then performs no delivery.
+   */
+  toolCallId?: string;
 }
 
 /** A `ui://` resource fetched through the host (mirrors `ReadMCPResourceResponse`). */
@@ -116,6 +126,38 @@ export interface MCPAppToolListing {
 }
 
 /**
+ * One half (input or result) of a captured tool context (mirrors the Protocol
+ * `ToolContextPayload`). EXACTLY ONE of `content` / `artifactRef` is set:
+ * `content` carries inline JSON below the heavy-content threshold (D-026);
+ * `artifactRef` carries the by-reference stub at or above it, which the host
+ * resolves + fetches at the iframe edge before delivering.
+ */
+export interface MCPAppToolContextPayload {
+  /** Inline JSON — set only below the heavy threshold. */
+  content?: unknown;
+  /** The by-reference stub when the payload meets/exceeds the heavy threshold. */
+  artifactRef?: { id: string; mimeType?: string; sizeBytes?: number };
+}
+
+/**
+ * The captured tool context (input + lowered result) that produced a rendered
+ * `ui://` MCP App (mirrors the Protocol `ToolContextResponse`). The host
+ * delivers this into the app after `ui/notifications/initialized` — `input`
+ * via `sendToolInput`, then `result` via `sendToolResult` — closing the Data
+ * Delivery lifecycle.
+ */
+export interface MCPAppToolContext {
+  /** The server-side tool name that declared the app. */
+  tool: string;
+  /** The tool's input arguments (inline JSON or by reference). */
+  input: MCPAppToolContextPayload;
+  /** The tool's lowered result (inline JSON or by reference). */
+  result: MCPAppToolContextPayload;
+  /** Whether the tool returned a server-side error result. */
+  isError: boolean;
+}
+
+/**
  * The minimal, injected Protocol surface the MCP Apps host drives every
  * app→host request through. The caller (the Playground page) implements this
  * by delegating to the Harbor Protocol client's `mcp.servers.read_resource`
@@ -154,6 +196,29 @@ export interface MCPAppHostClient {
    * renderer's presigned `src` flows through).
    */
   resolveArtifact(artifactID: string): Promise<string>;
+  /**
+   * Fetch the captured tool context (input + lowered result) that produced a
+   * rendered app, so the host can deliver it into the app after it initializes
+   * (the Data Delivery lifecycle stage). Routes onto `mcp.apps.tool_context`,
+   * identity-scoped. Returns `null` when no context exists for the
+   * `(serverID, toolCallID)` pair — an unknown / evicted / cross-identity id
+   * (the adapter maps the Runtime's `not_found` onto `null`); the host then
+   * performs no delivery and the app boots without delivered data (degraded,
+   * never a thrown error).
+   */
+  toolContext(serverID: string, toolCallID: string): Promise<MCPAppToolContext | null>;
+  /**
+   * Resolve an artifact id to a presigned URL and fetch its bytes as text —
+   * the heavy-payload path for {@link toolContext}. A captured input / result
+   * at or above the heavy threshold (D-026) rides by reference; the host
+   * fetches the bytes here (implemented in the adapter so this module never
+   * issues a raw `fetch` — the no-direct-transport invariant, D-173). The
+   * fetched text is the tool payload's JSON, parsed/delivered by the host.
+   * Throws when the bytes cannot be resolved or fetched (e.g. presign
+   * unsupported on a non-S3 store) — the host then delivers a faithful
+   * by-reference stub rather than silently empty data (fail-loud).
+   */
+  fetchArtifactText(artifactID: string): Promise<string>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -215,12 +280,38 @@ export interface AppBridgeHostOptions {
    */
   hostInfo?: { name: string; version: string };
   /**
-   * The host theme propagated to the app's `McpUiHostContext`. Injected through
-   * the module seam so the mounting surface supplies its own theme rather than
-   * the module assuming the Console's. Defaults to `'dark'` (the prior baked-in
-   * value) so an existing caller is unchanged.
+   * The host light/dark preference baked into the app's `McpUiHostContext` at
+   * construction, so a rendered app adapts to the host's appearance. Injected
+   * through the module seam (the renderer resolves it from OS
+   * `prefers-color-scheme`); defaults to `'dark'` — the Console palette — when
+   * absent. A LIVE theme change is relayed onto the running bridge via
+   * {@link AppBridgeHost.setHostContext}, never by rebuilding the bridge.
    */
-  theme?: 'light' | 'dark';
+  theme?: McpUiTheme;
+  /**
+   * The host style variables baked into the app's `McpUiHostContext` at
+   * construction (the Console `tokens.css` surface projected onto the ext-apps
+   * `McpUiStyleVariableKey` namespace). The app-side SDK applies them so its
+   * components inherit the host's structural design tokens. Optional; absent
+   * means the app falls back to its own defaults.
+   */
+  styles?: McpUiHostStyles;
+  /**
+   * The stable per-invocation id of the tool call that declared the app — the
+   * correlation key the host uses to fetch the captured tool context via
+   * {@link MCPAppHostClient.toolContext} once the app has initialized, then
+   * deliver it across the bridge (the Data Delivery lifecycle stage). When
+   * unset, the host performs no delivery (the app boots without delivered
+   * data).
+   */
+  toolCallId?: string;
+  /**
+   * Called once, when the app has completed `ui/initialize` and sent
+   * `ui/notifications/initialized`. The renderer uses this to flip a reactive
+   * "bridge is live" flag that GATES its live theme relay — so a theme change
+   * only patches the bridge AFTER the handshake, never during it. Optional.
+   */
+  onInitialized?: () => void;
 }
 
 /**
@@ -366,6 +457,10 @@ function hostCapabilities(): McpUiHostCapabilities {
 export class AppBridgeHost {
   readonly #bridge: AppBridge;
   readonly #handlers: AppHandlers;
+  readonly #client: MCPAppHostClient;
+  readonly #serverID: string;
+  readonly #toolCallId: string | undefined;
+  readonly #onInitialized: (() => void) | undefined;
   #transport: PostMessageTransport | undefined;
   #displayModeRequests: DisplayModeRequest[] = [];
   #connected = false;
@@ -379,13 +474,21 @@ export class AppBridgeHost {
         opts.onDisplayModeRequest?.(req);
       },
     });
+    this.#client = opts.client;
+    this.#serverID = opts.serverID;
+    this.#toolCallId = opts.toolCallId;
+    this.#onInitialized = opts.onInitialized;
 
     // Host identity + theme are injected through the seam; both default to the
-    // Console's prior baked-in values so an existing caller is unchanged.
+    // Console's values so an existing caller is unchanged.
     const hostInfo = opts.hostInfo ?? DEFAULT_HOST_INFO;
-    const theme: 'light' | 'dark' = opts.theme ?? 'dark';
+    const theme: McpUiTheme = opts.theme ?? 'dark';
 
     const available = opts.availableDisplayModes ?? (['inline'] as McpUiDisplayMode[]);
+    // Construct the bridge ONCE with the FINAL host-context — theme + the host
+    // style variables baked in. It is NEVER rebuilt for a theme/data change: a
+    // theme change patches this live bridge via `setHostContext`; a
+    // reconstruction mid-handshake was the reverted-work handshake break.
     const hostContext: McpUiHostContext = {
       theme,
       // The app boots inline (in the chat scroll); fullscreen / pip are reached
@@ -393,6 +496,9 @@ export class AppBridgeHost {
       displayMode: 'inline',
       availableDisplayModes: available,
     };
+    if (opts.styles) {
+      hostContext.styles = opts.styles;
+    }
 
     // The load-bearing line: the first argument is `null`. The AppBridge is
     // NEVER handed an MCP Client, so it can never auto-forward to a direct MCP
@@ -405,6 +511,14 @@ export class AppBridgeHost {
     this.#bridge.onrequestdisplaymode = (params) => this.#handlers.onrequestdisplaymode(params);
     this.#bridge.oninitialized = () => {
       this.#initialized = true;
+      // The renderer flips its "bridge is live" gate here, so its live theme
+      // relay only fires AFTER the handshake completes.
+      this.#onInitialized?.();
+      // Data Delivery: once the app has sent `ui/notifications/initialized`,
+      // deliver the originating tool's input + result into it. Best-effort and
+      // fire-and-forget — a delivery failure is logged, never thrown (the app
+      // already rendered its shell).
+      void this.#deliverToolContext();
     };
   }
 
@@ -436,6 +550,109 @@ export class AppBridgeHost {
   /** True once the app has sent `ui/notifications/initialized`. */
   get isInitialized(): boolean {
     return this.#initialized;
+  }
+
+  /**
+   * Patch the LIVE bridge's host-context (→ a `host-context-changed`
+   * notification the app's SDK consumes). The relay for a host theme change:
+   * the renderer calls this from a SEPARATE effect that no-ops until the bridge
+   * reports initialized. This method also GATES on `#initialized` as a
+   * belt-and-braces second factor — a patch that raced ahead of the handshake
+   * is dropped rather than posted onto a transport the app has not finished
+   * `ui/initialize` on. It NEVER tears down or rebuilds the bridge.
+   */
+  setHostContext(patch: McpUiHostContext): void {
+    if (!this.#initialized) return;
+    this.#bridge.setHostContext(patch);
+  }
+
+  /**
+   * Fetch the captured tool context and deliver it into the app — `input` via
+   * `sendToolInput`, then `result` via `sendToolResult` (in that ORDER: the
+   * SDK requires `initialized` before `sendToolResult`, and input-then-result
+   * is the lifecycle order). Guarded by a `toolCallId` being set; a missing /
+   * evicted context (`toolContext` → `null`) yields no delivery and no error.
+   * The whole sequence is best-effort: a delivery failure is logged but never
+   * propagated — the app has already rendered (fail-safe on the delivery, not
+   * the render). The injected client is the ONLY path used — no direct
+   * transport (D-173).
+   */
+  async #deliverToolContext(): Promise<void> {
+    if (this.#toolCallId === undefined || this.#toolCallId === '') return;
+    try {
+      const ctx = await this.#client.toolContext(this.#serverID, this.#toolCallId);
+      if (!ctx) return;
+      await this.#bridge.sendToolInput({ arguments: await this.#payloadToArgs(ctx.input) });
+      await this.#bridge.sendToolResult(await this.#payloadToResult(ctx.result, ctx.isError));
+    } catch (err) {
+      // The delivery is best-effort — surface the failure to the console but
+      // never throw (the app already rendered; a delivery error is not a render
+      // error).
+      console.error('MCP App tool-context delivery failed', err);
+    }
+  }
+
+  /**
+   * Build the `sendToolInput` arguments from a captured input payload. Inline
+   * content is coerced to a record; a heavy by-reference payload is fetched +
+   * JSON-parsed at the iframe edge (the bytes are the input JSON). A fetch /
+   * parse failure degrades to `{}` — tool input is advisory pre-render data,
+   * not the result, so an empty argument map is a faithful "no input" rather
+   * than a thrown error.
+   */
+  async #payloadToArgs(p: MCPAppToolContextPayload): Promise<Record<string, unknown>> {
+    if (p.content !== undefined) {
+      return asStructured(p.content);
+    }
+    if (p.artifactRef) {
+      try {
+        const text = await this.#client.fetchArtifactText(p.artifactRef.id);
+        return asStructured(JSON.parse(text));
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }
+
+  /**
+   * Build the `sendToolResult` `CallToolResult` from a captured result payload.
+   * Inline content becomes a text block plus `structuredContent`; a heavy
+   * by-reference result is resolved + fetched at the iframe edge and delivered
+   * as a text block. When the heavy bytes cannot be fetched (e.g. presign
+   * unsupported on a non-S3 store), the host delivers a FAITHFUL by-reference
+   * stub block — never silently empty (fail-loud).
+   */
+  async #payloadToResult(
+    p: MCPAppToolContextPayload,
+    isError: boolean,
+  ): Promise<CallToolResult> {
+    if (p.content !== undefined) {
+      return {
+        content: [{ type: 'text', text: stringifyContent(p.content) }],
+        structuredContent: asStructured(p.content),
+        isError,
+      };
+    }
+    if (p.artifactRef) {
+      try {
+        const text = await this.#client.fetchArtifactText(p.artifactRef.id);
+        return { content: [{ type: 'text', text }], isError };
+      } catch {
+        const ref = p.artifactRef;
+        const size = ref.sizeBytes ? ` · ${ref.sizeBytes} bytes` : '';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `[artifact ${ref.id}${size} — unavailable on this store]`,
+            },
+          ],
+          isError,
+        };
+      }
+    }
+    return { content: [{ type: 'text', text: '' }], isError };
   }
 
   /** Tears the bridge down — closes the transport and drops the iframe peer. */

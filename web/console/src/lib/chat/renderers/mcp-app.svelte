@@ -20,6 +20,8 @@
   //   3. Construct the AppBridge host (manual-handler mode) and connect it to
   //      the iframe's `contentWindow`, completing the `ui/initialize`
   //      handshake. Every app→host request routes through `appHostClient`.
+  import { untrack } from 'svelte';
+  import type { McpUiTheme } from '@modelcontextprotocol/ext-apps/app-bridge';
   import type { RendererProps } from './index.js';
   import {
     AppBridgeHost,
@@ -27,6 +29,7 @@
     type McpUiDisplayMode
   } from './app-bridge-host.js';
   import { appIframeSandbox, buildAppCSP, wrapAppDocument } from './sandbox-policy.js';
+  import { buildHostStyles, hostThemeMediaQuery, resolveHostTheme } from './theme-tokens.js';
 
   let {
     app,
@@ -43,6 +46,23 @@
   let srcdoc = $state('');
   let iframeEl = $state<HTMLIFrameElement | null>(null);
   let host: AppBridgeHost | undefined;
+
+  // Live theme state, isolated from the bridge lifecycle.
+  //
+  // `hostTheme` tracks the OS `prefers-color-scheme`; a matchMedia `change`
+  // event updates it. The bridge is NOT rebuilt when it changes — a SEPARATE
+  // effect relays the change onto the LIVE bridge via `setHostContext`. This
+  // isolation is the fix for the reverted-work handshake break: the bridge's
+  // lifecycle effect must never re-run (and tear the transport down) because
+  // the theme changed.
+  let hostTheme = $state<McpUiTheme>(resolveHostTheme());
+  // Flipped true once the bridge completes `ui/initialize`; GATES the theme
+  // relay so it never patches a bridge mid-handshake.
+  let bridgeReady = $state(false);
+  // The theme most recently baked into / relayed onto the bridge — so the relay
+  // skips the redundant echo of the theme the bridge was constructed with, and
+  // still fires when the OS toggles back to a previously-applied theme.
+  let lastAppliedTheme: McpUiTheme | undefined;
 
   // The sandbox token set + CSP are derived from the per-server raw-HTML
   // trust posture. `appIframeSandbox` GUARANTEES `allow-same-origin` is never
@@ -121,15 +141,28 @@
   async function connectBridge(): Promise<void> {
     if (!iframeEl?.contentWindow || !app || !serverID || !appHostClient) return;
     if (host) return;
+    // Resolve theme + styles OUTSIDE the reactive graph at construction: both
+    // are plain DOM reads (matchMedia / computed tokens), and reading the
+    // reactive `hostTheme` here would make the lifecycle effect re-run — and
+    // tear the transport down — on a theme change (the reverted-work break).
+    // `untrack` documents the intent belt-and-braces.
+    const constructedTheme = untrack(() => resolveHostTheme());
+    lastAppliedTheme = constructedTheme;
     host = new AppBridgeHost({
       client: appHostClient,
       serverID,
       availableDisplayModes,
       onDisplayModeRequest,
       // Host identity is injected through the seam (not baked into the module).
-      // The Console supplies its own identity; theme stays at the seam default
-      // ('dark'), preserving prior behaviour until a theme prop is threaded.
-      hostInfo: DEFAULT_HOST_INFO
+      hostInfo: DEFAULT_HOST_INFO,
+      theme: constructedTheme,
+      styles: buildHostStyles(),
+      // The correlation key for the after-init Data Delivery push.
+      toolCallId: app.toolCallId,
+      // The renderer flips its live-theme gate here, AFTER the handshake.
+      onInitialized: () => {
+        bridgeReady = true;
+      }
     });
     try {
       await host.connect(iframeEl.contentWindow);
@@ -143,6 +176,10 @@
     void preload();
   });
 
+  // The bridge lifecycle effect — depends ONLY on `loadState` + `iframeEl`.
+  // It NEVER reads the theme (that is resolved untracked in `connectBridge`),
+  // so a theme change can never re-run this effect and tear the bridge down
+  // mid-handshake. This isolation is the reverted-work fix (D-342).
   $effect(() => {
     if (loadState === 'ready' && iframeEl) {
       void connectBridge();
@@ -152,7 +189,33 @@
         void host.close();
         host = undefined;
       }
+      bridgeReady = false;
     };
+  });
+
+  // Track the OS `prefers-color-scheme` into `hostTheme`. Runs once (reads no
+  // reactive state); the listener is torn down on unmount. Separate from the
+  // bridge lifecycle effect on purpose.
+  $effect(() => {
+    const mql = hostThemeMediaQuery();
+    if (!mql) return;
+    const onChange = (e: MediaQueryListEvent): void => {
+      hostTheme = e.matches ? 'dark' : 'light';
+    };
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  });
+
+  // Relay a LIVE theme change onto the running bridge — NEVER a teardown. Fires
+  // only after the bridge is initialized and only when the theme actually
+  // changed from the last-applied value; `AppBridgeHost.setHostContext` gates
+  // on init a second time.
+  $effect(() => {
+    const theme = hostTheme;
+    if (!bridgeReady || !host) return;
+    if (theme === lastAppliedTheme) return;
+    lastAppliedTheme = theme;
+    host.setHostContext({ theme, styles: buildHostStyles() });
   });
 </script>
 

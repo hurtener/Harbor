@@ -296,6 +296,7 @@ const appAvailableFrame = JSON.stringify({
 		SafePayload: null,
 		Identity: { TenantID: 'dev', UserID: 'dev', SessionID: 'dev', RunID: '01KSTH74S20BDDP1BK6ZSGABJG' },
 		ServerID: 'weather-server',
+		ToolCallID: 'tc_01weather',
 		ResourceURI: 'ui://weather/main.html',
 		DisplayMode: 'inline',
 		RawHTMLTrusted: false
@@ -309,7 +310,8 @@ describe('decodeAppAvailable', () => {
 			serverID: 'weather-server',
 			resourceUri: 'ui://weather/main.html',
 			displayMode: 'inline',
-			rawHtmlTrusted: false
+			rawHtmlTrusted: false,
+			toolCallId: 'tc_01weather'
 		});
 	});
 
