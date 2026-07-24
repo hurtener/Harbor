@@ -13,6 +13,7 @@ package conformancetest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -88,6 +89,12 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 			t.Skip("driver does not support reopen (set Harness.ReopenedStore to enable)")
 		}
 		testRestartSurvival(t, h)
+	})
+
+	t.Run("user_scope_cross_session", func(t *testing.T) {
+		h := factory(t)
+		defer h.Cleanup()
+		testUserScopeResolution(t, h)
 	})
 }
 
@@ -295,4 +302,105 @@ func testRestartSurvival(t *testing.T, h Harness) {
 	if got.Name != "durable" || got.Trigger != s.Trigger {
 		t.Fatalf("restart mismatch: %+v", got)
 	}
+}
+
+// testUserScopeResolution asserts the durable-by-default ScopeUser contract:
+// a user-scope skill authored under session A is resolvable from a DIFFERENT
+// session of the same (tenant, user), stays invisible to a different user and
+// a different tenant, and does NOT change the session-pinned visibility of
+// non-user scopes. Every driver inherits this verbatim (the persistence
+// three-driver parity contract).
+func testUserScopeResolution(t *testing.T, h Harness) {
+	ctx := context.Background()
+
+	// Identity variants off the base fixture.
+	sessionA := fixtureID
+	sessionB := fixtureID
+	sessionB.SessionID = "s-conformance-B"
+	otherUser := fixtureID
+	otherUser.UserID = "u-conformance-OTHER"
+	otherUser.SessionID = "s-conformance-B"
+	otherTenant := fixtureID
+	otherTenant.TenantID = "t-conformance-OTHER"
+
+	// Author a durable user-scope skill under session A.
+	userSkill := newSkill("durable-user")
+	userSkill.Scope = skills.ScopeUser
+	userSkill.ContentHash = skills.CanonicalContentHash(userSkill)
+	if err := h.Store.Upsert(ctx, sessionA, userSkill); err != nil {
+		t.Fatalf("Upsert user-scope skill under session A: %v", err)
+	}
+	// Also author a SESSION-scoped skill under session A — its visibility must
+	// stay pinned to session A (regression guard for non-user scopes).
+	sessSkill := newSkill("ephemeral-session")
+	sessSkill.Scope = skills.ScopeSession
+	sessSkill.ContentHash = skills.CanonicalContentHash(sessSkill)
+	if err := h.Store.Upsert(ctx, sessionA, sessSkill); err != nil {
+		t.Fatalf("Upsert session-scope skill under session A: %v", err)
+	}
+
+	// (1) Visible from session B of the same (tenant, user) — Get.
+	got, err := h.Store.Get(ctx, sessionB, "durable-user")
+	if err != nil {
+		t.Fatalf("Get user-scope skill from session B: %v (want visible cross-session)", err)
+	}
+	if got.Name != "durable-user" || got.Scope != skills.ScopeUser {
+		t.Fatalf("cross-session Get mismatch: %+v", got)
+	}
+
+	// (2) Visible from session B — List (both default and Scope=user filter).
+	assertListContains(t, ctx, h, sessionB, skills.ListFilter{}, "durable-user", true, "default List from session B")
+	assertListContains(t, ctx, h, sessionB, skills.ListFilter{Scope: skills.ScopeUser}, "durable-user", true, "Scope=user List from session B")
+
+	// (3) The session-scoped skill stays pinned to session A — NOT in session B.
+	if _, err := h.Store.Get(ctx, sessionB, "ephemeral-session"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("session-scope skill leaked to session B: err=%v (want ErrSkillNotFound)", err)
+	}
+	assertListContains(t, ctx, h, sessionB, skills.ListFilter{}, "ephemeral-session", false, "session-scope skill must not leak cross-session")
+
+	// (4) NOT visible to a different user (same tenant).
+	if _, err := h.Store.Get(ctx, otherUser, "durable-user"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("user-scope skill leaked to a different user: err=%v (want ErrSkillNotFound)", err)
+	}
+	assertListContains(t, ctx, h, otherUser, skills.ListFilter{}, "durable-user", false, "user-scope skill must not leak cross-user")
+
+	// (5) NOT visible cross-tenant.
+	if _, err := h.Store.Get(ctx, otherTenant, "durable-user"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("user-scope skill leaked cross-tenant: err=%v (want ErrSkillNotFound)", err)
+	}
+	assertListContains(t, ctx, h, otherTenant, skills.ListFilter{}, "durable-user", false, "user-scope skill must not leak cross-tenant")
+
+	// (6) Delete from session B removes the durable row for every session.
+	if err := h.Store.Delete(ctx, sessionB, "durable-user"); err != nil {
+		t.Fatalf("Delete user-scope skill from session B: %v", err)
+	}
+	if _, err := h.Store.Get(ctx, sessionA, "durable-user"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("user-scope skill survived cross-session Delete: err=%v (want ErrSkillNotFound)", err)
+	}
+}
+
+func assertListContains(t *testing.T, ctx context.Context, h Harness, id identity.Quadruple, filter skills.ListFilter, name string, want bool, msg string) {
+	t.Helper()
+	list, err := h.Store.List(ctx, id, filter)
+	if err != nil {
+		t.Fatalf("%s: List: %v", msg, err)
+	}
+	found := false
+	for _, s := range list {
+		if s.Name == name {
+			found = true
+			break
+		}
+	}
+	if found != want {
+		t.Fatalf("%s: List contains %q = %v, want %v (list=%v)", msg, name, found, want, listNames(list))
+	}
+}
+
+func listNames(list []skills.Skill) []string {
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		out = append(out, s.Name)
+	}
+	return out
 }

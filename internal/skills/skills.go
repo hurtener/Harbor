@@ -70,6 +70,21 @@ const (
 	// is the matching declared-scope marker for rows that should
 	// stay session-local.
 	ScopeSession Scope = "session"
+	// ScopeUser — visible to EVERY session of the same (tenant, user).
+	// The durable-by-default rung for a user's personal skills: an
+	// authored skill persists across all of that user's conversations
+	// rather than dying with the originating session. Rows are stored
+	// session-zeroed (the session storage component is emptied via
+	// StorageSessionID) so the identity filter resolves them for any
+	// session of the same (tenant, user); physical durability rides the
+	// driver (the in-memory dev store is ephemeral, sqlite/postgres
+	// survive restart). The isolation principal stays (tenant, user) —
+	// the row is never widened past the user, and a different user or a
+	// different tenant never sees it. A user-scoped skill cannot widen
+	// capability: RequiredTools is provenance/filter metadata, and the
+	// injection-time redactor scrubs any tool a skill names that is not
+	// in the run's allowed set.
+	ScopeUser Scope = "user"
 	// ScopeProject — visible inside the operator-declared project
 	// only. The generator default per RFC §6.7.
 	ScopeProject Scope = "project"
@@ -90,7 +105,7 @@ const (
 //   - `Trigger` non-empty (planner-visible match cue)
 //   - `Steps` non-empty (at least one step)
 //   - `Origin` ∈ {OriginPack, OriginGenerated}
-//   - `Scope` ∈ {ScopeSession, ScopeProject, ScopeTenant, ScopeGlobal}
+//   - `Scope` ∈ {ScopeSession, ScopeUser, ScopeProject, ScopeTenant, ScopeGlobal}
 type Skill struct {
 	Name           string
 	Title          string
@@ -137,9 +152,9 @@ func (s Skill) Validate() error {
 		return fmt.Errorf("%w: Origin=%q (expected pack|generated)", ErrInvalidSkill, s.Origin)
 	}
 	switch s.Scope {
-	case ScopeSession, ScopeProject, ScopeTenant, ScopeGlobal:
+	case ScopeSession, ScopeUser, ScopeProject, ScopeTenant, ScopeGlobal:
 	default:
-		return fmt.Errorf("%w: Scope=%q (expected session|project|tenant|global)", ErrInvalidSkill, s.Scope)
+		return fmt.Errorf("%w: Scope=%q (expected session|user|project|tenant|global)", ErrInvalidSkill, s.Scope)
 	}
 	return nil
 }
@@ -461,6 +476,33 @@ func ValidateIdentity(q identity.Quadruple) error {
 	}
 	return nil
 }
+
+// StorageSessionID returns the session component a skill of the given
+// `scope` is PERSISTED under. `ScopeUser` rows are stored session-zeroed
+// ("") so the identity filter resolves them for every session of the same
+// `(tenant, user)` — the durable-by-default rung. Every other scope pins
+// the caller's real `SessionID`, so those rows stay session-local exactly
+// as before.
+//
+// Identity remains mandatory: callers still validate the full triple via
+// `ValidateIdentity` BEFORE deriving the storage session — zeroing the
+// PERSISTED session for a user-scope row never relaxes the identity gate,
+// it only widens the READ visibility to the row's owning `(tenant, user)`.
+// This mirrors the agent-config user-scope keying (session + run zeroed in
+// storage, identity still validated).
+func StorageSessionID(id identity.Quadruple, scope Scope) string {
+	if scope == ScopeUser {
+		return ""
+	}
+	return id.SessionID
+}
+
+// UserScopeStorageSession is the persisted session sentinel for a
+// `ScopeUser` row: the empty string. A row carrying this session value is
+// resolvable from every session of the same `(tenant, user)`; because the
+// identity contract forbids an empty caller session, no NON-user row ever
+// carries it, so it uniquely marks the user rung in the read filter.
+const UserScopeStorageSession = ""
 
 // IdentityFromCtx reads the identity `Quadruple` (or bare `Identity`)
 // from `ctx` and validates the triple. It returns the (possibly

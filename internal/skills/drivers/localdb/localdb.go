@@ -200,12 +200,18 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 		}
 	}()
 
+	// User-scope rows persist session-zeroed so they resolve across every
+	// session of the same (tenant, user) — the durable-by-default rung. All
+	// other scopes pin the caller's real session (unchanged). Identity was
+	// validated above, so zeroing the STORED session never relaxes the gate.
+	storeSession := skills.StorageSessionID(id, skill.Scope)
+
 	var existingOrigin sql.NullString
 	var existingHash sql.NullString
 	err = tx.QueryRowContext(ctx, `
         SELECT origin, content_hash FROM skills
         WHERE tenant = ? AND user = ? AND session = ? AND scope = ? AND name = ?`,
-		id.TenantID, id.UserID, id.SessionID, string(skill.Scope), skill.Name,
+		id.TenantID, id.UserID, storeSession, string(skill.Scope), skill.Name,
 	).Scan(&existingOrigin, &existingHash)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -311,7 +317,7 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
             content_hash       = excluded.content_hash,
             updated_at         = excluded.updated_at,
             extra_json         = excluded.extra_json`,
-		id.TenantID, id.UserID, id.SessionID, string(skill.Scope), skill.Name,
+		id.TenantID, id.UserID, storeSession, string(skill.Scope), skill.Name,
 		skill.Title, skill.Description, skill.Trigger, skill.TaskType,
 		tagsJSON, tagsText, stepsJSON, preJSON, failJSON,
 		rtJSON, rnsJSON, rtgJSON,
@@ -356,10 +362,17 @@ func (d *driver) Get(ctx context.Context, id identity.Quadruple, name string) (s
 	if skills.ValidateIdentity(id) != nil {
 		return skills.Skill{}, skills.EmitIdentityRejected(ctx, d.bus, id, "Get")
 	}
+	// Resolve the caller's own session rows PLUS any user-scope (durable,
+	// session-zeroed) rows of the same (tenant, user). On a name collision
+	// between a session-scoped and a user-scoped skill, the exact-session row
+	// wins (ORDER BY (session = ?) DESC) so the session verb's read-back is
+	// deterministic; the user verb reads its rung back via a scope-filtered
+	// List, never this ambiguous path.
 	row := d.db.QueryRowContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND session = ? AND name = ?
+        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND name = ?
+        ORDER BY (session = ?) DESC
         LIMIT 1`,
-		id.TenantID, id.UserID, id.SessionID, name)
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name, id.SessionID)
 	got, err := scanSkill(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -391,8 +404,13 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 	// scope / task_type / per-tag filters grow the slice past this.
 	args := make([]any, 0, 5+len(filter.Tags))
 	sb.WriteString(selectSkillsSQL)
-	sb.WriteString(` WHERE tenant = ? AND user = ? AND session = ?`)
-	args = append(args, id.TenantID, id.UserID, id.SessionID)
+	// The caller's own session rows PLUS any user-scope (durable,
+	// session-zeroed) rows of the same (tenant, user). A ScopeUser filter
+	// narrows this to the user rung alone (the AND scope = ? below); the
+	// default (no scope filter) unions the session rung with the durable
+	// user rung, which is exactly what the run-start directory view needs.
+	sb.WriteString(` WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)`)
+	args = append(args, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser))
 	if filter.Scope != "" {
 		sb.WriteString(` AND scope = ?`)
 		args = append(args, string(filter.Scope))
@@ -490,10 +508,18 @@ func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string)
 	if skills.ValidateIdentity(id) != nil {
 		return skills.EmitIdentityRejected(ctx, d.bus, id, "Delete")
 	}
+	// Delete resolves the same union the reads do: the caller's own session
+	// rows PLUS any user-scope (durable, session-zeroed) row of the same
+	// (tenant, user). This is what lets the user verb delete its durable
+	// rung from any session. On a (pathological) name collision between a
+	// session-scoped and a user-scoped skill of the same name, deleting the
+	// name removes both from the caller's view — the union-visibility
+	// semantics; the verbs treat a name as one skill from the caller's
+	// vantage.
 	res, err := d.db.ExecContext(ctx, `
         DELETE FROM skills
-        WHERE tenant = ? AND user = ? AND session = ? AND name = ?`,
-		id.TenantID, id.UserID, id.SessionID, name)
+        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?) AND name = ?`,
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), name)
 	if err != nil {
 		return fmt.Errorf("skills/localdb: Delete exec: %w", err)
 	}

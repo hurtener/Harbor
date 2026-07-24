@@ -36,10 +36,10 @@ func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, quer
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND session = ?
+        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)
         ORDER BY updated_at DESC, name ASC
         LIMIT ?`,
-		id.TenantID, id.UserID, id.SessionID, semanticCandidateCap)
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), semanticCandidateCap)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: semantic candidates: %w", err)
 	}
