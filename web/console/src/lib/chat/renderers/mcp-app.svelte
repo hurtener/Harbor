@@ -139,33 +139,47 @@
   // that exact window (origin / source validation), so a foreign frame's
   // messages are rejected.
   async function connectBridge(): Promise<void> {
-    if (!iframeEl?.contentWindow || !app || !serverID || !appHostClient) return;
     if (host) return;
-    // Resolve theme + styles OUTSIDE the reactive graph at construction: both
-    // are plain DOM reads (matchMedia / computed tokens), and reading the
-    // reactive `hostTheme` here would make the lifecycle effect re-run — and
-    // tear the transport down — on a theme change (the reverted-work break).
-    // `untrack` documents the intent belt-and-braces.
-    const constructedTheme = untrack(() => resolveHostTheme());
-    lastAppliedTheme = constructedTheme;
-    host = new AppBridgeHost({
-      client: appHostClient,
+    // Snapshot EVERY reactive input to the bridge — the iframe window, the five
+    // renderer props, and the resolved theme/styles — in a single `untrack`, so
+    // NONE of them is tracked by the caller (the lifecycle `$effect` below).
+    // That effect therefore depends on ONLY `loadState` + `iframeEl` (the two
+    // signals it reads directly): a change to any prop's identity, or a theme
+    // change, can never re-run it and tear the transport down mid-`ui/initialize`
+    // — the exact outage that got the original work reverted. `iframeEl` stays a
+    // tracked dep because the effect body reads it directly; reading it here
+    // untracked only avoids a redundant second subscription. Theme/styles are
+    // plain DOM reads, snapshotted here for the same isolation guarantee.
+    const s = untrack(() => ({
+      win: iframeEl?.contentWindow ?? null,
+      app,
       serverID,
+      client: appHostClient,
       availableDisplayModes,
       onDisplayModeRequest,
+      theme: resolveHostTheme(),
+      styles: buildHostStyles()
+    }));
+    if (!s.win || !s.app || !s.serverID || !s.client) return;
+    lastAppliedTheme = s.theme;
+    host = new AppBridgeHost({
+      client: s.client,
+      serverID: s.serverID,
+      availableDisplayModes: s.availableDisplayModes,
+      onDisplayModeRequest: s.onDisplayModeRequest,
       // Host identity is injected through the seam (not baked into the module).
       hostInfo: DEFAULT_HOST_INFO,
-      theme: constructedTheme,
-      styles: buildHostStyles(),
+      theme: s.theme,
+      styles: s.styles,
       // The correlation key for the after-init Data Delivery push.
-      toolCallId: app.toolCallId,
+      toolCallId: s.app.toolCallId,
       // The renderer flips its live-theme gate here, AFTER the handshake.
       onInitialized: () => {
         bridgeReady = true;
       }
     });
     try {
-      await host.connect(iframeEl.contentWindow);
+      await host.connect(s.win);
     } catch (err) {
       errorMessage = err instanceof Error ? err.message : String(err);
       loadState = 'error';
@@ -176,10 +190,12 @@
     void preload();
   });
 
-  // The bridge lifecycle effect — depends ONLY on `loadState` + `iframeEl`.
-  // It NEVER reads the theme (that is resolved untracked in `connectBridge`),
-  // so a theme change can never re-run this effect and tear the bridge down
-  // mid-handshake. This isolation is the reverted-work fix (D-342).
+  // The bridge lifecycle effect — depends ONLY on `loadState` + `iframeEl` (the
+  // two signals it reads directly). Every other input the bridge needs (theme,
+  // styles, and all five renderer props) is snapshotted UNTRACKED inside
+  // `connectBridge`, so neither a theme change nor prop-identity churn can
+  // re-run this effect and tear the transport down mid-handshake. That teardown
+  // was the reverted-work outage (#346); this isolation is the fix (D-342).
   $effect(() => {
     if (loadState === 'ready' && iframeEl) {
       void connectBridge();

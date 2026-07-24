@@ -20,7 +20,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { McpUiHostContext } from '@modelcontextprotocol/ext-apps/app-bridge';
 
-import type { MCPAppHostClient } from './app-bridge-host.js';
+import type { DisplayModeRequest, MCPAppHostClient } from './app-bridge-host.js';
 
 interface MockBridge {
   oninitialized?: (params: unknown) => void;
@@ -63,6 +63,7 @@ vi.mock('@modelcontextprotocol/ext-apps/app-bridge', () => {
 });
 
 const McpAppRenderer = (await import('./mcp-app.svelte')).default;
+const { mountRendererReactive } = await import('./mcp-app-harness.svelte.js');
 
 // A controllable `prefers-color-scheme` MediaQueryList: the test flips `matches`
 // and dispatches a `change` event to the registered listeners.
@@ -182,6 +183,58 @@ describe('McpAppRenderer — theme lifecycle isolation (reverted-work guard)', (
     // AppBridgeHost.setHostContext gates on init, so no patch is posted and the
     // bridge is never closed/rebuilt.
     expect(bridge.setHostContextCalls).toHaveLength(0);
+    expect(bridge.closeCalls).toBe(0);
+    expect(captured.instances).toHaveLength(1);
+
+    unmount(component);
+    document.body.removeChild(target);
+  });
+
+  it('churning a lifecycle-effect input prop (onDisplayModeRequest) NEVER re-runs the effect — no close, one bridge', async () => {
+    // Defense-in-depth for the exact outage class: the bridge lifecycle effect
+    // must depend ONLY on loadState + iframeEl. `onDisplayModeRequest` is read
+    // by `connectBridge` (a lifecycle-effect input) but NOT by `preload`, so it
+    // isolates the concern: if the effect tracked the prop, reassigning its
+    // identity would re-run the effect → tear the transport down (host.close) +
+    // rebuild — the reverted-work break. The untracked snapshot means it can't.
+    // Mutation check: revert the untrack snapshot and this test fails (close=1,
+    // two bridges).
+    installMatchMedia(true);
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+
+    const { component, props } = mountRendererReactive(target, {
+      mime: 'application/vnd.harbor.mcp-app',
+      src: '',
+      app: { resourceUri: 'ui://srv/app.html', displayMode: 'inline', rawHtmlTrusted: false },
+      serverID: 'srv',
+      appHostClient: fakeClient(),
+      availableDisplayModes: ['inline', 'fullscreen', 'pip'],
+      onDisplayModeRequest: () => {},
+    });
+    // Drain preload → ready → connectBridge.
+    for (let i = 0; i < 8 && captured.instances.length === 0; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+    expect(captured.instances).toHaveLength(1);
+    const bridge = captured.instances[0];
+    bridge.fireInitialized();
+    flushSync();
+
+    // Churn the prop identities the lifecycle effect used to track through
+    // connectBridge — a brand-new callback reference and a new array.
+    props.onDisplayModeRequest = (_req: DisplayModeRequest) => {};
+    flushSync();
+    await Promise.resolve();
+    flushSync();
+    props.availableDisplayModes = ['inline'];
+    flushSync();
+    await Promise.resolve();
+    flushSync();
+
+    // The effect did not re-run: no teardown, still exactly one bridge.
     expect(bridge.closeCalls).toBe(0);
     expect(captured.instances).toHaveLength(1);
 
