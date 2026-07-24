@@ -45,6 +45,14 @@ func buildHTTPClient(cfg Config) *http.Client {
 	if cfg.OAuthProvider != nil {
 		rt = &bearerInjectingTransport{base: rt}
 	}
+	// Per-user credential injection (receiver-style server): the HTTP forms
+	// (header / Basic) ride each call's ctx into this innermost injecting
+	// transport, so the injected header wins over any static header and holds NO
+	// mutable state (the value rides req.Context()). The `_meta` form injects
+	// into the JSON-RPC body, not a header, so it needs no transport here.
+	if cfg.Injection != nil && (cfg.Injection.Form == InjectionFormHeader || cfg.Injection.Form == InjectionFormBasic) {
+		rt = &injectedHeaderTransport{base: rt}
+	}
 	if len(cfg.Headers) > 0 {
 		rt = &headerInjectingTransport{
 			base:    rt,
@@ -63,21 +71,29 @@ func buildHTTPClient(cfg Config) *http.Client {
 			onScopeShortfall: cfg.OnScopeShortfall,
 		}
 	}
-	if rt == base {
+	// An injection connection (any form) always gets a custom client so its
+	// redirect guard is installed even when no header transport is wired (the
+	// `_meta` form), because the pulled credential still leaves to the
+	// connection host in the request body.
+	if rt == base && cfg.Injection == nil {
 		return http.DefaultClient
 	}
 	client := &http.Client{Transport: rt}
-	// Redirect hardening for the bearer-injecting connection (the
-	// credential-plane invariant). bearerInjectingTransport
-	// re-injects `Authorization: Bearer <exchanged>` on EVERY hop from
-	// inside the RoundTripper, so Go's cross-host header stripping does NOT
-	// help — an allow-listed host that answers a 3xx would otherwise send
-	// the exchanged bearer to an arbitrary redirect target. Re-validate
-	// each redirect target host against the bound provider's boot-declared
-	// AllowedDownstreamHosts; a redirect to an unlisted host is refused
-	// with a typed sentinel, so the bearer never reaches an off-list host.
-	if cfg.OAuthProvider != nil {
+	// Redirect hardening for a credential-injecting connection (the
+	// credential-plane invariant). The injecting transports re-inject the
+	// credential on EVERY hop from inside the RoundTripper, so Go's cross-host
+	// header stripping does NOT help — an allow-listed host that answers a 3xx
+	// would otherwise send the credential to an arbitrary redirect target.
+	// Re-validate each redirect target host against the bound provider's
+	// boot-declared AllowedDownstreamHosts; a redirect to an unlisted host is
+	// refused with a typed sentinel, so the credential never reaches an off-list
+	// host. This covers both the bearer path and the receiver-style injection
+	// forms (including `_meta`, whose credential rides the redirected body).
+	switch {
+	case cfg.OAuthProvider != nil:
 		client.CheckRedirect = redirectGuardFor(cfg.OAuthProvider.AllowedDownstreamHosts())
+	case cfg.Injection != nil:
+		client.CheckRedirect = redirectGuardFor(cfg.Injection.Provider.AllowedDownstreamHosts())
 	}
 	return client
 }
@@ -157,6 +173,58 @@ func (b *bearerInjectingTransport) RoundTrip(req *http.Request) (*http.Response,
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+tok)
 	return b.base.RoundTrip(clone)
+}
+
+// injectedHeaderCtxKey is the unexported key under which per-call injected
+// headers (the header / Basic receiver-style forms) are carried on a request's
+// ctx for injectedHeaderTransport to read.
+type injectedHeaderCtxKey struct{}
+
+// withInjectedHeaders returns a child ctx carrying headers to Set on the
+// outbound request. An empty map is a no-op.
+func withInjectedHeaders(ctx context.Context, headers map[string]string) context.Context {
+	if len(headers) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, injectedHeaderCtxKey{}, headers)
+}
+
+// injectedHeadersFrom returns the per-call injected headers carried on ctx, or nil.
+func injectedHeadersFrom(ctx context.Context) map[string]string {
+	if ctx == nil {
+		return nil
+	}
+	h, ok := ctx.Value(injectedHeaderCtxKey{}).(map[string]string)
+	if !ok {
+		return nil
+	}
+	return h
+}
+
+// injectedHeaderTransport is the context-aware RoundTripper that Sets the
+// per-call injected headers (the receiver-style header / Basic forms) carried on
+// the request's ctx (see withInjectedHeaders). It holds NO mutable state — the
+// values ride req.Context(), so one shared transport serves N concurrent
+// identities with no credential bleed (the concurrent-reuse contract). A request
+// whose ctx carries no injected headers passes through untouched (connect-time
+// and unbound paths).
+type injectedHeaderTransport struct {
+	base http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *injectedHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	headers := injectedHeadersFrom(req.Context())
+	if len(headers) == 0 {
+		return t.base.RoundTrip(req)
+	}
+	// Clone so we never mutate the caller's request (the SDK may reuse it across
+	// retries). Preserve the ctx so a nested transport still reads it.
+	clone := req.Clone(req.Context())
+	for k, v := range headers {
+		clone.Header.Set(k, v)
+	}
+	return t.base.RoundTrip(clone)
 }
 
 // headerInjectingTransport wraps an http.RoundTripper to add static

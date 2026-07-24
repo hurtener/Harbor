@@ -39,12 +39,12 @@ None. D-271's pull-only posture is revisited (a controlled exception) but not de
 
 ## Acceptance criteria
 
-- [ ] A connection configured with an injection mapping sources the acting principal's credential via the broker-pull (`OAuthProvider.Token(ctx, source)`, reading `identity.From(ctx)`) per outbound call and injects it per the declared mapping (header / Basic / `_meta`).
-- [ ] Per-user isolation: two acting users on the same connection produce two distinct injected values; a concurrent-reuse test (N≥100 interleaved per-user calls, one shared driver, `-race`) shows no cross-user value bleed.
-- [ ] A broker error fails the call loudly (surfaces the typed error; the call is not sent unauthenticated).
-- [ ] The audit redactor redacts `Authorization: Basic <b64>`, the declared injection header keys, and the declared `_meta` credential keys to `***` (asserted against a captured outbound request payload).
-- [ ] The attach-time one-auth-mode guard rejects an injection mapping declared alongside an `oauth_provider` bearer binding or a static `Authorization` header.
-- [ ] `scripts/smoke/phase-200.sh` asserts the redaction discipline / mapping validation (degrades to SKIP where no dev receiver fixture is reachable).
+- [x] A connection configured with an injection mapping sources the acting principal's credential via the broker-pull (`OAuthProvider.Token(ctx, source)`, reading `identity.From(ctx)`) per outbound call and injects it per the declared mapping (header / Basic / `_meta`).
+- [x] Per-user isolation: two acting users on the same connection produce two distinct injected values; a concurrent-reuse test (N≥100 interleaved per-user calls, one shared driver, `-race`) shows no cross-user value bleed.
+- [x] A broker error fails the call loudly (surfaces the typed error; the call is not sent unauthenticated).
+- [x] The audit redactor redacts `Authorization: Basic <b64>`, the declared injection header keys, and the declared `_meta` credential keys to `***` (asserted against a captured outbound request payload).
+- [x] The attach-time one-auth-mode guard rejects an injection mapping declared alongside an `oauth_provider` bearer binding or a static `Authorization` header.
+- [x] `scripts/smoke/phase-200.sh` asserts the redaction discipline / mapping validation (degrades to SKIP where no dev receiver fixture is reachable).
 
 ## Files added or changed
 
@@ -90,7 +90,7 @@ docs/glossary.md                                  # "Receiver-style MCP server",
 
 - A misconfigured mapping could target a reserved `_meta` key or collide with the identity stamp — the `IsReservedMCPMetaKey` guard rejects that at attach time (fail-loud), asserted by test.
 - Discovery of the injection contract (a server advertising its accepted credential forms) is deferred; the mapping is operator-declared this phase. Noted, not blocking — the receiver server already declares its forms in its own error text, so onboarding is config, not code.
-- §17.8: the receiver-form fixture derives from a real receiver-style server's declared credential forms, not a hand-authored shape.
+- §17.8: the RFC-8693 broker pull runs through the real `tokenexchange` provider against the spec-derived broker fixture. The receiver server is an accept-anything echo fixture on the official go-sdk streamable-HTTP handler; its accepted credential forms (header name / `Basic` / `_meta` key) are hand-authored, because no canonical receiver-style credential schema exists to derive from. The §17.8 wrong-field risk does not bite here: the test observes the ACTUAL injected value at the recorder (not a self-consistent pass/fail), so it proves inject+redact+isolate regardless of what a real receiver would require.
 
 ## Glossary additions
 
