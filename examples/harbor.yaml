@@ -590,15 +590,27 @@ planner:
 # it entirely and skills stay uninitialised. When set, both `driver`
 # and `dsn` are required.
 # skills:
-#   # SkillStore driver — Phase 37 ships `localdb` (CGo-free SQLite
-#   # with FTS5 → regex → exact ranking ladder). Phase 49 will add
-#   # `portico` (MCP-distributed skills).
+#   # SkillStore driver. Harbor ships two backends at three-driver
+#   # parity (RFC §9):
+#   #   - `localdb` (default) — CGo-free SQLite with the FTS5 → regex →
+#   #     exact ranking ladder. A per-instance file; ideal for single-
+#   #     node / embedded deployments.
+#   #   - `postgres` — shared, durable Postgres (`pgx`) for multi-
+#   #     instance deployments where every replica must see the same
+#   #     skills catalog. Same conflict policy, identity scoping, and
+#   #     ranking ladder as `localdb` (proven by the shared conformance
+#   #     suite); the full-text tier rides a `tsvector` + GIN index.
 #   driver: localdb
-#   # DSN — required when driver=localdb. SQLite accepts a bare file
-#   # path (or `:memory:` for the degenerate dev case). Override via
-#   # HARBOR_SKILLS_DSN in production; never commit a real path with
-#   # sensitive metadata.
+#   # DSN — required for both drivers. `localdb` (SQLite) accepts a
+#   # bare file path (or `:memory:` for the degenerate dev case).
+#   # `postgres` takes a libpq/pgx connection string. Override via
+#   # HARBOR_SKILLS_DSN in production; never commit a real DSN with
+#   # sensitive metadata (the value is `secret:"true"` — redacted in
+#   # audit logs).
 #   dsn: /var/lib/harbor/skills.sqlite
+#   # Postgres variant (durable / shared, multi-instance):
+#   #   driver: postgres
+#   #   dsn: postgres://harbor:${HARBOR_SKILLS_PG_PASSWORD}@db:5432/harbor?sslmode=require
 #   # Phase 111d (D-201) — the skills virtual directory: the bounded,
 #   # pinned-then-recent, capability-filtered browse window the run
 #   # loop injects as the per-turn `<skills_context>` prompt block.

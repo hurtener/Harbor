@@ -139,8 +139,12 @@ Once the skills are in the catalog, the planner sees them at reasoning time two 
 
 ```yaml
 skills:
-  driver: localdb
+  driver: localdb                  # localdb (default, SQLite) | postgres (durable/shared)
   dsn: /tmp/harbor-validation/my-agent-skills.sqlite    # WAL trap caveat applies
+  # Postgres variant — durable/shared storage for multi-instance
+  # deployments (every replica sees the same skills catalog):
+  #   driver: postgres
+  #   dsn: postgres://harbor:${HARBOR_SKILLS_PG_PASSWORD}@db:5432/harbor?sslmode=require
   # retrieval: semantic            # optional — skill_search ranks by embedding
   #                                # similarity instead of the FTS5/regex/exact
   #                                # ladder (requires the embeddings: block; the
@@ -158,6 +162,15 @@ tools:
     - skill_list      # the LLM enumerates the catalog (paged, summary-only)
     # - skill_propose # OPT-IN: lets the LLM author + persist new skills
 ```
+
+**Store drivers.** Skills ship at three-driver parity like memory:
+
+| Driver     | Use when                                                                 |
+| ---------- | ------------------------------------------------------------------------ |
+| `localdb`  | Default. CGo-free SQLite, a per-instance file. Single-node / embedded.    |
+| `postgres` | Durable, shared Postgres for multi-instance deployments — every replica sees the same skills catalog. Same conflict policy, identity scoping, and FTS → regex → exact ranking ladder as `localdb` (the full-text tier rides a `tsvector` + GIN index). |
+
+Switching backends is a `driver:` + `dsn:` change — the CLI verbs, meta-tools, directory, and semantic mode all behave identically (proven by the shared conformance suite). Identity scoping (`(tenant, user, session)` in the SQL `WHERE`) is enforced at the driver on both.
 
 ### LLM-side discovery via meta-tools
 
