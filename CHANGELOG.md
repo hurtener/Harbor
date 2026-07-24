@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.19.0] — 2026-07-24
+
+Minor: a Postgres driver for the skills subsystem — durable, shared skill storage for multi-instance deployments.
+
+### Added
+
+- **Skills Postgres driver.** The skills subsystem gains a `postgres` storage
+  driver alongside the existing `localdb` (SQLite) default, bringing it to the
+  §9 three-driver persistence parity (in-memory / SQLite / Postgres). Skills now
+  persist in shared, durable Postgres for multi-instance / production
+  deployments instead of only a per-instance SQLite file. The driver sits behind
+  the existing `SkillStore` interface (no interface change, no `Supports*`
+  ceremony), is identity-triple-scoped on every query, carries its own
+  forward-only migrations, and passes the existing skills conformance suite
+  unchanged. `localdb` remains the default — fully backward-compatible.
+
 ## [1.18.1] — 2026-07-24
 
 Patch: test-only hardening — eliminate a class of load-sensitive flaky
