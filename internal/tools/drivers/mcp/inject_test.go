@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -316,8 +317,20 @@ func TestInjectedHeaderTransport_ConcurrentReuse_NoBleed(t *testing.T) {
 		t.Fatalf("observed %d requests, want %d", cap.count(), n)
 	}
 
-	runtime.GC()
-	if got := runtime.NumGoroutine(); got > base+5 {
+	// Bounded drain-poll (§17.4): the per-request goroutines can still be
+	// unwinding at this instant, so re-sample after GC until the count settles
+	// within tolerance or a deadline elapses — a genuine leak still fails.
+	settleDeadline := time.Now().Add(5 * time.Second)
+	var got int
+	for {
+		runtime.GC()
+		got = runtime.NumGoroutine()
+		if got <= base+5 || !time.Now().Before(settleDeadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got > base+5 {
 		t.Errorf("goroutine leak: base=%d after=%d", base, got)
 	}
 }

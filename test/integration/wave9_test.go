@@ -612,10 +612,6 @@ func TestE2E_Wave9_Concurrency_NoCrossTalk(t *testing.T) {
 	}
 
 	// No goroutine leak: every run's loop goroutine + the Coordinator's
-	// per-pause state are released once Run returns. Small slack for
-	// scheduler noise.
-	time.Sleep(100 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after > baseline+10 {
-		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-	}
+	// per-pause state are released once Run returns.
+	eventuallyGoroutinesSettleExt(t, baseline, 10)
 }

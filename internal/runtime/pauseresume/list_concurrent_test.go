@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -108,8 +109,21 @@ func TestList_ConcurrentReuse_D025(t *testing.T) {
 
 	// Goroutine-leak check: every List goroutine has joined; the count
 	// must return to baseline (allow a small slack for the runtime's
-	// own scheduler bookkeeping).
-	if after := runtime.NumGoroutine(); after > baseline+2 {
+	// own scheduler bookkeeping). Bounded drain-poll (§17.4): the joined
+	// goroutines can still be unwinding at this instant, so re-sample after
+	// GC until the count settles within tolerance or a deadline elapses — a
+	// genuine leak still fails.
+	settleDeadline := time.Now().Add(5 * time.Second)
+	var after int
+	for {
+		runtime.GC()
+		after = runtime.NumGoroutine()
+		if after <= baseline+2 || !time.Now().Before(settleDeadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if after > baseline+2 {
 		t.Errorf("goroutine leak: baseline=%d after=%d", baseline, after)
 	}
 }

@@ -307,9 +307,7 @@ func TestModel_ConcurrentReuse128UpdatesNoAliasOrLeak(t *testing.T) {
 	for err := range errs {
 		t.Error(err)
 	}
-	if runtime.NumGoroutine() > baseline+2 {
-		t.Fatal("goroutine leak")
-	}
+	eventuallyGoroutinesSettle(t, baseline, 2)
 }
 
 type immediateModel struct{}
@@ -325,9 +323,7 @@ func TestRun_RepeatedInProcessMountUnmountNoLeak(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if runtime.NumGoroutine() > baseline+2 {
-		t.Fatalf("in-process mount leak baseline=%d got=%d", baseline, runtime.NumGoroutine())
-	}
+	eventuallyGoroutinesSettle(t, baseline, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := Run(ctx, bytes.NewBuffer(nil), &bytes.Buffer{}, immediateModel{}); err == nil || !errors.Is(err, context.Canceled) {

@@ -220,9 +220,6 @@ func TestE2E_Phase127_WireDigestOverTheWire(t *testing.T) {
 			}
 		}
 
-		time.Sleep(50 * time.Millisecond)
-		if after := runtime.NumGoroutine(); after > baseline+8 {
-			t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-		}
+		eventuallyGoroutinesSettle(t, baseline, 8)
 	})
 }

@@ -148,24 +148,41 @@ func TestGoroutineLeak_StreamsDrainAfterShutdown(t *testing.T) {
 	// After every client disconnected and the server closed, the
 	// per-stream goroutines must have unwound. Poll briefly — goroutine
 	// teardown is asynchronous — then assert against the baseline.
-	settle()
-	got := runtime.NumGoroutine()
 	// Allow a small slack for test-runtime noise; the real signal is
 	// "not growing by ~streams".
+	got := settledGoroutines(baseline, 5)
 	if got > baseline+5 {
 		t.Errorf("goroutine leak: baseline=%d, after=%d (opened %d streams)",
 			baseline, got, streams)
 	}
 }
 
-// settle gives asynchronous goroutine teardown a bounded window to
-// complete. It is NOT a synchronisation primitive for a specific event —
-// it is a best-effort quiesce before a NumGoroutine snapshot, which is
-// the accepted shape for a leak test.
+// settle gives the test server's own goroutines a brief, best-effort window to
+// stabilise BEFORE the baseline is sampled. It is a pre-measurement quiesce, not
+// a leak assertion or an event synchronisation, so a fixed window is acceptable.
 func settle() {
 	for range 20 {
 		runtime.GC()
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// settledGoroutines gives asynchronous goroutine teardown a bounded window to
+// complete, then returns the live count. It is a real-time eventually-poll
+// (AGENTS.md §17.4), NOT a fixed sleep-as-synchronisation: it re-samples after
+// each runtime.GC() (which reaps finished-but-unscheduled goroutines and parks
+// the poller so the exiting goroutines get scheduler time under load) and
+// returns the instant the count drains to within tol of base, or when a bounded
+// deadline elapses. The caller asserts, so a genuine leak still fails the test.
+func settledGoroutines(base, tol int) int {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		runtime.GC()
+		got := runtime.NumGoroutine()
+		if got <= base+tol || !time.Now().Before(deadline) {
+			return got
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -286,8 +303,7 @@ func TestConcurrentReuse_StateHistory_NoCrossIdentityBleed(t *testing.T) {
 		}
 	}
 
-	settle()
-	if got := runtime.NumGoroutine(); got > baseline+8 {
+	if got := settledGoroutines(baseline, 8); got > baseline+8 {
 		t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, got)
 	}
 }

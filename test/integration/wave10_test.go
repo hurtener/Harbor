@@ -547,11 +547,8 @@ func TestE2E_Wave10_Concurrency_NoCrossTalk(t *testing.T) {
 
 	// Goroutine baseline restored — every per-request goroutine has
 	// joined (the SSE handler's keepalive goroutines, the response
-	// readers). Small slack for scheduler noise.
-	time.Sleep(100 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after > baseline+10 {
-		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-	}
+	// readers).
+	eventuallyGoroutinesSettleExt(t, baseline, 10)
 }
 
 // Sanity: every Wave 10 phase's package surface is reachable via the

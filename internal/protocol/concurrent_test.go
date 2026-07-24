@@ -142,10 +142,7 @@ func TestConcurrentReuse_ControlSurface(t *testing.T) {
 	// No goroutine leak: the baseline is restored once every Dispatch
 	// has returned. A small slack tolerates the test harness's own
 	// scheduler noise.
-	time.Sleep(50 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after > baseline+5 {
-		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-	}
+	eventuallyGoroutinesSettle(t, baseline, 5)
 }
 
 // TestConcurrentReuse_ControlSurface_Topology pins the D-025
@@ -199,8 +196,5 @@ func TestConcurrentReuse_ControlSurface_Topology(t *testing.T) {
 		t.Error(err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after > baseline+5 {
-		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
-	}
+	eventuallyGoroutinesSettle(t, baseline, 5)
 }
