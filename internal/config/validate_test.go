@@ -807,6 +807,35 @@ func TestValidate_AcceptsPostgresMemoryDriverWithDSN(t *testing.T) {
 	}
 }
 
+// The skills `postgres` driver ships in the runtime and self-registers,
+// so the config validator's driver allowlist must accept it (with a DSN,
+// as the other durable stores require). This guards the regression where
+// the driver shipped but the validator still rejected `skills.driver:
+// postgres` at boot.
+func TestValidate_AcceptsPostgresSkillsDriverWithDSN(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Skills.Driver = "postgres"
+	cfg.Skills.DSN = "postgres://harbor:secret@localhost:5432/harbor?sslmode=disable"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected postgres skills driver: %v", err)
+	}
+}
+
+// The skills `postgres` driver is durable/shared and therefore requires
+// an explicit DSN, mirroring the memory/state postgres drivers.
+func TestValidate_RejectsPostgresSkillsDriverWithoutDSN(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Skills.Driver = "postgres"
+	cfg.Skills.DSN = ""
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted postgres skills driver without DSN, want error")
+	}
+	if !strings.Contains(err.Error(), "skills.dsn") {
+		t.Fatalf("Validate error = %v, want skills.dsn error", err)
+	}
+}
+
 // Phase 83v (D-162) — a valid CORS allowlist passes validation.
 func TestValidate_AcceptsCORSAllowedOrigins(t *testing.T) {
 	cfg := mustLoadValid(t)
