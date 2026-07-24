@@ -17,6 +17,19 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.19.1] — 2026-07-24
+
+Patch: config-validation hotfix for the v1.19.0 skills Postgres driver.
+
+### Fixed
+
+- **Skills `postgres` driver rejected by config validation.** The v1.19.0 skills
+  `postgres` driver was rejected by config validation
+  (`config.skills.driver: must be one of localdb`) despite the driver shipping —
+  the static driver allowlist in the config validator was not extended.
+  `skills.driver: postgres` now validates and boots; a config-validation
+  regression test guards it.
+
 ## [1.19.0] — 2026-07-24
 
 Minor: a Postgres driver for the skills subsystem — durable, shared skill storage for multi-instance deployments.
