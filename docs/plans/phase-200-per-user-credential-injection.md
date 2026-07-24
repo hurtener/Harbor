@@ -90,7 +90,7 @@ docs/glossary.md                                  # "Receiver-style MCP server",
 
 - A misconfigured mapping could target a reserved `_meta` key or collide with the identity stamp — the `IsReservedMCPMetaKey` guard rejects that at attach time (fail-loud), asserted by test.
 - Discovery of the injection contract (a server advertising its accepted credential forms) is deferred; the mapping is operator-declared this phase. Noted, not blocking — the receiver server already declares its forms in its own error text, so onboarding is config, not code.
-- §17.8: the receiver-form fixture derives from a real receiver-style server's declared credential forms, not a hand-authored shape.
+- §17.8: the RFC-8693 broker pull runs through the real `tokenexchange` provider against the spec-derived broker fixture. The receiver server is an accept-anything echo fixture on the official go-sdk streamable-HTTP handler; its accepted credential forms (header name / `Basic` / `_meta` key) are hand-authored, because no canonical receiver-style credential schema exists to derive from. The §17.8 wrong-field risk does not bite here: the test observes the ACTUAL injected value at the recorder (not a self-consistent pass/fail), so it proves inject+redact+isolate regardless of what a real receiver would require.
 
 ## Glossary additions
 

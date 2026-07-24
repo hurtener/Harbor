@@ -1496,9 +1496,11 @@ func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (cont
 
 // injectMeta writes value into meta at the (already-validated, non-reserved) key
 // path, creating intermediate maps as needed. A single-segment path sets a
-// top-level key; a multi-segment path nests. Reserved top-level keys are stamped
-// LAST by buildIdentityMeta, and validate() guarantees no path segment is
-// reserved, so injection can never shadow the identity triple.
+// top-level key; a multi-segment path nests. buildIdentityMeta stamps the
+// identity triple + agent provenance BEFORE this runs, so the sole protection
+// against a credential overwriting them is validate(): it guarantees no
+// injection path segment is a reserved key, so injection can never shadow the
+// identity triple or agent provenance.
 func injectMeta(meta mcpsdk.Meta, path []string, value string) {
 	if len(path) == 0 {
 		return

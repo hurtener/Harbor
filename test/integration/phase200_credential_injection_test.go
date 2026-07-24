@@ -10,7 +10,13 @@
 //     REUSED unchanged (D-341 sources the credential exactly as the bearer path);
 //   - an httptest-hosted MCP fixture on the OFFICIAL go-sdk streamable-HTTP
 //     handler, fronted by a recorder that captures EVERY request header + the
-//     `_meta` map — the receiver-style server's declared credential forms;
+//     `_meta` map. NOTE: this is an accept-anything echo receiver; the injected
+//     credential FORMS (header name / Basic / `_meta` key) are hand-authored,
+//     because no canonical receiver-style credential schema exists to derive
+//     from. The §17.8 wrong-field risk does not bite here because the test
+//     observes the ACTUAL injected value at the recorder (not a self-consistent
+//     pass/fail), proving inject+redact+isolate regardless of what a real
+//     receiver would require;
 //   - the real MCP driver bound via Config.Injection in each declared form;
 //   - the real `audit.Redactor` (patterns driver) on the seam — the captured
 //     outbound payload is redacted and asserted to show `***` for every form.
