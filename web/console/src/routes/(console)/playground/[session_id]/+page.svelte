@@ -501,7 +501,9 @@
     const appView: MCPAppRefView = {
       resourceUri: ev.resourceUri,
       displayMode: known ? (ev.displayMode as McpUiDisplayMode) : '',
-      rawHtmlTrusted: ev.rawHtmlTrusted
+      rawHtmlTrusted: ev.rawHtmlTrusted,
+      // The correlation key for the after-init Data Delivery push.
+      toolCallId: ev.toolCallId
     };
     messages = messages.map((m) =>
       m.taskID === ev.taskID && m.role === 'agent'
@@ -525,7 +527,10 @@
       title: deriveAppTitle(app.resourceUri),
       serverID,
       resourceUri: app.resourceUri,
-      rawHtmlTrusted: app.rawHtmlTrusted
+      rawHtmlTrusted: app.rawHtmlTrusted,
+      // Carry the correlation key so the page-level (fullscreen / pip) render
+      // delivers the same captured tool context the inline render does.
+      toolCallId: app.toolCallId
     };
     dispatchLayout({ type: 'request-display-mode', app: ref, mode: req.granted });
   }

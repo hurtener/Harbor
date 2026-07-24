@@ -53,7 +53,8 @@
     app: {
       resourceUri: app.resourceUri,
       displayMode: app.mode,
-      rawHtmlTrusted: app.rawHtmlTrusted
+      rawHtmlTrusted: app.rawHtmlTrusted,
+      toolCallId: app.toolCallId
     },
     serverID: app.serverID,
     appHostClient,
