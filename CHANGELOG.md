@@ -17,6 +17,32 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.21.0] — 2026-07-24
+
+Minor: durable-by-default per-user skills, and wire-carried per-user credential injection for dynamically-added receiver-style MCP servers.
+
+### Added
+
+- **Durable-by-default per-user skills.** A new claim-free
+  `agent_config.user.skills.{list,upsert,delete}` verb family lets an end user
+  author personal skills that persist across all of their sessions, via a new
+  `ScopeUser` rung keyed `(tenant, user)`. Durability follows the store driver —
+  ephemeral on the in-memory driver, durable on SQLite/Postgres. The run-start
+  projection unions durable user skills so they survive an admin membership pin,
+  and a personal skill cannot widen capability (the default-deny capability
+  filter scrubs any tool a skill names outside the run's allowed set), which is
+  why the verbs need no elevated scope claim. (D-345)
+- **Wire-carried per-user credential injection for runtime-added MCP servers.**
+  The `add_mcp_connection` connection descriptor (and `agent_config.set_revision`)
+  may now carry an optional `injection` mapping for receiver-style MCP servers,
+  behind a fail-closed `tools.allow_wire_injection` / `HARBOR_ALLOW_WIRE_INJECTION`
+  boot opt-in — so a coordinator can attach a receiver-style server at runtime and
+  deliver each acting user's own broker-pulled credential without a boot redeploy.
+  The injection provider names a boot-declared broker (no secret rides the wire),
+  the reachable sink is derived from the connection URL, and every target key is
+  redaction-covered. Composes with the wire-carried OAuth descriptor (D-340) and
+  reuses the receiver-injection engine (D-341). (D-346)
+
 ## [1.20.0] — 2026-07-24
 
 Minor: MCP Apps in the Console now adapt to the host — live theme + design tokens and real tool data delivered into the rendered app — re-landed handshake-safe.

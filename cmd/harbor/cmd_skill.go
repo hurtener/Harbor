@@ -313,7 +313,9 @@ func runSkillRm(cmd *cobra.Command, args []string) error {
 
 	id := skillIdentity(cmd)
 	name := args[0]
-	if err := handle.store.Delete(ctx, identity.Quadruple{Identity: id}, name); err != nil {
+	// The CLI manages session-local (non-durable) skills; a durable user-scope
+	// personal skill is owned through the Protocol user verb, not `skill rm`.
+	if err := handle.store.Delete(ctx, identity.Quadruple{Identity: id}, name, skills.ScopeSession); err != nil {
 		hint := ""
 		if errors.Is(err, skills.ErrSkillNotFound) {
 			hint = "names are identity-scoped — check --tenant/--user/--session match the import"

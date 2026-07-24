@@ -109,7 +109,10 @@ func (s *Service) SkillsDelete(ctx context.Context, req prototypes.AgentConfigSk
 	if req.Name == "" {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, fmt.Errorf("%w: skill name is empty", ErrIdentityRequired)
 	}
-	if err := s.skills.Delete(ctx, q, req.Name); err != nil {
+	// Admin manages agent-level (session-local, non-durable) skills — it never
+	// deletes a user's durable personal skill. A non-user target scope keeps
+	// this a session-local delete.
+	if err := s.skills.Delete(ctx, q, req.Name, skills.ScopeSession); err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}
 	rev, err := s.recordSkillsMembership(ctx, q, req.AgentID, removeName, req.Name)

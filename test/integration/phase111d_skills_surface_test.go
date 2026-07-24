@@ -275,7 +275,7 @@ func TestE2E_Phase111d_ImportDiscoverGetInject(t *testing.T) {
 	if !errors.Is(err, importer.ErrMissingFrontmatter) {
 		t.Errorf("invalid import err = %v, want ErrMissingFrontmatter", err)
 	}
-	if err := stack.store.Delete(ctxA, identity.Quadruple{Identity: phase111dIDA}, "no-such-skill"); !errors.Is(err, skills.ErrSkillNotFound) {
+	if err := stack.store.Delete(ctxA, identity.Quadruple{Identity: phase111dIDA}, "no-such-skill", skills.ScopeSession); !errors.Is(err, skills.ErrSkillNotFound) {
 		t.Errorf("Delete(missing) err = %v, want ErrSkillNotFound", err)
 	}
 }

@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 118 canonical Harbor Protocol methods, generated from the single-source registry
+The 121 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -236,3 +236,6 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agent_config.user.list_revisions` | `POST /v1/agent_config/user/list_revisions` | agent config — user | [`AgentConfigUserListRevisionsRequest`](./types.md#agentconfiguserlistrevisionsrequest) | [`AgentConfigUserListRevisionsResponse`](./types.md#agentconfiguserlistrevisionsresponse) | read-only; identity-mandatory; requires the verified `agent_config:user` scope claim (NOT admin — the durable per-user variant tier) |
 | `agent_config.user.rollback` | `POST /v1/agent_config/user/rollback` | agent config — user | [`AgentConfigUserRollbackRequest`](./types.md#agentconfiguserrollbackrequest) | [`AgentConfigUserRollbackResponse`](./types.md#agentconfiguserrollbackresponse) | mutating; identity-mandatory; requires the verified `agent_config:user` scope claim (NOT admin — the durable per-user variant tier) |
 | `agent_config.user.set_revision` | `POST /v1/agent_config/user/set_revision` | agent config — user | [`AgentConfigUserSetRevisionRequest`](./types.md#agentconfigusersetrevisionrequest) | [`AgentConfigUserSetRevisionResponse`](./types.md#agentconfigusersetrevisionresponse) | mutating; identity-mandatory; requires the verified `agent_config:user` scope claim (NOT admin — the durable per-user variant tier) |
+| `agent_config.user.skills.delete` | `POST /v1/agent_config/user/skills/delete` | agent config — session | [`AgentConfigUserSkillsDeleteRequest`](./types.md#agentconfiguserskillsdeleterequest) | [`AgentConfigUserSkillsDeleteResponse`](./types.md#agentconfiguserskillsdeleteresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
+| `agent_config.user.skills.list` | `POST /v1/agent_config/user/skills/list` | agent config — session | [`AgentConfigUserSkillsListRequest`](./types.md#agentconfiguserskillslistrequest) | [`AgentConfigUserSkillsListResponse`](./types.md#agentconfiguserskillslistresponse) | read-only; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
+| `agent_config.user.skills.upsert` | `POST /v1/agent_config/user/skills/upsert` | agent config — session | [`AgentConfigUserSkillsUpsertRequest`](./types.md#agentconfiguserskillsupsertrequest) | [`AgentConfigUserSkillsUpsertResponse`](./types.md#agentconfiguserskillsupsertresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |

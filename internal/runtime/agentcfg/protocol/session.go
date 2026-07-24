@@ -180,7 +180,12 @@ func (s *Service) SessionSkillsDelete(ctx context.Context, req prototypes.AgentC
 		return prototypes.AgentConfigSessionSkillsDeleteResponse{}, fmt.Errorf("%w: skill name is empty", ErrIdentityRequired)
 	}
 	q := identity.Quadruple{Identity: id}
-	if err := s.skills.Delete(ctx, q, req.Name); err != nil {
+	// RUNG-PRECISE: the ephemeral session verb deletes ONLY the caller's
+	// session-scoped rung — it must never destroy a durable user-scope skill
+	// of the same name (a cross-durability data-loss bug). It also does not
+	// touch the ConfigScopeUser membership (this tier tracks membership in the
+	// session overlay below, never the durable user-config revision).
+	if err := s.skills.Delete(ctx, q, req.Name, skills.ScopeSession); err != nil {
 		return prototypes.AgentConfigSessionSkillsDeleteResponse{}, err
 	}
 	ov, err := s.sessionOverlay.RemovePersonalSkill(ctx, q, req.AgentID, req.Name)

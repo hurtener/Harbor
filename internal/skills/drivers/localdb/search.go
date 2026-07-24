@@ -80,11 +80,11 @@ func (d *driver) searchFTS5(ctx context.Context, id identity.Quadruple, query st
             FROM skills_fts
             JOIN skills s ON s.rowid = skills_fts.rowid
             WHERE skills_fts MATCH ?
-              AND s.tenant = ? AND s.user = ? AND s.session = ?
+              AND s.tenant = ? AND s.user = ? AND (s.session = ? OR s.scope = ?)
             ORDER BY bm25(skills_fts) ASC, s.updated_at DESC, s.name ASC
             LIMIT ?`
 		rows, err := d.db.QueryContext(ctx, sel,
-			matchExpr, id.TenantID, id.UserID, id.SessionID, limit)
+			matchExpr, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), limit)
 		if err != nil {
 			return nil, fmt.Errorf("skills/localdb: fts5 query: %w", err)
 		}
@@ -266,9 +266,9 @@ func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, query s
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND session = ?
+        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)
         ORDER BY updated_at DESC, name ASC`,
-		id.TenantID, id.UserID, id.SessionID)
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser))
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: regex query: %w", err)
 	}
@@ -361,7 +361,7 @@ func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, query s
 		return nil, nil
 	}
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant = ? AND user = ? AND session = ?
+        WHERE tenant = ? AND user = ? AND (session = ? OR scope = ?)
           AND (
               lower(name) = ?
               OR lower(title) = ?
@@ -370,7 +370,7 @@ func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, query s
           )
         ORDER BY updated_at DESC, name ASC
         LIMIT ?`,
-		id.TenantID, id.UserID, id.SessionID,
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser),
 		q, q, q, "%"+q+"%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: exact query: %w", err)

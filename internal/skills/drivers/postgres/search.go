@@ -207,11 +207,11 @@ func (d *driver) runFTS(ctx context.Context, id identity.Quadruple, tsqueryExpr 
 	sel := `SELECT ` + skillCols + `, ts_rank(search_tsv, q) AS rank
         FROM skills, to_tsquery('english', $1) q
         WHERE search_tsv @@ q
-          AND tenant_id = $2 AND user_id = $3 AND session_id = $4
+          AND tenant_id = $2 AND user_id = $3 AND (session_id = $4 OR scope = $5)
         ORDER BY rank DESC, updated_at DESC, name ASC
-        LIMIT $5`
+        LIMIT $6`
 	rows, err := d.db.QueryContext(ctx, sel,
-		tsqueryExpr, id.TenantID, id.UserID, id.SessionID, limit)
+		tsqueryExpr, id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), limit)
 	if err != nil {
 		return nil, fmt.Errorf("skills/postgres: fts query: %w", err)
 	}
@@ -283,9 +283,9 @@ func (d *driver) searchRegex(ctx context.Context, id identity.Quadruple, query s
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
+        WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4)
         ORDER BY updated_at DESC, name ASC`,
-		id.TenantID, id.UserID, id.SessionID)
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser))
 	if err != nil {
 		return nil, fmt.Errorf("skills/postgres: regex query: %w", err)
 	}
@@ -378,16 +378,16 @@ func (d *driver) searchExact(ctx context.Context, id identity.Quadruple, query s
 		return nil, nil
 	}
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
+        WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4)
           AND (
-              lower(name) = $4
-              OR lower(title) = $4
-              OR lower(trigger_text) = $4
-              OR lower(tags_text) LIKE $5
+              lower(name) = $5
+              OR lower(title) = $5
+              OR lower(trigger_text) = $5
+              OR lower(tags_text) LIKE $6
           )
         ORDER BY updated_at DESC, name ASC
-        LIMIT $6`,
-		id.TenantID, id.UserID, id.SessionID,
+        LIMIT $7`,
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser),
 		q, "%"+q+"%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("skills/postgres: exact query: %w", err)
@@ -419,10 +419,10 @@ func (d *driver) searchSemantic(ctx context.Context, id identity.Quadruple, quer
 	}
 
 	rows, err := d.db.QueryContext(ctx, selectSkillsSQL+`
-        WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
+        WHERE tenant_id = $1 AND user_id = $2 AND (session_id = $3 OR scope = $4)
         ORDER BY updated_at DESC, name ASC
-        LIMIT $4`,
-		id.TenantID, id.UserID, id.SessionID, semanticCandidateCap)
+        LIMIT $5`,
+		id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), semanticCandidateCap)
 	if err != nil {
 		return nil, fmt.Errorf("skills/postgres: semantic candidates: %w", err)
 	}

@@ -89,6 +89,35 @@ export interface AgentConfigMCPConnectionDescriptor {
 	 * behind the fail-closed `tools.allow_wire_oauth_descriptor` boot opt-in; the
 	 * downstream sink is DERIVED from this connection's url (http transport only). */
 	oauth?: AgentConfigOAuthProviderDescriptor;
+	/** Optional dev-gated per-user credential-INJECTION mapping for a receiver-style
+	 * MCP server — NAMES a boot-declared broker + a target header / basic / `_meta`
+	 * key (mutually exclusive with `oauth_provider` / `oauth`). Accepted only behind
+	 * the fail-closed `tools.allow_wire_injection` boot opt-in (independent of the
+	 * wire-OAuth opt-in); the pulled credential's reachable sink is DERIVED from this
+	 * connection's url and every target key must be redaction-covered (http transport
+	 * only). */
+	injection?: AgentConfigMCPCredentialInjectionDescriptor;
+}
+
+/** One runtime-added connection's per-user credential-INJECTION mapping for a
+ * RECEIVER-STYLE MCP server — the NON-SECRET mapping only (NAMES a boot-declared
+ * `tools.oauth_providers[]` broker + declares WHERE the pulled value is placed on
+ * the outbound request). No secret rides this descriptor; only the broker-pulled
+ * value (resolved per-call from the acting identity) is secret. Mirrors
+ * `types.AgentConfigMCPCredentialInjectionDescriptor`. */
+export interface AgentConfigMCPCredentialInjectionDescriptor {
+	/** Boot-declared broker NAME the per-user credential is pulled from. */
+	provider: string;
+	/** "header" | "basic" | "meta". */
+	form: string;
+	/** Target request header NAME for form=header (redaction-covered; not
+	 * `Authorization`). */
+	header?: string;
+	/** Username half for form=basic (the pulled credential is the password half). */
+	basic_username?: string;
+	/** Target `_meta` key PATH for form=meta (dot-separated; redaction-covered leaf;
+	 * no reserved segment). */
+	meta_key?: string;
 }
 
 /** The runtime-added MCP-connection section of the config envelope. Mirrors
@@ -804,6 +833,52 @@ export interface AgentConfigUserRollbackRequest {
 
 /** `agent_config.user.rollback` response. */
 export interface AgentConfigUserRollbackResponse {
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+// --- Durable-per-user skills (CLAIM-FREE). `user` names the durable STORAGE
+// scope, not an auth tier: these verbs need only a valid identity (NOT admin,
+// NOT the `agent_config:user` scope) because a personal skill cannot widen
+// capability. The upsert/delete responses REUSE AgentConfigRevisionView (the
+// recorded durable membership revision). ---
+
+/** `agent_config.user.skills.list` request — CLAIM-FREE. */
+export interface AgentConfigUserSkillsListRequest {
+	identity: IdentityScope;
+	agent_id: string;
+}
+
+/** `agent_config.user.skills.list` response. */
+export interface AgentConfigUserSkillsListResponse {
+	skills: AgentConfigSkillSummary[];
+	protocol_version: string;
+}
+
+/** `agent_config.user.skills.upsert` request — CLAIM-FREE. Upserts a durable
+ * personal skill (scope forced to `user` server-side). */
+export interface AgentConfigUserSkillsUpsertRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	skill: AgentConfigSkillInput;
+}
+
+/** `agent_config.user.skills.upsert` response. */
+export interface AgentConfigUserSkillsUpsertResponse {
+	skill: AgentConfigSkillSummary;
+	revision: AgentConfigRevisionView;
+	protocol_version: string;
+}
+
+/** `agent_config.user.skills.delete` request — CLAIM-FREE. */
+export interface AgentConfigUserSkillsDeleteRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+}
+
+/** `agent_config.user.skills.delete` response. */
+export interface AgentConfigUserSkillsDeleteResponse {
 	revision: AgentConfigRevisionView;
 	protocol_version: string;
 }
