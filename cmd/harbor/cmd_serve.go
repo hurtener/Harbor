@@ -181,6 +181,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Protocol-writable. The per-provider `allow_private_token_url` config
 	// flag is the other surface for the same opt-in.
 	registerAllowPrivateExchangeIfDev(os.Getenv(EnvDevAllowPrivateExchange) == "1", logSink)
+	// Dev-only wire-carried OAuth-descriptor escape hatch — reciprocal capture +
+	// banner, mirroring the private-dial hatch above.
+	registerAllowWireOAuthDescriptorIfDev(os.Getenv(EnvAllowWireOAuthDescriptor) == "1", logSink)
 
 	stack, err := serve.Boot(ctx, serve.Options{
 		ConfigPath:      cfgPath,

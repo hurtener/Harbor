@@ -287,7 +287,7 @@ func TestRegistry_LastScopeShortfall_Surfaced(t *testing.T) {
 	if err := p.Connect(context.Background()); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	if err := reg.Register(ServerRegistration{Provider: p, Transport: "streamable_http", URLOrCommand: hs.URL, InitialState: ServerStateOnline}); err != nil {
+	if err := reg.Register(context.Background(), ServerRegistration{Provider: p, Transport: "streamable_http", URLOrCommand: hs.URL, InitialState: ServerStateOnline}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 

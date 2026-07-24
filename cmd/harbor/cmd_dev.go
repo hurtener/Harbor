@@ -144,6 +144,24 @@ const EnvDevAllowPrivateExchange = "HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE"
 // §13 amendment: "every boot prints a stderr banner".
 const PrivateExchangeBanner = "[DEV-ONLY PRIVATE-IP TOKEN EXCHANGE — DO NOT USE IN PRODUCTION]"
 
+// EnvAllowWireOAuthDescriptor is the env var name that unlocks the dev-only
+// opt-in permitting `agent_config.set_oauth_provider` / `add_mcp_connection` to
+// carry a FULL OAuth-provider binding over the wire (token_url / audience /
+// scopes / remote{}) instead of only a boot-declared provider NAME. It RELAXES
+// the credential-plane invariant that no admin-writable field determines a
+// credential sink, so it is fail-closed: unset leaves a wire descriptor carrying
+// any credential-sink field REJECTED (the zero-URL name-only posture). Mirrors
+// HARBOR_DEV_ALLOW_PRIVATE_EXCHANGE (env, not flag, so preflight boots without
+// arguments). Captured once at boot; never re-read at request time; never
+// Protocol-writable. The effective posture is this env OR the
+// `tools.allow_wire_oauth_descriptor` config flag.
+const EnvAllowWireOAuthDescriptor = "HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR"
+
+// WireOAuthDescriptorBanner is the unconditional stderr banner printed on every
+// boot when the wire-carried OAuth-descriptor escape hatch is active. §13
+// amendment: "every boot prints a stderr banner".
+const WireOAuthDescriptorBanner = "[DEV-ONLY WIRE OAUTH DESCRIPTOR — DO NOT USE IN PRODUCTION]"
+
 // DefaultDevPort is the loopback port `harbor dev` listens on when
 // the operator does not override via `--port` or env. Matches the
 // preflight harness default.
@@ -253,6 +271,9 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	// Dev-only private-IP token-exchange escape hatch (read exactly like the
 	// mock hatch above). Captured + banner'd at the same call sites as the mock.
 	allowPrivateExchange := os.Getenv(EnvDevAllowPrivateExchange) == "1"
+	// Dev-only wire-carried OAuth-descriptor escape hatch (read exactly like the
+	// hatches above). Captured + banner'd at the same call sites.
+	allowWireOAuthDescriptor := os.Getenv(EnvAllowWireOAuthDescriptor) == "1"
 
 	// Co-launch log separation (mirrors serve --tui): when --tui is set the
 	// Bubble Tea program owns stdout+stderr, so Runtime logs and the dev-token
@@ -280,6 +301,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	// compile time via devmock.go; this is the runtime surfacing.
 	registerMockIfDevAllowMock(allowMock, logSink)
 	registerAllowPrivateExchangeIfDev(allowPrivateExchange, logSink)
+	registerAllowWireOAuthDescriptorIfDev(allowWireOAuthDescriptor, logSink)
 
 	comp, err := newDevComposition(devCompositionOptions{
 		allowMock:    allowMock,
@@ -365,6 +387,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	supervisor.onReboot = func(_ *serve.Handle) {
 		registerMockIfDevAllowMock(allowMock, stderr)
 		registerAllowPrivateExchangeIfDev(allowPrivateExchange, stderr)
+		registerAllowWireOAuthDescriptorIfDev(allowWireOAuthDescriptor, stderr)
 		if tErr := comp.printDevToken("dev", logger, stderr); tErr != nil {
 			logger.Error("harbor dev: dev-token re-mint after hot-reload failed (the previously printed token remains valid)",
 				slog.String("error", tErr.Error()))

@@ -13,15 +13,17 @@ import (
 func TestCanonicalRules_ListsAllNamedSecrets(t *testing.T) {
 	got := audit.CanonicalRules()
 	want := map[string]bool{
-		"api_key":         false,
-		"password":        false,
-		"secret":          false,
-		"token":           false,
-		"cookie":          false,
-		"authorization":   false,
-		"bearer":          false,
-		"bearer_in_value": false,
-		"multimodal":      false,
+		"api_key":              false,
+		"password":             false,
+		"secret":               false,
+		"token":                false,
+		"cookie":               false,
+		"authorization":        false,
+		"bearer":               false,
+		"injection_credential": false,
+		"bearer_in_value":      false,
+		"basic_in_value":       false,
+		"multimodal":           false,
 	}
 	for _, r := range got {
 		if _, ok := want[r.Name()]; ok {
@@ -80,10 +82,15 @@ func TestKeyRule_RedactsCanonicalKeys(t *testing.T) {
 func TestKeyRule_DoesNotOverMatchPlainWords(t *testing.T) {
 	driver := patterns.New()
 	in := map[string]any{
-		"description":   "this is a normal description, not a secret",
-		"username":      "alice",
-		"tenant_id":     "t-1",
-		"user_password": "yes-this-key-fragment-token-bearer", // partial match must not trigger
+		"description": "this is a normal description, not a secret",
+		"username":    "alice",
+		"tenant_id":   "t-1",
+		// The injection_credential rule matches only the TRAILING key segment,
+		// so a legitimate observability field whose key merely CONTAINS a token
+		// word must pass through unredacted (token_type / token_url are RFC 8693
+		// identifiers, not secrets).
+		"token_type": "urn:ietf:params:oauth:token-type:jwt",
+		"token_url":  "https://broker.example/token",
 	}
 	out, err := driver.Redact(context.Background(), in)
 	if err != nil {
@@ -96,9 +103,60 @@ func TestKeyRule_DoesNotOverMatchPlainWords(t *testing.T) {
 	if m["username"] != "alice" {
 		t.Errorf("username was modified: %v", m["username"])
 	}
-	// user_password is NOT exactly "password" so it should pass through.
-	if m["user_password"] != "yes-this-key-fragment-token-bearer" {
-		t.Errorf("user_password unexpectedly modified: %v", m["user_password"])
+	if m["token_type"] != "urn:ietf:params:oauth:token-type:jwt" {
+		t.Errorf("token_type unexpectedly modified: %v", m["token_type"])
+	}
+	if m["token_url"] != "https://broker.example/token" {
+		t.Errorf("token_url unexpectedly modified: %v", m["token_url"])
+	}
+}
+
+// TestInjectionCredentialRule_RedactsReceiverInjectionForms proves every
+// receiver-style credential-injection form is held to the same `***` bar as the
+// Bearer path: an Authorization: Basic value (both as a header-map value and an
+// inline string), an arbitrary vendor header key, and a nested `_meta`
+// credential leaf.
+func TestInjectionCredentialRule_RedactsReceiverInjectionForms(t *testing.T) {
+	driver := patterns.New()
+	in := map[string]any{
+		"headers": map[string]any{
+			"Authorization":    "Basic dXNlcjpzM2NyZXQ=", // base64(user:s3cret)
+			"x-vendor-api-key": "sk-live-vendor-DO-NOT-LEAK",
+			"content-type":     "application/json",
+		},
+		"_meta": map[string]any{
+			"vendor": map[string]any{
+				"api_key": "meta-cred-DO-NOT-LEAK",
+			},
+		},
+		"log_line": "sent Authorization: Basic dXNlcjpzM2NyZXQ= downstream",
+	}
+	out, err := driver.Redact(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Redact: %v", err)
+	}
+	m := out.(map[string]any)
+	headers := m["headers"].(map[string]any)
+	if headers["Authorization"] != "***" {
+		t.Errorf("Authorization: Basic not redacted: %v", headers["Authorization"])
+	}
+	if headers["x-vendor-api-key"] != "***" {
+		t.Errorf("vendor api-key header not redacted: %v", headers["x-vendor-api-key"])
+	}
+	if headers["content-type"] != "application/json" {
+		t.Errorf("content-type over-redacted: %v", headers["content-type"])
+	}
+	meta := m["_meta"].(map[string]any)
+	vendor := meta["vendor"].(map[string]any)
+	if vendor["api_key"] != "***" {
+		t.Errorf("_meta credential leaf not redacted: %v", vendor["api_key"])
+	}
+	logLine := m["log_line"].(string)
+	if strings.Contains(logLine, "dXNlcjpzM2NyZXQ=") {
+		t.Errorf("inline Basic credential leaked: %q", logLine)
+	}
+	if !strings.Contains(logLine, "Basic ***") {
+		t.Errorf("inline Basic redaction marker missing: %q", logLine)
 	}
 }
 

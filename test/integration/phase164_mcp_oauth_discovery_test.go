@@ -154,7 +154,7 @@ func TestE2E_MCPOAuthDiscovery_ProbeWalksChainAndProjects(t *testing.T) {
 	defer prServer.Close()
 
 	reg := mcp.NewRegistry()
-	if err := reg.Register(mcp.ServerRegistration{
+	if err := reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:                     &oauthDiscoveryStubProvider{id: "mcp-oauth"},
 		Transport:                    "streamable-http",
 		URLOrCommand:                 prServer.URL,
@@ -257,7 +257,7 @@ func TestE2E_MCPOAuthDiscovery_WrongFieldFixture_NoServers(t *testing.T) {
 	defer prServer.Close()
 
 	reg := mcp.NewRegistry()
-	_ = reg.Register(mcp.ServerRegistration{
+	_ = reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:                     &oauthDiscoveryStubProvider{id: "mcp-bad"},
 		Transport:                    "streamable-http",
 		URLOrCommand:                 prServer.URL,
@@ -288,7 +288,7 @@ func TestE2E_MCPOAuthDiscovery_WrongFieldFixture_NoServers(t *testing.T) {
 // Failure mode: a read with a missing identity component is refused.
 func TestE2E_MCPOAuthDiscovery_MissingIdentity_Refused(t *testing.T) {
 	reg := mcp.NewRegistry()
-	_ = reg.Register(mcp.ServerRegistration{
+	_ = reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:     &oauthDiscoveryStubProvider{id: "mcp-x"},
 		Transport:    "streamable-http",
 		URLOrCommand: "https://mcp.example.com",
@@ -315,7 +315,7 @@ func TestE2E_MCPOAuthDiscovery_ConcurrentProbeAndGet(t *testing.T) {
 	defer prServer.Close()
 
 	reg := mcp.NewRegistry()
-	_ = reg.Register(mcp.ServerRegistration{
+	_ = reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:                     &oauthDiscoveryStubProvider{id: "mcp-c"},
 		Transport:                    "streamable-http",
 		URLOrCommand:                 prServer.URL,

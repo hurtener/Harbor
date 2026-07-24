@@ -1005,6 +1005,24 @@ type ToolsConfig struct {
 	// consumer within the wave, not a dangling field.
 	OAuthCredentialBrokers []ToolOAuthCredentialBrokerConfig `yaml:"oauth_credential_brokers,omitempty"`
 
+	// AllowWireOAuthDescriptor is a DEV-ONLY, fail-closed opt-in that permits
+	// `agent_config.set_oauth_provider` / `add_mcp_connection` to carry a FULL
+	// OAuth-provider binding over the wire (`token_url` / `audience` / `scopes` /
+	// `remote{}`) instead of only a boot-declared provider NAME — so a
+	// coordinator can stand up a new OAuth-fronted MCP server at runtime without a
+	// static `oauth_providers[]` block and a redeploy. It RELAXES the
+	// credential-plane invariant that no admin-writable field determines a
+	// credential sink, so it is default false / fail-closed: with it unset (all of
+	// production), a wire descriptor carrying any credential-sink field is REJECTED
+	// exactly as the zero-URL name-only binding rejects it today. When set, the
+	// relaxation stays bounded — `allowed_downstream_hosts` is DERIVED from the
+	// connected server's own URL (never a wire field) and the wire `token_url` /
+	// `remote{}` dials face the identical token-exchange SSRF backstop. The same
+	// opt-in is also available globally via the `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR`
+	// boot env; the effective posture is this flag OR that env. Restart-required.
+	// Do NOT enable in production.
+	AllowWireOAuthDescriptor bool `yaml:"allow_wire_oauth_descriptor,omitempty"`
+
 	// BuiltIn lists opt-in tools shipped in the Harbor binary that the
 	// runtime should register against the catalog at boot. V1.1 ships
 	// two names: `clock.now` (current UTC time) and `text.echo` (echo
@@ -1588,6 +1606,69 @@ type MCPServerConfig struct {
 	// invariant). Optional; empty preserves today's behaviour.
 	// Restart-required.
 	ToolOAuthProviders map[string]string `yaml:"tool_oauth_providers,omitempty"`
+
+	// Injection, when set, binds this connection to per-user credential
+	// INJECTION for a RECEIVER-STYLE MCP server — one that authenticates by
+	// RECEIVING its credential directly on each request (an arbitrary header,
+	// an `Authorization: Basic` value, or a `_meta` key) instead of PULLING it
+	// via RFC 8693. On every identity-stamped outbound tool call the runtime
+	// SOURCES the acting principal's credential from the named broker (the SAME
+	// per-user broker-pull `oauth_provider` performs — per-user via the ctx
+	// identity, fetched-not-held, memory-only TTL) and INJECTS it into the
+	// request per the declared, NON-SECRET mapping. Only the pulled value is
+	// secret; the mapping (which broker + which target key/form) is config.
+	// Mutually exclusive with OAuthProvider / ToolOAuthProviders / a static
+	// `Authorization` header (one auth mode per connection) — the same
+	// downstream-sink allow-list the bearer binding enforces applies here (the
+	// pulled credential may only reach a boot-declared sink). Optional; empty
+	// preserves today's behaviour. Restart-required.
+	Injection *MCPCredentialInjectionConfig `yaml:"injection,omitempty"`
+}
+
+// MCP credential-injection form discriminators (MCPCredentialInjectionConfig.Form).
+const (
+	// MCPInjectionFormHeader injects the pulled credential VALUE as the value of
+	// a declared request header (e.g. `x-vendor-api-key: <pulled>`).
+	MCPInjectionFormHeader = "header"
+	// MCPInjectionFormBasic injects the pulled credential as the password half of
+	// an `Authorization: Basic base64(username ":" <pulled>)` header.
+	MCPInjectionFormBasic = "basic"
+	// MCPInjectionFormMeta injects the pulled credential as the leaf value of a
+	// declared `_meta` key path (dot-separated for nesting, e.g. `vendor.api_key`).
+	MCPInjectionFormMeta = "meta"
+)
+
+// MCPCredentialInjectionConfig is the NON-SECRET per-connection mapping that
+// binds a receiver-style MCP server to per-user credential injection. It names
+// the broker the per-user credential is pulled from and declares WHERE the
+// pulled value is placed on the outbound request — a header, an
+// `Authorization: Basic` value, or a `_meta` key. No secret material lives here;
+// only the broker-pulled value (resolved per-call from the ctx identity) is
+// secret. Every declared target key must be redaction-covered (validation
+// rejects a target the audit redactor would not hold to `***`), so the injected
+// value can never leak uncredacted into an audit payload.
+type MCPCredentialInjectionConfig struct {
+	// Provider names the declared `tools.oauth_providers[]` broker entry the
+	// per-user credential is pulled from (the SAME registry `oauth_provider`
+	// resolves against). Required; an unknown name fails validation.
+	Provider string `yaml:"provider"`
+	// Form selects the injection form: "header" / "basic" / "meta". Required.
+	Form string `yaml:"form"`
+	// Header is the target request header NAME for Form=="header" (e.g.
+	// `x-vendor-api-key`). Required for that form; must be a redaction-covered
+	// credential key and must not be `Authorization` (use Form=="basic").
+	Header string `yaml:"header,omitempty"`
+	// BasicUsername is the username half for Form=="basic". The pulled
+	// credential becomes the password half: `Authorization: Basic
+	// base64(BasicUsername ":" <pulled>)`. Optional — an empty username
+	// (base64(":"+cred)) is the common API-key-as-basic shape. Non-secret.
+	BasicUsername string `yaml:"basic_username,omitempty"`
+	// MetaKey is the target `_meta` key PATH for Form=="meta", dot-separated
+	// for nesting (e.g. `vendor.api_key`). Required for that form; no path
+	// segment may be a reserved `_meta` key (the isolation triple / agent_id /
+	// trace-context / spec namespace) and the leaf segment must be a
+	// redaction-covered credential key.
+	MetaKey string `yaml:"meta_key,omitempty"`
 }
 
 // ToolPolicyConfig is the operator-facing YAML projection of

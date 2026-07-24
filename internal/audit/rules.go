@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/config"
 )
 
 // opaquePassThrough returns true for struct types whose internal
@@ -58,7 +60,31 @@ type keyRule struct {
 func (r *keyRule) Name() string { return r.name }
 
 func (r *keyRule) Apply(_ context.Context, payload any) (any, error) {
-	return walkRedactKeys(payload, r.aliases, 0)
+	aliases := r.aliases
+	return walkRedactKeys(payload, func(k string) bool {
+		return matchesAlias(k, aliases)
+	}, 0)
+}
+
+// keyPredicateRule redacts values whose containing key (map key OR struct field
+// name OR yaml/json tag name) satisfies a predicate rather than matching a fixed
+// alias list. It is how the receiver-style credential-injection forms are held
+// to the same `***` bar as the Bearer path: an arbitrary vendor header key
+// (`x-<vendor>-api-key`) or a `_meta` credential leaf (`vendor.api_key`) is not
+// in any static alias list, but IS a credential key by segment. The predicate is
+// the single authority `config.IsReceiverInjectionCredentialKey` — the SAME one
+// the injection-mapping validation consults — so the redactor covers exactly the
+// keys an operator may declare (fail-closed; no injected value reaches an audit
+// payload uncredacted).
+type keyPredicateRule struct {
+	name  string
+	match func(string) bool
+}
+
+func (r *keyPredicateRule) Name() string { return r.name }
+
+func (r *keyPredicateRule) Apply(_ context.Context, payload any) (any, error) {
+	return walkRedactKeys(payload, r.match, 0)
 }
 
 // regexValueRule scans every string-typed leaf of payload and applies
@@ -86,9 +112,12 @@ func (r *regexValueRule) Apply(_ context.Context, payload any) (any, error) {
 //
 //  1. api_key, password, secret, token, cookie, authorization,
 //     bearer (key-based redaction).
-//  2. bearer_in_value (regex over string values for embedded
-//     `Bearer xxx` credentials).
-//  3. multimodal (inline DataURL / base64 image|audio|file content).
+//  2. injection_credential (predicate-based redaction for arbitrary
+//     receiver-style credential-injection keys — vendor headers and
+//     `_meta` credential leaves the static alias lists cannot enumerate).
+//  3. bearer_in_value / basic_in_value (regex over string values for
+//     embedded `Authorization: Bearer xxx` / `Basic <base64>` credentials).
+//  4. multimodal (inline DataURL / base64 image|audio|file content).
 //
 // Each rule's Name() is enumerable via patterns.Driver.Names() (the
 // production driver shipped in this phase).
@@ -101,10 +130,19 @@ func CanonicalRules() []Rule {
 		&keyRule{name: "cookie", aliases: cookieAliases},
 		&keyRule{name: "authorization", aliases: authorizationKeys},
 		&keyRule{name: "bearer", aliases: bearerKeyAliases},
+		&keyPredicateRule{name: "injection_credential", match: config.IsReceiverInjectionCredentialKey},
 		&regexValueRule{
 			name:    "bearer_in_value",
 			pattern: regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._\-+/=~]+`),
 			repl:    "Bearer " + Placeholder,
+		},
+		&regexValueRule{
+			name: "basic_in_value",
+			// The Basic scheme carries `base64(user:credential)` — a receiver-style
+			// server injection form. The Bearer regex does not match it, so it gets
+			// its own value rule held to the same `***` bar.
+			pattern: regexp.MustCompile(`(?i)\bBasic\s+[A-Za-z0-9._\-+/=~]+`),
+			repl:    "Basic " + Placeholder,
 		},
 		&multimodalRule{name: "multimodal"},
 	}
@@ -123,9 +161,9 @@ func matchesAlias(key string, aliases []string) bool {
 }
 
 // walkRedactKeys deep-walks payload and replaces values whose
-// containing key matches one of aliases. Returns a deep-copied
-// result; never mutates input.
-func walkRedactKeys(v any, aliases []string, depth int) (any, error) {
+// containing key satisfies match. Returns a deep-copied result; never
+// mutates input.
+func walkRedactKeys(v any, match func(string) bool, depth int) (any, error) {
 	if depth >= MaxDepth {
 		return nil, fmt.Errorf("%w (depth=%d)", ErrRedactionDepthExceeded, depth)
 	}
@@ -136,7 +174,7 @@ func walkRedactKeys(v any, aliases []string, depth int) (any, error) {
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, sub := range val {
-			if matchesAlias(k, aliases) {
+			if match(k) {
 				if isArtifactRef(sub) {
 					out[k] = sub
 					continue
@@ -144,7 +182,7 @@ func walkRedactKeys(v any, aliases []string, depth int) (any, error) {
 				out[k] = Placeholder
 				continue
 			}
-			r, err := walkRedactKeys(sub, aliases, depth+1)
+			r, err := walkRedactKeys(sub, match, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -154,7 +192,7 @@ func walkRedactKeys(v any, aliases []string, depth int) (any, error) {
 	case []any:
 		out := make([]any, len(val))
 		for i, item := range val {
-			r, err := walkRedactKeys(item, aliases, depth+1)
+			r, err := walkRedactKeys(item, match, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -165,14 +203,14 @@ func walkRedactKeys(v any, aliases []string, depth int) (any, error) {
 		uint, uint8, uint16, uint32, uint64, float32, float64:
 		return v, nil
 	}
-	return reflectiveRedactKeys(v, aliases, depth+1)
+	return reflectiveRedactKeys(v, match, depth+1)
 }
 
 // reflectiveRedactKeys handles pointers, structs, and other reflect
 // types that the type-switch above didn't catch. Structs are
 // converted to map[string]any (using yaml/json tag → field name)
 // so the result is JSON-serializable for log emit.
-func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
+func reflectiveRedactKeys(v any, match func(string) bool, depth int) (any, error) {
 	if depth >= MaxDepth {
 		return nil, fmt.Errorf("%w (depth=%d)", ErrRedactionDepthExceeded, depth)
 	}
@@ -191,7 +229,7 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 		if rv.IsNil() {
 			return nil, nil
 		}
-		return reflectiveRedactKeys(rv.Elem().Interface(), aliases, depth+1)
+		return reflectiveRedactKeys(rv.Elem().Interface(), match, depth+1)
 	case reflect.Struct:
 		t := rv.Type()
 		out := make(map[string]any, t.NumField())
@@ -201,7 +239,7 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 				continue
 			}
 			name := fieldName(f)
-			if matchesAlias(name, aliases) {
+			if match(name) {
 				field := rv.Field(i).Interface()
 				if isArtifactRef(field) {
 					out[name] = field
@@ -210,7 +248,7 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 				}
 				continue
 			}
-			r, err := walkRedactKeys(rv.Field(i).Interface(), aliases, depth+1)
+			r, err := walkRedactKeys(rv.Field(i).Interface(), match, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -227,7 +265,7 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 		for iter.Next() {
 			k := iter.Key().String()
 			subVal := iter.Value().Interface()
-			if matchesAlias(k, aliases) {
+			if match(k) {
 				if isArtifactRef(subVal) {
 					out[k] = subVal
 				} else {
@@ -235,7 +273,7 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 				}
 				continue
 			}
-			r, err := walkRedactKeys(subVal, aliases, depth+1)
+			r, err := walkRedactKeys(subVal, match, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -245,7 +283,7 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 	case reflect.Slice, reflect.Array:
 		out := make([]any, rv.Len())
 		for i := range rv.Len() {
-			r, err := walkRedactKeys(rv.Index(i).Interface(), aliases, depth+1)
+			r, err := walkRedactKeys(rv.Index(i).Interface(), match, depth+1)
 			if err != nil {
 				return nil, err
 			}

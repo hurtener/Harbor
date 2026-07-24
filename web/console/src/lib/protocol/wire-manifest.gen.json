@@ -586,6 +586,12 @@
           "optional": true
         },
         {
+          "key": "oauth",
+          "type": "object",
+          "ref": "AgentConfigOAuthProviderDescriptor",
+          "optional": true
+        },
+        {
           "key": "oauth_discovery_allowed_origins",
           "type": "array",
           "optional": true
@@ -738,6 +744,16 @@
         {
           "key": "scopes",
           "type": "array",
+          "optional": true
+        },
+        {
+          "key": "token_url",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "audience",
+          "type": "string",
           "optional": true
         }
       ]

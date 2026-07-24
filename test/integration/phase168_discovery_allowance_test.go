@@ -123,7 +123,7 @@ func newDaHarness(t *testing.T) *daHarness {
 // agent's active revision declares it.
 func (h *daHarness) registerServer(t *testing.T, tenant, agentID, name string, origins []string) {
 	t.Helper()
-	if err := h.mcpReg.Register(mcpdrv.ServerRegistration{
+	if err := h.mcpReg.Register(context.Background(), mcpdrv.ServerRegistration{
 		Provider:                     daStubProvider{id: tools.ToolSourceID(name)},
 		Transport:                    "streamable-http",
 		URLOrCommand:                 "https://" + name + ".invalid/rpc",

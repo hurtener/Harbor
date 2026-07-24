@@ -207,6 +207,91 @@ func (b *ProviderBuilder) BrokerNames() []string {
 // is the boot-pinned remote PULL. The descriptor NEVER contributes a
 // URL, an env-var name, or a secret — only the scope subset.
 func (b *ProviderBuilder) Build(ctx context.Context, name, brokerName string, scopes []string) (OAuthProvider, error) {
+	return b.buildBrokerPull(ctx, name, brokerName, scopes, brokerPullOverride{})
+}
+
+// WireProviderDescriptor is the non-secret input to [ProviderBuilder.BuildWire]:
+// the NEW server's OAuth params carried over the wire behind the dev-only
+// `allow_wire_oauth_descriptor` opt-in, PLUS the boot-declared credential broker
+// NAME. The runtime's OWN credential custody (the coordinator pull endpoint, the
+// service-token env-var name, the org client credential) is read from the boot
+// broker — NONE of it rides the wire. AllowedDownstreamHosts is DERIVED by the
+// caller from the bound connection's own URL (never a wire field); the wire
+// TokenURL is dialed through the token-exchange SSRF backstop.
+type WireProviderDescriptor struct {
+	// Name is the installed provider name.
+	Name string
+	// CredentialBroker names the boot-declared broker that supplies the runtime's
+	// own credential custody. Required.
+	CredentialBroker string
+	// TokenURL is the NEW server's RFC-8693 token-exchange endpoint (wire-carried).
+	TokenURL string
+	// Audience is the NEW server's exchanged-token audience (wire-carried; optional).
+	Audience string
+	// Scopes is the requested scope subset (wire-carried; optional).
+	Scopes []string
+	// AllowedDownstreamHosts is the DERIVED downstream sink allow-list (from the
+	// bound connection's URL). May be empty (a set_oauth_provider install with no
+	// bound connection yet — the provider is unbindable until a connection derives
+	// its sink); a bound connection ALWAYS supplies exactly one host.
+	AllowedDownstreamHosts []string
+}
+
+// ErrWireDescriptorIncomplete — a wire provider descriptor is missing a required
+// field (token_url or credential_broker). Loud, fail-closed.
+var ErrWireDescriptorIncomplete = errors.New("auth: wire oauth provider descriptor is incomplete (token_url and credential_broker are required for the dev-gated wire binding)")
+
+// BuildWire constructs a broker-pull `tokenexchange` provider for a wire-carried
+// binding (the dev-only `allow_wire_oauth_descriptor` path). It reads the
+// runtime's OWN credential custody (the coordinator pull endpoint, the
+// service-token env name, the org client credential) from the boot-declared
+// broker NAMED by the descriptor — EXACTLY as [Build] does — and overrides ONLY
+// the NEW server's per-server OAuth params (token endpoint, audience,
+// downstream sink) from the wire:
+//
+//   - The wire TokenURL replaces the broker's exchange endpoint (the NEW server's
+//     token endpoint), dialed through the driver's own token-exchange SSRF
+//     backstop (private / link-local / ULA / unspecified refused post-DNS, every
+//     redirect refused, no proxy — subject to the independent dev-only
+//     private-dial opt-in).
+//   - The exchanged token's downstream sink is the caller-DERIVED
+//     AllowedDownstreamHosts (from the bound connection's own URL, never a wire
+//     field), so a token can only ever be injected into the endpoint the
+//     connection actually dials.
+//   - The wire Audience (optional) sets the NEW server's audience; the broker's
+//     boot scope ceiling still clamps the requested scopes.
+//
+// No credential-source URL, env-var name, or secret rides the wire — the
+// runtime's credential custody is 100% boot-declared on the named broker.
+func (b *ProviderBuilder) BuildWire(ctx context.Context, desc WireProviderDescriptor) (OAuthProvider, error) {
+	if desc.TokenURL == "" || desc.CredentialBroker == "" {
+		return nil, fmt.Errorf("%w (name=%q)", ErrWireDescriptorIncomplete, desc.Name)
+	}
+	return b.buildBrokerPull(ctx, desc.Name, desc.CredentialBroker, desc.Scopes, brokerPullOverride{
+		override:     true,
+		tokenURL:     desc.TokenURL,
+		audience:     desc.Audience,
+		allowedHosts: desc.AllowedDownstreamHosts,
+	})
+}
+
+// brokerPullOverride carries the wire-supplied per-server OAuth params that
+// override the boot broker's defaults for a wire-installed provider. The zero
+// value (override=false) is the plain boot broker-pull path.
+type brokerPullOverride struct {
+	override     bool
+	tokenURL     string
+	audience     string
+	allowedHosts []string
+}
+
+// buildBrokerPull is the shared broker-pull construction for both [Build] (no
+// override — every sink read from the boot broker) and [BuildWire] (override —
+// the NEW server's token endpoint / audience / DERIVED downstream sink come from
+// the wire, the credential custody + scope ceiling stay boot-declared). The
+// credential SOURCE (the coordinator pull endpoint + the service-token env name +
+// the org client credential) is ALWAYS the boot broker's — never wire.
+func (b *ProviderBuilder) buildBrokerPull(ctx context.Context, name, brokerName string, scopes []string, ov brokerPullOverride) (OAuthProvider, error) {
 	broker, ok := b.brokers[brokerName]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q (declared: %v)", ErrUnknownBroker, brokerName, b.BrokerNames())
@@ -232,13 +317,27 @@ func (b *ProviderBuilder) Build(ctx context.Context, name, brokerName string, sc
 	if err := src.ValidateAtBoot(ctx); err != nil {
 		return nil, fmt.Errorf("tools/oauth: broker %q credential source: %w", brokerName, err)
 	}
+	// Sink params: boot broker by default; the wire overrides ONLY the NEW
+	// server's token endpoint, audience, and DERIVED downstream sink. The scope
+	// ceiling always stays the broker's boot bound (a wire descriptor can never
+	// widen scope past it).
+	tokenURL := broker.TokenURL
+	audience := broker.Audience
+	allowedHosts := append([]string(nil), broker.AllowedDownstreamHosts...)
+	if ov.override {
+		tokenURL = ov.tokenURL
+		allowedHosts = append([]string(nil), ov.allowedHosts...)
+		if ov.audience != "" {
+			audience = ov.audience
+		}
+	}
 	pcfg := ProviderConfig{
 		Name:                   name,
 		CredentialSource:       src,
 		Scopes:                 append([]string(nil), scopes...),
-		TokenURL:               broker.TokenURL,
-		AllowedDownstreamHosts: append([]string(nil), broker.AllowedDownstreamHosts...),
-		Audience:               broker.Audience,
+		TokenURL:               tokenURL,
+		AllowedDownstreamHosts: allowedHosts,
+		Audience:               audience,
 		ScopeCeiling:           append([]string(nil), broker.ScopeCeiling...),
 	}
 	prov, err := Resolve(ctx, TokenExchangeDriverName, pcfg, b.factoryDeps)

@@ -353,8 +353,16 @@ type ServerRegistration struct {
 }
 
 // Register adds a server to the Registry. Re-registering the same name
-// replaces the prior entry (the dev hot-reload path re-registers).
-func (r *Registry) Register(reg ServerRegistration) error {
+// replaces the prior entry (the dev hot-reload path and the runtime
+// re-attach path both re-register). A same-name replacement CLOSES the
+// prior provider's transport so the replaced session drains instead of
+// leaking: the entry is swapped under the write lock, then the displaced
+// provider's Close runs OUTSIDE the lock (a transport close can block on
+// session teardown and must not stall concurrent reads — mirroring
+// Deregister). When the replacement re-registers the very same provider
+// instance (an idempotent re-register of the live one), the close is
+// skipped so the just-registered transport is not torn down.
+func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 	if reg.Provider == nil {
 		return fmt.Errorf("mcp: Register requires a non-nil Provider")
 	}
@@ -374,7 +382,7 @@ func (r *Registry) Register(reg ServerRegistration) error {
 		st = ServerStateOffline
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	prior := r.servers[name]
 	r.servers[name] = &serverEntry{
 		provider:     reg.Provider,
 		transport:    reg.Transport,
@@ -392,6 +400,16 @@ func (r *Registry) Register(reg ServerRegistration) error {
 			state:             st,
 			oauthBindingCount: reg.OAuthBindingCount,
 		},
+	}
+	r.mu.Unlock()
+	// Close the DISPLACED provider's transport outside the lock so a same-name
+	// replacement drains the old session instead of leaking it. Skip when the
+	// prior entry held the exact same provider (a no-op re-register must not
+	// close the transport we just re-registered).
+	if prior != nil && prior.provider != nil && prior.provider != reg.Provider {
+		if err := prior.provider.Close(ctx); err != nil {
+			return fmt.Errorf("mcp: Register %q: close replaced transport: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -424,6 +442,24 @@ func (r *Registry) Deregister(ctx context.Context, name string) error {
 		return fmt.Errorf("mcp: deregister %q: close transport: %w", name, err)
 	}
 	return nil
+}
+
+// OwnerOf returns the (tenant, agent) owner tag of the named registration and
+// whether a registration by that name currently exists. It is the read the
+// same-name replace consults to keep an atomic upsert scoped to the caller's
+// OWN registration: a re-attach that supersedes a still-live connection is the
+// operator replacing their own, so tearing the old one down first is intended;
+// a same-name attach by a DIFFERENT owner must never tear down another owner's
+// live tools/transport. A boot-declared server carries the zero owner. The
+// returned owner is a value copy, safe to read without the registry lock.
+func (r *Registry) OwnerOf(name string) (auth.Owner, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.servers[name]
+	if !ok {
+		return auth.Owner{}, false
+	}
+	return e.owner, true
 }
 
 // SourceIDs returns the source ids of every currently-registered server —

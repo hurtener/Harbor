@@ -17,6 +17,48 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.18.0] — 2026-07-23
+
+Minor: runtime-time MCP connection management + per-user credential delivery — an idempotent live re-attach, a dev-gated wire-carried OAuth-provider descriptor, and per-user credential injection for receiver-style MCP servers.
+
+### Added
+
+- **`agent_config.add_mcp_connection` is idempotent at the live layer.** A
+  same-name attach against a still-live in-memory registration now
+  synchronously REPLACES it — deregister the old server's tools + close its
+  transport, then register the new one — an atomic, owner-scoped upsert,
+  instead of failing with a duplicate-tool-name collision. This closes the
+  synchronous-attach / deferred-detach asymmetry that otherwise stranded a
+  coordinator re-establishing a connection on a running runtime with ZERO tools
+  until a process restart. A same-name collision owned by a DIFFERENT tenant /
+  agent is rejected loud (`ErrConnectionNameOwnerConflict`) and never tears
+  down another owner's live registration; the fix also closes a transport leak
+  in the registry's same-name overwrite path.
+- **A dev-gated, wire-carried OAuth-provider descriptor.**
+  `agent_config.set_oauth_provider` / `add_mcp_connection` may carry a new
+  server's OAuth binding (`token_url`, `audience`, `scopes`, naming a
+  boot-declared credential broker) so a new OAuth-fronted MCP server can be
+  connected at runtime without a static `tools.oauth_providers[]` block and a
+  redeploy — but ONLY behind a fail-closed, boot-only opt-in
+  (`tools.allow_wire_oauth_descriptor`, or the `HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR`
+  boot env; default off). With the opt-in off (all production), a descriptor
+  carrying any credential-sink field is rejected exactly as before. When an
+  operator opts in, the downstream allow-list is DERIVED from the connected
+  server's own URL (never wire-chosen), the wire token endpoint is dialed
+  through the same SSRF backstop as the boot path (private / link-local /
+  unspecified refused, redirects refused, no proxy), and the runtime's own
+  credential custody stays entirely boot-declared — no secret ever rides the
+  wire.
+- **Per-user credential injection for receiver-style MCP servers.** The
+  southbound MCP driver can source the acting principal's credential from the
+  broker per outbound tool call and inject it in a server's declared form
+  (arbitrary headers, `Authorization: Basic`, or MCP `_meta`), reaching a
+  server that RECEIVES its credential directly instead of pulling it via
+  RFC 8693. The injection mapping is non-secret connection config; the pulled
+  value is per-user, fetched-not-held, and never logged — the audit redactor
+  covers every injected form. Injection is mutually exclusive with the bearer
+  OAuth mode (one auth mode per connection).
+
 ## [1.17.4] — 2026-07-23
 
 Patch: fix the Console's posture-edit 400 and a silent-park on an unresolvable MCP OAuth binding.

@@ -210,6 +210,16 @@ type Service struct {
 	// boot-declared provider is edited in yaml + restart (boot wins). Populated
 	// at the cmd/harbor + devstack boundary from the loaded config.
 	bootDeclaredOAuthProviders map[string]struct{}
+	// allowWireOAuthDescriptor is the effective DEV-ONLY, fail-closed opt-in that
+	// permits set_oauth_provider / add_mcp_connection to carry a FULL OAuth
+	// provider binding over the wire (token_url / audience / scopes / remote{})
+	// instead of only a boot-declared provider NAME. Default false / fail-closed:
+	// with it off (all of production) a wire descriptor carrying any
+	// credential-sink field is REJECTED (the zero-URL name-only posture,
+	// unchanged). The effective value is (tools.allow_wire_oauth_descriptor config
+	// flag) OR (the HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR boot env), computed at the
+	// cmd/harbor + devstack boundary and injected here — never Protocol-writable.
+	allowWireOAuthDescriptor bool
 	// coordinator is the unified pause/resume primitive an auth-required
 	// attach parks on. Optional — nil ⇒ an auth-required attach fails loud
 	// with ErrCoordinatorUnavailable rather than silently dropping the auth
@@ -463,6 +473,20 @@ func WithBootDeclaredOAuthProviders(names []string) Option {
 			}
 		}
 		s.bootDeclaredOAuthProviders = set
+	}
+}
+
+// WithAllowWireOAuthDescriptor sets the effective DEV-ONLY, fail-closed opt-in
+// that permits set_oauth_provider / add_mcp_connection to carry a FULL OAuth
+// provider binding over the wire (token_url / audience / scopes / remote{}). The
+// caller passes (tools.allow_wire_oauth_descriptor config flag) OR (the
+// HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR boot env). Default (option not applied) is
+// false / fail-closed — a wire descriptor carrying any credential-sink field is
+// rejected, the zero-URL name-only posture unchanged. Injected at the cmd/harbor
+// + devstack boundary; never Protocol-writable.
+func WithAllowWireOAuthDescriptor(allow bool) Option {
+	return func(s *Service) {
+		s.allowWireOAuthDescriptor = allow
 	}
 }
 

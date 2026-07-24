@@ -95,7 +95,7 @@ func newTestRegistry(t *testing.T) *Registry {
 	r := NewRegistry(WithRegistryClock(func() time.Time {
 		return time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
 	}))
-	if err := r.Register(ServerRegistration{
+	if err := r.Register(context.Background(), ServerRegistration{
 		Provider:          &stubProvider{id: "github-server", toolNames: []string{"issues"}, resources: []string{"repo://x"}, prompts: []string{"pr"}},
 		Transport:         "http+sse",
 		URLOrCommand:      "https://mcp.example.com/github",
@@ -104,7 +104,7 @@ func newTestRegistry(t *testing.T) *Registry {
 	}); err != nil {
 		t.Fatalf("Register github: %v", err)
 	}
-	if err := r.Register(ServerRegistration{
+	if err := r.Register(context.Background(), ServerRegistration{
 		Provider:     &stubProvider{id: "slack-server", toolNames: []string{"post"}},
 		Transport:    "stdio",
 		URLOrCommand: "/usr/bin/slack-mcp",
@@ -304,7 +304,7 @@ func TestRegistry_Probe_Happy(t *testing.T) {
 
 func TestRegistry_Probe_ErrorRecorded(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(ServerRegistration{
+	if err := r.Register(context.Background(), ServerRegistration{
 		Provider:  &stubProvider{id: "bad-server", discErr: errors.New("transport down")},
 		Transport: "http+sse",
 	}); err != nil {

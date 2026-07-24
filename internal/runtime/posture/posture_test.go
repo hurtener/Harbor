@@ -84,7 +84,7 @@ func TestCountersProvider_MCPHealthyCount(t *testing.T) {
 	// Two healthy servers + one offline. The offline one must NOT
 	// count in MCPConnectionsHealthy.
 	for _, name := range []string{"alpha", "beta"} {
-		if err := reg.Register(mcpdrv.ServerRegistration{
+		if err := reg.Register(context.Background(), mcpdrv.ServerRegistration{
 			Provider:     &postureStubProvider{id: tools.ToolSourceID(name)},
 			Transport:    "stdio",
 			InitialState: mcpdrv.ServerStateOnline,
@@ -92,7 +92,7 @@ func TestCountersProvider_MCPHealthyCount(t *testing.T) {
 			t.Fatalf("Register %q: %v", name, err)
 		}
 	}
-	if err := reg.Register(mcpdrv.ServerRegistration{
+	if err := reg.Register(context.Background(), mcpdrv.ServerRegistration{
 		Provider:     &postureStubProvider{id: "offline"},
 		Transport:    "stdio",
 		InitialState: mcpdrv.ServerStateOffline,

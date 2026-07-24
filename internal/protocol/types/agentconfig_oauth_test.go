@@ -6,31 +6,53 @@ import (
 	"testing"
 )
 
-// TestSetOAuthProviderWire_HasNoSinkField asserts the writable OAuth provider
-// descriptor exposes NO field that is a URL or an env-var name — the structural
-// form of the credential-plane invariant (D-300/D-303): no admin-writable field
-// may determine where a credential is sent. The allowed field set is exactly
-// {name, driver, credential_source, credential_broker, scopes}; any URL/env
-// field (token_url, auth_url, client_id_env, client_secret_env, remote) would be
-// a sink and must not exist on the struct.
-func TestSetOAuthProviderWire_HasNoSinkField(t *testing.T) {
+// TestSetOAuthProviderWire_FieldSetIsClosed pins the writable OAuth provider
+// descriptor to a CLOSED field set. By default it is the name-only shape
+// {name, driver, credential_source, credential_broker, scopes} (D-300/D-303).
+// The dev-gated wire fields {token_url, audience} (D-340) — the NEW server's
+// OAuth params — are also permitted BUT are enforced at validation behind the
+// fail-closed `tools.allow_wire_oauth_descriptor` opt-in; with the opt-in off
+// either is rejected loud, so their presence on the struct does NOT weaken the
+// credential-plane invariant by default. A NEW field that is not in this closed
+// set fails the test — a new sink must be proven safe (and gated) before it lands.
+func TestSetOAuthProviderWire_FieldSetIsClosed(t *testing.T) {
 	allowed := map[string]struct{}{
+		// Name-only shape (D-303) — credential_broker required in BOTH shapes.
 		"name": {}, "driver": {}, "credential_source": {}, "credential_broker": {}, "scopes": {},
+		// Dev-gated wire fields (D-340): the NEW server's token endpoint + audience.
+		// The downstream sink is DERIVED (no `allowed_downstream_hosts`) and the
+		// runtime's OWN credential source stays boot-declared on the named broker
+		// (no `remote`, no env-var names).
+		"token_url": {}, "audience": {},
 	}
-	forbiddenSubstrings := []string{"url", "_env", "secret", "token_", "auth_", "remote", "client_id", "client_secret"}
-
 	rt := reflect.TypeOf(AgentConfigOAuthProviderDescriptor{})
 	for i := range rt.NumField() {
 		tag := rt.Field(i).Tag.Get("json")
 		name := strings.Split(tag, ",")[0]
 		if _, ok := allowed[name]; !ok {
-			t.Fatalf("descriptor field %q (json %q) is not in the allowed zero-URL set %v — a new field must be proven non-sink", rt.Field(i).Name, name, keys(allowed))
+			t.Fatalf("descriptor field %q (json %q) is not in the closed set %v — a new field is a potential sink and must be proven safe + gated (D-340)", rt.Field(i).Name, name, keys(allowed))
 		}
-		low := strings.ToLower(name)
-		for _, bad := range forbiddenSubstrings {
-			if strings.Contains(low, bad) {
-				t.Fatalf("descriptor field %q contains forbidden sink substring %q — no URL/env/secret field may exist on the writable descriptor (D-300)", name, bad)
-			}
+	}
+}
+
+// TestSetOAuthProviderWire_NoCredentialSourceOrRawHostField asserts the fields
+// that must NEVER be wire-writable — EVEN behind the D-340 opt-in — are absent:
+// any credential-SOURCE URL or env-var name (the runtime's own credential custody
+// stays 100% boot-declared on the named credential_broker; no `remote`, no
+// `client_*_env`, no `auth_url`), and a raw `allowed_downstream_hosts` list (the
+// downstream sink is DERIVED from the connected server's URL, never wire-chosen).
+// This is the structural proof that a self-contained wire credential-pull — the
+// exfil surface — cannot exist.
+func TestSetOAuthProviderWire_NoCredentialSourceOrRawHostField(t *testing.T) {
+	forbidden := map[string]struct{}{
+		"remote": {}, "client_id_env": {}, "client_secret_env": {}, "auth_url": {},
+		"auth_token_env": {}, "allowed_downstream_hosts": {},
+	}
+	rt := reflect.TypeOf(AgentConfigOAuthProviderDescriptor{})
+	for i := range rt.NumField() {
+		name := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+		if _, bad := forbidden[name]; bad {
+			t.Fatalf("descriptor field %q must NEVER be wire-writable (the runtime credential source stays boot-declared on the named broker; the downstream sink is DERIVED, never a wire list) — D-340", name)
 		}
 	}
 }

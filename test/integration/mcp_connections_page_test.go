@@ -135,7 +135,7 @@ func buildMCPPageEnv(t *testing.T) *mcpPageEnv {
 
 	// Real MCP registry with one stub-backed server.
 	reg := mcp.NewRegistry()
-	if err := reg.Register(mcp.ServerRegistration{
+	if err := reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:          &mcpPageStubProvider{id: tools.ToolSourceID(mcpPageServer)},
 		Transport:         "http+sse",
 		URLOrCommand:      "https://mcp.example.com/github",
@@ -475,7 +475,7 @@ func mcpToggleRawHTMLTrust(t *testing.T, env *mcpPageEnv) {
 	// build an equivalent one over the SAME bus + a fresh registry so
 	// the audit event lands on env.bus the subscribers watch.
 	reg := mcp.NewRegistry()
-	if err := reg.Register(mcp.ServerRegistration{
+	if err := reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:     &mcpPageStubProvider{id: tools.ToolSourceID(mcpPageServer)},
 		Transport:    "http+sse",
 		InitialState: mcp.ServerStateOnline,

@@ -79,7 +79,7 @@ func newAppsToolCtx(t *testing.T) *mcpconsole.ToolContextStore {
 func newAppsRegistry(t *testing.T, body []byte) *mcp.Registry {
 	t.Helper()
 	reg := mcp.NewRegistry()
-	if err := reg.Register(mcp.ServerRegistration{
+	if err := reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:     &stubProvider{id: "srv-a", resourceBody: body},
 		Transport:    "inmemory",
 		InitialState: mcp.ServerStateOnline,

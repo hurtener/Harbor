@@ -144,7 +144,7 @@ func asViewStatus(req *types.MCPOAuthRequirementView) *types.MCPDiscoveryStepSta
 
 func registerServer(t *testing.T, reg *mcp.Registry, id, serverURL, metadataURL string, allowed []string) {
 	t.Helper()
-	if err := reg.Register(mcp.ServerRegistration{
+	if err := reg.Register(context.Background(), mcp.ServerRegistration{
 		Provider:                     &oauthDiscoveryStubProvider{id: tools.ToolSourceID(id)},
 		Transport:                    "streamable-http",
 		URLOrCommand:                 serverURL,

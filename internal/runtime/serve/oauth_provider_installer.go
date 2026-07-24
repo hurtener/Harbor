@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
@@ -28,22 +29,38 @@ import (
 // building them from the boot credential broker (auth.ProviderBuilder) and
 // installing them owner-tagged into the shared auth.ProviderSet.
 //
-// Concurrent reuse: builder + set are set once at construction; both are
-// internally synchronised. The installer holds no mutable state.
+// Concurrent reuse: builder + set + allowWireDescriptor are set once at
+// construction; the builder + set are internally synchronised. The installer
+// holds no mutable state.
 type OAuthProviderInstaller struct {
 	builder *toolauth.ProviderBuilder
 	set     toolauth.ProviderSet
+	// allowWireDescriptor is the effective DEV-ONLY, fail-closed opt-in (the
+	// tools.allow_wire_oauth_descriptor config flag OR the boot env). It is a
+	// KILL-SWITCH honoured on EVERY build — including the run-start reconcile —
+	// so a wire-carried provider (TokenURL set) persisted during an opt-in-ON
+	// window is NOT rebuilt live after the operator restarts with the opt-in
+	// OFF. A name-only / boot broker-pull provider is unaffected.
+	allowWireDescriptor bool
+	// logger surfaces the kill-switch skip (a wire provider not rebuilt after a
+	// flip-off) loud — never a silent drop.
+	logger *slog.Logger
 }
 
 // NewOAuthProviderInstaller builds the production installer. Both the builder
 // and the set are mandatory; a nil either returns a nil installer so the caller
 // leaves the install verbs unwired (→ 501 at the wire edge) rather than
-// nil-panicking.
-func NewOAuthProviderInstaller(builder *toolauth.ProviderBuilder, set toolauth.ProviderSet) *OAuthProviderInstaller {
+// nil-panicking. allowWireDescriptor is the effective wire-descriptor opt-in
+// (config flag OR boot env) — the kill-switch consulted on every build. A nil
+// logger is replaced with the default so the kill-switch skip is never silent.
+func NewOAuthProviderInstaller(builder *toolauth.ProviderBuilder, set toolauth.ProviderSet, allowWireDescriptor bool, logger *slog.Logger) *OAuthProviderInstaller {
 	if builder == nil || set == nil {
 		return nil
 	}
-	return &OAuthProviderInstaller{builder: builder, set: set}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &OAuthProviderInstaller{builder: builder, set: set, allowWireDescriptor: allowWireDescriptor, logger: logger}
 }
 
 // InstallProvider resolves the descriptor's credential_broker against the boot
@@ -56,8 +73,23 @@ func (i *OAuthProviderInstaller) InstallProvider(ctx context.Context, tenant, ag
 	if owner.Tenant == "" || owner.Agent == "" {
 		return fmt.Errorf("%w: install requires a (tenant, agent) owner (tenant=%q agent=%q)", agentcfgprotocol.ErrInvalidProvider, tenant, agentID)
 	}
-	prov, err := i.builder.Build(ctx, desc.Name, desc.CredentialBroker, desc.Scopes)
+	prov, err := i.build(ctx, desc)
 	if err != nil {
+		if errors.Is(err, ErrWireDescriptorDisabled) {
+			// Kill-switch: a wire provider persisted during a prior opt-in-ON
+			// window is presented for reconcile after a restart with the opt-in
+			// OFF. Do NOT rebuild it live; log LOUD and SKIP (fail-closed — the
+			// provider stays ABSENT, so a still-bound connection's next call fails
+			// loud rather than silently POSTing the boot client credential to the
+			// previously wire-set endpoint). Returning nil (not an error) keeps the
+			// reconcile from bricking run start over one disabled provider; the
+			// loud log makes the skip non-silent (CLAUDE.md §13). The write path
+			// never reaches here — the agent-config handler gates it first.
+			i.logger.WarnContext(ctx,
+				"oauth provider: wire-carried provider NOT rebuilt — tools.allow_wire_oauth_descriptor is off (kill-switch); the provider stays absent and a bound connection's next call fails loud",
+				"provider", desc.Name, "tenant", tenant, "agent", agentID)
+			return nil
+		}
 		if errors.Is(err, toolauth.ErrUnknownBroker) || errors.Is(err, toolauth.ErrBrokerMissingCredentialURL) {
 			return fmt.Errorf("%w: %w", agentcfgprotocol.ErrProviderBrokerUnknown, err)
 		}
@@ -70,6 +102,38 @@ func (i *OAuthProviderInstaller) InstallProvider(ctx context.Context, tenant, ag
 		return fmt.Errorf("%w: %w", agentcfgprotocol.ErrInvalidProvider, err)
 	}
 	return nil
+}
+
+// ErrWireDescriptorDisabled — a wire-carried provider (TokenURL set) was
+// presented for build while the fail-closed wire-descriptor opt-in is OFF. The
+// install path never reaches this (the agent-config handler gates the write), so
+// it fires only on the run-start RECONCILE of a wire provider persisted during a
+// prior opt-in-ON window: the kill-switch refuses to rebuild it live after a
+// restart with the opt-in off.
+var ErrWireDescriptorDisabled = errors.New("serve: wire-carried oauth provider not rebuilt — tools.allow_wire_oauth_descriptor is off (the dev opt-in is a kill-switch: a wire provider installed while it was on is not rebuilt after a restart with it off)")
+
+// build constructs the provider instance for a descriptor: the DEV-GATED wire
+// binding (TokenURL set — the NEW server's wire token_url + wire audience + the
+// runtime-DERIVED downstream sink, with the runtime's OWN credential custody read
+// from the named boot broker) or the default name-only broker-pull shape. The
+// wire-descriptor opt-in is a KILL-SWITCH honoured HERE on every build: a wire
+// descriptor with the opt-in off is refused loud (the install path is already
+// gated at the handler; this closes the reconcile-after-flip-off path).
+func (i *OAuthProviderInstaller) build(ctx context.Context, desc agentcfg.OAuthProviderDescriptor) (toolauth.OAuthProvider, error) {
+	if desc.TokenURL != "" {
+		if !i.allowWireDescriptor {
+			return nil, fmt.Errorf("%w (provider=%q)", ErrWireDescriptorDisabled, desc.Name)
+		}
+		return i.builder.BuildWire(ctx, toolauth.WireProviderDescriptor{
+			Name:                   desc.Name,
+			CredentialBroker:       desc.CredentialBroker,
+			TokenURL:               desc.TokenURL,
+			Audience:               desc.Audience,
+			Scopes:                 append([]string(nil), desc.Scopes...),
+			AllowedDownstreamHosts: append([]string(nil), desc.AllowedDownstreamHosts...),
+		})
+	}
+	return i.builder.Build(ctx, desc.Name, desc.CredentialBroker, desc.Scopes)
 }
 
 // UninstallProvider removes the named provider from the owner-tagged set and

@@ -180,6 +180,13 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if toolBindErr != nil {
 		return fmt.Errorf("mcp server %q: %w", ms.Name, toolBindErr)
 	}
+	// Resolve the per-user credential-injection binding (receiver-style server),
+	// re-enforcing one-auth-mode + the downstream-sink allow-list at attach time
+	// for the runtime-add path exactly like the bearer binding.
+	injection, injErr := resolveInjectionBinding(ms, mode, resolver)
+	if injErr != nil {
+		return fmt.Errorf("mcp server %q: %w", ms.Name, injErr)
+	}
 	provider, err := New(Config{
 		Name:               ms.Name,
 		TransportMode:      mode,
@@ -196,6 +203,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		ToolContext:        deps.ToolContext,
 		OAuthProvider:      oauthProvider,
 		ToolOAuthProviders: toolProviders,
+		Injection:          injection,
 		MetaAnnotations:    cloneHeaderMap(ms.MetaAnnotations),
 		// Record any `WWW-Authenticate` OAuth step-up challenge on the
 		// registry state so an operator can inspect the advertised requirement
@@ -212,6 +220,48 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	})
 	if err != nil {
 		return fmt.Errorf("mcp.New: %w", err)
+	}
+	// Idempotent same-name replace at the live layer — SAME-OWNER ONLY. When
+	// this connection name already has a live in-memory registration owned by
+	// the SAME (tenant, agent) — a re-attach against a still-attached server
+	// whose deferred detach has not run yet — tear the old one down BEFORE
+	// dialing and registering the new connection: (1) deregister the old
+	// server's catalog tools (so the register step below does not collide on a
+	// duplicate `<name>_<tool>`), and (2) close the old transport via the
+	// registry deregister. The attach then proceeds as an atomic upsert. The
+	// teardown-first supersede is deliberate but confined to the caller
+	// replacing THEIR OWN connection (the operator asked to replace it): a
+	// same-name registration owned by a DIFFERENT owner is NEVER torn down —
+	// that would evict another tenant's live tools/transport — it is rejected
+	// loud instead (the registry is process-global bare-name but owner-tagged,
+	// and the run-start reconcile is likewise owner-scoped). A FIRST attach
+	// with no prior registration is unaffected: the deregister legs no-op
+	// (DeregisterSource removes 0; Deregister returns ErrServerNotFound), both
+	// swallowed — idempotent by construction. This runs inside the caller's
+	// serialise-the-whole-attach lock (the runtime attacher holds it for the
+	// whole Attach), so two concurrent same-name attaches cannot race the
+	// replace — no new lock. Once the old tools are deregistered a later
+	// Connect/Discover failure leaves the old set removed; that is intended for
+	// a same-owner re-attach the operator asked for.
+	if priorOwner, priorExists := deps.Registry.OwnerOf(ms.Name); priorExists {
+		if priorOwner != deps.Owner {
+			return fmt.Errorf("%w: a connection named %q is already registered to a different owner", ErrConnectionNameOwnerConflict, ms.Name)
+		}
+		// The production catalog implements CatalogSourceDeregisterer, so this
+		// branch always runs in practice. Were a catalog to not implement it, the
+		// old tools would not be deregistered and the Register below would fail
+		// LOUD on ErrToolDuplicateName — never a silent stale-registration.
+		if dc, ok := deps.Catalog.(tools.CatalogSourceDeregisterer); ok {
+			if removed := dc.DeregisterSource(tools.ToolSourceID(ms.Name)); removed > 0 && deps.Logger != nil {
+				deps.Logger.Info("mcp: replacing live same-name registration",
+					slog.String("name", ms.Name),
+					slog.Int("tools_deregistered", removed),
+				)
+			}
+		}
+		if deregErr := deps.Registry.Deregister(ctx, ms.Name); deregErr != nil && !errors.Is(deregErr, ErrServerNotFound) {
+			return fmt.Errorf("mcp attach %q: replace live registration: %w", ms.Name, deregErr)
+		}
 	}
 	if connectErr := provider.Connect(ctx); connectErr != nil {
 		_ = provider.Close(ctx)
@@ -239,7 +289,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if urlOrCommand == "" {
 		urlOrCommand = strings.Join(ms.Command, " ")
 	}
-	if regErr := deps.Registry.Register(ServerRegistration{
+	if regErr := deps.Registry.Register(ctx, ServerRegistration{
 		Provider:     provider,
 		Transport:    string(mode),
 		URLOrCommand: urlOrCommand,
@@ -346,6 +396,13 @@ func toolPolicyFromProjected(p config.ProjectedToolPolicy) tools.ToolPolicy {
 	}
 }
 
+// ErrConnectionNameOwnerConflict — a same-name attach collided with a live
+// registration owned by a DIFFERENT (tenant, agent). The idempotent same-name
+// replace is scoped to the caller's OWN registration, so a cross-owner
+// collision is rejected loud rather than tearing down another owner's live
+// tools and transport. Callers compare with errors.Is.
+var ErrConnectionNameOwnerConflict = errors.New("mcp: connection name already registered to a different owner")
+
 // ErrOAuthBinding — a connection's `oauth_provider` binding is invalid: it
 // names an unregistered provider, sits on a stdio transport, or conflicts
 // with a static `Authorization` header. Callers compare with errors.Is.
@@ -400,6 +457,76 @@ func resolveToolOAuthBindings(ms config.MCPServerConfig, mode MCPTransportMode, 
 		out[toolName] = prov
 	}
 	return out, nil
+}
+
+// resolveInjectionBinding resolves a connection's non-secret per-user
+// credential-INJECTION mapping (receiver-style server) into a resolved
+// CredentialInjection, re-enforcing every rule config validation enforces so the
+// runtime-add path (which never passes through `harbor validate`) is held to the
+// same bar: mutual exclusivity with the bearer/oauth mode + a static
+// Authorization header (one auth mode per connection), an http(s) transport, the
+// broker's downstream-sink allow-list (via resolveProviderBinding), and a
+// redaction-covered target key. Returns nil when the connection declares no
+// injection.
+func resolveInjectionBinding(ms config.MCPServerConfig, mode MCPTransportMode, providers OAuthProviderResolver) (*CredentialInjection, error) {
+	if ms.Injection == nil {
+		return nil, nil
+	}
+	inj := ms.Injection
+	if ms.OAuthProvider != "" || len(ms.ToolOAuthProviders) > 0 {
+		return nil, fmt.Errorf("%w: injection is mutually exclusive with oauth_provider/tool_oauth_providers (one auth mode per connection)", ErrOAuthBinding)
+	}
+	if strings.TrimSpace(inj.Provider) == "" {
+		return nil, fmt.Errorf("%w: injection.provider must name a declared oauth provider", ErrOAuthBinding)
+	}
+	// resolveProviderBinding enforces stdio/url + static-Authorization conflict +
+	// unknown-name + the downstream-sink allow-list — the same gate the bearer
+	// binding uses (the pulled credential leaves to the connection host).
+	prov, err := resolveProviderBinding(ms, mode, inj.Provider, providers)
+	if err != nil {
+		return nil, err
+	}
+	ci := &CredentialInjection{Provider: prov}
+	switch inj.Form {
+	case config.MCPInjectionFormHeader:
+		if strings.TrimSpace(inj.Header) == "" {
+			return nil, fmt.Errorf("%w: injection form=header requires a header", ErrOAuthBinding)
+		}
+		if strings.EqualFold(inj.Header, "authorization") {
+			return nil, fmt.Errorf("%w: injection form=header must not target the Authorization header (use form=basic)", ErrOAuthBinding)
+		}
+		if !config.IsReceiverInjectionCredentialKey(inj.Header) {
+			return nil, fmt.Errorf("%w: injection header %q is not a redaction-covered credential key (name it with a credential segment such as -api-key / -token / -secret)", ErrOAuthBinding, inj.Header)
+		}
+		ci.Form = InjectionFormHeader
+		ci.Header = inj.Header
+	case config.MCPInjectionFormBasic:
+		ci.Form = InjectionFormBasic
+		ci.BasicUsername = inj.BasicUsername
+	case config.MCPInjectionFormMeta:
+		if strings.TrimSpace(inj.MetaKey) == "" {
+			return nil, fmt.Errorf("%w: injection form=meta requires a meta_key path", ErrOAuthBinding)
+		}
+		segs := strings.Split(inj.MetaKey, ".")
+		for _, seg := range segs {
+			if strings.TrimSpace(seg) == "" {
+				return nil, fmt.Errorf("%w: injection meta_key has an empty segment", ErrOAuthBinding)
+			}
+			if isReservedMetaKey(seg) {
+				return nil, fmt.Errorf("%w: injection meta_key segment %q is reserved (triple/agent_id/traceparent/tracestate and io.modelcontextprotocol/-prefixed keys are runtime-stamped)", ErrOAuthBinding, seg)
+			}
+		}
+		if !config.IsReceiverInjectionCredentialKey(segs[len(segs)-1]) {
+			return nil, fmt.Errorf("%w: injection meta_key leaf is not a redaction-covered credential key (name the leaf with a credential segment such as api_key / token / secret)", ErrOAuthBinding)
+		}
+		ci.Form = InjectionFormMeta
+		ci.MetaKey = segs
+	case "":
+		return nil, fmt.Errorf("%w: injection.form must be set (header/basic/meta)", ErrOAuthBinding)
+	default:
+		return nil, fmt.Errorf("%w: injection.form %q is invalid (header/basic/meta)", ErrOAuthBinding, inj.Form)
+	}
+	return ci, nil
 }
 
 // resolveProviderBinding resolves one provider name against the registry and

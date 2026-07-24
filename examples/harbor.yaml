@@ -697,6 +697,24 @@ tools:
   #     include_actor_token: true
   oauth_providers: []
 
+  # allow_wire_oauth_descriptor (D-340) — DEV-ONLY, fail-closed opt-in that
+  # permits `agent_config.set_oauth_provider` / `add_mcp_connection` to carry a
+  # NEW server's OAuth params over the wire (token_url / audience / scopes),
+  # still naming a boot-declared credential_broker, instead of only a provider
+  # NAME — so a coordinator can stand up a new OAuth-fronted MCP server at runtime
+  # without a static oauth_providers[] block + redeploy. Default false. With it
+  # unset (all of production) a wire descriptor carrying token_url or audience is
+  # REJECTED, exactly as the name-only binding rejects a sink field today. When
+  # set the relaxation stays bounded: allowed_downstream_hosts is DERIVED from the
+  # connected server's own URL (never a wire field) and the wire token_url dial
+  # faces the identical token-exchange SSRF backstop; the runtime's OWN credential
+  # custody stays boot-declared on the named broker (no credential-source URL or
+  # secret rides the wire). The same
+  # opt-in is also available globally via the HARBOR_ALLOW_WIRE_OAUTH_DESCRIPTOR
+  # boot env; the effective posture is this flag OR that env. Restart-required.
+  # Do NOT enable in production.
+  # allow_wire_oauth_descriptor: false
+
   # MCP southbound attachments (Phase 28). Each entry boots a
   # *mcp.Provider whose discovered tools / resources / prompts merge
   # into the runtime catalog. The section is optional — operators
@@ -796,6 +814,26 @@ tools:
   #     #   list_events: gcal-broker         # a tool
   #     #   cal://calendars/primary: gcal-broker   # a resource URI
   #     #   draft_reply: m365-mail-broker    # a prompt
+  #     # injection — per-user credential INJECTION for a RECEIVER-STYLE server
+  #     # (one that RECEIVES its credential on each request instead of PULLING it
+  #     # via RFC 8693). The runtime SOURCES the acting user's credential from the
+  #     # named broker per call (the SAME per-user broker-pull as oauth_provider)
+  #     # and INJECTS it in the declared, NON-SECRET form. Only the pulled value is
+  #     # secret; the mapping is config. Mutually exclusive with oauth_provider /
+  #     # tool_oauth_providers / a static Authorization header (one auth mode per
+  #     # connection). The broker's allowed_downstream_hosts must list this
+  #     # connection's host (fail-closed). The target header / _meta leaf key MUST
+  #     # be redaction-covered (a credential segment such as -api-key / -token /
+  #     # -secret) so the audit redactor always holds the injected value to ***.
+  #     # Pick exactly ONE form:
+  #     # injection:
+  #     #   provider: recv-broker            # a declared tools.oauth_providers[] broker
+  #     #   form: header                     # header | basic | meta
+  #     #   header: x-vendor-api-key         # form=header: the pulled value → this header
+  #     #   # form=basic → Authorization: Basic base64(basic_username ":" <pulled>)
+  #     #   # basic_username: svc
+  #     #   # form=meta → the pulled value → this dot-path _meta leaf
+  #     #   # meta_key: vendor.api_key
   #
   #   - name: filesystem
   #     transport_mode: stdio
