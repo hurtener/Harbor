@@ -38,14 +38,18 @@ import (
 // (the live allow-list is restored AND the active pointer is rolled back to the
 // pre-write revision) so an un-auditable write is never left observably applied.
 //
-// # Governs revisioned state only (three distinct loud errors)
+// # Governs the caller's own revisioned state only (four distinct loud errors)
 //
-// An unknown name (not in the active revision's connections) fails loud with
-// ErrConnectionNotFound; a boot-declared (yaml) name fails with
-// ErrBootDeclaredConnection (edit yaml + restart); a stdio-transport connection
-// fails with ErrDiscoveryOriginsNotHTTP (a stdio server has no HTTP 401 edge —
-// there is no discovery walk to allow). None records a revision or emits an
-// event.
+// A boot-declared (yaml) name fails with ErrBootDeclaredConnection (edit yaml +
+// restart) — checked on EVERY path, before any revision read, because the guard
+// is a property of the NAME: a caller whose own revision also declares that name
+// reaches the same refusal. An unknown name (not in the active revision's
+// connections) fails loud with ErrConnectionNotFound; a stdio-transport
+// connection fails with ErrDiscoveryOriginsNotHTTP (a stdio server has no HTTP
+// 401 edge — there is no discovery walk to allow); a name attached live under a
+// DIFFERENT (tenant, agent) owner fails with ErrConnectionOwnerMismatch (→ 403)
+// and the accompanying revision write is rolled back. None leaves a recorded
+// revision or an emitted event.
 //
 // # Live on rollback via the owner-scoped reconcile (not here)
 //
@@ -69,7 +73,15 @@ type DiscoveryOriginApplier interface {
 	// granted / revoked delta. Identity-mandatory for authorization (the registry
 	// stays bare-name). A revoke also prunes the recorded requirement's
 	// now-unallowed authorization-server entries.
-	SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error)
+	//
+	// (tenant, agentID) is the caller's resolved OWNER — the same (tenant, agent)
+	// pair the ProviderInstaller seam carries, and the same tag the attach path
+	// stamps on the live registration. The replacement lands only on a
+	// registration carrying that tag, so the write applies to the caller's OWN
+	// connection; a name owned by someone else is refused with
+	// ErrConnectionOwnerMismatch, and a name the owner declares but has not
+	// attached yet degrades to ErrDiscoveryTargetNotLive.
+	SetOAuthDiscoveryOrigins(ctx context.Context, tenant, agentID, name string, origins []string) (prev []string, err error)
 }
 
 // ErrDiscoveryOriginsNotHTTP — set_mcp_discovery_origins named a
@@ -90,10 +102,20 @@ var ErrDiscoveryOriginsNotHTTP = errors.New("agentcfg/protocol: connection is a 
 // revision entirely, which still fails loud).
 var ErrDiscoveryTargetNotLive = errors.New("agentcfg/protocol: connection not attached in the live MCP registry — allowance recorded in the revision, applied on next reconcile")
 
+// ErrConnectionOwnerMismatch — the named connection is attached in the live MCP
+// registry under a DIFFERENT (tenant, agent) owner than the caller's, or is
+// boot-declared (untagged). A live connection write applies to the caller's OWN
+// registration; a name owned elsewhere is refused as an authorization failure
+// (→ 403 / CodeScopeMismatch) and the accompanying revision write is rolled
+// back, so the call leaves no observable effect. It is DISTINCT from
+// ErrDiscoveryTargetNotLive (the caller owns the declaration but the server is
+// not attached yet, which degrades to a revision-only write).
+var ErrConnectionOwnerMismatch = errors.New("agentcfg/protocol: connection is registered to a different owner — a live connection write applies to the caller's own connection")
+
 // SetMCPDiscoveryOrigins FULL-REPLACES a runtime-added MCP connection's
 // OAuth-discovery cross-origin allow-list. See the file doc for the full
-// contract (revision + live apply + revoke-prune, the three distinct loud
-// errors, the fail-closed audit, the rollback reconcile path).
+// contract (revision + owner-scoped live apply + revoke-prune, the four
+// distinct loud errors, the fail-closed audit, the rollback reconcile path).
 func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.AgentConfigSetMCPDiscoveryOriginsRequest) (prototypes.AgentConfigSetMCPDiscoveryOriginsResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetMCPDiscoveryOriginsResponse{}, err
@@ -112,6 +134,16 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 	origins, oerr := normalizeDiscoveryOrigins(req.AllowedOrigins)
 	if oerr != nil {
 		return prototypes.AgentConfigSetMCPDiscoveryOriginsResponse{}, oerr
+	}
+	// Boot wins on EVERY path. A boot-declared (yaml) server is not revisioned
+	// state, so the verb refuses the name outright — whether or not the caller's
+	// own active revision also declares a connection under it. The guard is a
+	// property of the NAME, so it is evaluated here, before any revision read,
+	// rather than inside a not-declared branch: a revision that declares the same
+	// name reaches exactly the same refusal, and nothing is read or written on
+	// the way to it. Edit the yaml + restart.
+	if _, boot := s.bootDeclaredMCPServers[name]; boot {
+		return prototypes.AgentConfigSetMCPDiscoveryOriginsResponse{}, fmt.Errorf("%w: %q", ErrBootDeclaredConnection, name)
 	}
 	q := identity.Quadruple{Identity: id}
 	// The live registry applier reads the identity triple from ctx for
@@ -136,11 +168,8 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 	}
 	desc, found := findConnection(prior, name)
 	if !found {
-		// Distinguish a boot-declared server (edit yaml + restart) from a plain
-		// unknown name — both fail loud, neither records a revision.
-		if _, boot := s.bootDeclaredMCPServers[name]; boot {
-			return prototypes.AgentConfigSetMCPDiscoveryOriginsResponse{}, fmt.Errorf("%w: %q", ErrBootDeclaredConnection, name)
-		}
+		// A name absent from the caller's active revision fails loud; no revision
+		// is recorded. (The boot-declared case is refused earlier, on every path.)
 		return prototypes.AgentConfigSetMCPDiscoveryOriginsResponse{}, fmt.Errorf("%w: %q", ErrConnectionNotFound, name)
 	}
 	if desc.Transport != agentcfg.MCPTransportHTTP {
@@ -174,7 +203,7 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 			}
 			rev = written
 			if s.discoveryApplier != nil {
-				live, setErr := s.discoveryApplier.SetOAuthDiscoveryOrigins(applyCtx, name, origins)
+				live, setErr := s.discoveryApplier.SetOAuthDiscoveryOrigins(applyCtx, id.TenantID, req.AgentID, name, origins)
 				switch {
 				case setErr == nil:
 					prevLive = live
@@ -188,8 +217,11 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 					appliedLive = false
 					prevLive = append([]string(nil), desc.OAuthDiscoveryAllowedOrigins...)
 				default:
-					// A real live apply failure — roll the just-written revision back so
-					// the call has NO observable effect, then return the apply error.
+					// A real live apply failure — including the owner refusal
+					// (ErrConnectionOwnerMismatch), which is an authorization failure the
+					// caller must SEE rather than a silent degrade to a revision-only
+					// write — roll the just-written revision back so the call has NO
+					// observable effect, then return the apply error.
 					if _, rbErr := s.registry.Rollback(ctx, q, req.AgentID, prevActiveRevID, agentcfg.ConfigScopeAgent); rbErr != nil {
 						return nil, fmt.Errorf("live allow-list apply failed AND revision rollback failed (state may be inconsistent): %w", errors.Join(setErr, rbErr))
 					}
@@ -203,7 +235,7 @@ func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.Age
 			revert = func() error {
 				var errs []error
 				if appliedLive {
-					if _, e := s.discoveryApplier.SetOAuthDiscoveryOrigins(applyCtx, name, prevLive); e != nil {
+					if _, e := s.discoveryApplier.SetOAuthDiscoveryOrigins(applyCtx, id.TenantID, req.AgentID, name, prevLive); e != nil {
 						errs = append(errs, e)
 					}
 				}

@@ -26,8 +26,14 @@ func TestVerbs_PreserveAllSiblingSections(t *testing.T) {
 			PromptLayers: &prototypes.AgentConfigPromptLayers{Base: strPtr("seed-base")},
 			ToolExposure: &prototypes.AgentConfigToolExposure{PausedServers: []string{"seed-srv"}},
 			Skills:       &prototypes.AgentConfigSkillsSelection{Names: []string{"seed-skill"}},
+			// An http descriptor: the matrix asserts only that the Connections
+			// SECTION survives each verb (by name), so the transport is
+			// incidental — and http needs no stdio allowlist on the bare Service
+			// most cases build. A stdio seed would have to carry an allowlisted
+			// command, which is the add/set_revision RCE gate's concern, not this
+			// test's.
 			Connections: &prototypes.AgentConfigConnections{Servers: []prototypes.AgentConfigMCPConnectionDescriptor{
-				{Name: "seed-conn", Transport: "stdio", Command: []string{"server-bin"}},
+				{Name: "seed-conn", Transport: "http", URL: "https://seed-conn.invalid/rpc"},
 			}},
 			LLMParams: &prototypes.AgentConfigLLMParams{Temperature: f64(0.5)},
 			Hooks: &prototypes.AgentConfigHooks{

@@ -16,9 +16,10 @@ import (
 
 // setdiscoveryorigins_test.go — unit coverage for
 // `agent_config.set_mcp_discovery_origins`: the shared-validator origin gate,
-// the three distinct loud errors (unknown / boot-declared / stdio), the
-// revision write + sibling carry-forward, the live apply + granted/revoked
-// delta, and the fail-closed audit (revert on emit failure).
+// the four distinct loud errors (unknown / boot-declared / stdio /
+// owner-mismatch), the revision write + sibling carry-forward, the live apply
+// (owner-scoped) + granted/revoked delta, and the fail-closed audit (revert on
+// emit failure).
 
 // fakeApplier is a deterministic stand-in for the live registry applier; it
 // records the current allow-list per connection so a test can assert both the
@@ -27,14 +28,26 @@ type fakeApplier struct {
 	mu      sync.Mutex
 	current map[string][]string
 	calls   int
+	// owners records the (tenant, agent) owner presented on each apply — the
+	// setter passes the caller's resolved owner through so the live write is
+	// owner-scoped.
+	owners [][2]string
 }
 
 func newFakeApplier() *fakeApplier { return &fakeApplier{current: map[string][]string{}} }
 
-func (f *fakeApplier) SetOAuthDiscoveryOrigins(_ context.Context, name string, origins []string) ([]string, error) {
+// seenOwners returns a copy of the owners presented on the apply calls.
+func (f *fakeApplier) seenOwners() [][2]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][2]string(nil), f.owners...)
+}
+
+func (f *fakeApplier) SetOAuthDiscoveryOrigins(_ context.Context, tenant, agentID, name string, origins []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.owners = append(f.owners, [2]string{tenant, agentID})
 	prev := append([]string(nil), f.current[name]...)
 	f.current[name] = append([]string(nil), origins...)
 	return prev, nil
@@ -122,7 +135,7 @@ func TestSetMCPDiscoveryOrigins_WritesRevisionAppliesLive(t *testing.T) {
 // into), and the setter must DEGRADE to a revision-only write.
 type notLiveApplier struct{ calls int }
 
-func (a *notLiveApplier) SetOAuthDiscoveryOrigins(_ context.Context, name string, _ []string) ([]string, error) {
+func (a *notLiveApplier) SetOAuthDiscoveryOrigins(_ context.Context, _, _, name string, _ []string) ([]string, error) {
 	a.calls++
 	return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrDiscoveryTargetNotLive, name)
 }
@@ -172,7 +185,7 @@ func TestSetMCPDiscoveryOrigins_DegradesWhenConnectionNotLive(t *testing.T) {
 // might collapse it into the degrade arm.
 type erroringApplier struct{ boom error }
 
-func (a *erroringApplier) SetOAuthDiscoveryOrigins(context.Context, string, []string) ([]string, error) {
+func (a *erroringApplier) SetOAuthDiscoveryOrigins(context.Context, string, string, string, []string) ([]string, error) {
 	return nil, a.boom
 }
 
@@ -237,6 +250,91 @@ func TestSetMCPDiscoveryOrigins_BootDeclaredRejected(t *testing.T) {
 
 	if _, err := s.SetMCPDiscoveryOrigins(ctx, discReq("agent-d", "boot-srv", []string{"https://as.example.net"})); !errors.Is(err, agentcfgprotocol.ErrBootDeclaredConnection) {
 		t.Fatalf("err = %v, want ErrBootDeclaredConnection", err)
+	}
+}
+
+// TestSetMCPDiscoveryOrigins_BootDeclaredRejectedWhenAlsoDeclaredInRevision
+// pins the boot-declared guard on the DECLARED path: a caller whose own active
+// revision carries a connection under a boot-declared name reaches exactly the
+// same refusal as a caller whose revision does not, and the live allow-list is
+// never touched. Boot state is not revisioned state on either path.
+func TestSetMCPDiscoveryOrigins_BootDeclaredRejectedWhenAlsoDeclaredInRevision(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	applier := newFakeApplier()
+	s, _ := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithBus(newCollectingBus(t)),
+		agentcfgprotocol.WithDiscoveryOriginApplier(applier),
+		agentcfgprotocol.WithBootDeclaredMCPServers([]string{"boot-srv"}))
+	// The caller's OWN revision declares a connection under the boot-declared name.
+	seedDiscoveryRev(t, ctx, reg, "agent-d", agentcfg.MCPConnectionDescriptor{Name: "boot-srv", Transport: agentcfg.MCPTransportHTTP, URL: "https://x.invalid/rpc"})
+
+	if _, err := s.SetMCPDiscoveryOrigins(ctx, discReq("agent-d", "boot-srv", []string{"https://as.example.net"})); !errors.Is(err, agentcfgprotocol.ErrBootDeclaredConnection) {
+		t.Fatalf("err = %v, want ErrBootDeclaredConnection on the declared path too", err)
+	}
+	if applier.calls != 0 {
+		t.Errorf("live applier calls = %d, want 0 (a boot-declared name never reaches the live registry)", applier.calls)
+	}
+	if live := applier.get("boot-srv"); len(live) != 0 {
+		t.Errorf("live allow-list = %v, want untouched", live)
+	}
+}
+
+// ownerMismatchApplier stands in for a live registry whose registration under
+// this name belongs to a DIFFERENT owner — what the real MCPConnectionAttacher
+// returns when its owner comparison refuses the write.
+type ownerMismatchApplier struct{ calls int }
+
+func (a *ownerMismatchApplier) SetOAuthDiscoveryOrigins(_ context.Context, _, _, name string, _ []string) ([]string, error) {
+	a.calls++
+	return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrConnectionOwnerMismatch, name)
+}
+
+// TestSetMCPDiscoveryOrigins_OwnerMismatchFailsLoudAndRollsBack proves an owner
+// refusal is surfaced (it maps to CodeScopeMismatch / 403 at the wire edge)
+// rather than degrading to a revision-only write, and that the just-written
+// revision is rolled back so the call leaves no observable effect.
+func TestSetMCPDiscoveryOrigins_OwnerMismatchFailsLoudAndRollsBack(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	applier := &ownerMismatchApplier{}
+	s, _ := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithBus(newCollectingBus(t)),
+		agentcfgprotocol.WithDiscoveryOriginApplier(applier))
+	seedDiscoveryRev(t, ctx, reg, "agent-d", agentcfg.MCPConnectionDescriptor{Name: "srv", Transport: agentcfg.MCPTransportHTTP, URL: "https://x.invalid/rpc", OAuthDiscoveryAllowedOrigins: []string{"https://as-initial.example.net"}})
+
+	if _, err := s.SetMCPDiscoveryOrigins(ctx, discReq("agent-d", "srv", []string{"https://as.example.net"})); !errors.Is(err, agentcfgprotocol.ErrConnectionOwnerMismatch) {
+		t.Fatalf("err = %v, want ErrConnectionOwnerMismatch (an owner refusal is loud, never a degrade)", err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, _, aerr := reg.Active(ctx, q, "agent-d", agentcfg.ConfigScopeAgent)
+	if aerr != nil {
+		t.Fatalf("active: %v", aerr)
+	}
+	descs := active.Payload.ConnectionDescriptors()
+	if len(descs) != 1 || len(descs[0].OAuthDiscoveryAllowedOrigins) != 1 || descs[0].OAuthDiscoveryAllowedOrigins[0] != "https://as-initial.example.net" {
+		t.Fatalf("revision not rolled back after an owner refusal: %#v", descs)
+	}
+}
+
+// TestSetMCPDiscoveryOrigins_PassesCallerOwnerToTheApplier proves the setter
+// hands the live applier the caller's VERIFIED (tenant, agent) owner, so the
+// live registry can scope the write to the caller's own registration.
+func TestSetMCPDiscoveryOrigins_PassesCallerOwnerToTheApplier(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	applier := newFakeApplier()
+	s, _ := agentcfgprotocol.NewService(reg,
+		agentcfgprotocol.WithBus(newCollectingBus(t)),
+		agentcfgprotocol.WithDiscoveryOriginApplier(applier))
+	seedDiscoveryRev(t, ctx, reg, "agent-d", agentcfg.MCPConnectionDescriptor{Name: "srv", Transport: agentcfg.MCPTransportHTTP, URL: "https://x.invalid/rpc"})
+
+	if _, err := s.SetMCPDiscoveryOrigins(ctx, discReq("agent-d", "srv", []string{"https://as.example.net"})); err != nil {
+		t.Fatalf("SetMCPDiscoveryOrigins: %v", err)
+	}
+	seen := applier.seenOwners()
+	if len(seen) != 1 || seen[0] != [2]string{"t", "agent-d"} {
+		t.Fatalf("owners presented to the applier = %v, want [[t agent-d]]", seen)
 	}
 }
 

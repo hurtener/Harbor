@@ -893,6 +893,13 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// state only.
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrConnectionOwnerMismatch):
+		// A live connection write applies to the caller's OWN registration; a
+		// name attached under a different (tenant, agent) owner is an
+		// authorization failure (CodeScopeMismatch), and the accompanying
+		// revision write is rolled back before this reaches the wire.
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrDiscoveryOriginsNotHTTP):
 		// set_mcp_discovery_origins named a stdio connection — no HTTP discovery
 		// walk, so an allow-list is meaningless (400).
