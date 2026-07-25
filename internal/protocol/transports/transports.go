@@ -264,6 +264,20 @@ func WithKeepalive(d time.Duration) Option {
 	}
 }
 
+// requestMiddleware returns the identity decorator every mounted route
+// is wrapped in. A wired validator gives the bearer decorator; the
+// explicit bearer-less opt-in gives the carrier decorator, which
+// establishes the triple from the X-Harbor-* headers and refuses a
+// request that supplies no complete one. NewMux fails construction when
+// neither is chosen, so there is no posture in which a handler runs
+// without an established identity on ctx.
+func (c *muxConfig) requestMiddleware() func(http.Handler) http.Handler {
+	if c.validator != nil {
+		return auth.Middleware(c.validator, auth.MWLogger(c.logger))
+	}
+	return auth.CarrierIdentityMiddleware(c.logger)
+}
+
 // WithValidator wires the JWT auth.Validator into NewMux.
 // BOTH transport handlers (REST control + SSE stream) are wrapped in
 // auth.Middleware: every request must carry a verified
@@ -748,6 +762,18 @@ func WithEventsList(arts artifacts.ArtifactStore) Option {
 	}
 }
 
+// WithoutValidator selects the bearer-less identity posture: the mux
+// establishes each request's identity from the X-Harbor-* carrier
+// headers instead of a bearer token, and refuses 401 when they supply
+// no complete triple. It does NOT waive identity — no mounted route
+// ever runs without an established one — it names a different carrier
+// for it.
+//
+// It remains test-only. Production deployments wire a validator; the
+// serve band never takes this path, and the curated SDK facade does not
+// expose it. What changed is only what the posture MEANS: "identity
+// arrives on the headers", not "there is no identity".
+//
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -1051,6 +1077,7 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		shh, err := stream.NewStateHistoryHandler(
 			cfg.stateHistoryBus, cfg.stateHistoryArtifacts,
 			stream.WithStateHistoryLogger(cfg.logger),
+			stream.WithStateHistoryRedactor(cfg.redactor),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("transports: build state.history handler: %w", err)
@@ -1096,44 +1123,34 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	// r.Context(), and then calls the wrapped handler — which reads
 	// identity from ctx (preferred) or the trust-based
 	// carriers (fallback when WithValidator is not set).
-	var (
-		mountedControl   http.Handler = controlHandler
-		mountedStream    http.Handler = streamHandler
-		mountedAggregate http.Handler = aggregateHandler
-	)
-	if cfg.validator != nil {
-		mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-		mountedControl = mw(controlHandler)
-		// SSE-only: promote `?access_token=...` to a synthesized
-		// Authorization header so EventSource cross-origin clients
-		// (Console multi-process posture) can subscribe. The shim
-		// wraps OUTSIDE the auth middleware so the request is
-		// rewritten BEFORE the JWT validation reads the header.
-		// a walkthrough fix.
-		mountedStream = auth.SSEAccessTokenShim(mw(streamHandler))
-		mountedAggregate = mw(aggregateHandler)
-	}
+	// Every mounted route is wrapped in the same identity middleware, so
+	// every handler runs with an established identity on ctx or does not
+	// run at all. requestMiddleware picks the bearer decorator when a
+	// validator is wired and the carrier decorator on the explicit
+	// bearer-less opt-in; there is no third posture in which a handler
+	// sees an unestablished request.
+	mw := cfg.requestMiddleware()
+	mountedControl := mw(controlHandler)
+	// SSE-only: promote `?access_token=...` to a synthesized
+	// Authorization header so EventSource cross-origin clients
+	// (Console multi-process posture) can subscribe. The shim
+	// wraps OUTSIDE the auth middleware so the request is
+	// rewritten BEFORE the JWT validation reads the header.
+	mountedStream := auth.SSEAccessTokenShim(mw(streamHandler))
+	mountedAggregate := mw(aggregateHandler)
 
 	mux.Handle(control.RoutePattern, mountedControl)
 	mux.Handle(stream.RoutePattern, mountedStream)
 	mux.Handle(stream.AggregateRoutePattern, mountedAggregate)
 
 	if pauseListHandler != nil {
-		var mountedPauseList http.Handler = pauseListHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedPauseList = mw(pauseListHandler)
-		}
+		mountedPauseList := mw(pauseListHandler)
 		mux.Handle(stream.PauseListRoutePattern, mountedPauseList)
 	}
 
 	if memoryHandler != nil {
 		mountMemory := func(pattern string, h http.Handler) {
-			if cfg.validator != nil {
-				mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-				h = mw(h)
-			}
-			mux.Handle(pattern, h)
+			mux.Handle(pattern, mw(h))
 		}
 		mountMemory(stream.MemoryListRoutePattern, memoryHandler.ListHandler())
 		mountMemory(stream.MemoryGetRoutePattern, memoryHandler.GetHandler())
@@ -1146,102 +1163,56 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	}
 
 	if toolsHandler != nil {
-		var mountedTools http.Handler = toolsHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedTools = mw(toolsHandler)
-		}
+		mountedTools := mw(toolsHandler)
 		mux.Handle(stream.ToolsRoutePattern, mountedTools)
 	}
 
 	if flowsHandler != nil {
-		var mountedFlows http.Handler = flowsHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedFlows = mw(flowsHandler)
-		}
+		mountedFlows := mw(flowsHandler)
 		mux.Handle(stream.FlowsRoutePattern, mountedFlows)
 	}
 
 	if tasksHandler != nil {
-		var mountedTasks http.Handler = tasksHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedTasks = mw(tasksHandler)
-		}
+		mountedTasks := mw(tasksHandler)
 		mux.Handle(stream.TasksRoutePattern, mountedTasks)
 	}
 
 	if agentsHandler != nil {
-		var mountedAgents http.Handler = agentsHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedAgents = mw(agentsHandler)
-		}
+		mountedAgents := mw(agentsHandler)
 		mux.Handle(stream.AgentsRoutePattern, mountedAgents)
 	}
 
 	if sessionsHandler != nil {
-		var mountedSessions http.Handler = sessionsHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedSessions = mw(sessionsHandler)
-		}
+		mountedSessions := mw(sessionsHandler)
 		mux.Handle(stream.SessionsRoutePattern, mountedSessions)
 	}
 
 	if runsHandler != nil {
-		var mountedRuns http.Handler = runsHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedRuns = mw(runsHandler)
-		}
+		mountedRuns := mw(runsHandler)
 		mux.Handle(stream.RunsRoutePattern, mountedRuns)
 	}
 
 	if authHandler != nil {
-		var mountedAuth http.Handler = authHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedAuth = mw(authHandler)
-		}
+		mountedAuth := mw(authHandler)
 		mux.Handle(stream.AuthRoutePattern, mountedAuth)
 	}
 
 	if governanceHandler != nil {
-		var mountedGovernance http.Handler = governanceHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedGovernance = mw(governanceHandler)
-		}
+		mountedGovernance := mw(governanceHandler)
 		mux.Handle(stream.GovernanceRoutePattern, mountedGovernance)
 	}
 
 	if agentConfigHandler != nil {
-		var mountedAgentConfig http.Handler = agentConfigHandler
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedAgentConfig = mw(agentConfigHandler)
-		}
+		mountedAgentConfig := mw(agentConfigHandler)
 		mux.Handle(stream.AgentConfigRoutePattern, mountedAgentConfig)
 	}
 
 	if stateHistoryHandler != nil {
-		mountedStateHistory := stateHistoryHandler.Handler()
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedStateHistory = mw(mountedStateHistory)
-		}
-		mux.Handle(stream.StateHistoryRoutePattern, mountedStateHistory)
+		mux.Handle(stream.StateHistoryRoutePattern, mw(stateHistoryHandler.Handler()))
 	}
 
 	if eventsListHandler != nil {
-		mountedEventsList := eventsListHandler.Handler()
-		if cfg.validator != nil {
-			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
-			mountedEventsList = mw(mountedEventsList)
-		}
-		mux.Handle(stream.EventsListRoutePattern, mountedEventsList)
+		mux.Handle(stream.EventsListRoutePattern, mw(eventsListHandler.Handler()))
 	}
 	return mux, nil
 }

@@ -78,9 +78,14 @@ fi
 assert_grep_absent 'Known accounting gap' \
     internal/governance/wrap.go \
     'phase 145: the wrap.go "Known accounting gap" comment is replaced by the tap contract'
+# Scoped to the PACKAGE, not to one file: the file this originally named
+# (`drivers/bifrost/cost.go`) no longer exists, so the guard was asserting
+# absence from nothing — it reported OK for years without reading a byte. The
+# claim it guards is a comment that could reappear anywhere in the LLM tree, so
+# the honest target is the tree.
 assert_grep_absent 'subscribes against this emit site' \
-    internal/llm/drivers/bifrost/cost.go \
-    'phase 145: the stale bifrost "subscribes against this emit site" claim is corrected'
+    internal/llm \
+    'phase 145: the stale "subscribes against this emit site" claim stays corrected'
 assert_grep_present 'ReportAttemptCost' \
     internal/llm/retry/retry.go \
     'phase 145: the retry wrapper reports consumed non-final attempts into the tap'

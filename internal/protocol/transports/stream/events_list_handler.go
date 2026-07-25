@@ -44,6 +44,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -128,7 +129,7 @@ func (h *EventsListHandler) serve(w http.ResponseWriter, r *http.Request) {
 
 	// Identity edge — a missing / incomplete triple fails closed with
 	// CodeIdentityRequired (401).
-	verified, err := resolveIdentity(r)
+	verified, r, err := resolveIdentity(r)
 	if err != nil {
 		writeEventsListError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -155,6 +156,13 @@ func (h *EventsListHandler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := clampEventsListLimit(req.Limit)
+
+	// The body carries an identity scope alongside its filter; the fan-in
+	// authority is the filter, so the body triple must be the caller's own.
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceEvents); perr != nil {
+		writeEventsListError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 
 	// Cross-tenant (fleet) gate — the wire filter may name a tenant other
 	// than the caller's, or multiple tenants. FilterFromWire flags this via

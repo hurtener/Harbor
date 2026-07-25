@@ -12,10 +12,12 @@
 // The Playground page injects the result of {@link makeMCPAppHostClient} into
 // the MCP App renderer's props (`appHostClient`).
 
+import { MCPAppToolNotFoundError } from '$lib/chat/renderers/app-bridge-host.js';
 import type {
   MCPAppHostClient,
   MCPAppResource,
   MCPAppResourceListing,
+  MCPAppResourceTemplateListing,
   MCPAppToolContext,
   MCPAppToolListing,
   MCPAppToolResult,
@@ -38,8 +40,13 @@ import type { ToolListResponse } from '$lib/protocol/tools.js';
  * call:
  *
  *   - `readResource` → `mcp.servers.read_resource`
- *   - `callTool`     → `mcp.apps.call_tool` (re-enters the tool-safety gates)
+ *   - `callTool`     → `mcp.apps.call_tool` (re-enters the tool-safety gates);
+ *                      a `not_found` becomes the typed `MCPAppToolNotFoundError`
+ *                      so an app can tell "no such tool here" from "the
+ *                      transport broke"
  *   - `listResources`→ `mcp.servers.resources`
+ *   - `listResourceTemplates` → no Protocol method exists; resolves empty
+ *                      (see the method's note)
  *   - `listTools`    → `tools.list`, narrowed to the server's `<source>_*` rows
  *   - `resolveArtifact` → `artifacts.get_ref` (the heavy `ui://` document's
  *                         by-reference stub → a presigned URL the renderer
@@ -82,7 +89,21 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
     },
 
     async callTool(tool, args): Promise<MCPAppToolResult> {
-      const res = await client.mcp.apps.callTool<MCPAppCallToolResponse>(tool, args);
+      let res: MCPAppCallToolResponse;
+      try {
+        res = await client.mcp.apps.callTool<MCPAppCallToolResponse>(tool, args);
+      } catch (err) {
+        // `tool` is already server-qualified by the caller (the confinement
+        // control), so a `not_found` means the name does not exist WITHIN the
+        // calling app's own server — the one outcome an app can act on. Raise
+        // the typed error so the host handler can tell the app that, instead of
+        // the undifferentiated runtime failure the Runtime used to return for
+        // an unresolvable tool. Every other failure propagates unchanged.
+        if (err instanceof ProtocolError && err.code === 'not_found') {
+          throw new MCPAppToolNotFoundError(tool);
+        }
+        throw err;
+      }
       return {
         tool: res.tool,
         content: res.content,
@@ -104,6 +125,18 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
         name: r.name ?? r.title,
         mimeType: r.mime_type,
       }));
+    },
+
+    async listResourceTemplates(_serverID): Promise<MCPAppResourceTemplateListing[]> {
+      // Harbor's Protocol exposes no resource-TEMPLATE method — `mcp.servers.
+      // resources` lists concrete resources only. The host nonetheless
+      // advertises the `serverResources` capability, and an advertised
+      // capability must answer rather than error, so this reports the honest
+      // state of the surface: this host exposes no templates. It is not a
+      // swallowed failure — there is no call to fail. When a Protocol
+      // `mcp.servers.resource_templates` lands, this method routes to it and
+      // nothing else in the host changes.
+      return [];
     },
 
     async listTools(serverID): Promise<MCPAppToolListing[]> {

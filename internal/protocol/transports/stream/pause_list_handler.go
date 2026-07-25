@@ -39,6 +39,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -157,7 +158,7 @@ func (h *PauseListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Identity at the edge — RFC §5.5, CLAUDE.md §6 rule 9. A missing /
 	// incomplete triple fails closed with CodeIdentityRequired (401).
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writePauseListError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -186,7 +187,7 @@ func (h *PauseListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// non-empty component MUST match the verified identity — a caller
 	// cannot present a valid JWT for tenant T1 while submitting a body
 	// claiming tenant T2.
-	if perr := assertPauseBodyMatchesIdentity(req.Identity, id); perr != nil {
+	if perr := reconcilePauseIdentity(r, &req.Identity); perr != nil {
 		writePauseListError(w, perr.code, perr.status, perr.message)
 		return
 	}
@@ -395,23 +396,20 @@ func crossTenantRequested(f prototypes.PauseFilter, callerTenant string) bool {
 	return f.TenantIDs[0] != callerTenant
 }
 
-// assertPauseBodyMatchesIdentity is the defence-in-depth check: when the
-// request body carries an identity, every non-empty component MUST
-// match the verified identity. An entirely empty body identity is
-// permitted (the verified identity in ctx is authoritative).
-func assertPauseBodyMatchesIdentity(body prototypes.IdentityScope, verified identity.Identity) *pauseListError {
-	if body.Tenant == "" && body.User == "" && body.Session == "" {
+// reconcilePauseIdentity routes the request body's identity scope
+// through the shared body-identity gate under the pause surface's
+// registered policy: an empty triple is backfilled from the verified
+// identity, and a populated component must match it. A cross-tenant
+// pause listing travels in the list filter's tenant set, gated on the
+// verified claim — never in the body triple.
+func reconcilePauseIdentity(r *http.Request, scope *prototypes.IdentityScope) *pauseListError {
+	perr := reconcileBodyScope(r, scope, bodyscope.SurfacePause)
+	if perr == nil {
 		return nil
 	}
-	if (body.Tenant != "" && body.Tenant != verified.TenantID) ||
-		(body.User != "" && body.User != verified.UserID) ||
-		(body.Session != "" && body.Session != verified.SessionID) {
-		return &pauseListError{
-			code: protoerrors.CodeIdentityRequired, status: http.StatusUnauthorized,
-			message: "body identity scope does not match the verified identity",
-		}
+	return &pauseListError{
+		code: perr.Code, status: bodyScopeStatus(perr.Code), message: perr.Message,
 	}
-	return nil
 }
 
 // toListRequest translates the wire PauseListRequest into the

@@ -32,6 +32,30 @@ import (
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
+// markNotFound translates the DRIVER's not-found sentinel into the PROTOCOL's,
+// so the wire edge can classify a not-found by errors.Is instead of by
+// substring-matching the rendered error chain.
+//
+// This package is the only layer allowed to know both sentinels: `protocol`
+// must not import the `mcp` driver, and the driver must not know the Protocol's
+// error taxonomy. Translating here keeps that boundary intact and removes the
+// text dependency from the edge.
+//
+// The text dependency was not cosmetic. A southbound MCP server's error message
+// is wrapped verbatim into the chain, so matching on "server not found" let a
+// REMOTE party's wording decide a Harbor classification — a transport failure
+// phrased the wrong way became a typed not-found, which a rendered MCP App
+// reads as a permanent "this does not exist here". A sentinel cannot be forged
+// by text.
+//
+// Returns err unchanged (including nil) when it is not a driver not-found.
+func markNotFound(err error) error {
+	if err == nil || !errors.Is(err, mcp.ErrServerNotFound) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", protocol.ErrAccessorNotFound, err)
+}
+
 // RegistryAccessor adapts a *mcp.Registry to the protocol.MCPAccessor
 // interface. It is the runtime-side read/control seam the MCPSurface
 // calls for the nine `mcp.servers.*` read methods plus the raw-HTML
@@ -88,7 +112,7 @@ func (a *RegistryAccessor) ListServers(ctx context.Context, f protocol.MCPListFi
 	}
 	views, cur, err := a.reg.ListServers(ctx, filter)
 	if err != nil {
-		return nil, "", err
+		return nil, "", markNotFound(err)
 	}
 	rows := make([]protocol.MCPServerRow, 0, len(views))
 	for _, v := range views {
@@ -105,7 +129,7 @@ func (a *RegistryAccessor) ListServers(ctx context.Context, f protocol.MCPListFi
 func (a *RegistryAccessor) GetServer(ctx context.Context, name string) (protocol.MCPServerRow, error) {
 	v, err := a.reg.GetServer(ctx, name)
 	if err != nil {
-		return protocol.MCPServerRow{}, err
+		return protocol.MCPServerRow{}, markNotFound(err)
 	}
 	return serverRow(*v), nil
 }
@@ -114,7 +138,7 @@ func (a *RegistryAccessor) GetServer(ctx context.Context, name string) (protocol
 func (a *RegistryAccessor) ListResources(ctx context.Context, name string) ([]protocol.MCPResourceRow, error) {
 	views, err := a.reg.ListResources(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, markNotFound(err)
 	}
 	out := make([]protocol.MCPResourceRow, 0, len(views))
 	for _, v := range views {
@@ -129,7 +153,7 @@ func (a *RegistryAccessor) ListResources(ctx context.Context, name string) ([]pr
 func (a *RegistryAccessor) ListPrompts(ctx context.Context, name string) ([]protocol.MCPPromptRow, error) {
 	views, err := a.reg.ListPrompts(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, markNotFound(err)
 	}
 	out := make([]protocol.MCPPromptRow, 0, len(views))
 	for _, v := range views {
@@ -150,7 +174,7 @@ func (a *RegistryAccessor) ListPrompts(ctx context.Context, name string) ([]prot
 func (a *RegistryAccessor) RefreshDiscovery(ctx context.Context, name string) (protocol.MCPDiscoveryRow, error) {
 	r, err := a.reg.RefreshDiscovery(ctx, name)
 	if err != nil {
-		return protocol.MCPDiscoveryRow{}, err
+		return protocol.MCPDiscoveryRow{}, markNotFound(err)
 	}
 	return protocol.MCPDiscoveryRow{
 		DiscoveryID: r.DiscoveryID, ToolCount: r.ToolCount,
@@ -171,7 +195,7 @@ func (a *RegistryAccessor) Probe(ctx context.Context, name string) (protocol.MCP
 	r, probeErr := a.reg.Probe(ctx, name)
 	a.maybeDiscoverOAuthRequirement(ctx, name)
 	if probeErr != nil {
-		return protocol.MCPProbeRow{}, probeErr
+		return protocol.MCPProbeRow{}, markNotFound(probeErr)
 	}
 	return protocol.MCPProbeRow{OK: r.OK, LatencyMs: r.LatencyMs, Error: r.Error}, nil
 }
@@ -204,7 +228,7 @@ func (a *RegistryAccessor) maybeDiscoverOAuthRequirement(ctx context.Context, na
 func (a *RegistryAccessor) Health(ctx context.Context, name string) (protocol.MCPHealthRow, error) {
 	snap, err := a.reg.Health(ctx, name, 0)
 	if err != nil {
-		return protocol.MCPHealthRow{}, err
+		return protocol.MCPHealthRow{}, markNotFound(err)
 	}
 	buckets := make([]protocol.MCPHealthBucketRow, 0, len(snap.HandshakeLatencyBuckets))
 	for _, b := range snap.HandshakeLatencyBuckets {
@@ -223,7 +247,8 @@ func (a *RegistryAccessor) Health(ctx context.Context, name string) (protocol.MC
 
 // SetRawHTMLTrust implements protocol.MCPAccessor.
 func (a *RegistryAccessor) SetRawHTMLTrust(ctx context.Context, name string, trusted bool) (bool, error) {
-	return a.reg.SetRawHTMLTrust(ctx, name, trusted)
+	prev, err := a.reg.SetRawHTMLTrust(ctx, name, trusted)
+	return prev, markNotFound(err)
 }
 
 // serverRow maps a mcp.ServerView onto the protocol.MCPServerRow shape.

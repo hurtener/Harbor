@@ -77,6 +77,14 @@ func (p daStubProvider) Close(context.Context) error { return nil }
 
 func newDaHarness(t *testing.T) *daHarness {
 	t.Helper()
+	return newDaHarnessWithBootServers(t)
+}
+
+// newDaHarnessWithBootServers builds the harness with the given names declared
+// as BOOT MCP servers (the yaml-declared set the control-plane verbs refuse).
+// Callers that need no boot declaration use newDaHarness.
+func newDaHarnessWithBootServers(t *testing.T, bootServers ...string) *daHarness {
+	t.Helper()
 	bus, err := eventsinmem.New(config.EventsConfig{
 		Driver: "inmem", MaxSubscribersPerSession: 32, SubscriberBufferSize: 256,
 		IdleTimeout: time.Minute, DropWindow: time.Second,
@@ -96,12 +104,13 @@ func newDaHarness(t *testing.T) *daHarness {
 	cat := tools.NewCatalog()
 	mcpReg := mcpdrv.NewRegistry()
 	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
-		identity.Identity{TenantID: daTenantA, UserID: daUser, SessionID: daSession}, nil, nil)
+		identity.Identity{TenantID: daTenantA, UserID: daUser, SessionID: daSession}, nil, nil, nil)
 	det := serve.NewMCPConnectionDetacher(cat, mcpReg, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),
 		agentcfgprotocol.WithConnectionAttacher(attacher),
 		agentcfgprotocol.WithDiscoveryOriginApplier(attacher),
+		agentcfgprotocol.WithBootDeclaredMCPServers(bootServers),
 	)
 	if err != nil {
 		t.Fatalf("service: %v", err)
@@ -159,7 +168,6 @@ func (h *daHarness) setOrigins(t *testing.T, tenant, agentID, name string, origi
 	return rec
 }
 
-//nolint:unparam // test helper: these reconciles run under owner A's tenant.
 func idCtxFor(t *testing.T, tenant string) context.Context {
 	t.Helper()
 	ctx, err := identity.With(context.Background(), identity.Identity{TenantID: tenant, UserID: daUser, SessionID: daSession})
@@ -208,7 +216,7 @@ func TestE2E_DiscoveryAllowance_LiveWrite_RevokePrune_RollbackReconcile(t *testi
 
 	// --- ROLLBACK path: a stale live grant is corrected by the run-start
 	// allowance-reconcile, which re-derives from the CURRENT revision (empty).
-	if _, err := h.mcpReg.SetOAuthDiscoveryOrigins(idCtxFor(t, daTenantA), "srv", []string{"https://stale.example.net"}); err != nil {
+	if _, err := h.mcpReg.SetOAuthDiscoveryOrigins(idCtxFor(t, daTenantA), "srv", auth.Owner{Tenant: daTenantA, Agent: daAgentA}, []string{"https://stale.example.net"}); err != nil {
 		t.Fatalf("inject stale grant: %v", err)
 	}
 	qa := identity.Quadruple{Identity: identity.Identity{TenantID: daTenantA, UserID: daUser, SessionID: daSession}}
@@ -275,7 +283,7 @@ func TestE2E_DiscoveryAllowance_ConcurrentWritesReadsReconciles(t *testing.T) {
 		}
 		go func() {
 			defer wg.Done()
-			_, _ = h.mcpReg.SetOAuthDiscoveryOrigins(idCtxFor(t, daTenantA), "srv", origins)
+			_, _ = h.mcpReg.SetOAuthDiscoveryOrigins(idCtxFor(t, daTenantA), "srv", auth.Owner{Tenant: daTenantA, Agent: daAgentA}, origins)
 		}()
 		go func() { defer wg.Done(); _, _, _, _ = h.mcpReg.OAuthDiscoveryTarget("srv") }()
 		go func() {

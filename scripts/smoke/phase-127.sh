@@ -60,7 +60,7 @@ assert_grep_present 'compareWireDigest' "web/console/src/lib/connection.ts" \
     "phase 127: connection.ts exports the pure wire-digest comparator"
 
 # Single-source defence: no Protocol error Code redefined under wiresurface.
-assert_grep_absent 'protoerrors\.Code(' "internal/protocol/wiresurface/wiresurface.go" \
+assert_grep_absent 'protoerrors\.Code\(' "internal/protocol/wiresurface/wiresurface.go" \
     "phase 127: no Protocol error Code redefined under wiresurface (single-source preserved)"
 
 # -----------------------------------------------------------------------------

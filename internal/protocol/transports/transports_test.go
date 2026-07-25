@@ -132,10 +132,7 @@ func TestNewMux_RoutesBothTransports(t *testing.T) {
 
 	// REST control route.
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
-	resp, err := http.Post(srv.URL+"/v1/control/start", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /v1/control/start: %v", err)
-	}
+	resp := postCarrier(t, srv.URL+"/v1/control/start", body)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("control route status = %d, want 200", resp.StatusCode)
@@ -191,10 +188,7 @@ func TestNewMux_Options(t *testing.T) {
 
 	// The mux still serves the control route with the options applied.
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
-	resp, err := http.Post(srv.URL+"/v1/control/start", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
+	resp := postCarrier(t, srv.URL+"/v1/control/start", body)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -383,9 +377,10 @@ func TestNewMux_WithValidator_NilValidator_FailsLoud(t *testing.T) {
 }
 
 // TestNewMux_WithoutValidator_OptInUnauthenticated — the explicit
-// test-only escape hatch lets the Phase 60 trust-based posture run
-// without a JWT validator. The body's identity is the source of
-// truth (the carrier-header / Dispatch identity-from-body gate).
+// test-only escape hatch runs the mux without a JWT validator. Identity
+// is still mandatory: the carrier headers establish it, and a request
+// that supplies none is refused 401 rather than falling back to the
+// caller-supplied request body.
 func TestNewMux_WithoutValidator_OptInUnauthenticated(t *testing.T) {
 	deps := newTestDeps(t)
 	defer deps.cleanup()
@@ -398,13 +393,22 @@ func TestNewMux_WithoutValidator_OptInUnauthenticated(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
-	resp, err := http.Post(srv.URL+"/v1/control/start", "application/json", strings.NewReader(body))
+	resp := postCarrier(t, srv.URL+"/v1/control/start", body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("carrier posture: status %d, want 200", resp.StatusCode)
+	}
+
+	// A request that carries no identity at all is refused before any
+	// handler runs: the bearer-less posture establishes identity from the
+	// carrier headers, and the request body is never the authority.
+	bare, err := http.Post(srv.URL+"/v1/control/start", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("WithoutValidator: status %d, want 200 (Phase 60 trust-based posture preserved)", resp.StatusCode)
+	_ = bare.Body.Close()
+	if bare.StatusCode != http.StatusUnauthorized {
+		t.Errorf("carrier posture without headers: status %d, want 401", bare.StatusCode)
 	}
 }
 
@@ -566,4 +570,24 @@ func TestNewMux_WithoutStateHistory_RouteUnmounted(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (route unmounted — skip_if_404 keeps preflight green)", resp.StatusCode)
 	}
+}
+
+// postCarrier drives a route on a bearer-less mux. That posture
+// establishes the request identity from the X-Harbor-* carrier headers,
+// so a request that omits them is refused before any handler runs.
+func postCarrier(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Harbor-Tenant", "t1")
+	req.Header.Set("X-Harbor-User", "u1")
+	req.Header.Set("X-Harbor-Session", "s1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	return resp
 }

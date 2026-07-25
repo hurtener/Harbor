@@ -1,0 +1,30 @@
+# Force a TEXTUAL diff for source files git might otherwise classify as binary.
+#
+# git decides binary-ness per blob by sniffing for a NUL byte, and it renders a
+# diff as "Binary files differ" when EITHER side sniffs binary. A source file
+# that legitimately needs a NUL in a string literal therefore disappears from
+# `git diff` and from PR review — silently, and exactly for the file whose
+# review matters most. The Console MCP-Apps renderer hit this: it used a raw NUL
+# as an in-string key separator, so the most security-relevant Console component
+# reviewed as a binary blob for four phases.
+#
+# That literal is now written as a JavaScript escape sequence rather than an
+# embedded byte, but a base revision that still carries one would keep the diff
+# binary, and nothing stops the next source file from reintroducing one.
+# Declaring these types diffable makes the review surface unconditional rather
+# than dependent on file content.
+#
+# This file lists itself: a rule file that could go un-reviewable is the same
+# failure one level up.
+.gitattributes diff
+*.svelte       diff
+*.ts           diff
+*.js           diff
+*.mjs          diff
+*.go           diff
+*.css          diff
+*.md           diff
+*.sh           diff
+*.json         diff
+*.yaml         diff
+*.yml          diff

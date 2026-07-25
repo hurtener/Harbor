@@ -226,7 +226,8 @@ func mcpCall(t *testing.T, env *mcpPageEnv, method methods.Method, body any) (in
 		t.Fatalf("marshal %s: %v", method, err)
 	}
 	url := fmt.Sprintf("%s/v1/control/%s", env.srv.URL, string(method))
-	resp, err := http.Post(url, "application/json", bytes.NewReader(buf))
+	tenant, user, session := carrierFromPayload(body)
+	resp, err := postCarrierJSON(url, buf, tenant, user, session)
 	if err != nil {
 		t.Fatalf("POST %s: %v", method, err)
 	}
@@ -495,7 +496,7 @@ func mcpToggleRawHTMLTrust(t *testing.T, env *mcpPageEnv) {
 	if err != nil {
 		t.Fatalf("NewMCPSurface: %v", err)
 	}
-	adminCtx := protoauth.WithScopes(context.Background(), []protoauth.Scope{protoauth.ScopeAdmin})
+	adminCtx := protoauth.WithScopes(verifiedMCPPageCtx(t), []protoauth.Scope{protoauth.ScopeAdmin})
 	_, derr := surface.Dispatch(adminCtx, methods.MethodMCPServersSetRawHTMLTrust,
 		&types.MCPServerSetRawHTMLTrustRequest{
 			Identity: types.IdentityScope{

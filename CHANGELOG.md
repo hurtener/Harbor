@@ -17,6 +17,146 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.22.0] — 2026-07-25
+
+Minor: one shared body-identity gate across every Protocol surface, owner-scoped
+MCP connection writes, MCP App replay on session reopen, and the re-landed
+MCP-Apps host obligations. No Protocol wire change (`ProtocolVersion` stays
+`0.1.0`), no config schema change, no migration.
+
+**Upgrading:** one boot-time validation is newly enforced — see
+*Action required* at the end of this entry.
+
+### Added
+
+- **A reopened session replays its rendered MCP Apps.** A `ui://` App that
+  rendered during a turn now survives a session reopen instead of vanishing from
+  the transcript: `HistoryTurn` carries `app` + `serverID` (reusing the live
+  `MCPAppRefView` rather than a second wire shape), and history reduction folds
+  the durable `mcp.app_available` event with the same guards, display-mode
+  normalisation, and last-wins semantics the live decoder applies. Re-mount
+  resolves the persisted tool context by its deterministic `tool_call_id` — no
+  new storage and no new Protocol method. Resolution happens **before** the
+  iframe mounts, so an unresolvable context renders an honest placeholder rather
+  than a half-mounted frame; a resolution *failure* stays a loud error and is
+  never laundered into the eviction copy. A non-empty `ToolCallID` now promises a
+  fetchable record: the MCP driver stamps the id only when a tool-context record
+  actually persisted, and runtime-added connections capture exactly as
+  boot-config ones do. (D-348)
+- **Five MCP-Apps host obligations.** `ui/notifications/size-changed` is
+  consumed, with the inline frame bounded in CSS between the existing minimum
+  and a new `--size-app-inline-max` token so any reported height is bounded by
+  construction (fullscreen and picture-in-picture are unaffected);
+  `ui/resource-teardown` and `request-teardown`; host-context `toolInfo` and
+  `containerDimensions`; and `resources/templates/list`. (D-351)
+
+### Changed
+
+- **Every Protocol surface reconciles its request-body identity scope through
+  one shared gate.** `internal/protocol/bodyscope.Reconcile` replaces thirteen
+  near-duplicate helpers across both transports. The posture is a **registry
+  row, not a policy value** — a call site can name a posture but never invent
+  one — and each row declares its per-component rules (`Pinned` /
+  `PinnedOrEmpty` / `AdminScoped`), the claims that grant a tenant crossing, a
+  deny code, and a prose reason a reviewer can disagree with. A policy that
+  permits a crossing must be handed a non-nil `Auditor`; a nil sink is a runtime
+  error rather than an unrecorded crossing. The MCP Apps and MCP-Connections
+  gates moved inside `Dispatch`, which makes those surfaces' transport-agnostic
+  godoc true. (D-349)
+- **`identity` carries provenance.** A third context key holds the
+  transport-established triple (`WithVerified` / `FromVerified`); plain
+  `identity.With` refuses to move the working identity past it, and
+  `WithElevated(ctx, id, reason)` is the one named crossing, scoped to the
+  audited tenant.
+- **`SessionCounters` gains `Partial`,** distinguishing "we could not look" from
+  "there were none" — including at the filter branches — so a cross-tenant
+  admin listing never presents an unreadable scope as an empty one.
+- **App→tool dispatch is confined to the App's own server.** An app-supplied
+  bare tool name is qualified with the host-derived `serverID` before dispatch.
+  Because the catalog key `<sourceID>_<tool>` is a string join over unconstrained
+  charsets, `Registry.Register` now refuses — under the same write lock that
+  installs the entry — a server id that sits inside another registered id's
+  tool-name namespace, in both directions so registration order does not matter.
+  `harbor validate` applies the identical rule.
+- **MCP accessor errors are classified by sentinel, not by matching error
+  text,** so a remote server's wording cannot decide a Harbor verdict and an App
+  can distinguish "no such tool" from "you may not".
+
+### Fixed
+
+- **A request with no established identity is refused** with
+  `identity_required` instead of falling back to the caller-supplied body scope.
+- **Live MCP connection writes are owner-scoped.**
+  `Registry.SetOAuthDiscoveryOrigins` resolves through a new `ownedEntry(name,
+  owner)`, replacing the live allow-list only on the connection the caller's
+  `(tenant, agent_id)` owns; a name another owner attached, a boot-declared
+  name, and an unregistered name all refuse identically, and a zero or partial
+  owner is refused at the choke point rather than at each call site. The
+  boot-declared guard now applies on every path, before any revision read, so it
+  is a property of the name rather than of the branch. Registry reads are
+  unchanged (D-287/D-301). (D-350)
+- **`agent_config.set_revision` validates connection descriptors before
+  persist,** reusing `add_mcp_connection`'s shape authority — one authority, two
+  doors — including the fail-closed stdio allowlist. Rejection leaves the active
+  revision untouched, and the normalized descriptor is what persists, so both
+  doors write identical bytes for identical input.
+- **`OAuthDiscoveryAllowedOrigins` round-trips through the revision spine.**
+  Both the domain and wire converters carry the field, so `set_revision` → `get`
+  / `list_revisions` / `diff` reflects what the allowance write recorded.
+- **Two cross-tenant admin reads no longer degrade silently.**
+  `sessions.list` / `sessions.inspect` returned fabricated zero counters and
+  `search.tasks` silently dropped foreign rows; both now perform an audited
+  re-scope. `artifacts.delete` moved to its own admin-only registry row so the
+  transport grants exactly what the surface honours.
+
+### Internal
+
+- **A three-part lockstep gate keeps the body-identity reconciler the only
+  one,** in the `protocol-ts-gen-check` idiom, each part with a non-vacuity pin:
+  *coverage* (every scope-carrying canonical request type joins to a registered
+  surface, both directions — a new type or a deleted row fails `go test`),
+  *enforcement* (an AST scan refusing any hand-written body-identity comparison
+  outside the reconciler, reading through hoisted locals and aliased imports,
+  with a reasoned allow-list), and *minting* (a reviewed call list for the
+  verified-identity and elevation writers, with stale entries reported).
+- **21 inert smoke guards repaired.** `assert_grep_absent` matched with basic
+  regex while its siblings used extended, and swallowed grep's exit-2, so 21
+  absence assertions across the suite were silently passing without running —
+  among them hand-rolled-`fetch` bans on seven Console pages, a Protocol
+  single-source check, a spawn-depth check, and one asserting absence from a
+  file that no longer exists. All are live and passing; a malformed pattern or
+  unreadable target now fails loudly with "the guard did not run". Smoke
+  assertions in this wave are anchored to **call sites** rather than
+  identifiers — an identifier appears in prose, a call site does not — and are
+  mutation-verified to FAIL rather than SKIP.
+- **Two smoke guards could only ever pass on macOS.** One asserted a
+  tab-indented field with `\t` inside a `grep -E` pattern — BSD grep reads that
+  as a tab, GNU grep as a literal `t`, so on Linux it could never match and
+  reported a present field absent. The other ran `CGO_ENABLED=0 go test -race`,
+  which on Linux fails to build with "-race requires cgo" rather than running
+  anything. Both are fixed, and `drift-audit` now fails on `\t` or `\d` inside
+  a `grep -E` pattern anywhere under `scripts/`, naming file:line; those two are
+  the only escapes that diverge between the greps.
+- **The TUI PTY end-to-end gate is hermetic.** The co-launch tests inherited the
+  operator's real `HOME` and so read back a composer draft that an earlier run
+  had persisted to `~/.harbor/tui-state.json`, making the suite non-idempotent.
+  Each PTY launch now gets its own `HOME`, and the wave's env-key lookup walks to
+  the filesystem root instead of five parents — previously, running from a nested
+  working tree put the repository `.env` out of reach and three subtests skipped
+  silently.
+
+### Action required
+
+A deployment whose configuration declares two MCP server ids where one sits
+inside the other's tool-name namespace — for example `github` and
+`github_enterprise` — is now refused at boot and by `harbor validate`.
+Remediation is a rename, which moves every `<name>_<tool>` catalog key
+referenced by agent YAML, `disabled_tools`, `paused_servers`, and persisted
+revisions.
+
+An MCP App must send the **bare** server-side tool name; an App that previously
+sent an already-qualified Harbor catalog key will report a missing tool.
+
 ## [1.21.1] — 2026-07-25
 
 Patch: Protocol body-identity reconciliation and the dev bootstrap endpoint are

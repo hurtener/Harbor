@@ -932,12 +932,27 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		// stamp it on the reference so BOTH the discovery event and the
 		// proxy-path projection (which reads value.AppRef) correlate to the
 		// captured tool context.
+		//
+		// The id is stamped ONLY when a context record actually landed. It is
+		// a PROMISE to the reader — a host that receives one fetches the
+		// context via mcp.apps.tool_context and, per the reader contract,
+		// treats a miss as "the record is gone" (a rendered app then reports
+		// its view as unavailable rather than mounting an empty shell). An id
+		// minted with no capturer wired, or after a capture error, would make
+		// that promise falsely and cost the reader its whole render for a
+		// context that never existed. An absent id says the honest thing
+		// instead: no context was captured, so the reader mounts with no
+		// delivery. Capture stays best-effort for the CALL (the tool result is
+		// the planner's source of truth) — this only governs what the
+		// reference claims.
 		runID := ""
 		if quad, qok := identity.QuadrupleFrom(ctx); qok {
 			runID = quad.RunID
 		}
-		value.AppRef.ToolCallID = ToolCallID(runID, string(p.source), name, args)
-		p.captureToolContext(ctx, value.AppRef.ToolCallID, name, args, value, res.IsError)
+		id := ToolCallID(runID, string(p.source), name, args)
+		if p.captureToolContext(ctx, id, name, args, value, res.IsError) {
+			value.AppRef.ToolCallID = id
+		}
 		p.publishAppAvailable(ctx, value.AppRef, name)
 	}
 	if lowerErr != nil {
@@ -1000,16 +1015,20 @@ func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef, toolNam
 // missing identity or a Capture error is logged loudly and returns —
 // never silently swallowed (CLAUDE.md §13) — but it does not fail the tool
 // call, because the tool result is the source of truth for the planner.
-func (p *Provider) captureToolContext(ctx context.Context, toolCallID, toolName string, args json.RawMessage, value MCPToolValue, isError bool) {
+//
+// It reports whether a record was actually persisted. The caller stamps the
+// tool-call id on the app reference ONLY on true, so a non-empty id always
+// promises a fetchable context (see the call site).
+func (p *Provider) captureToolContext(ctx context.Context, toolCallID, toolName string, args json.RawMessage, value MCPToolValue, isError bool) bool {
 	if p.cfg.ToolContext == nil {
-		return
+		return false
 	}
 	if _, ok := identity.From(ctx); !ok {
 		p.logger.Warn("mcp: app tool-context capture skipped: no identity on ctx",
 			slog.String("source", string(p.source)),
 			slog.String("tool", toolName),
 		)
-		return
+		return false
 	}
 	resultJSON, err := json.Marshal(value)
 	if err != nil {
@@ -1018,7 +1037,7 @@ func (p *Provider) captureToolContext(ctx context.Context, toolCallID, toolName 
 			slog.String("tool", toolName),
 			slog.String("error", err.Error()),
 		)
-		return
+		return false
 	}
 	in := CapturedToolContext{
 		ServerID:   p.source,
@@ -1035,7 +1054,9 @@ func (p *Provider) captureToolContext(ctx context.Context, toolCallID, toolName 
 			slog.String("tool_call_id", toolCallID),
 			slog.String("error", capErr.Error()),
 		)
+		return false
 	}
+	return true
 }
 
 // buildResourceDescriptor wraps an MCP Resource as a one-shot

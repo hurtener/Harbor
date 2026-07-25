@@ -45,6 +45,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -129,7 +130,7 @@ func (h *AgentsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Identity at the edge — RFC §5.5, CLAUDE.md §6 rule 9. A missing /
 	// incomplete triple fails closed with CodeIdentityRequired (401).
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeAgentsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -229,6 +230,10 @@ func (h *AgentsHandler) serveList(w http.ResponseWriter, r *http.Request, body [
 			"failed to decode agents.list request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.List(r.Context(), req, adminScoped)
 	if err != nil {
@@ -243,6 +248,10 @@ func (h *AgentsHandler) serveGet(w http.ResponseWriter, r *http.Request, body []
 	if err := decodeAgentsBody(body, &req); err != nil {
 		writeAgentsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode agents.get request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope
@@ -261,6 +270,10 @@ func (h *AgentsHandler) serveTools(w http.ResponseWriter, r *http.Request, body 
 			"failed to decode agents.tools request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.Tools(r.Context(), req)
 	if err != nil {
@@ -275,6 +288,10 @@ func (h *AgentsHandler) serveMemory(w http.ResponseWriter, r *http.Request, body
 	if err := decodeAgentsBody(body, &req); err != nil {
 		writeAgentsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode agents.memory request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope
@@ -293,6 +310,10 @@ func (h *AgentsHandler) serveGovernance(w http.ResponseWriter, r *http.Request, 
 			"failed to decode agents.governance request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.Governance(r.Context(), req)
 	if err != nil {
@@ -307,6 +328,10 @@ func (h *AgentsHandler) serveSkills(w http.ResponseWriter, r *http.Request, body
 	if err := decodeAgentsBody(body, &req); err != nil {
 		writeAgentsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode agents.skills request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope
@@ -325,6 +350,10 @@ func (h *AgentsHandler) servePermissions(w http.ResponseWriter, r *http.Request,
 			"failed to decode agents.permissions request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.Permissions(r.Context(), req)
 	if err != nil {
@@ -339,6 +368,10 @@ func (h *AgentsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, bod
 	if err := decodeAgentsBody(body, &req); err != nil {
 		writeAgentsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode agents.metrics request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope
@@ -370,6 +403,10 @@ func (h *AgentsHandler) serveControl(
 	if err := decodeAgentsBody(body, &req); err != nil {
 		writeAgentsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode "+string(method)+" request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceAgents); perr != nil {
+		writeAgentsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope

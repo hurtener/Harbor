@@ -61,7 +61,7 @@ control_post() {
 
 # The dev `harbor dev` JWT carries identity (tenant=dev, user=dev,
 # session=dev). The smoke scope MUST match it — the Phase 61
-# `backfillArtifactsIdentity` defence-in-depth check rejects a body
+# shared body-identity gate rejects a body
 # whose user/session disagree with the verified JWT identity.
 DEV_SCOPE='{"tenant":"dev","user":"dev","session":"dev"}'
 
@@ -148,7 +148,7 @@ esac
 # Assertion 4 — cross-tenant artifacts.list scope gate.
 # A request whose body identity (user/session) disagrees with the dev
 # token's verified identity is rejected at the transport edge — the
-# Phase 61 defence-in-depth `backfillArtifactsIdentity` check (401
+# shared body-identity gate (401
 # CodeIdentityRequired). When NO validator runs (a trust-based dev
 # transport) the body identity is authoritative and the request is
 # accepted; both the 401 reject and the trust-based 200 are OK. The

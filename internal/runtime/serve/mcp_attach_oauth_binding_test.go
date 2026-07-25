@@ -31,7 +31,7 @@ func TestMCPConnectionAttacher_OAuthBindingError_FailsLoudNotParked(t *testing.T
 	// resolveOAuthBinding returns a loud mcpdrv.ErrOAuthBinding before any dial.
 	a := NewMCPConnectionAttacher(tools.NewCatalog(), mcpdrv.NewRegistry(), bus,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil)
+		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, nil, nil, nil)
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

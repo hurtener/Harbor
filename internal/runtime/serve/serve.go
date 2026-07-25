@@ -71,6 +71,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
 // ErrAuthValidatorFactoryRequired is returned by Boot when Options carries a
@@ -476,8 +477,20 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	var mcpAttacher agentcfgprotocol.ConnectionAttacher
 	var mcpDetacher projection.ConnectionDetacher
 	if toolCat != nil && mcpRegistry != nil {
+		// Thread the runtime's MCP Apps tool-context store into the attacher so
+		// a RUNTIME-ADDED connection captures an app-declaring tool call's
+		// context exactly as a boot-config one does. The explicit nil check
+		// matters: handing a typed-nil *ToolContextStore to the
+		// mcpdrv.ToolContextCapturer interface would produce a non-nil
+		// interface holding a nil pointer, and the driver's "is a capturer
+		// wired?" test would answer yes for a store that cannot capture.
+		var mcpToolCtxCapturer mcpdrv.ToolContextCapturer
+		if mcpToolContext != nil {
+			mcpToolCtxCapturer = mcpToolContext
+		}
 		attacher := NewMCPConnectionAttacher(toolCat, mcpRegistry, bus, opts.Logger,
-			resolveMCPAttachIdentity(opts.MCPDefaultIdentity), oauthProviders, stack.OAuthProviderSet)
+			resolveMCPAttachIdentity(opts.MCPDefaultIdentity), oauthProviders, stack.OAuthProviderSet,
+			mcpToolCtxCapturer)
 		closers = append(closers, attacher.Close)
 		mcpAttacher = attacher
 		mcpDetacher = NewMCPConnectionDetacher(toolCat, mcpRegistry, opts.Logger)

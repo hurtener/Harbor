@@ -87,7 +87,7 @@ func TestSessionsHandler_Delete_ForeignTarget_401(t *testing.T) {
 	er := &stubEraser{resp: prototypes.SessionsDeleteResponse{Deleted: true}}
 	h := newSessionsDeleteHandler(t, er)
 	// Body names a tenant other than the verified identity — rejected
-	// identity_required (401) by assertSessionsIdentity, BEFORE the eraser.
+	// identity_required (401) by the body-identity gate, BEFORE the eraser.
 	body := `{"identity":{"tenant":"t-OTHER","user":"u-sh","session":"s-sh"}}`
 	code, raw := doSessionsRequest(t, h, "delete", body, &sessionsHandlerID, nil)
 	if code != http.StatusUnauthorized {

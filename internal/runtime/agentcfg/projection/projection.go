@@ -208,8 +208,11 @@ type DiscoveryOriginReconciler interface {
 	AttachedSources(ctx context.Context, owner auth.Owner) []string
 	// SetOAuthDiscoveryOrigins FULL-REPLACES the named connection's allow-list on
 	// the live registry (and prunes a now-unallowed recorded requirement),
-	// returning the prior set. Identity-mandatory for authorization.
-	SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error)
+	// returning the prior set. Identity-mandatory for authorization, and
+	// OWNER-SCOPED for the write: owner is the reconciling (tenant, agent), and
+	// the replacement lands only on a registration carrying that same owner tag,
+	// so the re-apply stays inside the owner's own runtime-added set.
+	SetOAuthDiscoveryOrigins(ctx context.Context, owner auth.Owner, name string, origins []string) (prev []string, err error)
 }
 
 // ReconcileDiscoveryOrigins is the ALLOWANCE-RECONCILE leg of run-start
@@ -256,7 +259,7 @@ func ReconcileDiscoveryOrigins(ctx context.Context, reg agentcfg.Registry, agent
 		if !isDeclared {
 			continue // detach territory (ReconcileConnections) — not re-applied here.
 		}
-		if _, aerr := reconciler.SetOAuthDiscoveryOrigins(ctx, src, origins); aerr != nil {
+		if _, aerr := reconciler.SetOAuthDiscoveryOrigins(ctx, owner, src, origins); aerr != nil {
 			errs = append(errs, fmt.Errorf("reapply allowance %q: %w", src, aerr))
 			continue
 		}

@@ -63,7 +63,7 @@ func TestE2E_WaveV118_HA33_ReAttachIdempotentAndOwnerIsolated(t *testing.T) {
 	cat := tools.NewCatalog()
 	reg := mcpdrv.NewRegistry()
 	sysID := identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}
-	attacher := serve.NewMCPConnectionAttacher(cat, reg, bus, nil, sysID, nil, nil)
+	attacher := serve.NewMCPConnectionAttacher(cat, reg, bus, nil, sysID, nil, nil, nil)
 	t.Cleanup(func() { _ = attacher.Close(context.Background()) })
 
 	req := func(owner string) agentcfgproto.AttachRequest {

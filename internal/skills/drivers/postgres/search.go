@@ -501,6 +501,24 @@ func skillText(s skills.Skill) string {
 // the embedder sees so the billable embedding traffic is attributed to
 // the identity the rows are scoped under. Mirrors the SQLite driver.
 func embedIdentityCtx(ctx context.Context, id identity.Quadruple) (context.Context, error) {
+	// A record from another tenant reaches here only behind a listing the
+	// caller was already authorized for; seat that as an audited crossing
+	// so the attribution names the tenant it reads and why.
+	if verified, ok := identity.FromVerified(ctx); ok && id.TenantID != verified.TenantID {
+		ectx, err := identity.WithElevated(ctx, id.Identity,
+			"skills semantic search: attributing an embedding call to the identity the stored skill is scoped under")
+		if err != nil {
+			return nil, fmt.Errorf("skills/postgres: identity: %w", err)
+		}
+		if id.RunID == "" {
+			return ectx, nil
+		}
+		ectx, err = identity.WithRun(ectx, id.Identity, id.RunID)
+		if err != nil {
+			return nil, fmt.Errorf("skills/postgres: identity: %w", err)
+		}
+		return ectx, nil
+	}
 	if id.RunID != "" {
 		ectx, err := identity.WithRun(ctx, id.Identity, id.RunID)
 		if err != nil {

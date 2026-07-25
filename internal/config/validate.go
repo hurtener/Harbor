@@ -1314,6 +1314,29 @@ func (c *Config) validateTools() error {
 			return fieldError(prefix+".name",
 				fmt.Sprintf("duplicate name %q (must be unique)", s.Name))
 		}
+		// Separator safety. A server's tools are keyed `<name>_<tool>` in the
+		// shared catalog, so two names where one is an underscore-extension of
+		// the other make that key ambiguous — a key built by prefixing the
+		// shorter name can resolve to a tool owned by the longer one, which is
+		// how a prefix-based scoping boundary stops meaning what it claims.
+		//
+		// The runtime registry refuses the pairing at attach, so a config like
+		// this would ABORT BOOT. Catching it here is the point: validate-time
+		// is where an operator should learn that two names cannot coexist,
+		// rather than discovering it when the runtime declines to start.
+		// Same rule, same wording, checked one stage earlier.
+		for existing := range names {
+			if strings.HasPrefix(s.Name, existing+"_") || strings.HasPrefix(existing, s.Name+"_") {
+				return fieldError(prefix+".name", fmt.Sprintf(
+					"%q and %q are separator-ambiguous: one is an underscore-extension of the "+
+						"other, so a `<name>_<tool>` catalog key would not identify one server. "+
+						"The runtime refuses this pairing at attach (boot would fail). Rename one "+
+						"— note that renaming changes every `<name>_<tool>` key referenced by "+
+						"agent-YAML tool allow-lists, disabled_tools, paused_servers, and any "+
+						"persisted agent-config revision",
+					s.Name, existing))
+			}
+		}
 		names[s.Name] = struct{}{}
 		mode := s.TransportMode
 		if mode == "" {

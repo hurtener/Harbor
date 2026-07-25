@@ -66,7 +66,7 @@ func TestSessionsHandler_SetTitle_OwnSession_200(t *testing.T) {
 // TestSessionsHandler_SetTitle_SiblingSession_200 pins the (tenant, user)
 // write scope at the wire layer: a session_id DIFFERENT from the caller's
 // own connecting session (carried via X-Harbor-Session) is still
-// accepted — assertSessionsIdentity only constrains the body Identity,
+// accepted — the body-identity gate only constrains the body Identity,
 // never the separate session_id field (D-288).
 func TestSessionsHandler_SetTitle_SiblingSession_200(t *testing.T) {
 	ts := &stubTitleSetter{}
@@ -85,7 +85,7 @@ func TestSessionsHandler_SetTitle_ForeignBodyIdentity_401(t *testing.T) {
 	ts := &stubTitleSetter{}
 	h := newSessionsSetTitleHandler(t, ts)
 	// Body names a tenant other than the verified identity — rejected
-	// identity_required (401) by assertSessionsIdentity, BEFORE the
+	// identity_required (401) by the body-identity gate, BEFORE the
 	// TitleSetter is ever reached.
 	body := `{"identity":{"tenant":"t-OTHER","user":"u-sh","session":"s-sh"},"session_id":"s-sh","title":"x"}`
 	code, raw := doSessionsRequest(t, h, "set_title", body, &sessionsHandlerID, nil)

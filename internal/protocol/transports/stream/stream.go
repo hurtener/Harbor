@@ -199,7 +199,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// carrier headers via resolveIdentity. A missing component on
 	// either path fails the request closed (401) before any
 	// subscription is opened (RFC §5.5, CLAUDE.md §6 rule 9).
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeProtocolError(w, http.StatusUnauthorized,
 			protoerrors.Newf(protoerrors.CodeIdentityRequired,
@@ -427,23 +427,28 @@ func (h *Handler) surfaceReplayGap(
 	flusher.Flush()
 }
 
-// resolveIdentity reads the identity triple. Prefer the
-// verified identity attached to r.Context() by auth.Middleware
-// (identity.With). fallback: when no middleware ran, read
-// from the X-Harbor-* carrier headers and validate.
+// resolveIdentity establishes the request's identity triple and returns
+// it alongside a request whose context carries it as the VERIFIED
+// identity — the anchor the body-scope gate reconciles request bodies
+// against.
 //
-// This is the single identity choke point on the SSE transport — the
-// ctx-first preference is additive and does not reshape
-// ServeHTTP. When neither path produces a complete triple, the
-// request fails closed (401).
-func resolveIdentity(r *http.Request) (identity.Identity, error) {
-	if id, ok := identity.From(r.Context()); ok {
-		// auth.Middleware already ran identity.Validate against the
-		// JWT claims — but defence in depth, re-validate here in case
-		// some future caller attached an identity directly without
-		// going through the middleware.
+// It is the single identity choke point on the streaming transport, and
+// it resolves in one order: the identity auth.Middleware seated on ctx
+// wins; where a deployment carries identity outside a bearer token, the
+// X-Harbor-* carrier headers are read instead. A request that produces
+// no complete triple by either route fails closed (401), so there is no
+// third state in which a handler runs without an established identity.
+//
+// The returned request is the one every handler must use from here on:
+// its context is what makes the body-scope gate's fail-closed contract
+// reachable, and reading r.Context() from the original request instead
+// would hand the gate a context with nothing to reconcile against.
+func resolveIdentity(r *http.Request) (identity.Identity, *http.Request, error) {
+	if id, ok := identity.FromVerified(r.Context()); ok {
+		// The middleware already ran identity.Validate against the
+		// token's claims — defence in depth, re-validate here.
 		if err := identity.Validate(id); err == nil {
-			return id, nil
+			return id, r, nil
 		}
 	}
 	id := identity.Identity{
@@ -452,9 +457,13 @@ func resolveIdentity(r *http.Request) (identity.Identity, error) {
 		SessionID: r.Header.Get(HeaderSession),
 	}
 	if err := identity.Validate(id); err != nil {
-		return identity.Identity{}, err
+		return identity.Identity{}, r, err
 	}
-	return id, nil
+	ctx, err := identity.WithVerified(r.Context(), id)
+	if err != nil {
+		return identity.Identity{}, r, err
+	}
+	return id, r.WithContext(ctx), nil
 }
 
 // parseEventTypes reads the optional repeatable X-Harbor-Event-Type

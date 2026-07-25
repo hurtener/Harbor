@@ -26,6 +26,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -104,7 +105,7 @@ func (h *AggregateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Identity at the edge — RFC §5.5, CLAUDE.md §6 rule 9.
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeAggregateError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -127,6 +128,13 @@ func (h *AggregateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"failed to decode request body: "+err.Error())
 			return
 		}
+	}
+
+	// The body carries an identity scope alongside its filter; the fan-in
+	// authority is the filter, so the body triple must be the caller's own.
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceEvents); perr != nil {
+		writeAggregateError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
 	}
 
 	// Cross-tenant gate — the wire filter may name a tenant other than
