@@ -280,3 +280,29 @@ func TestAppsSurface_ToolContext_UnknownIDMapsToNotFound(t *testing.T) {
 	})
 	assertCode(t, err, protoerrors.CodeNotFound)
 }
+
+// An app-initiated call naming a tool that does not resolve inside the calling
+// app's own server namespace must surface as CodeNotFound — the outcome an app
+// can act on — not as the undifferentiated CodeRuntimeError ("MCP read failed")
+// it cannot tell apart from a broken southbound transport. The catalog's
+// `tools: tool not found` wrap is the marker the Protocol edge classifies on.
+func TestAppsSurface_CallTool_UnresolvableToolMapsToNotFound(t *testing.T) {
+	inv := &stubInvoker{err: errors.New(`mcpconsole: tools: tool not found: "srv-a_nope"`)}
+	s := newAppsSurface(t, &stubResourceReader{}, inv)
+	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), Tool: "srv-a_nope",
+	})
+	assertCode(t, err, protoerrors.CodeNotFound)
+}
+
+// A transport-shaped failure keeps the generic runtime code, so the two remain
+// distinguishable at the wire: the not-found classification must not widen into
+// "every app tool-call failure is a not-found".
+func TestAppsSurface_CallTool_TransportFailureStaysRuntimeError(t *testing.T) {
+	inv := &stubInvoker{err: errors.New("mcpconsole: stdio transport reset by peer")}
+	s := newAppsSurface(t, &stubResourceReader{}, inv)
+	_, err := s.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), Tool: "srv-a_echo",
+	})
+	assertCode(t, err, protoerrors.CodeRuntimeError)
+}

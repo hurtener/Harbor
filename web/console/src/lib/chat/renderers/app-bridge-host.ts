@@ -54,6 +54,7 @@ export type { McpUiDisplayMode };
 import type {
   CallToolResult,
   ListResourcesResult,
+  ListResourceTemplatesResult,
   ReadResourceResult,
 } from '@modelcontextprotocol/sdk/types.js';
 
@@ -81,6 +82,15 @@ export interface MCPAppRefView {
    * carried no correlation id; the host then performs no delivery.
    */
   toolCallId?: string;
+  /**
+   * The server-side tool name that declared the app, carried on the
+   * `mcp.app_available` discovery event. The host projects it onto the
+   * `ui/initialize` host-context `toolInfo` so a rendered app can name the call
+   * that instantiated it. Display metadata only — never an authorization input
+   * (the app's tool namespace is derived from the server id, not from here).
+   * Absent when the discovery recorded no tool name.
+   */
+  toolName?: string;
 }
 
 /** A `ui://` resource fetched through the host (mirrors `ReadMCPResourceResponse`). */
@@ -116,6 +126,60 @@ export interface MCPAppResourceListing {
   uri: string;
   name?: string;
   mimeType?: string;
+}
+
+/**
+ * One advertised resource TEMPLATE (a parameterised `uriTemplate` row). Harbor's
+ * Protocol advertises no resource-template surface today, so the adapter
+ * resolves an empty list — see {@link MCPAppHostClient.listResourceTemplates}.
+ */
+export interface MCPAppResourceTemplateListing {
+  uriTemplate: string;
+  name?: string;
+  mimeType?: string;
+}
+
+/**
+ * The typed failure an app-initiated `tools/call` raises when the requested
+ * name does not resolve WITHIN the calling app's own server namespace.
+ *
+ * It exists so an app can degrade DELIBERATELY (render "that action is not
+ * available here") instead of guessing from a generic transport error. The host
+ * previously surfaced this as an undifferentiated runtime failure whose message
+ * read "MCP read failed", which an app could not distinguish from a broken
+ * southbound transport.
+ *
+ * The chat module declares the type; the Console-side adapter (which owns the
+ * Protocol import, D-091) raises it when the Runtime answers `not_found`, and
+ * {@link createAppHandlers} re-raises it naming the BARE name the app asked for
+ * plus the server it is confined to.
+ */
+export class MCPAppToolNotFoundError extends Error {
+  /**
+   * The tool name that did not resolve. The adapter raises it holding the
+   * SERVER-QUALIFIED name it dispatched; the host handler re-raises it holding
+   * the BARE name the app actually asked for, which is the only form the app
+   * can match against what it sent.
+   */
+  readonly tool: string;
+  /**
+   * The MCP server the calling app is confined to. Undefined on the adapter's
+   * raise (which sees only the qualified name and cannot split a server id that
+   * may itself contain underscores); always set by the time the app sees it.
+   */
+  readonly serverID: string | undefined;
+
+  constructor(tool: string, serverID?: string) {
+    super(
+      serverID === undefined
+        ? `tool ${JSON.stringify(tool)} does not resolve`
+        : `tool ${JSON.stringify(tool)} is not available on MCP server ` +
+          `${JSON.stringify(serverID)} (an app may only call its own server's tools)`,
+    );
+    this.name = 'MCPAppToolNotFoundError';
+    this.tool = tool;
+    this.serverID = serverID;
+  }
 }
 
 /** One advertised tool (mirrors a row of the tool catalog). */
@@ -169,10 +233,31 @@ export interface MCPAppToolContext {
 export interface MCPAppHostClient {
   /** Route `resources/read` → `mcp.servers.read_resource`. */
   readResource(serverID: string, resourceURI: string): Promise<MCPAppResource>;
-  /** Route `tools/call` → `mcp.apps.call_tool` (re-enters the tool-safety gates). */
+  /**
+   * Route `tools/call` → `mcp.apps.call_tool` (re-enters the tool-safety gates).
+   *
+   * `tool` is the SERVER-QUALIFIED catalog name (`<serverID>_<name>`) — the
+   * caller ({@link createAppHandlers}) qualifies the app-supplied bare name
+   * against the bridge's host-derived server id before dispatching, so an app
+   * can never name a tool outside its own server. Implementations MUST raise
+   * {@link MCPAppToolNotFoundError} when the Runtime reports the name as
+   * not-found, so the confinement rejection is distinguishable from a transport
+   * failure.
+   */
   callTool(tool: string, args?: unknown): Promise<MCPAppToolResult>;
   /** Route `resources/list` → `mcp.servers.resources`. */
   listResources(serverID: string): Promise<MCPAppResourceListing[]>;
+  /**
+   * Route `resources/templates/list` → the server's advertised resource
+   * templates. Harbor's Protocol surfaces no resource-template method, so the
+   * Console adapter resolves an EMPTY list rather than throwing: the host
+   * advertises the `serverResources` capability, and a capability you advertise
+   * must be serviceable (the roots-honesty bar) — an app probing for templates
+   * gets a truthful "this host exposes none" instead of an error it cannot act
+   * on. Full resource-template support is a documented follow-up; the empty
+   * answer is the honest state of the surface, not a swallowed failure.
+   */
+  listResourceTemplates(serverID: string): Promise<MCPAppResourceTemplateListing[]>;
   /**
    * Route a tool listing → the tool catalog filtered to this server. NOTE:
    * the official AppBridge exposes no `onlisttools` host handler (an app
@@ -326,6 +411,47 @@ export interface AppBridgeHostOptions {
    * only patches the bridge AFTER the handshake, never during it. Optional.
    */
   onInitialized?: () => void;
+  /**
+   * Metadata about the tool call that instantiated this app, projected onto the
+   * `ui/initialize` host-context `toolInfo` slot so a rendered app can name the
+   * call it belongs to. Supplied by the renderer from the `mcp.app_available`
+   * discovery (`toolCallId` + `toolName`); both are host-derived. Optional —
+   * absent when the discovery carried no tool name.
+   *
+   * Baked in at CONSTRUCTION and never patched: it cannot change for the life
+   * of a bridge (a different tool call is a different app).
+   */
+  toolInfo?: { toolCallId?: string; toolName: string };
+  /**
+   * The dimensions of the container holding the app, projected onto the
+   * `ui/initialize` host-context `containerDimensions` slot so an app can lay
+   * itself out to the box it was given instead of guessing.
+   *
+   * Measured ONCE by the renderer, UNTRACKED, at bridge construction. It is
+   * deliberately NOT relayed on a later resize: the host resizes the iframe in
+   * RESPONSE to the app's own `size-changed` report, so echoing the new box back
+   * would close a report→resize→report feedback loop. The value is a snapshot of
+   * the box the app was handed, not a live signal.
+   */
+  containerDimensions?: McpUiHostContext['containerDimensions'];
+  /**
+   * Called when the app reports its content size (`ui/notifications/size-changed`
+   * — the ext-apps view SDK emits it unprompted). The renderer uses it to grow
+   * the inline iframe to the app's content height, clamped by the host's own
+   * min/max so a misbehaving app cannot seize the viewport. Optional; when
+   * absent the notification is simply not consumed and the iframe keeps its
+   * fixed height.
+   */
+  onSizeChanged?: (size: { width?: number; height?: number }) => void;
+  /**
+   * Called when the app asks to be torn down
+   * (`ui/notifications/request-teardown`). The host has already sent the
+   * graceful `ui/resource-teardown` and closed the bridge by the time this
+   * fires; the renderer uses it to unmount the iframe and render an honest
+   * "this app closed itself" placeholder rather than leaving a dead frame.
+   * Optional.
+   */
+  onRequestTeardown?: () => void;
 }
 
 /**
@@ -337,7 +463,60 @@ export interface AppHandlers {
   oncalltool(params: { name: string; arguments?: unknown }): Promise<CallToolResult>;
   onreadresource(params: { uri: string }): Promise<ReadResourceResult>;
   onlistresources(): Promise<ListResourcesResult>;
+  onlistresourcetemplates(): Promise<ListResourceTemplatesResult>;
   onrequestdisplaymode(params: { mode: McpUiDisplayMode }): Promise<{ mode: McpUiDisplayMode }>;
+}
+
+/**
+ * Qualify an app-supplied tool name into the calling app's own server
+ * namespace — the app→host tool-call CONFINEMENT control.
+ *
+ * Harbor keys its catalog `<source>_<tool>`, so an app naming its server-side
+ * tool `get_weather` must reach `srv_get_weather`. Qualifying here does two
+ * jobs at once:
+ *
+ *   1. It RESOLVES the catalog key, so a spec-conformant app (which knows only
+ *      its own server-side names) reaches the right tool at all.
+ *   2. It CONFINES the app to its own server. The prefix is applied
+ *      UNCONDITIONALLY — an already-qualified or cross-server name
+ *      (`otherserver_drop_table`) becomes `srv_otherserver_drop_table`, which
+ *      cannot resolve. There is no escape: every name the app can utter lands
+ *      inside `<serverID>_`.
+ *
+ * `serverID` is HOST-DERIVED. It arrives on the bridge's construction options
+ * from the backend-minted `server_id` on the `mcp.app_available` event; nothing
+ * inside the sandboxed iframe can supply or influence it. An app chooses the
+ * suffix, never the namespace.
+ *
+ * This is defence in depth, not the only gate: identity, the tool's approval /
+ * OAuth wrappers, and the paused-server / disabled-tool exposure gate all still
+ * fire inside `mcp.apps.call_tool`. Confinement narrows WHICH tools are
+ * reachable; those gates decide whether a reachable one may run.
+ */
+export function qualifyAppToolName(serverID: string, name: string): string {
+  return `${serverID}_${name}`;
+}
+
+/**
+ * Build the `ui/initialize` host-context `containerDimensions` from the measured
+ * container box. Pure (no DOM) so the mapping is unit-testable; the renderer
+ * does the measurement and calls this.
+ *
+ * The spec's shape is an intersection of two unions — a FIXED or a MAXIMUM for
+ * each axis. Harbor's inline host gives an app a fixed WIDTH (the chat column)
+ * and a bounded HEIGHT (the app grows into it as it reports its content size,
+ * up to the host's maximum), so it emits `{ width, maxHeight }`. A
+ * non-positive measurement is omitted rather than sent as zero — a zero box is
+ * a lie an app would lay itself out against.
+ */
+export function containerDimensionsFromBox(box: {
+  width: number;
+  maxHeight?: number;
+}): McpUiHostContext['containerDimensions'] | undefined {
+  if (!(box.width > 0)) return undefined;
+  const out: { width: number; maxHeight?: number } = { width: box.width };
+  if (box.maxHeight !== undefined && box.maxHeight > 0) out.maxHeight = box.maxHeight;
+  return out;
 }
 
 /**
@@ -353,7 +532,23 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       // → mcp.apps.call_tool: re-enters the SAME identity + approval-gate +
       //   tool-side-OAuth path a planner call uses. A gated tool parks on the
       //   unified pause primitive (D-173).
-      const result = await client.callTool(name, args);
+      //
+      // The name is QUALIFIED into this bridge's host-derived server namespace
+      // first (see `qualifyAppToolName`) — the confinement control. An app can
+      // only ever reach `<serverID>_*`.
+      const qualified = qualifyAppToolName(serverID, name);
+      let result: MCPAppToolResult;
+      try {
+        result = await client.callTool(qualified, args);
+      } catch (err) {
+        if (err instanceof MCPAppToolNotFoundError) {
+          // Re-raise naming what the APP asked for (the bare name) and the
+          // server it is confined to, so the app can branch on a typed,
+          // actionable rejection rather than a generic transport error.
+          throw new MCPAppToolNotFoundError(name, serverID);
+        }
+        throw err;
+      }
       const blocks: CallToolResult['content'] = [];
       if (result.artifactRef) {
         // Heavy result rides by reference (D-026) — surface the stub, never
@@ -403,6 +598,23 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       };
     },
 
+    async onlistresourcetemplates() {
+      // → the server's advertised resource templates, scoped to THIS bridge's
+      //   server. The host advertises `serverResources`, and every advertised
+      //   capability must be serviceable: before this handler existed, an app
+      //   probing `resources/templates/list` got a "method not found" from a
+      //   host that claimed to proxy resource reads. It now answers honestly —
+      //   today with the empty list Harbor's Protocol actually exposes.
+      const rows = await client.listResourceTemplates(serverID);
+      return {
+        resourceTemplates: rows.map((r) => ({
+          uriTemplate: r.uriTemplate,
+          name: r.name ?? r.uriTemplate,
+          mimeType: r.mimeType,
+        })),
+      };
+    },
+
     async onrequestdisplaymode({ mode }) {
       // Grant the requested mode when the host can apply it; otherwise fall back
       // to the always-available `inline`. The inline-only chat-scroll host (the
@@ -445,6 +657,14 @@ function asStructured(content: unknown): Record<string, unknown> {
 export const DEFAULT_HOST_INFO = { name: 'harbor-console', version: '1' } as const;
 
 /**
+ * How long the host waits for an app to acknowledge the graceful
+ * `ui/resource-teardown` before closing the transport regardless. Short on
+ * purpose: the teardown is a courtesy on the unmount path, and a wedged app must
+ * never hold a Svelte effect cleanup open.
+ */
+export const APP_TEARDOWN_TIMEOUT_MS = 1_000;
+
+/**
  * The host capabilities advertised to the app. Phase 109b advertises the two
  * server proxies (tools + resources), inline display only, and the host
  * sandbox posture. Notably absent: `experimental` auto-forward — there is no
@@ -477,6 +697,7 @@ export class AppBridgeHost {
   // the tool context arrives already resolved.
   readonly #toolContext: MCPAppToolContext | undefined;
   readonly #onInitialized: (() => void) | undefined;
+  readonly #onRequestTeardown: (() => void) | undefined;
   #transport: PostMessageTransport | undefined;
   #displayModeRequests: DisplayModeRequest[] = [];
   #connected = false;
@@ -493,6 +714,7 @@ export class AppBridgeHost {
     this.#client = opts.client;
     this.#toolContext = opts.toolContext;
     this.#onInitialized = opts.onInitialized;
+    this.#onRequestTeardown = opts.onRequestTeardown;
 
     // Host identity + theme are injected through the seam; both default to the
     // Console's values so an existing caller is unchanged.
@@ -514,6 +736,20 @@ export class AppBridgeHost {
     if (opts.styles) {
       hostContext.styles = opts.styles;
     }
+    if (opts.toolInfo) {
+      // The spec shape: `{ id?: RequestId, tool: Tool }`. Harbor knows the tool
+      // NAME (carried on the discovery event) but not the server's full tool
+      // definition at render time, so the minimum valid `Tool` is emitted — the
+      // name plus the empty object schema the type requires. Naming the call is
+      // the point; re-deriving its schema is not.
+      hostContext.toolInfo = {
+        id: opts.toolInfo.toolCallId,
+        tool: { name: opts.toolInfo.toolName, inputSchema: { type: 'object' } },
+      };
+    }
+    if (opts.containerDimensions) {
+      hostContext.containerDimensions = opts.containerDimensions;
+    }
 
     // The load-bearing line: the first argument is `null`. The AppBridge is
     // NEVER handed an MCP Client, so it can never auto-forward to a direct MCP
@@ -523,7 +759,23 @@ export class AppBridgeHost {
     this.#bridge.oncalltool = (params) => this.#handlers.oncalltool(params);
     this.#bridge.onreadresource = (params) => this.#handlers.onreadresource(params);
     this.#bridge.onlistresources = () => this.#handlers.onlistresources();
+    this.#bridge.onlistresourcetemplates = () => this.#handlers.onlistresourcetemplates();
     this.#bridge.onrequestdisplaymode = (params) => this.#handlers.onrequestdisplaymode(params);
+    // The app reports its rendered content size. Purely a host→renderer relay:
+    // the notification arrives after the handshake, carries no authority, and
+    // never touches the bridge lifecycle. The renderer owns the clamp.
+    this.#bridge.onsizechange = (params) => {
+      opts.onSizeChanged?.({ width: params.width, height: params.height });
+    };
+    // The app asks to be torn down. The host DECIDES (per the spec the host may
+    // decline); Harbor grants it: send the graceful `ui/resource-teardown`,
+    // close the bridge, then tell the renderer to unmount. `close()` gates the
+    // teardown send on `#initialized`, so this can never fire mid-handshake.
+    this.#bridge.onrequestteardown = () => {
+      void this.close().finally(() => {
+        this.#onRequestTeardown?.();
+      });
+    };
     this.#bridge.oninitialized = () => {
       this.#initialized = true;
       // The renderer flips its "bridge is live" gate here, so its live theme
@@ -685,10 +937,43 @@ export class AppBridgeHost {
     return { content: [{ type: 'text', text: '' }], isError };
   }
 
-  /** Tears the bridge down — closes the transport and drops the iframe peer. */
+  /**
+   * Tears the bridge down: sends the graceful `ui/resource-teardown` the app
+   * gets to react to, THEN closes the transport and drops the iframe peer.
+   *
+   * Three properties make the teardown handshake-safe — the failure class that
+   * got the original MCP-Apps Console work reverted:
+   *
+   *   1. **Never mid-handshake.** The teardown request is sent ONLY when the app
+   *      has reported `ui/notifications/initialized`. A bridge closed before the
+   *      handshake completes (a stale preload losing its generation race, an app
+   *      that never boots) closes silently, exactly as it did before — a request
+   *      posted onto a transport the app has not finished `ui/initialize` on is
+   *      the shape that produced the 30s timeout.
+   *   2. **Idempotent, and it drops the liveness flags FIRST.** `#connected` is
+   *      cleared before anything is awaited, so a concurrent tool-context
+   *      delivery observes a dead bridge at its next re-check and bails, and a
+   *      second `close()` (unmount racing an app-requested teardown) is a no-op.
+   *   3. **Bounded and best-effort.** The request is a round-trip to code inside
+   *      a sandboxed iframe that may be wedged or already gone, so it carries a
+   *      short timeout and a failure is logged, never thrown: the unmount MUST
+   *      proceed. Closing the transport is the guarantee; the graceful notice is
+   *      the courtesy.
+   */
   async close(): Promise<void> {
     if (!this.#connected) return;
+    // Drop liveness BEFORE the first await (see property 2 above).
     this.#connected = false;
+    const wasInitialized = this.#initialized;
+    this.#initialized = false;
+    if (wasInitialized) {
+      try {
+        await this.#bridge.teardownResource({}, { timeout: APP_TEARDOWN_TIMEOUT_MS });
+      } catch (err) {
+        // A wedged / already-navigated-away app must not block the unmount.
+        console.warn('MCP App resource-teardown failed; closing anyway', err);
+      }
+    }
     await this.#bridge.close();
   }
 }

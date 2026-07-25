@@ -6,6 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { MCPAppToolNotFoundError } from './chat/renderers/app-bridge-host.js';
 import { makeMCPAppHostClient } from './mcp-app-host-client.js';
 import type { ProtocolClient } from './protocol/client.js';
 import { ProtocolError } from './protocol/errors.js';
@@ -145,6 +146,37 @@ describe('makeMCPAppHostClient', () => {
     toolContext.mockRejectedValueOnce(new ProtocolError('identity_scope_required', 'nope', 401));
     const host = makeMCPAppHostClient(client);
     await expect(host.toolContext('srv', 'x')).rejects.toThrow(/nope/);
+  });
+
+  it('callTool maps a Runtime not_found onto the TYPED MCPAppToolNotFoundError', async () => {
+    // The caller has already qualified the name into the app's own server
+    // namespace, so `not_found` means "no such tool on YOUR server" — the one
+    // outcome an app can act on. Before this, the Runtime answered an
+    // unresolvable tool with a generic `runtime_error` reading "MCP read
+    // failed", indistinguishable from a broken southbound transport.
+    const { client, callTool } = fakeProtocolClient();
+    callTool.mockRejectedValueOnce(new ProtocolError('not_found', 'tools: tool not found', 404));
+    const host = makeMCPAppHostClient(client);
+    const err = await host.callTool('srv_nope').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MCPAppToolNotFoundError);
+    expect((err as MCPAppToolNotFoundError).tool).toBe('srv_nope');
+  });
+
+  it('callTool re-throws a non-not_found Protocol error unchanged (fail loud)', async () => {
+    const { client, callTool } = fakeProtocolClient();
+    callTool.mockRejectedValueOnce(new ProtocolError('scope_mismatch', 'server paused', 403));
+    const host = makeMCPAppHostClient(client);
+    const err = await host.callTool('srv_echo').catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(MCPAppToolNotFoundError);
+    expect((err as Error).message).toContain('server paused');
+  });
+
+  it('listResourceTemplates answers the advertised capability with the honest empty list', async () => {
+    // Harbor's Protocol exposes no resource-template method. The host still
+    // advertises `serverResources`, so the probe must ANSWER rather than error.
+    const { client } = fakeProtocolClient();
+    const host = makeMCPAppHostClient(client);
+    await expect(host.listResourceTemplates('srv')).resolves.toEqual([]);
   });
 
   it('fetchArtifactText resolves the presigned URL and returns the bytes as text', async () => {

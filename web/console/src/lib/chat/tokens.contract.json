@@ -28,6 +28,7 @@
     "--radius-md",
     "--radius-pill",
     "--radius-sm",
+    "--size-app-inline-max",
     "--size-app-inline-min",
     "--size-avatar-md",
     "--size-code-font",

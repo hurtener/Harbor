@@ -73,7 +73,12 @@ describe('reduceHistoryTurns — MCP App replay (D-348)', () => {
 			rawHtmlTrusted: false,
 			// The deterministic content-hash key the re-mount reads the PERSISTED
 			// tool context by — no new storage, no caller-controlled identifier.
-			toolCallId: 'tc_9f2c1a'
+			toolCallId: 'tc_9f2c1a',
+			// The originating tool name — display metadata the host projects onto
+			// the `ui/initialize` host-context `toolInfo`. Read on BOTH projections
+			// (live decoder + replay reducer); the cross-producer pin below fails
+			// on a one-sided omission.
+			toolName: 'reports_render'
 		});
 	});
 
@@ -109,7 +114,8 @@ describe('reduceHistoryTurns — MCP App replay (D-348)', () => {
 					tool_call_id: 'tc_1',
 					resource_uri: 'ui://reports/x.html',
 					display_mode: 'fullscreen',
-					raw_html_trusted: true
+					raw_html_trusted: true,
+					tool_name: 'reports_render'
 				})
 			]),
 			'r1'
@@ -119,7 +125,8 @@ describe('reduceHistoryTurns — MCP App replay (D-348)', () => {
 			resourceUri: 'ui://reports/x.html',
 			displayMode: 'fullscreen',
 			rawHtmlTrusted: true,
-			toolCallId: 'tc_1'
+			toolCallId: 'tc_1',
+			toolName: 'reports_render'
 		});
 	});
 

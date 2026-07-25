@@ -49,7 +49,10 @@ export function appViewFromDiscovery(ev: AppAvailableEvent): AppAttachment {
 			displayMode: known ? (ev.displayMode as McpUiDisplayMode) : '',
 			rawHtmlTrusted: ev.rawHtmlTrusted,
 			// The correlation key for the after-init Data Delivery push.
-			toolCallId: ev.toolCallId
+			toolCallId: ev.toolCallId,
+			// The originating tool name, projected onto the host-context
+			// `toolInfo` so the app can name the call it belongs to.
+			toolName: ev.toolName
 		},
 		serverID: ev.serverID
 	};

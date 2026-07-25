@@ -42,7 +42,8 @@ const APP = {
 	resourceUri: 'ui://reports/dashboard.html',
 	displayMode: 'inline' as const,
 	rawHtmlTrusted: false,
-	toolCallId: 'tc_9f2c1a'
+	toolCallId: 'tc_9f2c1a',
+	toolName: 'build_dashboard'
 };
 
 describe('hydratedAgentMessage — the reopened bubble field mapping (D-348)', () => {
@@ -124,6 +125,7 @@ describe('appViewFromDiscovery — the live bubble projection (D-348)', () => {
 		const got = decode({
 			ServerID: 'reports',
 			ToolCallID: 'tc_9f2c1a',
+			ToolName: 'build_dashboard',
 			ResourceURI: 'ui://reports/dashboard.html',
 			DisplayMode: 'pip',
 			RawHTMLTrusted: true
@@ -133,7 +135,8 @@ describe('appViewFromDiscovery — the live bubble projection (D-348)', () => {
 			resourceUri: 'ui://reports/dashboard.html',
 			displayMode: 'pip',
 			rawHtmlTrusted: true,
-			toolCallId: 'tc_9f2c1a'
+			toolCallId: 'tc_9f2c1a',
+			toolName: 'build_dashboard'
 		});
 	});
 

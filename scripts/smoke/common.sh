@@ -43,11 +43,23 @@ assert_dir_nonempty() {
     fi
 }
 
+# -----------------------------------------------------------------------------
+# Why every grep helper below passes `-a` (treat the file as text).
+#
+# A source file may legitimately contain a NUL byte — e.g. the Console MCP-Apps
+# renderer uses one as an in-string separator for its dedup key. grep classifies
+# such a file as BINARY, and BSD grep's handling of a binary file differs from
+# GNU's and is sensitive to how it is invoked, so a guard over that file can
+# silently stop matching content that is plainly there. A gate that reports the
+# wrong answer is worse than no gate (it is the same failure class as a SKIP
+# where an OK belongs, AGENTS.md §4.2 item 5), so the helpers force text mode.
+# -----------------------------------------------------------------------------
+
 # assert_grep_absent <pattern> <path> <description>
 # Asserts pattern is NOT found in path. Used for forbidden-words scans.
 assert_grep_absent() {
     local pattern="$1" target="$2" desc="$3"
-    if grep -q -i -- "$pattern" "$target" 2>/dev/null; then
+    if grep -a -q -i -- "$pattern" "$target" 2>/dev/null; then
         fail "${desc}: forbidden pattern '${pattern}' found in ${target}"
     else
         ok "${desc} (no '${pattern}' in ${target})"
@@ -59,7 +71,7 @@ assert_grep_absent() {
 # static-guard smokes to pin a load-bearing declaration in a source file.
 assert_grep_present() {
     local pattern="$1" target="$2" desc="$3"
-    if grep -qE -- "$pattern" "$target" 2>/dev/null; then
+    if grep -a -qE -- "$pattern" "$target" 2>/dev/null; then
         ok "${desc}"
     else
         fail "${desc} — pattern '${pattern}' absent from ${target}"
@@ -72,7 +84,7 @@ assert_grep_present() {
 # canonical Protocol-error-code set).
 assert_grep_count() {
     local pattern="$1" target="$2" expected="$3" desc="$4" actual
-    actual=$(grep -cE -- "$pattern" "$target" 2>/dev/null) || actual=0
+    actual=$(grep -a -cE -- "$pattern" "$target" 2>/dev/null) || actual=0
     if [ "${actual}" -eq "${expected}" ]; then
         ok "${desc} (count=${actual})"
     else

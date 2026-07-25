@@ -67,6 +67,13 @@ export interface OpenApp {
    * after-init Data Delivery push. Absent when the discovery carried none.
    */
   toolCallId?: string;
+  /**
+   * The server-side tool name that declared the app — projected onto the
+   * `ui/initialize` host-context `toolInfo` so the page-level render names the
+   * originating call exactly as the inline render does. Absent when the
+   * discovery carried none.
+   */
+  toolName?: string;
   /** The page-level mode: `fullscreen` or `pip` (never `inline` here). */
   mode: Exclude<DisplayMode, 'inline'>;
 }

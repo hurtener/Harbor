@@ -54,7 +54,8 @@
       resourceUri: app.resourceUri,
       displayMode: app.mode,
       rawHtmlTrusted: app.rawHtmlTrusted,
-      toolCallId: app.toolCallId
+      toolCallId: app.toolCallId,
+      toolName: app.toolName
     },
     serverID: app.serverID,
     appHostClient,

@@ -1115,9 +1115,15 @@ func isMCPNotFound(err error) bool {
 	msg := err.Error()
 	// The MCP registry surfaces "server not found"; the tool-context store
 	// surfaces "tool context not found" for an unknown or cross-identity
-	// (serverID, toolCallID). Both map to CodeNotFound — existence is never
-	// revealed across identities.
-	return containsMarker(msg, "server not found") || containsMarker(msg, "tool context not found")
+	// (serverID, toolCallID); the tool catalog surfaces "tool not found" when
+	// an app-initiated call names a tool that does not exist inside the
+	// calling app's own server namespace. All map to CodeNotFound — existence
+	// is never revealed across identities, and an unresolvable name is a
+	// not-found the caller can act on rather than an opaque runtime error it
+	// cannot distinguish from a broken southbound transport.
+	return containsMarker(msg, "server not found") ||
+		containsMarker(msg, "tool context not found") ||
+		containsMarker(msg, "tool not found")
 }
 
 func isMCPIdentityMissing(err error) bool {
