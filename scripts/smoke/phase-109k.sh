@@ -60,7 +60,11 @@ assert_grep_absent '"displayModes": modes' "${MCPDRV}" \
 # ----------------------------------------------------------------------------
 # Anchored to the FIELD DECLARATION: the bare identifier also appears in the
 # godoc above it, so a rename left the guard green.
-assert_grep_present '^\tMCPAppDisplayModes \[\]string' "${POSTURE}" \
+#
+# The leading indent is matched with the POSIX class, NOT '\t': GNU grep -E
+# reads '\t' as a literal 't' (so the pattern could never match on Linux) while
+# BSD grep -E reads it as a tab. The guard passed on macOS and failed in CI.
+assert_grep_present '^[[:space:]]+MCPAppDisplayModes \[\]string' "${POSTURE}" \
     'phase 109k: runtime.info carries the configured MCP-app display modes'
 
 # ----------------------------------------------------------------------------
