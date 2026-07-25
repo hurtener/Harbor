@@ -200,11 +200,16 @@ export interface MCPAppHostClient {
    * Fetch the captured tool context (input + lowered result) that produced a
    * rendered app, so the host can deliver it into the app after it initializes
    * (the Data Delivery lifecycle stage). Routes onto `mcp.apps.tool_context`,
-   * identity-scoped. Returns `null` when no context exists for the
-   * `(serverID, toolCallID)` pair — an unknown / evicted / cross-identity id
-   * (the adapter maps the Runtime's `not_found` onto `null`); the host then
-   * performs no delivery and the app boots without delivered data (degraded,
-   * never a thrown error).
+   * identity-scoped. The renderer calls this BEFORE mounting the iframe.
+   *
+   * Returns `null` when no context exists for the `(serverID, toolCallID)`
+   * pair — an unknown / evicted / cross-identity id (the adapter maps the
+   * Runtime's `not_found` onto `null`). That is the MISS: the renderer mounts
+   * NO app and renders an honest "this view is no longer available"
+   * placeholder instead of a dataless iframe. Any other failure THROWS (the
+   * adapter re-raises a non-`not_found` Protocol error), which the renderer
+   * surfaces as its loud error state — neither outcome is ever swallowed
+   * (CLAUDE.md §13).
    */
   toolContext(serverID: string, toolCallID: string): Promise<MCPAppToolContext | null>;
   /**
@@ -297,14 +302,23 @@ export interface AppBridgeHostOptions {
    */
   styles?: McpUiHostStyles;
   /**
-   * The stable per-invocation id of the tool call that declared the app — the
-   * correlation key the host uses to fetch the captured tool context via
-   * {@link MCPAppHostClient.toolContext} once the app has initialized, then
-   * deliver it across the bridge (the Data Delivery lifecycle stage). When
-   * unset, the host performs no delivery (the app boots without delivered
-   * data).
+   * The ALREADY-RESOLVED tool context (input + lowered result) the host
+   * delivers across the bridge once the app has initialized (the Data
+   * Delivery lifecycle stage).
+   *
+   * The host does NOT fetch it: the renderer resolves it through
+   * {@link MCPAppHostClient.toolContext} BEFORE the iframe is mounted, so an
+   * unresolvable context never produces a mounted-but-dataless app — the
+   * renderer shows an honest placeholder instead and no bridge is ever built.
+   * That ordering is what makes the miss path observable rather than silent
+   * (CLAUDE.md §13), and it matters most on a REPLAYED app, where the
+   * persisted context is the one thing that can have gone away.
+   *
+   * When unset, the host performs no delivery — the shape a discovery that
+   * recorded no correlation id at all takes (nothing was ever captured, so
+   * there is no miss to report).
    */
-  toolCallId?: string;
+  toolContext?: MCPAppToolContext;
   /**
    * Called once, when the app has completed `ui/initialize` and sent
    * `ui/notifications/initialized`. The renderer uses this to flip a reactive
@@ -458,8 +472,10 @@ export class AppBridgeHost {
   readonly #bridge: AppBridge;
   readonly #handlers: AppHandlers;
   readonly #client: MCPAppHostClient;
-  readonly #serverID: string;
-  readonly #toolCallId: string | undefined;
+  // NOTE: the server id is consumed by `createAppHandlers` (which scopes every
+  // app→host read to it); the wrapper itself no longer needs a copy now that
+  // the tool context arrives already resolved.
+  readonly #toolContext: MCPAppToolContext | undefined;
   readonly #onInitialized: (() => void) | undefined;
   #transport: PostMessageTransport | undefined;
   #displayModeRequests: DisplayModeRequest[] = [];
@@ -475,8 +491,7 @@ export class AppBridgeHost {
       },
     });
     this.#client = opts.client;
-    this.#serverID = opts.serverID;
-    this.#toolCallId = opts.toolCallId;
+    this.#toolContext = opts.toolContext;
     this.#onInitialized = opts.onInitialized;
 
     // Host identity + theme are injected through the seam; both default to the
@@ -567,31 +582,38 @@ export class AppBridgeHost {
   }
 
   /**
-   * Fetch the captured tool context and deliver it into the app — `input` via
+   * Deliver the ALREADY-RESOLVED tool context into the app — `input` via
    * `sendToolInput`, then `result` via `sendToolResult` (in that ORDER: the
    * SDK requires `initialized` before `sendToolResult`, and input-then-result
-   * is the lifecycle order). Guarded by a `toolCallId` being set; a missing /
-   * evicted context (`toolContext` → `null`) yields no delivery and no error.
-   * The whole sequence is best-effort: a delivery failure is logged but never
-   * propagated — the app has already rendered (fail-safe on the delivery, not
+   * is the lifecycle order). No fetch happens here: the renderer resolved the
+   * context before it mounted the iframe, so an unresolvable context never
+   * reaches a constructed bridge (it renders the placeholder instead). An
+   * absent context therefore means "nothing was ever captured", not "the
+   * lookup failed" — no delivery, and nothing to report.
+   *
+   * The sends themselves stay best-effort: a heavy by-reference half is
+   * fetched at the iframe edge between them, and a failure is logged but never
+   * propagated (the app has already rendered — fail-safe on the delivery, not
    * the render). The injected client is the ONLY path used — no direct
    * transport (D-173).
    */
   async #deliverToolContext(): Promise<void> {
-    if (this.#toolCallId === undefined || this.#toolCallId === '') return;
+    const ctx = this.#toolContext;
+    if (!ctx) return;
     try {
-      const ctx = await this.#client.toolContext(this.#serverID, this.#toolCallId);
-      if (!ctx) return;
-      // Re-check liveness AFTER the async context fetch: a transcript re-render
-      // can `close()` this bridge while the `toolContext` request is in flight,
-      // swapping the transport out from under us. Sending onto a torn-down
-      // transport throws "Not connected" — a stale delivery for a bridge that
-      // no longer exists, not a real failure. Bail silently instead; the
-      // replacement bridge runs its own delivery on its own `oninitialized`.
+      // Re-check liveness around EVERY send: a transcript re-render can
+      // `close()` this bridge while a heavy by-reference half is being fetched
+      // at the iframe edge, swapping the transport out from under us. Sending
+      // onto a torn-down transport throws "Not connected" — a stale delivery
+      // for a bridge that no longer exists, not a real failure. Bail silently
+      // instead; the replacement bridge runs its own delivery on its own
+      // `oninitialized`.
+      const args = await this.#payloadToArgs(ctx.input);
       if (!this.#connected || !this.#initialized) return;
-      await this.#bridge.sendToolInput({ arguments: await this.#payloadToArgs(ctx.input) });
+      await this.#bridge.sendToolInput({ arguments: args });
+      const result = await this.#payloadToResult(ctx.result, ctx.isError);
       if (!this.#connected || !this.#initialized) return;
-      await this.#bridge.sendToolResult(await this.#payloadToResult(ctx.result, ctx.isError));
+      await this.#bridge.sendToolResult(result);
     } catch (err) {
       // The delivery is best-effort — surface the failure to the console but
       // never throw (the app already rendered; a delivery error is not a render

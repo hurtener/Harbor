@@ -270,7 +270,10 @@ export interface MCPAppRef {
   /**
    * The stable per-invocation id of the tool call that declared the app —
    * paired with `server_id` to fetch the tool context (input + lowered
-   * result) via `mcp.apps.tool_context`. Empty for a non-app result.
+   * result) via `mcp.apps.tool_context`. Empty for a non-app result, and
+   * empty when no tool context was captured for the invocation — a
+   * non-empty value promises a fetchable record, so a client may treat a
+   * miss as an expired one.
    */
   tool_call_id?: string;
   /** The `ui://`-scheme URI of the app's UI document. */

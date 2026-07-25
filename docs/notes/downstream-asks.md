@@ -24,7 +24,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 |-----|-------|------|----------|------|-------|
 | HA-38 | Host consumption of `ui/notifications/size-changed` | web/console (MCP Apps host) | Medium | Small | Filed |
 | HA-39 | `artifact_ref` resolution in the MCP-Apps data-delivery path | web/console (MCP Apps host) | High | Small | Filed |
-| HA-40 | Replay of `mcp.app_available` in session-history hydration | web/console (sessions) | Medium | Contained | Filed |
+| HA-40 | Replay of `mcp.app_available` in session-history hydration | web/console (sessions) | Medium | Contained | Shipped — phase 204 / D-348 |
 | HA-41 | App→host `tools/call` server-namespace confinement | web/console (MCP Apps host) | High (security) | Small | Filed |
 | HA-42 | Progressive `tool-input-partial` streaming into a rendered App | internal/llm + internal/protocol + web/console | Low | Large | Deferred — reserved as D-343 |
 
@@ -86,6 +86,10 @@ Either way an App cannot render its rich view over heavy data — which was Phas
 **Why this is a reduction gap, not a durability gap.** The backing data is already durable: the tool context is persisted as a session-scoped `StateRecord` under a deterministic content-hash key (`internal/mcpconsole/toolcontext.go`), and `mcp.app_available` is a canonical bus event that `state.history` replays. Nothing needs to be newly stored.
 
 **Requested shape.** Reduce `mcp.app_available` in `reduceHistoryTurns`, add the `app` field to `HistoryTurn`, and have the hydration path mount the renderer exactly as the live path does. **Define the miss-behaviour explicitly**: when the referenced tool context is evicted or otherwise unresolvable, the hydrated turn must render an honest placeholder that names what is missing — never a blank bubble and never a half-mounted iframe that fails its handshake. (That placeholder decision interacts with the HA-39 eviction sub-question above; the two should be settled together.)
+
+**State: SHIPPED — phase 204 / D-348** (`docs/plans/phase-204-mcp-app-replay.md`). Zero-wire, Console-only, exactly the requested shape: `HistoryTurn` gains `app` (the LIVE `MCPAppRefView`, reused rather than re-declared) + `serverID`, `reduceHistoryTurns` folds `mcp.app_available`, `hydratePastTurns` sets both, and the shipped renderer re-mounts — reading the already-persisted tool context by its deterministic content-hash `tool_call_id`. The miss is defined by moving the context resolution BEFORE the iframe mount: `not_found` renders a stable "this view is no longer available" placeholder with no iframe and no bridge; a non-`not_found` failure keeps the loud error state; a ref that never carried a correlation id mounts unchanged. **The HA-39 retention sub-question is deliberately NOT settled by it** — the Console is made correct under either answer, since `not_found` is already reachable today for an unknown id, a cross-identity id, and a restarted in-memory state driver. HA-39's heavy-`artifact_ref` limitation is likewise inherited, not fixed: a replayed App behaves no worse than a live one.
+
+**It also closed a related production gap (§17.6), which is relevant to anyone reading HA-39's sub-question.** Defining the miss made the correlation id a promise, and two producers were breaking it: the runtime-attach path (`MCPConnectionAttacher`) never wired the tool-context capturer — only the boot-config path did — and the driver stamped the id unconditionally, so a `ui://` app declared by a tool on a server attached via `add_mcp_connection` advertised a context that had never been written. Both are fixed: the attacher threads the store, and the id is stamped only after a successful capture. So a `not_found` today genuinely means "the record is gone", not "it may never have existed" — which narrows the retention question HA-39 still has to answer.
 
 ---
 

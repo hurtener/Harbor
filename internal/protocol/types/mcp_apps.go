@@ -40,7 +40,9 @@ type MCPAppRef struct {
 	// ToolCallID is the stable per-invocation id of the tool call that
 	// declared the app. The Console pairs it with ServerID to fetch the
 	// tool context (input + lowered result) via mcp.apps.tool_context.
-	// Empty for a non-app result.
+	// Empty for a non-app result, and empty when no tool context was
+	// captured for the invocation — a non-empty value promises a fetchable
+	// record, so a client may treat a miss as an expired one.
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ResourceURI is the `ui://`-scheme URI of the app's UI document.
 	// The Console fetches the document via mcp.servers.read_resource.

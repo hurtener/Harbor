@@ -53,7 +53,7 @@ func TestMCPConnectionAttacher_EmptyDefaultIdentity_RejectedAtProviderBuild(t *t
 	bus := mkDriverTestBus(t, auditpatterns.New())
 	a := NewMCPConnectionAttacher(tools.NewCatalog(), mcpdrv.NewRegistry(), bus,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		identity.Identity{}, nil, nil) // empty default identity — the bug
+		identity.Identity{}, nil, nil, nil) // empty default identity — the bug
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -81,7 +81,7 @@ func TestMCPConnectionAttacher_ResolvedDefaultIdentity_ReachesDial(t *testing.T)
 	bus := mkDriverTestBus(t, auditpatterns.New())
 	a := NewMCPConnectionAttacher(tools.NewCatalog(), mcpdrv.NewRegistry(), bus,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		resolveMCPAttachIdentity(identity.Identity{}), nil, nil) // the fix
+		resolveMCPAttachIdentity(identity.Identity{}), nil, nil, nil) // the fix
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

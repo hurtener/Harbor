@@ -96,7 +96,7 @@ func newDaHarness(t *testing.T) *daHarness {
 	cat := tools.NewCatalog()
 	mcpReg := mcpdrv.NewRegistry()
 	attacher := serve.NewMCPConnectionAttacher(cat, mcpReg, bus, nil,
-		identity.Identity{TenantID: daTenantA, UserID: daUser, SessionID: daSession}, nil, nil)
+		identity.Identity{TenantID: daTenantA, UserID: daUser, SessionID: daSession}, nil, nil, nil)
 	det := serve.NewMCPConnectionDetacher(cat, mcpReg, nil)
 	svc, err := agentcfgprotocol.NewService(reg,
 		agentcfgprotocol.WithBus(bus),

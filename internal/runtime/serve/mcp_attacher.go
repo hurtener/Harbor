@@ -62,6 +62,16 @@ type MCPConnectionAttacher struct {
 	// resolves against, so an installed provider is bindable. Takes precedence
 	// over oauthProviders. Set once at construction.
 	oauthProviderSet toolauth.ProviderSet
+	// toolContext is the MCP Apps tool-context capturer a runtime-added
+	// server's providers persist an app-declaring tool call's input + lowered
+	// result through — the SAME store the boot-config attach path wires, so a
+	// server attached at runtime is not a second-class citizen. Without it, a
+	// tool on a runtime-added server that declares a `ui://` app would capture
+	// nothing, and a host could not fetch the context that makes the rendered
+	// app show real data. Nil is legitimate (an embedder with no store); the
+	// driver then stamps no tool-call id at all rather than promising a
+	// context that does not exist. Set once at construction.
+	toolContext mcpdrv.ToolContextCapturer
 
 	mu      sync.Mutex
 	closers []func(context.Context) error
@@ -71,7 +81,11 @@ type MCPConnectionAttacher struct {
 // registry, and bus are mandatory (mcpdrv.Attach validates them too).
 // oauthProviders may be nil when no provider is declared; oauthProviderSet, when
 // non-nil, is the runtime set (boot seed + installs) resolution consults first.
-func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider, oauthProviderSet toolauth.ProviderSet) *MCPConnectionAttacher {
+// toolContext is the MCP Apps tool-context capturer a runtime-added server's
+// providers capture through — pass the runtime's store so a runtime-added
+// server behaves like a boot-config one; nil is legitimate only where no store
+// exists (the driver then stamps no tool-call id).
+func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Registry, bus events.EventBus, logger *slog.Logger, defaultIdentity identity.Identity, oauthProviders map[string]toolauth.OAuthProvider, oauthProviderSet toolauth.ProviderSet, toolContext mcpdrv.ToolContextCapturer) *MCPConnectionAttacher {
 	return &MCPConnectionAttacher{
 		catalog:          catalog,
 		registry:         registry,
@@ -80,6 +94,7 @@ func NewMCPConnectionAttacher(catalog tools.ToolCatalog, registry *mcpdrv.Regist
 		defaultIdentity:  defaultIdentity,
 		oauthProviders:   oauthProviders,
 		oauthProviderSet: oauthProviderSet,
+		toolContext:      toolContext,
 	}
 }
 
@@ -142,7 +157,12 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 		Closers:          &local,
 		OAuthProviders:   a.oauthProviders,
 		OAuthProviderSet: a.oauthProviderSet,
-		Owner:            owner,
+		// Capture app tool contexts on this connection exactly as the
+		// boot-config attach path does, so a `ui://` app declared by a tool on
+		// a runtime-added server renders with its real data instead of an
+		// empty shell.
+		ToolContext: a.toolContext,
+		Owner:       owner,
 	})
 	// Merge whatever closers Attach appended (a successful Connect appends the
 	// provider's Close even if a later step failed — drain it on teardown).
