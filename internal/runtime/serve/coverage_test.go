@@ -165,7 +165,7 @@ func TestMCPConnectionDetacher_NilRegistry(t *testing.T) {
 // service calls the discovery-origin applier.
 func TestMCPConnectionDetacher_SetOAuthDiscoveryOrigins_NilRegistry(t *testing.T) {
 	d := NewMCPConnectionDetacher(nil, nil, nil)
-	prev, err := d.SetOAuthDiscoveryOrigins(context.Background(), "srv-x", []string{"https://origin.example.com"})
+	prev, err := d.SetOAuthDiscoveryOrigins(context.Background(), toolauth.Owner{Tenant: "t1", Agent: "a1"}, "srv-x", []string{"https://origin.example.com"})
 	if err != nil {
 		t.Errorf("SetOAuthDiscoveryOrigins with nil registry should be a no-op, got %v", err)
 	}
@@ -179,12 +179,25 @@ func TestMCPConnectionDetacher_SetOAuthDiscoveryOrigins_NilRegistry(t *testing.T
 // the guard fires loud (no silent degradation).
 func TestMCPConnectionAttacher_SetOAuthDiscoveryOrigins_NilRegistry(t *testing.T) {
 	a := NewMCPConnectionAttacher(nil, nil, nil, nil, identity.Identity{}, nil, nil, nil)
-	_, err := a.SetOAuthDiscoveryOrigins(context.Background(), "srv-x", []string{"https://origin.example.com"})
+	_, err := a.SetOAuthDiscoveryOrigins(context.Background(), "t1", "a1", "srv-x", []string{"https://origin.example.com"})
 	if err == nil {
 		t.Fatal("SetOAuthDiscoveryOrigins with nil registry must fail loud (no silent degradation)")
 	}
 	if !strings.Contains(err.Error(), "no registry wired") {
 		t.Errorf("expected 'no registry wired' error, got %v", err)
+	}
+}
+
+// TestMCPConnectionAttacher_SetOAuthDiscoveryOrigins_IncompleteOwner pins the
+// fail-closed owner guard on the live discovery-origin write: both owner
+// components are mandatory, matching the attach path's own owner requirement.
+func TestMCPConnectionAttacher_SetOAuthDiscoveryOrigins_IncompleteOwner(t *testing.T) {
+	a := NewMCPConnectionAttacher(nil, mcpdrv.NewRegistry(), nil, nil, identity.Identity{}, nil, nil, nil)
+	for _, tc := range []struct{ tenant, agent string }{{"", "a1"}, {"t1", ""}, {"", ""}} {
+		_, err := a.SetOAuthDiscoveryOrigins(context.Background(), tc.tenant, tc.agent, "srv-x", []string{"https://origin.example.com"})
+		if !errors.Is(err, ErrRuntimeAddOwnerMissing) {
+			t.Fatalf("owner (tenant=%q agent=%q): err = %v, want ErrRuntimeAddOwnerMissing", tc.tenant, tc.agent, err)
+		}
 	}
 }
 

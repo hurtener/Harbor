@@ -684,6 +684,46 @@ func (r *Registry) entry(name string) (*serverEntry, error) {
 	return e, nil
 }
 
+// ownedEntry returns the named server entry ONLY when its owner tag equals
+// owner — the OWNER-SCOPED resolution the registry's write paths use. A name
+// that resolves to a boot-declared (zero-owner) entry, or to an entry another
+// (tenant, agent) owner registered, returns ErrServerNotFound: a write applies
+// to the caller's OWN registration, and a caller that does not own the name
+// sees the same answer it would see for a name nobody registered. Caller must
+// NOT hold r.mu; the owner tag is set at Register and read-only thereafter, so
+// the read lock is sufficient.
+//
+// A ZERO owner owns nothing and always returns ErrServerNotFound — it never
+// resolves to the boot-declared (zero-owner) entries, which is what a bare
+// equality check would do. Boot state is not a runtime owner's to write, and
+// the guard lives HERE, at the single resolution choke point, so no present or
+// future caller can reach a boot entry by omitting its owner. This mirrors
+// [Registry.RuntimeAddedSources], which likewise returns nothing for a zero
+// owner rather than falling back to the whole registry.
+//
+// The owner tag stays a WRITE-SCOPE filter, exactly as it is a reconcile-view
+// filter for [Registry.RuntimeAddedSources]: it is never an isolation key and
+// never a dispatch key. Bare-name resolution, dispatch, and every read
+// projection (ListServers, GetServer, OAuthDiscoveryTarget, ReadResource) stay
+// process-global and untouched, so boot servers remain visible to every
+// session.
+func (r *Registry) ownedEntry(name string, owner auth.Owner) (*serverEntry, error) {
+	if owner.IsZero() {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	r.mu.RLock()
+	e, ok := r.servers[name]
+	var entryOwner auth.Owner
+	if ok {
+		entryOwner = e.owner
+	}
+	r.mu.RUnlock()
+	if !ok || entryOwner != owner {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	return e, nil
+}
+
 // GetServer returns the per-server detail view. Identity is mandatory.
 func (r *Registry) GetServer(ctx context.Context, name string) (*ServerView, error) {
 	if err := requireIdentity(ctx); err != nil {
@@ -986,12 +1026,19 @@ func (r *Registry) SetRawHTMLTrust(ctx context.Context, name string, trusted boo
 //
 // The registry stays PROCESS-GLOBAL bare-name — identity is mandatory for
 // AUTHORIZATION (a caller with no identity triple is refused), NOT for keying.
-// An unknown name returns ErrServerNotFound.
-func (r *Registry) SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error) {
+// The WRITE, however, is OWNER-SCOPED: owner is the caller's (tenant, agent)
+// tag and the allow-list is replaced only on the registration carrying that
+// same tag, so an allowance write lands on the caller's OWN connection. A name
+// that is unregistered, boot-declared (zero owner), or registered to a
+// different owner all return ErrServerNotFound — resolution and dispatch are
+// unaffected and stay bare-name (see [Registry.ownedEntry]). This mirrors the
+// owner comparison the same-name attach replace already performs via
+// [Registry.OwnerOf].
+func (r *Registry) SetOAuthDiscoveryOrigins(ctx context.Context, name string, owner auth.Owner, origins []string) (prev []string, err error) {
 	if idErr := requireIdentity(ctx); idErr != nil {
 		return nil, idErr
 	}
-	e, eerr := r.entry(name)
+	e, eerr := r.ownedEntry(name, owner)
 	if eerr != nil {
 		return nil, eerr
 	}

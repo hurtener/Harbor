@@ -782,6 +782,24 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err := s.validateNaming(req.Payload.Naming); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
+	// A full-payload set that pins MCP connection descriptors runs every
+	// descriptor through the SAME shape validator the add_mcp_connection door
+	// enforces, so a descriptor this second door persists is a descriptor the
+	// first door would have accepted (parity at both doors). The whole set is
+	// rejected on the first offender — nothing is persisted. The NORMALISED
+	// descriptors are persisted below so both doors record the same bytes (and
+	// therefore the same content hash) for the same logical input.
+	normalizedConns, err := validateConnectionsSection(req.Payload.Connections)
+	if err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
+	// The fail-closed stdio command allowlist — the SAME §7 RCE gate the
+	// add_mcp_connection door applies. Both doors write the same revision spine,
+	// so a stdio command the add door refuses is refused here too rather than
+	// persisted for a later attach leg to read.
+	if err := s.gateStdioConnectionCommands(normalizedConns); err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
 	// A full-payload set that pins a runtime-added MCP connection carrying a
 	// per-user credential-INJECTION mapping runs through the SAME fail-closed
 	// opt-in gate + shape validation the add_mcp_connection door enforces — so a
@@ -790,7 +808,15 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err := s.gateAndValidateConnectionsInjection(req.Payload.Connections); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
-	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payloadToDomain(req.Payload))
+	payload := payloadToDomain(req.Payload)
+	// Persist the validator's NORMALISED descriptors rather than the raw wire
+	// values connectionsToDomain projects. The nil-vs-present distinction on the
+	// section itself is preserved — only the server list is replaced, so a
+	// payload that pins no connections still carries none.
+	if payload.Connections != nil {
+		payload.Connections.Servers = normalizedConns
+	}
+	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payload)
 	if err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
@@ -981,6 +1007,11 @@ func connectionsToWire(in []agentcfg.MCPConnectionDescriptor) []prototypes.Agent
 			URL:             d.URL,
 			OAuthProvider:   d.OAuthProvider,
 			MetaAnnotations: cloneAnnotations(d.MetaAnnotations),
+			// The OAuth-discovery cross-origin allow-list is part of the versioned
+			// desired state — surface it on the revision view so get / list / diff
+			// show the allowance the connection actually carries, matching what the
+			// allowance write recorded. NON-SECRET (public https origins).
+			OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
 			// The per-user credential-injection mapping is part of the versioned
 			// desired state — surface it on the revision view (diff / rollback /
 			// list parity). NON-SECRET (a mapping, never a value).
@@ -1005,7 +1036,13 @@ func connectionsToDomain(in []prototypes.AgentConfigMCPConnectionDescriptor) []a
 			URL:             d.URL,
 			OAuthProvider:   d.OAuthProvider,
 			MetaAnnotations: cloneAnnotations(d.MetaAnnotations),
-			Injection:       injectionDescriptorToDomain(d.Injection),
+			// The OAuth-discovery cross-origin allow-list is part of the persisted
+			// descriptor (the same field the add door and the allowance write
+			// record), so a full-payload write carries it onto the revision and it
+			// round-trips through get / list / diff and the run-start
+			// allowance-reconcile — one descriptor shape across every door.
+			OAuthDiscoveryAllowedOrigins: append([]string(nil), d.OAuthDiscoveryAllowedOrigins...),
+			Injection:                    injectionDescriptorToDomain(d.Injection),
 		})
 	}
 	return out

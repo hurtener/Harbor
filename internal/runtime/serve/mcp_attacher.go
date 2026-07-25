@@ -77,6 +77,17 @@ type MCPConnectionAttacher struct {
 	closers []func(context.Context) error
 }
 
+// Compile-time assertions that the production concrete satisfies BOTH seams the
+// agent-config service binds it to. The mux binds the applier through an
+// UNCHECKED type assertion (`in.MCPAttacher.(agentcfgprotocol.DiscoveryOriginApplier)`),
+// which degrades silently to "not wired" on a signature drift — the write would
+// keep answering 200 with applied_live=false forever. These pin the shapes at
+// compile time so the drift is a build failure instead.
+var (
+	_ agentcfgprotocol.ConnectionAttacher     = (*MCPConnectionAttacher)(nil)
+	_ agentcfgprotocol.DiscoveryOriginApplier = (*MCPConnectionAttacher)(nil)
+)
+
 // NewMCPConnectionAttacher builds the production attacher. catalog,
 // registry, and bus are mandatory (mcpdrv.Attach validates them too).
 // oauthProviders may be nil when no provider is declared; oauthProviderSet, when
@@ -194,18 +205,46 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 // delegating to the process-global bare-name registry (identity-mandatory for
 // authorization; the registry is never re-keyed by identity). The revoke-prune
 // of any recorded requirement lives in the registry mutator.
-func (a *MCPConnectionAttacher) SetOAuthDiscoveryOrigins(ctx context.Context, name string, origins []string) (prev []string, err error) {
+//
+// The write is OWNER-SCOPED: (tenant, agentID) is the caller's resolved owner —
+// the same (tenant, agent) tag Attach stamps on the registration — and the
+// registry replaces the allow-list only on a registration carrying that tag,
+// so an allowance write lands on the caller's OWN connection. Both components
+// are mandatory: an incomplete owner is refused loud rather than widened into
+// an unscoped write (the fail-closed twin of Attach's ErrRuntimeAddOwnerMissing
+// guard).
+//
+// The registry classifies "not mine" and "not there" identically (its
+// ErrServerNotFound), which is the right answer AT the registry boundary but
+// the wrong diagnostic for the operator: one degrades to a revision-only write,
+// the other is an authorization refusal. So the OWNER comparison the operator
+// sees is read here from the registry's owner tag — mirroring the same
+// [mcpdrv.Registry.OwnerOf] comparison the same-name attach replace performs —
+// and surfaced as agentcfgprotocol.ErrConnectionOwnerMismatch. The registry's
+// own owner scoping remains the authoritative enforcement (a registration
+// replaced between the two reads still refuses the write and degrades, never
+// applies).
+func (a *MCPConnectionAttacher) SetOAuthDiscoveryOrigins(ctx context.Context, tenant, agentID, name string, origins []string) (prev []string, err error) {
 	if a.registry == nil {
 		return nil, errors.New("serve: mcp attacher has no registry wired for discovery-origin apply")
 	}
-	prev, err = a.registry.SetOAuthDiscoveryOrigins(ctx, name, origins)
+	owner := toolauth.Owner{Tenant: tenant, Agent: agentID}
+	if owner.Tenant == "" || owner.Agent == "" {
+		return nil, fmt.Errorf("%w: discovery-origin write for connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
+			ErrRuntimeAddOwnerMissing, name, owner.Tenant, owner.Agent)
+	}
+	if priorOwner, exists := a.registry.OwnerOf(name); exists && priorOwner != owner {
+		return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrConnectionOwnerMismatch, name)
+	}
+	prev, err = a.registry.SetOAuthDiscoveryOrigins(ctx, name, owner, origins)
 	if errors.Is(err, mcpdrv.ErrServerNotFound) {
 		// The connection is declared in the revision but not attached in the live
-		// registry (unreachable server, or awaiting the next run-start reconcile).
-		// Translate to the service-layer sentinel so the setter degrades to a
-		// revision-only write (applied_live=false) instead of failing loud — the
-		// reconcile applies the allowance when the server comes online. Keeps this
-		// the ONLY place that imports the mcp driver's not-found sentinel.
+		// registry under this owner (unreachable server, or awaiting the next
+		// run-start reconcile). Translate to the service-layer sentinel so the
+		// setter degrades to a revision-only write (applied_live=false) instead of
+		// failing loud — the reconcile applies the allowance when the server comes
+		// online. Keeps this the ONLY place that imports the mcp driver's
+		// not-found sentinel.
 		return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrDiscoveryTargetNotLive, name)
 	}
 	return prev, err

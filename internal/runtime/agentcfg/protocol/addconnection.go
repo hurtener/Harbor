@@ -394,6 +394,80 @@ func validateConnection(c prototypes.AgentConfigMCPConnectionDescriptor) (agentc
 	}
 }
 
+// validateConnectionsSection runs EVERY connection descriptor in a full-payload
+// write through [validateConnection] — the ONE shape authority the
+// `add_mcp_connection` door uses (transport/URL/command coherence, the name
+// rule, the reserved-`_meta`-key rule, one-auth-mode mutual exclusivity, and
+// the stdio rules) — and returns the NORMALISED domain descriptors for the
+// caller to persist. The full-payload `agent_config.set_revision` door persists
+// the same descriptors the add door does, so it holds them to the same shape
+// AND records the same bytes: the trimmed name / URL / provider name and the
+// de-duplicated, validated origin list, never the raw wire values. Persisting
+// the raw form would give the two doors different content hashes for the same
+// logical input.
+//
+// The whole set is rejected on the first offender, naming its index and the
+// specific rule, and the `%w` preserves ErrInvalidConnection so the wire
+// handler's 400 mapping fires and nothing is persisted. A nil section (a
+// payload that pins no connections) returns (nil, nil) — it is the
+// carry-forward case, not a declaration of an empty set.
+//
+// The credential-injection mapping is carried onto the descriptor verbatim
+// (exactly as [connectionsToDomain] projects it); its fail-closed OPT-IN gate
+// and shape validation are the separate, composed half
+// ([Service.gateAndValidateConnectionsInjection]), which needs Service state
+// that shape validation does not. The stdio command allowlist is the other
+// Service-state half ([Service.gateStdioConnectionCommands]).
+func validateConnectionsSection(conns *prototypes.AgentConfigConnections) ([]agentcfg.MCPConnectionDescriptor, error) {
+	if conns == nil {
+		return nil, nil
+	}
+	out := make([]agentcfg.MCPConnectionDescriptor, 0, len(conns.Servers))
+	for i := range conns.Servers {
+		desc, _, _, err := validateConnection(conns.Servers[i])
+		if err != nil {
+			return nil, fmt.Errorf("connections.servers[%d]: %w", i, err)
+		}
+		// The injection mapping rides the descriptor unchanged — the opt-in gate
+		// validates it separately and the domain shape is a straight projection.
+		desc.Injection = injectionDescriptorToDomain(conns.Servers[i].Injection)
+		out = append(out, desc)
+	}
+	return out, nil
+}
+
+// gateStdioConnectionCommands applies the fail-closed stdio command allowlist
+// to every stdio descriptor a full-payload write declares — the SAME §7 RCE
+// gate the `add_mcp_connection` door applies before it dials, so both doors
+// onto the revision spine admit exactly the same stdio commands. Without it the
+// full-payload door would persist a descriptor naming a command the add door
+// refuses, and the spine is the input any future attach-from-revision leg
+// reads.
+//
+// argv[0] is the gated binary (argv-form only; the descriptor is never passed
+// to a shell). An empty allowlist refuses every stdio descriptor — the
+// fail-closed default. The sentinel is ErrStdioNotAllowed, so this door answers
+// with the same typed error and the same 403 the add door does. Nothing is
+// persisted on a refusal.
+//
+// It gates only; it never rewrites a descriptor.
+func (s *Service) gateStdioConnectionCommands(descs []agentcfg.MCPConnectionDescriptor) error {
+	for i, d := range descs {
+		if d.Transport != agentcfg.MCPTransportStdio {
+			continue
+		}
+		// validateConnectionsSection guarantees a non-empty argv for stdio; the
+		// guard keeps this safe for any future caller that skips it.
+		if len(d.Command) == 0 {
+			return fmt.Errorf("%w: connections.servers[%d]: stdio transport requires a non-empty argv command", ErrInvalidConnection, i)
+		}
+		if _, ok := s.stdioAllowlist[d.Command[0]]; !ok {
+			return fmt.Errorf("%w: connections.servers[%d]: %q", ErrStdioNotAllowed, i, d.Command[0])
+		}
+	}
+	return nil
+}
+
 // recordConnectionRevision writes a new config revision whose connections
 // section is the prior connections PLUS the new descriptor (the connection
 // added / replaced by name), preserving the skills + tool-exposure +
