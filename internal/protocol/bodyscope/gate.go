@@ -526,7 +526,14 @@ func ScanElevationSites(root string, allow map[string]string) ([]Violation, int,
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case "testdata", "node_modules", ".git", "web":
+			// `.claude` holds tooling state, including nested git
+			// worktrees that carry a full copy of the module. Scanning
+			// those reports every call site twice — once for the real
+			// source and once for each checkout — so the gate would fail
+			// on any developer machine that keeps a nested worktree while
+			// passing in a clean checkout. Skip it: the module's own
+			// source is what this scan is about.
+			case "testdata", "node_modules", ".git", ".claude", "web":
 				return filepath.SkipDir
 			}
 			return nil
