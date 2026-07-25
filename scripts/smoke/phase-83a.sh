@@ -54,7 +54,7 @@ done
 
 # No un-rendered template markers survived into the fixture (catches a
 # `{{current_date}}` / `{{rendered_tools}}` regression).
-assert_grep_absent '{{' "${GOLDEN}" "golden has no '{{' template markers"
+assert_grep_absent '\{\{' "${GOLDEN}" "golden has no '{{' template markers"
 
 # The action JSON drops the `reasoning` field (brief 13 §2.6) — no
 # `"reasoning":` JSON key anywhere in the rendered prompt.

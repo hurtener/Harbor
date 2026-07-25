@@ -15,8 +15,11 @@ import {
   appIframeSandbox,
   assertSandboxTokensSafe,
   buildAppCSP,
+  containerDimensionsFromBox,
   createAppHandlers,
   isTrustedAppMessage,
+  MCPAppToolNotFoundError,
+  qualifyAppToolName,
   wrapAppDocument,
   type MCPAppHostClient,
   type MCPAppResource,
@@ -52,6 +55,9 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
     async listResources(serverID) {
       calls.listResources.push(serverID);
       return [{ uri: 'ui://srv/app.html', name: 'app', mimeType: 'text/html' }];
+    },
+    async listResourceTemplates() {
+      return [];
     },
     async listTools(serverID) {
       calls.listTools.push(serverID);
@@ -154,13 +160,113 @@ describe('isTrustedAppMessage — origin / source validation', () => {
 });
 
 describe('manual handlers dispatch to the injected client', () => {
-  it('oncalltool proxies tool name + args and maps the result', async () => {
+  it('oncalltool qualifies the app-supplied BARE name into the server namespace', async () => {
+    // A spec-conformant app knows only its SERVER-side tool names (`echo`), not
+    // Harbor's `<source>_<tool>` catalog keys. The host qualifies the name so
+    // the call resolves at all — and so the app is confined (next case).
     const { client, calls } = makeFakeClient();
     const handlers = createAppHandlers({ client, serverID: 'srv' });
-    const result = await handlers.oncalltool({ name: 'srv_echo', arguments: { q: 1 } });
+    const result = await handlers.oncalltool({ name: 'echo', arguments: { q: 1 } });
     expect(calls.callTool).toEqual([['srv_echo', { q: 1 }]]);
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toEqual({ ok: true });
+  });
+
+  it('oncalltool CONFINES the app to its own server — a cross-server name cannot escape', async () => {
+    // The confinement property. An app that tries to name another server's tool
+    // (or an in-proc / HTTP / A2A catalog entry by its exact catalog key) is
+    // still prefixed, so the dispatched name stays inside `<serverID>_` and
+    // cannot resolve to the tool it aimed at. There is no input the app can
+    // supply that reaches outside its own namespace.
+    const { client, calls } = makeFakeClient();
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    await handlers.oncalltool({ name: 'otherserver_drop_table' });
+    await handlers.oncalltool({ name: 'harbor_spawn_task' });
+    expect(calls.callTool.map(([t]) => t)).toEqual([
+      'srv_otherserver_drop_table',
+      'srv_harbor_spawn_task',
+    ]);
+    for (const [dispatched] of calls.callTool) {
+      expect(String(dispatched).startsWith('srv_')).toBe(true);
+    }
+  });
+
+  it('oncalltool qualifies even a name that ALREADY looks qualified (no escape hatch)', async () => {
+    // The subtle regression an `if (name.startsWith(serverID + "_")) return name`
+    // shortcut would introduce: it looks like a harmless idempotence tweak, and
+    // the cross-server case above still passes under it — but it hands an App a
+    // way to bypass qualification by prefixing its own server id itself, which
+    // is the first half of reaching a NEIGHBOUR namespace. The prefix is
+    // unconditional: a bare `srv_echo` from the app on server `srv` dispatches
+    // `srv_srv_echo`, not `srv_echo`.
+    const { client, calls } = makeFakeClient();
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    await handlers.oncalltool({ name: 'srv_echo' });
+    expect(calls.callTool).toEqual([['srv_srv_echo', undefined]]);
+  });
+
+  it('qualifyAppToolName is unconditional — every name lands inside the server namespace', () => {
+    expect(qualifyAppToolName('srv', 'echo')).toBe('srv_echo');
+    expect(qualifyAppToolName('srv', 'other_echo')).toBe('srv_other_echo');
+    // Idempotence is deliberately NOT a property here — see the handler case.
+    expect(qualifyAppToolName('srv', 'srv_echo')).toBe('srv_srv_echo');
+    // Even an attempt to spoof separators stays under the prefix.
+    expect(qualifyAppToolName('srv', '../evil').startsWith('srv_')).toBe(true);
+    expect(qualifyAppToolName('srv', '').startsWith('srv_')).toBe(true);
+  });
+
+  it('oncalltool raises a TYPED not-found naming the bare name + the confining server', async () => {
+    // The distinguishable-degradation property: an app must be able to tell
+    // "there is no such tool here" from "the transport broke", and must see the
+    // name IT asked for, not Harbor's internal catalog key.
+    const { client } = makeFakeClient({
+      async callTool(tool) {
+        throw new MCPAppToolNotFoundError(tool);
+      },
+    });
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    await expect(handlers.oncalltool({ name: 'nope' })).rejects.toBeInstanceOf(
+      MCPAppToolNotFoundError,
+    );
+    const err = await handlers.oncalltool({ name: 'nope' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MCPAppToolNotFoundError);
+    expect((err as MCPAppToolNotFoundError).tool).toBe('nope');
+    expect((err as MCPAppToolNotFoundError).serverID).toBe('srv');
+    expect((err as Error).message).toContain('srv');
+  });
+
+  it('oncalltool propagates a NON-not-found failure unchanged (no swallowing)', async () => {
+    const { client } = makeFakeClient({
+      async callTool() {
+        throw new Error('southbound transport reset');
+      },
+    });
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    await expect(handlers.oncalltool({ name: 'echo' })).rejects.toThrow(
+      /southbound transport reset/,
+    );
+  });
+
+  it('onlistresourcetemplates answers the advertised capability instead of erroring', async () => {
+    // The host advertises `serverResources`; an app probing
+    // `resources/templates/list` must get an answer, not a method-not-found.
+    const { client } = makeFakeClient();
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    const res = await handlers.onlistresourcetemplates();
+    expect(res.resourceTemplates).toEqual([]);
+  });
+
+  it('onlistresourcetemplates maps rows through when the host has templates', async () => {
+    const { client } = makeFakeClient({
+      async listResourceTemplates() {
+        return [{ uriTemplate: 'ui://srv/{id}.html', mimeType: 'text/html' }];
+      },
+    });
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    const res = await handlers.onlistresourcetemplates();
+    expect(res.resourceTemplates).toEqual([
+      { uriTemplate: 'ui://srv/{id}.html', name: 'ui://srv/{id}.html', mimeType: 'text/html' },
+    ]);
   });
 
   it('oncalltool surfaces a heavy result by reference, never silently inlined', async () => {
@@ -236,6 +342,24 @@ describe('manual handlers dispatch to the injected client', () => {
   });
 });
 
+describe('containerDimensionsFromBox — the host-context container snapshot', () => {
+  it('emits a fixed width + a maximum height (the host-owned growth bound)', () => {
+    expect(containerDimensionsFromBox({ width: 640, maxHeight: 400 })).toEqual({
+      width: 640,
+      maxHeight: 400,
+    });
+  });
+
+  it('omits an unknown / non-positive maxHeight rather than sending zero', () => {
+    expect(containerDimensionsFromBox({ width: 640 })).toEqual({ width: 640 });
+    expect(containerDimensionsFromBox({ width: 640, maxHeight: 0 })).toEqual({ width: 640 });
+  });
+
+  it('emits nothing at all for an unmeasured box — a zero box is a lie', () => {
+    expect(containerDimensionsFromBox({ width: 0, maxHeight: 400 })).toBeUndefined();
+  });
+});
+
 describe('D-173 — the host opens NO direct MCP transport', () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
   let wsSpy: ReturnType<typeof vi.fn>;
@@ -266,9 +390,10 @@ describe('D-173 — the host opens NO direct MCP transport', () => {
   it('drives every handler through the injected client without touching the network', async () => {
     const { client, calls } = makeFakeClient();
     const handlers = createAppHandlers({ client, serverID: 'srv' });
-    await handlers.oncalltool({ name: 'srv_echo', arguments: {} });
+    await handlers.oncalltool({ name: 'echo', arguments: {} });
     await handlers.onreadresource({ uri: 'ui://srv/app.html' });
     await handlers.onlistresources();
+    await handlers.onlistresourcetemplates();
     await handlers.onrequestdisplaymode({ mode: 'inline' });
 
     // The injected client received the calls...

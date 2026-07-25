@@ -1038,6 +1038,45 @@ func TestValidateTools_MCPServers(t *testing.T) {
 			wantSub: "tools.mcp_servers[0].name",
 		},
 		{
+			// The runtime registry refuses this pairing at attach, so a config
+			// carrying it aborts boot. Validate must catch it FIRST — an
+			// operator should learn at validate-time that two names cannot
+			// coexist, not when the runtime declines to start.
+			name: "separator-ambiguous names rejected (longer after shorter)",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "github", TransportMode: "sse", URL: "https://x"},
+					{Name: "github_enterprise", TransportMode: "sse", URL: "https://y"},
+				}
+			},
+			wantSub: "separator-ambiguous",
+		},
+		{
+			// Both orders: whichever lands second is refused, so declaration
+			// order cannot decide whether a config is accepted.
+			name: "separator-ambiguous names rejected (shorter after longer)",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "github_enterprise", TransportMode: "sse", URL: "https://y"},
+					{Name: "github", TransportMode: "sse", URL: "https://x"},
+				}
+			},
+			wantSub: "separator-ambiguous",
+		},
+		{
+			// A shared prefix WITHOUT a separator boundary is unambiguous
+			// (`githubby_x` can never be produced by `github`), so refusing it
+			// would block legitimate operator naming.
+			name: "prefix without separator boundary accepted",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "github", TransportMode: "sse", URL: "https://x"},
+					{Name: "githubby", TransportMode: "sse", URL: "https://y"},
+				}
+			},
+			wantOK: true,
+		},
+		{
 			name: "duplicate name rejected",
 			mutate: func(c *config.Config) {
 				c.Tools.MCPServers = []config.MCPServerConfig{

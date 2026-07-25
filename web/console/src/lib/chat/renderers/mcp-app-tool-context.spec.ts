@@ -107,6 +107,9 @@ function fakeClient(toolContext: () => Promise<MCPAppToolContext | null>): MCPAp
     async listResources() {
       return [];
     },
+    async listResourceTemplates() {
+      return [];
+    },
     async listTools() {
       return [];
     },

@@ -257,6 +257,13 @@ export interface AppAvailableEvent {
 	 * it initializes (Data Delivery). Empty when the discovery carried none.
 	 */
 	toolCallId: string;
+	/**
+	 * The server-side tool name that declared the app — display metadata the
+	 * host projects onto the `ui/initialize` host-context `toolInfo`, so a
+	 * rendered app can name the call that instantiated it. Empty when the
+	 * discovery carried none.
+	 */
+	toolName: string;
 }
 
 /** Decode an `mcp.app_available` frame. Returns null if not one. */
@@ -277,7 +284,8 @@ export function decodeAppAvailable(data: string): AppAvailableEvent | null {
 		resourceUri,
 		displayMode: str(frame.payload.DisplayMode),
 		rawHtmlTrusted: frame.payload.RawHTMLTrusted === true,
-		toolCallId: str(frame.payload.ToolCallID)
+		toolCallId: str(frame.payload.ToolCallID),
+		toolName: str(frame.payload.ToolName)
 	};
 }
 

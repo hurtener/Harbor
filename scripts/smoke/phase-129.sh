@@ -56,7 +56,10 @@ assert_grep_present 'jwks_stale' "internal/protocol/auth/middleware.go" \
 # ----------------------------------------------------------------------
 assert_grep_absent 'ErrJWKSStale' "internal/protocol/errors/errors.go" \
     "phase 129: no new Protocol error Code added (single-source preserved)"
-assert_grep_absent 'jwks_stale\|JWKSMaxStale\|JWKSStale' \
+# ERE alternation: assert_grep_absent takes an extended regex (as its siblings
+# always did). The BRE spelling `\|` would be read as a LITERAL pipe here and
+# match nothing, leaving the guard permanently green.
+assert_grep_absent 'jwks_stale|JWKSMaxStale|JWKSStale' \
     "web/console/src/lib/protocol/wire-manifest.gen.json" \
     "phase 129: wire manifest carries no new symbol (no wire change)"
 if grep -q 'ProtocolVersion = "0.1.0"' "internal/protocol/types/version.go"; then

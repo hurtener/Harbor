@@ -432,7 +432,14 @@ export function reduceHistoryTurns(events: readonly StateEvent[]): HistoryTurn[]
 					// pairs with `serverID` to read the PERSISTED tool context
 					// (`mcp.apps.tool_context`). Nothing new is stored for the
 					// replay — the runtime already persisted it under this id.
-					toolCallId: readString(p, ['ToolCallID', 'tool_call_id'])
+					toolCallId: readString(p, ['ToolCallID', 'tool_call_id']),
+					// The server-side tool name that declared the app — display
+					// metadata the host projects onto the `ui/initialize`
+					// host-context `toolInfo`. Read here for the same reason the
+					// live decoder reads it: the two projections must produce
+					// identical refs, and a one-sided omission is the drift the
+					// paired spec exists to catch.
+					toolName: readString(p, ['ToolName', 'tool_name'])
 				};
 				turn.serverID = serverID;
 			}

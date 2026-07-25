@@ -100,6 +100,9 @@ function fakeClient(): MCPAppHostClient {
     async listResources() {
       return [];
     },
+    async listResourceTemplates() {
+      return [];
+    },
     async listTools() {
       return [];
     },

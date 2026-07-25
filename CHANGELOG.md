@@ -17,6 +17,62 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Changed — ACTION REQUIRED for two configurations
+
+- **MCP server ids must be separator-safe; an ambiguous pair now refuses to
+  boot.** Two MCP server names where one is an underscore-extension of the
+  other (`github` and `github_enterprise`; also `a` and `a_b`) are no longer
+  allowed to coexist. A server's tools are keyed `<name>_<tool>` in the shared
+  tool catalog, so such a pair makes that key ambiguous — a key built by
+  prefixing the shorter name can resolve to a tool owned by the longer one,
+  which silently weakens any scoping that relies on the prefix (notably the
+  MCP-Apps host's per-App tool scoping).
+
+  **Impact.** A deployment already running such a pair will FAIL TO START after
+  upgrade: the registry refuses the second registration and assembly aborts
+  with `mcp: ambiguous server id`. The failure is loud, deterministic and names
+  the offending id. `harbor validate` now reports the same condition, so run it
+  against your config BEFORE upgrading.
+
+  **Remediation is a rename, and a rename is not free.** Changing a server's
+  name changes every `<name>_<tool>` catalog key that references it — agent
+  YAML tool allow-lists, `disabled_tools`, `paused_servers`, and any persisted
+  agent-config revision that pinned those keys. Update them in the same change,
+  or the tools will read as missing. Names that merely share a prefix without a
+  `_` boundary (`github` and `githubby`) are unaffected.
+
+- **MCP Apps: a rendered app must send the BARE server-side tool name.** The
+  MCP-Apps host now qualifies an app-supplied tool name with the app's own
+  server id before dispatching, instead of passing it through verbatim. An app
+  written against Harbor's `<source>_<tool>` catalog keys now double-qualifies
+  and receives a typed not-found; send `get_forecast`, not
+  `weather_get_forecast`. This is the spec-correct behaviour — a conformant MCP
+  App knows only its own server-side names — and it is what scopes an app to
+  its own server's tools.
+
+### Fixed
+
+- **MCP not-found responses are classified by sentinel, not by error text.**
+  `mcp.*` methods previously decided `not_found` by substring-matching the
+  error chain, which carries a southbound MCP server's message verbatim — so a
+  server whose transport failure happened to read like a not-found could turn a
+  transient failure into a typed `not_found` that clients treat as permanent.
+  The same applied to the paused-server / disabled-tool refusal. Both now
+  classify on an explicit sentinel the accessor sets.
+
+- **An MCP App that reports its content size now resizes its inline frame.**
+  `ui/notifications/size-changed` was ignored, so content-bearing apps were
+  pinned to a fixed height with their own nested scrollbar. The frame now
+  tracks the reported height, bounded by the host between a minimum and a
+  maximum. Apps that report no size are unchanged. The fullscreen and
+  side-by-side panels are unaffected by that bound.
+
+- **MCP Apps host obligations that were recorded as shipped but were absent.**
+  Graceful `ui/resource-teardown` on unmount, the app-initiated
+  `request-teardown`, host-context `toolInfo` / `containerDimensions`, and
+  `resources/templates/list` are now implemented. They were reverted alongside
+  an unrelated regression and never re-landed.
+
 ## [1.18.1] — 2026-07-24
 
 Patch: test-only hardening — eliminate a class of load-sensitive flaky

@@ -175,6 +175,12 @@
   --size-graph-max-height: 480px;
   /* The minimum height of an inline MCP App iframe before it self-sizes. */
   --size-app-inline-min: 12rem;
+  /* The maximum height an inline MCP App iframe may grow to when it self-sizes
+     from `ui/notifications/size-changed`. The host owns this bound: an app
+     reports its content height, the host honours it up to here, and beyond it
+     the app scrolls inside its own box rather than seizing the transcript
+     viewport. */
+  --size-app-inline-max: 40rem;
   --size-modal-width: 420px;
   --size-sparkline-height: 4rem;
   /* Phase 108h — the Events rate card holds a multi-line chart + a

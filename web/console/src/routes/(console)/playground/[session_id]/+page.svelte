@@ -523,7 +523,9 @@
       rawHtmlTrusted: app.rawHtmlTrusted,
       // Carry the correlation key so the page-level (fullscreen / pip) render
       // delivers the same captured tool context the inline render does.
-      toolCallId: app.toolCallId
+      toolCallId: app.toolCallId,
+      // …and names the same originating tool in the host-context `toolInfo`.
+      toolName: app.toolName
     };
     dispatchLayout({ type: 'request-display-mode', app: ref, mode: req.granted });
   }

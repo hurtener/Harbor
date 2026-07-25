@@ -297,6 +297,7 @@ const appAvailableFrame = JSON.stringify({
 		Identity: { TenantID: 'dev', UserID: 'dev', SessionID: 'dev', RunID: '01KSTH74S20BDDP1BK6ZSGABJG' },
 		ServerID: 'weather-server',
 		ToolCallID: 'tc_01weather',
+		ToolName: 'get_forecast',
 		ResourceURI: 'ui://weather/main.html',
 		DisplayMode: 'inline',
 		RawHTMLTrusted: false
@@ -311,7 +312,10 @@ describe('decodeAppAvailable', () => {
 			resourceUri: 'ui://weather/main.html',
 			displayMode: 'inline',
 			rawHtmlTrusted: false,
-			toolCallId: 'tc_01weather'
+			toolCallId: 'tc_01weather',
+			// The originating tool name — the host projects it onto the
+			// `ui/initialize` host-context `toolInfo`.
+			toolName: 'get_forecast'
 		});
 	});
 

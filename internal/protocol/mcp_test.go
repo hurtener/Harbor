@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -26,7 +27,13 @@ type stubMCP struct {
 	missingID bool
 }
 
-func mcpNotFoundErr() error  { return stderrors.New("mcp: server not found: x") }
+// The accessor STATES the not-found verdict by wrapping the Protocol
+// sentinel — the edge no longer reads the rendered text, so a stub that
+// only looks like a not-found is (correctly) not one. In production the
+// wrap is applied by mcpconsole.markNotFound at the driver boundary.
+func mcpNotFoundErr() error {
+	return fmt.Errorf("%w: mcp: server not found: x", protocol.ErrAccessorNotFound)
+}
 func mcpMissingIDErr() error { return stderrors.New("mcp: identity missing from ctx") }
 
 func (s *stubMCP) ListServers(_ context.Context, _ protocol.MCPListFilter) ([]protocol.MCPServerRow, string, error) {

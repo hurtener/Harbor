@@ -222,6 +222,11 @@ var (
 	// ErrRegistryIdentityMissing — the read ctx had no identity triple.
 	// Identity is mandatory (AGENTS.md §6 rule 9); the read fails closed.
 	ErrRegistryIdentityMissing = fmt.Errorf("mcp: identity missing from ctx")
+	// ErrAmbiguousServerID — the server id being registered would make the
+	// `<sourceID>_<tool>` catalog key space ambiguous against an
+	// already-registered id. See CheckServerIDUnambiguous for why that
+	// matters and what the rule is.
+	ErrAmbiguousServerID = fmt.Errorf("mcp: ambiguous server id (separator collision with a registered server)")
 )
 
 // maxListPageSize / defaultListPageSize bound the ListServers page.
@@ -352,6 +357,88 @@ type ServerRegistration struct {
 	Owner auth.Owner
 }
 
+// CheckServerIDUnambiguous reports whether registering `name` would leave the
+// `<sourceID>_<tool>` catalog key space ambiguous against an already-registered
+// MCP server id, returning a wrapped ErrAmbiguousServerID when it would.
+//
+// # Why the key space has to be unambiguous
+//
+// A tool discovered from server S is registered in the catalog as
+// `S_<toolName>` — a single underscore join in which NEITHER side is
+// charset-constrained: a server id may contain underscores, and server-side
+// tool names routinely do. The join is therefore not injective across arbitrary
+// id pairs. When two ids are separator-ambiguous, a single catalog key can be
+// parsed as belonging to either of them, and a consumer that BUILDS a key by
+// prefixing a server id cannot know which server it just addressed.
+//
+// That matters because a key prefix is used as a confinement boundary: the
+// Console's MCP-Apps host scopes a sandboxed App to its own server by
+// qualifying every app-supplied tool name with the App's host-derived server
+// id. The qualification is unconditional and the App cannot choose the id, so
+// the boundary holds exactly as well as the key space is unambiguous — and no
+// better. Downstream gates evaluate the posture of whichever server the key
+// resolved to, so an ambiguous resolution is not visible to them either.
+//
+// Refusing an ambiguous pairing at registration is what makes the key space
+// unambiguous AMONG MCP SERVER IDS, which is the precondition that boundary
+// depends on.
+//
+// # Scope of the guarantee — MCP ids only
+//
+// This registry sees MCP servers. The tool catalog is SHARED: in-proc and HTTP
+// tools register operator-chosen names into the same namespace with no source
+// prefix at all, and this check never sees them. A bare tool name that happens
+// to look like `<mcpServerID>_<something>` therefore reintroduces the same
+// ambiguity through a door this guard does not cover.
+//
+// So the honest statement is: `<sourceID>_<tool>` identifies exactly one
+// server AMONG MCP SERVER IDS. Closing the non-MCP door needs the resolved
+// descriptor's `Source` compared exactly at dispatch — a runtime-side check, not
+// a naming rule — which is recorded as a follow-up rather than bolted on here.
+//
+// # The rule
+//
+// Registering `N` is refused when a registered id `E` (E != N) satisfies either
+// direction: `N` is under `E`'s namespace (`N == E + "_" + …`), or `E` is under
+// `N`'s (`E == N + "_" + …`). Both directions are checked so ORDER does not
+// matter — whichever of an ambiguous pair lands second is refused, and the
+// runtime never ends up in a state the boot order alone decided.
+//
+// Re-registering the SAME id is always allowed: it is the hot-reload and
+// runtime re-attach path, and replacing an entry cannot create an ambiguity
+// that the id did not already have.
+func (r *Registry) CheckServerIDUnambiguous(name string) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return ambiguousAgainst(r.servers, name)
+}
+
+// ambiguousAgainst is the lock-free core of CheckServerIDUnambiguous. The
+// caller holds the appropriate lock.
+func ambiguousAgainst(servers map[string]*serverEntry, name string) error {
+	for existing := range servers {
+		if existing == name {
+			// A same-id replacement (hot reload / re-attach) is not an
+			// ambiguity — the id's relationship to every OTHER id is unchanged.
+			continue
+		}
+		// The message names ONLY the id the caller supplied. The id it collided
+		// with belongs to a server the caller may have no business knowing
+		// exists — this error is surfaced to the runtime-attach response, so
+		// echoing the other id would leak another owner's server name to
+		// whoever probes for it (AGENTS.md §6: existence is never revealed
+		// across identities). The operator diagnosing it has the boot log and
+		// the full server list; the API caller does not need either.
+		if strings.HasPrefix(name, existing+"_") || strings.HasPrefix(existing, name+"_") {
+			return fmt.Errorf("%w: server id %q is separator-ambiguous with an already-registered "+
+				"server id, so a %q catalog key would not identify one server; choose an id that is "+
+				"not an underscore-extension of, and not extended by, another registered id",
+				ErrAmbiguousServerID, name, "<serverID>_<tool>")
+		}
+	}
+	return nil
+}
+
 // Register adds a server to the Registry. Re-registering the same name
 // replaces the prior entry (the dev hot-reload path and the runtime
 // re-attach path both re-register). A same-name replacement CLOSES the
@@ -382,6 +469,13 @@ func (r *Registry) Register(ctx context.Context, reg ServerRegistration) error {
 		st = ServerStateOffline
 	}
 	r.mu.Lock()
+	// Separator safety, checked under the SAME write lock that installs the
+	// entry, so two concurrent registrations of an ambiguous pair cannot both
+	// observe an empty map and both succeed.
+	if err := ambiguousAgainst(r.servers, name); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	prior := r.servers[name]
 	r.servers[name] = &serverEntry{
 		provider:     reg.Provider,
