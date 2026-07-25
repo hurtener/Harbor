@@ -31,9 +31,10 @@ import (
 	"net/http"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -60,6 +61,31 @@ type StateHistoryHandler struct {
 	bus       events.EventBus
 	artifacts artifacts.ArtifactStore
 	logger    *slog.Logger
+	// redactor vets the audit payload before it reaches the bus. Optional
+	// at construction (an embedder may wire none); when supplied, a
+	// payload it refuses is logged rather than published.
+	redactor audit.Redactor
+	// auditor is the sink the shared body-identity gate records a
+	// granted cross-identity read on. Built once, after the options have
+	// been applied, so it sees the wired bus and redactor.
+	auditor bodyscope.Auditor
+}
+
+// bodyScopeAuditor returns the audit sink the shared body-identity gate
+// records a granted cross-identity read on.
+func (h *StateHistoryHandler) bodyScopeAuditor() bodyscope.Auditor { return h.auditor }
+
+// WithStateHistoryRedactor supplies the audit redactor the granted
+// cross-identity read's record passes through before it reaches the bus.
+// Unsupplied, the record is published unvetted only if the payload is
+// already a SafePayload by construction — so production wiring supplies
+// one.
+func WithStateHistoryRedactor(r audit.Redactor) StateHistoryOption {
+	return func(h *StateHistoryHandler) {
+		if r != nil {
+			h.redactor = r
+		}
+	}
 }
 
 // StateHistoryOption configures NewStateHistoryHandler at construction.
@@ -101,6 +127,9 @@ func NewStateHistoryHandler(bus events.EventBus, arts artifacts.ArtifactStore, o
 	for _, opt := range opts {
 		opt(h)
 	}
+	// The redactor is not optional on an audit path: a payload that
+	// reaches the bus without passing it is a payload nobody vetted.
+	h.auditor = bodyscope.NewBusAuditor(h.bus, h.redactor, h.logger)
 	return h, nil
 }
 
@@ -119,7 +148,7 @@ func (h *StateHistoryHandler) serve(w http.ResponseWriter, r *http.Request) {
 
 	// Identity edge — a missing / incomplete triple fails closed with
 	// CodeIdentityRequired (401).
-	verified, err := resolveIdentity(r)
+	verified, r, err := resolveIdentity(r)
 	if err != nil {
 		writeStateHistoryError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -144,34 +173,34 @@ func (h *StateHistoryHandler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := clampStateHistoryLimit(req.Limit)
 
-	// adminScoped derives SOLELY from the verified ctx scope — the request
-	// body carries no elevation knob (authority comes from the verified
-	// JWT, never the request).
-	adminScoped := auth.HasScope(r.Context(), auth.ScopeAdmin)
-
-	// Cross-identity gate. A body that names a tenant/user other than the
-	// verified one is a cross-identity read: it requires the verified
-	// admin scope, and absent it returns CodeNotFound (404 — existence is
-	// never revealed across identities, mirroring tasks.get; never a 403
-	// that would green-light an existence leak).
-	crossIdentity := (req.Identity.Tenant != "" && req.Identity.Tenant != verified.TenantID) ||
-		(req.Identity.User != "" && req.Identity.User != verified.UserID)
-
-	effTenant, effUser := verified.TenantID, verified.UserID
-	filterAdmin := false
-	if crossIdentity {
-		if !adminScoped {
+	// The cross-identity gate is the shared body-identity reconciler under
+	// the state.history surface's registered policy: the tenant and the
+	// user are admin-scoped (a fleet operator reads another identity's
+	// timeline under the admin claim, and the gate records the crossing),
+	// and the refusal carries the not-found code so the absence of the
+	// claim and the absence of the session read the same on the wire.
+	ctx, perr := bodyscope.Reconcile(r.Context(), bodyscope.ForIdentityScope(&req.Identity),
+		bodyscope.SurfaceStateHistory, h.bodyScopeAuditor())
+	if perr != nil {
+		if perr.Code == protoerrors.CodeNotFound {
 			writeStateHistoryError(w, protoerrors.CodeNotFound, http.StatusNotFound,
 				"state.history: session not found")
 			return
 		}
+		writeStateHistoryError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
+	r = r.WithContext(ctx)
+
+	effTenant, effUser := verified.TenantID, verified.UserID
+	filterAdmin := bodyscope.Elevated(ctx)
+	if filterAdmin {
 		if req.Identity.Tenant != "" {
 			effTenant = req.Identity.Tenant
 		}
 		if req.Identity.User != "" {
 			effUser = req.Identity.User
 		}
-		filterAdmin = true
 	}
 
 	f := events.Filter{

@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -101,7 +102,7 @@ func (h *RunsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"runs endpoints accept POST only")
 		return
 	}
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeRunsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -134,8 +135,8 @@ func (h *RunsHandler) serveSetOverrides(w http.ResponseWriter, r *http.Request, 
 	// Defence-in-depth: a body identity, when present, must match the
 	// verified identity. A caller cannot present a valid JWT for one
 	// identity while submitting a body claiming another.
-	if perr := assertRunsIdentity(req.Identity, wireID); perr != "" {
-		writeRunsError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceRuns); perr != nil {
+		writeRunsError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = wireID
@@ -163,19 +164,6 @@ func decodeRunsBody(body []byte, req any) error {
 	dec := json.NewDecoder(bytesReader(body))
 	dec.DisallowUnknownFields()
 	return dec.Decode(req)
-}
-
-// assertRunsIdentity is the defence-in-depth check: when the request
-// body carries an identity, every non-empty component MUST match the
-// verified identity. Returns "" when the body identity is consistent
-// (or empty).
-func assertRunsIdentity(body, verified prototypes.IdentityScope) string {
-	if (body.Tenant != "" && body.Tenant != verified.Tenant) ||
-		(body.User != "" && body.User != verified.User) ||
-		(body.Session != "" && body.Session != verified.Session) {
-		return "body identity scope does not match the verified identity"
-	}
-	return ""
 }
 
 // writeServiceError maps a runs/protocol.Service error onto a canonical

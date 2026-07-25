@@ -356,8 +356,8 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 			"method %q: identity scope incomplete: %v", string(method), err)
 	}
 
-	// Cross-tenant gate. When auth middleware ran, ctx carries
-	// the verified identity; a request whose body Tenant differs from
+	// Cross-tenant gate against the request's VERIFIED identity — the
+	// anchor a granted crossing never moves; a request whose body Tenant differs from
 	// the verified tenant requires the admin (or console:fleet) scope.
 	// When no middleware ran (trust-based posture), there is
 	// no ctx-identity and the gate is a no-op — the body identity is
@@ -367,7 +367,7 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 	// the body identity.
 	crossTenant := false
 	actor := id
-	if verified, hasVerified := identity.From(ctx); hasVerified {
+	if verified, hasVerified := identity.FromVerified(ctx); hasVerified {
 		actor = verified
 		if id.TenantID != verified.TenantID {
 			if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {
@@ -579,10 +579,12 @@ func (s *PostureSurface) handleGovernancePosture(
 	actor identity.Identity,
 	crossTenant bool,
 ) (any, error) {
-	govCtx, err := identity.With(ctx, id)
+	// A cross-tenant read runs under the named tenant. Seat it as an
+	// audited crossing: the admin-tier claim was verified by the gate
+	// above, and the audit record is written on the way out.
+	govCtx, err := postureReadContext(ctx, method, id, crossTenant)
 	if err != nil {
-		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"method %q: identity scope incomplete: %v", string(method), err)
+		return nil, err
 	}
 	snap, err := s.governance.Posture(govCtx)
 	if err != nil {
@@ -595,6 +597,34 @@ func (s *PostureSurface) handleGovernancePosture(
 		}
 	}
 	return projectGovernancePosture(snap), nil
+}
+
+// postureReadContext seats the request identity for a posture read. An
+// own-tenant read narrows within the verified tenant; a cross-tenant
+// read crosses it, which is an authorization decision the caller has
+// already passed — the surface's admin-tier gate ran before this, and
+// the audit record is written on the way out.
+func postureReadContext(
+	ctx context.Context,
+	method methods.Method,
+	id identity.Identity,
+	crossTenant bool,
+) (context.Context, error) {
+	var (
+		out context.Context
+		err error
+	)
+	if crossTenant {
+		out, err = identity.WithElevated(ctx, id,
+			fmt.Sprintf("method %q: cross-tenant posture read under an admin-tier scope claim", string(method)))
+	} else {
+		out, err = identity.With(ctx, id)
+	}
+	if err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: identity scope incomplete: %v", string(method), err)
+	}
+	return out, nil
 }
 
 // handleLLMPosture builds the llm.posture response

@@ -23,7 +23,6 @@
 package integration
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -162,7 +161,8 @@ func callArtifacts(t *testing.T, baseURL string, method methods.Method, payload 
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	resp, err := http.Post(baseURL+"/v1/control/"+string(method), "application/json", bytes.NewReader(body))
+	tenant, user, session := carrierFromPayload(payload)
+	resp, err := postCarrierJSON(baseURL+"/v1/control/"+string(method), body, tenant, user, session)
 	if err != nil {
 		t.Fatalf("POST %s: %v", method, err)
 	}
@@ -179,7 +179,7 @@ func callArtifacts(t *testing.T, baseURL string, method methods.Method, payload 
 // ctx carries a verified identity, without standing up a JWT key set.
 func withVerifiedIdentity(next http.Handler, id identity.Identity, scopes []auth.Scope) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, err := identity.With(r.Context(), id)
+		ctx, err := identity.WithVerified(r.Context(), id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -199,7 +199,7 @@ func withVerifiedIdentity(next http.Handler, id identity.Identity, scopes []auth
 //
 // It is deliberately a wire-level test rather than a direct
 // surface.Dispatch call: the transport's own reconciliation
-// (backfillArtifactsIdentity) constrains which shapes can reach the
+// (the shared body-identity gate) constrains which shapes can reach the
 // surface at all — it rejects a body User/Session that disagrees with
 // the verified identity — so only a scope carrying the caller's OWN user
 // and session under a foreign tenant is reachable here. Asserting

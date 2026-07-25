@@ -187,7 +187,8 @@ func (s *ControlSurface) dispatchTopology(ctx context.Context, req any) (*types.
 	// another tenant's graph is an admin-only operation. A granted
 	// cross-tenant read emits audit.admin_scope_used (RFC §6.13 —
 	// admin-scope use is retroactively auditable).
-	if callerID.TenantID != s.topology.TenantID() {
+	crossTenant := callerID.TenantID != s.topology.TenantID()
+	if crossTenant {
 		if s.adminScope == nil || !s.adminScope(ctx, auth.ScopeAdmin) {
 			return nil, protoerrors.Newf(protoerrors.CodeAuthRejected,
 				"method %q: cross-tenant topology snapshot requires the admin scope", string(method))
@@ -201,11 +202,21 @@ func (s *ControlSurface) dispatchTopology(ctx context.Context, req any) (*types.
 		}
 	}
 
-	// The engine's Topology accessor reads identity from ctx. Inject
-	// the validated caller identity so the accessor's identity-mandatory
-	// gate passes — the trust-based posture has no ctx-identity
-	// otherwise, and the engine fails closed on an unscoped ctx.
-	topoCtx, err := identity.With(ctx, callerID)
+	// The engine's Topology accessor reads identity from ctx. Seat the
+	// validated caller identity so the accessor's identity-mandatory
+	// gate passes. A cross-tenant read is seated as an audited crossing:
+	// the admin claim was verified and the record written above, so the
+	// crossing carries its justification with it.
+	var (
+		topoCtx context.Context
+		err     error
+	)
+	if crossTenant {
+		topoCtx, err = identity.WithElevated(ctx, callerID,
+			fmt.Sprintf("method %q: cross-tenant topology snapshot under the admin scope claim", string(method)))
+	} else {
+		topoCtx, err = identity.With(ctx, callerID)
+	}
 	if err != nil {
 		// Unreachable — callerID already passed identity.Validate above.
 		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,

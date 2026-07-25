@@ -87,7 +87,7 @@ func TestE2E_MCPApps_ProxyParksOnGate(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		resp, derr := surface.Dispatch(context.Background(), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		resp, derr := surface.Dispatch(mustVerifiedCtx(t, id), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 			Identity:  types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 			Tool:      "srv-a_sensitive",
 			Arguments: json.RawMessage(`{}`),

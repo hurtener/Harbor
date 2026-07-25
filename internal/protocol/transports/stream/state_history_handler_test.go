@@ -330,3 +330,28 @@ func TestStateHistory_AdminCrossTenantAllowed(t *testing.T) {
 		t.Fatalf("tail = %d, want 4", got.TailSequence)
 	}
 }
+
+// TestStateHistory_WithRedactorIsAccepted — the audit path's redactor is
+// wired through a constructor option, so the option itself must work. A
+// granted cross-identity read publishes its record through this sink; an
+// option that silently dropped the redactor would put an unvetted payload
+// on the bus.
+func TestStateHistory_WithRedactorIsAccepted(t *testing.T) {
+	t.Parallel()
+	bus := newDurableBusForHistory(t)
+	store := newArtifactStore(t)
+	h, err := stream.NewStateHistoryHandler(bus, store,
+		stream.WithStateHistoryRedactor(auditpatterns.New()))
+	if err != nil {
+		t.Fatalf("NewStateHistoryHandler with a redactor: %v", err)
+	}
+	if h == nil {
+		t.Fatal("NewStateHistoryHandler returned nil")
+	}
+	// A nil redactor is treated as unsupplied, never as a construction
+	// failure — the same posture every other optional dependency holds.
+	if _, err := stream.NewStateHistoryHandler(bus, store,
+		stream.WithStateHistoryRedactor(nil)); err != nil {
+		t.Fatalf("NewStateHistoryHandler with a nil redactor: %v", err)
+	}
+}

@@ -1,23 +1,24 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
-	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
 // serveApps is the MCP Apps host REST adapter. It decodes the body into
-// the per-method MCP Apps request wire type, backfills the body identity
-// from the auth-verified identity in ctx when the body left it empty
-// (same posture as serveMCP), and dispatches through the configured
-// AppsSurface.
+// the per-method MCP Apps request wire type, reconciles the body
+// identity against the request's verified identity through the shared
+// body-identity gate, and dispatches through the configured AppsSurface
+// under the reconciled ctx.
 //
 // The AppsSurface itself enforces identity-mandatory; the
 // `mcp.apps.call_tool` proxy additionally re-enters the approval / OAuth
@@ -37,12 +38,13 @@ func (h *Handler) serveApps(w http.ResponseWriter, r *http.Request, method metho
 		return
 	}
 
-	if perr := backfillAppsIdentity(r, req); perr != nil {
+	ctx, perr := reconcileAppsIdentity(r, req)
+	if perr != nil {
 		h.writeError(w, r, perr)
 		return
 	}
 
-	resp, derr := h.appsSurface.Dispatch(r.Context(), method, req)
+	resp, derr := h.appsSurface.Dispatch(ctx, method, req)
 	if derr != nil {
 		h.writeAppsError(w, r, method, derr)
 		return
@@ -92,41 +94,20 @@ func appsIdentityScope(req any) *types.IdentityScope {
 	}
 }
 
-// backfillAppsIdentity threads the verified identity into the MCP Apps
-// request body. When ctx carries a verified identity:
+// reconcileAppsIdentity routes the MCP Apps request body through the
+// shared body-identity gate under the MCP Apps surface's registered
+// policy. The policy pins all three components: the surface's verb gate
+// is identity-scoped and mints no claim that widens the tenant, so the
+// body triple is the caller's own or the request is refused.
 //
-//   - An empty body identity is backfilled from the verified triple —
-//     the verified identity is the source of truth.
-//   - A populated body identity MUST match the verified identity on the
-//     FULL (tenant, user, session) triple. The MCP Apps surface has no
-//     admin-elevation path — gateAppsIdentity is a plain identity-scoped
-//     check with no scope claim that widens it — so a body triple that
-//     disagrees with the verified one is unconditionally invalid and
-//     fails closed with CodeIdentityRequired (CLAUDE.md §6 rule 9).
-//
-// When ctx carries no verified identity (no middleware ran), the body
-// identity is authoritative and this is a no-op.
-func backfillAppsIdentity(r *http.Request, req any) *protoerrors.Error {
+// It returns the ctx to dispatch under.
+func reconcileAppsIdentity(r *http.Request, req any) (context.Context, *protoerrors.Error) {
 	scope := appsIdentityScope(req)
 	if scope == nil {
-		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+		return r.Context(), protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"MCP Apps request type is not recognised")
 	}
-	authed, ok := identity.From(r.Context())
-	if !ok {
-		return nil
-	}
-	if scope.Tenant == "" && scope.User == "" && scope.Session == "" {
-		scope.Tenant = authed.TenantID
-		scope.User = authed.UserID
-		scope.Session = authed.SessionID
-		return nil
-	}
-	if scope.Tenant != authed.TenantID || scope.User != authed.UserID || scope.Session != authed.SessionID {
-		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"MCP Apps request body identity (tenant/user/session) does not match the verified JWT identity")
-	}
-	return nil
+	return bodyscope.Reconcile(r.Context(), bodyscope.ForIdentityScope(scope), bodyscope.SurfaceApps, nil)
 }
 
 // writeAppsError maps an AppsSurface error onto the wire. The AppsSurface

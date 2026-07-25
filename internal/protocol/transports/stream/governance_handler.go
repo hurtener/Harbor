@@ -34,6 +34,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -130,7 +131,7 @@ func (h *GovernanceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"governance endpoints accept POST only")
 		return
 	}
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeGovernanceError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -184,8 +185,8 @@ func (h *GovernanceHandler) serveRotateKey(w http.ResponseWriter, r *http.Reques
 			"failed to decode governance.rotate_key request: "+err.Error())
 		return
 	}
-	if perr := assertGovernanceIdentity(req.Identity, wireID); perr != "" {
-		writeGovernanceError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceGovernance); perr != nil {
+		writeGovernanceError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = wireID
@@ -235,8 +236,8 @@ func (h *GovernanceHandler) serveSet(w http.ResponseWriter, r *http.Request, bod
 			"failed to decode governance.set_tenant_overrides request: "+err.Error())
 		return
 	}
-	if perr := assertGovernanceIdentity(req.Identity, wireID); perr != "" {
-		writeGovernanceError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceGovernance); perr != nil {
+		writeGovernanceError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = wireID
@@ -255,8 +256,8 @@ func (h *GovernanceHandler) serveGet(w http.ResponseWriter, r *http.Request, bod
 			"failed to decode governance.get_tenant_overrides request: "+err.Error())
 		return
 	}
-	if perr := assertGovernanceIdentity(req.Identity, wireID); perr != "" {
-		writeGovernanceError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceGovernance); perr != nil {
+		writeGovernanceError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = wireID
@@ -277,18 +278,6 @@ func decodeGovernanceBody(body []byte, req any) error {
 	dec := json.NewDecoder(bytesReader(body))
 	dec.DisallowUnknownFields()
 	return dec.Decode(req)
-}
-
-// assertGovernanceIdentity is the defence-in-depth check: when the request
-// body carries an identity, every non-empty component MUST match the
-// verified identity. Returns "" when consistent (or empty).
-func assertGovernanceIdentity(body, verified prototypes.IdentityScope) string {
-	if (body.Tenant != "" && body.Tenant != verified.Tenant) ||
-		(body.User != "" && body.User != verified.User) ||
-		(body.Session != "" && body.Session != verified.Session) {
-		return "body identity scope does not match the verified identity"
-	}
-	return ""
 }
 
 // writeServiceError maps a service error onto a canonical Protocol Code +

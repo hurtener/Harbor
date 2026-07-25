@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -233,7 +234,7 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: expected *types.ReadMCPResourceRequest, got %T", string(method), req)
 	}
-	id, perr := gateAppsIdentity(method, r.Identity)
+	id, perr := gateAppsIdentity(ctx, method, &r.Identity)
 	if perr != nil {
 		return nil, perr
 	}
@@ -277,7 +278,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: expected *types.MCPAppCallToolRequest, got %T", string(method), req)
 	}
-	id, perr := gateAppsIdentity(method, r.Identity)
+	id, perr := gateAppsIdentity(ctx, method, &r.Identity)
 	if perr != nil {
 		return nil, perr
 	}
@@ -329,7 +330,7 @@ func (s *AppsSurface) handleToolContext(ctx context.Context, req any) (any, erro
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: expected *types.ToolContextRequest, got %T", string(method), req)
 	}
-	id, perr := gateAppsIdentity(method, r.Identity)
+	id, perr := gateAppsIdentity(ctx, method, &r.Identity)
 	if perr != nil {
 		return nil, perr
 	}
@@ -369,12 +370,27 @@ func projectToolContextPayload(row AppToolContextPayloadRow) types.ToolContextPa
 	return types.ToolContextPayload{Content: row.Inline}
 }
 
-// gateAppsIdentity validates the request's identity triple at the edge.
-// Every MCP Apps method is identity-mandatory; an incomplete triple
-// fails closed with CodeIdentityRequired (CLAUDE.md §6 rule 9). There is
-// no admin-scope gate — the proxy's tool-safety gates fire inside the
-// invocation path, and a resource read is a plain identity-scoped read.
-func gateAppsIdentity(method methods.Method, scope types.IdentityScope) (identity.Identity, *protoerrors.Error) {
+// gateAppsIdentity is the surface's identity gate — the one every MCP
+// Apps method passes through, whichever transport (or in-process
+// embedder) called Dispatch.
+//
+// It reconciles the request body's identity scope against the ctx
+// verified identity through the shared body-identity gate under the MCP
+// Apps surface's registered policy, then validates the reconciled
+// triple. The policy pins all three components: this surface has no
+// admin-elevation path — the proxy's tool-safety gates fire inside the
+// invocation path, and a resource read is a plain identity-scoped read —
+// so a body triple that disagrees with the verified one is
+// unconditionally invalid.
+//
+// Running the reconciliation HERE rather than only in the transport is
+// what makes this surface's transport-agnostic claim true: a second
+// transport, or an embedder calling Dispatch directly, gets the same
+// answer without re-deriving the check.
+func gateAppsIdentity(ctx context.Context, method methods.Method, scope *types.IdentityScope) (identity.Identity, *protoerrors.Error) {
+	if _, perr := bodyscope.Reconcile(ctx, bodyscope.ForIdentityScope(scope), bodyscope.SurfaceApps, nil); perr != nil {
+		return identity.Identity{}, perr
+	}
 	id := identity.Identity{
 		TenantID:  scope.Tenant,
 		UserID:    scope.User,

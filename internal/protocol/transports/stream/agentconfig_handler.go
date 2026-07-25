@@ -50,6 +50,7 @@ import (
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -115,7 +116,7 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"agent_config endpoints accept POST only")
 		return
 	}
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeAgentConfigError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -271,7 +272,7 @@ func (h *AgentConfigHandler) serveGet(w http.ResponseWriter, r *http.Request, bo
 	if !h.decode(w, body, &req, methods.MethodAgentConfigGet) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -288,7 +289,7 @@ func (h *AgentConfigHandler) serveSetRevision(w http.ResponseWriter, r *http.Req
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSetRevision) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -305,7 +306,7 @@ func (h *AgentConfigHandler) serveListRevisions(w http.ResponseWriter, r *http.R
 	if !h.decode(w, body, &req, methods.MethodAgentConfigListRevisions) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -322,7 +323,7 @@ func (h *AgentConfigHandler) serveDiff(w http.ResponseWriter, r *http.Request, b
 	if !h.decode(w, body, &req, methods.MethodAgentConfigDiff) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -339,7 +340,7 @@ func (h *AgentConfigHandler) serveRollback(w http.ResponseWriter, r *http.Reques
 	if !h.decode(w, body, &req, methods.MethodAgentConfigRollback) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -356,7 +357,7 @@ func (h *AgentConfigHandler) serveSetToolExposure(w http.ResponseWriter, r *http
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSetToolExposure) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -373,7 +374,7 @@ func (h *AgentConfigHandler) serveSetPromptLayers(w http.ResponseWriter, r *http
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSetPromptLayers) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -390,7 +391,7 @@ func (h *AgentConfigHandler) serveSetLLMParams(w http.ResponseWriter, r *http.Re
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSetLLMParams) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -407,7 +408,7 @@ func (h *AgentConfigHandler) serveAddMCPConnection(w http.ResponseWriter, r *htt
 	if !h.decode(w, body, &req, methods.MethodAgentConfigAddMCPConnection) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -424,7 +425,7 @@ func (h *AgentConfigHandler) serveRemoveMCPConnection(w http.ResponseWriter, r *
 	if !h.decode(w, body, &req, methods.MethodAgentConfigRemoveMCPConnection) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -441,7 +442,7 @@ func (h *AgentConfigHandler) serveSetMCPDiscoveryOrigins(w http.ResponseWriter, 
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSetMCPDiscoveryOrigins) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -458,7 +459,7 @@ func (h *AgentConfigHandler) serveSetOAuthProvider(w http.ResponseWriter, r *htt
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSetOAuthProvider) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -475,7 +476,7 @@ func (h *AgentConfigHandler) serveRemoveOAuthProvider(w http.ResponseWriter, r *
 	if !h.decode(w, body, &req, methods.MethodAgentConfigRemoveOAuthProvider) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -492,7 +493,7 @@ func (h *AgentConfigHandler) serveSetLLMProvider(w http.ResponseWriter, r *http.
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSetLLMProvider) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -509,7 +510,7 @@ func (h *AgentConfigHandler) serveSkillsList(w http.ResponseWriter, r *http.Requ
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSkillsList) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -526,7 +527,7 @@ func (h *AgentConfigHandler) serveSkillsUpsert(w http.ResponseWriter, r *http.Re
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSkillsUpsert) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -543,7 +544,7 @@ func (h *AgentConfigHandler) serveSkillsDelete(w http.ResponseWriter, r *http.Re
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSkillsDelete) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -562,7 +563,7 @@ func (h *AgentConfigHandler) serveSessionSetUserPrompt(w http.ResponseWriter, r 
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSetUserPrompt) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -579,7 +580,7 @@ func (h *AgentConfigHandler) serveSessionSetSourceDisables(w http.ResponseWriter
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSetSourceDisables) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -596,7 +597,7 @@ func (h *AgentConfigHandler) serveSessionSkillsList(w http.ResponseWriter, r *ht
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSkillsList) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -613,7 +614,7 @@ func (h *AgentConfigHandler) serveSessionSkillsUpsert(w http.ResponseWriter, r *
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSkillsUpsert) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -630,7 +631,7 @@ func (h *AgentConfigHandler) serveSessionSkillsDelete(w http.ResponseWriter, r *
 	if !h.decode(w, body, &req, methods.MethodAgentConfigSessionSkillsDelete) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -649,7 +650,7 @@ func (h *AgentConfigHandler) serveUserGet(w http.ResponseWriter, r *http.Request
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserGet) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -666,7 +667,7 @@ func (h *AgentConfigHandler) serveUserSetRevision(w http.ResponseWriter, r *http
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSetRevision) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -683,7 +684,7 @@ func (h *AgentConfigHandler) serveUserListRevisions(w http.ResponseWriter, r *ht
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserListRevisions) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -700,7 +701,7 @@ func (h *AgentConfigHandler) serveUserDiff(w http.ResponseWriter, r *http.Reques
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserDiff) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -717,7 +718,7 @@ func (h *AgentConfigHandler) serveUserRollback(w http.ResponseWriter, r *http.Re
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserRollback) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -736,7 +737,7 @@ func (h *AgentConfigHandler) serveUserSkillsList(w http.ResponseWriter, r *http.
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsList) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -753,7 +754,7 @@ func (h *AgentConfigHandler) serveUserSkillsUpsert(w http.ResponseWriter, r *htt
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsUpsert) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -770,7 +771,7 @@ func (h *AgentConfigHandler) serveUserSkillsDelete(w http.ResponseWriter, r *htt
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsDelete) {
 		return
 	}
-	if !h.assertIdentity(w, req.Identity, wireID) {
+	if !h.assertIdentity(w, r, &req.Identity) {
 		return
 	}
 	req.Identity = wireID
@@ -793,12 +794,13 @@ func (h *AgentConfigHandler) decode(w http.ResponseWriter, body []byte, req any,
 	return true
 }
 
-// assertIdentity is the defence-in-depth body-identity check. Returns
-// false (and writes the error) when the body identity disagrees with the
-// verified identity.
-func (h *AgentConfigHandler) assertIdentity(w http.ResponseWriter, body, verified prototypes.IdentityScope) bool {
-	if perr := assertGovernanceIdentity(body, verified); perr != "" {
-		writeAgentConfigError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized, perr)
+// assertIdentity routes the request body's identity scope through the
+// shared body-identity gate under the agent-config surface's registered
+// policy. Returns false (and writes the error) when the body disagrees
+// with the request's verified identity.
+func (h *AgentConfigHandler) assertIdentity(w http.ResponseWriter, r *http.Request, scope *prototypes.IdentityScope) bool {
+	if perr := reconcileBodyScope(r, scope, bodyscope.SurfaceAgentConfig); perr != nil {
+		writeAgentConfigError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return false
 	}
 	return true

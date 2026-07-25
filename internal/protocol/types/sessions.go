@@ -248,14 +248,22 @@ type SessionRow struct {
 	// "" when Title is unset. Additive field — omitted on the wire when
 	// empty.
 	TitleSource string `json:"title_source,omitempty"`
-	// CountersPartial reports that the bounded per-session scan that
-	// produced the cost / tokens / events counters hit its scan bound (or a
-	// retention gap): the counts are then an HONEST LOWER BOUND, not exact.
-	// A `cost_desc` sort or `cost_above_cents` filter over a partial row is
-	// non-authoritative — the runtime never silently mis-orders or excludes
-	// it; the consumer renders the counts with a "≥" / lower-bound
-	// affordance. Additive field — omitted on the wire when false (the
-	// common case: a session's events fit inside the scan bound).
+	// CountersPartial reports that at least one read behind this row's
+	// counters could not be taken in full — the bounded per-session event
+	// scan hit its bound (or a retention gap), or a registry read (tasks /
+	// pauses) failed or could not be scoped to the row. EVERY counter on
+	// the row is then an HONEST LOWER BOUND, not exact: `total_cost_cents`
+	// / `total_tokens` / `events_count` may undercount, and
+	// `has_failed_task` / `has_pending_intervention` may read false because
+	// nobody looked rather than because there was nothing to find.
+	//
+	// No sort or filter over a partial row is authoritative — the runtime
+	// never silently mis-orders or EXCLUDES one, so a `has_failed_task` /
+	// `has_intervention` / `cost_above_cents` filter returns it and lets the
+	// consumer decide. Render the counts with a "≥" / lower-bound
+	// affordance and the booleans as unknown rather than false. Additive
+	// field — omitted on the wire when false (the common case: every read
+	// succeeded and the counts are exact).
 	CountersPartial bool `json:"counters_partial,omitempty"`
 }
 

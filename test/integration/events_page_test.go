@@ -271,7 +271,8 @@ func callEventsArtifacts(t *testing.T, baseURL string, method methods.Method, pa
 	if err != nil {
 		t.Fatalf("marshal artifacts request: %v", err)
 	}
-	resp, err := http.Post(baseURL+"/v1/control/"+string(method), "application/json", bytes.NewReader(body))
+	tenant, user, session := carrierFromPayload(payload)
+	resp, err := postCarrierJSON(baseURL+"/v1/control/"+string(method), body, tenant, user, session)
 	if err != nil {
 		t.Fatalf("POST %s: %v", method, err)
 	}

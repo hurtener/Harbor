@@ -39,6 +39,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -123,7 +124,7 @@ func (h *TasksHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Identity at the edge — RFC §5.5, CLAUDE.md §6 rule 9. A missing /
 	// incomplete triple fails closed with CodeIdentityRequired (401).
-	id, err := resolveIdentity(r)
+	id, r, err := resolveIdentity(r)
 	if err != nil {
 		writeTasksError(w, protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"identity scope incomplete: "+err.Error())
@@ -180,6 +181,10 @@ func (h *TasksHandler) serveList(w http.ResponseWriter, r *http.Request, body []
 			"failed to decode tasks.list request: "+err.Error())
 		return
 	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTasks); perr != nil {
+		writeTasksError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
+		return
+	}
 	req.Identity = scope
 	resp, err := h.service.List(r.Context(), req, adminScoped)
 	if err != nil {
@@ -194,6 +199,10 @@ func (h *TasksHandler) serveGet(w http.ResponseWriter, r *http.Request, body []b
 	if err := decodeTasksBody(body, &req); err != nil {
 		writeTasksError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			"failed to decode tasks.get request: "+err.Error())
+		return
+	}
+	if perr := reconcileBodyScope(r, &req.Identity, bodyscope.SurfaceTasks); perr != nil {
+		writeTasksError(w, perr.Code, bodyScopeStatus(perr.Code), perr.Message)
 		return
 	}
 	req.Identity = scope
