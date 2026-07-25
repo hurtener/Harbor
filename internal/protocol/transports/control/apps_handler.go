@@ -93,8 +93,19 @@ func appsIdentityScope(req any) *types.IdentityScope {
 }
 
 // backfillAppsIdentity threads the verified identity into the MCP Apps
-// request body — same posture as backfillMCPIdentity. A body claiming a
-// different (user, session) than the verified JWT is rejected.
+// request body. When ctx carries a verified identity:
+//
+//   - An empty body identity is backfilled from the verified triple —
+//     the verified identity is the source of truth.
+//   - A populated body identity MUST match the verified identity on the
+//     FULL (tenant, user, session) triple. The MCP Apps surface has no
+//     admin-elevation path — gateAppsIdentity is a plain identity-scoped
+//     check with no scope claim that widens it — so a body triple that
+//     disagrees with the verified one is unconditionally invalid and
+//     fails closed with CodeIdentityRequired (CLAUDE.md §6 rule 9).
+//
+// When ctx carries no verified identity (no middleware ran), the body
+// identity is authoritative and this is a no-op.
 func backfillAppsIdentity(r *http.Request, req any) *protoerrors.Error {
 	scope := appsIdentityScope(req)
 	if scope == nil {
@@ -111,9 +122,9 @@ func backfillAppsIdentity(r *http.Request, req any) *protoerrors.Error {
 		scope.Session = authed.SessionID
 		return nil
 	}
-	if scope.User != authed.UserID || scope.Session != authed.SessionID {
+	if scope.Tenant != authed.TenantID || scope.User != authed.UserID || scope.Session != authed.SessionID {
 		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"MCP Apps request body identity (user/session) does not match the verified JWT identity")
+			"MCP Apps request body identity (tenant/user/session) does not match the verified JWT identity")
 	}
 	return nil
 }

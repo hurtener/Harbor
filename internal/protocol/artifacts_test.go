@@ -479,6 +479,77 @@ func TestArtifactsGetRefHandler_RejectsMissingIdentity(t *testing.T) {
 	}
 }
 
+// TestArtifactsGetRefHandler_ForeignTenant_Refused pins the tenant
+// reconciliation on artifacts.get_ref. Unlike artifacts.list, this
+// method offers NO admin elevation, so the refusal holds for every scope
+// claim — the sub-tests carry admin and console:fleet respectively and
+// are refused identically. The artifact really exists under tenant-b, so
+// a refusal proves the check runs BEFORE the store read rather than
+// falling out of a not-found.
+func TestArtifactsGetRefHandler_ForeignTenant_Refused(t *testing.T) {
+	t.Parallel()
+	for name, scopes := range map[string][]auth.Scope{
+		"no scopes":     nil,
+		"admin":         {auth.ScopeAdmin},
+		"console:fleet": {auth.ScopeConsoleFleet},
+		"both":          {auth.ScopeAdmin, auth.ScopeConsoleFleet},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			store := stubPresigner{ArtifactStore: newInMemStore(t)}
+			s := newArtifactsSurface(t, store, "s3-stub")
+			scope := types.ArtifactScope{Tenant: "tenant-b", User: "u1", Session: "s1"}
+			ref := putFixture(t, s, scope, []byte("payload"), types.ArtifactsPutOpts{})
+
+			// Verified identity = tenant A; request scope = tenant B.
+			ctx, err := identity.With(context.Background(), identity.Identity{
+				TenantID: "tenant-a", UserID: "u1", SessionID: "s1",
+			})
+			if err != nil {
+				t.Fatalf("identity.With: %v", err)
+			}
+			if scopes != nil {
+				ctx = auth.WithScopes(ctx, scopes)
+			}
+			_, err = s.Dispatch(ctx, methods.MethodArtifactsGetRef, &types.ArtifactsGetRefRequest{
+				Scope: scope, ID: ref.ID, Expiry: 30 * time.Minute,
+			})
+			if err == nil {
+				t.Fatal("foreign-tenant get_ref: want error, got nil")
+			}
+			if code := asProtoError(t, err); code != protoerrors.CodeScopeMismatch {
+				t.Fatalf("foreign-tenant get_ref: code = %q, want scope_mismatch", code)
+			}
+		})
+	}
+}
+
+// TestArtifactsGetRefHandler_SameTenant_Allowed pins the golden path:
+// a verified identity resolving a ref in its own tenant is unaffected.
+func TestArtifactsGetRefHandler_SameTenant_Allowed(t *testing.T) {
+	t.Parallel()
+	store := stubPresigner{ArtifactStore: newInMemStore(t)}
+	s := newArtifactsSurface(t, store, "s3-stub")
+	scope := types.ArtifactScope{Tenant: "tenant-a", User: "u1", Session: "s1"}
+	ref := putFixture(t, s, scope, []byte("payload"), types.ArtifactsPutOpts{})
+
+	ctx, err := identity.With(context.Background(), identity.Identity{
+		TenantID: "tenant-a", UserID: "u1", SessionID: "s1",
+	})
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	resp, err := s.Dispatch(ctx, methods.MethodArtifactsGetRef, &types.ArtifactsGetRefRequest{
+		Scope: scope, ID: ref.ID, Expiry: 30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("same-tenant get_ref: unexpected error %v", err)
+	}
+	if gr := resp.(*types.ArtifactsGetRefResponse); gr.PresignedURL == "" {
+		t.Fatal("same-tenant get_ref: empty presigned URL")
+	}
+}
+
 func TestArtifactsGetRefHandler_NotFound(t *testing.T) {
 	t.Parallel()
 	store := stubPresigner{ArtifactStore: newInMemStore(t)}

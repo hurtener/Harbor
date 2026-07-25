@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 )
 
 // staticSigner is a test-grade BootstrapSigner that returns a stable
@@ -46,6 +47,16 @@ func newTestHandler() *BootstrapHandler {
 	)
 }
 
+// newBootstrapRequest builds a POST at the bootstrap path addressed to a
+// local authority — the shape a co-resident Console / CLI caller sends.
+// httptest.NewRequest defaults Host to "example.com", which the
+// handler's local-host gate refuses.
+func newBootstrapRequest(body io.Reader) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", body)
+	req.Host = "127.0.0.1:18080"
+	return req
+}
+
 func mustDecodeBootstrap(t *testing.T, body []byte) BootstrapResponse {
 	t.Helper()
 	var resp BootstrapResponse
@@ -57,7 +68,7 @@ func mustDecodeBootstrap(t *testing.T, body []byte) BootstrapResponse {
 
 func TestBootstrap_Loopback_127001_Returns200(t *testing.T) {
 	h := newTestHandler()
-	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", nil)
+	req := newBootstrapRequest(nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -85,7 +96,7 @@ func TestBootstrap_Loopback_127001_Returns200(t *testing.T) {
 
 func TestBootstrap_Loopback_IPv6_Returns200(t *testing.T) {
 	h := newTestHandler()
-	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", nil)
+	req := newBootstrapRequest(nil)
 	req.RemoteAddr = "[::1]:12345"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -97,7 +108,7 @@ func TestBootstrap_Loopback_IPv6_Returns200(t *testing.T) {
 
 func TestBootstrap_NonLoopback_Returns403(t *testing.T) {
 	h := newTestHandler()
-	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", nil)
+	req := newBootstrapRequest(nil)
 	req.RemoteAddr = "192.168.1.5:12345"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -116,7 +127,7 @@ func TestBootstrap_NonLoopback_Returns403(t *testing.T) {
 
 func TestBootstrap_SpoofedXForwardedFor_StillReturns403(t *testing.T) {
 	h := newTestHandler()
-	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", nil)
+	req := newBootstrapRequest(nil)
 	req.RemoteAddr = "192.168.1.5:12345"
 	req.Header.Set("X-Forwarded-For", "127.0.0.1")
 	rec := httptest.NewRecorder()
@@ -131,7 +142,7 @@ func TestBootstrap_TokenIsFreshPerCall(t *testing.T) {
 	h := newTestHandler()
 	var token1, token2 string
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", nil)
+	req := newBootstrapRequest(nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -148,7 +159,7 @@ func TestBootstrap_TokenIsFreshPerCall(t *testing.T) {
 
 func TestBootstrap_ResponseShape(t *testing.T) {
 	h := newTestHandler()
-	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", nil)
+	req := newBootstrapRequest(nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -186,7 +197,7 @@ func postBootstrap(t *testing.T, h *BootstrapHandler, body string) *httptest.Res
 	if body != "" {
 		rdr = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", rdr)
+	req := newBootstrapRequest(rdr)
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -297,7 +308,7 @@ func TestBootstrap_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	for range n {
 		go func() {
 			defer wg.Done()
-			req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", nil)
+			req := newBootstrapRequest(nil)
 			req.RemoteAddr = "127.0.0.1:12345"
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
@@ -315,5 +326,155 @@ func TestBootstrap_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	close(errs)
 	for e := range errs {
 		t.Error(e)
+	}
+}
+
+// TestBootstrap_LocalHostHeader_Allowed pins the Host allowlist's accept
+// side: every authority that names the local machine — the literal name
+// "localhost" or a loopback IP literal, with or without a port and with
+// IPv6 brackets — is served, so `harbor dev`, the Console's one-click
+// attach, and a plain curl all keep working.
+func TestBootstrap_LocalHostHeader_Allowed(t *testing.T) {
+	for _, host := range []string{
+		"localhost",
+		"localhost:18080",
+		"LOCALHOST:18080",
+		"127.0.0.1",
+		"127.0.0.1:18080",
+		"127.0.0.53:18080",
+		"[::1]:18080",
+		"::1",
+		"localhost.",
+		"localhost.:18080",
+	} {
+		t.Run(host, func(t *testing.T) {
+			h := newTestHandler()
+			req := newBootstrapRequest(nil)
+			req.Host = host
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("Host %q: expected 200, got %d: %s", host, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestBootstrap_ForeignHostHeader_Refused pins the Host allowlist's
+// refusal side: a request that arrives over loopback but is addressed to
+// an external authority (or carries no Host at all) is not a local
+// caller's request and gets 403.
+func TestBootstrap_ForeignHostHeader_Refused(t *testing.T) {
+	for _, host := range []string{
+		"harbor.example.com",
+		"harbor.example.com:18080",
+		"localhost.example.com:18080",
+		"203.0.113.7:18080",
+		"",
+	} {
+		t.Run("host="+host, func(t *testing.T) {
+			h := newTestHandler()
+			req := newBootstrapRequest(nil)
+			req.Host = host
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("Host %q: expected 403, got %d: %s", host, rec.Code, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("unmarshal error body: %v", err)
+			}
+			if body["code"] != "forbidden" {
+				t.Errorf("expected code forbidden, got %q", body["code"])
+			}
+		})
+	}
+}
+
+// TestBootstrap_CrossOriginHeadersStripped composes the handler behind
+// the real CORS middleware with the dev-only any-origin flag set — the
+// most permissive posture an operator can configure — and asserts the
+// bootstrap response still carries no allow-origin / allow-credentials
+// headers, so the envelope stays readable to same-origin callers only.
+func TestBootstrap_CrossOriginHeadersStripped(t *testing.T) {
+	wrapped := cors.Wrap(newTestHandler(), cors.Config{DevAllowAny: true})
+	req := newBootstrapRequest(nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set(cors.HeaderOrigin, "https://elsewhere.example.com")
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(cors.HeaderAccessControlAllowOrigin); got != "" {
+		t.Errorf("%s = %q, want empty", cors.HeaderAccessControlAllowOrigin, got)
+	}
+	if got := rec.Header().Get(cors.HeaderAccessControlAllowCredentials); got != "" {
+		t.Errorf("%s = %q, want empty", cors.HeaderAccessControlAllowCredentials, got)
+	}
+	// The response body is still served — the endpoint is not refused,
+	// it is simply not exposed to a cross-origin reader.
+	if resp := mustDecodeBootstrap(t, rec.Body.Bytes()); resp.Token == "" {
+		t.Error("token empty")
+	}
+}
+
+// TestBootstrap_CORSWrapped_SameOriginUnaffected proves the strip does
+// not change what a same-origin caller sees — the Console's attach flow
+// fetches from window.location.origin and never needed the headers.
+func TestBootstrap_CORSWrapped_SameOriginUnaffected(t *testing.T) {
+	wrapped := cors.Wrap(newTestHandler(), cors.Config{DevAllowAny: true})
+	req := newBootstrapRequest(nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := mustDecodeBootstrap(t, rec.Body.Bytes())
+	if resp.Token == "" || resp.BaseURL == "" {
+		t.Errorf("envelope incomplete: %+v", resp)
+	}
+}
+
+// TestIsLocalHostHeader_Table covers the authority parser directly,
+// including the shapes the handler tests do not drive end-to-end.
+func TestIsLocalHostHeader_Table(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want bool
+	}{
+		{"localhost", true},
+		{"localhost:8080", true},
+		{"LocalHost", true},
+		// Trailing root dot — the fully-qualified form a browser sends
+		// for `http://localhost./`.
+		{"localhost.", true},
+		{"localhost.:8080", true},
+		{"127.0.0.1.", true},
+		// Only ONE root label is stripped.
+		{"localhost..", false},
+		{"example.com.", false},
+		{"127.0.0.1", true},
+		{"127.0.0.1:1", true},
+		{"127.1.2.3", true},
+		{"::1", true},
+		{"[::1]", true},
+		{"[::1]:8080", true},
+		{"", false},
+		{"example.com", false},
+		{"example.com:8080", false},
+		{"notlocalhost", false},
+		{"192.168.0.1:8080", false},
+		{"[2001:db8::1]:8080", false},
+	} {
+		if got := isLocalHostHeader(tc.host); got != tc.want {
+			t.Errorf("isLocalHostHeader(%q) = %v, want %v", tc.host, got, tc.want)
+		}
 	}
 }

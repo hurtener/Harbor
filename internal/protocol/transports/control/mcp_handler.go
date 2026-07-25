@@ -16,8 +16,9 @@ import (
 // serveMCP is the MCP-Connections REST adapter. It
 // decodes the body into the per-method `mcp.servers.*` request wire
 // type, backfills the body identity from the auth-verified identity in
-// ctx when the body left it empty (same posture as servePosture), and
-// dispatches through the configured MCPSurface.
+// ctx when the body left it empty — reconciling a populated body
+// identity against the verified triple — and dispatches through the
+// configured MCPSurface.
 //
 // The MCPSurface itself enforces identity-mandatory + the admin-scope
 // gate on the three admin verbs and the two control-plane verbs
@@ -37,11 +38,9 @@ func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request, method method
 		return
 	}
 
-	// defence-in-depth: when auth.Middleware ran, r.Context()
-	// carries the verified identity; backfill an empty body identity
-	// from it, and reject a body claiming a different (user, session).
-	// The Tenant deliberately may differ — a cross-tenant MCP read is an
-	// admin operation the MCPSurface gates on the admin scope.
+	// defence-in-depth: when auth.Middleware ran, r.Context() carries the
+	// verified identity; backfill an empty body identity from it, and
+	// reject a body claiming a different (tenant, user, session).
 	if perr := backfillMCPIdentity(r, req); perr != nil {
 		h.writeError(w, r, perr)
 		return
@@ -133,8 +132,20 @@ func mcpIdentityScope(req any) *types.IdentityScope {
 	}
 }
 
-// backfillMCPIdentity threads the verified identity into the
-// MCP request body — same posture as backfillPostureIdentity.
+// backfillMCPIdentity threads the verified identity into the MCP request
+// body. When ctx carries a verified identity:
+//
+//   - An empty body identity is backfilled from the verified triple —
+//     the verified identity is the source of truth.
+//   - A populated body identity MUST match the verified identity on the
+//     FULL (tenant, user, session) triple. MCPSurface.gate is a
+//     verb-level admin gate over a process-global server catalog; it
+//     mints no scope claim that widens the tenant, so a body triple that
+//     disagrees with the verified one is unconditionally invalid and
+//     fails closed with CodeIdentityRequired (CLAUDE.md §6 rule 9).
+//
+// When ctx carries no verified identity (no middleware ran), the body
+// identity is authoritative and this is a no-op.
 func backfillMCPIdentity(r *http.Request, req any) *protoerrors.Error {
 	scope := mcpIdentityScope(req)
 	if scope == nil {
@@ -151,9 +162,9 @@ func backfillMCPIdentity(r *http.Request, req any) *protoerrors.Error {
 		scope.Session = authed.SessionID
 		return nil
 	}
-	if scope.User != authed.UserID || scope.Session != authed.SessionID {
+	if scope.Tenant != authed.TenantID || scope.User != authed.UserID || scope.Session != authed.SessionID {
 		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"MCP request body identity (user/session) does not match the verified JWT identity")
+			"MCP request body identity (tenant/user/session) does not match the verified JWT identity")
 	}
 	return nil
 }
